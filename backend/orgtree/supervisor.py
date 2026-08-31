@@ -6462,6 +6462,37 @@ def _run_one_turn(slug: str, nid: str,
                                 # 2026-08-18). Carry the fact; do not derive
                                 # it from an identity test.
                                 agent_authored = True
+                        # Cross-process complement to the CLI's D-211
+                        # reporter.  The pinned CLI forgets its comparison
+                        # baseline when this limit closes the process, so the
+                        # first resumed result is the only durable evidence
+                        # of read-vs-create.  Consume only fields already on
+                        # this result; no keepalive/probe/prompt mutation.
+                        with _state_lock:
+                            _cache_resume = st.pop(
+                                "limit_cache_resume", None)
+                        if limited or isinstance(_cache_resume, dict):
+                            _usage = ev.get("usage")
+                            _usage = _usage if isinstance(_usage, dict) else {}
+                            _resume_at = (_cache_resume or {}).get("resumed_at")
+                            warmpool.journal_limit_cache_usage(
+                                slug, nid, ran_sid or "",
+                                getattr(proc, "pid", None),
+                                str(st.get("ran_as") or ""), _usage,
+                                phase=("first-after-resume"
+                                       if _cache_resume is not None
+                                       else "limit"),
+                                limited=limited,
+                                prior_sid=str((_cache_resume or {}).get(
+                                    "session_id") or ""),
+                                prior_pid=(_cache_resume or {}).get("pid"),
+                                prior_account=str((_cache_resume or {}).get(
+                                    "account") or ""),
+                                freeze_s=(_cache_resume or {}).get("freeze_s"),
+                                resume_wait_s=(time.time() - _resume_at
+                                               if isinstance(_resume_at,
+                                                             (int, float))
+                                               else None))
                         nxt = None
                         with _state_lock:
                             st["responding"] = False
@@ -6995,6 +7026,7 @@ def _run_one_turn(slug: str, nid: str,
                     # refusal handed back off-lock seconds later. They must
                     # not be able to disagree again — see `subscription_lane`.
                     _sub_lane = False
+                    _frozen_at: str | None = None
                     # a limit the CLI REPORTED — stderr, a result event flagged
                     # is_error, or its own `<synthetic>` limit record — versus
                     # one promoted out of the agent's own final answer by the
@@ -7295,6 +7327,19 @@ def _run_one_turn(slug: str, nid: str,
                                 o2.d["api_fallback_until"] = _stamped_win
                                 o2.d["api_fallback_since"] = time.time()
                             store.save_org(o2)
+                            _frozen_at = str(fz.get("at") or "") or None
+                    # The old process/account identity is runtime attribution,
+                    # not org configuration.  Keep it in memory until the
+                    # freeze is resumed; the limit journal row above remains
+                    # the durable source if the backend itself restarts.
+                    if _frozen_at is not None:
+                        with _state_lock:
+                            st["limit_cache_origin"] = {
+                                "session_id": ran_sid or "",
+                                "pid": getattr(proc, "pid", None),
+                                "account": str(st.get("ran_as") or ""),
+                                "frozen_at": _frozen_at,
+                            }
                     # the stamp above came out of the CACHED readout, because
                     # this block holds the document lock and the usage
                     # endpoint routinely takes over a second (user report
@@ -10620,7 +10665,7 @@ def resume_frozen(slug: str, only: Iterable[str] | None = None,
     its context is warm — and only when the session has a transcript to
     reload. A refusal falls through to a plain resume, never a gate."""
     pick = None if only is None else set(only)
-    resumed: list[tuple[str, list[str]]] = []
+    resumed: list[tuple[str, list[str], bool, str, str]] = []
     with store.DOC_LOCK:
         org = store.load_org(slug)
         if org.d.get("spend_frozen"):
@@ -10650,6 +10695,9 @@ def resume_frozen(slug: str, only: Iterable[str] | None = None,
             fz = _resumable(n)
             if fz is None:
                 continue
+            _limit_resume = bool(fz.get("limit"))
+            _frozen_at = str(fz.get("at") or "")
+            _frozen_sid = str(n.get("session_id") or "")
             # a fallback wake is seconds behind the freeze — the cache is
             # still warm, which is the opposite of what cheap_first is for
             if cheap_first and fz.get("limit") \
@@ -10664,16 +10712,37 @@ def resume_frozen(slug: str, only: Iterable[str] | None = None,
                 except LedgerError:
                     pass          # an optimization, never a gate (D-114)
             n.pop("frozen", None)
-            resumed.append((nid, fz.get("resume_texts") or []))
+            resumed.append((nid, fz.get("resume_texts") or [],
+                            _limit_resume, _frozen_at, _frozen_sid))
         if resumed:
             store.save_org(org)
-    for nid, texts in resumed:
+    for nid, texts, limit_resume, frozen_at, frozen_sid in resumed:
         if not texts:
             texts = ["(orgtree) You were frozen by a usage limit and have been "
                      "resumed — handle any mail above and continue."]
         st = state(slug, nid)
         first = None
+        resumed_at = time.time()
+        freeze_s: float | None = None
+        if frozen_at:
+            try:
+                freeze_s = resumed_at - _dtm.datetime.fromisoformat(
+                    frozen_at.replace("Z", "+00:00")).timestamp()
+            except (TypeError, ValueError):
+                pass
         with _state_lock:
+            origin = st.pop("limit_cache_origin", None)
+            if limit_resume:
+                origin = origin if isinstance(origin, dict) else {}
+                st["limit_cache_resume"] = {
+                    "session_id": str(origin.get("session_id")
+                                      or frozen_sid),
+                    "pid": origin.get("pid"),
+                    "account": str(origin.get("account")
+                                   or st.get("ran_as") or ""),
+                    "freeze_s": freeze_s,
+                    "resumed_at": resumed_at,
+                }
             st["queue"].extend(texts[1:])
             if not st["busy"]:
                 st["busy"] = True
@@ -10684,7 +10753,7 @@ def resume_frozen(slug: str, only: Iterable[str] | None = None,
             threading.Thread(target=_run_turn, args=(slug, nid, first),
                              daemon=True).start()
         notify(slug, nid, "resumed")
-    return [nid for nid, _ in resumed]
+    return [nid for nid, *_ in resumed]
 
 
 # The chatq external bridge that lived here (registration, send.sh

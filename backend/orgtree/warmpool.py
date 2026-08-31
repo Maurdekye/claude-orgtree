@@ -430,6 +430,58 @@ def journal_cache_break_lines(slug: str, nid: str, sid: str,
                  truncated=len(raw) > CACHE_BREAK_LINE_MAX)
 
 
+def journal_limit_cache_usage(
+        slug: str, nid: str, sid: str, pid: int | None, account: str,
+        usage: dict[str, Any], *, phase: str, limited: bool,
+        prior_sid: str = "", prior_pid: int | None = None,
+        prior_account: str = "", freeze_s: float | None = None,
+        resume_wait_s: float | None = None) -> None:
+    """Record the two boundaries needed to attribute a limit -> wake miss.
+
+    This consumes the result event Orgtree already received; it never probes
+    Claude or mutates a prompt.  Only the limit result and the first result
+    after ``resume_frozen`` call this helper.  The whitelist is intentional:
+    result/error text and unknown provider fields do not belong in the shared
+    warm journal.
+    """
+    if phase not in ("limit", "first-after-resume"):
+        return
+    rec: dict[str, Any] = {
+        "slug": slug, "nid": nid, "session_id": sid, "pid": pid,
+        "account": account, "phase": phase, "limited": bool(limited),
+    }
+    for key in ("input_tokens", "cache_read_input_tokens",
+                "cache_creation_input_tokens", "output_tokens"):
+        value = usage.get(key)
+        if isinstance(value, (int, float)) and not isinstance(value, bool) \
+                and value >= 0:
+            rec[key] = int(value)
+    creation = usage.get("cache_creation")
+    if isinstance(creation, dict):
+        for key in ("ephemeral_5m_input_tokens",
+                    "ephemeral_1h_input_tokens"):
+            value = creation.get(key)
+            if isinstance(value, (int, float)) and not isinstance(value, bool) \
+                    and value >= 0:
+                rec[key] = int(value)
+    if phase == "first-after-resume":
+        rec["process_respawned"] = True
+        if prior_sid:
+            rec["prior_session_id"] = prior_sid
+            rec["same_session"] = prior_sid == sid
+        if prior_pid is not None:
+            rec["prior_pid"] = prior_pid
+            rec["pid_changed"] = prior_pid != pid
+        if prior_account:
+            rec["prior_account"] = prior_account
+            rec["same_account"] = prior_account == account
+        if freeze_s is not None:
+            rec["freeze_s"] = round(max(0.0, freeze_s), 3)
+        if resume_wait_s is not None:
+            rec["resume_wait_s"] = round(max(0.0, resume_wait_s), 3)
+    _journal("limit-cache", **rec)
+
+
 def read_cold_stderr(proc: subprocess.Popen[str], slug: str, nid: str,
                      sid: str) -> str:
     """The non-pooled stderr owner, with the same cache-break observation as
