@@ -110,10 +110,23 @@ os.environ.pop("ORGTREE_SANDBOX_MCP", None)
 os.environ.pop("ORGTREE_SANDBOX_API_KEY", None)
 os.environ.pop("ORGTREE_EXPOSE_ADMIN", None)
 
-from orgtree import (api, deployment, sandbox, store, subproxy,  # noqa: E402
-                     supervisor)
+from orgtree import (api, deployment, frozen_install, sandbox,   # noqa: E402
+                     store, subproxy, supervisor)
 from orgtree import disk as dsk                                  # noqa: E402
 from orgtree.ledger import USER                                  # noqa: E402
+
+
+def _approved_sandbox_labels() -> dict[str, str]:
+    """The exact labels the approved manifest requires on the frozen image."""
+    import json as _json
+    from pathlib import Path as _Path
+    root = _Path(frozen_install.REPO_ROOT)
+    doc = _json.loads((root / frozen_install.MANIFEST_REL)
+                      .read_text(encoding="utf-8"))
+    spec = next(c for c in doc["containers"] if c["id"] == "sandbox")
+    return {**spec["labels"],
+            "io.orgtree.frozen.config":
+                frozen_install.APPROVED_MANIFEST_SHA256}
 
 # ---- the blast-radius guard. Nothing in this file may name a slug that does
 # not start with this prefix, and the real credentials file may never be the
@@ -379,6 +392,8 @@ class FakeDocker:
         self.calls: list[list[str]] = []
         self.server_up = True
         self.images: set[str] = set()
+        # tag → OCI labels, so a frozen image can be approved or not
+        self.image_labels: dict[str, dict[str, str]] = {}
         self.volumes: set[str] = set()
         self.networks: dict[str, dict] = {
             "bridge": {"internal": False, "gateway": "172.17.0.1"}}
@@ -408,7 +423,13 @@ class FakeDocker:
         if a[:1] == ["version"]:
             return self.cp(a, 0 if self.server_up else 1, "28.0.0\n")
         if a[:2] == ["image", "inspect"]:
-            return self.cp(a, 0 if a[2] in self.images else 1)
+            if a[2] not in self.images:
+                return self.cp(a, 1, "", f"No such image: {a[2]}")
+            # Real `docker image inspect` output: frozen attestation reads
+            # the labels off this to decide whether the image is approved.
+            return self.cp(a, 0, json.dumps([{
+                "Id": "sha256:" + "1" * 64,
+                "Config": {"Labels": self.image_labels.get(a[2], {})}}]))
         if a[:1] == ["build"]:
             if self.build_fails:
                 return self.cp(a, 1, "", "no space left on device")
@@ -710,8 +731,30 @@ if section("§2  the container contract"):
         net = sandbox.frozen_network_name(slug)
         gateway = sandbox.frozen_gateway_name(slug)
         os.environ[deployment.PROFILE_ENV] = "frozen"
+        # Frozen mode never builds an image lazily: it runs the ONE approved
+        # content-addressed tag or refuses. Publish that tag with the labels
+        # the manifest approves, exactly as a real prebuilt image would.
+        frozen_tag = frozen_install.required_sandbox_image_tag()
+        FD.images.add(frozen_tag)
+        FD.image_labels[frozen_tag] = _approved_sandbox_labels()
         try:
             sandbox.ensure_container(o)
+            agent_run0 = next(
+                c for c in FD.find("run")
+                if c[c.index("--name") + 1] == sandbox.container_name(slug))
+            assert agent_run0[agent_run0.index("--name") - 1] == frozen_tag \
+                or frozen_tag in agent_run0, agent_run0
+            # ☠ /usr/local is seeded from the image ONCE and reused by name.
+            # In frozen mode it must be keyed to the approved configuration,
+            # not the host CLI version — otherwise a frozen container could
+            # mount a /usr/local seeded from an unapproved standard image
+            # built at the same CLI version, and the pins would verify while
+            # the CLI actually running came from somewhere else.
+            usrlocal = next(v for i, v in enumerate(agent_run0)
+                            if agent_run0[i - 1] == "-v"
+                            and v.endswith(":/usr/local:ro"))
+            assert "frozen-" in usrlocal, usrlocal
+            assert supervisor.cli_version() not in usrlocal, usrlocal
             creates = FD.find("network", "create")
             assert creates and "--internal" in creates[-1] \
                 and creates[-1][-1] == net, creates

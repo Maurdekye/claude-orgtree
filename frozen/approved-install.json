@@ -3,18 +3,23 @@
   "profile": "frozen",
   "approved_at": "2026-08-31",
   "files": {
-    "frozen/requirements.txt": "3b1b5705c5f481deb128e7015e5093a3571426bc74d598b8295b153b9e4fa32f",
-    "frozen/requirements-hub.txt": "a587743180eb6f15e7c1363ee3c372f6dcbc8046d7d322da7d89e58a034fc6d5",
-    "frozen/sandbox-apt.txt": "3bc371f5d699eba40d67b448462855886c6a7c2b4829e765da925e0cc259ec36",
+    "backend/orgtree/bridgeauth.py": "cdab1095bf05914e62e7c66cf3c31c1b4e14057177052ee2e61e3815f06d393b",
+    "backend/orgtree/frozen_gateway.py": "20b058eee2025f257c7532272b83498ee6b759baa6462d35d904309d1003b3b0",
     "frontend/package-lock.json": "d490b76e6c11c844b82ed3dfb5b209aa4a83f715228ced9dc6d8e1fbe91bd09e",
-    "frozen/sandbox-provider/package-lock.json": "d2d3efe1cd8363e3256dfebfd5e30adc68cddb53625538b0fc09c0be9f4fcf1d",
-    "frozen/sandbox.Dockerfile": "ef192d43a1fe4c2f02bb0db7c91368a6a21d75f591bf7a4c838aace1a256dda9",
-    "frozen/hub.Dockerfile": "3feb1fe7b2e581e6b27e3be53f0970b9896fd0e6ef9a85deb13d749c540d75de"
+    "frozen/hub.Dockerfile": "c01cfb85d97807334dd1e7a1d14ab54e8823d89e6b850bd492a41a1f927f18e8",
+    "frozen/requirements-hub.txt": "edef1281ef1a3907b2daa977ea4e602101861b5ddebfd902b6b06b69d4c7bfe7",
+    "frozen/requirements.txt": "64200702f589cfd10da6e7369731940ba780bcd4c09376856e64ff6a42f2c2a6",
+    "frozen/sandbox-apt.txt": "d8bd68029505fa43fe02240ffa94d95b526bc13d36bcddf93245fdf889551885",
+    "frozen/sandbox-provider/package-lock.json": "1917708f5fe245b2cf34f7ccc55cc3d0bb6850c0da7b48e68e51605cb5faf5a0",
+    "frozen/sandbox.Dockerfile": "0520e683e28a617e755cd4f812d0b507b995907315e9b431f5626aaf86cc444e"
   },
   "python": {
     "requirements": "frozen/requirements.txt",
     "implementation": "CPython",
-    "versions": ["3.10", "3.11"],
+    "versions": [
+      "3.10",
+      "3.11"
+    ],
     "platform_system": "Windows",
     "platform_machine": "AMD64",
     "allowed_bootstrap_packages": []
@@ -76,5 +81,10 @@
         "org.opencontainers.image.version": "3.12.14"
       }
     }
-  ]
+  ],
+  "bridge": {
+    "scheme": "hmac-sha256-org-v1",
+    "scope": "org",
+    "same_org_nodes_mutually_trusted": true
+  }
 }

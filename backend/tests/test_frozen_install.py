@@ -115,6 +115,15 @@ def fixture(root: Path) -> str:
             "labels": {"io.orgtree.frozen.component": "sandbox",
                        "io.orgtree.frozen.platform": "linux/amd64"},
         }],
+        # The approved bridge boundary is a rotatable PER-ORG credential.
+        # Same-org root-capable nodes are mutually trusted here; the manifest
+        # states that literally so attestation cannot drift into claiming
+        # per-node isolation. See test_frozen_attestation_integration.py.
+        "bridge": {
+            "scheme": "hmac-sha256-org-v1",
+            "scope": "org",
+            "same_org_nodes_mutually_trusted": True,
+        },
     }
     write_json(root / "frozen" / "approved-install.json", manifest)
     return approve(root)
@@ -142,7 +151,26 @@ def inventories(digest: str) -> dict[str, Any]:
             "command": "python -m orgtree.api",
             "deployment_profile": "frozen",
             "admin_hosts": ["127.0.0.1"], "public_port": 0,
-            "expose_admin": None},
+            "expose_admin": None,
+            # Since the frozen network landed the backend holds two listeners:
+            # the loopback admin app and the sandbox bridge the per-org relay
+            # dials. The whole table is checked, not just the admin port.
+            "admin_port": 7360, "bridge_port": 7362,
+            "listeners": [{"ip": "127.0.0.1", "port": 7360},
+                          {"ip": "127.0.0.1", "port": 7362}],
+            "expected_bridge_hosts": ["127.0.0.1"]},
+        "bridge_inventory": {
+            "key_path": "/host-only/.bridge-credentials.key",
+            "key_present": True,
+            "sandboxed_orgs": ["acme"],
+            "orgs": {"acme": {
+                "scheme": "hmac-sha256-org-v1", "scope": "org", "org": "acme",
+                "generation": 2, "fingerprint": "sha256:" + "c" * 64,
+                "rotated_at": "2026-08-31T00:00:00Z",
+                "legacy_credentials_accepted": False,
+                "same_org_nodes_mutually_trusted": True,
+                "previous_generation_rejected": True}},
+            "error": ""},
     }
 
 
@@ -330,24 +358,27 @@ def frozen_sandbox_never_builds_lazily() -> None:
 
 def direct_uvicorn_refused() -> None:
     def run(root: Path, digest: str) -> None:
-        report = verify(root, digest, launch_inventory={
-            "mode": "live", "supported": False,
-            "command": "python -m uvicorn orgtree.api:app --host 127.0.0.1",
-            "deployment_profile": "frozen",
-            "admin_hosts": ["127.0.0.1"], "public_port": 0,
-            "expose_admin": None})
+        # Otherwise an entirely conforming live install: the ONLY defect is
+        # the unsupported launch command.
+        bad = inventories(digest)["launch_inventory"]
+        bad["supported"] = False
+        bad["command"] = "python -m uvicorn orgtree.api:app --host 127.0.0.1"
+        report = verify(root, digest, launch_inventory=bad)
         assert codes(report) == {"LAUNCH_PATH_SUPPORTED"}, codes(report)
     with_fixture(run)
 
 
 def public_admin_bind_refused() -> None:
     def run(root: Path, digest: str) -> None:
-        report = verify(root, digest, launch_inventory={
-            "mode": "live", "supported": True,
-            "command": "python -m orgtree.api", "admin_hosts": ["0.0.0.0"],
-            "deployment_profile": "frozen",
-            "public_port": 0, "expose_admin": None})
-        assert codes(report) == {"ADMIN_LISTENER_LOOPBACK"}, codes(report)
+        bad = inventories(digest)["launch_inventory"]
+        bad["admin_hosts"] = ["0.0.0.0"]
+        bad["listeners"] = [{"ip": "0.0.0.0", "port": 7360},
+                            {"ip": "127.0.0.1", "port": 7362}]
+        report = verify(root, digest, launch_inventory=bad)
+        # A public admin bind now trips two independent checks: the admin
+        # listener is not loopback, and the process holds a wildcard bind.
+        assert codes(report) == {"ADMIN_LISTENER_LOOPBACK",
+                                 "NO_WILDCARD_LISTENER"}, codes(report)
     with_fixture(run)
 
 

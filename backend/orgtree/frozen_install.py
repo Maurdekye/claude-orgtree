@@ -42,7 +42,7 @@ MANIFEST_REL = Path("frozen") / "approved-install.json"
 # and all of its referenced files cannot be silently edited into a new
 # approval: this independently committed value must move too.
 APPROVED_MANIFEST_SHA256 = \
-    "ad72b817903b111766d830dac9050d2fbb7bd4adaeda74710894b410a3da1d9c"
+    "39f7809836aa8da602ef9590eb6e5563e1d58e726d4fcf386b6f542a1c00362f"
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _EXACT_REQUIREMENT = re.compile(
@@ -432,15 +432,189 @@ def _verify_providers(manifest: Mapping[str, Any], rec: _Recorder,
                 "the prefix package-lock records npm's registry integrity")
 
 
+def _bridge_inventory(*, create_key: bool = False) -> dict[str, Any]:
+    """Observe the live per-org bridge credential state.
+
+    ``bridgeauth.install_key()`` MINTS a key when none exists.  The standalone
+    verifier must never do that: a machine with no key is a finding, not
+    something to quietly fix, so its reads go through ``create=False``.
+
+    Frozen STARTUP passes ``create_key=True``.  The backend legitimately owns
+    that file, and minting it once at startup — rather than lazily, inside
+    whichever turn first touches a sandbox — is what lets the very first
+    frozen boot attest its own bridge instead of deadlocking on a key that
+    only exists after the check it is blocking.
+    """
+
+    # Local imports keep provider/store startup work out of a standard process
+    # that never invokes frozen attestation.
+    from . import bridgeauth, sandbox, store
+    from .ledger import LedgerError
+
+    out: dict[str, Any] = {
+        "key_path": bridgeauth.credential_key_path(),
+        "key_present": False,
+        "orgs": {},
+        "sandboxed_orgs": [],
+        "error": "",
+    }
+    try:
+        out["key_present"] = bridgeauth.install_key(
+            create=create_key) is not None
+    except bridgeauth.BridgeCredentialError as e:
+        out["error"] = str(e)
+        return out
+    if not out["key_present"]:
+        out["error"] = ("no host-only bridge credential key; frozen orgs have "
+                        "no rotatable credential to attest")
+        return out
+    records: dict[str, Any] = {}
+    sandboxed: list[str] = []
+    for row in store.list_orgs():
+        slug = str(row.get("slug") or "")
+        if not slug:
+            continue
+        try:
+            org = store.load_org(slug)
+        except (LedgerError, OSError) as e:
+            records[slug] = {"error": f"could not load org: {e}"}
+            sandboxed.append(slug)
+            continue
+        if not sandbox.is_sandboxed(org):
+            # Frozen mode already refuses unsandboxed orgs in preflight; this
+            # module does not duplicate that refusal, it only attests bridges.
+            continue
+        sandboxed.append(slug)
+        try:
+            records[slug] = bridgeauth.credential_attestation(org)
+        except (bridgeauth.BridgeCredentialError,
+                deployment.DeploymentConfigError) as e:
+            records[slug] = {"error": f"{type(e).__name__}: {e}"}
+    out["orgs"] = records
+    out["sandboxed_orgs"] = sandboxed
+    return out
+
+
+def _verify_bridge(manifest: Mapping[str, Any], rec: _Recorder,
+                   inventory: Mapping[str, Any] | None) -> None:
+    """Attest the rotatable per-org sandbox bridge credential state.
+
+    ⚠ The approved claim is a ROTATABLE PER-ORG credential.  Sandboxed nodes
+    inside one org share a root-capable container and can read each other's
+    bearer from ``/proc``; they are mutually trusted at this boundary.  These
+    checks deliberately assert that the attestation record SAYS SO, and would
+    fail an attestation that quietly claimed per-node isolation instead.
+    """
+
+    spec = manifest.get("bridge")
+    if not isinstance(spec, dict):
+        rec.add("BRIDGE_SPEC_INVALID", "bridge", False,
+                "approved bridge credential specification", repr(spec))
+        return
+    approved_scheme = str(spec.get("scheme") or "")
+    approved_scope = str(spec.get("scope") or "")
+    approved_mutual = spec.get("same_org_nodes_mutually_trusted")
+    if not approved_scheme or approved_scope != "org" or approved_mutual is not True:
+        rec.add("BRIDGE_SPEC_INVALID", "bridge", False,
+                "scheme, scope='org', same_org_nodes_mutually_trusted=true",
+                json.dumps(spec, sort_keys=True),
+                "the approved boundary is per-org rotation, not per-node "
+                "isolation; the manifest must state that literally")
+        return
+
+    obs = dict(inventory) if inventory is not None else _bridge_inventory()
+    if not rec.add("BRIDGE_KEY_PRESENT", "host-only bridge credential key",
+                   obs.get("key_present") is True,
+                   "a 64-hex owner-only install key",
+                   "present" if obs.get("key_present") else "missing",
+                   str(obs.get("error") or "")):
+        return
+
+    # The signing key must never be reachable from inside a sandbox. Every
+    # sandbox bind is rooted under the data root's ``sandboxes`` directory.
+    key_path = str(obs.get("key_path") or "")
+    try:
+        resolved = Path(key_path).resolve()
+        from . import sandbox as _sandbox
+        inside = any(
+            resolved == p or p in resolved.parents
+            for p in (Path(_sandbox.sandbox_root(str(slug))).resolve()
+                      for slug in (obs.get("sandboxed_orgs") or [])))
+    except (OSError, ValueError) as e:
+        inside, resolved = True, key_path
+        rec.add("BRIDGE_KEY_PATH_UNREADABLE", key_path, False,
+                "resolvable host path", type(e).__name__, str(e))
+    rec.add("BRIDGE_KEY_HOST_ONLY", key_path, not inside,
+            "outside every sandbox bind root", str(resolved),
+            "a key visible inside a container is not a host-only key")
+
+    raw_records = obs.get("orgs")
+    records = raw_records if isinstance(raw_records, dict) else {}
+    sandboxed = [str(v) for v in (obs.get("sandboxed_orgs") or [])]
+    uncovered = sorted(set(sandboxed) - set(records))
+    rec.add("BRIDGE_ORGS_COVERED", "sandboxed orgs", not uncovered,
+            f"{len(sandboxed)} sandboxed orgs attested",
+            ", ".join(uncovered) if uncovered else f"{len(records)} attested",
+            "every sandboxed org must produce a bridge attestation record")
+
+    for slug in sorted(records):
+        raw = records[slug]
+        row = raw if isinstance(raw, dict) else {}
+        if row.get("error"):
+            rec.add("BRIDGE_ATTESTATION_UNAVAILABLE", slug, False,
+                    "secret-free bridge attestation", "error",
+                    str(row.get("error")))
+            continue
+        rec.add("BRIDGE_SCHEME", slug, row.get("scheme") == approved_scheme,
+                approved_scheme, row.get("scheme") or "missing")
+        rec.add("BRIDGE_SCOPE", slug, row.get("scope") == "org", "org",
+                row.get("scope") or "missing",
+                "the approved identity boundary is the org")
+        rec.add("BRIDGE_TRUST_BOUNDARY_DECLARED", slug,
+                row.get("same_org_nodes_mutually_trusted") is True,
+                "true", row.get("same_org_nodes_mutually_trusted"),
+                "same-org root-capable nodes ARE mutually trusted here; an "
+                "attestation that denied it would be claiming isolation this "
+                "deployment does not provide")
+        rec.add("BRIDGE_LEGACY_CREDENTIALS_REFUSED", slug,
+                row.get("legacy_credentials_accepted") is False,
+                "false", row.get("legacy_credentials_accepted"),
+                "the shared persisted org root is not accepted in frozen mode")
+        generation = row.get("generation")
+        rec.add("BRIDGE_GENERATION", slug,
+                isinstance(generation, int) and not isinstance(generation, bool)
+                and generation >= 0,
+                "non-negative integer generation", generation)
+        fingerprint = str(row.get("fingerprint") or "")
+        rec.add("BRIDGE_FINGERPRINT", slug,
+                fingerprint.startswith("sha256:")
+                and _SHA256.fullmatch(fingerprint[7:]) is not None,
+                "sha256:<64 hex> one-way fingerprint",
+                fingerprint or "missing",
+                "the attestation must carry no recoverable bearer")
+        previous = row.get("previous_generation_rejected")
+        # ``None`` means this org has never rotated, so there is no previous
+        # generation to reject. ``False`` means a rotation happened and the
+        # superseded credential is STILL accepted — that is a real finding.
+        rec.add("BRIDGE_PREVIOUS_GENERATION_REJECTED", slug,
+                previous is not False,
+                "true (or not-yet-rotated)", previous,
+                "a rotation that leaves the old credential valid has not "
+                "rotated anything")
+
+
 def container_tag(repository: str, configuration_sha256: str) -> str:
     return f"{repository}:frozen-{configuration_sha256[:16]}"
 
 
 def _inspect_container(tag: str) -> dict[str, Any]:
+    # Go through sandbox._docker rather than shelling out here. It is the
+    # install's single Docker seam: the runtime path that actually launches
+    # containers already uses it, so a second private subprocess call would
+    # be a second thing to trust and a path no sandbox test could observe.
+    from . import sandbox
     try:
-        result = subprocess.run(
-            ["docker", "image", "inspect", tag], capture_output=True,
-            text=True, timeout=30)
+        result = sandbox._docker("image", "inspect", tag, timeout=30)
     except (OSError, subprocess.TimeoutExpired) as e:
         return {"exists": False, "error": f"{type(e).__name__}: {e}"}
     if result.returncode != 0:
@@ -497,11 +671,18 @@ def _verify_containers(manifest: Mapping[str, Any], config_sha256: str,
 
 def register_official_launch(*, admin_host: str,
                              public_port: int | str | None,
-                             expose_admin: str | None) -> None:
+                             expose_admin: str | None,
+                             admin_port: int | None = None,
+                             bridge_port: int | None = None) -> None:
     """Record the listener plan owned by ``orgtree.api.main``.
 
     This is evidence for the pre-bind startup check, not a public launcher API.
     The same ``admin_host`` value must be handed to Uvicorn after preflight.
+
+    Pre-bind evidence is deliberately incomplete: no listener exists yet, so
+    the kernel table cannot be read.  The plan carries the ports this process
+    intends to open so the standalone verifier's live check has something
+    exact to compare against.
     """
 
     global _official_launch_plan
@@ -513,6 +694,9 @@ def register_official_launch(*, admin_host: str,
         "admin_hosts": [admin_host],
         "public_port": public_port,
         "expose_admin": expose_admin,
+        "admin_port": admin_port,
+        "bridge_port": bridge_port,
+        "listeners": None,        # not observable before uvicorn binds
     }
 
 
@@ -562,13 +746,23 @@ def _live_launch_inventory() -> dict[str, Any]:
             if official or direct:
                 candidates[int(process.info["pid"])] = {
                     "official": official, "cmd": cmd, "process": process}
+        # Every listening socket of each candidate, not only the admin port.
+        # Since the frozen network work landed, the backend opens a SECOND
+        # listener (the sandbox bridge) whose approved bind address is not
+        # loopback on Linux, and a third (public kiosk) that frozen mode must
+        # never open at all.  Checking one port could not see either.
+        all_listeners: dict[int, list[tuple[str, int]]] = {}
         listeners: dict[int, list[str]] = {}
         for conn in psutil.net_connections(kind="tcp"):
             if conn.pid not in candidates or conn.status != psutil.CONN_LISTEN:
                 continue
-            if not conn.laddr or int(conn.laddr.port) != port:
+            if not conn.laddr:
                 continue
-            listeners.setdefault(int(conn.pid), []).append(str(conn.laddr.ip))
+            pid = int(conn.pid)
+            ip, lport = str(conn.laddr.ip), int(conn.laddr.port)
+            all_listeners.setdefault(pid, []).append((ip, lport))
+            if lport == port:
+                listeners.setdefault(pid, []).append(ip)
     except (psutil.AccessDenied, OSError) as e:
         return {"mode": "live", "supported": False, "admin_hosts": [],
                 "public_port": None, "expose_admin": None,
@@ -581,7 +775,9 @@ def _live_launch_inventory() -> dict[str, Any]:
                 "public_port": None, "expose_admin": None,
                 "error": f"expected one orgtree backend listening on :{port}; "
                          f"observed {len(active)}"}
-    _pid, row, hosts = active[0]
+    pid, row, hosts = active[0]
+    observed_listeners = [{"ip": ip, "port": lport} for ip, lport
+                          in sorted(set(all_listeners.get(pid, [])))]
     env: Mapping[str, str] = {}
     try:
         env = row["process"].environ()
@@ -594,6 +790,13 @@ def _live_launch_inventory() -> dict[str, Any]:
     # variable must be present with value ``0``. Unset/blank is unsafe for the
     # update scripts because they otherwise supply their standard-mode 7361.
     public_port: int | str | None = 0 if raw_public == "0" else raw_public
+    # Read the bridge port from the OBSERVED process, not from this verifier's
+    # own environment: they are different processes and only the backend's
+    # value describes the listener actually open.
+    try:
+        bridge_port = int(env.get("ORGTREE_BRIDGE_PORT", "7362") or 0)
+    except ValueError:
+        bridge_port = -1
     return {
         "mode": "live",
         "supported": bool(row["official"]),
@@ -602,8 +805,33 @@ def _live_launch_inventory() -> dict[str, Any]:
         "admin_hosts": hosts,
         "public_port": public_port,
         "expose_admin": env.get("ORGTREE_EXPOSE_ADMIN"),
+        "admin_port": port,
+        "bridge_port": bridge_port,
+        "listeners": observed_listeners,
+        "expected_bridge_hosts": _approved_bridge_hosts(),
         "error": "" if env else "could not read backend process environment",
     }
+
+
+def _approved_bridge_hosts() -> list[str]:
+    """Bind addresses the sandbox bridge listener is allowed to hold.
+
+    Frozen containers have no route off their private network, so the bridge
+    is reached through the per-org relay.  On Windows and macOS that resolves
+    to loopback; on native Linux the relay reaches the host through Docker's
+    host-side bridge gateway, which is host-only but is NOT loopback.  Asking
+    for loopback everywhere would be a wrong assertion, not a strict one.
+    """
+
+    try:
+        from . import sandbox
+        return [sandbox.bridge_bind_host()]
+    except Exception:                       # docker/policy unavailable here
+        return []
+
+
+def _is_wildcard(ip: str) -> bool:
+    return ip in ("0.0.0.0", "::", "*", "")
 
 
 def _verify_launch(rec: _Recorder,
@@ -633,6 +861,81 @@ def _verify_launch(rec: _Recorder,
     rec.add("ADMIN_EXPOSURE_UNSET", "ORGTREE_EXPOSE_ADMIN",
             expose is None, "unset", expose,
             "blank is not the supported contract; remove the variable")
+    _verify_listener_table(rec, obs, mode)
+
+
+def _verify_listener_table(rec: _Recorder, obs: Mapping[str, Any],
+                           mode: str) -> None:
+    """Assert the WHOLE listener table of the running backend.
+
+    Before the frozen network landed there was effectively one listener worth
+    checking.  There are now up to three trust levels in one process — admin,
+    public kiosk, sandbox bridge — so "the admin port is loopback" no longer
+    describes a correct install.  A frozen backend must hold exactly the admin
+    listener plus the bridge listener, and no wildcard bind anywhere.
+    """
+
+    raw = obs.get("listeners")
+    if raw is None:
+        # Startup evidence is legitimately pre-bind: no listener exists yet.
+        # LIVE evidence with no table is a different thing entirely — it means
+        # the verifier could not read what it claims to prove, so it fails
+        # rather than reporting an unperformed check as a pass.
+        rec.add("LISTENER_TABLE_OBSERVED", "backend listener table",
+                mode == "planned",
+                "live kernel listener table, or an acknowledged pre-bind plan",
+                f"{mode}: not observed",
+                "startup runs before uvicorn binds; `python "
+                "tools/verify_frozen_install.py` proves the live table")
+        return
+    rows = [v for v in raw if isinstance(v, dict)]
+    admin_port = obs.get("admin_port")
+    bridge_port = obs.get("bridge_port")
+    approved_ports = {int(v) for v in (admin_port, bridge_port)
+                      if isinstance(v, int) and v > 0}
+
+    wildcard = sorted(f"{r.get('ip')}:{r.get('port')}" for r in rows
+                      if _is_wildcard(str(r.get("ip") or "")))
+    rec.add("NO_WILDCARD_LISTENER", "backend listener table", not wildcard,
+            "no 0.0.0.0/:: bind on any port",
+            ", ".join(wildcard) if wildcard else "no wildcard binds",
+            "a wildcard bind reaches the LAN regardless of which port it is")
+
+    observed_ports = {int(r["port"]) for r in rows
+                      if isinstance(r.get("port"), int)}
+    unexpected = sorted(observed_ports - approved_ports)
+    rec.add("LISTENER_PORT_SET", "backend listening ports", not unexpected,
+            ", ".join(str(v) for v in sorted(approved_ports)) or "unknown",
+            ", ".join(str(v) for v in sorted(observed_ports)) or "none",
+            ("unapproved listeners: "
+             + ", ".join(str(v) for v in unexpected)) if unexpected else
+            "admin and sandbox bridge only; the public kiosk listener must "
+            "not be open in frozen mode")
+
+    if isinstance(bridge_port, int) and bridge_port > 0:
+        bridge_hosts = sorted({str(r.get("ip")) for r in rows
+                               if r.get("port") == bridge_port})
+        raw_expected = obs.get("expected_bridge_hosts")
+        expected = sorted({str(v) for v in raw_expected}) \
+            if isinstance(raw_expected, list) and raw_expected else []
+        if not expected:
+            rec.add("BRIDGE_LISTENER_HOST_ONLY", "sandbox bridge listener",
+                    False, "the policy-selected host-only bind address",
+                    ", ".join(bridge_hosts) or "unobserved",
+                    "could not resolve the approved bridge bind address; "
+                    "cannot prove the bridge is host-only")
+        else:
+            rec.add("BRIDGE_LISTENER_HOST_ONLY", "sandbox bridge listener",
+                    bool(bridge_hosts) and set(bridge_hosts) <= set(expected),
+                    ", ".join(expected),
+                    ", ".join(bridge_hosts) or "unobserved",
+                    "the frozen bridge is reached through the per-org relay, "
+                    "never from the LAN")
+    else:
+        rec.add("BRIDGE_LISTENER_HOST_ONLY", "sandbox bridge listener", False,
+                "an enabled ORGTREE_BRIDGE_PORT from 1 through 65535",
+                bridge_port,
+                "frozen sandboxes have no other service path to the backend")
 
 
 def verify_approved_install(
@@ -644,6 +947,7 @@ def verify_approved_install(
         provider_inventory: Mapping[str, Mapping[str, Any]] | None = None,
         container_inventory: Mapping[str, Mapping[str, Any]] | None = None,
         launch_inventory: Mapping[str, Any] | None = None,
+        bridge_inventory: Mapping[str, Any] | None = None,
         include_containers: bool = True) -> AttestationReport:
     """Return every approved-configuration check without mutating the host."""
 
@@ -667,6 +971,7 @@ def verify_approved_install(
     _verify_providers(manifest, rec, provider_inventory)
     if include_containers:
         _verify_containers(manifest, config_sha256, rec, container_inventory)
+    _verify_bridge(manifest, rec, bridge_inventory)
     _verify_launch(rec, launch_inventory)
     return AttestationReport(selected.name, config_sha256, tuple(rec.checks))
 
@@ -701,7 +1006,8 @@ def require_approved_install(*, policy: deployment.DeploymentPolicy) -> None:
         "error": "frozen ASGI startup was not entered through orgtree.api.main",
     }
     report = verify_approved_install(
-        policy=policy, include_containers=True, launch_inventory=launch)
+        policy=policy, include_containers=True, launch_inventory=launch,
+        bridge_inventory=_bridge_inventory(create_key=True))
     if not report.ok:
         first = report.failures[0]
         raise deployment.DeploymentConfigError(

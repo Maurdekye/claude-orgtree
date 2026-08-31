@@ -6155,6 +6155,8 @@ def main() -> None:
                 public_port=(0 if raw_public_port == "0"
                              else raw_public_port),
                 expose_admin=os.environ.get(EXPOSE_ENV),
+                admin_port=PORT,
+                bridge_port=sandbox.BRIDGE_PORT,
             )
         policy = _deployment_preflight()
     except deployment.DeploymentConfigError as e:
