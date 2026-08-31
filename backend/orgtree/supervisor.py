@@ -175,6 +175,12 @@ WORKING_CACHE_POLL_S = max(
     5.0, float(os.environ.get("ORGTREE_WORKING_CACHE_POLL", "20")))
 WORKING_CACHE_TIMEOUT_S = max(
     30.0, float(os.environ.get("ORGTREE_WORKING_CACHE_TIMEOUT", "180")))
+WORKING_CACHE_RETRY_BASE_S = max(
+    WORKING_CACHE_POLL_S,
+    float(os.environ.get("ORGTREE_WORKING_CACHE_RETRY_BASE", "60")))
+WORKING_CACHE_RETRY_MAX_S = max(
+    WORKING_CACHE_RETRY_BASE_S,
+    float(os.environ.get("ORGTREE_WORKING_CACHE_RETRY_MAX", "1800")))
 WORKING_CACHE_PROMPT = (
     "This is an automated prompt-cache keepalive. Reply with exactly OK and "
     "do not use tools.")
@@ -4289,19 +4295,85 @@ def _working_cache_due(org: Org, nid: str, now: float | None = None) -> bool:
 
 _working_cache_started = False
 _working_cache_inflight: set[tuple[str, str]] = set()
+_working_cache_retry: dict[tuple[str, str], tuple[int, float]] = {}
 _working_cache_lock = threading.Lock()
 _working_cache_slots = threading.BoundedSemaphore(2)
 
 
-def _working_cache_idle(slug: str, nid: str,
-                        own_inflight: bool = False) -> bool:
+def _working_cache_idle(slug: str, nid: str) -> bool:
     """No observed turn, queued turn, or parallel keepalive owns the seat."""
     st = state(slug, nid)
     with _state_lock, _working_cache_lock:
         return (not st.get("busy") and not st.get("waiting")
                 and not st.get("responding") and not st.get("queue")
-                and (own_inflight
-                     or (slug, nid) not in _working_cache_inflight))
+                and not st.get("cache_keepalive")
+                and (slug, nid) not in _working_cache_inflight)
+
+
+def _working_cache_retry_due(slug: str, nid: str, now: float) -> bool:
+    with _working_cache_lock:
+        return now >= _working_cache_retry.get((slug, nid), (0, 0.0))[1]
+
+
+def _working_cache_note_failure(slug: str, nid: str, now: float) -> float:
+    """Advance a bounded exponential retry window and return its deadline."""
+    key = (slug, nid)
+    with _working_cache_lock:
+        failures = _working_cache_retry.get(key, (0, 0.0))[0] + 1
+        delay = min(WORKING_CACHE_RETRY_MAX_S,
+                    WORKING_CACHE_RETRY_BASE_S * (2 ** min(failures - 1, 30)))
+        retry_at = now + delay
+        _working_cache_retry[key] = (failures, retry_at)
+        return retry_at
+
+
+def _working_cache_clear_failure(slug: str, nid: str) -> None:
+    with _working_cache_lock:
+        _working_cache_retry.pop((slug, nid), None)
+
+
+def _working_cache_cmd(org: Org, nid: str) -> list[str]:
+    """Real-turn cache prefix, but with a local all-tool execution barrier.
+
+    `--disallowed-tools` would remove tools from the provider request and make
+    this read warm a different prefix.  A PreToolUse hook leaves the model's
+    system/tools/MCP request intact, then denies execution on this machine.
+    `--max-turns 1` is the independent ceiling if the model ignores the
+    instruction and keeps trying.
+    """
+    cmd = _build_cmd(org, nid)
+    pos = cmd.index("--settings") + 1
+    settings = json.loads(cmd[pos])
+    settings.pop("disableAllHooks", None)
+    hooks = settings.setdefault("hooks", {})
+    # A hooks-only settings object merges with global hooks. `_build_cmd`
+    # normally supplies every event when steering is enabled, but its
+    # no-steering form is `disableAllHooks`; replacing that flag with only our
+    # PreToolUse hook would accidentally re-enable operator hooks. Explicit
+    # empty arrays preserve the same isolation before installing the deny.
+    for event in ("PreToolUse", "PostToolUse", "Notification",
+                  "UserPromptSubmit", "Stop", "SubagentStop", "PreCompact",
+                  "SessionStart", "SessionEnd"):
+        hooks.setdefault(event, [])
+    sandboxed = sbx.is_sandboxed(org)
+    if (not sandboxed and not cli_capable()
+            and os.environ.get("ORGTREE_STEER_HOOK") != "1"):
+        # Old Claude CLIs do not fire tool hooks in headless mode. The prompt
+        # is not a security boundary, so refuse maintenance rather than run a
+        # child whose tool denial cannot be enforced locally.
+        raise RuntimeError("Claude CLI cannot enforce the keepalive tool hook")
+    if sandboxed:
+        deny_cmd = "python3 /opt/orgtree-backend/orgtree/cachedeny.py"
+    else:
+        deny_py = os.path.join(BACKEND_DIR, "orgtree", "cachedeny.py")
+        deny_cmd = '"{}" "{}"'.format(
+            sys.executable.replace("\\", "/"), deny_py.replace("\\", "/"))
+    hooks["PreToolUse"] = [{"hooks": [{
+        "type": "command", "command": deny_cmd,
+        "shell": "bash", "timeout": 5,
+    }]}]
+    cmd[pos] = json.dumps(settings)
+    return cmd + ["--fork-session", "--max-turns", "1"]
 
 
 def _working_cache_result(out: str) -> dict[str, Any]:
@@ -4316,7 +4388,23 @@ def _working_cache_result(out: str) -> dict[str, Any]:
     return {}
 
 
-def _working_cache_read(slug: str, nid: str) -> None:
+def _working_cache_fork_id(out: str, old_sid: str) -> str:
+    """Last non-parent session id from any stream event, terminal or partial."""
+    found = ""
+    for line in out.splitlines():
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(obj, dict):
+            sid = str(obj.get("session_id") or "")
+            if sid and sid != old_sid:
+                found = sid
+    return found
+
+
+def _working_cache_read(slug: str, nid: str,
+                        lease: dict[str, Any] | None = None) -> None:
     """Make one billed, disposable read of a reported-working Claude prefix.
 
     The argv starts from `_build_cmd`, not the lighter compaction argv: cache
@@ -4326,18 +4414,20 @@ def _working_cache_read(slug: str, nid: str) -> None:
     """
     old_sid = fork_sid = ""
     fork_path: str | None = None
+    troot: str | None = None
     billed_key = False
     cost = 0.0
-    success = False
+    success = failed = False
+    out = ""
+    proc: subprocess.Popen[str] | None = None
     try:
         with _working_cache_slots:
-            # Re-check after keeper-slot contention. A real turn or status
-            # change wins; cache maintenance is always the loser.
-            if not _working_cache_idle(slug, nid, own_inflight=True):
+            if lease is not None and lease["cancel"].is_set():
                 return
             with store.DOC_LOCK:
                 org = store.load_org(slug)
-                if not _working_cache_due(org, nid):
+                if (not _working_cache_due(org, nid)
+                        or not _working_cache_retry_due(slug, nid, time.time())):
                     return
                 n = org.node(nid)
                 old_sid = n["session_id"]
@@ -4345,30 +4435,50 @@ def _working_cache_read(slug: str, nid: str) -> None:
                 on_fallback = api_fallback_active(org)
                 billed_key = bills_the_key(org, on_fallback)
                 env = spawn_env(org, tier=tier, nid=nid)
-                # Do not rewrite _build_cmd's MCP/cache policy here. Reusing
-                # it byte-for-byte is what makes this warm the next turn's
-                # prefix and preserve explicit per-server opt-ins.
-                cmd = _build_cmd(org, nid) + ["--fork-session"]
+                cmd = _working_cache_cmd(org, nid)
                 cwd = scratch_dir(slug, nid)
                 troot = _transcript_root(org)
-            proc = subprocess.Popen(
-                cmd, cwd=cwd, env=env, stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                encoding="utf-8", errors="replace")
+            # The reservation check and Popen are one state-lock transaction.
+            # A real turn either marks busy first (so no child starts), or
+            # observes the published child and kills/waits it before resuming.
+            st = state(slug, nid)
+            with _state_lock:
+                if (st.get("busy") or st.get("waiting")
+                        or st.get("responding") or st.get("queue")
+                        or (lease is not None
+                            and (lease["cancel"].is_set()
+                                 or st.get("cache_keepalive") is not lease))):
+                    return
+                proc = subprocess.Popen(
+                    cmd, cwd=cwd, env=env, stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                    encoding="utf-8", errors="replace")
+                if lease is not None:
+                    lease["proc"] = proc
             _leash(proc)
             try:
                 out, _err = proc.communicate(
                     input=_user_event(WORKING_CACHE_PROMPT),
                     timeout=WORKING_CACHE_TIMEOUT_S)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.communicate()
+            except subprocess.TimeoutExpired as e:
+                partial = e.output.decode("utf-8", "replace") \
+                    if isinstance(e.output, bytes) else str(e.output or "")
+                _wd_kill_tree(proc)
+                tail, _err = proc.communicate()
+                out = partial + str(tail or "")
+                if lease is not None and lease["cancel"].is_set():
+                    return
+                failed = True
                 raise RuntimeError("cache keepalive timed out (child killed)")
+            if lease is not None and lease["cancel"].is_set():
+                # Real work killed this child. The finally block still reaps
+                # any fork and banks any complete cost record, but this is not
+                # a provider failure and must not create retry backoff/noise.
+                return
             res = _working_cache_result(out)
             # Even a failed terminal result can have created a fork. Harvest
             # any emitted session id so the copied transcript is still reaped.
-            fork_sid = str(res.get("session_id")
-                           or _fork_result(out).get("session_id") or "")
+            fork_sid = _working_cache_fork_id(out, old_sid)
             cost = float(res.get("total_cost_usd") or 0.0)
             if not _math.isfinite(cost) or cost < 0:
                 cost = 0.0
@@ -4378,19 +4488,43 @@ def _working_cache_read(slug: str, nid: str) -> None:
             if fork_sid and fork_sid != old_sid:
                 fork_path = transcript_path(fork_sid, troot)
             if not success:
+                failed = True
                 raise RuntimeError(
                     f"cache keepalive fork failed (rc={proc.returncode})")
     except (LedgerError, OSError, RuntimeError, TypeError, ValueError) as e:
+        if not (lease is not None and lease["cancel"].is_set()):
+            failed = True
         # Advisory, deliberately not `last_error`: failure may make a later
         # turn expensive, but the agent itself is not broken or blocked.
         print(f"[orgtree] {slug}/{nid}: working cache keepalive skipped: {e}")
     finally:
+        # Result accounting is deliberately outside the success path. A CLI
+        # can report billable usage and then return `is_error`, and a timeout
+        # can leave a complete result in the pipe before process teardown.
+        if out:
+            res = _working_cache_result(out)
+            try:
+                reported = float(res.get("total_cost_usd") or 0.0)
+                if _math.isfinite(reported) and reported >= 0:
+                    cost = reported
+            except (TypeError, ValueError):
+                pass
+        # Timeout and protocol errors may have emitted only init/assistant
+        # events. Harvest their fork id even without a terminal result.
+        if old_sid and not fork_sid:
+            fork_sid = _working_cache_fork_id(out, old_sid)
+        if fork_sid and fork_sid != old_sid and not fork_path:
+            fork_path = transcript_path(fork_sid, troot)
         if fork_path:
             try:
                 os.remove(fork_path)
             except OSError:
                 pass
         if success:
+            _working_cache_clear_failure(slug, nid)
+        elif failed and not (lease is not None and lease["cancel"].is_set()):
+            _working_cache_note_failure(slug, nid, time.time())
+        if cost or success:
             spend_total = None
             kcfg = None
             try:
@@ -4403,9 +4537,11 @@ def _working_cache_read(slug: str, nid: str) -> None:
                                 float(n2.get("cost_usd") or 0.0) + cost, 6)
                             if billed_key:
                                 _bank_api_cost(current, cost)
+                        # A failed request can still report billable usage;
+                        # bank it, but only a successful read earns freshness.
                         # The read warmed this exact prefix only while the node
                         # still owns the session we forked.
-                        if n2.get("session_id") == old_sid:
+                        if success and n2.get("session_id") == old_sid:
                             n2["cache_keepalive_at"] = now_iso()
                         store.save_org(current)
                         spend_total = current.cost_total()
@@ -4428,19 +4564,45 @@ def _working_cache_read(slug: str, nid: str) -> None:
 
 def _launch_working_cache_read(slug: str, nid: str) -> None:
     key = (slug, nid)
-    with _working_cache_lock:
-        if key in _working_cache_inflight:
+    st = state(slug, nid)
+    lease: dict[str, Any] = {
+        "cancel": threading.Event(), "done": threading.Event(), "proc": None}
+    with _state_lock, _working_cache_lock:
+        if (st.get("busy") or st.get("waiting") or st.get("responding")
+                or st.get("queue") or st.get("cache_keepalive")
+                or key in _working_cache_inflight):
             return
+        st["cache_keepalive"] = lease
         _working_cache_inflight.add(key)
 
     def run() -> None:
         try:
-            _working_cache_read(slug, nid)
+            _working_cache_read(slug, nid, lease)
         finally:
-            with _working_cache_lock:
+            with _state_lock, _working_cache_lock:
+                if st.get("cache_keepalive") is lease:
+                    st.pop("cache_keepalive", None)
                 _working_cache_inflight.discard(key)
+            lease["done"].set()
     threading.Thread(target=run, daemon=True,
                      name=f"cachekeep-{slug}-{nid}").start()
+
+
+def _cancel_working_cache(slug: str, nid: str) -> None:
+    """Make a real turn wait only for prompt-cache maintenance to die."""
+    st = state(slug, nid)
+    with _state_lock:
+        lease = st.get("cache_keepalive")
+        if not isinstance(lease, dict):
+            return
+        lease["cancel"].set()
+        proc = lease.get("proc")
+    if proc is not None:
+        _wd_kill_tree(proc)
+    # Popen publication and cancellation share `_state_lock`: no child can
+    # appear after the read above. Five seconds is process reaping, never the
+    # keepalive's 180-second provider timeout.
+    lease["done"].wait(timeout=5)
 
 
 def _working_cache_keeper_pass(
@@ -4457,6 +4619,7 @@ def _working_cache_keeper_pass(
         for nid in sorted(org.nodes):
             try:
                 if _working_cache_due(org, nid, now) \
+                        and _working_cache_retry_due(slug, nid, now) \
                         and _working_cache_idle(slug, nid):
                     launch(slug, nid)
             except Exception as e:                          # noqa: BLE001
@@ -4640,6 +4803,9 @@ def _run_turn(slug: str, nid: str, text: str | dict[str, Any]) -> None:
     st = state(slug, nid)
     with _state_lock:
         st["turn_activity"] = False
+    # A disposable cache read may own the same Claude session between turns.
+    # Real work always wins: kill/reap it before this choke point can resume.
+    _cancel_working_cache(slug, nid)
     # the single choke point: all three thread starts target this function,
     # so one gate here covers every way a turn can begin (D-142/a)
     _hold_for_deploy(slug, nid)

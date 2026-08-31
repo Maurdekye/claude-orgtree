@@ -84,6 +84,8 @@ scope, charter, and MCP-grant rules as Claude tiers.
 | `ORGTREE_WORKING_CACHE_API_KEY` | `240` s | cache-read cadence while a Claude agent reports `working` on an Anthropic API-key lane (4 min, below its 5 min TTL) |
 | `ORGTREE_WORKING_CACHE_POLL` | `20` s | fleet sweep cadence for due reported-working cache reads |
 | `ORGTREE_WORKING_CACHE_TIMEOUT` | `180` s | bound for one disposable keepalive fork; timeout kills the child and leaves agent state untouched |
+| `ORGTREE_WORKING_CACHE_RETRY_BASE` | `60` s | first retry delay after a failed or limited keepalive request (never below the fleet poll cadence) |
+| `ORGTREE_WORKING_CACHE_RETRY_MAX` | `1800` s | ceiling for exponential keepalive retry backoff; a successful read clears the backoff |
 
 ### Sandbox
 
