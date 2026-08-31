@@ -3191,6 +3191,139 @@ nothing. The verifier now names line endings explicitly as a cause instead of
 printing two digests and leaving the reader to hunt for a content change that
 does not exist.
 
+### D-211 · a flag that enables a subsystem's state but not its output is indistinguishable from a working feature
+
+D-206 shipped `CLAUDE_CODE_IS_COWORK=1` fleet-wide on 2026-08-30 to turn on the
+Claude CLI's own prompt-cache-break diagnoser, and orgtree journalled the exact
+`[PROMPT CACHE BREAK]` sentinel from both stderr owners into `warm.jsonl`. For
+a full day the org believed the instrument was live. **It had never emitted a
+single line, anywhere, ever.** `warm.jsonl` held zero matching rows over its
+entire history, and that zero was read as *no cache breaks* when it only ever
+meant *no instrument*. Two agents spent turns interpreting an absence that
+could not have been anything else, and a residual of 13-of-24 warm-hit-but-
+cache-cold requests was queued for a diagnoser that was structurally silent.
+
+**D-206 WAS NECESSARY BUT NOT SUFFICIENT.** `CLAUDE_CODE_IS_COWORK` gates the
+diagnoser's cross-process state file and its telemetry. It does not gate, and
+cannot gate, the emission. Nothing about the flag was wrong; it was incomplete
+in a way that produced no symptom, because **the failure mode of a diagnostic
+is silence, and silence is also its success mode.**
+
+#### The emission gate, recorded so nobody re-derives it from the binary again
+
+Read out of the shipped **2.1.241** binary (`bin/claude.exe`, a compiled Bun
+image — `grep -a` for offsets, `dd` to extract). The sentinel is built at the
+reporter and handed to the CLI's debug **file** logger:
+
+```js
+let w = `[PROMPT CACHE BREAK] ${cause} [source=${qs}, call #${n}, cache read: ${prev} → ${now}, creation: ${cr}]`;
+E(w, {level:"warn"})            // E(e,t={level:"debug"}) { kXe().log(e,t) }
+```
+
+and that logger drops it unless two independent conditions hold:
+
+```js
+log(e,{level:t}){
+  if (LEVELS[t] < LEVELS[this.minLevel]) return;
+  if (!this.shouldLog(e)) return;                  // ← gate 1
+  if (this.toStderr) { writeToStderr(n); return }  // ← gate 2
+  this.write(n)                                    //   else a FILE
+}
+shouldLog(e){ ... if (!this.deps.isAnt && !this.isDebugMode()) return false; ... }
+// toStderr        = argv has --debug-to-stderr | -d2e
+// debugFromLaunch = env DEBUG | DEBUG_SDK, or argv --debug | -d | --debug-file
+//                   | --debug=<filter> | toStderr
+// minLevel        = env CLAUDE_CODE_DEBUG_LOG_LEVEL, else "debug"
+//                   (verbose 0, debug 1, info 2, warn 3, error 4)
+```
+
+So: **without debug mode the line is written NOWHERE — not to stderr, not to a
+file.** With debug mode but without `--debug-to-stderr` / `-d2e` it goes to
+`~/.claude/debug/<session_id>.txt`. warmpool reads stderr and only stderr.
+`isAnt` is an Anthropic-internal build flag we are not and cannot be.
+
+#### What landed
+
+Both halves, one revertible commit. `--debug-to-stderr` on the turn spawn's
+argv, and `CLAUDE_CODE_DEBUG_LOG_LEVEL=warn` in `spawn_env` — the latter set
+**after `clean_env()`**, which strips every `CLAUDE_CODE_*` var, exactly as
+D-206's own flag is and for exactly the same reason: injecting before the strip
+is a silent no-op that looks like a working feature, which is the same shape as
+the bug this entry is about. The level cap is not cosmetic. Measured on a
+forced, genuinely reportable break: **2 lines / 270 bytes of stderr per turn
+capped, versus 187 lines / ~20 KB uncapped.** Uncapped, that noise floods
+`WarmProc.err_tail` — a 200-entry deque — and evicts the real errors it exists
+to hold. **The collector was not touched, because it was never broken.**
+
+Note the asymmetry, which matters for anyone reverting: the env half is *not*
+part of `warmpool.ident_hash`, so it rides the next respawn; the argv half
+*is*, so adding or removing it respawns every parked process.
+
+#### The controls came before the conclusion, and that is the whole method
+
+Per D-210 — an instrument that reports "nothing found" must first prove it can
+find something — nothing was edited until the silence was earned:
+
+* **Positive control on our code.** A correctly-shaped sentinel planted on a
+  real subprocess's real stderr, driven through the real `read_cold_stderr` and
+  real `WarmProc._pump_err`: both journalled it, unrelated stderr was correctly
+  excluded. **The capture was innocent** — which is why no second collector was
+  written, and why the day was not spent debugging the wrong component.
+* **Paired live control on the CLI.** A genuine break forced against the real
+  binary. With `--debug-to-stderr`: the sentinel appears. With the production
+  argv, on a break confirmed reportable by its own numbers (cache read
+  43702 → 29904, a 13798-token drop clearing both thresholds): **stderr is
+  0 bytes.** Not missing the sentinel — entirely empty.
+
+`backend/tests/test_d211_cache_break_emission.py` promotes both into the suite.
+It drives the **real** `_build_cmd` argv and the **real** `spawn_env` through
+the **real** capture into a real journal, and its stub CLI reproduces the
+measured gate rather than emitting unconditionally — so deleting
+`--debug-to-stderr` from `supervisor.py` turns it red, and that deletion is
+precisely the state D-206 shipped in. Both mutants were planted and shown to
+fail before the file was accepted.
+
+#### What this instrument can and cannot ever say
+
+These bound every number it will produce, and each is a way to mistake a blind
+spot for a finding:
+
+* **haiku turns are excluded outright** (the reporter returns early when the
+  model name contains `haiku`);
+* **breaks under a 2000-token drop are invisible** — reporting requires the new
+  cache read to be under 95% of the previous AND the drop to be ≥ 2000;
+* **the first call of a session never reports** — there is no baseline yet;
+* **only `repl_main_thread`, `sdk`, `agent:custom`, `agent:default`,
+  `agent:builtin` are tracked.** Orgtree's headless turns report as `sdk`,
+  confirmed live.
+
+The payoff: the cause vocabulary separates named input changes (`system prompt
+changed (+N chars)`, `tools changed`, `betas changed`, `effort changed`,
+`message history mutated at index N`) from `possible 5min/1h TTL expiry (prompt
+unchanged)` and `likely server-side (prompt unchanged, <5min gap)`. That is the
+our-surface-vs-server-side split the residual always needed.
+
+⚠ **The 13/24 residual is not evidence about what the diagnoser will say.** It
+was measured by a blind instrument. Re-derive it from live data with the flag
+on; do not inherit the number. Keep-warm / fork-ping stays gated on that
+classification, which does not exist yet.
+
+#### Two corrections to the record, both of which had been passed on as evidence
+
+* **The empty-`{}` state files were a red herring.** The 2.1.241 writer emits
+  `{action:"remove"}` and deletes the file when its map is empty — it never
+  writes a literal `{}`. Whatever produced those two-byte files, this code path
+  did not. It had been circulated as evidence that the diagnoser was misbehaving
+  and was evidence about nothing.
+* **The CLI is 2.1.241, not the 2.1.220 named throughout the source.** Nothing
+  in this repo pins it; npm moves it without a commit. Comments naming 2.1.220
+  are left as written because they record measurements genuinely taken against
+  that build and rewriting the version would falsify them — the correction is a
+  single authoritative note at `cli_version()`, the one place the version is
+  actually resolved. **Re-derive against the running binary; do not trust a
+  version named in prose.** D-211 exists because a CLI detail was reasoned
+  about instead of measured.
+
 ### D-208 · a frozen container's /usr/local is keyed to the approved configuration, not the CLI version
 
 Sandboxed containers mount `/usr/local` from a named Docker volume rather than

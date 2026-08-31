@@ -284,7 +284,17 @@ def cli_version() -> str:
     rebuilds the image) and the /api/host report. Cached on the resolved
     package.json's mtime (review X2): a forever-cache froze the versioned
     image for the backend's lifetime — the one thing it exists to react to
-    is the CLI changing under a running backend."""
+    is the CLI changing under a running backend.
+
+    ⚠ THE INSTALLED CLI IS 2.1.241 (measured 2026-08-31, D-211). Nothing in
+    this repo pins it — it is whatever npm last put on this machine, and it
+    moves without a commit. Comments elsewhere that say "the pinned 2.1.220"
+    are RECORDS OF A MEASUREMENT taken against that older build, not claims
+    about what is installed now; they are left as written because rewriting
+    the version in them would falsify the observation. When a behaviour
+    matters, re-derive it against the version this function returns rather
+    than trusting a version named in prose — D-211 exists because a CLI
+    detail was reasoned about instead of measured."""
     global _cli_version_cache
     probe = os.path.dirname(CLAUDE_CLI_JS)
     for _ in range(6):
@@ -1245,19 +1255,39 @@ def spawn_env(org: Org, tier: str | None = None,
     # D-206 (fleet ruling 2026-08-30): turn on the CLI's own prompt-cache
     # break diagnoser. CLAUDE_CODE_IS_COWORK gates Claude Code's per-request
     # cache diff — named "[PROMPT CACHE BREAK] …" warning lines plus
-    # tengu_prompt_cache_break telemetry. D-206 initially claimed its state
-    # file made this durable across respawns; runtime disproved that: the CLI
-    # writes %TEMP%/claude/cache-break-state-${session}.json, but almost every
-    # stream-json file ends at {}. warmpool therefore journals ONLY the exact
-    # warning sentinel from both stderr owners (docs/cache-hazards.md). Side
-    # effects enumerated on the pinned 2.1.220:
-    # eager transcript flush, OTel diag level WARN, telemetry labels — and
-    # skills' inline !`cmd` preprocessing is DISABLED (no skill on this
-    # machine uses it). Must stay AFTER clean_env(), which strips every
-    # CLAUDE_CODE_* var. Revert = revert this commit alone.
+    # tengu_prompt_cache_break telemetry. Side effects enumerated on the
+    # pinned 2.1.241: eager transcript flush, OTel diag level WARN, telemetry
+    # labels — and skills' inline !`cmd` preprocessing is DISABLED (no skill
+    # on this machine uses it). Must stay AFTER clean_env(), which strips
+    # every CLAUDE_CODE_* var.
     # ⚠ Spawn env is NOT part of warmpool's ident_hash: a parked process
     # only picks this up at its next respawn — it rides a deploy restart.
     env["CLAUDE_CODE_IS_COWORK"] = "1"
+    # D-211 (2026-08-31): ⚠ D-206 WAS NECESSARY BUT NOT SUFFICIENT, and for
+    # a full day it looked identical to a working feature from the outside.
+    # IS_COWORK gates the diagnoser's cross-process STATE FILE
+    # (%TEMP%/claude/cache-break-state-<session>.json) and its telemetry —
+    # it does NOT gate the emission. Measured against the shipped 2.1.241
+    # binary: the sentinel is written by the CLI's debug FILE logger as
+    # `E(line, {level:"warn"})`, and that logger drops everything unless
+    #   * debug mode is on — env DEBUG/DEBUG_SDK, or argv --debug / -d /
+    #     --debug-to-stderr / -d2e / --debug-file (`shouldLog` returns False
+    #     for anyone who is not an Anthropic-internal `isAnt` build), AND
+    #   * for STDERR specifically, argv carries --debug-to-stderr / -d2e;
+    #     otherwise it lands in ~/.claude/debug/<session>.txt instead.
+    # warmpool only ever reads stderr, so with D-206 alone the journal could
+    # not have recorded a single row — and did not, over its whole history.
+    # The argv half lives at the turn-spawn site (search --debug-to-stderr).
+    #
+    # This var caps the debug logger at warn level, which is the sentinel's
+    # own level. Measured on a forced, genuinely reportable break: 2 lines /
+    # 270 bytes of stderr per turn with the sentinel present, versus 187
+    # lines / ~20 KB at the default level. Without it the noise floods
+    # WarmProc.err_tail (deque maxlen=200) and destroys it for real error
+    # diagnosis. It must stay AFTER clean_env() for the same reason
+    # IS_COWORK does — clean_env strips every CLAUDE_CODE_* var.
+    # Revert D-211 = revert this commit alone.
+    env["CLAUDE_CODE_DEBUG_LOG_LEVEL"] = "warn"
     if nid is not None:
         env.update(env_overrides(org.d["slug"], nid))
     key = str(org.d.get("api_key") or "")
@@ -3707,6 +3737,18 @@ def _build_cmd(org: Org, nid: str, write_ident: bool = True) -> list[str]:
            (f"{sbx.cpath_scratch(slug, nid)}/.orgtree-identity.md"
             if sandboxed else ident_file),
            "--settings", json.dumps(settings),
+           # D-211 (2026-08-31): the other half of the cache-break diagnoser.
+           # This flag is the ONLY thing that routes the CLI's
+           # "[PROMPT CACHE BREAK] …" warning to stderr, where warmpool's two
+           # stderr owners already capture it (warmpool.journal_cache_break_lines
+           # — no collector change was needed). Without it the line goes to
+           # ~/.claude/debug/<session>.txt if debug mode is on at all, and
+           # nowhere whatsoever if it is not, which is what D-206 shipped.
+           # Paired with CLAUDE_CODE_DEBUG_LOG_LEVEL=warn in spawn_env, which
+           # is what keeps this to ~2 stderr lines a turn instead of ~187.
+           # ⚠ UNLIKE the env half, argv IS part of warmpool's ident_hash, so
+           # adding or removing this respawns every parked process.
+           "--debug-to-stderr",
            "--strict-mcp-config"]
     # per-agent thinking effort (user-approved 2026-07-31); an UNSET node
     # inherits the org's default_effort LIVE at turn time (user ruling

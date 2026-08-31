@@ -109,6 +109,59 @@ tuple. The warning does not carry a request ID. Enumerated side effects on the
 pinned CLI 2.1.220: eager transcript flush at turn boundaries, OTel diag level
 WARN, telemetry labels — and one real behaviour change:
 
+### ⚠ D-206 ALONE EMITTED NOTHING. IT TOOK D-211 TO TURN THIS ON
+
+`CLAUDE_CODE_IS_COWORK` gates the diagnoser's cross-process **state** and its
+telemetry. **It does not gate the emission.** For a full day the fleet ran
+with D-206 on, `warm.jsonl` recorded zero cache-break rows over its entire
+history, and that zero was read as "no breaks" when it only ever meant "no
+instrument". A flag that enables a subsystem's state without enabling its
+output looks identical to a working feature from the outside.
+
+Measured against the shipped **2.1.241** binary: the sentinel is written by
+the CLI's debug FILE logger as `E(line, {level:"warn"})`, and that logger
+drops everything unless
+
+* debug mode is on — env `DEBUG` / `DEBUG_SDK`, or argv `--debug` / `-d` /
+  `--debug-to-stderr` / `-d2e` / `--debug-file`. Absent all of these,
+  `shouldLog()` returns false for anyone who is not an Anthropic-internal
+  `isAnt` build and the line is written **nowhere at all**; and
+* for STDERR specifically, argv carries `--debug-to-stderr` / `-d2e`.
+  Otherwise it goes to `~/.claude/debug/<session_id>.txt`.
+
+warmpool reads stderr and only stderr, so D-206 alone could not have produced
+a row. D-211 adds both halves: `--debug-to-stderr` on the turn spawn, plus
+`CLAUDE_CODE_DEBUG_LOG_LEVEL=warn` in `spawn_env` to cap the volume (measured
+on a forced, genuinely reportable break: **2 lines / 270 bytes of stderr per
+turn with the sentinel present, versus 187 lines / ~20 KB uncapped**, which
+would otherwise flood `WarmProc.err_tail`, a 200-entry deque, with debug noise
+and evict real errors). The capture itself needed no change — it was correct
+the whole time, which a positive control proved before anything was edited.
+
+`backend/tests/test_d211_cache_break_emission.py` is the standing gate: it
+drives the REAL `_build_cmd` argv and REAL `spawn_env` through the REAL
+capture and asserts a row lands, and goes red if either half is removed.
+
+### What the diagnoser will and will not tell you
+
+These bound every number this instrument can ever produce (read from the
+2.1.241 binary, D-211):
+
+* **haiku turns are excluded outright** — the reporter returns early when the
+  model name contains `haiku`.
+* **breaks under a 2000-token drop are invisible** — it reports only when the
+  new cache read is under 95% of the previous one AND the drop is ≥ 2000.
+* **the first call of a session never reports** — there is no baseline yet.
+* **only these query sources are tracked**: `repl_main_thread`, `sdk`,
+  `agent:custom`, `agent:default`, `agent:builtin`. Orgtree's headless turns
+  report as `sdk` (confirmed live).
+* the cause vocabulary distinguishes named input changes (`system prompt
+  changed (+N chars)`, `tools changed`, `betas changed`, `effort changed`,
+  `message history mutated at index N`, …) from `possible 5min/1h TTL expiry
+  (prompt unchanged)` and `likely server-side (prompt unchanged, <5min gap)`.
+  That last distinction is the point: it separates our request surface
+  changing from a server-side miss on byte-stable input.
+
 **Do not look under `~/.claude` for its state file.** In 2.1.220 the exact path
 is `%TEMP%\claude\cache-break-state-${session_id}.json`
 (`Lie()` → `Iw()` → `path.join(os.tmpdir(), "claude")`). The deployed CLI does
@@ -117,6 +170,12 @@ the two bytes `{}`. Useful state surviving a respawn is therefore **not
 established**; the journaled warning line is the observation path. This
 corrects D-206's initial, too-strong claim that the file itself made openings
 across respawns attributable.
+
+⚠ **The empty-`{}` observation is a red herring — do not reason from it.**
+D-211 read the writer in 2.1.241: it emits `{action:"remove"}` and deletes the
+file when the map is empty, so it never writes a literal `{}`. Whatever
+produced those two-byte files, this code path did not, and the emptiness was
+taken as evidence about the diagnoser when it was evidence about nothing.
 
 **⚠ Skill authors: inline shell preprocessing (`` !`command` `` blocks in
 skill markdown) is DISABLED under this flag** — such blocks render as
