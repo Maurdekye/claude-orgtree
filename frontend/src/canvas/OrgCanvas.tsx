@@ -9,7 +9,7 @@ import type { ReactNode } from 'react'
 import type { AudienceGrant, NodeStatus, ProviderInfo, ToastFn, TreeNode, TreePayload } from '../types'
 import { audienceAction, getProviders, orgInboxRead, reorderNode } from '../api'
 import {
-  AddIcon, AutorenewIcon, ChevronLeftIcon, ChevronRightIcon, FrozenIcon,
+  AddIcon, ChevronLeftIcon, ChevronRightIcon, FrozenIcon,
   FullscreenIcon, PublicIcon, RemoveIcon, ViewListIcon,
 } from '../icons'
 import {
@@ -21,7 +21,7 @@ import type {
   CanvasNode, DraftScope, DraftState, MailEvent, MailLinkFn,
   HireState, OpFn, Pile, Pt, Seg, Spring, StreamEvent, View,
 } from './shared'
-import { Activity, ContextWheel, DeskChat, LineagePanel, ProcessWarmMark } from './desk'
+import { Activity, ContextWheel, DeskChat, DestinationBusy, LineagePanel, ProcessLifecycleMark } from './desk'
 import { DocReader } from './docs'
 import { NodeInboxModal, OrgInboxModal } from './mail'
 import { NodeConfig, PilePicker, UserConfig, WatchdogPanel } from './modals'
@@ -1946,7 +1946,7 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
           {e.side === 'l' && <ChevronLeftIcon fontSize="inherit" />}
           <span className={'tier t-' + e.n.tier}>{TIER_LETTER[e.n.tier!] ?? '?'}</span>
           <span className="ej-name">{e.n.id}</span>
-          {e.n.busy && <AutorenewIcon fontSize="inherit" className="cc-spin" />}
+          {e.n.busy && <DestinationBusy tier={e.n.tier} />}
           {(e.n.mail_pending ?? 0) > 0 && <b className="eye-count">{e.n.mail_pending}</b>}
           {e.side === 'r' && <ChevronRightIcon fontSize="inherit" />}
         </button>
@@ -2054,7 +2054,9 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
                       title={(n.charter || '').split('\n')[0] || n.id}>{n.id}</span>
                     <ContextWheel occ={n.occupancy} cw={n.context_window}
                       est={n.occupancy_est} compactAt={tree.compact_at} />
-                    {n.state === 'live' && <ProcessWarmMark warm={Boolean(n.proc_warm)} />}
+                    {n.state === 'live' && <ProcessLifecycleMark warm={Boolean(n.proc_warm)}
+                      live={n.proc_live} relaunch={n.proc_relaunch}
+                      reason={n.proc_relaunch_reason} />}
                     {n.busy ? (n.waiting
                       ? <span className="statusdot waiting"
                           title="queued — waiting for a free turn slot (№12)" />
@@ -2150,7 +2152,9 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
                 <span className={'tier t-' + n.tier}>{TIER_LETTER[n.tier ?? ''] ?? '?'}</span>
                 <b className="ms-name">{n.id}</b>
                 {n.busy && <Activity act={n.activity} dotOnly />}
-                {n.state === 'live' && <ProcessWarmMark warm={Boolean(n.proc_warm)} />}
+                {n.state === 'live' && <ProcessLifecycleMark warm={Boolean(n.proc_warm)}
+                  live={n.proc_live} relaunch={n.proc_relaunch}
+                  reason={n.proc_relaunch_reason} />}
                 {n.state !== 'live' && <span className="dim">{n.state}</span>}
                 <span className="spacer" />
                 {myDogs.length > 0 &&

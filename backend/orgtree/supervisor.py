@@ -826,6 +826,11 @@ def state(slug: str, nid: str) -> dict[str, Any]:
             # The doc is the home; a restart no longer changes the answer.
             "busy": False, "waiting": False, "queue": [], "last_error": None,
             "turns_run": 0, "turn_activity": False,
+            # Process existence is not warmth: a serving process is live but
+            # not parked. Relaunch is set by the backend lifecycle owner when
+            # that specific process is known stale; the UI never guesses why.
+            "proc_live": False, "proc_relaunch": False,
+            "proc_relaunch_reason": None,
             # the LIVE TAIL: rows the agent has produced this turn that the
             # transcript may not carry yet. Server-owned (P2) — the client used
             # to accumulate its own copy from the websocket and reconcile it
@@ -4920,6 +4925,9 @@ def _codex_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
         with _state_lock:
             st["codex_turn"] = turn   # the ⏸ escape hatch (interrupt_turn)
             st["responding"] = True   # mail now steers instead of queueing
+            st["proc_live"] = True
+            st["proc_relaunch"] = False
+            st["proc_relaunch_reason"] = None
 
         def _steer_pump() -> None:
             while not stop.wait(CODEX_STEER_POLL):
@@ -4951,6 +4959,9 @@ def _codex_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
         with _state_lock:
             st.pop("codex_turn", None)
             st["responding"] = False
+            st["proc_live"] = False
+            st["proc_relaunch"] = False
+            st["proc_relaunch_reason"] = None
     with dlock:
         draft_timer = dstate.get("timer")
         if draft_timer:
@@ -5298,6 +5309,9 @@ def _gemini_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
         with _state_lock:
             st["gemini_turn"] = turn   # the ⏸ escape hatch (interrupt_turn)
             st["responding"] = True    # mail now steers instead of queueing
+            st["proc_live"] = True
+            st["proc_relaunch"] = False
+            st["proc_relaunch_reason"] = None
 
         def _steer_pump() -> None:
             while not stop.wait(CODEX_STEER_POLL):
@@ -5326,6 +5340,9 @@ def _gemini_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
         with _state_lock:
             st.pop("gemini_turn", None)
             st["responding"] = False
+            st["proc_live"] = False
+            st["proc_relaunch"] = False
+            st["proc_relaunch_reason"] = None
     with dlock:
         draft_timer = dstate.get("timer")
         if draft_timer:
@@ -5971,6 +5988,9 @@ def _run_one_turn(slug: str, nid: str,
             with _state_lock:
                 st["proc"] = proc         # for the user-interrupt escape hatch
                 st["responding"] = True
+                st["proc_live"] = True
+                st["proc_relaunch"] = False
+                st["proc_relaunch_reason"] = None
             try:
                 # (the pyright ignores below: stdin/stdout/stderr are PIPE ⇒
                 # non-None, which typeshed's Popen cannot express)
@@ -6671,6 +6691,10 @@ def _run_one_turn(slug: str, nid: str,
                 dog_stop.set()
                 with _state_lock:
                     st["proc"] = None
+                    if not parked:
+                        st["proc_live"] = False
+                        st["proc_relaunch"] = False
+                        st["proc_relaunch_reason"] = None
                     st["responding"] = False
                     st["tasks"] = 0     # a dead process runs nothing
                     st["bg_tasks"] = 0  # …its background children included

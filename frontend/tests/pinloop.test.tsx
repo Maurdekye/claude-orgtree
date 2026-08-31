@@ -64,10 +64,13 @@ test('a sticky ↑-you chip keeps its target at the flow boundary',
       if (this.children.length === 1 && child?.classList.contains('msg')
           && child.classList.contains('user')) {
         userReads += 1
-        // The chip's *in-flow* footprint moves the row by exactly its height.
-        // Old code compares this 5 with top 4 and clears the pin; corrected
-        // code subtracts the footprint from the comparison and retains it.
-        return rect(0, document.querySelector('.pinuser') ? 5 : 0) as DOMRect
+        // The old in-flow chip moved the row by its height PLUS `.msgs`' 7px
+        // flex gap. Its height-only compensation therefore still alternated
+        // in this band. The overlay fix is outside `.msgs`, so it contributes
+        // exactly zero regardless of its height, gap, margins or wrapping.
+        const msgs = document.querySelector('.msgs')
+        const pin = document.querySelector('.pinuser')
+        return rect(0, msgs && pin && msgs.contains(pin) ? 12 : 0) as DOMRect
       }
       return saved.call(this)
     }
@@ -96,6 +99,8 @@ test('a sticky ↑-you chip keeps its target at the flow boundary',
     await flush()
     assert.ok(open.el.querySelector('.pinuser'),
       'the chip must remain mounted; removing it re-arms the exact same boundary')
+    assert.equal(open.el.querySelector('.msgs')?.contains(open.el.querySelector('.pinuser')), false,
+      'the pin must be an overlay outside the geometry it uses as its predicate')
     assert.ok(userReads >= 2,
       `the fixture did not observe both the pre-pin and post-pin geometries (saw ${userReads})`)
   })

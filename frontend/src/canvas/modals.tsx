@@ -21,6 +21,7 @@ import {
 import { ago, ALL_PRESENT, CODEX_TIER_SEAT, CODEX_TIERS, GEMINI_TIER_SEAT, GEMINI_TIERS, MODEL_VERSIONS, pileOrder, PROVIDER_LABEL, providerOf, TIER_LETTER, TIER_SEAT, TIERS, tierShown, USER, useEsc } from './shared'
 import type { ProviderPresence } from './shared'
 import type { CanvasNode, DraftScope, DraftState, OpFn, Pile } from './shared'
+import { ProcessLifecycleMark } from './desk'
 
 export interface ConfirmModalProps {
   title: ReactNode
@@ -777,10 +778,9 @@ export function NodeConfig({ node, map, tree, slug, op, toast, codexProvider,
     <div className="overlay" onClick={close} onPointerDown={(e) => e.stopPropagation()}>
       <div className="settings cfg" onClick={(e) => e.stopPropagation()}>
         <h3><SettingsIcon fontSize="inherit" /> {node.id}
-          {node.state === 'live' && <span className={'proc-mark ' + (node.proc_warm ? 'warm' : 'cold')}
-            aria-label={node.proc_warm ? 'process warm' : 'process cold'}
-            title={node.proc_warm ? 'process warm — ready for its next turn'
-              : 'process cold — starts normally on its next turn'} />}
+          {node.state === 'live' && <ProcessLifecycleMark warm={Boolean(node.proc_warm)}
+            live={node.proc_live} relaunch={node.proc_relaunch}
+            reason={node.proc_relaunch_reason} />}
           <span className="dim">· {node.tier} · configuration</span></h3>
         {/* FULL identity rename (user ruling 2026-08-05): id, mailbox,
             working folder and session all move; history keeps the old name

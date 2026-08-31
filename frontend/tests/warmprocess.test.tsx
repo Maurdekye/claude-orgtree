@@ -5,7 +5,7 @@ import { mountView } from './harness'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { NodeSquare } from '../src/canvas/cards'
-import { ProcessWarmMark } from '../src/canvas/desk'
+import { DestinationBusy, ProcessLifecycleMark } from '../src/canvas/desk'
 import type { CanvasNode } from '../src/canvas/shared'
 import type { OpResult } from '../src/types'
 
@@ -16,7 +16,8 @@ const hire = { enabled: true, installed: true, reason: null }
 
 function node(warm: boolean): CanvasNode {
   return { id: warm ? 'warm' : 'cold', state: 'live', tier: 'terra', model_id: 'terra',
-    proc_warm: warm, children: [], seat: 2, grant: 0, free: 0,
+    proc_warm: warm, proc_live: warm, proc_relaunch: false,
+    proc_relaunch_reason: null, children: [], seat: 2, grant: 0, free: 0,
     scope: { tools: {}, add_dirs: [] } }
 }
 
@@ -42,11 +43,35 @@ test('live cards carry exactly one warm-cache class and a matching quiet marker'
   }
 })
 
-test('warm and cold marks use a visible shape distinction, never warning colour classes', async () => {
-  const view = await mountView(<><ProcessWarmMark warm /><ProcessWarmMark warm={false} /></>, (el) => el)
+test('warmth and OS-process liveness are separate, accessible shape channels', async () => {
+  const view = await mountView(<>
+    <ProcessLifecycleMark warm live />
+    <ProcessLifecycleMark warm={false} live={false} />
+    <ProcessLifecycleMark warm={false} live relaunch
+      reason="identity-changed — system prompt changed" />
+  </>, (el) => el)
   try {
     assert.equal(view.el.querySelectorAll('.proc-mark.warm').length, 1)
-    assert.equal(view.el.querySelectorAll('.proc-mark.cold').length, 1)
+    assert.equal(view.el.querySelectorAll('.proc-mark.cold').length, 2)
+    assert.equal(view.el.querySelectorAll('.proc-live-mark.live').length, 2)
+    assert.equal(view.el.querySelectorAll('.proc-live-mark.cold').length, 1)
+    const relaunch = view.el.querySelector<HTMLElement>('.proc-relaunch')
+      ?.closest<HTMLElement>('.proc-state')
+    assert.match(relaunch?.title ?? '', /identity-changed — system prompt changed/)
     assert.equal(view.el.querySelectorAll('.proc-mark.bad, .proc-mark.err').length, 0)
+  } finally { view.unmount() }
+})
+
+test('navigation busy arrows carry the destination provider, not an ancestor theme', async () => {
+  const view = await mountView(<div className="prov-openai">
+    <DestinationBusy tier="haiku" />
+    <DestinationBusy tier="terra" />
+    <DestinationBusy tier="pro" />
+  </div>, (el) => el)
+  try {
+    const spins = [...view.el.querySelectorAll('.cc-spin')]
+    assert.equal(spins[0]!.classList.contains('prov-claude'), true)
+    assert.equal(spins[1]!.classList.contains('prov-openai'), true)
+    assert.equal(spins[2]!.classList.contains('prov-google'), true)
   } finally { view.unmount() }
 })

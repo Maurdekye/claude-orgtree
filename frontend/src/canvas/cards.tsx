@@ -10,7 +10,7 @@ import { createPortal } from 'react-dom'
 import type { ToastFn, TreePayload } from '../types'
 import { audienceAction, getCharters, saveKiosk, unstickNode } from '../api'
 import {
-  AutorenewIcon, CheckIcon, CloseIcon, FocusIcon, FrozenIcon, LayersIcon,
+  CheckIcon, CloseIcon, FocusIcon, FrozenIcon, LayersIcon,
   LockIcon, MailIcon, RetireIcon, SettingsIcon,
 } from '../icons'
 import {
@@ -21,7 +21,7 @@ import type {
   AttentionPip, CanvasNode, DraftScope, DraftState, HireState, MailLinkFn, OpFn, Pile,
   Pt,
 } from './shared'
-import { Activity, ContextWheel, DeskChat, ProcessWarmMark } from './desk'
+import { Activity, ContextWheel, DeskChat, DestinationBusy, ProcessLifecycleMark } from './desk'
 import { DocChips } from './docs'
 import { isMobile } from '../mobile'
 import { ConfirmModal, DraftScopeModal } from './modals'
@@ -321,7 +321,7 @@ function EyeDesk({ map, op, slug, toast, pip,
                 onClick={() => toggle(a.id)}>
                 <span className={'tier t-' + a.tier}>{TIER_LETTER[a.tier!] ?? '?'}</span>
                 {a.id}
-                {a.busy && <AutorenewIcon fontSize="inherit" className="cc-spin" />}
+                {a.busy && <DestinationBusy tier={a.tier} />}
                 {(a.mail_pending ?? 0) > 0 && <b className="eye-count">{a.mail_pending}</b>}
               </button>
               {/* jump straight to the agent's own node — same glide as
@@ -1091,7 +1091,9 @@ export function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, c
             : node.state !== 'live' ? <span className="map-off">{node.state}</span>
             : stat ? <span className={'statusdot ' + stat.status} />
             : <span className="statusdot idle" />}
-          {live && <ProcessWarmMark warm={Boolean(node.proc_warm)} />}
+          {live && <ProcessLifecycleMark warm={Boolean(node.proc_warm)}
+            live={node.proc_live} relaunch={node.proc_relaunch}
+            reason={node.proc_relaunch_reason} />}
           {(dogs ?? 0) > 0 && <span className={'map-dogs' + ((oneShotDogs ?? 0) > 0 ? ' oneshot' : '')}
             aria-label={`${dogs} watchdog${dogs === 1 ? '' : 's'}${(oneShotDogs ?? 0) > 0
               ? `, ${oneShotDogs} one-shot dog${oneShotDogs === 1 ? '' : 's'}` : ''}`}>
@@ -1181,7 +1183,9 @@ export function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, c
           onClick={(e) => { e.stopPropagation(); onConfig() }}><SettingsIcon fontSize="inherit" /></button>
         <ContextWheel occ={node.occupancy} cw={node.context_window}
           est={node.occupancy_est} compactAt={compactAt} />
-        {live && <ProcessWarmMark warm={Boolean(node.proc_warm)} />}
+        {live && <ProcessLifecycleMark warm={Boolean(node.proc_warm)}
+          live={node.proc_live} relaunch={node.proc_relaunch}
+          reason={node.proc_relaunch_reason} />}
         {lod === 'mini' && node.last_status &&
           <span className={'statusdot ' + node.last_status.status}
             title={`${node.last_status.status} — ${node.last_status.summary ?? ''}`} />}

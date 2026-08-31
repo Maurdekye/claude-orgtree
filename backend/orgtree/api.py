@@ -1247,6 +1247,11 @@ def org_tree(slug: str, request: Request) -> dict[str, Any]:
         # it just pays a cold spawn. Always present (never absent) on every
         # node this block decorates.
         node["proc_warm"] = bool(st.get("proc_warm"))
+        node["proc_live"] = bool(st.get("proc_live"))
+        node["proc_relaunch"] = bool(st.get("proc_relaunch"))
+        node["proc_relaunch_reason"] = (
+            str(st.get("proc_relaunch_reason"))
+            if st.get("proc_relaunch_reason") else None)
         # concurrently running subagents (Task/Agent tool calls in flight) —
         # the desk header shows it beside the working clock, only when > 0
         node["tasks"] = int(st.get("tasks") or 0)

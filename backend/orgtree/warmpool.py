@@ -849,6 +849,55 @@ def _set_proc_warm(slug: str, nid: str, val: bool) -> None:
         pass
 
 
+_RELAUNCH_LABELS = {
+    "disabled": "warming was disabled",
+    "excluded-by-flag": "this agent was excluded from warming",
+    "not-live": "the agent is no longer live",
+    "provider-lane": "the agent changed provider lane",
+    "sandboxed": "the agent changed to sandboxed execution",
+    "preserving-oracle": "the agent changed to a preserving oracle",
+    "not-eligible": "the agent is no longer eligible for process reuse",
+}
+_IDENTITY_LABELS = {
+    "prompt": "system prompt changed",
+    "argv": "CLI launch arguments changed",
+    "cred": "CLI credential changed",
+    "envov": "CLI environment overrides changed",
+}
+
+
+def _relaunch_text(reason: str,
+                   changed: list[str] | None = None) -> str:
+    """Reader-shaped, backend-owned reason for replacing a live process."""
+    if reason == "identity-changed":
+        labels = [_IDENTITY_LABELS.get(x, x) for x in (changed or [])]
+        return "identity-changed — " + (", ".join(labels)
+                                       if labels else "process identity changed")
+    return f"{reason} — {_RELAUNCH_LABELS.get(reason, reason)}"
+
+
+def _set_proc_lifecycle(slug: str, nid: str, *, live: bool,
+                        relaunch: bool = False,
+                        reason: str | None = None) -> None:
+    """Mirror the OS-process fact into supervisor state for the tree API."""
+    try:
+        from . import supervisor as sup             # noqa: PLC0415
+        ent = sup.state(slug, nid)
+        changed = False
+        with sup._state_lock:
+            nxt = (bool(live), bool(relaunch), reason if relaunch else None)
+            cur = (bool(ent.get("proc_live")), bool(ent.get("proc_relaunch")),
+                   ent.get("proc_relaunch_reason"))
+            if cur != nxt:
+                ent["proc_live"], ent["proc_relaunch"], \
+                    ent["proc_relaunch_reason"] = nxt
+                changed = True
+        if changed:
+            sup.notify(slug, nid, "proc_lifecycle")
+    except Exception:                               # noqa: BLE001
+        pass
+
+
 def is_warm(slug: str, nid: str) -> bool:
     with _pool_lock:
         wp = _pool.get((slug, nid))
@@ -973,6 +1022,7 @@ def _on_proc_exit(wp: WarmProc) -> None:
     # discard; the guard covers it too.)
     if was_tracked or wp.claimed:
         _journal_exit_once(wp)
+        _set_proc_lifecycle(wp.slug, wp.nid, live=False)
 
 
 def _spawn_for(org: Any, nid: str, why: str) -> WarmProc | None:
@@ -1020,6 +1070,7 @@ def _spawn_for(org: Any, nid: str, why: str) -> WarmProc | None:
             raise
         _journal_proc("respawn-done", slug, nid, why, ih,
                       elapsed_ms=int((time.time() - t0) * 1000))
+        _set_proc_lifecycle(slug, nid, live=True)
         return wp
     except Exception as e:                          # noqa: BLE001
         # a failed pre-warm is a non-event for the agent: the next turn just
@@ -1043,6 +1094,7 @@ def kill_node(slug: str, nid: str, reason: str) -> None:
         del _pool[(slug, nid)]
     _kill_proc(wp)
     _set_proc_warm(slug, nid, False)
+    _set_proc_lifecycle(slug, nid, live=False)
     _journal_exit_once(wp, reason)
 
 
@@ -1101,12 +1153,14 @@ def claim(slug: str, nid: str,
             wp.attach()
             _serving[(slug, nid)] = wp
             _set_proc_warm(slug, nid, False)   # claimed = no longer parked
+            _set_proc_lifecycle(slug, nid, live=True)
             return wp, "warm-hit"
     # (outside the lock) the mismatched/dead one dies now
     if was_alive:
         _record_identity_change(wp, want_hash, want_components)
     _kill_proc(wp)
     _set_proc_warm(slug, nid, False)
+    _set_proc_lifecycle(slug, nid, live=False)
     _journal_exit_once(wp, "identity-changed" if was_alive else "crash")
     return None, ("identity-changed" if was_alive else "crashed")
 
@@ -1139,6 +1193,7 @@ def park_back(wp: WarmProc, cost_base: float, out_base: int = 0) -> bool:
         _kill_proc(other)
         _journal_exit_once(other, "superseded")
     _set_proc_warm(wp.slug, wp.nid, True)
+    _set_proc_lifecycle(wp.slug, wp.nid, live=True)
     _journal_proc("park", wp.slug, wp.nid, "turn-end", wp.hash)
     return True
 
@@ -1153,6 +1208,7 @@ def discard(wp: WarmProc, reason: str) -> None:
             del _serving[(wp.slug, wp.nid)]
     _kill_proc(wp)
     _set_proc_warm(wp.slug, wp.nid, False)
+    _set_proc_lifecycle(wp.slug, wp.nid, live=False)
     _journal_exit_once(wp, reason)
 
 
@@ -1216,8 +1272,36 @@ def _keeper_pass() -> None:
                 kill_node(slug, nid, why)
         for nid in sorted(live):
             ok, _why = eligible(org, nid)
-            if not ok or _busy(slug, nid):
-                continue          # a busy seat's lifecycle belongs to its turn
+            busy = _busy(slug, nid)
+            if busy:
+                # A serving warm process keeps running to a safe boundary, but
+                # a save-hook keeper pass can already know it is stale. Expose
+                # that scheduled replacement immediately, including WHICH
+                # identity input moved, rather than waiting for the boundary.
+                with _pool_lock:
+                    serving = _serving.get((slug, nid))
+                if serving is not None and serving.alive():
+                    if not ok:
+                        _set_proc_lifecycle(
+                            slug, nid, live=True, relaunch=True,
+                            reason=_relaunch_text(_why or "not-eligible"))
+                    else:
+                        try:
+                            h, parts = identity_snapshot(org, nid)
+                            if h != serving.hash:
+                                fields = identity_change_fields(
+                                    serving.hash, serving.ident_components,
+                                    h, parts)
+                                _set_proc_lifecycle(
+                                    slug, nid, live=True, relaunch=True,
+                                    reason=_relaunch_text(
+                                        "identity-changed",
+                                        fields.get("changed_inputs")))
+                        except Exception:           # noqa: BLE001
+                            pass
+                continue
+            if not ok:
+                continue
             with _pool_lock:
                 wp = _pool.get((slug, nid))
                 if wp is not None and wp.claimed:
