@@ -14,13 +14,12 @@
 > completed end to end in a frozen container**, the Linux bridge-bind path has
 > never run on Linux, and the mailhub image has never been run.
 >
-> **Before you plan a frozen install, read
-> [the capacity gap](#-frozen-mode-cannot-use-the-account-pool--it-has-no-capacity-failover).**
-> Frozen mode routes every turn through the bridge's Anthropic passthrough,
-> which can authenticate with a per-org API key or the primary subscription and
-> **nothing else** — the multi-account pool that provides capacity failover in
-> standard mode is unreachable. A frozen install whose primary subscription is
-> rate-limited, and whose orgs have no API key, cannot run a single turn.
+> **Every frozen org MUST have its own API key** (user ruling 2026-08-31) —
+> see [the requirement](#-frozen-mode-requires-a-per-org-api-key). Startup
+> refuses a sandboxed org without one, by name. The host subscription is not a
+> supported frozen credential, and a frozen install has **no capacity
+> failover**: each org runs on its own key with nothing behind it, so if that
+> key is exhausted or revoked, that org stops.
 
 The frozen deployment profile is an opt-in, install-wide policy for an
 operator-controlled orgtree installation. It reduces the attack surface
@@ -94,6 +93,7 @@ started.
 | Sandbox network | Every org's container reaches the host bridge directly (`host.docker.internal`) and has ordinary outbound internet access. | Every org's container joins its own `--internal` Docker network with no route to the host, LAN, or internet, except through a fixed-upstream relay — see [Sandbox network boundary](#sandbox-network-boundary). |
 | Anthropic relay | The `/anthropic/*` passthrough forwards any method/path. | The relay accepts only `POST v1/messages`; everything else is refused before an upstream connection opens. |
 | Sandbox bridge credential | Each org's persisted sandbox secret is the sole credential, unrotatable without editing the org document by hand. | Each frozen org gets a deterministic, HMAC-signed, rotatable credential minted from a host-only install key — see [Bridge credential rotation](#bridge-credential-rotation). |
+| Provider credential | A sandboxed org may use an explicit key or fall back to the host subscription; host-mode orgs use the multi-account pool. | **Every sandboxed org must carry its own API key** (user ruling 2026-08-31). Startup refuses a keyless org by name (`ORG_PROVIDER_KEY`). The host-subscription branch is not a supported frozen configuration, and the account pool is unreachable from the bridge passthrough — so there is **no capacity failover**. See [the requirement](#-frozen-mode-requires-a-per-org-api-key). |
 | Agent restart tools | `orgtree_self_restart`, `orgtree_self_update` (deprecated alias), and `orgtree_prime_restart` are available to authorized callers. | These tools are omitted from every provider's tool catalog and from the identity prompt; the API, ledger, and supervisor launch/arm/cancel paths independently refuse them; the prime-restart engine does not run. Operator-controlled deployment (a human running `update.ps1`/`./update.sh`) is unaffected — this only removes the *agent-triggered* path. |
 
 ## Setting up a frozen install (fresh, no existing orgs)
@@ -118,11 +118,21 @@ started.
 4. Launch with `python -m orgtree.api` (or `update.ps1`/`./update.sh`, which
    invoke it). Create every org with sandboxing enabled from the start —
    frozen mode has no path to accept an unsandboxed org, ever.
-5. Read the startup console output. A clean start prints the CLI resolution
+5. **Give every org its own provider API key as you create it** — on the org,
+   its kiosk settings, or as an install default. This is required, not
+   advisory. ⚠ Note the ordering trap: org creation does *not* check for a
+   key, so a keyless org is accepted quietly and then **refuses the next
+   startup**, naming itself
+   (`[ORG_PROVIDER_KEY] <org>: expected an explicit per-org API key`). Set the
+   key at creation and you will never meet that. See
+   [the requirement](#-frozen-mode-requires-a-per-org-api-key), and read the
+   capacity note there before planning how many orgs to run — each is limited
+   by its own key with no pool behind it.
+6. Read the startup console output. A clean start prints the CLI resolution
    line, then `frozen-install: approved configuration <sha256> verified (<n>
    checks)`; a refusal prints the `DEPLOYMENT POLICY REFUSED STARTUP` banner
    naming the first failed check, and nothing is started.
-6. Verify a live install with the operational checks in
+7. Verify a live install with the operational checks in
    [Operational guidance](#operational-guidance-running-and-verifying-a-frozen-install).
 
 ## Migrating an existing (standard-mode) install to frozen
@@ -453,60 +463,66 @@ implicated.
 The honest summary is therefore **the turn machinery works and the provider hop
 failed** — not "we do not know". Hops 1 to 6 are observed. Hops 7 and 8 are not.
 
-### ⚠ Frozen mode cannot use the account pool — it has no capacity failover
+### ⚠ Frozen mode REQUIRES a per-org API key
 
-This is a **design gap, not a bug**, and it is the reason no agent turn has
-completed in a frozen container on the machine where this was developed. State
-it to anyone considering a frozen install, because it can make one unable to
-run *any* turn while the same machine happily runs turns in standard mode.
+> **User ruling, 2026-08-31:** *"with the featureset requested every frozen account should only use an api key"*. The org API key is the **required** credential for frozen mode, not one of two acceptable options. The host-subscription branch is not a supported frozen configuration.
 
-A sandboxed org's provider traffic goes out through the bridge's
-`/anthropic/...` passthrough (`anthropic_proxy` in `backend/orgtree/api.py`).
-That handler has exactly **two** credential branches:
+**The requirement.** Frozen startup **refuses** an install in which any
+sandboxed org lacks a resolvable provider key, naming the org:
 
-1. an explicit **org API key** — attached as `x-api-key`; or
-2. otherwise the **host subscription**, read by `subproxy.get_access_token()`
-   from the fixed path `~/.claude/.credentials.json`.
+```text
+frozen approved-configuration check failed [ORG_PROVIDER_KEY] <org>:
+expected an explicit per-org API key; actual missing.
+```
 
-There is no third branch. Meanwhile a **host-mode** turn is authenticated
-completely differently: `supervisor` injects `CLAUDE_CODE_OAUTH_TOKEN` into the
-CLI's environment, chosen from the multi-account pool (`accounts.resolve(tier)`),
-which is what provides per-tier capacity failover when the primary login is
-rate-limited.
+The key may be set on the org, on its kiosk settings, or as an install
+default — the check resolves exactly the value the passthrough would attach,
+so anything the proxy would accept satisfies it, and anything it would send to
+the subscription branch does not. `python tools/verify_frozen_install.py`
+reports the same check, so an operator can find every keyless org before
+attempting to start.
 
-Those two lanes never meet:
+**Why the subscription is not an option.** A sandboxed org's provider traffic
+leaves through the bridge's `/anthropic/...` passthrough (`anthropic_proxy` in
+`backend/orgtree/api.py`). That handler has exactly **two** credential
+branches: an explicit **org API key** attached as `x-api-key`, or the **host
+subscription** read by `subproxy.get_access_token()` from the fixed path
+`~/.claude/.credentials.json`. A **host-mode** turn is authenticated
+completely differently — `supervisor` injects `CLAUDE_CODE_OAUTH_TOKEN` chosen
+from the multi-account pool (`accounts.resolve(tier)`), and that is what
+provides capacity failover in standard mode.
+
+Those two lanes never meet, and no configuration bridges them:
 
 * `subproxy.py` contains **no** reference to the account pool, and
-  `accounts.py` never writes the credentials file that `subproxy` reads — so
-  the pool cannot reach the proxy even indirectly.
+  `accounts.py` never writes the credentials file that `subproxy` reads.
 * `get_access_token()` has only two callers: this proxy and `limits.py`.
-* An account-pool credential is an **OAuth token**, which needs
-  `Authorization: Bearer` plus the `oauth-2025-04-20` beta header. It cannot be
-  smuggled through the `x-api-key` branch, so an operator cannot work around
-  this by configuration.
+* An account-pool credential is an **OAuth token**. It needs
+  `Authorization: Bearer` plus the `oauth-2025-04-20` beta header, so it cannot
+  be attached through the `x-api-key` branch at all.
 
-**Consequence.** Frozen mode requires *every* org to be sandboxed, so it routes
-*every* turn through the proxied path. A frozen install therefore has exactly
-two working provider lanes — a per-org API key, or the primary subscription —
-and **no capacity failover at all.** The fallback-account machinery (including
-the D-205 fallback-key liveness checks) is unreachable from frozen mode. If the
-primary subscription is rate-limited or its token cannot be refreshed, a frozen
-install with no org API key cannot run a single turn, even when the pool holds
-a live account with capacity.
+Frozen mode requires every org to be sandboxed, so it routes every turn through
+that passthrough. Requiring the key is what makes the credential lane
+predictable instead of silently depending on one shared subscription.
 
-This was measured, not inferred. On the development machine on 2026-08-31 the
-primary was at 100% of its weekly limit (severity `critical`, resetting
-2026-09-01) with a stale access token whose refresh returned `403`, while every
-tier — haiku, sonnet, opus, fable — was assigned to a live fallback account and
-the standard-mode fleet was running normally on it. The frozen rig could not
-reach that account by any supported configuration.
+> ### A frozen install has NO capacity failover, by design
+>
+> This is the operator consequence of the rule above, and it is certain rather
+> than hypothetical. Each frozen org runs on its own key and **nothing stands
+> behind it**. If that key is exhausted, revoked, or rate-limited, **that org
+> stops** — there is no pool to fail over to, and the fallback-account
+> machinery (including the D-205 fallback-key liveness checks) is unreachable
+> from frozen mode. Plan capacity per org, and monitor each key, because
+> nothing else will absorb the failure.
 
-**If you run a frozen install, plan for this**: either give each org an
-explicit `api_key`, or accept that the install's availability is exactly the
-availability of the single primary subscription. Note also that this is not
-strictly frozen-specific — a *sandboxed* org in standard mode uses the same
-proxied path — but standard mode makes sandboxing optional, whereas frozen mode
-makes it universal and mandatory.
+This was measured, not inferred, and it is how the requirement came about. On
+the development machine on 2026-08-31 the primary subscription was at 100% of
+its weekly limit (severity `critical`, resetting 2026-09-01) with a stale
+access token whose refresh returned `403`, while every tier — haiku, sonnet,
+opus, fable — was assigned to a live fallback account that the standard-mode
+fleet was running on normally. A frozen org could not reach that account by any
+supported configuration, and the failure surfaced only as a `502` in the middle
+of an agent's turn. It is now a named startup refusal instead.
 
 > ### A TESTING-METHODOLOGY WARNING, NOT A BUG REPORT
 >
