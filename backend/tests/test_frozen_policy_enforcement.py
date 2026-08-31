@@ -26,7 +26,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from fastapi import HTTPException  # noqa: E402
 import httpx  # noqa: E402
 from starlette.requests import Request  # noqa: E402
-from orgtree import api, deployment, mcptool, sandbox, store, supervisor  # noqa: E402
+from orgtree import (api, deployment, frozen_install, mcptool, sandbox, store,
+                     supervisor)  # noqa: E402
 from orgtree.ledger import LedgerError, Org, USER  # noqa: E402
 
 
@@ -129,12 +130,23 @@ def test_frozen_inventories_unsandboxed_orgs() -> None:
 def test_sandboxed_inventory_passes() -> None:
     org = store.create_org("Boxed Org")
     slug = org.d["slug"]
+    original = frozen_install.require_approved_install
+    checked: list[deployment.DeploymentPolicy] = []
     try:
         org.d["sandbox"] = {"enabled": True, "secret": "a" * 32}
         store.save_org(org)
+        frozen_install.require_approved_install = \
+            lambda *, policy: (_ for _ in ()).throw(
+                AssertionError(f"standard called attestation: {policy.name}"))
+        with env(ORGTREE_DEPLOYMENT_PROFILE="standard"):
+            assert api._deployment_preflight() is deployment.STANDARD
+        frozen_install.require_approved_install = \
+            lambda *, policy: checked.append(policy)
         with env(ORGTREE_DEPLOYMENT_PROFILE="frozen"):
             assert api._deployment_preflight() is deployment.FROZEN
+        assert checked == [deployment.FROZEN]
     finally:
+        frozen_install.require_approved_install = original
         store.delete_org(slug)
 
 

@@ -1,0 +1,90 @@
+{
+  "schema": 1,
+  "profile": "frozen",
+  "approved_at": "2026-08-31",
+  "files": {
+    "backend/orgtree/bridgeauth.py": "cdab1095bf05914e62e7c66cf3c31c1b4e14057177052ee2e61e3815f06d393b",
+    "backend/orgtree/frozen_gateway.py": "20b058eee2025f257c7532272b83498ee6b759baa6462d35d904309d1003b3b0",
+    "frontend/package-lock.json": "d490b76e6c11c844b82ed3dfb5b209aa4a83f715228ced9dc6d8e1fbe91bd09e",
+    "frozen/hub.Dockerfile": "c01cfb85d97807334dd1e7a1d14ab54e8823d89e6b850bd492a41a1f927f18e8",
+    "frozen/requirements-hub.txt": "edef1281ef1a3907b2daa977ea4e602101861b5ddebfd902b6b06b69d4c7bfe7",
+    "frozen/requirements.txt": "64200702f589cfd10da6e7369731940ba780bcd4c09376856e64ff6a42f2c2a6",
+    "frozen/sandbox-apt.txt": "d8bd68029505fa43fe02240ffa94d95b526bc13d36bcddf93245fdf889551885",
+    "frozen/sandbox-provider/package-lock.json": "1917708f5fe245b2cf34f7ccc55cc3d0bb6850c0da7b48e68e51605cb5faf5a0",
+    "frozen/sandbox.Dockerfile": "0520e683e28a617e755cd4f812d0b507b995907315e9b431f5626aaf86cc444e"
+  },
+  "python": {
+    "requirements": "frozen/requirements.txt",
+    "implementation": "CPython",
+    "versions": [
+      "3.10",
+      "3.11"
+    ],
+    "platform_system": "Windows",
+    "platform_machine": "AMD64",
+    "allowed_bootstrap_packages": []
+  },
+  "frontend": {
+    "lockfile": "frontend/package-lock.json",
+    "installed_lockfile": "frontend/node_modules/.package-lock.json"
+  },
+  "providers": [
+    {
+      "id": "claude",
+      "package": "@anthropic-ai/claude-code",
+      "prefix": "cli",
+      "version": "2.1.220",
+      "integrity": "sha512-ogBrvwkqF9f8okmnXKxmRNHuvtFxFEffe5pWdqOV3iQDxlUOKirFqnyWC7NGXXnDA4WkkbPH8pvSbwyCR2Auyw==",
+      "required": true
+    },
+    {
+      "id": "openai",
+      "package": "@openai/codex",
+      "prefix": "codex",
+      "version": "0.150.1",
+      "integrity": "sha512-knrbhpJH3mEULAVStcZW4F5WEt9MQhBj6KFOonBSIUGTLcHlu9CE7FRmr95E33y94+sWNZSeVBBV/kYvlfgxkQ==",
+      "required": false
+    },
+    {
+      "id": "google",
+      "package": "@google/gemini-cli",
+      "prefix": "gemini",
+      "version": "0.57.0",
+      "integrity": "sha512-I0V03d3k0J0ZN2m9u54XhN3VcMG+VjyPzoy7E9QV8lhzd39C6UgaZGLZNsOgODOtDhK8YMijHJWJn+Qxop2umw==",
+      "required": false
+    }
+  ],
+  "containers": [
+    {
+      "id": "sandbox",
+      "repository": "orgtree-sandbox",
+      "dockerfile": "frozen/sandbox.Dockerfile",
+      "platform": "linux/amd64",
+      "required": true,
+      "labels": {
+        "io.orgtree.frozen.component": "sandbox",
+        "io.orgtree.frozen.platform": "linux/amd64",
+        "org.opencontainers.image.base.name": "docker.io/library/node:22.23.2-bookworm-slim@sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5",
+        "org.opencontainers.image.version": "2.1.220"
+      }
+    },
+    {
+      "id": "mailhub",
+      "repository": "orgtree-mailhub",
+      "dockerfile": "frozen/hub.Dockerfile",
+      "platform": "linux/amd64",
+      "required": false,
+      "labels": {
+        "io.orgtree.frozen.component": "mailhub",
+        "io.orgtree.frozen.platform": "linux/amd64",
+        "org.opencontainers.image.base.name": "docker.io/library/python:3.12.14-slim-trixie@sha256:09f7da3bc104798d0afb40bc08d23ab2da20a76130cec1f2ef170848f5d85217",
+        "org.opencontainers.image.version": "3.12.14"
+      }
+    }
+  ],
+  "bridge": {
+    "scheme": "hmac-sha256-org-v1",
+    "scope": "org",
+    "same_org_nodes_mutually_trusted": true
+  }
+}

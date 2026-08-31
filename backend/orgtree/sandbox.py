@@ -668,14 +668,61 @@ def docker_ok() -> bool:
         return False
 
 
+def _desired_image_tag(
+        policy: deployment.DeploymentPolicy | None = None) -> str:
+    """Return the policy-selected image tag without building or pulling it."""
+
+    selected = policy or deployment.current_policy()
+    if selected.name == "frozen":
+        from . import frozen_install
+        return frozen_install.required_sandbox_image_tag()
+    from . import supervisor        # lazy — supervisor imports this module
+    ver = supervisor.cli_version()
+    return f"{IMAGE}:{ver}-{IMG_REV}" if ver != "unknown" else IMAGE
+
+
+def _usrlocal_key(policy: deployment.DeploymentPolicy | None = None) -> str:
+    """What the read-only /usr/local volume's name is keyed to.
+
+    Docker seeds that volume from the image ONCE, on first mount, and the
+    name is the only thing deciding whether an existing volume is reused. In
+    standard mode the host CLI version is the right key (№44: a CLI update
+    moves the name, so the fresh volume seeds from the freshly built image).
+
+    ⚠ In frozen mode it must key to the APPROVED CONFIGURATION instead. A
+    frozen image and a standard image can be built at the same host CLI
+    version, so sharing that key would let a frozen container mount a
+    /usr/local seeded from an unapproved standard image — the pins would
+    still verify while the CLI actually executing came from somewhere else.
+    """
+
+    selected = policy or deployment.current_policy()
+    if selected.name == "frozen":
+        from . import frozen_install
+        # Exactly the content-addressed suffix the approved image tag
+        # carries, so image and volume move together by construction.
+        tag = frozen_install.required_sandbox_image_tag()
+        return tag.rsplit(":", 1)[-1]
+    from . import supervisor        # lazy — supervisor imports this module
+    return supervisor.cli_version()
+
+
 def ensure_image() -> str:
     """№44 (user-approved): the image is TAGGED with the host CLI's version
     and pins the same version inside — when the host CLI updates, the next
     sandboxed turn rebuilds instead of running a CLI frozen at first-build.
     Returns the tag to run."""
+    policy = deployment.current_policy()
+    if policy.name == "frozen":
+        # Frozen startup has already checked this image, but enforce the same
+        # immutable tag/labels again at the exact runtime boundary. Never turn
+        # a missing approved artifact into a mutable network build.
+        from . import frozen_install
+        return frozen_install.require_approved_sandbox_image()
+
     from . import supervisor        # lazy — supervisor imports this module
     ver = supervisor.cli_version()
-    tag = f"{IMAGE}:{ver}-{IMG_REV}" if ver != "unknown" else IMAGE
+    tag = _desired_image_tag(policy)
     if _docker("image", "inspect", tag).returncode == 0:
         return tag
     with _build_lock:
@@ -814,7 +861,7 @@ def ensure_container(org: Org) -> str:
         raise RuntimeError("Docker is not running — start Docker Desktop "
                            "(kiosk sandboxes run their turns in containers)")
     _warn_vm_cap()
-    from . import disk as dsk, supervisor
+    from . import disk as dsk
     # virtual-disk pivot (user verdict): every sandboxed org rides its own
     # capped ext4 disk. Legacy (volume-layout) orgs migrate on first need —
     # user-approved auto-migration; old volumes are KEPT for rollback.
@@ -837,8 +884,8 @@ def ensure_container(org: Org) -> str:
     # Docker mints an EMPTY DIR for a missing bind source — an org must
     # hard-refuse to run rather than bind an empty workspace and diverge.
     dsk.mount(slug)                        # sentinel-verified; raises DiskError
-    ver = supervisor.cli_version()
-    want = f"{IMAGE}:{ver}-{IMG_REV}" if ver != "unknown" else IMAGE
+    want = _desired_image_tag(policy)
+    usrlocal = _usrlocal_key(policy)
     ins = _docker("container", "inspect", "-f",
                   "{{.State.Running}} {{.Config.Image}} "
                   '{{index .Config.Labels "orgtree.layout"}} '
@@ -943,7 +990,7 @@ def ensure_container(org: Org) -> str:
         *(["--network", frozen_network_name(slug)]
           if network_layout == FROZEN_NETWORK_LAYOUT else []),
         *[a for d in SYS_DIRS for a in ("-v", f"{mp}/{d}:/{d}")],
-        "-v", f"{usrlocal_volume(ver)}:/usr/local:ro",
+        "-v", f"{usrlocal_volume(usrlocal)}:/usr/local:ro",
         *([] if network_layout == FROZEN_NETWORK_LAYOUT else
           ["--add-host", "host.docker.internal:host-gateway"]),
         *[item for env_key, env_val in
