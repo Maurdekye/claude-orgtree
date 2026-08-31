@@ -42,7 +42,7 @@ import subprocess
 import threading
 import time
 from collections.abc import Callable
-from typing import Any, Final
+from typing import Any, Final, cast
 
 #: how long request() waits before declaring the server unresponsive. Turns
 #: themselves are unbounded (the caller owns the turn timeout); this bounds
@@ -55,6 +55,117 @@ REQUEST_TIMEOUT: Final = 120.0
 STATUS_COMPLETED: Final = "completed"
 STATUS_INTERRUPTED: Final = "interrupted"
 STATUS_FAILED: Final = "failed"
+
+#: codex's own `TurnStatus` → ours (D-209). ⚠ THERE IS NO `turn/failed`
+#: NOTIFICATION IN codex-cli 0.150.1 — the literal string does not occur
+#: anywhere in the binary, and the notification set interned there is
+#: turn/started, turn/completed, turn/diff/updated, turn/plan/updated. A FAILED
+#: turn arrives as `turn/completed` carrying `turn.status = "failed"` and a
+#: `turn.error`, and codex's TurnStatus enum is exactly
+#: completed | interrupted | failed | inProgress.
+#:
+#: ⚠ THIS TABLE IS THE DEFECT'S WHOLE STORY. What stood here was
+#: `INTERRUPTED if raw == "interrupted" else COMPLETED`, so "failed" WAS
+#: "completed": a Codex agent that hit its usage limit had the failure booked
+#: as a successful turn — normal tokens, normal cost, no error row, no freeze
+#: — and simply went quiet. Measured on cache-structural, 2026-08-30T22:41:41Z,
+#: silent for 9h47m until a person noticed.
+_TURN_STATUS: Final = {
+    "completed": STATUS_COMPLETED,
+    "interrupted": STATUS_INTERRUPTED,
+    "failed": STATUS_FAILED,
+}
+
+
+def _status_of(raw: str) -> str:
+    """Normalize one of codex's turn statuses.
+
+    ⚠ AN UNKNOWN STATUS IS A FAILURE, NOT A SUCCESS, and the asymmetry is
+    deliberate: `compact_fork` in this same module already refuses anything
+    outside (completed, interrupted), and the cost of the two mistakes is not
+    symmetric. Calling a healthy new status a failure costs one visible error
+    row the operator can read and complain about; calling a failure a success
+    is what made an agent disappear for ten hours with nobody able to tell it
+    from an idle one."""
+    return _TURN_STATUS.get(raw.strip(), STATUS_FAILED) if raw else (
+        STATUS_COMPLETED)
+
+
+def error_text(error: Any) -> str:
+    """A `TurnError` flattened into the one string the classifiers read.
+
+    The wire shape is `{message, codexErrorInfo, additionalDetails}` (measured:
+    `struct TurnError with 3 elements` in the 0.150.1 binary), and
+    `codexErrorInfo` is a short machine tag — `"usage_limit_exceeded"` in the
+    specimen. Both halves are kept: the MESSAGE is what
+    `supervisor._looks_like_usage_limit` matches on and what a person reads,
+    the TAG is what survives a wording change upstream.
+
+    Never raises and never returns None — a caller building a failure blob has
+    nothing else to fall back on but the stderr tail, which for a limit is
+    empty (the app-server says all of this on the wire, not on stderr)."""
+    if not isinstance(error, dict):
+        return ""
+    err: dict[str, Any] = error
+    msg = str(err.get("message") or "").strip()
+    extra = str(err.get("additionalDetails") or "").strip()
+    info: Any = err.get("codexErrorInfo")
+    if isinstance(info, dict):
+        # the tagged-object form, should the protocol ever send one
+        code = str(info.get("type") or info.get("kind") or "").strip()
+    else:
+        code = str(info or "").strip()
+    out = " — ".join(p for p in (msg, extra) if p)
+    if code and code.lower() not in out.lower():
+        out = f"{out} [{code}]" if out else code
+    return out[:600]
+
+
+def _window_reset(window: Any) -> float | None:
+    """`resetsAt` of a window that is actually EXHAUSTED, or None.
+
+    Only a window at 100% describes the wall the turn just hit. A window with
+    room left has a reset time too, and taking it would park the agent on a
+    deadline belonging to a limit it never reached."""
+    if not isinstance(window, dict):
+        return None
+    win: dict[str, Any] = window
+    try:
+        if float(win.get("usedPercent") or 0) < 100.0:
+            return None
+        return float(win.get("resetsAt") or 0) or None
+    except (TypeError, ValueError):
+        return None
+
+
+def limit_reset_epoch(snapshots: Any) -> float | None:
+    """The soonest reset among the EXHAUSTED windows of every rate-limit
+    snapshot the turn saw → epoch seconds, or None (D-209).
+
+    This is the number the prose usually cannot give us. The specimen's message
+    said "try again at Sep 6th, 2026 10:33 AM", which no reset parser in this
+    codebase can read; the notification 298 ms earlier carried
+    `resets_at: 1788680032`, which is that instant exactly.
+
+    ⚠ TAKES THE WHOLE BOARD, keyed by limitId — see `CodexTurn.rate_limit_
+    snapshots`. The notifications are sparse and arrive per bucket: in the
+    specimen the exhausted `codex` bucket came first and a `premium` bucket
+    with `primary: null` came 286 ms later, so a single last-wins field held
+    the useless one at exactly the moment the useful one was needed.
+
+    Unbanded on purpose — the caller bands it against the same horizon it bands
+    a prose timestamp with, so one rule governs both."""
+    if not isinstance(snapshots, dict):
+        return None
+    best: float | None = None
+    for snap in list(cast("dict[str, Any]", snapshots).values()):
+        if not isinstance(snap, dict):
+            continue
+        for slot in ("primary", "secondary"):
+            ts = _window_reset(cast("dict[str, Any]", snap).get(slot))
+            if ts is not None and (best is None or ts < best):
+                best = ts
+    return best
 
 
 class CodexServerError(RuntimeError):
@@ -452,10 +563,27 @@ class CodexTurn:
         self.agent_text: list[str] = []
         self.token_usage: dict[str, Any] | None = None
         self.rate_limits: dict[str, Any] | None = None
+        #: EVERY rate-limit snapshot this turn saw, keyed by limitId — the
+        #: board, not the last card off it. `rate_limits` above stays last-wins
+        #: for its existing readers; this is what `limit_reset_epoch` prices a
+        #: freeze from, and it exists because in the measured specimen the last
+        #: card was the empty one (D-209).
+        self.rate_limit_snapshots: dict[str, dict[str, Any]] = {}
+        #: the `turn.error` of a failed turn — the CLI's own words for why.
+        #: Discarded entirely until D-209, which is how a usage limit reached
+        #: no detector: it is not on stderr, it is here.
+        self.error: dict[str, Any] | None = None
         self.status: str | None = None
         self._done = threading.Event()
 
     # ── event fold (M2: raw notifications → normalized fields) ───────────
+
+    def _note_error(self, err: Any) -> None:
+        """Keep a `turn.error` if there is one. A turn that completes cleanly
+        sends `"error": null`, so the guard is what stops a clean completion
+        from erasing an error an earlier event already recorded."""
+        if isinstance(err, dict) and error_text(err):
+            self.error = dict(cast("dict[str, Any]", err))
 
     def _observe(self, msg: dict[str, Any]) -> None:
         method = str(msg.get("method", ""))
@@ -472,17 +600,25 @@ class CodexTurn:
             rl = params.get("rateLimits")
             if isinstance(rl, dict):
                 self.rate_limits = rl
+                self.rate_limit_snapshots[
+                    str(rl.get("limitId") or "codex")] = rl
         elif method == "turn/completed":
             turn = params.get("turn")
             if isinstance(turn, dict):
-                raw = str(turn.get("status") or "")
-                self.status = (STATUS_INTERRUPTED if raw == "interrupted"
-                               else STATUS_COMPLETED)
+                # ⚠ THE STATUS IS READ, NOT ASSUMED (D-209). See `_status_of`.
+                self.status = _status_of(str(turn.get("status") or ""))
+                self._note_error(turn.get("error"))
             else:
                 self.status = STATUS_COMPLETED
             self._done.set()
         elif method == "turn/failed":
+            # Kept although codex-cli 0.150.1 never sends it (see _TURN_STATUS)
+            # — a future server that does must not land back in silence. The
+            # error is read from either shape it could plausibly wear.
             self.status = STATUS_FAILED
+            _t = params.get("turn")
+            self._note_error(_t.get("error") if isinstance(_t, dict)
+                             else params.get("error"))
             self._done.set()
         if self._caller_on_event:
             self._caller_on_event(msg)
@@ -572,4 +708,8 @@ class CodexTurn:
             "agent_text": "".join(self.agent_text),
             "token_usage": self.token_usage,
             "rate_limits": self.rate_limits,
+            # D-209: the CLI's own reason, and the whole rate-limit board that
+            # dates it. Both are None/{} on every healthy turn.
+            "error": self.error,
+            "rate_limit_snapshots": dict(self.rate_limit_snapshots),
         }

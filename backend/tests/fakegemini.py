@@ -16,6 +16,10 @@ scenarios selected by FAKEGEMINI_SCENARIO:
                 assertion must see (the real CLI substitutes silently)
     permission  a session/request_permission server-request mid-turn; the
                 chosen outcome is echoed into the agent text
+    usage_limit session/prompt answers with a JSON-RPC ERROR naming a quota —
+                the shape geminirun maps to STATUS_FAILED + stop_reason.
+                ⚠ the SHAPE is from the code, the WORDING is invented: no
+                gemini usage wall has been captured here (D-209)
 
 Env probe: whatever FAKEGEMINI_ENVPROBE names (comma-separated env keys) is
 written as JSON to FAKEGEMINI_ENVPROBE_PATH at prompt time — credential
@@ -132,6 +136,20 @@ def run_prompt(rid, sid):
         path = os.environ.get("FAKEGEMINI_ENVPROBE_PATH", "envprobe.json")
         with open(path, "w", encoding="utf-8") as f:
             json.dump({k: os.environ.get(k) for k in probe.split(",")}, f)
+    if SCENARIO == "usage_limit":
+        # ⚠ UNMEASURED, and the suite says so where it uses this (D-209).
+        # Unlike the codex fixture — transcribed byte-for-byte from a captured
+        # incident — no gemini usage wall has been observed on this machine.
+        # What IS from the code: geminirun turns an ERROR RESPONSE to
+        # session/prompt into `stop_reason` (json.dumps of the error object)
+        # and STATUS_FAILED, so this is the right SHAPE for any wire error.
+        # The WORDING is a plausible quota refusal, not a recording. A test
+        # standing on it proves the shared freeze seam, never the gemini wire.
+        send({"jsonrpc": "2.0", "id": rid, "error": {
+            "code": 429,
+            "message": ("Quota exceeded for quota metric 'Generate requests' "
+                        "and limit 'Generate requests per day'")}})
+        return
     if SCENARIO == "interrupt":
         _chunk(sid, "agent_message_chunk", "working until cancelled… ")
         if _cancelled.wait(8.0):

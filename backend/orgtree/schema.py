@@ -129,7 +129,11 @@ class FrozenInfo(TypedDict, total=False):
     # run was cut off and `until_ts` deliberately REMOVED — there is no number
     # left for a provenance to describe), or "inherited" (a re-freeze kept the
     # previous record's still-plausible horizon; the provenance of THAT number
-    # belonged to the earlier freeze, so this one does not claim it).
+    # belonged to the earlier freeze, so this one does not claim it), or
+    # "provider" (D-209 — a NON-claude lane handed us a machine reset out of
+    # band: the codex app-server's `account/rateLimits/updated` carries a
+    # `resetsAt` on the exhausted window, and it is exact where that lane's
+    # error prose usually names a date no reset parser here can read).
     # Diagnostic: a freeze that opened an api_fallback window records what the
     # window was priced on. ⚠ On an `untrusted` freeze it records where the
     # NUMBER came from and nothing more — no window was priced at all.

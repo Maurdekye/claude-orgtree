@@ -13,6 +13,8 @@ scenarios selected by FAKECODEX_SCENARIO:
                 to prove the client's time-based live flush actually fires
     interrupt  the turn stalls until turn/interrupt, then completes with
                status "interrupted"
+    usage_limit (D-209) the turn ends the way a REAL subscription wall ends
+               one, replayed from captured bytes — see below
 
 Env probe: whatever FAKECODEX_ENVPROBE names (comma-separated env keys) is
 written as JSON to <cwd>/envprobe.json at turn start — how the suite proves
@@ -27,6 +29,33 @@ import threading
 import time
 
 SCENARIO = os.environ.get("FAKECODEX_SCENARIO", "tool")
+
+# ── the measured usage-limit ending (D-209) ──────────────────────────────────
+# Transcribed from the Codex CLI's OWN rollout for the incident that started
+# this work — cache-structural, thread 01a0547f-6578-7eb1-b025-74b8250b8ef0,
+# 2026-08-30T22:41:41Z, in ~/.codex/sessions/2026/08/31/. Three facts about the
+# real ending, all of which the fixture reproduces and each of which the
+# production code got wrong in its own way:
+#
+#   · there is NO `turn/failed` notification. codex-cli 0.150.1 does not have
+#     one — the literal string is absent from the binary. The wall arrives as
+#     `turn/completed` carrying status "failed" and a `turn.error`.
+#   · the reason is ON THE WIRE, not on stderr. stderr was empty.
+#   · the machine-readable reset comes on a rate-limit notification 298 ms
+#     EARLIER, and a SECOND, useless snapshot lands after it. That ordering is
+#     not incidental: last-wins retention kept the useless one.
+#
+# `resetsAt` is stamped relative to now rather than transcribed (the captured
+# value, 1788680032, is a real instant that will fall into the past), but the
+# 10080-minute window and the 100% exhaustion are verbatim.
+LIMIT_MESSAGE = ("You've hit your usage limit. Visit "
+                 "https://chatgpt.com/codex/settings/usage to purchase more "
+                 "credits or try again at Sep 6th, 2026 10:33 AM.")
+LIMIT_ERROR_INFO = "usage_limit_exceeded"
+#: seconds from now for the exhausted window's resetsAt. Six days: inside the
+#: 7-day window it belongs to, far outside anything a prose parser could invent
+#: and far outside the 5-minute probe floor, so a test can tell the three apart.
+LIMIT_RESET_IN = 6 * 24 * 3600
 
 _out_lock = threading.Lock()
 _requests: list[dict] = []
@@ -133,6 +162,51 @@ def run_turn(thread_id, turn_id, dyn_tools):
             agent_message("msg-steer", f"STEERED[{text}]")
         else:
             agent_message("msg-nosteer", "no steer arrived")
+    elif SCENARIO == "usage_limit":
+        # the exhausted bucket FIRST, carrying the only machine reset anyone
+        # will ever get for this wall…
+        notify("account/rateLimits/updated", {
+            "rateLimits": {
+                "limitId": "codex", "limitName": None,
+                "primary": {"usedPercent": 100.0,
+                            "windowDurationMins": 10080,
+                            "resetsAt": int(time.time()) + LIMIT_RESET_IN},
+                "secondary": None, "planType": "prolite",
+                "rateLimitReachedType": None}})
+        # …then the second, empty one that a last-wins field would keep
+        notify("account/rateLimits/updated", {
+            "rateLimits": {"limitId": "premium", "limitName": None,
+                           "primary": None, "secondary": None,
+                           "planType": "prolite",
+                           "rateLimitReachedType": None}})
+        # …and the wall itself: a COMPLETED notification whose status is
+        # "failed". Nothing is written to stderr, exactly as measured.
+        notify("turn/completed", {
+            "threadId": thread_id,
+            "turn": {"id": turn_id, "status": "failed",
+                     "error": {"message": LIMIT_MESSAGE,
+                               "codexErrorInfo": LIMIT_ERROR_INFO,
+                               "additionalDetails": None}}})
+        return
+    elif SCENARIO == "turn_failed_notification":
+        # the shape codex-cli 0.150.1 does NOT send, kept live so the retained
+        # `turn/failed` branch cannot rot into a lie about a lane we claim to
+        # handle. Same wall, announced the other way.
+        notify("turn/failed", {
+            "threadId": thread_id,
+            "turn": {"id": turn_id,
+                     "error": {"message": LIMIT_MESSAGE,
+                               "codexErrorInfo": LIMIT_ERROR_INFO}}})
+        return
+    elif SCENARIO == "plain_failure":
+        # a failed turn that is NOT a limit — the containment control. It must
+        # surface as an ordinary turn error and must NOT freeze anything.
+        notify("turn/completed", {
+            "threadId": thread_id,
+            "turn": {"id": turn_id, "status": "failed",
+                     "error": {"message": "the sandbox denied a write",
+                               "codexErrorInfo": "sandbox_error"}}})
+        return
     elif SCENARIO == "interrupt":
         irr = wait_request("turn/interrupt")
         if irr:

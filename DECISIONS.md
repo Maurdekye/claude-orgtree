@@ -3254,6 +3254,101 @@ Found while doing the first real frozen boot rather than by reading: the same
 work also showed `ensure_container` had been raising `NameError` for every
 sandboxed org, which is why nobody had reached the volume mount to notice.
 
+### D-209 · a failed provider turn is a failure, and a usage limit freezes on every lane
+
+User report: *"codex agents hitting usage limits don't get the normal turn
+refusal error; they just stop."* The observable was exactly that. The cause was
+not, and the difference decided the fix.
+
+**codex-cli 0.150.1 has no `turn/failed` notification.** The literal string does
+not occur anywhere in `codex.exe`; the notification set interned there is
+`turn/started`, `turn/completed`, `turn/diff/updated`, `turn/plan/updated`. A
+FAILED turn arrives as `turn/completed` carrying `turn.status = "failed"` and a
+`turn.error` — codex's `TurnStatus` enum being exactly
+`completed | interrupted | failed | inProgress`. `codexrun` normalized every
+status except `"interrupted"` to COMPLETED, so:
+
+> **A WALL WAS BOOKED AS A SUCCESSFUL TURN.** Normal tokens, normal cost, a turn
+> ring entry, no `last_error`, no `turn_error_log` row, no freeze. Not merely a
+> silent stop — a silent stop that also polluted the accounting, and that from
+> one level up is indistinguishable from an agent quietly working.
+
+Measured on `cache-structural` (Codex `sol`) at 2026-08-30T22:41:41.681Z, in the
+CLI's own rollout. The wall carried a message ("You've hit your usage limit …
+try again at Sep 6th, 2026 10:33 AM"), the machine tag `usage_limit_exceeded`,
+and — on the `account/rateLimits/updated` notification 298 ms earlier —
+`resets_at: 1788680032`, which is that instant exactly. **Orgtree was told
+everything and discarded all three.** The agent was silent for 9h47m until a
+person noticed. This is why the framing matters: "we are blind" would have
+justified a heuristic; "we are told and throw it away" demands only that we read
+what we are given.
+
+Three defects, and the third is the subtle one:
+
+1. the status was assumed, not read (above);
+2. `turn.error` was never looked at, so the limit prose reached no classifier —
+   `limits.is_limit_message` matches it fine and was simply never called on it.
+   The reason is on the WIRE, not on stderr: stderr was empty, so the old error
+   text could only name the notification it believed it had seen;
+3. **rate-limit snapshots were kept last-wins.** Notifications are sparse and
+   arrive per bucket. In the capture the exhausted `codex` bucket came first and
+   a `premium` bucket with `primary: null` came 286 ms later — so the single
+   field held the useless snapshot at precisely the moment the useful one was
+   needed. Snapshots are now retained per `limitId`, and the reset is read from
+   the EXHAUSTED window of the whole board.
+
+The fix sits at the **shared provider seam**, not inside `_codex_leg`: both
+non-claude legs raise `_ProviderTurnFailed`, carrying the provider's own words
+as `blob` (classifier input, kept separate from the operator prose in
+`str(exc)` — the `_for_the_record` split) and any machine reset as `reset_ts`.
+`_run_one_turn`'s shared handler freezes when that blob names a limit. Gemini
+was never frozen either; it merely failed loudly instead of silently, and it
+inherits the fix by construction.
+
+`freeze_provider_limit` writes the ORDINARY freeze record — `_ensure_frozen`,
+`limit`, `until_ts`, `until`, `reset_src`, `error`, `resume_texts` — which
+`_resumable`, `auto_resume_ready`, `resume_frozen` and the desk badge already
+act on; not one of them needed a line. What it deliberately does NOT reproduce
+is the claude lane's policy around that record, and each omission is a
+statement rather than a gap: no `accounts.record_limit` or failover re-drive
+(one signed-in ChatGPT account, no second codex lane to move to, so a re-drive
+would spawn a turn into the same wall); no `api_fallback` window (that key buys
+Anthropic inference and cannot serve a codex turn); no fable escalation; no
+`_spawn_reset_refresh` (it re-asks the claude host's readout, which describes a
+different account's quota).
+
+Reset ladder, best first: the provider's machine value, **banded against the
+same `limits.MAX_HORIZON` every other reset here is banded by**; then the prose,
+through the existing banded parser with `subscription=False` so the claude
+readout cannot time a codex wall; then the honest 5-minute probe floor. The
+measured codex wording names a date no parser in this codebase reads, so
+without the machine value this freeze would fall to the floor — which is
+exactly what makes retaining the whole snapshot board load-bearing rather than
+tidy.
+
+`reset_src` gains the value `"provider"` for that first rung.
+
+An unknown status now normalizes to FAILED, matching `compact_fork`, which had
+been checking the status correctly in the same module all along. The asymmetry
+is deliberate: calling a healthy new status a failure costs one visible error
+row somebody can complain about, while calling a failure a success is what made
+an agent disappear for ten hours.
+
+Anti-vacuity: `tests/_mutate_provider_limit.py`, 15 mutations including a NOOP
+that must survive and a sanity mutant that must die. One of them earned its own
+guard — a twelve-space target string was a SUBSTRING of the claude lane's
+twenty-eight-space line 3000 lines earlier, so `replace(…, 1)` mutated a path
+the suite never runs and the mutant "survived", reading as an unchecked
+behaviour in code that was in fact checked. **A mutant that aims at two places
+aims at neither, and it fails quietly**; the harness now refuses any target that
+is not unique.
+
+Scope of the evidence, stated rather than implied: the codex half is
+transcribed from captured wire bytes; the gemini half is by construction from
+the shape of `geminirun`'s error path. No gemini usage wall has been observed
+on this machine, so the suite proves the seam freezes a gemini failure whose
+text names a quota — not that a real gemini limit wears that text.
+
 ### D-203 · App settings are machine-wide, and provider off is an admission policy
 Ruling (user, 2026-08-30): the Accounts surface becomes a tabbed App settings
 panel. Provider choices and process warming describe what THIS MACHINE may do
