@@ -3284,9 +3284,11 @@ is silence, and silence is also its success mode.**
 
 #### The emission gate, recorded so nobody re-derives it from the binary again
 
-Read out of the shipped **2.1.241** binary (`bin/claude.exe`, a compiled Bun
-image — `grep -a` for offsets, `dd` to extract). The sentinel is built at the
-reporter and handed to the CLI's debug **file** logger:
+First read out of the unused PATH **2.1.241** binary (`bin/claude.exe`, a
+compiled Bun image — `grep -a` for offsets, `dd` to extract), then verified
+inside one process using the production-spawned **2.1.220** binary. The
+sentinel is built at the reporter and handed to the CLI's debug **file**
+logger:
 
 ```js
 let w = `[PROMPT CACHE BREAK] ${cause} [source=${qs}, call #${n}, cache read: ${prev} → ${now}, creation: ${cr}]`;
@@ -3383,19 +3385,36 @@ classification, which does not exist yet.
 
 #### Two corrections to the record, both of which had been passed on as evidence
 
-* **The empty-`{}` state files were a red herring.** The 2.1.241 writer emits
-  `{action:"remove"}` and deletes the file when its map is empty — it never
-  writes a literal `{}`. Whatever produced those two-byte files, this code path
-  did not. It had been circulated as evidence that the diagnoser was misbehaving
-  and was evidence about nothing.
-* **The CLI is 2.1.241, not the 2.1.220 named throughout the source.** Nothing
-  in this repo pins it; npm moves it without a commit. Comments naming 2.1.220
-  are left as written because they record measurements genuinely taken against
-  that build and rewriting the version would falsify them — the correction is a
-  single authoritative note at `cli_version()`, the one place the version is
-  actually resolved. **Re-derive against the running binary; do not trust a
-  version named in prose.** D-211 exists because a CLI detail was reasoned
-  about instead of measured.
+* **Production 2.1.220 does not hydrate the state file across processes.** It
+  writes the file but lacks the hydration path present in 2.1.241. The earlier
+  cross-process control therefore could not report and was a test artifact;
+  the successful control changed model/system/tools inside one process.
+* **The fleet CLI is 2.1.220, not the 2.1.241 found by `which claude`.** The
+  supervisor spawns the bundled copy under `ORGTREE_CLI_DIR`; WMI confirmed
+  that path on a live fleet process. The global npm 2.1.241 copy is unused by
+  production turns. **Re-derive against the binary the supervisor actually
+  spawns, not PATH and not a version named in prose.**
+
+### D-213 · do not buy cache stability by forcing every first turn to wait for MCP
+
+OrgTree briefly rewrote every emitted MCP server entry to
+`alwaysLoad: true`. The intended cache benefit was plausible: a complete,
+stable tool set avoids prompt drift from connection-order and deferred-tool
+changes. But the product cost was measured while the cache benefit was not.
+Cold multi-MCP turns took **5.084s** and **7.270s** from admit to first user
+request, and a process prewarmed for 2.4 seconds still took **7.001s**, versus
+**0.039s** for a long-warm orgtree-only control. Process creation itself was
+only 203–375ms. The delay is the CLI waiting for `alwaysLoad` servers before
+it can build turn 1—the handshake barrier the user had explicitly ruled out.
+
+The global rewrite is therefore removed. OrgTree preserves a registry entry's
+explicit `alwaysLoad` choice, so a server/operator can still opt into the
+tradeoff deliberately; it no longer makes that choice fleet-wide. A future
+cache experiment may test a narrower opt-in, but a cache hypothesis is not
+authority to restore a user-visible turn barrier. The standing test proves
+both halves: generated entries remain unforced, and an explicit per-server
+opt-in survives unchanged. Restoring the removed global rewrite makes that
+test fail.
 
 ### D-208 · a frozen container's /usr/local is keyed to the approved configuration, not the CLI version
 

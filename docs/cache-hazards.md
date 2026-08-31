@@ -64,7 +64,7 @@ path/mode and handles by address after validation and deduplication. A real
 path, mode, or handle change still invalidates identity. Production frequency
 and savings were not measured.
 
-## OPEN: alwaysLoad can make turn 1 wait for MCP handshakes
+## Forced alwaysLoad was rolled back: it made turn 1 wait for MCP handshakes
 
 The old source comment said orgtree never waits for MCP handshakes. Orgtree
 adds no explicit barrier, but that is not the whole runtime truth:
@@ -75,12 +75,13 @@ timeouts. The post-D-206 audit measured admit-to-first-user at **5.084s** and
 prewarm, versus **0.039s** for a long-warm orgtree-only control. Popen itself
 took only **203–375ms**.
 
-Coordinator ruling 2026-08-30: retain `alwaysLoad` as deployed for now. There
-are zero successful post-deploy Claude requests, so its cache benefit is still
-unmeasured and a revert would trade a measured delay for an unknown cache
-effect. This explicitly conflicts with the earlier no-first-request-handshake-
-wait ruling and remains an **OPEN ITEM**: once successful Claude traffic
-returns, measure the cache result and re-decide retention versus rollback.
+The fleet-wide override was rolled back. It had a measured user-visible cost,
+conflicted with the earlier no-first-request-handshake-wait ruling, and still
+had no successful post-deploy Claude sample demonstrating a cache benefit.
+Individual registry entries may opt in to `alwaysLoad`; orgtree preserves that
+choice but no longer adds it to every server. A future cache experiment may
+reconsider a narrower opt-in, but it must not silently restore a fleet-wide
+turn barrier.
 
 ## Capability guidance must not depend on whether a report exists today
 
@@ -118,9 +119,10 @@ history, and that zero was read as "no breaks" when it only ever meant "no
 instrument". A flag that enables a subsystem's state without enabling its
 output looks identical to a working feature from the outside.
 
-Measured against the shipped **2.1.241** binary: the sentinel is written by
-the CLI's debug FILE logger as `E(line, {level:"warn"})`, and that logger
-drops everything unless
+The gate was first read from the unused PATH **2.1.241** binary, then verified
+in-process against the production-spawned **2.1.220** binary. The sentinel is
+written by the CLI's debug FILE logger as `E(line, {level:"warn"})`, and that
+logger drops everything unless
 
 * debug mode is on — env `DEBUG` / `DEBUG_SDK`, or argv `--debug` / `-d` /
   `--debug-to-stderr` / `-d2e` / `--debug-file`. Absent all of these,
@@ -144,8 +146,8 @@ capture and asserts a row lands, and goes red if either half is removed.
 
 ### What the diagnoser will and will not tell you
 
-These bound every number this instrument can ever produce (read from the
-2.1.241 binary, D-211):
+These bound every number this instrument can ever produce (verified against
+the production 2.1.220 binary, D-211):
 
 * **haiku turns are excluded outright** — the reporter returns early when the
   model name contains `haiku`.
@@ -171,11 +173,12 @@ established**; the journaled warning line is the observation path. This
 corrects D-206's initial, too-strong claim that the file itself made openings
 across respawns attributable.
 
-⚠ **The empty-`{}` observation is a red herring — do not reason from it.**
-D-211 read the writer in 2.1.241: it emits `{action:"remove"}` and deletes the
-file when the map is empty, so it never writes a literal `{}`. Whatever
-produced those two-byte files, this code path did not, and the emptiness was
-taken as evidence about the diagnoser when it was evidence about nothing.
+⚠ **Production 2.1.220 does not hydrate this state across processes.** It
+writes the state file but contains none of 2.1.241's hydration path
+(`baselineFromDisk`, `hydrationAttempted`, or `previousStateBySource`). A
+cross-process resume therefore starts without a baseline and cannot prove the
+emission path. The observed empty `{}` files are consistent with that older
+implementation; validate the reporter inside one live process.
 
 **⚠ Skill authors: inline shell preprocessing (`` !`command` `` blocks in
 skill markdown) is DISABLED under this flag** — such blocks render as

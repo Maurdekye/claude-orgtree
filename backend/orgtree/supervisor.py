@@ -286,15 +286,13 @@ def cli_version() -> str:
     image for the backend's lifetime — the one thing it exists to react to
     is the CLI changing under a running backend.
 
-    ⚠ THE INSTALLED CLI IS 2.1.241 (measured 2026-08-31, D-211). Nothing in
-    this repo pins it — it is whatever npm last put on this machine, and it
-    moves without a commit. Comments elsewhere that say "the pinned 2.1.220"
-    are RECORDS OF A MEASUREMENT taken against that older build, not claims
-    about what is installed now; they are left as written because rewriting
-    the version in them would falsify the observation. When a behaviour
-    matters, re-derive it against the version this function returns rather
-    than trusting a version named in prose — D-211 exists because a CLI
-    detail was reasoned about instead of measured."""
+    ⚠ PRODUCTION SPAWNS THE BUNDLED 2.1.220 CLI from ORGTREE_CLI_DIR
+    (measured from a live process on 2026-08-31, D-211). A separate 2.1.241
+    global npm install is on PATH but is not the fleet binary. Nothing in the
+    repo pins the global copy; do not use `which claude` as evidence about a
+    production turn. When a behaviour matters, re-derive it against the path
+    this function resolves — D-211 exists because the wrong binary was read
+    before the production path was checked."""
     global _cli_version_cache
     probe = os.path.dirname(CLAUDE_CLI_JS)
     for _ in range(6):
@@ -1256,7 +1254,7 @@ def spawn_env(org: Org, tier: str | None = None,
     # break diagnoser. CLAUDE_CODE_IS_COWORK gates Claude Code's per-request
     # cache diff — named "[PROMPT CACHE BREAK] …" warning lines plus
     # tengu_prompt_cache_break telemetry. Side effects enumerated on the
-    # pinned 2.1.241: eager transcript flush, OTel diag level WARN, telemetry
+    # pinned 2.1.220: eager transcript flush, OTel diag level WARN, telemetry
     # labels — and skills' inline !`cmd` preprocessing is DISABLED (no skill
     # on this machine uses it). Must stay AFTER clean_env(), which strips
     # every CLAUDE_CODE_* var.
@@ -1267,8 +1265,9 @@ def spawn_env(org: Org, tier: str | None = None,
     # a full day it looked identical to a working feature from the outside.
     # IS_COWORK gates the diagnoser's cross-process STATE FILE
     # (%TEMP%/claude/cache-break-state-<session>.json) and its telemetry —
-    # it does NOT gate the emission. Measured against the shipped 2.1.241
-    # binary: the sentinel is written by the CLI's debug FILE logger as
+    # it does NOT gate the emission. First read from the unused PATH 2.1.241
+    # binary, then verified in-process against the production 2.1.220 binary:
+    # the sentinel is written by the CLI's debug FILE logger as
     # `E(line, {level:"warn"})`, and that logger drops everything unless
     #   * debug mode is on — env DEBUG/DEBUG_SDK, or argv --debug / -d /
     #     --debug-to-stderr / -d2e / --debug-file (`shouldLog` returns False
@@ -3809,46 +3808,11 @@ def _build_cmd(org: Org, nid: str, write_ident: bool = True) -> list[str]:
                     deployment.PROFILE_ENV:
                         deployment.current_policy().name},
         }
-    # ALWAYSLOAD (cache-structural's finding, coordinator-approved 2026-08-30;
-    # decision number to be allocated). Schema-verified in the pinned CLI
-    # 2.1.220: every mcp server entry — stdio, sse and http alike — accepts
-    # `alwaysLoad: boolean`, "all tools from this server are always included in
-    # the prompt and never deferred behind tool search".
-    #
-    # WHY IT IS A CACHE FIX. Without it the tools array is assembled from
-    # whichever servers have finished their handshake when the turn's first
-    # request goes out — so the array, which sits AHEAD of the system prompt in
-    # the cached prefix, differs run to run for the same agent. Measured
-    # association on n=1,063: MCP-pending openings are 78.7% cold (370/470)
-    # against 43.8% (260/593) for non-pending. It also stops the deferred-tool
-    # hint section flapping ("defer_loading presence flipped" is in the CLI's
-    # own break-cause list, inc-5316), and this fleet runs with tool search on.
-    #
-    # ⚠ THIS CAN BECOME THE HANDSHAKE WAIT THE USER RULED OUT ON 2026-08-30.
-    # alwaysLoad blocks the turn-1 prompt on connection, capped at the CLI's 5s
-    # timeout per server. Prewarming hides that only when the parked process is
-    # old enough. The post-D-206 audit measured admit-to-first-user at 5.084s
-    # and 7.270s for cold multi-MCP processes and 7.001s for a 2.4s-young
-    # prewarm, versus 0.039s for a long-warm orgtree-only process; Popen itself
-    # took only 203–375ms. Retention versus rollback is a policy decision — do
-    # not describe this as a zero-turn-latency cache fix.
-    #
-    # ⚠ COST, STATED RATHER THAN DISCOVERED: full tool schemas now ride every
-    # prompt instead of being deferred, so multi-server agents carry a FATTER
-    # prefix. That is the deliberate trade — bigger but STABLE beats smaller but
-    # varying, because the prefix is re-paid only when it changes.
-    #
-    # Copied rather than written in place. ⚠ AND THE OBVIOUS JUSTIFICATION FOR
-    # THAT IS WRONG, so it is not given here: an in-place write would NOT
-    # currently escape this call. `registered_mcp_servers` re-parses
-    # ~/.claude.json on every call and `granted_mcp_servers` calls it again, so
-    # every read hands back fresh objects and there is no shared structure to
-    # corrupt. I checked that rather than assuming it, after a mutant that
-    # mutated in place failed to break anything and exposed the claim.
-    # The copy stays because it is free and does not DEPEND on that remaining
-    # true — the day the registry gets a cache, in-place writes become a real
-    # leak and this line is already correct.
-    chosen = {k: {**v, "alwaysLoad": True} for k, v in chosen.items()}
+    # Do not force `alwaysLoad` here. In CLI 2.1.220 it blocks construction of
+    # the first request until each MCP server connects (up to its timeout).
+    # Production measured 5–7 second waits on cold and young-prewarm turns,
+    # violating the user's no-first-request-handshake-wait rule. A registry
+    # entry may still opt in explicitly; `chosen` preserves that field.
     # Canonical JSON is part of the cache contract, not cosmetic formatting.
     # The CLI sees object-key order as semantically irrelevant, but argv is an
     # identity input: preserving ~/.claude.json insertion order made a pure
