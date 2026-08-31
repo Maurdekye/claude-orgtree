@@ -13,6 +13,14 @@
 > network boundary against a real running system. **No agent turn has ever
 > completed end to end in a frozen container**, the Linux bridge-bind path has
 > never run on Linux, and the mailhub image has never been run.
+>
+> **Before you plan a frozen install, read
+> [the capacity gap](#-frozen-mode-cannot-use-the-account-pool--it-has-no-capacity-failover).**
+> Frozen mode routes every turn through the bridge's Anthropic passthrough,
+> which can authenticate with a per-org API key or the primary subscription and
+> **nothing else** — the multi-account pool that provides capacity failover in
+> standard mode is unreachable. A frozen install whose primary subscription is
+> rate-limited, and whose orgs have no API key, cannot run a single turn.
 
 The frozen deployment profile is an opt-in, install-wide policy for an
 operator-controlled orgtree installation. It reduces the attack surface
@@ -392,7 +400,9 @@ it have been observed working on a running system.
 ### NOT proven — do not claim these
 
 * **No agent turn has ever completed end to end in a frozen container.** See
-  the next subsection for exactly how far one got.
+  [exactly how far one got](#exactly-how-far-the-agent-turn-got), and the
+  capacity gap below for why it could not be finished on the development
+  machine by any supported configuration.
 * **The Linux branch of `sandbox.bridge_bind_host()` has never run on Linux.**
   On Windows and macOS it returns loopback; on native Linux it returns Docker's
   host-side bridge gateway, which is host-only but *not* loopback. That branch
@@ -442,6 +452,61 @@ implicated.
 
 The honest summary is therefore **the turn machinery works and the provider hop
 failed** — not "we do not know". Hops 1 to 6 are observed. Hops 7 and 8 are not.
+
+### ⚠ Frozen mode cannot use the account pool — it has no capacity failover
+
+This is a **design gap, not a bug**, and it is the reason no agent turn has
+completed in a frozen container on the machine where this was developed. State
+it to anyone considering a frozen install, because it can make one unable to
+run *any* turn while the same machine happily runs turns in standard mode.
+
+A sandboxed org's provider traffic goes out through the bridge's
+`/anthropic/...` passthrough (`anthropic_proxy` in `backend/orgtree/api.py`).
+That handler has exactly **two** credential branches:
+
+1. an explicit **org API key** — attached as `x-api-key`; or
+2. otherwise the **host subscription**, read by `subproxy.get_access_token()`
+   from the fixed path `~/.claude/.credentials.json`.
+
+There is no third branch. Meanwhile a **host-mode** turn is authenticated
+completely differently: `supervisor` injects `CLAUDE_CODE_OAUTH_TOKEN` into the
+CLI's environment, chosen from the multi-account pool (`accounts.resolve(tier)`),
+which is what provides per-tier capacity failover when the primary login is
+rate-limited.
+
+Those two lanes never meet:
+
+* `subproxy.py` contains **no** reference to the account pool, and
+  `accounts.py` never writes the credentials file that `subproxy` reads — so
+  the pool cannot reach the proxy even indirectly.
+* `get_access_token()` has only two callers: this proxy and `limits.py`.
+* An account-pool credential is an **OAuth token**, which needs
+  `Authorization: Bearer` plus the `oauth-2025-04-20` beta header. It cannot be
+  smuggled through the `x-api-key` branch, so an operator cannot work around
+  this by configuration.
+
+**Consequence.** Frozen mode requires *every* org to be sandboxed, so it routes
+*every* turn through the proxied path. A frozen install therefore has exactly
+two working provider lanes — a per-org API key, or the primary subscription —
+and **no capacity failover at all.** The fallback-account machinery (including
+the D-205 fallback-key liveness checks) is unreachable from frozen mode. If the
+primary subscription is rate-limited or its token cannot be refreshed, a frozen
+install with no org API key cannot run a single turn, even when the pool holds
+a live account with capacity.
+
+This was measured, not inferred. On the development machine on 2026-08-31 the
+primary was at 100% of its weekly limit (severity `critical`, resetting
+2026-09-01) with a stale access token whose refresh returned `403`, while every
+tier — haiku, sonnet, opus, fable — was assigned to a live fallback account and
+the standard-mode fleet was running normally on it. The frozen rig could not
+reach that account by any supported configuration.
+
+**If you run a frozen install, plan for this**: either give each org an
+explicit `api_key`, or accept that the install's availability is exactly the
+availability of the single primary subscription. Note also that this is not
+strictly frozen-specific — a *sandboxed* org in standard mode uses the same
+proxied path — but standard mode makes sandboxing optional, whereas frozen mode
+makes it universal and mandatory.
 
 > ### A TESTING-METHODOLOGY WARNING, NOT A BUG REPORT
 >
