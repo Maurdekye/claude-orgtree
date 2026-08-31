@@ -7,6 +7,12 @@
 > (`bc7e456`…`2316a83b`). All source citations below were checked against that
 > revision, including running the verifier and the seven policy/attestation
 > test suites (99 checks total, all passing).
+>
+> **Ship position — read [What is actually proven](#what-is-actually-proven-and-what-is-not)
+> before relying on any of this.** Frozen mode boots, attests, and enforces its
+> network boundary against a real running system. **No agent turn has ever
+> completed end to end in a frozen container**, the Linux bridge-bind path has
+> never run on Linux, and the mailhub image has never been run.
 
 The frozen deployment profile is an opt-in, install-wide policy for an
 operator-controlled orgtree installation. It reduces the attack surface
@@ -342,6 +348,128 @@ it is running on, rather than asserting one address everywhere). The
 standalone verifier reads the whole table, so a kiosk listener that is
 actually open is caught even if the environment claims
 `ORGTREE_PUBLIC_PORT=0` and no code path opened it on purpose.
+
+## What is actually proven, and what is not
+
+Everything below was established on 2026-08-31 on a Windows host with Docker
+29.6.2, against a real frozen install: a dedicated data root, a Python
+environment built from `frozen/requirements.txt` (23 distributions, exactly the
+lock), an `npm ci` frontend tree, the pinned provider CLIs in private prefixes,
+and both frozen images built from the manifest's own `--build-commands`.
+
+**Read this before treating any claim elsewhere in this document as tested.**
+The rest of the document describes the design. This section says which parts of
+it have been observed working on a running system.
+
+### Proven against a running system
+
+| Claim | Evidence |
+|---|---|
+| Both images build and carry the approved labels | built from `verify_frozen_install.py --build-commands`; `claude --version` inside the sandbox image really is `2.1.220`, matching the label |
+| A conforming frozen install boots and attests | startup printed `frozen-install: approved configuration <sha256> verified`; the standalone verifier then attested the **running** backend **65/65** |
+| The listener checks read real sockets | observed `127.0.0.1:7431` (admin) and `127.0.0.1:7432` (bridge) in the kernel table; `BRIDGE_LISTENER_HOST_ONLY` matched `sandbox.bridge_bind_host()` on this host |
+| A non-conforming install is refused | pointed at the machine's **live standard** install, the verifier refuses it and names the real wildcard binds `0.0.0.0:7361`, `0.0.0.0:7362` |
+| Four bad boots are refused by the running system | unapproved image labels gives `CONTAINER_IMAGE_LABELS`; `ORGTREE_PUBLIC_PORT` unset gives `PUBLIC_LISTENER_DISABLED`; `ORGTREE_EXPOSE_ADMIN=1` is refused before any bind; direct `uvicorn orgtree.api:app` gives `LAUNCH_PATH_SUPPORTED`, failing at ASGI startup |
+| The container runs the approved image on the digest-keyed volume | agent container runs `orgtree-sandbox:frozen-<digest16>` and mounts `orgtree-usrlocal-frozen-<digest16>-r2` (D-208) |
+| The network boundary holds | 16/16 probes from **inside** the agent container: `host.docker.internal` does not resolve, the public internet is unreachable, and the relay refuses non-POST, unknown paths, and an uncredentialed Anthropic path |
+| The bridge credential works and rotates | the org credential is accepted and a forged one is refused, both from inside the container; a **live rotation** (generation 0 to 1) makes the previously-working credential return **403 from inside the container** |
+| The orgtree tool round trip works from inside | `orgtree_chart` and `orgtree_status` called from inside the container both returned **HTTP 200** through relay, host bridge and backend `/api/agent` |
+
+### Proven only against fixtures or fakes
+
+* Everything in `test_frozen_install.py` and most of
+  `test_frozen_attestation_integration.py` runs against injected inventories
+  and a synthetic approved install. That is appropriate — it is how the
+  negative cases are made exhaustive — but a fixture pass is not a running
+  system.
+* `test_sandbox.py` runs against a **fake Docker** that records `docker` argv.
+  See the warning below: that fake cannot tell a working container path from a
+  broken one.
+* The per-org network, relay creation and container recreation logic are
+  covered by that fake in the hermetic tier; only the specific standing-up
+  described above was done for real.
+
+### NOT proven — do not claim these
+
+* **No agent turn has ever completed end to end in a frozen container.** See
+  the next subsection for exactly how far one got.
+* **The Linux branch of `sandbox.bridge_bind_host()` has never run on Linux.**
+  On Windows and macOS it returns loopback; on native Linux it returns Docker's
+  host-side bridge gateway, which is host-only but *not* loopback. That branch
+  is implemented and unit-tested and has never executed on a Linux host, so
+  `BRIDGE_LISTENER_HOST_ONLY` has only ever compared loopback. It is untested
+  code on the security boundary.
+* **The mailhub image has never been run.** It builds and carries the approved
+  labels; nothing has executed it.
+
+### Exactly how far the agent turn got
+
+This matters more than the fact that it failed, so it is stated hop by hop. A
+real turn was driven and a real `claude` process ran inside the frozen
+container for roughly 90 seconds. What that did and did not exercise:
+
+**Exercised and working:**
+
+1. orgtree's turn machinery selected the org's container and launched the CLI
+   inside it via `docker exec` (observed: one `claude` process alive inside the
+   container for about 90 seconds).
+2. The pinned CLI in the approved image started and resolved
+   `ANTHROPIC_BASE_URL` to the per-org relay.
+3. The CLI's requests reached the relay (the relay logged them, from the agent
+   container's address).
+4. The relay authorized the org bridge credential and opened an upstream
+   socket to the host bridge.
+5. The host bridge accepted it and routed to the backend's subscription proxy.
+6. Separately and definitively, the **orgtree tool round trip** over that same
+   path returned HTTP 200 — so "agent to relay to bridge to backend and back"
+   works for tool calls.
+
+**Not exercised:**
+
+7. The provider call itself. The backend's subscription proxy tried to refresh
+   the host OAuth token and got `HTTP 403 Forbidden`; the CLI reported
+   `API Error: 502 {"detail":"subscription token refresh failed: ..."}` and
+   exited 1. orgtree correctly classified it as a terminal, non-retryable
+   failure and left durable mail.
+8. Therefore **no model output, no tool call made by a model, and no completed
+   turn.** The agent never received a response to reason about.
+
+The blocker is a host credential, not frozen mode: the shared
+`~/.claude/.credentials.json` access token had expired and its refresh was
+being rejected. `subproxy.py` reads only that fixed path, so a frozen sandbox
+turn has no other credential source. Nothing in the frozen boundary was
+implicated.
+
+The honest summary is therefore **the turn machinery works and the provider hop
+failed** — not "we do not know". Hops 1 to 6 are observed. Hops 7 and 8 are not.
+
+> ### A TESTING-METHODOLOGY WARNING, NOT A BUG REPORT
+>
+> Twice on 2026-08-31 a green test suite concealed a defect that made frozen
+> mode **completely non-functional on Windows**, which is the platform this
+> repository is developed on.
+>
+> 1. `frozen/sandbox-apt.txt` is fed to `apt` through `xargs`. With a CRLF
+>    checkout every pin arrived with a trailing carriage return and the sandbox
+>    image could not be built at all.
+> 2. The relay's in-container script path was built with `os.path.join`, which
+>    uses the **host** separator, producing a Windows-style path inside a Linux
+>    container. Every relay start died with `can't open file`, so **the frozen
+>    network boundary had never come up on Windows.**
+>
+> Neither was caught, and the reason is the same both times: `test_sandbox.py`
+> runs against a **fake Docker that compares argv strings**. In that fake a
+> path that cannot resolve is indistinguishable from one that can, and a file
+> that would break a build is just a string that matches. The suite asserted
+> that the arguments were correct; nothing asserted that the arguments
+> *worked*.
+>
+> The rule this yields: **an argv assertion is not an integration test.** When
+> a value crosses a boundary — into a container, into a shell, into a package
+> manager — assert the property that boundary cares about (the path is POSIX
+> and the file exists; the file has no CRLF), not that the string equals what
+> you wrote. `test_frozen_attestation_integration.py` now carries both of those
+> checks and both are proved to fail on a planted fault. See D-210.
 
 ## Threat boundary and residual risk
 

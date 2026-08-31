@@ -3136,6 +3136,61 @@ Controls include real weekly/session limit replies, an unseen per-model reply,
 “organisation limit policy” false-ALIVE trap, shared-detector value replacement,
 and a child-process environment witness. The old exact-sentence classifier is
 kept as a failing control for the first three blind spots.
+### D-210 · an argv assertion is not an integration test
+
+Twice on 2026-08-31 a fully green test suite concealed a defect that made the
+frozen deployment profile **completely non-functional on Windows** — the
+platform this repository is developed on. Both defects were found by running
+the thing for real, neither by reading, and neither by any test.
+
+* `frozen/sandbox-apt.txt` is handed to `apt` through `xargs`. In a CRLF
+  checkout every pin arrived with a trailing carriage return, so `apt` reported
+  `E: Version '...' for 'sudo' was not found` for all 47 packages and the
+  sandbox image **could not be built at all**.
+* The frozen relay's in-container script path was built with `os.path.join`,
+  which uses the **host** separator. On Windows that produced
+  `/opt/orgtree-backend\orgtree\frozen_gateway.py`; every relay start died with
+  `can't open file`, so the **frozen network boundary had never come up on this
+  platform**.
+
+> **THE FAKE CANNOT SEE THE PROPERTY THAT MATTERS.** `test_sandbox.py` runs
+> against a recording fake Docker and asserts on the `docker` argv. That is a
+> good design for what it was built for — every security property of the
+> sandbox is a flag in that argv, and the fake makes those assertions cheap and
+> exhaustive. But inside a string comparison, a path that cannot resolve is
+> indistinguishable from one that can, and a file that would break a build is
+> just a string that matches. The suite asserted that the arguments were
+> *correct*. Nothing asserted that the arguments *worked*.
+
+The rule: **when a value crosses a boundary — into a container, into a shell,
+into a package manager, into a foreign OS — assert the property that boundary
+cares about, not that the string equals what you wrote.** "The path is POSIX
+and the file exists at the other end of the bind mount" is a testable property.
+"The pinned input contains no CRLF" is a testable property. `argv[7] ==
+"/opt/orgtree-backend/orgtree/frozen_gateway.py"` is not: it is a restatement
+of the code under test.
+
+Both properties are now asserted in
+`backend/tests/test_frozen_attestation_integration.py`, and both were shown to
+fail against a deliberately planted fault before being accepted — an instrument
+that reports "nothing found" must first prove it can find something.
+
+This does not condemn the fake. It bounds it: a fake-Docker suite is a
+**unit** test of argument construction and must not be read as evidence that
+the container works. Anything that must actually execute on the far side of the
+boundary needs either a real-Docker tier (`test_sandbox.py --docker`) or an
+explicit property assertion of the kind above. The two defects here were
+platform-specific, which is exactly the class a host-side fake is structurally
+blind to: the fake runs on the same OS that is producing the wrong value.
+
+A companion warning, because it produced the same false confidence from the
+other direction: `frozen/approved-install.json` pins **working-tree bytes**, so
+a checkout whose line endings predate the `eol=lf` attribute fails its own pins
+while `git status` reports the tree clean and `git add --renormalize` stages
+nothing. The verifier now names line endings explicitly as a cause instead of
+printing two digests and leaving the reader to hunt for a content change that
+does not exist.
+
 ### D-208 · a frozen container's /usr/local is keyed to the approved configuration, not the CLI version
 
 Sandboxed containers mount `/usr/local` from a named Docker volume rather than
