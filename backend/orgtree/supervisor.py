@@ -842,6 +842,40 @@ def state(slug: str, nid: str) -> dict[str, Any]:
             "live": []})
 
 
+def _limit_cache_result_state(
+        st: dict[str, Any], usage: dict[str, Any], limited: bool,
+) -> tuple[str | None, dict[str, Any] | None]:
+    """Classify a result without losing the first billable resume marker.
+
+    Empty auth/network/error results are real boundaries but carry no cache
+    evidence.  They leave the marker armed.  An immediate limit is still
+    journaled as ``limit`` when empty, or as a usage-bearing
+    ``first-after-resume`` with ``limited=true`` when it has counters.
+    """
+    has_usage = bool(warmpool.limit_cache_usage_fields(usage))
+    with _state_lock:
+        marker = st.get("limit_cache_resume")
+        if isinstance(marker, dict) and has_usage:
+            marker = st.pop("limit_cache_resume")
+        else:
+            marker = None
+    if marker is not None:
+        return "first-after-resume", marker
+    if limited:
+        return "limit", None
+    return None, None
+
+
+def _limit_cache_claude_state(st: dict[str, Any], tier: str) -> bool:
+    """Keep attribution state only while the resumed turn is Claude-owned."""
+    if providers.provider_of(tier) == "claude":
+        return True
+    with _state_lock:
+        st.pop("limit_cache_origin", None)
+        st.pop("limit_cache_resume", None)
+    return False
+
+
 def working_count(slug: str) -> int:
     # F-09: how many of this org's agents have a turn RUNNING right now.
     # Reads _state directly — state() setdefault-allocates an entry per lookup,
@@ -5706,7 +5740,12 @@ def _run_one_turn(slug: str, nid: str,
             # "the timeout banner does not go away on its own")
             st["last_error"] = None
             notify(slug, nid, "turn_started")
-            if str(org.node(nid).get("model") or "") in providers.CODEX_TIERS:
+            _turn_tier = str(org.node(nid).get("model") or "")
+            # A limit marker belongs to a Claude result stream.  Retooling a
+            # frozen node across providers must not let it survive a Codex or
+            # Gemini turn and attach to some unrelated future Claude result.
+            _limit_cache_claude_state(st, _turn_tier)
+            if _turn_tier in providers.CODEX_TIERS:
                 # THE PROVIDER SEAM (FR-15 M1b): a codex tier takes its own
                 # leg here — after the provider-neutral prologue above, before
                 # any claude machinery — and rejoins through the success tail
@@ -5719,7 +5758,7 @@ def _run_one_turn(slug: str, nid: str,
                 paid_booked = True     # _after_turn books `res`'s cost itself
                 _after_turn(slug, nid, org, res, st, codex_occ, on_key=False)
                 raise _CodexTurnDone
-            if str(org.node(nid).get("model") or "") in providers.GEMINI_TIERS:
+            if _turn_tier in providers.GEMINI_TIERS:
                 # the same seam one provider over (D-186): identical tail,
                 # its own control raise, the SHARED finally owns the queue.
                 res, gem_occ = _gemini_leg(
@@ -6468,20 +6507,17 @@ def _run_one_turn(slug: str, nid: str,
                         # first resumed result is the only durable evidence
                         # of read-vs-create.  Consume only fields already on
                         # this result; no keepalive/probe/prompt mutation.
-                        with _state_lock:
-                            _cache_resume = st.pop(
-                                "limit_cache_resume", None)
-                        if limited or isinstance(_cache_resume, dict):
-                            _usage = ev.get("usage")
-                            _usage = _usage if isinstance(_usage, dict) else {}
+                        _usage = ev.get("usage")
+                        _usage = _usage if isinstance(_usage, dict) else {}
+                        _cache_phase, _cache_resume = \
+                            _limit_cache_result_state(st, _usage, limited)
+                        if _cache_phase is not None:
                             _resume_at = (_cache_resume or {}).get("resumed_at")
                             warmpool.journal_limit_cache_usage(
                                 slug, nid, ran_sid or "",
                                 getattr(proc, "pid", None),
                                 str(st.get("ran_as") or ""), _usage,
-                                phase=("first-after-resume"
-                                       if _cache_resume is not None
-                                       else "limit"),
+                                phase=_cache_phase,
                                 limited=limited,
                                 prior_sid=str((_cache_resume or {}).get(
                                     "session_id") or ""),
@@ -10665,7 +10701,7 @@ def resume_frozen(slug: str, only: Iterable[str] | None = None,
     its context is warm — and only when the session has a transcript to
     reload. A refusal falls through to a plain resume, never a gate."""
     pick = None if only is None else set(only)
-    resumed: list[tuple[str, list[str], bool, str, str]] = []
+    resumed: list[tuple[str, list[str], bool, str, str, str]] = []
     with store.DOC_LOCK:
         org = store.load_org(slug)
         if org.d.get("spend_frozen"):
@@ -10713,14 +10749,16 @@ def resume_frozen(slug: str, only: Iterable[str] | None = None,
                     pass          # an optimization, never a gate (D-114)
             n.pop("frozen", None)
             resumed.append((nid, fz.get("resume_texts") or [],
-                            _limit_resume, _frozen_at, _frozen_sid))
+                            _limit_resume, _frozen_at, _frozen_sid,
+                            str(org.node(nid).get("model") or "")))
         if resumed:
             store.save_org(org)
-    for nid, texts, limit_resume, frozen_at, frozen_sid in resumed:
+    for nid, texts, limit_resume, frozen_at, frozen_sid, tier in resumed:
         if not texts:
             texts = ["(orgtree) You were frozen by a usage limit and have been "
                      "resumed — handle any mail above and continue."]
         st = state(slug, nid)
+        claude_resume = _limit_cache_claude_state(st, tier)
         first = None
         resumed_at = time.time()
         freeze_s: float | None = None
@@ -10732,7 +10770,7 @@ def resume_frozen(slug: str, only: Iterable[str] | None = None,
                 pass
         with _state_lock:
             origin = st.pop("limit_cache_origin", None)
-            if limit_resume:
+            if limit_resume and claude_resume:
                 origin = origin if isinstance(origin, dict) else {}
                 st["limit_cache_resume"] = {
                     "session_id": str(origin.get("session_id")

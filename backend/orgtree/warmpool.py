@@ -430,6 +430,30 @@ def journal_cache_break_lines(slug: str, nid: str, sid: str,
                  truncated=len(raw) > CACHE_BREAK_LINE_MAX)
 
 
+def limit_cache_usage_fields(usage: dict[str, Any]) -> dict[str, int]:
+    """The accepted numeric counters from one Claude result usage object.
+
+    This is also the evidence-presence predicate: an empty/error-only result
+    must not consume the in-memory first-after-resume marker.
+    """
+    out: dict[str, int] = {}
+    for key in ("input_tokens", "cache_read_input_tokens",
+                "cache_creation_input_tokens", "output_tokens"):
+        value = usage.get(key)
+        if isinstance(value, (int, float)) and not isinstance(value, bool) \
+                and value >= 0:
+            out[key] = int(value)
+    creation = usage.get("cache_creation")
+    if isinstance(creation, dict):
+        for key in ("ephemeral_5m_input_tokens",
+                    "ephemeral_1h_input_tokens"):
+            value = creation.get(key)
+            if isinstance(value, (int, float)) and not isinstance(value, bool) \
+                    and value >= 0:
+                out[key] = int(value)
+    return out
+
+
 def journal_limit_cache_usage(
         slug: str, nid: str, sid: str, pid: int | None, account: str,
         usage: dict[str, Any], *, phase: str, limited: bool,
@@ -449,21 +473,8 @@ def journal_limit_cache_usage(
     rec: dict[str, Any] = {
         "slug": slug, "nid": nid, "session_id": sid, "pid": pid,
         "account": account, "phase": phase, "limited": bool(limited),
+        **limit_cache_usage_fields(usage),
     }
-    for key in ("input_tokens", "cache_read_input_tokens",
-                "cache_creation_input_tokens", "output_tokens"):
-        value = usage.get(key)
-        if isinstance(value, (int, float)) and not isinstance(value, bool) \
-                and value >= 0:
-            rec[key] = int(value)
-    creation = usage.get("cache_creation")
-    if isinstance(creation, dict):
-        for key in ("ephemeral_5m_input_tokens",
-                    "ephemeral_1h_input_tokens"):
-            value = creation.get(key)
-            if isinstance(value, (int, float)) and not isinstance(value, bool) \
-                    and value >= 0:
-                rec[key] = int(value)
     if phase == "first-after-resume":
         rec["process_respawned"] = True
         if prior_sid:

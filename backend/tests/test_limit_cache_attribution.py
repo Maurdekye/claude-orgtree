@@ -9,7 +9,6 @@ from __future__ import annotations
 import inspect
 import json
 import os
-import re
 import sys
 import tempfile
 import traceback
@@ -110,19 +109,59 @@ check("bounded rows expose raw cache usage and cross-process identity",
       journal_contract)
 
 
+def marker_lifecycle_contract() -> None:
+    marker = {"session_id": "sid-a", "pid": 101, "account": "acct-a"}
+    st = {"limit_cache_resume": marker}
+
+    phase, got = S._limit_cache_result_state(st, {}, limited=False)
+    assert (phase, got) == (None, None)
+    assert st["limit_cache_resume"] is marker
+
+    # A second limit with no usage is still a real limit row, but it cannot
+    # answer read-vs-create and therefore must not consume the marker.
+    phase, got = S._limit_cache_result_state(st, {}, limited=True)
+    assert (phase, got) == ("limit", None)
+    assert st["limit_cache_resume"] is marker
+
+    phase, got = S._limit_cache_result_state(
+        st, {"cache_read_input_tokens": 0}, limited=False)
+    assert phase == "first-after-resume" and got is marker
+    assert "limit_cache_resume" not in st
+
+
+check("empty error retains the marker; the next usage-bearing result takes it",
+      marker_lifecycle_contract)
+
+
+def provider_gate_contract() -> None:
+    foreign = {"limit_cache_resume": {}, "limit_cache_origin": {}}
+    assert S._limit_cache_claude_state(foreign, "luna") is False
+    assert "limit_cache_resume" not in foreign
+    assert "limit_cache_origin" not in foreign
+
+    claude = {"limit_cache_resume": {"session_id": "sid-a"}}
+    assert S._limit_cache_claude_state(claude, "fable") is True
+    assert "limit_cache_resume" in claude
+
+
+check("cross-provider resume state is cleared while Claude state survives",
+      provider_gate_contract)
+
+
 def wiring_contract() -> None:
     run_src = inspect.getsource(S._run_one_turn)
     resume_src = inspect.getsource(S.resume_frozen)
-    assert re.search(r'st\.pop\(\s*"limit_cache_resume",\s*None\)', run_src)
+    assert "_limit_cache_result_state(st, _usage, limited)" in run_src
     assert "journal_limit_cache_usage(" in run_src
-    assert 'phase=("first-after-resume"' in run_src
     assert 'st["limit_cache_origin"]' in run_src
+    assert "_limit_cache_claude_state(st, _turn_tier)" in run_src
+    assert "_limit_cache_claude_state(st, tier)" in resume_src
     assert 'st["limit_cache_resume"]' in resume_src
     assert 'bool(fz.get("limit"))' in resume_src
     assert "freeze_s" in resume_src
 
 
-check("the limit freeze and first resumed result are both wired",
+check("the behavioral helpers are wired at freeze, resume, and result",
       wiring_contract)
 
 
