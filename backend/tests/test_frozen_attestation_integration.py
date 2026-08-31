@@ -509,6 +509,36 @@ def committed_manifest_declares_the_adjudicated_boundary() -> None:
     assert doc["bridge"]["scheme"] == "hmac-sha256-org-v1"
 
 
+def pinned_files_have_no_crlf() -> None:
+    """A CRLF checkout breaks the build AND the digests. Both, silently.
+
+    ⚠ Found by trying to build the images for real, not by reading. Every
+    pin in the manifest hashes WORKING-TREE bytes, so with `core.autocrlf=true`
+    — the norm on the Windows machines this repo is developed on — the same
+    commit hashes differently on Windows and Linux: a manifest approved on one
+    platform can never verify on the other, and the content-addressed image
+    tag moves without a single byte being authored.
+
+    It is not only a hashing concern. `frozen/sandbox-apt.txt` is fed to apt
+    through xargs, so a CRLF checkout asks for `sudo=1.9.13p3-1+deb12u4\\r`
+    and the sandbox image fails to build with
+    `E: Version '...' for 'sudo' was not found` on all 47 packages.
+
+    `.gitattributes` pins these paths to `eol=lf`. This test is the alarm for
+    anyone who adds a pin without adding the attribute.
+    """
+    doc = json.loads((REPO_ROOT / "frozen" / "approved-install.json")
+                     .read_text(encoding="utf-8"))
+    offenders = []
+    for rel in list(doc["files"]) + ["frozen/approved-install.json"]:
+        raw = (REPO_ROOT / rel).read_bytes()
+        if b"\r\n" in raw:
+            offenders.append(rel)
+    assert not offenders, (
+        "CRLF in content-addressed frozen inputs: " + ", ".join(offenders)
+        + " — add them to .gitattributes with `text eol=lf`")
+
+
 def image_tags_follow_the_rebuilt_digest() -> None:
     digest = frozen_install.APPROVED_MANIFEST_SHA256
     commands = frozen_install.build_commands(REPO_ROOT)
@@ -699,6 +729,7 @@ def main() -> None:
           frozen_boundary_source_is_pinned)
     check("the committed manifest declares the adjudicated boundary",
           committed_manifest_declares_the_adjudicated_boundary)
+    check("no pinned frozen input carries CRLF", pinned_files_have_no_crlf)
     check("image tags follow the rebuilt digest",
           image_tags_follow_the_rebuilt_digest)
 

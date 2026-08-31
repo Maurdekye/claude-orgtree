@@ -3069,6 +3069,47 @@ Controls include real weekly/session limit replies, an unseen per-model reply,
 “organisation limit policy” false-ALIVE trap, shared-detector value replacement,
 and a child-process environment witness. The old exact-sentence classifier is
 kept as a failing control for the first three blind spots.
+### D-208 · a frozen container's /usr/local is keyed to the approved configuration, not the CLI version
+
+Sandboxed containers mount `/usr/local` from a named Docker volume rather than
+from the image, so the CLI keeps its image pinning while `/usr` rides the org
+disk (№44). Docker seeds that volume from the image **once, on first mount**,
+and from then on the NAME is the only thing deciding whether an existing
+volume is reused. Standard mode names it after the host CLI version, which is
+correct there: a CLI update moves the name and the fresh volume seeds from the
+freshly built image.
+
+> **THE NAME IS THE CACHE KEY, AND A CACHE KEY THAT IGNORES PROVENANCE IS A
+> SUPPLY-CHAIN HOLE.** Frozen mode runs one content-addressed, label-verified
+> image; standard mode builds its image from the network. Both can be built at
+> the same host CLI version. Keyed on that version alone the two modes name
+> the SAME volume, so a frozen container mounts a `/usr/local` that Docker
+> seeded from the unapproved standard image — and every pin still verifies,
+> because attestation checks the image, the locks and the labels, none of
+> which describe a volume that was populated before the frozen image existed.
+> The CLI actually executing came from somewhere nobody attested.
+
+This is not a hypothetical ordering. On the machine where the frozen profile
+was first booted for real, the host CLI was 2.1.220, `frozen/sandbox.Dockerfile`
+pins 2.1.220, and `orgtree-usrlocal-2.1.220-r2` already existed, seeded from the
+standard image. The collision was one `docker run` away, and nothing in the
+attestation report would have looked wrong.
+
+Frozen mode therefore keys the volume to the approved configuration digest —
+the same content-addressed suffix the image tag carries, so image and volume
+move together by construction (`orgtree-usrlocal-frozen-<digest16>-<rev>` vs
+`orgtree-usrlocal-<cliver>-<rev>`). Standard naming is untouched, so ordinary
+installs neither re-seed nor recreate anything.
+
+The general rule, which outlives this volume: **when a security profile pins an
+artifact, everything derived from that artifact and cached by name must carry
+the pin in its name.** A digest in the tag and a bare version in the cache key
+means the cache silently outranks the pin.
+
+Found while doing the first real frozen boot rather than by reading: the same
+work also showed `ensure_container` had been raising `NameError` for every
+sandboxed org, which is why nobody had reached the volume mount to notice.
+
 ### D-203 · App settings are machine-wide, and provider off is an admission policy
 Ruling (user, 2026-08-30): the Accounts surface becomes a tabbed App settings
 panel. Provider choices and process warming describe what THIS MACHINE may do

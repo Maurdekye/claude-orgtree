@@ -42,7 +42,7 @@ MANIFEST_REL = Path("frozen") / "approved-install.json"
 # and all of its referenced files cannot be silently edited into a new
 # approval: this independently committed value must move too.
 APPROVED_MANIFEST_SHA256 = \
-    "39f7809836aa8da602ef9590eb6e5563e1d58e726d4fcf386b6f542a1c00362f"
+    "7bc792855a6331baffc847efa17b46cbb812211a6dc741c5f28412eed369df7e"
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _EXACT_REQUIREMENT = re.compile(

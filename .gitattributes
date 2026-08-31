@@ -13,5 +13,21 @@
 *.ps1 text eol=crlf
 *.cmd text eol=crlf
 
+# The frozen deployment's approved inputs are CONTENT-ADDRESSED: frozen/
+# approved-install.json pins each one's SHA-256, and the manifest's own digest
+# names the container image tags. "let git decide locally" is exactly wrong
+# for those files — the same commit would hash differently on Windows and
+# Linux, so a manifest approved on one platform could never verify on the
+# other, and the image tag would move without a single byte being authored.
+#
+# It is not only a hashing concern. frozen/sandbox-apt.txt is fed to apt
+# through xargs, so a CRLF checkout asks for `sudo=1.9.13p3-1+deb12u4\r` and
+# the sandbox image FAILS TO BUILD on the very platform this repo is
+# developed on ("E: Version '...' for 'sudo' was not found").
+frozen/** text eol=lf
+frontend/package-lock.json text eol=lf
+backend/orgtree/bridgeauth.py text eol=lf
+backend/orgtree/frozen_gateway.py text eol=lf
+
 # Everything else: normalise to LF in the repository, let git decide locally.
 * text=auto
