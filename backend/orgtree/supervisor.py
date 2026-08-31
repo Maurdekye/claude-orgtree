@@ -4405,6 +4405,40 @@ class _GeminiTurnDone(Exception):
     exact."""
 
 
+class _ProviderTurnFailed(RuntimeError):
+    """A NON-claude leg's turn failed and the provider said why (D-209).
+
+    A plain `RuntimeError` from `_codex_leg`/`_gemini_leg` lands in
+    `_run_one_turn`'s general `except`, which writes `last_error` and a
+    `turn_error_log` row and stops. That is the whole of what those lanes ever
+    did with a failure — there is no freeze, no reset time and no auto-resume
+    on either of them, because the machinery that does all three lives inline
+    in the CLAUDE leg's post-processing and nothing else can reach it.
+
+    This type is the seam that lets the shared handler tell a provider failure
+    apart from every other exception and act on it, WITHOUT either leg growing
+    its own copy of the freeze policy:
+
+      · `blob` is the provider's own words — classifier input, and only that.
+        It is deliberately separate from `str(exc)`, which is prose written for
+        the operator's record and may carry framing the predicates must never
+        see. Same split, same reason, as `_for_the_record` on the claude lane.
+      · `reset_ts` is a MACHINE reset the provider handed us out of band (the
+        codex app-server's `resetsAt`), or None. Unbanded here; the freeze
+        bands it, so one rule governs it and the prose parse alike.
+
+    ⚠ IT IS STILL A RuntimeError. `_run_one_turn`'s handler prints a traceback
+    for any raiser "the turn machinery does not already explain", keyed on
+    exactly that type — a fresh base class would have put a stack trace in the
+    log for every routine usage limit."""
+
+    def __init__(self, message: str, blob: str = "",
+                 reset_ts: float | None = None) -> None:
+        super().__init__(message)
+        self.blob = blob or message
+        self.reset_ts = reset_ts
+
+
 def _iso_ts(t: float) -> str:
     """A wall-clock epoch as the ISO-Z shape transcript timestamps wear."""
     return _dtm.datetime.fromtimestamp(
@@ -4917,20 +4951,41 @@ def _codex_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
             draft_timer.cancel()
             dstate["timer"] = None
     _flush_draft()
+    # ⚠ FOLD THE ACCOUNT STANDING BEFORE THE STATUS CHECK, NOT AFTER (D-209).
+    # The app-server pushes the same standing the usage modal reads, and this
+    # used to run only on the success path — so the ONE turn whose snapshot
+    # said `usedPercent: 100` was the exact turn that never recorded it, and
+    # the header glow learned about the wall from nobody. Notifications are
+    # sparse and arrive per bucket, so every bucket is folded: `codex_limits`
+    # merges them by limitId and a partial one cannot erase a window.
+    _snaps = res_raw.get("rate_limit_snapshots")
+    for _snap in (list(_snaps.values()) if isinstance(_snaps, dict)
+                  else [res_raw.get("rate_limits")]):
+        codex_limits.observe(_snap)
     status = str(res_raw.get("status") or codexrun.STATUS_FAILED)
     if status == codexrun.STATUS_FAILED:
-        if time.time() - t0 >= TURN_TIMEOUT:
+        # the CLI's own account of the failure. ⚠ NOT the stderr tail: for a
+        # usage limit the app-server says everything on the WIRE — a message,
+        # a machine tag, and a resetsAt on the notification beside it — and
+        # writes nothing to stderr at all, which is why the tail was empty and
+        # the old message could only name the notification it thought it saw.
+        detail = codexrun.error_text(res_raw.get("error"))
+        if not detail and time.time() - t0 >= TURN_TIMEOUT:
+            # only when the CLI gave no reason: a turn that ran to the ceiling
+            # AND came back with a real error is that error, not a timeout
             raise RuntimeError(f"turn killed: exceeded the {TURN_TIMEOUT}s "
                                "per-message ceiling")
         tail = " | ".join(turn.client.stderr_tail[-3:])[:300]
-        raise RuntimeError("turn failed: the codex app-server reported "
-                           f"turn/failed{' — ' + tail if tail else ''}")
+        blob = detail or tail
+        raise _ProviderTurnFailed(
+            "turn failed: " + (detail or "the codex app-server reported a "
+                               "failed turn")
+            + (f" — {tail}" if tail and detail else ""),
+            blob=blob,
+            reset_ts=codexrun.limit_reset_epoch(
+                res_raw.get("rate_limit_snapshots")))
     # "interrupted" is a COMPLETED turn (C.3) — same as claude's ⏸
     tu = res_raw.get("token_usage")
-    # The app-server pushes the same account standing the usage modal can read.
-    # Fold it into the shared cache so the header glow can warn before anyone
-    # opens the modal.  Notifications are sparse; codex_limits merges them.
-    codex_limits.observe(res_raw.get("rate_limits"))
     # The item lifecycle already journaled the conversation in real time.
     # Retain one fallback for a non-conforming/older app-server that emitted
     # deltas but no authoritative item/completed notification, then append a
@@ -5278,10 +5333,23 @@ def _gemini_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
                                "per-message ceiling")
         tail = " | ".join(turn.client.stderr_tail[-3:])[:300]
         detail = str(res_raw.get("stop_reason") or "")[:200]
-        raise RuntimeError(
+        # D-209: the same seam the codex leg raises through. Gemini already
+        # SURFACED its reason — a limit here stopped the agent loudly rather
+        # than silently — but it was never FROZEN either, so it got no reset
+        # time and never auto-resumed. Raising the shared type is the whole
+        # change on this lane; the freeze policy lives in one place.
+        # ⚠ UNMEASURED, and stated as such (report 2026-08-31): the codex half
+        # of D-209 was built from captured wire bytes, this half from the shape
+        # of the code. `stop_reason` carries whatever the gemini session put in
+        # its error, and no limit-shaped sample of it has been observed here —
+        # so it may or may not be prose `_looks_like_usage_limit` recognises.
+        # There is no reset time on this lane at all; a limit that IS
+        # recognised parks on the 5-minute probe floor.
+        raise _ProviderTurnFailed(
             "turn failed: the gemini session reported an error"
             + (f" — {detail}" if detail else "")
-            + (f" — {tail}" if tail else ""))
+            + (f" — {tail}" if tail else ""),
+            blob=detail or tail)
     tu = res_raw.get("token_usage")
     final_recs: list[dict[str, Any]] = []
     if jstate["thoughts"]:
@@ -7466,6 +7534,31 @@ def _run_one_turn(slug: str, nid: str,
         # the next turn's START (see turn_started below); this row is what
         # keeps the failure in the conversation, in chronological place
         _log_turn_error(slug, nid, str(e) or type(e).__name__)
+        # ── D-209: THE PROVIDER SEAM'S USAGE-LIMIT DOOR ────────────────────
+        # A codex/gemini turn that hit a usage limit ended at the two lines
+        # above and went no further: a `last_error` and a log row, the node
+        # left LIVE and unfrozen, no reset time, nothing to auto-resume. From
+        # one level up that is indistinguishable from an agent quietly working
+        # — and on the codex lane it did not even get this far, because a
+        # failed turn was read as a completed one (codexrun._TURN_STATUS).
+        #
+        # ⚠ THREE THINGS ABOUT THIS PLACEMENT, none of them cosmetic:
+        # 1. AFTER the durable row. That row is the record of the FAILURE and
+        #    must exist whatever becomes of the freeze; the freeze is a
+        #    consequence of it. (`freeze_provider_limit` also swallows its own
+        #    errors, so it cannot cost the row either way.)
+        # 2. The predicate reads `e.blob` — the PROVIDER's own words — never
+        #    `str(e)`, which is prose this module composed for the operator.
+        #    Same split as `_for_the_record` on the claude lane: text we wrote
+        #    must never be able to change what a failure classifies as.
+        # 3. Typed, not text-matched. Only a leg that got past `turn/start`
+        #    raises `_ProviderTurnFailed`, so replaying `text` is safe BY
+        #    CONSTRUCTION — a death before that carries its batch back to the
+        #    mailbox through the shared `finally` and must not also be replayed.
+        if isinstance(e, _ProviderTurnFailed) \
+                and _looks_like_usage_limit(e.blob):
+            freeze_provider_limit(slug, nid, e.blob, e.reset_ts,
+                                  replay=None if is_cmd else text)
         # …and the traceback to the backend log, but ONLY for a raiser the turn
         # machinery does not already explain. Every expected failure arrives as
         # a RuntimeError this function itself raised with a written message
@@ -9863,6 +9956,115 @@ def _ensure_frozen(n: NodeDoc) -> FrozenInfo:
         n["frozen"] = fresh
         return fresh
     return fz
+
+
+def _provider_limit_until(blob: str, reset_ts: float | None,
+                          now: float | None = None) -> tuple[float, str]:
+    """When does a NON-claude lane's usage limit lift? → `(epoch, reset_src)`.
+
+    Three sources, best first, and the caller always gets a number — the user's
+    2026-08-18 ruling that every usage freeze carries a timestamp is not a
+    claude-lane rule:
+
+      1. `reset_ts` — a MACHINE value the provider handed us out of band. On
+         the codex lane that is `resetsAt` on the exhausted rate-limit window,
+         and it is the only source that answered the measured specimen at all:
+         the message said "try again at Sep 6th, 2026 10:33 AM", which no
+         parser here reads, while the notification 298 ms earlier carried
+         `resets_at: 1788680032` — that instant exactly.
+      2. the error prose, through the SAME banded parser the claude lane uses.
+         ⚠ `subscription=False`: the host's usage readout describes the CLAUDE
+         subscription's lanes, and answering a CODEX wall from it is the
+         wrong-account parking bug (redteam 2026-08-18) with a new provider on
+         the front. Prose still answers, because it came from this error.
+      3. the blind `PROBE_FLOOR`, honestly short so capacity is re-asked soon.
+
+    ⚠ THE MACHINE VALUE IS BANDED LIKE ANY OTHER, against the same horizon a
+    prose `epoch` gets. It arrives over the same wire as everything else here
+    and a reshaped or absurd field must not be able to park an agent past the
+    longest real lane — the failure it would cause (an agent asleep for years)
+    is silent, which is the family of bug this whole change exists to end."""
+    now = time.time() if now is None else now
+    if reset_ts is not None and now < reset_ts <= now + limits.MAX_HORIZON:
+        return reset_ts, "provider"
+    ts, src = _limit_reset_ts(blob, subscription=False)
+    if ts is not None:
+        return ts, (src or "text")
+    return now + PROBE_FLOOR, "probe"
+
+
+def freeze_provider_limit(slug: str, nid: str, blob: str,
+                          reset_ts: float | None = None,
+                          replay: str | None = None) -> bool:
+    """A codex/gemini turn hit a usage limit: park the agent the way the claude
+    lane parks one (D-209). Returns True if a freeze was written.
+
+    ⚠ THIS IS NOT A SECOND FREEZE SYSTEM, and the distinction is the whole
+    design. It writes the ORDINARY freeze record — `_ensure_frozen`, `limit`,
+    `until_ts`, `until`, `reset_src`, `error`, `resume_texts` — which
+    `_resumable`, `auto_resume_ready`, `resume_frozen` and the desk's frozen
+    badge already act on and none of which needed a line changed. What it does
+    NOT reproduce is the claude lane's *policy* around that record, all of
+    which is claude-specific by construction:
+
+      · `accounts.record_limit` / the failover re-drive. There is ONE signed-in
+        ChatGPT account on this machine and no second codex lane to move to, so
+        marking a lane would record a fact nothing can act on and the re-drive
+        would spawn a turn into the same wall. Deliberately omitted, and said
+        out loud here rather than left looking like an oversight.
+      · the `api_fallback` billing window. That key buys ANTHROPIC inference;
+        it cannot serve a codex turn, so opening a window on a codex wall would
+        bill the org for capacity it did not obtain.
+      · the org-wide fable escalation — there is no fable tier on these lanes.
+      · `_spawn_reset_refresh`, which re-asks the claude host's usage readout.
+        It describes a different account's quota entirely.
+
+    ⚠ EVERY QUALIFIER IS WRITTEN ON EVERY PASS, never only when true — the same
+    rule, for the same reason, as the claude lane's `cause`/`pool` stamps.
+    `_ensure_frozen` hands back a SURVIVING record on a re-freeze, so a `cause`
+    left standing from an earlier auth failure would park a genuine capacity
+    freeze forever and a stale `untrusted` would suppress its auto-wake.
+
+    ⚠ AND IT MUST NEVER LEAVE `{error, no until, no resume_texts, nothing
+    True}`: ledger's pre-№41 migration re-tags that shape as a kiosk SPEND
+    freeze, after which ▶ skips the node for good. `limit = True` and a label
+    derived from the timestamp are what keep the record out of it."""
+    ts, src = _provider_limit_until(blob, reset_ts)
+    try:
+        with store.DOC_LOCK:
+            o2 = store.load_org(slug)
+            if nid not in o2.nodes:
+                return False
+            fz = _ensure_frozen(o2.node(nid))
+            fz["limit"] = True
+            # the CLI reported this itself — it is not the agent's own prose
+            # promoted by the clean-result gate, so the untrusted machinery
+            # does not apply and must not be inherited from an earlier freeze
+            fz.pop("untrusted", None)
+            o2.node(nid).pop("untrusted_limit_run", None)
+            fz.pop("cause", None)      # not an auth failure (D-156)
+            fz.pop("pool", None)       # this freeze never asked a resolver
+            fz.pop("on_fallback", None)  # no key lane serves these providers
+            fz["until_ts"] = ts
+            fz["until"] = (_reset_label(ts) if src != "probe"
+                           else "unknown — probing again in ~5 min")
+            fz["reset_src"] = src
+            fz["error"] = blob[:300]
+            if replay:
+                # replay only what the provider actually CONSUMED. Both legs
+                # reach this only after `turn/start` was accepted, which is
+                # where the batch was confirmed delivered — an unconsumed one
+                # folds back as MAIL in the shared `finally` and replaying it
+                # too would deliver it twice.
+                fz.setdefault("resume_texts", []).append(replay[-8000:])
+            store.save_org(o2)
+    except Exception as e:                                   # noqa: BLE001
+        # a freeze that cannot be written must not swallow the failure that
+        # caused it — the caller has already logged the durable row
+        print(f"[orgtree] {slug}/{nid}: provider limit freeze failed: {e!r}")
+        return False
+    notify(slug, nid, "frozen")
+    return True
 
 
 def hard_freeze(slug: str, kind: str, error: str) -> None:
