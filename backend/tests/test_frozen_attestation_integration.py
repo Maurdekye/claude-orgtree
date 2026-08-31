@@ -110,6 +110,13 @@ def good_bridge() -> dict[str, Any]:
     }
 
 
+def good_org_keys() -> dict[str, Any]:
+    # Frozen mode requires every sandboxed org to carry its own provider key
+    # (user ruling 2026-08-31). Presence only — an attestation report is
+    # logged, so it must never carry the key or a digest of it.
+    return {"orgs": {"acme": {"present": True}}}
+
+
 def build_fixture(root: Path) -> str:
     """A minimal but fully conforming approved installation on disk."""
     (root / "frozen").mkdir(parents=True)
@@ -174,6 +181,7 @@ def run(root: Path, digest: str, **changes: Any) \
                        "io.orgtree.frozen.config": digest}}},
         "launch_inventory": good_launch(),
         "bridge_inventory": good_bridge(),
+        "org_key_inventory": good_org_keys(),
     }
     values.update(changes)
     return frozen_install.verify_approved_install(
@@ -567,6 +575,44 @@ def container_paths_are_posix() -> None:
         "the gateway container would die on start")
 
 
+def frozen_org_without_a_key_is_caught() -> None:
+    """⚠ USER RULING 2026-08-31: a frozen org MUST carry its own API key.
+
+    The subscription branch is not a supported frozen credential, and the
+    account pool that gives host-mode turns their capacity failover cannot be
+    reached from the bridge's Anthropic passthrough at all. So a keyless org
+    is refused by name at startup rather than discovered as a 403 in the
+    middle of an agent's turn — which is how it was actually found.
+    """
+    planted({"ORG_PROVIDER_KEY"},
+            org_key_inventory={"orgs": {"acme": {"present": False}}})()
+
+
+def unresolvable_org_key_is_not_a_pass() -> None:
+    planted({"ORG_PROVIDER_KEY_UNAVAILABLE"},
+            org_key_inventory={"orgs": {"acme": {
+                "error": "forbidden legacy selector"}}})()
+
+
+def an_install_with_no_sandboxed_orgs_is_allowed() -> None:
+    def body(root: Path, digest: str) -> None:
+        # A fresh frozen install has no orgs yet; org creation enforces
+        # sandboxing separately. This must not be a startup refusal.
+        report = run(root, digest, org_key_inventory={"orgs": {}})
+        assert report.ok, frozen_install.format_report(report, verbose=True)
+    with_fixture(body)
+
+
+def the_key_never_appears_in_the_report() -> None:
+    def body(root: Path, digest: str) -> None:
+        secret = "sk-ant-do-not-log-me"
+        report = run(root, digest, org_key_inventory={
+            "orgs": {"acme": {"present": True, "key": secret}}})
+        blob = json.dumps(report.as_dict())
+        assert secret not in blob, "the provider key leaked into the report"
+    with_fixture(body)
+
+
 def pinned_files_have_no_crlf() -> None:
     """A CRLF checkout breaks the build AND the digests. Both, silently.
 
@@ -787,6 +833,14 @@ def main() -> None:
           frozen_boundary_source_is_pinned)
     check("the committed manifest declares the adjudicated boundary",
           committed_manifest_declares_the_adjudicated_boundary)
+    check("PLANTED: a frozen org with no API key is refused",
+          frozen_org_without_a_key_is_caught)
+    check("PLANTED: an unresolvable org key is not a pass",
+          unresolvable_org_key_is_not_a_pass)
+    check("an install with no sandboxed orgs is allowed",
+          an_install_with_no_sandboxed_orgs_is_allowed)
+    check("the provider key never reaches the report",
+          the_key_never_appears_in_the_report)
     check("no pinned frozen input carries CRLF", pinned_files_have_no_crlf)
     check("in-container paths are POSIX and resolve",
           container_paths_are_posix)

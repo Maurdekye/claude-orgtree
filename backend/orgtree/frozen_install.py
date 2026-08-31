@@ -535,6 +535,85 @@ def _bridge_inventory(*, create_key: bool = False) -> dict[str, Any]:
     return out
 
 
+def _org_key_inventory() -> dict[str, Any]:
+    """Which sandboxed orgs have the explicit provider key frozen mode needs.
+
+    Records only presence — never the key, and never a digest of it, because
+    an attestation report is written to logs and read over shoulders.
+    """
+
+    from . import sandbox, store
+    from .ledger import LedgerError
+
+    rows: dict[str, Any] = {}
+    for row in store.list_orgs():
+        slug = str(row.get("slug") or "")
+        if not slug:
+            continue
+        try:
+            org = store.load_org(slug)
+        except (LedgerError, OSError) as e:
+            rows[slug] = {"error": f"could not load org: {e}"}
+            continue
+        if not sandbox.is_sandboxed(org):
+            continue
+        try:
+            # Exactly the value api.anthropic_proxy would attach as x-api-key.
+            # Checking the real thing, not a stand-in for it: reading
+            # org.d["api_key"] alone would miss the kiosk-level key and the
+            # install default, and would pass an org that the proxy will
+            # nonetheless send to the subscription branch.
+            rows[slug] = {"present": bool(
+                sandbox.anthropic_proxy_api_key(org).strip())}
+        except deployment.DeploymentConfigError as e:
+            rows[slug] = {"error": str(e)}
+    return {"orgs": rows}
+
+
+def _verify_org_provider_keys(rec: _Recorder,
+                              inventory: Mapping[str, Any] | None) -> None:
+    """Frozen orgs must carry their own provider key (user ruling 2026-08-31).
+
+    ⚠ THIS IS A CAPACITY CONTRACT, NOT A PREFERENCE. A sandboxed org's traffic
+    leaves through ``api.anthropic_proxy``, which authenticates with an
+    explicit per-org key or else falls back to the host subscription read from
+    a fixed path. The multi-account pool that gives host-mode turns their
+    capacity failover is unreachable from that handler — an account-pool
+    credential is an OAuth token needing ``Authorization: Bearer`` and cannot
+    be attached through the ``x-api-key`` branch at all.
+
+    The ruling resolves that by requiring the key. The subscription branch is
+    not a supported frozen configuration, so an org without a key is refused
+    HERE, by name, rather than discovered as a 403 in the middle of an agent's
+    turn — which is how it was actually found.
+    """
+
+    obs = dict(inventory) if inventory is not None else _org_key_inventory()
+    raw = obs.get("orgs")
+    rows = raw if isinstance(raw, dict) else {}
+    if not rows:
+        # No sandboxed orgs is a legitimate state: a fresh frozen install has
+        # none yet, and org creation enforces sandboxing separately.
+        rec.add("ORG_PROVIDER_KEY", "sandboxed orgs", True,
+                "every sandboxed org carries its own provider key",
+                "no sandboxed orgs yet")
+        return
+    for slug in sorted(rows):
+        row = rows[slug] if isinstance(rows[slug], dict) else {}
+        if row.get("error"):
+            rec.add("ORG_PROVIDER_KEY_UNAVAILABLE", slug, False,
+                    "a resolvable provider key", "error", str(row["error"]))
+            continue
+        rec.add("ORG_PROVIDER_KEY", slug, row.get("present") is True,
+                "an explicit per-org API key", "missing"
+                if not row.get("present") else "present",
+                "frozen mode requires every org to carry its own provider "
+                "key; the host subscription is not a supported frozen "
+                "credential and there is no account pool behind it. Set this "
+                "org's api_key (org, kiosk, or install default) before "
+                "starting a frozen install.")
+
+
 def _verify_bridge(manifest: Mapping[str, Any], rec: _Recorder,
                    inventory: Mapping[str, Any] | None) -> None:
     """Attest the rotatable per-org sandbox bridge credential state.
@@ -988,6 +1067,7 @@ def verify_approved_install(
         container_inventory: Mapping[str, Mapping[str, Any]] | None = None,
         launch_inventory: Mapping[str, Any] | None = None,
         bridge_inventory: Mapping[str, Any] | None = None,
+        org_key_inventory: Mapping[str, Any] | None = None,
         include_containers: bool = True) -> AttestationReport:
     """Return every approved-configuration check without mutating the host."""
 
@@ -1012,6 +1092,7 @@ def verify_approved_install(
     if include_containers:
         _verify_containers(manifest, config_sha256, rec, container_inventory)
     _verify_bridge(manifest, rec, bridge_inventory)
+    _verify_org_provider_keys(rec, org_key_inventory)
     _verify_launch(rec, launch_inventory)
     return AttestationReport(selected.name, config_sha256, tuple(rec.checks))
 
@@ -1047,7 +1128,8 @@ def require_approved_install(*, policy: deployment.DeploymentPolicy) -> None:
     }
     report = verify_approved_install(
         policy=policy, include_containers=True, launch_inventory=launch,
-        bridge_inventory=_bridge_inventory(create_key=True))
+        bridge_inventory=_bridge_inventory(create_key=True),
+        org_key_inventory=_org_key_inventory())
     if not report.ok:
         first = report.failures[0]
         raise deployment.DeploymentConfigError(
