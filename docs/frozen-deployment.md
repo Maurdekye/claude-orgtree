@@ -271,10 +271,17 @@ pinned, committed configuration — not just that the policy selector says
 | launch/listener contract | the launch command actually used, the active `ORGTREE_DEPLOYMENT_PROFILE`, and — standalone only — the real listener table | `DEPLOYMENT_PROFILE`, `LAUNCH_PATH_SUPPORTED`, `LAUNCH_PROFILE_ACTIVE`, `ADMIN_LISTENER_LOOPBACK`, `PUBLIC_LISTENER_DISABLED`, `ADMIN_EXPOSURE_UNSET`, `LISTENER_TABLE_OBSERVED`, `NO_WILDCARD_LISTENER`, `LISTENER_PORT_SET`, `BRIDGE_LISTENER_HOST_ONLY` |
 
 Image tags are content-addressed, not hand-written:
-`<repository>:frozen-<first 16 hex of the manifest SHA-256>` — at this
-checkpoint's manifest (digest `39f78098…`), that is
-`orgtree-sandbox:frozen-39f7809836aa8da6` and
-`orgtree-mailhub:frozen-39f7809836aa8da6`. Every approved image also carries
+`<repository>:frozen-<first 16 hex of the manifest SHA-256>`. Do not copy a
+tag out of this document — the digest moves whenever any pinned file changes,
+so a tag written down here is a tag that will eventually be wrong. Ask the
+install what its tags are:
+
+```
+ORGTREE_DEPLOYMENT_PROFILE=frozen python tools/verify_frozen_install.py --build-commands
+```
+
+That prints the exact `docker build` for each approved image, tag included.
+Every approved image also carries
 `io.orgtree.frozen.config=<full manifest SHA-256>`, so changing the manifest
 changes the required tag and every previously-approved image tag stops being
 approved automatically — there is no separate "re-approve the old images"
