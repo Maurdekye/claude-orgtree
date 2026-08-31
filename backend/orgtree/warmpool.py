@@ -18,9 +18,10 @@ the user's, verbatim where it matters:
   · a prompt change respawns the process IMMEDIATELY, in the background —
     never "mark dirty and fix it when a turn comes". The one exception: an
     agent MID-TURN is never disturbed; its re-warm happens at turn end.
-  · no waiting for the MCP handshake anywhere (user ruling 2026-08-30): in
-    steady state the handshake completed long before any message arrives, and
-    a wait would only add latency to a brand-new hire's first turn.
+  · orgtree adds no explicit MCP-handshake barrier (user ruling 2026-08-30).
+    The CLI's `alwaysLoad` setting can nevertheless hold a cold or too-young
+    process's turn-1 prompt for its connection timeout; the production audit
+    measured that wait and the retain/revert policy is still open.
 
 THE WARM PROCESS IS A CACHE, NEVER THE SOURCE OF TRUTH. Every caller falls
 back to today's spawn-per-turn when the pool has nothing valid, and the agent
@@ -29,11 +30,12 @@ hash no longer matches is killed, not served — a stale system prompt would
 mean a retool or grant silently not applying.
 
 INVALIDATION IS A HASH, NOT AN EVENT LIST (coordinator ruling). We hash the
-rendered identity prompt, the spawn argv, the resolved credential identity and
-the explicit per-node env override — the full set of inputs the process bakes
-in at spawn that may change at runtime. An enumerated list of invalidating
-events is exactly what goes stale when someone adds a surface; the audit found
-surfaces nobody had enumerated.
+rendered identity prompt (including native session-start instruction files),
+the spawn argv, the resolved credential identity and the explicit per-node env
+override — the full set of inputs the process bakes in at spawn that may change
+at runtime. An enumerated list of invalidating events is exactly what goes
+stale when someone adds a surface; the audit found surfaces nobody had
+enumerated.
 
 KILL SWITCH (cache-misses' A/B requirement): ORGTREE_WARM env sets the
 default — which is ON (user ruling 2026-08-30). The file
@@ -54,6 +56,7 @@ import hashlib
 import json
 import os
 import queue
+import re
 import subprocess
 import threading
 import time
@@ -63,9 +66,9 @@ from . import store
 
 # ── knobs ──────────────────────────────────────────────────────────────────
 # how often the keeper re-checks every live agent's hash even with no poke.
-# File-borne surfaces (a granted CLAUDE.md edited, the MCP registry changed)
-# never call store.save_org, so polling is what catches them; org-borne
-# changes arrive faster via the save-hook poke.
+# File-borne surfaces (a granted or native CLAUDE.md edited, the MCP registry
+# changed) never call store.save_org, so polling is what catches them;
+# org-borne changes arrive faster via the save-hook poke.
 WARM_POLL = float(os.environ.get("ORGTREE_WARM_POLL", "20"))
 # cascade pacing: one team_charter edit can dirty a whole subtree at once, and
 # this machine already has port contention — at most this many spawns run
@@ -529,6 +532,126 @@ def _argv_normalized(cmd: list[str]) -> list[str]:
     return out
 
 
+_STARTUP_IMPORT_RE = re.compile(r"(?<![\w@])@([^\s`\"'<>]+)")
+_RULE_PATHS_RE = re.compile(r"(?m)^paths\s*:")
+
+
+def _memory_prefix(data: bytes) -> bytes:
+    """The exact documented auto-memory startup ceiling: first 25 KiB or
+    first 200 lines, whichever comes first."""
+    data = data[:25 * 1024]
+    return b"".join(data.splitlines(keepends=True)[:200])
+
+
+def _startup_rule(data: bytes) -> bool:
+    """A path-scoped rule is lazy, not a session-start input."""
+    text = data.decode("utf-8", "replace")
+    if not text.startswith("---"):
+        return True
+    end = text.find("\n---", 3)
+    frontmatter = text[3:end if end >= 0 else len(text)]
+    return _RULE_PATHS_RE.search(frontmatter) is None
+
+
+def native_startup_context_digest(org: Any, nid: str) -> str:
+    """Digest Claude's file-borne, once-per-session instruction inputs.
+
+    Claude Code loads these before turn 1 and holds them in the process. A
+    warm process therefore becomes correctness-stale when one changes unless
+    the file participates in the identity hash. This deliberately excludes
+    global skills: the pinned CLI watches skill directories live, so hashing
+    them would manufacture respawns rather than prevent stale instructions.
+
+    The manifest contains paths and content hashes, never raw instruction
+    text. CLAUDE.md imports are followed to the CLI's documented five-hop
+    ceiling; auto memory is hashed only through the prefix the CLI loads.
+    """
+    from . import supervisor as sup                 # noqa: PLC0415
+
+    cwd = os.path.abspath(sup.scratch_dir(org.d["slug"], nid))
+    home = os.path.abspath(os.path.expanduser("~"))
+    manifest: dict[str, str] = {}
+    seen: set[str] = set()
+
+    def add(path: str, depth: int = 0, *, memory: bool = False,
+            rule: bool = False) -> None:
+        path = os.path.abspath(os.path.expanduser(path))
+        key = os.path.normcase(os.path.realpath(path))
+        if key in seen:
+            return
+        try:
+            with open(path, "rb") as f:
+                data = f.read()
+        except (OSError, ValueError):
+            return
+        if rule and not _startup_rule(data):
+            return
+        seen.add(key)
+        if memory:
+            data = _memory_prefix(data)
+        label = os.path.normcase(path)
+        manifest[label] = hashlib.sha256(data).hexdigest()
+        if depth >= 5:
+            return
+        text = data.decode("utf-8", "replace")
+        for match in _STARTUP_IMPORT_RE.finditer(text):
+            token = match.group(1).rstrip(".,;:!?)]}")
+            if not token:
+                continue
+            imported = (os.path.expanduser(token) if token.startswith("~")
+                        else token if os.path.isabs(token)
+                        else os.path.join(os.path.dirname(path), token))
+            add(imported, depth + 1)
+
+    # Managed policy, then user instructions.
+    if os.name == "nt":
+        add(os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"),
+                         "ClaudeCode", "CLAUDE.md"))
+    else:
+        add("/etc/claude-code/CLAUDE.md")
+        add("/Library/Application Support/ClaudeCode/CLAUDE.md")
+    add(os.path.join(home, ".claude", "CLAUDE.md"))
+
+    # Project instructions: root -> cwd, then the project-local .claude
+    # form. The cwd is outside a git tree for normal orgtree seats, so it is
+    # the project root; walking parents is still required by Claude Code.
+    chain: list[str] = []
+    at = cwd
+    while True:
+        chain.append(at)
+        parent = os.path.dirname(at)
+        if parent == at:
+            break
+        at = parent
+    for directory in reversed(chain):
+        add(os.path.join(directory, "CLAUDE.md"))
+        add(os.path.join(directory, "CLAUDE.local.md"))
+    add(os.path.join(cwd, ".claude", "CLAUDE.md"))
+
+    # Unscoped rules load at session start; path-scoped rules load lazily when
+    # a matching file is read and therefore must not dirty an idle process.
+    for rules_root in (os.path.join(home, ".claude", "rules"),
+                       os.path.join(cwd, ".claude", "rules")):
+        try:
+            for root, dirs, files in os.walk(rules_root):
+                dirs.sort()
+                for name in sorted(files):
+                    if name.endswith(".md"):
+                        add(os.path.join(root, name), rule=True)
+        except OSError:
+            pass
+
+    # Auto memory is another documented session-start input. Topic files are
+    # lazy; only MEMORY.md's bounded prefix belongs here.
+    memory = os.path.join(home, ".claude", "projects",
+                          sup._cli_project_dir(cwd), "memory", "MEMORY.md")
+    add(memory, memory=True)
+
+    encoded = json.dumps(manifest, sort_keys=True, separators=(",", ":"),
+                         ensure_ascii=False).encode("utf-8", "replace")
+    return hashlib.sha256(encoded).hexdigest()
+
+
 def _part(b: bytes) -> str:
     return hashlib.sha256(b).hexdigest()[:12]
 
@@ -559,8 +682,12 @@ def identity_snapshot(org: Any, nid: str, *,
         env = sup.spawn_env(org,
                             tier=str(org.node(nid).get("model") or ""),
                             nid=nid)
+    native = native_startup_context_digest(org, nid)
     raw = {
-        "prompt": prompt.encode("utf-8", "replace"),
+        # Keep the fixed four-component vocabulary cache-misses approved:
+        # native instructions are prompt input, not a fifth identity class.
+        "prompt": (prompt.encode("utf-8", "replace")
+                   + b"\x00native-startup\x00" + native.encode("ascii")),
         "argv": json.dumps(_argv_normalized(cmd), ensure_ascii=False)
                     .encode("utf-8", "replace"),
         "cred": sup.identity_in_env(env).encode("utf-8", "replace"),

@@ -1966,6 +1966,18 @@ notices and mail for them because the `/` must be the first character the CLI
 sees. This entry does NOT touch the `org_visibility` default (which is `full`);
 that is a standing user ruling and remains the user's call.
 
+Audit amendment (2026-08-30): capability guidance is stable identity; whether
+the capability is useful *right now* is live state and must not gate the text.
+Five child-count branches survived the original split: a manager's own set
+team charter; inspect, retire, and cheap-compact report guidance; and
+archived-agent guidance. A real ledger 0→1→2→1→0 report cycle moved the
+parent's prompt/hash at the first hire and last retirement while argv stayed
+fixed. All five now render before the first hire (the team charter only when
+its value is set). Actual role/team-charter content changes still invalidate
+the parent's prompt; report count does not. `test_report_guidance_identity.py`
+pins the full ledger cycle, exact component classification, restoration, and
+value-replacement mutants.
+
 Load-bearing: ① the block is prepended AFTER the `prelude` construction and is
 never folded into it — `prelude` being empty is D-175's phantom-drop predicate,
 and a block that is never empty would silently disable that drop. ② It is
@@ -2120,6 +2132,61 @@ no-op rename killing a process is a death outside the list) — and must
 kill it, or the parked cwd blocks the scratch move on Windows. ⑤ A failed
 spawn kills the child it started, or keeper retries leak whole CLI+MCP
 trees while every correctness test stays green.
+
+### D-206 · cache breaks are observed before they are guessed; node trials are spawn identity
+
+Decision (coordinator under the user's maximum-priority cache order,
+2026-08-30): every unsandboxed Claude spawn carries
+`CLAUDE_CODE_IS_COWORK=1`, enabling the pinned CLI's named prompt-cache-break
+diagnoser fleet-wide. The flip is one self-contained, revertible commit. Its
+non-diagnostic behaviour change is written where skills are authored:
+`` !`command` `` inline-shell preprocessing is disabled under this product
+flag. All skill roots loaded on this machine were searched before enablement
+and contained zero users of that syntax.
+
+Observation belongs to orgtree, not to an assumed CLI file. The CLI writes
+`%TEMP%\claude\cache-break-state-${session_id}.json`, but the deployed
+stream-json runs leave almost every such file exactly `{}`; useful state
+surviving a respawn is not established. Orgtree therefore journals ONLY the
+exact `[PROMPT CACHE BREAK]` warning sentinel from BOTH stderr owners: the
+parked process pump and the cold/non-pooled success read. General stderr stays
+private. Rows carry collection time (not request time), org/node/session/pid,
+distinct warm/cold source, the bounded raw line and its original length; the
+consumer joins session/order plus the warning's call/read/create tuple because
+the CLI warning has no request ID.
+
+Identity-change attribution must be independently checkable. Dirty and exit
+rows carry previous/next combined hashes and previous/next digest maps for the
+fixed `prompt`, `argv`, `cred`, `envov` vocabulary; `changed_inputs` is exactly
+the digest difference, never an uncheckable label. Keeper-, claim- and
+boundary-time changes use the same record and include session/pid. The hash at
+admission uses the ACTUAL already-resolved spawn argv, credential environment
+and override; resolving the account again can select another lane and invent a
+process change that never happened.
+
+Per-node experiments use `<ORGTREE_DATA>/env-overrides.json`, keyed by
+`<slug>/<nid>`. Only explicit entries apply; malformed input reads empty and
+credential variable names are refused. The override is itself in warm identity
+so an edit re-warms only the named process. Ordinary `spawn_env` additions are
+NOT identity: parked processes retain the old environment until a restart, so
+fleet env flips must ride a deploy restart or the trial silently does nothing.
+
+Audit amendment, same boundary: identity includes native file-borne startup
+instructions that Claude Code holds in the process — working-directory-chain
+`CLAUDE.md`/`CLAUDE.local.md`, project `.claude/CLAUDE.md`, unscoped rules,
+imports and the loaded auto-memory prefix. It deliberately excludes global
+skills (watched live) and lazy path-scoped rules. MCP config object keys are
+serialized canonically: key order is not semantic identity; array order and
+server values still are. This repairs one correctness miss (stale native
+instructions indefinitely) and one false positive (formatter-only respawn).
+Set-like directory grants and external-response handles are canonicalized too:
+reversing an unchanged set no longer moves prompt/argv/hash, while a real mode,
+path, or handle value change still does. Frequency and savings are not measured.
+
+Bounds: D-206 changes no API request surface and, by itself, claims no burn
+ratio improvement. It makes the next measurement falsifiable. A keep-warm or
+fork-ping treatment remains off until cache-misses can classify successful
+post-deploy openings and approve a contemporaneous randomized gate.
 
 ### D-192 · the org-state block is delivered to the agent and hidden from the reader
 Ruling (user, 2026-08-29): "i really do not think the org structure needs to be

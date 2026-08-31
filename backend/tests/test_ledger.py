@@ -206,7 +206,7 @@ def main():
     org5.hire(USER, None, "opus", 20, "lead")
     check("top-level default = org dirs (rw)", lambda: (
         None if [d["path"] for d in org5.nodes["lead"]["scope"]["add_dirs"]]
-        == ["E:/work", "E:/other"]
+        == sorted(["E:/work", "E:/other"])
         and all(d["mode"] == "rw" for d in org5.nodes["lead"]["scope"]["add_dirs"])
         else (_ for _ in ()).throw(AssertionError)))
     org5.hire("lead", "lead", "haiku", 2, "worker", **spec(add_dirs=["E:/work"]))

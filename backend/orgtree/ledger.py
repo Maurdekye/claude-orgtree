@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import re
 import time as _time
 import uuid
@@ -204,7 +205,7 @@ def expand_mcp(granted: Iterable[str] | None, ceiling_mcp: Iterable[str] | None,
 
 
 def norm_dirs(dirs: Iterable[Any] | None) -> list[DirGrant]:
-    """Normalize dir grants to [{path, mode}] — strings default to read/write."""
+    """Normalize a set-like path→mode grant map into canonical list order."""
     out: list[DirGrant] = []
     seen: set[str] = set()
     for d in dirs or []:
@@ -216,7 +217,13 @@ def norm_dirs(dirs: Iterable[Any] | None) -> list[DirGrant]:
             continue
         seen.add(path)
         out.append({"path": path, "mode": mode})
-    return out
+    # Access semantics do not depend on caller list order, but identity_prompt
+    # and --add-dir both consume this list. A formatter/retool that merely
+    # reversed it therefore killed a valid warm process. Preserve the path
+    # spelling while ordering by its platform-semantic form; mode remains part
+    # of identity, and the first exact-path duplicate still wins as before.
+    return sorted(out, key=lambda d: (
+        os.path.normcase(os.path.normpath(d["path"])), d["mode"], d["path"]))
 
 
 class LedgerError(ValueError):
@@ -295,7 +302,7 @@ def stamp_handles(n: Any, handles: list[str]) -> None:
 
 
 def norm_extern_handles(raw: Iterable[Any] | None, *, where: str) -> list[str]:
-    """Validate + dedupe @mcp:<peer> response handles, preserving order.
+    """Validate + dedupe a set of @mcp:<peer> response handles canonically.
 
     Shared by hire() and set_scope() so the two grant paths cannot drift: a
     handle is a per-address post_mail bypass, and a rule enforced at hire but
@@ -317,7 +324,9 @@ def norm_extern_handles(raw: Iterable[Any] | None, *, where: str) -> list[str]:
     if len(handles) > MAX_EXTERN_HANDLES:
         raise LedgerError(
             f"at most {MAX_EXTERN_HANDLES} external_handles per {where}")
-    return handles
+    # Handle order grants no mail authority and controls no routing. It does
+    # render into identity_prompt, so retain a stable set representation.
+    return sorted(handles)
 
 
 def slugify(name: str) -> str:
@@ -3848,10 +3857,11 @@ class Org:
         # rewriting its own instructions, which is the one thing the hierarchy
         # exists to prevent. `team_charter` is the standing instruction IT
         # issues to ITS subtree; that is its own management to do, and the
-        # ledger's own cascade already guarantees it cannot leak upward
-        # (identity_prompt walks `ancestors`, which starts at the PARENT — a
-        # node's own team charter never appears in its own prompt, so this
-        # cannot become self-direction by the back door). Pinned in test_asks.
+        # ledger's own cascade already guarantees it cannot leak upward.
+        # identity_prompt labels the node's own value as the charter it GIVES
+        # its team, distinct from the superior-authored role charter that binds
+        # the node; descendants receive it through the ancestor cascade. Pinned
+        # in test_asks and test_report_guidance_identity.
         self_edit = (actor == nid and actor_kind(actor) not in ("user", "system"))
         if self_edit:
             if charter is not None:
