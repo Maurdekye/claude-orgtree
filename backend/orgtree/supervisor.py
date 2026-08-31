@@ -4925,9 +4925,8 @@ def _codex_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
         with _state_lock:
             st["codex_turn"] = turn   # the ⏸ escape hatch (interrupt_turn)
             st["responding"] = True   # mail now steers instead of queueing
-            st["proc_live"] = True
-            st["proc_relaunch"] = False
-            st["proc_relaunch_reason"] = None
+        warmpool._set_proc_lifecycle(slug, nid, live=True, owner=turn,
+                                     adopt=True)
 
         def _steer_pump() -> None:
             while not stop.wait(CODEX_STEER_POLL):
@@ -4959,9 +4958,7 @@ def _codex_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
         with _state_lock:
             st.pop("codex_turn", None)
             st["responding"] = False
-            st["proc_live"] = False
-            st["proc_relaunch"] = False
-            st["proc_relaunch_reason"] = None
+        warmpool._set_proc_lifecycle(slug, nid, live=False, owner=turn)
     with dlock:
         draft_timer = dstate.get("timer")
         if draft_timer:
@@ -5309,9 +5306,8 @@ def _gemini_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
         with _state_lock:
             st["gemini_turn"] = turn   # the ⏸ escape hatch (interrupt_turn)
             st["responding"] = True    # mail now steers instead of queueing
-            st["proc_live"] = True
-            st["proc_relaunch"] = False
-            st["proc_relaunch_reason"] = None
+        warmpool._set_proc_lifecycle(slug, nid, live=True, owner=turn,
+                                     adopt=True)
 
         def _steer_pump() -> None:
             while not stop.wait(CODEX_STEER_POLL):
@@ -5340,9 +5336,7 @@ def _gemini_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
         with _state_lock:
             st.pop("gemini_turn", None)
             st["responding"] = False
-            st["proc_live"] = False
-            st["proc_relaunch"] = False
-            st["proc_relaunch_reason"] = None
+        warmpool._set_proc_lifecycle(slug, nid, live=False, owner=turn)
     with dlock:
         draft_timer = dstate.get("timer")
         if draft_timer:
@@ -5988,9 +5982,8 @@ def _run_one_turn(slug: str, nid: str,
             with _state_lock:
                 st["proc"] = proc         # for the user-interrupt escape hatch
                 st["responding"] = True
-                st["proc_live"] = True
-                st["proc_relaunch"] = False
-                st["proc_relaunch_reason"] = None
+            warmpool._set_proc_lifecycle(slug, nid, live=True,
+                                         owner=wp_turn or proc, adopt=True)
             try:
                 # (the pyright ignores below: stdin/stdout/stderr are PIPE ⇒
                 # non-None, which typeshed's Popen cannot express)
@@ -6023,6 +6016,8 @@ def _run_one_turn(slug: str, nid: str,
                     _leash(proc)
                     with _state_lock:
                         st["proc"] = proc
+                    warmpool._set_proc_lifecycle(slug, nid, live=True,
+                                                 owner=proc, adopt=True)
                     warmpool.journal_admit(
                         slug, nid, sid, "cold", "claim-died",
                         turn_hash or "", None, 0, warm_lbl,
@@ -6691,10 +6686,6 @@ def _run_one_turn(slug: str, nid: str,
                 dog_stop.set()
                 with _state_lock:
                     st["proc"] = None
-                    if not parked:
-                        st["proc_live"] = False
-                        st["proc_relaunch"] = False
-                        st["proc_relaunch_reason"] = None
                     st["responding"] = False
                     st["tasks"] = 0     # a dead process runs nothing
                     st["bg_tasks"] = 0  # …its background children included
@@ -6702,6 +6693,9 @@ def _run_one_turn(slug: str, nid: str,
                     st["steer"] = []
                     if leftover:
                         st["queue"][0:0] = leftover
+                if not parked:
+                    warmpool._set_proc_lifecycle(
+                        slug, nid, live=False, owner=wp_turn or proc)
                 if leftover:
                     _steer_fold_log(slug, nid, len(leftover), "turn exit")
                 # ⛔ FAIL LOUD (user ruling 2026-08-20). The process is gone.

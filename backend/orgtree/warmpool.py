@@ -810,8 +810,21 @@ def boundary_check(slug: str, nid: str,
         next_hash, next_components = identity_snapshot(org, nid)
         if next_hash == want_hash:
             return True, label, ""
+        fields = identity_change_fields(
+            want_hash, wp.ident_components if wp is not None else None,
+            next_hash, next_components)
         if wp is not None:
             _record_identity_change(wp, next_hash, next_components)
+        # The boundary can beat the save-hook keeper. Delivery may continue
+        # on this dirtied process, but it is already known unable to park, so
+        # publish the scheduled replacement for the remainder of the busy
+        # chain now. `owner` prevents a late boundary from tagging a newer
+        # process generation for the same seat.
+        _set_proc_lifecycle(
+            slug, nid, live=True, relaunch=True,
+            reason=_relaunch_text("identity-changed",
+                                  fields.get("changed_inputs")),
+            owner=wp)
         return False, label, "identity-changed"
     except Exception:                               # noqa: BLE001
         return False, label, "stdin-closed"
@@ -878,13 +891,34 @@ def _relaunch_text(reason: str,
 
 def _set_proc_lifecycle(slug: str, nid: str, *, live: bool,
                         relaunch: bool = False,
-                        reason: str | None = None) -> None:
-    """Mirror the OS-process fact into supervisor state for the tree API."""
+                        reason: str | None = None,
+                        owner: Any | None = None,
+                        adopt: bool = False) -> None:
+    """Mirror one concrete process generation into supervisor/UI state.
+
+    ``owner`` is the WarmProc/Popen/provider-turn object whose liveness this
+    transition describes. A late EOF or kill from an older generation may
+    journal its own exit, but must not clear a newer generation's live flag.
+    ``adopt`` is reserved for the sites that actually install a newly current
+    process (claim/spawn/park). Observations from an older owner cannot replace
+    the token merely because they arrived later. Calls without an owner retain
+    the current token (the cold boundary path, where supervisor owns it).
+    """
     try:
         from . import supervisor as sup             # noqa: PLC0415
         ent = sup.state(slug, nid)
         changed = False
         with sup._state_lock:
+            current_owner = ent.get("proc_lifecycle_owner")
+            if owner is not None:
+                if not live and current_owner is not owner:
+                    return
+                if live and not adopt and current_owner is not None \
+                        and current_owner is not owner \
+                        and ent.get("proc_live"):
+                    # A stale observation cannot mark OR clear the newer live
+                    # process. Only an installing site may adopt a new owner.
+                    return
             nxt = (bool(live), bool(relaunch), reason if relaunch else None)
             cur = (bool(ent.get("proc_live")), bool(ent.get("proc_relaunch")),
                    ent.get("proc_relaunch_reason"))
@@ -892,6 +926,10 @@ def _set_proc_lifecycle(slug: str, nid: str, *, live: bool,
                 ent["proc_live"], ent["proc_relaunch"], \
                     ent["proc_relaunch_reason"] = nxt
                 changed = True
+            if live and owner is not None:
+                ent["proc_lifecycle_owner"] = owner
+            elif not live:
+                ent.pop("proc_lifecycle_owner", None)
         if changed:
             sup.notify(slug, nid, "proc_lifecycle")
     except Exception:                               # noqa: BLE001
@@ -1022,7 +1060,7 @@ def _on_proc_exit(wp: WarmProc) -> None:
     # discard; the guard covers it too.)
     if was_tracked or wp.claimed:
         _journal_exit_once(wp)
-        _set_proc_lifecycle(wp.slug, wp.nid, live=False)
+        _set_proc_lifecycle(wp.slug, wp.nid, live=False, owner=wp)
 
 
 def _spawn_for(org: Any, nid: str, why: str) -> WarmProc | None:
@@ -1070,7 +1108,6 @@ def _spawn_for(org: Any, nid: str, why: str) -> WarmProc | None:
             raise
         _journal_proc("respawn-done", slug, nid, why, ih,
                       elapsed_ms=int((time.time() - t0) * 1000))
-        _set_proc_lifecycle(slug, nid, live=True)
         return wp
     except Exception as e:                          # noqa: BLE001
         # a failed pre-warm is a non-event for the agent: the next turn just
@@ -1094,7 +1131,7 @@ def kill_node(slug: str, nid: str, reason: str) -> None:
         del _pool[(slug, nid)]
     _kill_proc(wp)
     _set_proc_warm(slug, nid, False)
-    _set_proc_lifecycle(slug, nid, live=False)
+    _set_proc_lifecycle(slug, nid, live=False, owner=wp)
     _journal_exit_once(wp, reason)
 
 
@@ -1153,14 +1190,14 @@ def claim(slug: str, nid: str,
             wp.attach()
             _serving[(slug, nid)] = wp
             _set_proc_warm(slug, nid, False)   # claimed = no longer parked
-            _set_proc_lifecycle(slug, nid, live=True)
+            _set_proc_lifecycle(slug, nid, live=True, owner=wp, adopt=True)
             return wp, "warm-hit"
     # (outside the lock) the mismatched/dead one dies now
     if was_alive:
         _record_identity_change(wp, want_hash, want_components)
     _kill_proc(wp)
     _set_proc_warm(slug, nid, False)
-    _set_proc_lifecycle(slug, nid, live=False)
+    _set_proc_lifecycle(slug, nid, live=False, owner=wp)
     _journal_exit_once(wp, "identity-changed" if was_alive else "crash")
     return None, ("identity-changed" if was_alive else "crashed")
 
@@ -1193,7 +1230,7 @@ def park_back(wp: WarmProc, cost_base: float, out_base: int = 0) -> bool:
         _kill_proc(other)
         _journal_exit_once(other, "superseded")
     _set_proc_warm(wp.slug, wp.nid, True)
-    _set_proc_lifecycle(wp.slug, wp.nid, live=True)
+    _set_proc_lifecycle(wp.slug, wp.nid, live=True, owner=wp, adopt=True)
     _journal_proc("park", wp.slug, wp.nid, "turn-end", wp.hash)
     return True
 
@@ -1208,7 +1245,7 @@ def discard(wp: WarmProc, reason: str) -> None:
             del _serving[(wp.slug, wp.nid)]
     _kill_proc(wp)
     _set_proc_warm(wp.slug, wp.nid, False)
-    _set_proc_lifecycle(wp.slug, wp.nid, live=False)
+    _set_proc_lifecycle(wp.slug, wp.nid, live=False, owner=wp)
     _journal_exit_once(wp, reason)
 
 
@@ -1284,7 +1321,8 @@ def _keeper_pass() -> None:
                     if not ok:
                         _set_proc_lifecycle(
                             slug, nid, live=True, relaunch=True,
-                            reason=_relaunch_text(_why or "not-eligible"))
+                            reason=_relaunch_text(_why or "not-eligible"),
+                            owner=serving)
                     else:
                         try:
                             h, parts = identity_snapshot(org, nid)
@@ -1296,7 +1334,15 @@ def _keeper_pass() -> None:
                                     slug, nid, live=True, relaunch=True,
                                     reason=_relaunch_text(
                                         "identity-changed",
-                                        fields.get("changed_inputs")))
+                                        fields.get("changed_inputs")),
+                                    owner=serving)
+                            else:
+                                # A later pass is an observation too. If this
+                                # exact serving generation is current again
+                                # (for example a transient stub/probe result),
+                                # clear its earlier scheduled-relaunch flag.
+                                _set_proc_lifecycle(
+                                    slug, nid, live=True, owner=serving)
                         except Exception:           # noqa: BLE001
                             pass
                 continue
@@ -1353,6 +1399,8 @@ def _keeper_pass() -> None:
                     nwp = None
             if nwp is not None:
                 _set_proc_warm(slug, nid, True)
+                _set_proc_lifecycle(slug, nid, live=True, owner=nwp,
+                                    adopt=True)
 
 
 def _pool_snapshot() -> None:
