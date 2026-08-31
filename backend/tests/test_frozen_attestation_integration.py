@@ -444,6 +444,26 @@ def direct_uvicorn_is_still_refused() -> None:
                 command="uvicorn orgtree.api:app --host 0.0.0.0"))()
 
 
+def public_port_must_be_a_literal_zero() -> None:
+    # The other contract boundary, restated for the same reason: the update
+    # scripts supply their standard-mode default of 7361 unless the variable
+    # is present with value "0", so UNSET is not the frozen contract and
+    # blank is not either. Both must be refused, not normalised to zero.
+    for absent in (None, "", "7361"):
+        planted({"PUBLIC_LISTENER_DISABLED"},
+                launch_inventory=mutate_launch(public_port=absent))()
+
+
+def admin_exposure_blank_is_not_unset() -> None:
+    planted({"ADMIN_EXPOSURE_UNSET"},
+            launch_inventory=mutate_launch(expose_admin=""))()
+
+
+def a_standard_profile_backend_is_refused() -> None:
+    planted({"LAUNCH_PROFILE_ACTIVE"},
+            launch_inventory=mutate_launch(deployment_profile="standard"))()
+
+
 # --------------------------------------------------------------------------
 # 4. the REAL repository's pins, not a fixture
 # --------------------------------------------------------------------------
@@ -663,6 +683,12 @@ def main() -> None:
           disabled_bridge_port_is_caught)
     check("PLANTED: direct uvicorn launch is still refused",
           direct_uvicorn_is_still_refused)
+    check("PLANTED: ORGTREE_PUBLIC_PORT must be a literal 0",
+          public_port_must_be_a_literal_zero)
+    check("PLANTED: a blank ORGTREE_EXPOSE_ADMIN is not unset",
+          admin_exposure_blank_is_not_unset)
+    check("PLANTED: a standard-profile backend process is refused",
+          a_standard_profile_backend_is_refused)
 
     print("the real repository's pins")
     check("the committed manifest matches its pinned digest",
