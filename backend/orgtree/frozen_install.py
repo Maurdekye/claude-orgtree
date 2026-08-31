@@ -188,7 +188,47 @@ def _verify_source_files(root: Path, manifest: Mapping[str, Any],
             continue
         actual = _file_sha256(path)
         rec.add("SOURCE_FILE_DIGEST", rel, actual == expected,
-                expected, actual, "approved source/lock content")
+                expected, actual,
+                _digest_mismatch_detail(path, rel, expected, actual))
+
+
+def _digest_mismatch_detail(path: Path, rel: str, expected: str,
+                            actual: str) -> str:
+    """Explain a pin mismatch that no diff can show.
+
+    ⚠ THE LINE-ENDING TRAP. These pins hash WORKING-TREE bytes, and
+    ``.gitattributes`` pins them to ``eol=lf`` — but an attribute only takes
+    effect on CHECKOUT. A worktree that existed before that rule keeps its CRLF
+    bytes forever: ``git status`` reports the tree clean, ``git diff`` shows
+    nothing, and ``git add --renormalize`` stages nothing (the blobs in git were
+    always LF). The file is genuinely correct by every git measure and still
+    hashes differently.
+
+    Reporting only "expected X, actual Y" sends the reader hunting for a
+    content change that does not exist, so when the ONLY difference is line
+    endings, say so and give the exact command that fixes it.
+    """
+
+    if actual == expected:
+        return "approved source/lock content"
+    try:
+        raw = path.read_bytes()
+    except OSError:
+        return "approved source/lock content"
+    if b"\r\n" not in raw:
+        return "approved source/lock content"
+    normalised = hashlib.sha256(raw.replace(b"\r\n", b"\n")).hexdigest()
+    if normalised != expected:
+        return "approved source/lock content"
+    return (
+        "LINE ENDINGS ONLY — the content is correct. This file is CRLF in "
+        "the working tree; the approved pin is the LF form, and .gitattributes "
+        "pins it to eol=lf. Attributes apply on CHECKOUT, so a worktree older "
+        "than that rule keeps CRLF while `git status` stays clean and "
+        "`git add --renormalize` stages nothing. Fix this checkout with: "
+        f"git rm --cached -q \"{rel}\" && git checkout -- \"{rel}\" "
+        "(or, for the whole tree, `git rm --cached -r -q . && git reset --hard`). "
+        "Do NOT edit the file.")
 
 
 def _parse_requirements(path: Path) -> dict[str, str]:

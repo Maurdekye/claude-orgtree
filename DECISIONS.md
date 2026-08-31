@@ -3154,7 +3154,29 @@ freshly built image.
 > seeded from the unapproved standard image — and every pin still verifies,
 > because attestation checks the image, the locks and the labels, none of
 > which describe a volume that was populated before the frozen image existed.
-> The CLI actually executing came from somewhere nobody attested.
+
+**Corrected after running a real frozen container** (the first draft of this
+entry said "the CLI actually executing came from somewhere nobody attested",
+which overstates one link — recording the precise mechanism instead):
+
+* `/usr/local` really is the volume — inside a live frozen container it is
+  `/dev/sdd on /usr/local type ext4 (ro)`, not image content.
+* The volume supplies the whole `/usr/local` tree, **including the `node`
+  runtime**: `command -v node` resolves to `/usr/local/bin/node`.
+* The frozen `claude` is a native ELF at
+  `/opt/orgtree-cli/node_modules/.bin/claude`, baked into the approved image
+  and first on `PATH`. So the *claude entry point* survives a bad volume.
+* But `/usr/local/sbin` and `/usr/local/bin` sit ahead of `/usr/bin` on
+  `PATH`, and the standard image's volume — `orgtree-usrlocal-2.1.220-r2`,
+  present on the machine this was found on — contains its own
+  `/usr/local/bin/claude` and `node v22.23.2`.
+
+So the exact exposure is: a frozen container would have run with an
+**unattested `node` interpreter and an unattested `/usr/local` tree ahead of
+`/usr/bin` on PATH, carrying a second `claude` binary**, while every pin in the
+attestation report still verified. That is narrower than "the CLI came from
+nowhere" and worse in one respect — the interpreter and the entire early-PATH
+tree are the unattested part, and nothing in the manifest describes them.
 
 This is not a hypothetical ordering. On the machine where the frozen profile
 was first booted for real, the host CLI was 2.1.220, `frozen/sandbox.Dockerfile`

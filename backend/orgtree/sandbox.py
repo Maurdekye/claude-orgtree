@@ -780,8 +780,15 @@ def _ensure_frozen_gateway(slug: str, image_tag: str) -> None:
             if not valid:
                 _docker("rm", "-f", name, timeout=60)
         if not valid:
-            relay = os.path.join("/opt/orgtree-backend", "orgtree",
-                                 "frozen_gateway.py")
+            # ⚠ A LITERAL POSIX PATH, never os.path.join. This names a file
+            # inside a LINUX container, and os.path.join uses the HOST's
+            # separator: on Windows it produced
+            # "/opt/orgtree-backend\\orgtree\\frozen_gateway.py" and the relay
+            # died on every start with "can't open file". The frozen network
+            # boundary therefore never came up on Windows at all — the fake
+            # Docker in the tests only ever compared argv strings, so nothing
+            # noticed that the path could not resolve.
+            relay = "/opt/orgtree-backend/orgtree/frozen_gateway.py"
             run = _docker(
                 "create", "--name", name,
                 "--label", f"orgtree.layout={FROZEN_GATEWAY_LAYOUT}",

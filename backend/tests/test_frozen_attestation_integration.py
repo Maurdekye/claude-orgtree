@@ -33,6 +33,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import sys
 import tempfile
@@ -53,7 +54,7 @@ with open(os.path.join(DATA, "defaults.json"), "w", encoding="utf-8") as f:
     json.dump({"net_hub_address": "http://127.0.0.1:9"}, f)
 
 from orgtree import (bridgeauth, deployment,  # noqa: E402
-                     frozen_install, store)
+                     frozen_install, sandbox, store)
 from orgtree.ledger import USER  # noqa: E402
 
 
@@ -481,12 +482,29 @@ def committed_pins_match_the_files_beside_them() -> None:
     # digests described an earlier state of the tree.
     doc = json.loads((REPO_ROOT / "frozen" / "approved-install.json")
                      .read_text(encoding="utf-8"))
-    stale = []
+    stale, crlf_only = [], []
     for rel, expected in doc["files"].items():
         p = REPO_ROOT / rel
         assert p.is_file(), f"pinned file missing from the repo: {rel}"
-        if sha(p) != expected:
+        if sha(p) == expected:
+            continue
+        raw = p.read_bytes()
+        if b"\r\n" in raw and hashlib.sha256(
+                raw.replace(b"\r\n", b"\n")).hexdigest() == expected:
+            crlf_only.append(rel)
+        else:
             stale.append(rel)
+    # ⚠ Distinguish the two causes. A STALE pin is a real red main. A CRLF
+    # working tree is a checkout that predates the `eol=lf` attribute — git
+    # reports it clean, `git diff` shows nothing and `git add --renormalize`
+    # stages nothing, because the blobs in git were always LF. Same digest
+    # mismatch, completely different fix, so never report them the same way.
+    assert not crlf_only, (
+        "these pinned files are CRLF in this working tree but their CONTENT "
+        f"matches the pin exactly: {crlf_only}. This checkout predates the "
+        "`eol=lf` attribute. Refresh it with `git rm --cached -r -q . && "
+        "git reset --hard` (a fresh clone is already correct). The pin is "
+        "NOT stale and main is NOT broken — do not 'fix' it by re-pinning.")
     assert not stale, f"stale pins in approved-install.json: {stale}"
 
 
@@ -507,6 +525,46 @@ def committed_manifest_declares_the_adjudicated_boundary() -> None:
     assert doc["bridge"]["scope"] == "org"
     assert doc["bridge"]["same_org_nodes_mutually_trusted"] is True
     assert doc["bridge"]["scheme"] == "hmac-sha256-org-v1"
+
+
+def container_paths_are_posix() -> None:
+    """Paths naming files INSIDE a container must never use the host separator.
+
+    ⚠ Found by watching the relay die in a real frozen container, not by
+    reading. `_ensure_frozen_gateway` built the relay's path with
+    `os.path.join`, which uses the HOST separator: on Windows that produced
+    `/opt/orgtree-backend\\orgtree\\frozen_gateway.py` and every relay start
+    failed with "can't open file". The frozen network boundary had therefore
+    never come up on Windows at all.
+
+    Nothing caught it because the sandbox tests run against a fake Docker and
+    only compare argv strings — a path that cannot resolve looks identical to
+    one that can. So this asserts the property directly: any absolute
+    container path in sandbox.py is POSIX, and the relay path in particular
+    names a file that really exists under the bind-mounted backend directory.
+    """
+    src = Path(sandbox.__file__)
+    text = src.read_text(encoding="utf-8")
+    # Any string literal that starts a container-absolute path must not carry
+    # a backslash, and must not be assembled with the host's os.path.join.
+    bad = re.findall(r'os\.path\.join\(\s*"(/[^"]*)"', text)
+    assert not bad, (
+        "os.path.join used to build container-absolute path(s) "
+        f"{bad} — use a literal POSIX path; os.path.join uses the HOST "
+        "separator and silently produces /opt/...\\\\file on Windows")
+
+    # The relay path the gateway is launched with must name a real file.
+    relay = re.search(r'relay = "([^"]+)"', text)
+    assert relay, "could not find the relay path literal in sandbox.py"
+    rel = relay.group(1)
+    assert "\\" not in rel and rel.startswith("/"), rel
+    assert rel == "/opt/orgtree-backend/orgtree/frozen_gateway.py", rel
+    # /opt/orgtree-backend is sandbox.BACKEND_DIR bind-mounted read-only.
+    on_host = Path(sandbox.BACKEND_DIR) / Path(
+        rel[len("/opt/orgtree-backend/"):])
+    assert on_host.is_file(), (
+        f"the relay path {rel} maps to {on_host}, which does not exist — "
+        "the gateway container would die on start")
 
 
 def pinned_files_have_no_crlf() -> None:
@@ -730,6 +788,8 @@ def main() -> None:
     check("the committed manifest declares the adjudicated boundary",
           committed_manifest_declares_the_adjudicated_boundary)
     check("no pinned frozen input carries CRLF", pinned_files_have_no_crlf)
+    check("in-container paths are POSIX and resolve",
+          container_paths_are_posix)
     check("image tags follow the rebuilt digest",
           image_tags_follow_the_rebuilt_digest)
 
