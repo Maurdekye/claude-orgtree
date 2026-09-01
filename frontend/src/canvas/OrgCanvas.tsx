@@ -14,7 +14,7 @@ import {
 } from '../icons'
 import {
   ago, attentionPip, CODEX_TIER_LETTER, CODEX_TIER_SEAT, CODEX_TIERS, DOG_H, DOG_W, DRAFT, ease, edgeJumpPlacement, type EJForm, EXTERN, fallbackActive, familyOffer, flatten, GEMINI_TIER_LETTER, GEMINI_TIER_SEAT, GEMINI_TIERS, hireOf, INBOX, INBOX_H, layout, NODE_H, NODE_W, orgPxc, presenceOf, segD,
-  segPoint, sizeOf, smooth, SPRING_C, SPRING_K, TIER_LETTER, TIER_SEAT, TIERS, useCrowdPiles, usePolled, USER, USER_H,
+  providerOf, segPoint, sizeOf, smooth, SPRING_C, SPRING_K, TIER_LETTER, TIER_SEAT, TIERS, useCrowdPiles, usePolled, USER, USER_H,
   USER_W, withDraftTree, Z_DESK, Z_MAX, Z_MINI,
 } from './shared'
 import type {
@@ -1964,7 +1964,13 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
           pan pointer-capture would swallow the click, see above) */}
       {edgeJumps.map((e) => (
         <button key={e.n.id}
+          /* the card's whole accent surface — highlight, hover/focus wash,
+             the shed-form mail dot and the unread count — wears the JUMP
+             TARGET's provider theme, never the focused desk's (user spec
+             2026-09-01: a Codex-hosted jump card pointing at a Claude agent
+             is Claude orange) */
           className={'edge-jump ' + e.side + ' ej-' + e.form
+            + ' prov-' + providerOf(e.n.tier ?? '')
             + (e.band ? ' ej-band' : '')
             + ((e.n.mail_pending ?? 0) > 0 ? ' ej-mail' : '')}
           style={{ top: e.y }} title={`jump to ${e.n.id}`}
@@ -1974,7 +1980,9 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
           <span className={'tier t-' + e.n.tier}>{TIER_LETTER[e.n.tier!] ?? '?'}</span>
           <span className="ej-name">{e.n.id}</span>
           {e.n.busy && <DestinationBusy tier={e.n.tier} />}
-          {(e.n.mail_pending ?? 0) > 0 && <b className="eye-count">{e.n.mail_pending}</b>}
+          {(e.n.mail_pending ?? 0) > 0 &&
+            <b className={'eye-count prov-' + providerOf(e.n.tier ?? '')}>
+              {e.n.mail_pending}</b>}
           {e.side === 'r' && <ChevronRightIcon fontSize="inherit" />}
         </button>
       ))}

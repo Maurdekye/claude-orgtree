@@ -1188,7 +1188,9 @@ export function PilePicker({ pile, map, onPick, close, op, toast }: PilePickerPr
               {n.bearer_state && <span className="badge dim">{n.bearer_state}</span>}
               {n.busy && <span className="badge">working</span>}
               {n.state === 'unrecoverable' && <span className="badge dim">unrecoverable</span>}
-              {(n.mail_pending ?? 0) > 0 && <span className="badge free">{n.mail_pending} mail</span>}
+              {(n.mail_pending ?? 0) > 0 &&
+                <span className={'badge free prov-' + providerOf(n.tier ?? '')}>
+                  {n.mail_pending} mail</span>}
               {id === pile.front && <span className="badge free">in front</span>}
               {lastTurn && (
                 <span className="badge dim pile-ago"

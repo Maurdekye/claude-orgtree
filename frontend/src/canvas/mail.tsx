@@ -18,7 +18,7 @@ import {
   MailIcon, PublicIcon,
 } from '../icons'
 import {
-  EXTERN, isSystemNotice, md, pileNotices, USER, useEsc, usePolled,
+  EXTERN, isSystemNotice, md, pileNotices, providerOf, USER, useEsc, usePolled,
 } from './shared'
 import type { CanvasNode, MailRow } from './shared'
 import { isMobile } from '../mobile'
@@ -487,9 +487,11 @@ interface InboxViewProps {
    *  mail on the server but invisible here until remount */
   onRetract?: (m: MailRow) => Promise<unknown> | void
   jumpTo?: string | null
+  /** the inbox owner's tier: its unread count wears that agent's provider */
+  tier?: string | null
 }
 
-export function InboxView({ slug, nid, onRetract, jumpTo }: InboxViewProps) {
+export function InboxView({ slug, nid, onRetract, jumpTo, tier }: InboxViewProps) {
   const [folder, setFolder] = useState('inbox')
   // G5: was a fetch keyed on the `pulse` prop, which meant it refreshed on turn
   // events and on nothing else — and a mail DELIVERY is not a turn event, so
@@ -508,7 +510,7 @@ export function InboxView({ slug, nid, onRetract, jumpTo }: InboxViewProps) {
   return (
     <div className="mailwrap">
       <MailFolders folder={folder} setFolder={setFolder}
-        unread={pending.length} />
+        unread={pending.length} tier={tier} />
       <div className="mailpane">
         {box == null
           ? <div className="dim pad">loading…</div>
@@ -543,15 +545,21 @@ export interface MailFoldersProps {
   setFolder: (f: string) => void
   unread: number
   folders?: string[]
+  /** provider-themes the inbox count by the mailbox OWNER (absent for the
+   *  user's own inbox and the org inbox, which belong to no provider) */
+  tier?: string | null
 }
 
-export function MailFolders({ folder, setFolder, unread, folders }: MailFoldersProps) {
+export function MailFolders({ folder, setFolder, unread, folders, tier }: MailFoldersProps) {
   return (
     <div className="mail-folders">
       {(folders ?? ['inbox', 'sent']).map((f) => (
         <button key={f} className={folder === f ? 'on' : ''}
           onClick={() => setFolder(f)}>
-          {f}{f === 'inbox' && unread > 0 ? ` ${unread}` : ''}
+          {f}{f === 'inbox' && unread > 0
+            ? <>{' '}<span className={'tab-count'
+                + (tier ? ' prov-' + providerOf(tier) : '')}>{unread}</span></>
+            : ''}
         </button>
       ))}
     </div>
@@ -611,7 +619,7 @@ export function NodeInboxModal({ node, slug, close, jumpTo }: NodeInboxModalProp
     <div className="overlay" onClick={close} onPointerDown={(e) => e.stopPropagation()}>
       <div className="settings wide" onClick={(e) => e.stopPropagation()}>
         <h3><MailIcon fontSize="inherit" /> {node.id} <span className="dim">· inbox</span></h3>
-        <InboxView slug={slug} nid={node.id} jumpTo={jumpTo} />
+        <InboxView slug={slug} nid={node.id} jumpTo={jumpTo} tier={node.tier} />
         <div className="row">
           <button className="primary" onClick={close}>close</button>
         </div>

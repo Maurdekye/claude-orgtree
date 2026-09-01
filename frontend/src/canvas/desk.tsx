@@ -349,9 +349,8 @@ export function CacheForecastWarning({ forecast }: {
 /** A busy arrow on navigation chrome must name the destination provider even
  * when it is rendered inside another provider's themed desk. */
 export function DestinationBusy({ tier }: { tier?: string | null }) {
-  const provider = tier && CODEX_TIERS.includes(tier) ? 'openai'
-    : tier && GEMINI_TIERS.includes(tier) ? 'google' : 'claude'
-  return <AutorenewIcon fontSize="inherit" className={`cc-spin prov-${provider}`} />
+  return <AutorenewIcon fontSize="inherit"
+    className={`cc-spin prov-${providerOf(tier ?? '')}`} />
 }
 
 /* click-to-copy for the React-rendered pres (filepre/respre/diffpre) — same
@@ -458,11 +457,14 @@ interface DeskChatProps {
  *  the top of the desk, one per direct report at the bottom. Carries live
  *  state (busy spinner, unread mail count) because the data is already in
  *  `map`; an inert chip would be a lie of omission next to a busy agent. */
-function NavChip({ n, dir, onJump }:
+export function NavChip({ n, dir, onJump }:
 { n: CanvasNode; dir: 'up' | 'down'; onJump: (id: string) => void }) {
   const eye = n.id === USER
+  // the chip's accent and unread count belong to the DESTINATION agent, not
+  // to whichever provider's themed desk this chip happens to render inside
+  const prov = !eye && n.tier ? ' prov-' + providerOf(n.tier) : ''
   return (
-    <button className={'desk-nav-chip' + (!eye && n.state !== 'live' ? ' dim' : '')}
+    <button className={'desk-nav-chip' + (!eye && n.state !== 'live' ? ' dim' : '') + prov}
       title={eye ? 'jump to the switchboard'
         : `jump to ${n.id}${n.state !== 'live' ? ` (${n.state})` : ''}`}
       onClick={() => onJump(n.id)}>
@@ -472,7 +474,8 @@ function NavChip({ n, dir, onJump }:
         : <><span className={'tier t-' + n.tier}>{TIER_LETTER[n.tier!] ?? '?'}</span>
             {n.id}</>}
       {n.busy && <DestinationBusy tier={n.tier} />}
-      {(n.mail_pending ?? 0) > 0 && <b className="eye-count">{n.mail_pending}</b>}
+      {(n.mail_pending ?? 0) > 0 &&
+        <b className={'eye-count' + prov}>{n.mail_pending}</b>}
     </button>
   )
 }
@@ -971,7 +974,11 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
             {(['chat', 'history', 'files', 'inbox'] as const).map((v) => (
               <button key={v} className={view === v ? 'on' : ''}
                 onClick={() => setView(v)}>
-                {v}{v === 'inbox' && (chat?.mail_pending ?? 0) > 0 ? ` ${chat!.mail_pending}` : ''}
+                {v}{v === 'inbox' && (chat?.mail_pending ?? 0) > 0
+                  ? <>{' '}<span className={'tab-count prov-'
+                      + providerOf(node.tier ?? '')}>
+                      {chat!.mail_pending}</span></>
+                  : ''}
               </button>
             ))}
           </span>
@@ -1388,7 +1395,7 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
       )}
       {view === 'history' && <HistoryView slug={slug} nid={node.id} />}
       {view === 'files' && <FilesView slug={slug} nid={node.id} />}
-      {view === 'inbox' && <InboxView slug={slug} nid={node.id}
+      {view === 'inbox' && <InboxView slug={slug} nid={node.id} tier={node.tier}
         onRetract={(m) => retractMail(slug, node.id, m.id)
           .then(() => refresh(true))
           // rethrow: InboxView's optimistic hide rolls back on rejection

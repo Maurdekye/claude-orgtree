@@ -14,7 +14,7 @@ import {
   LockIcon, MailIcon, RetireIcon, SettingsIcon,
 } from '../icons'
 import {
-  CODEX_TIER_LETTER, CODEX_TIER_SEAT, CODEX_TIERS, DESK_SCALE, deskDpi, DRAFT, familyOffer, freezeKind, FREEZE_LABEL_SHORT, GEMINI_TIER_LETTER, GEMINI_TIER_SEAT, GEMINI_TIERS, NODE_H, NODE_W, TIER_LETTER, TIER_SEAT, TIERS, USER,
+  CODEX_TIER_LETTER, CODEX_TIER_SEAT, CODEX_TIERS, DESK_SCALE, deskDpi, DRAFT, familyOffer, freezeKind, FREEZE_LABEL_SHORT, GEMINI_TIER_LETTER, GEMINI_TIER_SEAT, GEMINI_TIERS, NODE_H, NODE_W, providerOf, TIER_LETTER, TIER_SEAT, TIERS, USER,
   USER_H, USER_W,
 } from './shared'
 import type {
@@ -233,7 +233,7 @@ interface EyeDeskProps {
   onRecenter?: () => void
 }
 
-function EyeDesk({ map, op, slug, toast, pip,
+export function EyeDesk({ map, op, slug, toast, pip,
   onInbox, onGear, pub, eyeW, posX, onJump, compactAt, maxTop, pxc,
   onMailLink, onOpenDoc, onNodeLineage, onNodeConfig, onRecenter }: EyeDeskProps) {
   const agents = [...map.values()].filter((n) =>
@@ -267,23 +267,56 @@ function EyeDesk({ map, op, slug, toast, pip,
     } catch { seenIds.current = null }
   }
   const idsKey = agents.map((a) => a.id).join(',')
+  // Auto-open (user 2026-09-01, OPTIONAL and OFF by default): while the user
+  // is actually AT the switchboard — this surface only mounts focused — a NEW
+  // direct line (hired with a user audience, or an existing agent granted
+  // one) may open its panel immediately instead of arriving minimized, IF one
+  // more panel still fits without horizontal scrolling. The first effect run
+  // after mount is the catch-up pass for lines that arrived while the camera
+  // was away; those keep №24's arrive-minimized rule — "at the same time
+  // they're hired" is the user's condition, and a mount is not that moment.
+  const [autoOpen, setAutoOpen] = useState<boolean>(() => {
+    try { return localStorage.getItem('orgtree-eyeauto-' + slug) === '1' }
+    catch { return false }
+  })
+  const liveRun = useRef(false)
   useEffect(() => {
     const ids = new Set(idsKey ? idsKey.split(',') : [])
     if (seenIds.current) {
       const fresh = [...ids].filter((id) => !seenIds.current!.has(id))
       if (fresh.length) {
-        setMinned((s) => {
-          const n = new Set(s)
-          fresh.forEach((id) => n.add(id))
-          localStorage.setItem('orgtree-eyemin-' + slug, JSON.stringify([...n]))
-          return n
-        })
+        // №24's own minimums — 420px panel min-width, 10px gaps — measured
+        // against the same inner width the row lays out in. Conservative on
+        // purpose: auto-open must never CAUSE the scroll it is gated on.
+        const openNow = agents.filter((a) => !fresh.includes(a.id)
+          && !minned.has(a.id)).length
+        const fits = (already: number) =>
+          (already + 1) * 420 + already * 10 <= innerW - 24
+        let opened = 0
+        const toMin: string[] = []
+        for (const id of fresh) {
+          if (liveRun.current && autoOpen && fits(openNow + opened)) opened += 1
+          else toMin.push(id)
+        }
+        if (toMin.length) {
+          setMinned((s) => {
+            const n = new Set(s)
+            toMin.forEach((id) => n.add(id))
+            localStorage.setItem('orgtree-eyemin-' + slug, JSON.stringify([...n]))
+            return n
+          })
+        }
       }
     }
+    liveRun.current = true
     seenIds.current = ids
     try {
       localStorage.setItem('orgtree-eyeseen-' + slug, JSON.stringify([...ids]))
     } catch { /* private mode */ }
+    // agents/minned/innerW/autoOpen are read at the moment a NEW ID LANDS —
+    // only the id set may trigger this, or every resize/toggle would re-run
+    // the arrival rule on lines that already arrived
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [idsKey, slug])
   const open = agents.filter((a) => !minned.has(a.id))
   // the inner virtual panel matches the card interior through the desk scale.
@@ -325,7 +358,11 @@ function EyeDesk({ map, op, slug, toast, pip,
                 <span className={'tier t-' + a.tier}>{TIER_LETTER[a.tier!] ?? '?'}</span>
                 {a.id}
                 {a.busy && <DestinationBusy tier={a.tier} />}
-                {(a.mail_pending ?? 0) > 0 && <b className="eye-count">{a.mail_pending}</b>}
+                {/* the unread count wears the TAB AGENT's provider — the same
+                    hue as its working spinner beside it, never a global tint */}
+                {(a.mail_pending ?? 0) > 0 &&
+                  <b className={'eye-count prov-' + providerOf(a.tier ?? '')}>
+                    {a.mail_pending}</b>}
               </button>
               {/* jump straight to the agent's own node — same glide as
                   clicking its card (user spec) */}
@@ -350,6 +387,23 @@ function EyeDesk({ map, op, slug, toast, pip,
           {/* no spacer here (user bug 2026-08-05): .eye-tabs already has
               flex:1, and a second flex:1 sibling split the header 50/50 so
               the tab strip wrapped at half width */}
+          <button className={'cc-icon eye-auto' + (autoOpen ? ' on' : '')}
+            title={autoOpen
+              ? 'auto-open new direct lines: on — a line hired with (or '
+                + 'granted) a user audience opens its panel immediately '
+                + 'while another panel still fits without scrolling; '
+                + 'click to turn off'
+              : 'auto-open new direct lines: off — new lines arrive as '
+                + 'minimized tabs; click to turn on'}
+            aria-pressed={autoOpen}
+            onClick={() => setAutoOpen((v) => {
+              const next = !v
+              try {
+                localStorage.setItem('orgtree-eyeauto-' + slug,
+                  next ? '1' : '0')
+              } catch { /* private mode */ }
+              return next
+            })}>auto</button>
           <button className="cc-icon"
             title={pip?.title ?? 'your inbox'}
             onClick={() => onInbox?.()}>
@@ -1163,7 +1217,8 @@ export function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, c
         <button className={'mailbtn' + ((node.mail_pending ?? 0) > 0 ? ' has' : '')}
           onPointerDown={(e) => e.stopPropagation()}
           onClick={(e) => { e.stopPropagation(); onInbox() }}>
-          <MailIcon fontSize="inherit" />{(node.mail_pending ?? 0) > 0 && <span className="count">{node.mail_pending}</span>}
+          <MailIcon fontSize="inherit" />{(node.mail_pending ?? 0) > 0 &&
+            <span className={'count prov-' + providerOf(node.tier ?? '')}>{node.mail_pending}</span>}
         </button>
         {/* retire without the zoom-in (user request 2026-08-17): hover-revealed
             like the gear/mail, confirm-gated like the desk button. Wears the

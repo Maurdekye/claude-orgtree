@@ -944,6 +944,47 @@ button.cc-name:hover {
 .cc-spin.prov-claude { color: var(--prov-claude); }
 .cc-spin.prov-openai { color: var(--prov-openai); }
 .cc-spin.prov-google { color: var(--prov-google); }
+/* ── destination-provider theming (user spec 2026-09-01) ──────────────────
+   Every unread-mail count wears the provider of the agent IT COUNTS FOR —
+   the same --prov-* hue as that agent's working spinner above — never a
+   global tint and never the host desk's inherited --accent (a NavChip or
+   jump card inside a Codex-themed desk pointing at a Claude agent is Claude
+   orange). Same 42% mix over --panel-2 as the base .eye-count, so contrast
+   against --ink-strong is unchanged; the user pip keeps the accent form and
+   its vibrant .asks tier, which never carries a prov-* class. */
+.eye-count.prov-claude { background: color-mix(in srgb, var(--prov-claude) 42%, var(--panel-2)); }
+.eye-count.prov-openai { background: color-mix(in srgb, var(--prov-openai) 42%, var(--panel-2)); }
+.eye-count.prov-google { background: color-mix(in srgb, var(--prov-google) 42%, var(--panel-2)); }
+/* tab-suffix counts (a desk's `inbox N`, a node mailbox's folder strip) */
+.tab-count.prov-claude { color: var(--prov-claude); font-weight: 700; }
+.tab-count.prov-openai { color: var(--prov-openai); font-weight: 700; }
+.tab-count.prov-google { color: var(--prov-google); font-weight: 700; }
+/* the card mail button's count: explicit, so a themed ancestor cannot
+   restyle it away from its own agent (white-on-provider keeps the base
+   form's contrast on all three hues) */
+.mailbtn .count.prov-claude { background: var(--prov-claude); }
+.mailbtn .count.prov-openai { background: var(--prov-openai); }
+.mailbtn .count.prov-google { background: var(--prov-google); }
+/* pile-picker rows: the "N mail" badge names its row's agent */
+.badge.prov-claude { color: var(--prov-claude); border-color: color-mix(in srgb, var(--prov-claude) 45%, var(--line)); }
+.badge.prov-openai { color: var(--prov-openai); border-color: color-mix(in srgb, var(--prov-openai) 45%, var(--line)); }
+.badge.prov-google { color: var(--prov-google); border-color: color-mix(in srgb, var(--prov-google) 45%, var(--line)); }
+/* jump cards re-scope the whole accent surface to the JUMP TARGET: hover/
+   focus border and wash, the shed-form mail dot, and the inline count all
+   follow one override — the focus ring and hover geometry are untouched, so
+   focus visibility and contrast structure stay exactly the base form's. */
+.edge-jump.prov-claude, .desk-nav-chip.prov-claude {
+  --accent: var(--prov-claude);
+  --accent-soft: color-mix(in srgb, var(--prov-claude) 16%, transparent);
+}
+.edge-jump.prov-openai, .desk-nav-chip.prov-openai {
+  --accent: var(--prov-openai);
+  --accent-soft: color-mix(in srgb, var(--prov-openai) 16%, transparent);
+}
+.edge-jump.prov-google, .desk-nav-chip.prov-google {
+  --accent: var(--prov-google);
+  --accent-soft: color-mix(in srgb, var(--prov-google) 16%, transparent);
+}
 /* -- composer: the Claude Code input box -- */
 /* send beside the input, no footer row (user ruling: reclaim vertical space) */
 .cache-send-warning {
@@ -2810,6 +2851,18 @@ svg.MuiSvgIcon-root {
   padding: 0 7px; color: var(--dim); font-size: 11px; border-radius: 0;
 }
 .eye-tab-x:hover { color: var(--bad); background: rgba(241, 76, 76, .1); }
+/* the optional auto-open toggle (user 2026-09-01, off by default): a small
+   labelled latch in the head row — quiet when off, accent when armed */
+.eye-auto {
+  font-size: 10px; letter-spacing: .4px; font-weight: 700;
+  color: var(--dim); border: 1px solid var(--line); border-radius: 5px;
+  padding: 2px 6px;
+}
+.eye-auto.on {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--line));
+  background: var(--accent-soft);
+}
 /* №24: panels keep a readable minimum and the row scrolls — eight direct
    lines used to split into eight ~150px slivers, each with a composer */
 .eye-panels { flex: 1; min-height: 0; display: flex; gap: 10px; overflow-x: auto; }
