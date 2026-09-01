@@ -25,12 +25,13 @@ HTML = """
 <div class="desk-body" id="desk">
   <div class="cc-head" id="head">
     <div class="cc-head-top">
-      <span class="tier">F</span>
-      <span class="cc-name">an-agent-name-long-enough-to-wrap-at-enlarged-browser-text</span>
-      <span class="cc-turn-seat"><span class="cc-working">↻ working · 31m · 8 tasks</span></span>
-      <span class="cc-context-seat"><span class="ctxwheel">◔</span></span>
-      <span class="cc-process-seat"><span class="proc-state relaunch"><span class="proc-one-mark"></span>↻</span></span>
-      <span class="spacer"></span>
+      <span class="cc-info-cluster">
+        <span class="tier">F</span>
+        <span class="cc-name">an-agent-name-long-enough-to-wrap-at-enlarged-browser-text</span>
+        <span class="cc-context-seat"><span class="ctxwheel">◔</span></span>
+        <span class="cc-process-seat"><span class="proc-state relaunch"><span class="proc-one-mark"></span>↻</span></span>
+        <span class="turn-status-banner working"><span class="cc-spin">↻</span><span>Working</span><span class="turn-status-time">31m</span></span>
+      </span>
       <span class="cc-actions"><button class="danger">dissolve · 30</button></span>
       <span class="cc-tabs"><button>chat</button><button>history</button><button>files</button><button>inbox 12</button></span>
       <button class="cc-icon" aria-label="settings">⚙</button>
@@ -83,10 +84,22 @@ def failures(page, width: int, enlarged: bool) -> list[str]:
         if (r.width < 27.5 || r.height < 23.5)
           bad.push(`${sel}: unstable static slot`);
       }
-      if (top.querySelector('.cc-turn-seat').getBoundingClientRect().width < 51.5)
-        bad.push('turn age/activity seat collapsed');
-      if (meta.querySelector('.ctxwheel,.proc-state,.cc-working'))
+      if (top.querySelector('.turn-status-banner').getBoundingClientRect().width < 71.5)
+        bad.push('status/age banner collapsed');
+      if (meta.querySelector('.ctxwheel,.proc-state,.turn-status-banner'))
         bad.push('static top-row item duplicated in metadata');
+      const cluster = top.querySelector('.cc-info-cluster');
+      const expected = ['tier', 'cc-name', 'cc-context-seat', 'cc-process-seat',
+        'turn-status-banner'];
+      const actual = [...cluster.children].map((el) => el.classList[0]);
+      if (actual.join('|') !== expected.join('|')) bad.push('information order changed');
+      const items = [...cluster.children];
+      for (let i = 1; i < items.length; i++) {
+        const before = items[i - 1].getBoundingClientRect();
+        const after = items[i].getBoundingClientRect();
+        if (Math.abs(before.top - after.top) < .5 && after.left - before.right > 2.5)
+          bad.push(`information gap ${after.left - before.right}px exceeds compact token`);
+      }
       const name = document.querySelector('.cc-name');
       if (name.scrollWidth > name.clientWidth + 1) bad.push('agent name clipped');
       return bad.map((v) => `${width}px${enlarged ? ' enlarged' : ''}: ${v}`);
@@ -107,7 +120,7 @@ def main() -> int:
             size = "20px" if enlarged else "13px"
             page.set_content(
                 f"<style>{css}\nbody{{margin:0}} #desk{{width:100%;font-size:{size}}}"
-                f"#desk button,#desk .cc-name,#desk .badge,#desk .cc-working{{font-size:inherit}}</style>{HTML}")
+                f"#desk button,#desk .cc-name,#desk .badge,#desk .turn-status-banner{{font-size:inherit}}</style>{HTML}")
             all_failures.extend(failures(page, width, enlarged))
             page.close()
         browser.close()

@@ -76,7 +76,7 @@ export function ContextWheel({ occ, cw, onCompact, compactAt, est,
   const svg = (
     <svg className={'ctxwheel' + (est && knownOccupancy ? ' est' : '')}
       viewBox="0 0 16 16" width="15" height="15"
-      role={onCompact ? undefined : 'img'} aria-hidden={onCompact || undefined}
+      role={onCompact ? undefined : 'img'} aria-hidden={onCompact ? true : undefined}
       aria-label={onCompact ? undefined : contextTitle}>
       {/* an estimated fill says so in the tooltip (a leading ≈) and draws its
           arc at half opacity (.ctxwheel.est .fill): the number is real enough
@@ -151,45 +151,41 @@ export function LastTurnAge({ turn, busy = false, variant = 'badge' }: {
   </span>
 }
 
-/** The active half of the desk header's single turn-time seat. It shares the
- * same one-second clock as LastTurnAge so elapsed work remains live without a
- * tree refetch, and names queued/compacting/working rather than flattening
- * every state to "working". */
-export function CurrentTurnActivity({ phase, waiting = false, inflightAt,
-  tasks = 0 }: {
-  phase?: string | null; waiting?: boolean; inflightAt?: string | null;
-  tasks?: number | null
+export type TurnBannerState = 'idle' | 'working' | 'queued' | 'compacting'
+
+/** One persistent desk-header status/time seat. Its label and clock change
+ * together at a turn boundary: active states measure the current admission,
+ * while Idle measures the last completed turn. Canvas cards continue to use
+ * LastTurnAge; the focused desk deliberately has no second age chip. */
+export function TurnStatusBanner({ state, turn, inflightAt, tasks = 0,
+  reportedSummary }: {
+  state: TurnBannerState; turn?: TurnStat | null; inflightAt?: string | null;
+  tasks?: number | null; reportedSummary?: string | null
 }) {
   useSyncExternalStore(subscribeAgeClock, () => ageClockSecond,
     () => ageClockSecond)
-  const state = phase === 'compacting' ? 'compacting…'
-    : waiting ? 'queued for a turn slot…' : 'working'
-  const elapsed = inflightAt ? ago(inflightAt) : ''
+  const active = state !== 'idle'
+  const reference = active ? inflightAt : turn?.at
+  const elapsed = reference ? ago(reference) : '—'
+  const label = state === 'idle' ? 'Idle'
+    : state === 'working' ? 'Working'
+    : state === 'queued' ? 'Queued' : 'Compacting'
   const taskText = (tasks ?? 0) > 0
     ? `${tasks} task${tasks === 1 ? '' : 's'}` : ''
-  const title = [state.replace(/…$/, ''), elapsed, taskText]
-    .filter(Boolean).join(' · ')
-  return <span className="cc-working" title={title} aria-label={title}>
-    {phase !== 'compacting' && !waiting &&
+  const title = state === 'idle'
+    ? (turn
+      ? `Idle · last turn ended ${(turn.at ?? '').slice(0, 16).replace('T', ' ')}`
+        + (turn.killed ? ' (killed)' : '')
+      : 'Idle · no completed turn yet')
+        + (reportedSummary ? ` · ${reportedSummary}` : '')
+    : [label, reference ? `active for ${elapsed}` : 'start time unavailable',
+        taskText, reportedSummary].filter(Boolean).join(' · ')
+  return <span className={`turn-status-banner ${state}`} title={title}
+    aria-label={title}>
+    {state === 'working' &&
       <AutorenewIcon fontSize="inherit" className="cc-spin" />}
-    <span>{state}</span>
-    {elapsed && <span className="dim"> · {elapsed}</span>}
-    {taskText && <span className="dim"> · {taskText}</span>}
-  </span>
-}
-
-/** One permanent desk-header seat: active turn state replaces completed-turn
- * age in place, so the two clocks never compete or render twice. */
-export function HeaderTurnSeat({ active, turn, phase, waiting, inflightAt,
-  tasks }: {
-  active: boolean; turn?: TurnStat | null; phase?: string | null;
-  waiting?: boolean; inflightAt?: string | null; tasks?: number | null
-}) {
-  return <span className="cc-turn-seat">
-    {active
-      ? <CurrentTurnActivity phase={phase} waiting={waiting}
-          inflightAt={inflightAt} tasks={tasks} />
-      : <LastTurnAge turn={turn} />}
+    <span className="turn-status-label">{label}</span>
+    <span className="turn-status-time">{elapsed}</span>
   </span>
 }
 
@@ -830,6 +826,10 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
     ? chat.occupancy_estimated : node.occupancy_est
   const turnActive = Boolean(node.busy || node.waiting
     || node.phase === 'compacting' || chat?.busy)
+  const turnBannerState: TurnBannerState = node.phase === 'compacting'
+    ? 'compacting' : node.waiting ? 'queued' : turnActive ? 'working' : 'idle'
+  const bannerDuplicatesStatus = Boolean(node.last_status
+    && node.last_status.status === turnBannerState)
   // A fresh/empty seat now keeps its truthful hollow wheel, but it must not
   // acquire a dead compact button: the endpoint still requires real context.
   const canCompactContext = live && !node.bearer_state && !node.compacted_unrun
@@ -859,31 +859,33 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
     <>
       <div className="cc-head">
         <div className="cc-head-top">
-        <span className={'tier t-' + node.tier}>{TIER_LETTER[node.tier!] ?? '?'}</span>
-        {/* in a switchboard panel the NAME is also a jump: focus this
-            agent's own desk — same glide as clicking its card (user
-            feature 2026-08-17; the tab strip's ⌖ button stays) */}
-        {bare && onJump ? (
-          <button className="cc-name cc-name-jump"
-            title={`focus ${node.id}'s desk`}
-            onClick={() => onJump(node.id)}>{node.id}</button>
-        ) : (
-          <span className="cc-name"
-            title={(node.charter || '').split('\n')[0] || node.id}>{node.id}</span>
-        )}
-        <HeaderTurnSeat active={turnActive} turn={lastTurn} phase={node.phase}
-          waiting={node.waiting} inflightAt={node.inflight_at} tasks={node.tasks} />
-        <span className="cc-context-seat">
-          <ContextWheel occ={contextOccupancy} cw={node.context_window}
-            est={contextEstimated} compactAt={compactAt} persistent
-            onCompact={canCompactContext ? () => setAskCompact(true) : undefined} />
+        <span className="cc-info-cluster">
+          <span className={'tier t-' + node.tier}>{TIER_LETTER[node.tier!] ?? '?'}</span>
+          {/* in a switchboard panel the NAME is also a jump: focus this
+              agent's own desk — same glide as clicking its card (user
+              feature 2026-08-17; the tab strip's ⌖ button stays) */}
+          {bare && onJump ? (
+            <button className="cc-name cc-name-jump"
+              title={`focus ${node.id}'s desk`}
+              onClick={() => onJump(node.id)}>{node.id}</button>
+          ) : (
+            <span className="cc-name"
+              title={(node.charter || '').split('\n')[0] || node.id}>{node.id}</span>
+          )}
+          <span className="cc-context-seat">
+            <ContextWheel occ={contextOccupancy} cw={node.context_window}
+              est={contextEstimated} compactAt={compactAt} persistent
+              onCompact={canCompactContext ? () => setAskCompact(true) : undefined} />
+          </span>
+          <span className="cc-process-seat">
+            <ProcessLifecycleMark warm={Boolean(node.proc_warm)}
+              live={live ? node.proc_live : false} relaunch={node.proc_relaunch}
+              reason={node.proc_relaunch_reason} busy={turnActive} />
+          </span>
+          <TurnStatusBanner state={turnBannerState} turn={lastTurn}
+            inflightAt={node.inflight_at} tasks={node.tasks}
+            reportedSummary={bannerDuplicatesStatus ? node.last_status?.summary : undefined} />
         </span>
-        <span className="cc-process-seat">
-          <ProcessLifecycleMark warm={Boolean(node.proc_warm)}
-            live={live ? node.proc_live : false} relaunch={node.proc_relaunch}
-            reason={node.proc_relaunch_reason} busy={turnActive} />
-        </span>
-        <span className="spacer" />
         <span className="cc-actions">
           {live && !liveKids &&
             <button className="danger" onClick={() => setAsking('retire')}>
@@ -915,7 +917,7 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
           readinessState={mcpReadinessState}
           readinessReason={mcpReadinessReason} />
         <CacheForecastMark forecast={node.cache_forecast} />
-        {node.last_status &&
+        {node.last_status && !bannerDuplicatesStatus &&
           <span className={'statuschip ' + node.last_status.status}
             title={node.last_status.summary}>{node.last_status.status}</span>}
         {node.frozen &&

@@ -51,23 +51,28 @@ test('desk header has bounded controls and a separate wrapping metadata row', as
   for (const sel of ['.tier', '.cc-name', '.cc-actions', '.cc-tabs', '.cc-icon']) {
     assert.ok(top.querySelector(sel), `top row omitted ${sel}`)
   }
-  for (const sel of ['.cc-turn-seat', '.cc-context-seat .ctxwheel',
-    '.cc-process-seat .proc-state', '.cc-turn-seat .cc-working']) {
+  for (const sel of ['.turn-status-banner.working', '.cc-context-seat .ctxwheel',
+    '.cc-process-seat .proc-state', '.turn-status-banner .cc-spin']) {
     assert.ok(top.querySelector(sel), `top static slot omitted ${sel}`)
   }
-  assert.ok(top.querySelector(
-    '.cc-turn-seat + .cc-context-seat + .cc-process-seat'),
-  'turn/context/process slots changed order')
+  const cluster = top.querySelector('.cc-info-cluster')!
+  assert.deepEqual([...cluster.children].map((el) => el.classList[0]), [
+    'tier', 'cc-name', 'cc-context-seat', 'cc-process-seat', 'turn-status-banner',
+  ], 'leading information cluster changed order')
   assert.equal(top.querySelectorAll('.cc-tabs button').length, 4)
   for (const sel of [
-    '.mcp-tool-count', '.cache-forecast', '.statuschip', '.badge',
+    '.mcp-tool-count', '.cache-forecast', '.badge',
   ]) assert.ok(meta.querySelector(sel), `metadata row omitted ${sel}`)
-  for (const sel of ['.ctxwheel', '.proc-state', '.cc-working', '.turnago']) {
+  assert.equal(meta.querySelector('.statuschip.working'), null,
+    'durable working summary duplicated the live Working banner')
+  assert.match(top.querySelector('.turn-status-banner')?.getAttribute('title') ?? '',
+    /still working/, 'duplicate durable summary was not preserved in the banner tooltip')
+  for (const sel of ['.ctxwheel', '.proc-state', '.turn-status-banner', '.turnago']) {
     assert.equal(meta.querySelector(sel), null, `metadata duplicates ${sel}`)
   }
   assert.equal(head.querySelectorAll('.proc-state').length, 1)
   assert.equal(head.querySelectorAll('.ctxwheel').length, 1)
-  assert.equal(head.querySelectorAll('.cc-working').length, 1)
+  assert.equal(head.querySelectorAll('.turn-status-banner').length, 1)
   assert.equal(head.querySelectorAll('.proc-state .proc-mark').length, 0,
     'the desk header still renders separate live and warm lights')
   assert.equal(top.querySelector('.mcp-tool-count'), null)
@@ -76,7 +81,7 @@ test('desk header has bounded controls and a separate wrapping metadata row', as
     'known incompatibility warning is not attached above the composer')
 })
 
-test('fresh desk preserves empty context, off process, and turn-time slots', async (t) => {
+test('fresh desk preserves empty context, off process, and neutral Idle banner', async (t) => {
   const server = new FakeServer()
   server.occupancy = null
   installFetch(server)
@@ -101,20 +106,32 @@ test('fresh desk preserves empty context, off process, and turn-time slots', asy
     'fresh empty session received a dead compact action')
   assert.ok(top.querySelector('.proc-state.off'),
     'fresh no-process state did not occupy the process slot')
-  assert.ok(top.querySelector('.cc-turn-seat'))
+  const banner = top.querySelector('.turn-status-banner.idle')!
+  assert.equal(banner.textContent, 'Idle—')
   assert.equal(top.querySelector('.turnago'), null)
-  assert.equal(top.querySelector('.cc-working'), null)
+  assert.equal(banner.querySelector('svg,.cc-spin'), null)
 })
 
 test('layout CSS wraps naturally and pins finite controls above metadata', () => {
   const css = readFileSync(path.join(__SRC_DIR__, 'styles.css'), 'utf8')
   assert.match(css, /\.cc-head\s*\{[^}]*flex-direction:\s*column/s)
   assert.match(css, /\.cc-head-top\s*\{[^}]*flex-wrap:\s*wrap/s)
+  assert.match(css, /\.cc-head-top\s*\{[^}]*justify-content:\s*flex-start/s)
   assert.match(css, /\.cc-head-meta\s*\{[^}]*flex-wrap:\s*wrap/s)
   assert.match(css, /\.cc-tabs button\s*\{[^}]*min-height:\s*24px/s)
   assert.match(css, /\.cc-actions button\s*\{[^}]*min-height:\s*24px/s)
-  assert.match(css, /\.cc-turn-seat\s*\{[^}]*min-width:\s*52px/s)
+  assert.match(css, /\.cc-info-cluster\s*\{[^}]*gap:\s*4px 2px/s)
+  assert.match(css, /\.turn-status-banner\s*\{[^}]*min-width:\s*72px/s)
+  assert.match(css, /\.turn-status-banner\.idle\s*\{[^}]*color:\s*var\(--dim\)/s)
+  assert.doesNotMatch(css, /\.turn-status-banner\.idle\s*\{[^}]*animation:/s)
   assert.match(css, /\.cc-context-seat, \.cc-process-seat\s*\{[^}]*width:\s*28px/s)
+  assert.match(css, /\.cc-info-cluster > \.cc-name\s*\{[^}]*flex:\s*0 1 20ch/s)
   assert.match(css, /\.cc-name\s*\{[^}]*overflow-wrap:\s*anywhere/s)
   assert.doesNotMatch(css, /\.eye-chat \.cc-name\s*\{[^}]*text-overflow:\s*ellipsis/s)
+  assert.doesNotMatch(topLevelHeaderCss(css), /margin-(?:left|right):\s*auto/)
 })
+
+function topLevelHeaderCss(css: string) {
+  return [...css.matchAll(/\.(?:cc-head-top|cc-info-cluster)[^{]*\{[^}]*\}/gs)]
+    .map((m) => m[0]).join('\n')
+}
