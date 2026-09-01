@@ -738,11 +738,12 @@ class CodexTurn:
         thread id from here is too late: `_pump` dispatches notifications on
         the READER thread while this one is still inside `request()`'s poll
         loop, so `item/started`, `item/agentMessage/delta` and
-        `item/completed` are all observed BEFORE this method returns —
-        measured on every run of probe_startrace.py, fresh threads and
-        resumed ones alike. A caller that opens its journal on the return
-        value therefore streams assistant output against a transcript that
-        does not yet carry the user's message.
+        `item/completed` are all observed BEFORE this method returns — on
+        every run of a ten-run measurement, fresh threads and resumed ones
+        alike. A caller that opens its journal on the return value therefore
+        streams assistant output against a transcript that does not yet carry
+        the user's message. test_codex_stream_order.py holds that failure
+        down: remove this hook and it reports it.
 
         The hook is fail-open: journaling must never be the reason a turn
         does not run (same contract as `_codex_journal`), so an exception in

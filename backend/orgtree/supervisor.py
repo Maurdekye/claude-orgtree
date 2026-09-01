@@ -6811,8 +6811,8 @@ def _codex_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
     # It was neither, and the desk showed the consequence. The journal opened
     # on the RETURN of `turn.start()`, but `AppServerClient._pump` dispatches
     # notifications on the READER thread while the turn thread is still inside
-    # `request()`'s 20 ms poll loop: measured (probe_startrace.py, 10 runs of
-    # 10, fresh threads and resumed alike) `item/started`,
+    # `request()`'s 20 ms poll loop: measured 10 runs out of 10, fresh threads
+    # and resumed alike, `item/started`,
     # `item/agentMessage/delta` and `item/completed` are ALL observed before
     # that return. Everything durable was buffered in `pending` meanwhile, so
     # for that window the transcript had no user row for the turn — and the
