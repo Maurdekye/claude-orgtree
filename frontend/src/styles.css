@@ -1039,6 +1039,11 @@ button.cc-name:hover {
 .msgs {
   height: 100%; min-height: 0; overflow-y: auto; display: flex; flex-direction: column;
   gap: 7px; padding: 3px 2px;
+  /* the COLUMN never scrolls sideways (user bug 2026-09-01: a wide message
+     event put a horizontal scrollbar on the whole desk chat) — wide content
+     either wraps (.msg overflow-wrap) or scrolls INSIDE its own message
+     (.md table / code blocks), never the chat */
+  overflow-x: hidden;
 }
 .desk-over .msgs::-webkit-scrollbar { width: 8px; }
 /* windowed lists page in automatically on scroll (user ruling 2026-08-04) —
@@ -1093,7 +1098,13 @@ button.cc-name:hover {
 .pinuser:hover { opacity: 1; border-color: var(--accent); }
 .msg {
   max-width: 100%; min-width: 0; font-size: 14px;
-  line-height: 1.45; white-space: pre-wrap; overflow-wrap: break-word;
+  line-height: 1.45; white-space: pre-wrap;
+  /* `anywhere`, not `break-word`: only `anywhere` participates in flex
+     MIN-CONTENT sizing, so an unbroken token (a path, a hash, a JSON event
+     line) cannot prop the column open past the viewport — it wraps instead
+     (user bug 2026-09-01). Code blocks keep white-space:pre and their own
+     internal overflow-x, so they are untouched by this. */
+  overflow-wrap: anywhere;
 }
 /* the same containment for the mail reading pane, which shares .md */
 .mailer-body { min-width: 0; max-width: 100%; }
