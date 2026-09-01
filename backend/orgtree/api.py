@@ -1298,9 +1298,17 @@ def org_tree(slug: str, request: Request) -> dict[str, Any]:
             providers.provider_of(str(org.node(node["id"]).get("model") or "")))
         node["mcp_tool_count_source"] = (
             str(st.get("mcp_tool_source")) if st.get("mcp_tool_source") else None)
+        # A KNOWN count owes the reader no excuse. `_mcp_tool_count_publish`
+        # clears the reason on SUCCESS, and this fallback then filled that
+        # silence with "no live provider process" — so a node with a resolved
+        # count and a live process reported that it had neither. Measured
+        # 2026-09-01: all five live nodes said it simultaneously, every one of
+        # them serving turns. The fallback belongs to the unknown case, which
+        # is the only one that has anything to explain.
         node["mcp_tool_count_reason"] = (
-            str(st.get("mcp_tool_reason")) if st.get("mcp_tool_reason") else
-            "no live provider process")
+            str(st.get("mcp_tool_reason")) if st.get("mcp_tool_reason")
+            else None if node["mcp_tool_count"] is not None
+            else "no live provider process")
         node["mcp_readiness_waiting"] = bool(
             st.get("mcp_readiness_waiting"))
         node["mcp_readiness_state"] = (

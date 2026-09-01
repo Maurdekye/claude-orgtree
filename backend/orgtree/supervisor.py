@@ -4900,7 +4900,26 @@ def _cache_history(org: Org, nid: str) -> tuple[dict[str, Any] | None, str | Non
                            _transcript_root(org))
     measured = _cache_file_digest(path)
     if measured is None:
-        if n.get("session_unrun"):
+        # ⚠ `session_unrun` is NOT the only way a session can honestly have no
+        # history. The pardon is armed by cheap_compact, re-seed and rehire —
+        # NOT by an ordinary `hire` — so a freshly hired agent's FIRST turn
+        # launched with no transcript and no pardon and measured `None`:
+        # MISSING evidence, where the truth was "nothing has been written
+        # yet". `_cache_finish_turn` then stored that None as the receipt's
+        # launch prefix, `_cache_history_relation` read it back as
+        # "unobserved", and the desk reported the node's cache state as
+        # unknown until a SECOND completed turn happened to overwrite the
+        # receipt (user report 2026-09-01; measured in the live org doc — the
+        # one-turn node was stuck, the two-turn node had healed itself).
+        #
+        # An empty turn ring is the same fact the pardon states, observed
+        # rather than declared: this node has never booked a turn, so nothing
+        # can have written a transcript, so the absence is not damage.
+        #
+        # №31 is untouched. A node that HAS run carries turns in the ring, so
+        # a transcript that has gone missing under it still measures `None` —
+        # real amnesia, still reported as such.
+        if n.get("session_unrun") or not (n.get("turns") or []):
             # This is observed empty history, not missing evidence. It lets a
             # first positive receipt prove the stable startup/system prefix.
             return {"bytes": 0,

@@ -250,6 +250,19 @@ export function McpToolCountMark({ count, last, provider, source, reason,
   const known = typeof count === 'number'
   const hasLast = typeof last === 'number'
   const same = !hasLast || (known && count === last)
+  // №21: an UNRESOLVED count is not an unknown NODE. The live count is null
+  // for every window in which no provider process has published — the seconds
+  // between a spawn and its `system/init`, and every idle stretch after a cold
+  // process retires — which on a mostly-idle agent is most of the time. The
+  // chip was rendering '—' through all of it while holding
+  // `last_turn_mcp_tool_count` and showing it only on hover, so a node whose
+  // surface we know perfectly well read as "unknown" (user report 2026-09-01,
+  // measured: every one of five live nodes had a known last-turn count).
+  //
+  // So fall back to it, marked as what it is: `~27` means "27 last turn, not
+  // resolved right now", never "27 right now". Only a node that has never
+  // completed a turn — nothing measured, ever — still reads '—'.
+  const stale = !known && hasLast
   const title = [
     known ? `current callable MCP tools: ${count}`
       : `current callable MCP tools: unknown${reason ? ` — ${reason}` : ''}`,
@@ -259,9 +272,10 @@ export function McpToolCountMark({ count, last, provider, source, reason,
       ? `readiness: ${readinessState}${readinessReason ? ` — ${readinessReason}` : ''}`
       : '',
   ].filter(Boolean).join('\n')
-  return <span className={'mcp-tool-count ' + (!known ? 'unknown' : same ? 'same' : 'changed')}
+  return <span className={'mcp-tool-count '
+    + (!known ? (stale ? 'unknown stale' : 'unknown') : same ? 'same' : 'changed')}
     title={title} aria-label={title}>
-    <span aria-hidden="true">MCP</span> {known ? count : '—'}
+    <span aria-hidden="true">MCP</span> {known ? count : stale ? `~${last}` : '—'}
   </span>
 }
 

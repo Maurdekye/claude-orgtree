@@ -627,6 +627,10 @@ button.badge.audience-fold.alert {
   border-color: color-mix(in srgb, var(--warn, #e5c07b) 55%, var(--line));
 }
 .mcp-tool-count.unknown { color: var(--dim); border-style: dashed; }
+/* `~N` — the last measured count, shown while the live one is unresolved.
+   Keeps `unknown`'s dashed border (it is NOT a current reading) and only
+   lifts the text out of --dim, so a number that IS evidence is legible. */
+.mcp-tool-count.unknown.stale { color: var(--fg); }
 .cache-forecast {
   display: inline-flex; align-items: center; flex: none; min-height: 18px;
   padding: 0 6px; border: 1px solid var(--line); border-radius: 9px;
