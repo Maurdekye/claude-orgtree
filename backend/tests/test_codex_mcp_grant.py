@@ -112,6 +112,12 @@ class _StubProc:
         self.stdin = io.BytesIO()
         self.stdout = io.BytesIO(b"")
         self.stderr = io.BytesIO(b"")
+        # close() reaps the TREE by pid (`taskkill /T /F /PID`), so the stub
+        # needs one. 0 is deliberate: it is the System Idle Process, which
+        # Windows refuses to terminate, so the reap cannot land on anything
+        # real no matter what pids this machine is recycling. close() passes
+        # check=False and swallows the error, which is the whole contract.
+        self.pid = 0
 
     def terminate(self): pass
     def kill(self): pass
@@ -173,6 +179,14 @@ def main() -> int:
         real = codexrun.subprocess.Popen
 
         def fake_popen(argv, **kw):
+            # close() now reaps the process TREE with
+            # subprocess.run(["taskkill", …]), which routes through this same
+            # patched Popen. Only the app-server launch is under test, so let
+            # the reap through to the real Popen: intercepting it both crashes
+            # (subprocess.run needs a context manager) and would overwrite the
+            # argv this test is here to inspect.
+            if argv and "taskkill" in str(argv[0]).lower():
+                return real(argv, **kw)
             seen["argv"] = list(argv)
             return _StubProc()
 
@@ -198,6 +212,14 @@ def main() -> int:
         real = codexrun.subprocess.Popen
 
         def fake_popen(argv, **kw):
+            # close() now reaps the process TREE with
+            # subprocess.run(["taskkill", …]), which routes through this same
+            # patched Popen. Only the app-server launch is under test, so let
+            # the reap through to the real Popen: intercepting it both crashes
+            # (subprocess.run needs a context manager) and would overwrite the
+            # argv this test is here to inspect.
+            if argv and "taskkill" in str(argv[0]).lower():
+                return real(argv, **kw)
             seen["argv"] = list(argv)
             return _StubProc()
 
