@@ -23,6 +23,14 @@ SUBSCRIPTION_TTL_SECONDS: Final = 60 * 60
 API_KEY_TTL_SECONDS: Final = 5 * 60
 CODEX_SUBSCRIPTION_TTL_SECONDS: Final = 30 * 60
 
+#: The serialization quantum of durable receipt timestamps. `observed_at` is
+#: the microsecond-rounded ISO image of the float clock the same call still
+#: holds, and `datetime` rounds to the NEAREST microsecond — so the parsed
+#: stamp may sit up to half a quantum ahead of the float it was made from.
+#: A skew claim needs more than one whole quantum; anything inside it is the
+#: same instant wearing two encodings.
+SERIALIZATION_QUANTUM_S: Final = 1e-6
+
 # Stable by construction: no formatting fields, timestamps, account names,
 # settings, org state or forecast values may enter this system-prompt block.
 CACHE_CONTINUITY_BLOCK: Final = """[CACHE CONTINUITY]
@@ -43,6 +51,17 @@ def iso(epoch: float) -> str:
     """UTC second-resolution ISO string used by durable evidence."""
     return (dt.datetime.fromtimestamp(epoch, dt.timezone.utc)
             .isoformat(timespec="seconds").replace("+00:00", "Z"))
+
+
+def iso_us(epoch: float) -> str:
+    """UTC microsecond ISO string for computed expiry instants.
+
+    Receipts store microsecond `observed_at`/`expires_at` stamps; a projected
+    expiry truncated to whole seconds would disagree with them by up to a
+    second and flip displays across the boundary early.
+    """
+    return (dt.datetime.fromtimestamp(epoch, dt.timezone.utc)
+            .isoformat(timespec="microseconds").replace("+00:00", "Z"))
 
 
 def epoch(value: Any) -> float | None:
@@ -275,7 +294,7 @@ def classify(current: dict[str, Any], continuity: dict[str, Any] | None,
             "confidence": "uncertain", "expected_input_tokens": expected,
         }
     expires = observed + ttl
-    if now < observed:
+    if observed - now > SERIALIZATION_QUANTUM_S:
         return {
             "state": "uncertain", "source": "clock_skew",
             "reason": "The receipt timestamp is in the future relative to this backend clock.",
@@ -283,10 +302,24 @@ def classify(current: dict[str, Any], continuity: dict[str, Any] | None,
                                 "uncertain")],
             "observed_at": at, "last_receipt_at": receipt.get("observed_at"),
             "lane": str(current.get("lane") or "unobserved"),
-            "ttl_seconds": ttl, "expires_at": iso(expires),
+            "ttl_seconds": ttl, "expires_at": iso_us(expires),
             "confidence": "uncertain", "expected_input_tokens": expected,
         }
-    if now >= expires:                 # equality is the expiry boundary
+    if observed > now:
+        now = observed          # inside one quantum: the same instant, clamped
+    return _receipt_verdict(
+        expired=now >= expires,        # equality is the expiry boundary
+        codex_estimate=codex_estimate, at=at,
+        last_receipt_at=receipt.get("observed_at"),
+        lane=str(current.get("lane") or "unobserved"),
+        ttl=ttl, expires=expires, expected=expected)
+
+
+def _receipt_verdict(*, expired: bool, codex_estimate: bool, at: str,
+                     last_receipt_at: Any, lane: str, ttl: int,
+                     expires: float, expected: int) -> dict[str, Any]:
+    """The two matching-receipt outcomes, shared with legacy-row healing."""
+    if expired:
         return {
             "state": "expired_known_entry",
             "source": ("codex_subscription_fixed_estimate" if codex_estimate
@@ -301,9 +334,9 @@ def classify(current: dict[str, Any], continuity: dict[str, Any] | None,
                         if codex_estimate else
                         "authoritative cache entry expired"), at,
                 "estimated" if codex_estimate else "known")],
-            "observed_at": at, "last_receipt_at": receipt.get("observed_at"),
-            "lane": str(current.get("lane") or "unobserved"),
-            "ttl_seconds": ttl, "expires_at": iso(expires),
+            "observed_at": at, "last_receipt_at": last_receipt_at,
+            "lane": lane,
+            "ttl_seconds": ttl, "expires_at": iso_us(expires),
             "confidence": ("estimated" if codex_estimate else "known"),
             "expected_input_tokens": expected,
         }
@@ -323,11 +356,54 @@ def classify(current: dict[str, Any], continuity: dict[str, Any] | None,
                         "subscription estimate" if codex_estimate else
                         "matching unexpired positive cache receipt"), at,
             "estimated" if codex_estimate else "observed")],
-        "observed_at": at, "last_receipt_at": receipt.get("observed_at"),
-        "lane": str(current.get("lane") or "unobserved"),
-        "ttl_seconds": ttl, "expires_at": iso(expires),
+        "observed_at": at, "last_receipt_at": last_receipt_at,
+        "lane": lane,
+        "ttl_seconds": ttl, "expires_at": iso_us(expires),
         "confidence": "observed", "expected_input_tokens": expected,
     }
+
+
+def heal_quantized_skew(forecast: Any, now: float) -> dict[str, Any] | None:
+    """Reclassify one persisted false ``clock_skew`` forecast row, or None.
+
+    The healable artifact is exact: a zero-tolerance comparison of one call's
+    float clock against its own microsecond-serialized receipt stamp, provable
+    because that call recorded identical ``observed_at`` and
+    ``last_receipt_at`` strings. A receipt genuinely observed in the future
+    carries a distinct (later) ``last_receipt_at`` and is preserved untouched,
+    as is any row this cannot re-derive a verdict for. The verdict follows the
+    fixed lane boundary: before the TTL the entry is compatible, after it
+    expired. Codex's fixed-estimate labelling is recovered from the lane plus
+    the TTL value itself — the fixed TTL table maps them one-to-one.
+    """
+    row = forecast if isinstance(forecast, dict) else {}
+    if (str(row.get("state") or "") != "uncertain"
+            or str(row.get("source") or "") != "clock_skew"):
+        return None
+    at = str(row.get("observed_at") or "")
+    receipt_at = row.get("last_receipt_at")
+    if not at or not isinstance(receipt_at, str) or at != receipt_at:
+        return None
+    observed = epoch(receipt_at)
+    ttl_raw = row.get("ttl_seconds")
+    if (observed is None or isinstance(ttl_raw, bool)
+            or not isinstance(ttl_raw, (int, float)) or ttl_raw <= 0):
+        return None
+    if observed - now > SERIALIZATION_QUANTUM_S:
+        return None            # still genuinely ahead of this clock: keep it
+    ttl = int(ttl_raw)
+    lane = str(row.get("lane") or "unobserved")
+    codex_estimate = (lane == "subscription"
+                      and ttl == CODEX_SUBSCRIPTION_TTL_SECONDS)
+    try:
+        expected = int(row.get("expected_input_tokens") or 0)
+    except (TypeError, ValueError, OverflowError):
+        expected = 0
+    expires = observed + ttl
+    return _receipt_verdict(
+        expired=max(now, observed) >= expires, codex_estimate=codex_estimate,
+        at=at, last_receipt_at=receipt_at, lane=lane, ttl=ttl,
+        expires=expires, expected=expected)
 
 
 def public(forecast: dict[str, Any], *, generation: str,

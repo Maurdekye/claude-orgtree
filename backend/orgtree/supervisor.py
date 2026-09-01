@@ -5354,6 +5354,14 @@ def cache_forecast_public(org: Org, nid: str,
     internal = dict(internal_raw)
     now = time.time() if now is None else now
 
+    # Rows persisted before the serialization-quantum tolerance can carry a
+    # false `clock_skew` verdict minted against their own receipt stamp. Heal
+    # them at read time (stateless — the durable book is admission's to
+    # write); a genuinely future receipt keeps its uncertainty.
+    healed = cachecontinuity.heal_quantized_skew(internal, now)
+    if healed is not None:
+        internal = healed
+
     # Re-evaluate all non-history identity inputs for the pre-send UI.  The
     # synthetic relations below say only "do not decide history here"; a
     # static mismatch is independently sufficient to prove incompatibility.

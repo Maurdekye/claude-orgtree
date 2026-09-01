@@ -542,6 +542,260 @@ def source_contract() -> None:
 check("one pre-drain ordinary-turn gate owns policy and WebSocket contract",
       source_contract)
 
+def quantized_receipt_stamps() -> None:
+    # The production artifact end to end: a receipt stamp is the
+    # microsecond-rounded ISO image of the very float the classifier then
+    # compares against, and fromtimestamp rounds to NEAREST — so a float just
+    # under a microsecond boundary serializes AHEAD of itself.
+    roundup_now = NOW + 6e-7
+    stamp = C.iso_us(roundup_now)
+    parsed = C.epoch(stamp)
+    assert parsed is not None and parsed > roundup_now, \
+        "fixture lost its round-up property"
+    prior = book(receipt_at=NOW)
+    prior["receipt"]["observed_at"] = stamp
+    row = C.classify(snapshot(), prior, roundup_now)
+    eq(row["state"], "compatible_observed")
+    eq(row["expires_at"], C.iso_us(parsed + 3600))
+
+    # sub-quantum skew (the +0.476837µs shape), with float margin comfortably
+    # above one ULP (~0.24µs at contemporary epochs)
+    prior["receipt"]["observed_at"] = C.iso_us(NOW + 2e-6)
+    obs = C.epoch(prior["receipt"]["observed_at"])
+    within = obs - 4.76837e-7
+    assert 0 < obs - within <= 1e-6, f"bad fixture: {obs - within!r}"
+    eq(C.classify(snapshot(), prior, within)["state"], "compatible_observed")
+
+    # just over one serialization quantum remains genuine skew
+    over = obs - 1.5e-6
+    assert obs - over > 1e-6, f"bad fixture: {obs - over!r}"
+    row = C.classify(snapshot(), prior, over)
+    eq((row["state"], row["source"]), ("uncertain", "clock_skew"))
+    eq(row["expires_at"], C.iso_us(obs + 3600))
+
+    # a whole second ahead is unambiguous skew on every lane
+    prior["receipt"]["observed_at"] = C.iso(NOW + 1)
+    eq(C.classify(snapshot(), prior, NOW)["source"], "clock_skew")
+
+
+check("receipt-stamp quantization is tolerated; genuine skew is not",
+      quantized_receipt_stamps)
+
+
+def quantized_lane_sweep() -> None:
+    lanes = (("claude", "subscription", 3600, "compatible_observed"),
+             ("claude", "api_key", 300, "compatible_observed"),
+             ("openai", "subscription", 1800, "compatible_observed"),
+             ("openai", "api_key", None, "uncertain"),
+             ("google", "provider_unsupported", None, "uncertain"))
+    for provider, lane, ttl, want in lanes:
+        ident = {"provider": provider, "lane": lane, "account": "acct",
+                 "model": "m"}
+        cur = snapshot(**ident)
+        prior = book(receipt_at=NOW)
+        for key in ("last_turn", "receipt"):
+            prior[key].update(ident)
+        roundup_now = NOW + 6e-7
+        prior["receipt"]["observed_at"] = C.iso_us(roundup_now)
+        row = C.classify(cur, prior, roundup_now)
+        eq((provider, lane, row["state"]), (provider, lane, want))
+        if ttl is None:
+            eq(row["source"], "ttl_unobserved")
+        else:
+            observed = C.epoch(prior["receipt"]["observed_at"])
+            expired = C.classify(cur, prior, observed + ttl)
+            eq((provider, lane, expired["state"]),
+               (provider, lane, "expired_known_entry"))
+
+
+check("quantized stamps classify per lane; unobserved TTL lanes stay unknown",
+      quantized_lane_sweep)
+
+
+def subsecond_expiry_boundary() -> None:
+    stamp = C.iso_us(NOW + 0.25)          # a fractional-second receipt instant
+    obs = C.epoch(stamp)
+    prior = book(receipt_at=NOW)
+    prior["receipt"]["observed_at"] = stamp
+    row = C.classify(snapshot(), prior, obs + 3600 - 0.001)
+    eq(row["state"], "compatible_observed")
+    eq(row["expires_at"], C.iso_us(obs + 3600))
+    eq(C.epoch(row["expires_at"]), obs + 3600)     # microseconds round-trip
+    row = C.classify(snapshot(), prior, obs + 3600)
+    eq(row["state"], "expired_known_entry")        # equality is the boundary
+    eq(row["expires_at"], C.iso_us(obs + 3600))
+
+
+check("expiry keeps microseconds and flips exactly at the subsecond boundary",
+      subsecond_expiry_boundary)
+
+
+def _legacy_row(stamp: str, *, lane: str = "subscription",
+                ttl: int | None = 3600) -> dict[str, Any]:
+    return {
+        "state": "uncertain", "source": "clock_skew",
+        "reason": "The receipt timestamp is in the future relative to this "
+                  "backend clock.",
+        "reasons": [{"component": "clock",
+                     "reason": "receipt timestamp is in the future",
+                     "evidence_at": stamp, "confidence": "uncertain"}],
+        "observed_at": stamp, "last_receipt_at": stamp,
+        "lane": lane, "ttl_seconds": ttl,
+        "expires_at": C.iso(NOW + (ttl or 0)),     # old second-truncated shape
+        "confidence": "uncertain", "expected_input_tokens": 111,
+    }
+
+
+def legacy_skew_healing() -> None:
+    stamp = C.iso_us(NOW + 6e-7)
+    obs = C.epoch(stamp)
+    legacy = _legacy_row(stamp)
+    healed = C.heal_quantized_skew(legacy, obs + 10)
+    assert healed is not None, "same-call quantization row must heal"
+    eq(healed["state"], "compatible_observed")
+    eq(healed["source"], "authoritative_receipt")
+    eq(healed["last_receipt_at"], stamp)
+    eq(healed["expires_at"], C.iso_us(obs + 3600))
+    eq(healed["expected_input_tokens"], 111)
+    healed = C.heal_quantized_skew(legacy, obs + 3600)
+    eq((healed or {}).get("state"), "expired_known_entry")
+
+    api = _legacy_row(stamp, lane="api_key", ttl=300)
+    eq((C.heal_quantized_skew(api, obs + 10) or {}).get("state"),
+       "compatible_observed")
+    eq((C.heal_quantized_skew(api, obs + 300) or {}).get("state"),
+       "expired_known_entry")
+
+    codex = _legacy_row(stamp, ttl=1800)
+    healed = C.heal_quantized_skew(codex, obs + 10)
+    eq((healed or {}).get("source"), "codex_subscription_fixed_estimate")
+    eq((healed or {}).get("confidence"), "observed")
+    healed = C.heal_quantized_skew(codex, obs + 1800)
+    eq((healed or {}).get("state"), "expired_known_entry")
+    eq((healed or {}).get("confidence"), "estimated")
+
+    # preserved untouched: genuinely distinct future receipts, foreign
+    # sources/states, underivable rows, rows still ahead of this clock
+    eq(C.heal_quantized_skew(
+        dict(legacy, last_receipt_at=C.iso_us(NOW + 500)), obs + 10), None)
+    eq(C.heal_quantized_skew(dict(legacy, source="ttl_unobserved"),
+                             obs + 10), None)
+    eq(C.heal_quantized_skew(dict(legacy, state="compatible_observed"),
+                             obs + 10), None)
+    eq(C.heal_quantized_skew(dict(legacy, ttl_seconds=None), obs + 10), None)
+    eq(C.heal_quantized_skew(dict(legacy, last_receipt_at=None), obs + 10),
+       None)
+    eq(C.heal_quantized_skew(legacy, obs - 5), None)
+    eq(C.heal_quantized_skew(None, obs + 10), None)
+
+
+check("legacy false clock-skew rows heal by TTL side; genuine skew is preserved",
+      legacy_skew_healing)
+
+
+def quantized_finish_and_refresh() -> None:
+    org = store.create_org("zz-cache-quantized-finish")
+    org.hire(USER, None, "haiku", 0, "agent")
+    n = org.node("agent")
+    hist_path = os.path.join(DATA, "quantized-history.jsonl")
+    with open(hist_path, "wb") as f:
+        f.write(b"hist")
+    import hashlib
+    history = {"bytes": 4, "sha256": hashlib.sha256(b"hist").hexdigest()}
+    base = snapshot(node_generation=int(n.get("generation") or 0),
+                    session=n["session_id"], history=history)
+    base.pop("last_turn_history_relation", None)
+    base.pop("receipt_history_relation", None)
+    old_snapshot = S._cache_snapshot
+
+    def fake_snapshot(_org: Any, _nid: Any, *, now: float | None = None,
+                      **_kw: Any) -> dict[str, Any]:
+        row = copy.deepcopy(base)
+        row["captured_at"] = S._iso_ts(NOW if now is None else now)
+        row["_history_path"] = hist_path
+        return row
+
+    S._cache_snapshot = fake_snapshot
+    try:
+        seed = S._cache_finish_turn(org, "agent", copy.deepcopy(base),
+                                    {"cache_read_input_tokens": 10},
+                                    now=NOW - 100)
+        assert seed is not None
+        for k in range(12):
+            now_f = NOW + k * 1.7e-7   # sweeps under/over µs rounding edges
+            safe = S._cache_finish_turn(
+                org, "agent", copy.deepcopy(base),
+                {"cache_read_input_tokens": 10}, now=now_f)
+            assert safe is not None
+            fc = n["cache_continuity"]["forecast"]
+            assert fc["state"] == "compatible_observed", (
+                f"now={now_f!r} produced {fc['state']} ({fc['source']})")
+            eq(fc["observed_at"], fc["last_receipt_at"])
+        roundup = NOW + 6e-7
+        safe = S._cache_refresh_receipt(
+            org, "agent", copy.deepcopy(base),
+            {"cache_read_input_tokens": 5}, now=roundup)
+        assert safe is not None
+        fc = n["cache_continuity"]["forecast"]
+        eq(fc["state"], "compatible_observed")
+        eq(fc["observed_at"], fc["last_receipt_at"])
+        eq(safe["state"], "compatible_observed")
+    finally:
+        S._cache_snapshot = old_snapshot
+
+
+check("finish/refresh same-call stamps never manufacture clock skew",
+      quantized_finish_and_refresh)
+
+
+def public_healing() -> None:
+    org = store.create_org("zz-cache-heal-public")
+    org.hire(USER, None, "haiku", 0, "agent")
+    n = org.node("agent")
+    stamp = C.iso_us(NOW + 6e-7)
+    obs = C.epoch(stamp)
+    legacy = _legacy_row(stamp)
+    doc = book(receipt_at=NOW)
+    doc["receipt"]["observed_at"] = stamp
+    doc["receipt"]["ttl_seconds"] = 3600
+    doc["receipt"]["expires_at"] = C.iso_us(obs + 3600)
+    doc.update({"version": 1, "seq": 3, "forecast": copy.deepcopy(legacy),
+                "public": C.public(legacy, generation="legacy-gen",
+                                   precompact_action="not_applicable",
+                                   precompact_reason="uncertain")})
+    n["cache_continuity"] = copy.deepcopy(doc)
+    old_snapshot = S._cache_snapshot
+    S._cache_snapshot = lambda *a, **k: copy.deepcopy(
+        dict(snapshot(), captured_at=stamp))
+    try:
+        served = S.cache_forecast_public(org, "agent", now=obs + 10)
+        assert served is not None
+        eq(served["state"], "compatible_observed")
+        eq(served["expires_at"], C.iso_us(obs + 3600))
+        assert served["generation"] != "legacy-gen"
+
+        served = S.cache_forecast_public(org, "agent", now=obs + 3600 + 1)
+        assert served is not None
+        eq(served["state"], "expired_known_entry")
+
+        genuine = copy.deepcopy(doc)
+        genuine["forecast"] = dict(legacy,
+                                   last_receipt_at=C.iso_us(NOW + 500))
+        genuine["public"] = C.public(
+            genuine["forecast"], generation="g2",
+            precompact_action="not_applicable", precompact_reason="uncertain")
+        n["cache_continuity"] = genuine
+        served = S.cache_forecast_public(org, "agent", now=obs + 10)
+        assert served is not None
+        eq((served["state"], served["source"]), ("uncertain", "clock_skew"))
+    finally:
+        S._cache_snapshot = old_snapshot
+
+
+check("read-time healing corrects displayed legacy rows without touching genuine skew",
+      public_healing)
+
+
 print(f"\nALL {PASS} CHECKS PASS" if not FAIL else
       f"\n{FAIL} FAILED, {PASS} PASSED")
 raise SystemExit(1 if FAIL else 0)
