@@ -1140,6 +1140,44 @@ class Org:
             res["bridge"] = {"raise_ceiling": True}
         return res
 
+    def heal_plan_stamps(self) -> list[str] | None:
+        """One-shot data heal (D-219): strip the 'plan' stamps an old org
+        default backfilled into node scopes.
+
+        Load normalization seeds a scope's MISSING permission_mode from the
+        org default, and `_new_node` stamps the default into every hire — so
+        a period when this default sat at 'plan' left 'plan' written into
+        every node that predated the key (live-measured 2026-09-01: 78 of
+        106 archived nodes). A HEADLESS turn cannot leave plan mode
+        (ExitPlanMode is disallowed at spawn; MCP/file/shell tools deny), so
+        every bare rehire of a stamped expert came back mute — the user
+        read it as "permissions are all wrong / newly hired agents don't
+        start". Marker-keyed on the doc: runs once, records what it touched,
+        and a 'plan' set DELIBERATELY after the heal is preserved. Kiosk
+        ceilings are untouched — a ceiling is deliberate lockdown config,
+        not birth-stamp residue.
+
+        Returns the healed names when the heal RAN (possibly empty), None
+        when the marker says it already ran."""
+        migs = self.d.setdefault("_migrations", {})
+        if "pm_plan_stamp_heal" in migs:
+            return None
+        healed: list[str] = []
+        if self.d.get("permission_mode") == "plan":
+            self.d["permission_mode"] = "acceptEdits"
+            healed.append("<org default>")
+        for nid, n in self.nodes.items():
+            sc = n["scope"]
+            if sc.get("permission_mode") == "plan":
+                sc["permission_mode"] = "acceptEdits"
+                healed.append(nid)
+        migs["pm_plan_stamp_heal"] = {"at": now(), "healed": healed}
+        if healed:
+            self._log("heal", SYSTEM,
+                      {"what": "permission_mode plan→acceptEdits",
+                       "nodes": healed}, [])
+        return healed
+
     # ------------------------------------------------------------- validation
     def _require_authority(self, actor: str, nid: str,
                            allow_self: bool = False) -> None:

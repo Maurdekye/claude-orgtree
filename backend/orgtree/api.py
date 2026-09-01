@@ -678,6 +678,23 @@ async def _wire_notify() -> None:  # type: ignore[unused-function]  # registered
                   f"ORGTREE_PUBLIC_PORT to expose it")
         except LedgerError:
             print(f"[orgtree] ORGTREE_KIOSK={legacy!r}: no such org — ignored")
+    # D-219 one-shot heal: an old 'plan' org default left 'plan' stamped in
+    # node scopes, and a headless plan-mode agent is mute — every bare rehire
+    # of a stamped expert stalled (user incident 2026-09-01). Runs before
+    # reconciliation so re-driven turns spawn with the healed mode.
+    for o in store.list_orgs():
+        healed: list[str] | None = None
+        try:
+            with store.DOC_LOCK:
+                horg = store.load_org(o["slug"])
+                healed = horg.heal_plan_stamps()
+                if healed is not None:
+                    store.save_org(horg)
+        except Exception as e:                       # noqa: BLE001
+            print(f"[orgtree] {o['slug']}: plan-stamp heal failed ({e})")
+        if healed:
+            print(f"[orgtree] {o['slug']}: healed permission_mode "
+                  f"'plan' → 'acceptEdits' on {len(healed)} node(s)")
     for o in store.list_orgs():                   # №31 eager reconciliation
         marked = supervisor.reconcile(o["slug"])
         if marked:

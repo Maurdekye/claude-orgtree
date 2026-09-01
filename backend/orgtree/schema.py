@@ -593,6 +593,10 @@ class OrgDoc(TypedDict):
                                             # net slug), body, kind, at, oid
                                             # (org_inbox row id), tries,
                                             # last_err?, attachments: [abs]}
+    _migrations: NotRequired[dict[str, Any]]  # one-shot data-heal markers
+                                              # (D-219): key = heal name,
+                                              # value = {at, healed: [...]};
+                                              # presence means "never again"
     headless: NotRequired[bool]             # §9.6: no user present; user-bound
                                             # asks auto-deny (requires api_key)
     api_key: NotRequired[str]               # §9.5: per-org ANTHROPIC_API_KEY
