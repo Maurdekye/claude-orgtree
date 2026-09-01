@@ -93,10 +93,13 @@ def failures(page, width: int, enlarged: bool) -> list[str]:
       }
       const contextSeat = top.querySelector('.cc-context-seat').getBoundingClientRect();
       const processSeat = top.querySelector('.cc-process-seat').getBoundingClientRect();
+      const processToggle = top.querySelector('.cc-process-seat .proc-toggle').getBoundingClientRect();
       if (contextSeat.width < 23.5 || contextSeat.height < 23.5)
         bad.push('.cc-context-seat: unstable static slot');
       if (processSeat.width < 23.5 || processSeat.height < 23.5)
         bad.push('.cc-process-seat: unstable static slot');
+      if (processToggle.width < 23.5 || processToggle.height < 23.5)
+        bad.push('.proc-toggle: shrunken hit target');
       if (top.querySelector('.turn-status-banner').getBoundingClientRect().width < 71.5)
         bad.push('status/age banner collapsed');
       if (meta.querySelector('.ctxwheel,.proc-state,.turn-status-banner'))
@@ -106,6 +109,15 @@ def failures(page, width: int, enlarged: bool) -> list[str]:
         'turn-status-banner'];
       const actual = [...cluster.children].map((el) => el.classList[0]);
       if (actual.join('|') !== expected.join('|')) bad.push('information order changed');
+      const tierRect = cluster.querySelector('.tier').getBoundingClientRect();
+      const nameRect = cluster.querySelector('.cc-name').getBoundingClientRect();
+      const tierNameGap = nameRect.left - tierRect.right;
+      if (tierNameGap < 3.5 || tierNameGap > 4.5)
+        bad.push(`tier-to-name gap ${tierNameGap}px is not the intended subtle 4px`);
+      const contextToggle = cluster.querySelector('.cc-context-seat .ctxbtn').getBoundingClientRect();
+      const statusRect = cluster.querySelector('.turn-status-banner').getBoundingClientRect();
+      if (processToggle.left < contextToggle.right - .5 || statusRect.left < processToggle.right - .5)
+        bad.push('process hit target overlaps an adjacent control');
       const topOrder = [...top.children].map((el) => el.classList[0]);
       if (topOrder.join('|') !== 'cc-head-left|spacer|cc-head-right')
         bad.push('top group/spacer order changed');

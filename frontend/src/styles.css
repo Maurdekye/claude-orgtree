@@ -819,6 +819,7 @@ html.mobile .edge-jump { display: none; }
 .cc-head-left > .cc-context-seat,
 .cc-head-left > .cc-process-seat,
 .cc-head-left > .turn-status-banner { flex: none; }
+.cc-head-left > .tier { margin-inline-end: 2px; }
 .cc-head-left > .cc-name {
   flex: 0 1 auto; min-width: 6ch; max-width: none;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -858,7 +859,9 @@ html.mobile .edge-jump { display: none; }
   min-height: 24px; flex: none;
 }
 .cc-context-seat { width: 24px; min-width: 24px; }
-.cc-process-seat { width: auto; min-width: 16px; }
+.cc-process-seat {
+  width: auto; min-width: 16px; margin-inline: -2px;
+}
 .cc-context-seat .ctxbtn {
   width: 24px; min-width: 24px; min-height: 24px;
   align-items: center; justify-content: center;
