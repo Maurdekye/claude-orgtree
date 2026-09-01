@@ -356,6 +356,14 @@ class Org:
                 sc["tools"] = norm_tools({"bash": sc.pop("bash", True), "mcp": []})
             else:
                 sc["tools"] = norm_tools(sc["tools"])
+            # Cache-aware compaction replaced the editable idle timeout. A
+            # node row that contained only the legacy timeout becomes a clean
+            # inherit; enabled/off and the occupancy threshold survive.
+            _node_acc = sc.get("auto_cheap_compact")
+            if isinstance(_node_acc, dict):
+                _node_acc.pop("idle_s", None)
+                if not _node_acc:
+                    sc.pop("auto_cheap_compact", None)
             # default leans toward visibility, not opaque invisibility (user ruling)
             sc.setdefault("org_visibility", "full")
             sc.setdefault("permission_mode", self.d.get("permission_mode", "acceptEdits"))
@@ -376,6 +384,12 @@ class Org:
         # machine-global (accounts.py). Old docs shed the stale key here so
         # nothing can appear selected while nothing reads it.
         self.d.pop("account_token_uuid", None)
+        _org_acc = self.d.get("auto_cheap_compact")
+        if isinstance(_org_acc, dict):
+            # Migration is deliberately ignore-and-remove: old idle duration
+            # is not converted into a TTL because only an authoritative
+            # provider/auth receipt may start the new expiry clock.
+            _org_acc.pop("idle_s", None)
         if self.d.get("fable_filter_policy") not in ("halt", "opus"):
             self.d["fable_filter_policy"] = "halt"  # content-filter flags (user spec)
         # add-only migration (D-084 style): existing orgs reach the new toggle
@@ -2780,6 +2794,9 @@ class Org:
         n["session_id"] = str(uuid.uuid4())
         n["generation"] = gen + 1
         n["predecessor"] = pred_id
+        # Evidence belongs to the archived predecessor generation. The fresh
+        # successor starts unobserved and cannot inherit a positive receipt.
+        n.pop("cache_continuity", None)
         # the counter belongs to the OLD session file; this one is brand new
         # and empty. Left stale it fails the other way round from the fork's
         # phantom: a node carrying "2" would need THREE real compactions in
@@ -4153,13 +4170,10 @@ class Org:
                 if "occ" in acc:
                     keep["occ"] = min(0.95, max(0.05,
                                                 float(acc.get("occ", 0.5))))
-                if "idle_s" in acc:
-                    # (the fallback is unreachable — the `in` guard above means
-                    # the key is present — but it is kept in step with
-                    # `_auto_cheap_cfg`'s 3600 so a reader never meets two
-                    # different numbers for the same default)
-                    keep["idle_s"] = max(0, int(acc.get("idle_s", 3600)))
-                sc["auto_cheap_compact"] = keep
+                if keep:
+                    sc["auto_cheap_compact"] = keep
+                # A legacy timeout-only write is a no-op. It neither creates
+                # an empty override nor clears a recognised current one.
             else:
                 sc.pop("auto_cheap_compact", None)
         if want_handles is not None:
@@ -6678,6 +6692,8 @@ class Org:
         """Derived view for the API/UI: nested nodes with computed fields."""
         def build(nid: str) -> dict[str, Any]:
             n = self.nodes[nid]
+            _cc = n.get("cache_continuity")
+            _cc_public = (_cc.get("public") if isinstance(_cc, dict) else None)
             return {
                 "id": nid,
                 "title": n["title"],
@@ -6702,6 +6718,11 @@ class Org:
                 # session holds only its summary until the next turn
                 "compacted_unrun": bool(n.get("compacted_unrun")),
                 "context_window": n.get("context_window"),
+                # Safe atomic forecast only. Private fingerprints, provider
+                # account/session evidence and component hashes never cross
+                # this view boundary.
+                "cache_forecast": (dict(_cc_public)
+                                   if isinstance(_cc_public, dict) else None),
                 "charter": n.get("charter"),
                 "team_charter": n.get("team_charter"),
                 "mail_pending": len((self.d.get("mail") or {}).get(nid, [])),
@@ -6874,8 +6895,8 @@ class Org:
             # the UI derives "active" by comparing against its own clock
             "api_fallback": bool(self.d.get("api_fallback")),
             "api_fallback_until": self.d.get("api_fallback_until"),
-            # FR-24b: the org-level auto-cheap-compact config (nodes carry
-            # their overrides in scope.auto_cheap_compact, already shipped)
+            # Cache-protective compaction: explicit on/off plus the minimum
+            # measured context fraction. Provider/auth expiry is derived.
             "auto_cheap_compact": self.d.get("auto_cheap_compact"),
             # FR-18: the canvas renders dogs as satellite entities; the
             # events ring IS the sent-mail tab.

@@ -629,18 +629,15 @@ export function NodeConfig({ node, map, tree, slug, op, toast, codexProvider,
   const setEffort = set<string>('effort', effort)
   const pm = val('pm', scope.permission_mode ?? 'acceptEdits')
   const setPm = set<string>('pm', pm)
-  // FR-24b: per-node auto-cheap-compact override — '' inherit | 'on' | 'off'
+  // Per-node known-cold compaction override — '' inherit | 'on' | 'off'
   const srvAcc = (scope as { auto_cheap_compact?: { enabled?: boolean
-    occ?: number; idle_s?: number } }).auto_cheap_compact
+    occ?: number } }).auto_cheap_compact
   const accMode = val('accMode',
     srvAcc == null ? '' : srvAcc.enabled ? 'on' : 'off')
   const setAccMode = set<string>('accMode', accMode)
   const accOcc = val<number | string>('accOcc',
     Math.round((srvAcc?.occ ?? 0.5) * 100))
   const setAccOcc = set('accOcc', accOcc)
-  const accIdle = val<number | string>('accIdle',
-    Math.round((srvAcc?.idle_s ?? 3600) / 60))
-  const setAccIdle = set('accIdle', accIdle)
   // D-106: who this pending grant would raise, recomputed as the form changes
   const cascade = useMemo(
     () => cascadePreview(map, node.id,
@@ -682,10 +679,7 @@ export function NodeConfig({ node, map, tree, slug, op, toast, codexProvider,
           charter, team_charter: teamCharter, effort,
           auto_cheap_compact: accMode === '' ? {}
             : { enabled: accMode === 'on',
-                occ: (+accOcc || 50) / 100,
-                // 60 min = _auto_cheap_cfg's idle_s 3600 default; an
-                // emptied box must save what the unset box displays
-                idle_s: Math.round((+accIdle || 60) * 60) },
+                occ: (+accOcc || 50) / 100 },
           model_version: versions.includes(modelVersion)
             ? modelVersion : '' }))
       .then((r) => {
@@ -700,8 +694,7 @@ export function NodeConfig({ node, map, tree, slug, op, toast, codexProvider,
                 charter, team_charter: teamCharter, effort,
                 auto_cheap_compact: accMode === '' ? {}
                   : { enabled: accMode === 'on',
-                      occ: (+accOcc || 50) / 100,
-                      idle_s: Math.round((+accIdle || 60) * 60) },
+                      occ: (+accOcc || 50) / 100 },
                 model_version: versions.includes(modelVersion)
                   ? modelVersion : '',
                 raise_ceiling: true })
@@ -1019,9 +1012,11 @@ export function NodeConfig({ node, map, tree, slug, op, toast, codexProvider,
           <option value="bypassPermissions">bypassPermissions ⚠ unguarded</option>
         </select>
 
-        {/* FR-24b: waking a long-idle, high-context agent resets its session
-            (cheap compact, in place) instead of re-paying the cold reload */}
-        <div className="field-label">auto cheap-compact on wake</div>
+        <div className="field-label">cache-protective cheap compaction</div>
+        <div className="dim hub-hint">Expiry is derived: 60 min after a
+          positive subscription receipt, 5 min after a positive API-key
+          receipt. Known identity changes are cold immediately; uncertain
+          forecasts never auto-compact.</div>
         <select value={accMode} onChange={(e) => setAccMode(e.target.value)}>
           <option value="">inherit the org setting</option>
           <option value="on">on for this agent</option>
@@ -1031,9 +1026,6 @@ export function NodeConfig({ node, map, tree, slug, op, toast, codexProvider,
           <label>context ≥ <input type="number" min="5" max="95" step="5"
             style={{ width: '5em' }} value={accOcc}
             onChange={(e) => setAccOcc(e.target.value)} />%</label>
-          <label>idle ≥ <input type="number" min="0" step="1"
-            style={{ width: '5em' }} value={accIdle}
-            onChange={(e) => setAccIdle(e.target.value)} /> min</label>
         </div>}
 
         <div className="field-label">charter</div>

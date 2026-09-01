@@ -642,8 +642,8 @@ export interface TreePayload {
   disk?: TreeDisk
   /** FR-18: the org's watchdogs (canvas satellites + detail panels) */
   watchdogs?: Watchdog[]
-  /** FR-24b: org-level auto-cheap-compact config (null/absent = off) */
-  auto_cheap_compact?: { enabled?: boolean; occ?: number; idle_s?: number } | null
+  /** cache-protective compaction; provider/auth expiry is derived server-side */
+  auto_cheap_compact?: { enabled?: boolean; occ?: number } | null
   auto_resume: boolean
   /** cheap-compact a limit-frozen node right before its AUTO resume */
   auto_resume_compact?: boolean
@@ -1188,8 +1188,8 @@ export interface ScopeRequest {
   team_charter?: string | null
   effort?: string | null
   model_version?: string | null
-  /** FR-24b per-node override; {} clears back to org inherit */
-  auto_cheap_compact?: { enabled?: boolean; occ?: number; idle_s?: number } | null
+  /** per-node cache-protection override; {} clears back to org inherit */
+  auto_cheap_compact?: { enabled?: boolean; occ?: number } | null
   raise_ceiling?: boolean
 }
 
@@ -1211,8 +1211,8 @@ export interface SettingsRequest {
   auto_resume?: boolean | null
   /** cheap-compact a limit-frozen node right before its AUTO resume wakes it */
   auto_resume_compact?: boolean | null
-  /** FR-24b: auto cheap-compact on wake (org level; disabled by default) */
-  auto_cheap_compact?: { enabled?: boolean; occ?: number; idle_s?: number } | null
+  /** known-cold pre-turn compaction (org level; disabled by default) */
+  auto_cheap_compact?: { enabled?: boolean; occ?: number } | null
   cascade_hire?: boolean | null
   cascade_alloc?: boolean | null
   // F-06

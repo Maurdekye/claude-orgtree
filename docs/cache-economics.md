@@ -1,17 +1,16 @@
 # Cache economics — dormant agents and the cost of waking cold
 
-*(implementer, 2026-08-11; from a design conversation with the user. Status: recorded for
-implementation planning — the measures below are candidates, not commitments, except where a
-docket/DECISIONS entry says otherwise. Premises verified in FR-24's docket entry: prompt-cache
-TTL is 5 min (1 h exists on the raw API; the pinned CLI v2.1.220 exposes no flag for it), and
-orgtree talks only to the CLI, so nothing here may assume an interface change.)*
+*(implementer, 2026-08-11; updated 2026-09-01. The numbered ideas remain
+historical design context. Current receipt/TTL and automatic-compaction
+behavior is normative in `cache-continuity.md` and D-214.)*
 
 ## The problem
 
-An expensive-model agent (fable) with heavy context (say 700k tokens) left dormant past the
-cache TTL pays close to full input price the moment it wakes — every wake, forever, for as long
-as the context stays big. In a dynamically orchestrated system agents routinely sleep ≫ 5 min
-and are woken autonomously, so this is a standing tax, not an edge case.
+An expensive-model agent with heavy context left past its cache TTL can pay
+close to full input price when it wakes. The TTL is lane-specific: Orgtree now
+derives 60 minutes for a positive Claude subscription receipt and 5 minutes
+for a positive Claude API-key receipt. Unknown/unsupported lanes do not inherit
+either number.
 
 ## The arithmetic that sorts the ideas
 
@@ -72,11 +71,12 @@ cache contracts are different, so the backend does not send them a synthetic Cla
 remote-controlled, preserving-bearer, never-run, busy, waiting, responding, or queued nodes are also
 skipped. A real turn/status change always wins a recheck after keeper-slot contention.
 
-Both configured automatic paths stand down while the status is `working`: wake-time cheap compact and
-post-turn occupancy-threshold split. Explicit/manual compaction is unchanged. A successful keepalive
-has its own `cache_keepalive_at` timestamp (not a fake turn); the coldness heuristic uses the fresher
-of it and the latest real turn, so ending `working` does not immediately destroy a session whose cache
-was just refreshed.
+The working checkup/cache-read setting determines whether this maintenance
+request runs. A successful request still records `cache_keepalive_at` for
+lifecycle observability, but automatic known-cold compaction does **not** use
+that timestamp or generic turn idle time. Only a positive same-lane provider
+receipt refreshes the predictor expiry. Explicit/manual compaction is
+unchanged.
 
 Failed requests use bounded exponential retry backoff (one minute through thirty minutes by default),
 reap a fork id even when it appeared only in partial timeout output, and bank any cost the CLI

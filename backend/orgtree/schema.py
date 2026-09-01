@@ -63,7 +63,8 @@ class NodeScope(TypedDict):
     # the node (ledger sc["effort"]; supervisor reads sc.get("effort")).
     # Absent = the CLI default ("" clears by popping the key).
     effort: NotRequired[str]
-    # FR-24b: per-node auto-cheap-compact override — {enabled?, occ?, idle_s?}
+    # Cache-protective compact override — {enabled?, occ?}. Expiry is derived
+    # from authoritative provider receipts, never an operator timeout.
     # merged key-by-key over the org's `auto_cheap_compact`; absent = inherit
     auto_cheap_compact: NotRequired[dict[str, Any]]
     # which model VERSION inside the tier (ledger.MODEL_VERSIONS) — a
@@ -264,6 +265,9 @@ class NodeDoc(TypedDict):
     # Claude prompt-cache lifetime while the agent reported `working`.
     # Separate from `turns`: this request is billed, but is not agent work.
     cache_keepalive_at: NotRequired[str]
+    # Generation-owned private evidence plus a credential-free `public`
+    # projection for the next-turn cache-continuity forecast.
+    cache_continuity: NotRequired[dict[str, Any]]
     # Latest durable wake/status/checkup-reservation boundary while the node
     # reports `working`. It is the restart-safe 30-minute checkup clock and
     # failed-wake cooldown; cleared when status leaves working.
@@ -529,8 +533,9 @@ class OrgDoc(TypedDict):
     # pending entry per node (items merge by identity); a tab family of the
     # FR-14 batch beside asks + credit_requests
     scope_requests: NotRequired[list[dict[str, Any]]]
-    # FR-24b: org-level auto-cheap-compact-on-wake config
-    # {enabled: bool, occ: float 0..1, idle_s: int} — disabled by default
+    # Cache-protective cheap compaction: {enabled: bool, occ: float 0..1}.
+    # The only numeric operator value is minimum measured context occupancy;
+    # provider/auth TTL is derived from positive inference receipts.
     auto_cheap_compact: NotRequired[dict[str, Any]]
     # FR-18: watchdogs — persistent pets {id, owner, name, kind:
     # file|command|process|stream, target, pattern?, interval_s, state:

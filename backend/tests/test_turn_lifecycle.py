@@ -147,6 +147,14 @@ WRAP = os.path.join(TMP, "wrapcli.js")
 LOG = os.path.join(TMP, "backend.log")
 for d in (HDATA, DATA, HOME):
     os.makedirs(d, exist_ok=True)
+# D-199 made provider admission verify both installation and login. This rig
+# owns a fake provider end to end, so give its isolated HOME matching identity
+# metadata instead of accidentally borrowing (or failing on) the operator's
+# real login.
+with io.open(os.path.join(HOME, ".claude.json"), "w", encoding="utf-8") as _f:
+    json.dump({"oauthAccount": {
+        "accountUuid": "turnlife-fixture",
+        "emailAddress": "turnlife@example.invalid"}}, _f)
 
 os.environ["ORGTREE_DATA"] = HDATA        # BEFORE importing orgtree (store
                                           # resolves it at import time)
@@ -2347,6 +2355,10 @@ def start_backend(max_turns: int = 16, steer_hook: str = "0",
         "ORGTREE_PORT": str(PORT),
         "FAKECLI_CONFIG": CFG,
         "FAKECLI_REAL": os.path.join(_HERE, "fakecli.js").replace("\\", "/"),
+        # D-199's install probe resolves the executable override; the CLI-JS
+        # override below is the actual launch door. Point both at this rig so
+        # provider admission cannot inspect a real PATH installation.
+        "ORGTREE_CLAUDE": WRAP,
         "ORGTREE_CLAUDE_CLI": WRAP,
         "ORGTREE_MAX_TURNS": str(max_turns),
         "ORGTREE_STEER_HOOK": steer_hook,
@@ -4219,12 +4231,12 @@ def live_auto_resume() -> None:
 
 
 def live_auto_cheap_compact() -> None:
-    """FR-24b (user request 2026-08-12): a wake past BOTH thresholds swaps
-    the session in place BEFORE the resume pays the cold-context reload —
+    """A proven-incompatible, high-context wake swaps the session in place
+    BEFORE the resume pays the cold-context reload —
     same seat, same team, mailbox untouched; the successor's first turn
     carries the compact notice AND the waking mail together. Disabled by
     default; the per-node override outranks the org setting."""
-    print("\nauto cheap-compact on wake (FR-24b):")
+    print("\ncache-protective cheap compact before a known-cold turn:")
     start_backend()
     set_cfg(FAST)
     slug, (nid,) = make_org("acc")
@@ -4237,10 +4249,10 @@ def live_auto_cheap_compact() -> None:
     sid0 = n["session_id"]
     if not n.get("turns"):
         raise AssertionError("fixture: the warm-up turn left no ring entry")
-    # arm: org config on with thresholds the next wake trivially crosses,
-    # plus the two facts the hook reads — a high occupancy high-water and a
-    # last-turn stamp already past the idle window (idle_s 0)
-    d["auto_cheap_compact"] = {"enabled": True, "occ": 0.5, "idle_s": 0}
+    # Arm a real, deterministic mismatch: charter is a provider-visible system
+    # component and the warm-up saved the completed launch fingerprint.
+    d["auto_cheap_compact"] = {"enabled": True, "occ": 0.5}
+    n["charter"] = "changed after the recorded warm turn"
     n["occupancy"] = 150_000
     n["context_window"] = 200_000
     with open(os.path.join(DATA, "orgs", slug + ".json"), "w",
@@ -4281,6 +4293,7 @@ def live_auto_cheap_compact() -> None:
     stop_backend()
     d3 = doc(slug)
     d3["nodes"][nid]["scope"]["auto_cheap_compact"] = {"enabled": False}
+    d3["nodes"][nid]["charter"] = "changed again while policy is off"
     d3["nodes"][nid]["occupancy"] = 150_000
     d3["nodes"][nid]["context_window"] = 200_000
     with open(os.path.join(DATA, "orgs", slug + ".json"), "w",

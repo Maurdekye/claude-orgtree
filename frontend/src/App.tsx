@@ -2002,7 +2002,7 @@ function SettingsPanel({ tree, toast, close }: {
   const setCascadeHire = set('cascadeHire', cascadeHire)
   const cascadeAlloc = val('cascadeAlloc', tree.cascade_alloc !== false)
   const setCascadeAlloc = set('cascadeAlloc', cascadeAlloc)
-  // FR-24b: auto cheap-compact on wake — org defaults; per-node overrides
+  // Known-cold pre-turn cheap compaction — per-node overrides
   // live in each agent's own gear panel
   const acc = tree.auto_cheap_compact ?? null
   const accOn = val('accOn', !!acc?.enabled)
@@ -2010,9 +2010,6 @@ function SettingsPanel({ tree, toast, close }: {
   const accOcc = val<number | string>('accOcc',
     Math.round(((acc?.occ ?? 0.5) as number) * 100))
   const setAccOcc = set('accOcc', accOcc)
-  const accIdle = val<number | string>('accIdle',
-    Math.round(((acc?.idle_s ?? 3600) as number) / 60))
-  const setAccIdle = set('accIdle', accIdle)
   // pre-resume cheap compact (2026-08-17): rides the AUTO limit resume only
   const arCompact = val('arCompact', !!tree.auto_resume_compact)
   const setArCompact = set('arCompact', arCompact)
@@ -2165,13 +2162,13 @@ function SettingsPanel({ tree, toast, close }: {
               <option value="halt">halt (default)</option>
               <option value="opus">switch to opus + retry</option>
             </select>
-            {/* FR-24b (user request 2026-08-12): swap a cold, heavy session
-                for a fresh one at the WAKE, before the resume re-pays the
-                whole context. Off by default; per-agent overrides in each
-                gear panel. Especially suited to headless orgs. */}
-            <div className="field-label">auto cheap-compact on wake (waking a
-              long-idle, high-context agent resets its session instead of
-              re-paying the cold-cache reload; the old self stays consultable)</div>
+            <div className="field-label">cache-protective cheap compaction
+              (before a known-cold, high-context turn, reset the session; the
+              old self stays consultable)</div>
+            <div className="dim hub-hint">Cache expiry is derived, never
+              editable: 60 min after a positive subscription receipt or 5 min
+              after a positive API-key receipt. A known identity mismatch is
+              cold immediately; uncertain forecasts never auto-compact.</div>
             <label className="checkline">
               <input type="checkbox" checked={accOn}
                 onChange={(e) => setAccOn(e.target.checked)} />
@@ -2181,9 +2178,6 @@ function SettingsPanel({ tree, toast, close }: {
               <label>context ≥ <input type="number" min="5" max="95" step="5"
                 style={{ width: '5em' }} value={accOcc}
                 onChange={(e) => setAccOcc(e.target.value)} />%</label>
-              <label>idle ≥ <input type="number" min="0" step="1"
-                style={{ width: '5em' }} value={accIdle}
-                onChange={(e) => setAccIdle(e.target.value)} /> min</label>
             </div>}
             {/* 2026-08-17: a usage-limit freeze outlives the cache TTL by
                 construction, so the auto-resume wake can swap the session
@@ -2314,11 +2308,7 @@ function SettingsPanel({ tree, toast, close }: {
                   cascade_alloc: cascadeAlloc,
                   auto_resume_compact: arCompact,
                   auto_cheap_compact: { enabled: accOn,
-                    occ: (+accOcc || 50) / 100,
-                    // 60 min, matching _auto_cheap_cfg's idle_s 3600 default:
-                    // this is what an EMPTIED box saves, so it has to agree
-                    // with the number the box shows when unset
-                    idle_s: Math.round((+accIdle || 60) * 60) } }),
+                    occ: (+accOcc || 50) / 100 } }),
               orgMd != null ? putOrgMd(tree.slug, orgMd).then(() => ({}))
                 : Promise.resolve({}),
             ]

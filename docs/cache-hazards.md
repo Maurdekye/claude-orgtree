@@ -4,6 +4,10 @@ Facts found the hard way on 2026-08-30 (D-206 work). Each is stated as the
 mistake the next person would otherwise make. Companion to
 `cache-economics.md`.
 
+The current proof classes, lane-derived TTLs, migration, and pre-turn policy
+are defined in [`cache-continuity.md`](cache-continuity.md). In particular,
+local process restart and provider cache rejection are separate events.
+
 ## Changing spawn env does NOT respawn agents — a restart is required
 
 The warm pool's identity hash covers the rendered identity prompt, the

@@ -1280,6 +1280,8 @@ def org_tree(slug: str, request: Request) -> dict[str, Any]:
         node["mcp_readiness_reason"] = (
             str(st.get("mcp_readiness_reason"))
             if st.get("mcp_readiness_reason") else None)
+        node["cache_forecast"] = supervisor.cache_forecast_public(
+            org, node["id"])
         # concurrently running subagents (Task/Agent tool calls in flight) —
         # the desk header shows it beside the working clock, only when > 0
         node["tasks"] = int(st.get("tasks") or 0)
@@ -1500,10 +1502,9 @@ class Settings(Body):
                                             # weekly hit, instead of leaving it
                                             # to fable_limit_policy (requires
                                             # api_fallback + api_key already)
-    # FR-24b: auto cheap-compact on wake — {enabled, occ (0..1 fraction of
-    # the context window), idle_s (seconds since the last turn)}. Disabled by
-    # default; per-node scope entries override key-by-key. Especially suited
-    # to headless orgs (infrequent wakes, cold resumes).
+    # Cache-protective cheap compaction — {enabled, occ (0..1 fraction of the
+    # context window)}. Expiry is derived from same-lane positive receipts
+    # (60m subscription, 5m API key), never an editable idle timeout.
     auto_cheap_compact: dict[str, Any] | None = None
 
 
@@ -1525,7 +1526,14 @@ def load_org_defaults() -> dict[str, Any]:
     try:
         d = json.load(open(os.path.join(store.DATA_ROOT, "defaults.json"),
                            encoding="utf-8"))
-        return cast("dict[str, Any]", d) if isinstance(d, dict) else {}
+        if not isinstance(d, dict):
+            return {}
+        acc = d.get("auto_cheap_compact")
+        if isinstance(acc, dict):
+            acc = dict(acc)
+            acc.pop("idle_s", None)       # legacy timeout is never a TTL
+            d["auto_cheap_compact"] = acc
+        return cast("dict[str, Any]", d)
     except (OSError, json.JSONDecodeError):
         return {}
 
@@ -1559,6 +1567,17 @@ def defaults_set(body: Settings) -> dict[str, Any]:
         d["auto_resume"] = bool(body.auto_resume)
     if body.auto_resume_compact is not None:
         d["auto_resume_compact"] = bool(body.auto_resume_compact)
+    if body.auto_cheap_compact is not None:
+        acc = body.auto_cheap_compact
+        # An old client may submit only `idle_s`. That field is retired, so a
+        # timeout-only write is a no-op rather than silently turning a policy
+        # off. Recognised partial updates preserve the other current value.
+        if "enabled" in acc or "occ" in acc:
+            old = cast("dict[str, Any]", d.get("auto_cheap_compact") or {})
+            d["auto_cheap_compact"] = {
+                "enabled": bool(acc.get("enabled", old.get("enabled", False))),
+                "occ": min(0.95, max(0.05, float(
+                    acc.get("occ", old.get("occ", 0.5)))))}
     if body.cascade_hire is not None:
         d["cascade_hire"] = bool(body.cascade_hire)
     if body.cascade_alloc is not None:
@@ -1686,10 +1705,13 @@ def _org_settings_locked(slug: str, body: Settings) -> dict[str, Any]:
         org.d["cascade_alloc"] = bool(body.cascade_alloc)
     if body.auto_cheap_compact is not None:
         acc = body.auto_cheap_compact
-        org.d["auto_cheap_compact"] = {
-            "enabled": bool(acc.get("enabled")),
-            "occ": min(0.95, max(0.05, float(acc.get("occ", 0.5)))),
-            "idle_s": max(0, int(acc.get("idle_s", 3600)))}
+        if "enabled" in acc or "occ" in acc:
+            old = cast("dict[str, Any]",
+                       org.d.get("auto_cheap_compact") or {})
+            org.d["auto_cheap_compact"] = {
+                "enabled": bool(acc.get("enabled", old.get("enabled", False))),
+                "occ": min(0.95, max(0.05, float(
+                    acc.get("occ", old.get("occ", 0.5)))))}
     # ---- §9.5/§9.6: per-org API key + headless (couplings are HARD rules) --
     if body.api_key is not None and body.api_key.strip():
         org.d["api_key"] = body.api_key.strip()
@@ -2036,7 +2058,7 @@ class Scope(Body):
     team_charter: str | None = None         # §15: binds this node's whole subtree
     effort: str | None = None               # thinking effort: low|medium|high|"" clears
     model_version: str | None = None        # a VERSION inside the tier ("" clears)
-    # FR-24b: {enabled?, occ?, idle_s?} per-node override; {} clears to inherit
+    # {enabled?, occ?} per-node cache-protection override; {} clears to inherit
     auto_cheap_compact: dict[str, Any] | None = None
     # post-hire @mcp:<peer> response handles (2026-08-22). REPLACES the node's
     # set; [] clears. Read the current set off the org tree first if you mean

@@ -125,17 +125,19 @@ def wake_compaction_gate_and_freshness():
     base = {"model": "unknown", "occupancy": 80, "context_window": 100,
             "turns": [{"at": stamp(7200)}],
             "last_status": {"status": "working"}}
-    cfg = {"occ": 0.5, "idle_s": 3600.0}
-    assert not S._auto_cheap_ready(base, cfg)
+    cfg = {"occ": 0.5}
+    assert not S._auto_cheap_ready(base, cfg, {"state": "uncertain"})
     idle = {**base, "last_status": {"status": "idle"},
             "cache_keepalive_at": stamp(10)}
-    assert not S._auto_cheap_ready(idle, cfg), (
-        "a fresh keepalive was ignored by the coldness heuristic")
+    assert not S._auto_cheap_ready(idle, cfg, {"state": "uncertain"}), (
+        "a timestamp without a positive same-lane receipt invented coldness")
     idle["cache_keepalive_at"] = stamp(7200)
-    assert S._auto_cheap_ready(idle, cfg)
+    assert not S._auto_cheap_ready(idle, cfg, {"state": "uncertain"})
+    assert S._auto_cheap_ready(
+        idle, cfg, {"state": "expired_known_entry"})
 
 
-check("wake-time auto cheap compact skips working and honors keepalive freshness",
+check("cache-protective compact follows receipt forecast, never raw keepalive age",
       wake_compaction_gate_and_freshness)
 
 

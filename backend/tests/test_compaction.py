@@ -1496,7 +1496,7 @@ def occupancy_reporting() -> None:
     n16 = org.node(s16.nid)
     n16["occupancy"], n16["context_window"] = 60_000, 200_000
     n16["turns"] = [{"at": "2020-01-01T00:00:00Z", "cost": 0.0}]
-    org.d["auto_cheap_compact"] = {"enabled": True, "occ": 0.25, "idle_s": 1}
+    org.d["auto_cheap_compact"] = {"enabled": True, "occ": 0.25}
     store.save_org(org)
     cfg = supervisor._auto_cheap_cfg(store.load_org(s16.slug), s16.nid)
     check("auto-cheap · the fixture really is over the trigger's threshold "
@@ -1506,117 +1506,38 @@ def occupancy_reporting() -> None:
     check("auto-cheap · …and an ESTIMATED fill is not a number that trigger "
           "may act on",
           lambda: _true(supervisor._auto_cheap_ready(
-              store.load_org(s16.slug).node(s16.nid), cfg) is True
+              store.load_org(s16.slug).node(s16.nid), cfg,
+              {"state": "known_incompatible"}) is True
               and supervisor._auto_cheap_ready(
                   {**store.load_org(s16.slug).node(s16.nid),
-                   "occupancy_est": True}, cfg) is False))
+                   "occupancy_est": True}, cfg,
+                  {"state": "known_incompatible"}) is False))
 
-    # ---- FR-24b: idle_s DEFAULTS TO 3600, and the RATIONALE travels with the
-    # number (user ruling 2026-08-21). The old 300 meant "the prompt-cache
-    # TTL" back when that was read as five minutes. For us it is an HOUR: an
-    # agent turn is a headless `claude -p` run whose querySource is `sdk`,
-    # which the pinned CLI classifies as a MAIN conversation, and Claude Code
-    # asks for a 1h TTL on a subscription. (The five-minute cap is the
-    # in-session Task-subagent one — querySource `agent:*` — which an orgtree
-    # agent is not.) A revert to 300 must FAIL ONE OF THESE BY NAME rather
-    # than quietly halving the window everywhere.
-    #
-    # ⚠ Every path below is derived from `supervisor.__file__`, so these read
-    # the package that actually imported. A suite run against a different
-    # checkout than it thinks reads THAT checkout's numbers and says so.
-    import ast as _ast
-    _pkg = os.path.dirname(supervisor.__file__)
-    _repo = os.path.dirname(os.path.dirname(_pkg))
-    _fe = os.path.join(_repo, "frontend", "src")
-
-    def _idle_get_defaults(path: str) -> list:
-        """Every `<x>.get("idle_s", N)` literal in a module, via the AST.
-
-        Deliberately NOT a text search: the rationale comments beside these
-        lines now contain the string "3600" themselves, so a grep would go on
-        passing after the code reverted to 300. The AST sees only code."""
-        with open(path, encoding="utf-8") as fh:
-            tree = _ast.parse(fh.read())
-        out = []
-        for nd in _ast.walk(tree):
-            if (isinstance(nd, _ast.Call)
-                    and isinstance(nd.func, _ast.Attribute)
-                    and nd.func.attr == "get" and len(nd.args) == 2
-                    and isinstance(nd.args[0], _ast.Constant)
-                    and nd.args[0].value == "idle_s"
-                    and isinstance(nd.args[1], _ast.Constant)):
-                out.append(nd.args[1].value)
-        return out
-
-    def _code(path: str) -> str:
-        """Source with `//` line comments stripped — same reason as above."""
-        with open(path, encoding="utf-8") as fh:
-            return "\n".join(re.sub(r"//.*", "", ln)
-                             for ln in fh.read().splitlines())
-
+    # ---- The editable idle timeout was replaced by receipt-derived expiry.
+    # Only the occupancy threshold remains configurable. Generic elapsed time
+    # cannot enter the trigger; Claude subscription/API-key lanes derive 60m
+    # and 5m respectively from a positive receipt.
     s18 = Sess()
     s18.turn(20_000)
     org = store.load_org(s18.slug)
-    org.d["auto_cheap_compact"] = {"enabled": True}     # no idle_s ⇒ default
+    org.d["auto_cheap_compact"] = {
+        "enabled": True, "occ": 0.6, "idle_s": 17}
     store.save_org(org)
-    cfg18 = supervisor._auto_cheap_cfg(store.load_org(s18.slug), s18.nid)
-    check("idle-ttl · an UNSET idle_s resolves to 3600 s, not 300",
-          lambda: _eq(cfg18 and cfg18["idle_s"], 3600.0))
-
-    org = store.load_org(s18.slug)
-    org.d["auto_cheap_compact"] = {"enabled": True, "idle_s": "sixty minutes"}
-    store.save_org(org)
-    cfg18b = supervisor._auto_cheap_cfg(store.load_org(s18.slug), s18.nid)
-    check("idle-ttl · the MALFORMED-config fallback says 3600 too (the two "
-          "returns in one function are the classic pair to revert by half)",
-          lambda: _eq(cfg18b and cfg18b["idle_s"], 3600.0))
-
-    _idle_lits = (_idle_get_defaults(os.path.join(_pkg, "supervisor.py"))
-                  + _idle_get_defaults(os.path.join(_pkg, "api.py"))
-                  + _idle_get_defaults(os.path.join(_pkg, "ledger.py")))
-    check("idle-ttl · all three backend `.get(\"idle_s\", N)` defaults are "
-          "3600 — and there are still three of them (a deleted site cannot "
-          "pass this by leaving an empty list)",
-          lambda: _eq(sorted(_idle_lits), [3600, 3600, 3600]))
-
-    check("idle-ttl · the DOCSTRING carries the new number, so the next "
-          "reader does not inherit a rationale for 300",
-          lambda: _true("idle_s 3600" in (supervisor._auto_cheap_cfg.__doc__
-                                          or "")
-                        and not re.search(r"idle_s 300\b",
-                                          supervisor._auto_cheap_cfg.__doc__
-                                          or "")))
-
-    _app = _code(os.path.join(_fe, "App.tsx"))
-    _mod = _code(os.path.join(_fe, "canvas", "modals.tsx"))
-    check("idle-ttl · both frontend panels DISPLAY the 3600 default "
-          "(`?? 300` would render 5 min beside a backend that means 60)",
-          lambda: _true("idle_s ?? 3600" in _app and "idle_s ?? 3600" in _mod
-                        and not re.search(r"idle_s \?\? 300\b", _app + _mod)))
-    # the sneaky half: `(+accIdle || 5) * 60` is what an EMPTIED box saves.
-    # Move only the `?? 300` sites and clearing the field silently writes 5
-    # min against a field that displays 60 — a disagreement no single-site
-    # check would see.
-    check("idle-ttl · …and all THREE blank-field fallbacks save 60 min, so "
-          "an emptied box agrees with the displayed default",
-          lambda: _eq((len(re.findall(r"\+accIdle \|\| 60\b", _app + _mod)),
-                       len(re.findall(r"\+accIdle \|\| 5\b", _app + _mod))),
-                      (3, 0)))
-
-    _desk = [ln for ln in _code(os.path.join(_fe, "canvas", "desk.tsx"))
-             .splitlines() if "const cold" in ln]
-    check("idle-ttl · the manual-compact COLD badge uses the same 1h window "
-          "(at 5 min it warned 'past the cache window' on a cache warm for "
-          "another 55)",
-          lambda: _true(len(_desk) == 1 and "60 * 60e3" in _desk[0],
-                        " | ".join(_desk)))
-
-    with open(os.path.join(_repo, "DECISIONS.md"), encoding="utf-8") as fh:
-        _dec = fh.read()
-    check("idle-ttl · DECISIONS.md quotes the shipped default, not the old "
-          "one",
-          lambda: _true("0.5 / 3600 s" in _dec
-                        and "0.5 / 300 s" not in _dec))
+    migrated = store.load_org(s18.slug)
+    cfg18 = supervisor._auto_cheap_cfg(migrated, s18.nid)
+    check("cache-policy · legacy idle_s is removed while occupancy survives",
+          lambda: _eq((migrated.d["auto_cheap_compact"], cfg18),
+                      ({"enabled": True, "occ": 0.6}, {"occ": 0.6})))
+    check("cache-policy · subscription/API-key TTLs are fixed at 60m/5m",
+          lambda: _eq((supervisor.cachecontinuity.ttl_seconds(
+                           "claude", "subscription"),
+                       supervisor.cachecontinuity.ttl_seconds(
+                           "claude", "api_key")), (3600, 300)))
+    check("cache-policy · elapsed time alone can never open the trigger",
+          lambda: _eq(supervisor._auto_cheap_ready(
+              {"occupancy": 60_000, "context_window": 200_000,
+               "turns": [{"at": "2000-01-01T00:00:00Z"}]},
+              {"occ": 0.25}, {"state": "uncertain"}), False))
 
     # ---- the refusal that guards a billed fork rests on the FACT, not on how
     # a number was arrived at
@@ -1684,7 +1605,7 @@ def occupancy_reporting() -> None:
           lambda: _eq(supervisor._auto_cheap_ready(
               {**n19, "occupancy": 212_859, "context_window": 200_000,
                "turns": [{"at": "2020-01-01T00:00:00Z"}]},
-              {"occ": 0.25, "idle_s": 1}), False))
+              {"occ": 0.25}, {"state": "known_incompatible"}), False))
 
     # ---- the tracker's arithmetic, one mutation at a time
     s20 = Sess()
@@ -1918,24 +1839,23 @@ def occupancy_reporting() -> None:
                        ("occupancy", "occupancy_est", "compacted_unrun")],
                       [None, None, None]))
 
-    # ---- the wake sweep's own defensive parse. `cast` is a no-op at runtime,
-    # so a torn `turns` raised AttributeError/IndexError out of a decision
-    # taken under DOC_LOCK on the turn path — killing the turn the optimization
-    # was trying to cheapen.
+    # ---- the predictor, not the turns ring, now owns cache coldness.
     base = {"occupancy": 60_000, "context_window": 200_000,
             "turns": [{"at": "2020-01-01T00:00:00Z"}]}
-    cfg2 = {"occ": 0.25, "idle_s": 1}
+    cfg2 = {"occ": 0.25}
+    cold2 = {"state": "known_incompatible"}
     check("auto-cheap · the fixture fires (the refusals below are not "
           "vacuous)",
-          lambda: _eq(supervisor._auto_cheap_ready(base, cfg2), True))
-    check("auto-cheap · a torn `turns` refuses rather than raising",
-          lambda: _eq([supervisor._auto_cheap_ready({**base, "turns": t}, cfg2)
+          lambda: _eq(supervisor._auto_cheap_ready(base, cfg2, cold2), True))
+    check("auto-cheap · a torn `turns` is irrelevant to a proven forecast",
+          lambda: _eq([supervisor._auto_cheap_ready(
+                           {**base, "turns": t}, cfg2, cold2)
                        for t in ("notalist", ["str"], [None], [{}], 7)],
-                      [False] * 5))
+                      [True] * 5))
     check("auto-cheap · …and a compacted-but-unrun node refuses however its "
           "fill was arrived at",
           lambda: _eq(supervisor._auto_cheap_ready(
-              {**base, "compacted_unrun": True}, cfg2), False))
+              {**base, "compacted_unrun": True}, cfg2, cold2), False))
 
     # ================================================ redteam round 3
     # A third pass, against the second pass's fixes. Two of these are its own
@@ -2341,18 +2261,13 @@ def _plant_transcript(sid: str, home: str = HOME) -> str:
     return p
 
 
-# =============== 3a-bis. hermetic: the cheap-compact fires at an ACCOUNT SWITCH
+# =============== 3a-bis. hermetic: proven cold namespace + occupancy policy
 #
-# D-179 (user request 2026-08-29): "when a fallback key is triggered, it
-# doesn't take advantage of any existing agent cached context; it has to send
-# the full context all the way up to the new account, wasting tons of usage.
-# autocompact should trigger on this boundary too for that reason."
-#
-# ⚠ WHAT THIS IS TESTING IS NOT A NEW TRIGGER. `_auto_cheap_cfg` says idle_s
-# defaults to 3600 because that IS the prompt-cache TTL — "beyond it the resume
-# is cold and the swap pays for itself". Idle time was only ever a PROXY for
-# coldness. An account switch is the other road to the same place, so it is
-# OR-ed into the same bar, and the OCCUPANCY bar stays ANDed in front of both.
+# D-214 replaces D-179's generic-idle proxy. An account/auth-lane change is a
+# known namespace incompatibility immediately. Expiry is independently proven
+# only by a positive same-lane receipt crossing its authoritative TTL. Both
+# proof shapes still require the configured occupancy threshold; uncertainty
+# never becomes permission to destroy context.
 #
 # ⚠ AND WHY OCCUPANCY STILL GATES A COMPACTION THAT COSTS NOTHING. It is worth
 # writing down because the obvious objection — "a fallback is followed by only
@@ -2369,10 +2284,7 @@ def _plant_transcript(sid: str, home: str = HOME) -> str:
 
 def _sw_node(ran_as: str = "primary", occ: int = 60_000,
              cw: int = 200_000, **over) -> dict:
-    """A node whose last turn ran JUST NOW — so the idle bar is nowhere near
-    open and only an account switch can fire the swap. That is the whole point
-    of the fixture: every True below is attributable to the account and to
-    nothing else."""
+    """A measured, non-successor context for the pure compaction guard."""
     turn: dict = {"at": ledger.now(), "cost": 0.0}
     if ran_as:
         turn["ran_as"] = ran_as
@@ -2380,145 +2292,35 @@ def _sw_node(ran_as: str = "primary", occ: int = 60_000,
 
 
 def account_switch_compaction() -> None:
-    print("\nan account switch is a cold cache (supervisor."
-          "_cache_moved_account):")
-    # idle_s an hour: the fixture's last turn is seconds old, so the ONLY way
-    # anything below returns True is the account comparison.
-    cfg = {"occ": 0.25, "idle_s": 3600.0}
+    """Replacement contract: the predictor proves the namespace move."""
+    print("\nan account switch is a cold cache (cache-continuity predictor):")
+    cfg = {"occ": 0.25}
     ready = supervisor._auto_cheap_ready
-    moved = supervisor._cache_moved_account
-
-    # ---- CONTROL FIRST. If the fixture fired on its own, every check under
-    # it would be measuring the fixture and not the feature.
-    check("switch · CONTROL: the fixture does NOT fire on idle — its last "
-          "turn is seconds old, so nothing below can be an idle pass",
-          lambda: _eq(ready(_sw_node(), cfg), False))
-    check("switch · CONTROL: …nor when the account is UNCHANGED (this is the "
-          "same fixture, same thunk shape, one value different)",
-          lambda: _eq(ready(_sw_node("primary"), cfg, lambda: "primary"),
-                      False))
-
-    # ---- THE FEATURE. Same node, same instant, different serving account.
-    check("switch · a node moved from the primary to a fallback key compacts "
-          "at once, without waiting out idle_s",
-          lambda: _eq(ready(_sw_node("primary"), cfg, lambda: "kAAA"), True))
-    check("switch · …and back again: fallback → primary is the same fact "
-          "(the cache is on whichever account is being LEFT)",
-          lambda: _eq(ready(_sw_node("kAAA"), cfg, lambda: "primary"), True))
-    check("switch · …and fallback → a DIFFERENT fallback, which is the case a "
-          "rule written as 'is it the primary' would silently miss",
-          lambda: _eq(ready(_sw_node("kAAA"), cfg, lambda: "kBBB"), True))
-    check("switch · …and the api-key lane counts: an api_fallback window "
-          "opening or expiring moves accounts too, and the cache with it",
-          lambda: _eq([ready(_sw_node("api-key"), cfg, lambda: "primary"),
-                       ready(_sw_node("primary"), cfg, lambda: "api-key")],
-                      [True, True]))
-
-    # ---- THE BAR THAT DID NOT MOVE. This is the "does not fire where it
-    # would cost more than it saves" half of the deliverable: cheap_compact
-    # spends no tokens but spends the whole context, so a small session is
-    # exactly the one not worth throwing away — a switch is not permission.
-    check("switch · a SMALL context does not compact on a switch — the swap "
-          "costs no tokens but costs the whole session, and there is little "
-          "here to save",
-          lambda: _eq(ready(_sw_node("primary", occ=10_000), cfg,
-                            lambda: "kAAA"), False))
-    check("switch · …and the occupancy bar is honoured as a THRESHOLD, not as "
-          "a nonzero test: a hair under refuses, a hair over fires",
-          lambda: _eq([ready(_sw_node("primary", occ=o), cfg,
-                             lambda: "kAAA") for o in (49_999, 50_001)],
-                      [False, True]))
-    check("switch · …and a just-compacted session is still off limits, "
-          "however cold its cache is",
-          lambda: _eq([ready(_sw_node("primary", **{k: True}), cfg,
-                             lambda: "kAAA")
-                       for k in ("compacted_unrun", "occupancy_est")],
-                      [False, False]))
-
-    # ---- CANNOT TELL MEANS DO NOT. A false negative is one cold reload; a
-    # false positive destroys a live agent's context. Every unknown refuses.
-    check("switch · an absent `ran_as` (the node has not run in this backend "
-          "process) is not a switch — absence is not a measurement",
-          lambda: _eq(ready(_sw_node(""), cfg, lambda: "kAAA"), False))
-    check("switch · …nor is an empty answer from the resolver",
-          lambda: _eq(ready(_sw_node("primary"), cfg, lambda: ""), False))
-    check("switch · …nor is `key:unattributed` on EITHER side — a token no "
-          "row explains could be two different accounts two turns running",
-          lambda: _eq([ready(_sw_node(supervisor.UNATTRIBUTED), cfg,
-                             lambda: "kAAA"),
-                       ready(_sw_node("primary"), cfg,
-                             lambda: supervisor.UNATTRIBUTED)],
-                      [False, False]))
-    check("switch · …and the sentinel the refusal is written against is the "
-          "one `identity_in_env` actually returns (a literal would drift)",
-          lambda: _eq(supervisor.identity_in_env(
-              {"CLAUDE_CODE_OAUTH_TOKEN": "no-row-explains-this"}),
-              supervisor.UNATTRIBUTED))
-
-    # ---- an optimization is never allowed to be the reason a turn dies. The
-    # thunk reaches the filesystem (registry + token store) under DOC_LOCK.
-    def _boom() -> str:
-        raise RuntimeError("registry unreadable")
-    check("switch · a resolver that RAISES refuses the swap instead of "
-          "killing the turn it was trying to cheapen",
-          lambda: _eq(ready(_sw_node("primary"), cfg, _boom), False))
-    check("switch · …and a torn `turns` still refuses under the new argument",
-          lambda: _eq([ready({**_sw_node("primary"), "turns": t}, cfg,
-                             lambda: "kAAA")
-                       for t in ("notalist", ["str"], [None], [{}], 7)],
-                      [False] * 5))
-
-    # ---- the old callers must be untouched: `serving=None` is "not asking".
-    check("switch · omitting the argument entirely leaves the idle-only "
-          "behaviour exactly as it was",
-          lambda: _eq([ready(_sw_node("primary"), cfg),
-                       ready(_sw_node("primary"), {"occ": 0.25,
-                                                   "idle_s": 0.0})],
-                      [False, True]))
-    check("switch · …and `_cache_moved_account` itself answers False for a "
-          "caller that passed no resolver at all",
-          lambda: _eq(moved(_sw_node("primary"), None), False))
-
-    # ---- THE ORDERING IS BEHAVIOUR, NOT STYLE: `serving` reads the registry
-    # and the token store off disk, once per wake, under DOC_LOCK. A node
-    # below the occupancy bar must not pay for an answer that cannot change
-    # the verdict.
-    calls: list[int] = []
-
-    def _counted() -> str:
-        calls.append(1)
-        return "kAAA"
-    ready(_sw_node("primary", occ=10_000), cfg, _counted)
-    check("switch · a node under the occupancy bar never consults the "
-          "resolver — the filesystem read stays off the common path",
-          lambda: _eq(calls, []))
-    ready(_sw_node("primary", occ=60_000), cfg, _counted)
-    check("switch · …and the check above is not vacuous: over the bar, it IS "
-          "consulted",
-          lambda: _eq(calls, [1]))
-    calls.clear()
-    ready(_sw_node("primary"), {"occ": 0.25, "idle_s": 0.0}, _counted)
-    check("switch · …and an idle pass short-circuits it too: nothing is read "
-          "when idle alone already answers",
-          lambda: _eq(calls, []))
-
-    # ---- DRIFT GUARD. The trigger is only reachable if the turn loop passes
-    # a resolver built the way `identity_in_env` demands — from the env the
-    # spawn will really carry. A refactor to `accounts.resolve(...)` would
-    # keep every check above green and answer the wrong question for any org
-    # billing its own api_key. Read out of the source, so it cannot pass by
-    # the call site having been deleted.
+    base = {"provider": "claude", "account": "primary",
+            "lane": "subscription", "model": "claude-sonnet-5",
+            "session": "sid", "captured_at": ledger.now(),
+            "expected_input_tokens": 60_000,
+            "components": {k: "same" for k in
+                           ("system", "tools", "argv", "env", "startup", "lineage")},
+            "last_turn_history_relation": "same_or_appended",
+            "receipt_history_relation": "same_or_appended"}
+    prior = {"last_turn": {k: v for k, v in base.items()
+                            if not k.endswith("_relation")}}
+    moved = {**base, "account": "fallback"}
+    forecast = supervisor.cachecontinuity.classify(moved, prior, time.time())
+    check("switch · a known account namespace change is incompatible immediately",
+          lambda: _eq(forecast["state"], "known_incompatible"))
+    check("switch · proven incompatibility plus a large context compacts",
+          lambda: _eq(ready(_sw_node(occ=60_000), cfg, forecast), True))
+    check("switch · the occupancy threshold still refuses a small context",
+          lambda: _eq(ready(_sw_node(occ=10_000), cfg, forecast), False))
+    check("switch · an unobserved account remains uncertain and never compacts",
+          lambda: _eq(ready(_sw_node(occ=60_000), cfg,
+                            {"state": "uncertain"}), False))
     _src = re.sub(r"\s+", "", inspect.getsource(supervisor._run_one_turn))
-    check("switch · the turn loop hands the trigger a resolver over the "
-          "RESOLVED SPAWN ENV, not a bare `accounts.resolve` reading",
-          lambda: _true("identity_in_env(spawn_env(" in _src,
-                        "the wake-time resolver no longer reads the spawn "
-                        "env — see identity_in_env's docstring on why that "
-                        "is the difference between a diagnosis and a guess"))
-    check("switch · …and the readiness call at the wake actually passes it "
-          "(a trigger nothing feeds is a trigger that never fires)",
-          lambda: _true("_auto_cheap_ready(_n0,_c,_serving_now)" in _src,
-                        "the wake no longer passes a resolver"))
+    check("switch · forecast and Claude launch reuse one resolved spawn env",
+          lambda: _true("cache_pre_env=spawn_env(" in _src
+                        and "env=cache_pre_envorspawn_env(" in _src))
 
 
 # ====================== 3b. hermetic: the two pure predicates the split rests on

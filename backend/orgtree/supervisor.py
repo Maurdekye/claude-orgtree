@@ -39,7 +39,7 @@ import uuid
 from collections.abc import Callable, Iterable, Mapping
 from typing import Any, Final, cast
 
-from . import (accounts, appsettings, codex_limits, deployment, imgblock,
+from . import (accounts, appsettings, cachecontinuity, codex_limits, deployment, imgblock,
                limits, net, providers, sandbox as sbx, store, tokens,
                turnusage, warmpool)
 from .ledger import EXTERN, SYSTEM, USER, LedgerError, Org, expand_mcp, now as now_iso
@@ -3555,6 +3555,10 @@ def identity_prompt(org: Org, nid: str, include_archived: bool = False) -> str:
     return (
         f'You are "{nid}", an agent in the organization "{org.d["name"]}" (orgtree). '
         f"{purpose_line}{position}\n{charter_line}"
+        # Stable doctrine, never telemetry: deployment intentionally changes
+        # every existing managed system prompt once, then these bytes stay
+        # fixed across turns and across provider lanes.
+        f"\n{cachecontinuity.CACHE_CONTINUITY_BLOCK}\n"
         # D-181: `Credits:`, the fable note and the open-ask line used to sit
         # here. They are live org state and now ride `org_state_block`.
         f"{dir_line}{skills_line}{tool_line}{handles_line}"
@@ -4698,30 +4702,370 @@ def _foreign_session_provider(n: NodeDoc) -> str | None:
     return None
 
 
+def _cache_file_digest(path: str | None, limit: int | None = None) -> tuple[int, str] | None:
+    """Size plus SHA-256 for a transcript, optionally only its prefix."""
+    if not path:
+        return None
+    try:
+        size = os.path.getsize(path)
+        want = size if limit is None else min(size, max(0, int(limit)))
+        h = hashlib.sha256()
+        left = want
+        with open(path, "rb") as f:
+            while left:
+                block = f.read(min(1024 * 1024, left))
+                if not block:
+                    break
+                h.update(block)
+                left -= len(block)
+        if left:
+            return None
+        return want, h.hexdigest()
+    except (OSError, TypeError, ValueError, OverflowError):
+        return None
+
+
+def _cache_history(org: Org, nid: str) -> tuple[dict[str, Any] | None, str | None]:
+    """Current append-only local history evidence and its private path."""
+    n = org.node(nid)
+    path = transcript_path(str(n.get("session_id") or ""),
+                           _transcript_root(org))
+    measured = _cache_file_digest(path)
+    if measured is None:
+        if n.get("session_unrun"):
+            # This is observed empty history, not missing evidence. It lets a
+            # first positive receipt prove the stable startup/system prefix.
+            return {"bytes": 0,
+                    "sha256": hashlib.sha256(b"").hexdigest()}, path
+        return None, path
+    size, sha = measured
+    return {"bytes": size, "sha256": sha}, path
+
+
+def _cache_history_relation(path: str | None,
+                            prior: Any) -> str:
+    """Whether ``prior`` is still a byte prefix of today's history."""
+    if not isinstance(prior, dict):
+        return "unobserved"
+    try:
+        size = int(prior.get("bytes"))
+        sha = str(prior.get("sha256") or "")
+    except (TypeError, ValueError, OverflowError):
+        return "unobserved"
+    if size < 0 or not sha:
+        return "unobserved"
+    measured = _cache_file_digest(path, size)
+    if measured is None:
+        return "changed" if size else "unobserved"
+    got, digest = measured
+    if got < size:
+        return "changed"
+    return "same_or_appended" if digest == sha else "changed"
+
+
+def _cache_cmd_projection(cmd: list[str]) -> dict[str, Any]:
+    """Provider-visible Claude argv, excluding process-only/effort controls."""
+    once = {"--model", "--permission-mode", "--disallowed-tools",
+            "--mcp-config", "--allowedTools"}
+    repeat = {"--add-dir"}
+    out: dict[str, Any] = {}
+    i = 0
+    while i < len(cmd):
+        key = cmd[i]
+        if key in once and i + 1 < len(cmd):
+            out[key] = cmd[i + 1]
+            i += 2
+            continue
+        if key in repeat and i + 1 < len(cmd):
+            out.setdefault(key, []).append(cmd[i + 1])
+            i += 2
+            continue
+        i += 1
+    return out
+
+
+def _cache_semantic_inputs(org: Org, nid: str, provider: str) -> tuple[str, str]:
+    """Digests of normalized provider-visible tool and argv surfaces."""
+    n = org.node(nid)
+    scope = n.get("scope") or {}
+    if provider == "claude":
+        cmd = _build_cmd(org, nid, write_ident=False)
+        projection = _cache_cmd_projection(cmd)
+        projection["cli_version"] = cli_version()
+        tools = {
+            "grant": scope.get("tools") or {},
+            "permission_mode": scope.get("permission_mode"),
+            "mcp": projection.get("--mcp-config"),
+            "allowed": projection.get("--allowedTools"),
+            "disallowed": projection.get("--disallowed-tools"),
+            "dirs": projection.get("--add-dir") or [],
+        }
+        return cachecontinuity.digest(tools), cachecontinuity.digest(projection)
+    if provider == "openai":
+        from . import mcptool                              # noqa: PLC0415
+        spec = _codex_process_spec(org, nid, write_ident=False)
+        tools = {
+            "grant": scope.get("tools") or {},
+            "dynamic_tools": mcptool.available_tools(),
+            "mcp": spec.get("config_overrides") or [],
+        }
+        argv = {"head": spec.get("argv_head") or [],
+                "mcp": spec.get("config_overrides") or [],
+                "exe": spec.get("exe") or ""}
+        return cachecontinuity.digest(tools), cachecontinuity.digest(argv)
+    chosen, unavailable = gemini_mcp_grant(org, nid)
+    tools = {"grant": scope.get("tools") or {}, "mcp": chosen,
+             "unavailable": unavailable,
+             "approval": ("yolo" if (scope.get("tools") or {}).get("edit", True)
+                            and (scope.get("tools") or {}).get("bash", True)
+                            else "default")}
+    status = providers.gemini_status()
+    argv = {"exe": status.get("path") or "", "mcp": chosen,
+            "model": org.model_for(nid)}
+    return cachecontinuity.digest(tools), cachecontinuity.digest(argv)
+
+
+def _cache_claude_namespace(org: Org, tier: str,
+                            resolved_env: dict[str, str], now: float
+                            ) -> tuple[str, str]:
+    """Private account identity plus authoritative Claude TTL lane.
+
+    The returned account never enters the public forecast.  API keys are
+    represented only by a digest so rotation is detectable without persisting
+    the credential.  Sandboxed proxy requests do not carry the credential in
+    the host spawn environment, so their namespace is resolved from the same
+    fallback-window and container-auth helpers used by the request relay.
+    """
+    if sbx.is_sandboxed(org):
+        selected = sbx.container_auth(org)
+        fallback = api_fallback_active(org, now)
+        if not bills_the_key(org, fallback):
+            return accounts.PRIMARY, "subscription"
+        credential = (str(org.d.get("api_key") or "")
+                      if fallback else selected)
+        return ("sandbox-api-key:" + cachecontinuity.digest(
+                    {"credential": credential}, 16), "api_key")
+    api_key = str(resolved_env.get("ANTHROPIC_API_KEY") or "")
+    if api_key:
+        return ("api-key:" + cachecontinuity.digest(
+                    {"credential": api_key}, 16), "api_key")
+    account = identity_in_env(resolved_env)
+    return (account,
+            "unobserved" if account == UNATTRIBUTED else "subscription")
+
+
+def _cache_codex_account_namespace() -> str:
+    """Private stable Codex account evidence, credential-free on disk.
+
+    The CLI has one selected account, but that selection can still be replaced
+    by ``codex login``.  Hash the provider's own stable account id when it is
+    present, or the API key only as a digest. Refresh/access tokens and their
+    timestamps are deliberately excluded: rotating credentials for the same
+    account is not an account namespace change.
+    """
+    home = os.environ.get("CODEX_HOME") or os.path.expanduser("~/.codex")
+    try:
+        with open(os.path.join(home, "auth.json"), encoding="utf-8") as f:
+            loaded: Any = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return "unobserved"
+    if not isinstance(loaded, dict):
+        return "unobserved"
+    doc = cast("dict[str, Any]", loaded)
+    key = doc.get("OPENAI_API_KEY")
+    if isinstance(key, str) and key:
+        return "codex-api-key:" + cachecontinuity.digest(
+            {"credential": key}, 16)
+    tokens_row = doc.get("tokens")
+    tokens_row = (cast("dict[str, Any]", tokens_row)
+                  if isinstance(tokens_row, dict) else {})
+    account_id = tokens_row.get("account_id")
+    if isinstance(account_id, str) and account_id:
+        return "codex-chatgpt:" + cachecontinuity.digest(
+            {"account": account_id}, 16)
+    # Older auth records may omit account_id while the display identity is
+    # still locally observable in the id-token claims.
+    status = providers._codex_account()  # pyright: ignore[reportPrivateUsage]
+    email = status.get("email")
+    if isinstance(email, str) and email:
+        return "codex-chatgpt:" + cachecontinuity.digest(
+            {"account": email}, 16)
+    return "codex-account-unobserved"
+
+
+def _cache_gemini_account_namespace() -> str:
+    """Best locally observable Gemini account/auth namespace.
+
+    OAuth exposes the selected account name in Gemini's own account record.
+    API-key and Vertex credentials live outside that file surface, so their
+    auth kind is known but the account remains explicitly unobserved.
+    """
+    status = providers._gemini_account()  # pyright: ignore[reportPrivateUsage]
+    kind = str(status.get("kind") or "")
+    email = status.get("email")
+    if isinstance(email, str) and email:
+        return "gemini-" + (kind or "account") + ":" + \
+            cachecontinuity.digest({"account": email}, 16)
+    if kind:
+        return f"gemini-{kind}-account-unobserved"
+    return "unobserved"
+
+
+def _cache_claude_env_projection(resolved_env: dict[str, str]
+                                 ) -> dict[str, str]:
+    """Exact semantic env delta carried by this launch, credential-free.
+
+    Comparing with ``clean_env`` avoids hashing ambient PATH/HOME/port noise.
+    The remaining delta is the per-node override surface plus stable CLI
+    behavior switches. Credentials are the private account namespace above;
+    debug logging is process-only and cannot invalidate a provider prefix.
+    """
+    baseline = clean_env()
+    excluded = {
+        "ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN",
+        "CLAUDE_CODE_DEBUG_LOG_LEVEL",
+    }
+    return {key: str(value) for key, value in sorted(resolved_env.items())
+            if key not in excluded and baseline.get(key) != value}
+
+
+def _cache_snapshot(org: Org, nid: str, *, now: float | None = None,
+                    env: dict[str, str] | None = None,
+                    account_override: str | None = None,
+                    lane_override: str | None = None,
+                    include_history: bool = True) -> dict[str, Any]:
+    """Exact local prefix/namespace evidence for the next ordinary request.
+
+    Raw prompt, tool definitions, environment values and startup paths are
+    reduced to digests before this object can be persisted.
+    """
+    now = time.time() if now is None else now
+    n = org.node(nid)
+    tier = str(n.get("model") or "")
+    provider = providers.provider_of(tier)
+    account = account_override
+    lane = lane_override
+    resolved_env: dict[str, str] = {}
+    if provider == "claude":
+        resolved_env = env or spawn_env(org, tier=tier, nid=nid)
+        resolved_account, resolved_lane = _cache_claude_namespace(
+            org, tier, resolved_env, now)
+        account = account or resolved_account
+        lane = lane or resolved_lane
+    elif provider == "openai":
+        account = account or _cache_codex_account_namespace()
+        lane = lane or "provider_unsupported"
+    else:
+        account = account or _cache_gemini_account_namespace()
+        lane = lane or "provider_unsupported"
+    system = cachecontinuity.digest(identity_prompt(org, nid))
+    tools_digest, argv_digest = _cache_semantic_inputs(org, nid, provider)
+    startup = (warmpool.native_startup_context_digest(org, nid)
+               if provider == "claude"
+               else cachecontinuity.digest({"managed_identity": system,
+                                            "provider": provider}))
+    env_digest = cachecontinuity.digest(
+        _cache_claude_env_projection(resolved_env) if provider == "claude" else
+        {"provider": provider,
+         "codex_home": os.environ.get("CODEX_HOME", "") if provider == "openai"
+         else ""})
+    lineage = cachecontinuity.digest({
+        "generation": n.get("generation", 0),
+        "predecessor": n.get("predecessor"),
+    })
+    history, history_path = (_cache_history(org, nid)
+                             if include_history else (None, None))
+    components = {"system": system, "tools": tools_digest,
+                  "argv": argv_digest, "env": env_digest,
+                  "startup": startup, "lineage": lineage}
+    namespace = {
+        "provider": provider, "account": account or "unobserved",
+        "lane": lane or "unobserved", "model": org.model_for(nid),
+        "session": str(n.get("session_id") or ""),
+        "node_generation": int(n.get("generation") or 0),
+    }
+    fingerprint = cachecontinuity.digest(
+        {**namespace, "components": components, "history": history})
+    return {
+        **namespace, "components": components, "history": history,
+        "fingerprint": fingerprint, "captured_at": _iso_ts(now),
+        "expected_input_tokens": int(n.get("occupancy") or 0),
+        "session_was_unrun": bool(n.get("session_unrun")),
+        # Private, ephemeral I/O handle; stripped before persistence.
+        "_history_path": history_path,
+    }
+
+
+def _cache_prepare_relations(current: dict[str, Any],
+                             continuity: dict[str, Any] | None) -> dict[str, Any]:
+    book = continuity if isinstance(continuity, dict) else {}
+    last = book.get("last_turn") if isinstance(book.get("last_turn"), dict) else {}
+    receipt = book.get("receipt") if isinstance(book.get("receipt"), dict) else {}
+    out = dict(current)
+    path = cast("str | None", current.get("_history_path"))
+    out["last_turn_history_relation"] = _cache_history_relation(
+        path, cast("dict[str, Any]", last).get("history"))
+    out["receipt_history_relation"] = _cache_history_relation(
+        path, cast("dict[str, Any]", receipt).get("history"))
+    return out
+
+
+def _cache_persistable(snapshot: dict[str, Any]) -> dict[str, Any]:
+    return {k: v for k, v in snapshot.items()
+            if not k.startswith("_") and not k.endswith("_history_relation")}
+
+
+def _cache_boundary_attempt(org: Org, nid: str) -> dict[str, Any] | None:
+    """Exact request fingerprint for a turn fed to the current CLI process.
+
+    A boundary feed may deliberately drain through a process whose *desired*
+    identity became dirty. Its actual startup/system/tool components remain
+    those of the last request served by that process; using a freshly rendered
+    snapshot here would record the desired bytes as though they were sent.
+    """
+    n = org.node(nid)
+    raw = n.get("cache_continuity")
+    book = raw if isinstance(raw, dict) else {}
+    prior_raw = book.get("last_turn")
+    if not isinstance(prior_raw, dict):
+        return None
+    prior = dict(prior_raw)
+    if (int(n.get("generation") or 0)
+            != int(prior.get("node_generation") or 0)
+            or str(n.get("session_id") or "")
+            != str(prior.get("session") or "")):
+        # This process belongs to an older successor/session.  Its result may
+        # be useful to the old transcript, but it cannot mint evidence for the
+        # node identity that now owns the name.
+        return None
+    history, _path = _cache_history(org, nid)
+    prior.update({
+        "history": history,
+        "captured_at": now_iso(),
+        "node_generation": int(n.get("generation") or 0),
+        "expected_input_tokens": int(n.get("occupancy") or 0),
+        "session_was_unrun": False,
+        "session": str(prior.get("session") or ""),
+    })
+    prior["fingerprint"] = cachecontinuity.digest({
+        "provider": prior.get("provider"), "account": prior.get("account"),
+        "lane": prior.get("lane"), "model": prior.get("model"),
+        "session": prior.get("session"),
+        "node_generation": prior.get("node_generation"),
+        "components": prior.get("components"),
+        "history": history,
+    })
+    return _cache_persistable(prior)
+
+
 def _auto_cheap_cfg(org: Org, nid: str) -> dict[str, float] | None:
-    """FR-24b (user request 2026-08-12): the resolved auto-cheap-compact
-    thresholds for this node, or None when the feature is off. Org-level
-    `auto_cheap_compact` {enabled, occ, idle_s} is overridden key-by-key by
-    the node scope's entry of the same name; DISABLED unless some level says
-    enabled (D-108's opt-in stays the rule). Defaults: occ 0.5 (half the
-    context window), idle_s 3600 (the prompt-cache TTL — beyond it the resume
-    is cold and the swap pays for itself).
+    """Resolved cache-protective compaction setting for this node.
 
-    ⚠ 3600, not the 300 this shipped with (user ruling 2026-08-21). The number
-    has always meant "the cache TTL"; what changed is that 300 tracked a
-    5-minute TTL we do not actually get. Claude Code asks for a 1-HOUR TTL on
-    a subscription, and orgtree's agents qualify: a turn is a headless
-    `claude -p` run whose querySource is `sdk`, which the CLI classifies as a
-    MAIN conversation. (The 5-minute cap that the docs describe applies to
-    in-session Task subagents — querySource `agent:*` — which is not what an
-    orgtree agent is.) Verified against the PINNED cli 2.1.220 that the
-    backend actually launches, not the older one on PATH.
-
-    Two things silently put a turn back on a 5-minute TTL, and both make this
-    default too large: usage-credit OVERAGE, and an org billing its own
-    `api_key` (§9.5) — key auth never gets the automatic hour. Neither is
-    detected here; erring long is the cheap direction (a skipped compaction
-    costs one cold reload, a needless one destroys a live session)."""
+    The sole numeric operator value is the minimum measured context fraction.
+    Expiry is never configured here: it is derived from an authoritative
+    positive receipt (60m Claude subscription / 5m Claude API key). Legacy
+    ``idle_s`` fields are ignored and removed by the ledger load migration.
+    """
     base = cast("dict[str, Any]", org.d.get("auto_cheap_compact") or {})
     ov = cast("dict[str, Any]",
               org.node(nid)["scope"].get("auto_cheap_compact") or {})
@@ -4729,10 +5073,9 @@ def _auto_cheap_cfg(org: Org, nid: str) -> dict[str, float] | None:
     if not cfg.get("enabled"):
         return None
     try:
-        return {"occ": float(cfg.get("occ", 0.5)),
-                "idle_s": float(cfg.get("idle_s", 3600))}
+        return {"occ": min(0.95, max(0.05, float(cfg.get("occ", 0.5))))}
     except (TypeError, ValueError):
-        return {"occ": 0.5, "idle_s": 3600.0}
+        return {"occ": 0.5}
 
 
 #: `identity_in_env`'s "a token no stored row explains" answer. Named here
@@ -4743,50 +5086,11 @@ UNATTRIBUTED = "key:unattributed"
 
 def _cache_moved_account(n: NodeDoc | dict[str, Any],
                          serving: Callable[[], str] | None) -> bool:
-    """Will the coming turn run on a DIFFERENT account than the one holding
-    this session's prompt cache? (D-179, user request 2026-08-29.)
+    """Legacy diagnostic helper; admission uses fingerprint evidence now.
 
-    ⚠ THIS IS NOT A NEW TRIGGER — IT IS A SECOND WAY TO BE COLD. Read
-    `_auto_cheap_cfg` first: `idle_s` defaults to 3600 because that is the
-    prompt-cache TTL, and its whole meaning is "past this, the resume is cold
-    and the swap pays for itself". Idle time is a PROXY for coldness, not the
-    thing itself. An account switch makes the cache cold at any idle time —
-    the prompt cache is scoped to the account that wrote it, so the new
-    account has never seen a byte of this session and the resume pays the full
-    1.25×C cold-wake price (docs/cache-economics.md) no matter how recently
-    the last turn ran. So this answers the SAME question `idle_s` answers, on
-    the other axis, and it is OR-ed with it rather than added as a third bar.
-
-    ⚠ AND WHY THE OCCUPANCY BAR IS NOT TOUCHED. `cheap_compact` is FREE — it
-    makes no API call at all, it swaps `session_id` for a fresh uuid and
-    archives the old session as a knowledge bearer (ledger.cheap_compact).
-    There is no token cost to amortise and therefore no "did we get enough
-    turns out of it" break-even. What a needless swap costs is CONTEXT, and
-    the occupancy bar is the whole of what protects it. A switch says the
-    reload is expensive; only occupancy says the session is big enough that
-    losing it is the better trade. Both, always.
-
-    ⚠ IT COMPARES TWO RESOLVED IDENTITIES, NEVER TWO INTENTS. `serving`
-    returns `identity_in_env(spawn_env(...))` — the account the spawn will
-    ACTUALLY authenticate as, api-key lane included — for the same reason
-    `identity_in_env` takes an env dict at all (read its docstring). Asking
-    `accounts.resolve` here instead would answer "where would this tier route
-    now", which is a different question the moment an org bills its own key.
-
-    ⚠ UNKNOWN ON EITHER SIDE IS NOT A SWITCH, and the asymmetry is deliberate.
-    `_auto_cheap_cfg` states the direction: "a skipped compaction costs one
-    cold reload, a needless one destroys a live session". A false NEGATIVE
-    here is one cold wake; a false POSITIVE throws away a live agent's whole
-    context. So this fires only when both sides are known AND attributed:
-    an absent `ran_as` (the node has not run in this backend process), an
-    empty answer from `serving`, or `key:unattributed` on either side — a
-    token no row explains, which two consecutive turns could hold different
-    values of — all read as "cannot tell", and cannot tell means do not.
-
-    `serving is None` means the caller is not asking about accounts at all
-    (every hermetic caller, and every test that predates this), and the
-    answer is a plain False: the idle bar then decides alone, exactly as it
-    did before."""
+    Kept for journal/tests that ask the narrow historical question. Unknown or
+    unattributed identities never become a destructive-policy proof.
+    """
     if serving is None:
         return False
     try:
@@ -4799,93 +5103,264 @@ def _cache_moved_account(n: NodeDoc | dict[str, Any],
             return False                      # nothing to compare with
         return now_on != prev
     except Exception:                                            # noqa: BLE001
-        # Same rule as the caller's own defensive parse, and the same reason:
-        # this runs under DOC_LOCK on the turn path, and `serving` reaches the
-        # filesystem (the token store, the registry). An optimization is never
-        # allowed to be the reason a turn dies — least of all one whose whole
-        # job is to make the turn cheaper.
         return False
+
+
+def _auto_cheap_context_ready(n: NodeDoc | dict[str, Any],
+                              cfg: dict[str, float]) -> tuple[bool, str]:
+    """Destructive-action guard: real, sufficiently large, non-fresh context."""
+    if n.get("state") not in (None, "live"):
+        return False, "the agent is not live"
+    if n.get("frozen") or n.get("limit_locked") or n.get("remote_controlled"):
+        return False, "the agent is frozen or otherwise blocked"
+    occ, cw = n.get("occupancy"), context_window(n)
+    if not occ or not cw:
+        return False, "context size is empty or unmeasured"
+    if (n.get("occupancy_est") or n.get("compacted_unrun")
+            or n.get("session_unrun") or n.get("cheap_compacted")):
+        return False, "the successor context is new or only estimated"
+    if n.get("bearer_state"):
+        return False, "knowledge-bearer sessions are never auto-compacted"
+    last_status = n.get("last_status")
+    if (isinstance(last_status, dict)
+            and last_status.get("status") == "blocked"):
+        return False, "the agent is durably blocked"
+    try:
+        ratio = float(occ) / float(cw)
+    except (TypeError, ValueError, ZeroDivisionError, OverflowError):
+        return False, "context size is invalid"
+    minimum = float(cfg.get("occ", 0.5))
+    if ratio < minimum:
+        return False, f"context {ratio:.0%} is below the {minimum:.0%} minimum"
+    return True, f"context {ratio:.0%} meets the {minimum:.0%} minimum"
+
+
+def _cache_precompact_decision(org: Org, nid: str,
+                               forecast: dict[str, Any]) -> tuple[str, str]:
+    """One policy answer shared by admission, tree payload and composer UI."""
+    state_name = str(forecast.get("state") or "uncertain")
+    if state_name not in ("known_incompatible", "expired_known_entry"):
+        return "not_applicable", "No proven cold entry requires compaction."
+    cfg = _auto_cheap_cfg(org, nid)
+    if cfg is None:
+        return "miss_expected", "Automatic cache-protective compaction is off."
+    if org.d.get("spend_frozen") or org.d.get("storage_blocked"):
+        return "miss_expected", "The organization is frozen or storage-blocked."
+    ready, why = _auto_cheap_context_ready(org.node(nid), cfg)
+    if not ready:
+        return "miss_expected", why
+    return "will_compact", why
+
+
+def _cache_record_forecast(org: Org, nid: str, current: dict[str, Any],
+                           now: float | None = None
+                           ) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Classify and persist one generation-owned internal/public forecast."""
+    now = time.time() if now is None else now
+    n = org.node(nid)
+    raw = n.get("cache_continuity")
+    book: dict[str, Any] = raw if isinstance(raw, dict) else {}
+    prepared = _cache_prepare_relations(current, book)
+    forecast = cachecontinuity.classify(prepared, book, now)
+    action, action_reason = _cache_precompact_decision(org, nid, forecast)
+    seq = int(book.get("seq") or 0) + 1
+    generation = cachecontinuity.generation(prepared, forecast, seq)
+    safe = cachecontinuity.public(
+        forecast, generation=generation, precompact_action=action,
+        precompact_reason=action_reason)
+    book["version"] = 1
+    book["seq"] = seq
+    book["forecast"] = forecast
+    book["public"] = safe
+    n["cache_continuity"] = book
+    return forecast, safe
+
+
+def _cache_forecast_now(org: Org, nid: str, *, now: float | None = None,
+                        env: dict[str, str] | None = None
+                        ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    current = _cache_snapshot(org, nid, now=now, env=env)
+    forecast, safe = _cache_record_forecast(org, nid, current, now)
+    return forecast, safe, current
+
+
+def _cache_turn_record(snapshot: dict[str, Any], history: Any,
+                       completed_at: str, actual_session: str) -> dict[str, Any]:
+    row = _cache_persistable(snapshot)
+    row["session"] = actual_session
+    row["history"] = history
+    row["completed_at"] = completed_at
+    row["launch_fingerprint"] = snapshot.get("fingerprint")
+    row["resulting_fingerprint"] = cachecontinuity.digest({
+        "provider": row.get("provider"), "account": row.get("account"),
+        "lane": row.get("lane"), "model": row.get("model"),
+        "session": actual_session,
+        "node_generation": row.get("node_generation"),
+        "components": row.get("components"), "history": history,
+    })
+    return row
+
+
+def _cache_finish_turn(org: Org, nid: str, attempt: dict[str, Any] | None,
+                       usage: Any, *, now: float | None = None
+                       ) -> dict[str, Any] | None:
+    """Generation-safe post-turn fingerprint/receipt reconciliation."""
+    if not isinstance(attempt, dict):
+        return None
+    n = org.node(nid)
+    if int(n.get("generation") or 0) != int(attempt.get("node_generation") or 0):
+        return None                       # a stale process cannot write successor state
+    current_session = str(n.get("session_id") or "")
+    attempt_session = str(attempt.get("session") or "")
+    session_transition = bool(
+        attempt.get("session_was_unrun")
+        and attempt.get("provider") in ("openai", "google"))
+    if not session_transition and current_session != attempt_session:
+        return None                       # same generation, replaced session
+    now = time.time() if now is None else now
+    current = _cache_snapshot(org, nid, now=now)
+    history = current.get("history")
+    actual_session = (str(current.get("session") or attempt_session)
+                      if session_transition else attempt_session)
+    stamp = _iso_ts(now)
+    book_raw = n.get("cache_continuity")
+    book: dict[str, Any] = book_raw if isinstance(book_raw, dict) else {}
+    last = _cache_turn_record(attempt, history, stamp, actual_session)
+    book["last_turn"] = last
+    reads, writes = cachecontinuity.positive_usage(usage)
+    if reads or writes:
+        # Usage describes the request that was launched, not the assistant
+        # response appended afterward. Keep the exact launch history prefix;
+        # the next turn may append to it and remain compatible.
+        receipt = _cache_turn_record(
+            attempt, attempt.get("history"), stamp, actual_session)
+        ttl = cachecontinuity.ttl_seconds(
+            str(attempt.get("provider") or ""), str(attempt.get("lane") or ""))
+        receipt.update({"observed_at": stamp, "cache_read_tokens": reads,
+                        "cache_write_tokens": writes, "ttl_seconds": ttl,
+                        "expires_at": (_iso_ts(now + ttl) if ttl else None)})
+        book["receipt"] = receipt
+    n["cache_continuity"] = book
+    _forecast, safe = _cache_record_forecast(org, nid, current, now)
+    return safe
+
+
+def _cache_refresh_receipt(org: Org, nid: str,
+                           attempt: dict[str, Any] | None, usage: Any,
+                           *, now: float | None = None) -> dict[str, Any] | None:
+    """Refresh only positive disposable cache-read evidence; no fake turn."""
+    if not isinstance(attempt, dict):
+        return None
+    reads, writes = cachecontinuity.positive_usage(usage)
+    if not (reads or writes):
+        return None
+    n = org.node(nid)
+    if (int(n.get("generation") or 0)
+            != int(attempt.get("node_generation") or 0)
+            or str(n.get("session_id") or "") != str(attempt.get("session") or "")):
+        return None
+    now = time.time() if now is None else now
+    current = _cache_snapshot(org, nid, now=now)
+    stamp = _iso_ts(now)
+    receipt = _cache_turn_record(
+        attempt, current.get("history"), stamp,
+        str(attempt.get("session") or ""))
+    ttl = cachecontinuity.ttl_seconds(
+        str(attempt.get("provider") or ""), str(attempt.get("lane") or ""))
+    receipt.update({"observed_at": stamp, "cache_read_tokens": reads,
+                    "cache_write_tokens": writes, "ttl_seconds": ttl,
+                    "expires_at": (_iso_ts(now + ttl) if ttl else None),
+                    "maintenance": True})
+    raw = n.get("cache_continuity")
+    book: dict[str, Any] = raw if isinstance(raw, dict) else {}
+    book["receipt"] = receipt
+    n["cache_continuity"] = book
+    _forecast, safe = _cache_record_forecast(org, nid, current, now)
+    return safe
+
+
+def cache_forecast_public(org: Org, nid: str,
+                          now: float | None = None) -> dict[str, Any] | None:
+    """Tree projection with a cheap semantic preview and authoritative TTL.
+
+    Admission remains the only place that persists a full fingerprint and
+    proves transcript-prefix continuity.  A tree poll does, however, render
+    the current namespace/system/tool/startup components without reading the
+    transcript.  That is what lets the composer warn *before* a turn after a
+    retool, model/account switch, or startup-file edit instead of briefly
+    showing the last completed turn's stale green result.  History-only
+    changes remain conservative until admission; no UI request is allowed to
+    manufacture that proof by repeatedly hashing a large transcript.
+    """
+    n = org.node(nid)
+    raw = n.get("cache_continuity")
+    book = raw if isinstance(raw, dict) else {}
+    public_row = book.get("public")
+    if not isinstance(public_row, dict):
+        return None
+    old = dict(public_row)
+    internal_raw = book.get("forecast")
+    if not isinstance(internal_raw, dict):
+        return old
+    internal = dict(internal_raw)
+    now = time.time() if now is None else now
+
+    # Re-evaluate all non-history identity inputs for the pre-send UI.  The
+    # synthetic relations below say only "do not decide history here"; a
+    # static mismatch is independently sufficient to prove incompatibility.
+    # If rendering fails (missing CLI/config race), retain the durable answer
+    # rather than turning a display read into an admission dependency.
+    try:
+        preview_current = _cache_snapshot(
+            org, nid, now=now, include_history=False)
+        preview_current["last_turn_history_relation"] = "same_or_appended"
+        preview_current["receipt_history_relation"] = "same_or_appended"
+        preview = cachecontinuity.classify(preview_current, book, now)
+        if preview.get("state") == "known_incompatible":
+            internal = preview
+    except Exception:                                           # noqa: BLE001
+        pass
+
+    if old.get("state") == "compatible_observed":
+        expiry = cachecontinuity.epoch(old.get("expires_at"))
+        receipt = cachecontinuity.epoch(old.get("last_receipt_at"))
+        if (internal.get("state") != "known_incompatible"
+                and expiry is not None and receipt is not None
+                and now >= expiry):
+            internal.update({
+                "state": "expired_known_entry",
+                "source": "authoritative_receipt",
+                "reason": (f"The observed {int(old.get('ttl_seconds') or 0) // 60}"
+                           "-minute cache entry has expired."),
+            })
+    action, action_reason = _cache_precompact_decision(org, nid, internal)
+    candidate = cachecontinuity.public(
+        internal, generation=str(old.get("generation") or ""),
+        precompact_action=action, precompact_reason=action_reason)
+    without_generation = {k: v for k, v in candidate.items()
+                          if k != "generation"}
+    old_without_generation = {k: v for k, v in old.items()
+                              if k != "generation"}
+    if without_generation == old_without_generation:
+        return candidate
+    generation = cachecontinuity.digest({
+        "prior": old.get("generation"), "forecast": without_generation}, 24)
+    return {**candidate, "generation": generation}
 
 
 def _auto_cheap_ready(n: NodeDoc | dict[str, Any],
                       cfg: dict[str, float],
-                      serving: Callable[[], str] | None = None) -> bool:
-    """Does this node meet FR-24b's bar for the wake-time cheap-compact?
+                      forecast: dict[str, Any] | None = None) -> bool:
+    """True only for a proven-cold forecast and a measured large context.
 
-    A NAMED decision rather than six lines inside the turn loop, because what
-    it decides is destructive: `cheap_compact` replaces the session with an
-    empty one, and on a just-compacted node that means discarding the summary a
-    600-second, really-billed fork produced.
-
-    Two bars, and the second is the one 2026-08-20 added. The fill must be over
-    the configured fraction of the window, AND it must be a fill something
-    MEASURED. A §8 split now reports the successor's post-compaction size
-    immediately (it used to report nothing at all, which is what kept this
-    branch away from a fresh successor), and an estimate must not be the number
-    a destructive, irreversible action turns on. The first completed turn
-    measures the session and this decides on real numbers again, as it always
-    has.
-
-    Defensive throughout (redteam hardening 2026-08-12): every writer of
-    `turns[].at` uses now_iso today, but a malformed stamp must not kill the
-    very turn the swap was trying to cheapen — an optimization is never allowed
-    to be the reason a turn dies.
-
-    ⚠ THE FIRST BAR IS COLDNESS, AND IT HAS TWO ROADS IN (2026-08-29). It used
-    to read `idle >= idle_s` and that was the only way to be cold; an ACCOUNT
-    SWITCH is the other, and `_cache_moved_account` is it. The bar itself has
-    not moved — `idle_s` never meant "has been quiet for a while", it meant
-    "the prompt cache is gone" — so a switch satisfies the SAME condition by
-    the other route rather than adding a third one. The occupancy bar below is
-    unchanged and still ANDed: see `_cache_moved_account` on why a free
-    compaction still needs it."""
-    # A durable reported-working status spans the quiet gap between turns.
-    # Manual compaction remains available; only this configured automatic
-    # wake-time swap stands down.
-    if _reported_working(n):
+    No turn timestamp, UI-idle clock or operator timeout is read here. Time can
+    enter solely through ``expired_known_entry``, which the classifier derives
+    from a positive same-lane provider receipt and its authoritative TTL.
+    """
+    if not isinstance(forecast, dict) or forecast.get("state") not in (
+            "known_incompatible", "expired_known_entry"):
         return False
-    occ, cw = n.get("occupancy"), context_window(n)
-    if not occ or not cw:
-        return False
-    # BOTH markers, and the FACT is the load-bearing one: `occupancy_est`
-    # describes a number and evaporates the moment a fork's transcript happens
-    # to carry a post-boundary record — or a boundary this reader cannot make
-    # sense of — while `compacted_unrun` says the thing that actually matters
-    # here, that everything in this session is a summary a 600 s billed fork
-    # just produced and this branch would throw away. The api prechecks were
-    # moved onto the fact in round 1 and this one, the only trigger that is
-    # destructive with NO user action at all, was left on the number
-    # (redteam 2026-08-20).
-    if n.get("occupancy_est") or n.get("compacted_unrun"):
-        return False
-    try:
-        # ⚠ inside the try: `cast` is a no-op at runtime, so a `turns` that is
-        # not a list of dicts (a hand-edited or torn doc) raised AttributeError
-        # or IndexError from the subscript — under DOC_LOCK, on the turn path,
-        # killing the very turn this optimization exists to cheapen
-        turns = cast("list[dict[str, Any]]", n.get("turns") or [])
-        stamps = ([str(turns[-1].get("at") or "")] if turns else [])
-        stamps.append(str(n.get("cache_keepalive_at") or ""))
-        parsed = [_dtm.datetime.fromisoformat(s.replace("Z", "+00:00"))
-                  for s in stamps if s]
-        if not parsed:
-            return False
-        idle = (_dtm.datetime.now(_dtm.timezone.utc)
-                - max(parsed)
-                ).total_seconds()
-        # ⚠ OCCUPANCY IS TESTED FIRST, and that is not cosmetic. The two bars
-        # are ANDed and so commute logically, but `_cache_moved_account` calls
-        # `serving`, which reads the registry and the token store off disk —
-        # once per wake, under DOC_LOCK, on the turn path. Asking it about a
-        # node that is 10% full would pay for an answer that cannot change the
-        # verdict. Cheap in-doc arithmetic decides first; the filesystem is
-        # only consulted for a node the swap could actually fire on.
-        if float(occ) / float(cw) < cfg["occ"]:
-            return False
-        return idle >= cfg["idle_s"] or _cache_moved_account(n, serving)
-    except (ValueError, TypeError, ZeroDivisionError, KeyError,
-            AttributeError, IndexError):
-        return False
+    return _auto_cheap_context_ready(n, cfg)[0]
 
 
 # ── reported-working prompt-cache lifecycle ───────────────────────────────
@@ -5206,6 +5681,9 @@ def _working_cache_read(slug: str, nid: str,
     cost = 0.0
     success = failed = False
     out = ""
+    cache_attempt: dict[str, Any] | None = None
+    cache_usage: dict[str, Any] = {}
+    cache_event: dict[str, Any] | None = None
     proc: subprocess.Popen[str] | None = None
     try:
         with _working_cache_slots:
@@ -5224,6 +5702,13 @@ def _working_cache_read(slug: str, nid: str,
                 billed_key = bills_the_key(org, on_fallback)
                 env = spawn_env(org, tier=tier, nid=nid)
                 cmd = _working_cache_cmd(org, nid)
+                try:
+                    cache_attempt = _cache_persistable(
+                        _cache_snapshot(org, nid, env=env))
+                except Exception:                               # noqa: BLE001
+                    # A maintenance request still does useful cache work even
+                    # when predictor metadata is temporarily unavailable.
+                    cache_attempt = None
                 cwd = scratch_dir(slug, nid)
                 troot = _transcript_root(org)
             # The reservation check and Popen are one state-lock transaction.
@@ -5291,6 +5776,8 @@ def _working_cache_read(slug: str, nid: str,
         # can leave a complete result in the pipe before process teardown.
         if out:
             res = _working_cache_result(out)
+            cache_usage = (dict(res.get("usage") or {})
+                           if isinstance(res.get("usage"), dict) else {})
             try:
                 reported = float(res.get("total_cost_usd") or 0.0)
                 if _math.isfinite(reported) and reported >= 0:
@@ -5331,6 +5818,8 @@ def _working_cache_read(slug: str, nid: str,
                         # still owns the session we forked.
                         if success and n2.get("session_id") == old_sid:
                             n2["cache_keepalive_at"] = now_iso()
+                            cache_event = _cache_refresh_receipt(
+                                current, nid, cache_attempt, cache_usage)
                         store.save_org(current)
                         spend_total = current.cost_total()
                         kcfg = kiosk_cfg(current)
@@ -5348,6 +5837,9 @@ def _working_cache_read(slug: str, nid: str,
                     and spend_total is not None
                     and spend_total >= float(kcfg["spend_limit"])):
                 hard_freeze(slug, "spend", "kiosk spend limit reached")
+        if cache_event is not None:
+            stream(slug, nid, {"kind": "cache_forecast",
+                               "forecast": cache_event})
 
 
 def _launch_working_cache_read(slug: str, nid: str) -> None:
@@ -6545,6 +7037,14 @@ def _codex_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
         "_mcp_tool_count": turn_mcp_count,
         "_mcp_tool_names": turn_mcp_names,
         "_mcp_tool_fingerprint": turn_mcp_fingerprint,
+        "_cache_usage": {
+            "input_tokens": max(
+                int(last_tu.get("inputTokens") or 0)
+                - int(last_tu.get("cachedInputTokens") or 0), 0),
+            "cache_read_input_tokens":
+                int(last_tu.get("cachedInputTokens") or 0),
+            "cache_creation_input_tokens": 0,
+        },
     }
     return res, providers.codex_occupancy(tu)
 
@@ -6935,6 +7435,11 @@ def _gemini_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
         "_mcp_tool_count": None,
         "_mcp_tool_names": None,
         "_mcp_tool_fingerprint": turn_mcp_fingerprint,
+        "_cache_usage": {
+            "input_tokens": int(main_tok.get("input") or 0),
+            "cache_read_input_tokens": int(main_tok.get("cached") or 0),
+            "cache_creation_input_tokens": 0,
+        },
     }
     return res, providers.gemini_occupancy(tu)
 
@@ -6968,6 +7473,12 @@ def _run_one_turn(slug: str, nid: str,
     # which lane bills this turn, hoisted to function scope: the spawn-time
     # capture lives inside the try and may not be bound when it unwinds
     billed_on_key = False
+    # Next-turn cache evidence is captured before ANY ordinary carrier drains.
+    # It is reused by the provider launch and reconciled only by this exact
+    # generation's completion, so a stale process cannot bless a successor.
+    cache_attempt: dict[str, Any] | None = None
+    cache_pre_env: dict[str, str] | None = None
+    cache_forecast_event: dict[str, Any] | None = None
     # a mail POINTER whose box empties between `_run_turn`'s gate and the drain
     # below is dropped HERE instead of launched (see the drop site). The flag
     # says the drop already handed the queue on, so the `finally` must not pop
@@ -7053,90 +7564,68 @@ def _run_one_turn(slug: str, nid: str,
                 # a slash command skips the drain entirely: the "/" must be
                 # the first character the CLI sees, and the mail stays boxed
                 # for the next normal turn (user-approved 2026-07-31)
-                # FR-24b (user request 2026-08-12): auto cheap-compact at
-                # the WAKE — swap the cold, heavy session for a fresh one
-                # BEFORE the resume pays the full cold-context reload.
-                # In-place (same seat, team, mailbox — a normal compact's
-                # retention), so nothing needs rerouting, and the notice it
-                # posts drains into THIS turn's envelope, so the successor
-                # learns what happened in the same wake. Especially valuable
-                # for headless orgs, whose agents wake infrequently and
-                # would otherwise re-pay their whole context every time.
-                # A refusal (raced state change) falls through to a normal
-                # turn — the swap is an optimization, never a gate.
-                #
-                # ⚠ AND AT AN ACCOUNT SWITCH TOO (user request 2026-08-29).
-                # The prompt cache belongs to the account that wrote it, so a
-                # fallback moves this agent to a machine that has never seen
-                # its context: the resume pays the full cold-wake price at any
-                # idle time. `_cache_moved_account` is what notices, and this
-                # is the ONE site that needs it — every way an agent's account
-                # can change arrives here. The re-drive after a usage limit
-                # (`redrive_after_limit`) drives the node, which becomes a
-                # turn, which wakes through this branch; and a SILENT switch —
-                # routing is machine-global, so another org's limit can move
-                # this tier's lane with no re-drive at all — lands here too, on
-                # this node's next turn. Putting the trigger at the re-drive
-                # site would have caught only the first of those.
+                # Cache-protective cheap compaction lives at this ONE common
+                # ordinary-turn admission boundary, before notices or mail are
+                # drained. User, mail, checkup, recovery and provider-redrive
+                # carriers therefore share the same exact-once gate. Commands
+                # deliberately skip it because they launch no prompt turn.
                 if not is_cmd:
-                    _c = _auto_cheap_cfg(org, nid)
-                    if _c is not None:
-                        _n0 = org.node(nid)
-                        _occ = _n0.get("occupancy")
-                        _cw = context_window(_n0)
-                        # ⚠ the SAME construction the spawn below uses, not a
-                        # resolver call — `identity_in_env` answers about a
-                        # resolved env on purpose, and the api-key lane means
-                        # `accounts.resolve` alone would sometimes name an
-                        # account this turn will not authenticate as. Passed
-                        # as a thunk so it is only paid for by a node that has
-                        # already cleared the occupancy bar, and MEMOISED so
-                        # that the readiness test and the log line below share
-                        # one answer: two calls would be two registry reads AND
-                        # two chances to disagree, on the turn path, under the
-                        # doc lock.
-                        _memo: list[str] = []
-
-                        def _serving_now(_o: Org = org) -> str:
-                            if not _memo:
-                                _memo.append(identity_in_env(spawn_env(
-                                    _o,
-                                    tier=str(_o.node(nid).get("model") or ""))))
-                            return _memo[0]
-                        if _auto_cheap_ready(_n0, _c, _serving_now):
-                            # ⚠ WHICH BAR OPENED THE GATE, decided BEFORE the
-                            # swap runs — for the same reason `_occ` is read up
-                            # here. `cheap_compact` mutates this very dict in
-                            # place (it nulls `occupancy`), so anything the log
-                            # line wants to say about the pre-swap node has to
-                            # be settled while the pre-swap node still exists.
-                            # It does not touch `turns` today and this would
-                            # survive; that is luck, and a log line is not
-                            # worth resting on it.
-                            _why = ("the serving account changed — the prompt "
-                                    "cache does not move with it"
-                                    if _cache_moved_account(_n0, _serving_now)
-                                    else f"idle past {int(_c['idle_s'])}s")
+                    try:
+                        _tier0 = str(org.node(nid).get("model") or "")
+                        if providers.provider_of(_tier0) == "claude":
+                            # Reuse this exact resolved environment at launch;
+                            # forecast and request cannot race two account reads.
+                            cache_pre_env = spawn_env(
+                                org, tier=_tier0, nid=nid)
+                        _forecast0, cache_forecast_event, _current0 = \
+                            _cache_forecast_now(
+                                org, nid, env=cache_pre_env)
+                        cache_attempt = _cache_persistable(_current0)
+                    except Exception as exc:                    # noqa: BLE001
+                        # Prediction is protective telemetry, never an
+                        # admission dependency. Unknown evidence means run the
+                        # exact pending turn without destructive optimization.
+                        print(f"[orgtree] {slug}/{nid}: cache forecast "
+                              f"unavailable ({type(exc).__name__}: {exc})")
+                    else:
+                        _cfg0 = _auto_cheap_cfg(org, nid)
+                        if (_cfg0 is not None
+                                and _auto_cheap_ready(
+                                    org.node(nid), _cfg0, _forecast0)):
+                            _before = org.node(nid)
+                            _occ0 = _before.get("occupancy")
+                            _cw0 = context_window(_before)
+                            _state0 = str(_forecast0.get("state") or "")
+                            _reason0 = str(_forecast0.get("reason") or "")
                             try:
                                 _r0 = org.cheap_compact(SYSTEM, nid)
                                 export_predecessor_transcript(
                                     org, nid,
-                                    old_sid=str(_r0.get("old_session")
-                                                or ""))
-                                store.save_org(org)
-                                # `_why` and not a fixed "idle past N s": that
-                                # string printed on a swap that in fact fired
-                                # 20 seconds after the last turn because the
-                                # account moved is what makes a feature
-                                # unexplainable, and this print is the only
-                                # trace the swap leaves an operator reading a
-                                # console after the fact.
-                                print(f"[orgtree] {slug}/{nid}: auto "
-                                      f"cheap-compact (context "
-                                      f"{100 * float(_occ or 0) / float(_cw or 1):.0f}"
-                                      f"%, {_why})")
+                                    old_sid=str(_r0.get("old_session") or ""))
                             except LedgerError:
+                                # A raced lifecycle change refuses the swap;
+                                # the original carrier proceeds normally.
                                 pass
+                            else:
+                                # A successor is a new evidence generation. It
+                                # cannot inherit the predecessor's receipt.
+                                org.node(nid).pop("cache_continuity", None)
+                                try:
+                                    (_forecast1, cache_forecast_event,
+                                     _current1) = _cache_forecast_now(
+                                         org, nid, env=cache_pre_env)
+                                    cache_attempt = _cache_persistable(_current1)
+                                except Exception:               # noqa: BLE001
+                                    cache_forecast_event = None
+                                    cache_attempt = None
+                                print(
+                                    f"[orgtree] {slug}/{nid}: cache-protective "
+                                    f"cheap-compact (context "
+                                    f"{100 * float(_occ0 or 0) / float(_cw0 or 1):.0f}"
+                                    f"%, {_state0}: {_reason0})")
+                        # Persist the generation-owned decision before drain;
+                        # a backend restart cannot resurrect stale evidence.
+                        store.save_org(org)
                 pending = None if is_cmd \
                     else (org.d.get("notices") or {}).pop(nid, None)
                 mail = [] if is_cmd else org.take_mail(nid)
@@ -7146,6 +7635,9 @@ def _run_one_turn(slug: str, nid: str,
                     # die with the turn — the journal folds it back
                     toks.append(_journal_drain(org, nid, mail, pending, "turn"))
                     store.save_org(org)
+            if cache_forecast_event is not None:
+                stream(slug, nid, {"kind": "cache_forecast",
+                                   "forecast": cache_forecast_event})
             prelude = []
             # D-181: bound here, assigned under the lock below. Never folded
             # into `prelude` — see the note at the assignment.
@@ -7275,7 +7767,8 @@ def _run_one_turn(slug: str, nid: str,
                 st["turns_run"] += 1
                 st["account_switches"] = 0
                 paid_booked = True     # _after_turn books `res`'s cost itself
-                _after_turn(slug, nid, org, res, st, codex_occ, on_key=False)
+                _after_turn(slug, nid, org, res, st, codex_occ, on_key=False,
+                            cache_attempt=cache_attempt)
                 raise _CodexTurnDone
             if _turn_tier in providers.GEMINI_TIERS:
                 # the same seam one provider over (D-186): identical tail,
@@ -7286,7 +7779,8 @@ def _run_one_turn(slug: str, nid: str,
                 st["turns_run"] += 1
                 st["account_switches"] = 0
                 paid_booked = True     # _after_turn books `res`'s cost itself
-                _after_turn(slug, nid, org, res, st, gem_occ, on_key=False)
+                _after_turn(slug, nid, org, res, st, gem_occ, on_key=False,
+                            cache_attempt=cache_attempt)
                 raise _GeminiTurnDone
             sandbox_name = None
             if sbx.is_sandboxed(org):
@@ -7301,8 +7795,8 @@ def _run_one_turn(slug: str, nid: str,
             # routes the account lane: this node's model tier picks the
             # highest-priority account with capacity for it (user redesign
             # 2026-08-25, machine-local per-model routing).
-            env = spawn_env(org, tier=str(org.node(nid).get("model") or ""),
-                            nid=nid)
+            env = cache_pre_env or spawn_env(
+                org, tier=str(org.node(nid).get("model") or ""), nid=nid)
             # api_fallback cost split: which lane bills THIS turn is decided
             # here, at spawn — capture it so the accounting below attributes
             # the whole turn to that lane even if the window expires mid-turn
@@ -7483,6 +7977,7 @@ def _run_one_turn(slug: str, nid: str,
                                 # (per-message point-in-time usage — see the
                                 # max() site; №24 was about the result event)
             turn_out = 0        # cumulative output tokens (killed-turn accounting)
+            last_cache_usage: dict[str, Any] = {}
             dbuf, dlast = "", time.time()   # token-stream delta batcher (~8 Hz)
             think_t0, think_buf = 0.0, ""   # the in-progress thought
             # concurrently running subagents, for the desk header's task count:
@@ -7895,6 +8390,11 @@ def _run_one_turn(slug: str, nid: str,
                                     stream_api_err,
                                     ev.get("error") or _msg.get("error"), _t)
                         u = ev.get("message", {}).get("usage") or {}
+                        if u and not sub:
+                            # Exact last top-level request receipt. The result
+                            # event is process/turn cumulative and cannot prove
+                            # which prefix was read.
+                            last_cache_usage = dict(u)
                         t = (u.get("input_tokens", 0)
                              + u.get("cache_read_input_tokens", 0)
                              + u.get("cache_creation_input_tokens", 0))
@@ -8196,6 +8696,50 @@ def _run_one_turn(slug: str, nid: str,
                                 # closed-death-list telemetry
                                 wp_turn.exit_reason = _bnd_why or \
                                     "identity-changed"
+                        # Reconcile this exact completed request before
+                        # admitting another carrier to the same process. This
+                        # is both the authoritative receipt boundary and the
+                        # cache-protective policy gate for boundary-fed turns.
+                        _boundary_cache_event: dict[str, Any] | None = None
+                        if (not ev.get("is_error")
+                                and cache_attempt is not None):
+                            try:
+                                with store.DOC_LOCK:
+                                    _co = store.load_org(slug)
+                                    if nid in _co.nodes:
+                                        if turn_occ:
+                                            _co.node(nid)["occupancy"] = turn_occ
+                                            _co.node(nid).pop(
+                                                "occupancy_est", None)
+                                        _boundary_cache_event = _cache_finish_turn(
+                                            _co, nid, cache_attempt,
+                                            last_cache_usage)
+                                        cache_attempt = None
+                                        _cc0 = _co.node(nid).get(
+                                            "cache_continuity")
+                                        _fc0 = (_cc0.get("forecast")
+                                                if isinstance(_cc0, dict)
+                                                else None)
+                                        _cfg_b = _auto_cheap_cfg(_co, nid)
+                                        if (_cfg_b is not None
+                                                and _auto_cheap_ready(
+                                                    _co.node(nid), _cfg_b,
+                                                    _fc0 if isinstance(
+                                                        _fc0, dict) else None)):
+                                            # Leave the queue untouched. The
+                                            # ordinary follow-up admission
+                                            # cheap-compacts before it drains.
+                                            may_feed = False
+                                        store.save_org(_co)
+                            except Exception as exc:            # noqa: BLE001
+                                print(f"[orgtree] {slug}/{nid}: boundary cache "
+                                      f"reconciliation unavailable "
+                                      f"({type(exc).__name__}: {exc})")
+                            if _boundary_cache_event is not None:
+                                stream(slug, nid, {
+                                    "kind": "cache_forecast",
+                                    "forecast": _boundary_cache_event})
+                            last_cache_usage = {}
                         # queued texts are RAW (mail stays in the doc until
                         # delivery — restart durability): envelope now, and
                         # track it as the in-flight turn.
@@ -8274,6 +8818,9 @@ def _run_one_turn(slug: str, nid: str,
                                         if ncmd:
                                             ninf["cmd"] = True
                                         o2.node(nid)["inflight"] = ninf
+                                        if not ncmd:
+                                            cache_attempt = \
+                                                _cache_boundary_attempt(o2, nid)
                                         store.save_org(o2)
                                         if not ncmd:
                                             # Do not persist a changing usage
@@ -8314,6 +8861,7 @@ def _run_one_turn(slug: str, nid: str,
                                     slot_wait_s=0.0)
                                 continue
                             except (OSError, ValueError):
+                                cache_attempt = None
                                 # ValueError is io's "I/O operation on closed
                                 # file." — this stdin was already closed by a
                                 # PRIOR result event (the CLI can emit an
@@ -9272,9 +9820,12 @@ def _run_one_turn(slug: str, nid: str,
             res["_mcp_tool_count"] = turn_mcp_count
             res["_mcp_tool_names"] = turn_mcp_names
             res["_mcp_tool_fingerprint"] = turn_mcp_fingerprint
+            if last_cache_usage:
+                res["_cache_usage"] = last_cache_usage
             paid_booked = True     # _after_turn books `res`'s cost itself
             _after_turn(slug, nid, org, res, st, turn_occ,
-                        on_key=on_fallback_key)
+                        on_key=on_fallback_key,
+                        cache_attempt=cache_attempt)
     except _CodexTurnDone:
         pass    # the codex leg booked its turn; only the shared finally runs
     except _GeminiTurnDone:
@@ -9951,7 +10502,8 @@ def _log_turn_error(slug: str, nid: str, text: str) -> None:
 
 def _after_turn(slug: str, nid: str, org: Org, res: dict[str, Any],
                 st: dict[str, Any], occ: int = 0,
-                on_key: bool = False) -> None:
+                on_key: bool = False,
+                cache_attempt: dict[str, Any] | None = None) -> None:
     """Post-turn bookkeeping: dollar cost (№32), context occupancy (№24), and the
     §8 compaction split when occupancy crosses the threshold. Tolerates the node
     having been deleted mid-turn.
@@ -9996,6 +10548,7 @@ def _after_turn(slug: str, nid: str, org: Org, res: dict[str, Any],
          "arg": _tool_arg(d.get("tool_name", ""), d.get("tool_input"))}
         for d in (res.get("permission_denials") or [])[:8]]
     spend_total = None
+    cache_event: dict[str, Any] | None = None
     if cost or occ or cw or denials or res:
         with store.DOC_LOCK:
             o2 = store.load_org(slug)
@@ -10060,6 +10613,15 @@ def _after_turn(slug: str, nid: str, org: Org, res: dict[str, Any],
             _stamp_ran_as(entry, slug, nid)
             ring.append(entry)
             del ring[:-20]
+            try:
+                cache_event = _cache_finish_turn(
+                    o2, nid, cache_attempt, res.get("_cache_usage") or {})
+            except Exception as exc:                            # noqa: BLE001
+                # Provider telemetry may be incomplete or a startup input may
+                # disappear between launch and completion. Turn bookkeeping
+                # remains authoritative; the next forecast stays conservative.
+                print(f"[orgtree] {slug}/{nid}: cache receipt reconciliation "
+                      f"unavailable ({type(exc).__name__}: {exc})")
             store.save_org(o2)
             spend_total = o2.cost_total()   # incl. deleted agents' burn
             kcfg = kiosk_cfg(o2)
@@ -10079,6 +10641,9 @@ def _after_turn(slug: str, nid: str, org: Org, res: dict[str, Any],
                 "last_turn_count": mcp_snapshot,
             }
         _mcp_tool_emit(slug, nid, payload)
+    if cache_event is not None:
+        stream(slug, nid, {"kind": "cache_forecast",
+                           "forecast": cache_event})
     # kiosk spend limit (user spec): breach → freeze everything.
     # ⚠ cost is only reported at turn end, so the limit can overshoot by the
     # in-flight turns' cost — an accepted, irreducible window.

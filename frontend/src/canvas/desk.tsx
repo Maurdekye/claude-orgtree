@@ -991,25 +991,22 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
           close={() => setAsking(null)} />
       )}
       {askCompact && (() => {
-        // FR-24: is the prompt cache likely cold? Idle past the TTL means the
-        // compact fork re-reads the ENTIRE transcript at near-full input
-        // price — exactly the case cheap compact exists for.
-        // 2026-08-21: one HOUR, not five minutes. Agent turns run headless
-        // (querySource `sdk` = a main conversation), and Claude Code asks for
-        // a 1h cache TTL on a subscription; the 5-minute figure this used to
-        // carry is the in-session-subagent cap, which we are not. Same number
-        // and same reason as `_auto_cheap_cfg`'s idle_s 3600 default — at 5
-        // minutes this warned "past the cache window" on a cache that was
-        // still warm for another 55, pushing the reader toward a compaction
-        // they did not need.
-        const lastAt = node.turns?.[node.turns.length - 1]?.at
-        const cold = !!lastAt && Date.now() - Date.parse(lastAt) > 60 * 60e3
+        // FR-24: only backend evidence may call the next turn known-cold.
+        // Generic UI idle / last-turn age is neither an authoritative cache
+        // receipt nor a provider-lane TTL and must never manufacture expiry.
+        const forecast = node.cache_forecast
+        const cold = forecast?.state === 'known_incompatible'
+          || forecast?.state === 'expired_known_entry'
+        const coldLabel = forecast?.state === 'known_incompatible'
+          ? 'incompatible with the last observed cache entry'
+          : 'past the derived cache TTL'
         return <ConfirmModal title={`compact ${node.id} now?`}
           body={'Same as the automatic split: the session forks and compacts — '
             + 'the successor carries on under this name; the pre-compaction '
             + 'self is archived in place as a consultable knowledge bearer.'
-            + (cold ? ` ⚠ Idle ${ago(lastAt)} — past the cache window, so this `
-              + 'fork re-reads the whole transcript at near-full price. CHEAP '
+            + (cold ? ` ⚠ The next-turn cache forecast is ${coldLabel}`
+              + (forecast?.reason ? `: ${forecast.reason}` : '')
+              + '. This fork re-reads the whole transcript at near-full price. CHEAP '
               + 'COMPACT instead retires the agent and hires a fresh '
               + 'replacement (same tier/grant/charter) that reads the old '
               + 'transcript selectively, read-only, only as needed.'

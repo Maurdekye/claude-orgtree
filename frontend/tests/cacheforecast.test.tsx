@@ -1,9 +1,13 @@
 import './harness'
 import { mountView } from './harness'
+import { readFileSync } from 'node:fs'
+import path from 'node:path'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { CacheForecastMark, CacheForecastWarning } from '../src/canvas/desk'
 import type { CacheForecast, CacheForecastState } from '../src/types'
+
+declare const __SRC_DIR__: string
 
 const forecast = (
   state: CacheForecastState,
@@ -60,4 +64,16 @@ test('only known incompatibility warns at send time with policy-owned colour', a
     assert.equal(warnings[1]?.classList.contains('compact'), true)
     assert.match(warnings[1]?.textContent ?? '', /will cheap-compact/)
   } finally { await view.unmount() }
+})
+
+test('manual compaction warning uses forecast evidence, never generic idle age', () => {
+  const source = readFileSync(path.join(__SRC_DIR__, 'canvas', 'desk.tsx'), 'utf8')
+  const start = source.indexOf('{askCompact && (() => {')
+  const end = source.indexOf('{/* last_error moved', start)
+  assert.ok(start >= 0 && end > start, 'manual compact modal source seam moved')
+  const modal = source.slice(start, end)
+  assert.match(modal, /node\.cache_forecast/)
+  assert.match(modal, /expired_known_entry/)
+  assert.match(modal, /known_incompatible/)
+  assert.doesNotMatch(modal, /Date\.parse|60\s*\*\s*60e3|lastAt/)
 })

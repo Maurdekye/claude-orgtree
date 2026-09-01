@@ -15,6 +15,9 @@ Markdown file in this repository as current operating guidance.
   controls.
 - [`agent-tools.md`](agent-tools.md) is the complete agent-facing MCP tool
   catalog and its operational boundaries.
+- [`cache-continuity.md`](cache-continuity.md) defines the persisted next-turn
+  forecast, provider receipt evidence, and known-cold compaction policy;
+  [`cache-hazards.md`](cache-hazards.md) records invalidation traps.
 - [`infrastructure-tiers.md`](infrastructure-tiers.md) compares deployment
   shapes and their operational trade-offs.
 - [`frozen-deployment.md`](frozen-deployment.md) covers the hardened, operator-

@@ -3422,6 +3422,48 @@ both halves: generated entries remain unforced, and an explicit per-server
 opt-in survives unchanged. Restoring the removed global rewrite makes that
 test fail.
 
+### D-214 · compact only a proven-cold next turn; process warmth is separate evidence
+
+The old `auto_cheap_compact {enabled, occ, idle_s}` heuristic treated time
+since the last turn as cache evidence. That clock was neither the provider
+receipt clock nor lane-aware, so it could destroy a live session on a guess.
+It is replaced by a persisted, generation-owned next-turn forecast:
+
+* `known_incompatible` means a known provider/account/auth-lane/model/session
+  namespace changed, or a known provider-visible system, tools, argv, env,
+  startup input, lineage, or already-sent history prefix changed.
+* `expired_known_entry` requires a positive same-lane inference receipt and
+  the derived TTL boundary: 60 minutes for Claude subscription auth, 5 minutes
+  for Claude API-key auth. Equality is expired. Unknown lanes, missing
+  receipts, unsupported provider TTLs, and clock skew stay `uncertain`.
+* `compatible_observed` means the local fingerprint matches an unexpired
+  positive receipt. It is evidence of compatibility, never a promise that the
+  provider will accept the cache entry.
+
+A local CLI process restart is deliberately absent from those incompatibility
+rules: local process warmth and provider cache acceptance are different facts.
+Provider switches are not benign, however—they lose the warm process/cache
+namespace and may also lose provider-specific session/context continuity.
+
+Before every ordinary admission (user, mail, checkup, recovery, provider
+redrive, and warm-process boundary feed), automatic cheap compaction runs only
+when the forecast is `known_incompatible` or `expired_known_entry`, measured
+context meets `occ`, and the setting is on. `uncertain`, fresh/empty successors,
+estimated contexts, bearers, commands, and disabled/below-threshold nodes do
+not compact. The carrier remains queued until the successor exists, preserving
+mail exactly once.
+
+`idle_s` is no longer configurable. Load migration removes it without
+converting it to a TTL; `enabled` and the existing `occ` value survive. The UI
+explains the derived 60m/5m rule. A credential-free atomic forecast is exposed
+in the tree and node stream with an opaque generation, complete safe
+`changed_inputs`, and the backend-owned pre-compaction action.
+
+Finally, every managed startup/system prompt receives one stable
+`CACHE CONTINUITY` doctrine block. Deploying D-214 intentionally replaces the
+system-prompt identity once for existing agents; after that, the block contains
+no live interpolation and stays byte-stable.
+
 ### D-208 · a frozen container's /usr/local is keyed to the approved configuration, not the CLI version
 
 Sandboxed containers mount `/usr/local` from a named Docker volume rather than
