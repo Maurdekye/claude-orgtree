@@ -2590,7 +2590,8 @@ if section("§6  the sandboxed turn"):
         cmd = supervisor._build_cmd(store.load_org(S6), "alice")
         st = json.loads(cmd[cmd.index("--settings") + 1])
         deny = st["permissions"]["deny"]
-        assert f"Write({sandbox.cpath_workspace(S6)}/**)" in deny, deny
+        # D-220: one Edit() rule per path — the only deny shape the CLI matches
+        assert f"Edit({sandbox.cpath_workspace(S6)}/**)" in deny, deny
         with store.DOC_LOCK:
             o = store.load_org(S6)
             o.node("alice")["scope"]["add_dirs"] = [{"path": ws, "mode": "rw"}]

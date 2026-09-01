@@ -7636,3 +7636,30 @@ stamp once.
 Bounds: kiosk ceilings are untouched — a ceiling is deliberate lockdown
 config, not birth-stamp residue. The heal does not touch `default_*` hire
 defaults beyond the org `permission_mode` itself.
+
+### D-220 · deny rules are Edit-only — one rule per path
+
+Ruling (fix-orgtree-org, 2026-09-01): read-only enforcement renders exactly
+one `Edit(path)` deny rule per denied tree; `Write()`/`NotebookEdit()` rule
+shapes are never emitted.
+
+Why: the pinned CLI (2.1.220) matches file-permission checks against
+`Edit(path)` rules ONLY and says so itself at startup — "Edit rules cover
+all file-editing tools" — printing one WARNING per ignored
+`Write()`/`NotebookEdit()` rule. The old trio was 3× dead weight with the
+Edit rule alone carrying the enforcement (no security gap: the Edit rule was
+always present). At D-217 scale the dead weight became lethal: ~670 ignored
+rules → a 229 KB stderr burst during CLI startup → the pipe filled before
+the backend drained it → the CLI blocked before its FIRST stdout byte →
+"no CLI output for 600s" and the idle kill, on every broad-ro-grant spawn
+D-218 had just made spawnable. Reproduced both ways in isolation: the same
+settings file runs clean with drained stderr and hangs with an undrained
+pipe.
+
+Bounds: if a future CLI stops honoring the covering semantics, the render
+follows the CLI — the contract is the CLI's own warning text, live-verified
+on the pin.
+
+Load-bearing: startup stderr staying ~2 lines (D-211's accounting) is what
+keeps a cold spawn from wedging on the pipe; test_ro_grant_scratch pins
+one-rule-per-path.

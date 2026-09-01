@@ -59,18 +59,20 @@ def deny_rules(org: Any, nid: str) -> list[str]:
     return list((settings.get("permissions") or {}).get("deny") or [])
 
 
-def rule(prefix: str, suffix: str, tool: str = "Write") -> str:
+def rule(prefix: str, suffix: str, tool: str = "Edit") -> str:
     return f"{tool}({prefix.replace(os.sep, '/').rstrip('/')}/{suffix})"
 
 
 def covers(rules: list[str], path: str) -> bool:
     """Approximate the CLI matcher for OUR OWN emitted shapes: `X/**` covers
-    any file below X; `X/*` covers immediate children of X."""
+    any file below X; `X/*` covers immediate children of X. D-220: only
+    Edit(path) rules exist — the CLI matches nothing else and Edit covers
+    all file-editing tools."""
     target = path.replace(os.sep, "/")
     for r in rules:
-        if not r.startswith("Write("):
+        if not r.startswith("Edit("):
             continue
-        pattern = r[len("Write("):-1]
+        pattern = r[len("Edit("):-1]
         if pattern.endswith("/**") and target.startswith(pattern[:-2]):
             return True
         if pattern.endswith("/*"):
@@ -102,9 +104,10 @@ def with_grants(*dirs: tuple[str, str]) -> list[str]:
 
 def plain_grant_unchanged() -> None:
     rules = with_grants((PLAIN_RO, "ro"))
-    for tool in ("Edit", "Write", "NotebookEdit"):
-        assert rule(PLAIN_RO, "**", tool) in rules, rules
-    eq(len(rules), 3)
+    assert rule(PLAIN_RO, "**") in rules, rules
+    # D-220: exactly ONE rule per path — Edit() is the only shape the CLI
+    # matches, and every extra shape was a startup stderr warning
+    eq(len(rules), 1)
     assert covers(rules, os.path.join(PLAIN_RO, "deep", "f.txt"))
     assert not covers(rules, os.path.join(SCRATCH, "breadcrumbs.md"))
 
@@ -136,7 +139,7 @@ check("an ancestor read-only grant denies everything except the agent's own scra
 def own_scratch_grant_is_noop() -> None:
     eq(with_grants((SCRATCH, "ro")), [])
     rules = with_grants((SCRATCH, "ro"), (PLAIN_RO, "ro"))
-    eq(len(rules), 3)
+    eq(len(rules), 1)
     assert rule(PLAIN_RO, "**") in rules
 
 

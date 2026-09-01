@@ -63,7 +63,9 @@ os.makedirs(SCRATCH, exist_ok=True)
 # the killer config: a broad read-only ANCESTOR grant over a root with many
 # siblings — every sibling at every chain level becomes three deny rules
 ROOT = os.path.normpath(DATA)
-for i in range(300):
+# 700 siblings: enough that even D-220's one-Edit-rule-per-path render
+# exceeds the 32,767-char cap inline, so the boundary stays proven
+for i in range(700):
     os.makedirs(os.path.join(ROOT, f"sibling-directory-{i:04d}"), exist_ok=True)
 ORG.node("aya")["scope"]["add_dirs"] = [{"path": ROOT, "mode": "ro"}]
 
