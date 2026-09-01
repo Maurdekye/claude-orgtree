@@ -39,7 +39,8 @@ import uuid
 from collections.abc import Callable, Iterable, Mapping
 from typing import Any, Final, cast
 
-from . import (accounts, appsettings, cachecontinuity, codex_limits, deployment, imgblock,
+from . import (accounts, appsettings, cachecontinuity, clipin, codex_limits,
+               deployment, imgblock,
                limits, net, providers, sandbox as sbx, store, tokens,
                turnusage, warmpool)
 from .ledger import EXTERN, SYSTEM, USER, LedgerError, Org, expand_mcp, now as now_iso
@@ -446,9 +447,8 @@ def _claude_argv() -> list[str]:
 _CLI_MIN = (2, 1, 32)
 
 
-def _ver_tuple(v: str) -> tuple[int, ...]:
-    return tuple(int(x) for x in (re.findall(r"\d+", v or "")
-                                  + ["0", "0", "0"])[:3])
+_ver_tuple = clipin.ver_tuple   # ONE parser — clipin owns it (the update
+                                # scripts compare versions with it too)
 
 
 def cli_capable() -> bool:
@@ -467,6 +467,55 @@ def cli_capable() -> bool:
     return v == "unknown" or _ver_tuple(v) >= _CLI_MIN
 
 
+def cli_knows_fable_5_1() -> bool:
+    """Does the RESOLVED CLI have `claude-fable-5-1` in its model registry?
+
+    A SECOND, NARROWER GATE than `cli_capable`, and the two must not be
+    merged. `cli_capable` asks "is this CLI new enough to run a turn at all"
+    and its floor stayed at 2.1.32 on purpose: raising it to the new pin would
+    declare every machine that has not yet redeployed incapable and degrade
+    turns that work fine today. This asks the much smaller question "may I say
+    this particular word to it", and the answer costs one model version, not
+    the turn.
+
+    Fails CLOSED on an unreadable version — see `clipin.knows_fable_5_1` for
+    why that is the opposite rule to `cli_capable`'s and why both are right.
+    """
+    return clipin.knows_fable_5_1(cli_version())
+
+
+def claude_model_for(org: Org, nid: str) -> str:
+    """The `--model` id to hand THIS machine's CLI for this node (D-222).
+
+    `Org.model_for` answers what the ORG wants (tier default, or the version
+    this node chose). This answers what the CLI in front of us can be told,
+    which is the same thing on a current install and not on an old one.
+
+    THE MIGRATION THIS EXISTS FOR. The fable tier's default moved to
+    `claude-fable-5-1`, and that default reaches every existing org the moment
+    the new code loads (the doc migration in `Org._migrate`) — but the CLI pin
+    only moves when a deploy actually runs, and the two are not the same event.
+    Between them sits a machine whose orgs ask for 5.1 and whose CLI has never
+    heard of it. Measured on 2.1.220: it does NOT refuse the id, it forwards it
+    and fails somewhere out on the network, so there is no loud local error to
+    catch — the guard has to be here or it is nowhere.
+
+    DOWNGRADE, never refuse. A fable node on an old pin keeps running exactly
+    as it did yesterday, on 5.0. The cost is one model version on a machine
+    that has not redeployed yet; the alternative was breaking every fable turn
+    on it.
+
+    ⚠ NOT the place to enforce anything else. Every other model id in the
+    table predates the current floor, so this deliberately touches ONE id
+    rather than growing into a general "is this model known" filter that would
+    need a per-version registry orgtree has no way to keep honest.
+    """
+    want = org.model_for(nid)
+    if want == clipin.FABLE_5_1 and not cli_knows_fable_5_1():
+        return clipin.FABLE_5
+    return want
+
+
 def cli_resolution() -> dict[str, Any]:
     """WHICH CLI did we resolve, and is it the pin? Nothing anywhere reported
     this before (/api/host carried the version alone — a number you had to
@@ -475,6 +524,12 @@ def cli_resolution() -> dict[str, Any]:
     return {"path": CLAUDE, "version": cli_version(),
             "is_pin": CLAUDE == _PIN, "pin_present": os.path.exists(_PIN),
             "pin_path": _PIN, "capable": cli_capable(),
+            # the pin a deploy would install, and whether this CLI is new
+            # enough for the fable tier's own default model id. Reported
+            # BECAUSE the downgrade above is silent by design: a turn that
+            # quietly ran on 5.0 leaves no other trace the user can see.
+            "pin_version": clipin.PIN,
+            "fable_5_1": cli_knows_fable_5_1(),
             "argv": _claude_argv()[:-1] or ["<exe>"]}
 
 
@@ -4344,7 +4399,9 @@ def _build_cmd(org: Org, nid: str, write_ident: bool = True) -> list[str]:
     slug = org.d["slug"]
     sid = n["session_id"]
     first = transcript_path(sid, _transcript_root(org)) is None
-    model = org.model_for(nid)   # tier default, or this node's chosen version
+    # tier default, or this node's chosen version — downgraded to an id THIS
+    # CLI knows (claude_model_for; 5.1 → 5.0 below the 2.1.257 floor)
+    model = claude_model_for(org, nid)
     sc = n["scope"]
     # kiosk sandbox (user spec): the whole turn — CLI, bash, file I/O, web —
     # runs inside the org's container; paths below become container paths and
@@ -5168,7 +5225,13 @@ def _cache_snapshot(org: Org, nid: str, *, now: float | None = None,
                   "startup": startup, "lineage": lineage}
     namespace = {
         "provider": provider, "account": account or "unobserved",
-        "lane": lane or "unobserved", "model": org.model_for(nid),
+        # THE MODEL THAT ACTUALLY GOES OUT, not the one the org asked for.
+        # A namespace is only worth anything if it moves when the request
+        # moves: on a machine below the fable floor a 5.1 node's turns really
+        # are served by 5.0, and when that machine finally redeploys the model
+        # genuinely changes — which is a cache-namespace break and has to be
+        # visible as one. `claude_model_for` is a no-op on every other lane.
+        "lane": lane or "unobserved", "model": claude_model_for(org, nid),
         "session": str(n.get("session_id") or ""),
         "node_generation": int(n.get("generation") or 0),
     }
@@ -12098,7 +12161,11 @@ def _compact_split_body(slug: str, nid: str) -> None:
         org = store.load_org(slug)
         n = org.node(nid)
         old_sid = n["session_id"]
-        model = org.model_for(nid)   # tier default, or this node's chosen version
+        # ⚠ resolved through claude_model_for even though the codex/gemini
+        # branches below also read it: the downgrade only ever rewrites the
+        # fable id, so it is a no-op on those lanes, and computing it once
+        # here is what keeps the fork's `--model` equal to the turn's.
+        model = claude_model_for(org, nid)
     if str(n.get("model") or "") in providers.CODEX_TIERS:
         _compact_split_codex_body(slug, nid, org, n, old_sid, model)
         return
@@ -13194,7 +13261,7 @@ def immediate_command(slug: str, nid: str, text: str) -> bool:
     _deployment_org_gate(org)
     n = org.node(nid)
     sid = n["session_id"]
-    model = org.model_for(nid)   # tier default, or this node's chosen version
+    model = claude_model_for(org, nid)   # the id THIS CLI knows (see above)
     tdir = _transcript_root(org)
     if not transcript_path(sid, tdir):
         return False

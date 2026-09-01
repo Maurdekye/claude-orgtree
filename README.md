@@ -190,16 +190,33 @@ missing WebSocket library does not error, it answers the upgrade with a plain
 `200 OK` and the UI silently degrades to polling. `/api/host` reports both
 `python.venv` and `websockets` so a deployment can be checked at a glance.
 
-**Recommended:** give agents their own up-to-date CLI (enables mid-task
-message delivery — older CLIs never run tool hooks headless):
+**Recommended:** give agents their own pinned CLI (enables mid-task message
+delivery — older CLIs never run tool hooks headless — and the Fable tier's
+current model id):
 
 ```bash
-npm install --prefix ~/orgtree/cli @anthropic-ai/claude-code@latest
+npm install --prefix ~/orgtree/cli @anthropic-ai/claude-code@2.1.258 --save-exact
 ```
 
 The supervisor auto-detects this private install and prefers it; your global
 `claude` stays untouched. Without it, messages to a busy agent deliver when
 its current response ends instead of after its next tool call.
+
+You only need that command for a **first** install. `update.ps1` / `update.sh`
+manage the pin from then on: each deploy compares what is installed against
+`backend/orgtree/clipin.py`'s `PIN` and upgrades it in place if it is behind —
+in the window between stopping and starting the backend, because a running
+`claude.exe` cannot be overwritten on Windows. It is a floor, not an equality:
+a **newer** CLI than the pin is reported and left alone, never rolled back. If
+the upgrade fails the deploy still restarts and says so; nothing needs to be
+uninstalled by hand.
+
+The pin is also why the Fable tier is on **Claude Fable 5.1**: that model id
+exists only in CLI 2.1.257 and later. On an older CLI orgtree hands fable
+agents Fable 5 instead of a model the CLI has never heard of, so a machine that
+has not redeployed yet keeps working — `/api/host` reports both the resolved
+version and whether it knows the 5.1 id. Fable 5 also stays selectable per
+agent in the ⚙ gear, like Opus 4.8.
 
 ### Optional providers: Codex and Gemini
 

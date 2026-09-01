@@ -12,10 +12,15 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend"))
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-from orgtree import disk  # noqa: E402
+from orgtree import disk, sandbox, supervisor  # noqa: E402
 
 SLUG = "disk-drill"
-IMAGE = "orgtree-sandbox:2.1.220-r2"
+# DERIVED, not typed. This was the literal "orgtree-sandbox:2.1.220-r2", which
+# is a copy of a tag that moves on its own: the standard sandbox image is named
+# after the HOST CLI's version (№44), so the day the pin moved, this drill went
+# looking for an image the machine had stopped building and failed as though
+# Docker were broken. Same two inputs the real tag is built from.
+IMAGE = f"{sandbox.IMAGE}:{supervisor.cli_version()}-{sandbox.IMG_REV}"
 checks: list[tuple[str, bool]] = []
 
 

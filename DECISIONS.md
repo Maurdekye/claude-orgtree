@@ -7728,3 +7728,68 @@ Load-bearing: test_codex_stream_order.py checks the invariant at
 journal on disk at that instant, and proves it can fail (against the code
 before this ruling it fails exactly the four ordering checks and passes the
 other twenty).
+
+### D-222 · a CLI pin is three numbers, and a deploy owns the one it installs
+
+Ruling (fable-cli-migration, 2026-09-02): the Fable tier's default model id is
+`claude-fable-5-1`, the installed CLI pin is **2.1.258**, and those two facts
+are held apart by a **third** number — `clipin.FABLE_5_1_MIN = (2, 1, 257)`,
+the oldest CLI whose model registry contains that id at all. `update.ps1` /
+`update.sh` install the pin themselves, as a FLOOR, in the window between
+stopping and starting the backend. Below the model-id floor,
+`supervisor.claude_model_for` hands a fable node `claude-fable-5` instead.
+
+Why: the id was measured, not assumed — each published build's native
+`bin/claude.exe` was grepped for the literal string. 2.1.220 absent, 2.1.251
+absent, 2.1.252 absent, **2.1.257 present**, 2.1.258 present; 2.1.253–256 were
+never published, so the floor is exact rather than a bracket. (A request to
+this work named 2.1.251 as the floor; it is wrong, and shipping it would have
+installed a CLI that still could not say the tier's own default id.)
+
+The three numbers are three because collapsing any pair breaks a different
+install. Raising the CAPABILITY floor (`_CLI_MIN`, still `(2, 1, 32)`) to meet
+the pin would declare every machine that has not yet redeployed *incapable* and
+degrade turns that work today — the opposite of a migration. Letting the pin
+BE the model floor would refuse a machine that is already on 2.1.257. And a pin
+that only a human installs is not a pin: nothing in the repo installed one
+before this, so the fleet's copies carried a hand-typed caret range and drifted
+with the registry.
+
+Load-bearing, and the reason the downgrade is ours rather than the CLI's: **an
+old CLI does not refuse an unknown `--model`.** Measured on 2.1.220 against a
+dead endpoint, `claude-fable-5-1` and a deliberately bogus id behave
+identically — both get past argv and go to the network. There is no loud local
+failure to catch, so a machine whose orgs had migrated and whose CLI had not
+would have failed late and quietly, once per fable turn.
+
+The doc migration is the other half. `Org.create` COPIES the model table into
+each org document and the load hook is `setdefault`/add-only, so changing the
+constant alone reaches NO org that already exists — the new default would ship
+to nobody, and the only evidence would be an org card still reading the old id.
+`Org._migrate` therefore moves the fable id explicitly, and only from the OLD
+SHIPPED DEFAULT, the same discipline as the sonnet 3→2 price move: any other
+string is an operator holding the tier still, and is left alone.
+
+Bounds: the install step is a floor, never an equality — a CLI NEWER than the
+pin is reported and left where it is, because an operator who installed ahead
+of us did so on purpose and a deploy that silently rolls a machine backwards is
+worse than one that says nothing. It never blocks the restart: every failure
+warns and falls through to starting the backend, since an old pin still runs
+turns while a backend that never came back up is an outage. `ORGTREE_CLAUDE`
+wins at runtime, so when it is set the pin is not installed at all, only
+reported — including when the override is itself behind the floor.
+
+Bounds, frozen mode: the sandbox CLI is the approved one, not the host's, so
+`frozen/approved-install.json`, `frozen/sandbox.Dockerfile` and
+`frozen/sandbox-provider/`'s lock move in the same commit as `clipin.PIN` and a
+drift guard fails if they ever disagree. D-208's rule generalised — when a
+profile pins an artifact, everything naming that artifact moves with it. ⚠ The
+frozen images have NOT been rebuilt at 2.1.258; the manifest agrees with itself
+and with the pin, and nothing has been observed running.
+
+Load-bearing: `backend/tests/test_cli_pin.py` — 31 checks, including the
+call-site check that drives the real `_build_cmd` and reads `--model` out of
+the argv it produces. Reverting that one call site to `org.model_for` fails
+exactly that check and nothing else (mutation-verified), which is the point: a
+gate that is computed and never read is the abstention shape this suite exists
+to prevent.

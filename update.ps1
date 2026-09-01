@@ -343,25 +343,7 @@ Write-Host "`n== python deps =="
 & $py -m pip install -q -r requirements.txt
 if ($LASTEXITCODE -ne 0) { Write-Host "pip install failed" -ForegroundColor Red; exit 1 }
 
-# -- 3b - CLI version (No.44) ----------------------------------------------
-# Sandbox images are tagged with the host CLI's version and rebuild on demand
-# when it changes -- nothing to do here beyond reporting it.
-# Resolve the SAME cli the backend will run (ORGTREE_CLAUDE -> pin under the
-# data root -> PATH), not whatever `claude` happens to be on PATH: probing PATH
-# printed 2.1.31 on a machine whose runtime was the 2.1.220 pin, so the log
-# contradicted /api/host and read like the broken fallback was live.
-try {
-    $cliRoot = $env:ORGTREE_DATA
-    if (-not $cliRoot) { $cliRoot = Join-Path $env:USERPROFILE 'orgtree' }
-    $cliPin  = Join-Path $cliRoot 'cli\node_modules\@anthropic-ai\claude-code\bin\claude.exe'
-    $cliExe  = $env:ORGTREE_CLAUDE
-    if (-not $cliExe) { if (Test-Path $cliPin) { $cliExe = $cliPin } else { $cliExe = 'claude' } }
-    $cliWhich = if ($cliExe -eq 'claude') { 'PATH fallback -- the pin is MISSING' }
-                elseif ($env:ORGTREE_CLAUDE) { 'ORGTREE_CLAUDE override' } else { 'pin' }
-    $cliVer = (& $cliExe --version 2>$null | Select-Object -First 1)
-    if ($cliVer) { Write-Host "Claude CLI: $cliVer [$cliWhich] $cliExe (sandbox images rebuild automatically when this changes)" }
-} catch {}
-}   # end -not $EnsureUp (sections 2-3b)
+}   # end -not $EnsureUp (sections 2-3)
 
 # -- 4 - restart the backend ------------------------------------------------
 $dataRoot = $env:ORGTREE_DATA
@@ -381,6 +363,158 @@ if ($conn) {
     }
     Start-Sleep -Milliseconds 800
 }
+
+# -- 4b - the Claude Code CLI pin (No.44, D-222) -----------------------------------
+# WHY IT IS *HERE*, between the stop and the start, and not up with the other
+# dependency steps: on Windows a running process holds its own image open, so
+# `npm install` cannot overwrite bin\claude.exe while a turn is in flight --
+# it fails with EPERM/EBUSY on the one file the whole upgrade is about. The
+# backend has just been killed and nothing has been started yet, so this is
+# the only window in the deploy where the pin is not in use. The cost is that
+# an upgrade extends the restart gap by one npm install; it is paid once, on
+# the deploy that moves the pin, and every later deploy skips this in
+# milliseconds.
+#
+# It is a FLOOR, not an equality. A pin OLDER than the target is upgraded; a
+# pin NEWER is left exactly where it is and merely reported. An operator who
+# installed something ahead of us did so on purpose, and a deploy script that
+# silently rolls a machine backwards is worse than one that says nothing.
+#
+# It NEVER blocks the restart. Every failure below warns and falls through to
+# the start: the old pin still runs turns (`supervisor.claude_model_for`
+# downgrades the one model id it cannot name), so a CLI that would not update
+# is a degraded install, while a backend that never came back up is an outage.
+if (-not $EnsureUp) {
+Write-Host "`n== claude cli =="
+$pinDir  = Join-Path $dataRoot 'cli'
+$pinPkgJ = Join-Path $pinDir 'node_modules\@anthropic-ai\claude-code\package.json'
+$pinBin  = Join-Path $pinDir 'node_modules\@anthropic-ai\claude-code\bin\claude.exe'
+
+# The target version is READ FROM THE CODE, never retyped here -- one literal
+# in backend\orgtree\clipin.py, which is also what the backend compares
+# against at runtime. A version written down twice is a machine that reports
+# one number and runs another. clipin imports nothing, so this cannot fail for
+# a reason unrelated to the pin; if it fails anyway we do not GUESS a version,
+# we leave the pin alone and say so.
+$wantVer = $null
+try {
+    $wantVer = (& $py -c "import sys; sys.path.insert(0, sys.argv[1]); from orgtree import clipin; print(clipin.PIN)" (Join-Path $root 'backend') | Select-Object -First 1)
+    if ($wantVer) { $wantVer = $wantVer.Trim() }
+} catch { $wantVer = $null }
+if ($wantVer -notmatch '^\d+\.\d+\.\d+') {
+    Write-Host "could not read the pinned CLI version from backend\orgtree\clipin.py -- LEAVING THE CLI ALONE (guessing a version is how a machine ends up running one thing and reporting another)." -ForegroundColor Yellow
+    $wantVer = $null
+}
+
+function Get-PinVersion {
+    if (-not (Test-Path $pinPkgJ)) { return $null }
+    try { return (Get-Content $pinPkgJ -Raw | ConvertFrom-Json).version } catch { return $null }
+}
+# "2.1.220" -> [version] for an ordering comparison. Returns $null on anything
+# unparseable so callers can tell "older" from "no idea".
+function ConvertTo-Ver([string]$v) {
+    if (-not $v) { return $null }
+    $m = [regex]::Match($v, '^(\d+)\.(\d+)\.(\d+)')
+    if (-not $m.Success) { return $null }
+    return [version]::new([int]$m.Groups[1].Value, [int]$m.Groups[2].Value, [int]$m.Groups[3].Value)
+}
+
+if ($env:ORGTREE_CLAUDE) {
+    # The override wins at runtime (supervisor resolves ORGTREE_CLAUDE first),
+    # so installing the pin underneath it would build something nothing runs.
+    # Report the truth instead, including when the override is behind.
+    $ovVer = $null
+    try { $ovVer = (& $env:ORGTREE_CLAUDE --version 2>$null | Select-Object -First 1) } catch {}
+    Write-Host "ORGTREE_CLAUDE is set -- the pin is NOT what this machine runs. Leaving it untouched."
+    Write-Host "  running: $env:ORGTREE_CLAUDE ($(if ($ovVer) { $ovVer } else { 'version unreadable' }))"
+    $ov = ConvertTo-Ver $ovVer
+    $wv = ConvertTo-Ver $wantVer
+    if ($ov -and $wv -and $ov -lt $wv) {
+        Write-Host "  ⚠ that is OLDER than the pinned $wantVer -- fable agents fall back to Claude Fable 5, and other new model ids may not resolve. Point ORGTREE_CLAUDE at a newer CLI or unset it to use the managed pin." -ForegroundColor Yellow
+    }
+} elseif ($wantVer) {
+    $haveVer = Get-PinVersion
+    $have = ConvertTo-Ver $haveVer
+    $want = ConvertTo-Ver $wantVer
+    $needs = (-not (Test-Path $pinBin)) -or (-not $have) -or ($have -lt $want)
+    if (-not $needs) {
+        if ($have -gt $want) {
+            Write-Host "Claude CLI: $haveVer (pin) -- NEWER than this build's $wantVer, left as it is"
+        } else {
+            Write-Host "Claude CLI: $haveVer (pin) -- already current"
+        }
+    } else {
+        $from = if ($haveVer) { $haveVer } elseif (Test-Path $pinDir) { 'present but unreadable' } else { 'not installed' }
+        Write-Host "Claude CLI: $from -> $wantVer (installing into $pinDir)" -ForegroundColor Cyan
+        # --save-exact so the prefix's package.json records the exact version
+        # rather than a caret range. The pre-existing installs on this fleet
+        # carry exactly such a range, from a hand-run `npm install
+        # @anthropic-ai/claude-code`, which means the version a re-install
+        # lands on drifts with the registry -- the opposite of a pin.
+        # Rewriting it to an exact spec is most of what makes this migration
+        # reproducible.
+        function Install-Pin {
+            # ⚠ `| Out-Host`, not a bare call: a native command's stdout goes to
+            # the FUNCTION'S OUTPUT STREAM, so without this the return value is
+            # npm's log lines followed by the boolean, and `(Install-Pin) -and
+            # (Test-Pin)` then tests a non-empty array (always true) instead of
+            # the exit code. Out-Host keeps the operator's log and leaves the
+            # function returning exactly one thing.
+            npm install --prefix $pinDir "@anthropic-ai/claude-code@$wantVer" `
+                --no-audit --no-fund --save-exact | Out-Host
+            return ($LASTEXITCODE -eq 0)
+        }
+        # VERIFY, never trust the exit code: npm's long-standing optional-deps
+        # bug (the same one the esbuild block above works around) can report
+        # success having left the platform-specific package behind, and the
+        # claude-code package IS a native binary delivered that way. So the
+        # test is the two things that actually have to be true afterwards.
+        function Test-Pin {
+            $v = Get-PinVersion
+            return ((Test-Path $pinBin) -and $v -and (ConvertTo-Ver $v) -ge $want)
+        }
+        $ok = (Install-Pin) -and (Test-Pin)
+        if (-not $ok) {
+            # A dirty upgrade over an older tree is the one case the operator
+            # would otherwise have to fix by hand -- which is exactly what this
+            # deploy is not allowed to require. Two things cause it: the npm
+            # optional-deps bug, and a claude.exe still held open by an agent
+            # process that outlived the backend. Wait out the second, then
+            # remove the tree and install clean. Only the managed pin directory
+            # is ever deleted, and it holds nothing but this package.
+            Write-Host "the in-place upgrade did not take -- clean reinstall of the pin" -ForegroundColor Yellow
+            Start-Sleep -Seconds 3
+            Remove-Item -Recurse -Force (Join-Path $pinDir 'node_modules') -ErrorAction SilentlyContinue
+            Remove-Item -Force (Join-Path $pinDir 'package-lock.json') -ErrorAction SilentlyContinue
+            Remove-Item -Force (Join-Path $pinDir 'package.json') -ErrorAction SilentlyContinue
+            $ok = (Install-Pin) -and (Test-Pin)
+        }
+        if ($ok) {
+            Write-Host "Claude CLI: now $(Get-PinVersion) (pin) -- sandbox images rebuild automatically on the next sandboxed turn" -ForegroundColor Green
+        } else {
+            # Loud, specific, and NOT fatal. See the section header.
+            Write-Host ""
+            Write-Host "the Claude CLI pin could NOT be updated to $wantVer." -ForegroundColor Red
+            Write-Host "  the backend is still being started and turns still run: agents on the" -ForegroundColor Red
+            Write-Host "  fable tier fall back to Claude Fable 5 until this is fixed." -ForegroundColor Red
+            Write-Host "  most likely a claude.exe still running from $pinDir, or npm could not reach the registry." -ForegroundColor Red
+            Write-Host "  to retry by hand:  npm install --prefix `"$pinDir`" @anthropic-ai/claude-code@$wantVer --save-exact" -ForegroundColor Red
+            Write-Host ""
+        }
+    }
+} else {
+    # No override and no target: report what the backend will resolve, which is
+    # what section 3b used to do. Probing PATH instead printed 2.1.31 on a
+    # machine whose runtime was the 2.1.220 pin, so the log contradicted
+    # /api/host and read like the broken fallback was live.
+    $cliExe = if (Test-Path $pinBin) { $pinBin } else { 'claude' }
+    $cliWhich = if ($cliExe -eq 'claude') { 'PATH fallback -- the pin is MISSING' } else { 'pin' }
+    try {
+        $cliVer = (& $cliExe --version 2>$null | Select-Object -First 1)
+        if ($cliVer) { Write-Host "Claude CLI: $cliVer [$cliWhich] $cliExe" }
+    } catch {}
+}
+}   # end -not $EnsureUp (section 4b)
 
 $logDir = $dataRoot
 if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Force $logDir | Out-Null }

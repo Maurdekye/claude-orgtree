@@ -35,8 +35,13 @@ export const TIER_SEAT: Record<string, number> =
 /** Model VERSIONS inside a tier — mirrors ledger.MODEL_VERSIONS. A version is
  *  a subcategory of the tier (user ruling 2026-08-04): it never changes the
  *  seat cost and never appears as a chip, only in the gear. A tier absent
- *  here, or present with one entry, offers no choice. */
-export const MODEL_VERSIONS: Record<string, string[]> = { opus: ['5', '4.8'] }
+ *  here, or present with one entry, offers no choice.
+ *  ⚠ ORDER IS THE DEFAULT-FIRST ORDER of ledger.MODEL_VERSIONS: the gear
+ *  renders these in sequence and the tier's own default has to be the one at
+ *  the head, or the menu reads as though the node is pinned to the older
+ *  version it is merely listing. */
+export const MODEL_VERSIONS: Record<string, string[]> =
+  { opus: ['5', '4.8'], fable: ['5.1', '5'] }
 /** The codex family (FR-15 preview) — ChatGPT/OpenAI tiers, GPT-5.6. A
  *  SEPARATE list, never merged into TIERS: every existing surface iterates
  *  TIERS, and a family that cannot be hired yet must not grow chips there by

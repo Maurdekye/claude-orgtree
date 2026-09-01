@@ -10,7 +10,7 @@ LABEL io.orgtree.frozen.config="$ORGTREE_FROZEN_CONFIG" \
       io.orgtree.frozen.component="sandbox" \
       io.orgtree.frozen.platform="linux/amd64" \
       org.opencontainers.image.base.name="docker.io/library/node:22.23.2-bookworm-slim@sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5" \
-      org.opencontainers.image.version="2.1.220"
+      org.opencontainers.image.version="2.1.258"
 
 # Exact direct and transitive Debian closure. If an approved artifact leaves
 # the configured repository, the build fails instead of selecting a newer

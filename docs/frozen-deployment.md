@@ -383,7 +383,7 @@ it have been observed working on a running system.
 
 | Claim | Evidence |
 |---|---|
-| Both images build and carry the approved labels | built from `verify_frozen_install.py --build-commands`; `claude --version` inside the sandbox image really is `2.1.220`, matching the label |
+| Both images build and carry the approved labels | built from `verify_frozen_install.py --build-commands`; `claude --version` inside the sandbox image really is `2.1.220`, matching the label. ⚠ **Observed at the previous pin.** The approved CLI moved to `2.1.258` on 2026-09-02 (the Fable 5.1 migration) and the images have **not** been rebuilt or re-observed since — the manifest, the lock and the Dockerfile label all agree on 2.1.258, but this row's evidence is 2.1.220's. Rebuild and re-check before treating it as current. |
 | A conforming frozen install boots and attests | startup printed `frozen-install: approved configuration <sha256> verified`; the standalone verifier then attested the **running** backend **65/65** |
 | The listener checks read real sockets | observed `127.0.0.1:7431` (admin) and `127.0.0.1:7432` (bridge) in the kernel table; `BRIDGE_LISTENER_HOST_ONLY` matched `sandbox.bridge_bind_host()` on this host |
 | A non-conforming install is refused | pointed at the machine's **live standard** install, the verifier refuses it and names the real wildcard binds `0.0.0.0:7361`, `0.0.0.0:7362` |

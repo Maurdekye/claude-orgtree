@@ -276,13 +276,8 @@ cd "$ROOT" || exit 1
 printf '\n== python deps ==\n'
 "$PY" -m pip install -q -r requirements.txt || die "pip install failed"
 
-# -- 3b - CLI version (No.44) ----------------------------------------------
-# Sandbox images are tagged with the host CLI's version and rebuild on demand
-# when it changes -- nothing to do here beyond reporting it.
-if command -v claude >/dev/null 2>&1; then
-  CLI_VER=$(claude --version 2>/dev/null | head -n 1)
-  [ -n "$CLI_VER" ] && echo "Claude CLI: $CLI_VER (sandbox images rebuild automatically when this changes)"
-fi
+# (the Claude CLI pin is section 4b, below -- it has to run in the window
+# between stopping the old backend and starting the new one)
 
 # -- 4 - restart the backend ------------------------------------------------
 DATA_ROOT=${ORGTREE_DATA:-$HOME/orgtree}
@@ -332,6 +327,135 @@ if [ -n "${PIDS:-}" ]; then
     sleep 0.5
   fi
   [ -n "$(listeners)" ] && die "port $PORT is still held -- stop that process and re-run"
+fi
+
+# -- 4b - the Claude Code CLI pin (No.44, D-222) -----------------------------------
+# The bash half of update.ps1's section 4b; the reasoning lives there in full
+# and is not repeated here. In short: it runs BETWEEN the stop and the start
+# (on Windows a running claude.exe cannot be overwritten, and this script runs
+# under Git Bash there too), it is a FLOOR rather than an equality (a newer
+# pin is reported, never rolled back), and it NEVER blocks the restart -- an
+# old pin still runs turns, a backend that never came back up is an outage.
+printf '\n== claude cli ==\n'
+PIN_DIR="$DATA_ROOT/cli"
+PIN_PKG="$PIN_DIR/node_modules/@anthropic-ai/claude-code/package.json"
+# the executable's name differs by platform; the package ships one or the other
+PIN_BIN="$PIN_DIR/node_modules/@anthropic-ai/claude-code/bin/claude"
+[ "$WINDOWS" = 1 ] && PIN_BIN="$PIN_BIN.exe"
+
+# The target version is READ FROM THE CODE (backend/orgtree/clipin.py), never
+# retyped here -- see update.ps1. clipin imports nothing, so a failure here is
+# a broken checkout, not a broken pin, and we leave the CLI alone rather than
+# guess a version.
+WANT_VER=$("$PY" -c 'import sys; sys.path.insert(0, sys.argv[1]); from orgtree import clipin; print(clipin.PIN)' "$ROOT/backend" 2>/dev/null | head -n 1 | tr -d '[:space:]')
+case "$WANT_VER" in
+  [0-9]*.[0-9]*.[0-9]*) : ;;
+  *)
+    note "could not read the pinned CLI version from backend/orgtree/clipin.py -- LEAVING THE CLI ALONE (guessing a version is how a machine ends up running one thing and reporting another)."
+    WANT_VER='' ;;
+esac
+
+# the installed pin's version, or empty. Read from package.json rather than by
+# running the binary: it is the same source `supervisor.cli_version` prefers,
+# and it still answers when the binary is the thing that is broken.
+pin_version() {
+  [ -f "$PIN_PKG" ] || return 0
+  sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$PIN_PKG" | head -n 1
+}
+# "2.1.220" -> 2001000220, so a plain integer compare orders versions correctly
+# (`sort -V` is not on macOS's stock sort, and this needs no subprocess).
+ver_key() {
+  local v a rest b c
+  case "$1" in
+    [0-9]*.[0-9]*.[0-9]*) : ;;
+    *) return 1 ;;                      # "unknown", empty, a stray banner line
+  esac
+  v=$(printf '%s' "$1" | sed 's/[^0-9.].*$//')   # drop " (Claude Code)"
+  a=${v%%.*}; rest=${v#*.}; b=${rest%%.*}; c=${rest#*.}; c=${c%%.*}
+  printf '%d' $(( ${a:-0} * 1000000 + ${b:-0} * 1000 + ${c:-0} ))
+}
+
+if [ -n "${ORGTREE_CLAUDE:-}" ]; then
+  # the override wins at runtime, so installing the pin underneath it would
+  # build something nothing runs. Report the truth, including when it is behind.
+  OV_VER=$("$ORGTREE_CLAUDE" --version 2>/dev/null | head -n 1)
+  echo "ORGTREE_CLAUDE is set -- the pin is NOT what this machine runs. Leaving it untouched."
+  echo "  running: $ORGTREE_CLAUDE (${OV_VER:-version unreadable})"
+  OV_K=$(ver_key "${OV_VER:-}" 2>/dev/null || echo '')
+  WANT_K=$(ver_key "${WANT_VER:-}" 2>/dev/null || echo '')
+  if [ -n "$OV_K" ] && [ -n "$WANT_K" ] && [ "$OV_K" -lt "$WANT_K" ]; then
+    note "  that is OLDER than the pinned $WANT_VER -- fable agents fall back to Claude Fable 5, and other new model ids may not resolve. Point ORGTREE_CLAUDE at a newer CLI or unset it to use the managed pin."
+  fi
+elif [ -n "$WANT_VER" ]; then
+  HAVE_VER=$(pin_version)
+  HAVE_K=$(ver_key "${HAVE_VER:-}" 2>/dev/null || echo '')
+  WANT_K=$(ver_key "$WANT_VER")
+  NEEDS=1
+  if [ -x "$PIN_BIN" ] || [ -f "$PIN_BIN" ]; then
+    if [ -n "$HAVE_K" ] && [ "$HAVE_K" -ge "$WANT_K" ]; then NEEDS=0; fi
+  fi
+  if [ "$NEEDS" = 0 ]; then
+    if [ "$HAVE_K" -gt "$WANT_K" ]; then
+      echo "Claude CLI: $HAVE_VER (pin) -- NEWER than this build's $WANT_VER, left as it is"
+    else
+      echo "Claude CLI: $HAVE_VER (pin) -- already current"
+    fi
+  else
+    FROM=${HAVE_VER:-not installed}
+    echo "Claude CLI: $FROM -> $WANT_VER (installing into $PIN_DIR)"
+    # --save-exact: the pre-existing installs on this fleet carry a CARET range
+    # from a hand-run `npm install @anthropic-ai/claude-code`, so the version a
+    # re-install lands on drifts with the registry -- the opposite of a pin.
+    install_pin() {
+      npm install --prefix "$PIN_DIR" "@anthropic-ai/claude-code@$WANT_VER" \
+        --no-audit --no-fund --save-exact
+    }
+    # VERIFY rather than trust the exit code: npm's optional-deps bug (the same
+    # one the esbuild block above works around) can report success having left
+    # the platform-specific native package behind.
+    test_pin() {
+      local v k
+      { [ -f "$PIN_BIN" ] || [ -x "$PIN_BIN" ]; } || return 1
+      v=$(pin_version); [ -n "$v" ] || return 1
+      k=$(ver_key "$v" 2>/dev/null) || return 1
+      [ "$k" -ge "$WANT_K" ]
+    }
+    OK=0
+    if install_pin && test_pin; then OK=1; fi
+    if [ "$OK" = 0 ]; then
+      # the one case that would otherwise need a manual uninstall -- which is
+      # exactly what this deploy must not require. Wait out a claude process
+      # that outlived the backend, then remove the tree and install clean.
+      # Only the managed pin directory is touched; it holds nothing else.
+      note "the in-place upgrade did not take -- clean reinstall of the pin"
+      sleep 3
+      rm -rf "$PIN_DIR/node_modules" "$PIN_DIR/package-lock.json" "$PIN_DIR/package.json"
+      if install_pin && test_pin; then OK=1; fi
+    fi
+    if [ "$OK" = 1 ]; then
+      good "Claude CLI: now $(pin_version) (pin) -- sandbox images rebuild automatically on the next sandboxed turn"
+    else
+      # loud, specific, and NOT fatal
+      printf '%s\n' "$RED"
+      echo "the Claude CLI pin could NOT be updated to $WANT_VER."
+      echo "  the backend is still being started and turns still run: agents on the"
+      echo "  fable tier fall back to Claude Fable 5 until this is fixed."
+      echo "  most likely a claude process still running from $PIN_DIR, or npm could not reach the registry."
+      echo "  to retry by hand:  npm install --prefix \"$PIN_DIR\" @anthropic-ai/claude-code@$WANT_VER --save-exact"
+      printf '%s\n' "$OFF"
+    fi
+  fi
+else
+  # no override and no target: report what the backend will resolve. Probing
+  # PATH instead printed 2.1.31 on a machine whose runtime was the 2.1.220 pin,
+  # so the log contradicted /api/host and read like the fallback was live.
+  if [ -f "$PIN_BIN" ]; then
+    CLI_VER=$("$PIN_BIN" --version 2>/dev/null | head -n 1)
+    [ -n "$CLI_VER" ] && echo "Claude CLI: $CLI_VER [pin] $PIN_BIN"
+  elif command -v claude >/dev/null 2>&1; then
+    CLI_VER=$(claude --version 2>/dev/null | head -n 1)
+    [ -n "$CLI_VER" ] && echo "Claude CLI: $CLI_VER [PATH fallback -- the pin is MISSING]"
+  fi
 fi
 
 mkdir -p "$DATA_ROOT" || die "cannot create $DATA_ROOT"

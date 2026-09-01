@@ -33,7 +33,7 @@ from collections.abc import Callable, Iterable, Mapping
 from datetime import datetime, timedelta, timezone
 from typing import Any, Final, Literal, cast
 
-from . import deployment
+from . import clipin, deployment
 from .schema import (AudienceGrant, DirGrant, MailEntry, NodeDoc, NoticeEntry,
                      OrgDoc, OrgInboxEntry, ToolGrant, UserMailEntry)
 
@@ -63,7 +63,14 @@ MAX_CHILDREN: Final = 1024
 
 # §5 — full model ids only; aliases drift (spike: 'sonnet' resolved to sonnet-4-5).
 MODELS: Final[dict[str, str]] = {
-    "fable": "claude-fable-5",
+    # Fable 5.1 (2026-09-02). The tier default moves with the CLI's own — in
+    # the pinned build the fable family's default IS `claude-fable-5-1` — and
+    # the seat does not move with it (§3.1 prices the BAND, and Fable's did not
+    # change). ⚠ The id only exists in CLI ≥ 2.1.257 (clipin.FABLE_5_1_MIN,
+    # measured), so `supervisor.claude_model_for` hands 5.0 to anything older
+    # rather than this constant going straight to argv. 5.0 stays reachable as
+    # a model VERSION below.
+    "fable": clipin.FABLE_5_1,
     "opus": "claude-opus-5",
     "sonnet": "claude-sonnet-5",
     "haiku": "claude-haiku-4-5",
@@ -100,6 +107,10 @@ MODELS: Final[dict[str, str]] = {
 # `claude-opus-4-8` answers; `claude-opus-4.8` and `opus-4-8` are refused.
 MODEL_VERSIONS: Final[dict[str, dict[str, str]]] = {
     "opus": {"5": "claude-opus-5", "4.8": "claude-opus-4-8"},
+    # Fable 5.1 is the tier default; 5.0 stays selectable in the gear for the
+    # same reason Opus 4.8 does — a version is a subcategory inside the band,
+    # never a chip, and never a different price.
+    "fable": {"5.1": clipin.FABLE_5_1, "5": clipin.FABLE_5},
 }
 
 # Actors are one of three KINDS — user, system, agent — not one string namespace.
@@ -519,6 +530,24 @@ class Org:
         _t = cast("dict[str, Any]", _doc.get("tiers") or {})
         if _t.get("sonnet") == 3:
             _t["sonnet"] = 2
+        # ☞ …and a MODEL-ID change needs one for exactly the same reason: the
+        # add-only rule above means `MODELS["fable"] = claude-fable-5-1` reaches
+        # NO org that already exists — `setdefault` finds the key present and
+        # leaves 5.0 there forever, so the new default would ship to nobody and
+        # the only evidence would be an org card still reading "claude-fable-5".
+        # Same discipline as the sonnet price: migrate ONLY the OLD SHIPPED
+        # DEFAULT. Any other string is an operator's own pin (a fixed id in
+        # `models` is how you hold a tier still) and is left alone.
+        # This is a DEFAULT, not a lock: a node that recorded model_version "5"
+        # keeps getting 5.0 through `model_for`, and a machine whose CLI is too
+        # old to know the new id is handed 5.0 anyway by
+        # `supervisor.claude_model_for`. So the migration is safe to apply
+        # before the CLI pin has caught up on any given machine — which it must
+        # be, because the two move on different clocks (the doc migrates the
+        # instant the new code loads; the CLI migrates when a deploy runs).
+        _m = cast("dict[str, Any]", _doc.get("models") or {})
+        if _m.get("fable") == clipin.FABLE_5:
+            _m["fable"] = clipin.FABLE_5_1
         # pre-№41 spend freezes wrote the usage-limit keys (error, until=None);
         # re-tag them so clear_hard_freeze("spend") actually clears them
         # instead of leaving a stale-reason freeze the API reports as cleared
