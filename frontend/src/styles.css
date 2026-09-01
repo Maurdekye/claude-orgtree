@@ -573,6 +573,7 @@ button.badge.audience-fold.alert {
 }
 .proc-toggle {
   appearance: none; margin: 0; padding: 0; border: 0;
+  min-width: 24px; min-height: 24px;
   border-radius: 3px; background: transparent; color: inherit;
   font: inherit; cursor: pointer;
 }
@@ -588,15 +589,27 @@ button.badge.audience-fold.alert {
   width: 8px; height: 8px; box-sizing: border-box; border-radius: 50%;
   border: 1px solid var(--dim); background: transparent; opacity: .72;
 }
-.proc-state.ready .proc-one-mark {
-  border-color: var(--ok); background: var(--ok); opacity: .9;
-}
-.proc-state.live .proc-one-mark {
+.proc-state.standby .proc-one-mark {
   border-color: var(--dim); background: var(--dim); opacity: .72;
+}
+.proc-state.active.prov-claude { --process-accent: var(--prov-claude); }
+.proc-state.active.prov-openai { --process-accent: var(--prov-openai); }
+.proc-state.active.prov-google { --process-accent: var(--prov-google); }
+.proc-state.active .proc-one-mark {
+  border-color: var(--process-accent, var(--provider-accent, var(--accent)));
+  background: var(--process-accent, var(--provider-accent, var(--accent)));
+  opacity: .92;
 }
 .proc-state.relaunch .proc-one-mark {
   border-color: var(--warn, #e5c07b); background: var(--warn, #e5c07b);
-  opacity: .92;
+  animation: proc-relaunch-pulse 3.2s ease-in-out infinite;
+}
+@keyframes proc-relaunch-pulse {
+  0%, 100% { opacity: .68; }
+  50% { opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .proc-state.relaunch .proc-one-mark { animation: none; opacity: .92; }
 }
 .proc-relaunch {
   color: var(--warn, #e5c07b); font-size: 10px; animation: none;
@@ -2769,7 +2782,11 @@ svg.MuiSvgIcon-root {
   display: flex; gap: 6px; flex-wrap: wrap; align-items: center;
   flex: 1; min-width: 0; font-size: 13px;
 }
-.eye-head { border-bottom: 1px solid var(--line-soft); padding-bottom: 5px; }
+.eye-head {
+  display: flex; flex-direction: row; align-items: center; gap: 6px;
+  min-width: 0; min-height: 20px; flex: none;
+  border-bottom: 1px solid var(--line-soft); padding-bottom: 5px;
+}
 .eye-tab {
   display: inline-flex; align-items: stretch; overflow: hidden;
   border: 1px solid var(--line); border-radius: 5px; background: var(--input);

@@ -310,7 +310,7 @@ function EyeDesk({ map, op, slug, toast, pip,
       <div className="desk-inner desk-body eye-inner" style={{ width: innerW }}>
         {/* one row (user spec 2026-07-31): the "you · N direct lines" label
             was dead space — the TABS live in the head now, beside the eye */}
-        <div className="cc-head eye-head">
+        <div className="eye-head">
           <svg className="eye eye-mini" viewBox="0 0 48 26">
             <path d="M 2 13 C 13 2, 35 2, 46 13 C 35 24, 13 24, 2 13 Z" />
             <circle className="iris" cx="24" cy="13" r="6.5" />
@@ -1096,7 +1096,7 @@ export function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, c
             : <span className="statusdot idle" />}
           {live && <ProcessLifecycleMark warm={Boolean(node.proc_warm)}
             live={node.proc_live} relaunch={node.proc_relaunch}
-            reason={node.proc_relaunch_reason} busy={node.busy} />}
+            reason={node.proc_relaunch_reason} busy={node.busy} tier={node.tier} />}
           {(dogs ?? 0) > 0 && <span className={'map-dogs' + ((oneShotDogs ?? 0) > 0 ? ' oneshot' : '')}
             aria-label={`${dogs} watchdog${dogs === 1 ? '' : 's'}${(oneShotDogs ?? 0) > 0
               ? `, ${oneShotDogs} one-shot dog${oneShotDogs === 1 ? '' : 's'}` : ''}`}>
@@ -1187,7 +1187,7 @@ export function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, c
           est={node.occupancy_est} compactAt={compactAt} />
         {live && <ProcessLifecycleMark warm={Boolean(node.proc_warm)}
           live={node.proc_live} relaunch={node.proc_relaunch}
-          reason={node.proc_relaunch_reason} busy={node.busy} />}
+          reason={node.proc_relaunch_reason} busy={node.busy} tier={node.tier} />}
         {lod === 'mini' && node.last_status &&
           <span className={'statusdot ' + node.last_status.status}
             title={`${node.last_status.status} — ${node.last_status.summary ?? ''}`} />}

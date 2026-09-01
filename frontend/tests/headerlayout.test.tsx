@@ -155,6 +155,40 @@ test('layout CSS wraps naturally and pins finite controls above metadata', () =>
   assert.doesNotMatch(topLevelHeaderCss(css), /margin-(?:left|right):\s*auto/)
 })
 
+test('queued or compacting desks keep an unclaimed live process on standby', async (t) => {
+  installFetch(new FakeServer())
+  for (const extra of [{ waiting: true }, { phase: 'compacting' as const }]) {
+    const id = extra.waiting ? 'queued-agent' : 'compacting-agent'
+    const n: CanvasNode = {
+      id, state: 'live', tier: 'terra', model_id: 'terra', children: [],
+      seat: 2, grant: 0, free: 0, scope: { tools: {}, add_dirs: [] },
+      proc_live: true, proc_warm: true, busy: false, ...extra,
+    }
+    const view = await mountView(
+      <DeskChat node={n} map={new Map([[id, n]])} op={op} slug={id}
+        toast={noop} pub={false} bare />,
+      (el) => el,
+    )
+    t.after(() => view.unmount())
+    await flush()
+    assert.ok(view.el.querySelector('.proc-state.standby.prov-openai'),
+      `${id} falsely presented its parked CLI as currently used`)
+    assert.equal(view.el.querySelector('.proc-state.active'), null)
+  }
+})
+
+test('switchboard header stays a horizontal surface independent of desk chrome', () => {
+  const css = readFileSync(path.join(__SRC_DIR__, 'styles.css'), 'utf8')
+  const cards = readFileSync(path.join(__SRC_DIR__, 'canvas', 'cards.tsx'), 'utf8')
+  assert.match(cards, /<div className="eye-head">/,
+    'switchboard header is not rendered with its dedicated layout class')
+  assert.doesNotMatch(cards, /className="cc-head eye-head"/,
+    'switchboard inherited the desk header column layout again')
+  assert.match(css,
+    /\.eye-head\s*\{[^}]*display:\s*flex[^}]*flex-direction:\s*row[^}]*align-items:\s*center/s,
+    'switchboard header no longer guarantees one horizontal eye/tab/action row')
+})
+
 function topLevelHeaderCss(css: string) {
   return [...css.matchAll(/\.(?:cc-head-top|cc-head-left|cc-head-right)[^{]*\{[^}]*\}/gs)]
     .map((m) => m[0]).join('\n')

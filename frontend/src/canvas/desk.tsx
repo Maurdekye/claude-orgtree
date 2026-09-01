@@ -24,7 +24,7 @@ import {
   HearingIcon, LayersIcon, LockIcon, MailIcon, PlayIcon, PsychologyIcon,
   SettingsIcon, SparkIcon, StopIcon, WarnIcon,
 } from '../icons'
-import { ago, ALL_PRESENT, ALL_TIERS, CODEX_TIER_SEAT, CODEX_TIERS, CopyIcon, EXTERN, freezeKind, FREEZE_LABEL, GEMINI_TIER_SEAT, GEMINI_TIERS, md, TIER_LETTER, TIER_SEAT, tierShown, USER, useEsc, usePolled } from './shared'
+import { ago, ALL_PRESENT, ALL_TIERS, CODEX_TIER_SEAT, CODEX_TIERS, CopyIcon, EXTERN, freezeKind, FREEZE_LABEL, GEMINI_TIER_SEAT, GEMINI_TIERS, md, providerOf, TIER_LETTER, TIER_SEAT, tierShown, USER, useEsc, usePolled } from './shared'
 import type { ProviderPresence } from './shared'
 import {
   addPending, CHAT_WINDOW, dropPending, loadOlder as storeLoadOlder, markBusy,
@@ -193,21 +193,25 @@ export function TurnStatusBanner({ state, turn, inflightAt, tasks = 0,
  * never the only distinction; backend live/warm fields remain independent. */
 export function ProcessLifecycleMark({ warm, live, relaunch, reason, busy,
   paused = false, controlEnabled = false, controlAction, controlReason,
-  onToggle }: {
+  onToggle, tier }: {
   warm: boolean; live?: boolean; relaunch?: boolean; reason?: string | null;
   busy?: boolean; paused?: boolean; controlEnabled?: boolean
   controlAction?: 'start' | 'stop' | null; controlReason?: string | null
-  onToggle?: () => void
+  onToggle?: () => void; tier?: string | null
 }) {
   const isLive = live ?? warm
-  const state = !isLive ? 'off' : relaunch ? 'relaunch' : warm ? 'ready' : 'live'
+  // Colour answers use, not mere process existence: a claimed process takes
+  // its provider theme even during the brief warm-to-claimed handoff; every
+  // other live process is neutral standby. Relaunch keeps its warning state.
+  const state = !isLive ? 'off' : busy ? 'active' : relaunch ? 'relaunch' : 'standby'
   const lifecycleTitle = isLive
-    ? relaunch
-      ? `CLI process live — will relaunch before its next turn: ${reason || 'reason unavailable'}`
-      : warm
-        ? 'CLI process live — parked and ready for its next turn'
-        : busy
-          ? 'CLI process live — claimed by the current turn; not parked'
+    ? busy
+      ? 'CLI process live — serving the current turn'
+        + (relaunch ? `; will relaunch afterward: ${reason || 'reason unavailable'}` : '')
+      : relaunch
+        ? `CLI process live — will relaunch before its next turn: ${reason || 'reason unavailable'}`
+        : warm
+          ? 'CLI process live — parked on standby and ready for its next turn'
           : 'CLI process live — spawning or initializing; not ready yet'
     : paused
       ? onToggle
@@ -222,7 +226,8 @@ export function ProcessLifecycleMark({ warm, live, relaunch, reason, busy,
       : `process control unavailable — ${controlReason || 'the agent is not idle'}`
     : ''
   const title = [lifecycleTitle, controlTitle].filter(Boolean).join('\n')
-  const cls = `proc-state ${state}${paused ? ' paused' : ''}${onToggle ? ' proc-toggle' : ''}`
+  const providerClass = tier ? ` prov-${providerOf(tier)}` : ''
+  const cls = `proc-state ${state}${providerClass}${paused ? ' paused' : ''}${onToggle ? ' proc-toggle' : ''}`
   const mark = <>
     <span className="proc-one-mark" aria-hidden="true" />
     {relaunch && <AutorenewIcon fontSize="inherit" className="proc-relaunch" />}
@@ -862,6 +867,9 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
     ? chat.occupancy_estimated : node.occupancy_est
   const turnActive = Boolean(node.busy || node.waiting
     || node.phase === 'compacting' || chat?.busy)
+  // Waiting for a slot and compacting are desk activity, but neither proves
+  // this CLI is claimed. The process cue lights only for an actual busy turn.
+  const processActive = Boolean(node.busy || chat?.busy)
   const turnBannerState: TurnBannerState = node.phase === 'compacting'
     ? 'compacting' : node.waiting ? 'queued' : turnActive ? 'working' : 'idle'
   const bannerDuplicatesStatus = Boolean(node.last_status
@@ -934,7 +942,7 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
           <span className="cc-process-seat">
             <ProcessLifecycleMark warm={Boolean(node.proc_warm)}
               live={live ? node.proc_live : false} relaunch={node.proc_relaunch}
-              reason={node.proc_relaunch_reason} busy={turnActive}
+              reason={node.proc_relaunch_reason} busy={processActive} tier={node.tier}
               paused={Boolean(node.proc_paused)}
               controlEnabled={Boolean(node.proc_control_enabled)
                 && !processToggleBusy}

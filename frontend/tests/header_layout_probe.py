@@ -29,7 +29,7 @@ HTML = """
         <span class="tier">F</span>
         <span class="cc-name" title="an-agent-name-long-enough-to-wrap-at-enlarged-browser-text">an-agent-name-long-enough-to-wrap-at-enlarged-browser-text</span>
         <span class="cc-context-seat"><button class="ctxbtn"><svg class="ctxwheel" width="15" height="15" viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.5" class="track"></circle></svg></button></span>
-        <span class="cc-process-seat"><span class="proc-state relaunch"><span class="proc-one-mark"></span>↻</span></span>
+        <span class="cc-process-seat"><button class="proc-state standby proc-toggle"><span class="proc-one-mark"></span></button></span>
         <span class="turn-status-banner working"><span class="cc-spin">↻</span><span>Working</span><span class="turn-status-time">31m</span></span>
       </span>
       <span class="spacer"></span>
@@ -95,7 +95,7 @@ def failures(page, width: int, enlarged: bool) -> list[str]:
       const processSeat = top.querySelector('.cc-process-seat').getBoundingClientRect();
       if (contextSeat.width < 23.5 || contextSeat.height < 23.5)
         bad.push('.cc-context-seat: unstable static slot');
-      if (processSeat.width < 15.5 || processSeat.height < 23.5)
+      if (processSeat.width < 23.5 || processSeat.height < 23.5)
         bad.push('.cc-process-seat: unstable static slot');
       if (top.querySelector('.turn-status-banner').getBoundingClientRect().width < 71.5)
         bad.push('status/age banner collapsed');

@@ -2084,7 +2084,7 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
                       est={n.occupancy_est} compactAt={tree.compact_at} />
                     {n.state === 'live' && <ProcessLifecycleMark warm={Boolean(n.proc_warm)}
                       live={n.proc_live} relaunch={n.proc_relaunch}
-                      reason={n.proc_relaunch_reason} busy={n.busy} />}
+                      reason={n.proc_relaunch_reason} busy={n.busy} tier={n.tier} />}
                     {n.busy ? (n.waiting
                       ? <span className="statusdot waiting"
                           title="queued — waiting for a free turn slot (№12)" />
@@ -2182,7 +2182,7 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
                 {n.busy && <Activity act={n.activity} dotOnly />}
                 {n.state === 'live' && <ProcessLifecycleMark warm={Boolean(n.proc_warm)}
                   live={n.proc_live} relaunch={n.proc_relaunch}
-                  reason={n.proc_relaunch_reason} busy={n.busy} />}
+                  reason={n.proc_relaunch_reason} busy={n.busy} tier={n.tier} />}
                 {n.state !== 'live' && <span className="dim">{n.state}</span>}
                 <span className="spacer" />
                 {myDogs.length > 0 &&
