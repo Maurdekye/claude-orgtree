@@ -246,6 +246,11 @@ export function TurnStartingMark({ mcpWaiting, reason }: {
   </div>
 }
 
+const defaultCompatibleForecast = (forecast: CacheForecast): boolean =>
+  forecast.state === 'uncertain'
+  && forecast.source === 'no_completed_fingerprint'
+  && (forecast.lane === 'subscription' || forecast.lane === 'api_key')
+
 const cacheForecastTitle = (forecast: CacheForecast): string => {
   const ttl = typeof forecast.ttl_seconds === 'number'
     ? forecast.ttl_seconds === 3600 ? '60 minutes (subscription authentication)'
@@ -253,11 +258,13 @@ const cacheForecastTitle = (forecast: CacheForecast): string => {
       : forecast.ttl_seconds === 300 ? '5 minutes (API-key inference)'
         : `${forecast.ttl_seconds} seconds (derived from inference lane)`
     : 'unavailable'
-  const compatibility = forecast.state === 'compatible_observed'
-    ? 'known compatible locally (provider hit not guaranteed)'
-    : forecast.state === 'known_incompatible' ? 'known incompatible'
-      : forecast.state === 'expired_known_entry' ? 'known cold at the configured boundary'
-        : 'unknown'
+  const compatibility = defaultCompatibleForecast(forecast)
+    ? 'No completed turn exists to conflict with this one; no known cache invalidation (provider cache hit not guaranteed).'
+    : forecast.state === 'compatible_observed'
+      ? 'known compatible locally (provider hit not guaranteed)'
+      : forecast.state === 'known_incompatible' ? 'known incompatible'
+        : forecast.state === 'expired_known_entry' ? 'known cold at the configured boundary'
+          : 'unknown'
   const changed = forecast.changed_inputs?.length
     ? `changed components:\n${forecast.changed_inputs.map((v) => `• ${v}`).join('\n')}`
     : 'changed components: none reported'
@@ -281,6 +288,7 @@ export function CacheForecastMark({ forecast }: {
 }) {
   if (!forecast) return null
   const compatible = forecast.state === 'compatible_observed'
+    || defaultCompatibleForecast(forecast)
   const uncertain = forecast.state === 'uncertain'
   const cls = compatible ? 'compatible' : uncertain ? 'uncertain' : 'cold'
   const glyph = compatible ? '✓' : uncertain ? '?' : '×'

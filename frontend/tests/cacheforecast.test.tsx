@@ -12,6 +12,7 @@ declare const __SRC_DIR__: string
 const forecast = (
   state: CacheForecastState,
   action: CacheForecast['precompact_action'] = 'not_applicable',
+  overrides: Partial<CacheForecast> = {},
 ): CacheForecast => ({
   generation: 'opaque-generation', state,
   reason: state === 'known_incompatible' ? 'three identity components changed' : 'observed',
@@ -24,6 +25,7 @@ const forecast = (
   precompact_reason: action === 'will_compact'
     ? 'context is above the configured minimum'
     : action === 'miss_expected' ? 'automatic policy is off' : '',
+  ...overrides,
 })
 
 test('cache badge has exactly the selected green/red/grey state mapping', async () => {
@@ -64,6 +66,60 @@ test('Codex subscription tooltip names the fixed estimate without promising a hi
       ?.getAttribute('aria-label') ?? ''
     assert.match(title, /30 minutes \(Codex subscription estimate\)/)
     assert.match(title, /provider hit not guaranteed/)
+  } finally { await view.unmount() }
+})
+
+test('supported empty-history forecasts render compatible without claiming an observed hit', async () => {
+  const view = await mountView(<>
+    <CacheForecastMark forecast={forecast('uncertain', 'not_applicable', {
+      source: 'no_completed_fingerprint', lane: 'subscription',
+    })} />
+    <CacheForecastMark forecast={forecast('uncertain', 'not_applicable', {
+      source: 'no_completed_fingerprint', lane: 'api_key', ttl_seconds: 300,
+    })} />
+  </>, (el) => el)
+  try {
+    const marks = [...view.el.querySelectorAll<HTMLElement>('.cache-forecast')]
+    assert.deepEqual(marks.map((m) => [...m.classList][1]),
+      ['compatible', 'compatible'])
+    assert.deepEqual(marks.map((m) => m.textContent?.trim()),
+      ['cache ✓', 'cache ✓'])
+    for (const mark of marks) {
+      const title = mark.getAttribute('aria-label') ?? ''
+      assert.match(title, /No completed turn exists to conflict with this one/)
+      assert.match(title, /no known cache invalidation/)
+      assert.match(title, /provider cache hit not guaranteed/)
+      assert.doesNotMatch(title, /observed hit/i)
+    }
+  } finally { await view.unmount() }
+})
+
+test('unsupported lanes and other uncertainty remain unknown', async () => {
+  const view = await mountView(<>
+    <CacheForecastMark forecast={forecast('uncertain', 'not_applicable', {
+      source: 'no_completed_fingerprint', lane: 'provider_unsupported',
+    })} />
+    <CacheForecastMark forecast={forecast('uncertain', 'not_applicable', {
+      source: 'no_completed_fingerprint', lane: 'unobserved',
+    })} />
+    <CacheForecastMark forecast={forecast('uncertain', 'not_applicable', {
+      source: 'no_positive_receipt', lane: 'subscription',
+    })} />
+    <CacheForecastMark forecast={forecast('uncertain', 'not_applicable', {
+      source: 'no_completed_fingerprint', lane: 'provider_unsupported',
+      reason: 'Gemini cache continuity is not observed',
+    })} />
+  </>, (el) => el)
+  try {
+    const marks = [...view.el.querySelectorAll<HTMLElement>('.cache-forecast')]
+    assert.deepEqual(marks.map((m) => [...m.classList][1]),
+      ['uncertain', 'uncertain', 'uncertain', 'uncertain'])
+    assert.deepEqual(marks.map((m) => m.textContent?.trim()),
+      ['cache ?', 'cache ?', 'cache ?', 'cache ?'])
+    for (const mark of marks) {
+      assert.match(mark.getAttribute('aria-label') ?? '',
+        /next-turn cache compatibility: unknown/)
+    }
   } finally { await view.unmount() }
 })
 

@@ -3472,10 +3472,13 @@ no live interpolation and stays byte-stable.
 
 The public badge retains the selected three colours but does not expose raw
 proof vocabulary as product copy. Green says local compatibility is known
-while warning that a provider hit is not guaranteed; red names known
-incompatibility or the configured cold boundary; gray says **cache
-compatibility unknown**. The internal state remains `uncertain` so missing
-evidence is never silently upgraded.
+while warning that a provider hit is not guaranteed; it also covers an
+`uncertain` `no_completed_fingerprint` forecast on a known supported
+`subscription` or `api_key` lane, where no completed turn exists to conflict
+with the next one. Red names known incompatibility or the configured cold
+boundary; all other uncertainty is gray **cache compatibility unknown**. The
+internal state remains `uncertain` so the UI exception cannot enable automatic
+cheap compaction or claim an observed provider hit.
 
 The composer banner is separately thresholded. With automatic compaction off,
 known-incompatible/expired is red only above 25% measured context (25% exactly

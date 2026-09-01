@@ -110,8 +110,11 @@ changed_inputs, precompact_action, precompact_reason
 ```
 
 `generation` is opaque and suppresses stale events. The UI maps the internal
-`uncertain` proof state to the plain gray label **cache compatibility unknown**;
-it never describes uncertainty as a cache hit. `changed_inputs` is always
+`uncertain` proof state to the plain gray label **cache compatibility unknown**,
+except that `no_completed_fingerprint` on a known supported `subscription` or
+`api_key` lane is green because no completed turn exists to conflict with it.
+That exception still says a provider hit is not guaranteed and never describes
+uncertainty as an observed cache hit. `changed_inputs` is always
 present: every safe changed component label for `known_incompatible`, otherwise
 `[]`. It contains no values, hashes, credentials, account/session IDs, or
 secret-bearing paths. `precompact_action` is one of `will_compact`,
