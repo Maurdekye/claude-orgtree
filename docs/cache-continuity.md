@@ -29,7 +29,7 @@ successor.
 | State | What Orgtree knows |
 |---|---|
 | `known_incompatible` | A known namespace changed (provider, account/auth lane, model, session lineage) or a known provider-visible prefix component changed (system, tools/MCP, normalized argv/env, startup inputs, lineage, or already-sent history). |
-| `expired_known_entry` | A positive receipt exists for the same fingerprint/lane and its authoritative derived TTL has reached its boundary. |
+| `expired_known_entry` | A positive receipt exists for the same fingerprint/lane and its fixed lane boundary has been reached. Claude uses provider-reported lanes; Codex subscription uses the documented 30-minute API default as an explicit estimate. |
 | `uncertain` | Local evidence matches or is incomplete, but a positive receipt, history proof, lane, TTL, or trustworthy clock boundary is unavailable. Orgtree does not infer a miss. |
 | `compatible_observed` | The local fingerprint matches an unexpired positive receipt. This is evidence of compatibility, not a guaranteed provider hit. |
 
@@ -44,15 +44,20 @@ Claude's startup component covers the native startup instruction manifest
 prefix). Codex and Gemini currently cover Orgtree's managed startup identity
 and their normalized process/tool surfaces; provider-native global/project
 instruction discovery is not exposed authoritatively on those lanes. Their
-positive cached-input counts therefore remain useful receipts, but neither
-lane is promoted beyond `uncertain` on elapsed time.
+positive cached-input counts remain useful receipts. Gemini and Codex API-key
+time remain unknown; Codex subscription is the one explicit estimated lane.
 
 Positive provider usage is the only expiry-refresh evidence. For Claude,
 subscription-auth receipts derive a 3,600-second TTL and API-key receipts a
-300-second TTL. At exactly the expiry timestamp the state is expired. A future
-receipt timestamp is clock-skew uncertainty. Codex/Gemini cached-input counts
-currently have no authoritative TTL exposed to Orgtree, so time alone remains
-uncertain on those lanes.
+300-second TTL. Codex app-server receipts report cached input but not TTL;
+Orgtree therefore uses 1,800 seconds for a detected ChatGPT/subscription login.
+That is a fixed estimate from the official OpenAI `gpt-5.6-sol` Responses API
+default—`prompt_cache_options.ttl` defaults to `30m`, currently its only
+supported value—not a TTL returned by the Codex receipt. At its boundary the
+forecast says a miss is expected, not guaranteed. A future receipt timestamp
+is clock-skew uncertainty. Codex API-key and Gemini time remain unknown.
+
+Official basis: <https://developers.openai.com/api/reference/cli/resources/responses/methods/create>
 
 Provider switching is a known namespace change. It loses the current warm
 cache/process and can also lose provider-specific session/context continuity;
@@ -81,6 +86,18 @@ disabled/below-threshold nodes. Frozen/blocked nodes do not reach ordinary
 admission. Compaction happens before mail/notices drain, so the exact carrier
 is delivered once to the successor together with its compaction notice.
 
+The composer warning is narrower than the header badge. The badge always shows
+the forecast. For a known-incompatible or boundary-expired forecast:
+
+- with automatic compaction **off**, a red warning appears only when measured
+  context is strictly greater than 25%; exactly 25% is quiet;
+- with automatic compaction **on**, a yellow warning appears only when measured
+  context is greater than or equal to the configured `occ` threshold, and says
+  sending will cheap-compact first;
+- below those boundaries there is no banner, and enabled mode never shows red.
+
+Unknown and compatible forecasts never show either banner.
+
 ## Safe UI and stream contract
 
 Tree/API nodes expose `cache_forecast`; the node WebSocket sends
@@ -92,7 +109,9 @@ lane, last_receipt_at, ttl_seconds, expires_at,
 changed_inputs, precompact_action, precompact_reason
 ```
 
-`generation` is opaque and suppresses stale events. `changed_inputs` is always
+`generation` is opaque and suppresses stale events. The UI maps the internal
+`uncertain` proof state to the plain gray label **cache compatibility unknown**;
+it never describes uncertainty as a cache hit. `changed_inputs` is always
 present: every safe changed component label for `known_incompatible`, otherwise
 `[]`. It contains no values, hashes, credentials, account/session IDs, or
 secret-bearing paths. `precompact_action` is one of `will_compact`,

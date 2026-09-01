@@ -1013,10 +1013,11 @@ export function NodeConfig({ node, map, tree, slug, op, toast, codexProvider,
         </select>
 
         <div className="field-label">cache-protective cheap compaction</div>
-        <div className="dim hub-hint">Expiry is derived: 60 min after a
-          positive subscription receipt, 5 min after a positive API-key
-          receipt. Known identity changes are cold immediately; uncertain
-          forecasts never auto-compact.</div>
+        <div className="dim hub-hint">Expiry is fixed by lane: Claude uses
+          60 min after a positive subscription receipt or 5 min after a
+          positive API-key receipt; OpenAI subscription uses the documented
+          30 min default as a fixed estimate. Known identity changes are cold
+          immediately; unknown forecasts never auto-compact.</div>
         <select value={accMode} onChange={(e) => setAccMode(e.target.value)}>
           <option value="">inherit the org setting</option>
           <option value="on">on for this agent</option>

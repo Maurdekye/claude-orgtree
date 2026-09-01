@@ -253,14 +253,20 @@ export function TurnStartingMark({ mcpWaiting, reason }: {
 const cacheForecastTitle = (forecast: CacheForecast): string => {
   const ttl = typeof forecast.ttl_seconds === 'number'
     ? forecast.ttl_seconds === 3600 ? '60 minutes (subscription authentication)'
+      : forecast.ttl_seconds === 1800 ? '30 minutes (Codex subscription estimate)'
       : forecast.ttl_seconds === 300 ? '5 minutes (API-key inference)'
         : `${forecast.ttl_seconds} seconds (derived from inference lane)`
     : 'unavailable'
+  const compatibility = forecast.state === 'compatible_observed'
+    ? 'known compatible locally (provider hit not guaranteed)'
+    : forecast.state === 'known_incompatible' ? 'known incompatible'
+      : forecast.state === 'expired_known_entry' ? 'known cold at the configured boundary'
+        : 'unknown'
   const changed = forecast.changed_inputs?.length
     ? `changed components:\n${forecast.changed_inputs.map((v) => `• ${v}`).join('\n')}`
     : 'changed components: none reported'
   return [
-    `next-turn cache: ${forecast.state.replaceAll('_', ' ')}`,
+    `next-turn cache compatibility: ${compatibility}`,
     `reason: ${forecast.reason || 'unavailable'}`,
     changed,
     `lane/source: ${forecast.lane || 'unknown'} / ${forecast.source || 'unknown'}`,
@@ -273,7 +279,7 @@ const cacheForecastTitle = (forecast: CacheForecast): string => {
 }
 
 /** User-selected three-state cache forecast: compatible green, known cold
- * red, uncertain grey. Glyphs keep every state distinct without colour. */
+ * red, unknown grey. Glyphs keep every state distinct without colour. */
 export function CacheForecastMark({ forecast }: {
   forecast?: CacheForecast | null
 }) {
@@ -291,15 +297,19 @@ export function CacheForecastMark({ forecast }: {
 export function CacheForecastWarning({ forecast }: {
   forecast?: CacheForecast | null
 }) {
-  if (forecast?.state !== 'known_incompatible') return null
+  const cold = forecast?.state === 'known_incompatible'
+    || forecast?.state === 'expired_known_entry'
+  const actionable = forecast?.precompact_action === 'will_compact'
+    || forecast?.precompact_action === 'miss_expected'
+  if (!forecast || !cold || !actionable) return null
   const compacts = forecast.precompact_action === 'will_compact'
   const title = cacheForecastTitle(forecast)
   return <div className={`cache-send-warning ${compacts ? 'compact' : 'miss'}`}
     role="status" title={title}>
     <WarnIcon fontSize="inherit" />
     <span>{compacts
-      ? 'Cache mismatch — sending will cheap-compact this session first.'
-      : 'Cache miss expected — this session is incompatible and automatic cheap compaction will not run.'}</span>
+      ? 'Cache warning — sending will cheap-compact this session first.'
+      : 'Cache miss expected — this session is known cold and automatic cheap compaction is off.'}</span>
   </div>
 }
 

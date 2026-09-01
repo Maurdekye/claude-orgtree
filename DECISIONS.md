@@ -3433,9 +3433,14 @@ It is replaced by a persisted, generation-owned next-turn forecast:
   namespace changed, or a known provider-visible system, tools, argv, env,
   startup input, lineage, or already-sent history prefix changed.
 * `expired_known_entry` requires a positive same-lane inference receipt and
-  the derived TTL boundary: 60 minutes for Claude subscription auth, 5 minutes
-  for Claude API-key auth. Equality is expired. Unknown lanes, missing
-  receipts, unsupported provider TTLs, and clock skew stay `uncertain`.
+  the fixed TTL boundary: 60 minutes for Claude subscription auth, 5 minutes
+  for Claude API-key auth, and the user-selected 30-minute estimate for a
+  Codex ChatGPT/subscription login. The Codex value is based on the official
+  `gpt-5.6-sol` Responses API default (`prompt_cache_options.ttl=30m`, currently
+  the only supported value), because app-server receipts expose cached tokens
+  but not their TTL. Its reason therefore says expected, not guaranteed.
+  Equality is expired. Unknown lanes, missing receipts, unsupported provider
+  TTLs, and clock skew stay `uncertain`.
 * `compatible_observed` means the local fingerprint matches an unexpired
   positive receipt. It is evidence of compatibility, never a promise that the
   provider will accept the cache entry.
@@ -3455,7 +3460,8 @@ mail exactly once.
 
 `idle_s` is no longer configurable. Load migration removes it without
 converting it to a TTL; `enabled` and the existing `occ` value survive. The UI
-explains the derived 60m/5m rule. A credential-free atomic forecast is exposed
+explains the Claude 60m/5m boundaries and the estimated Codex subscription
+30m boundary. A credential-free atomic forecast is exposed
 in the tree and node stream with an opaque generation, complete safe
 `changed_inputs`, and the backend-owned pre-compaction action.
 
@@ -3463,6 +3469,21 @@ Finally, every managed startup/system prompt receives one stable
 `CACHE CONTINUITY` doctrine block. Deploying D-214 intentionally replaces the
 system-prompt identity once for existing agents; after that, the block contains
 no live interpolation and stays byte-stable.
+
+The public badge retains the selected three colours but does not expose raw
+proof vocabulary as product copy. Green says local compatibility is known
+while warning that a provider hit is not guaranteed; red names known
+incompatibility or the configured cold boundary; gray says **cache
+compatibility unknown**. The internal state remains `uncertain` so missing
+evidence is never silently upgraded.
+
+The composer banner is separately thresholded. With automatic compaction off,
+known-incompatible/expired is red only above 25% measured context (25% exactly
+is suppressed). With it on, the banner exists only at or above the configured
+inclusive `occ` threshold and is yellow because the send will compact first.
+Below-threshold, unknown, and compatible forecasts have no banner; enabled
+mode can never produce a red banner. The header badge remains visible whether
+or not the banner is suppressed.
 
 ### D-208 · a frozen container's /usr/local is keyed to the approved configuration, not the CLI version
 

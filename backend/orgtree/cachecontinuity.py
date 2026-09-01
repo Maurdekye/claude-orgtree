@@ -21,6 +21,7 @@ State = Literal[
 
 SUBSCRIPTION_TTL_SECONDS: Final = 60 * 60
 API_KEY_TTL_SECONDS: Final = 5 * 60
+CODEX_SUBSCRIPTION_TTL_SECONDS: Final = 30 * 60
 
 # Stable by construction: no formatting fields, timestamps, account names,
 # settings, org state or forecast values may enter this system-prompt block.
@@ -29,7 +30,7 @@ Provider cache continuity is separate from a local warm process. A local process
 
 Always treat a provider, account/auth lane, model, or session-lineage switch as a new cache namespace. A provider switch can also lose provider-specific session/context continuity. Treat a rewrite of the already-sent system/startup prompt, charter, scope, tool or MCP definitions, startup instruction files, or conversation history as a changed prefix. Avoid those changes when they are unnecessary; when they are necessary, surface the cache cost instead of hiding it.
 
-Dynamic turn-envelope facts (org state, mail/notices, usage/status/checkup data, attachments), live process/tool counts, append-only new turns, and an effort-only control change do not invalidate an unchanged earlier prefix by themselves. TTL expiry and provider-side acceptance depend on the actual auth lane and an authoritative positive cache receipt: Claude subscription auth uses 60 minutes and Claude API-key auth uses 5 minutes; unsupported or unobserved lanes stay uncertain. Even a matching, unexpired local fingerprint is evidence of compatibility, never a guaranteed provider hit.
+Dynamic turn-envelope facts (org state, mail/notices, usage/status/checkup data, attachments), live process/tool counts, append-only new turns, and an effort-only control change do not invalidate an unchanged earlier prefix by themselves. TTL expiry and provider-side acceptance depend on the actual auth lane and a positive cache receipt: Claude subscription auth uses 60 minutes and Claude API-key auth uses 5 minutes; Codex subscription auth uses a fixed 30-minute estimate from OpenAI's documented gpt-5.6 prompt-cache default. Unsupported or unobserved lanes stay unknown. Even a matching, unexpired local fingerprint is evidence of compatibility, never a guaranteed provider hit.
 [END CACHE CONTINUITY]"""
 
 _COMPONENT_ORDER: Final = (
@@ -77,18 +78,21 @@ def digest(value: Any, length: int = 32) -> str:
 
 
 def ttl_seconds(provider: str, lane: str) -> int | None:
-    """Authoritative cache lifetime for an observed auth lane.
+    """Fixed cache window for an observed auth lane.
 
-    Codex and Gemini expose cached-input counts but no authoritative entry TTL
-    to Orgtree.  They therefore remain uncertain rather than inheriting a
-    Claude number.
+    Claude receipts expose the two provider TTL lanes directly. Codex does not
+    return a TTL in the app-server usage receipt, so its subscription value is
+    the user's fixed estimate: the documented gpt-5.6 Responses API default
+    (30m, currently the only supported prompt_cache_options.ttl value). Gemini
+    and Codex API-key sessions remain unknown rather than borrowing a lane.
     """
-    if provider != "claude":
-        return None
-    if lane == "subscription":
-        return SUBSCRIPTION_TTL_SECONDS
-    if lane == "api_key":
-        return API_KEY_TTL_SECONDS
+    if provider == "claude":
+        if lane == "subscription":
+            return SUBSCRIPTION_TTL_SECONDS
+        if lane == "api_key":
+            return API_KEY_TTL_SECONDS
+    if provider == "openai" and lane == "subscription":
+        return CODEX_SUBSCRIPTION_TTL_SECONDS
     return None
 
 
@@ -254,8 +258,10 @@ def classify(current: dict[str, Any], continuity: dict[str, Any] | None,
             "confidence": "uncertain", "expected_input_tokens": expected,
         }
 
-    ttl = ttl_seconds(str(current.get("provider") or ""),
-                      str(current.get("lane") or ""))
+    provider = str(current.get("provider") or "")
+    lane = str(current.get("lane") or "")
+    ttl = ttl_seconds(provider, lane)
+    codex_estimate = provider == "openai" and lane == "subscription"
     observed = epoch(receipt.get("observed_at"))
     if ttl is None or observed is None:
         return {
@@ -282,19 +288,41 @@ def classify(current: dict[str, Any], continuity: dict[str, Any] | None,
         }
     if now >= expires:                 # equality is the expiry boundary
         return {
-            "state": "expired_known_entry", "source": "authoritative_receipt",
-            "reason": f"The observed {ttl // 60}-minute cache entry has expired.",
-            "reasons": [_reason("ttl", "authoritative cache entry expired", at)],
+            "state": "expired_known_entry",
+            "source": ("codex_subscription_fixed_estimate" if codex_estimate
+                       else "authoritative_receipt"),
+            "reason": (
+                "The fixed 30-minute Codex subscription cache estimate has "
+                "elapsed; a provider miss is expected, not guaranteed."
+                if codex_estimate else
+                f"The observed {ttl // 60}-minute cache entry has expired."),
+            "reasons": [_reason(
+                "ttl", ("fixed Codex subscription cache estimate elapsed"
+                        if codex_estimate else
+                        "authoritative cache entry expired"), at,
+                "estimated" if codex_estimate else "known")],
             "observed_at": at, "last_receipt_at": receipt.get("observed_at"),
             "lane": str(current.get("lane") or "unobserved"),
             "ttl_seconds": ttl, "expires_at": iso(expires),
-            "confidence": "known", "expected_input_tokens": expected,
+            "confidence": ("estimated" if codex_estimate else "known"),
+            "expected_input_tokens": expected,
         }
     return {
-        "state": "compatible_observed", "source": "authoritative_receipt",
-        "reason": "The local prefix matches an unexpired positive cache receipt; a provider hit is still not guaranteed.",
-        "reasons": [_reason("receipt", "matching unexpired positive cache receipt", at,
-                            "observed")],
+        "state": "compatible_observed",
+        "source": ("codex_subscription_fixed_estimate" if codex_estimate
+                   else "authoritative_receipt"),
+        "reason": (
+            "The local prefix matches a positive receipt inside the fixed "
+            "30-minute Codex subscription estimate; a provider hit is not "
+            "guaranteed."
+            if codex_estimate else
+            "The local prefix matches an unexpired positive cache receipt; "
+            "a provider hit is still not guaranteed."),
+        "reasons": [_reason(
+            "receipt", ("matching positive receipt inside fixed Codex "
+                        "subscription estimate" if codex_estimate else
+                        "matching unexpired positive cache receipt"), at,
+            "estimated" if codex_estimate else "observed")],
         "observed_at": at, "last_receipt_at": receipt.get("observed_at"),
         "lane": str(current.get("lane") or "unobserved"),
         "ttl_seconds": ttl, "expires_at": iso(expires),

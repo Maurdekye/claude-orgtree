@@ -45,24 +45,49 @@ test('cache badge has exactly the selected green/red/grey state mapping', async 
     }
     assert.match(incompatible, /60 minutes \(subscription authentication\)/)
     assert.match(incompatible, /last authoritative inference receipt: 2026/)
+    const unknown = marks[3]?.getAttribute('aria-label') ?? ''
+    assert.match(unknown, /next-turn cache compatibility: unknown/)
+    assert.doesNotMatch(unknown, /next-turn cache: uncertain|uncertain cache hit/i)
   } finally { await view.unmount() }
 })
 
-test('only known incompatibility warns at send time with policy-owned colour', async () => {
+test('Codex subscription tooltip names the fixed estimate without promising a hit', async () => {
+  const row = {
+    ...forecast('compatible_observed'),
+    ttl_seconds: 1800,
+    source: 'codex_subscription_fixed_estimate',
+    lane: 'subscription',
+  }
+  const view = await mountView(<CacheForecastMark forecast={row} />, (el) => el)
+  try {
+    const title = view.el.querySelector<HTMLElement>('.cache-forecast')
+      ?.getAttribute('aria-label') ?? ''
+    assert.match(title, /30 minutes \(Codex subscription estimate\)/)
+    assert.match(title, /provider hit not guaranteed/)
+  } finally { await view.unmount() }
+})
+
+test('only known-cold states warn at send time with policy-owned colour', async () => {
   const view = await mountView(<>
     <CacheForecastWarning forecast={forecast('compatible_observed')} />
     <CacheForecastWarning forecast={forecast('expired_known_entry')} />
     <CacheForecastWarning forecast={forecast('uncertain')} />
     <CacheForecastWarning forecast={forecast('known_incompatible', 'miss_expected')} />
+    <CacheForecastWarning forecast={forecast('expired_known_entry', 'miss_expected')} />
     <CacheForecastWarning forecast={forecast('known_incompatible', 'will_compact')} />
+    <CacheForecastWarning forecast={forecast('expired_known_entry', 'will_compact')} />
   </>, (el) => el)
   try {
     const warnings = [...view.el.querySelectorAll<HTMLElement>('.cache-send-warning')]
-    assert.equal(warnings.length, 2)
+    assert.equal(warnings.length, 4)
     assert.equal(warnings[0]?.classList.contains('miss'), true)
     assert.match(warnings[0]?.textContent ?? '', /Cache miss expected/)
-    assert.equal(warnings[1]?.classList.contains('compact'), true)
-    assert.match(warnings[1]?.textContent ?? '', /will cheap-compact/)
+    assert.equal(warnings[1]?.classList.contains('miss'), true)
+    assert.match(warnings[1]?.textContent ?? '', /Cache miss expected/)
+    assert.equal(warnings[2]?.classList.contains('compact'), true)
+    assert.match(warnings[2]?.textContent ?? '', /will cheap-compact/)
+    assert.equal(warnings[3]?.classList.contains('compact'), true)
+    assert.match(warnings[3]?.textContent ?? '', /will cheap-compact/)
   } finally { await view.unmount() }
 })
 

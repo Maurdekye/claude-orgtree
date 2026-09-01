@@ -4854,8 +4854,8 @@ def _cache_claude_namespace(org: Org, tier: str,
             "unobserved" if account == UNATTRIBUTED else "subscription")
 
 
-def _cache_codex_account_namespace() -> str:
-    """Private stable Codex account evidence, credential-free on disk.
+def _cache_codex_account_namespace() -> tuple[str, str]:
+    """Private stable Codex account evidence plus observable auth lane.
 
     The CLI has one selected account, but that selection can still be replaced
     by ``codex login``.  Hash the provider's own stable account id when it is
@@ -4868,29 +4868,29 @@ def _cache_codex_account_namespace() -> str:
         with open(os.path.join(home, "auth.json"), encoding="utf-8") as f:
             loaded: Any = json.load(f)
     except (OSError, json.JSONDecodeError):
-        return "unobserved"
+        return "unobserved", "unobserved"
     if not isinstance(loaded, dict):
-        return "unobserved"
+        return "unobserved", "unobserved"
     doc = cast("dict[str, Any]", loaded)
     key = doc.get("OPENAI_API_KEY")
     if isinstance(key, str) and key:
-        return "codex-api-key:" + cachecontinuity.digest(
-            {"credential": key}, 16)
+        return ("codex-api-key:" + cachecontinuity.digest(
+            {"credential": key}, 16), "api_key")
     tokens_row = doc.get("tokens")
     tokens_row = (cast("dict[str, Any]", tokens_row)
                   if isinstance(tokens_row, dict) else {})
     account_id = tokens_row.get("account_id")
     if isinstance(account_id, str) and account_id:
-        return "codex-chatgpt:" + cachecontinuity.digest(
-            {"account": account_id}, 16)
+        return ("codex-chatgpt:" + cachecontinuity.digest(
+            {"account": account_id}, 16), "subscription")
     # Older auth records may omit account_id while the display identity is
     # still locally observable in the id-token claims.
     status = providers._codex_account()  # pyright: ignore[reportPrivateUsage]
     email = status.get("email")
     if isinstance(email, str) and email:
-        return "codex-chatgpt:" + cachecontinuity.digest(
-            {"account": email}, 16)
-    return "codex-account-unobserved"
+        return ("codex-chatgpt:" + cachecontinuity.digest(
+            {"account": email}, 16), "subscription")
+    return "codex-account-unobserved", "unobserved"
 
 
 def _cache_gemini_account_namespace() -> str:
@@ -4953,8 +4953,9 @@ def _cache_snapshot(org: Org, nid: str, *, now: float | None = None,
         account = account or resolved_account
         lane = lane or resolved_lane
     elif provider == "openai":
-        account = account or _cache_codex_account_namespace()
-        lane = lane or "provider_unsupported"
+        resolved_account, resolved_lane = _cache_codex_account_namespace()
+        account = account or resolved_account
+        lane = lane or resolved_lane
     else:
         account = account or _cache_gemini_account_namespace()
         lane = lane or "provider_unsupported"
@@ -5062,9 +5063,10 @@ def _auto_cheap_cfg(org: Org, nid: str) -> dict[str, float] | None:
     """Resolved cache-protective compaction setting for this node.
 
     The sole numeric operator value is the minimum measured context fraction.
-    Expiry is never configured here: it is derived from an authoritative
-    positive receipt (60m Claude subscription / 5m Claude API key). Legacy
-    ``idle_s`` fields are ignored and removed by the ledger load migration.
+    Expiry is never configured here: it follows a positive receipt and the
+    fixed lane boundary (60m Claude subscription / 5m Claude API key / the
+    documented 30m Codex subscription estimate). Legacy ``idle_s`` fields are
+    ignored and removed by the ledger load migration.
     """
     base = cast("dict[str, Any]", org.d.get("auto_cheap_compact") or {})
     ov = cast("dict[str, Any]",
@@ -5137,18 +5139,39 @@ def _auto_cheap_context_ready(n: NodeDoc | dict[str, Any],
 
 def _cache_precompact_decision(org: Org, nid: str,
                                forecast: dict[str, Any]) -> tuple[str, str]:
-    """One policy answer shared by admission, tree payload and composer UI."""
+    """One policy answer shared by admission, tree payload and composer UI.
+
+    Banner policy is deliberately stricter than badge policy. The badge always
+    reports the forecast. A disabled compactor earns a red warning only above
+    25% measured context (strict: equality is suppressed). An enabled compactor
+    earns yellow only when the destructive gate itself is ready at its
+    configured inclusive threshold. Thus enabled can never produce red.
+    """
     state_name = str(forecast.get("state") or "uncertain")
     if state_name not in ("known_incompatible", "expired_known_entry"):
         return "not_applicable", "No proven cold entry requires compaction."
     cfg = _auto_cheap_cfg(org, nid)
     if cfg is None:
-        return "miss_expected", "Automatic cache-protective compaction is off."
+        n = org.node(nid)
+        occ, cw = n.get("occupancy"), context_window(n)
+        try:
+            ratio = float(occ or 0) / float(cw or 0)
+        except (TypeError, ValueError, ZeroDivisionError, OverflowError):
+            ratio = 0.0
+        if n.get("occupancy_est") or ratio <= 0.25:
+            return ("not_applicable",
+                    "Automatic compaction is off, but measured context is not "
+                    "above the 25% warning floor.")
+        return ("miss_expected",
+                f"Automatic compaction is off and measured context {ratio:.0%} "
+                "is above the 25% warning floor.")
     if org.d.get("spend_frozen") or org.d.get("storage_blocked"):
-        return "miss_expected", "The organization is frozen or storage-blocked."
+        return ("not_applicable",
+                "The organization is frozen or storage-blocked; no send-time "
+                "compaction is promised.")
     ready, why = _auto_cheap_context_ready(org.node(nid), cfg)
     if not ready:
-        return "miss_expected", why
+        return "not_applicable", why
     return "will_compact", why
 
 
@@ -5327,11 +5350,18 @@ def cache_forecast_public(org: Org, nid: str,
         if (internal.get("state") != "known_incompatible"
                 and expiry is not None and receipt is not None
                 and now >= expiry):
+            codex_estimate = (old.get("source") ==
+                              "codex_subscription_fixed_estimate")
             internal.update({
                 "state": "expired_known_entry",
-                "source": "authoritative_receipt",
-                "reason": (f"The observed {int(old.get('ttl_seconds') or 0) // 60}"
-                           "-minute cache entry has expired."),
+                "source": ("codex_subscription_fixed_estimate" if codex_estimate
+                           else "authoritative_receipt"),
+                "reason": (
+                    "The fixed 30-minute Codex subscription cache estimate "
+                    "has elapsed; a provider miss is expected, not guaranteed."
+                    if codex_estimate else
+                    f"The observed {int(old.get('ttl_seconds') or 0) // 60}"
+                    "-minute cache entry has expired."),
             })
     action, action_reason = _cache_precompact_decision(org, nid, internal)
     candidate = cachecontinuity.public(
@@ -5355,7 +5385,7 @@ def _auto_cheap_ready(n: NodeDoc | dict[str, Any],
 
     No turn timestamp, UI-idle clock or operator timeout is read here. Time can
     enter solely through ``expired_known_entry``, which the classifier derives
-    from a positive same-lane provider receipt and its authoritative TTL.
+    from a positive same-lane provider receipt and its fixed lane boundary.
     """
     if not isinstance(forecast, dict) or forecast.get("state") not in (
             "known_incompatible", "expired_known_entry"):

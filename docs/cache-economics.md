@@ -9,8 +9,9 @@ behavior is normative in `cache-continuity.md` and D-214.)*
 An expensive-model agent with heavy context left past its cache TTL can pay
 close to full input price when it wakes. The TTL is lane-specific: Orgtree now
 derives 60 minutes for a positive Claude subscription receipt and 5 minutes
-for a positive Claude API-key receipt. Unknown/unsupported lanes do not inherit
-either number.
+for a positive Claude API-key receipt. A Codex subscription receipt uses the
+fixed 30-minute estimate documented in `cache-continuity.md`; Codex API-key,
+Gemini and otherwise unknown lanes do not inherit another provider's number.
 
 ## The arithmetic that sorts the ideas
 

@@ -2165,10 +2165,12 @@ function SettingsPanel({ tree, toast, close }: {
             <div className="field-label">cache-protective cheap compaction
               (before a known-cold, high-context turn, reset the session; the
               old self stays consultable)</div>
-            <div className="dim hub-hint">Cache expiry is derived, never
-              editable: 60 min after a positive subscription receipt or 5 min
-              after a positive API-key receipt. A known identity mismatch is
-              cold immediately; uncertain forecasts never auto-compact.</div>
+            <div className="dim hub-hint">Cache expiry is fixed by lane, never
+              editable: Claude uses 60 min after a positive subscription
+              receipt or 5 min after a positive API-key receipt; OpenAI
+              subscription uses the documented 30 min default as a fixed
+              estimate. A known identity mismatch is cold immediately;
+              unknown forecasts never auto-compact.</div>
             <label className="checkline">
               <input type="checkbox" checked={accOn}
                 onChange={(e) => setAccOn(e.target.checked)} />

@@ -89,8 +89,8 @@ check("doctrine is explicit, stable, provider-aware and not telemetry", lambda: 
     eq(C.CACHE_CONTINUITY_BLOCK.count("[END CACHE CONTINUITY]"), 1),
     None if "local process restart" in C.CACHE_CONTINUITY_BLOCK else
     (_ for _ in ()).throw(AssertionError("missing restart distinction")),
-    None if "60 minutes" in C.CACHE_CONTINUITY_BLOCK and "5 minutes" in
-    C.CACHE_CONTINUITY_BLOCK else
+    None if all(value in C.CACHE_CONTINUITY_BLOCK for value in
+                ("60 minutes", "5 minutes", "30-minute estimate")) else
     (_ for _ in ()).throw(AssertionError("missing derived TTLs")),
     None if "provider-specific session/context continuity" in
     C.CACHE_CONTINUITY_BLOCK else
@@ -143,19 +143,87 @@ check("future receipt is clock-skew uncertainty",
                  "clock_skew"))
 
 
-def unsupported_ttl() -> None:
+def codex_subscription_ttl() -> None:
     cur = snapshot(provider="openai", account="codex-account",
-                   lane="provider_unsupported", model="gpt-5.6")
-    prior = book(receipt_at=NOW - 99999)
+                   lane="subscription", model="gpt-5.6-sol")
+    prior = book(receipt_at=NOW - 1799)
     for key in ("last_turn", "receipt"):
         prior[key].update({"provider": "openai", "account": "codex-account",
-                           "lane": "provider_unsupported", "model": "gpt-5.6"})
+                           "lane": "subscription", "model": "gpt-5.6-sol"})
     row = C.classify(cur, prior, NOW)
-    eq(row["state"], "uncertain")
-    eq(row["source"], "ttl_unobserved")
+    eq(row["state"], "compatible_observed")
+    eq(row["source"], "codex_subscription_fixed_estimate")
+    assert "not guaranteed" in row["reason"]
+    prior["receipt"]["observed_at"] = C.iso(NOW - 1800)
+    row = C.classify(cur, prior, NOW)
+    eq(row["state"], "expired_known_entry")
+    eq(row["source"], "codex_subscription_fixed_estimate")
+    eq(row["confidence"], "estimated")
+    assert "expected, not guaranteed" in row["reason"]
 
 
-check("unsupported provider TTL never invents expiry", unsupported_ttl)
+def unsupported_ttl() -> None:
+    for provider, lane in (("openai", "api_key"),
+                           ("google", "provider_unsupported")):
+        cur = snapshot(provider=provider, account="account", lane=lane,
+                       model="provider-model")
+        prior = book(receipt_at=NOW - 99999)
+        for key in ("last_turn", "receipt"):
+            prior[key].update({"provider": provider, "account": "account",
+                               "lane": lane, "model": "provider-model"})
+        row = C.classify(cur, prior, NOW)
+        eq(row["state"], "uncertain")
+        eq(row["source"], "ttl_unobserved")
+
+
+check("Codex subscription uses fixed 30-minute documented estimate",
+      codex_subscription_ttl)
+check("Codex API-key and Gemini TTLs remain unknown", unsupported_ttl)
+
+
+def warning_boundaries() -> None:
+    org = store.create_org("zz-cache-warning-boundaries")
+    org.hire(USER, None, "haiku", 4, "agent")
+    n = org.node("agent")
+    n.update({"state": "live", "occupancy": 50_000,
+              "context_window": 200_000, "occupancy_est": False,
+              "session_unrun": False, "compacted_unrun": False,
+              "cheap_compacted": False})
+    incompatible = {"state": "known_incompatible"}
+    expired = {"state": "expired_known_entry"}
+
+    # Disabled: the user chose strictly ABOVE 25%, so equality is quiet.
+    org.d["auto_cheap_compact"] = {"enabled": False, "occ": 0.6}
+    eq(S._cache_precompact_decision(org, "agent", incompatible)[0],
+       "not_applicable")
+    n["occupancy"] = 50_001
+    eq(S._cache_precompact_decision(org, "agent", incompatible)[0],
+       "miss_expected")
+    eq(S._cache_precompact_decision(org, "agent", expired)[0],
+       "miss_expected")
+
+    # Enabled: its configured threshold is inclusive, and never produces red.
+    org.d["auto_cheap_compact"] = {"enabled": True, "occ": 0.6}
+    n["occupancy"] = 119_999
+    eq(S._cache_precompact_decision(org, "agent", incompatible)[0],
+       "not_applicable")
+    n["occupancy"] = 120_000
+    eq(S._cache_precompact_decision(org, "agent", incompatible)[0],
+       "will_compact")
+    eq(S._cache_precompact_decision(org, "agent", expired)[0],
+       "will_compact")
+    n["occupancy"] = 199_000
+    assert all(S._cache_precompact_decision(org, "agent", state)[0]
+               != "miss_expected" for state in (incompatible, expired))
+
+    for state in ({"state": "uncertain"},
+                  {"state": "compatible_observed"}):
+        eq(S._cache_precompact_decision(org, "agent", state)[0],
+           "not_applicable")
+
+
+check("banner boundaries: off >25% red; on >=threshold yellow; never enabled-red",
+      warning_boundaries)
 
 
 def every_changed_input() -> None:
@@ -299,12 +367,18 @@ def other_provider_account_evidence() -> None:
         auth_path = os.path.join(codex_home, "auth.json")
         with open(auth_path, "w", encoding="utf-8") as f:
             json.dump({"tokens": {"account_id": "account-a"}}, f)
-        codex_a = S._cache_codex_account_namespace()
+        codex_a, lane_a = S._cache_codex_account_namespace()
         with open(auth_path, "w", encoding="utf-8") as f:
             json.dump({"tokens": {"account_id": "account-b"}}, f)
-        codex_b = S._cache_codex_account_namespace()
+        codex_b, lane_b = S._cache_codex_account_namespace()
         assert codex_a != codex_b
         assert "account-a" not in codex_a and "account-b" not in codex_b
+        eq((lane_a, lane_b), ("subscription", "subscription"))
+        with open(auth_path, "w", encoding="utf-8") as f:
+            json.dump({"OPENAI_API_KEY": "secret-key"}, f)
+        codex_key, key_lane = S._cache_codex_account_namespace()
+        eq(key_lane, "api_key")
+        assert "secret-key" not in codex_key
 
         with open(os.path.join(gemini_home, "settings.json"), "w",
                   encoding="utf-8") as f:

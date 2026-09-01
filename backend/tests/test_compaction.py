@@ -1516,7 +1516,8 @@ def occupancy_reporting() -> None:
     # ---- The editable idle timeout was replaced by receipt-derived expiry.
     # Only the occupancy threshold remains configurable. Generic elapsed time
     # cannot enter the trigger; Claude subscription/API-key lanes derive 60m
-    # and 5m respectively from a positive receipt.
+    # and 5m from a positive receipt, while Codex subscription uses the fixed
+    # documented 30m estimate selected by the user.
     s18 = Sess()
     s18.turn(20_000)
     org = store.load_org(s18.slug)
@@ -1528,11 +1529,15 @@ def occupancy_reporting() -> None:
     check("cache-policy · legacy idle_s is removed while occupancy survives",
           lambda: _eq((migrated.d["auto_cheap_compact"], cfg18),
                       ({"enabled": True, "occ": 0.6}, {"occ": 0.6})))
-    check("cache-policy · subscription/API-key TTLs are fixed at 60m/5m",
+    check("cache-policy · Claude 60m/5m and Codex subscription 30m are fixed",
           lambda: _eq((supervisor.cachecontinuity.ttl_seconds(
                            "claude", "subscription"),
-                       supervisor.cachecontinuity.ttl_seconds(
-                           "claude", "api_key")), (3600, 300)))
+                        supervisor.cachecontinuity.ttl_seconds(
+                           "claude", "api_key"),
+                        supervisor.cachecontinuity.ttl_seconds(
+                           "openai", "subscription"),
+                        supervisor.cachecontinuity.ttl_seconds(
+                           "openai", "api_key")), (3600, 300, 1800, None)))
     check("cache-policy · elapsed time alone can never open the trigger",
           lambda: _eq(supervisor._auto_cheap_ready(
               {"occupancy": 60_000, "context_window": 200_000,
