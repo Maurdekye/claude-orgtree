@@ -7576,3 +7576,63 @@ created at a chain level after render stays writable until the next render
 re-enumerates it, and a new chain-level entry (a sibling hire, a data-root
 log) moves the deny list and therefore the warm identity hash — a rare
 respawn, in exchange for the agent keeping its own desk.
+
+### D-218 · settings ride argv for identity, and a file for the OS
+
+Ruling (fix-orgtree-org, 2026-09-01, executing the user's "fix it" on
+backup-coordinator's measured diagnosis): `_build_cmd` keeps emitting the
+canonical inline `--settings` JSON, and every real spawn routes through
+`supervisor.spawn_argv`, which parks that JSON in a per-node scratch dotfile
+(`.orgtree-settings.json`, keepalives `.orgtree-settings-keepalive.json`) and
+hands the OS the path instead. A guard warns at 30k chars and refuses in
+writing just under Windows' cap. `warmpool._spawn_for` now also journals a
+`prewarm-failed` row when the OS refuses the spawn itself.
+
+Why: argv is a D-201 identity input — hashing the settings BYTES is what lets
+a deny-rule move (D-217) invalidate a parked process — but Windows
+CreateProcess caps the whole command line at 32,767 chars, and the D-217
+carve is unbounded: a broad ro ancestor rendered ~690 deny rules and a
+54,056-char line, and every spawn on the machine (pre-warm, cold turn,
+keepalive) died `[WinError 206]` before provider contact. Hires never
+started; provider switches never proceeded; warm.jsonl showed nothing because
+a spawn the OS refuses never reached a journal writer. The cap binds at the
+exec boundary, so the transform lives at the exec boundary: identity code
+upstream never sees the file, the OS never sees the JSON, and the CLI reads
+the same bytes through its documented other door (`--settings
+<file-or-json>`, verified on the pinned 2.1.220).
+
+Bounds: sandboxed spawns pass through untouched (grants collapse to the one
+mounted workspace, so the render is bounded, and their argv carries container
+paths a host-side rewrite could not serve). The two constant
+`{"disableAllHooks":true}` consult forks stay inline — bounded by
+construction. The parked file is rewritten before every spawn, so tampering
+or deletion self-heals exactly like `.orgtree-identity.md`.
+
+Load-bearing: the CLI's file-or-json contract for `--settings`; every real
+spawn site routing through `spawn_argv` (turn cold spawn, claim-died respawn,
+warm-pool spawn, working-cache keepalive); tests reading settings through
+either door.
+
+### D-219 · 'plan' birth-stamps are healed once, not floored forever
+
+Ruling (fix-orgtree-org, 2026-09-01): a one-shot, marker-keyed heal
+(`Org.heal_plan_stamps`, run at startup for every org doc) rewrites
+`scope.permission_mode == "plan"` to `"acceptEdits"` across nodes and the
+org default, records what it touched in `_migrations` and the event log, and
+never runs again — a 'plan' set deliberately AFTER the heal is preserved.
+
+Why: load normalization seeds a scope's MISSING `permission_mode` from the
+org default, and `_new_node` stamps the default into every hire — so a
+period when this org's default sat at 'plan' left 'plan' written into 78 of
+106 archived nodes, most of which predate plan mode itself (FR-13,
+2026-08-12). A headless turn cannot leave plan mode (ExitPlanMode is
+disallowed at spawn; file, shell and MCP tools deny), so every bare rehire of
+a stamped expert came back mute — read from the outside as "permissions are
+all wrong; newly hired agents don't start". The damage is data, not
+semantics: FR-13 stands, `PM_LEVELS` keeps 'plan', and a spawn-time floor
+would have silently overridden a sanctioned mode forever instead of healing a
+stamp once.
+
+Bounds: kiosk ceilings are untouched — a ceiling is deliberate lockdown
+config, not birth-stamp residue. The heal does not touch `default_*` hire
+defaults beyond the org `permission_mode` itself.
