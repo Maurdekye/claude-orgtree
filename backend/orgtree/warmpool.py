@@ -1670,6 +1670,7 @@ def _spawn_for(org: Any, nid: str, why: str) -> WarmProcess | None:
     from . import providers                         # noqa: PLC0415
     slug = org.d["slug"]
     t0 = time.time()
+    ih = ""
     try:
         model = str(org.node(nid).get("model") or "")
         if model in providers.CODEX_TIERS:
@@ -1728,8 +1729,12 @@ def _spawn_for(org: Any, nid: str, why: str) -> WarmProcess | None:
         env["PYTHONPATH"] = (sup.BACKEND_DIR + os.pathsep
                              + env.get("PYTHONPATH", ""))
         _journal_proc("respawn-start", slug, nid, why, ih)
+        # D-218: identity hashed the INLINE argv above; the OS gets the
+        # settings parked in a file, or Windows' 32,767-char CreateProcess
+        # cap kills every pre-warm of a broad-ro-grant node ([WinError 206])
         proc = _POPEN(
-            cmd, cwd=sup.scratch_dir(slug, nid), env=env,
+            sup.spawn_argv(org, nid, cmd),
+            cwd=sup.scratch_dir(slug, nid), env=env,
             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.PIPE, text=True, encoding="utf-8",
             errors="replace")
@@ -1766,6 +1771,19 @@ def _spawn_for(org: Any, nid: str, why: str) -> WarmProcess | None:
         print(f"[orgtree] warmpool: pre-warm of {slug}/{nid} failed "
               f"({type(e).__name__}: {e}) — the agent falls back to "
               f"spawn-per-turn and notices nothing")
+        # …and JOURNAL it (D-218): the print alone proved invisible in
+        # practice — 2026-09-01's [WinError 206] spawn deaths repeated for
+        # hours while warm.jsonl showed ZERO prewarm-failed rows, because a
+        # spawn the OS refuses (no PID, no process) never reached any journal
+        # writer. The flight recorder must see the failures it exists for.
+        try:
+            sid = str(org.node(nid).get("session_id") or "") or None
+        except Exception:                           # noqa: BLE001
+            sid = None
+        _journal_proc("prewarm-failed", slug, nid,
+                      f"spawn: {type(e).__name__}: {e}"[:300], ih,
+                      elapsed_ms=int((time.time() - t0) * 1000),
+                      session_id=sid)
         return None
 
 

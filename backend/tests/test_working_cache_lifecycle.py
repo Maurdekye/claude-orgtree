@@ -58,6 +58,17 @@ def stamp(seconds_ago: float) -> str:
             ).isoformat().replace("+00:00", "Z")
 
 
+def settings_of(cmd):
+    """The spawned CLI's settings through either door of the real contract
+    (`--settings <file-or-json>`): inline JSON, or the D-218 scratch file the
+    keepalive parks it in."""
+    val = cmd[cmd.index("--settings") + 1]
+    if val.lstrip().startswith("{"):
+        return json.loads(val)
+    with open(val, encoding="utf-8") as f:
+        return json.load(f)
+
+
 def fixture(name: str = "zz-working-cache"):
     org = store.create_org(name)
     org.hire(USER, None, "haiku", 0, "agent")
@@ -252,8 +263,7 @@ def tool_use_is_locally_denied_without_hiding_tools():
             seen["cmd"] = cmd
 
         def communicate(self, input=None, timeout=None):
-            settings = json.loads(
-                seen["cmd"][seen["cmd"].index("--settings") + 1])
+            settings = settings_of(seen["cmd"])
             hook = settings.get("hooks", {}).get("PreToolUse", [])
             decision = cachedeny.decision() if hook else {}
             denied = (decision.get("hookSpecificOutput", {})
@@ -290,7 +300,7 @@ def tool_use_is_locally_denied_without_hiding_tools():
          S.subprocess.Popen, S._leash, S.scratch_dir) = saved
 
     cmd = seen["cmd"]
-    settings = json.loads(cmd[cmd.index("--settings") + 1])
+    settings = settings_of(cmd)
     assert not seen["executed"], "fake Bash/edit/MCP tools escaped local deny"
     assert settings["hooks"]["PostToolUse"] == \
         original_settings["hooks"]["PostToolUse"]

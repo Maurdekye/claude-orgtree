@@ -4752,6 +4752,89 @@ def _build_cmd(org: Org, nid: str, write_ident: bool = True) -> list[str]:
     return cmd
 
 
+# D-218: Windows CreateProcess refuses command lines over 32,767 chars with
+# [WinError 206] — a "filename" error that names neither the flag nor the
+# culprit. Warn with headroom; refuse in writing just under the OS wall.
+_ARGV_WARN_CHARS: Final = 30_000
+_ARGV_HARD_CAP_CHARS: Final = 32_500
+
+
+def spawn_argv(org: Org, nid: str, cmd: list[str],
+               purpose: str = "turn") -> list[str]:
+    """The argv actually handed to the OS: `_build_cmd`'s inline `--settings`
+    JSON is parked in a scratch dotfile and the path rides in its place.
+
+    `_build_cmd` deliberately keeps the JSON inline — argv is a D-201
+    identity input, and hashing the settings BYTES is what lets a deny-rule
+    move (D-217) invalidate a parked process. But the D-217 carve is
+    unbounded: a broad ro ancestor rendered ~690 deny rules and a 54,056-char
+    command line, and every spawn on the machine — pre-warm, cold turn,
+    keepalive — died [WinError 206] before provider contact (live-hit
+    2026-09-01: hires never started, provider switches never proceeded). The
+    cap binds at the exec boundary, so the transform lives at the exec
+    boundary: identity code upstream keeps hashing the inline form, the OS
+    sees a short constant path, and the CLI reads the same bytes through its
+    other door (`--settings <file-or-json>`, verified on the pinned 2.1.220).
+
+    The file is rewritten before EVERY spawn (tampering/deletion self-heals —
+    same doctrine as .orgtree-identity.md; edits between spawns are inert
+    because the CLI reads it once at startup). `purpose` keeps concurrent
+    spawn shapes apart: the working-cache keepalive forks with DIFFERENT
+    settings than a real turn, so it writes its own file instead of racing
+    the turn's. A turn and a pre-warm still share the "turn" file, but both
+    render from the same org doc — divergence needs a scope edit inside the
+    sub-second spawn window, and the keeper's next identity pass respawns the
+    parked process then anyway.
+
+    Sandboxed spawns pass through untouched: their grants collapse to the one
+    mounted workspace (no unbounded deny render), and their argv carries
+    container paths a host-side file rewrite could not serve.
+    """
+    if sbx.is_sandboxed(org):
+        return cmd
+    try:
+        i = cmd.index("--settings")
+    except ValueError:
+        return cmd
+    if i + 1 >= len(cmd) or not cmd[i + 1].lstrip().startswith("{"):
+        return cmd                     # already a path — nothing to park
+    scratch = scratch_dir(org.d["slug"], nid)
+    os.makedirs(scratch, exist_ok=True)
+    fname = (".orgtree-settings.json" if purpose == "turn"
+             else f".orgtree-settings-{purpose}.json")
+    path = os.path.join(scratch, fname)
+    tmp = f"{path}.tmp-{os.getpid()}-{threading.get_ident()}"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(cmd[i + 1])
+    os.replace(tmp, path)              # atomic on one volume; last writer wins
+    out = list(cmd)
+    out[i + 1] = path
+    _argv_length_guard(out, org.d["slug"], nid)
+    return out
+
+
+def _argv_length_guard(cmd: list[str], slug: str, nid: str) -> None:
+    """Fail in writing what Windows would fail in riddles. With settings
+    parked in a file the 32,767-char cap should be unreachable; if a future
+    rider grows past it anyway, raise a named error here so the turn books a
+    readable failure instead of [WinError 206], and warn one step early so
+    the log shows the trend before the wall."""
+    if os.name != "nt":
+        return
+    total = len(subprocess.list2cmdline(cmd))
+    if total <= _ARGV_WARN_CHARS:
+        return
+    biggest = max(cmd, key=len)
+    culprit = f"largest element {len(biggest)} chars: {biggest[:120]}…"
+    if total > _ARGV_HARD_CAP_CHARS:
+        raise RuntimeError(
+            f"turn failed: the spawn command line for {slug}/{nid} is "
+            f"{total:,} chars — over Windows' 32,767-char CreateProcess cap "
+            f"even with settings parked in a file. {culprit}")
+    print(f"[orgtree] spawn argv for {slug}/{nid} is {total:,} chars — "
+          f"nearing Windows' 32,767-char cap; {culprit}")
+
+
 def _foreign_session_provider(n: NodeDoc) -> str | None:
     """The provider ID that OWNS this node's current session, when that is not
     the claude lane — otherwise None (D-197). Same vocabulary as
@@ -5817,7 +5900,11 @@ def _working_cache_read(slug: str, nid: str,
                 on_fallback = api_fallback_active(org)
                 billed_key = bills_the_key(org, on_fallback)
                 env = spawn_env(org, tier=tier, nid=nid)
-                cmd = _working_cache_cmd(org, nid)
+                # D-218: the keepalive rides the same unbounded deny render
+                # as a real turn, so it parks settings the same way — into
+                # its OWN file, so a racing real spawn never reads its hooks
+                cmd = spawn_argv(org, nid, _working_cache_cmd(org, nid),
+                                 purpose="keepalive")
                 try:
                     cache_attempt = _cache_persistable(
                         _cache_snapshot(org, nid, env=env))
@@ -7998,7 +8085,8 @@ def _run_one_turn(slug: str, nid: str,
                     slot_wait_s=slot_wait_s)
             else:
                 proc = subprocess.Popen(
-                    _build_cmd(org, nid), cwd=scratch_dir(slug, nid), env=env,
+                    spawn_argv(org, nid, _build_cmd(org, nid)),
+                    cwd=scratch_dir(slug, nid), env=env,
                     stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                     text=True, encoding="utf-8", errors="replace")
                 _leash(proc)              # dies with the backend (№29)
@@ -8238,7 +8326,8 @@ def _run_one_turn(slug: str, nid: str,
                     wp_turn = None
                     warm_cost_base, warm_out_base = 0.0, 0
                     proc = subprocess.Popen(
-                        _build_cmd(org, nid), cwd=scratch_dir(slug, nid),
+                        spawn_argv(org, nid, _build_cmd(org, nid)),
+                        cwd=scratch_dir(slug, nid),
                         env=env, stdin=subprocess.PIPE,
                         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                         text=True, encoding="utf-8", errors="replace")

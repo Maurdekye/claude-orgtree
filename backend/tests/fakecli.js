@@ -149,7 +149,11 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, Math.max(0, ms | 0)))
 // the steer path is which carrier is holding the message at each instant.
 let steerCmd = null
 try {
-  const s = JSON.parse(arg('--settings') || '{}')
+  // the real CLI's contract is `--settings <file-or-json>`; orgtree parks the
+  // JSON in a scratch dotfile since D-218, so honor both doors like it does
+  const rawSettings = (arg('--settings') || '{}').trim()
+  const s = JSON.parse(rawSettings.startsWith('{')
+    ? rawSettings : fs.readFileSync(rawSettings, 'utf8'))
   const h = ((s.hooks || {}).PostToolUse || [])[0]
   steerCmd = h && h.hooks && h.hooks[0] && h.hooks[0].command
 } catch (e) { steerCmd = null }
