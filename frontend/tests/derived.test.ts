@@ -319,11 +319,11 @@ test('⑫  the canvas turn-end stamp reads TurnStat, never NodeStatus',
     const desk = code('canvas/desk.tsx')
     assert.ok(desk.includes('if (!turn || busy) return null'),
       'the shared turn-age badge lost its busy/never-ran gate')
-    assert.ok(desk.includes('<HeaderTurnSeat active={turnActive} turn={lastTurn}'),
+    assert.ok(desk.includes('<TurnStatusBanner state={turnBannerState} turn={lastTurn}'),
       'the focused desk stopped feeding the authoritative turn age into its '
-      + 'shared age/activity seat')
-    assert.ok(desk.includes(': <LastTurnAge turn={turn} />'),
-      'the idle half of the shared seat stopped rendering LastTurnAge')
+      + 'persistent status banner')
+    assert.ok(!desk.includes('<LastTurnAge turn={lastTurn}'),
+      'the focused desk reintroduced a separate last-turn age chip')
     assert.ok(!/last_status\S*\.at/.test(code('canvas/cards.tsx')),
       'cards.tsx reads last_status.at — the glanceable stamp must come from '
       + 'TurnStat (see FR-23: NodeStatus.at depends on the agent having '

@@ -25,15 +25,19 @@ HTML = """
 <div class="desk-body" id="desk">
   <div class="cc-head" id="head">
     <div class="cc-head-top">
-      <span class="tier">F</span>
-      <span class="cc-name">an-agent-name-long-enough-to-wrap-at-enlarged-browser-text</span>
-      <span class="cc-turn-seat"><span class="cc-working">↻ working · 31m · 8 tasks</span></span>
-      <span class="cc-context-seat"><span class="ctxwheel">◔</span></span>
-      <span class="cc-process-seat"><span class="proc-state relaunch"><span class="proc-one-mark"></span>↻</span></span>
+      <span class="cc-head-left">
+        <span class="tier">F</span>
+        <span class="cc-name" title="an-agent-name-long-enough-to-wrap-at-enlarged-browser-text">an-agent-name-long-enough-to-wrap-at-enlarged-browser-text</span>
+        <span class="cc-context-seat"><span class="ctxwheel">◔</span></span>
+        <span class="cc-process-seat"><span class="proc-state relaunch"><span class="proc-one-mark"></span>↻</span></span>
+        <span class="turn-status-banner working"><span class="cc-spin">↻</span><span>Working</span><span class="turn-status-time">31m</span></span>
+      </span>
       <span class="spacer"></span>
-      <span class="cc-actions"><button class="danger">dissolve · 30</button></span>
-      <span class="cc-tabs"><button>chat</button><button>history</button><button>files</button><button>inbox 12</button></span>
-      <button class="cc-icon" aria-label="settings">⚙</button>
+      <span class="cc-head-right">
+        <span class="cc-actions"><button class="danger">dissolve · 30</button></span>
+        <span class="cc-tabs"><button>chat</button><button>history</button><button>files</button><button>inbox 12</button></span>
+        <button class="cc-icon" aria-label="settings">⚙</button>
+      </span>
     </div>
     <div class="cc-head-meta">
       <span class="mcp-tool-count changed">MCP 127</span>
@@ -46,6 +50,7 @@ HTML = """
       <span class="badge">fallback 4 · safe-public-label</span>
     </div>
   </div>
+  <div class="desk-nav" id="superior"><button class="desk-nav-chip">↑ superior</button></div>
   <div id="transcript" style="min-height:120px;border:1px solid transparent">conversation</div>
   <div class="cache-send-warning miss">⚠ Cache miss expected — this session is incompatible and automatic cheap compaction will not run.</div>
   <div class="cc-composer"><textarea>message</textarea><button class="cc-send">↑</button></div>
@@ -59,6 +64,9 @@ def failures(page, width: int, enlarged: bool) -> list[str]:
       const desk = document.querySelector('#desk');
       const top = document.querySelector('.cc-head-top');
       const meta = document.querySelector('.cc-head-meta');
+      const left = document.querySelector('.cc-head-left');
+      const right = document.querySelector('.cc-head-right');
+      const superior = document.querySelector('#superior');
       const transcript = document.querySelector('#transcript');
       const hr = head.getBoundingClientRect();
       const dr = desk.getBoundingClientRect();
@@ -69,9 +77,14 @@ def failures(page, width: int, enlarged: bool) -> list[str]:
       if (hr.bottom > tr.top + .5) bad.push('header overlays transcript');
       if (meta.getBoundingClientRect().top < top.getBoundingClientRect().bottom - .5)
         bad.push('metadata overlaps bounded row');
+      if (superior.getBoundingClientRect().top < meta.getBoundingClientRect().bottom - .5)
+        bad.push('superior strip overlaps metadata row');
       for (const el of head.querySelectorAll('button,.badge,.mcp-tool-count,.cache-forecast,.proc-state')) {
         const r = el.getBoundingClientRect();
-        if (r.left < dr.left - .5 || r.right > dr.right + .5)
+        const scrollParent = el.closest('.cc-head-right');
+        const safelyScrollable = scrollParent
+          && getComputedStyle(scrollParent).overflowX === 'auto';
+        if (!safelyScrollable && (r.left < dr.left - .5 || r.right > dr.right + .5))
           bad.push(`${el.className || el.textContent}: offscreen`);
       }
       for (const el of top.querySelectorAll('button')) {
@@ -83,12 +96,50 @@ def failures(page, width: int, enlarged: bool) -> list[str]:
         if (r.width < 27.5 || r.height < 23.5)
           bad.push(`${sel}: unstable static slot`);
       }
-      if (top.querySelector('.cc-turn-seat').getBoundingClientRect().width < 51.5)
-        bad.push('turn age/activity seat collapsed');
-      if (meta.querySelector('.ctxwheel,.proc-state,.cc-working'))
+      if (top.querySelector('.turn-status-banner').getBoundingClientRect().width < 71.5)
+        bad.push('status/age banner collapsed');
+      if (meta.querySelector('.ctxwheel,.proc-state,.turn-status-banner'))
         bad.push('static top-row item duplicated in metadata');
+      const cluster = left;
+      const expected = ['tier', 'cc-name', 'cc-context-seat', 'cc-process-seat',
+        'turn-status-banner'];
+      const actual = [...cluster.children].map((el) => el.classList[0]);
+      if (actual.join('|') !== expected.join('|')) bad.push('information order changed');
+      const topOrder = [...top.children].map((el) => el.classList[0]);
+      if (topOrder.join('|') !== 'cc-head-left|spacer|cc-head-right')
+        bad.push('top group/spacer order changed');
+      const rightOrder = [...right.children].map((el) => el.classList[0]);
+      if (rightOrder.join('|') !== 'cc-actions|cc-tabs|cc-icon')
+        bad.push('right action order changed');
+      const items = [...cluster.children];
+      for (let i = 1; i < items.length; i++) {
+        const before = items[i - 1].getBoundingClientRect();
+        const after = items[i].getBoundingClientRect();
+        if (Math.abs(before.top - after.top) < .5 && after.left - before.right > 2.5)
+          bad.push(`information gap ${after.left - before.right}px exceeds compact token`);
+      }
+      const leftRows = new Set([...left.children].map((el) => {
+        const r = el.getBoundingClientRect();
+        return Math.round((r.top + r.height / 2) * 2) / 2;
+      }));
+      if (leftRows.size !== 1) bad.push('left group wrapped internally');
+      const rightRows = new Set([...right.children].map((el) => {
+        const r = el.getBoundingClientRect();
+        return Math.round((r.top + r.height / 2) * 2) / 2;
+      }));
+      if (rightRows.size !== 1) bad.push('right group wrapped internally');
+      if (width === 951) {
+        const lr = left.getBoundingClientRect(), rr = right.getBoundingClientRect();
+        if (Math.abs((lr.top + lr.height / 2) - (rr.top + rr.height / 2)) > .5)
+          bad.push('951px groups did not stay on one line');
+        if (top.getBoundingClientRect().height > Math.max(lr.height, rr.height) + 1)
+          bad.push('951px top row gained a stranded second line');
+      }
+      if (Math.abs(right.getBoundingClientRect().right - top.getBoundingClientRect().right) > .5)
+        bad.push('right group is not right aligned');
       const name = document.querySelector('.cc-name');
-      if (name.scrollWidth > name.clientWidth + 1) bad.push('agent name clipped');
+      if (name.scrollWidth > name.clientWidth + 1 && !name.getAttribute('title'))
+        bad.push('clipped agent name has no accessible full label');
       return bad.map((v) => `${width}px${enlarged ? ' enlarged' : ''}: ${v}`);
     }""", {"width": width, "enlarged": enlarged})
 
@@ -107,7 +158,7 @@ def main() -> int:
             size = "20px" if enlarged else "13px"
             page.set_content(
                 f"<style>{css}\nbody{{margin:0}} #desk{{width:100%;font-size:{size}}}"
-                f"#desk button,#desk .cc-name,#desk .badge,#desk .cc-working{{font-size:inherit}}</style>{HTML}")
+                f"#desk button,#desk .cc-name,#desk .badge,#desk .turn-status-banner{{font-size:inherit}}</style>{HTML}")
             all_failures.extend(failures(page, width, enlarged))
             page.close()
         browser.close()

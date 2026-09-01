@@ -774,31 +774,58 @@ html.mobile .edge-jump { display: none; }
 /* -- chrome: bounded identity/actions/static live slots, then wrapping metadata --
    The old single flex row let the finite controls and unbounded audience/
    status text fight for the same width. Nothing in either row may shrink a
-   control below its usable size. Context, process and the mutually exclusive
-   age/activity seat are permanent top-row positions; metadata grows instead of
+   control below its usable size. Context, process and the persistent status/
+   age banner are permanent top-row positions; metadata grows instead of
    overlaying or stealing width from the transcript. */
 .cc-head {
   display: flex; flex-direction: column; align-items: stretch; gap: 4px;
-  min-width: 0; min-height: 20px; flex: none;
+  min-width: 0; min-height: 20px; flex: none; container-type: inline-size;
 }
 .cc-head-top {
-  display: flex; align-items: center; flex-wrap: wrap; gap: 4px 6px;
-  min-width: 0; width: 100%;
+  display: flex; align-items: center; flex-wrap: wrap; gap: 4px 0;
+  justify-content: flex-start; min-width: 0; width: 100%;
 }
-.cc-head-top > .tier,
-.cc-head-top > .cc-turn-seat,
-.cc-head-top > .cc-context-seat,
-.cc-head-top > .cc-process-seat,
-.cc-head-top > .cc-actions,
-.cc-head-top > .cc-tabs,
-.cc-head-top > .cc-icon { flex: none; }
-.cc-head-top > .spacer { display: none; }
-.cc-turn-seat {
-  display: inline-flex; align-items: center; min-width: 52px; min-height: 24px;
-  max-width: min(28ch, 100%); flex: none;
+.cc-head-left {
+  display: inline-flex; align-items: center; flex-wrap: nowrap; gap: 2px;
+  flex: 0 1 auto; min-width: 0; max-width: 100%;
 }
-.cc-turn-seat .cc-working {
-  min-width: 0; max-width: 100%; white-space: normal; overflow-wrap: anywhere;
+.cc-head-left > .tier,
+.cc-head-left > .cc-context-seat,
+.cc-head-left > .cc-process-seat,
+.cc-head-left > .turn-status-banner { flex: none; }
+.cc-head-left > .cc-name {
+  flex: 0 1 auto; min-width: 6ch; max-width: none;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.cc-head-top > .spacer {
+  display: block; flex: 1 1 12px; min-width: 12px;
+}
+.cc-head-right {
+  display: inline-flex; align-items: center; flex-wrap: nowrap; gap: 6px;
+  flex: none; margin-inline-start: auto;
+}
+@container (min-width: 600px) {
+  .cc-head-top { flex-wrap: nowrap; }
+}
+@container (max-width: 599px) {
+  .cc-head-left > .cc-name { min-width: 3ch; }
+  .cc-head-right {
+    max-width: 100%; overflow-x: auto; overflow-y: hidden;
+    scrollbar-width: thin;
+  }
+}
+.turn-status-banner {
+  display: inline-flex; align-items: center; gap: 3px;
+  min-width: 72px; min-height: 24px; padding: 0 6px; box-sizing: border-box;
+  border: 1px solid var(--line); border-radius: 5px; font-size: 11px;
+  line-height: 1; white-space: nowrap; color: var(--dim); background: var(--input);
+}
+.turn-status-banner.working { color: var(--accent); }
+.turn-status-banner.queued,
+.turn-status-banner.compacting { color: var(--warn, #e5c07b); }
+.turn-status-banner.idle { color: var(--dim); }
+.turn-status-banner .turn-status-time {
+  color: var(--dim); font-variant-numeric: tabular-nums;
 }
 .cc-context-seat, .cc-process-seat {
   display: inline-flex; align-items: center; justify-content: center;
@@ -885,10 +912,6 @@ button.cc-name:hover {
 .cc-spin.prov-claude { color: var(--prov-claude); }
 .cc-spin.prov-openai { color: var(--prov-openai); }
 .cc-spin.prov-google { color: var(--prov-google); }
-.cc-working {
-  color: var(--accent); font-size: 11px; display: inline-flex;
-  gap: 4px; align-items: center; flex: none;
-}
 /* -- composer: the Claude Code input box -- */
 /* send beside the input, no footer row (user ruling: reclaim vertical space) */
 .cache-send-warning {
