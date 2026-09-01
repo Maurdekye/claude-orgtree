@@ -7522,3 +7522,57 @@ that removes mail from a box without consulting the carriers pointing at it
 qualifies — and the contract above is what makes such an origin harmless rather
 than a new bug: the drop is keyed on the state at delivery, so it does not need
 to know how the box came to be empty.
+
+### D-216 · a Codex seat is warm when its app-server is actually ready, not merely spawned
+
+D-201's Claude rule stands untouched: the Claude lane adds no MCP-handshake
+barrier anywhere. The Codex lane is different in kind, and treating the two
+alike made "warm" a lie there: an app-server parked with `_initialized=False`
+had done no JSON-RPC `initialize`, launched-but-unverified MCP servers, and a
+first claim that paid the whole handshake **on the user's turn** — while the
+UI called the seat ready the moment the child existed.
+
+Full prewarm (user-authorized, 2026-09-01): after spawn, leash and owner
+registration, the PARKED client performs its bounded idempotent
+`initialize()` (`ORGTREE_WARM_CODEX_INIT_S`, default 45 s), plants the
+runtime MCP inventory from `mcpServerStatus/list`, and runs the same bounded
+readiness gate a turn would — asynchronously, off the keeper, with the
+process already claimable so a racing first claim keeps exact-PID reuse and
+finds `initialize` done or in flight behind the client's own once-per-process
+lock. Only then is the seat MARKED warm, as **ready** or **explicitly
+degraded** (inventory unanswerable, or the readiness gate timing out); the
+WS/UI lifecycle tells that story as initializing → ready/degraded instead of
+calling merely claimable "ready". Prewarm sends **no** `thread/start`, **no**
+`thread/resume`, **no** developer instructions and **no** `turn/start` — it
+is local process/MCP readiness only, and provider cache/session evidence is
+untouched.
+
+A mute or dying handshake is killed and reaped: `prewarm-failed`, classified
+`prewarm-abort` — the one addition to the closed death list, sanctioned here
+— plus an attribution row with the real elapsed time even when the EOF pump
+wins the reaping race. The seat keeps cold-fallback turns and keeper retry.
+The admit journal's `handshake_ms` stays dead: the handshake interval now
+exists, and it is journaled by the finisher's own rows against the process it
+actually timed.
+
+### D-217 · one's own scratch is never deniable
+
+A read-only folder grant naming an ANCESTOR of an agent's own working folder
+used to render blanket `Edit/Write/NotebookEdit` deny rules over the whole
+subtree — clamping the exact folder whose breadcrumbs.md/CLAUDE.md the
+charter requires through those tools, where a headless permission request
+dies with nobody present to approve it (live case 2026-09-01: the data root,
+granted ro so a fixer agent could read the deployment). The predecessor
+read-down carve-out had already stated the principle; this generalizes it to
+grants: **a permission onto one's own desk is not a permission at all**.
+
+The rule language has no negation, so an ancestor grant renders as its chain
+levels — immediate entries (`level/*`) plus every sibling subtree
+(`level/<entry>/**`) — leaving exactly the scratch chain undenied. Sorted
+enumeration keeps the D-201 identity hash deterministic; an unreadable
+ancestor keeps the blanket clamp rather than silently widening the grant; a
+grant OF the scratch itself denies nothing. Priced and accepted: a directory
+created at a chain level after render stays writable until the next render
+re-enumerates it, and a new chain-level entry (a sibling hire, a data-root
+log) moves the deny list and therefore the warm identity hash — a rare
+respawn, in exchange for the agent keeping its own desk.
