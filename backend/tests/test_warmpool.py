@@ -612,9 +612,9 @@ def e_closed_death_list_table():
             assert not rows_now, (
                 f"{label}: a surviving process must leave no exit rows, "
                 f"got {rows_now}")
-    # a CHILD seat: the same audience grant IS an identity change one level
-    # down (the CLAUDE.md-caveat paragraph flips to "you hold a USER
-    # AUDIENCE"), so the process must die there
+    # a CHILD seat: user-audience state is volatile authorization, rendered
+    # into the per-turn org-state envelope. It must update immediately without
+    # rewriting the startup prompt or killing the parked process.
     with store.DOC_LOCK:
         o = reload_org()
         o.hire(nid, nid, "haiku", 1, "childboy", add_dirs=[],
@@ -626,6 +626,11 @@ def e_closed_death_list_table():
     wait_for(lambda: W.is_warm(SLUG, "childboy"), why="warm the child seat")
     wp0 = pooled("childboy")
     n0 = len(exit_rows("childboy"))
+    before = reload_org()
+    prompt0 = S.identity_prompt(before, "childboy")
+    state0 = S.org_state_block(before, "childboy")
+    assert "you do not have direct contact with the user" in state0
+    assert "orgtree_self_restart" not in state0
     with store.DOC_LOCK:
         o = reload_org()
         o.d["audiences"].append({"grantee": "childboy", "grantor": USER,
@@ -634,12 +639,31 @@ def e_closed_death_list_table():
         store.save_org(o)
     W.keeper_pass_now()
     cur = pooled("childboy")
-    assert (not wp0.alive()) or cur is None \
-        or cur.proc.pid != wp0.proc.pid, (
-        "USER audience grant on a CHILD seat is an identity change and must "
-        "respawn its process")
+    after = reload_org()
+    assert S.identity_prompt(after, "childboy") == prompt0, (
+        "live audience state leaked back into the startup identity")
+    state1 = S.org_state_block(after, "childboy")
+    assert state1 != state0 and "you currently hold a USER AUDIENCE" in state1
+    assert "orgtree_self_restart" in state1
+    assert wp0.alive() and cur is wp0 and cur.proc.pid == wp0.proc.pid, (
+        "a live audience grant replaced the parked process before its first "
+        "direct-user turn")
     rows_now = exit_rows("childboy")[n0:]
-    assert len(rows_now) == 1 and rows_now[0][1] == "prompt-change", rows_now
+    assert not rows_now, rows_now
+    with store.DOC_LOCK:
+        o = reload_org()
+        o.d["audiences"] = [
+            a for a in o.d["audiences"]
+            if not (a.get("grantee") == "childboy"
+                    and a.get("grantor") == USER)]
+        store.save_org(o)
+    W.keeper_pass_now()
+    revoked = reload_org()
+    assert S.identity_prompt(revoked, "childboy") == prompt0
+    assert "you do not have direct contact with the user" in S.org_state_block(
+        revoked, "childboy")
+    assert pooled("childboy") is wp0 and wp0.alive()
+    assert not exit_rows("childboy")[n0:]
     # retirement, on a disposable seat so the suite keeps its fixtures
     with store.DOC_LOCK:
         o = reload_org()

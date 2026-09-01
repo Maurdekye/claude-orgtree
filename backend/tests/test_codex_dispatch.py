@@ -112,6 +112,25 @@ def mkorg(label: str) -> tuple[str, str]:
     return org.d["slug"], nid
 
 
+def mkdeep_luna(label: str) -> tuple[str, str]:
+    """Fresh manual-hire shape: a Luna below another agent, initially with
+    no direct user audience. Both seats are fake app-servers, so this spends
+    no provider call while still giving us real child PIDs."""
+    org = store.create_org(f"zz codexdisp deep {label}")
+    boss = org.hire(
+        USER, None, "luna", 1, "boss", add_dirs=[],
+        tools={"bash": True, "web": False, "edit": True,
+               "subagents": False, "mcp": []},
+        org_visibility="team", charter="deep Luna fixture parent")["node"]
+    nid = org.hire(
+        boss, boss, "luna", 0, "new-luna", add_dirs=[],
+        tools={"bash": True, "web": False, "edit": True,
+               "subagents": False, "mcp": []},
+        org_visibility="team", charter="fresh manual Luna hire")["node"]
+    store.save_org(org)
+    return org.d["slug"], nid
+
+
 def run_turn(slug: str, nid: str, text: str, view: str | None = None):
     st = supervisor.state(slug, nid)
     with supervisor._state_lock:
@@ -125,6 +144,70 @@ def node_doc(slug: str, nid: str) -> dict:
 
 
 def main() -> int:
+    print("§0 first direct-user turn keeps its real pre-warmed PID")
+    os.environ["FAKECODEX_SCENARIO"] = "delta_pause"
+    deep_slug, deep_nid = mkdeep_luna("audience")
+    warmpool.keeper_pass_now()
+    with warmpool._pool_lock:
+        before_wp = warmpool._pool.get((deep_slug, deep_nid))
+    assert isinstance(before_wp, warmpool.CodexWarmProc)
+    pid_before = before_wp.proc.pid
+    stable_before = supervisor.identity_prompt(
+        store.load_org(deep_slug), deep_nid)
+
+    # Exact production mutation: the user's first direct message is persisted
+    # in the same save as user_deep_reach's automatic audience grant.
+    with store.DOC_LOCK:
+        o = store.load_org(deep_slug)
+        o.post_mail(USER, deep_nid, "first direct user prompt")
+        o.user_deep_reach(deep_nid, "first direct user prompt")
+        store.save_org(o)
+    changed = store.load_org(deep_slug)
+    assert changed._has_audience(deep_nid, USER)
+    assert supervisor.identity_prompt(changed, deep_nid) == stable_before, (
+        "the live audience grant rewrote the parked app-server identity")
+    assert "you currently hold a USER AUDIENCE" in supervisor.org_state_block(
+        changed, deep_nid), "the newly granted authority missed the turn envelope"
+    warmpool.keeper_pass_now()
+    with warmpool._pool_lock:
+        after_grant_wp = warmpool._pool.get((deep_slug, deep_nid))
+    assert isinstance(after_grant_wp, warmpool.CodexWarmProc)
+    eq(after_grant_wp.proc.pid, pid_before,
+       "PID after first-message audience grant, before claim")
+
+    turn_error: list[BaseException] = []
+
+    def first_turn() -> None:
+        try:
+            run_turn(deep_slug, deep_nid, "first direct user prompt")
+        except BaseException as exc:                              # noqa: BLE001
+            turn_error.append(exc)
+
+    th0 = threading.Thread(target=first_turn, daemon=True)
+    th0.start()
+    deadline = time.time() + 5
+    during_wp = None
+    while time.time() < deadline:
+        with warmpool._pool_lock:
+            during_wp = warmpool._serving.get((deep_slug, deep_nid))
+        if during_wp is not None:
+            break
+        time.sleep(0.01)
+    assert isinstance(during_wp, warmpool.CodexWarmProc), (
+        "first turn never claimed the pre-warmed app-server")
+    pid_during = during_wp.proc.pid
+    th0.join(10)
+    assert not th0.is_alive() and not turn_error, turn_error
+    with warmpool._pool_lock:
+        after_wp = warmpool._pool.get((deep_slug, deep_nid))
+    assert isinstance(after_wp, warmpool.CodexWarmProc)
+    eq((pid_before, pid_during, after_wp.proc.pid),
+       (pid_before, pid_before, pid_before),
+       "PID before/during/after the first direct-user turn")
+    warmpool.kill_org(deep_slug, "suite-teardown")
+    check("fresh deep Luna stays on one PID across its first user turn",
+          lambda: None)
+
     print("§1 dispatch + bookkeeping (scenario: tool)")
     os.environ["FAKECODEX_SCENARIO"] = "tool"
     slug, nid = mkorg("basic")

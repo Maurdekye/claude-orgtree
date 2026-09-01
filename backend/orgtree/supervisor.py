@@ -3075,7 +3075,13 @@ def _claudemd_caveat(org: Org, nid: str) -> str:
     """User ruling 2026-07-29: top-level agents work directly under the user, so
     CLAUDE.md files apply literally to them. Deeper agents read the same files
     verbatim EXCEPT that user-communication instructions redirect to their direct
-    superior — unless they currently hold a user audience."""
+    superior — unless they currently hold a user audience.
+
+    This is live authorization state, not a process-startup input.  It rides
+    ``org_state_block`` on every turn so a grant or revocation is visible at
+    once without rewriting the managed system prompt or replacing a parked
+    provider process.  The ledger remains the authority gate either way.
+    """
     n = org.node(nid)
     if n["parent"] is None:
         return ""
@@ -3176,6 +3182,13 @@ def org_state_block(org: Org, nid: str, include_archived: bool = False) -> str:
     byte of drift in the system prompt discards the entire conversation cache
     and the agent re-pays its whole context.
 
+    Audience-dependent guidance belongs here for the same reason.  A direct
+    user message may grant a deep agent an audience in the very save that
+    wakes its turn.  Treating that live grant as a startup identity change
+    killed the real pre-warmed process immediately before every such first
+    turn.  The current caveat still reaches the turn here; server-side ledger
+    checks remain authoritative.
+
     MEASURED, on this machine, before the split (cache-misses, 2026-08-29):
     one hire changed 6 of 8 live agents' system prompts, i.e. made six unrelated
     agents re-pay their full context on their next turn; an org-wide fable_lock
@@ -3261,6 +3274,19 @@ def org_state_block(org: Org, nid: str, include_archived: bool = False) -> str:
             f"than leaving a card the user must still deal with; say in your "
             f"next message that you did and why. If it does still stand, "
             f"leave it alone — do not re-ask, that only replaces it.")
+    live_guidance = _claudemd_caveat(org, nid).strip()
+    if deployment.current_policy().allow_agent_restart \
+            and n["parent"] is not None and org._has_audience(nid, USER):
+        # The full unprompted-deploy doctrine remains in a top-level agent's
+        # stable identity. A deep audience holder gains the same authority
+        # dynamically, so state that trigger here without putting the live
+        # audience bit back into the provider-process identity.
+        live_guidance += (
+            " You currently have authority to use orgtree_self_restart for a "
+            "committed fix or a confirmed newer version. If the machine is "
+            "busy, use orgtree_prime_restart so the deploy fires when it is "
+            "quiet; never restart speculatively.")
+    guidance_line = f"\n{live_guidance}" if live_guidance else ""
     # ⚠ THE HEADER EARNS ITS WORDS. This block is re-sent every turn, so an
     # agent's history accumulates SUPERSEDED copies of it — an older turn may
     # show a chart with an agent that has since been retired, or a stale free
@@ -3275,6 +3301,7 @@ def org_state_block(org: Org, nid: str, include_archived: bool = False) -> str:
         f"Credits: seat {org.seat_cost(nid)}, grant {n['grant']}, "
         f"free {org.free(nid):g} — credits bound concurrent agent capacity, "
         f"not tokens."
+        f"{guidance_line}"
         f"{fable_line}{ask_line}\n{ORG_STATE_CLOSE}")
 
 
@@ -3780,7 +3807,7 @@ def identity_prompt(org: Org, nid: str, include_archived: bool = False) -> str:
            "deploy, or a backend to bounce. Never restart speculatively, on a "
            "hunch, or to 'make sure': there is no free restart. "
            if deployment.current_policy().allow_agent_restart
-           and (n["parent"] is None or org._has_audience(nid, USER))
+           and n["parent"] is None
            else "")
         + f"AUTHENTIC-CHANNEL NOTE: "
         f"the orgtree harness may deliver real mail mid-task — from the user or "
@@ -3801,7 +3828,6 @@ def identity_prompt(org: Org, nid: str, include_archived: bool = False) -> str:
            " — that is how your superior learns of it. ")
         + f"Your scratch folder is your own: keep a CLAUDE.md there as standing notes — "
         f"it is loaded automatically every turn and survives compaction. "
-        + _claudemd_caveat(org, nid)
         + (("\n\n[STANDING INSTRUCTIONS from your granted folders]\n" + cmd_block)
            if (cmd_block := _claudemd_block(org, nid)) else "")
         + _breadcrumbs_block(org, nid)
