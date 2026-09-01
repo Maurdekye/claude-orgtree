@@ -6922,6 +6922,21 @@ six, so containment cannot be satisfied by rendering nothing.
 
 ---
 
+### O-envelope · does a driven turn's final text owe the driver a reply?
+
+Raised 2026-09-01 (user observation, live case): agent A `orgtree_message`s
+agent B; B's turn answers in plain final text and never calls
+`orgtree_message` back; A's mailbox stays empty and only the user, watching
+B's chat, saw the answer. Today the envelope is explicit-reply-only, and the
+identity prompt tells agents to reply via `orgtree_message` — but a charter
+that says "just answer briefly" produces exactly this silent shape.
+Candidate: when a turn was DRIVEN by another agent's mail and made no
+`orgtree_message` to that agent, deliver the turn's final text as a
+fallback reply (kind=question at minimum). Costs: double-reply dedup,
+chattiness, and "final text" not always being addressed to the asker.
+Needs a ruling before anything ships.
+
+
 ## Retired
 
 ### D-144 · the account registry ships INERT — and Phase 1 green is not failover
