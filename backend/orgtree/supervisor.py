@@ -4447,12 +4447,63 @@ def _build_cmd(org: Org, nid: str, write_ident: bool = True) -> list[str]:
                         else host_pd)
             ro_paths = ro_paths + [pred_dir]
     if ro_paths:
-        # read-only enforcement: permission deny rules on the writing tools
+        # read-only enforcement: permission deny rules on the writing tools.
+        # ⚠ THE AGENT'S OWN SCRATCH IS NEVER DENIED (user report 2026-09-01:
+        # a data-root ro grant, given so a fixer agent could READ the live
+        # deployment, silently clamped that agent's own working folder — the
+        # folder its charter requires it to keep breadcrumbs.md/CLAUDE.md in,
+        # through these very tools, and the folder every headless write
+        # request dies in because nobody is present to approve). Same
+        # doctrine as the predecessor read-down above: one's own desk is not
+        # a permission at all. The rule language has no negation, so an
+        # ancestor grant is rewritten as its chain levels — immediate
+        # entries (level/*) plus every sibling subtree (level/<entry>/**) —
+        # leaving exactly the scratch chain undenied. Enumeration is sorted
+        # (this JSON rides argv into the D-201 identity hash, so it must be
+        # deterministic); a directory CREATED at a chain level after this
+        # render stays writable until the next render re-enumerates —
+        # accepted in exchange for the agent keeping its own desk.
+        own_scratch = os.path.normpath(
+            sbx.cpath_scratch(slug, nid) if sandboxed
+            else scratch_dir(slug, nid))
+        own_key = os.path.normcase(own_scratch)
+
+        def _write_denies(prefix: str, suffix: str) -> list[str]:
+            base = prefix.replace("\\", "/").rstrip("/")
+            return [f"Edit({base}/{suffix})", f"Write({base}/{suffix})",
+                    f"NotebookEdit({base}/{suffix})"]
+
         deny = []
         for p in ro_paths:
-            p = p.replace("\\", "/").rstrip("/")
-            deny += [f"Edit({p}/**)", f"Write({p}/**)", f"NotebookEdit({p}/**)"]
-        settings["permissions"] = {"deny": deny}
+            root = os.path.normpath(p)
+            root_key = os.path.normcase(root).rstrip("\\/")
+            if root_key == own_key:
+                continue                  # one's own desk: nothing to deny
+            if not own_key.startswith(root_key + os.sep):
+                deny += _write_denies(p, "**")
+                continue
+            carved: list[str] = []
+            level = root
+            components = [c for c in os.path.relpath(
+                own_scratch, root).split(os.sep) if c not in ("", ".")]
+            try:
+                for child in components:
+                    entries = sorted(os.listdir(level))
+                    carved += _write_denies(level, "*")
+                    child_key = os.path.normcase(child)
+                    for entry in entries:
+                        if os.path.normcase(entry) != child_key:
+                            carved += _write_denies(
+                                os.path.join(level, entry), "**")
+                    level = os.path.join(level, child)
+            except OSError:
+                # an unreadable ancestor cannot be carved honestly; keep the
+                # blanket clamp rather than silently widening the grant
+                deny += _write_denies(p, "**")
+            else:
+                deny += carved
+        if deny:
+            settings["permissions"] = {"deny": deny}
     head = ((sbx.exec_argv(sbx.container_name(slug),
                            sbx.cpath_scratch(slug, nid),
                            sbx.bridge_exec_env(org)) + ["claude"])
