@@ -7678,3 +7678,53 @@ on the pin.
 Load-bearing: startup stderr staying ~2 lines (D-211's accounting) is what
 keeps a cold spawn from wedging on the pipe; test_ro_grant_scratch pins
 one-rule-per-path.
+
+### D-221 · the question is committed before the answer is shown
+
+Ruling (codex-stream-order, 2026-09-02): **no assistant output for a turn may
+become VISIBLE before that turn's user message is DURABLE in the transcript.**
+On the codex lane the journal therefore opens at `on_thread` — inside
+`CodexTurn.start()`, after the thread id is final and BEFORE `turn/start` goes
+on the wire — and every assistant-visible emission (delta, text row, tool row,
+thought row) passes a barrier that holds it, in order, until it has.
+
+Why: Claude gets this invariant from its provider — the CLI owns the
+transcript and writes the user record into it before it emits anything of its
+own. A codex thread has no CLI-owned transcript; orgtree journals it, and it
+was journaling on the RETURN of `turn.start()`. That is too late.
+`AppServerClient._pump` dispatches notifications on the READER thread while
+the turn thread is still inside `request()`'s 20 ms poll loop, so
+`item/started`, `item/agentMessage/delta` and `item/completed` are all
+observed before that return — measured on 10 runs of 10, fresh threads and
+resumed alike, and reproduced in the suite with the ORDINARY fixture scenario,
+not only the synthetic race. Durable records buffered in memory meanwhile, so
+for that window the transcript carried no user row for the turn. The desk
+draws the durable block first, the live tail under it, and the user's own
+undelivered message at the very BOTTOM (`pending_mail`) — so the agent's
+answer rendered above the question it was answering, while the question still
+read "delivering…".
+
+Two mechanisms, deliberately, because one of them is only an arrangement:
+`on_thread` makes the window zero; the barrier makes it STAY zero, by making
+the ordering a property of the code rather than of a sequence that happens to
+hold. The old post-`start()` activation remains as an idempotent belt.
+
+Rider: item completions are deduplicated by item id (`item_ids`), the way
+tool calls already were. A replayed completion used to write a second journal
+record AND a second live row, and since `_sweep_live` retires one live row per
+durable copy, both survived — the answer stood on the desk twice for the rest
+of the turn.
+
+Bounds: if the journal never opens (the thread id never arrived because
+`turn.start()` raised), held output is never released. That is deliberate —
+there is no transcript for that turn at all, so releasing would put assistant
+prose on screen under a turn the server cannot show. Nothing is the honest
+render, and the turn's own durable error row is what the desk gets instead.
+An item with no id is not deduplicated: a missing identity is not evidence of
+a repeat, and a duplicate is a blemish where a gap is a lie.
+
+Load-bearing: test_codex_stream_order.py checks the invariant at
+`supervisor.stream` — the websocket the desk actually sees — against the
+journal on disk at that instant, and proves it can fail (against the code
+before this ruling it fails exactly the four ordering checks and passes the
+other twenty).

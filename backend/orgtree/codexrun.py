@@ -724,9 +724,29 @@ class CodexTurn:
     # ── lifecycle ────────────────────────────────────────────────────────
 
     def start(self, input_text: str,
-              image_inputs: list[dict[str, Any]] | None = None) -> str:
+              image_inputs: list[dict[str, Any]] | None = None,
+              on_thread: Callable[[str], None] | None = None) -> str:
         """Initialize, open/resume the thread, start the turn. Returns the
-        durable thread id (the provider session id the node records)."""
+        durable thread id (the provider session id the node records).
+
+        `on_thread(thread_id)` fires the instant the thread id is FINAL and
+        before `turn/start` goes on the wire — the last moment at which no
+        notification for this turn can exist yet, because the turn does not.
+
+        That hook is not a convenience; it is where the caller's ordering
+        invariant is enforceable (supervisor `_codex_leg`). Returning the
+        thread id from here is too late: `_pump` dispatches notifications on
+        the READER thread while this one is still inside `request()`'s poll
+        loop, so `item/started`, `item/agentMessage/delta` and
+        `item/completed` are all observed BEFORE this method returns —
+        measured on every run of probe_startrace.py, fresh threads and
+        resumed ones alike. A caller that opens its journal on the return
+        value therefore streams assistant output against a transcript that
+        does not yet carry the user's message.
+
+        The hook is fail-open: journaling must never be the reason a turn
+        does not run (same contract as `_codex_journal`), so an exception in
+        it is swallowed and the turn proceeds."""
         self.client.initialize()
         if self.thread_id:
             # dynamicTools + developerInstructions ride the RESUME too —
@@ -757,6 +777,11 @@ class CodexTurn:
         user_input: list[dict[str, Any]] = [
             {"type": "text", "text": input_text}]
         user_input.extend(image_inputs or [])
+        if on_thread is not None and self.thread_id:
+            try:
+                on_thread(self.thread_id)
+            except Exception:                              # noqa: BLE001
+                pass      # journaling never blocks a turn — see the docstring
         turn = self.client.request("turn/start", {
             "threadId": self.thread_id,
             "input": user_input,

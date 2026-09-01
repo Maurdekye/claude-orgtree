@@ -6794,6 +6794,88 @@ def _codex_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
                         "tool_input": params.get("command") or {}})
         return "decline"
 
+    jlock = threading.Lock()
+    jstate: dict[str, Any] = {
+        "sid": "", "pending": [], "held": [], "agent_items": 0,
+        "tool_ids": set(), "item_ids": set()}
+
+    # ── THE ORDERING BARRIER (D-221) ────────────────────────────────────────
+    # INVARIANT: no assistant output for a turn may become VISIBLE before that
+    # turn's user message is DURABLE in the transcript.
+    #
+    # Claude gets this from its provider: the CLI owns the transcript and
+    # writes the user record into it before it emits anything of its own. A
+    # codex thread has no CLI-owned transcript — orgtree journals it — so here
+    # the invariant has to be code.
+    #
+    # It was neither, and the desk showed the consequence. The journal opened
+    # on the RETURN of `turn.start()`, but `AppServerClient._pump` dispatches
+    # notifications on the READER thread while the turn thread is still inside
+    # `request()`'s 20 ms poll loop: measured (probe_startrace.py, 10 runs of
+    # 10, fresh threads and resumed alike) `item/started`,
+    # `item/agentMessage/delta` and `item/completed` are ALL observed before
+    # that return. Everything durable was buffered in `pending` meanwhile, so
+    # for that window the transcript had no user row for the turn — and the
+    # desk draws the durable block first, the live tail under it, and the
+    # user's own undelivered message at the very bottom (`pending_mail`). The
+    # agent answered above the question it was answering.
+    #
+    # Two mechanisms, because one of them is only an arrangement:
+    #   · `on_thread` (codexrun.CodexTurn.start) opens the journal at the last
+    #     instant before `turn/start` goes on the wire, when no notification
+    #     for this turn can exist yet. That makes the window zero.
+    #   · this barrier makes it STAY zero. Visible emission is a closure that
+    #     runs now if the journal is open and is held IN ORDER if it is not,
+    #     so the ordering is a property of the code rather than of a sequence
+    #     that happens to hold.
+    #
+    # Residual, stated rather than hidden: if the journal never opens (the
+    # thread id never arrived because `turn.start()` raised), held output is
+    # never released. That is deliberate. There is no transcript for that turn
+    # at all, so releasing would put assistant prose on screen under a turn
+    # the server cannot show; nothing is the honest render, and the turn's own
+    # durable error row is what the desk gets instead.
+    def _visible(emit: Callable[[], None]) -> None:
+        with jlock:
+            if not jstate["sid"]:
+                cast("list[Any]", jstate["held"]).append(emit)
+                return
+        emit()             # outside the lock: emission reaches the websocket
+
+    def _visible_stream(payload: dict[str, Any]) -> None:
+        _visible(lambda: stream(slug, nid, payload))
+
+    def _visible_live_row(payload: dict[str, Any]) -> None:
+        _visible(lambda: live_row(slug, nid, payload))
+
+    def _first_time(iid: str) -> bool:
+        """Is this the first `item/completed` seen for this item id?
+
+        A tool call was already deduplicated this way (`tool_ids`); message,
+        plan and reasoning items were not, and they are the ones the desk
+        renders as prose. A replayed or duplicated completion therefore wrote
+        a SECOND identical journal record and a second live row — and because
+        `_sweep_live` retires one live row per durable copy, both survived the
+        sweep and the agent's answer stood on the desk twice, permanently.
+        The same identity the app-server already gives tools is on these
+        items too; this just uses it.
+
+        An item with NO id cannot be deduplicated and is let through: a
+        missing identity is not evidence of a repeat, and dropping on
+        suspicion would lose a real message. Same trade as everywhere else
+        here — a duplicate is a blemish, a gap is a lie.
+
+        Its own set, not `tool_ids`: that one means "a tool_use record is
+        already written for this id" and is consulted on `item/started` too,
+        which is a different question from this one."""
+        if not iid:
+            return True
+        with jlock:
+            if iid in jstate["item_ids"]:
+                return False
+            cast("set[str]", jstate["item_ids"]).add(iid)
+        return True
+
     dstate: dict[str, Any] = {"buf": "", "timer": None}
     dlock = threading.Lock()
 
@@ -6808,7 +6890,9 @@ def _codex_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
             dstate["buf"] = ""
             dstate["timer"] = None
         while body:
-            stream(slug, nid, {"kind": "delta", "text": body[:2000]})
+            # through the barrier: a delta is the FIRST assistant output of a
+            # turn, so it is the first thing that could outrun the user's row
+            _visible_stream({"kind": "delta", "text": body[:2000]})
             body = body[2000:]
 
     def _queue_delta(body: str) -> None:
@@ -6828,14 +6912,11 @@ def _codex_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
                 timer.start()
         if fire:
             _flush_draft()
-    jlock = threading.Lock()
-    jstate: dict[str, Any] = {
-        "sid": "", "pending": [], "agent_items": 0, "tool_ids": set()}
 
     def _journal_records(recs: list[dict[str, Any]]) -> None:
         """Serialize reader-thread item events with the turn thread's start /
-        usage records. Before turn/start yields its durable thread id, events
-        wait in memory; activation writes the user row first, then this queue."""
+        usage records. Before the thread id is known, events wait in memory;
+        activation writes the user row first, then this queue."""
         with jlock:
             sid = str(jstate["sid"] or "")
             if not sid:
@@ -6866,22 +6947,31 @@ def _codex_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
                         "model": codex_model,
                         "content": [{"type": "tool_use", "id": iid,
                                      "name": name, "input": inp}]}}])
-        live_row(slug, nid, {"kind": "tool", "id": iid,
-                             "text": name + ((" · " + _tool_arg(name, inp))
-                                              if _tool_arg(name, inp) else "")})
+        _visible_live_row({"kind": "tool", "id": iid,
+                           "text": name + ((" · " + _tool_arg(name, inp))
+                                           if _tool_arg(name, inp) else "")})
 
     def _on_item(msg: dict[str, Any]) -> None:
         method = str(msg.get("method") or "")
         if method not in ("item/started", "item/completed"):
             return
-        params = msg.get("params") if isinstance(msg.get("params"), dict) else {}
-        item = params.get("item") if isinstance(params.get("item"), dict) else {}
+        # narrowed through a NAME, not through a repeated `.get()` call: the
+        # old `x.get(k) if isinstance(x.get(k), dict) else {}` calls `.get`
+        # twice, so nothing narrows and every later `item.get(...)` reads as
+        # an access on a possible None. Same values, same guards — the type
+        # checker can just follow these.
+        raw_params = msg.get("params")
+        params: dict[str, Any] = raw_params if isinstance(raw_params, dict) else {}
+        raw_item = params.get("item")
+        item: dict[str, Any] = raw_item if isinstance(raw_item, dict) else {}
         completed = method == "item/completed"
         ts = _event_ts(params, completed)
         typ = str(item.get("type") or "")
         if typ == "agentMessage" and completed:
             body = str(item.get("text") or "")
             if not body:
+                return
+            if not _first_time(str(item.get("id") or "")):
                 return
             _flush_draft()
             jstate["agent_items"] += 1
@@ -6891,13 +6981,15 @@ def _codex_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
                                            f"codex-{time.time_ns()}"),
                             "role": "assistant", "model": codex_model,
                             "content": [{"type": "text", "text": body}]}}])
-            live_row(slug, nid, {"kind": "text", "text": body[:2000],
-                                 **({"truncated": True}
-                                    if len(body) > 2000 else {})})
+            _visible_live_row({"kind": "text", "text": body[:2000],
+                               **({"truncated": True}
+                                  if len(body) > 2000 else {})})
             return
         if typ == "plan" and completed:
             body = str(item.get("text") or "")
             if not body:
+                return
+            if not _first_time(str(item.get("id") or "")):
                 return
             _journal_records([{
                 "type": "assistant", "timestamp": ts,
@@ -6905,11 +6997,13 @@ def _codex_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
                                            f"codex-plan-{time.time_ns()}"),
                             "role": "assistant", "model": codex_model,
                             "content": [{"type": "text", "text": body}]}}])
-            live_row(slug, nid, {"kind": "text", "text": body[:2000],
-                                 **({"truncated": True}
-                                    if len(body) > 2000 else {})})
+            _visible_live_row({"kind": "text", "text": body[:2000],
+                               **({"truncated": True}
+                                  if len(body) > 2000 else {})})
             return
         if typ == "reasoning" and completed:
+            if not _first_time(str(item.get("id") or "")):
+                return
             parts = item.get("summary") or item.get("content") or []
             body = "\n".join(
                 str(x.get("text") or x.get("summary") or x)
@@ -6922,7 +7016,7 @@ def _codex_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
                             "role": "assistant", "model": codex_model,
                             "content": [{"type": "thinking", "thinking": body,
                                          "signature": "codex"}]}}])
-            live_row(slug, nid, {"kind": "thought", "text": body[:2000]})
+            _visible_live_row({"kind": "thought", "text": body[:2000]})
             return
         info = _codex_tool_item(item)
         if not info:
@@ -7049,6 +7143,53 @@ def _codex_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
         turn_mcp_fingerprint = _mcp_infrastructure_fingerprint(org, nid)
     except Exception:                                      # noqa: BLE001
         turn_mcp_fingerprint = None
+
+    def _open_journal(tid: str) -> None:
+        """Make this turn's user message durable, then release held output.
+
+        A Codex thread has no CLI-owned transcript. Start orgtree's journal
+        the moment the thread id is final — which `CodexTurn.start` reaches
+        BEFORE it sends `turn/start`, so no notification for this turn can
+        have been observed yet (see THE ORDERING BARRIER above). The user's
+        message and every item that follows are then durable and renderable
+        while the turn is still running, in the order they happened.
+
+        Idempotent, because it has two callers: the `on_thread` hook (the
+        correct, early one) and the post-`start()` line that used to be the
+        only one. The second is the belt — it still runs a turn correctly if
+        the hook is ever bypassed (a stubbed CodexTurn in a test, an older
+        runner) — and does nothing when the hook has already fired.
+
+        `_iso_ts(t0)` and not `now_iso()`: the user row must carry the
+        EARLIEST stamp of the turn. `_sweep_live` finds a turn's boundary by
+        the last user row and prices its chronology backstop off the newest
+        durable stamp, so a user row stamped after the turn's first items
+        would put the turn boundary in the wrong place."""
+        held: list[Callable[[], None]] = []
+        with jlock:
+            if jstate["sid"]:
+                return                    # already open — nothing to re-do
+            jstate["sid"] = str(tid or "")
+            if not jstate["sid"]:
+                return                    # no thread id, no journal, no release
+            pending_recs = list(jstate["pending"])
+            jstate["pending"].clear()
+            _record_prompt_view(slug, jstate["sid"], text, turn_view,
+                                at=_iso_ts(t0))
+            _codex_journal(slug, jstate["sid"], [
+                {"type": "user", "timestamp": _iso_ts(t0),
+                 "message": {"role": "user", "content": text}},
+                *pending_recs,
+            ])
+            held = cast("list[Callable[[], None]]", jstate["held"])[:]
+            cast("list[Any]", jstate["held"]).clear()
+        # released IN ORDER, outside the lock, with the user's row already on
+        # disk — so the first frame a view can draw already has the question
+        # above the answer
+        for emit in held:
+            emit()
+        stream(slug, nid, {"kind": "journal", "text": ""})
+
     try:
         # Initialization is prompt-free. It is the first point at which the
         # app-server can authoritatively answer mcpServerStatus/list, so the
@@ -7058,7 +7199,11 @@ def _codex_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
         _refresh_codex_mcp()
         _mcp_gate_terminal(_mcp_wait_for_surface(
             org, nid, mcp_owner, "openai", turn_mcp_fingerprint))
-        tid = turn.start(text, _codex_image_inputs(images or []))
+        # `on_thread` fires inside start(), before `turn/start` goes on the
+        # wire: that is where this turn's user row becomes durable, and it is
+        # the only point early enough (THE ORDERING BARRIER, above).
+        tid = turn.start(text, _codex_image_inputs(images or []),
+                         on_thread=_open_journal)
         _refresh_codex_mcp()
         if wp_turn is not None and tid:
             # A fresh Codex thread replaces the hire's minted placeholder.
@@ -7083,23 +7228,10 @@ def _codex_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
                     o2.node(nid)["codex_thread"] = tid
                     o2.node(nid).pop("session_unrun", None)
                     store.save_org(o2)
-        # A Codex thread has no CLI-owned transcript. Start orgtree's journal
-        # NOW, not at turn completion: the user's opening message and every
-        # item already emitted are durable and renderable while the turn is
-        # still running. This is what prevents a live desk full of streamed
-        # prose from simultaneously claiming "no conversation yet".
-        with jlock:
-            jstate["sid"] = str(tid or "")
-            pending_recs = list(jstate["pending"])
-            jstate["pending"].clear()
-            _record_prompt_view(slug, str(tid or ""), text, turn_view,
-                                at=_iso_ts(t0))
-            _codex_journal(slug, str(tid or ""), [
-                {"type": "user", "timestamp": _iso_ts(t0),
-                 "message": {"role": "user", "content": text}},
-                *pending_recs,
-            ])
-        stream(slug, nid, {"kind": "journal", "text": ""})
+        # The belt to the hook's braces: a no-op when `on_thread` already
+        # opened the journal (the normal path), and the whole activation when
+        # something bypassed it. Either way the turn ends up journaled.
+        _open_journal(str(tid or ""))
         with _state_lock:
             st["codex_turn"] = turn   # the ⏸ escape hatch (interrupt_turn)
             st["responding"] = True   # mail now steers instead of queueing

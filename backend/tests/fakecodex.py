@@ -11,6 +11,16 @@ scenarios selected by FAKECODEX_SCENARIO:
                STEERED[<text>] into the agent text and completes
     delta_pause emits one short agent-message delta, then pauses long enough
                 to prove the client's time-based live flush actually fires
+    replay     the same `item/completed` is sent TWICE for one message and
+               once more for one reasoning item — what a reconnecting or
+               retrying app-server replays. One copy must reach the desk
+    early_stream the whole turn — reasoning, delta, agent message, completion
+                — is notified BEFORE `turn/start` is answered. JSON-RPC does
+                not order notifications against responses, and the client
+                reads them on a different thread from the one awaiting the
+                reply, so this is the worst case a correct runner must
+                survive: it makes the stream-before-commit race certain
+                instead of merely likely (see test_codex_stream_order.py)
     interrupt  the turn stalls until turn/interrupt, then completes with
                status "interrupted"
     usage_limit (D-209) the turn ends the way a REAL subscription wall ends
@@ -124,7 +134,33 @@ def run_turn(thread_id, turn_id, dyn_tools):
             "itemId": iid, "delta": text})
         item_event("completed", {**base, "text": text})
 
-    if SCENARIO == "delta_pause":
+    if SCENARIO == "replay":
+        # the SAME completion twice, ids and all — a reconnecting or retrying
+        # app-server replaying what it already sent. Both the journal and the
+        # live tail must end up with ONE copy, or the agent's answer stands on
+        # the desk twice for the rest of the turn.
+        think = {"id": "think-replay", "type": "reasoning",
+                 "summary": [{"text": "thinking once"}]}
+        base = {"id": "msg-replay", "type": "agentMessage",
+                "text": "said exactly once"}
+        item_event("completed", think)
+        item_event("started", {**base, "text": ""})
+        item_event("completed", base)
+        item_event("completed", base)        # the replay…
+        item_event("completed", think)       # …of both kinds
+    elif SCENARIO == "early_stream":
+        # every VISIBLE kind the codex leg can emit — a thought row, a token
+        # delta, and a durable text row — all of them before the caller can
+        # possibly have seen `turn/start`'s reply
+        item_event("completed", {"id": "think-early", "type": "reasoning",
+                                 "summary": [{"text": "planning the answer"}]})
+        base = {"id": "msg-early", "type": "agentMessage", "text": ""}
+        item_event("started", base)
+        notify("item/agentMessage/delta", {
+            "threadId": thread_id, "turnId": turn_id,
+            "itemId": "msg-early", "delta": "answering before the reply"})
+        item_event("completed", {**base, "text": "answering before the reply"})
+    elif SCENARIO == "delta_pause":
         base = {"id": "msg-paused", "type": "agentMessage", "text": ""}
         item_event("started", base)
         notify("item/agentMessage/delta", {
@@ -359,10 +395,16 @@ def main():
                 with open(input_probe, "w", encoding="utf-8") as f:
                     json.dump(params.get("input") or [], f)
             turn_id = "fake-turn-0001"
-            reply(rid, {"turn": {"id": turn_id}})
-            threading.Thread(target=run_turn,
-                             args=(thread_id, turn_id, dyn_tools),
-                             daemon=True).start()
+            if SCENARIO == "early_stream":
+                # the whole turn on the wire BEFORE the reply — see the
+                # scenario note at the top of this file
+                run_turn(thread_id, turn_id, dyn_tools)
+                reply(rid, {"turn": {"id": turn_id}})
+            else:
+                reply(rid, {"turn": {"id": turn_id}})
+                threading.Thread(target=run_turn,
+                                 args=(thread_id, turn_id, dyn_tools),
+                                 daemon=True).start()
         elif method in ("turn/steer", "turn/interrupt"):
             pass                            # the scenario thread answers it
         elif rid is not None:
