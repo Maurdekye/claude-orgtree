@@ -5089,6 +5089,52 @@ def _gemini_image_inputs(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
+def _codex_process_spec(org: Org, nid: str, *,
+                        write_ident: bool = True) -> dict[str, Any]:
+    """The exact process-scoped inputs for one Codex app-server.
+
+    Both the synchronous warm-pool keeper and the turn fallback use this
+    helper.  Codex MCP configuration is launch-scoped, so letting those two
+    sites derive it separately would make a pre-warmed process capable of
+    serving a node other than the one its argv actually represents.
+    """
+    from . import codexrun                 # noqa: PLC0415 — codex lane only
+
+    slug = org.d["slug"]
+    cstat = providers.codex_status()
+    exe = str(cstat.get("path") or "")
+    if not (cstat.get("installed") and exe):
+        raise RuntimeError(
+            "turn failed: the Codex CLI is not installed — the accounts "
+            "panel's Codex section shows the install command")
+    if not cstat.get("connected"):
+        raise RuntimeError(
+            "turn failed: codex is not signed in on this machine — run "
+            "`codex login` (accounts panel → Codex)")
+    if sbx.is_sandboxed(org):
+        raise RuntimeError("turn failed: codex agents cannot run in a "
+                           "sandboxed kiosk org yet (user ruling)")
+    cwd = scratch_dir(slug, nid)
+    ident = identity_prompt(org, nid)
+    if write_ident:
+        os.makedirs(cwd, exist_ok=True)
+        with open(os.path.join(cwd, "AGENTS.md"), "w",
+                  encoding="utf-8") as f:
+            f.write(ident)
+    mcp_chosen, _ = codex_mcp_grant(org, nid)
+    port = os.environ.get("ORGTREE_PORT", "7360")
+    return {
+        "argv_head": providers.codex_argv(exe),
+        "cwd": cwd,
+        "identity": ident,
+        "config_overrides": codexrun.mcp_config_overrides(mcp_chosen),
+        "env_extra": {"ORGTREE_ORG": slug, "ORGTREE_NODE": nid,
+                      "ORGTREE_PORT": port},
+        "port": port,
+        "exe": exe,
+    }
+
+
 def _codex_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
                text: str, toks: list[str],
                images: list[dict[str, Any]] | None = None
@@ -5102,12 +5148,12 @@ def _codex_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
     with a written message, which is the turn machinery's failure vocabulary
     (the shared except books it as `last_error` + the durable error row).
 
-    The turn itself is `codexrun.CodexTurn`: one `codex app-server` process,
-    thread resumed by the node's session id (the codex threadId — harvested
-    from `thread/start`, not minted). Org powers attach as dynamicTools built
-    from the SAME cards `mcptool.available_tools()` serves the claude lane,
-    and calls are
-    answered in-process through the same `/api/agent` door — so the ledger
+    The turn itself is `codexrun.CodexTurn` on a claimed warm app-server (or
+    a cold fallback), with the thread resumed by the node's session id (the
+    codex threadId — harvested from `thread/start`, not minted). Org powers
+    attach as dynamicTools built from the SAME cards
+    `mcptool.available_tools()` serves the claude lane, and calls are answered
+    in-process through the same `/api/agent` door — so the ledger
     enforces authority identically for both providers. Mid-turn mail rides a
     poller on the SAME steer store the claude hook drains.
     """
@@ -5117,31 +5163,14 @@ def _codex_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
 
     n = org.node(nid)
     tier = str(n.get("model") or "")
-    cstat = providers.codex_status()
-    exe = str(cstat.get("path") or "")
-    if not (cstat.get("installed") and exe):
-        raise RuntimeError(
-            "turn failed: the Codex CLI is not installed — the accounts "
-            "panel's Codex section shows the install command")
-    if not cstat.get("connected"):
-        raise RuntimeError(
-            "turn failed: codex is not signed in on this machine — run "
-            "`codex login` (accounts panel → Codex)")
-    if sbx.is_sandboxed(org):
-        # user ruling 2026-08-28: kiosks hold codex out until the sandbox
-        # story is settled; the hire guard enforces this upstream, so this is
-        # a belt for a doc edited by hand
-        raise RuntimeError("turn failed: codex agents cannot run in a "
-                           "sandboxed kiosk org yet (user ruling)")
+    process_spec = _codex_process_spec(org, nid, write_ident=True)
     tools_sc = n["scope"].get("tools", {})
-    cwd = scratch_dir(slug, nid)
+    cwd = str(process_spec["cwd"])
     # identity through codex's two doors: developerInstructions carries it on
     # a NEW thread, and AGENTS.md in the scratch cwd (honored verbatim,
     # Appendix C.6) re-asserts it on every turn of a RESUMED thread — the
     # same regenerate-per-spawn self-healing as .orgtree-identity.md.
-    ident = identity_prompt(org, nid)
-    with open(os.path.join(cwd, "AGENTS.md"), "w", encoding="utf-8") as f:
-        f.write(ident)
+    ident = str(process_spec["identity"])
     # resume ONLY a session id this leg itself harvested (`codex_thread`
     # equals it exactly then): a fresh hire's session_id is a MINTED uuid no
     # codex thread answers to, and a rehire/compact re-mint (which also sets
@@ -5154,14 +5183,8 @@ def _codex_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
     dyn = [{"type": "function", "name": t["name"],
             "description": t["description"], "inputSchema": t["inputSchema"]}
            for t in mcptool.available_tools()]
-    # D-180: orgtree's OWN suite rides dynamicTools (above); the node's GRANTED
-    # EXTERNAL servers ride `-c mcp_servers.…` on the app-server launch, which
-    # is a different mechanism for a different problem and was simply missing.
-    # `codex_mcp_grant` is the same call `identity_prompt` promises from, so the
-    # text above and the capability below cannot drift apart again.
-    mcp_chosen, _ = codex_mcp_grant(org, nid)
-    mcp_overrides = codexrun.mcp_config_overrides(mcp_chosen)
-    port = os.environ.get("ORGTREE_PORT", "7360")
+    mcp_overrides = list(process_spec["config_overrides"])
+    port = str(process_spec["port"])
 
     def _tool_call(tool: str, args: dict[str, Any]) -> str:
         # the same request the MCP server makes for a claude agent — identity
@@ -5364,8 +5387,37 @@ def _codex_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
 
     codex_model = providers.CODEX_MODELS.get(tier) or org.model_for(nid)
 
+    # D-201, Codex lane: the keeper owns an uninitialized app-server at boot;
+    # this turn claims it only when the exact process-scoped identity matches.
+    # Any miss falls through to the historical one-process-per-turn path.
+    wp_turn: warmpool.CodexWarmProc | None = None
+    turn_hash: str | None = None
+    turn_components: dict[str, str] | None = None
+    warm_on, warm_lbl = warmpool.warm_decision()
+    elig_ok, elig_why = warmpool.eligible(org, nid)
+    if elig_ok and warm_on:
+        try:
+            turn_hash, turn_components = warmpool.identity_snapshot(
+                org, nid, provider_spec=process_spec)
+        except Exception:                              # noqa: BLE001
+            turn_hash = None
+    admit_reason = (elig_why or "not-eligible") if not elig_ok else (
+        "disabled" if not warm_on else "no-process")
+    if turn_hash is not None:
+        candidate, admit_reason = warmpool.claim_snapshot(
+            slug, nid, turn_hash, turn_components)
+        if isinstance(candidate, warmpool.CodexWarmProc):
+            wp_turn = candidate
+        elif candidate is not None:
+            # A provider switch must never hand a Claude stream process to
+            # the Codex wire, even if a future hash change accidentally
+            # collides with it.
+            warmpool.discard(candidate, "provider-lane")
+            admit_reason = "provider-lane"
+
+    spawn_t0 = time.monotonic()
     turn = codexrun.CodexTurn(
-        providers.codex_argv(exe), cwd=cwd,
+        list(process_spec["argv_head"]), cwd=cwd,
         model=codex_model,
         # measured superset of orgtree's low…max (Appendix B.3) — pass-through
         effort=org.effective_effort(nid),
@@ -5376,12 +5428,29 @@ def _codex_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
         config_overrides=mcp_overrides,
         on_event=_on_event, tool_dispatch=_tool_call,
         approval_decide=_approve,
-        env_extra={"ORGTREE_ORG": slug, "ORGTREE_NODE": nid,
-                   "ORGTREE_PORT": port})
+        env_extra=dict(process_spec["env_extra"]),
+        client=wp_turn.client if wp_turn is not None else None)
+    warmpool.journal_admit(
+        slug, nid, str(n.get("session_id") or ""),
+        "warm" if wp_turn is not None else "cold",
+        "warm-hit" if wp_turn is not None else admit_reason,
+        turn_hash or "",
+        time.time() - wp_turn.parked_at if wp_turn is not None else None,
+        0 if wp_turn is not None else
+        int((time.monotonic() - spawn_t0) * 1000),
+        warm_lbl)
     t0 = time.time()
     stop = threading.Event()
+    res_raw: dict[str, Any] = {}
+    parked = False
     try:
         tid = turn.start(text, _codex_image_inputs(images or []))
+        if wp_turn is not None and tid:
+            # A fresh Codex thread replaces the hire's minted placeholder.
+            # Keep later dirty/exit telemetry joined to the real provider
+            # session rather than to the prewarm-time placeholder.
+            with wp_turn._lk:
+                wp_turn.sid = tid
         # `turn/start`'s response is the C1 proof transposed: the server
         # accepted this turn's input, so the journaled batch is delivered
         if toks:
@@ -5441,16 +5510,45 @@ def _codex_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
 
         threading.Thread(target=_steer_pump, daemon=True,
                          name=f"codexsteer-{slug}-{nid}").start()
-        res_raw = turn.wait(timeout=TURN_TIMEOUT)
+        res_raw = turn.wait(timeout=TURN_TIMEOUT,
+                            close_client=wp_turn is None)
     finally:
-        # leg-local cleanup ONLY (the turn-lifecycle finally stays shared in
-        # _run_one_turn): stop the pump, kill the child, drop the live refs
+        # Leg-local cleanup only; `_run_one_turn` still owns the shared queue
+        # and busy-state boundary. A clean warm claimant detaches its callbacks
+        # and parks the SAME app-server instead of killing it here.
         stop.set()
-        turn.client.close()
+        if wp_turn is not None:
+            turn.client.unbind()
+            keep, _bnd_lbl, keep_why = warmpool.boundary_check(
+                slug, nid, turn_hash, wp_turn)
+            status_now = str(res_raw.get("status") or "")
+            if (keep and status_now in (
+                    codexrun.STATUS_COMPLETED, codexrun.STATUS_INTERRUPTED)
+                    and wp_turn.alive()):
+                parked = warmpool.park_back(wp_turn, 0.0, 0)
+            if not parked:
+                detail_now = codexrun.error_text(res_raw.get("error"))
+                if keep_why:
+                    reason = keep_why
+                elif ("usage_limit" in detail_now
+                      or "usage limit" in detail_now.lower()):
+                    reason = "limit-frozen"
+                elif (status_now in ("", codexrun.STATUS_FAILED)
+                      and not detail_now
+                      and time.time() - t0 >= TURN_TIMEOUT):
+                    reason = "turn-timeout"
+                else:
+                    reason = "stdin-closed"
+                warmpool.discard(wp_turn, reason)
+        else:
+            # `wait` normally closed the cold client; this also covers a
+            # start/initialize exception before wait was reached.
+            turn.client.close()
         with _state_lock:
             st.pop("codex_turn", None)
             st["responding"] = False
-        warmpool._set_proc_lifecycle(slug, nid, live=False, owner=turn)
+        if not parked:
+            warmpool._set_proc_lifecycle(slug, nid, live=False, owner=turn)
     with dlock:
         draft_timer = dstate.get("timer")
         if draft_timer:
