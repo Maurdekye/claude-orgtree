@@ -25,8 +25,8 @@
 
 import { useEffect, useRef, useState } from 'react'
 import type {
-  AccountsPayload, AccountUsage, ProviderInfo, TierStanding, ToastFn,
-  UsageLimit,
+  AccountsPayload, AccountUsage, ProviderInfo, RuntimeSettingsPayload,
+  TierStanding, ToastFn, UsageLimit,
 } from '../types'
 import {
   addAccountKey, deleteAccountKey, getAccounts, getAccountUsage,
@@ -34,6 +34,10 @@ import {
   setWaitForMcpToolsEnabled, setWarmingEnabled, setWorkingCheckupsEnabled,
 } from '../api'
 import { CheckIcon, DataUsageIcon, DeleteIcon } from '../icons'
+import {
+  SetGroup, SetRow, SettingsTabPanel, SettingsTabs, SetToggle,
+} from './settingskit'
+import type { SettingsTab } from './settingskit'
 import {
   setCrowdPilesOn, setDeskDpi, TIER_LETTER, TIERS, useCrowdPiles,
   useDeskDpi, useEsc,
@@ -161,10 +165,10 @@ export function UsageBars({ u }: { u: AccountUsage }) {
 }
 
 type AppSettingsTab = 'providers' | 'runtime' | 'display'
-const APP_TABS: { id: AppSettingsTab; label: string }[] = [
+const APP_TABS: SettingsTab<AppSettingsTab>[] = [
   { id: 'providers', label: 'Providers' },
   { id: 'runtime', label: 'Runtime' },
-  { id: 'display', label: 'Display' },
+  { id: 'display', label: 'Display', note: 'this browser' },
 ]
 
 function DeskTextSize() {
@@ -175,28 +179,27 @@ function DeskTextSize() {
     setDeskDpi(clamped)
   }
   return (
-    <div className="app-pref-row">
-      <span className="app-pref-label">desk text size</span>
-      <div className="row app-pref-control">
-        <button onClick={() => apply(dpi - 0.25)}
-          disabled={dpi <= 0.75}>−</button>
-        <span className="app-pref-value">{Math.round(dpi * 100)}%</span>
-        <button onClick={() => apply(dpi + 0.25)}
-          disabled={dpi >= 2.5}>+</button>
-        <button onClick={() => apply(1)} disabled={dpi === 1}>reset</button>
-      </div>
-    </div>
+    <SetRow label="desk text size"
+      hint={'scales agent desks, cards and canvas type. '
+        + 'Panels like this one keep their own size.'}>
+      <button aria-label="smaller desk text" onClick={() => apply(dpi - 0.25)}
+        disabled={dpi <= 0.75}>−</button>
+      <span className="set-value" aria-live="polite">
+        {Math.round(dpi * 100)}%</span>
+      <button aria-label="larger desk text" onClick={() => apply(dpi + 0.25)}
+        disabled={dpi >= 2.5}>+</button>
+      <button onClick={() => apply(1)} disabled={dpi === 1}>reset</button>
+    </SetRow>
   )
 }
 
 function CrowdStackToggle() {
   const on = useCrowdPiles()
   return (
-    <label className="checkline app-pref-row app-pref-check">
-      <input type="checkbox" checked={on}
-        onChange={(e) => setCrowdPilesOn(e.target.checked)} />
-      collapse teams with more than 8 active agents into one stack
-    </label>
+    <SetToggle label="collapse crowded teams into one stack" checked={on}
+      onChange={setCrowdPilesOn}
+      hint={'a team with more than 8 active agents draws as a single '
+        + 'stack instead of 8+ separate cards'} />
   )
 }
 
@@ -223,7 +226,6 @@ export function AccountsPanel({ toast, close }: {
   close: () => void
 }) {
   const [tab, setTab] = useState<AppSettingsTab>('providers')
-  const tabRefs = useRef<(HTMLButtonElement | null)[]>([])
   const [data, setData] = useState<AccountsPayload | null>(null)
   const [err, setErr] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -272,6 +274,36 @@ export function AccountsPanel({ toast, close }: {
       })
       .catch((e: Error) => setWarmingErr(e.message))
   }, [])
+  /** D-222 — every Runtime switch does the same five things: raise its own
+   *  busy flag, PUT, adopt ALL THREE values from the reply (the endpoint
+   *  answers with the whole record, so a sibling cannot linger stale), clear
+   *  the error, toast. Written once because it was written three times, and
+   *  the three copies had already drifted: two of them adopted the reply's
+   *  booleans raw while the load effect and the third normalised them, so a
+   *  backend that omitted a field could leave one row showing a different
+   *  default from the one the checkbox was reading. The normalisation here is
+   *  the load effect's, exactly — default-on for warming and checkups,
+   *  default-off for the MCP wait. */
+  const runtimeSwitch = (
+    put: (v: boolean) => Promise<RuntimeSettingsPayload>,
+    setBusy: (b: boolean) => void,
+    say: (p: RuntimeSettingsPayload) => string,
+  ) => (next: boolean) => {
+    setBusy(true)
+    put(next)
+      .then((p) => {
+        setWarming(p.warming_enabled)
+        setWorkingCheckups(p.working_checkups_enabled !== false)
+        setWaitForMcpTools(p.wait_for_mcp_tools_enabled === true)
+        setWarmingErr(null)
+        toast([say(p)])
+      })
+      .catch((runtimeErr: Error) => {
+        setWarmingErr(runtimeErr.message)
+        toast([`error: ${runtimeErr.message}`])
+      })
+      .finally(() => setBusy(false))
+  }
   const claudeProv = providers?.find((p) => p.id === 'claude')
   const codex = providers?.find((p) => p.id === 'openai')
   const gemini = providers?.find((p) => p.id === 'google')
@@ -306,12 +338,6 @@ export function AccountsPanel({ toast, close }: {
       })
       .catch((e: Error) => toast([`error: ${e.message}`]))
       .finally(() => setProviderBusy(null))
-  }
-
-  const moveTab = (from: number, delta: number) => {
-    const next = (from + delta + APP_TABS.length) % APP_TABS.length
-    setTab(APP_TABS[next]!.id)
-    tabRefs.current[next]?.focus()
   }
 
   const register = () => {
@@ -413,38 +439,11 @@ export function AccountsPanel({ toast, close }: {
     <div className="overlay" onClick={close} onPointerDown={(e) => e.stopPropagation()}>
       <div className="settings acct-panel" onClick={(e) => e.stopPropagation()}>
         <h3>App settings</h3>
-        <div className="app-settings-tabs" role="tablist"
-          aria-label="App settings sections">
-          {APP_TABS.map((item, index) => (
-            <button type="button" role="tab" key={item.id}
-              ref={(el) => { tabRefs.current[index] = el }}
-              id={`app-settings-tab-${item.id}`}
-              aria-selected={tab === item.id}
-              aria-controls={`app-settings-panel-${item.id}`}
-              tabIndex={tab === item.id ? 0 : -1}
-              className={'app-settings-tab' + (tab === item.id ? ' on' : '')}
-              onClick={() => setTab(item.id)}
-              onKeyDown={(e) => {
-                if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
-                  e.preventDefault(); moveTab(index, 1)
-                } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
-                  e.preventDefault(); moveTab(index, -1)
-                } else if (e.key === 'Home' || e.key === 'End') {
-                  e.preventDefault()
-                  const next = e.key === 'Home' ? 0 : APP_TABS.length - 1
-                  setTab(APP_TABS[next]!.id); tabRefs.current[next]?.focus()
-                }
-              }}>
-              {item.label}
-              {item.id === 'display'
-                && <span className="app-settings-scope">this browser</span>}
-            </button>
-          ))}
-        </div>
+        <SettingsTabs tabs={APP_TABS} tab={tab} setTab={setTab}
+          idBase="app-settings" label="App settings sections" />
 
-        <div id="app-settings-panel-providers" role="tabpanel"
-          aria-labelledby="app-settings-tab-providers"
-          hidden={tab !== 'providers'} className="app-settings-panel">
+        <SettingsTabPanel id="providers" idBase="app-settings"
+          active={tab === 'providers'}>
           {err && <div className="ask-warn">could not read accounts: {err}</div>}
           {!data && !err && <div className="dim">reading accounts…</div>}
 
@@ -452,14 +451,24 @@ export function AccountsPanel({ toast, close }: {
           <>
             {/* ── provider section: Claude (FR-15 preview) — a head over
                 the rows that were the whole panel while Claude was the only
-                provider; everything under it is untouched. */}
-            <div className={'acct-provider-head'
+                provider; everything under it is untouched.
+                D-222: each vendor's head and rows are wrapped in a
+                `.set-group`, so the panel's gap is the space BETWEEN vendors
+                and the rows inside one vendor stay a tight list. Before, the
+                panel gap applied between every child alike, which spaced a
+                key row from its neighbour exactly as far as it spaced Claude
+                from Codex — nothing in the spacing said where a section
+                ended. */}
+            <div className="set-group">
+            <div className={'set-group-head acct-provider-head'
               + (claudeProv?.user_enabled === false ? ' provider-off' : '')}>
               Claude
               <span className="dim"> · Claude Code
                 {claudeProv?.status.version ? ` ${claudeProv.status.version}` : ''}</span>
-              <ProviderSwitch provider={claudeProv}
-                busy={providerBusy !== null} onChange={toggleProvider} />
+              <span className="set-head-right">
+                <ProviderSwitch provider={claudeProv}
+                  busy={providerBusy !== null} onChange={toggleProvider} />
+              </span>
             </div>
             {/* D-202: Claude is the ONE provider whose absence is reported
                 rather than hidden — "since orgtree is built around it, do show
@@ -602,6 +611,7 @@ export function AccountsPanel({ toast, close }: {
                 </div>
               </div>
             </div>
+            </div>{/* /.set-group — Claude */}
 
             {/* ── provider section: ChatGPT (Codex) — FR-15 preview.
                 Machine-level install/connect state for the Codex CLI, and
@@ -619,16 +629,18 @@ export function AccountsPanel({ toast, close }: {
                 an uninstalled provider is not part of the product until it is
                 installed. Installed-but-signed-out is untouched and still
                 renders in full, reason and all. */}
-            {codexShown && <>
-            <div className={'acct-provider-head prov-openai'
+            {codexShown && <div className="set-group">
+            <div className={'set-group-head acct-provider-head prov-openai'
               + (codex?.user_enabled === false ? ' provider-off' : '')}>
               Codex
               <span className="dim"> · Codex CLI
                 {codex?.status.version ? ` ${codex.status.version}` : ''}</span>
-              {codex?.user_enabled !== false && !codex?.hire_enabled
-                && <span className="acct-preview-tag">preview</span>}
-              <ProviderSwitch provider={codex}
-                busy={providerBusy !== null} onChange={toggleProvider} />
+              <span className="set-head-right">
+                {codex?.user_enabled !== false && !codex?.hire_enabled
+                  && <span className="acct-preview-tag">preview</span>}
+                <ProviderSwitch provider={codex}
+                  busy={providerBusy !== null} onChange={toggleProvider} />
+              </span>
             </div>
             {!codex && (
               <div className="dim acct-prov-note">
@@ -667,22 +679,24 @@ export function AccountsPanel({ toast, close }: {
                   && <div className="dim acct-prov-note">{codex.reason}</div>}
               </>
             )}
-            </>}
+            </div>}
 
             {/* ── provider section: Gemini (D-189) — the same machine-level
                 install/connect surface, the CLI's own name as the label.
                 The preview tag only while hiring is actually off.
                 D-202 hides it whole when absent, exactly as Codex above. */}
-            {geminiShown && <>
-            <div className={'acct-provider-head prov-google'
+            {geminiShown && <div className="set-group">
+            <div className={'set-group-head acct-provider-head prov-google'
               + (gemini?.user_enabled === false ? ' provider-off' : '')}>
               Gemini
               <span className="dim"> · Gemini CLI
                 {gemini?.status.version ? ` ${gemini.status.version}` : ''}</span>
-              {gemini?.user_enabled !== false && !gemini?.hire_enabled
-                && <span className="acct-preview-tag">preview</span>}
-              <ProviderSwitch provider={gemini}
-                busy={providerBusy !== null} onChange={toggleProvider} />
+              <span className="set-head-right">
+                {gemini?.user_enabled !== false && !gemini?.hire_enabled
+                  && <span className="acct-preview-tag">preview</span>}
+                <ProviderSwitch provider={gemini}
+                  busy={providerBusy !== null} onChange={toggleProvider} />
+              </span>
             </div>
             {!gemini && (
               <div className="dim acct-prov-note">
@@ -722,110 +736,60 @@ export function AccountsPanel({ toast, close }: {
                   && <div className="dim acct-prov-note">{gemini.reason}</div>}
               </>
             )}
-            </>}
+            </div>}
           </>
         )}
-        </div>
+        </SettingsTabPanel>
 
-        <div id="app-settings-panel-runtime" role="tabpanel"
-          aria-labelledby="app-settings-tab-runtime"
-          hidden={tab !== 'runtime'} className="app-settings-panel">
+        <SettingsTabPanel id="runtime" idBase="app-settings"
+          active={tab === 'runtime'}>
           {warmingErr && <div className="ask-warn">
             could not read runtime settings: {warmingErr}</div>}
-          <label className="app-pref-row app-pref-check">
-            <input type="checkbox" role="switch"
-              aria-label="keep agent processes warm"
-              checked={warming ?? true}
+          {/* grouped by WHAT THEY ACT ON — one is about the processes that
+              sit between turns, two are about what a turn does at its edges.
+              The old flat list of three gave no reason why "keep processes
+              warm" and "wait for MCP tools" sat next to each other. */}
+          <SetGroup title="Agent processes">
+            <SetToggle label="keep agent processes warm"
+              checked={warming !== false}
               disabled={warming == null || warmingBusy}
-              onChange={(e) => {
-                const enabled = e.target.checked
-                setWarmingBusy(true)
-                setWarmingEnabled(enabled)
-                  .then((p) => {
-                    setWarming(p.warming_enabled)
-                    setWorkingCheckups(p.working_checkups_enabled !== false)
-                    setWaitForMcpTools(p.wait_for_mcp_tools_enabled === true)
-                    setWarmingErr(null)
-                    toast([`process warming turned ${p.warming_enabled ? 'on' : 'off'}`])
-                  })
-                  .catch((runtimeErr: Error) => {
-                    setWarmingErr(runtimeErr.message)
-                    toast([`error: ${runtimeErr.message}`])
-                  })
-                  .finally(() => setWarmingBusy(false))
-              }} />
-            keep agent processes warm
-            <span className="app-pref-state">{warming === false ? 'off' : 'on'}</span>
-          </label>
-          <label className="app-pref-row app-pref-check">
-            <input type="checkbox" role="switch"
-              aria-label="check on working agents after 30 minutes"
-              checked={workingCheckups ?? true}
+              onChange={runtimeSwitch(setWarmingEnabled, setWarmingBusy,
+                (p) => `process warming turned ${p.warming_enabled ? 'on' : 'off'}`)}
+              hint={'a warm process answers its next turn immediately '
+                + 'instead of starting cold'} />
+          </SetGroup>
+          <SetGroup title="Turns">
+            <SetToggle label="check on working agents after 30 minutes"
+              checked={workingCheckups !== false}
               disabled={workingCheckups == null || workingCheckupsBusy}
-              onChange={(e) => {
-                const enabled = e.target.checked
-                setWorkingCheckupsBusy(true)
-                setWorkingCheckupsEnabled(enabled)
-                  .then((p) => {
-                    setWorkingCheckups(p.working_checkups_enabled)
-                    setWarming(p.warming_enabled)
-                    setWaitForMcpTools(p.wait_for_mcp_tools_enabled === true)
-                    setWarmingErr(null)
-                    toast([`working-agent checkups turned ${p.working_checkups_enabled ? 'on' : 'off'}`])
-                  })
-                  .catch((runtimeErr: Error) => {
-                    setWarmingErr(runtimeErr.message)
-                    toast([`error: ${runtimeErr.message}`])
-                  })
-                  .finally(() => setWorkingCheckupsBusy(false))
-              }} />
-            check on working agents after 30 minutes
-            <span className="app-pref-state">
-              {workingCheckups === false ? 'off' : 'on'}
-            </span>
-            <span className="dim">
-              off uses isolated Claude cache reads instead
-            </span>
-          </label>
-          <label className="app-pref-row app-pref-check">
-            <input type="checkbox" role="switch"
-              aria-label="wait until the MCP tool surface is ready"
-              checked={waitForMcpTools ?? false}
+              onChange={runtimeSwitch(setWorkingCheckupsEnabled,
+                setWorkingCheckupsBusy,
+                (p) => 'working-agent checkups turned '
+                  + (p.working_checkups_enabled ? 'on' : 'off'))}
+              hint="off uses isolated Claude cache reads instead" />
+            <SetToggle label="wait until the MCP tool surface is ready"
+              checked={waitForMcpTools === true}
               disabled={waitForMcpTools == null || waitForMcpToolsBusy}
-              onChange={(e) => {
-                const enabled = e.target.checked
-                setWaitForMcpToolsBusy(true)
-                setWaitForMcpToolsEnabled(enabled)
-                  .then((p) => {
-                    setWaitForMcpTools(p.wait_for_mcp_tools_enabled)
-                    setWorkingCheckups(p.working_checkups_enabled)
-                    setWarming(p.warming_enabled)
-                    setWarmingErr(null)
-                    toast([`MCP tool readiness wait turned ${p.wait_for_mcp_tools_enabled ? 'on' : 'off'}`])
-                  })
-                  .catch((runtimeErr: Error) => {
-                    setWarmingErr(runtimeErr.message)
-                    toast([`error: ${runtimeErr.message}`])
-                  })
-                  .finally(() => setWaitForMcpToolsBusy(false))
-              }} />
-            wait until the MCP tool surface is ready
-            <span className="app-pref-state">
-              {waitForMcpTools === true ? 'on' : 'off'}
-            </span>
-            <span className="dim">
-              when on, a turn waits briefly for every MCP tool its last
-              successful turn could call
-            </span>
-          </label>
-        </div>
+              onChange={runtimeSwitch(setWaitForMcpToolsEnabled,
+                setWaitForMcpToolsBusy,
+                (p) => 'MCP tool readiness wait turned '
+                  + (p.wait_for_mcp_tools_enabled ? 'on' : 'off'))}
+              hint={'when on, a turn waits briefly for every MCP tool its '
+                + 'last successful turn could call'} />
+          </SetGroup>
+        </SettingsTabPanel>
 
-        <div id="app-settings-panel-display" role="tabpanel"
-          aria-labelledby="app-settings-tab-display"
-          hidden={tab !== 'display'} className="app-settings-panel">
-          <DeskTextSize />
-          <CrowdStackToggle />
-        </div>
+        <SettingsTabPanel id="display" idBase="app-settings"
+          active={tab === 'display'}>
+          {/* the scope note moves off the tab button's badge and onto the
+              group, where it can say WHAT is browser-local rather than
+              decorating the tab strip. The badge stays too — it is what
+              tells you before you open the tab. */}
+          <SetGroup title="Desk" note="saved in this browser">
+            <DeskTextSize />
+            <CrowdStackToggle />
+          </SetGroup>
+        </SettingsTabPanel>
 
         <div className="row">
           <span style={{ flex: 1 }} />

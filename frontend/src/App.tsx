@@ -24,6 +24,11 @@ import { FolderPickerHost } from './picker'
 import { ALL_TIERS, attentionPip, deskDpi, fallbackActive, freezeKind, orgPxc, presenceOfPayload, primedRestartChip, setDeskDpi, TIER_LETTER, usePolled } from './canvas/shared'
 import { AskCard } from './canvas/asks'
 import { AccountsPanel, UsageBars } from './canvas/accounts'
+import {
+  SetBlock, SetGroup, SetRow, SettingsTabPanel, SettingsTabs, SetToggle,
+  useVisitedTabs,
+} from './canvas/settingskit'
+import type { SettingsTab } from './canvas/settingskit'
 import { addPending, dropPending, ingestPulse, ingestStream, resetConvos } from './convo'
 import type {
   AskInfo, AudiencesPayload, CacheForecast, DefaultsPayload, HostPayload, InboxPayload,
@@ -1948,7 +1953,17 @@ function SweepBlock({ slug, toast }: { slug: string; toast: ToastFn }) {
   )
 }
 
-function SettingsPanel({ tree, toast, close }: {
+/** D-222: the org settings modal's tab series. "basic" is always first; the
+ *  rest are the categories that used to be inside the nested advanced modal,
+ *  now siblings of it. `mailserver` and `autonomy` are conditional — see
+ *  `orgTabs` in the panel. */
+type OrgSettingsTab =
+  'basic' | 'policies' | 'orgtype' | 'mailserver' | 'autonomy'
+
+// exported for tests/orgsettings.test.tsx — the consolidation is a claim
+// about THIS component's shape (one modal, one save, tabs not a nested
+// modal), so the test has to be able to mount it directly
+export function SettingsPanel({ tree, toast, close }: {
   tree: TreePayload
   toast: ToastFn
   close: () => void
@@ -1970,11 +1985,30 @@ function SettingsPanel({ tree, toast, close }: {
     (k in edit ? edit[k] as T : server)
   const clearEdits = () => setEdit({})
   const [orgMd, setOrgMd] = useState<string | null>(null)
-  const [showAdv, setShowAdv] = useState(false)   // F-07: the shared modal
-  // D-204: these are unsaved inputs, and the advanced modal deliberately
-  // unmounts both inactive tabs and the whole shell on close. Keep the only
-  // copies in the owning SettingsPanel so a tab switch or close/reopen cannot
-  // destroy a one-time API key paste or a half-typed mailserver address.
+  // D-222 (user ruling 2026-09-01, "consolidate settings into ONE modal"):
+  // the advanced disclosure and the nested AdvancedOrgModal it opened are
+  // gone from this panel. Its categories are now tabs of THIS modal, with
+  // "Basic" first — one surface, one Escape, one save button, and no
+  // modal-over-a-modal. (AdvancedOrgModal itself stays for the create form,
+  // which opens it from an inline form rather than from another modal.)
+  const [tab, setTab, visited] = useVisitedTabs<OrgSettingsTab>('basic')
+  // the strip is built from live org shape: a kiosk has no autonomy, an org
+  // with no mail identity has no mailserver tab. Same conditionals the
+  // advanced modal's tab array used — moved out here so the tab strip and
+  // the panels below cannot disagree about which tabs exist.
+  const orgTabs = useMemo<SettingsTab<OrgSettingsTab>[]>(() => [
+    { id: 'basic', label: 'Basic' },
+    { id: 'policies', label: 'Policies' },
+    { id: 'orgtype', label: 'Org type' },
+    ...(tree.net != null
+      ? [{ id: 'mailserver' as const, label: 'Mailserver' }] : []),
+    ...(!tree.kiosk ? [{ id: 'autonomy' as const, label: 'Autonomy' }] : []),
+  ], [tree.net, tree.kiosk])
+  // D-204: these are unsaved inputs. The tabs now stay mounted once visited,
+  // so a tab switch can no longer destroy them — but close/reopen still
+  // unmounts the whole shell, and keeping the only copies here also means a
+  // future field added to those tabs inherits the protection instead of
+  // having to rediscover it.
   const [netHubDraft, setNetHubDraft] = useState('')
   const [apiKeyDraft, setApiKeyDraft] = useState('')
 
@@ -2052,40 +2086,61 @@ function SettingsPanel({ tree, toast, close }: {
     <div className="overlay" onClick={close}>
       <div className="settings" onClick={(e) => e.stopPropagation()}>
         <h3><SettingsIcon fontSize="inherit" /> {tree.name} — settings</h3>
+        <SettingsTabs tabs={orgTabs} tab={tab} setTab={setTab}
+          idBase="org-settings" label="Organization settings sections" />
+
+        {/* ── Basic: the knobs an operator reaches for, in the order they
+            reach for them. Everything that used to be behind "advanced…" is
+            now a SIBLING TAB rather than a second modal. */}
+        <SettingsTabPanel id="basic" idBase="org-settings"
+          active={tab === 'basic'}>
         {/* folder access lives on the eye's ⚙ gear panel (user ruling) */}
-        <div className="field-label">top-level grant cap</div>
-        <input type="number" min="1" step="1" value={maxTop} style={{ width: '8em' }}
-          onChange={(e) => setMaxTop(e.target.value)} />
-        <div className="field-label">default top-level grant (pre-filled on new hires)</div>
-        <input type="number" min="0" step="1" value={defTop} style={{ width: '8em' }}
-          onChange={(e) => setDefTop(e.target.value)} />
-        <div className="field-label">compaction threshold % (50–95; splits the agent
-          when its context passes this)</div>
-        <input type="number" min="50" max="95" step="1" value={compactAt}
-          style={{ width: '8em' }}
-          onChange={(e) => setCompactAt(e.target.value)} />
-        {/* default effort (user req 2026-08-01, visible inherit): agents
-            without their own effort follow this LIVE — changing it here
-            reaches every unset agent's next turn, no rehire */}
-        <div className="field-label">default thinking effort (agents without
-          their own setting inherit this, live)</div>
-        <select value={defEffort} onChange={(e) => setDefEffort(e.target.value)}>
-          <option value="">CLI default (no flag)</option>
-          <option value="low">low</option>
-          <option value="medium">medium</option>
-          <option value="high">high</option>
-          <option value="xhigh">xhigh</option>
-          <option value="max">max</option>
-        </select>
+        <SetGroup title="Credits">
+          <SetRow label="top-level grant cap"
+            hint="the largest grant any top-level agent may hold">
+            <input type="number" min="1" step="1" value={maxTop}
+              aria-label="top-level grant cap"
+              onChange={(e) => setMaxTop(e.target.value)} />
+          </SetRow>
+          <SetRow label="default top-level grant"
+            hint="pre-filled on new hires">
+            <input type="number" min="0" step="1" value={defTop}
+              aria-label="default top-level grant"
+              onChange={(e) => setDefTop(e.target.value)} />
+          </SetRow>
+        </SetGroup>
+        <SetGroup title="Agent defaults">
+          <SetRow label="compaction threshold"
+            hint="50–95%. Splits the agent when its context passes this.">
+            <input type="number" min="50" max="95" step="1" value={compactAt}
+              aria-label="compaction threshold percent"
+              onChange={(e) => setCompactAt(e.target.value)} />
+            <span className="dim">%</span>
+          </SetRow>
+          {/* default effort (user req 2026-08-01, visible inherit): agents
+              without their own effort follow this LIVE — changing it here
+              reaches every unset agent's next turn, no rehire */}
+          <SetRow label="default thinking effort"
+            hint={'agents without their own setting inherit this, live — '
+              + 'no rehire needed'}>
+            <select value={defEffort} aria-label="default thinking effort"
+              onChange={(e) => setDefEffort(e.target.value)}>
+              <option value="">CLI default (no flag)</option>
+              <option value="low">low</option>
+              <option value="medium">medium</option>
+              <option value="high">high</option>
+              <option value="xhigh">xhigh</option>
+              <option value="max">max</option>
+            </select>
+          </SetRow>
+        </SetGroup>
         {/* per-kiosk controls (user ruling 2026-07-31): caps, share URL and
             pause live HERE, in the org's own settings — the all-kiosks
             dashboard on the welcome panel is gone */}
         {kk && (
-          <>
-            <div className="field-label">kiosk caps
-              {kk.sandbox && <span className="dim"> · sandboxed</span>}
-              {!kk.enabled && <span className="dim"> · URL paused</span>}
-            </div>
+          <SetGroup title="Kiosk"
+            note={[kk.sandbox ? 'sandboxed' : '',
+              kk.enabled ? '' : 'URL paused'].filter(Boolean).join(' · ')}>
             <div className="kiosk-caps">
               <label>credits <input type="number" min="0" value={kkCredits}
                 onChange={(e) => setKkCredits(e.target.value)} /></label>
@@ -2124,173 +2179,216 @@ function SettingsPanel({ tree, toast, close }: {
                 {kk.enabled ? <BlockIcon fontSize="inherit" />
                   : <PlayIcon fontSize="inherit" />}</button>
             </div>
-          </>
+          </SetGroup>
         )}
-        <div className="field-label">org.md</div>
-        <textarea className="orgmd-editor" value={orgMd ?? ''} disabled={orgMd == null}
-          onChange={(e) => setOrgMd(e.target.value)} />
-        {/* F-07: everything below the everyday knobs lives in the shared
-            advanced modal — same shape the create form opens. The summary
-            names what is set, so nothing hides silently. */}
-        <button type="button" className="disclosure" onClick={() => setShowAdv(true)}>
-          <ChevronRightIcon fontSize="inherit" /> advanced…
-          <span className="dim adv-sum"> · {[
-            kk ? 'kiosk' : '', tree.sandboxed ? 'sandboxed' : '',
-            fablePolicy !== 'halt' ? `fable-limit:${fablePolicy}` : '',
-            filterPolicy !== 'halt' ? `fable-filter:${filterPolicy}` : '',
-            tree.fable_api_fallback ? 'fable→key fallback' : '',
-            !cascadeHire || !cascadeAlloc ? 'cascade off' : '',
-          ].filter(Boolean).join(' · ') || 'policies & ceiling'}</span>
-        </button>
-        {showAdv && (
-          <AdvancedOrgModal title={tree.name} close={() => setShowAdv(false)}
-            tabs={[
-              { label: 'general', content: (<>
-            <div className="field-label">fable weekly-limit policy</div>
-            <select value={fablePolicy} onChange={(e) => setFablePolicy(e.target.value)}>
-              <option value="halt">halt (default)</option>
-              <option value="opus">switch to opus</option>
-              <option value="dissolve">dissolve subtree</option>
-            </select>
-            {tree.fable_api_fallback && <div className="dim hub-hint">a
-              TRUSTED weekly Fable-tier hit currently bypasses this policy —
-              see "also cover the weekly Fable-tier limit" in the autonomy
-              tab</div>}
-            <div className="field-label">fable content-filter policy (a flagged message
-              halts the turn, or converts the agent to opus and retries)</div>
-            <select value={filterPolicy} onChange={(e) => setFilterPolicy(e.target.value)}>
-              <option value="halt">halt (default)</option>
-              <option value="opus">switch to opus + retry</option>
-            </select>
-            <div className="field-label">cache-protective cheap compaction
-              (before a known-cold, high-context turn, reset the session; the
-              old self stays consultable)</div>
-            <div className="dim hub-hint">Cache expiry is fixed by lane, never
-              editable: Claude uses 60 min after a positive subscription
-              receipt or 5 min after a positive API-key receipt; OpenAI
-              subscription uses the documented 30 min default as a fixed
-              estimate. A known identity mismatch is cold immediately;
-              unknown forecasts never auto-compact.</div>
-            <label className="checkline">
-              <input type="checkbox" checked={accOn}
-                onChange={(e) => setAccOn(e.target.checked)} />
-              enabled (org default — agents can override in their ⚙)
-            </label>
-            {accOn && <div className="row">
-              <label>context ≥ <input type="number" min="5" max="95" step="5"
-                style={{ width: '5em' }} value={accOcc}
-                onChange={(e) => setAccOcc(e.target.value)} />%</label>
-            </div>}
-            {/* 2026-08-17: a usage-limit freeze outlives the cache TTL by
-                construction, so the auto-resume wake can swap the session
-                first and skip the cold reload. The manual ▶ never compacts. */}
-            <label className="checkline"
-              title="applies only to the automatic resume after a usage-limit freeze (auto-resume toggle); pressing ▶ yourself resumes sessions as they are">
-              <input type="checkbox" checked={arCompact}
-                onChange={(e) => setArCompact(e.target.checked)} />
-              cheap-compact limit-frozen agents before auto-resume wakes them
-            </label>
+        <SetGroup title="Org charter" note="org.md">
+          <SetBlock hint="loaded into every agent's context each turn">
+            <textarea className="orgmd-editor" value={orgMd ?? ''}
+              aria-label="org.md" disabled={orgMd == null}
+              onChange={(e) => setOrgMd(e.target.value)} />
+          </SetBlock>
+        </SetGroup>
+        </SettingsTabPanel>
+
+        {/* ── Policies (was the advanced modal's "general" tab) ─────────── */}
+        <SettingsTabPanel id="policies" idBase="org-settings"
+          active={tab === 'policies'}>
+          {visited('policies') && (<>
+            <SetGroup title="Fable tier">
+              <SetRow label="weekly-limit policy"
+                hint={tree.fable_api_fallback
+                  ? 'a TRUSTED weekly Fable-tier hit currently bypasses this'
+                    + ' policy — see "also cover the weekly Fable-tier limit"'
+                    + ' on the Autonomy tab'
+                  : 'what happens when the weekly Fable-tier limit is reached'}>
+                <select value={fablePolicy} aria-label="fable weekly-limit policy"
+                  onChange={(e) => setFablePolicy(e.target.value)}>
+                  <option value="halt">halt (default)</option>
+                  <option value="opus">switch to opus</option>
+                  <option value="dissolve">dissolve subtree</option>
+                </select>
+              </SetRow>
+              <SetRow label="content-filter policy"
+                hint={'a flagged message halts the turn, or converts the '
+                  + 'agent to opus and retries'}>
+                <select value={filterPolicy} aria-label="fable content-filter policy"
+                  onChange={(e) => setFilterPolicy(e.target.value)}>
+                  <option value="halt">halt (default)</option>
+                  <option value="opus">switch to opus + retry</option>
+                </select>
+              </SetRow>
+            </SetGroup>
+            <SetGroup title="Cache-protective cheap compaction">
+              <SetToggle label="reset a session before a known-cold turn"
+                checked={accOn} onChange={setAccOn}
+                hint={'org default — agents can override in their own ⚙. '
+                  + 'The old self stays consultable. Cache expiry is fixed by '
+                  + 'lane and never editable: Claude uses 60 min after a '
+                  + 'positive subscription receipt or 5 min after a positive '
+                  + 'API-key receipt; OpenAI subscription uses the documented '
+                  + '30 min default as a fixed estimate. A known identity '
+                  + 'mismatch is cold immediately; unknown forecasts never '
+                  + 'auto-compact.'} />
+              {accOn && (
+                <SetRow label="only above a context occupancy of">
+                  <input type="number" min="5" max="95" step="5" value={accOcc}
+                    aria-label="cheap compaction context occupancy percent"
+                    onChange={(e) => setAccOcc(e.target.value)} />
+                  <span className="dim">%</span>
+                </SetRow>
+              )}
+              {/* 2026-08-17: a usage-limit freeze outlives the cache TTL by
+                  construction, so the auto-resume wake can swap the session
+                  first and skip the cold reload. The manual ▶ never compacts. */}
+              <SetToggle
+                label="cheap-compact limit-frozen agents before auto-resume"
+                checked={arCompact} onChange={setArCompact}
+                title="applies only to the automatic resume after a usage-limit freeze (auto-resume toggle); pressing ▶ yourself resumes sessions as they are"
+                hint={'applies to the automatic resume only — pressing ▶ '
+                  + 'yourself resumes the session as it is'} />
+            </SetGroup>
             {/* §4.6 cost-bubbling toggles (user spec, both ON by default) */}
-            <div className="field-label">credit cost bubbling</div>
-            <label className="checkline">
-              <input type="checkbox" checked={cascadeHire}
-                onChange={(e) => setCascadeHire(e.target.checked)} />
-              hires bubble their cost up the chain (off: the hiring agent's superior
-              must hold the free credits itself)
-            </label>
-            <label className="checkline">
-              <input type="checkbox" checked={cascadeAlloc}
-                onChange={(e) => setCascadeAlloc(e.target.checked)} />
-              allocations &amp; model upgrades bubble their cost up the chain (off:
-              limited to the superior's own free credits)
-            </label>
-            <div className="dim" style={{ fontSize: '11.5px' }}>
-              changes here save with the panel's own save button
-            </div>
-              </>) },
-              { label: 'org type', content: (<>
+            <SetGroup title="Credit cost bubbling">
+              <SetToggle label="hires bubble their cost up the chain"
+                checked={cascadeHire} onChange={setCascadeHire}
+                hint={"off: the hiring agent's superior must hold the free "
+                  + 'credits itself'} />
+              <SetToggle
+                label="allocations & model upgrades bubble their cost up the chain"
+                checked={cascadeAlloc} onChange={setCascadeAlloc}
+                hint="off: limited to the superior's own free credits" />
+            </SetGroup>
+          </>)}
+        </SettingsTabPanel>
+
+        {/* ── Org type (was the advanced modal's "org type" tab) ────────── */}
+        <SettingsTabPanel id="orgtype" idBase="org-settings"
+          active={tab === 'orgtype'}>
+          {visited('orgtype') && (<>
             {/* born-with facts render LOCKED: the modal must not offer to
                 change what cannot change after creation (docket F-07 rule 1) */}
-            <div className="field-label">born-with — set at creation, immutable</div>
-            <div className="row" style={{ flexWrap: 'wrap' }}>
-              <span className="badge dim">{kk ? 'kiosk' : 'not a kiosk'}</span>
-              <span className="badge dim">{tree.sandboxed ? 'sandboxed (Docker)' : 'unsandboxed'}</span>
-              {tree.disk && <span className="badge dim">fixed disk · resize via the storage browser</span>}
-            </div>
+            <SetGroup title="Born with" note="set at creation, immutable">
+              <SetBlock>
+                <div className="row" style={{ flexWrap: 'wrap' }}>
+                  <span className="badge dim">{kk ? 'kiosk' : 'not a kiosk'}</span>
+                  <span className="badge dim">{tree.sandboxed ? 'sandboxed (Docker)' : 'unsandboxed'}</span>
+                  {tree.disk && <span className="badge dim">fixed disk · resize via the storage browser</span>}
+                </div>
+              </SetBlock>
+            </SetGroup>
             {ms && ceil && (
-              <>
-                <div className="field-label"
-                  title="visitors and agents retool freely WITHIN it (clamped, never refused); lowering it sweeps every agent's grants to fit">
-                  kiosk permission ceiling — the maximum grantable to any agent</div>
-                <div className="ceil-tools">
-                  {(['bash', 'web', 'edit', 'subagents'] as const).map((k) => (
-                    <label key={k} className="checkline">
-                      <input type="checkbox" checked={ceil[k]}
-                        onChange={(e) => setCeil((c) => ({ ...c!, [k]: e.target.checked }))} />
-                      {k}
-                    </label>
-                  ))}
-                </div>
-                <div className="field-label">MCP servers ("*" = all, empty = none,
-                  or a comma-separated list)</div>
-                <input value={ceilMcp} placeholder="*"
-                  onChange={(e) => setCeilMcp(e.target.value)} />
-                <div className="field-label">folder bounds (grants clamp into these)</div>
-                <CeilDirs dirs={ceilDirs} onChange={setCeilDirs} />
+              <SetGroup title="Kiosk permission ceiling"
+                note="the maximum grantable to any agent">
+                <SetBlock label="tools"
+                  hint={'visitors and agents retool freely WITHIN the '
+                    + "ceiling (clamped, never refused); lowering it sweeps "
+                    + "every agent's grants to fit"}>
+                  <div className="ceil-tools">
+                    {(['bash', 'web', 'edit', 'subagents'] as const).map((k) => (
+                      <label key={k} className="checkline">
+                        <input type="checkbox" checked={ceil[k]}
+                          onChange={(e) => setCeil((c) => ({ ...c!, [k]: e.target.checked }))} />
+                        {k}
+                      </label>
+                    ))}
+                  </div>
+                </SetBlock>
+                {/* "ADDITIONAL" is load-bearing (coordinator, 2026-09-01):
+                    this list is the OPERATOR-supplied servers only. Every
+                    agent always reaches Orgtree's own MCP server whatever is
+                    set here, so an empty box reads as "zero callable MCP
+                    tools" to anyone who has not been told otherwise — and it
+                    never means that. */}
+                <SetBlock label="additional MCP servers"
+                  hint={'operator-supplied servers only — "*" = all, empty = '
+                    + 'none, or a comma-separated list. Orgtree’s own MCP '
+                    + 'server is always available to every agent and is not '
+                    + 'affected by this field.'}>
+                  <input value={ceilMcp} placeholder="*"
+                    aria-label="additional MCP servers"
+                    onChange={(e) => setCeilMcp(e.target.value)} />
+                </SetBlock>
+                <SetBlock label="folder bounds"
+                  hint="grants clamp into these">
+                  <CeilDirs dirs={ceilDirs} onChange={setCeilDirs} />
+                </SetBlock>
                 {/* styled like the credits/spend/storage caps (user spec) */}
-                <div className="kiosk-caps">
-                  <label>visibility ≤ <select value={ceilVis}
-                    onChange={(e) => setCeilVis(e.target.value)}>
-                    {['self', 'team', 'subtree', 'full'].map((v) =>
-                      <option key={v} value={v}>{v}</option>)}
-                  </select></label>
-                  <label>mode ≤ <select value={ceilPm}
-                    onChange={(e) => setCeilPm(e.target.value)}>
-                    <option value="default">default</option>
-                    <option value="acceptEdits">acceptEdits</option>
-                    <option value="bypassPermissions">bypassPermissions</option>
-                  </select></label>
-                  <label
-                    title="the highest model tier this kiosk may run — spawn tokens above it disappear; hires, rehires and switches above it are refused (existing over-cap agents stay until you switch or retire them)">
-                    tier ≤ <select value={ceilTier}
-                      onChange={(e) => setCeilTier(e.target.value)}>
-                      <option value="">fable</option>
-                      <option value="opus">opus</option>
-                      <option value="sonnet">sonnet</option>
-                      <option value="haiku">haiku</option>
+                <SetBlock>
+                  <div className="kiosk-caps">
+                    <label>visibility ≤ <select value={ceilVis}
+                      onChange={(e) => setCeilVis(e.target.value)}>
+                      {['self', 'team', 'subtree', 'full'].map((v) =>
+                        <option key={v} value={v}>{v}</option>)}
                     </select></label>
-                </div>
-                <label className="checkline"
-                  title="an over-ceiling grant made by YOU raises the ceiling to fit (logged, named) instead of clamping; visitors always clamp">
-                  <input type="checkbox" checked={autoRaise}
-                    onChange={(e) => setAutoRaise(e.target.checked)} />
-                  auto-raise the ceiling on my own over-ceiling grants
-                </label>
-              </>
+                    <label>mode ≤ <select value={ceilPm}
+                      onChange={(e) => setCeilPm(e.target.value)}>
+                      <option value="default">default</option>
+                      <option value="acceptEdits">acceptEdits</option>
+                      <option value="bypassPermissions">bypassPermissions</option>
+                    </select></label>
+                    <label
+                      title="the highest model tier this kiosk may run — spawn tokens above it disappear; hires, rehires and switches above it are refused (existing over-cap agents stay until you switch or retire them)">
+                      tier ≤ <select value={ceilTier}
+                        onChange={(e) => setCeilTier(e.target.value)}>
+                        <option value="">fable</option>
+                        <option value="opus">opus</option>
+                        <option value="sonnet">sonnet</option>
+                        <option value="haiku">haiku</option>
+                      </select></label>
+                  </div>
+                </SetBlock>
+                <SetToggle
+                  label="auto-raise the ceiling on my own over-ceiling grants"
+                  checked={autoRaise} onChange={setAutoRaise}
+                  title="an over-ceiling grant made by YOU raises the ceiling to fit (logged, named) instead of clamping; visitors always clamp"
+                  hint={'an over-ceiling grant made by YOU raises the '
+                    + 'ceiling to fit (logged, named) instead of clamping; '
+                    + 'visitors always clamp'} />
+              </SetGroup>
             )}
-            {tree.fable_lock && (
-              <button className="danger" onClick={() =>
-                saveSettings(tree.slug, { clear_fable_lock: true })
-                  .then((r) => { toast(r.warnings); close() })
-                  .catch((e: Error) => toast([`error: ${e.message}`]))}>
-                <BlockIcon fontSize="inherit" /> clear the fable weekly-limit lock (your decree)</button>
+            {(tree.fable_lock || tree.disk) && (
+              <SetGroup title="Maintenance">
+                {tree.fable_lock && (
+                  <SetBlock>
+                    <div className="row">
+                      <button className="danger" onClick={() =>
+                        saveSettings(tree.slug, { clear_fable_lock: true })
+                          .then((r) => { toast(r.warnings); close() })
+                          .catch((e: Error) => toast([`error: ${e.message}`]))}>
+                        <BlockIcon fontSize="inherit" /> clear the fable weekly-limit lock (your decree)</button>
+                    </div>
+                  </SetBlock>
+                )}
+                {tree.disk && <SweepBlock slug={tree.slug} toast={toast} />}
+              </SetGroup>
             )}
-            {tree.disk && <SweepBlock slug={tree.slug} toast={toast} />}
-            <div className="dim" style={{ fontSize: '11.5px' }}>
-              changes here save with the panel's own save button
-            </div>
-              </>) },
-              ...(tree.net != null
-                ? [{ label: 'mailserver',
-                     content: <NetTab tree={tree} toast={toast}
-                       adding={netHubDraft} setAdding={setNetHubDraft} /> }] : []),
-              ...(!kk
-                ? [{ label: 'autonomy',
-                     content: <AutonomyTab tree={tree} toast={toast}
-                       keyDraft={apiKeyDraft} setKeyDraft={setApiKeyDraft} /> }]
-                : []),
-            ]} />
+          </>)}
+        </SettingsTabPanel>
+
+        {/* ── Mailserver (F-06). Saves IMMEDIATELY on its own, which is why
+            it is rendered only once visited: an unvisited tab must not fetch
+            hub state the operator never asked to see. ─────────────────── */}
+        {tree.net != null && (
+          <SettingsTabPanel id="mailserver" idBase="org-settings"
+            active={tab === 'mailserver'}>
+            {visited('mailserver') && <NetTab tree={tree} toast={toast}
+              adding={netHubDraft} setAdding={setNetHubDraft} />}
+          </SettingsTabPanel>
         )}
+
+        {/* ── Autonomy — kiosks have none, so the tab is absent for them ── */}
+        {!kk && (
+          <SettingsTabPanel id="autonomy" idBase="org-settings"
+            active={tab === 'autonomy'}>
+            {visited('autonomy') && <AutonomyTab tree={tree} toast={toast}
+              keyDraft={apiKeyDraft} setKeyDraft={setApiKeyDraft} />}
+          </SettingsTabPanel>
+        )}
+
+        {/* ONE save button for the whole modal, on every tab — the panel's
+            single save surface, unchanged. It is now visible from whichever
+            tab you are on, which is what retires the four "changes here save
+            with the panel's own save button" notes the nested modal needed. */}
         <div className="row">
           <button className="primary" onClick={() => {
             // the bottom save applies the WHOLE panel: the kiosk caps and

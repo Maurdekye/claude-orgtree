@@ -158,8 +158,12 @@ test('§3 Display owns both browser-local controls, with durable values and no '
     const panel = view.el.querySelector<HTMLElement>('#app-settings-panel-display')!
     assert.equal(panel.querySelectorAll('.hint').length, 0)
     assert.match(panel.textContent ?? '', /desk text size/)
+    // D-222 renamed the crowd toggle: the LABEL is now the short imperative
+    // and the 8-agent threshold moved into the row's hint, where the rest of
+    // the settings surface puts its qualifying prose.
+    assert.match(panel.textContent ?? '', /collapse crowded teams into one stack/)
     assert.match(panel.textContent ?? '',
-      /collapse teams with more than 8 active agents into one stack/)
+      /more than 8 active agents draws as a single stack/)
     const plus = [...panel.querySelectorAll<HTMLButtonElement>('button')]
       .find((b) => b.textContent === '+')!
     await inAct(async () => { plus.click() })

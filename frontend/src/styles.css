@@ -3813,14 +3813,20 @@ html.mobile .md table { display: block; overflow-x: auto; max-width: 100%; }
   display: inline-flex; align-items: center; justify-content: center;
   border-radius: 4px; font-size: 15px; }
 .acct-panel .acct-add { width: 62px; }
-/* ---- provider sections (FR-15 preview): a head per vendor over its rows ---- */
-.acct-provider-head { display: flex; align-items: baseline; gap: 6px;
-  font-size: 13px; font-weight: 600; color: var(--ink-strong);
-  border-bottom: 1px solid var(--line); padding-bottom: 3px; margin-top: 4px; }
-.acct-provider-head .dim { font-weight: 400; font-size: 11.5px; }
-.acct-preview-tag { margin-left: auto; font-size: 9.5px; font-weight: 700;
+/* ---- provider sections (FR-15 preview): a head per vendor over its rows.
+   Metrics and type come from `.set-group-head` (D-222) — the element carries
+   both classes — so a vendor head and a Runtime group head are the same
+   object. Only the vendor colouring lives here. ---- */
+.acct-provider-head { margin-top: 4px; }
+/* ⚠ NO `margin-left: auto` HERE (D-222). The switch already claims the free
+   space with one; a SECOND auto margin splits it, so the tag floated in the
+   middle of the head instead of sitting with the control it qualifies —
+   measured 2026-09-01 at x=686 in a 660px panel, nowhere near either edge.
+   One auto margin per row, and it belongs to the rightmost item. */
+.acct-preview-tag { font-size: 9.5px; font-weight: 700;
   text-transform: uppercase; letter-spacing: .06em; color: var(--dim);
-  border: 1px dashed var(--line); border-radius: 8px; padding: 1px 7px; }
+  border: 1px dashed var(--line); border-radius: 8px; padding: 1px 7px;
+  flex: none; align-self: center; }
 /* the codex section wears its provider's blue (user spec 2026-08-29) */
 .acct-provider-head.prov-openai { border-bottom-color: color-mix(in srgb, var(--prov-openai) 45%, var(--line)); }
 .acct-provider-head.prov-openai .acct-preview-tag { color: var(--prov-openai);
@@ -3828,11 +3834,34 @@ html.mobile .md table { display: block; overflow-x: auto; max-width: 100%; }
 .acct-provider-head.prov-google { border-bottom-color: color-mix(in srgb, var(--prov-google) 45%, var(--line)); }
 .acct-provider-head.prov-google .acct-preview-tag { color: var(--prov-google);
   border-color: color-mix(in srgb, var(--prov-google) 45%, var(--line)); }
-.acct-prov-note { font-size: 12.5px; line-height: 1.5; }
+/* D-222 — THE RAIL. The account rows are inset by the routing gutter
+   (72px) plus the line's own 8px gap, so every field, grip and button in the
+   Providers tab starts at 80px. The provider notes and tier lists are part of
+   the same section but were rendered at the panel edge, which left the tab
+   with two competing left margins and a visibly ragged edge (measured
+   2026-09-01: heads and notes at x=53, row content at x=215). They now share
+   the rows' rail. The HEAD itself deliberately stays full-bleed: it is the
+   section rule, and a rule that starts 80px in is a fragment, not a rule. */
+.acct-panel { --acct-rail: 80px; }
+.acct-prov-note { font-size: 12.5px; line-height: 1.5;
+  margin-left: var(--acct-rail); }
 .acct-prov-note code { font-size: 11px; }
 .acct-prov-tiers { display: flex; flex-wrap: wrap; gap: 6px 14px;
-  font-size: 12.5px; }
+  font-size: 12.5px; margin-left: var(--acct-rail); }
 .acct-prov-tier { display: inline-flex; align-items: center; gap: 6px; }
+/* NARROW: a 660px panel can spare 80px for the routing gutter; a 340px one
+   cannot, and shrinking the gutter instead would wrap the chips and make
+   every row a different height. So the line stacks — chips ABOVE their row,
+   left-aligned — and the rail collapses to 0, which puts rows, notes and
+   tier lists back on ONE left edge. Still one system, one column, just a
+   different arrangement of it. The variable is what keeps the notes honest:
+   they cannot disagree with the rows about where the rail is. */
+@media (max-width: 460px) {
+  .acct-panel { --acct-rail: 0px; }
+  .acct-line { flex-direction: column; align-items: stretch; gap: 4px; }
+  .acct-gutter { width: auto; justify-content: flex-start; }
+  .acct-gutter:empty { display: none; }
+}
 
 /* ------------------------------------------------ D-203: App settings ----
    Machine-wide provider admission and browser-local display preferences live
@@ -3851,45 +3880,169 @@ html.mobile .md table { display: block; overflow-x: auto; max-width: 100%; }
 .settings .app-settings-tab.on {
   color: var(--ink-strong); border-bottom-color: var(--accent);
 }
-@media (max-width: 420px) {
+/* the tab strip scrolls rather than wrapping (D-222): a wrapped strip put
+   one lone tab on a second line with its own full-width rule, which read as
+   a section divider rather than as the rest of the same control. */
+@media (max-width: 460px) {
   .app-settings-tabs {
-    align-items: stretch; flex-wrap: wrap; border-bottom: 0;
+    flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none;
   }
-  .settings .app-settings-tab {
-    flex: 1 1 auto; justify-content: center; margin-bottom: 0;
-    border-bottom-color: var(--line);
-  }
-  .app-settings-panel .app-pref-row:not(.app-pref-check) {
-    align-items: stretch; flex-direction: column; gap: 7px;
-  }
-  .app-settings-panel .app-pref-control {
-    margin-left: 0; justify-content: flex-start;
-  }
+  .app-settings-tabs::-webkit-scrollbar { height: 0; }
+  .settings .app-settings-tab { flex: none; padding: 5px 8px 7px; }
 }
 .app-settings-scope {
   color: var(--dim); border: 1px solid var(--line); border-radius: 8px;
   padding: 0 6px; font-size: 9.5px; font-weight: 400;
 }
 .app-settings-panel:not([hidden]) {
-  display: flex; flex-direction: column; gap: 12px;
+  display: flex; flex-direction: column; gap: 15px;
 }
+/* no `margin-left: auto` — `.set-head-right` owns the head's one auto margin */
 .provider-switch {
-  display: inline-flex; align-items: center; gap: 5px; margin-left: auto;
-  color: var(--ink); font-size: 11px; font-weight: 500; cursor: pointer;
+  display: inline-flex; align-items: center; gap: 5px;
+  color: var(--ink); font-size: 11.5px; font-weight: 500; cursor: pointer;
 }
-.provider-switch input { cursor: pointer; }
+.provider-switch > span { min-width: 2.1em; color: var(--dim); }
+.provider-switch input:checked + span { color: var(--ink); }
+/* ⚠ `flex: none` on every settings control input. Without it a checkbox is a
+   shrinkable flex item, and a long label on a narrow panel squeezed the three
+   Runtime switches down to 6px, 4px and finally invisible dots — measured at
+   360px before D-222. A control the user cannot hit is worse than a wrapped
+   label, so the LABEL wraps and the control never moves. */
+.provider-switch input { cursor: pointer; flex: none; accent-color: var(--accent);
+  /* an unstyled checkbox is 13px in Chromium — below the ~15px a pointer can
+     reliably hit, and visibly smaller than the 16px switches one tab over.
+     Sized here rather than left to the UA so the two surfaces match. */
+  width: 16px; height: 16px; margin: 0; }
 .acct-provider-head.provider-off {
   border-bottom-style: dashed; color: var(--dim);
 }
-.app-pref-row {
-  display: flex; align-items: center; justify-content: space-between;
-  gap: 16px; min-height: 40px;
+
+/* ------------------------------------------ D-222: the settings row ------
+   ONE GRID FOR EVERY ADJUSTABLE THING, in App settings and org settings
+   alike. Three columns that are the same in every row of every tab:
+
+       [ lead 18px ] [ label 1fr ] [ control auto ]
+       [    .      ] [ hint, spanning label+control ]
+
+   WHY A GRID AND NOT A FLEX ROW. The rows this replaces were flex, and each
+   one chose its own idiom: Display's text-size row put its label left and its
+   control right, Display's checkbox row put the control FIRST, and Runtime's
+   rows put control-first then pushed an on/off word right with margin-left
+   auto — except that `auto` only reaches the panel edge when nothing follows
+   it, so a row with a trailing hint parked its state word mid-row. Measured
+   2026-09-01: the three Runtime state words landed at x=1253, x=682 and
+   x=510 in one 1320px panel. A grid cannot do that: the column exists whether
+   or not a row fills it, so the controls line up because they are IN a
+   column, not because each row independently arrived at the same place.
+
+   The hint is on its own grid row rather than trailing the label inline. As
+   an inline sibling it competed with the label for the same horizontal space
+   and read as a second column of unrelated prose; underneath, indented to the
+   label rather than to the checkbox, it reads as what it is — a footnote to
+   the thing above it.
+
+   Add a row by writing `.set-row`; do NOT add a per-row special case. */
+/* a group is TIGHT inside and spaced outside: rows within a section are one
+   list (separated by hairlines, not by air), and the air goes between
+   sections. The panel's own `gap` supplies the outer rhythm, so a group must
+   not add a second one. */
+.set-group { display: flex; flex-direction: column; }
+/* `.set-row` is excluded: its own 9px padding plus the hairline IS the
+   spacing between rows, and adding a margin on top of that would open the
+   list back up into the loose stack this replaced. Everything else in a
+   group — account lines, provider notes, tier strips — gets one small step. */
+.set-group > * + *:not(.set-row) { margin-top: 6px; }
+/* ONE SECTION HEAD FOR THE WHOLE SETTINGS SURFACE. The Providers tab's
+   vendor heads and the Runtime/Display group heads sit at the same level of
+   the same modal, so they are the same object: `.acct-provider-head` now
+   carries this class and adds only its provider-specific colouring. Two
+   different head treatments one tab apart is the incoherence this whole
+   change is about. */
+.set-group-head {
+  font-size: 13px; font-weight: 600; color: var(--ink-strong);
+  border-bottom: 1px solid var(--line); padding-bottom: 3px; margin-bottom: 2px;
+  display: flex; align-items: baseline; gap: 6px;
 }
-.app-pref-label { font-weight: 600; color: var(--ink); }
-.app-pref-control { margin-left: auto; flex-wrap: nowrap; }
-.app-pref-value { min-width: 4.5em; text-align: center; }
-.app-pref-check { justify-content: flex-start; cursor: pointer; }
-.app-pref-state { margin-left: auto; color: var(--dim); font-size: 11px; }
+.set-group-head .dim { font-weight: 400; font-size: 11.5px; }
+/* the head's right-hand cluster — a scope note, a preview tag, a switch.
+   ⚠ ONE auto margin, on the cluster, never on its members: two members each
+   claiming `margin-left: auto` split the free space between them and neither
+   lands where it was meant to. */
+.set-head-right { margin-left: auto; align-self: center; flex: none;
+  display: flex; align-items: center; gap: 8px; }
+.set-row {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  grid-template-areas: "lead label control" ".  hint hint";
+  /* ROW-GAP 0 on purpose: `grid-template-areas` declares the hint row
+     whether or not a row has a hint, so a row-gap would make every hintless
+     row 3px taller than its neighbours. The hint carries its own margin. */
+  align-items: center; gap: 0 12px;
+  padding: 9px 0; margin: 0; min-height: 40px;
+  font-size: 13.5px; line-height: 1.45; color: var(--ink);
+}
+/* hairlines, not gaps: a stack of rows separated by whitespace reads as
+   loose cards, and the eye loses the column. The first row in a group has
+   the group head's own rule above it already. */
+.set-row + .set-row { border-top: 1px solid var(--line-soft); }
+label.set-row { cursor: pointer; }
+.set-lead { grid-area: lead; display: flex; align-items: center;
+  justify-content: center; min-height: 20px; }
+.settings .set-lead input[type="checkbox"] {
+  flex: none; width: 16px; height: 16px; margin: 0; accent-color: var(--accent);
+  cursor: pointer;
+}
+.set-label { grid-area: label; min-width: 0; }
+.set-label b, .set-title { font-weight: 600; color: var(--ink-strong); }
+/* the trailing cell: an on/off word, a stepper, a select, a number box */
+.set-control { grid-area: control; display: flex; align-items: center;
+  gap: 6px; justify-self: end; min-height: 20px; }
+.set-control > * { flex: none; }
+.settings .set-control button { font-size: 12.5px; padding: 5px 11px; }
+/* the state word is the widest of "on"/"off" so the switch column cannot
+   twitch left and right as rows are toggled */
+.set-state { color: var(--dim); font-size: 11.5px; min-width: 2.1em;
+  text-align: right; }
+.set-state.on { color: var(--ink); }
+.set-value { min-width: 4.2em; text-align: center; font-variant-numeric:
+  tabular-nums; color: var(--ink-strong); }
+.set-hint { grid-area: hint; font-size: 11.5px; line-height: 1.45;
+  color: var(--dim); margin-top: 3px; }
+.set-hint code { font-size: 11px; }
+/* a row's own sub-controls (a dependent number field revealed by a toggle)
+   sit under the hint, still on the label rail */
+.set-sub { grid-area: hint; display: flex; align-items: center;
+  flex-wrap: wrap; gap: 6px; font-size: 12px; color: var(--dim); }
+.set-sub input { width: 5em; }
+.settings .set-row select, .settings .set-row input[type="number"],
+.settings .set-row input[type="text"] { font-size: 12.5px; padding: 5px 9px; }
+.settings .set-row input[type="number"] { width: 7em; }
+/* a full-width field (a textarea, a folder list, a badge strip) keeps the
+   rail but drops the control column — the field IS the control and needs the
+   width.
+   ⚠ THE PADDING IS THE RAIL, and it must equal the grid's first column plus
+   its gap (18px + 12px). Without it a block's label sat at the panel edge
+   while every row label beside it sat 30px in, which is the ragged left edge
+   this whole change exists to remove — visible on the org Basic tab as
+   "org.md" starting left of "top-level grant cap" directly above it. */
+.set-block { display: flex; flex-direction: column; gap: 6px;
+  padding: 9px 0 9px 30px; }
+.set-row + .set-block, .set-block + .set-row, .set-block + .set-block {
+  border-top: 1px solid var(--line-soft);
+}
+.set-block > .set-hint { grid-area: auto; }
+/* NARROW: the control drops to its own line under the hint and left-aligns
+   to the label rail. It does NOT return to the panel edge — the rail is the
+   thing that makes a narrow panel still read as a system. */
+@media (max-width: 460px) {
+  .set-row {
+    grid-template-areas: "lead label" ".  hint" ".  control";
+    grid-template-columns: 18px minmax(0, 1fr);
+  }
+  .set-control { justify-self: start; padding-top: 2px; }
+  .set-state { text-align: left; }
+}
 .lin-provider-off {
   color: var(--dim); font-size: 11.5px; line-height: 1.35;
 }
