@@ -5625,6 +5625,7 @@ def _working_cache_idle(slug: str, nid: str) -> bool:
         return (not st.get("busy") and not st.get("waiting")
                 and not st.get("responding") and not st.get("queue")
                 and not st.get("cache_keepalive")
+                and not st.get("proc_control")
                 and (slug, nid) not in _working_cache_inflight)
 
 
@@ -5908,6 +5909,7 @@ def _launch_working_cache_read(slug: str, nid: str) -> None:
     with _state_lock, _working_cache_lock:
         if (st.get("busy") or st.get("waiting") or st.get("responding")
                 or st.get("queue") or st.get("cache_keepalive")
+                or st.get("proc_control")
                 or key in _working_cache_inflight):
             return
         st["cache_keepalive"] = lease
@@ -11980,7 +11982,7 @@ def manual_compact(slug: str, nid: str) -> None:
                 "fork would strand the controlled session)")
     st = state(slug, nid)
     with _state_lock:
-        if st["busy"]:
+        if st["busy"] or st.get("proc_control"):
             raise RuntimeError("busy — wait for the current turn to finish")
         st["busy"] = True
     try:
@@ -12277,6 +12279,10 @@ def send_message(slug: str, nid: str, text: str,
         # any waiting mail stays boxed for the next normal turn
         carrier = {"cmd": True, "text": text, "view": text}
         with _state_lock:
+            if st.get("proc_control"):
+                st["queue"].append(carrier)
+                return {"accepted": True, "queued": len(st["queue"]),
+                        "command": True, "process_control": True}
             if st["busy"]:
                 st["queue"].append(carrier)
                 return {"accepted": True, "queued": len(st["queue"]),
@@ -12292,7 +12298,8 @@ def send_message(slug: str, nid: str, text: str,
         with _state_lock:
             if (st.get("busy") or st.get("waiting")
                     or st.get("responding") or st.get("queue")
-                    or st.get("steer") or st.get("cache_keepalive")):
+                    or st.get("steer") or st.get("cache_keepalive")
+                    or st.get("proc_control")):
                 return {"accepted": False, "queued": 0, "not_idle": True}
             st["busy"] = True
         threading.Thread(
@@ -12327,6 +12334,16 @@ def send_message(slug: str, nid: str, text: str,
             # (the carrier may be a journaled dict; _run_turn accepts both)
             text = carrier   # pyright: ignore[reportAssignmentType]
     with _state_lock:
+        if st.get("proc_control"):
+            if not wake:
+                return {"accepted": True, "queued": 0,
+                        "parked": True, "process_control": True}
+            queued: str | dict[str, Any] = (
+                {"text": text, "view": view or ""}
+                if view is not None and isinstance(text, str) else text)
+            st["queue"].append(_mark_ping(queued) if mail_ping else queued)
+            return {"accepted": True, "queued": len(st["queue"]),
+                    "process_control": True}
         if st["busy"]:
             # ⚠ NOT COALESCED, deliberately — see the note on `_mark_ping`.
             # Collapsing a second pointer into the one already waiting was
@@ -13161,7 +13178,9 @@ def resume_frozen(slug: str, only: Iterable[str] | None = None,
                     "resumed_at": resumed_at,
                 }
             st["queue"].extend(carriers[1:])
-            if not st["busy"]:
+            if st.get("proc_control"):
+                st["queue"].insert(0, carriers[0])
+            elif not st["busy"]:
                 st["busy"] = True
                 first = carriers[0]
             else:

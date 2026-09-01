@@ -571,6 +571,19 @@ button.badge.audience-fold.alert {
   display: inline-flex; align-items: center; justify-content: center; gap: 3px;
   min-width: 16px; min-height: 18px; flex: none;
 }
+.proc-toggle {
+  appearance: none; margin: 0; padding: 0; border: 0;
+  border-radius: 3px; background: transparent; color: inherit;
+  font: inherit; cursor: pointer;
+}
+.proc-toggle:not(:disabled):hover { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.proc-toggle:not(:disabled):focus-visible {
+  outline: 1px solid var(--accent); outline-offset: 2px;
+}
+.proc-toggle:disabled { cursor: default; }
+.proc-state.paused .proc-one-mark {
+  border-color: var(--warn, #e5c07b); opacity: .9;
+}
 .proc-one-mark {
   width: 8px; height: 8px; box-sizing: border-box; border-radius: 50%;
   border: 1px solid var(--dim); background: transparent; opacity: .72;

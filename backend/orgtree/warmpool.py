@@ -83,6 +83,10 @@ _FLAG_TTL = 2.0
 _FLAG_LOCK = threading.RLock()  # atomic read/modify/write for runtime controls
 
 
+class WarmFlagError(RuntimeError):
+    """The durable warm.flag exists but is not safe to modify."""
+
+
 def _flag_path() -> str:
     return os.path.join(store.DATA_ROOT, "warm.flag")
 
@@ -210,6 +214,53 @@ def node_excluded(slug: str, nid: str) -> bool:
     f = _read_flag()
     return bool(f and not f.get("malformed")
                 and f"{slug}/{nid}" in f["exclude"])
+
+
+def set_node_excluded(slug: str, nid: str, excluded: bool) -> bool:
+    """Atomically add/remove one node's persistent warm-process exclusion.
+
+    The list shares ``warm.flag`` with the machine-wide warming switch.  A
+    read/modify/write under the flag lock is important here: writing a bare
+    ``0``/``1`` would either erase another node's manual stop or make a later
+    global toggle silently resurrect it.  ``True`` is the durable manual-stop
+    arm; ``False`` is the matching manual-start operation.
+    """
+    key = f"{slug}/{nid}"
+    changed = False
+    with _FLAG_LOCK:
+        # Do not let a stale two-second cache overwrite a hand-edited list.
+        _FLAG_CACHE["at"] = 0.0
+        f = _read_flag_unlocked()
+        if f and f.get("malformed"):
+            raise WarmFlagError(
+                "warm.flag is malformed; repair it before changing a "
+                "node's process setting")
+        if f is None:
+            enabled = os.environ.get("ORGTREE_WARM", "1") != "0"
+            excludes: list[str] = []
+        else:
+            enabled = bool(f.get("enabled", True))
+            # Preserve other exclusions, while normalising duplicates of the
+            # target touched by this operation.
+            excludes = [str(x) for x in (f.get("exclude") or [])]
+        had = key in excludes
+        if excluded:
+            if not had:
+                excludes.append(key)
+                changed = True
+        elif had:
+            excludes = [x for x in excludes if x != key]
+            changed = True
+        if changed:
+            # The compact 0/1 form is the established representation when no
+            # per-node arm remains; JSON is required whenever exclusions do.
+            content = (json.dumps({"enabled": enabled,
+                                   "exclude": excludes})
+                       if excludes else ("1" if enabled else "0"))
+            set_flag(content)
+    if changed:
+        poke()
+    return changed
 
 
 # ── the pool ───────────────────────────────────────────────────────────────
@@ -899,7 +950,8 @@ def _record_identity_change(wp: WarmProcess, next_hash: str,
     return fields
 
 
-def eligible(org: Any, nid: str) -> tuple[bool, str]:
+def eligible(org: Any, nid: str, *, ignore_exclusion: bool = False,
+             ) -> tuple[bool, str]:
     """May this node hold a warm process at all? Everything outside this set
     keeps today's spawn-per-turn behaviour, which is also the universal
     fallback. The sandbox remains excluded (its spawn is a docker exec whose
@@ -911,7 +963,7 @@ def eligible(org: Any, nid: str) -> tuple[bool, str]:
     n = org.nodes.get(nid)
     if not n or n.get("state") != "live":
         return False, "not-live"
-    if node_excluded(org.d["slug"], nid):
+    if not ignore_exclusion and node_excluded(org.d["slug"], nid):
         return False, "excluded-by-flag"
     if sup.sbx.is_sandboxed(org):
         return False, "sandboxed"
@@ -921,6 +973,360 @@ def eligible(org: Any, nid: str) -> tuple[bool, str]:
     if n.get("bearer_state") == "preserving":
         return False, "preserving-oracle"
     return True, ""
+
+
+def _warm_eligible(org: Any, nid: str, *, ignore_exclusion: bool = False,
+                   ) -> tuple[bool, str]:
+    """The manual-control lifecycle gate, including non-turn exclusions.
+
+    ``eligible`` remains the process-admission predicate used by a real turn;
+    this stricter companion lets manual start refuse a frozen, remotely
+    controlled, or otherwise administratively blocked seat. The keeper keeps
+    its established ``eligible`` gate because it must preserve the existing
+    warm-process fallback semantics. Manual start uses ``ignore_exclusion``
+    only to test the seat behind its own persistent stop flag.
+    """
+    from . import supervisor as sup                 # noqa: PLC0415
+    ok, why = (eligible(org, nid, ignore_exclusion=True)
+               if ignore_exclusion else eligible(org, nid))
+    if not ok:
+        return False, why
+    n = org.nodes.get(nid)
+    if n is None:
+        return False, "not-live"
+    if n.get("frozen"):
+        return False, "frozen"
+    if n.get("limit_locked"):
+        return False, "limit-locked"
+    if n.get("remote_controlled"):
+        return False, "remote-controlled"
+    if n.get("bearer_state"):
+        return False, "bearer-state"
+    if org.d.get("spend_frozen"):
+        return False, "spend-frozen"
+    if n.get("inflight"):
+        return False, "inflight"
+    if (org.d.get("delivering") or {}).get(nid):
+        return False, "delivery-in-progress"
+    if org.d.get("storage_blocked") and sup.sbx.on_disk(org.d["slug"]):
+        return False, "storage-blocked"
+    try:
+        sup._deployment_org_gate(org)
+    except RuntimeError:
+        return False, "deployment-gate"
+    return True, ""
+
+
+def _control_runtime(slug: str, nid: str) -> dict[str, Any]:
+    """Snapshot the ephemeral turn and pool state without nested lock order."""
+    from . import supervisor as sup                 # noqa: PLC0415
+    st = sup.state(slug, nid)
+    with sup._state_lock:
+        state_part = {
+            "busy": bool(st.get("busy")),
+            "waiting": bool(st.get("waiting")),
+            "responding": bool(st.get("responding")),
+            "queued": bool(st.get("queue")),
+            "steer": bool(st.get("steer")),
+            "phase": st.get("phase"),
+            "cache_keepalive": bool(st.get("cache_keepalive")),
+            "mcp_readiness_waiting": bool(st.get("mcp_readiness_waiting")),
+            "tasks": bool(st.get("tasks")),
+            "bg_tasks": bool(st.get("bg_tasks")),
+            "proc": bool(st.get("proc") or st.get("codex_turn")
+                         or st.get("gemini_turn")),
+            "proc_live": bool(st.get("proc_live")),
+            "proc_warm": bool(st.get("proc_warm")),
+            "proc_relaunch": bool(st.get("proc_relaunch")),
+            "proc_control": st.get("proc_control") is not None,
+        }
+    # Never hold supervisor._state_lock while taking _pool_lock: lifecycle
+    # publication takes the inverse pool -> state path.
+    with _pool_lock:
+        pooled = _pool.get((slug, nid))
+        serving = _serving.get((slug, nid))
+        parked = bool(pooled and not pooled.claimed and pooled.alive())
+        claimed = bool((pooled and pooled.claimed) or serving)
+    return {**state_part, "parked": parked, "claimed": claimed}
+
+
+def _control_busy_reason(runtime: dict[str, Any]) -> str | None:
+    """Human-readable reason a node is not fully idle/admissible."""
+    if runtime["proc_control"]:
+        return "process control is already in progress"
+    if runtime["phase"] == "compacting":
+        return "the agent is compacting"
+    if runtime["mcp_readiness_waiting"]:
+        return "the process is waiting for provider readiness"
+    if runtime["waiting"]:
+        return "the agent is waiting for a turn slot"
+    if runtime["queued"]:
+        return "the agent has queued work"
+    if runtime["responding"]:
+        return "the agent is responding"
+    if runtime["busy"] or runtime["proc"]:
+        return "the agent has an active turn"
+    if runtime["steer"]:
+        return "the agent has pending mid-turn delivery"
+    if runtime["cache_keepalive"]:
+        return "the process is being checked for cache continuity"
+    if runtime["tasks"] or runtime["bg_tasks"]:
+        return "the agent still has running tasks"
+    if runtime["proc_relaunch"]:
+        return "the process is awaiting replacement"
+    if runtime["claimed"]:
+        return "the process is being claimed for a turn"
+    return None
+
+
+def _control_eligibility_text(reason: str) -> str:
+    return {
+        "frozen": "the agent is frozen",
+        "limit-locked": "the agent is limit-locked",
+        "remote-controlled": "the agent is under remote control",
+        "bearer-state": "the agent is in a bearer lifecycle state",
+        "spend-frozen": "organization spending is frozen",
+        "inflight": "the agent has a turn pending recovery",
+        "delivery-in-progress": "the agent has a delivery in progress",
+        "storage-blocked": "the organization storage gate is closed",
+        "deployment-gate": "the current deployment profile blocks this org",
+        "provider-lane": "this provider lane cannot keep a parked process",
+        "sandboxed": "sandboxed process warming is unavailable",
+        "preserving-oracle": "preserving oracle processes are not reusable",
+        "not-live": "the agent is not live",
+        "excluded-by-flag": "the agent is manually stopped",
+    }.get(reason, "the agent is not eligible for process warming")
+
+
+def process_control_status(org: Any, nid: str, *, public: bool = False,
+                           ) -> dict[str, Any]:
+    """Return the backend-owned control state shown in the desk tooltip."""
+    slug = str(org.d.get("slug") or "")
+    n = org.nodes.get(nid)
+    paused = node_excluded(slug, nid)
+    runtime = _control_runtime(slug, nid)
+    action: str | None = "start" if paused else (
+        "stop" if runtime["parked"] else None)
+    result: dict[str, Any] = {
+        "paused": paused, "enabled": False, "action": action,
+        "reason": None, "runtime": runtime,
+    }
+    if public:
+        result["reason"] = "process controls are available on admin desks only"
+        return result
+    if n is None:
+        result["action"] = None
+        result["reason"] = "the agent no longer exists"
+        return result
+    if n.get("state") != "live":
+        result["action"] = None
+        result["reason"] = "the agent is not live"
+        return result
+    blocked = _control_busy_reason(runtime)
+    if blocked:
+        result["reason"] = blocked
+        return result
+    if action == "start":
+        on, _label = warm_decision()
+        if not on:
+            result["reason"] = "warming is disabled globally"
+            return result
+        ok, why = _warm_eligible(org, nid, ignore_exclusion=True)
+        if not ok:
+            result["reason"] = _control_eligibility_text(why)
+            return result
+        result["enabled"] = True
+        result["reason"] = "click to clear the manual stop and pre-warm"
+        return result
+    if action == "stop":
+        if not runtime["parked"]:
+            result["reason"] = "the process is transitioning; wait for it to park"
+            return result
+        result["enabled"] = True
+        result["reason"] = "click to stop this parked process"
+        return result
+    on, _label = warm_decision()
+    if not on:
+        result["reason"] = "warming is disabled globally"
+    else:
+        ok, why = _warm_eligible(org, nid)
+        result["reason"] = (_control_eligibility_text(why)
+                            if not ok else
+                            "no idle parked process to control")
+    return result
+
+
+class ProcessControlRefused(RuntimeError):
+    """A stale or unsafe process-control request."""
+
+
+def _audit_process_control(slug: str, nid: str, action: str, result: str,
+                           reason: str, wp: WarmProcess | None = None,
+                           ) -> None:
+    fields: dict[str, Any] = {
+        "slug": slug, "nid": nid, "action": action,
+        "result": result, "reason": reason,
+    }
+    if wp is not None:
+        fields.update({"session_id": wp.sid,
+                       "pid": getattr(wp.proc, "pid", None),
+                       "ident_hash": wp.hash})
+    _journal("control", **fields)
+
+
+def _control_result(slug: str, nid: str, action: str, *,
+                    already: bool = False) -> dict[str, Any]:
+    from . import supervisor as sup                 # noqa: PLC0415
+    st = sup.state(slug, nid)
+    with sup._state_lock:
+        warm = bool(st.get("proc_warm"))
+        live = bool(st.get("proc_live"))
+    return {"ok": True, "action": action, "already": already,
+            "paused": action == "stop", "proc_warm": warm,
+            "proc_live": live}
+
+
+def _release_process_control(slug: str, nid: str, token: object) -> None:
+    """Release the admission reservation and hand off mail that arrived in it."""
+    from . import supervisor as sup                 # noqa: PLC0415
+    first: str | dict[str, Any] | None = None
+    try:
+        st = sup.state(slug, nid)
+        with sup._state_lock:
+            if st.get("proc_control") is not token:
+                return
+            st.pop("proc_control", None)
+            if (not st.get("busy") and not st.get("waiting")
+                    and not st.get("steer") and not st.get("cache_keepalive")
+                    and st.get("queue")):
+                first = st["queue"].pop(0)
+                st["busy"] = True
+        sup.notify(slug, nid, "proc_control")
+        # The first poke may have been consumed while the reservation marker was
+        # still set. Wake again after releasing it so a manual start pre-warms
+        # immediately instead of waiting for the keeper's polling interval.
+        poke()
+        if first is not None:
+            threading.Thread(target=sup._run_turn,
+                             args=(slug, nid, first), daemon=True).start()
+    except Exception:                               # noqa: BLE001
+        # The marker must never strand a node if a test seam or a shutting-down
+        # supervisor disappears while the control request is finishing.
+        try:
+            st = sup.state(slug, nid)
+            with sup._state_lock:
+                if st.get("proc_control") is token:
+                    st.pop("proc_control", None)
+        except Exception:                           # noqa: BLE001
+            pass
+
+
+def process_control(slug: str, nid: str, action: str,
+                    ) -> dict[str, Any]:
+    """Stop/start one parked process with a durable, generation-safe CAS."""
+    if action not in ("start", "stop"):
+        raise ProcessControlRefused("action must be 'start' or 'stop'")
+    from . import supervisor as sup                 # noqa: PLC0415
+    token: object | None = None
+    expected: WarmProcess | None = None
+    killed = False
+    try:
+        # DOC_LOCK serializes this admission with retire/rename/freeze writes;
+        # state is then reserved before the flag or pool is changed. A turn
+        # that reached the state lock first wins and this request refuses.
+        with store.DOC_LOCK:
+            org = store.load_org(slug)
+            n = org.node(nid)
+            status = process_control_status(org, nid)
+            paused = bool(status["paused"])
+            if (action == "stop" and paused) or (
+                    action == "start" and not paused and
+                    not status["enabled"]):
+                _audit_process_control(slug, nid, action, "already",
+                                       "manual state already applied")
+                return _control_result(slug, nid, action, already=True)
+            if not status["enabled"] or status["action"] != action:
+                reason = str(status.get("reason") or "process control is unavailable")
+                _audit_process_control(slug, nid, action, "refused", reason)
+                raise ProcessControlRefused(reason)
+            st = sup.state(slug, nid)
+            with sup._state_lock:
+                # Recheck every gate while reserving the operation. This is
+                # the atomic half of stale-UI/racing-turn safety.
+                runtime = {
+                    "busy": bool(st.get("busy")),
+                    "waiting": bool(st.get("waiting")),
+                    "responding": bool(st.get("responding")),
+                    "queued": bool(st.get("queue")),
+                    "steer": bool(st.get("steer")),
+                    "phase": st.get("phase"),
+                    "cache_keepalive": bool(st.get("cache_keepalive")),
+                    "mcp_readiness_waiting": bool(
+                        st.get("mcp_readiness_waiting")),
+                    "tasks": bool(st.get("tasks")),
+                    "bg_tasks": bool(st.get("bg_tasks")),
+                    "proc": bool(st.get("proc") or st.get("codex_turn")
+                                 or st.get("gemini_turn")),
+                    "proc_relaunch": bool(st.get("proc_relaunch")),
+                    "proc_control": st.get("proc_control") is not None,
+                    "claimed": False,
+                }
+                blocked = _control_busy_reason(runtime)
+                if blocked:
+                    _audit_process_control(slug, nid, action, "refused", blocked)
+                    raise ProcessControlRefused(blocked)
+                token = object()
+                st["proc_control"] = token
+            # The pool check is deliberately after releasing state lock: the
+            # lifecycle owner may publish a late EOF in pool -> state order.
+            with _pool_lock:
+                current = _pool.get((slug, nid))
+                if _serving.get((slug, nid)) is not None \
+                        or (current is not None and current.claimed):
+                    reason = "the process is being claimed for a turn"
+                    _audit_process_control(slug, nid, action, "refused", reason)
+                    raise ProcessControlRefused(reason)
+                if action == "stop":
+                    if current is None or not current.alive():
+                        reason = "the process is transitioning; wait for it to park"
+                        _audit_process_control(slug, nid, action, "refused", reason)
+                        raise ProcessControlRefused(reason)
+                    expected = current
+            # Persist the stop BEFORE killing so every keeper pass observes
+            # the exclusion. Start rechecks all start-only gates under the same
+            # reservation before clearing it.
+            if action == "stop":
+                set_node_excluded(slug, nid, True)
+            else:
+                on, _label = warm_decision()
+                ok, why = _warm_eligible(org, nid, ignore_exclusion=True)
+                if not on:
+                    reason = "warming is disabled globally"
+                    _audit_process_control(slug, nid, action, "refused", reason)
+                    raise ProcessControlRefused(reason)
+                if not ok:
+                    reason = _control_eligibility_text(why)
+                    _audit_process_control(slug, nid, action, "refused", reason)
+                    raise ProcessControlRefused(reason)
+                set_node_excluded(slug, nid, False)
+            _audit_process_control(slug, nid, action, "accepted",
+                                   "manual stop" if action == "stop"
+                                   else "manual start", expected)
+        if action == "stop" and expected is not None:
+            killed = kill_node(slug, nid, "excluded-by-flag", expected=expected)
+        # Start's flag write wakes the keeper; this second poke closes the
+        # reservation window and requests immediate prewarm after release.
+        poke()
+        result = _control_result(slug, nid, action)
+        result["paused"] = action == "stop"
+        result["killed"] = killed if action == "stop" else False
+        return result
+    except WarmFlagError as e:
+        _audit_process_control(slug, nid, action, "refused", str(e))
+        raise ProcessControlRefused(str(e)) from e
+    finally:
+        if token is not None:
+            _release_process_control(slug, nid, token)
 
 
 def boundary_check(slug: str, nid: str,
@@ -1014,6 +1420,11 @@ _RELAUNCH_LABELS = {
     "provider-lane": "the agent changed provider lane",
     "sandboxed": "the agent changed to sandboxed execution",
     "preserving-oracle": "the agent changed to a preserving oracle",
+    "frozen": "the agent is frozen",
+    "limit-locked": "the agent is limit-locked",
+    "remote-controlled": "the agent is under remote control",
+    "bearer-state": "the agent is in a bearer lifecycle state",
+    "spend-frozen": "organization spending is frozen",
     "not-eligible": "the agent is no longer eligible for process reuse",
 }
 _IDENTITY_LABELS = {
@@ -1124,6 +1535,11 @@ KILL_REASON_CLASS = {
     "provider-lane": "prompt-change",    # eligibility flips are model/scope
     "sandboxed": "prompt-change",        # changes, i.e. identity changes
     "preserving-oracle": "prompt-change",
+    "frozen": "prompt-change",           # lifecycle gate closed
+    "limit-locked": "prompt-change",
+    "remote-controlled": "prompt-change",
+    "bearer-state": "prompt-change",
+    "spend-frozen": "prompt-change",
     "disabled": "kill-switch",           # the coordinator-ordered A/B and
     "excluded-by-flag": "kill-switch",   # back-out lever, sanctioned
     "superseded": "duplicate-resolution",  # the seat KEEPS a warm process
@@ -1317,15 +1733,17 @@ def _spawn_for(org: Any, nid: str, why: str) -> WarmProcess | None:
         return None
 
 
-def kill_node(slug: str, nid: str, reason: str) -> None:
+def kill_node(slug: str, nid: str, reason: str,
+              expected: WarmProcess | None = None) -> bool:
     """Immediate teardown for a node's warm process (retire, dissolve,
     rename — a parked process's cwd would block the scratch move). A CLAIMED
     process is mid-turn and is NOT touched: the turn owns it, and the keeper
     handles the aftermath at turn end."""
     with _pool_lock:
         wp = _pool.get((slug, nid))
-        if wp is None or wp.claimed:
-            return
+        if wp is None or wp.claimed \
+                or (expected is not None and wp is not expected):
+            return False
         del _pool[(slug, nid)]
     _kill_proc(wp)
     _set_proc_warm(slug, nid, False)
@@ -1336,6 +1754,7 @@ def kill_node(slug: str, nid: str, reason: str) -> None:
     except Exception:                                   # noqa: BLE001
         pass
     _journal_exit_once(wp, reason)
+    return True
 
 
 def kill_org(slug: str, reason: str) -> None:
@@ -1470,7 +1889,7 @@ def _busy(slug: str, nid: str) -> bool:
     from . import supervisor as sup                 # noqa: PLC0415
     with sup._state_lock:
         ent = sup._state.get((slug, nid)) or {}
-        return bool(ent.get("busy"))
+        return bool(ent.get("busy") or ent.get("proc_control"))
 
 
 def _keeper_pass() -> None:

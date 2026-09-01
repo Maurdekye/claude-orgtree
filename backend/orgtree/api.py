@@ -282,6 +282,11 @@ def _public_denied(method: str, rest: str, slug: str) -> tuple[int, str] | None:
         # no call site for it). Reachable from the kiosk it POPPED the node's
         # pending mid-task mail — reading it AND destroying the delivery.
         or rest.endswith("/steer")
+        # The warm-process toggle kills/spawns host CLI processes and is an
+        # admin-only control. Public desks still receive passive lifecycle
+        # status, but a kiosk token must never be able to use it as a DoS or
+        # process-spawn surface.
+        or rest.endswith("/process")
         or rest == "/api/fs"                                 # filesystem browse
         or (method == "PUT" and rest.endswith("/orgmd"))     # org.md edits
         or rest == "/api/agent"                              # node MCP gateway
@@ -1256,6 +1261,13 @@ def org_tree(slug: str, request: Request) -> dict[str, Any]:
         node["proc_relaunch_reason"] = (
             str(st.get("proc_relaunch_reason"))
             if st.get("proc_relaunch_reason") else None)
+        control = warmpool.process_control_status(
+            org, node["id"], public=_public_slug(request) is not None)
+        node["proc_paused"] = bool(control.get("paused"))
+        node["proc_control_enabled"] = bool(control.get("enabled"))
+        node["proc_control_action"] = control.get("action")
+        node["proc_control_reason"] = (
+            str(control.get("reason")) if control.get("reason") else None)
         last_mcp = org.node(node["id"]).get("last_turn_mcp_tool_count")
         node["mcp_tool_count"] = (
             int(st["mcp_tool_count"])
@@ -2686,6 +2698,39 @@ def node_interrupt(slug: str, nid: str) -> dict[str, Any]:
     except LedgerError as e:
         raise HTTPException(404, str(e))
     return supervisor.interrupt_turn(slug, nid)
+
+
+class ProcessControl(Body):
+    action: str
+
+
+@app.post("/api/orgs/{slug}/nodes/{nid}/process")
+def node_process(slug: str, nid: str, body: ProcessControl,
+                 request: Request) -> dict[str, Any]:
+    """Admin-only stop/start for an idle node's parked CLI process.
+
+    The endpoint delegates admission and generation checks to
+    ``warmpool.process_control``. The browser's tree copy is only a hint; the
+    backend rechecks every turn/lifecycle gate while reserving the seat.
+    """
+    if _public_slug(request):
+        # PublicGateway denies this path before FastAPI, but keep the route
+        # safe when called through a mounted app or directly in a test.
+        raise HTTPException(
+            403, "kiosk: process controls are managed from the admin side")
+    try:
+        org = store.load_org(slug)
+        org.node(nid)
+    except LedgerError as e:
+        raise HTTPException(404, str(e))
+    try:
+        return warmpool.process_control(slug, nid, body.action)
+    except LedgerError as e:
+        # The node can be retired/deleted after the optimistic validation above
+        # but before process_control takes DOC_LOCK; report that race as a 404.
+        raise HTTPException(404, str(e)) from e
+    except warmpool.ProcessControlRefused as e:
+        raise HTTPException(409, str(e)) from e
 
 
 @app.post("/api/orgs/{slug}/nodes/{nid}/compact")

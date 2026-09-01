@@ -152,6 +152,15 @@ export const interruptNode = (
   slug: string, nid: string,
 ): Promise<{ interrupted: boolean; reason?: string }> =>
   req(`/api/orgs/${slug}/nodes/${nid}/interrupt`, { method: 'POST' })
+export const processControl = (
+  slug: string, nid: string, action: 'start' | 'stop',
+): Promise<{ ok: boolean; action: 'start' | 'stop'; already?: boolean;
+  paused: boolean; proc_warm: boolean; proc_live: boolean; killed?: boolean }> =>
+  req(`/api/orgs/${slug}/nodes/${nid}/process`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action }),
+  })
 export const compactNode = (slug: string, nid: string): Promise<{ started: boolean }> =>
   req(`/api/orgs/${slug}/nodes/${nid}/compact`, { method: 'POST' })
 /** ⭐ the user's per-node override (ruling 2026-08-06): releases EVERY lock

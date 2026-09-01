@@ -75,6 +75,32 @@ test('the desk header collapses live and warm into one accessible process cue', 
   } finally { view.unmount() }
 })
 
+test('idle process cue is a native toggle with an honest disabled reason', async () => {
+  let toggles = 0
+  const view = await mountView(<>
+    <ProcessLifecycleMark warm live controlEnabled controlAction="stop"
+      onToggle={() => { toggles += 1 }} />
+    <ProcessLifecycleMark warm={false} live={false} paused controlEnabled
+      controlAction="start" onToggle={() => { toggles += 1 }} />
+    <ProcessLifecycleMark warm live controlAction="stop" controlEnabled={false}
+      controlReason="the agent is responding" onToggle={() => { toggles += 1 }} />
+  </>, (el) => el)
+  try {
+    const buttons = [...view.el.querySelectorAll<HTMLButtonElement>(
+      'button.proc-toggle')]
+    assert.equal(buttons.length, 3)
+    assert.equal(buttons[0]!.getAttribute('aria-pressed'), 'false')
+    assert.equal(buttons[1]!.getAttribute('aria-pressed'), 'true')
+    assert.equal(buttons[2]!.disabled, true)
+    assert.match(buttons[0]!.title, /click to stop/)
+    assert.match(buttons[1]!.title, /click to start/)
+    assert.match(buttons[2]!.title, /agent is responding/)
+    buttons[0]!.click()
+    buttons[2]!.click()
+    assert.equal(toggles, 1, 'disabled controls must not invoke their handler')
+  } finally { view.unmount() }
+})
+
 test('navigation busy arrows carry the destination provider, not an ancestor theme', async () => {
   const view = await mountView(<div className="prov-openai">
     <DestinationBusy tier="haiku" />

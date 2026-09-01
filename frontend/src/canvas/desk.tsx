@@ -13,7 +13,7 @@ import type {
 } from '../types'
 import {
   audienceAction, BASE, compactNode, fileBase, fileUrl, getChat, getHistory,
-  getScratch, interruptNode, retractMail, saveScope, sendMessage,
+  getScratch, interruptNode, processControl, retractMail, saveScope, sendMessage,
   unstickNode, uploadFile,
 } from '../api'
 import { AttachThumb, fmtBytes, ImgCardCaption, isImg, parseAttachedFiles } from './img'
@@ -191,13 +191,17 @@ export function TurnStatusBanner({ state, turn, inflightAt, tasks = 0,
 
 /** One compact process cue. Shape/glyph and text carry the state so colour is
  * never the only distinction; backend live/warm fields remain independent. */
-export function ProcessLifecycleMark({ warm, live, relaunch, reason, busy }: {
+export function ProcessLifecycleMark({ warm, live, relaunch, reason, busy,
+  paused = false, controlEnabled = false, controlAction, controlReason,
+  onToggle }: {
   warm: boolean; live?: boolean; relaunch?: boolean; reason?: string | null;
-  busy?: boolean
+  busy?: boolean; paused?: boolean; controlEnabled?: boolean
+  controlAction?: 'start' | 'stop' | null; controlReason?: string | null
+  onToggle?: () => void
 }) {
   const isLive = live ?? warm
   const state = !isLive ? 'off' : relaunch ? 'relaunch' : warm ? 'ready' : 'live'
-  const title = isLive
+  const lifecycleTitle = isLive
     ? relaunch
       ? `CLI process live — will relaunch before its next turn: ${reason || 'reason unavailable'}`
       : warm
@@ -205,11 +209,31 @@ export function ProcessLifecycleMark({ warm, live, relaunch, reason, busy }: {
         : busy
           ? 'CLI process live — claimed by the current turn; not parked'
           : 'CLI process live — spawning or initializing; not ready yet'
-    : 'no CLI process live — starts normally on its next turn'
-  return <span className={`proc-state ${state}`} title={title} aria-label={title}>
+    : paused
+      ? onToggle
+        ? 'CLI process manually stopped — click to enable pre-warming again'
+        : 'CLI process manually stopped — enable pre-warming from the admin desk'
+      : 'no CLI process live — starts normally on its next turn'
+  const controlTitle = onToggle
+    ? controlEnabled
+      ? controlAction === 'stop'
+        ? 'click to stop this parked CLI process'
+        : 'click to start pre-warming for this agent'
+      : `process control unavailable — ${controlReason || 'the agent is not idle'}`
+    : ''
+  const title = [lifecycleTitle, controlTitle].filter(Boolean).join('\n')
+  const cls = `proc-state ${state}${paused ? ' paused' : ''}${onToggle ? ' proc-toggle' : ''}`
+  const mark = <>
     <span className="proc-one-mark" aria-hidden="true" />
     {relaunch && <AutorenewIcon fontSize="inherit" className="proc-relaunch" />}
-  </span>
+  </>
+  if (!onToggle) {
+    return <span className={cls} title={title} aria-label={title}>{mark}</span>
+  }
+  return <button type="button" className={cls} title={title} aria-label={title}
+    aria-pressed={paused} disabled={!controlEnabled} onClick={onToggle}>
+    {mark}
+  </button>
 }
 
 export function McpToolCountMark({ count, last, provider, source, reason,
@@ -509,6 +533,10 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
   const [askCompact, setAskCompact] = useState(false)
   // F-01 footer: retired reports collapsed behind one chip (user ruling)
   const [showRetired, setShowRetired] = useState(false)
+  // The process control is a server-side CAS. This local latch only prevents
+  // a double-click while the request is in flight; the response/WS tree state
+  // remains authoritative if another desk wins the race.
+  const [processToggleBusy, setProcessToggleBusy] = useState(false)
   const [view, setView] = useState<'chat' | 'history' | 'files' | 'inbox'>('chat')     // chat | history | files | inbox
   // №7's denials banner and its dismissal state are gone (user bug
   // 2026-08-02): a denial already renders inline as an errored ToolChip where
@@ -838,6 +866,24 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
     ? 'compacting' : node.waiting ? 'queued' : turnActive ? 'working' : 'idle'
   const bannerDuplicatesStatus = Boolean(node.last_status
     && node.last_status.status === turnBannerState)
+  const processAction = node.proc_control_action
+  const toggleProcess = useCallback(() => {
+    const action = processAction
+    if (pub || !live || !action || !node.proc_control_enabled
+        || processToggleBusy) return
+    setProcessToggleBusy(true)
+    processControl(slug, node.id, action)
+      .then((r) => {
+        toast([r.already
+          ? `${node.id} process setting was already ${r.paused ? 'stopped' : 'enabled'}`
+          : action === 'stop'
+            ? `${node.id} parked CLI process stopped`
+            : `${node.id} process pre-warming enabled`])
+      })
+      .catch((e: Error) => toast([`error: ${e.message}`]))
+      .finally(() => setProcessToggleBusy(false))
+  }, [live, node.id, node.proc_control_enabled, processAction,
+    processToggleBusy, pub, slug, toast])
   // A fresh/empty seat now keeps its truthful hollow wheel, but it must not
   // acquire a dead compact button: the endpoint still requires real context.
   const canCompactContext = live && !node.bearer_state && !node.compacted_unrun
@@ -888,7 +934,15 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
           <span className="cc-process-seat">
             <ProcessLifecycleMark warm={Boolean(node.proc_warm)}
               live={live ? node.proc_live : false} relaunch={node.proc_relaunch}
-              reason={node.proc_relaunch_reason} busy={turnActive} />
+              reason={node.proc_relaunch_reason} busy={turnActive}
+              paused={Boolean(node.proc_paused)}
+              controlEnabled={Boolean(node.proc_control_enabled)
+                && !processToggleBusy}
+              controlAction={processAction}
+              controlReason={processToggleBusy
+                ? 'process control is in progress'
+                : node.proc_control_reason}
+              onToggle={!pub && live && processAction ? toggleProcess : undefined} />
           </span>
           <TurnStatusBanner state={turnBannerState} turn={lastTurn}
             inflightAt={node.inflight_at} tasks={node.tasks}

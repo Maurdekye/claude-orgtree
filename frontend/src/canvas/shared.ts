@@ -286,6 +286,11 @@ export interface CanvasNode {
   proc_live?: boolean
   proc_relaunch?: boolean
   proc_relaunch_reason?: string | null
+  /** D-201 manual warm-process exclusion and backend-owned control gate. */
+  proc_paused?: boolean
+  proc_control_enabled?: boolean
+  proc_control_action?: 'start' | 'stop' | null
+  proc_control_reason?: string | null
   mcp_tool_count?: number | null
   last_turn_mcp_tool_count?: number | null
   mcp_tool_count_provider?: string

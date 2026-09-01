@@ -3488,6 +3488,32 @@ Below-threshold, unknown, and compatible forecasts have no banner; enabled
 mode can never produce a red banner. The header badge remains visible whether
 or not the banner is suppressed.
 
+### D-215 · an idle desk may control its own parked warm process
+
+Ruling (coordinator, 2026-09-01, implementing the user's clickable CLI
+indicator): the process cue in an admin desk header is a button only when its
+node is fully idle and the backend sees a parked, unclaimed process (STOP) or
+a durable manual-stop exclusion (START). A queued, waiting, compacting,
+responding, active, MCP-readiness, cache-check, task, replacement, claim, or
+other lifecycle race disables the control. The browser state is only a hint;
+the endpoint rechecks the same gates while reserving the node, and stale or
+competing requests fail safely.
+
+STOP atomically records `slug/nid` in `warm.flag`, journals the user action,
+then kills that exact parked generation. START clears only that exclusion and
+requests an immediate keeper pass when the global warm switch, provider,
+deployment, storage, freeze, delivery, and other lifecycle gates all permit a
+parked process. It never overrides global warming-off or an authoritative
+ineligibility gate. Both operations are idempotent and generation-safe;
+restart persistence comes from `warm.flag`, not in-memory state. Public desks
+receive the passive status fields but never the process-control operation.
+
+The cue remains an accessible native button with a tooltip and disabled reason,
+while the WebSocket/tree lifecycle state remains authoritative after the
+request. Control audit rows use the existing warm journal and process-kill
+vocabulary, so a manual stop is visible as a sanctioned `kill-switch` event
+rather than an unclassified teardown.
+
 ### D-208 · a frozen container's /usr/local is keyed to the approved configuration, not the CLI version
 
 Sandboxed containers mount `/usr/local` from a named Docker volume rather than

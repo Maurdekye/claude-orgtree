@@ -300,6 +300,12 @@ export interface TreeNode {
   proc_relaunch: boolean
   /** Backend-owned explanation for proc_relaunch; never inferred by the UI. */
   proc_relaunch_reason: string | null
+  /** Durable per-node manual stop state from warm.flag. */
+  proc_paused: boolean
+  /** Backend-owned idle/admission gate for the desk process toggle. */
+  proc_control_enabled: boolean
+  proc_control_action: 'start' | 'stop' | null
+  proc_control_reason: string | null
   /** Runtime-observed callable MCP names for the current process generation.
    * null is unknown, never zero. */
   mcp_tool_count: number | null
