@@ -282,10 +282,27 @@ def main():
         _requests.append(msg)
         method, rid = msg["method"], msg.get("id")
         params = msg.get("params") or {}
+        # wire probe: append every method this impostor receives, in order —
+        # how a suite proves WHAT was (and was not) sent during prewarm
+        probe = os.environ.get("FAKECODEX_WIREPROBE")
+        if probe:
+            with open(probe, "a", encoding="utf-8") as f:
+                f.write(json.dumps({"method": method}) + "\n")
         if method == "initialize":
+            # plantable prewarm faults: a server that never answers its
+            # handshake, and one that dies on it
+            mode = os.environ.get("FAKECODEX_INIT_MODE", "answer")
+            if mode == "die":
+                sys.exit(3)
+            if mode == "mute":
+                continue
             reply(rid, {"serverInfo": {"name": "fakecodex", "version": "0"}})
         elif method == "initialized":
             pass
+        elif method == "mcpServerStatus/list":
+            # a resolved runtime inventory, the shape codexrun paginates
+            reply(rid, {"data": [{"name": "fakesrv",
+                                  "tools": {"toolA": {}, "toolB": {}}}]})
         elif method == "account/rateLimits/read":
             # The real 0.150.1 protocol's full snapshot: one canonical bucket
             # plus a named/model bucket with two windows.  `codex` is repeated

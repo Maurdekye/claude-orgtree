@@ -20,10 +20,20 @@ user's, verbatim where it matters:
   · a prompt change respawns the process IMMEDIATELY, in the background —
     never "mark dirty and fix it when a turn comes". The one exception: an
     agent MID-TURN is never disturbed; its re-warm happens at turn end.
-  · orgtree adds no explicit MCP-handshake barrier (user ruling 2026-08-30).
+  · CLAUDE adds no explicit MCP-handshake barrier (user ruling 2026-08-30).
     The CLI's `alwaysLoad` setting can nevertheless hold a cold or too-young
     process's turn-1 prompt for its connection timeout; the production audit
     measured that wait and the retain/revert policy is still open.
+  · CODEX prewarming is FULL (user-authorized change, 2026-09-01): a parked
+    app-server completes its bounded idempotent `initialize()` handshake and
+    obtains its MCP inventory/readiness (ready, or explicitly degraded)
+    BEFORE the seat is marked warm — asynchronously, after parking, so the
+    keeper never blocks and a racing first claim still reuses the exact PID
+    exactly as before. Prewarm sends NO thread/start, NO thread/resume, NO
+    developer instructions and NO turn/start; it is local process readiness,
+    never a provider call, and provider cache/session evidence is untouched.
+    A failed or timed-out initialize kills and reaps that generation
+    (`prewarm-failed`) and the seat falls back to spawn-per-turn.
 
 THE WARM PROCESS IS A CACHE, NEVER THE SOURCE OF TRUTH. Every caller falls
 back to today's spawn-per-turn when the pool has nothing valid, and the agent
@@ -77,6 +87,12 @@ WARM_POLL = float(os.environ.get("ORGTREE_WARM_POLL", "20"))
 SPAWN_PACE = max(1, int(os.environ.get("ORGTREE_WARM_SPAWN_PACE", "2")))
 # pool snapshot cadence for the telemetry journal
 POOL_SNAP_EVERY = 60.0
+# bound on the prewarm-time Codex `initialize()` exchange. Generous against a
+# busy machine, small against the keeper's world: the finisher runs OFF the
+# keeper thread, so this bounds only how long a broken app-server may sit in
+# the pool unready before it is reaped and the seat falls back to cold spawns.
+CODEX_PREWARM_INIT_TIMEOUT_S = float(
+    os.environ.get("ORGTREE_WARM_CODEX_INIT_S", "45"))
 
 _FLAG_CACHE: dict[str, Any] = {"at": 0.0, "mtime": None, "val": None}
 _FLAG_TTL = 2.0
@@ -447,6 +463,11 @@ class CodexWarmProc:
         self.ident_components = dict(components or {})
         self.claimed = False
         self.active = False
+        # full-prewarm truth: "initializing" until the finisher completes the
+        # bounded initialize() + MCP inventory, then "ready" or "degraded".
+        # `proc_warm` mirrors this — the seat is only CALLED warm afterward,
+        # though a racing claim may reuse the process at any point.
+        self.warm_state = "initializing"
         self.parked_at = time.time()
         self.cost_base = 0.0
         self.out_base = 0
@@ -625,19 +646,19 @@ def journal_admit(slug: str, nid: str, sid: str, served: str, reason: str,
     not explain either way — a slot wait leaves no OTHER trace anywhere, so
     without this field the next occurrence would be just as unexplainable.
 
-    ⚠ THERE IS DELIBERATELY NO `handshake_ms` FIELD. One used to be written
-    here as the literal `0`, and cache-misses measured it vacuous
-    (2026-08-30): 0 in all 46 admit rows, cold spawns included. What makes
-    that a finding rather than a guess is the control — `spawn_ms` in the
-    SAME rows varies 0–483ms, so the journal does record varying values and
-    that field specifically was dead.
+    ⚠ THERE IS DELIBERATELY NO `handshake_ms` FIELD IN ADMIT ROWS. One used
+    to be written here as the literal `0`, and cache-misses measured it
+    vacuous (2026-08-30): 0 in all 46 admit rows, cold spawns included. What
+    makes that a finding rather than a guess is the control — `spawn_ms` in
+    the SAME rows varies 0–483ms, so the journal does record varying values
+    and that field specifically was dead.
 
-    It is REMOVED rather than wired up, because there is no interval here to
-    measure. This pool by explicit user ruling (module docstring) NEVER WAITS
-    FOR THE MCP HANDSHAKE anywhere, so nothing at this seam observes the
-    handshake starting or finishing; any number written here would be
-    invented. Timing it means watching the CLI's own MCP readiness output,
-    which is a feature, not a field.
+    It stays removed because NOTHING AT THIS SEAM observes a handshake:
+    Claude admissions still never wait for one (user ruling, module
+    docstring), and the Codex prewarm handshake completes elsewhere — its
+    real, measured interval is journaled by the finisher's own
+    `prewarm-ready`/`prewarm-degraded`/`prewarm-failed` rows as
+    `elapsed_ms`, against the process it actually timed.
 
     A MISSING FIELD IS HONEST; A PERMANENTLY-ZERO ONE LIES — and this one sat
     in the journal this whole effort steers by, where `handshake_ms=0` on a
@@ -1552,6 +1573,13 @@ KILL_REASON_CLASS = {
     "limit-frozen": "turn-machinery",    # usage limit froze the seat
     "background-children": "turn-machinery",  # lives on till bg agents land
     "stdin-closed": "turn-machinery",    # generic non-park drain-to-exit
+    # a Codex app-server whose bounded prewarm initialize() failed, timed out
+    # or died is reaped rather than parked-unready forever (user-authorized
+    # full-prewarm contract, 2026-09-01). The seat keeps today's retry and
+    # cold-fallback semantics: the next keeper pass respawns, turns spawn
+    # cold meanwhile, and a process CLAIMED mid-initialize is never touched —
+    # its turn owns the aftermath.
+    "prewarm-failed": "prewarm-abort",
     "suite-teardown": "test",
 }
 
@@ -1631,9 +1659,13 @@ def _on_proc_exit(wp: WarmProcess) -> None:
 
 def _spawn_for(org: Any, nid: str, why: str) -> WarmProcess | None:
     """Spawn and park one CLI process, exactly the shape a turn spawn uses
-    (production argv, leashed to the backend's job object). NO message is
-    written and NO handshake is awaited — a parked process makes no API call
-    (parkprobe.py: 2/2 survived, 0 transcripts, 0 tokens)."""
+    (production argv, leashed to the backend's job object). NO prompt is
+    written, NO thread is created or resumed, and NO turn is started — a
+    parked process makes no API call (parkprobe.py: 2/2 survived, 0
+    transcripts, 0 tokens). Claude additionally awaits no handshake (user
+    ruling 2026-08-30). A Codex spawn is followed by the keeper's async
+    prewarm finisher, which completes initialize()+MCP readiness before the
+    seat is called warm — see `_codex_prewarm_finish`."""
     from . import supervisor as sup                 # noqa: PLC0415
     from . import providers                         # noqa: PLC0415
     slug = org.d["slug"]
@@ -1655,7 +1687,7 @@ def _spawn_for(org: Any, nid: str, why: str) -> WarmProcess | None:
             proc = client.proc
             sup._mcp_tool_count_begin(
                 slug, nid, proc, "codex", "mcpServerStatus/list",
-                "Codex app-server is parked but not initialized",
+                "Codex app-server is initializing (prewarm)",
                 org.node(nid).get("last_turn_mcp_tool_count"))
             try:
                 sup._leash(proc)
@@ -1663,6 +1695,10 @@ def _spawn_for(org: Any, nid: str, why: str) -> WarmProcess | None:
                     slug, nid, client, org.node(nid)["session_id"], ih,
                     components)
                 client.on_exit = lambda: _on_proc_exit(wp)
+                # While parked, MCP startup events refresh the planted
+                # inventory the same way a live turn's handler would; a
+                # claim's bind() replaces this handler with the turn's own.
+                client.on_event = _codex_prewarm_events(wp)
             except Exception:
                 sup._mcp_tool_count_end(slug, nid, proc,
                                         "process setup failed")
@@ -1731,6 +1767,149 @@ def _spawn_for(org: Any, nid: str, why: str) -> WarmProcess | None:
               f"({type(e).__name__}: {e}) — the agent falls back to "
               f"spawn-per-turn and notices nothing")
         return None
+
+
+def _codex_prewarm_events(wp: CodexWarmProc) -> Any:
+    """A parked-period on_event handler: MCP startup transitions re-list the
+    runtime inventory so the planted surface tracks servers as they connect.
+    The refresh runs OFF the wire-reader thread (a request from the reader
+    would deadlock against itself), one at a time, and stands down the moment
+    the process is claimed — the turn installs its own handler via bind()."""
+    gate = threading.Lock()
+
+    def _refresh() -> None:
+        from . import supervisor as sup             # noqa: PLC0415
+        with gate:
+            if wp.claimed:
+                return
+            try:
+                names = wp.client.mcp_tool_names()
+            except Exception as e:                  # noqa: BLE001
+                sup._mcp_tool_count_unknown(
+                    wp.slug, wp.nid, wp.proc, "codex", "mcpServerStatus/list",
+                    f"Codex runtime inventory unavailable: {type(e).__name__}")
+                return
+            sup._mcp_tool_count_names(
+                wp.slug, wp.nid, wp.proc, names, "codex",
+                "mcpServerStatus/list")
+
+    def _on_event(msg: dict[str, Any]) -> None:
+        if wp.claimed:
+            return
+        if str(msg.get("method") or "") in (
+                "mcpServer/startupStatus/updated",
+                "mcpServer/event/stream/notification"):
+            threading.Thread(target=_refresh, daemon=True,
+                             name=f"warmmcp-{wp.slug}-{wp.nid}").start()
+
+    return _on_event
+
+
+def _codex_prewarm_finish(org: Any, nid: str, wp: CodexWarmProc) -> None:
+    """Complete a parked app-server's LOCAL readiness, then call it warm.
+
+    Runs off-keeper after the process is parked (already claimable, so a
+    racing first claim keeps its exact-PID-reuse contract and simply finds
+    initialize() already done or in flight — the client's initialize lock
+    keeps it once-per-process either way). Sends no thread or turn traffic
+    and reads no provider cache: this is process/MCP readiness only.
+
+      · initialize() failure/timeout/death → kill and reap THIS generation
+        (`prewarm-failed`), unless a turn claimed it meanwhile — then the
+        turn owns the process and its own initialize tells the story.
+      · MCP inventory is planted from mcpServerStatus/list; an unanswerable
+        inventory is an EXPLICIT degraded outcome, not a lie and not a kill.
+      · the bounded readiness gate then runs exactly as a turn would run it;
+        `timed-out` degrades, `cancelled`/`generation-changed` abort quietly
+        (someone else owns the seat's story), every fail-open outcome is
+        ready.
+    Only after that is `proc_warm` raised — the UI's initializing→ready/
+    degraded transitions are the true process story, not a claimable flag.
+    """
+    from . import supervisor as sup                 # noqa: PLC0415
+    slug = wp.slug
+    t0 = time.time()
+
+    def _ours_and_parked() -> bool:
+        with _pool_lock:
+            return _pool.get((slug, nid)) is wp and not wp.claimed
+    try:
+        wp.client.initialize(timeout=CODEX_PREWARM_INIT_TIMEOUT_S)
+    except Exception as e:                          # noqa: BLE001
+        with _pool_lock:
+            ours = _pool.get((slug, nid)) is wp
+            claimed = wp.claimed
+            if ours and not claimed:
+                del _pool[(slug, nid)]
+        if claimed:
+            return          # the turn owns this process and its story
+        # the attribution row is written even when the EOF pump already
+        # reaped the corpse (its exit row says crash; this one says WHOSE
+        # handshake it was that failed, and how long it was given)
+        _journal_proc("prewarm-failed", slug, nid,
+                      f"initialize: {type(e).__name__}: {e}"[:300], wp.hash,
+                      elapsed_ms=int((time.time() - t0) * 1000),
+                      session_id=wp.sid, pid=getattr(wp.proc, "pid", None))
+        if not ours:
+            return          # already reaped/replaced; nothing left to clean
+        _kill_proc(wp)
+        _set_proc_warm(slug, nid, False)
+        _set_proc_lifecycle(slug, nid, live=False, owner=wp)
+        try:
+            sup._mcp_tool_count_end(slug, nid, wp.proc,
+                                    "prewarm initialize failed")
+        except Exception:                           # noqa: BLE001
+            pass
+        _journal_exit_once(wp, "prewarm-failed")
+        return
+    degraded_reason = ""
+    try:
+        names = wp.client.mcp_tool_names()
+        sup._mcp_tool_count_names(slug, nid, wp.proc, names, "codex",
+                                  "mcpServerStatus/list")
+    except Exception as e:                          # noqa: BLE001
+        degraded_reason = (f"Codex runtime inventory unavailable: "
+                           f"{type(e).__name__}")
+        try:
+            sup._mcp_tool_count_unknown(slug, nid, wp.proc, "codex",
+                                        "mcpServerStatus/list",
+                                        degraded_reason)
+        except Exception:                           # noqa: BLE001
+            pass
+    if not _ours_and_parked():
+        return              # a turn took it; nothing left to mark here
+    gate = "unavailable"
+    try:
+        fingerprint = sup._mcp_infrastructure_fingerprint(org, nid)
+        gate = sup._mcp_wait_for_surface(org, nid, wp.proc, "openai",
+                                         fingerprint)
+    except Exception:                               # noqa: BLE001
+        pass
+    if gate in ("cancelled", "generation-changed"):
+        return
+    if gate == "timed-out" and not degraded_reason:
+        degraded_reason = "MCP readiness timed out during prewarm"
+    outcome = "degraded" if degraded_reason else "ready"
+    with _pool_lock:
+        current = (_pool.get((slug, nid)) is wp and not wp.claimed
+                   and wp.alive())
+        if current:
+            with wp._lk:
+                wp.warm_state = outcome
+    if not current:
+        return
+    if outcome == "degraded":
+        try:
+            sup._mcp_readiness_set(slug, nid, wp.proc, waiting=False,
+                                   state_name="degraded",
+                                   reason=degraded_reason)
+        except Exception:                           # noqa: BLE001
+            pass
+    _set_proc_warm(slug, nid, True)
+    _journal_proc(f"prewarm-{outcome}", slug, nid,
+                  degraded_reason or gate, wp.hash,
+                  elapsed_ms=int((time.time() - t0) * 1000),
+                  session_id=wp.sid, pid=getattr(wp.proc, "pid", None))
 
 
 def kill_node(slug: str, nid: str, reason: str,
@@ -2020,9 +2199,18 @@ def _keeper_pass() -> None:
                     _journal_exit_once(nwp, "superseded")
                     nwp = None
             if nwp is not None:
-                _set_proc_warm(slug, nid, True)
                 _set_proc_lifecycle(slug, nid, live=True, owner=nwp,
                                     adopt=True)
+                if isinstance(nwp, CodexWarmProc):
+                    # full Codex prewarm: the seat is called warm only after
+                    # the async finisher proves initialize()+MCP readiness
+                    # (or explicit degradation). The process is already
+                    # parked and claimable — a racing turn loses nothing.
+                    threading.Thread(
+                        target=_codex_prewarm_finish, args=(org, nid, nwp),
+                        daemon=True, name=f"codexwarm-{slug}-{nid}").start()
+                else:
+                    _set_proc_warm(slug, nid, True)
 
 
 def _pool_snapshot() -> None:

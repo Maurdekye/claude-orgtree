@@ -430,7 +430,7 @@ class AppServerClient:
             time.sleep(0.02)
         raise CodexServerError(f"{method}: no answer in {timeout:.0f}s")
 
-    def initialize(self) -> dict[str, Any]:
+    def initialize(self, timeout: float = 60.0) -> dict[str, Any]:
         with self._initialize_lock:
             if self._initialized:
                 return dict(self._initialize_result)
@@ -438,7 +438,7 @@ class AppServerClient:
                 "clientInfo": {"name": "orgtree",
                                "title": "orgtree supervisor",
                                "version": "1"},
-                "capabilities": {"experimentalApi": True}}, 60)
+                "capabilities": {"experimentalApi": True}}, timeout)
             self.notify("initialized", {})
             self._initialize_result = dict(r)
             self._initialized = True
