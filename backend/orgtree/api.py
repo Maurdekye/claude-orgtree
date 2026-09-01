@@ -2344,34 +2344,51 @@ async def provider_preference(
 
 
 class RuntimePreference(Body):
-    enabled: bool
+    # `enabled` is the established process-warming wire key. Keep it stable;
+    # the explicit second key lets either control change without rewriting the
+    # other durable value.
+    enabled: bool | None = None
+    working_checkups_enabled: bool | None = None
+
+
+def _runtime_preferences() -> dict[str, bool]:
+    return {
+        "warming_enabled": warmpool.warm_enabled(),
+        "working_checkups_enabled": appsettings.working_checkups_enabled(),
+    }
 
 
 @app.get("/api/app-settings/runtime")
 async def runtime_preference_info() -> dict[str, bool]:
-    """Return the machine-wide warming preference/runtime control arm.
+    """Return machine-wide process and reported-working lifecycle choices.
 
-    This deliberately reads D-201's warm.flag through warmpool rather than
-    mirroring it in app-settings.json: the user-facing preference, runtime
-    back-out lever and A/B measurement arm are the same durable value.
+    Process warming still reads D-201's warm.flag through warmpool rather than
+    mirroring it in app-settings.json. The stale-working choice is additive
+    runtime policy and lives in the application settings record.
     """
     from fastapi.concurrency import run_in_threadpool
 
-    enabled = await run_in_threadpool(warmpool.warm_enabled)
-    return {"warming_enabled": enabled}
+    return await run_in_threadpool(_runtime_preferences)
 
 
 @app.put("/api/app-settings/runtime")
 async def runtime_preference(body: RuntimePreference) -> dict[str, bool]:
-    """Flip process warming through warmpool's sole read/modify/write path."""
+    """Update either runtime choice without disturbing the other one."""
     from fastapi.concurrency import run_in_threadpool
 
+    if body.enabled is None and body.working_checkups_enabled is None:
+        raise HTTPException(422, "one runtime setting is required")
     try:
-        await run_in_threadpool(warmpool.set_enabled, body.enabled)
-        enabled = await run_in_threadpool(warmpool.warm_enabled)
-    except OSError as e:
+        if body.enabled is not None:
+            await run_in_threadpool(warmpool.set_enabled, body.enabled)
+        if body.working_checkups_enabled is not None:
+            await run_in_threadpool(
+                appsettings.set_working_checkups_enabled,
+                body.working_checkups_enabled)
+        result = await run_in_threadpool(_runtime_preferences)
+    except (appsettings.AppSettingsUnreadable, OSError) as e:
         raise HTTPException(500, str(e)) from e
-    return {"warming_enabled": enabled}
+    return result
 
 
 class Reorder(Body):
@@ -4576,9 +4593,16 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
                 # `blocked` is NOT collapsed: it means "stuck, needs a human or
                 # a superior", which idle does not.
                 stored = "idle" if status == "done" else status
+                status_at = supervisor.now_iso()
                 org.node(body.node)["last_status"] = {
                     "status": stored, "summary": summary,
-                    "at": supervisor.now_iso()}
+                    "at": status_at}
+                if stored == "working":
+                    # The report itself is observable agent activity and the
+                    # first durable anchor for the 30-minute checkup clock.
+                    org.node(body.node)["working_activity_at"] = status_at
+                else:
+                    org.node(body.node).pop("working_activity_at", None)
                 result = {"recorded": status}
                 if status in ("done", "blocked"):
                     parent = org.node(body.node)["parent"]

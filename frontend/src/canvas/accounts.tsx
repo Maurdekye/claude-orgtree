@@ -31,7 +31,7 @@ import type {
 import {
   addAccountKey, deleteAccountKey, getAccounts, getAccountUsage,
   getProviders, getRuntimeSettings, setAccountKeyOrder, setProviderEnabled,
-  setWarmingEnabled,
+  setWarmingEnabled, setWorkingCheckupsEnabled,
 } from '../api'
 import { CheckIcon, DataUsageIcon, DeleteIcon } from '../icons'
 import {
@@ -254,13 +254,19 @@ export function AccountsPanel({ toast, close }: {
   const [providerBusy, setProviderBusy] = useState<string | null>(null)
   const [warming, setWarming] = useState<boolean | null>(null)
   const [warmingBusy, setWarmingBusy] = useState(false)
+  const [workingCheckups, setWorkingCheckups] = useState<boolean | null>(null)
+  const [workingCheckupsBusy, setWorkingCheckupsBusy] = useState(false)
   const [warmingErr, setWarmingErr] = useState<string | null>(null)
   useEffect(() => {
     getProviders().then((p) => setProviders(p.providers)).catch(() => {})
   }, [])
   useEffect(() => {
     getRuntimeSettings()
-      .then((p) => { setWarming(p.warming_enabled); setWarmingErr(null) })
+      .then((p) => {
+        setWarming(p.warming_enabled)
+        setWorkingCheckups(p.working_checkups_enabled !== false)
+        setWarmingErr(null)
+      })
       .catch((e: Error) => setWarmingErr(e.message))
   }, [])
   const claudeProv = providers?.find((p) => p.id === 'claude')
@@ -733,7 +739,9 @@ export function AccountsPanel({ toast, close }: {
                 setWarmingBusy(true)
                 setWarmingEnabled(enabled)
                   .then((p) => {
-                    setWarming(p.warming_enabled); setWarmingErr(null)
+                    setWarming(p.warming_enabled)
+                    setWorkingCheckups(p.working_checkups_enabled !== false)
+                    setWarmingErr(null)
                     toast([`process warming turned ${p.warming_enabled ? 'on' : 'off'}`])
                   })
                   .catch((runtimeErr: Error) => {
@@ -744,6 +752,35 @@ export function AccountsPanel({ toast, close }: {
               }} />
             keep agent processes warm
             <span className="app-pref-state">{warming === false ? 'off' : 'on'}</span>
+          </label>
+          <label className="app-pref-row app-pref-check">
+            <input type="checkbox" role="switch"
+              aria-label="check on working agents after 30 minutes"
+              checked={workingCheckups ?? true}
+              disabled={workingCheckups == null || workingCheckupsBusy}
+              onChange={(e) => {
+                const enabled = e.target.checked
+                setWorkingCheckupsBusy(true)
+                setWorkingCheckupsEnabled(enabled)
+                  .then((p) => {
+                    setWorkingCheckups(p.working_checkups_enabled)
+                    setWarming(p.warming_enabled)
+                    setWarmingErr(null)
+                    toast([`working-agent checkups turned ${p.working_checkups_enabled ? 'on' : 'off'}`])
+                  })
+                  .catch((runtimeErr: Error) => {
+                    setWarmingErr(runtimeErr.message)
+                    toast([`error: ${runtimeErr.message}`])
+                  })
+                  .finally(() => setWorkingCheckupsBusy(false))
+              }} />
+            check on working agents after 30 minutes
+            <span className="app-pref-state">
+              {workingCheckups === false ? 'off' : 'on'}
+            </span>
+            <span className="dim">
+              off uses isolated Claude cache reads instead
+            </span>
           </label>
         </div>
 

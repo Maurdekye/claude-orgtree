@@ -30,8 +30,12 @@ with open(os.path.join(ROOT, "defaults.json"), "w", encoding="utf-8") as f:
 BACKEND = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, BACKEND)
 
-from orgtree import cachedeny, store, supervisor as S  # noqa: E402
+from orgtree import appsettings, cachedeny, store, supervisor as S  # noqa: E402
 from orgtree.ledger import USER              # noqa: E402
+
+# This suite pins the fallback mode. The new default-on real checkup mode is
+# covered separately and suppresses these disposable reads by design.
+appsettings.set_working_checkups_enabled(False)
 
 PASS = FAIL = 0
 

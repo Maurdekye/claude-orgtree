@@ -7,9 +7,11 @@ machine admits a provider. Display-only preferences remain in browser
 localStorage because text scale and canvas density belong to the screen being
 used, not to the backend machine.
 
-The first record is D-203's per-provider admission switch. Missing means
-enabled, so existing installs and older settings files retain today's
-behaviour without a migration.
+The first record is D-203's per-provider admission switch. Runtime also owns
+the machine-wide stale-working checkup mode. Both are default-on: missing
+means enabled, so existing installs and older settings files retain the
+established provider behaviour and adopt the safer real-turn checkup without
+a migration.
 """
 
 from __future__ import annotations
@@ -39,7 +41,7 @@ def path() -> str:
 
 
 def _blank() -> dict[str, Any]:
-    return {"version": VERSION, "providers": {}}
+    return {"version": VERSION, "providers": {}, "runtime": {}}
 
 
 def load(*, strict: bool = False) -> dict[str, Any]:
@@ -70,6 +72,8 @@ def load(*, strict: bool = False) -> dict[str, Any]:
             return _blank()
         raw = doc.get("providers")
         doc["providers"] = raw if isinstance(raw, dict) else {}
+        runtime = doc.get("runtime")
+        doc["runtime"] = runtime if isinstance(runtime, dict) else {}
         return doc
 
 
@@ -84,6 +88,17 @@ def provider_choices() -> dict[str, bool]:
     raw = load().get("providers")
     prefs = raw if isinstance(raw, dict) else {}
     return {provider: prefs.get(provider) is not False for provider in PROVIDERS}
+
+
+def working_checkups_enabled() -> bool:
+    """Whether reported-working seats get real 30-minute checkup turns.
+
+    Only an explicit false disables it. This is both the compatibility rule
+    for records written before the setting existed and the product default.
+    """
+    raw = load().get("runtime")
+    runtime = raw if isinstance(raw, dict) else {}
+    return runtime.get("working_checkups") is not False
 
 
 def _save(doc: dict[str, Any]) -> None:
@@ -125,5 +140,17 @@ def set_provider_enabled(provider: str, enabled: bool) -> None:
         # preferences screen rather than relying on absence as success.
         prefs[provider] = bool(enabled)
         doc["providers"] = prefs
+        doc["version"] = VERSION
+        _save(doc)
+
+
+def set_working_checkups_enabled(enabled: bool) -> None:
+    """Persist the machine-wide checkup/cache-read lifecycle choice."""
+    with _LOCK:
+        doc = load(strict=True)
+        raw = doc.get("runtime")
+        runtime: dict[str, Any] = dict(raw) if isinstance(raw, dict) else {}
+        runtime["working_checkups"] = bool(enabled)
+        doc["runtime"] = runtime
         doc["version"] = VERSION
         _save(doc)

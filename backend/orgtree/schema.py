@@ -257,6 +257,10 @@ class NodeDoc(TypedDict):
     # Claude prompt-cache lifetime while the agent reported `working`.
     # Separate from `turns`: this request is billed, but is not agent work.
     cache_keepalive_at: NotRequired[str]
+    # Latest durable wake/status/checkup-reservation boundary while the node
+    # reports `working`. It is the restart-safe 30-minute checkup clock and
+    # failed-wake cooldown; cleared when status leaves working.
+    working_activity_at: NotRequired[str]
     inflight: NotRequired[InflightInfo | None]
     last_denials: NotRequired[list[Denial]]
     turns: NotRequired[list[TurnStat]]

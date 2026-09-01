@@ -37,8 +37,9 @@ import uuid
 from collections.abc import Callable, Iterable, Mapping
 from typing import Any, Final, cast
 
-from . import (accounts, codex_limits, deployment, imgblock, limits, net,
-               providers, sandbox as sbx, store, tokens, warmpool)
+from . import (accounts, appsettings, codex_limits, deployment, imgblock,
+               limits, net, providers, sandbox as sbx, store, tokens,
+               warmpool)
 from .ledger import EXTERN, SYSTEM, USER, LedgerError, Org, expand_mcp, now as now_iso
 from .schema import (Denial, FrozenInfo, InflightInfo, KioskCfg, MailEntry,
                      NodeDoc, NoticeEntry, TurnStat)
@@ -184,6 +185,25 @@ WORKING_CACHE_RETRY_MAX_S = max(
 WORKING_CACHE_PROMPT = (
     "This is an automated prompt-cache keepalive. Reply with exactly OK and "
     "do not use tools.")
+
+# A durable reported-working status is a promise that work is still moving,
+# not permission to disappear indefinitely. App settings chooses this real
+# checkup turn OR the disposable cache read above; the two never run together.
+# The existing lifecycle keeper supplies the poll cadence, so this is the one
+# new timing policy rather than a second family of scheduler knobs.
+WORKING_CHECKUP_AFTER_S = 30.0 * 60.0
+WORKING_CHECKUP_PROMPT = (
+    "[AUTOMATIC 30-MINUTE WORKING-STATUS CHECK]\n"
+    "You previously reported that you were working, but Orgtree has not woken "
+    "you for 30 minutes. Check the actual work, files, processes, and messages. "
+    "If useful work remains, make concrete progress now. Then report honestly "
+    "with orgtree_status: use working only if work is still in progress, done "
+    "if it is complete, or blocked if you truly cannot proceed. Do not claim "
+    "that work is continuing without verifying it.")
+WORKING_CHECKUP_NUDGE = (
+    "(orgtree) This is the automatic 30-minute working-status check. The "
+    "internally attributed mail above asks you to verify the work, make "
+    "progress, and report your status honestly.")
 
 # real context windows per tier (user-verified) — the CLI's
 # modelUsage.contextWindow under-reported 1M-window models as 200k.
@@ -4239,6 +4259,129 @@ def _reported_working(n: NodeDoc | dict[str, Any]) -> bool:
     return isinstance(status, dict) and status.get("status") == "working"
 
 
+def _working_checkup_anchor(n: NodeDoc | dict[str, Any]) -> float:
+    """Latest durable working-status activity boundary, as epoch seconds."""
+    status = n.get("last_status")
+    stamps = [str(n.get("working_activity_at") or "")]
+    if isinstance(status, dict):
+        stamps.append(str(status.get("at") or ""))
+    turns = n.get("turns")
+    if isinstance(turns, list) and turns and isinstance(turns[-1], dict):
+        # A long real turn can finish well after its wake. Its completion is
+        # actual activity, so the 30 minutes begin there rather than firing as
+        # soon as the busy bit falls.
+        stamps.append(str(turns[-1].get("at") or ""))
+    vals: list[float] = []
+    for stamp in stamps:
+        if not stamp:
+            continue
+        try:
+            vals.append(_dtm.datetime.fromisoformat(
+                stamp.replace("Z", "+00:00")).timestamp())
+        except (TypeError, ValueError, OverflowError):
+            pass
+    return max(vals, default=0.0)
+
+
+def _working_checkup_eligible(org: Org, nid: str) -> bool:
+    """Durable half of checkup admission; ordinary turn gates still recheck."""
+    n = org.nodes.get(nid)
+    if not n or n.get("state") != "live" or not _reported_working(n):
+        return False
+    if (n.get("frozen") or n.get("limit_locked")
+            or n.get("remote_controlled") or n.get("bearer_state")
+            or n.get("inflight")):
+        return False
+    if org.d.get("spend_frozen"):
+        return False
+    # Match the real turn's disk-org admission gate. Host-folder orgs use the
+    # watchdog's ACL barrier instead and are not turn-blocked by this flag.
+    if org.d.get("storage_blocked") and sbx.on_disk(org.d["slug"]):
+        return False
+    if org.waking_mail(nid):
+        return False
+    if (org.d.get("delivering") or {}).get(nid):
+        return False
+    try:
+        _deployment_org_gate(org)
+    except RuntimeError:
+        return False
+    return True
+
+
+def _working_checkup_reserve(slug: str, nid: str, now: float) -> str | None:
+    """Atomically claim one due checkup and persist its internal mail.
+
+    The mail is the durable carrier. If the backend dies after this save but
+    before the worker starts, startup reconciliation sees ordinary waking mail
+    and drives it. ``working_activity_at`` is both the cross-restart dedupe and
+    the failed-wake cooldown; it is written before any fallible thread start.
+    """
+    with store.DOC_LOCK:
+        org = store.load_org(slug)
+        if not _working_checkup_eligible(org, nid):
+            return None
+        n = org.node(nid)
+        anchor = _working_checkup_anchor(n)
+        if not anchor:
+            # Reconcile a legacy/hand-edited working row without a timestamp
+            # conservatively. Absence is not evidence that 30 minutes passed.
+            n["working_activity_at"] = _iso_ts(now)
+            store.save_org(org)
+            return None
+        if now - anchor < WORKING_CHECKUP_AFTER_S:
+            return None
+        mid = uuid_hex8()
+        stamp = _iso_ts(now)
+        n["working_activity_at"] = stamp
+        entry: MailEntry = {
+            "id": mid, "from": SYSTEM, "kind": "message",
+            "body": WORKING_CHECKUP_PROMPT, "at": stamp,
+            "relationship": (
+                "the orgtree engine automatically checking a durable working "
+                "status after 30 minutes without an agent wake"),
+        }
+        box = org.d.setdefault("mail", {})
+        box.setdefault(nid, []).append(cast(MailEntry, dict(entry)))
+        log = org.d.setdefault("mail_log", {}).setdefault(nid, [])
+        log.append(cast(MailEntry, dict(entry)))
+        del log[:-100]
+        store.save_org(org)
+        return mid
+
+
+def _working_checkup_cancel(slug: str, nid: str, mid: str) -> None:
+    """Withdraw a reservation that lost the idle-admission race."""
+    try:
+        with store.DOC_LOCK:
+            org = store.load_org(slug)
+            box = (org.d.get("mail") or {}).get(nid) or []
+            before = len(box)
+            box[:] = [m for m in box if m.get("id") != mid]
+            if len(box) == before:
+                return          # already drained: the real turn owns it
+            log = (org.d.get("mail_log") or {}).get(nid) or []
+            log[:] = [m for m in log if m.get("id") != mid]
+            store.save_org(org)
+    except (LedgerError, OSError):
+        pass
+
+
+def _note_working_activity(slug: str, nid: str,
+                           now: float | None = None) -> None:
+    """Reset stale-working time at the single real-turn wake choke point."""
+    try:
+        with store.DOC_LOCK:
+            org = store.load_org(slug)
+            if nid in org.nodes and _reported_working(org.node(nid)):
+                org.node(nid)["working_activity_at"] = _iso_ts(
+                    time.time() if now is None else now)
+                store.save_org(org)
+    except Exception:                                        # noqa: BLE001
+        # Advisory bookkeeping must never become a new turn-admission gate.
+        pass
+
+
 def _working_cache_interval(org: Org, nid: str) -> tuple[float, bool] | None:
     """Return (cadence, billed_key) for a Claude keepalive, else None.
 
@@ -4284,6 +4427,13 @@ def _working_cache_due(org: Org, nid: str, now: float | None = None) -> bool:
     n = org.node(nid)
     if n.get("frozen") or n.get("limit_locked") \
             or n.get("remote_controlled") or n.get("bearer_state"):
+        return False
+    # An enabled-mode checkup may have been durably reserved just before the
+    # operator switched modes or the backend died. Do not run the fallback
+    # cache request beside that already-scheduled real turn; reconciliation or
+    # the next ordinary wake owns the mail.
+    if any(m.get("from") == SYSTEM and m.get("body") == WORKING_CHECKUP_PROMPT
+           for m in (org.d.get("mail") or {}).get(nid) or []):
         return False
     # A never-run session has no prefix to read. Starting it here would create
     # agent history rather than preserve existing history.
@@ -4426,7 +4576,8 @@ def _working_cache_read(slug: str, nid: str,
                 return
             with store.DOC_LOCK:
                 org = store.load_org(slug)
-                if (not _working_cache_due(org, nid)
+                if (appsettings.working_checkups_enabled()
+                        or not _working_cache_due(org, nid)
                         or not _working_cache_retry_due(slug, nid, time.time())):
                     return
                 n = org.node(nid)
@@ -4563,6 +4714,8 @@ def _working_cache_read(slug: str, nid: str,
 
 
 def _launch_working_cache_read(slug: str, nid: str) -> None:
+    if appsettings.working_checkups_enabled():
+        return
     key = (slug, nid)
     st = state(slug, nid)
     lease: dict[str, Any] = {
@@ -4605,10 +4758,63 @@ def _cancel_working_cache(slug: str, nid: str) -> None:
     lease["done"].wait(timeout=5)
 
 
+def _working_checkup_pass(
+        wake: Callable[[str, str, str], dict[str, Any]] | None = None,
+        now: float | None = None, *, mode_enabled: bool | None = None) -> None:
+    """One deterministic fleet sweep for stale reported-working seats."""
+    enabled = (appsettings.working_checkups_enabled()
+               if mode_enabled is None else mode_enabled)
+    if not enabled:
+        return
+    now = time.time() if now is None else now
+    wake_fn = wake or (lambda slug, nid, text: send_message(
+        slug, nid, text, mail_ping=True, idle_only=True))
+    for row in store.list_orgs():
+        slug = row["slug"]
+        try:
+            org = store.load_org(slug)
+        except LedgerError:
+            continue
+        for nid in sorted(org.nodes):
+            try:
+                # Runtime state stays in RAM; durable eligibility is reloaded
+                # atomically by the reservation below. The second idle-only
+                # check in send_message closes a race with a real wake.
+                if not _working_cache_idle(slug, nid):
+                    continue
+                mid = _working_checkup_reserve(slug, nid, now)
+                if not mid:
+                    continue
+                result = wake_fn(slug, nid, WORKING_CHECKUP_NUDGE)
+                refused = (not result.get("accepted")
+                           or bool(result.get("queued"))
+                           or any(result.get(k) for k in (
+                               "frozen", "limit_locked", "remote",
+                               "deferred", "not_idle")))
+                if refused:
+                    # Some real activity or a durable gate won the race after
+                    # reservation. It supersedes this checkup; do not leave a
+                    # stale system message to surprise a later turn.
+                    _working_checkup_cancel(slug, nid, mid)
+                    continue
+                mail_spark(slug, SYSTEM, nid)
+            except Exception as e:                          # noqa: BLE001
+                # Reservation precedes the fallible wake. If thread creation
+                # itself fails, its durable mail remains for reconciliation
+                # and the activity stamp prevents scheduler-tick hammering.
+                print(f"[orgtree] {slug}/{nid}: working checkup decision "
+                      f"failed: {type(e).__name__}: {e}")
+
+
 def _working_cache_keeper_pass(
         launch: Callable[[str, str], None] = _launch_working_cache_read,
-        now: float | None = None) -> None:
+        now: float | None = None, *,
+        checkup_mode_enabled: bool | None = None) -> None:
     """One fleet sweep; `launch` is the deterministic hermetic test seam."""
+    checkups = (appsettings.working_checkups_enabled()
+                if checkup_mode_enabled is None else checkup_mode_enabled)
+    if checkups:
+        return
     now = time.time() if now is None else now
     for row in store.list_orgs():
         slug = row["slug"]
@@ -4627,13 +4833,27 @@ def _working_cache_keeper_pass(
                       f"failed: {type(e).__name__}: {e}")
 
 
+def _working_lifecycle_keeper_pass(
+        checkup_wake: Callable[[str, str, str], dict[str, Any]] | None = None,
+        cache_launch: Callable[[str, str], None] = _launch_working_cache_read,
+        now: float | None = None, *, mode_enabled: bool | None = None) -> None:
+    """Choose exactly one reported-working maintenance mode for this pass."""
+    enabled = (appsettings.working_checkups_enabled()
+               if mode_enabled is None else mode_enabled)
+    if enabled:
+        _working_checkup_pass(checkup_wake, now, mode_enabled=True)
+    else:
+        _working_cache_keeper_pass(
+            cache_launch, now, checkup_mode_enabled=False)
+
+
 def working_cache_keeper_pass_now() -> None:
-    """Synchronous decision pass; requests themselves remain backgrounded."""
-    _working_cache_keeper_pass()
+    """Synchronous lifecycle pass; launched work remains backgrounded."""
+    _working_lifecycle_keeper_pass()
 
 
 def start_working_cache_keeper() -> None:
-    """Attach periodic cache reads to durable reported-working statuses."""
+    """Attach the selected lifecycle mode to durable working statuses."""
     global _working_cache_started
     if _working_cache_started:
         return
@@ -4642,9 +4862,9 @@ def start_working_cache_keeper() -> None:
     def run() -> None:
         while True:
             try:
-                _working_cache_keeper_pass()
+                _working_lifecycle_keeper_pass()
             except Exception as e:                          # noqa: BLE001
-                print(f"[orgtree] working cache keeper failed: "
+                print(f"[orgtree] working lifecycle keeper failed: "
                       f"{type(e).__name__}: {e}")
             time.sleep(WORKING_CACHE_POLL_S)
     threading.Thread(target=run, daemon=True,
@@ -4806,6 +5026,12 @@ def _run_turn(slug: str, nid: str, text: str | dict[str, Any]) -> None:
     # A disposable cache read may own the same Claude session between turns.
     # Real work always wins: kill/reap it before this choke point can resume.
     _cancel_working_cache(slug, nid)
+    # A real wake is the stale-working clock's activity boundary even when a
+    # later admission/provider failure prevents a completed result. This must
+    # sit AFTER cache cancellation: the cache builder may hold DOC_LOCK, while
+    # cancellation must be able to set its lease flag without waiting for that
+    # build (the check-to-Popen race pinned by the cache lifecycle suite).
+    _note_working_activity(slug, nid)
     # the single choke point: all three thread starts target this function,
     # so one gate here covers every way a turn can begin (D-142/a)
     _hold_for_deploy(slug, nid)
@@ -10442,7 +10668,8 @@ def remote_control_stop(slug: str, nid: str) -> dict[str, Any]:
 
 def send_message(slug: str, nid: str, text: str,
                  command: bool = False, wake: bool = True,
-                 mail_ping: bool = False) -> dict[str, Any]:
+                 mail_ping: bool = False,
+                 idle_only: bool = False) -> dict[str, Any]:
     """Drive a node with a nudge; returns immediately. EVERY substantive message
     — user and agent alike — is MAIL (user ruling: the direct-message channel
     was folded into the mail system): it already sits persisted in the node's
@@ -10473,7 +10700,13 @@ def send_message(slug: str, nid: str, text: str,
     rather than shown (see `_mark_ping`), which is what stops the phantom
     wake. Leave it False for anything that still reads correctly with an empty
     mailbox — a replayed message, a restart notice — or that text will be
-    silently swallowed."""
+    silently swallowed.
+
+    idle_only=True is the automatic working-checkup admission shape. It uses
+    this ordinary turn path but refuses, rather than queues or steers, if any
+    active/waiting/queued work already owns the node. That is what makes a
+    periodic observer unable to manufacture a second turn behind real work.
+    """
     st = state(slug, nid)
     # a FROZEN node runs nothing: mail stays safe in its mailbox (not drained)
     # until the org-wide ▶ resume. Both freeze kinds land here — the usage
@@ -10526,6 +10759,21 @@ def send_message(slug: str, nid: str, text: str,
         threading.Thread(target=_run_turn, args=(slug, nid, carrier),
                          daemon=True).start()
         return {"accepted": True, "queued": 0, "command": True}
+    if idle_only:
+        if not wake:
+            return {"accepted": False, "queued": 0,
+                    "error": "idle-only delivery requires a wake"}
+        with _state_lock:
+            if (st.get("busy") or st.get("waiting")
+                    or st.get("responding") or st.get("queue")
+                    or st.get("steer") or st.get("cache_keepalive")):
+                return {"accepted": False, "queued": 0, "not_idle": True}
+            st["busy"] = True
+        threading.Thread(
+            target=_run_turn, daemon=True,
+            args=(slug, nid, _mark_ping(text) if mail_ping else text),
+        ).start()
+        return {"accepted": True, "queued": 0, "idle_only": True}
     with _state_lock:
         maybe_steer = st["busy"] and st.get("responding")
     if maybe_steer:

@@ -61,6 +61,7 @@ def missing_means_on() -> None:
     assert not os.path.exists(appsettings.path())
     assert appsettings.provider_choices() == {
         "claude": True, "openai": True, "google": True}
+    assert appsettings.working_checkups_enabled() is True
 
 
 def explicit_values_round_trip() -> None:
@@ -183,7 +184,7 @@ check("PUT saves, reads back, and rejects an unknown provider",
       put_round_trip_and_unknown_refusal)
 
 
-print("\n§5  runtime setting is D-201's sole durable value")
+print("\n§5  machine-wide runtime settings keep their established stores")
 
 
 def runtime_round_trip_uses_warm_flag() -> None:
@@ -195,32 +196,54 @@ def runtime_round_trip_uses_warm_flag() -> None:
 
     initial = client.get("/api/app-settings/runtime")
     assert initial.status_code == 200, initial.text
-    assert initial.json() == {"warming_enabled": True}, initial.json()
+    assert initial.json() == {
+        "warming_enabled": True,
+        "working_checkups_enabled": True}, initial.json()
 
     off = client.put(
         "/api/app-settings/runtime", json={"enabled": False})
     assert off.status_code == 200, off.text
-    assert off.json() == {"warming_enabled": False}, off.json()
+    assert off.json() == {
+        "warming_enabled": False,
+        "working_checkups_enabled": True}, off.json()
     assert open(flag, encoding="utf-8").read().strip() == "0"
     warmpool._FLAG_CACHE["at"] = 0.0
     assert warmpool.warm_enabled() is False
 
-    # There must not be a preference mirror: this file is provider admission
-    # only, while warm.flag is both the runtime lever and the visible setting.
+    checkups_off = client.put(
+        "/api/app-settings/runtime",
+        json={"working_checkups_enabled": False})
+    assert checkups_off.status_code == 200, checkups_off.text
+    assert checkups_off.json() == {
+        "warming_enabled": False,
+        "working_checkups_enabled": False}, checkups_off.json()
+    assert appsettings.working_checkups_enabled() is False
+
+    # Process warming has no preference mirror: warm.flag remains both its
+    # runtime lever and visible setting. The additive checkup choice belongs
+    # in app-settings.json.
     settings_doc = appsettings.load(strict=True)
-    assert "runtime" not in settings_doc, settings_doc
+    assert settings_doc["runtime"]["working_checkups"] is False, settings_doc
     assert "warming_enabled" not in settings_doc, settings_doc
 
     on = client.put("/api/app-settings/runtime", json={"enabled": True})
     assert on.status_code == 200, on.text
-    assert on.json() == {"warming_enabled": True}, on.json()
+    assert on.json() == {
+        "warming_enabled": True,
+        "working_checkups_enabled": False}, on.json()
+    checkups_on = client.put(
+        "/api/app-settings/runtime",
+        json={"working_checkups_enabled": True})
+    assert checkups_on.status_code == 200, checkups_on.text
+    assert checkups_on.json()["working_checkups_enabled"] is True
+    assert appsettings.working_checkups_enabled() is True
     denied = api._public_denied(
         "PUT", "/api/app-settings/runtime", "public-org")
     assert denied == (
         403, "kiosk: configuration is managed from the admin side"), denied
 
 
-check("GET/PUT round-trip warm.flag without an app-settings mirror",
+check("GET/PUT round-trip both runtime choices in their durable stores",
       runtime_round_trip_uses_warm_flag)
 
 print(f"\n{PASSED}/{PASSED + len(FAILED)} checks passed")

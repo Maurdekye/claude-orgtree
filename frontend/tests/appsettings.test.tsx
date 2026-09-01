@@ -43,17 +43,29 @@ type Seen = { method: string; path: string; body: unknown }
 const g = globalThis as unknown as Record<string, unknown>
 
 function stubFetch(seen: Seen[], initial = ON): void {
+  let warmingEnabled = true
+  let workingCheckupsEnabled = true
   g.fetch = (url: string, init?: RequestInit) => {
     const path = new URL(String(url), 'http://localhost').pathname
     const method = init?.method ?? 'GET'
     const body = init?.body ? JSON.parse(String(init.body)) : null
     seen.push({ method, path, body })
+    if (path === '/api/app-settings/runtime' && method === 'PUT') {
+      const runtime = body as {
+        enabled?: boolean, working_checkups_enabled?: boolean
+      }
+      if (runtime.enabled !== undefined) warmingEnabled = runtime.enabled
+      if (runtime.working_checkups_enabled !== undefined)
+        workingCheckupsEnabled = runtime.working_checkups_enabled
+    }
     const payload = path === '/api/accounts' ? ACCOUNTS
       : path === '/api/providers' ? initial
         : path === '/api/app-settings/runtime' && method === 'GET'
-          ? { warming_enabled: true }
+          ? { warming_enabled: warmingEnabled,
+              working_checkups_enabled: workingCheckupsEnabled }
           : path === '/api/app-settings/runtime' && method === 'PUT'
-            ? { warming_enabled: Boolean((body as { enabled?: boolean })?.enabled) }
+            ? { warming_enabled: warmingEnabled,
+                working_checkups_enabled: workingCheckupsEnabled }
         : path === '/api/providers/claude/enabled' && method === 'PUT'
           ? CLAUDE_OFF : null
     if (!payload) return Promise.reject(new Error(`unexpected ${method} ${path}`))
@@ -168,7 +180,7 @@ test('§3 Display owns both browser-local controls, with durable values and no '
   }
 })
 
-test('§4 Runtime reads default-on and writes the one warming control', async () => {
+test('§4 Runtime reads and writes both machine-wide lifecycle controls', async () => {
   const seen: Seen[] = []
   stubFetch(seen)
   const view = await mountSettings()
@@ -185,6 +197,18 @@ test('§4 Runtime reads default-on and writes the one warming control', async ()
       method: 'PUT', path: '/api/app-settings/runtime',
       body: { enabled: false },
     })
+    const checkup = view.el.querySelector<HTMLInputElement>(
+      'input[aria-label="check on working agents after 30 minutes"]')!
+    assert.equal(checkup.checked, true, 'checkups default on')
+    await inAct(async () => { checkup.click(); await flush(10) })
+    assert.equal(checkup.checked, false)
+    assert.deepEqual(seen.find((r) =>
+      (r.body as { working_checkups_enabled?: boolean } | null)
+        ?.working_checkups_enabled === false), {
+      method: 'PUT', path: '/api/app-settings/runtime',
+      body: { working_checkups_enabled: false },
+    })
+    assert.match(view.el.textContent ?? '', /isolated Claude cache reads instead/)
   } finally { await view.unmount(); delete g.fetch }
 })
 

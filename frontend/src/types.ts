@@ -928,7 +928,11 @@ export interface ProviderInfo {
 export interface ProvidersPayload { providers: ProviderInfo[] }
 
 /** GET/PUT /api/app-settings/runtime — machine behavior, never org state. */
-export interface RuntimeSettingsPayload { warming_enabled: boolean }
+export interface RuntimeSettingsPayload {
+  warming_enabled: boolean
+  /** Default on: real 30-minute checkups replace disposable cache reads. */
+  working_checkups_enabled: boolean
+}
 
 /** one bar of the host subscription's rate-limit standing (GET /api/usage —
  *  the same readout Claude Code shows under /usage). `model` is the display
