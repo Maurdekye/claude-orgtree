@@ -4469,9 +4469,17 @@ def _build_cmd(org: Org, nid: str, write_ident: bool = True) -> list[str]:
         own_key = os.path.normcase(own_scratch)
 
         def _write_denies(prefix: str, suffix: str) -> list[str]:
+            # ONE rule per path (D-220): the pinned CLI matches file
+            # permission checks against Edit(path) ONLY — "Edit rules cover
+            # all file-editing tools" — and prints a startup WARNING for
+            # every Write()/NotebookEdit() rule it ignores. The old trio was
+            # 3× dead weight (the Edit rule alone always carried the
+            # enforcement), and at D-217 scale those ~670 warnings became a
+            # 229 KB stderr burst that filled the pipe before the CLI's
+            # first stdout byte: spawn, then silence, then the 600 s idle
+            # kill (live-hit 2026-09-01, reproduced both ways in isolation).
             base = prefix.replace("\\", "/").rstrip("/")
-            return [f"Edit({base}/{suffix})", f"Write({base}/{suffix})",
-                    f"NotebookEdit({base}/{suffix})"]
+            return [f"Edit({base}/{suffix})"]
 
         deny = []
         for p in ro_paths:
@@ -15318,9 +15326,16 @@ def wd_file_roots(org: Org, owner: str) -> list[str]:
 
 
 def wd_file_contained(org: Org, owner: str, target: str) -> bool:
-    full = os.path.realpath(target)
-    return any(full == r or full.startswith(r + os.sep)
-               for r in wd_file_roots(org, owner))
+    full = os.path.normcase(os.path.realpath(target))
+    for r in wd_file_roots(org, owner):
+        # rstrip: a drive-root grant realpaths to "C:\" and the naive
+        # `r + os.sep` doubled the separator, refusing everything under it
+        # (live-hit 2026-09-01: C:\ held, backend.log unwatchable);
+        # normcase: Windows trees differing only in case are the same tree
+        base = os.path.normcase(r).rstrip("\\/")
+        if full == base or full.startswith(base + os.sep):
+            return True
+    return False
 
 
 def _wd_pause(slug: str, wid: str, why: str) -> None:

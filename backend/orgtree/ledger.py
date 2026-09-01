@@ -838,10 +838,30 @@ class Org:
         """
         if parent_map is None:
             return list(requested), []
+
+        def _held_mode(path: str) -> str | None:
+            """The mode the holder's set confers on `path`: an exact entry,
+            or the entry of any held ANCESTOR tree — №30 names TREES, and
+            holding a tree is holding every subtree of it. The lookup used
+            to be exact-key only, which refused a parent holding C:\\ the
+            grant of a folder UNDER it (live-hit 2026-09-01): narrowing was
+            impossible and every refusal pushed toward over-granting, the
+            opposite of the clamp's purpose. rw wins when several held
+            trees cover the path."""
+            want = os.path.normcase(os.path.normpath(path))
+            best: str | None = None
+            for hp, hm in parent_map.items():
+                base = os.path.normcase(os.path.normpath(hp)).rstrip("\\/")
+                if want == base or want.startswith(base + os.sep):
+                    if hm == "rw":
+                        return "rw"
+                    best = "ro"
+            return best
+
         kept: list[DirGrant] = []
         lost: list[str] = []
         for d in requested:
-            held = parent_map.get(d["path"])
+            held = _held_mode(d["path"])
             if held is None:
                 if strict:
                     raise LedgerError(

@@ -4997,7 +4997,12 @@ def _agent_send_file(org: Org, nid: str, a: dict[str, Any]) -> dict[str, Any]:
         roots.append(os.path.realpath(d["path"]))
     if sandbox.is_sandboxed(org):
         roots.append(os.path.realpath(sandbox.sandbox_home(slug)))
-    if not any(src == r or src.startswith(r + os.sep) for r in roots):
+    # rstrip: a drive-root grant realpaths to "C:\" and the naive
+    # `r + os.sep` doubled the separator, refusing everything under it;
+    # normcase: Windows trees differing only in case are the same tree
+    src_key = os.path.normcase(src)
+    if not any(src_key == (b := os.path.normcase(r).rstrip("\\/"))
+               or src_key.startswith(b + os.sep) for r in roots):
         raise LedgerError(
             f"cannot send {raw} — only files in your working folder, the "
             f"workspace, or a folder you hold are sendable")
