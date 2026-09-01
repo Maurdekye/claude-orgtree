@@ -191,6 +191,42 @@ def main():
     check("a planted failed compact turn is rejected (anti-vacuity)",
           compact_failure_seen)
 
+    print("§8 a warm client serves two turns on one initialized process")
+    class CountingClient(codexrun.AppServerClient):
+        def __init__(self, *args, **kwargs):
+            self.init_calls = []
+            super().__init__(*args, **kwargs)
+
+        def request(self, method, params, timeout=codexrun.REQUEST_TIMEOUT):
+            if method == "initialize":
+                self.init_calls.append(method)
+            return super().request(method, params, timeout)
+
+    client = CountingClient(
+        FAKE, cwd=tmp, env_extra={"FAKECODEX_SCENARIO": "tool"})
+    pid8 = client.proc.pid
+    try:
+        warm1 = codexrun.CodexTurn(
+            FAKE, cwd=tmp, model=None, effort=None, thread_id=None,
+            client=client)
+        warm1.start("warm first")
+        warm1.wait(timeout=20, close_client=False)
+        client.unbind()
+        warm2 = codexrun.CodexTurn(
+            FAKE, cwd=tmp, model=None, effort=None,
+            thread_id="fake-thread-0001", client=client)
+        warm2.start("warm second")
+        warm2.wait(timeout=20, close_client=False)
+        client.unbind()
+        check("both claims retain the same live app-server PID",
+              lambda: eq((client.proc.pid, client.proc.poll()),
+                         (pid8, None), "warm process"))
+        check("JSON-RPC initialize is issued exactly once per warm process",
+              lambda: eq(client.init_calls, ["initialize"],
+                         "initialize calls"))
+    finally:
+        client.close()
+
     print(f"\n{PASS} checks passed")
 
 

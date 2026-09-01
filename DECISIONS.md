@@ -2061,20 +2061,24 @@ fire on a row that does not exist):
 - `observed-death` — bookkeeping for a process found already dead. Grants
   nobody permission to end anything.
 
-Eligibility v1 and its bases (21 live agents at ruling time; 15 covered):
-Claude-lane, unsandboxed, non-preserving-bearer. Sandbox: the leash cannot
-reach in-container processes, so a parked one would SURVIVE shutdown —
-violates cause (3); zero live sandboxed agents today. Preserving oracles:
-each consult is a deliberately discarded `--fork-session`; a parked process
-would accumulate state the oracle promises not to. Codex/Gemini (6 agents):
-their turns never touch the Claude CLI. **Measured on the real CLIs
-2026-08-30: per-turn teardown on BOTH provider lanes is OUR WRAPPER POLICY
-(`CodexTurn.wait` / `GeminiTurn.wait` close explicitly), not a wire limit —
-across all three lanes the thing ending the process every turn was a choice
-made three times and never revisited.** Codex real probe: two resumed turns
-on one live PID, PASS — inclusion is a user scoping decision (roughly the
-size of the claude-lane supervisor half). Gemini is an **UNVERIFIED SCOPE
-EXCLUSION**, not a verified protocol impossibility: the real probe's
+Eligibility, amended 2026-09-01 after the live Codex contradiction: Claude
+and Codex lanes, unsandboxed, non-preserving-bearer. The startup keeper and
+closed death vocabulary govern both. A Codex seat holds an uninitialized
+`app-server` at backend startup, initializes it on its first claim, and parks
+that same client after a clean turn; provider `initialize` is process-scoped
+and therefore issued once across all claims. The exact production defect was
+the older v1 eligibility guard returning `provider-lane` for Codex while
+`CodexTurn.wait` and `_codex_leg` explicitly killed every app-server at turn
+end. This was Orgtree policy, not a provider constraint: the 2026-08-30 real
+probe already ran two resumed turns on one live PID. The user's report made
+the previously deferred inclusion decision explicit.
+
+Sandbox remains excluded: the leash cannot reach in-container processes, so
+a parked one would SURVIVE shutdown — violates cause (3). Preserving oracles
+remain excluded: each consult is a deliberately discarded `--fork-session`;
+a parked process would accumulate state the oracle promises not to. Gemini
+also remains an **UNVERIFIED SCOPE EXCLUSION**, not a verified protocol
+impossibility: the real probe's
 `session/load` refusal ("No previous sessions found for this project") tests
 the post-respawn DISK path, while a persistent process keeps the session in
 `AcpSessionManager` and serves another turn through a direct second
@@ -2675,9 +2679,11 @@ The mechanism is LAUNCH-scoped rather than per-thread, and that is deliberate.
 Measured 2026-08-29 against codex 0.150.1: configured MCP servers are started
 when the APP-SERVER starts, not when a thread is created (a planted server was
 launched, handshaked and had its tools listed in a run where no thread existed
-at all). Since orgtree spawns one app-server per turn per node, launch scope IS
-per-node scope, and no thread operation — `start`, `resume` or `fork` — can drop
-the set. That closes by construction the failure `thread/resume` already caused
+at all). Orgtree now keeps one app-server per warm node and includes this
+launch configuration in the process identity hash, so launch scope remains
+per-node scope and a changed grant forces an immediate replacement. No thread
+operation — `start`, `resume` or `fork` — can drop the set. That closes by
+construction the failure `thread/resume` already caused
 once for `dynamicTools`, where a capability attached at turn one silently
 vanished at turn two. A per-thread `config` object was the alternative and was
 rejected for that reason.

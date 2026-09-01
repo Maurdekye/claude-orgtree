@@ -1,12 +1,13 @@
 # pyright: strict
-"""The codex turn runner: one `codex app-server` JSON-RPC session per turn.
+"""The Codex turn runner over a reusable `codex app-server` JSON-RPC client.
 
 FR-15 Phase 1 (design-multi-provider.md §3.2 + Appendix B/C, all measured on
 codex-cli 0.150.1 against a live account). The shape deliberately mirrors the
-Claude lane: ONE PROCESS PER TURN, resumed by a durable session id — here the
-app-server `threadId`, harvested from `thread/start` and passed back through
-`thread/resume` on the next turn. Steering and interrupting act on the LIVE
-client object the supervisor holds while the turn runs:
+Claude lane: one turn object at a time, resumed by a durable session id — here
+the app-server `threadId`, harvested from `thread/start` and passed back
+through `thread/resume` on the next turn. The process itself may come from the
+warm pool and survive that boundary. Steering and interrupting act on the
+LIVE client object the supervisor holds while the turn runs:
 
     turn/steer      — append input to the in-flight turn (expectedTurnId
                       guard; measured landing inside the same turn, C.2)
@@ -305,8 +306,16 @@ class AppServerClient:
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, cwd=cwd)
         self.on_event = on_event
+        self.on_exit: Callable[[], None] | None = None
         self.tool_dispatch = tool_dispatch
         self.approval_decide = approval_decide
+        # A pre-warmed app-server is initialized by its first claimant and
+        # then reused.  JSON-RPC initialize is process-scoped, not turn-
+        # scoped, so issuing it again on every claim is both unnecessary and
+        # rejected by stricter server versions.
+        self._initialized = False
+        self._initialize_result: dict[str, Any] = {}
+        self._initialize_lock = threading.Lock()
         self._lock = threading.Lock()
         self._next_id = 1
         self._responses: dict[int, dict[str, Any]] = {}
@@ -329,23 +338,30 @@ class AppServerClient:
     def _pump(self) -> None:
         out = self.proc.stdout
         assert out is not None
-        for raw in out:
-            try:
-                msg: dict[str, Any] = json.loads(raw)
-            except json.JSONDecodeError:
-                continue
-            if "id" in msg and ("result" in msg or "error" in msg):
-                with self._lock:
-                    self._responses[int(msg["id"])] = msg
-            elif "id" in msg and "method" in msg:
-                self._answer_server_request(msg)
-            else:
-                self.notifications.append(msg)
-                if self.on_event:
-                    try:
-                        self.on_event(msg)
-                    except Exception:
-                        pass   # an observer must never kill the wire reader
+        try:
+            for raw in out:
+                try:
+                    msg: dict[str, Any] = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                if "id" in msg and ("result" in msg or "error" in msg):
+                    with self._lock:
+                        self._responses[int(msg["id"])] = msg
+                elif "id" in msg and "method" in msg:
+                    self._answer_server_request(msg)
+                else:
+                    self.notifications.append(msg)
+                    if self.on_event:
+                        try:
+                            self.on_event(msg)
+                        except Exception:
+                            pass   # observer must never kill the wire reader
+        finally:
+            if self.on_exit:
+                try:
+                    self.on_exit()
+                except Exception:
+                    pass
 
     def _answer_server_request(self, msg: dict[str, Any]) -> None:
         method = str(msg.get("method", ""))
@@ -415,12 +431,34 @@ class AppServerClient:
         raise CodexServerError(f"{method}: no answer in {timeout:.0f}s")
 
     def initialize(self) -> dict[str, Any]:
-        r = self.request("initialize", {
-            "clientInfo": {"name": "orgtree", "title": "orgtree supervisor",
-                           "version": "1"},
-            "capabilities": {"experimentalApi": True}}, 60)
-        self.notify("initialized", {})
-        return r
+        with self._initialize_lock:
+            if self._initialized:
+                return dict(self._initialize_result)
+            r = self.request("initialize", {
+                "clientInfo": {"name": "orgtree",
+                               "title": "orgtree supervisor",
+                               "version": "1"},
+                "capabilities": {"experimentalApi": True}}, 60)
+            self.notify("initialized", {})
+            self._initialize_result = dict(r)
+            self._initialized = True
+            return dict(r)
+
+    def bind(self, *,
+             on_event: Callable[[dict[str, Any]], None] | None = None,
+             tool_dispatch: Callable[[str, dict[str, Any]], str] | None = None,
+             approval_decide: Callable[[str, dict[str, Any]], str] | None = None,
+             ) -> None:
+        """Attach one turn's callbacks to a parked app-server client."""
+        self.on_event = on_event
+        self.tool_dispatch = tool_dispatch
+        self.approval_decide = approval_decide
+
+    def unbind(self) -> None:
+        """Drop references to the completed turn while the process parks."""
+        self.on_event = None
+        self.tool_dispatch = None
+        self.approval_decide = None
 
     def close(self) -> None:
         try:
@@ -545,11 +583,8 @@ class CodexTurn:
                  tool_dispatch: Callable[[str, dict[str, Any]], str] | None = None,
                  approval_decide: Callable[[str, dict[str, Any]], str] | None = None,
                  env_extra: dict[str, str] | None = None,
-                 config_overrides: list[str] | None = None) -> None:
-        self.client = AppServerClient(
-            argv_head, codex_home=codex_home, cwd=cwd, on_event=self._observe,
-            tool_dispatch=tool_dispatch, approval_decide=approval_decide,
-            env_extra=env_extra, config_overrides=config_overrides)
+                 config_overrides: list[str] | None = None,
+                 client: AppServerClient | None = None) -> None:
         self._caller_on_event = on_event
         self.cwd = cwd
         self.model = model
@@ -575,6 +610,12 @@ class CodexTurn:
         self.error: dict[str, Any] | None = None
         self.status: str | None = None
         self._done = threading.Event()
+        self.client = client or AppServerClient(
+            argv_head, codex_home=codex_home, cwd=cwd,
+            env_extra=env_extra, config_overrides=config_overrides)
+        self.client.bind(on_event=self._observe,
+                         tool_dispatch=tool_dispatch,
+                         approval_decide=approval_decide)
 
     # ── event fold (M2: raw notifications → normalized fields) ───────────
 
@@ -694,13 +735,19 @@ class CodexTurn:
         except CodexServerError:
             return False
 
-    def wait(self, timeout: float | None = None) -> dict[str, Any]:
-        """Block until the turn ends; kill the process; return the
-        normalized result the policy layer consumes."""
+    def wait(self, timeout: float | None = None, *,
+             close_client: bool = True) -> dict[str, Any]:
+        """Block until the turn ends and return the normalized result.
+
+        Cold callers retain the historical default and close the app-server.
+        A warm-pool claimant passes ``close_client=False`` and parks the same
+        process after this boundary.
+        """
         finished = self._done.wait(timeout) if timeout else self._done.wait()
         if not finished and self.status is None:
             self.status = STATUS_FAILED
-        self.client.close()
+        if close_client:
+            self.client.close()
         return {
             "thread_id": self.thread_id,
             "turn_id": self.turn_id,

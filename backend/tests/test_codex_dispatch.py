@@ -33,6 +33,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 DATA = tempfile.mkdtemp(prefix="orgtree-codexdisp-")
 os.environ["ORGTREE_DATA"] = DATA
+os.environ["ORGTREE_WARM"] = "1"
+os.environ["ORGTREE_WARM_POLL"] = "3600"  # keeper passes are manual here
 # a PORT NOBODY SERVES: the codex leg's tool dispatcher POSTs /api/agent on
 # ORGTREE_PORT, and this rig runs no backend — left unset it would default to
 # 7360 and the tool calls of a TEST would land on the operator's LIVE
@@ -66,7 +68,7 @@ def sign_in(yes: bool) -> None:
 
 sign_in(True)
 
-from orgtree import store, supervisor                              # noqa: E402
+from orgtree import store, supervisor, warmpool                    # noqa: E402
 from orgtree.ledger import USER                                    # noqa: E402
 
 PASS = 0
@@ -125,6 +127,19 @@ def main() -> int:
     print("§1 dispatch + bookkeeping (scenario: tool)")
     os.environ["FAKECODEX_SCENARIO"] = "tool"
     slug, nid = mkorg("basic")
+    # Exact production sequence from the regression report: backend startup
+    # keeper pass, no prompt yet, first prompt, completed turn. The child is a
+    # real fakecodex app-server process, so PID continuity proves process
+    # persistence rather than a bookkeeping flag.
+    warmpool.keeper_pass_now()
+    with warmpool._pool_lock:
+        boot_wp = warmpool._pool.get((slug, nid))
+    assert isinstance(boot_wp, warmpool.CodexWarmProc), (
+        "startup keeper did not prewarm the idle eligible Codex agent")
+    boot_pid = boot_wp.proc.pid
+    assert boot_wp.alive() and warmpool.is_warm(slug, nid)
+    eq(supervisor.state(slug, nid)["turns_run"], 0,
+       "prewarm starts no turn")
 
     def t1():
         minted = node_doc(slug, nid)["session_id"]
@@ -150,6 +165,14 @@ def main() -> int:
         eq(len(ring), 1, "one turn ring entry")
         eq(ring[0].get("toks"), 12, "output tokens ride the ring")
         assert not n.get("inflight"), "inflight popped by the shared finally"
+        with warmpool._pool_lock:
+            parked = warmpool._pool.get((slug, nid))
+        assert isinstance(parked, warmpool.CodexWarmProc), (
+            "completed Codex turn was not returned to the warm pool")
+        eq(parked.proc.pid, boot_pid,
+           "post-turn park must retain the startup app-server PID")
+        assert parked.alive() and warmpool.is_warm(slug, nid), (
+            "startup app-server did not survive the turn boundary")
     check("codex tier takes the codex leg; books like a turn", t1)
 
     def t1b():
@@ -511,6 +534,7 @@ def main() -> int:
     check("gate: connected passes; signed-out, kiosk and headless-"
           "subscription refuse, naming the remedy; claude ungated", t8)
 
+    warmpool.kill_org(slug, "suite-teardown")
     print()
     if FAIL:
         for label, tb in FAIL:

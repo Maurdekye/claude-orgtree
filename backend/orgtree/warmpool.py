@@ -7,9 +7,11 @@ re-read and re-sent per turn. Measured cost (cache-misses' audit, 2026-08-30):
 agents cold on 44.3% of quiet turns vs 0.2% interactive, ~200k tokens re-sent
 per cold resume.
 
-This module keeps ONE parked CLI process per live agent, spawned at boot and
-on hire, and hands it to `_run_one_turn` when a turn arrives. The rules are
-the user's, verbatim where it matters:
+This module keeps ONE parked CLI process per eligible live agent, spawned at
+boot and on hire, and hands it to `_run_one_turn` when a turn arrives. It owns
+both Claude's stream-json process and Codex's app-server process; Gemini stays
+excluded pending its unresolved persistent-session probe. The rules are the
+user's, verbatim where it matters:
 
   · processes only end on RETIREMENT, an explicit SYSTEM-PROMPT CHANGE, or
     orgtree SHUTDOWN (the job-object leash covers shutdown). No idle reaping,
@@ -29,13 +31,12 @@ notices nothing. Correctness over speed: a process whose rendered identity
 hash no longer matches is killed, not served — a stale system prompt would
 mean a retool or grant silently not applying.
 
-INVALIDATION IS A HASH, NOT AN EVENT LIST (coordinator ruling). We hash the
-rendered identity prompt (including native session-start instruction files),
-the spawn argv, the resolved credential identity and the explicit per-node env
-override — the full set of inputs the process bakes in at spawn that may change
-at runtime. An enumerated list of invalidating events is exactly what goes
-stale when someone adds a surface; the audit found surfaces nobody had
-enumerated.
+INVALIDATION IS A HASH, NOT AN EVENT LIST (coordinator ruling). We hash each
+provider's exact process-scoped inputs: rendered identity, native startup
+instructions where applicable, spawn argv (including launch-scoped MCP
+configuration), credential identity and explicit environment. An enumerated
+list of invalidating events is exactly what goes stale when someone adds a
+surface; the audit found surfaces nobody had enumerated.
 
 KILL SWITCH (cache-misses' A/B requirement): ORGTREE_WARM env sets the
 default — which is ON (user ruling 2026-08-30). The file
@@ -369,14 +370,52 @@ class WarmProc:
         return self.proc.poll() is None and not self.dead.is_set()
 
 
-_pool: dict[tuple[str, str], WarmProc] = {}
+class CodexWarmProc:
+    """A parked Codex app-server in the same seat registry as Claude.
+
+    The wire reader belongs to ``AppServerClient`` rather than to WarmProc's
+    stream-json pump, but the keeper needs the same identity, ownership and
+    death bookkeeping surface for both provider processes.
+    """
+
+    def __init__(self, slug: str, nid: str, client: Any, sid: str,
+                 ihash: str, components: dict[str, str] | None = None) -> None:
+        self.slug, self.nid = slug, nid
+        self.client = client
+        self.proc = client.proc
+        self.sid = sid
+        self.hash = ihash
+        self.ident_components = dict(components or {})
+        self.claimed = False
+        self.active = False
+        self.parked_at = time.time()
+        self.cost_base = 0.0
+        self.out_base = 0
+        self.exit_reason: str | None = None
+        self.exit_journaled = False
+        self.identity_change: dict[str, Any] | None = None
+        self._lk = threading.RLock()
+
+    def attach(self) -> None:
+        with self._lk:
+            self.claimed = True
+            self.active = False
+
+    def alive(self) -> bool:
+        return self.proc.poll() is None
+
+
+WarmProcess = WarmProc | CodexWarmProc
+
+
+_pool: dict[tuple[str, str], WarmProcess] = {}
 # warm-origin processes CURRENTLY SERVING a turn (claimed out of _pool).
 # Tracked so the pool snapshot sees peak memory — parked-only counting
 # structurally hid every serving process, which corrupts the ceiling figure
 # the user asked for (cache-misses contract, coordinator-backed). ONLY
 # telemetry and exit bookkeeping read this: kill_node/kill_org deliberately
 # do not — a mid-turn process is never disturbed, tracked or not.
-_serving: dict[tuple[str, str], WarmProc] = {}
+_serving: dict[tuple[str, str], WarmProcess] = {}
 _pool_lock = threading.RLock()
 _spawn_gate = threading.Semaphore(SPAWN_PACE)
 _poke = threading.Event()
@@ -727,6 +766,7 @@ def identity_snapshot(org: Any, nid: str, *,
                       cmd: list[str] | None = None,
                       env: dict[str, str] | None = None,
                       overrides: dict[str, str] | None = None,
+                      provider_spec: dict[str, Any] | None = None,
                       ) -> tuple[str, dict[str, str]]:
     """One combined identity hash plus independently verifiable components.
 
@@ -736,8 +776,40 @@ def identity_snapshot(org: Any, nid: str, *,
     parked process. Raw inputs never leave this function; journals receive
     only the short SHA-256 component digests.
     """
+    from . import providers                         # noqa: PLC0415
     from . import supervisor as sup                 # noqa: PLC0415
     prompt = sup.identity_prompt(org, nid)
+    model = str(org.node(nid).get("model") or "")
+    if model in providers.CODEX_TIERS:
+        # Codex's process-scoped identity is not Claude's `_build_cmd`.
+        # In particular, external MCP servers are app-server argv and the
+        # managed identity is the AGENTS.md written before launch.  Hash the
+        # exact shared spawn spec so keeper and turn admission cannot disagree.
+        spec = provider_spec or sup._codex_process_spec(
+            org, nid, write_ident=False)
+        argv = (list(spec["argv_head"])
+                + list(spec["config_overrides"]) + ["app-server"])
+        raw = {
+            "prompt": prompt.encode("utf-8", "replace"),
+            # The tier is a process replacement boundary by contract even
+            # though app-server also accepts a model per turn.
+            "argv": json.dumps([*argv, "<tier>", model],
+                               ensure_ascii=False).encode("utf-8", "replace"),
+            "cred": json.dumps({
+                "exe": str(spec.get("exe") or ""),
+                "codex_home": os.environ.get(
+                    "CODEX_HOME", os.path.expanduser("~/.codex")),
+            }, sort_keys=True, ensure_ascii=False).encode("utf-8", "replace"),
+            "envov": json.dumps(spec.get("env_extra") or {}, sort_keys=True,
+                                ensure_ascii=False).encode("utf-8", "replace"),
+        }
+        h = hashlib.sha256()
+        for i, name in enumerate(IDENTITY_COMPONENTS):
+            if i:
+                h.update(b"\x00")
+            h.update(raw[name])
+        return h.hexdigest()[:32], {
+            name: _part(raw[name]) for name in IDENTITY_COMPONENTS}
     if cmd is None:
         cmd = sup._build_cmd(org, nid, write_ident=False)
     if overrides is None:
@@ -809,7 +881,7 @@ def identity_change_fields(previous_hash: str,
     }
 
 
-def _record_identity_change(wp: WarmProc, next_hash: str,
+def _record_identity_change(wp: WarmProcess, next_hash: str,
                             next_components: dict[str, str] | None,
                             ) -> dict[str, Any]:
     fields = identity_change_fields(
@@ -822,9 +894,10 @@ def _record_identity_change(wp: WarmProc, next_hash: str,
 def eligible(org: Any, nid: str) -> tuple[bool, str]:
     """May this node hold a warm process at all? Everything outside this set
     keeps today's spawn-per-turn behaviour, which is also the universal
-    fallback. v1 excludes the sandbox (its spawn is a docker exec whose
-    parking is untested) and the provider lanes (codex/gemini run their own
-    processes) and preserving oracles (each consult is a --fork-session)."""
+    fallback. The sandbox remains excluded (its spawn is a docker exec whose
+    parking is untested), as do Gemini (its persistent-session probe remains
+    unresolved) and preserving oracles (each consult is a --fork-session).
+    Codex app-server persistence is measured and shares this keeper."""
     from . import supervisor as sup                 # noqa: PLC0415
     from . import providers                         # noqa: PLC0415
     n = org.nodes.get(nid)
@@ -835,7 +908,7 @@ def eligible(org: Any, nid: str) -> tuple[bool, str]:
     if sup.sbx.is_sandboxed(org):
         return False, "sandboxed"
     model = str(n.get("model") or "")
-    if model in providers.CODEX_TIERS or model in providers.GEMINI_TIERS:
+    if model in providers.GEMINI_TIERS:
         return False, "provider-lane"
     if n.get("bearer_state") == "preserving":
         return False, "preserving-oracle"
@@ -844,7 +917,7 @@ def eligible(org: Any, nid: str) -> tuple[bool, str]:
 
 def boundary_check(slug: str, nid: str,
                    want_hash: str | None,
-                   wp: WarmProc | None = None,
+                   wp: WarmProcess | None = None,
                    ) -> tuple[bool, bool | None, str]:
     """The result-boundary decision, with ONE flag read shared between the
     behaviour and the label → (may this process keep serving, the label for
@@ -1059,7 +1132,7 @@ KILL_REASON_CLASS = {
 }
 
 
-def _journal_exit_once(wp: WarmProc, reason: str | None = None) -> None:
+def _journal_exit_once(wp: WarmProcess, reason: str | None = None) -> None:
     """EXACTLY ONE classified exit row per warm-origin process, whoever gets
     there first — the deliberate-kill paths write it at the kill, the pump's
     EOF writes it for every non-park end the turn only annotated (or for a
@@ -1087,7 +1160,7 @@ def _classify_kill(slug: str, nid: str, reason: str) -> str:
     return cls
 
 
-def _kill_proc(wp: WarmProc) -> None:
+def _kill_proc(wp: WarmProcess) -> None:
     """Tree kill: on Windows proc.kill() alone leaves the MCP servers alive
     (see _wd_kill_tree's note) — the CLI's children must die with it."""
     try:
@@ -1100,7 +1173,7 @@ def _kill_proc(wp: WarmProc) -> None:
             pass
 
 
-def _on_proc_exit(wp: WarmProc) -> None:
+def _on_proc_exit(wp: WarmProcess) -> None:
     """Pump saw EOF: the process ended (kill, crash, or backend teardown).
     Drop it from whichever registry holds it. A parked death journals here;
     a SERVING death only leaves the registry — its turn owns the aftermath
@@ -1127,15 +1200,51 @@ def _on_proc_exit(wp: WarmProc) -> None:
         _set_proc_lifecycle(wp.slug, wp.nid, live=False, owner=wp)
 
 
-def _spawn_for(org: Any, nid: str, why: str) -> WarmProc | None:
+def _spawn_for(org: Any, nid: str, why: str) -> WarmProcess | None:
     """Spawn and park one CLI process, exactly the shape a turn spawn uses
     (production argv, leashed to the backend's job object). NO message is
     written and NO handshake is awaited — a parked process makes no API call
     (parkprobe.py: 2/2 survived, 0 transcripts, 0 tokens)."""
     from . import supervisor as sup                 # noqa: PLC0415
+    from . import providers                         # noqa: PLC0415
     slug = org.d["slug"]
     t0 = time.time()
     try:
+        model = str(org.node(nid).get("model") or "")
+        if model in providers.CODEX_TIERS:
+            from . import codexrun                  # noqa: PLC0415
+
+            spec = sup._codex_process_spec(org, nid, write_ident=True)
+            ih, components = identity_snapshot(
+                org, nid, provider_spec=spec)
+            _journal_proc("respawn-start", slug, nid, why, ih,
+                          session_id=org.node(nid)["session_id"])
+            client = codexrun.AppServerClient(
+                list(spec["argv_head"]), cwd=str(spec["cwd"]),
+                config_overrides=list(spec["config_overrides"]),
+                env_extra=dict(spec["env_extra"]))
+            proc = client.proc
+            try:
+                sup._leash(proc)
+                wp = CodexWarmProc(
+                    slug, nid, client, org.node(nid)["session_id"], ih,
+                    components)
+                client.on_exit = lambda: _on_proc_exit(wp)
+            except Exception:
+                try:
+                    sup._wd_kill_tree(proc)
+                except Exception:                   # noqa: BLE001
+                    try:
+                        proc.kill()
+                    except Exception:               # noqa: BLE001
+                        pass
+                raise
+            _journal_proc("respawn-done", slug, nid, why, ih,
+                          elapsed_ms=int((time.time() - t0) * 1000),
+                          session_id=wp.sid,
+                          pid=getattr(proc, "pid", None))
+            return wp
+
         cmd = sup._build_cmd(org, nid)
         env = sup.spawn_env(org, tier=str(org.node(nid).get("model") or ""),
                             nid=nid)
@@ -1212,7 +1321,7 @@ _CLAIM_SNAPSHOT = threading.local()
 
 def claim_snapshot(slug: str, nid: str, want_hash: str,
                    want_components: dict[str, str] | None,
-                   ) -> tuple[WarmProc | None, str]:
+                   ) -> tuple[WarmProcess | None, str]:
     """Carry the turn's exact component snapshot into the stable 3-argument
     claim seam. The thread local avoids cross-turn races and deliberately
     calls `claim` by name so the suite's death-between-claim-and-write mutant
@@ -1225,7 +1334,7 @@ def claim_snapshot(slug: str, nid: str, want_hash: str,
 
 
 def claim(slug: str, nid: str,
-          want_hash: str) -> tuple[WarmProc | None, str]:
+          want_hash: str) -> tuple[WarmProcess | None, str]:
     """Hand the pooled process to a starting turn IFF it is alive and holds
     the current identity hash. A mismatch is killed on the spot (stale prompt
     = correctness hazard, never served) and the caller spawns cold. The
@@ -1266,7 +1375,7 @@ def claim(slug: str, nid: str,
     return None, ("identity-changed" if was_alive else "crashed")
 
 
-def park_back(wp: WarmProc, cost_base: float, out_base: int = 0) -> bool:
+def park_back(wp: WarmProcess, cost_base: float, out_base: int = 0) -> bool:
     """A turn finished on this process and nothing dirtied it: return it to
     the pool. If the pool already holds a DIFFERENT process for the seat (the
     hire-kickoff race can double-spawn), prefer THIS one — it holds the
@@ -1274,7 +1383,7 @@ def park_back(wp: WarmProc, cost_base: float, out_base: int = 0) -> bool:
     kill the other."""
     if not wp.alive() or not warm_enabled():
         return False
-    other: WarmProc | None = None
+    other: WarmProcess | None = None
     with _pool_lock:
         if _serving.get((wp.slug, wp.nid)) is wp:
             del _serving[(wp.slug, wp.nid)]
@@ -1299,7 +1408,7 @@ def park_back(wp: WarmProc, cost_base: float, out_base: int = 0) -> bool:
     return True
 
 
-def discard(wp: WarmProc, reason: str) -> None:
+def discard(wp: WarmProcess, reason: str) -> None:
     """A turn ends on a process that must not be parked (dirtied mid-turn,
     background children live, limit hit). Kill it — today's teardown."""
     with _pool_lock:
