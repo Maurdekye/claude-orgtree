@@ -771,10 +771,11 @@ html.mobile .edge-jump { display: none; }
   display: flex; flex-direction: column; gap: 6px; min-height: 0;
   font-size: 13px; cursor: default;
 }
-/* -- chrome: bounded identity/actions, then naturally wrapping metadata --
+/* -- chrome: bounded identity/actions/static live slots, then wrapping metadata --
    The old single flex row let the finite controls and unbounded audience/
    status text fight for the same width. Nothing in either row may shrink a
-   control below its usable size; metadata grows the header instead of
+   control below its usable size. Context, process and the mutually exclusive
+   age/activity seat are permanent top-row positions; metadata grows instead of
    overlaying or stealing width from the transcript. */
 .cc-head {
   display: flex; flex-direction: column; align-items: stretch; gap: 4px;
@@ -785,11 +786,28 @@ html.mobile .edge-jump { display: none; }
   min-width: 0; width: 100%;
 }
 .cc-head-top > .tier,
-.cc-head-top > .turnago,
+.cc-head-top > .cc-turn-seat,
+.cc-head-top > .cc-context-seat,
+.cc-head-top > .cc-process-seat,
 .cc-head-top > .cc-actions,
 .cc-head-top > .cc-tabs,
 .cc-head-top > .cc-icon { flex: none; }
 .cc-head-top > .spacer { display: none; }
+.cc-turn-seat {
+  display: inline-flex; align-items: center; min-width: 52px; min-height: 24px;
+  max-width: min(28ch, 100%); flex: none;
+}
+.cc-turn-seat .cc-working {
+  min-width: 0; max-width: 100%; white-space: normal; overflow-wrap: anywhere;
+}
+.cc-context-seat, .cc-process-seat {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 28px; min-width: 28px; min-height: 24px; flex: none;
+}
+.cc-context-seat .ctxbtn {
+  width: 28px; min-height: 24px; align-items: center; justify-content: center;
+}
+.cc-process-seat .proc-state { max-width: 100%; box-sizing: border-box; }
 .cc-head-meta {
   display: flex; align-items: center; align-content: flex-start; flex-wrap: wrap;
   gap: 4px 6px; width: 100%; min-width: 0;

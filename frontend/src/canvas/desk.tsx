@@ -43,28 +43,45 @@ interface ContextWheelProps {
   cw?: number | null
   onCompact?: () => void
   compactAt?: number
+  /** The focused desk owns a permanent top-row slot, including before the
+   * first measurement. Canvas cards keep their established omit-if-empty
+   * behavior so this header change does not add chrome at overview zoom. */
+  persistent?: boolean
   /** the fill is a post-compaction ESTIMATE — no turn has measured the new
    *  session yet (backend: occupancy_est / occupancy_estimated) */
   est?: boolean
 }
 
-export function ContextWheel({ occ, cw, onCompact, compactAt, est }: ContextWheelProps) {
-  if (!occ || !cw) return null
-  const frac = Math.min(1, occ / cw)
+export function ContextWheel({ occ, cw, onCompact, compactAt, est,
+  persistent = false }: ContextWheelProps) {
+  const knownWindow = typeof cw === 'number' && cw > 0
+  const knownOccupancy = typeof occ === 'number' && occ >= 0
+  const used = knownOccupancy ? Math.max(0, occ) : 0
+  if (!persistent && (!knownWindow || !knownOccupancy || used === 0)) return null
+  const frac = knownWindow ? Math.min(1, used / cw) : 0
   // №19: the red ring means "about to split" — the ORG'S configured
   // threshold, not a literal 0.8 (an org set to 50% got a ring that turned
   // red 30 points after its agents had already forked)
-  const hot = frac >= (compactAt || 0.8)
+  const hot = knownWindow && knownOccupancy && frac >= (compactAt || 0.8)
   const R = 5.5, C = 2 * Math.PI * R
+  const contextTitle = !knownWindow
+    ? 'context: unavailable — context-window size not reported'
+    : !knownOccupancy
+      ? `context: empty — no completed turn has measured this session yet · capacity ${Math.round(cw / 1000)}k`
+      : `context: ${est ? '≈' : ''}${Math.round(used / 1000)}k / ${Math.round(cw / 1000)}k (${Math.round(frac * 100)}%)`
+        + (used === 0 ? ' — empty session' : '')
+        + (est ? ' — estimated after compaction, until its next turn' : '')
+        + ` — auto-compacts at ${Math.round((compactAt || 0.8) * 100)}%`
+        + (onCompact ? ' — click to compact now' : '')
   const svg = (
-    <svg className={'ctxwheel' + (est ? ' est' : '')} viewBox="0 0 16 16" width="15" height="15">
+    <svg className={'ctxwheel' + (est && knownOccupancy ? ' est' : '')}
+      viewBox="0 0 16 16" width="15" height="15"
+      role={onCompact ? undefined : 'img'} aria-hidden={onCompact || undefined}
+      aria-label={onCompact ? undefined : contextTitle}>
       {/* an estimated fill says so in the tooltip (a leading ≈) and draws its
           arc at half opacity (.ctxwheel.est .fill): the number is real enough
           to act on and was never measured */}
-      <title>{`context: ${est ? '≈' : ''}${Math.round(occ / 1000)}k / ${Math.round(cw / 1000)}k (${Math.round(frac * 100)}%)`
-        + (est ? ' — estimated after compaction, until its next turn' : '')
-        + ` — auto-compacts at ${Math.round((compactAt || 0.8) * 100)}%`
-        + (onCompact ? ' — click to compact now' : '')}</title>
+      <title>{contextTitle}</title>
       <circle cx="8" cy="8" r={R} className="track" />
       <circle cx="8" cy="8" r={R} className={'fill' + (hot ? ' hot' : '')}
         strokeDasharray={`${C * frac} ${C}`} transform="rotate(-90 8 8)" />
@@ -73,7 +90,8 @@ export function ContextWheel({ occ, cw, onCompact, compactAt, est }: ContextWhee
   // clickable ONLY where a handler is wired — the zoomed desk (user ruling);
   // the zoomed-out card wheel stays a passive indicator
   if (!onCompact) return svg
-  return <button className="ctxbtn" onClick={onCompact}>{svg}</button>
+  return <button className="ctxbtn" aria-label={contextTitle}
+    onClick={onCompact}>{svg}</button>
 }
 
 /** D-201: a filled dot means the agent has a parked process ready; a quiet
@@ -130,6 +148,48 @@ export function LastTurnAge({ turn, busy = false, variant = 'badge' }: {
   return <span className={variant === 'map' ? 'map-ago' : 'badge dim turnago'}
     title={title} aria-label={title}>
     {ago(turn.at)}{variant === 'map' && turn.killed ? ' ✕' : ''}
+  </span>
+}
+
+/** The active half of the desk header's single turn-time seat. It shares the
+ * same one-second clock as LastTurnAge so elapsed work remains live without a
+ * tree refetch, and names queued/compacting/working rather than flattening
+ * every state to "working". */
+export function CurrentTurnActivity({ phase, waiting = false, inflightAt,
+  tasks = 0 }: {
+  phase?: string | null; waiting?: boolean; inflightAt?: string | null;
+  tasks?: number | null
+}) {
+  useSyncExternalStore(subscribeAgeClock, () => ageClockSecond,
+    () => ageClockSecond)
+  const state = phase === 'compacting' ? 'compacting…'
+    : waiting ? 'queued for a turn slot…' : 'working'
+  const elapsed = inflightAt ? ago(inflightAt) : ''
+  const taskText = (tasks ?? 0) > 0
+    ? `${tasks} task${tasks === 1 ? '' : 's'}` : ''
+  const title = [state.replace(/…$/, ''), elapsed, taskText]
+    .filter(Boolean).join(' · ')
+  return <span className="cc-working" title={title} aria-label={title}>
+    {phase !== 'compacting' && !waiting &&
+      <AutorenewIcon fontSize="inherit" className="cc-spin" />}
+    <span>{state}</span>
+    {elapsed && <span className="dim"> · {elapsed}</span>}
+    {taskText && <span className="dim"> · {taskText}</span>}
+  </span>
+}
+
+/** One permanent desk-header seat: active turn state replaces completed-turn
+ * age in place, so the two clocks never compete or render twice. */
+export function HeaderTurnSeat({ active, turn, phase, waiting, inflightAt,
+  tasks }: {
+  active: boolean; turn?: TurnStat | null; phase?: string | null;
+  waiting?: boolean; inflightAt?: string | null; tasks?: number | null
+}) {
+  return <span className="cc-turn-seat">
+    {active
+      ? <CurrentTurnActivity phase={phase} waiting={waiting}
+          inflightAt={inflightAt} tasks={tasks} />
+      : <LastTurnAge turn={turn} />}
   </span>
 }
 
@@ -755,6 +815,16 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
 
   const liveKids = node.children.some((c) => c.state === 'live')
   const lastTurn = node.turns?.[node.turns.length - 1]
+  const contextOccupancy = chat?.occupancy ?? node.occupancy
+  const contextEstimated = chat?.occupancy != null
+    ? chat.occupancy_estimated : node.occupancy_est
+  const turnActive = Boolean(node.busy || node.waiting
+    || node.phase === 'compacting' || chat?.busy)
+  // A fresh/empty seat now keeps its truthful hollow wheel, but it must not
+  // acquire a dead compact button: the endpoint still requires real context.
+  const canCompactContext = live && !node.bearer_state && !node.compacted_unrun
+    && typeof contextOccupancy === 'number' && contextOccupancy > 0
+    && typeof node.context_window === 'number' && node.context_window > 0
   // The tree copy is patched directly by the node-stream event. Chat is a
   // slower reconciliation payload and must not mask a newer gate transition.
   const mcpReadinessWaiting = Boolean(node.mcp_readiness_waiting)
@@ -791,7 +861,18 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
           <span className="cc-name"
             title={(node.charter || '').split('\n')[0] || node.id}>{node.id}</span>
         )}
-        <LastTurnAge turn={lastTurn} busy={Boolean(node.busy || chat?.busy)} />
+        <HeaderTurnSeat active={turnActive} turn={lastTurn} phase={node.phase}
+          waiting={node.waiting} inflightAt={node.inflight_at} tasks={node.tasks} />
+        <span className="cc-context-seat">
+          <ContextWheel occ={contextOccupancy} cw={node.context_window}
+            est={contextEstimated} compactAt={compactAt} persistent
+            onCompact={canCompactContext ? () => setAskCompact(true) : undefined} />
+        </span>
+        <span className="cc-process-seat">
+          <ProcessLifecycleMark warm={Boolean(node.proc_warm)}
+            live={live ? node.proc_live : false} relaunch={node.proc_relaunch}
+            reason={node.proc_relaunch_reason} busy={turnActive} />
+        </span>
         <span className="spacer" />
         <span className="cc-actions">
           {live && !liveKids &&
@@ -816,17 +897,6 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
         </button>
         </div>
         <div className="cc-head-meta">
-        <ContextWheel occ={chat?.occupancy ?? node.occupancy} cw={node.context_window}
-          est={chat?.occupancy != null ? chat.occupancy_estimated : node.occupancy_est}
-          compactAt={compactAt}
-          // …but NOT while the session holds only its own summary: the
-          // endpoint refuses that (422), and before the wheel drew a
-          // post-compaction arc there was no button here to press at all
-          onCompact={live && !node.bearer_state && !node.compacted_unrun
-            ? () => setAskCompact(true) : undefined} />
-        {live && <ProcessLifecycleMark warm={Boolean(node.proc_warm)}
-          live={node.proc_live} relaunch={node.proc_relaunch}
-          reason={node.proc_relaunch_reason} busy={node.busy || chat?.busy} />}
         <McpToolCountMark count={node.mcp_tool_count}
           last={node.last_turn_mcp_tool_count}
           provider={node.mcp_tool_count_provider}
@@ -838,20 +908,6 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
         {node.last_status &&
           <span className={'statuschip ' + node.last_status.status}
             title={node.last_status.summary}>{node.last_status.status}</span>}
-        {/* №3: the word is the STATE, not a blanket "working" — compacting,
-            queued behind the slot cap, and actually responding are different
-            things and the backend already splits them */}
-        {(node.busy || node.phase === 'compacting' || chat?.busy) &&
-          <span className="cc-working">
-            {node.phase === 'compacting' ? <>compacting…</>
-              : node.waiting ? <>queued for a turn slot…</>
-                : <><AutorenewIcon fontSize="inherit" className="cc-spin" /> working
-                  {node.inflight_at ? <span className="dim"> · {ago(node.inflight_at)}</span> : null}
-                  {(node.tasks ?? 0) > 0 && (
-                    // concurrently running subagents — shown only while any
-                    // are actually in flight (user spec 2026-08-17)
-                    <span className="dim"> · {node.tasks} task{node.tasks === 1 ? '' : 's'}</span>)}</>}
-          </span>}
         {node.frozen &&
           <span className="badge frozen" title={node.frozen.error ?? undefined}>
             <FrozenIcon fontSize="inherit" />{' '}

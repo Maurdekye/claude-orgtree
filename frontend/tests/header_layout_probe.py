@@ -27,18 +27,18 @@ HTML = """
     <div class="cc-head-top">
       <span class="tier">F</span>
       <span class="cc-name">an-agent-name-long-enough-to-wrap-at-enlarged-browser-text</span>
-      <span class="badge dim turnago">31m</span>
+      <span class="cc-turn-seat"><span class="cc-working">↻ working · 31m · 8 tasks</span></span>
+      <span class="cc-context-seat"><span class="ctxwheel">◔</span></span>
+      <span class="cc-process-seat"><span class="proc-state relaunch"><span class="proc-one-mark"></span>↻</span></span>
       <span class="spacer"></span>
       <span class="cc-actions"><button class="danger">dissolve · 30</button></span>
       <span class="cc-tabs"><button>chat</button><button>history</button><button>files</button><button>inbox 12</button></span>
       <button class="cc-icon" aria-label="settings">⚙</button>
     </div>
     <div class="cc-head-meta">
-      <span class="ctxwheel">◔</span><span class="proc-state relaunch"><span class="proc-one-mark"></span>↻</span>
       <span class="mcp-tool-count changed">MCP 127</span>
       <span class="cache-forecast cold">cache ×</span>
       <span class="statuschip working">working</span>
-      <span class="cc-working">↻ working · 31m · 8 tasks</span>
       <span class="badge frozen">usage halted until a deliberately long reset explanation</span>
       <span class="badge free">audience-with-a-very-long-name-that-cannot-be-clipped</span>
       <span class="badge free">user</span><span class="badge free">org inbox</span>
@@ -78,6 +78,15 @@ def failures(page, width: int, enlarged: bool) -> list[str]:
         if (el.getBoundingClientRect().height < 23.5)
           bad.push(`${el.textContent}: shrunken hit target`);
       }
+      for (const sel of ['.cc-context-seat', '.cc-process-seat']) {
+        const r = top.querySelector(sel).getBoundingClientRect();
+        if (r.width < 27.5 || r.height < 23.5)
+          bad.push(`${sel}: unstable static slot`);
+      }
+      if (top.querySelector('.cc-turn-seat').getBoundingClientRect().width < 51.5)
+        bad.push('turn age/activity seat collapsed');
+      if (meta.querySelector('.ctxwheel,.proc-state,.cc-working'))
+        bad.push('static top-row item duplicated in metadata');
       const name = document.querySelector('.cc-name');
       if (name.scrollWidth > name.clientWidth + 1) bad.push('agent name clipped');
       return bad.map((v) => `${width}px${enlarged ? ' enlarged' : ''}: ${v}`);

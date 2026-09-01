@@ -98,10 +98,38 @@ wheelTest('an ESTIMATED fill wears the marker in the tooltip AND on the arc',
     assert.match(tip(el), /estimated after compaction, until its next turn/)
   })
 
-wheelTest('an unknown fill draws no wheel at all — an empty ring would read '
-  + 'as "this agent is empty", which is a different claim',
+wheelTest('an unmeasured fresh session keeps a truthful empty wheel slot',
   async ({ mount }) => {
-    const el = await mount(<ContextWheel occ={undefined} cw={200_000} compactAt={0.8} />)
+    const el = await mount(<ContextWheel occ={undefined} cw={200_000}
+      compactAt={0.8} persistent />)
+    assert.ok(wheel(el), 'fresh agent lost the permanent context slot')
+    assert.match(tip(el), /context: empty — no completed turn has measured this session yet/)
+    assert.match(tip(el), /capacity 200k/)
+    assert.equal(el.querySelector('.ctxbtn'), null,
+      'fresh session was offered an ineligible compact action')
+  })
+
+wheelTest('an authoritative zero is explicit and remains non-clickable',
+  async ({ mount }) => {
+    const el = await mount(<ContextWheel occ={0} cw={200_000}
+      compactAt={0.8} persistent />)
+    assert.ok(wheel(el))
+    assert.match(tip(el), /0k \/ 200k \(0%\) — empty session/)
+    assert.equal(el.querySelector('.ctxbtn'), null)
+  })
+
+wheelTest('a missing context-window size renders unknown rather than vanishing',
+  async ({ mount }) => {
+    const el = await mount(<ContextWheel occ={0} cw={undefined}
+      compactAt={0.8} persistent />)
+    assert.ok(wheel(el))
+    assert.match(tip(el), /context: unavailable — context-window size not reported/)
+  })
+
+wheelTest('overview cards retain their established omit-if-empty behavior',
+  async ({ mount }) => {
+    const el = await mount(<ContextWheel occ={undefined} cw={200_000}
+      compactAt={0.8} />)
     assert.equal(wheel(el), null)
   })
 
