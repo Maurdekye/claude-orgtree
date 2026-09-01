@@ -28,7 +28,7 @@ HTML = """
       <span class="cc-head-left">
         <span class="tier">F</span>
         <span class="cc-name" title="an-agent-name-long-enough-to-wrap-at-enlarged-browser-text">an-agent-name-long-enough-to-wrap-at-enlarged-browser-text</span>
-        <span class="cc-context-seat"><span class="ctxwheel">◔</span></span>
+        <span class="cc-context-seat"><button class="ctxbtn"><svg class="ctxwheel" width="15" height="15" viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.5" class="track"></circle></svg></button></span>
         <span class="cc-process-seat"><span class="proc-state relaunch"><span class="proc-one-mark"></span>↻</span></span>
         <span class="turn-status-banner working"><span class="cc-spin">↻</span><span>Working</span><span class="turn-status-time">31m</span></span>
       </span>
@@ -91,11 +91,12 @@ def failures(page, width: int, enlarged: bool) -> list[str]:
         if (el.getBoundingClientRect().height < 23.5)
           bad.push(`${el.textContent}: shrunken hit target`);
       }
-      for (const sel of ['.cc-context-seat', '.cc-process-seat']) {
-        const r = top.querySelector(sel).getBoundingClientRect();
-        if (r.width < 27.5 || r.height < 23.5)
-          bad.push(`${sel}: unstable static slot`);
-      }
+      const contextSeat = top.querySelector('.cc-context-seat').getBoundingClientRect();
+      const processSeat = top.querySelector('.cc-process-seat').getBoundingClientRect();
+      if (contextSeat.width < 23.5 || contextSeat.height < 23.5)
+        bad.push('.cc-context-seat: unstable static slot');
+      if (processSeat.width < 15.5 || processSeat.height < 23.5)
+        bad.push('.cc-process-seat: unstable static slot');
       if (top.querySelector('.turn-status-banner').getBoundingClientRect().width < 71.5)
         bad.push('status/age banner collapsed');
       if (meta.querySelector('.ctxwheel,.proc-state,.turn-status-banner'))
@@ -111,13 +112,42 @@ def failures(page, width: int, enlarged: bool) -> list[str]:
       const rightOrder = [...right.children].map((el) => el.classList[0]);
       if (rightOrder.join('|') !== 'cc-actions|cc-tabs|cc-icon')
         bad.push('right action order changed');
-      const items = [...cluster.children];
-      for (let i = 1; i < items.length; i++) {
-        const before = items[i - 1].getBoundingClientRect();
-        const after = items[i].getBoundingClientRect();
-        if (Math.abs(before.top - after.top) < .5 && after.left - before.right > 2.5)
-          bad.push(`information gap ${after.left - before.right}px exceeds compact token`);
+      // Measure the rendered glyph/text boxes, not merely the flex gap token:
+      // the old 28px wrappers and status padding produced conspicuous empty
+      // space even while the container itself claimed a 2px gap.
+      const visibleSelectors = ['.tier', '.cc-name', '.ctxwheel',
+        '.proc-state', '.turn-status-banner'];
+      const visible = visibleSelectors.map((sel) => cluster.querySelector(sel));
+      for (let i = 1; i < visible.length; i++) {
+        const before = visible[i - 1].getBoundingClientRect();
+        const after = visible[i].getBoundingClientRect();
+        const gap = after.left - before.right;
+        if (gap > 11)
+          bad.push(`visible information gap ${visibleSelectors[i - 1]} to ${visibleSelectors[i]} ${gap}px exceeds compact geometry`);
       }
+      const idle = top.querySelector('.turn-status-banner').cloneNode(true);
+      idle.className = 'turn-status-banner idle';
+      idle.querySelector('.cc-spin')?.remove();
+      idle.style.position = 'fixed'; idle.style.left = '0'; idle.style.top = '0';
+      document.body.appendChild(idle);
+      const idleStyle = getComputedStyle(idle);
+      if (idleStyle.backgroundColor !== 'rgba(0, 0, 0, 0)')
+        bad.push(`Idle has background ${idleStyle.backgroundColor}`);
+      if (parseFloat(idleStyle.borderTopWidth) !== 0)
+        bad.push(`Idle has border ${idleStyle.borderTopWidth}`);
+      if (parseFloat(idleStyle.paddingLeft) !== 0 || parseFloat(idleStyle.paddingRight) !== 0)
+        bad.push(`Idle has horizontal padding ${idleStyle.paddingLeft}/${idleStyle.paddingRight}`);
+      if (idle.querySelector('.cc-spin,svg')) bad.push('Idle retained a spinner/glyph');
+      if (idleStyle.animationName !== 'none') bad.push('Idle root is animated');
+      const neutral = document.createElement('span');
+      neutral.style.color = 'var(--dim)'; document.body.appendChild(neutral);
+      if (idleStyle.color !== getComputedStyle(neutral).color)
+        bad.push(`Idle is not neutral (${idleStyle.color})`);
+      neutral.remove();
+      idle.remove();
+      const spinner = top.querySelector('.turn-status-banner.working .cc-spin');
+      if (!spinner || getComputedStyle(spinner).animationName === 'none')
+        bad.push('Working lost its active animation');
       const leftRows = new Set([...left.children].map((el) => {
         const r = el.getBoundingClientRect();
         return Math.round((r.top + r.height / 2) * 2) / 2;
