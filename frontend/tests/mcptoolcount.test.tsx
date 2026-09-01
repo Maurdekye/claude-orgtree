@@ -31,11 +31,23 @@ test('realtime inventory payloads apply stepwise before any turn boundary', asyn
   }
   assert.deepEqual(seen, [null, 0, 1, 3, 2, 0, null])
 
+  // 946f4ab — THE CHIP SAYS THE NUMBER IT HAS. There are THREE states here,
+  // not two, and the last two used to render identically:
+  //   · measured now            → "MCP 3"   (`same`/`changed`)
+  //   · measured LAST TURN only → "MCP ~3"  (`unknown stale`)
+  //   · never measured at all   → "MCP —"   (`unknown`)
+  // The live count is null for every window in which no provider process has
+  // published, which on a mostly-idle agent is most of its life, so collapsing
+  // the middle case into "—" reported a node whose surface we know perfectly
+  // well as unknown. The `~` is load-bearing: it says "3 last turn", never
+  // "3 right now".
   const view = await mountView(<>
     <McpToolCountMark count={0} last={null} provider="claude" source="init" />
     <McpToolCountMark count={3} last={3} provider="claude" source="refresh" />
     <McpToolCountMark count={2} last={3} provider="claude" source="refresh" />
     <McpToolCountMark count={null} last={3} provider="gemini" source="ACP"
+      reason="runtime inventory unavailable" />
+    <McpToolCountMark count={null} last={null} provider="gemini" source="ACP"
       reason="runtime inventory unavailable" />
   </>, (el) => el)
   try {
@@ -44,9 +56,26 @@ test('realtime inventory payloads apply stepwise before any turn boundary', asyn
       'a real zero with no previous turn must be green, not unknown')
     assert.equal(marks[1]?.classList.contains('same'), true)
     assert.equal(marks[2]?.classList.contains('changed'), true)
+
+    // unresolved NOW but measured last turn: the number survives, marked
     assert.equal(marks[3]?.classList.contains('unknown'), true)
-    assert.match(marks[3]?.textContent ?? '', /MCP\s+—/)
+    assert.equal(marks[3]?.classList.contains('stale'), true,
+      'a last-turn fallback must be marked stale, not styled as a live count')
+    assert.match(marks[3]?.textContent ?? '', /MCP\s+~3/)
+    assert.doesNotMatch(marks[3]?.textContent ?? '', /—/,
+      'a node with a known last-turn count must not read as never-measured')
     assert.match(marks[3]?.getAttribute('aria-label') ?? '', /runtime inventory unavailable/)
+
+    // ⚠ NEVER MEASURED IS STILL "—". This is the case the fallback must not
+    // swallow: with no live count AND no last-turn count there is no number
+    // to stand behind, and inventing one — or borrowing a neighbour's — is
+    // the failure the `~` notation exists to avoid.
+    assert.equal(marks[4]?.classList.contains('unknown'), true)
+    assert.equal(marks[4]?.classList.contains('stale'), false,
+      'nothing was ever measured — there is no stale number to fall back to')
+    assert.match(marks[4]?.textContent ?? '', /MCP\s+—/)
+    assert.doesNotMatch(marks[4]?.textContent ?? '', /~/)
+    assert.match(marks[4]?.getAttribute('aria-label') ?? '', /unknown/)
   } finally { await view.unmount() }
 })
 
