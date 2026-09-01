@@ -376,16 +376,16 @@ def heal_quantized_skew(forecast: Any, now: float) -> dict[str, Any] | None:
     expired. Codex's fixed-estimate labelling is recovered from the lane plus
     the TTL value itself — the fixed TTL table maps them one-to-one.
     """
-    row = forecast if isinstance(forecast, dict) else {}
+    row = cast("dict[str, Any]", forecast) if isinstance(forecast, dict) else {}
     if (str(row.get("state") or "") != "uncertain"
             or str(row.get("source") or "") != "clock_skew"):
         return None
     at = str(row.get("observed_at") or "")
-    receipt_at = row.get("last_receipt_at")
+    receipt_at: Any = row.get("last_receipt_at")
     if not at or not isinstance(receipt_at, str) or at != receipt_at:
         return None
     observed = epoch(receipt_at)
-    ttl_raw = row.get("ttl_seconds")
+    ttl_raw: Any = row.get("ttl_seconds")
     if (observed is None or isinstance(ttl_raw, bool)
             or not isinstance(ttl_raw, (int, float)) or ttl_raw <= 0):
         return None
