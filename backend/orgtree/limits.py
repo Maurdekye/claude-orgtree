@@ -584,6 +584,37 @@ def peek() -> dict[str, Any]:
             "age": round(age, 1)}
 
 
+def snapshot(now: float | None = None) -> dict[str, Any]:
+    """Cache-only usage evidence for dynamic turn envelopes.
+
+    Unlike :func:`peek`, this keeps a stale board (labelled ``stale``) so an
+    agent can distinguish "the last observation is old" from "this provider
+    has never reported usage".  It never fetches and never returns credential
+    material.  Callers receive copies, not the mutable cache records.
+    """
+    now = time.time() if now is None else now
+    with _lock:
+        raw = cast("dict[str, Any] | None", _cache.get("data"))
+        observed = float(cast(float, _cache.get("at") or 0.0))
+        if raw is None:
+            return {"available": False, "limits": [], "observed_at": None,
+                    "age": None, "stale": False}
+        data = dict(raw)
+        data["limits"] = [dict(x) for x in cast("list[Any]", raw.get("limits") or [])
+                          if isinstance(x, dict)]
+    age = max(0.0, now - observed) if observed > 0 else None
+    seen = None
+    if observed > 0:
+        try:
+            seen = (_dt.datetime.fromtimestamp(observed, _dt.timezone.utc)
+                    .isoformat().replace("+00:00", "Z"))
+        except (OverflowError, OSError, ValueError):
+            pass
+    data.update(observed_at=seen, age=age,
+                stale=bool(age is not None and age > MAX_EVIDENCE_AGE))
+    return data
+
+
 def invalidate() -> None:
     """Drop the cache. Tests only: a caller that just learned the standing
     changed wants `fetch(max_age=REREAD_MAX_AGE)`, which re-reads without

@@ -39,7 +39,7 @@ from typing import Any, Final, cast
 
 from . import (accounts, appsettings, codex_limits, deployment, imgblock,
                limits, net, providers, sandbox as sbx, store, tokens,
-               warmpool)
+               turnusage, warmpool)
 from .ledger import EXTERN, SYSTEM, USER, LedgerError, Org, expand_mcp, now as now_iso
 from .schema import (Denial, FrozenInfo, InflightInfo, KioskCfg, MailEntry,
                      NodeDoc, NoticeEntry, TurnStat)
@@ -2703,6 +2703,54 @@ def org_state_block(org: Org, nid: str, include_archived: bool = False) -> str:
         f"free {org.free(nid):g} — credits bound concurrent agent capacity, "
         f"not tokens."
         f"{fable_line}{ask_line}\n{ORG_STATE_CLOSE}")
+
+
+def _turn_usage_selection(org: Org, nid: str,
+                          now: float) -> tuple[str, str]:
+    """Safe provider/lane label for the process this turn would use.
+
+    Raw account ids never leave this function.  Fallback ordinals are the
+    same already-safe labels used by the accounts panel and kiosk-safe desk
+    payload.  Selection is advisory display data: any failure simply leaves
+    the board without a selected marker.
+    """
+    tier = str(org.node(nid).get("model") or "")
+    provider = providers.provider_of(tier)
+    if provider == "openai":
+        return provider, "account"
+    if provider == "google":
+        return provider, "account"
+    try:
+        if bills_the_key(org, api_fallback_active(org, now)):
+            return provider, "org-api-key"
+        resolved = accounts.resolve(tier, now)
+        account = str(resolved.get("account") or "")
+        if account == accounts.PRIMARY:
+            return provider, "primary"
+        ordinal = accounts.fallback_ordinal(accounts.load(), account)
+        return provider, f"fallback-{ordinal}" if ordinal else ""
+    except Exception:                                      # noqa: BLE001
+        return provider, ""
+
+
+def turn_usage_block(org: Org, nid: str,
+                     now: float | None = None) -> str:
+    """The cache-only, dynamic provider-usage user-envelope block.
+
+    This is deliberately adjacent to ``org_state_block`` and absent from
+    ``identity_prompt``.  Changing usage values therefore changes one user
+    event, never the system prompt, tools, launch argv/env, session id or warm
+    identity hash.  Broad failure handling is load-bearing: telemetry is
+    context, never a new admission gate.
+    """
+    now = time.time() if now is None else now
+    try:
+        provider, lane = _turn_usage_selection(org, nid, now)
+        return turnusage.render(
+            org, nid, selected_provider=provider,
+            selected_lane=lane, now=now)
+    except Exception:                                      # noqa: BLE001
+        return turnusage.failure_block(now)
 
 
 def identity_prompt(org: Org, nid: str, include_archived: bool = False) -> str:
@@ -6428,6 +6476,7 @@ def _run_one_turn(slug: str, nid: str,
             # D-181: bound here, assigned under the lock below. Never folded
             # into `prelude` — see the note at the assignment.
             state_block = ""
+            usage_org: Org | None = None
             if pending:
                 lines = "\n".join(f"- {p['at']}: {p['text']}" for p in pending)
                 prelude.append(f"[ORG NOTICES — {len(pending)} change(s) since your "
@@ -6508,12 +6557,19 @@ def _run_one_turn(slug: str, nid: str,
                     #     the same block through the same door.
                     if not is_cmd:
                         state_block = org_state_block(o2, nid)
+                        # Keep only the already-loaded doc across the lock
+                        # boundary. Provider cache/registry locks must never
+                        # sit underneath DOC_LOCK, and this block is advisory:
+                        # a telemetry stall or error cannot gate the turn.
+                        usage_org = o2
             # ⚠ `is_cmd` gets NO block, matching the drain above, which already
             # skips notices AND mail for a slash command: the "/" has to be the
             # first character the CLI sees. Command turns are informationally
             # lean by existing design, not by an oversight here.
             if state_block:
-                text = state_block + "\n\n" + text
+                usage_block = (turn_usage_block(usage_org, nid)
+                               if usage_org is not None else "")
+                text = (state_block + "\n\n" + usage_block + "\n\n" + text)
             # a new turn supersedes the previous failure: the durable system
             # row (_log_turn_error) already holds the history, so the banner
             # clears NOW instead of surviving until a later success — it used
@@ -7373,6 +7429,7 @@ def _run_one_turn(slug: str, nid: str,
                         # delivery — restart durability): envelope now, and
                         # track it as the in-flight turn.
                         ntoks: list[str] = []
+                        nusage_org: Org | None = None
                         # ⚠ bound BEFORE the `if not ncmd` below, which is
                         # the only thing that assigns it: a slash command
                         # skips the envelope entirely, and an unbound name
@@ -7398,7 +7455,7 @@ def _run_one_turn(slug: str, nid: str,
                                 nxt = st["queue"].pop(0)
                                 st["responding"] = True
                             nping = _carrier_is_ping(nxt)
-                            ntoks, nimgs, ncmd = [], [], False
+                            ntoks, nimgs, ncmd, nusage_org = [], [], False, None
                             if isinstance(nxt, dict):   # journaled/cmd
                                 ncmd = bool(nxt.get("cmd"))
                                 ntoks, nxt = list(nxt.get("toks") or []), nxt["text"]
@@ -7437,9 +7494,18 @@ def _run_one_turn(slug: str, nid: str,
                                             ninf["cmd"] = True
                                         o2.node(nid)["inflight"] = ninf
                                         store.save_org(o2)
+                                        if not ncmd:
+                                            # Do not persist a changing usage
+                                            # board into inflight replay text.
+                                            # A resumed carrier gets a fresh
+                                            # board when it re-enters.
+                                            nusage_org = o2
                             except Exception:                # noqa: BLE001
                                 pass
                             try:
+                                if not ncmd and nusage_org is not None:
+                                    nxt = (turn_usage_block(nusage_org, nid)
+                                           + "\n\n" + nxt)
                                 proc.stdin.write(_user_event(nxt, nimgs))   # pyright: ignore[reportOptionalMemberAccess]
                                 proc.stdin.flush()                   # pyright: ignore[reportOptionalMemberAccess]
                                 # C1 again: confirmed by the next consuming

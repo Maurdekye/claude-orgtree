@@ -244,6 +244,29 @@ def peek() -> dict[str, Any]:
             "limits": copied.get("limits") or [], "age": round(age, 1)}
 
 
+def snapshot(now: float | None = None) -> dict[str, Any]:
+    """Cache-only, timestamped Codex evidence for dynamic turn envelopes.
+
+    A stale board remains visible with an explicit stale marker; no app-server
+    process is started here.  The returned records are copies so formatting a
+    turn can never mutate the modal/glow cache.
+    """
+    now = time.time() if now is None else now
+    with _lock:
+        raw = _cache.get("data")
+        observed = float(_cache.get("at") or 0.0)
+        if not isinstance(raw, dict):
+            return {"available": False, "provider": "Codex", "limits": [],
+                    "observed_at": None, "age": None, "stale": False}
+        data = dict(raw)
+        data["limits"] = [dict(x) for x in raw.get("limits") or []
+                          if isinstance(x, dict)]
+    age = max(0.0, now - observed) if observed > 0 else None
+    data.update(provider="Codex", observed_at=_iso(observed), age=age,
+                stale=bool(age is not None and age > MAX_EVIDENCE_AGE))
+    return data
+
+
 def invalidate() -> None:
     with _lock:
         _cache.update(at=0.0, data=None)
