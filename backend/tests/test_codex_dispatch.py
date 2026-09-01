@@ -112,11 +112,12 @@ def mkorg(label: str) -> tuple[str, str]:
     return org.d["slug"], nid
 
 
-def run_turn(slug: str, nid: str, text: str):
+def run_turn(slug: str, nid: str, text: str, view: str | None = None):
     st = supervisor.state(slug, nid)
     with supervisor._state_lock:
         st["busy"] = True              # what _run_turn's callers always set
-    return supervisor._run_one_turn(slug, nid, text)
+    return supervisor._run_one_turn(
+        slug, nid, {"text": text, "view": text if view is None else view})
 
 
 def node_doc(slug: str, nid: str) -> dict:
@@ -334,7 +335,8 @@ def main() -> int:
         done: list = []
         th = threading.Thread(
             target=lambda: done.append(run_turn(
-                s3, n3, "[ORG NOTICES — 1 change]\n- peer status arrived")))
+                s3, n3, "[ORG NOTICES — 1 change]\n- peer status arrived",
+                view="")))
         th.start()
         for _ in range(300):
             if st.get("responding"):
@@ -345,9 +347,8 @@ def main() -> int:
         # The journal is opened at turn START. A running Codex turn must not
         # show streamed prose under a contradictory "no conversation yet".
         running_chat = supervisor.read_chat(store.load_org(s3), n3)
-        assert any(m.get("role") == "user"
-                   and "peer status arrived" in (m.get("text") or "")
-                   for m in running_chat["messages"]), running_chat
+        assert not any("peer status arrived" in (m.get("text") or "")
+                       for m in running_chat["messages"]), running_chat
         ident_before = supervisor.identity_prompt(store.load_org(s3), n3)
         with store.DOC_LOCK:
             o = store.load_org(s3)
@@ -357,7 +358,9 @@ def main() -> int:
         assert ident_after != ident_before, \
             "fixture failed to dirty the live turn's identity"
         with supervisor._state_lock:
-            st.setdefault("steer", []).append("FROM @user: mid-turn hello")
+            st.setdefault("steer", []).append({
+                "text": "FROM @user: mid-turn hello",
+                "view": "FROM @user: mid-turn hello"})
         th.join(20)
         assert not th.is_alive(), "steer turn never ended"
         text = "".join(p.get("text", "") for p in STREAMED
@@ -370,8 +373,8 @@ def main() -> int:
         user_text = "\n".join(m.get("text") or ""
                               for m in finished_chat["messages"]
                               if m.get("role") == "user")
-        assert "peer status arrived" in user_text, \
-            f"opening org notice vanished from history: {user_text!r}"
+        assert "peer status arrived" not in user_text, \
+            f"machine-only opening notice leaked into history: {user_text!r}"
         assert "mid-turn hello" in user_text, \
             f"steered agent/user mail vanished from history: {user_text!r}"
         eq(st.get("steer"), [], "steer store drained")

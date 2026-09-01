@@ -23,9 +23,11 @@ from __future__ import annotations
 
 import datetime as _dtm
 import glob
+import hashlib
 import json
 import math as _math
 import os
+import queue
 import re
 import shutil
 import socket
@@ -732,6 +734,9 @@ MAX_CONCURRENT = int(os.environ.get("ORGTREE_MAX_TURNS", "16"))
 # journal (user report 2026-08-30: a message looked "stuck" for ~58s with no
 # trace anywhere of why — see the SLOT_WAIT_WARN_S print site below).
 SLOT_WAIT_WARN_S = float(os.environ.get("ORGTREE_SLOT_WAIT_WARN_S", "5"))
+# Opt-in MCP readiness is bounded and fail-open: a provider process that never
+# publishes an exact runtime inventory cannot invisibly hold a turn forever.
+MCP_READINESS_TIMEOUT_S = 30.0
 
 _turn_slots = threading.Semaphore(MAX_CONCURRENT)
 # per-(slug, nid) in-memory runtime state — see state() for the key set
@@ -885,6 +890,479 @@ def state(slug: str, nid: str) -> dict[str, Any]:
             "live": []})
 
 
+def _mcp_tool_emit(slug: str, nid: str, payload: dict[str, Any]) -> None:
+    """Push an inventory transition directly over the existing node stream."""
+    try:
+        stream(slug, nid, {"kind": "mcp_tool_count", **payload,
+                           "emitted_at_ms": round(time.time() * 1000)})
+    except Exception:                                       # noqa: BLE001
+        pass             # observation/WS failure can never affect a turn
+
+
+def _mcp_tool_count_begin(slug: str, nid: str, owner: Any, provider: str,
+                          source: str, reason: str,
+                          last_turn_count: int | None = None) -> None:
+    """Adopt a newly installed provider-process generation as unknown."""
+    st = state(slug, nid)
+    with _state_lock:
+        if st.get("mcp_tool_owner") is owner:
+            return
+        st["mcp_tool_owner"] = owner
+        st["mcp_tool_count"] = None
+        st["mcp_tool_provider"] = provider
+        st["mcp_tool_source"] = source
+        st["mcp_tool_reason"] = reason
+        st["mcp_tool_server_counts"] = {}
+        st["mcp_tool_event"] = threading.Event()
+        if isinstance(last_turn_count, int) and not isinstance(
+                last_turn_count, bool) and last_turn_count >= 0:
+            st["last_turn_mcp_tool_count"] = last_turn_count
+        elif last_turn_count is None:
+            st.pop("last_turn_mcp_tool_count", None)
+        payload = {
+            "count": None, "provider": provider, "source": source,
+            "reason": reason,
+            "last_turn_count": st.get("last_turn_mcp_tool_count"),
+        }
+    _mcp_tool_emit(slug, nid, payload)
+    _mcp_readiness_set(
+        slug, nid, owner, waiting=False, state_name="initializing",
+        reason=reason)
+
+
+def _mcp_tool_count_publish(slug: str, nid: str, owner: Any, count: int,
+                            provider: str, source: str,
+                            reason: str | None = None) -> bool:
+    """Publish an authoritative count if ``owner`` is still current."""
+    if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+        return False
+    st = state(slug, nid)
+    changed = False
+    with _state_lock:
+        if st.get("mcp_tool_owner") is not owner:
+            return False
+        cur = (st.get("mcp_tool_count"), st.get("mcp_tool_provider"),
+               st.get("mcp_tool_source"), st.get("mcp_tool_reason"))
+        nxt = (count, provider, source, reason)
+        if cur != nxt:
+            st["mcp_tool_count"] = count
+            st["mcp_tool_provider"] = provider
+            st["mcp_tool_source"] = source
+            st["mcp_tool_reason"] = reason
+            changed = True
+        payload = {
+            "count": count, "provider": provider, "source": source,
+            "reason": reason,
+            "last_turn_count": st.get("last_turn_mcp_tool_count"),
+        }
+    if changed:
+        _mcp_tool_emit(slug, nid, payload)
+    return changed
+
+
+def _mcp_tool_count_unknown(slug: str, nid: str, owner: Any,
+                            provider: str, source: str, reason: str) -> bool:
+    """Publish a truthful unknown without replacing the process owner."""
+    st = state(slug, nid)
+    with _state_lock:
+        if st.get("mcp_tool_owner") is not owner:
+            return False
+        cur = (st.get("mcp_tool_count"), st.get("mcp_tool_provider"),
+               st.get("mcp_tool_source"), st.get("mcp_tool_reason"))
+        nxt = (None, provider, source, reason)
+        st["mcp_tool_count"] = None
+        st["mcp_tool_provider"] = provider
+        st["mcp_tool_source"] = source
+        st["mcp_tool_reason"] = reason
+        changed = cur != nxt
+        event = st.get("mcp_tool_event")
+        payload = {
+            "count": None, "provider": provider, "source": source,
+            "reason": reason,
+            "last_turn_count": st.get("last_turn_mcp_tool_count"),
+        }
+    if changed:
+        _mcp_tool_emit(slug, nid, payload)
+    if isinstance(event, threading.Event):
+        event.set()
+    return changed
+
+
+def _mcp_tool_count_names(slug: str, nid: str, owner: Any,
+                          names: Iterable[Any], provider: str,
+                          source: str) -> bool:
+    """Fold exact provider-reported callable names, excluding built-ins."""
+    tools = {str(n) for n in names
+             if isinstance(n, str) and n.startswith("mcp__")}
+    st = state(slug, nid)
+    with _state_lock:
+        if st.get("mcp_tool_owner") is not owner:
+            return False
+        st["mcp_tool_names"] = tools
+        servers: dict[str, int] = {}
+        for name in tools:
+            bits = name.split("__", 2)
+            server = bits[1] if len(bits) == 3 else "runtime"
+            servers[server] = servers.get(server, 0) + 1
+        st["mcp_tool_server_counts"] = servers
+        event = st.get("mcp_tool_event")
+    if isinstance(event, threading.Event):
+        event.set()
+    return _mcp_tool_count_publish(
+        slug, nid, owner, len(tools), provider, source)
+
+
+def _mcp_tool_count_server(slug: str, nid: str, owner: Any,
+                           server: str, count: int, provider: str,
+                           source: str) -> bool:
+    """Apply one provider server inventory update and emit the new total."""
+    if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+        return False
+    st = state(slug, nid)
+    with _state_lock:
+        if st.get("mcp_tool_owner") is not owner:
+            return False
+        per = cast("dict[str, int]", st.setdefault(
+            "mcp_tool_server_counts", {}))
+        per[str(server)] = count
+        total = sum(per.values())
+        # RefreshMcpTools' count-only shape proves the total but not canonical
+        # identities. Never keep an earlier exact set under a changed runtime.
+        st.pop("mcp_tool_names", None)
+        event = st.get("mcp_tool_event")
+    if isinstance(event, threading.Event):
+        event.set()
+    return _mcp_tool_count_publish(
+        slug, nid, owner, total, provider, source)
+
+
+def _mcp_tool_count_end(slug: str, nid: str, owner: Any,
+                        reason: str = "no live provider process") -> bool:
+    """Clear only the generation that actually exited."""
+    st = state(slug, nid)
+    with _state_lock:
+        if st.get("mcp_tool_owner") is not owner:
+            return False
+        provider = str(st.get("mcp_tool_provider") or "unknown")
+        st.pop("mcp_tool_owner", None)
+        st["mcp_tool_count"] = None
+        st["mcp_tool_source"] = "process"
+        st["mcp_tool_reason"] = reason
+        st.pop("mcp_tool_names", None)
+        st["mcp_tool_server_counts"] = {}
+        event = st.get("mcp_tool_event")
+        readiness_changed = (
+            bool(st.get("mcp_readiness_waiting")),
+            st.get("mcp_readiness_state"),
+            st.get("mcp_readiness_reason"),
+        ) != (False, "process-ended", reason)
+        st["mcp_readiness_waiting"] = False
+        st["mcp_readiness_state"] = "process-ended"
+        st["mcp_readiness_reason"] = reason
+        payload = {
+            "count": None, "provider": provider, "source": "process",
+            "reason": reason,
+            "last_turn_count": st.get("last_turn_mcp_tool_count"),
+        }
+    if isinstance(event, threading.Event):
+        event.set()
+    _mcp_tool_emit(slug, nid, payload)
+    if readiness_changed:
+        try:
+            stream(slug, nid, {
+                "kind": "mcp_readiness", "waiting": False,
+                "state": "process-ended", "reason": reason,
+                "emitted_at_ms": round(time.time() * 1000),
+            })
+        except Exception:                                   # noqa: BLE001
+            pass
+    return True
+
+
+def _mcp_tool_count_for_owner(slug: str, nid: str, owner: Any
+                              ) -> int | None:
+    st = state(slug, nid)
+    with _state_lock:
+        value = st.get("mcp_tool_count")
+        if st.get("mcp_tool_owner") is owner and isinstance(value, int) \
+                and not isinstance(value, bool):
+            return value
+    return None
+
+
+def _mcp_tool_surface_for_owner(
+        slug: str, nid: str, owner: Any,
+) -> tuple[int | None, list[str] | None]:
+    """Return one generation's authoritative count and exact names."""
+    st = state(slug, nid)
+    with _state_lock:
+        if st.get("mcp_tool_owner") is not owner:
+            return None, None
+        value = st.get("mcp_tool_count")
+        count = (value if isinstance(value, int)
+                 and not isinstance(value, bool) and value >= 0 else None)
+        names = st.get("mcp_tool_names")
+        exact = sorted(str(name) for name in names) \
+            if isinstance(names, set) else None
+    return count, exact
+
+
+def _mcp_registry_observed() -> dict[str, Any] | None:
+    """Read the registry with an explicit unavailable state.
+
+    ``registered_mcp_servers`` intentionally degrades parse/I/O errors to an
+    empty grant for launches. A readiness fingerprint must not mistake that
+    transient read failure for a genuine operator configuration change.
+    """
+    try:
+        with open(os.path.expanduser("~/.claude.json"), encoding="utf-8") as f:
+            doc: Any = json.load(f)
+    except FileNotFoundError:
+        return {}
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(doc, dict):
+        return None
+    raw = doc.get("mcpServers", {})
+    return dict(raw) if isinstance(raw, dict) else None
+
+
+def _mcp_infrastructure_fingerprint(org: Org, nid: str) -> str | None:
+    """Hash the effective MCP launch surface, never transient readiness.
+
+    The digest covers provider, effective granted server definitions after
+    kiosk/provider narrowing, sandbox delivery mode, and the callable names
+    exported by Orgtree's built-in MCP server. Raw server config (including
+    any env secrets) is hashed in-memory and never persisted or published.
+    """
+    registry = _mcp_registry_observed()
+    if registry is None:
+        return None
+    n = org.node(nid)
+    tools = n["scope"].get("tools", {})
+    ceiling = org.kiosk_ceiling()
+    granted_names = expand_mcp(
+        tools.get("mcp") or [],
+        (ceiling or {}).get("tools", {}).get("mcp") if ceiling else None,
+        sorted(registry))
+    chosen = {name: registry[name] for name in granted_names
+              if name in registry}
+    provider = providers.provider_of(str(n.get("model") or ""))
+    if provider == "openai":
+        from . import codexrun                         # noqa: PLC0415
+        chosen, _ = codexrun.deliverable_mcp(chosen)
+    elif provider == "google":
+        from . import geminirun                        # noqa: PLC0415
+        chosen, _ = geminirun.deliverable_mcp(chosen)
+    elif sbx.is_sandboxed(org):
+        chosen = sandbox_mcp_passthrough(sorted(chosen), registry)
+    from . import mcptool                              # noqa: PLC0415
+    # Codex receives Orgtree powers as dynamic functions, not through MCP;
+    # they are deliberately excluded from both the runtime MCP count and its
+    # infrastructure generation. Claude/Gemini launch Orgtree as an MCP
+    # server, so its callable catalogue is part of their surface.
+    builtin = ([] if provider == "openai" else
+               sorted(str(tool.get("name") or "")
+                      for tool in mcptool.available_tools()
+                      if isinstance(tool, dict) and tool.get("name")))
+    raw = json.dumps({
+        "version": 1,
+        "provider": provider,
+        "sandboxed": sbx.is_sandboxed(org),
+        "sandbox_mcp": bool(sandbox_mcp_enabled()),
+        "servers": chosen,
+        "orgtree_tools": builtin,
+    }, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(raw.encode("utf-8", "replace")).hexdigest()
+
+
+def _mcp_readiness_set(slug: str, nid: str, owner: Any, *, waiting: bool,
+                       state_name: str, reason: str) -> None:
+    """Publish one generation-owned readiness transition."""
+    st = state(slug, nid)
+    with _state_lock:
+        if st.get("mcp_tool_owner") is not owner:
+            return
+        current = (bool(st.get("mcp_readiness_waiting")),
+                   st.get("mcp_readiness_state"),
+                   st.get("mcp_readiness_reason"))
+        nxt = (bool(waiting), state_name, reason)
+        st["mcp_readiness_waiting"] = bool(waiting)
+        st["mcp_readiness_state"] = state_name
+        st["mcp_readiness_reason"] = reason
+    if current == nxt:
+        return
+    try:
+        stream(slug, nid, {
+            "kind": "mcp_readiness", "waiting": bool(waiting),
+            "state": state_name, "reason": reason,
+            "emitted_at_ms": round(time.time() * 1000),
+        })
+    except Exception:                                       # noqa: BLE001
+        pass
+
+
+def _mcp_wait_for_surface(
+        org: Org, nid: str, owner: Any, provider: str,
+        fingerprint: str | None, timeout_s: float | None = None,
+) -> str:
+    """Optionally wait for current exact tools to cover the prior surface.
+
+    Returns a stable outcome label. Timeout and unsupported/unobservable
+    providers fail open with a published explanation; cancellation and owner
+    replacement return explicit terminal outcomes for the caller to refuse.
+    """
+    slug = org.d["slug"]
+    if not appsettings.wait_for_mcp_tools_enabled():
+        _mcp_readiness_set(
+            slug, nid, owner, waiting=False, state_name="off",
+            reason="MCP readiness waiting is turned off")
+        return "off"
+    if provider == "google":
+        _mcp_readiness_set(
+            slug, nid, owner, waiting=False, state_name="unsupported",
+            reason=("Gemini ACP does not expose an authoritative runtime MCP "
+                    "tool list; this turn proceeds without waiting"))
+        return "unsupported"
+    if fingerprint is None:
+        _mcp_readiness_set(
+            slug, nid, owner, waiting=False, state_name="unavailable",
+            reason=("MCP configuration could not be read authoritatively; "
+                    "the prior expectation was not reset and this turn "
+                    "proceeds without waiting"))
+        return "unavailable"
+    n = org.node(nid)
+    prior_fingerprint = n.get("last_turn_mcp_fingerprint")
+    expected_raw = n.get("last_turn_mcp_tools")
+    if not isinstance(expected_raw, list) or not isinstance(
+            prior_fingerprint, str):
+        _mcp_readiness_set(
+            slug, nid, owner, waiting=False, state_name="no-baseline",
+            reason="No authoritative prior MCP tool surface exists")
+        return "no-baseline"
+    if prior_fingerprint != fingerprint:
+        _mcp_readiness_set(
+            slug, nid, owner, waiting=False,
+            state_name="infrastructure-changed",
+            reason=("MCP configuration changed since the last completed "
+                    "turn; the obsolete tool expectation was reset"))
+        return "infrastructure-changed"
+    expected = {str(name) for name in expected_raw
+                if isinstance(name, str) and name.startswith("mcp__")}
+    deadline = time.monotonic() + max(
+        0.0, MCP_READINESS_TIMEOUT_S if timeout_s is None else timeout_s)
+    last_reason = ""
+    while True:
+        if not appsettings.wait_for_mcp_tools_enabled():
+            _mcp_readiness_set(
+                slug, nid, owner, waiting=False, state_name="disabled",
+                reason="MCP readiness waiting was turned off while waiting")
+            return "disabled"
+        st = state(slug, nid)
+        with _state_lock:
+            event = st.get("mcp_tool_event")
+            if isinstance(event, threading.Event):
+                event.clear()
+            interrupted = bool(st.get("interrupted"))
+            current_owner = st.get("mcp_tool_owner")
+            current_raw = st.get("mcp_tool_names")
+            current = ({str(name) for name in current_raw}
+                       if isinstance(current_raw, set) else None)
+        if interrupted:
+            _mcp_readiness_set(
+                slug, nid, owner, waiting=False, state_name="cancelled",
+                reason="Turn cancelled while waiting for MCP tools")
+            return "cancelled"
+        if current_owner is not owner:
+            _mcp_readiness_set(
+                slug, nid, owner, waiting=False,
+                state_name="generation-changed",
+                reason="The provider process changed while waiting for MCP tools")
+            return "generation-changed"
+        if current is not None:
+            missing = sorted(expected - current)
+            if not missing:
+                _mcp_readiness_set(
+                    slug, nid, owner, waiting=False, state_name="ready",
+                    reason=("Current runtime MCP tools cover the last "
+                            "completed turn"))
+                return "ready"
+            sample = ", ".join(missing[:6])
+            reason = (f"Waiting for {len(missing)} prior MCP tool"
+                      f"{'s' if len(missing) != 1 else ''}: {sample}"
+                      + (" …" if len(missing) > 6 else ""))
+        else:
+            reason = "Waiting for an authoritative runtime MCP tool list"
+        if reason != last_reason:
+            _mcp_readiness_set(
+                slug, nid, owner, waiting=True,
+                state_name="waiting", reason=reason)
+            last_reason = reason
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            _mcp_readiness_set(
+                slug, nid, owner, waiting=False, state_name="timed-out",
+                reason=(f"MCP tools were not ready within "
+                        f"{max(0.0, MCP_READINESS_TIMEOUT_S if timeout_s is None else timeout_s):g}s; "
+                        "the bounded gate failed open and the turn proceeded"))
+            return "timed-out"
+        if isinstance(event, threading.Event):
+            event.wait(min(remaining, 0.25))
+        else:
+            time.sleep(min(remaining, 0.05))
+
+
+def _mcp_gate_terminal(outcome: str) -> None:
+    if outcome == "cancelled":
+        raise RuntimeError("turn cancelled while waiting for MCP tools")
+    if outcome == "generation-changed":
+        raise RuntimeError("provider process changed while waiting for MCP tools")
+
+
+def _mcp_queue_lines(lines: "queue.Queue[str | None]") -> Iterable[str]:
+    while True:
+        line = lines.get()
+        if line is None:
+            return
+        yield line
+
+
+def _claude_mcp_refresh_counts(content: Any) -> list[tuple[str, int]]:
+    """Parse Claude's authoritative ``RefreshMcpTools`` result rows."""
+    texts: list[str] = []
+    if isinstance(content, str):
+        texts.append(content)
+    elif isinstance(content, list):
+        for block in content:
+            if isinstance(block, dict):
+                value = block.get("text")
+                if isinstance(value, str):
+                    texts.append(value)
+    out: list[tuple[str, int]] = []
+    for body in texts:
+        try:
+            value = json.loads(body)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        rows: Any = value
+        if isinstance(value, dict):
+            rows = (value.get("servers") or value.get("results")
+                    or value.get("statuses") or [])
+        if not isinstance(rows, list):
+            continue
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            server = row.get("server") or row.get("name")
+            count = (row.get("toolCount") if "toolCount" in row
+                     else row.get("tool_count"))
+            if (isinstance(server, str) and server
+                    and isinstance(count, int) and not isinstance(count, bool)
+                    and count >= 0):
+                out.append((server, count))
+    return out
+
+
 def _limit_cache_result_state(
         st: dict[str, Any], usage: dict[str, Any], limited: bool,
 ) -> tuple[str | None, dict[str, Any] | None]:
@@ -967,6 +1445,101 @@ def journal_store() -> str:
     functions below instead of a parallel bookkeeping path. Records are
     written in the same shape the readers already parse."""
     return os.path.join(store.DATA_ROOT, "journals")
+
+
+_view_journal_lock = threading.Lock()
+
+
+def _prompt_view_path(slug: str, session_id: str) -> str:
+    """Structured human-projection sidecar for one provider transcript.
+
+    The provider transcript remains byte-for-byte raw.  This separate journal
+    records only a digest of the raw user event and the human-authored portion
+    that the desk may render.  Source provenance therefore survives restarts
+    without teaching the renderer to guess from marker-looking strings.
+    """
+    # Deliberately avoid the provider transcript's ``*.jsonl`` suffix: the
+    # transcript index scans that namespace and must never mistake display
+    # provenance for a provider session.
+    return os.path.join(journal_store(), "projects", slug,
+                        session_id + ".views.ndjson")
+
+
+def _record_prompt_view(slug: str, session_id: str, raw: str, visible: str,
+                        at: str | None = None) -> None:
+    """Durably pair a raw provider user event with its human projection.
+
+    Best effort and fail-open for turn admission: losing display metadata may
+    affect presentation, but can never stop or mutate the provider request.
+    """
+    if not session_id:
+        return
+    row = {
+        "v": 1,
+        "sha256": hashlib.sha256(raw.encode("utf-8")).hexdigest(),
+        "chars": len(raw),
+        "visible": visible,
+        "at": at or now_iso(),
+    }
+    try:
+        path = _prompt_view_path(slug, session_id)
+        with _view_journal_lock:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(row, ensure_ascii=False) + "\n")
+    except (OSError, TypeError, ValueError) as e:
+        print(f"[orgtree] {slug}: prompt-view journal write failed: {e!r}")
+
+
+def _load_prompt_views(slug: str, session_id: str
+                       ) -> dict[str, list[dict[str, Any]]]:
+    """Load ordered structured projections.  Corrupt rows are ignored."""
+    out: dict[str, list[dict[str, Any]]] = {}
+    try:
+        with open(_prompt_view_path(slug, session_id), encoding="utf-8",
+                  errors="replace") as f:
+            for line in f:
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if (not isinstance(row, dict)
+                        or not isinstance(row.get("sha256"), str)
+                        or not isinstance(row.get("visible"), str)):
+                    continue
+                out.setdefault(row["sha256"], []).append(row)
+    except OSError:
+        pass
+    return out
+
+
+def _take_prompt_view(views: dict[str, list[dict[str, Any]]], raw: str,
+                      event_at: Any = None) -> tuple[bool, str]:
+    """Consume the provenance row matching this exact provider user event.
+
+    A timestamp proximity check prevents a newly-created sidecar row from
+    being consumed by an identical legacy prompt earlier in the transcript.
+    Provider and sidecar writes are adjacent; five minutes is deliberately
+    generous for slow disks while still separating historical repetitions.
+    """
+    key = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+    rows = views.get(key) or []
+    for i, row in enumerate(rows):
+        if row.get("chars") not in (None, len(raw)):
+            continue
+        if event_at and row.get("at"):
+            try:
+                event_ts = _dtm.datetime.fromisoformat(
+                    str(event_at).replace("Z", "+00:00")).timestamp()
+                row_ts = _dtm.datetime.fromisoformat(
+                    str(row["at"]).replace("Z", "+00:00")).timestamp()
+                if abs(event_ts - row_ts) > 300:
+                    continue
+            except (TypeError, ValueError, OverflowError):
+                continue
+        rows.pop(i)
+        return True, str(row.get("visible") or "")
+    return False, raw
 
 
 def transcript_path(session_id: str, root: str | None = None) -> str | None:
@@ -3510,8 +4083,9 @@ def _phantom_log(slug: str, nid: str, where: str) -> None:
 
 
 def _envelope(slug: str, nid: str, text: str,
-              via: str = "steer") -> tuple[str, str | None,
-                                           list[dict[str, Any]]]:
+              via: str = "steer", *, base_view: str = "",
+              view_out: list[str] | None = None
+              ) -> tuple[str, str | None, list[dict[str, Any]]]:
     """Drain notices + mail atomically and prepend them (№27 envelope, §7.4).
     Safe to call repeatedly — a second call finds nothing new. Returns the
     enveloped text plus the delivery-journal token when anything was drained
@@ -3531,6 +4105,8 @@ def _envelope(slug: str, nid: str, text: str,
     with store.DOC_LOCK:
         org = store.load_org(slug)
         if nid not in org.nodes:
+            if view_out is not None:
+                view_out.append(base_view)
             return text, None, []
         pending = (org.d.get("notices") or {}).pop(nid, None)
         mail = org.take_mail(nid)
@@ -3546,6 +4122,18 @@ def _envelope(slug: str, nid: str, text: str,
     if mail:
         mtext, imgs = _mail_block(mail, slug, nid, inline=(via == "turn"))
         prelude.append(mtext)
+    if view_out is not None:
+        # Human chat is a structured projection, never a marker-string scrub.
+        # Pending org notices and model_only mail are machine context. Genuine
+        # mail keeps the same formatter/body/attachment semantics as before.
+        human_mail = [m for m in (mail or []) if not m.get("model_only")]
+        human_bits: list[str] = []
+        if human_mail:
+            human_bits.append(_mail_block(
+                human_mail, slug, nid, inline=(via == "turn"))[0])
+        if base_view:
+            human_bits.append(base_view)
+        view_out.append("\n\n".join(human_bits))
     return ((("\n\n".join(prelude) + "\n\n" + text) if prelude else text),
             tok, imgs)
 
@@ -4385,6 +4973,7 @@ def _working_checkup_reserve(slug: str, nid: str, now: float) -> str | None:
         entry: MailEntry = {
             "id": mid, "from": SYSTEM, "kind": "message",
             "body": WORKING_CHECKUP_PROMPT, "at": stamp,
+            "model_only": True,
             "relationship": (
                 "the orgtree engine automatically checking a durable working "
                 "status after 30 minutes without an agent wake"),
@@ -5411,7 +6000,8 @@ def _codex_process_spec(org: Org, nid: str, *,
 
 def _codex_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
                text: str, toks: list[str],
-               images: list[dict[str, Any]] | None = None
+               images: list[dict[str, Any]] | None = None,
+               turn_view: str = ""
                ) -> tuple[dict[str, Any], int]:
     """One codex turn behind the provider seam (FR-15 M1b).
 
@@ -5648,6 +6238,25 @@ def _codex_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
         # the heartbeat or the end of the turn.
         stream(slug, nid, {"kind": "journal", "text": ""})
 
+    mcp_client: Any | None = None
+    mcp_owner: Any | None = None
+    mcp_refresh_lock = threading.Lock()
+
+    def _refresh_codex_mcp() -> None:
+        client, owner = mcp_client, mcp_owner
+        if client is None or owner is None:
+            return
+        with mcp_refresh_lock:
+            try:
+                names = client.mcp_tool_names()
+            except Exception as e:                       # noqa: BLE001
+                _mcp_tool_count_unknown(
+                    slug, nid, owner, "codex", "mcpServerStatus/list",
+                    f"Codex runtime inventory unavailable: {type(e).__name__}")
+                return
+            _mcp_tool_count_names(
+                slug, nid, owner, names, "codex", "mcpServerStatus/list")
+
     def _on_event(msg: dict[str, Any]) -> None:
         # M2 normalization: deltas are the sub-second draft; authoritative
         # item lifecycle events above are the durable, correctly separated
@@ -5657,6 +6266,10 @@ def _codex_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
             d = (msg.get("params") or {}).get("delta")
             if isinstance(d, str) and d:
                 _queue_delta(d)
+        if method in ("mcpServer/startupStatus/updated",
+                      "mcpServer/event/stream/notification"):
+            threading.Thread(target=_refresh_codex_mcp, daemon=True,
+                             name=f"codexmcp-{slug}-{nid}").start()
         _on_item(msg)
 
     codex_model = providers.CODEX_MODELS.get(tier) or org.model_for(nid)
@@ -5704,6 +6317,12 @@ def _codex_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
         approval_decide=_approve,
         env_extra=dict(process_spec["env_extra"]),
         client=wp_turn.client if wp_turn is not None else None)
+    mcp_client = turn.client
+    mcp_owner = turn.client.proc
+    _mcp_tool_count_begin(
+        slug, nid, mcp_owner, "codex", "mcpServerStatus/list",
+        "Codex app-server is initializing runtime tools",
+        n.get("last_turn_mcp_tool_count"))
     warmpool.journal_admit(
         slug, nid, str(n.get("session_id") or ""),
         "warm" if wp_turn is not None else "cold",
@@ -5717,8 +6336,26 @@ def _codex_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
     stop = threading.Event()
     res_raw: dict[str, Any] = {}
     parked = False
+    # Capture before a cold process is closed and its generation-owned live
+    # state is cleared.  The successful turn still authoritatively ran with
+    # that inventory even when no process remains afterward.
+    turn_mcp_count: int | None = None
+    turn_mcp_names: list[str] | None = None
     try:
+        turn_mcp_fingerprint = _mcp_infrastructure_fingerprint(org, nid)
+    except Exception:                                      # noqa: BLE001
+        turn_mcp_fingerprint = None
+    try:
+        # Initialization is prompt-free. It is the first point at which the
+        # app-server can authoritatively answer mcpServerStatus/list, so the
+        # optional readiness gate runs here and never sends the user turn
+        # before the prior callable surface is ready.
+        turn.client.initialize()
+        _refresh_codex_mcp()
+        _mcp_gate_terminal(_mcp_wait_for_surface(
+            org, nid, mcp_owner, "openai", turn_mcp_fingerprint))
         tid = turn.start(text, _codex_image_inputs(images or []))
+        _refresh_codex_mcp()
         if wp_turn is not None and tid:
             # A fresh Codex thread replaces the hire's minted placeholder.
             # Keep later dirty/exit telemetry joined to the real provider
@@ -5751,6 +6388,8 @@ def _codex_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
             jstate["sid"] = str(tid or "")
             pending_recs = list(jstate["pending"])
             jstate["pending"].clear()
+            _record_prompt_view(slug, str(tid or ""), text, turn_view,
+                                at=_iso_ts(t0))
             _codex_journal(slug, str(tid or ""), [
                 {"type": "user", "timestamp": _iso_ts(t0),
                  "message": {"role": "user", "content": text}},
@@ -5765,9 +6404,10 @@ def _codex_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
 
         def _steer_pump() -> None:
             while not stop.wait(CODEX_STEER_POLL):
-                msgs = pop_steer(slug, nid)
-                if not msgs:
+                carriers = pop_steer(slug, nid, return_carriers=True)
+                if not carriers:
                     continue
+                msgs = [str(m.get("text") or "") for m in carriers]
                 body = "\n---\n".join(msgs)
                 wrapped = (
                     "[ORGTREE MAIL — delivered mid-task]\n" + body +
@@ -5780,7 +6420,7 @@ def _codex_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
                     # texts go back on the queue and deliver next turn (at
                     # worst a duplicate, which is the semantics mail chose).
                     with _state_lock:
-                        st["queue"].extend(msgs)
+                        st["queue"].extend(carriers)
 
         threading.Thread(target=_steer_pump, daemon=True,
                          name=f"codexsteer-{slug}-{nid}").start()
@@ -5821,8 +6461,11 @@ def _codex_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
         with _state_lock:
             st.pop("codex_turn", None)
             st["responding"] = False
+        turn_mcp_count, turn_mcp_names = _mcp_tool_surface_for_owner(
+            slug, nid, turn.client.proc)
         if not parked:
             warmpool._set_proc_lifecycle(slug, nid, live=False, owner=turn)
+            _mcp_tool_count_end(slug, nid, turn.client.proc)
     with dlock:
         draft_timer = dstate.get("timer")
         if draft_timer:
@@ -5899,13 +6542,17 @@ def _codex_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
         "permission_denials": denials,
         "rate_limits": res_raw.get("rate_limits"),
         "result": str(res_raw.get("agent_text") or ""),
+        "_mcp_tool_count": turn_mcp_count,
+        "_mcp_tool_names": turn_mcp_names,
+        "_mcp_tool_fingerprint": turn_mcp_fingerprint,
     }
     return res, providers.codex_occupancy(tu)
 
 
 def _gemini_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
                 text: str, toks: list[str],
-                images: list[dict[str, Any]] | None = None
+                images: list[dict[str, Any]] | None = None,
+                turn_view: str = ""
                 ) -> tuple[dict[str, Any], int]:
     """One gemini turn behind the provider seam (D-186) — the `_codex_leg`
     contract exactly: runs inside `_run_one_turn`'s try after the
@@ -6139,9 +6786,19 @@ def _gemini_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
         on_event=_on_event, permission_decide=_decide,
         env_extra={"ORGTREE_ORG": slug, "ORGTREE_NODE": nid,
                    "ORGTREE_PORT": port})
+    _mcp_tool_count_begin(
+        slug, nid, turn.client.proc, "gemini", "ACP",
+        "Gemini ACP does not expose runtime-loaded MCP inventory",
+        n.get("last_turn_mcp_tool_count"))
+    try:
+        turn_mcp_fingerprint = _mcp_infrastructure_fingerprint(org, nid)
+    except Exception:                                      # noqa: BLE001
+        turn_mcp_fingerprint = None
     t0 = time.time()
     stop = threading.Event()
     try:
+        _mcp_gate_terminal(_mcp_wait_for_surface(
+            org, nid, turn.client.proc, "google", turn_mcp_fingerprint))
         sid = turn.start(text, _gemini_image_inputs(images or []))
         # session/prompt is on the wire: the agent holds this turn's input,
         # so the journaled batch is delivered (the codex C1 proof transposed)
@@ -6161,6 +6818,8 @@ def _gemini_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
             jstate["sid"] = str(sid or "")
             pending_recs = list(jstate["pending"])
             jstate["pending"].clear()
+            _record_prompt_view(slug, str(sid or ""), text, turn_view,
+                                at=_iso_ts(t0))
             _codex_journal(slug, str(sid or ""), [
                 {"type": "user", "timestamp": _iso_ts(t0),
                  "message": {"role": "user", "content": text}},
@@ -6175,9 +6834,10 @@ def _gemini_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
 
         def _steer_pump() -> None:
             while not stop.wait(CODEX_STEER_POLL):
-                msgs = pop_steer(slug, nid)
-                if not msgs:
+                carriers = pop_steer(slug, nid, return_carriers=True)
+                if not carriers:
                     continue
+                msgs = [str(m.get("text") or "") for m in carriers]
                 body = "\n---\n".join(msgs)
                 wrapped = (
                     "[ORGTREE MAIL — delivered mid-task]\n" + body +
@@ -6189,7 +6849,7 @@ def _gemini_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
                     # normal path, and the texts fall back to the queue for
                     # boundary delivery (mail's chosen semantics)
                     with _state_lock:
-                        st["queue"].extend(msgs)
+                        st["queue"].extend(carriers)
 
         threading.Thread(target=_steer_pump, daemon=True,
                          name=f"gemsteer-{slug}-{nid}").start()
@@ -6201,6 +6861,7 @@ def _gemini_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
             st.pop("gemini_turn", None)
             st["responding"] = False
         warmpool._set_proc_lifecycle(slug, nid, live=False, owner=turn)
+        _mcp_tool_count_end(slug, nid, turn.client.proc)
     with dlock:
         draft_timer = dstate.get("timer")
         if draft_timer:
@@ -6271,6 +6932,9 @@ def _gemini_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
         "permission_denials": denials,
         "rate_limits": None,
         "result": str(res_raw.get("agent_text") or ""),
+        "_mcp_tool_count": None,
+        "_mcp_tool_names": None,
+        "_mcp_tool_fingerprint": turn_mcp_fingerprint,
     }
     return res, providers.gemini_occupancy(tu)
 
@@ -6287,6 +6951,7 @@ def _run_one_turn(slug: str, nid: str,
     # journal a confirmation (a steer/boundary leftover re-queued for a turn)
     toks: list[str] = []
     is_cmd = False
+    turn_view = ""
     # the session this turn actually launched on — NOT whatever the node
     # points at when the turn ends (a cheap-compact can land mid-turn)
     ran_sid: str | None = None
@@ -6294,6 +6959,11 @@ def _run_one_turn(slug: str, nid: str,
     # whether anything has already booked them (see the result branch and the
     # failure path's _charge_reported_spend)
     turn_paid = 0.0
+    # Like cost, runtime inventory must survive cold-process teardown long
+    # enough for the authoritative success boundary to snapshot it.
+    turn_mcp_count: int | None = None
+    turn_mcp_names: list[str] | None = None
+    turn_mcp_fingerprint: str | None = None
     paid_booked = False
     # which lane bills this turn, hoisted to function scope: the spawn-time
     # capture lives inside the try and may not be bound when it unwinds
@@ -6311,10 +6981,14 @@ def _run_one_turn(slug: str, nid: str,
     dropped_here = False
     if isinstance(text, dict):
         is_cmd = bool(text.get("cmd"))
+        turn_view = (str(text.get("view") or "") if "view" in text
+                     else str(text.get("text") or ""))
         toks, text = list(text.get("toks") or []), text["text"]
     text = cast(str, text)    # unwrapped above — plain str from here on
     try:
         # blocked on a turn slot is NOT running (№12) — the UI shows it hollow
+        if is_cmd:
+            turn_view = text
         st["waiting"] = True
         _slot_wait_t0 = time.monotonic()
         with _turn_slots:
@@ -6487,6 +7161,12 @@ def _run_one_turn(slug: str, nid: str,
                 # below, which is the one carrier that can hold an image
                 mtext, turn_images = _mail_block(mail, slug, nid, inline=True)
                 prelude.append(mtext)
+                human_mail = [m for m in mail if not m.get("model_only")]
+                if human_mail:
+                    human_text = _mail_block(
+                        human_mail, slug, nid, inline=True)[0]
+                    turn_view = (human_text + "\n\n" + turn_view
+                                 if turn_view else human_text)
             if prelude:
                 text = "\n\n".join(prelude) + "\n\n" + text
             elif is_ping and not is_cmd and not toks:
@@ -6529,6 +7209,7 @@ def _run_one_turn(slug: str, nid: str,
                     # would bury the "/" mid-string — a command that can't
                     # replay honestly is dropped, not degraded (review)
                     inf: InflightInfo = {"at": now_iso(), "text": text[-8000:]}
+                    inf["view"] = turn_view[-8000:]
                     if is_cmd:
                         inf["cmd"] = True
                     o2.node(nid)["inflight"] = inf
@@ -6589,7 +7270,7 @@ def _run_one_turn(slug: str, nid: str,
                 # any claude machinery — and rejoins through the success tail
                 # + the SHARED finally via the control raise below.
                 res, codex_occ = _codex_leg(
-                    slug, nid, org, st, text, toks, turn_images)
+                    slug, nid, org, st, text, toks, turn_images, turn_view)
                 st["last_error"] = None
                 st["turns_run"] += 1
                 st["account_switches"] = 0
@@ -6600,7 +7281,7 @@ def _run_one_turn(slug: str, nid: str,
                 # the same seam one provider over (D-186): identical tail,
                 # its own control raise, the SHARED finally owns the queue.
                 res, gem_occ = _gemini_leg(
-                    slug, nid, org, st, text, toks, turn_images)
+                    slug, nid, org, st, text, toks, turn_images, turn_view)
                 st["last_error"] = None
                 st["turns_run"] += 1
                 st["account_switches"] = 0
@@ -6715,6 +7396,58 @@ def _run_one_turn(slug: str, nid: str,
                     None, int((time.monotonic() - _spawn_t0) * 1000),
                     warm_lbl, slot_wait_s=slot_wait_s)
             ran_sid = sid          # the id _build_cmd just handed the CLI
+            _mcp_tool_count_begin(
+                slug, nid, proc, "claude", "system/init.tools",
+                "Claude process is starting; runtime tools are not resolved yet",
+                org.node(nid).get("last_turn_mcp_tool_count"))
+            try:
+                turn_mcp_fingerprint = _mcp_infrastructure_fingerprint(
+                    org, nid)
+            except Exception:                              # noqa: BLE001
+                turn_mcp_fingerprint = None
+            cold_mcp_lines: queue.Queue[str | None] | None = None
+
+            def _start_cold_mcp_pump(
+                    target: subprocess.Popen[str],
+            ) -> "queue.Queue[str | None]":
+                """Read a cold Claude init before its first prompt.
+
+                The turn loop still consumes every byte from this queue. The
+                extra reader exists only while readiness waiting is enabled;
+                default-off turns retain the direct stdout path.
+                """
+                lines: queue.Queue[str | None] = queue.Queue()
+
+                def _pump() -> None:
+                    try:
+                        if target.stdout is None:
+                            return
+                        for raw_line in target.stdout:
+                            try:
+                                init_ev = json.loads(raw_line)
+                            except json.JSONDecodeError:
+                                init_ev = None
+                            if (isinstance(init_ev, dict)
+                                    and init_ev.get("type") == "system"
+                                    and init_ev.get("subtype") == "init"):
+                                _mcp_tool_count_names(
+                                    slug, nid, target,
+                                    init_ev.get("tools") or [], "claude",
+                                    "system/init.tools")
+                            lines.put(raw_line)
+                    finally:
+                        lines.put(None)
+                        with _state_lock:
+                            wake = (st.get("mcp_tool_event")
+                                    if st.get("mcp_tool_owner") is target
+                                    else None)
+                        if isinstance(wake, threading.Event):
+                            wake.set()
+
+                threading.Thread(
+                    target=_pump, daemon=True,
+                    name=f"claudemcp-{slug}-{nid}").start()
+                return lines
             res = {}
             # the pipe's own state, tracked rather than probed: `proc.stdin`
             # stays truthy after close, and it is what tells a real turn
@@ -6757,6 +7490,7 @@ def _run_one_turn(slug: str, nid: str,
             # closes it. Foreground tasks only — a backgrounded agent's
             # tool_result returns immediately, so it leaves the count then.
             run_tasks: set[str] = set()
+            mcp_refresh_ids: set[str] = set()
             # …and the BACKGROUND ones, tracked SEPARATELY because they are a
             # different animal: they outlive the turn's result event, and the
             # idle watchdog must know they are there or it kills them (see
@@ -6865,6 +7599,12 @@ def _run_one_turn(slug: str, nid: str,
                 # (the pyright ignores below: stdin/stdout/stderr are PIPE ⇒
                 # non-None, which typeshed's Popen cannot express)
                 try:
+                    if (wp_turn is None
+                            and appsettings.wait_for_mcp_tools_enabled()):
+                        cold_mcp_lines = _start_cold_mcp_pump(proc)
+                    _mcp_gate_terminal(_mcp_wait_for_surface(
+                        org, nid, proc, "claude", turn_mcp_fingerprint))
+                    _record_prompt_view(slug, sid, text, turn_view)
                     proc.stdin.write(_user_event(text, turn_images))   # pyright: ignore[reportOptionalMemberAccess]
                     proc.stdin.flush()                # pyright: ignore[reportOptionalMemberAccess]
                 except (OSError, ValueError):
@@ -6895,6 +7635,15 @@ def _run_one_turn(slug: str, nid: str,
                         st["proc"] = proc
                     warmpool._set_proc_lifecycle(slug, nid, live=True,
                                                  owner=proc, adopt=True)
+                    _mcp_tool_count_begin(
+                        slug, nid, proc, "claude", "system/init.tools",
+                        "Claude process is restarting; runtime tools are not resolved yet",
+                        org.node(nid).get("last_turn_mcp_tool_count"))
+                    cold_mcp_lines = None
+                    if appsettings.wait_for_mcp_tools_enabled():
+                        cold_mcp_lines = _start_cold_mcp_pump(proc)
+                    _mcp_gate_terminal(_mcp_wait_for_surface(
+                        org, nid, proc, "claude", turn_mcp_fingerprint))
                     warmpool.journal_admit(
                         slug, nid, sid, "cold", "claim-died",
                         turn_hash or "", None, 0, warm_lbl,
@@ -6925,6 +7674,8 @@ def _run_one_turn(slug: str, nid: str,
                 # process outlives) — this turn reads through the pump's
                 # queue. The cold path iterates the pipe directly, unchanged.
                 for line in (wp_turn.lines_iter() if wp_turn is not None
+                             else _mcp_queue_lines(cold_mcp_lines)
+                             if cold_mcp_lines is not None
                              else proc.stdout):      # live per-message feed to the UI  # pyright: ignore[reportOptionalIterable]
                     line = line.strip()
                     if not line:
@@ -7028,6 +7779,9 @@ def _run_one_turn(slug: str, nid: str,
                             "tools": len(ev.get("tools") or []),
                             "mcp_servers": ev.get("mcp_servers") or [],
                         }
+                        _mcp_tool_count_names(
+                            slug, nid, proc, ev.get("tools") or [], "claude",
+                            "system/init.tools")
                         continue
                     if ev.get("type") == "system" and ev.get("subtype") in (
                             "background_tasks_changed", "task_started",
@@ -7191,6 +7945,9 @@ def _run_one_turn(slug: str, nid: str,
                                         and b.get("id")):
                                     run_tasks.add(b["id"])
                                     _pub_tasks()
+                                if (b.get("name") == "RefreshMcpTools"
+                                        and b.get("id")):
+                                    mcp_refresh_ids.add(str(b["id"]))
                                 live_row(slug, nid, {
                                     "kind": "tool",
                                     # the tool_use_id rides along: read_chat
@@ -7213,6 +7970,20 @@ def _run_one_turn(slug: str, nid: str,
                         if done:
                             run_tasks.difference_update(done)
                             _pub_tasks()
+                        if isinstance(_c, list):
+                            for block in _c:
+                                if (not isinstance(block, dict)
+                                        or block.get("type") != "tool_result"
+                                        or str(block.get("tool_use_id") or "")
+                                        not in mcp_refresh_ids):
+                                    continue
+                                rid = str(block.get("tool_use_id") or "")
+                                mcp_refresh_ids.discard(rid)
+                                for server, count in _claude_mcp_refresh_counts(
+                                        block.get("content")):
+                                    _mcp_tool_count_server(
+                                        slug, nid, proc, server, count,
+                                        "claude", "RefreshMcpTools")
                     elif ev.get("type") == "result" \
                             and not ev.get("parent_tool_use_id") \
                             and not stdin_open:
@@ -7438,6 +8209,7 @@ def _run_one_turn(slug: str, nid: str,
                         # likely to be exercised before it shipped.
                         nimgs: list[dict[str, Any]] = []
                         ncmd = False
+                        nview = ""
                         # ⚠ A LOOP, not a single pop, and THIS is the site the
                         # reported phantom actually came through: the box is
                         # drained wholesale, so the second of two queued
@@ -7456,11 +8228,19 @@ def _run_one_turn(slug: str, nid: str,
                                 st["responding"] = True
                             nping = _carrier_is_ping(nxt)
                             ntoks, nimgs, ncmd, nusage_org = [], [], False, None
+                            nview = ""
                             if isinstance(nxt, dict):   # journaled/cmd
                                 ncmd = bool(nxt.get("cmd"))
+                                nview = str(nxt.get("view") or "")
                                 ntoks, nxt = list(nxt.get("toks") or []), nxt["text"]
+                            if ncmd:
+                                nview = str(nxt)
                             if not ncmd:      # a slash command goes verbatim
-                                nxt, ntok, nimgs = _envelope(slug, nid, nxt, via="turn")
+                                nviews: list[str] = []
+                                nxt, ntok, nimgs = _envelope(
+                                    slug, nid, nxt, via="turn",
+                                    base_view=nview, view_out=nviews)
+                                nview = nviews[0] if nviews else nview
                                 if ntok:
                                     ntoks.append(ntok)
                                 elif nping and not ntoks:
@@ -7490,6 +8270,7 @@ def _run_one_turn(slug: str, nid: str,
                                     if nid in o2.nodes:
                                         ninf: InflightInfo = {
                                             "at": now_iso(), "text": nxt[-8000:]}
+                                        ninf["view"] = nview[-8000:]
                                         if ncmd:
                                             ninf["cmd"] = True
                                         o2.node(nid)["inflight"] = ninf
@@ -7506,6 +8287,8 @@ def _run_one_turn(slug: str, nid: str,
                                 if not ncmd and nusage_org is not None:
                                     nxt = (turn_usage_block(nusage_org, nid)
                                            + "\n\n" + nxt)
+                                _record_prompt_view(slug, ran_sid or sid,
+                                                    str(nxt), nview)
                                 proc.stdin.write(_user_event(nxt, nimgs))   # pyright: ignore[reportOptionalMemberAccess]
                                 proc.stdin.flush()                   # pyright: ignore[reportOptionalMemberAccess]
                                 # C1 again: confirmed by the next consuming
@@ -7544,8 +8327,9 @@ def _run_one_turn(slug: str, nid: str,
                                 with _state_lock:
                                     st["queue"].insert(0, {
                                         "toks": ntoks, "text": nxt,
+                                        "view": nview,
                                         **({"cmd": True} if ncmd else {})}
-                                        if (ntoks or ncmd) else nxt)
+                                        if (ntoks or ncmd or nview) else nxt)
                                     st["responding"] = False
                         # D-201: PARK instead of ending the process, when
                         # everything is clean — warm turn, hash still
@@ -7599,6 +8383,8 @@ def _run_one_turn(slug: str, nid: str,
                     proc.wait()
             finally:
                 dog_stop.set()
+                turn_mcp_count, turn_mcp_names = _mcp_tool_surface_for_owner(
+                    slug, nid, proc)
                 with _state_lock:
                     st["proc"] = None
                     st["responding"] = False
@@ -7611,6 +8397,7 @@ def _run_one_turn(slug: str, nid: str,
                 if not parked:
                     warmpool._set_proc_lifecycle(
                         slug, nid, live=False, owner=wp_turn or proc)
+                    _mcp_tool_count_end(slug, nid, proc)
                 if leftover:
                     _steer_fold_log(slug, nid, len(leftover), "turn exit")
                 # ⛔ FAIL LOUD (user ruling 2026-08-20). The process is gone.
@@ -8082,7 +8869,8 @@ def _run_one_turn(slug: str, nid: str,
                             # can't replay honestly (the "/" must be at
                             # position 0) so a lost one is lost, not degraded
                             if not is_cmd and not pend_toks:
-                                fz.setdefault("resume_texts", []).append(text[-8000:])
+                                _append_resume(fz, text[-8000:],
+                                               turn_view[-8000:])
                             # ⚠ trusted-only. This escalation halts — and
                             # under the `dissolve` policy ARCHIVES — every
                             # fable node in the org, and its trigger is three
@@ -8329,7 +9117,7 @@ def _run_one_turn(slug: str, nid: str,
                                     # agent gets, since from the inside it
                                     # cannot otherwise tell a failed turn
                                     # from nobody having messaged it.
-                                    fz.setdefault("resume_texts", []).append(
+                                    _append_resume(fz,
                                         f"(orgtree) Your previous turn died "
                                         f"part-way through ({kind_txt}) and "
                                         f"is being retried — attempt {run} of "
@@ -8352,7 +9140,7 @@ def _run_one_turn(slug: str, nid: str,
                                         f"transcript.\n\n"
                                         f"The message that turn was handling "
                                         f"follows.\n\n"
-                                        + text[-8000:])
+                                        + text[-8000:], turn_view[-8000:])
                             store.save_org(o2)
                     if 0 < run <= NET_RETRY_MAX:
                         notify(slug, nid, "frozen")
@@ -8481,6 +9269,9 @@ def _run_one_turn(slug: str, nid: str,
                     res["usage"] = _u
             if turn_paid > float(res.get("total_cost_usd") or 0.0):
                 res = {**res, "total_cost_usd": turn_paid}
+            res["_mcp_tool_count"] = turn_mcp_count
+            res["_mcp_tool_names"] = turn_mcp_names
+            res["_mcp_tool_fingerprint"] = turn_mcp_fingerprint
             paid_booked = True     # _after_turn books `res`'s cost itself
             _after_turn(slug, nid, org, res, st, turn_occ,
                         on_key=on_fallback_key)
@@ -8524,7 +9315,8 @@ def _run_one_turn(slug: str, nid: str,
         if isinstance(e, _ProviderTurnFailed) \
                 and _looks_like_usage_limit(e.blob):
             freeze_provider_limit(slug, nid, e.blob, e.reset_ts,
-                                  replay=None if is_cmd else text)
+                                  replay=None if is_cmd else text,
+                                  replay_view=turn_view)
         # …and the traceback to the backend log, but ONLY for a raiser the turn
         # machinery does not already explain. Every expected failure arrives as
         # a RuntimeError this function itself raised with a written message
@@ -9171,6 +9963,26 @@ def _after_turn(slug: str, nid: str, org: Org, res: dict[str, Any],
     if nid not in org.nodes:
         return
     cost = float(res.get("total_cost_usd") or 0.0)
+    mcp_success = (
+        not res.get("is_error") and not st.get("interrupted")
+        and str(res.get("status") or "").lower() not in (
+            "failed", "error", "interrupted", "cancelled", "aborted"))
+    mcp_value = res.get("_mcp_tool_count")
+    mcp_snapshot = (int(mcp_value)
+                    if isinstance(mcp_value, int)
+                    and not isinstance(mcp_value, bool) and mcp_value >= 0
+                    and mcp_success
+                    else None)
+    mcp_names_raw = res.get("_mcp_tool_names")
+    mcp_names_snapshot = (
+        sorted({str(name) for name in mcp_names_raw
+                if isinstance(name, str) and name.startswith("mcp__")})
+        if mcp_success and isinstance(mcp_names_raw, list) else None)
+    mcp_fingerprint_raw = res.get("_mcp_tool_fingerprint")
+    mcp_fingerprint = (str(mcp_fingerprint_raw)
+                       if mcp_success
+                       and isinstance(mcp_fingerprint_raw, str)
+                       and mcp_fingerprint_raw else None)
     # the pinned per-tier window wins; the CLI's modelUsage.contextWindow is
     # only a fallback for unknown tiers (it under-reported 1M models as 200k)
     cw = TIER_CONTEXT.get(org.node(nid)["model"])
@@ -9222,6 +10034,18 @@ def _after_turn(slug: str, nid: str, org: Org, res: dict[str, Any],
             if cw:
                 n["context_window"] = cw
             n["last_denials"] = denials
+            if mcp_success:
+                if mcp_snapshot is not None:
+                    n["last_turn_mcp_tool_count"] = mcp_snapshot
+                else:
+                    n.pop("last_turn_mcp_tool_count", None)
+                if (mcp_fingerprint is not None
+                        and mcp_names_snapshot is not None):
+                    n["last_turn_mcp_tools"] = mcp_names_snapshot
+                    n["last_turn_mcp_fingerprint"] = mcp_fingerprint
+                else:
+                    n.pop("last_turn_mcp_tools", None)
+                    n.pop("last_turn_mcp_fingerprint", None)
             # №15: a small per-turn ring — cost + duration + denial count —
             # surfaced as a tooltip on the $ badge, never a new chip
             ring = n.setdefault("turns", [])
@@ -9241,6 +10065,20 @@ def _after_turn(slug: str, nid: str, org: Org, res: dict[str, Any],
             kcfg = kiosk_cfg(o2)
     else:
         kcfg = kiosk_cfg(org)
+    if mcp_success:
+        with _state_lock:
+            if mcp_snapshot is not None:
+                st["last_turn_mcp_tool_count"] = mcp_snapshot
+            else:
+                st.pop("last_turn_mcp_tool_count", None)
+            payload = {
+                "count": st.get("mcp_tool_count"),
+                "provider": st.get("mcp_tool_provider") or "unknown",
+                "source": st.get("mcp_tool_source"),
+                "reason": st.get("mcp_tool_reason"),
+                "last_turn_count": mcp_snapshot,
+            }
+        _mcp_tool_emit(slug, nid, payload)
     # kiosk spend limit (user spec): breach → freeze everything.
     # ⚠ cost is only reported at turn end, so the limit can overshoot by the
     # in-flight turns' cost — an accepted, irreducible window.
@@ -10735,7 +11573,8 @@ def remote_control_stop(slug: str, nid: str) -> dict[str, Any]:
 def send_message(slug: str, nid: str, text: str,
                  command: bool = False, wake: bool = True,
                  mail_ping: bool = False,
-                 idle_only: bool = False) -> dict[str, Any]:
+                 idle_only: bool = False,
+                 view: str | None = None) -> dict[str, Any]:
     """Drive a node with a nudge; returns immediately. EVERY substantive message
     — user and agent alike — is MAIL (user ruling: the direct-message channel
     was folded into the mail system): it already sits persisted in the node's
@@ -10815,7 +11654,7 @@ def send_message(slug: str, nid: str, text: str,
         # slash command (user-approved): delivered VERBATIM as its own user
         # event — no envelope, no steering (only meaningful at a boundary);
         # any waiting mail stays boxed for the next normal turn
-        carrier = {"cmd": True, "text": text}
+        carrier = {"cmd": True, "text": text, "view": text}
         with _state_lock:
             if st["busy"]:
                 st["queue"].append(carrier)
@@ -10837,13 +11676,16 @@ def send_message(slug: str, nid: str, text: str,
             st["busy"] = True
         threading.Thread(
             target=_run_turn, daemon=True,
-            args=(slug, nid, _mark_ping(text) if mail_ping else text),
+            args=(slug, nid, _mark_ping({"text": text, "view": view or ""})
+                  if mail_ping else {"text": text, "view": view or ""}),
         ).start()
         return {"accepted": True, "queued": 0, "idle_only": True}
     with _state_lock:
         maybe_steer = st["busy"] and st.get("responding")
     if maybe_steer:
-        etext, tok, _ = _envelope(slug, nid, text)  # ⚠ outside _state_lock (DOC_LOCK order)
+        eviews: list[str] = []
+        etext, tok, _ = _envelope(
+            slug, nid, text, base_view=view or "", view_out=eviews)  # ⚠ outside _state_lock (DOC_LOCK order)
         if mail_ping and tok is None:
             # the box was already empty — this pointer has nothing to point at,
             # and injecting it would put a bare banner into a working agent's
@@ -10851,7 +11693,9 @@ def send_message(slug: str, nid: str, text: str,
             # delivered by whatever drained the box.
             _phantom_log(slug, nid, "steer")
             return {"accepted": True, "queued": 0, "already_delivered": True}
-        carrier = {"toks": [tok], "text": etext} if tok else etext
+        eview = eviews[0] if eviews else (view or "")
+        carrier = ({"toks": [tok], "text": etext, "view": eview}
+                   if tok or eview else etext)
         if mail_ping:
             carrier = _mark_ping(carrier)
         with _state_lock:
@@ -10871,7 +11715,10 @@ def send_message(slug: str, nid: str, text: str,
             # node's queue can get, which `deepqueue` pins as a real invariant
             # — the iterative drain must not wedge on a long queue, and
             # ordinary mail is how that queue gets long enough to test.
-            st["queue"].append(_mark_ping(text) if mail_ping else text)
+            queued: str | dict[str, Any] = (
+                {"text": text, "view": view or ""}
+                if view is not None and isinstance(text, str) else text)
+            st["queue"].append(_mark_ping(queued) if mail_ping else queued)
             return {"accepted": True, "queued": len(st["queue"])}
         if wake:
             st["busy"] = True
@@ -10888,9 +11735,12 @@ def send_message(slug: str, nid: str, text: str,
     # carry the pointer marking into the turn as well, so `_run_turn`'s gate
     # can drop it if the box is emptied between here and the launch (reconcile
     # re-driving mail a concurrent turn has already taken is the live case)
+    start_carrier: str | dict[str, Any] = (
+        {"text": text, "view": view or ""}
+        if view is not None and isinstance(text, str) else text)
     threading.Thread(target=_run_turn, daemon=True,
-                     args=(slug, nid,
-                           _mark_ping(text) if mail_ping else text)).start()
+                     args=(slug, nid, _mark_ping(start_carrier)
+                           if mail_ping else start_carrier)).start()
     return {"accepted": True, "queued": 0}
 
 
@@ -10904,9 +11754,18 @@ def interrupt_turn(slug: str, nid: str) -> dict[str, Any]:
         proc = st.get("proc") if st.get("responding") else None
         codex_turn = st.get("codex_turn") if st.get("responding") else None
         gemini_turn = st.get("gemini_turn") if st.get("responding") else None
+        readiness_wait = bool(st.get("mcp_readiness_waiting"))
+        readiness_event = st.get("mcp_tool_event") if readiness_wait else None
         if proc is not None or codex_turn is not None \
-                or gemini_turn is not None:
+                or gemini_turn is not None or readiness_wait:
             st["interrupted"] = True
+    if readiness_wait:
+        # No provider prompt has been admitted yet. Wake the bounded gate
+        # itself instead of sending an interrupt verb to a turn that does not
+        # exist; the owner sees `interrupted` and exits deterministically.
+        if isinstance(readiness_event, threading.Event):
+            readiness_event.set()
+        return {"interrupted": True}
     if codex_turn is not None:
         # the codex lane's graceful stop: turn/interrupt on the live session
         # (the turn completes with status "interrupted", C.3)
@@ -10948,10 +11807,24 @@ def _ensure_frozen(n: NodeDoc) -> FrozenInfo:
     fz["until"] (latent bug found by the typing wave, pyright basic)."""
     fz = n.get("frozen")
     if fz is None:
-        fresh: FrozenInfo = {"at": now_iso(), "resume_texts": []}
+        fresh: FrozenInfo = {"at": now_iso(), "resume_texts": [],
+                             "resume_views": []}
         n["frozen"] = fresh
         return fresh
     return fz
+
+
+def _append_resume(fz: FrozenInfo, raw: str, view: str = "") -> None:
+    """Append raw replay text and its human projection positionally."""
+    texts = fz.setdefault("resume_texts", [])
+    views = fz.setdefault("resume_views", [])
+    # Backfill legacy records so the two arrays remain positional. Absence in
+    # an old record means provenance was never captured, not machine-only;
+    # preserve that text rather than silently erase a genuine conversation.
+    if len(views) < len(texts):
+        views.extend(str(t) for t in texts[len(views):])
+    texts.append(raw)
+    views.append(view)
 
 
 def _provider_limit_until(blob: str, reset_ts: float | None,
@@ -10991,7 +11864,8 @@ def _provider_limit_until(blob: str, reset_ts: float | None,
 
 def freeze_provider_limit(slug: str, nid: str, blob: str,
                           reset_ts: float | None = None,
-                          replay: str | None = None) -> bool:
+                          replay: str | None = None,
+                          replay_view: str = "") -> bool:
     """A codex/gemini turn hit a usage limit: park the agent the way the claude
     lane parks one (D-209). Returns True if a freeze was written.
 
@@ -11052,7 +11926,7 @@ def freeze_provider_limit(slug: str, nid: str, blob: str,
                 # where the batch was confirmed delivered — an unconsumed one
                 # folds back as MAIL in the shared `finally` and replaying it
                 # too would deliver it twice.
-                fz.setdefault("resume_texts", []).append(replay[-8000:])
+                _append_resume(fz, replay[-8000:], replay_view[-8000:])
             store.save_org(o2)
     except Exception as e:                                   # noqa: BLE001
         # a freeze that cannot be written must not swallow the failure that
@@ -11093,7 +11967,8 @@ def hard_freeze(slug: str, kind: str, error: str) -> None:
                 if inf and inf.get("text") and not inf.get("cmd"):
                     rt = fz.setdefault("resume_texts", [])
                     if inf["text"][-8000:] not in rt:
-                        rt.append(inf["text"][-8000:])
+                        _append_resume(fz, inf["text"][-8000:],
+                                       str(inf.get("view") or "")[-8000:])
         store.save_org(org)
     interrupt_all(slug)
     notify(slug, "", flag)
@@ -11579,7 +12454,7 @@ def resume_frozen(slug: str, only: Iterable[str] | None = None,
     its context is warm — and only when the session has a transcript to
     reload. A refusal falls through to a plain resume, never a gate."""
     pick = None if only is None else set(only)
-    resumed: list[tuple[str, list[str], bool, str, str, str]] = []
+    resumed: list[tuple[str, list[str], list[str], bool, str, str, str]] = []
     with store.DOC_LOCK:
         org = store.load_org(slug)
         if org.d.get("spend_frozen"):
@@ -11627,14 +12502,19 @@ def resume_frozen(slug: str, only: Iterable[str] | None = None,
                     pass          # an optimization, never a gate (D-114)
             n.pop("frozen", None)
             resumed.append((nid, fz.get("resume_texts") or [],
-                            _limit_resume, _frozen_at, _frozen_sid,
+                            fz.get("resume_views") or [], _limit_resume,
+                            _frozen_at, _frozen_sid,
                             str(org.node(nid).get("model") or "")))
         if resumed:
             store.save_org(org)
-    for nid, texts, limit_resume, frozen_at, frozen_sid, tier in resumed:
+    for nid, texts, views, limit_resume, frozen_at, frozen_sid, tier in resumed:
         if not texts:
             texts = ["(orgtree) You were frozen by a usage limit and have been "
                      "resumed — handle any mail above and continue."]
+        if len(views) < len(texts):
+            views = [*views, *(str(t) for t in texts[len(views):])]
+        carriers = [{"text": t, "view": views[i]}
+                    for i, t in enumerate(texts)]
         st = state(slug, nid)
         claude_resume = _limit_cache_claude_state(st, tier)
         first = None
@@ -11659,12 +12539,12 @@ def resume_frozen(slug: str, only: Iterable[str] | None = None,
                     "freeze_s": freeze_s,
                     "resumed_at": resumed_at,
                 }
-            st["queue"].extend(texts[1:])
+            st["queue"].extend(carriers[1:])
             if not st["busy"]:
                 st["busy"] = True
-                first = texts[0]
+                first = carriers[0]
             else:
-                st["queue"].insert(0, texts[0])
+                st["queue"].insert(0, carriers[0])
         if first is not None:
             threading.Thread(target=_run_turn, args=(slug, nid, first),
                              daemon=True).start()
@@ -12733,7 +13613,8 @@ def _steer_fold_log(slug: str, nid: str, n: int, where: str) -> None:
         pass
 
 
-def pop_steer(slug: str, nid: str) -> list[str]:
+def pop_steer(slug: str, nid: str, *, return_carriers: bool = False
+              ) -> list[Any]:
     """The steering hook's fetch: everything pending for this node, atomically.
     The fetch puts the text into the agent's tool-result context, so it is the
     delivery-confirmation point for steered mail's journal batches."""
@@ -12743,6 +13624,13 @@ def pop_steer(slug: str, nid: str) -> list[str]:
         st["steer"] = []
     toks = [t for m in msgs if isinstance(m, dict) for t in m.get("toks") or []]
     out = [m["text"] if isinstance(m, dict) else m for m in msgs]
+    # A carrier created before structured projections existed has no `view`
+    # key. Preserve it as authored text rather than creating a visibility gap.
+    # New machine-only carriers carry an EXPLICIT empty view, which remains
+    # hidden; absence and empty therefore deliberately mean different things.
+    views = [str(m.get("view") or "")
+             if isinstance(m, dict) and "view" in m else str(raw)
+             for m, raw in zip(msgs, out)]
     # The steered log (user bug 2026-07-31, "my prompt vanishes moments after
     # sending"): steered mail rides HOOK CONTEXT, which the CLI writes to the
     # transcript as a `type:"attachment"` record — a shape read_chat cannot
@@ -12773,9 +13661,11 @@ def pop_steer(slug: str, nid: str) -> list[str]:
                 return out
             if nid not in org.nodes:
                 return out
-            if out:
+            if any(views):
                 log = org.d.setdefault("steered_log", {}).setdefault(nid, [])
-                for t in out:
+                for t in views:
+                    if not t:
+                        continue
                     s = str(t)
                     # this row IS the message's only durable rendering (hook
                     # context is never transcripted), so a silent cut here cut
@@ -12801,6 +13691,9 @@ def pop_steer(slug: str, nid: str) -> list[str]:
                 else:
                     dlmap.pop(nid, None)
             store.save_org(org)
+    if return_carriers:
+        return [{"text": str(raw), "view": view}
+                for raw, view in zip(out, views)]
     return out
 
 
@@ -14609,7 +15502,9 @@ def reconcile(slug: str) -> list[str]:
                      "turn is repeated below — you may have already completed "
                      "part of it; check your recent work and CONTINUE from where "
                      "you left off (do not redo finished steps).\n\n"
-                     + (inf.get("text") or ""))
+                     + (inf.get("text") or ""),
+                     view=(str(inf.get("view") or "") if "view" in inf
+                           else str(inf.get("text") or "")))
     for nid in revive:
         print(f"[orgtree] {slug}/{nid}: driving mail that waited across restart")
         send_message(slug, nid,
@@ -15148,6 +16043,10 @@ def read_chat(org: Org, nid: str, last: int | None = None) -> dict[str, Any]:
            # during a turn (user bug 2026-07-31: no interrupt offered while
            # a long command ran); the chat payload refreshes on every pulse
            "responding": bool(st.get("responding")),
+           "mcp_readiness_waiting": bool(
+               st.get("mcp_readiness_waiting")),
+           "mcp_readiness_state": st.get("mcp_readiness_state"),
+           "mcp_readiness_reason": st.get("mcp_readiness_reason"),
            "last_error": st["last_error"], "occupancy": None,
            "occupancy_estimated": False, "messages": [],
            # (an `effort_used` field lived here for one commit, reading the
@@ -15160,6 +16059,10 @@ def read_chat(org: Org, nid: str, last: int | None = None) -> dict[str, Any]:
     tpath = transcript_path(n["session_id"], _transcript_root(org))
     if not tpath:
         return out
+    # Structured source metadata, not marker parsing, decides which parts of
+    # a provider user event are human conversation.  The raw transcript stays
+    # untouched for audit/replay; only this response projection changes.
+    prompt_views = _load_prompt_views(org.d["slug"], n["session_id"])
     msgs = []
     fill = _OccTracker(context_window(n))
     by_tool_id: dict[str, dict[str, Any]] = {}
@@ -15240,6 +16143,29 @@ def read_chat(org: Org, nid: str, last: int | None = None) -> dict[str, Any]:
             continue
         if rec.get("isVisibleInTranscriptOnly"):
             continue
+        if t == "user":
+            raw_prompt: str | None = content if isinstance(content, str) else None
+            if isinstance(content, list):
+                # Claude stream-json and both provider journals store the
+                # prompt as the first text content block. Image blocks remain
+                # in the raw transcript; the visible projection retains their
+                # authored attachment lines without exposing machine context.
+                for block in content:
+                    if (isinstance(block, dict) and block.get("type") == "text"
+                            and isinstance(block.get("text"), str)):
+                        raw_prompt = block["text"]
+                        break
+            projected, human_text = ((False, "") if raw_prompt is None else
+                                      _take_prompt_view(
+                                          prompt_views, raw_prompt,
+                                          rec.get("timestamp")))
+            if projected:
+                # An empty projection is a machine-only turn (automatic
+                # checkup/recovery/state plumbing).  It reached the provider
+                # and remains in the raw transcript, but has no chat bubble.
+                if not human_text:
+                    continue
+                content = human_text
         if t == "user" and isinstance(content, str):
             if content.startswith("<command-name>"):
                 # the command the user sent — a durable bubble, so the /context

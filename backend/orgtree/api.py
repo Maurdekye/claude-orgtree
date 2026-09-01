@@ -1256,6 +1256,30 @@ def org_tree(slug: str, request: Request) -> dict[str, Any]:
         node["proc_relaunch_reason"] = (
             str(st.get("proc_relaunch_reason"))
             if st.get("proc_relaunch_reason") else None)
+        last_mcp = org.node(node["id"]).get("last_turn_mcp_tool_count")
+        node["mcp_tool_count"] = (
+            int(st["mcp_tool_count"])
+            if isinstance(st.get("mcp_tool_count"), int)
+            and not isinstance(st.get("mcp_tool_count"), bool) else None)
+        node["last_turn_mcp_tool_count"] = (
+            int(last_mcp) if isinstance(last_mcp, int)
+            and not isinstance(last_mcp, bool) else None)
+        node["mcp_tool_count_provider"] = str(
+            st.get("mcp_tool_provider") or
+            providers.provider_of(str(org.node(node["id"]).get("model") or "")))
+        node["mcp_tool_count_source"] = (
+            str(st.get("mcp_tool_source")) if st.get("mcp_tool_source") else None)
+        node["mcp_tool_count_reason"] = (
+            str(st.get("mcp_tool_reason")) if st.get("mcp_tool_reason") else
+            "no live provider process")
+        node["mcp_readiness_waiting"] = bool(
+            st.get("mcp_readiness_waiting"))
+        node["mcp_readiness_state"] = (
+            str(st.get("mcp_readiness_state"))
+            if st.get("mcp_readiness_state") else None)
+        node["mcp_readiness_reason"] = (
+            str(st.get("mcp_readiness_reason"))
+            if st.get("mcp_readiness_reason") else None)
         # concurrently running subagents (Task/Agent tool calls in flight) —
         # the desk header shows it beside the working clock, only when > 0
         node["tasks"] = int(st.get("tasks") or 0)
@@ -2349,12 +2373,15 @@ class RuntimePreference(Body):
     # other durable value.
     enabled: bool | None = None
     working_checkups_enabled: bool | None = None
+    wait_for_mcp_tools_enabled: bool | None = None
 
 
 def _runtime_preferences() -> dict[str, bool]:
     return {
         "warming_enabled": warmpool.warm_enabled(),
         "working_checkups_enabled": appsettings.working_checkups_enabled(),
+        "wait_for_mcp_tools_enabled": (
+            appsettings.wait_for_mcp_tools_enabled()),
     }
 
 
@@ -2376,7 +2403,8 @@ async def runtime_preference(body: RuntimePreference) -> dict[str, bool]:
     """Update either runtime choice without disturbing the other one."""
     from fastapi.concurrency import run_in_threadpool
 
-    if body.enabled is None and body.working_checkups_enabled is None:
+    if (body.enabled is None and body.working_checkups_enabled is None
+            and body.wait_for_mcp_tools_enabled is None):
         raise HTTPException(422, "one runtime setting is required")
     try:
         if body.enabled is not None:
@@ -2385,6 +2413,10 @@ async def runtime_preference(body: RuntimePreference) -> dict[str, bool]:
             await run_in_threadpool(
                 appsettings.set_working_checkups_enabled,
                 body.working_checkups_enabled)
+        if body.wait_for_mcp_tools_enabled is not None:
+            await run_in_threadpool(
+                appsettings.set_wait_for_mcp_tools_enabled,
+                body.wait_for_mcp_tools_enabled)
         result = await run_in_threadpool(_runtime_preferences)
     except (appsettings.AppSettingsUnreadable, OSError) as e:
         raise HTTPException(500, str(e)) from e
@@ -3001,8 +3033,10 @@ async def node_unstick(slug: str, nid: str) -> dict[str, Any]:
         texts = cast("list[str]", r.get("resume_texts") or []) or [
             "(orgtree) The user manually UNSTUCK you (override) — handle "
             "any mail above and continue from where you left off."]
-        for t in texts:
-            supervisor.send_message(slug, nid, t)
+        views = cast("list[str]", r.get("resume_views") or [])
+        for i, t in enumerate(texts):
+            supervisor.send_message(slug, nid, t,
+                                    view=views[i] if i < len(views) else t)
         supervisor.notify(slug, nid, "turn_started")
     await hub.changed(slug)
     return r

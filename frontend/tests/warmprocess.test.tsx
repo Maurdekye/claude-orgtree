@@ -32,33 +32,46 @@ function card(warm: boolean) {
     onDragEnd={noop} onDragCancel={noop} />, (el) => el)
 }
 
-test('live cards carry exactly one warm-cache class and a matching quiet marker', async (t) => {
+test('live cards retain warm-cache styling while using the unified cue', async (t) => {
   for (const warm of [false, true]) {
     const view = await card(warm)
     t.after(() => view.unmount())
     const root = view.el.querySelector('.sq')!
     assert.equal(root.classList.contains('proc-warm'), warm)
     assert.equal(root.classList.contains('proc-cold'), !warm)
-    assert.equal(root.querySelector('.proc-mark')?.classList.contains(warm ? 'warm' : 'cold'), true)
+    assert.equal(root.querySelectorAll('.proc-state').length, 1)
+    assert.equal(root.querySelector('.proc-state')?.classList.contains(warm ? 'ready' : 'off'), true)
+    assert.equal(root.querySelectorAll('.proc-mark').length, 0)
   }
 })
 
-test('warmth and OS-process liveness are separate, accessible shape channels', async () => {
+test('the desk header collapses live and warm into one accessible process cue', async () => {
   const view = await mountView(<>
     <ProcessLifecycleMark warm live />
     <ProcessLifecycleMark warm={false} live={false} />
+    <ProcessLifecycleMark warm={false} live busy />
+    <ProcessLifecycleMark warm={false} live />
     <ProcessLifecycleMark warm={false} live relaunch
       reason="identity-changed — system prompt changed" />
   </>, (el) => el)
   try {
-    assert.equal(view.el.querySelectorAll('.proc-mark.warm').length, 1)
-    assert.equal(view.el.querySelectorAll('.proc-mark.cold').length, 2)
-    assert.equal(view.el.querySelectorAll('.proc-live-mark.live').length, 2)
-    assert.equal(view.el.querySelectorAll('.proc-live-mark.cold').length, 1)
+    assert.equal(view.el.querySelectorAll('.proc-state').length, 5)
+    assert.equal(view.el.querySelectorAll('.proc-one-mark').length, 5)
+    assert.equal(view.el.querySelectorAll('.proc-state.ready').length, 1)
+    assert.equal(view.el.querySelectorAll('.proc-state.off').length, 1)
+    assert.equal(view.el.querySelectorAll('.proc-state.live').length, 2)
+    assert.equal(view.el.querySelectorAll('.proc-state.relaunch').length, 1)
+    assert.equal(view.el.querySelectorAll('.proc-state .proc-mark').length, 0,
+      'the header regressed to a second persistent warm/cold dot')
+    const labels = [...view.el.querySelectorAll<HTMLElement>('.proc-state')]
+      .map((el) => el.getAttribute('aria-label') ?? '')
+    assert.ok(labels.some((v) => /parked and ready/.test(v)))
+    assert.ok(labels.some((v) => /claimed by the current turn/.test(v)))
+    assert.ok(labels.some((v) => /spawning or initializing/.test(v)))
+    assert.ok(labels.some((v) => /no CLI process live/.test(v)))
     const relaunch = view.el.querySelector<HTMLElement>('.proc-relaunch')
       ?.closest<HTMLElement>('.proc-state')
     assert.match(relaunch?.title ?? '', /identity-changed — system prompt changed/)
-    assert.equal(view.el.querySelectorAll('.proc-mark.bad, .proc-mark.err').length, 0)
   } finally { view.unmount() }
 })
 

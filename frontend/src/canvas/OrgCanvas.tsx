@@ -59,6 +59,7 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
   const [docView, setDocView] = useState<string | null>(null)   // FR-03 reader
   const [userCfg, setUserCfg] = useState(false)
   const [trayOpen, setTrayOpen] = useState(false)   // the flat agent tray
+  const trayWrapRef = useRef<HTMLDivElement | null>(null)
   const [trayQ, setTrayQ] = useState('')            // №26: tray name filter
   const [trayArch, setTrayArch] = useState(false)   // archived rows shown (user
                                                     // spec: hidden by default)
@@ -79,6 +80,32 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
   const [sheetDogs, setSheetDogs] = useState(false)   // header dog list open
   const [hireOpen, setHireOpen] = useState(false)     // compact hire form
   const [, setVpTick] = useState(0)                   // re-render on resize
+
+  useEffect(() => {
+    if (!trayOpen) return
+    const closeOnOutsidePointer = (event: PointerEvent) => {
+      const root = trayWrapRef.current
+      if (!root) return
+      const path = typeof event.composedPath === 'function'
+        ? event.composedPath()
+        : []
+      if (path.includes(root)) return
+      if (event.target instanceof Node && root.contains(event.target)) return
+      // Capture observes the gesture but never consumes it: the outside
+      // control or canvas still receives the same pointerdown/click/drag.
+      setTrayOpen(false)
+    }
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setTrayOpen(false)
+    }
+    document.addEventListener('pointerdown', closeOnOutsidePointer, true)
+    document.addEventListener('keydown', closeOnEscape)
+    return () => {
+      document.removeEventListener('pointerdown', closeOnOutsidePointer, true)
+      document.removeEventListener('keydown', closeOnEscape)
+    }
+  }, [trayOpen])
+
   const compact = isCompact()
   const compactRef = useRef(compact); compactRef.current = compact
   // the eye's unread-mail GLOW is gone (user ruling 2026-08-04: only agents
@@ -1957,7 +1984,8 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
           — each superior immediately followed by its subtree, indented per
           depth — not by canvas position */}
       <MaybePortal>
-      <div className="tray-wrap" onPointerDown={(e) => e.stopPropagation()}>
+      <div ref={trayWrapRef} className="tray-wrap"
+        onPointerDown={(e) => e.stopPropagation()}>
         {trayOpen && (
           <div className="tray">
             <input className="mail-filter tray-filter" placeholder="filter agents…"
@@ -2056,7 +2084,7 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
                       est={n.occupancy_est} compactAt={tree.compact_at} />
                     {n.state === 'live' && <ProcessLifecycleMark warm={Boolean(n.proc_warm)}
                       live={n.proc_live} relaunch={n.proc_relaunch}
-                      reason={n.proc_relaunch_reason} />}
+                      reason={n.proc_relaunch_reason} busy={n.busy} />}
                     {n.busy ? (n.waiting
                       ? <span className="statusdot waiting"
                           title="queued — waiting for a free turn slot (№12)" />
@@ -2154,7 +2182,7 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
                 {n.busy && <Activity act={n.activity} dotOnly />}
                 {n.state === 'live' && <ProcessLifecycleMark warm={Boolean(n.proc_warm)}
                   live={n.proc_live} relaunch={n.proc_relaunch}
-                  reason={n.proc_relaunch_reason} />}
+                  reason={n.proc_relaunch_reason} busy={n.busy} />}
                 {n.state !== 'live' && <span className="dim">{n.state}</span>}
                 <span className="spacer" />
                 {myDogs.length > 0 &&

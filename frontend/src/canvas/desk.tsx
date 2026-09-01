@@ -5,10 +5,10 @@
 // ContextWheel/Activity indicators shared with the cards. Extracted verbatim
 // from Canvas.tsx in the phase-3 split.
 
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import type { ReactNode } from 'react'
 import type {
-  ChatMessage, ChatPayload, HistoryItem, ScratchPayload,
+  CacheForecast, ChatMessage, ChatPayload, HistoryItem, ScratchPayload, TurnStat,
   ToolChip as ToolChipData, ToastFn,
 } from '../types'
 import {
@@ -89,23 +89,158 @@ export function ProcessWarmMark({ warm, embedded = false }: {
       : 'process cold — starts normally on its next turn'} />
 }
 
-/** Process existence and cache readiness are separate facts. The square is
- * OS-process liveness; the circle remains D-201's parked/warm cache cue. A
- * relaunch gets a third, unmistakable arrow and the backend's exact reason. */
-export function ProcessLifecycleMark({ warm, live, relaunch, reason }: {
-  warm: boolean; live?: boolean; relaunch?: boolean; reason?: string | null
+// One clock for every card/desk badge. The prior card markup happened to
+// refresh when its parent did; this shared second pulse keeps every mounted
+// view in agreement without a tree refetch or one timer per agent.
+let ageClockSecond = Math.floor(Date.now() / 1000)
+let ageClockTimer: ReturnType<typeof setInterval> | null = null
+const ageClockSubs = new Set<() => void>()
+const pulseAgeClock = () => {
+  const next = Math.floor(Date.now() / 1000)
+  if (next === ageClockSecond) return
+  ageClockSecond = next
+  for (const fn of [...ageClockSubs]) fn()
+}
+const subscribeAgeClock = (fn: () => void) => {
+  ageClockSubs.add(fn)
+  if (ageClockSubs.size === 1) {
+    pulseAgeClock()
+    ageClockTimer = setInterval(pulseAgeClock, 1000)
+  }
+  return () => {
+    ageClockSubs.delete(fn)
+    if (!ageClockSubs.size && ageClockTimer) {
+      clearInterval(ageClockTimer)
+      ageClockTimer = null
+    }
+  }
+}
+
+/** FR-23's authoritative completed-turn age, shared by cards and desks.
+ * Busy/never-ran nodes deliberately render nothing, exactly as the card did. */
+export function LastTurnAge({ turn, busy = false, variant = 'badge' }: {
+  turn?: TurnStat | null; busy?: boolean; variant?: 'badge' | 'map'
+}) {
+  useSyncExternalStore(subscribeAgeClock, () => ageClockSecond,
+    () => ageClockSecond)
+  if (!turn || busy) return null
+  const title = 'last turn ended '
+    + (turn.at ?? '').slice(0, 16).replace('T', ' ')
+    + (turn.killed ? ' (killed)' : '')
+  return <span className={variant === 'map' ? 'map-ago' : 'badge dim turnago'}
+    title={title} aria-label={title}>
+    {ago(turn.at)}{variant === 'map' && turn.killed ? ' ✕' : ''}
+  </span>
+}
+
+/** One compact process cue. Shape/glyph and text carry the state so colour is
+ * never the only distinction; backend live/warm fields remain independent. */
+export function ProcessLifecycleMark({ warm, live, relaunch, reason, busy }: {
+  warm: boolean; live?: boolean; relaunch?: boolean; reason?: string | null;
+  busy?: boolean
 }) {
   const isLive = live ?? warm
+  const state = !isLive ? 'off' : relaunch ? 'relaunch' : warm ? 'ready' : 'live'
   const title = isLive
     ? relaunch
       ? `CLI process live — will relaunch before its next turn: ${reason || 'reason unavailable'}`
-      : `CLI process live${warm ? ' — parked and ready for its next turn' : ''}`
+      : warm
+        ? 'CLI process live — parked and ready for its next turn'
+        : busy
+          ? 'CLI process live — claimed by the current turn; not parked'
+          : 'CLI process live — spawning or initializing; not ready yet'
     : 'no CLI process live — starts normally on its next turn'
-  return <span className="proc-state" title={title} aria-label={title}>
-    <span className={'proc-live-mark ' + (isLive ? 'live' : 'cold')} />
+  return <span className={`proc-state ${state}`} title={title} aria-label={title}>
+    <span className="proc-one-mark" aria-hidden="true" />
     {relaunch && <AutorenewIcon fontSize="inherit" className="proc-relaunch" />}
-    <ProcessWarmMark warm={warm} embedded />
   </span>
+}
+
+export function McpToolCountMark({ count, last, provider, source, reason,
+  readinessState, readinessReason }: {
+  count?: number | null; last?: number | null; provider?: string | null;
+  source?: string | null; reason?: string | null;
+  readinessState?: string | null; readinessReason?: string | null
+}) {
+  const known = typeof count === 'number'
+  const hasLast = typeof last === 'number'
+  const same = !hasLast || (known && count === last)
+  const title = [
+    known ? `current callable MCP tools: ${count}`
+      : `current callable MCP tools: unknown${reason ? ` — ${reason}` : ''}`,
+    hasLast ? `last successful turn: ${last}` : 'last successful turn: none',
+    `provider/source: ${provider || 'unknown'} / ${source || 'unavailable'}`,
+    readinessState
+      ? `readiness: ${readinessState}${readinessReason ? ` — ${readinessReason}` : ''}`
+      : '',
+  ].filter(Boolean).join('\n')
+  return <span className={'mcp-tool-count ' + (!known ? 'unknown' : same ? 'same' : 'changed')}
+    title={title} aria-label={title}>
+    <span aria-hidden="true">MCP</span> {known ? count : '—'}
+  </span>
+}
+
+export function TurnStartingMark({ mcpWaiting, reason }: {
+  mcpWaiting?: boolean; reason?: string | null
+}) {
+  const text = mcpWaiting ? 'Waiting for MCP tools…' : 'starting…'
+  return <div className="msg live thinking sealed"
+    title={mcpWaiting ? reason || 'Waiting for the prior MCP tool surface' : undefined}>
+    <AutorenewIcon fontSize="inherit" className="cc-spin" /> {text}
+  </div>
+}
+
+const cacheForecastTitle = (forecast: CacheForecast): string => {
+  const ttl = typeof forecast.ttl_seconds === 'number'
+    ? forecast.ttl_seconds === 3600 ? '60 minutes (subscription authentication)'
+      : forecast.ttl_seconds === 300 ? '5 minutes (API-key inference)'
+        : `${forecast.ttl_seconds} seconds (derived from inference lane)`
+    : 'unavailable'
+  const changed = forecast.changed_inputs?.length
+    ? `changed components:\n${forecast.changed_inputs.map((v) => `• ${v}`).join('\n')}`
+    : 'changed components: none reported'
+  return [
+    `next-turn cache: ${forecast.state.replaceAll('_', ' ')}`,
+    `reason: ${forecast.reason || 'unavailable'}`,
+    changed,
+    `lane/source: ${forecast.lane || 'unknown'} / ${forecast.source || 'unknown'}`,
+    `last authoritative inference receipt: ${forecast.last_receipt_at || 'none'}`,
+    `derived expiry: ${ttl}`,
+    `expires at: ${forecast.expires_at || 'not authoritatively known'}`,
+    forecast.precompact_reason
+      ? `pre-turn compaction: ${forecast.precompact_reason}` : '',
+  ].filter(Boolean).join('\n')
+}
+
+/** User-selected three-state cache forecast: compatible green, known cold
+ * red, uncertain grey. Glyphs keep every state distinct without colour. */
+export function CacheForecastMark({ forecast }: {
+  forecast?: CacheForecast | null
+}) {
+  if (!forecast) return null
+  const compatible = forecast.state === 'compatible_observed'
+  const uncertain = forecast.state === 'uncertain'
+  const cls = compatible ? 'compatible' : uncertain ? 'uncertain' : 'cold'
+  const glyph = compatible ? '✓' : uncertain ? '?' : '×'
+  const title = cacheForecastTitle(forecast)
+  return <span className={`cache-forecast ${cls}`} title={title} aria-label={title}>
+    <span aria-hidden="true">cache {glyph}</span>
+  </span>
+}
+
+export function CacheForecastWarning({ forecast }: {
+  forecast?: CacheForecast | null
+}) {
+  if (forecast?.state !== 'known_incompatible') return null
+  const compacts = forecast.precompact_action === 'will_compact'
+  const title = cacheForecastTitle(forecast)
+  return <div className={`cache-send-warning ${compacts ? 'compact' : 'miss'}`}
+    role="status" title={title}>
+    <WarnIcon fontSize="inherit" />
+    <span>{compacts
+      ? 'Cache mismatch — sending will cheap-compact this session first.'
+      : 'Cache miss expected — this session is incompatible and automatic cheap compaction will not run.'}</span>
+  </div>
 }
 
 /** A busy arrow on navigation chrome must name the destination provider even
@@ -619,6 +754,12 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
   }
 
   const liveKids = node.children.some((c) => c.state === 'live')
+  const lastTurn = node.turns?.[node.turns.length - 1]
+  // The tree copy is patched directly by the node-stream event. Chat is a
+  // slower reconciliation payload and must not mask a newer gate transition.
+  const mcpReadinessWaiting = Boolean(node.mcp_readiness_waiting)
+  const mcpReadinessState = node.mcp_readiness_state
+  const mcpReadinessReason = node.mcp_readiness_reason
   // held-audience badges: retired grantor-agents fold behind one chip (user
   // feature 2026-08-17) — USER/EXTERN are pseudo-peers, always "live"
   const held = node.audiences_held ?? []
@@ -637,6 +778,7 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
   const content = (
     <>
       <div className="cc-head">
+        <div className="cc-head-top">
         <span className={'tier t-' + node.tier}>{TIER_LETTER[node.tier!] ?? '?'}</span>
         {/* in a switchboard panel the NAME is also a jump: focus this
             agent's own desk — same glide as clicking its card (user
@@ -649,6 +791,31 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
           <span className="cc-name"
             title={(node.charter || '').split('\n')[0] || node.id}>{node.id}</span>
         )}
+        <LastTurnAge turn={lastTurn} busy={Boolean(node.busy || chat?.busy)} />
+        <span className="spacer" />
+        <span className="cc-actions">
+          {live && !liveKids &&
+            <button className="danger" onClick={() => setAsking('retire')}>
+              retire · {node.seat! + node.grant!}</button>}
+          {live && liveKids &&
+            <button className="danger" onClick={() => setAsking('dissolve')}>
+              dissolve · {node.seat! + node.grant!}</button>}
+          {!live && <button onClick={() => op({ op: 'rehire', node: node.id })}>rehire</button>}
+        </span>
+        <span className="cc-tabs">
+          {(['chat', 'history', 'files', 'inbox'] as const).map((v) => (
+            <button key={v} className={view === v ? 'on' : ''}
+              onClick={() => setView(v)}>
+              {v}{v === 'inbox' && (chat?.mail_pending ?? 0) > 0 ? ` ${chat!.mail_pending}` : ''}
+            </button>
+          ))}
+        </span>
+        <button className="cc-icon" aria-label={`settings for ${node.id}`}
+          title={`settings for ${node.id}`} onClick={onConfig}>
+          <SettingsIcon fontSize="inherit" />
+        </button>
+        </div>
+        <div className="cc-head-meta">
         <ContextWheel occ={chat?.occupancy ?? node.occupancy} cw={node.context_window}
           est={chat?.occupancy != null ? chat.occupancy_estimated : node.occupancy_est}
           compactAt={compactAt}
@@ -659,7 +826,15 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
             ? () => setAskCompact(true) : undefined} />
         {live && <ProcessLifecycleMark warm={Boolean(node.proc_warm)}
           live={node.proc_live} relaunch={node.proc_relaunch}
-          reason={node.proc_relaunch_reason} />}
+          reason={node.proc_relaunch_reason} busy={node.busy || chat?.busy} />}
+        <McpToolCountMark count={node.mcp_tool_count}
+          last={node.last_turn_mcp_tool_count}
+          provider={node.mcp_tool_count_provider}
+          source={node.mcp_tool_count_source}
+          reason={node.mcp_tool_count_reason}
+          readinessState={mcpReadinessState}
+          readinessReason={mcpReadinessReason} />
+        <CacheForecastMark forecast={node.cache_forecast} />
         {node.last_status &&
           <span className={'statuschip ' + node.last_status.status}
             title={node.last_status.summary}>{node.last_status.status}</span>}
@@ -762,25 +937,7 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
             + 'resolved environment at spawn, so it describes what HAPPENED '
             + 'rather than what routing currently intends'}>
             {node.ran_as_label}</span>}
-        <span className="spacer" />
-        <span className="cc-actions">
-          {live && !liveKids &&
-            <button className="danger" onClick={() => setAsking('retire')}>
-              retire · {node.seat! + node.grant!}</button>}
-          {live && liveKids &&
-            <button className="danger" onClick={() => setAsking('dissolve')}>
-              dissolve · {node.seat! + node.grant!}</button>}
-          {!live && <button onClick={() => op({ op: 'rehire', node: node.id })}>rehire</button>}
-        </span>
-        <span className="cc-tabs">
-          {(['chat', 'history', 'files', 'inbox'] as const).map((v) => (
-            <button key={v} className={view === v ? 'on' : ''}
-              onClick={() => setView(v)}>
-              {v}{v === 'inbox' && (chat?.mail_pending ?? 0) > 0 ? ` ${chat!.mail_pending}` : ''}
-            </button>
-          ))}
-        </span>
-        <button className="cc-icon" onClick={onConfig}><SettingsIcon fontSize="inherit" /></button>
+        </div>
       </div>
       {/* F-01: superior chip at the TOP. For a top-level agent the superior is
           the user, so the chip targets the switchboard (map carries the eye
@@ -1015,9 +1172,8 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
           {chat?.busy && !chat.turn_activity && !live_feed.length
             && thinkSecs === null && !draft
             && !pending.length && (
-            <div className="msg live thinking sealed">
-              <AutorenewIcon fontSize="inherit" className="cc-spin" /> starting…
-            </div>)}
+            <TurnStartingMark mcpWaiting={mcpReadinessWaiting}
+              reason={mcpReadinessReason} />)}
           {/* №11: pending bubbles render from the DURABLE server copy, each
               retractable until delivery (№17) */}
           {(chat?.pending_mail ?? []).filter((m) => m.from === USER).map((m) => (
@@ -1166,6 +1322,7 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
       )}
       {text.trimStart().startsWith('/') && canMail && (
         <SlashHints text={text} setText={setText} />)}
+      <CacheForecastWarning forecast={node.cache_forecast} />
       <div className={'cc-composer' + (canMail ? '' : ' off')}>
         <button className="cc-attach" disabled={!canMail}
           title="attach a file — it lands in the agent's uploads/ folder"
@@ -1478,40 +1635,11 @@ export function LineagePanel({ node, op, slug, presence = ALL_PRESENT,
     </div>
   )
 }
-// Incoming turns are mail envelopes (messages ARE mail); for the chat view,
-// The envelope also prepends an [ORG NOTICES — n change(s)…] block to the next
-// turn's message (supervisor._envelope). That is machine chrome about the ORG,
-// not part of what the sender wrote, so it is pulled out here and rendered as
-// its own collapsed card rather than sitting inside the bubble (user bug
-// 2026-08-02). Anchored at the start because _envelope builds the prelude
-// notices-first; the trailing \n* eats the blank line before the mail block.
-const NOTICE_RE = /^\s*\[ORG NOTICES[^\]\n]*\]\n([\s\S]*?)\n\[END NOTICES\]\n*/
-// D-192 (user, 2026-08-29): "i really do not think the org structure needs to
-// be seen by the user; that's extraneous information to them that they can
-// just observe directly." D-181 prepends an [ORG STATE …] block — roster,
-// chart, credits — to EVERY non-command turn so the agent's cached prefix
-// stops churning. The agent must keep receiving it; the reader has the live
-// chart on screen and does not need a text rendering of it in every bubble.
-// So it is DELETED here, not carded like notices are: a collapsed card would
-// still cost a row, and there is nothing in it the canvas is not already
-// showing. The transcript keeps it — this is display only.
-const ORGSTATE_RE = /^\s*\[ORG STATE[^\]\n]*\]\n[\s\S]*?\n\[END ORG STATE\]\n*/
 const splitNotices = (t: string | null | undefined) => {
-  // ⚠ THE STATE BLOCK COMES OFF FIRST, AND THE ORDER IS LOAD-BEARING.
-  // `_run_one_turn` prepends the state block AFTER the prelude is joined, so
-  // the wire order is [ORG STATE] · [ORG NOTICES] · [MAIL] · body. NOTICE_RE
-  // is anchored at start, so once D-181 shipped it stopped matching and the
-  // notices card silently stopped rendering — the reader got raw
-  // `[ORG NOTICES …]` chrome in the bubble instead. Stripping the state block
-  // here restores that, which is why this lives inside `splitNotices` rather
-  // than beside it: every call site needs both, and one that got only the
-  // strip would go back to leaking notices chrome.
-  const s = (t ?? '').replace(ORGSTATE_RE, '')
-  const m = NOTICE_RE.exec(s)
-  if (!m) return { notices: [] as string[], rest: s }
-  const notices = (m[1] ?? '').split('\n')
-    .map((l) => l.replace(/^\s*-\s*/, '').trim()).filter(Boolean)
-  return { notices, rest: s.slice(m[0].length) }
+  // Structured server provenance owns machine-context visibility. Never
+  // infer authorship from marker-looking text: a person may type any marker
+  // literally and must get the exact text back.
+  return { notices: [] as string[], rest: t ?? '' }
 }
 
 /** A turn-start envelope can carry several authors.  Keep it structured until

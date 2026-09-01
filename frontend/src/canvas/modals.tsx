@@ -780,7 +780,7 @@ export function NodeConfig({ node, map, tree, slug, op, toast, codexProvider,
         <h3><SettingsIcon fontSize="inherit" /> {node.id}
           {node.state === 'live' && <ProcessLifecycleMark warm={Boolean(node.proc_warm)}
             live={node.proc_live} relaunch={node.proc_relaunch}
-            reason={node.proc_relaunch_reason} />}
+            reason={node.proc_relaunch_reason} busy={node.busy} />}
           <span className="dim">· {node.tier} · configuration</span></h3>
         {/* FULL identity rename (user ruling 2026-08-05): id, mailbox,
             working folder and session all move; history keeps the old name

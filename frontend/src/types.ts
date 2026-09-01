@@ -20,6 +20,27 @@ export type PermissionMode = 'default' | 'acceptEdits' | 'bypassPermissions'
 export type BearerState = 'knowledge' | 'preserving' | 'lost' | null
 export type Effort = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 
+/** Backend-owned, generation-safe forecast for the next provider turn. */
+export type CacheForecastState =
+  | 'known_incompatible'
+  | 'expired_known_entry'
+  | 'uncertain'
+  | 'compatible_observed'
+export interface CacheForecast {
+  generation: string
+  state: CacheForecastState
+  reason: string
+  source: string
+  lane: string
+  last_receipt_at: string | null
+  ttl_seconds: number | null
+  expires_at: string | null
+  /** Safe component labels only; underlying values/hashes remain backend-only. */
+  changed_inputs?: string[]
+  precompact_action?: 'will_compact' | 'miss_expected' | 'not_applicable'
+  precompact_reason?: string
+}
+
 // schema.py DirGrant
 export interface DirGrant {
   path: string
@@ -279,6 +300,19 @@ export interface TreeNode {
   proc_relaunch: boolean
   /** Backend-owned explanation for proc_relaunch; never inferred by the UI. */
   proc_relaunch_reason: string | null
+  /** Runtime-observed callable MCP names for the current process generation.
+   * null is unknown, never zero. */
+  mcp_tool_count: number | null
+  /** Authoritative count captured at the last successful completed turn. */
+  last_turn_mcp_tool_count: number | null
+  mcp_tool_count_provider: string
+  mcp_tool_count_source: string | null
+  mcp_tool_count_reason: string | null
+  mcp_readiness_waiting?: boolean
+  mcp_readiness_state?: string | null
+  mcp_readiness_reason?: string | null
+  /** Optional during the predictor rollout; absent until backend evidence exists. */
+  cache_forecast?: CacheForecast | null
   waiting: boolean
   responding: boolean
   phase: string | null
@@ -790,6 +824,9 @@ export interface ChatPayload {
   turn_activity?: boolean
   queued: number
   responding: boolean
+  mcp_readiness_waiting?: boolean
+  mcp_readiness_state?: string | null
+  mcp_readiness_reason?: string | null
   last_error: string | null
   occupancy: number | null
   /** the transcript's own reading is an estimate: this session was compacted
@@ -932,6 +969,8 @@ export interface RuntimeSettingsPayload {
   warming_enabled: boolean
   /** Default on: real 30-minute checkups replace disposable cache reads. */
   working_checkups_enabled: boolean
+  /** Default off: preserve no-wait startup until the operator opts in. */
+  wait_for_mcp_tools_enabled: boolean
 }
 
 /** one bar of the host subscription's rate-limit standing (GET /api/usage —

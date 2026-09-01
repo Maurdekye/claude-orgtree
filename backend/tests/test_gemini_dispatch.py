@@ -100,11 +100,12 @@ def mkorg(label: str, **tools_over) -> tuple[str, str]:
     return org.d["slug"], nid
 
 
-def run_turn(slug: str, nid: str, text: str):
+def run_turn(slug: str, nid: str, text: str, view: str | None = None):
     st = supervisor.state(slug, nid)
     with supervisor._state_lock:
         st["busy"] = True
-    return supervisor._run_one_turn(slug, nid, text)
+    return supervisor._run_one_turn(
+        slug, nid, {"text": text, "view": text if view is None else view})
 
 
 def node_doc(slug: str, nid: str) -> dict:
@@ -306,12 +307,15 @@ def main():
         # mid-turn mail: the pump pops it, the wire refuses (no steer verb),
         # and the text falls back to the queue for boundary delivery
         with supervisor._state_lock:
-            st.setdefault("steer", []).append("boundary mail")
+            st.setdefault("steer", []).append(
+                {"text": "boundary mail", "view": "boundary mail"})
+        def queued_boundary() -> bool:
+            return any((m.get("text") if isinstance(m, dict) else m)
+                       == "boundary mail" for m in (st.get("queue") or []))
         deadline = time.time() + 5
-        while time.time() < deadline and "boundary mail" not in (
-                st.get("queue") or []):
+        while time.time() < deadline and not queued_boundary():
             time.sleep(0.05)
-        assert "boundary mail" in (st.get("queue") or []), "queued fallback"
+        assert queued_boundary(), "queued fallback"
         r = supervisor.interrupt_turn(s6, n6)
         eq(r.get("interrupted"), True, "interrupt accepted")
         th.join(timeout=20)

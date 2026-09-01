@@ -14,14 +14,17 @@ import {
   LockIcon, MailIcon, RetireIcon, SettingsIcon,
 } from '../icons'
 import {
-  ago, CODEX_TIER_LETTER, CODEX_TIER_SEAT, CODEX_TIERS, DESK_SCALE, deskDpi, DRAFT, familyOffer, freezeKind, FREEZE_LABEL_SHORT, GEMINI_TIER_LETTER, GEMINI_TIER_SEAT, GEMINI_TIERS, NODE_H, NODE_W, TIER_LETTER, TIER_SEAT, TIERS, USER,
+  CODEX_TIER_LETTER, CODEX_TIER_SEAT, CODEX_TIERS, DESK_SCALE, deskDpi, DRAFT, familyOffer, freezeKind, FREEZE_LABEL_SHORT, GEMINI_TIER_LETTER, GEMINI_TIER_SEAT, GEMINI_TIERS, NODE_H, NODE_W, TIER_LETTER, TIER_SEAT, TIERS, USER,
   USER_H, USER_W,
 } from './shared'
 import type {
   AttentionPip, CanvasNode, DraftScope, DraftState, HireState, MailLinkFn, OpFn, Pile,
   Pt,
 } from './shared'
-import { Activity, ContextWheel, DeskChat, DestinationBusy, ProcessLifecycleMark } from './desk'
+import {
+  Activity, ContextWheel, DeskChat, DestinationBusy, LastTurnAge,
+  ProcessLifecycleMark,
+} from './desk'
 import { DocChips } from './docs'
 import { isMobile } from '../mobile'
 import { ConfirmModal, DraftScopeModal } from './modals'
@@ -1093,7 +1096,7 @@ export function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, c
             : <span className="statusdot idle" />}
           {live && <ProcessLifecycleMark warm={Boolean(node.proc_warm)}
             live={node.proc_live} relaunch={node.proc_relaunch}
-            reason={node.proc_relaunch_reason} />}
+            reason={node.proc_relaunch_reason} busy={node.busy} />}
           {(dogs ?? 0) > 0 && <span className={'map-dogs' + ((oneShotDogs ?? 0) > 0 ? ' oneshot' : '')}
             aria-label={`${dogs} watchdog${dogs === 1 ? '' : 's'}${(oneShotDogs ?? 0) > 0
               ? `, ${oneShotDogs} one-shot dog${oneShotDogs === 1 ? '' : 's'}` : ''}`}>
@@ -1101,8 +1104,7 @@ export function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, c
           </span>}
         </div>
         <span className="map-name">{node.id}</span>
-        {lastTurn && !node.busy &&
-          <span className="map-ago">{ago(lastTurn.at)}{lastTurn.killed ? ' ✕' : ''}</span>}
+        <LastTurnAge turn={lastTurn} busy={node.busy} variant="map" />
       </div>
     )
   }
@@ -1185,7 +1187,7 @@ export function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, c
           est={node.occupancy_est} compactAt={compactAt} />
         {live && <ProcessLifecycleMark warm={Boolean(node.proc_warm)}
           live={node.proc_live} relaunch={node.proc_relaunch}
-          reason={node.proc_relaunch_reason} />}
+          reason={node.proc_relaunch_reason} busy={node.busy} />}
         {lod === 'mini' && node.last_status &&
           <span className={'statusdot ' + node.last_status.status}
             title={`${node.last_status.status} — ${node.last_status.summary ?? ''}`} />}
@@ -1228,12 +1230,7 @@ export function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, c
               while busy (the activity dot owns that state; "3m ago" under a
               running turn reads as a contradiction) and absent when no turn
               ever ran (a fresh hire shows nothing rather than "never"). */}
-          {!node.busy && lastTurn &&
-            <span className="badge dim turnago"
-              title={'last turn ended '
-                + (lastTurn.at ?? '').slice(0, 16).replace('T', ' ')
-                + (lastTurn.killed ? ' (killed)' : '')}>
-              {ago(lastTurn.at)}</span>}
+          <LastTurnAge turn={lastTurn} busy={node.busy} />
           {/* ⭐ clickable (user ruling 2026-08-06): the freeze badge IS the
               per-node unstick — the control lives where the user finds the
               agent, not only in org-level panels */}

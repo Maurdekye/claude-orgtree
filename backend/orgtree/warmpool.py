@@ -303,6 +303,14 @@ class WarmProc:
                                 and ev.get("subtype") == "init":
                             with self._lk:
                                 self.init_line = line
+                            try:
+                                from . import supervisor as sup  # noqa: PLC0415
+                                sup._mcp_tool_count_names(
+                                    self.slug, self.nid, self.proc,
+                                    ev.get("tools") or [], "claude",
+                                    "system/init.tools")
+                            except Exception:                    # noqa: BLE001
+                                pass
                     except ValueError:
                         pass
                 else:
@@ -1198,6 +1206,11 @@ def _on_proc_exit(wp: WarmProcess) -> None:
     if was_tracked or wp.claimed:
         _journal_exit_once(wp)
         _set_proc_lifecycle(wp.slug, wp.nid, live=False, owner=wp)
+        try:
+            from . import supervisor as sup             # noqa: PLC0415
+            sup._mcp_tool_count_end(wp.slug, wp.nid, wp.proc)
+        except Exception:                               # noqa: BLE001
+            pass
 
 
 def _spawn_for(org: Any, nid: str, why: str) -> WarmProcess | None:
@@ -1224,6 +1237,10 @@ def _spawn_for(org: Any, nid: str, why: str) -> WarmProcess | None:
                 config_overrides=list(spec["config_overrides"]),
                 env_extra=dict(spec["env_extra"]))
             proc = client.proc
+            sup._mcp_tool_count_begin(
+                slug, nid, proc, "codex", "mcpServerStatus/list",
+                "Codex app-server is parked but not initialized",
+                org.node(nid).get("last_turn_mcp_tool_count"))
             try:
                 sup._leash(proc)
                 wp = CodexWarmProc(
@@ -1231,6 +1248,8 @@ def _spawn_for(org: Any, nid: str, why: str) -> WarmProcess | None:
                     components)
                 client.on_exit = lambda: _on_proc_exit(wp)
             except Exception:
+                sup._mcp_tool_count_end(slug, nid, proc,
+                                        "process setup failed")
                 try:
                     sup._wd_kill_tree(proc)
                 except Exception:                   # noqa: BLE001
@@ -1264,6 +1283,10 @@ def _spawn_for(org: Any, nid: str, why: str) -> WarmProcess | None:
             errors="replace")
         try:
             sup._leash(proc)
+            sup._mcp_tool_count_begin(
+                slug, nid, proc, "claude", "system/init.tools",
+                "Claude process is starting; runtime tools are not resolved yet",
+                org.node(nid).get("last_turn_mcp_tool_count"))
             wp = WarmProc(slug, nid, proc,
                           org.node(nid)["session_id"], ih, env_id,
                           components)
@@ -1271,6 +1294,8 @@ def _spawn_for(org: Any, nid: str, why: str) -> WarmProcess | None:
             # setup died AFTER the child existed: reap it or every keeper
             # retry leaks a CLI+MCP tree while turns stay correct — the
             # silent-fallback shape (process-cache-2's spawn-cleanup probe)
+            sup._mcp_tool_count_end(slug, nid, proc,
+                                    "process setup failed")
             try:
                 sup._wd_kill_tree(proc)
             except Exception:                       # noqa: BLE001
@@ -1305,6 +1330,11 @@ def kill_node(slug: str, nid: str, reason: str) -> None:
     _kill_proc(wp)
     _set_proc_warm(slug, nid, False)
     _set_proc_lifecycle(slug, nid, live=False, owner=wp)
+    try:
+        from . import supervisor as sup                 # noqa: PLC0415
+        sup._mcp_tool_count_end(slug, nid, wp.proc)
+    except Exception:                                   # noqa: BLE001
+        pass
     _journal_exit_once(wp, reason)
 
 

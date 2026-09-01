@@ -26,7 +26,7 @@ import { AskCard } from './canvas/asks'
 import { AccountsPanel, UsageBars } from './canvas/accounts'
 import { addPending, dropPending, ingestPulse, ingestStream, resetConvos } from './convo'
 import type {
-  AskInfo, AudiencesPayload, DefaultsPayload, HostPayload, InboxPayload,
+  AskInfo, AudiencesPayload, CacheForecast, DefaultsPayload, HostPayload, InboxPayload,
   KioskSpecRequest,
   MailEntry, OpRequest, OrgEvent, OrgListEntry, SweepPreview, ToastFn,
   ProvidersPayload,
@@ -51,8 +51,54 @@ const SYSTEM = '@system'
 // only triggers the tree refetch) — cast once at the JSON.parse boundary
 type WsEvent =
   | { type: 'mail'; from: string; to: string }
-  | { type: 'node_stream'; node: string; kind: string; text?: string; sticky?: boolean; id?: string }
+  | { type: 'node_stream'; node: string; kind: string; text?: string; sticky?: boolean; id?: string;
+      count?: number | null; last_turn_count?: number | null; provider?: string;
+      source?: string | null; reason?: string | null; emitted_at_ms?: number;
+      waiting?: boolean; state?: string | null;
+      forecast?: CacheForecast | null }
   | { type: 'node_event'; node: string; event: string }
+
+export const patchMcpNode = (
+  node: TreeNode, id: string,
+  data: Extract<WsEvent, { type: 'node_stream' }>,
+): TreeNode => {
+  const children = node.children.map((c) => patchMcpNode(c, id, data))
+  const childChanged = children.some((c, i) => c !== node.children[i])
+  if (node.id !== id) return childChanged ? { ...node, children } : node
+  return {
+    ...node, children,
+    mcp_tool_count: typeof data.count === 'number' ? data.count : null,
+    last_turn_mcp_tool_count: typeof data.last_turn_count === 'number'
+      ? data.last_turn_count : null,
+    mcp_tool_count_provider: data.provider ?? node.mcp_tool_count_provider,
+    mcp_tool_count_source: data.source ?? null,
+    mcp_tool_count_reason: data.reason ?? null,
+  }
+}
+
+export const patchCacheNode = (
+  node: TreeNode, id: string, forecast: CacheForecast | null,
+): TreeNode => {
+  const children = node.children.map((c) => patchCacheNode(c, id, forecast))
+  const childChanged = children.some((c, i) => c !== node.children[i])
+  if (node.id !== id) return childChanged ? { ...node, children } : node
+  return { ...node, children, cache_forecast: forecast }
+}
+
+export const patchMcpReadinessNode = (
+  node: TreeNode, id: string,
+  data: Extract<WsEvent, { type: 'node_stream' }>,
+): TreeNode => {
+  const children = node.children.map((c) => patchMcpReadinessNode(c, id, data))
+  const childChanged = children.some((c, i) => c !== node.children[i])
+  if (node.id !== id) return childChanged ? { ...node, children } : node
+  return {
+    ...node, children,
+    mcp_readiness_waiting: Boolean(data.waiting),
+    mcp_readiness_state: data.state ?? null,
+    mcp_readiness_reason: data.reason ?? null,
+  }
+}
 
 /** D-202: the usage button's tooltip named "Claude and Codex" as a literal,
  *  which is a Codex mention on a machine that has never had Codex. The bars
@@ -299,6 +345,39 @@ export default function App() {
         return
       }
       if (data?.type === 'node_stream') {
+        if (data.kind === 'cache_forecast') {
+          setTree((old) => old ? {
+            ...old,
+            roots: old.roots.map((n) => patchCacheNode(
+              n, data.node, data.forecast ?? null)),
+          } : old)
+          return
+        }
+        if (data.kind === 'mcp_tool_count') {
+          // Inventory is a hard-realtime process fact. Apply the websocket
+          // payload directly; the next ordinary tree fetch is reconciliation,
+          // not the primary update path.
+          setTree((old) => old ? {
+            ...old,
+            roots: old.roots.map((n) => patchMcpNode(n, data.node, data)),
+          } : old)
+          window.dispatchEvent(new CustomEvent('orgtree:mcp-tool-count-applied', {
+            detail: {
+              node: data.node,
+              latency_ms: typeof data.emitted_at_ms === 'number'
+                ? Math.max(0, Date.now() - data.emitted_at_ms) : null,
+            },
+          }))
+          return
+        }
+        if (data.kind === 'mcp_readiness') {
+          setTree((old) => old ? {
+            ...old,
+            roots: old.roots.map((n) => patchMcpReadinessNode(
+              n, data.node, data)),
+          } : old)
+          return
+        }
         // the conversation model is fed ONCE here, not once per mounted view:
         // a node can be on screen twice (its card and its switchboard panel)
         // and two private copies of one conversation diverge by construction

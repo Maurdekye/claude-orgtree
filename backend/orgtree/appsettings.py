@@ -8,10 +8,10 @@ localStorage because text scale and canvas density belong to the screen being
 used, not to the backend machine.
 
 The first record is D-203's per-provider admission switch. Runtime also owns
-the machine-wide stale-working checkup mode. Both are default-on: missing
-means enabled, so existing installs and older settings files retain the
-established provider behaviour and adopt the safer real-turn checkup without
-a migration.
+the machine-wide stale-working checkup mode and the optional MCP-readiness
+admission gate. Providers and working checkups are default-on; the readiness
+gate is deliberately default-off so existing installs preserve today's
+no-wait turn startup unless the operator opts in.
 """
 
 from __future__ import annotations
@@ -101,6 +101,17 @@ def working_checkups_enabled() -> bool:
     return runtime.get("working_checkups") is not False
 
 
+def wait_for_mcp_tools_enabled() -> bool:
+    """Whether turns wait for the last authoritative MCP tool surface.
+
+    This is an admission-latency choice, so only explicit true enables it.
+    Missing remains false for compatibility with every pre-setting install.
+    """
+    raw = load().get("runtime")
+    runtime = raw if isinstance(raw, dict) else {}
+    return runtime.get("wait_for_mcp_tools") is True
+
+
 def _save(doc: dict[str, Any]) -> None:
     blob = json.dumps(doc, indent=2).encode("utf-8")
     target = path()
@@ -151,6 +162,18 @@ def set_working_checkups_enabled(enabled: bool) -> None:
         raw = doc.get("runtime")
         runtime: dict[str, Any] = dict(raw) if isinstance(raw, dict) else {}
         runtime["working_checkups"] = bool(enabled)
+        doc["runtime"] = runtime
+        doc["version"] = VERSION
+        _save(doc)
+
+
+def set_wait_for_mcp_tools_enabled(enabled: bool) -> None:
+    """Persist the machine-wide MCP-readiness admission choice."""
+    with _LOCK:
+        doc = load(strict=True)
+        raw = doc.get("runtime")
+        runtime: dict[str, Any] = dict(raw) if isinstance(raw, dict) else {}
+        runtime["wait_for_mcp_tools"] = bool(enabled)
         doc["runtime"] = runtime
         doc["version"] = VERSION
         _save(doc)

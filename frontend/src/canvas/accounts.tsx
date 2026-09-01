@@ -31,7 +31,7 @@ import type {
 import {
   addAccountKey, deleteAccountKey, getAccounts, getAccountUsage,
   getProviders, getRuntimeSettings, setAccountKeyOrder, setProviderEnabled,
-  setWarmingEnabled, setWorkingCheckupsEnabled,
+  setWaitForMcpToolsEnabled, setWarmingEnabled, setWorkingCheckupsEnabled,
 } from '../api'
 import { CheckIcon, DataUsageIcon, DeleteIcon } from '../icons'
 import {
@@ -256,6 +256,8 @@ export function AccountsPanel({ toast, close }: {
   const [warmingBusy, setWarmingBusy] = useState(false)
   const [workingCheckups, setWorkingCheckups] = useState<boolean | null>(null)
   const [workingCheckupsBusy, setWorkingCheckupsBusy] = useState(false)
+  const [waitForMcpTools, setWaitForMcpTools] = useState<boolean | null>(null)
+  const [waitForMcpToolsBusy, setWaitForMcpToolsBusy] = useState(false)
   const [warmingErr, setWarmingErr] = useState<string | null>(null)
   useEffect(() => {
     getProviders().then((p) => setProviders(p.providers)).catch(() => {})
@@ -265,6 +267,7 @@ export function AccountsPanel({ toast, close }: {
       .then((p) => {
         setWarming(p.warming_enabled)
         setWorkingCheckups(p.working_checkups_enabled !== false)
+        setWaitForMcpTools(p.wait_for_mcp_tools_enabled === true)
         setWarmingErr(null)
       })
       .catch((e: Error) => setWarmingErr(e.message))
@@ -741,6 +744,7 @@ export function AccountsPanel({ toast, close }: {
                   .then((p) => {
                     setWarming(p.warming_enabled)
                     setWorkingCheckups(p.working_checkups_enabled !== false)
+                    setWaitForMcpTools(p.wait_for_mcp_tools_enabled === true)
                     setWarmingErr(null)
                     toast([`process warming turned ${p.warming_enabled ? 'on' : 'off'}`])
                   })
@@ -765,6 +769,7 @@ export function AccountsPanel({ toast, close }: {
                   .then((p) => {
                     setWorkingCheckups(p.working_checkups_enabled)
                     setWarming(p.warming_enabled)
+                    setWaitForMcpTools(p.wait_for_mcp_tools_enabled === true)
                     setWarmingErr(null)
                     toast([`working-agent checkups turned ${p.working_checkups_enabled ? 'on' : 'off'}`])
                   })
@@ -780,6 +785,37 @@ export function AccountsPanel({ toast, close }: {
             </span>
             <span className="dim">
               off uses isolated Claude cache reads instead
+            </span>
+          </label>
+          <label className="app-pref-row app-pref-check">
+            <input type="checkbox" role="switch"
+              aria-label="wait until the MCP tool surface is ready"
+              checked={waitForMcpTools ?? false}
+              disabled={waitForMcpTools == null || waitForMcpToolsBusy}
+              onChange={(e) => {
+                const enabled = e.target.checked
+                setWaitForMcpToolsBusy(true)
+                setWaitForMcpToolsEnabled(enabled)
+                  .then((p) => {
+                    setWaitForMcpTools(p.wait_for_mcp_tools_enabled)
+                    setWorkingCheckups(p.working_checkups_enabled)
+                    setWarming(p.warming_enabled)
+                    setWarmingErr(null)
+                    toast([`MCP tool readiness wait turned ${p.wait_for_mcp_tools_enabled ? 'on' : 'off'}`])
+                  })
+                  .catch((runtimeErr: Error) => {
+                    setWarmingErr(runtimeErr.message)
+                    toast([`error: ${runtimeErr.message}`])
+                  })
+                  .finally(() => setWaitForMcpToolsBusy(false))
+              }} />
+            wait until the MCP tool surface is ready
+            <span className="app-pref-state">
+              {waitForMcpTools === true ? 'on' : 'off'}
+            </span>
+            <span className="dim">
+              when on, a turn waits briefly for every MCP tool its last
+              successful turn could call
             </span>
           </label>
         </div>

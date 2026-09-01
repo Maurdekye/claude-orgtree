@@ -181,6 +181,10 @@ class FrozenInfo(TypedDict, total=False):
     pool: str
     # prompts to replay when the freeze lifts (supervisor queues them)
     resume_texts: list[str]
+    # Human-visible projections paired positionally with ``resume_texts``.
+    # The raw prompt is replayed to the provider; this copy is only what the
+    # chat renderer may show.  Older records legitimately omit it.
+    resume_views: list[str]
 
 
 class OracleExchange(TypedDict):
@@ -194,6 +198,9 @@ class InflightInfo(TypedDict):
     """The turn currently running (supervisor): prompt tail + start stamp."""
     at: str
     text: str
+    # Structured human projection of ``text``.  Machine-added context is
+    # deliberately absent; raw replay text remains untouched above.
+    view: NotRequired[str]
     cmd: NotRequired[bool]
 
 
@@ -261,6 +268,14 @@ class NodeDoc(TypedDict):
     # reports `working`. It is the restart-safe 30-minute checkup clock and
     # failed-wake cooldown; cleared when status leaves working.
     working_activity_at: NotRequired[str]
+    # Runtime-observed MCP tool count captured at the last authoritative,
+    # successful turn boundary.  Current live inventory is generation-owned
+    # in supervisor state and never persisted here.
+    last_turn_mcp_tool_count: NotRequired[int]
+    # Canonical runtime MCP identities and the effective launch-surface digest
+    # for that same successful boundary. The digest contains no raw config.
+    last_turn_mcp_tools: NotRequired[list[str]]
+    last_turn_mcp_fingerprint: NotRequired[str]
     inflight: NotRequired[InflightInfo | None]
     last_denials: NotRequired[list[Denial]]
     turns: NotRequired[list[TurnStat]]
@@ -412,6 +427,10 @@ MailEntry = TypedDict("MailEntry", {
     "attachments_missing": NotRequired[list[str]],
     "delivering": NotRequired[bool],
     "retracted": NotRequired[bool],   # api node_mail_retract tombstones in place
+    # Internal context delivered to the model but intentionally absent from
+    # the human chat projection (automatic checkups and future lifecycle
+    # plumbing).  Genuine mail never sets this flag.
+    "model_only": NotRequired[bool],
     "net_id": NotRequired[str],       # F-06: hub message id — _confirm_delivered
                                       # turns it into a READ receipt
     "reply_to": NotRequired[dict[str, Any]],  # FR-05: SNAPSHOT of the mail

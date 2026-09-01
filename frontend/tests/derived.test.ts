@@ -195,8 +195,12 @@ test('⑧  nothing on screen is retired on a clock', () => {
   assert.ok(/const retire: Partial<Convo> = \{\}/.test(src),
     'retirement still happens in one atomic patch with the payload')
   const desk = code('canvas/desk.tsx')
-  assert.ok(!/setInterval/.test(desk),
-    'the desk owns no timer of its own — the store does')
+  assert.equal((desk.match(/setInterval\(/g) ?? []).length, 1,
+    'the only desk timer is the shared completed-turn age clock')
+  assert.ok(/ageClockTimer = setInterval\(pulseAgeClock, 1000\)/.test(desk),
+    'the one allowed timer stopped being the shared age-label pulse')
+  assert.ok(!/_at < 5000|Date\.now\(\) - r\._at/.test(desk),
+    'the age-label clock must not revive live-row retirement')
 })
 
 // --------------------------------------------------------------------- ⑨
@@ -310,9 +314,13 @@ test('⑫  the canvas turn-end stamp reads TurnStat, never NodeStatus',
     assert.ok(m, 'lastTurn is no longer derived from node.turns — if the '
       + 'stamp moved to last_status.at, nodes that never self-report show '
       + 'nothing however many turns they run')
-    assert.ok(/!node\.busy && lastTurn/.test(src),
-      'the turnago badge lost its !busy gate — a stale "Nm ago" now renders '
-      + 'under a running turn, contradicting the activity indicator')
+    assert.ok(src.includes('<LastTurnAge turn={lastTurn} busy={node.busy}'),
+      'the canvas stopped using the shared authoritative turn-age component')
+    const desk = code('canvas/desk.tsx')
+    assert.ok(desk.includes('if (!turn || busy) return null'),
+      'the shared turn-age badge lost its busy/never-ran gate')
+    assert.ok(desk.includes('<LastTurnAge turn={lastTurn} busy={Boolean(node.busy || chat?.busy)}'),
+      'the focused desk stopped using the same turn-age source as the canvas')
     assert.ok(!/last_status\S*\.at/.test(code('canvas/cards.tsx')),
       'cards.tsx reads last_status.at — the glanceable stamp must come from '
       + 'TurnStat (see FR-23: NodeStatus.at depends on the agent having '

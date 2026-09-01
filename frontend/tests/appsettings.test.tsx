@@ -45,6 +45,7 @@ const g = globalThis as unknown as Record<string, unknown>
 function stubFetch(seen: Seen[], initial = ON): void {
   let warmingEnabled = true
   let workingCheckupsEnabled = true
+  let waitForMcpToolsEnabled = false
   g.fetch = (url: string, init?: RequestInit) => {
     const path = new URL(String(url), 'http://localhost').pathname
     const method = init?.method ?? 'GET'
@@ -52,20 +53,25 @@ function stubFetch(seen: Seen[], initial = ON): void {
     seen.push({ method, path, body })
     if (path === '/api/app-settings/runtime' && method === 'PUT') {
       const runtime = body as {
-        enabled?: boolean, working_checkups_enabled?: boolean
+        enabled?: boolean, working_checkups_enabled?: boolean,
+        wait_for_mcp_tools_enabled?: boolean
       }
       if (runtime.enabled !== undefined) warmingEnabled = runtime.enabled
       if (runtime.working_checkups_enabled !== undefined)
         workingCheckupsEnabled = runtime.working_checkups_enabled
+      if (runtime.wait_for_mcp_tools_enabled !== undefined)
+        waitForMcpToolsEnabled = runtime.wait_for_mcp_tools_enabled
     }
     const payload = path === '/api/accounts' ? ACCOUNTS
       : path === '/api/providers' ? initial
         : path === '/api/app-settings/runtime' && method === 'GET'
           ? { warming_enabled: warmingEnabled,
-              working_checkups_enabled: workingCheckupsEnabled }
+              working_checkups_enabled: workingCheckupsEnabled,
+              wait_for_mcp_tools_enabled: waitForMcpToolsEnabled }
           : path === '/api/app-settings/runtime' && method === 'PUT'
             ? { warming_enabled: warmingEnabled,
-                working_checkups_enabled: workingCheckupsEnabled }
+                working_checkups_enabled: workingCheckupsEnabled,
+                wait_for_mcp_tools_enabled: waitForMcpToolsEnabled }
         : path === '/api/providers/claude/enabled' && method === 'PUT'
           ? CLAUDE_OFF : null
     if (!payload) return Promise.reject(new Error(`unexpected ${method} ${path}`))
@@ -209,6 +215,17 @@ test('§4 Runtime reads and writes both machine-wide lifecycle controls', async 
       body: { working_checkups_enabled: false },
     })
     assert.match(view.el.textContent ?? '', /isolated Claude cache reads instead/)
+    const readiness = view.el.querySelector<HTMLInputElement>(
+      'input[aria-label="wait until the MCP tool surface is ready"]')!
+    assert.equal(readiness.checked, false, 'MCP readiness defaults off')
+    await inAct(async () => { readiness.click(); await flush(10) })
+    assert.equal(readiness.checked, true)
+    assert.deepEqual(seen.find((r) =>
+      (r.body as { wait_for_mcp_tools_enabled?: boolean } | null)
+        ?.wait_for_mcp_tools_enabled === true), {
+      method: 'PUT', path: '/api/app-settings/runtime',
+      body: { wait_for_mcp_tools_enabled: true },
+    })
   } finally { await view.unmount(); delete g.fetch }
 })
 

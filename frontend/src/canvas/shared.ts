@@ -13,7 +13,7 @@ import './lightbox'
 import { onLiveBump } from '../livebus'
 import type { DependencyList } from 'react'
 import type {
-  ActivityInfo, AskInfo, DirGrant, MailEntry, NodeState, NodeStatus,
+  ActivityInfo, AskInfo, CacheForecast, DirGrant, MailEntry, NodeState, NodeStatus,
   OpRequest, OpResult, ProviderInfo, ToolGrant, TreeNode, TreePayload,
 } from '../types'
 
@@ -286,6 +286,15 @@ export interface CanvasNode {
   proc_live?: boolean
   proc_relaunch?: boolean
   proc_relaunch_reason?: string | null
+  mcp_tool_count?: number | null
+  last_turn_mcp_tool_count?: number | null
+  mcp_tool_count_provider?: string
+  mcp_tool_count_source?: string | null
+  mcp_tool_count_reason?: string | null
+  mcp_readiness_waiting?: boolean
+  mcp_readiness_state?: string | null
+  mcp_readiness_reason?: string | null
+  cache_forecast?: CacheForecast | null
   /** G4: server-derived, from the supervisor's live tail (absent on the
    *  synthetic cards — eye root, draft, bearers — which never run turns) */
   activity?: ActivityInfo

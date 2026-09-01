@@ -444,6 +444,39 @@ class AppServerClient:
             self._initialized = True
             return dict(r)
 
+    def mcp_tool_names(self) -> list[str]:
+        """Exact MCP function names currently callable in this app-server.
+
+        ``mcpServerStatus/list`` is runtime evidence: unlike launch config it
+        reports each connected server's resolved ``tools`` map.  Pagination is
+        followed deterministically and built-in/dynamic tools never enter the
+        result.
+        """
+        names: set[str] = set()
+        cursor: str | None = None
+        seen: set[str] = set()
+        while True:
+            params = {"cursor": cursor} if cursor else {}
+            result = self.request("mcpServerStatus/list", params)
+            rows = result.get("data") or []
+            if isinstance(rows, list):
+                for row in rows:
+                    if not isinstance(row, dict):
+                        continue
+                    server = str(row.get("name") or "")
+                    tools = row.get("tools")
+                    if not server or not isinstance(tools, dict):
+                        continue
+                    for tool in tools:
+                        if isinstance(tool, str) and tool:
+                            names.add(f"mcp__{server}__{tool}")
+            nxt = result.get("nextCursor")
+            cursor = str(nxt) if nxt else None
+            if not cursor or cursor in seen:
+                break
+            seen.add(cursor)
+        return sorted(names)
+
     def bind(self, *,
              on_event: Callable[[dict[str, Any]], None] | None = None,
              tool_dispatch: Callable[[str, dict[str, Any]], str] | None = None,

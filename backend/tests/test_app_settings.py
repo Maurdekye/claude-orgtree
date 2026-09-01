@@ -62,6 +62,7 @@ def missing_means_on() -> None:
     assert appsettings.provider_choices() == {
         "claude": True, "openai": True, "google": True}
     assert appsettings.working_checkups_enabled() is True
+    assert appsettings.wait_for_mcp_tools_enabled() is False
 
 
 def explicit_values_round_trip() -> None:
@@ -198,14 +199,16 @@ def runtime_round_trip_uses_warm_flag() -> None:
     assert initial.status_code == 200, initial.text
     assert initial.json() == {
         "warming_enabled": True,
-        "working_checkups_enabled": True}, initial.json()
+        "working_checkups_enabled": True,
+        "wait_for_mcp_tools_enabled": False}, initial.json()
 
     off = client.put(
         "/api/app-settings/runtime", json={"enabled": False})
     assert off.status_code == 200, off.text
     assert off.json() == {
         "warming_enabled": False,
-        "working_checkups_enabled": True}, off.json()
+        "working_checkups_enabled": True,
+        "wait_for_mcp_tools_enabled": False}, off.json()
     assert open(flag, encoding="utf-8").read().strip() == "0"
     warmpool._FLAG_CACHE["at"] = 0.0
     assert warmpool.warm_enabled() is False
@@ -216,7 +219,8 @@ def runtime_round_trip_uses_warm_flag() -> None:
     assert checkups_off.status_code == 200, checkups_off.text
     assert checkups_off.json() == {
         "warming_enabled": False,
-        "working_checkups_enabled": False}, checkups_off.json()
+        "working_checkups_enabled": False,
+        "wait_for_mcp_tools_enabled": False}, checkups_off.json()
     assert appsettings.working_checkups_enabled() is False
 
     # Process warming has no preference mirror: warm.flag remains both its
@@ -230,13 +234,21 @@ def runtime_round_trip_uses_warm_flag() -> None:
     assert on.status_code == 200, on.text
     assert on.json() == {
         "warming_enabled": True,
-        "working_checkups_enabled": False}, on.json()
+        "working_checkups_enabled": False,
+        "wait_for_mcp_tools_enabled": False}, on.json()
     checkups_on = client.put(
         "/api/app-settings/runtime",
         json={"working_checkups_enabled": True})
     assert checkups_on.status_code == 200, checkups_on.text
     assert checkups_on.json()["working_checkups_enabled"] is True
     assert appsettings.working_checkups_enabled() is True
+    readiness_on = client.put(
+        "/api/app-settings/runtime",
+        json={"wait_for_mcp_tools_enabled": True})
+    assert readiness_on.status_code == 200, readiness_on.text
+    assert readiness_on.json()["wait_for_mcp_tools_enabled"] is True
+    assert appsettings.wait_for_mcp_tools_enabled() is True
+    assert appsettings.load(strict=True)["runtime"]["wait_for_mcp_tools"] is True
     denied = api._public_denied(
         "PUT", "/api/app-settings/runtime", "public-org")
     assert denied == (

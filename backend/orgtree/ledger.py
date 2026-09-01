@@ -6183,6 +6183,8 @@ class Org:
         return {"released": released,
                 "resume_texts": [str(t) for t in cast(
                     "list[Any]", (was or {}).get("resume_texts") or [])],
+                "resume_views": [str(t) for t in cast(
+                    "list[Any]", (was or {}).get("resume_views") or [])],
                 **({"warnings": warnings} if warnings else {})}
 
     def clear_fable_lock(self) -> None:
