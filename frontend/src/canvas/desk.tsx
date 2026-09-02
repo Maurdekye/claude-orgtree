@@ -576,12 +576,20 @@ export function CacheForecastMark({ forecast }: {
  * YELLOW. Red is reserved for a cost that is actually expected; this one may
  * well cost nothing at all.
  *
- * ⚠ IT IS DELIBERATELY NOT THRESHOLD-GATED. Case 2 rides `precompact_action`,
- * which the backend suppresses below its occupancy thresholds ("banner policy
- * is deliberately stricter than badge policy"). That makes it useless as a
- * signal here — it would silently withhold this warning in exactly the
- * low-occupancy cases the race still applies to. `cheapCompactOn` therefore
- * reads the compactor's own `enabled` flag, not the threshold decision.
+ * ⚠ IT IS THRESHOLD-GATED ON MEASURED CONTEXT (user ruling 2026-09-02 19:19Z,
+ * reversing 2dc8cbb's "deliberately not gated" stance): the same policy
+ * `_cache_precompact_decision` applies to case 2, computed here from the
+ * node's own numbers. Compactor OFF → only above the fixed 25% floor
+ * (strict). Compactor ON → only at or above the compactor's own configured
+ * threshold (`cheap_compact_occ`, inclusive — the destructive gate's
+ * minimum). Unmeasured or estimated context never passes: neither policy
+ * warns on a number it does not have. See `steerWarningGateOpen`.
+ *
+ * It is NOT gated on `precompact_action`, even though that carries the same
+ * policy: the backend computes that field only for proven-cold forecast
+ * states, and this banner also fires on the `uncertain/*` not_ready causes —
+ * riding it would silently withhold the warning in exactly those.
+ * `cheapCompactOn` likewise reads the compactor's own `enabled` flag.
  *
  * ⚠ `cheapCompactOn` IS TRI-STATE. `true`/`false` are the backend's verdict on
  * this node's compactor; `undefined` means the backend did not report one (a
@@ -603,18 +611,39 @@ export function CacheForecastMark({ forecast }: {
  * silently get the old behaviour back, and a missing gate here is invisible:
  * the banner looks identical whether it was reasoned about or forgotten.
  */
+/** The mid-turn banner's occupancy gate (see CacheForecastWarning). `ratio`
+ * is measured context as a fraction of the window, or null when there is no
+ * trustworthy measurement (empty, unmeasured, or a post-compaction estimate).
+ *
+ * Compactor ON without a reported threshold cannot come from a backend that
+ * emits `cheap_compact_on` at all — api.py sets both fields from one config
+ * read — so the 0.5 there is `_auto_cheap_cfg`'s own default, not a guess.
+ * An UNREPORTED compactor (older backend) gets the 25% floor: it is the lower
+ * of the two bars, and both policies agree nothing shows beneath it. */
+const steerWarningGateOpen = (ratio: number | null, on: boolean | undefined,
+  occ: number | null | undefined): boolean => {
+  if (ratio == null || !Number.isFinite(ratio)) return false
+  if (on === true) return ratio >= (typeof occ === 'number' ? occ : 0.5)
+  return ratio > 0.25
+}
+
 export function CacheForecastWarning({ forecast, midTurn, composerFocused,
-  cheapCompactOn }: {
+  cheapCompactOn, cheapCompactOcc, contextRatio }: {
   forecast?: CacheForecast | null
   midTurn: boolean
   composerFocused: boolean
   cheapCompactOn: boolean | undefined
+  /** the compactor's threshold fraction; null = off, undefined = unreported */
+  cheapCompactOcc: number | null | undefined
+  /** measured context / window, or null when unmeasured or estimated */
+  contextRatio: number | null
 }) {
   // "Readiness confirmed invalid" is `not_ready` and ONLY `not_ready`. A grey
   // diagnostic is the absence of a verdict, not a negative one (D-226), and
   // warning on it would be asserting something the backend declined to say.
   const invalid = Boolean(forecast) && readinessOf(forecast!) === 'not_ready'
-  if (forecast && midTurn && invalid && composerFocused) {
+  if (forecast && midTurn && invalid && composerFocused
+      && steerWarningGateOpen(contextRatio, cheapCompactOn, cheapCompactOcc)) {
     const title = cacheForecastTitle(forecast)
     return <div className="cache-send-warning midturn" role="status" title={title}>
       <WarnIcon fontSize="inherit" />
@@ -1241,6 +1270,13 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
   const contextOccupancy = chat?.occupancy ?? node.occupancy
   const contextEstimated = chat?.occupancy != null
     ? chat.occupancy_estimated : node.occupancy_est
+  // measured fill as a fraction of the window, for the mid-turn banner's
+  // gate; null (not 0) when there is nothing trustworthy to gate on, so the
+  // gate stays shut rather than reading "empty" as "below the floor"
+  const contextRatio = (!contextEstimated
+    && typeof contextOccupancy === 'number' && contextOccupancy > 0
+    && typeof node.context_window === 'number' && node.context_window > 0)
+    ? contextOccupancy / node.context_window : null
   const turnActive = Boolean(node.busy || node.waiting
     || node.phase === 'compacting' || chat?.busy)
   // Waiting for a slot and compacting are desk activity, but neither proves
@@ -1820,7 +1856,8 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
           A queued or compacting agent has no window to miss. */}
       <CacheForecastWarning forecast={node.cache_forecast}
         midTurn={processActive} composerFocused={composerFocused}
-        cheapCompactOn={node.cheap_compact_on} />
+        cheapCompactOn={node.cheap_compact_on}
+        cheapCompactOcc={node.cheap_compact_occ} contextRatio={contextRatio} />
       <div className={'cc-composer' + (canMail ? '' : ' off')}>
         <button className="cc-attach" disabled={!canMail}
           title="attach a file — it lands in the agent's uploads/ folder"

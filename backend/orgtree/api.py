@@ -1326,8 +1326,16 @@ def org_tree(slug: str, request: Request) -> dict[str, Any]:
         # setting merged with this node's own scope override, and only
         # `_auto_cheap_cfg` knows that. Passing the org value down instead
         # would render the wrong sentence on every node that overrides it.
-        node["cheap_compact_on"] = (
-            supervisor._auto_cheap_cfg(org, node["id"]) is not None)
+        _cheap_cfg = supervisor._auto_cheap_cfg(org, node["id"])
+        node["cheap_compact_on"] = _cheap_cfg is not None
+        # …and the compactor's own occupancy threshold, because the same
+        # banner is threshold-gated (user ruling 2026-09-02 19:19Z): with the
+        # compactor on it shows only at or above THIS fraction (the
+        # destructive gate's inclusive minimum, `_auto_cheap_context_ready`);
+        # off, only above the fixed 25% floor `_cache_precompact_decision`
+        # uses. None when the compactor is off — there is no threshold then.
+        node["cheap_compact_occ"] = (
+            float(_cheap_cfg["occ"]) if _cheap_cfg else None)
         # concurrently running subagents (Task/Agent tool calls in flight) —
         # the desk header shows it beside the working clock, only when > 0
         node["tasks"] = int(st.get("tasks") or 0)

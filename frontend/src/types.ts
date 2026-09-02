@@ -339,6 +339,11 @@ export interface TreeNode {
    *  with its own scope override) — resolved backend-side, because the
    *  org value alone would be wrong on any node that overrides it. */
   cheap_compact_on?: boolean
+  /** the compactor's occupancy threshold (fraction, 0.05..0.95) for THIS
+   *  node; null when the compactor is off, absent on a backend that does
+   *  not report it. The mid-turn banner gates on it (user ruling
+   *  2026-09-02 19:19Z). */
+  cheap_compact_occ?: number | null
   waiting: boolean
   responding: boolean
   phase: string | null

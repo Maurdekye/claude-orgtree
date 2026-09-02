@@ -330,7 +330,12 @@ test('internal_error is reserved for a verdict nothing can read, and it always s
 // The original past-threshold warning is UNCHANGED by the mid-turn case; it is
 // simply not mid-turn. `idle` spells that out at every call so the two cases
 // stay visibly distinct in these tests.
-const idle = { midTurn: false, composerFocused: false, cheapCompactOn: false }
+const idle = { midTurn: false, composerFocused: false, cheapCompactOn: false,
+  cheapCompactOcc: null, contextRatio: 0.6 }
+// A gate that is OPEN under both policies (above the 25% floor and at or
+// above a 0.5 threshold), so tests about the SENTENCE are not also tests
+// about the gate. The gate has its own test below.
+const gateOpen = { cheapCompactOcc: 0.5, contextRatio: 0.6 }
 
 test('only known-cold states warn at send time with policy-owned colour', async () => {
   const view = await mountView(<>
@@ -357,7 +362,7 @@ test('only known-cold states warn at send time with policy-owned colour', async 
 })
 
 test('mid-turn + invalid readiness + focused composer warns about the steer window', async () => {
-  const mid = { midTurn: true, composerFocused: true }
+  const mid = { midTurn: true, composerFocused: true, ...gateOpen }
   const view = await mountView(<>
     {/* compactor ON → the miss costs a cheap-compact */}
     <CacheForecastWarning {...mid} cheapCompactOn
@@ -399,7 +404,7 @@ test('the mid-turn warning needs all three conditions, and overrides the origina
   const cases: Array<[string, ReactElement, 'midturn' | 'compact' | 'none']> = [
     ['all three → mid-turn banner, overriding the threshold banner',
       <CacheForecastWarning forecast={cold} midTurn composerFocused
-        cheapCompactOn />, 'midturn'],
+        cheapCompactOn {...gateOpen} />, 'midturn'],
     // ⚠ the override direction matters: this same forecast WOULD have produced
     // the original yellow "sending will cheap-compact" banner. Mid-turn it must
     // not, because that sentence describes a send that starts a turn.
@@ -411,18 +416,18 @@ test('the mid-turn warning needs all three conditions, and overrides the origina
     // rather than trivially passing on a forecast that warns about nothing.
     ['mid-turn but unfocused → silence, not the original banner',
       <CacheForecastWarning forecast={cold} midTurn composerFocused={false}
-        cheapCompactOn />, 'none'],
+        cheapCompactOn {...gateOpen} />, 'none'],
     ['not mid-turn → falls back to the ORIGINAL banner, unchanged',
       <CacheForecastWarning forecast={cold} midTurn={false} composerFocused
-        cheapCompactOn />, 'compact'],
+        cheapCompactOn {...gateOpen} />, 'compact'],
     // grey is the ABSENCE of a verdict, not a negative one (D-226) — warning
     // on it would assert something the backend declined to say.
     ['grey diagnostic readiness is not "confirmed invalid"',
       <CacheForecastWarning forecast={forecast('uncertain')} midTurn
-        composerFocused cheapCompactOn />, 'none'],
+        composerFocused cheapCompactOn {...gateOpen} />, 'none'],
     ['a ready forecast never warns',
       <CacheForecastWarning forecast={forecast('compatible_observed')} midTurn
-        composerFocused cheapCompactOn />, 'none'],
+        composerFocused cheapCompactOn {...gateOpen} />, 'none'],
   ]
   for (const [label, el, want] of cases) {
     const view = await mountView(el, (v) => v)
@@ -431,6 +436,72 @@ test('the mid-turn warning needs all three conditions, and overrides the origina
       if (want === 'none') { assert.equal(w, null, label); continue }
       assert.ok(w, label)
       assert.equal(w?.classList.contains(want), true, label)
+    } finally { await view.unmount() }
+  }
+})
+
+// User ruling 2026-09-02 19:19Z: "if compactor off, only show sentence above
+// 25% context usage. if on, show only above compact threshold." This is the
+// backend's own case-2 policy (`_cache_precompact_decision`: strict 25% floor
+// when off, the compactor's inclusive threshold when on) applied to the
+// mid-turn banner from the node's own numbers. Every case below is otherwise
+// fully armed — mid-turn, focused, confirmed-invalid — so the gate is the
+// only thing deciding.
+test('the mid-turn warning is gated on measured context by the compactor policy', async () => {
+  const armed = { forecast: forecast('known_incompatible'), midTurn: true,
+    composerFocused: true }
+  const cases: Array<[string, ReactElement, boolean]> = [
+    // compactor OFF: strict 25% floor, exactly as the backend applies it
+    ['off, 25% exactly → shut (strict, like the backend)',
+      <CacheForecastWarning {...armed} cheapCompactOn={false}
+        cheapCompactOcc={null} contextRatio={0.25} />, false],
+    ['off, just above 25% → open',
+      <CacheForecastWarning {...armed} cheapCompactOn={false}
+        cheapCompactOcc={null} contextRatio={0.251} />, true],
+    ['off, 10% → shut',
+      <CacheForecastWarning {...armed} cheapCompactOn={false}
+        cheapCompactOcc={null} contextRatio={0.1} />, false],
+    // compactor ON: the node's OWN threshold, inclusive (the destructive
+    // gate's minimum) — not the 25% floor, and not a hard-coded 50%
+    ['on, threshold 0.5, 49% → shut',
+      <CacheForecastWarning {...armed} cheapCompactOn
+        cheapCompactOcc={0.5} contextRatio={0.49} />, false],
+    ['on, threshold 0.5, 50% exactly → open (inclusive)',
+      <CacheForecastWarning {...armed} cheapCompactOn
+        cheapCompactOcc={0.5} contextRatio={0.5} />, true],
+    ['on, threshold 0.9, 60% → shut (above the floor is not enough)',
+      <CacheForecastWarning {...armed} cheapCompactOn
+        cheapCompactOcc={0.9} contextRatio={0.6} />, false],
+    ['on, threshold 0.9, 95% → open',
+      <CacheForecastWarning {...armed} cheapCompactOn
+        cheapCompactOcc={0.9} contextRatio={0.95} />, true],
+    ['on, threshold unreported → the compactor default 0.5 (49% shut)',
+      <CacheForecastWarning {...armed} cheapCompactOn
+        cheapCompactOcc={undefined} contextRatio={0.49} />, false],
+    ['on, threshold unreported → the compactor default 0.5 (50% open)',
+      <CacheForecastWarning {...armed} cheapCompactOn
+        cheapCompactOcc={undefined} contextRatio={0.5} />, true],
+    // compactor UNREPORTED (older backend): the 25% floor, the lower bar
+    ['unreported, 20% → shut',
+      <CacheForecastWarning {...armed} cheapCompactOn={undefined}
+        cheapCompactOcc={undefined} contextRatio={0.2} />, false],
+    ['unreported, 30% → open',
+      <CacheForecastWarning {...armed} cheapCompactOn={undefined}
+        cheapCompactOcc={undefined} contextRatio={0.3} />, true],
+    // no trustworthy measurement: neither policy warns on a number it does
+    // not have (the backend refuses the same way — "empty or unmeasured",
+    // "only estimated")
+    ['unmeasured context → shut, whatever the compactor',
+      <CacheForecastWarning {...armed} cheapCompactOn={false}
+        cheapCompactOcc={null} contextRatio={null} />, false],
+  ]
+  for (const [label, el, want] of cases) {
+    const view = await mountView(el, (v) => v)
+    try {
+      const w = view.el.querySelector<HTMLElement>('.cache-send-warning')
+      if (!want) { assert.equal(w, null, label); continue }
+      assert.ok(w, label)
+      assert.equal(w?.classList.contains('midturn'), true, label)
     } finally { await view.unmount() }
   }
 })
