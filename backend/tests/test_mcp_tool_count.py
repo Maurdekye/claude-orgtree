@@ -519,6 +519,88 @@ class McpToolCountTests(unittest.TestCase):
             S._mcp_tool_surface_for_owner(self.slug, self.nid, live),
             (2, ["mcp__orgtree__one", "mcp__orgtree__two"]))
 
+    class _ReapingLock:
+        """`_state_lock` stand-in that fires a spurious EOF as it is taken.
+
+        Makes the pre-lock window deterministic: the reap has to land AFTER
+        `_mcp_tool_count_names` has read the owner and probed liveness, and
+        BEFORE it takes the lock it acts under.
+
+        Keyed on the Nth acquisition, not the first, and the number matters.
+        `_mcp_tool_count_names` opens with `st = state(slug, nid)`, which takes
+        this same lock — firing there would reap the generation before the
+        pre-lock read, so the gated implementation would see "already reaped",
+        probe, and recover. The test would pass against the bug it exists to
+        catch. Acquisition 2 is the `with _state_lock:` inside the function,
+        under both the gated and the ungated shape.
+
+        One shot, and it fires BEFORE acquiring the real lock, so the nested
+        acquisitions inside `_mcp_tool_count_end` cannot deadlock the plain
+        `threading.Lock` it stands in for.
+        """
+
+        def __init__(self, real, fire, on=2):                # noqa: ANN001
+            self._real, self._fire, self._on = real, fire, on
+            self._n = 0
+
+        def __enter__(self):                                 # noqa: ANN204
+            self._n += 1
+            if self._n == self._on:
+                self._fire()
+            return self._real.__enter__()
+
+        def __exit__(self, *exc):                            # noqa: ANN002
+            return self._real.__exit__(*exc)
+
+    def test_an_eof_inside_the_pre_lock_window_still_recovers(self) -> None:
+        """The liveness probe may not be gated on a dirty pre-lock read.
+
+        `_mcp_tool_count_names` observes liveness outside `_state_lock` so that
+        a subprocess syscall never sets the lock's hold time. Gating that probe
+        on an unlocked "does this generation already look reaped?" read put the
+        defect back in a smaller window, which is the whole finding: the read
+        sees the owner still current, so no probe runs and `owner_running`
+        stays False; a spurious EOF then reaps the generation before the lock
+        is taken, the recovery branch IS entered, and it refuses a live process
+        on the strength of a liveness answer that was never asked for.
+
+        Self-healing on the next publish — and on the Claude lane there may not
+        be one, because stdout EOF is the trigger and every publisher reads
+        stdout. Probing unconditionally removes the window instead of narrowing
+        it, at the cost of one non-blocking `poll()` on an init-or-refresh
+        event.
+        """
+        live = self._Proc(2718)
+        S._mcp_tool_count_begin(
+            self.slug, self.nid, live, "claude", "system/init.tools", "start")
+        S._mcp_tool_count_names(
+            self.slug, self.nid, live, ["mcp__orgtree__one"], "claude",
+            "system/init.tools")
+
+        saved = S._state_lock
+        S._state_lock = self._ReapingLock(
+            saved,
+            lambda: S._mcp_tool_count_end(
+                self.slug, self.nid, live, "pump saw EOF"))
+        try:
+            accepted = S._mcp_tool_count_names(
+                self.slug, self.nid, live,
+                ["mcp__orgtree__one", "mcp__orgtree__two"], "claude",
+                "system/init.tools")
+        finally:
+            S._state_lock = saved
+
+        st = S.state(self.slug, self.nid)
+        self.assertTrue(
+            accepted,
+            "a live process that spoke was refused because the reap landed in "
+            "the window the liveness gate could not see")
+        self.assertIs(st.get("mcp_tool_owner"), live)
+        self.assertEqual(st.get("mcp_readiness_state"), "recovered")
+        self.assertEqual(
+            S._mcp_tool_surface_for_owner(self.slug, self.nid, live),
+            (2, ["mcp__orgtree__one", "mcp__orgtree__two"]))
+
     def test_a_truly_dead_owner_is_never_revived(self) -> None:
         """Recovery proves liveness or refuses. Negative control."""
         dead = self._Proc(5150)
