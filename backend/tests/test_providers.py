@@ -278,10 +278,11 @@ def main():
     pay = providers.providers_payload({"installed": True, "connected": True})
     # grew to three at D-184 — the antigravity entry's own behaviour is
     # test_antigravity_providers.py's; here it only has to hold its place in
-    # line
-    check("exactly three providers, claude first",
+    # line. Four since 2026-09-02: openrouter, the API-backed lane, LAST — its
+    # own behaviour is test_openrouter.py's
+    check("exactly four providers, claude first, openrouter last",
           lambda: eq([p["id"] for p in pay["providers"]],
-                     ["claude", "openai", "google"], "order"))
+                     ["claude", "openai", "google", "openrouter"], "order"))
     codex = next(p for p in pay["providers"] if p["id"] == "openai")
     # FLIPPED at the MVP (M1–M8 standing): the vision live — a CONNECTED CLI
     # is a hireable provider, the same predicate the api hire gate enforces.

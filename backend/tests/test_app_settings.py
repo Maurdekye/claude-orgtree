@@ -60,7 +60,7 @@ print("\n§1  persistence and defaults")
 def missing_means_on() -> None:
     assert not os.path.exists(appsettings.path())
     assert appsettings.provider_choices() == {
-        "claude": True, "openai": True, "google": True}
+        "claude": True, "openai": True, "google": True, "openrouter": True}
     assert appsettings.working_checkups_enabled() is True
     assert appsettings.wait_for_mcp_tools_enabled() is False
 

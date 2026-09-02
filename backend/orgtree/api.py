@@ -2443,6 +2443,94 @@ async def provider_preference(
     return await run_in_threadpool(_providers_payload)
 
 
+# ── the OpenRouter lane's own doors (2026-09-02) ───────────────────────────
+# Machine-wide like the provider switch above: the key, the favorites and the
+# catalog belong to this MACHINE, never to an org. Nothing here returns the
+# key — the status document says `key_set` and what openrouter.ai answered.
+
+class OpenRouterKey(Body):
+    key: str
+
+
+class OpenRouterFavorite(Body):
+    id: str
+    selected: bool
+
+
+def _openrouter_doc(force: bool = False) -> dict[str, Any]:
+    from . import openrouter                    # noqa: PLC0415 — one lane
+    st = openrouter.status(force)
+    st["tiers"] = openrouter.tier_infos()
+    st["user_enabled"] = appsettings.provider_enabled(openrouter.PROVIDER_ID)
+    return st
+
+
+@app.get("/api/openrouter")
+async def openrouter_status(force: bool = False) -> dict[str, Any]:
+    """Key standing (secret-free), credits, and the favorites as tier rows.
+    `force` re-asks openrouter.ai past the 60s cache (the panel's refresh)."""
+    from fastapi.concurrency import run_in_threadpool
+    return await run_in_threadpool(_openrouter_doc, force)
+
+
+@app.put("/api/openrouter/key")
+async def openrouter_set_key(body: OpenRouterKey) -> dict[str, Any]:
+    """Store the machine-wide key; answers with the fresh standing so the
+    panel can show 'connected · label · credits' or the rejection at once."""
+    from . import openrouter                    # noqa: PLC0415
+    from fastapi.concurrency import run_in_threadpool
+    try:
+        await run_in_threadpool(openrouter.set_key, body.key)
+    except openrouter.OpenRouterError as e:
+        raise HTTPException(422, str(e)) from e
+    except OSError as e:
+        raise HTTPException(500, str(e)) from e
+    return await run_in_threadpool(_openrouter_doc, True)
+
+
+@app.delete("/api/openrouter/key")
+async def openrouter_clear_key() -> dict[str, Any]:
+    from . import openrouter                    # noqa: PLC0415
+    from fastapi.concurrency import run_in_threadpool
+    try:
+        await run_in_threadpool(openrouter.set_key, "")
+    except OSError as e:
+        raise HTTPException(500, str(e)) from e
+    return await run_in_threadpool(_openrouter_doc, True)
+
+
+@app.get("/api/openrouter/models")
+async def openrouter_models(q: str = "", offset: int = 0,
+                            limit: int = 8) -> dict[str, Any]:
+    """The picker's page over the catalog (5–10 rows, user spec). A cold
+    catalog costs one GET to openrouter.ai, which is why this is
+    threadpooled; a dead network with a stale disk copy still answers."""
+    from . import openrouter                    # noqa: PLC0415
+    from fastapi.concurrency import run_in_threadpool
+    try:
+        return await run_in_threadpool(openrouter.search, q, offset, limit)
+    except openrouter.OpenRouterError as e:
+        raise HTTPException(502, str(e)) from e
+
+
+@app.put("/api/openrouter/favorites")
+async def openrouter_favorite(body: OpenRouterFavorite) -> dict[str, Any]:
+    """Select (adopt as a hireable tier) or deselect (stop offering) one
+    catalog model. Model ids carry a `/`, hence a body rather than a path."""
+    from . import openrouter                    # noqa: PLC0415
+    from fastapi.concurrency import run_in_threadpool
+    try:
+        if body.selected:
+            await run_in_threadpool(openrouter.add_favorite, body.id)
+        else:
+            await run_in_threadpool(openrouter.remove_favorite, body.id)
+    except openrouter.OpenRouterError as e:
+        raise HTTPException(422, str(e)) from e
+    except OSError as e:
+        raise HTTPException(500, str(e)) from e
+    return await run_in_threadpool(_openrouter_doc)
+
+
 class RuntimePreference(Body):
     # `enabled` is the established process-warming wire key. Keep it stable;
     # the explicit second key lets either control change without rewriting the
@@ -6040,10 +6128,12 @@ def provider_hire_gate(
     """
     if not tier:
         return
+    from . import openrouter                   # noqa: PLC0415 — one lane
     provider_id = (
         "google" if tier in providers.ANTIGRAVITY_TIERS
         else "openai" if tier in providers.CODEX_TIERS
         else "claude" if tier in providers.CLAUDE_TIERS
+        else openrouter.PROVIDER_ID if openrouter.is_tier(tier)
         else None)
     if provider_id and not appsettings.provider_enabled(provider_id):
         label = providers.PROVIDER_LABEL[provider_id]
@@ -6051,6 +6141,35 @@ def provider_hire_gate(
             f"tier '{tier}' is a {label} tier and {label} is turned off "
             "in App settings → Providers")
     if user_choice_only:
+        return
+    if openrouter.is_tier(tier):
+        # the API-backed lane (2026-09-02): "installed" is a stored key,
+        # "connected" is openrouter.ai having accepted it (60s cache, one
+        # small GET — never a spawn). A favorite that was DESELECTED stays
+        # a valid tier in any org doc that carries it (add-only tables, so
+        # the plain-rehire door above still recovers such a node) but is no
+        # longer OFFERED here: deselecting means "stop offering", not evict.
+        ost = openrouter.status()
+        if not ost.get("key_set"):
+            raise LedgerError(
+                f"tier '{tier}' is an OpenRouter tier and no OpenRouter API "
+                f"key is set — {providers.install_hint(openrouter.PROVIDER_ID)}")
+        if not ost.get("connected"):
+            raise LedgerError(
+                f"tier '{tier}' is an OpenRouter tier and openrouter.ai did "
+                f"not accept the stored key — {ost.get('reason')}")
+        if openrouter.favorite_for_tier(tier) is None:
+            raise LedgerError(
+                f"tier '{tier}' is not among the OpenRouter favorites — "
+                "select the model in App settings → Providers first")
+        if org.d.get("kiosk"):
+            raise LedgerError(
+                "kiosk orgs cannot hire OpenRouter tiers yet — the lane is "
+                "held out of kiosks until its sandboxing is settled (the "
+                "same holdout as codex and antigravity, user ruling "
+                "2026-08-28)")
+        # headless orgs may hire: an API key IS a keyed provider (user
+        # ruling 2026-08-28), and this lane has no other login kind
         return
     if tier in providers.ANTIGRAVITY_TIERS:
         ast = providers.antigravity_status()

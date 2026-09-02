@@ -532,6 +532,20 @@ class Org:
             cur = cast("dict[str, Any]", _doc.setdefault(key, {}))
             for k, v in table.items():
                 cur.setdefault(k, v)
+        # ☞ …and the DYNAMIC half of the vocabulary (2026-09-02): OpenRouter
+        # favorites are tiers the user mints at runtime (openrouter.py — tier
+        # `or-<model>`, seat by the same §3.1 rule), so they reach every org
+        # through THIS hook, by the same add-only rule and for the same
+        # reason: a favorite added after an org was created must be hireable
+        # in it, and a favorite later DESELECTED must keep its row (a node
+        # hired on it still holds that seat at that price). Deferred import:
+        # openrouter imports store only, but ledger's own import graph stays
+        # minimal (the providers precedent below).
+        from . import openrouter as _orr        # noqa: PLC0415
+        for key, table in (("tiers", _orr.tiers()), ("models", _orr.models())):
+            cur = cast("dict[str, Any]", _doc.setdefault(key, {}))
+            for k, v in table.items():
+                cur.setdefault(k, v)
         # ☞ a price CHANGE (not an addition) needs its own migration under
         # the add-only rule: sonnet 3 → 2 (user ruling 2026-08-12, $2/M input
         # locked in). Only the OLD SHIPPED DEFAULT migrates — any other value

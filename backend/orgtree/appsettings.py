@@ -27,7 +27,10 @@ from . import store
 
 VERSION: Final = 1
 FILE_NAME: Final = "app-settings.json"
-PROVIDERS: Final = frozenset({"claude", "openai", "google"})
+#: "openrouter" (2026-09-02) is the first API-backed lane — same on/off
+#: switch as the CLI providers; its key lives in openrouter.py's own state
+#: file, never here
+PROVIDERS: Final = frozenset({"claude", "openai", "google", "openrouter"})
 _LOCK = threading.RLock()
 
 

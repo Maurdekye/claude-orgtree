@@ -43,7 +43,7 @@ import sys
 import time
 from typing import Any, Final, TypedDict
 
-from . import appsettings
+from . import appsettings, openrouter
 from .ledger import MODELS as _LEDGER_MODELS
 from .ledger import TIERS as _LEDGER_TIERS
 
@@ -154,6 +154,11 @@ def provider_of(tier: str) -> str:
         return "openai"
     if tier in ANTIGRAVITY_TIERS:
         return "google"
+    # the API-backed lane (2026-09-02): OpenRouter favorites are DYNAMIC
+    # tiers, so membership is the `or-` prefix rather than a table — a prefix
+    # no static tier carries, checked here without touching the registry file
+    if openrouter.is_tier(tier):
+        return openrouter.PROVIDER_ID
     return "claude"
 
 
@@ -166,7 +171,10 @@ def provider_of(tier: str) -> str:
 #: in the accounts panel cannot come to disagree about what a provider is
 #: called.
 PROVIDER_LABEL: Final[dict[str, str]] = {
-    "claude": "Claude", "openai": "Codex", "google": "Antigravity"}
+    "claude": "Claude", "openai": "Codex", "google": "Antigravity",
+    # the gateway's own name — there is no CLI whose product name could
+    # apply, and "OpenRouter" is what the user typed a key into
+    openrouter.PROVIDER_ID: openrouter.PROVIDER_LABEL}
 
 
 def provider_label(tier: str) -> str:
@@ -201,6 +209,9 @@ def install_hint(provider: str) -> str:
         return ("winget install Google.AntigravityCLI" if os.name == "nt"
                 else "curl -fsSL https://antigravity.google/cli/install.sh "
                      "| bash")
+    if provider == openrouter.PROVIDER_ID:
+        # nothing to install: the "install" of an API-backed lane is a key
+        return "add an OpenRouter API key in App settings → Providers"
     return "npm install -g @anthropic-ai/claude-code"
 
 
@@ -803,10 +814,12 @@ def providers_payload(claude_status: dict[str, Any]) -> dict[str, Any]:
     reserve = (reserve_availability(codex) if codex.get("connected")
                else offline)
     antigravity = antigravity_status()
+    orr = openrouter.status()
     choices = appsettings.provider_choices()
     claude_on = choices["claude"]
     codex_on = choices["openai"]
     antigravity_on = choices["google"]
+    orr_on = choices.get(openrouter.PROVIDER_ID, True)
     off_reason = "turned off in App settings → Providers"
     return {"providers": [
         {
@@ -903,5 +916,30 @@ def providers_payload(claude_status: dict[str, Any]) -> dict[str, Any]:
                 if antigravity.get("installed")
                 else "Antigravity CLI not installed — "
                      f"{install_hint('google')}"),
+        },
+        {
+            # the API-BACKED lane (user go-ahead 2026-09-02). No CLI: the
+            # `installed`/`connected` vocabulary is mapped honestly by
+            # openrouter.status() — installed = a key is stored, connected =
+            # openrouter.ai accepted it. Its tiers are the user's FAVORITES,
+            # each carrying the letter and canonical color the hire surfaces
+            # draw (there is no static per-tier CSS for ~425 models), and the
+            # list is empty until the user picks some — an empty family is a
+            # disabled row with a reason, never a hidden one.
+            "id": openrouter.PROVIDER_ID,
+            "label": PROVIDER_LABEL[openrouter.PROVIDER_ID],
+            "cli": "REST API (via Claude Code)",
+            "tiers": openrouter.tier_infos(),
+            "status": orr,
+            "hire_enabled": bool(orr_on and orr.get("connected")
+                                 and orr.get("favorites")),
+            "user_enabled": orr_on,
+            "reason": (
+                off_reason if not orr_on
+                else None if orr.get("connected") and orr.get("favorites")
+                else "no favorite models yet — pick some in App settings "
+                     "→ Providers"
+                if orr.get("connected")
+                else str(orr.get("reason") or install_hint(openrouter.PROVIDER_ID))),
         },
     ]}

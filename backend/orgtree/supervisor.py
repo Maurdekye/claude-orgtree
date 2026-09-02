@@ -41,8 +41,8 @@ from typing import Any, Final, cast
 
 from . import (accounts, appsettings, cachecontinuity, clipin, codex_limits,
                deployment, envelope, imgblock,
-               limits, net, providers, sandbox as sbx, store, tokens,
-               turnusage, warmpool)
+               limits, net, openrouter, providers, sandbox as sbx, store,
+               tokens, turnusage, warmpool)
 from .ledger import EXTERN, SYSTEM, USER, LedgerError, Org, expand_mcp, now as now_iso
 from .schema import (Denial, FrozenInfo, InflightInfo, KioskCfg, MailEntry,
                      NodeDoc, NoticeEntry, TurnStat)
@@ -223,6 +223,22 @@ try:
     TIER_CONTEXT.update(json.loads(os.environ.get("ORGTREE_CONTEXT_WINDOWS") or "{}"))
 except (json.JSONDecodeError, TypeError):
     pass
+
+
+def tier_context(tier: str) -> int | None:
+    """The pinned context window for `tier`: the static table above for the
+    CLI providers' tiers, the favorite's catalog `context_length` for an
+    OpenRouter tier (2026-09-02 — those tiers are minted at runtime, so no
+    import-time table can carry them). The env override still wins for any
+    tier it names, static or not."""
+    cw = TIER_CONTEXT.get(tier)
+    if cw:
+        return cw
+    if openrouter.is_tier(tier):
+        return openrouter.contexts().get(tier)
+    return None
+
+
 BACKEND_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), ".."))
 
 # the Claude Code CLI. Resolution order: ORGTREE_CLAUDE > the private agent
@@ -2553,6 +2569,38 @@ def spawn_env(org: Org, tier: str | None = None,
     env["CLAUDE_CODE_DEBUG_LOG_LEVEL"] = "warn"
     if nid is not None:
         env.update(env_overrides(org.d["slug"], nid))
+    if tier and openrouter.is_tier(tier):
+        # THE OPENROUTER LANE (user go-ahead 2026-09-02): Claude Code is the
+        # harness and openrouter.ai the endpoint — OpenRouter's own Claude
+        # Code cookbook, verbatim: the Anthropic-compatible base URL, the key
+        # as the AUTH TOKEN, and ANTHROPIC_API_KEY explicitly EMPTY (inside
+        # the CLI a non-empty key wins over the token). Every Anthropic model
+        # class the CLI could reach for on its own (subagent, background
+        # haiku calls) is pinned to the SAME OpenRouter model id the node was
+        # hired on, so nothing in the turn silently bills a different model.
+        # The org's own Anthropic key and the account lanes are BOTH
+        # bypassed: one spawn, one credential, and this spawn's is
+        # OpenRouter's. A missing key fails HERE, loudly, rather than falling
+        # through to the subscription with an `anthropic/…` model id the
+        # real Anthropic API would refuse somewhere out on the network.
+        k = openrouter._key()
+        if not k:
+            raise RuntimeError(
+                "turn failed: this agent runs on an OpenRouter tier and no "
+                "OpenRouter API key is set — "
+                f"{providers.install_hint(openrouter.PROVIDER_ID)}")
+        env["ANTHROPIC_BASE_URL"] = openrouter.ANTHROPIC_BASE
+        env["ANTHROPIC_AUTH_TOKEN"] = k
+        env["ANTHROPIC_API_KEY"] = ""
+        model = org.model_for(nid) if nid is not None else ""
+        if model:
+            for var in ("ANTHROPIC_DEFAULT_FABLE_MODEL",
+                        "ANTHROPIC_DEFAULT_OPUS_MODEL",
+                        "ANTHROPIC_DEFAULT_SONNET_MODEL",
+                        "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+                        "CLAUDE_CODE_SUBAGENT_MODEL"):
+                env[var] = model
+        return env
     key = str(org.d.get("api_key") or "")
     if key:
         # api_fallback (user feature 2026-08-17): with the option ON the key
@@ -12221,7 +12269,7 @@ def _after_turn(slug: str, nid: str, org: Org, res: dict[str, Any],
                        and mcp_fingerprint_raw else None)
     # the pinned per-tier window wins; the CLI's modelUsage.contextWindow is
     # only a fallback for unknown tiers (it under-reported 1M models as 200k)
-    cw = TIER_CONTEXT.get(org.node(nid)["model"])
+    cw = tier_context(str(org.node(nid)["model"]))
     if not cw:
         for mu in (res.get("modelUsage") or {}).values():
             cw = mu.get("contextWindow") or cw
@@ -18421,7 +18469,7 @@ def context_window(n: NodeDoc | dict[str, Any]) -> int | None:
     # Ledger documents call the field `model`; API tree projections call the
     # same tier `tier`. Accept both so every surface derives one answer.
     tier = str(n.get("model") or n.get("tier") or "")
-    return TIER_CONTEXT.get(tier) or n.get("context_window")
+    return tier_context(tier) or n.get("context_window")
 
 
 def session_occupancy(org: Org, nid: str,

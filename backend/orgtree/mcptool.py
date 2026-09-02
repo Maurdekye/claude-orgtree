@@ -12,6 +12,7 @@ Run: python -m orgtree.mcptool   (spawned by Claude Code via --mcp-config)
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import sys
@@ -1180,7 +1181,8 @@ TOOLS: list[dict[str, Any]] = [
             "fable 10 (Claude); gpt-reserve 1 · luna 1 · terra 2 · sol 5 "
             "(Codex, needs the "
             "CLI signed in); flash 1 · pro 2 (Antigravity, needs the CLI "
-            "signed in)."),
+            "signed in); any `or-…` tier listed in this card's enum is an "
+            "OpenRouter favorite (seat = its $/M input, floored to 1)."),
         "inputSchema": {"type": "object",
                         "properties": {"node": {"type": "string"},
                                        "tier": {"type": "string",
@@ -1230,13 +1232,48 @@ _AGENT_RESTART_TOOLS = frozenset({
 })
 
 
+#: the two cards whose `tier` enum must also offer the DYNAMIC tiers
+_TIER_CARDS = frozenset({"orgtree_hire", "orgtree_switch_model"})
+
+
+def _with_dynamic_tiers(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Grow the hire/switch `tier` enums with the OpenRouter favorites
+    (2026-09-02) AT SERVE TIME. The cards stay dependency-free and
+    hand-written for the static vocabulary (their test pins that enum to
+    ledger.TIERS), but a favorite is a tier the user minted a minute ago, so
+    the only honest enum is the one computed when `tools/list` is answered —
+    a static list would refuse every `or-…` tier as a schema violation before
+    the server ever saw the call. Deep-copied: the module constant must never
+    grow entries that outlive a deselected favorite."""
+    from . import openrouter                   # noqa: PLC0415 — one lane
+    extra = sorted(openrouter.tiers())
+    if not extra:
+        return tools
+    out: list[dict[str, Any]] = []
+    for tool in tools:
+        if str(tool.get("name") or "") not in _TIER_CARDS:
+            out.append(tool)
+            continue
+        tool = copy.deepcopy(tool)
+        props = cast("dict[str, Any]", tool["inputSchema"]["properties"])
+        tier = cast("dict[str, Any]", props["tier"])
+        enum = cast("list[str]", tier.get("enum") or [])
+        tier["enum"] = enum + [t for t in extra if t not in enum]
+        tier["description"] = (
+            "static tiers, plus the OpenRouter favorites this machine offers "
+            "(`or-…`, seat = their $/M input floored to 1): " + ", ".join(extra))
+        out.append(tool)
+    return out
+
+
 def available_tools() -> list[dict[str, Any]]:
     """The tool catalogue permitted by the install-wide deployment policy."""
 
     if deployment.current_policy().allow_agent_restart:
-        return TOOLS
-    return [tool for tool in TOOLS
-            if str(tool.get("name") or "") not in _AGENT_RESTART_TOOLS]
+        return _with_dynamic_tiers(TOOLS)
+    return _with_dynamic_tiers([
+        tool for tool in TOOLS
+        if str(tool.get("name") or "") not in _AGENT_RESTART_TOOLS])
 
 
 def call_api(tool: str, args: dict[str, Any]) -> str:
