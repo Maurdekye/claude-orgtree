@@ -7890,3 +7890,80 @@ the argv it produces. Reverting that one call site to `org.model_for` fails
 exactly that check and nothing else (mutation-verified), which is the point: a
 gate that is computed and never read is the abstention shape this suite exists
 to prevent.
+
+### D-225 · a task that stops without its process dying was invisible
+
+Ruling (stopped-task-wake, 2026-09-01): a backgrounded task (a `Bash
+run_in_background:true` shell, in the incident that surfaced this, but the
+fix is not shell-specific) that ends abnormally WITHOUT the CLI process
+dying now produces the same durable-mail-then-drive treatment `_bg_orphaned`
+already gives a process death. New function `_bg_task_stopped`
+(`supervisor.py`, sibling to `_bg_orphaned`), fired from the
+`task_notification` stream handler when the CLI reports a `status` other
+than `"completed"`.
+
+Why: user report via coordinator, incident evidence from
+`fable-cli-migration` — a backgrounded test run (`Bash
+run_in_background:true`, task id `bjl7hffri`, reproduced again as
+`b2v748xj4`) died mid-flight. The owning turn had already ended and parked,
+believing the task still running. NOTHING woke the agent for 30 minutes,
+until an unrelated automatic working-status heartbeat incidentally started a
+turn the CLI's own passive, session-start-only reconciliation message
+("No completion record was found for this background shell command from the
+previous session...") could ride in on.
+
+FORENSICS, all measured, none assumed:
+  - Org doc (node `fable-cli-migration`): `mail_log` has zero entries for
+    this incident before the heartbeat; `turn_error_log` is empty;
+    `hard_fail_run` is `None`; the recorded turn ending 23:06:16Z is not
+    flagged killed. So neither `_bg_orphaned` nor `_turn_abandoned` ever ran.
+  - `journals/warm.jsonl` (real, on-disk, per-turn proc telemetry): the
+    process that launched the task at 23:02:40Z parks cleanly at its own
+    23:06:16Z boundary and is reused UNTOUCHED 30 minutes later
+    (`served:"warm"`, `warm_age_s:1819.2`) — ruling out a keeper-level kill
+    (`warmpool._keeper_pass`'s identity-changed → `kill_node` path is real
+    and separately orphan-blind, but did not fire here; a candidate for a
+    narrower follow-up, not folded into this fix). This pins the defect to
+    `_bg_count()` reading 0 at that boundary — `bg_live` had already stopped
+    counting the task as live.
+  - The real installed CLI binary (UTF-16LE strings) and `tests/fakecli.js`
+    (built from measured real-CLI behaviour, predating this incident) both
+    show `task_notification` carrying `status`/`summary` fields. The
+    `task_notification` handler in `supervisor.py` read only
+    `description`/`output_file` — `status` and `summary` were received and
+    discarded, every time, for every backgrounded task, since the feature
+    was written.
+  - A second, independent defect surfaced while reproducing this in
+    `fakecli.js`: `background_tasks_changed`'s empty snapshot (the CLI's
+    "whole live set" publish) arrives BEFORE the `task_notification` that
+    explains why the set shrank. `bg_live` is cleared by the snapshot, so
+    gating the new stopped-status check on "still in `bg_live`" — the
+    obvious first attempt — made the fix unreachable by construction. Fixed
+    by adding `bg_desc` (never cleared, unlike `bg_live`) for the
+    description and `bg_reported` for once-only idempotency, neither keyed
+    off `bg_live` membership.
+
+The invariant: an actionable notification that a task or turn stopped and
+needs the owning agent to recover MUST persist (durable mail, kind=
+"message", never "notice" — `Org.waking_mail`'s own no-wake marker) and wake
+that agent exactly once. Purely informational status (a `"completed"` — or
+any UNRECOGNIZED, i.e. absent — status, which is left alone rather than
+guessed at) stays passive, by construction: nothing new fires for it.
+
+Tests: `backend/tests/test_bg_task_stopped_notification.py`, 3 checks,
+recreates the incident's exact shape end-to-end against the real turn
+scheduler (not a unit stub) via `fakecli.js`'s new `bgStatus`/`bgSummary`/
+`bgOnce` config. D1 is the repro (measured to fail against pre-fix
+`supervisor.py`: both D1 and D3 time out waiting for the notice; D2, the
+control, is unaffected either way). D2 is the control that a normal
+`"completed"` background task raises no false alarm (mirrors
+`test_turn_lifecycle.py`'s own control for the process-death path). D3 pins
+`kind=="message"` and counts a SECOND driven assistant reply by exact count
+(not mere presence — the launch turn's own ordinary reply already contains
+the same text), which is the difference between "mail was deposited" and
+"the agent was actually woken." Fast-tier full suite run afterward: 7
+failures, all a strict subset of the 12 pre-existing failures
+`turn-envelope-cost` catalogued the same day at clean HEAD in a detached
+worktree (`bearer-rehire-provider`, `extern-handle-attach`, `external-mail`,
+`harvest`, `headless`, `ledger-authority`, `run-completion`) — no new
+failure introduced.

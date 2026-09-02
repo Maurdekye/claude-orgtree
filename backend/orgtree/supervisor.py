@@ -8426,6 +8426,21 @@ def _run_one_turn(slug: str, nid: str,
             # is corrected by the next one rather than leaking forever.
             bg_live: dict[str, str] = {}    # task_id -> description
             bg_out: dict[str, str] = {}     # task_id -> its .output file
+            # bg_desc/bg_reported (2026-09-01 incident): `bg_live` is CLEARED
+            # on every `background_tasks_changed` snapshot, and that snapshot
+            # arrives BEFORE the `task_notification` carrying the same task's
+            # `status`/`summary` — measured directly against fakecli.js's own
+            # completion sequence (bgSnapshot() then task_notification). So a
+            # task ending is ALREADY gone from `bg_live` by the time the event
+            # that says WHY arrives; gating on "still in bg_live" (as the
+            # description-enrichment code below must, to avoid resurrecting a
+            # reaped id) would make a stopped/failed status unreachable by
+            # construction. `bg_desc` never clears — it is the last known
+            # description for any task_id this turn has ever seen — and
+            # `bg_reported` stops a duplicate/late notification for the same
+            # id from mailing twice.
+            bg_desc: dict[str, str] = {}
+            bg_reported: set[str] = set()
             bg_lock = threading.Lock()      # written here, read by _dog
 
             def _bg_count() -> int:
@@ -8740,17 +8755,55 @@ def _run_one_turn(slug: str, nid: str,
                                             fresh[tid] = bg_live[tid]
                                     bg_live.clear()
                                     bg_live.update(fresh)
+                                    for tid, d in fresh.items():
+                                        bg_desc.setdefault(tid, d)
                         else:
                             tid = str(ev.get("task_id") or "")
+                            stopped_desc = ""
                             if tid:
                                 with bg_lock:
                                     if tid in bg_live:
                                         d = str(ev.get("description") or "")
                                         if d:
                                             bg_live[tid] = d
+                                            bg_desc[tid] = d
                                     outf = str(ev.get("output_file") or "")
                                     if outf:
                                         bg_out[tid] = outf
+                                    # A TERMINAL status the CLI itself reports
+                                    # (2026-09-01 incident, fable-cli-
+                                    # migration): "completed" is the only
+                                    # success value observed; a missing status
+                                    # is left alone (older/unknown shape — do
+                                    # not invent a verdict it never gave).
+                                    # Anything else means the task ended
+                                    # WITHOUT the process dying — the one case
+                                    # `_bg_orphaned` cannot see. Gate on
+                                    # `bg_reported`, NOT on `tid in bg_live`:
+                                    # the CLI's own `background_tasks_changed`
+                                    # snapshot removes a finished id from
+                                    # `bg_live` BEFORE this notification
+                                    # arrives (measured against fakecli.js's
+                                    # own completion sequence), so by the time
+                                    # `status` shows up the id is routinely
+                                    # already gone from `bg_live` — checking
+                                    # it here would make a stopped/failed
+                                    # status unreachable by construction, and
+                                    # in fact WAS: that status/summary used to
+                                    # be read by nobody at all.
+                                    status = str(ev.get("status") or "")
+                                    if (status and status != "completed"
+                                            and tid not in bg_reported):
+                                        bg_reported.add(tid)
+                                        bg_live.pop(tid, None)
+                                        stopped_desc = (
+                                            bg_desc.get(tid)
+                                            or "background task")
+                            if stopped_desc:
+                                _bg_task_stopped(
+                                    slug, nid, tid, stopped_desc,
+                                    str(ev.get("summary") or ""),
+                                    str(ev.get("output_file") or ""))
                         with _state_lock:
                             st["bg_tasks"] = _bg_count()
                         continue
@@ -10800,6 +10853,72 @@ def _bg_orphaned(slug: str, nid: str,
         try:
             print(f"[orgtree] {slug}/{nid}: could not report "
                   f"{len(orphans)} orphaned background subagent(s)")
+        except Exception:                                    # noqa: BLE001
+            pass
+
+
+def _bg_task_stopped(slug: str, nid: str, task_id: str, desc: str,
+                     summary: str, output_file: str) -> None:
+    """A backgrounded task ended WITHOUT the CLI process dying — the gap
+    `_bg_orphaned` cannot cover, since that one only fires when the process
+    itself is gone and `bg_live` still lists the task as live.
+
+    Incident, 2026-09-01 (fable-cli-migration): a backgrounded Bash test run
+    died mid-flight while its process stayed warm and simply parked at the
+    turn's own boundary — `_bg_count()` read 0 by then, so parking proceeded
+    exactly as designed, and the agent went idle to wait on a notification
+    that had already been dropped. The CLI DID report the death, via this
+    very `task_notification` event carrying `status` and `summary` — but the
+    handler above used to read only `description`/`output_file`, so the one
+    fact that mattered was discarded on arrival. Nothing surfaced it until an
+    unrelated 30-minute working-status heartbeat incidentally started a turn
+    the CLI's own session-resume reconciliation could ride in on — 30 minutes
+    of silence for a task that finished (or died) within seconds of the turn
+    ending.
+
+    Same durable-mail-then-drive shape as `_bg_orphaned`, deliberately: kind
+    is NOT "notice" for the same reason (that is `Org.waking_mail`'s no-wake
+    marker, and a notice sits unread until a turn that never comes). Runs
+    inline inside the turn's own stdout-read loop (unlike `_bg_orphaned`,
+    which runs in `finally` after the turn has ended) — `send_message` queues
+    correctly either way: fed at the very next boundary if the turn is still
+    going, or driving a fresh turn once this one actually finishes, the same
+    proven path `_bg_orphaned` already relies on."""
+    try:
+        body = (
+            f"[BACKGROUND TASK STOPPED — \"{desc}\" did not complete]\n"
+            f"task id: {task_id}\n"
+            + (f"CLI summary: {summary}\n" if summary else "")
+            + (f"partial output: {output_file}\n" if output_file else "")
+            + "\nThis was reported by the CLI itself while your process was "
+              "still alive — it did not die and nothing killed it. Whatever "
+              "you were waiting for did not finish. Do NOT assume the work "
+              "landed; check the actual state before continuing.")
+        entry: MailEntry = {
+            "id": uuid_hex8(), "from": "@system",
+            "kind": "message", "body": body[:8000], "at": now_iso(),
+            "relationship": "the orgtree engine"}
+        with store.DOC_LOCK:
+            org = store.load_org(slug)
+            if nid not in org.nodes or org.node(nid)["state"] != "live":
+                return
+            box = org.d.setdefault("mail", {})
+            box.setdefault(nid, []).append(cast(MailEntry, dict(entry)))
+            log = org.d.setdefault("mail_log", {}).setdefault(nid, [])
+            log.append(cast(MailEntry, dict(entry)))
+            del log[:-100]
+            store.save_org(org)
+        print(f"[orgtree] {slug}/{nid}: background task {task_id} stopped "
+              f"(non-'completed' status) — mailed and driving")
+        mail_spark(slug, "@system", nid)
+        send_message(slug, nid,
+                     "(orgtree) A background task you were waiting on "
+                     "stopped without finishing — the mail above has the "
+                     "details.")
+    except Exception:                                        # noqa: BLE001
+        try:
+            print(f"[orgtree] {slug}/{nid}: could not report stopped "
+                  f"background task {task_id}")
         except Exception:                                    # noqa: BLE001
             pass
 

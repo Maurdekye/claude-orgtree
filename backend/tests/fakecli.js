@@ -108,6 +108,14 @@ const CFG_DEFAULT = {
   usageLimit: false,
   exitAfter: 0,
   bgTasks: 0, bgMs: 1500, bgOrphan: false, bgQuit: false,
+  // bgStatus/bgSummary — the 2026-09-01 incident (fable-cli-migration): a
+  // backgrounded task can end on its OWN, process still warm, with the CLI
+  // reporting a non-"completed" `status` on `task_notification`. That shape
+  // had no fixture before this — bgOrphan/bgQuit only model the process
+  // dying or exiting with a child still live, never "the task itself
+  // stopped and said so." Default stays 'completed' so every existing bgMs
+  // scenario is unchanged.
+  bgStatus: 'completed', bgSummary: '', bgOnce: false,
 }
 function loadCfg() {
   const p = process.env.FAKECLI_CONFIG
@@ -224,12 +232,14 @@ function launchBg(i) {
     if (!bgLive.has(taskId)) return
     bgLive.delete(taskId)
     bgSnapshot()                  // {"tasks":[]} once the last one lands
+    const status = cfg.bgStatus || 'completed'
     say({ type: 'system', subtype: 'task_updated', task_id: taskId,
-          patch: { status: 'completed' } })
+          patch: { status } })
     say({ type: 'system', subtype: 'task_notification', task_id: taskId,
-          tool_use_id: toolUseId, status: 'completed',
+          tool_use_id: toolUseId, status,
           output_file: path.join(projDir, taskId + '.output'),
-          summary: 'BG-DONE-' + i })
+          summary: cfg.bgSummary || ('BG-DONE-' + i) })
+    if (status !== 'completed') { maybeExit(); return }
     // THE POSITIVE CONTROL. A check that only asserts "no orphan was
     // reported" passes just as well against a child that was killed and
     // whose evidence was then erased (the notice drives a turn, and a turn
@@ -331,7 +341,13 @@ async function serve(text) {
   // BACKGROUND subagents — launched BEFORE the boundary, exactly as the real
   // CLI does (the Agent tool_use, then the snapshot, then task_started), so
   // orgtree sees a live child at the moment it decides to close stdin.
-  for (let i = 0; i < (cfg.bgTasks | 0); i += 1) launchBg(i)
+  // bgOnce: only on this process's FIRST served message — without it, a
+  // config that reports every launch as a fresh background task turns any
+  // driven follow-up (e.g. the "your background task stopped" nudge itself)
+  // into another one, which never stops.
+  if (!cfg.bgOnce || served === 1) {
+    for (let i = 0; i < (cfg.bgTasks | 0); i += 1) launchBg(i)
+  }
   const reply = cfg.usageLimit
     ? "You've hit your usage limit. Your limit will reset at 3pm."
     : cfg.replyText
