@@ -47,6 +47,11 @@ export interface OrgCanvasProps {
  *  rest, so a threshold that drifted between the two would let it engage on a
  *  node the loop still considers in flight — which is the freeze it exists to
  *  avoid. */
+// the backdrop grid's pan rate relative to the foreground's — kept close to 1
+// so the effect stays a tiny "farther away" cue, not a distinct layer racing
+// past the cards.
+const PARALLAX_BG = 0.88
+
 const atRest = (s: Spring, tgt: Pt): boolean =>
   Math.abs(tgt.x - s.x) <= 0.4 && Math.abs(tgt.y - s.y) <= 0.4
   && Math.abs(s.vx) <= 2 && Math.abs(s.vy) <= 2
@@ -1686,6 +1691,14 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
         e.currentTarget.scrollLeft = 0
         e.currentTarget.scrollTop = 0
       }}>
+      {/* parallax backdrop (user feature 2026-09-03): the dot grid pans at a
+          fraction of the foreground's rate — PARALLAX_BG below — so a drag
+          reads as depth instead of a flat sheet sliding under the cards. Zoom
+          still scales it 1:1 with the world; only the pan rate differs. */}
+      <div className="canvas-bg" style={{
+        backgroundPosition: `${view.x * PARALLAX_BG}px ${view.y * PARALLAX_BG}px`,
+        backgroundSize: `${28 * view.z}px ${28 * view.z}px`,
+      }} />
       <div className="space" style={{
         width: bounds.w, height: bounds.h,
         transform: `translate(${view.x}px, ${view.y}px) scale(${view.z})`,

@@ -182,10 +182,17 @@ main {
 .viewport:active { cursor: grabbing; }
 /* sandboxed orgs: the office border wears a light blue instead of the grey */
 .viewport.sandboxed { border-color: var(--sandbox); }
-.space {
-  position: absolute; transform-origin: 0 0;
+/* the dot grid rides its OWN layer, separate from .space, so a pan can move it
+   at a slightly slower rate than the foreground (see the parallax factor
+   where its backgroundPosition is set) — a tiny bit of depth, not a distinct
+   moving object. */
+.canvas-bg {
+  position: absolute; inset: 0; pointer-events: none;
   background-image: radial-gradient(circle, #2a2a2a 1px, transparent 1px);
   background-size: 28px 28px;
+}
+.space {
+  position: absolute; transform-origin: 0 0;
 }
 .edges { position: absolute; inset: 0; pointer-events: none; overflow: visible; }
 .edge {
@@ -223,6 +230,9 @@ main {
   background: var(--panel); border: 1px solid var(--line);
   border-radius: 8px; padding: 7px 7px;
   display: flex; flex-direction: column; gap: 5px;
+  /* a soft, resting drop-shadow — pairs with the backdrop parallax to read
+     as a card floating a little above the grid, not a flat tile on it */
+  box-shadow: 0 3px 10px rgba(0, 0, 0, .28);
   /* position comes from the spring engine per-frame — no transform transition */
   transition: width .4s cubic-bezier(.22, 1, .36, 1),
     height .4s cubic-bezier(.22, 1, .36, 1),
@@ -3609,7 +3619,7 @@ html.mobile .chip-x { min-width: 28px; min-height: 28px; }
 /* ---- compact canvas: the map tier ---- */
 @media (max-width: 640px) {
   /* the dot grid is the worst paint on a mobile GPU and conveys nothing */
-  html.mobile .space { background-image: none; }
+  html.mobile .canvas-bg { background-image: none; }
   /* map marker cards (NodeSquare mapMode) */
   html.mobile .sq.maplod {
     display: flex; flex-direction: column; align-items: center;
