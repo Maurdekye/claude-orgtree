@@ -8646,3 +8646,73 @@ flash/pro chip hues (D-189), the journal store (D-187), the seat prices. The
 playbook (`docs/adding-a-provider.md`) carries the re-walk's corrections as
 `[antigravity:]` marks; the measured facts live in D-183 and the
 implementing agent's banked probe logs.
+
+### D-232 · OpenRouter is a keyed lane, not a CLI: a favorite is a tier, and Claude Code carries the turn
+Ruling (user, 2026-09-02, direct): add OpenRouter as a fourth provider with
+this exact surface — the key is entered in App settings → Providers like any
+other provider's login (not a separate page); once a key is stored, a row of
+model-card icons appears under it, and clicking that row opens a picker over
+the LIVE catalog (search box, a handful of results at a time, each showing
+its icon card, full name, vendor and $/M in/out, select/deselect); the
+selected models are the FAVORITES, and a favorite is what can be hired.
+Asked and answered the same evening: chip colours derive canonically from
+the model (vendor hue, price-band lightness, a small per-model offset), the
+icons are monogram cards, there is NO cap on favorites, and the execution
+engine is Claude Code for now (one lane; a Codex lane for openai/* models
+was offered and deferred). The shipped shape follows: `backend/orgtree/
+openrouter.py` keeps the key and the favorites under `<data>/openrouter/`
+(secret-free readouts only — `key_set`, never the key), caches the catalog
+for an hour and the key's standing for a minute, and mints one DYNAMIC tier
+per favorite, `or-<slug of the model id>`, seat = the model's $/M input
+floored to 1 (the repo's standing seat rule), frozen into the favorite
+record at add time. The ledger's load hook merges those tiers and models
+into every org document add-only, exactly as the static tables are, so
+deselecting a favorite stops OFFERING it (the hire gate refuses; the chip
+disappears) without evicting the nodes already on it — plain rehire still
+recovers them. `providers.provider_of` answers by the `or-` prefix, the MCP
+tool enums carry the favorites at tools/list time, and the frontend
+generates the tier CSS from the backend's canonical colour with the same
+rule shapes the static tiers use, so no render site learned a colour prop.
+
+The lane is Claude Code pointed at openrouter.ai's Anthropic-compatible
+endpoint (`ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN`, an EMPTY
+`ANTHROPIC_API_KEY`, and the `--model` carries the OpenRouter id straight
+through), injected per spawn and only for `or-*` nodes; a missing key fails
+the turn loudly rather than falling through to the subscription. Measured
+(Claude Code 2.1.258, isolated config dir): headless turns, tool round-trips
+and `--resume` all work through the gateway; the cache lands in the FIVE-
+minute ephemeral bucket only, never the hour one, so `SUPPORTED_LANES` gets
+(`openrouter`, `api_key`) → 5 min, `identity_in_env` answers an `openrouter`
+sentinel (never the primary login) and the cache namespace is
+`openrouter-key:<digest>` — a provider switch is a namespace switch, as D-230
+requires. The CLI prices an `anthropic/…` id at list (`costBasis: "list"`),
+which is the gateway's pass-through rate, and that figure is kept; for every
+OTHER vendor it still reports a number, but with `costBasis: "unknown"` and
+wrong by an order of magnitude (a $0.004 gpt-5.6-luna tool turn booked as
+$0.134; a gemini-3.5-flash turn 25× over), so `_after_turn` reprices those
+from the turn's usage at the favorite's snapshot prices. The CLI also
+under-reports `contextWindow` (200000 for a 1M model), so `tier_context`
+reads the catalog. Non-Anthropic models are marked BEST-EFFORT in the UI for
+a measured reason: openai/gpt-5.6-luna completed a tool task correctly,
+google/gemini-3.5-flash ran two turns and returned an empty answer.
+
+Bounds. ① An API key IS a keyed provider (user ruling 2026-08-28), so
+headless orgs may hire the lane; kiosks hold it out like the other
+non-Claude lanes until sandboxing is settled. ② 402 (credits exhausted) is
+not a distinct freeze state yet — the turn fails with the gateway's message,
+and `record_limit` ignores the `openrouter` identity on purpose so a dry key
+can never be booked as the subscription's limit. ③ Not done, deliberately:
+a native harness for third-party models (an ACP one would need its own
+client; none is in the tree since D-231), the Codex lane as an alternative
+engine, per-org key override, "sign in with OpenRouter" (OAuth PKCE),
+account pooling, spend caps beyond the key's own. ④ Landed rebased onto
+D-231's swap; the playbook's §10 records the walk.
+
+Load-bearing: `backend/tests/test_openrouter.py` (46 checks, hermetic — a
+fake catalog and a fake key endpoint behind a monkeypatched fetcher; §7
+drives the API doors, the hire gate, the ledger merge, the MCP enum, the
+spawn env and the namespace through the TestClient), `backend/tests/
+test_providers.py` (four providers, openrouter last), `backend/tests/
+test_app_settings.py` (the fourth admission switch), and `frontend/tests/
+openrouter.test.tsx` (the key row and the picker's select/deselect against
+a scripted payload).
