@@ -417,6 +417,78 @@ class McpToolCountTests(unittest.TestCase):
         def die(self) -> None:
             self._alive = False
 
+    def test_a_failed_enumeration_leaves_an_unknown_count_and_kept_names(
+            self) -> None:
+        """Unit 3, and specifically WHERE it lives. Two fields, three states.
+
+        `_mcp_tool_count_unknown` fires when an enumeration FAILED — a later
+        `mcp_tool_names()` refresh raising on the Codex path (warmpool.py:1806,
+        :1892). Two things must both hold afterwards and they pull in opposite
+        directions, which is why the repair is split across two functions:
+
+        · the LIVE field must go back to unknown. `mcp_tool_count` is the
+          measured-NOW carrier, and `test_status_zero_vs_unknown` §2 pins it:
+          a value we measured earlier has its own carrier in
+          `last_turn_mcp_tool_count`, so putting a stale total in the live
+          field collapses three states into two — the exact defect that suite
+          was written for after the 2026-09-01 user report.
+
+        · the SURFACE must stay coherent. The names are NOT popped, because a
+          failed observation is not evidence the surface changed, so the reader
+          would otherwise hand the turn boundary a name list with no count
+          beside it — and that record becomes the readiness gate's baseline.
+
+        Both, therefore: unknown on the live field, derived on the reader.
+        Asserted together, because either one alone is satisfiable by a wrong
+        implementation.
+        """
+        proc = self._Proc(31337)
+        S._mcp_tool_count_begin(
+            self.slug, self.nid, proc, "codex", "mcpServerStatus/list", "s")
+        S._mcp_tool_count_names(
+            self.slug, self.nid, proc,
+            ["mcp__orgtree__one", "mcp__orgtree__two"], "codex",
+            "mcpServerStatus/list")
+
+        S._mcp_tool_count_unknown(
+            self.slug, self.nid, proc, "codex", "mcpServerStatus/list",
+            "Codex runtime inventory unavailable: TimeoutError")
+
+        st = S.state(self.slug, self.nid)
+        self.assertIs(st.get("mcp_tool_owner"), proc,
+                      "precondition: the generation is still live and owned")
+        self.assertIsNone(
+            st.get("mcp_tool_count"),
+            "the live count reported a total nothing measured this turn")
+        self.assertEqual(
+            st.get("mcp_tool_names"),
+            {"mcp__orgtree__one", "mcp__orgtree__two"},
+            "a failed enumeration destroyed a generation-correct name set")
+        self.assertEqual(
+            S._mcp_tool_surface_for_owner(self.slug, self.nid, proc),
+            (2, ["mcp__orgtree__one", "mcp__orgtree__two"]),
+            "the surface named two tools while reporting no total; the turn "
+            "boundary records that list as the gate's durable baseline")
+
+    def test_a_never_enumerated_surface_stays_honestly_unknown(self) -> None:
+        """Negative control for the derivation. It may not invent a count.
+
+        With no names held there is nothing to derive from, and the reader must
+        say so — otherwise "count follows names" quietly becomes "count is
+        zero", which is the measured-zero state and a different claim entirely.
+        """
+        proc = self._Proc(31338)
+        S._mcp_tool_count_begin(
+            self.slug, self.nid, proc, "codex", "mcpServerStatus/list", "s")
+        S._mcp_tool_count_unknown(
+            self.slug, self.nid, proc, "codex", "mcpServerStatus/list",
+            "Codex runtime inventory unavailable: TimeoutError")
+
+        self.assertEqual(
+            S._mcp_tool_surface_for_owner(self.slug, self.nid, proc),
+            (None, None),
+            "an unmeasured surface was given a fabricated total")
+
     def test_a_live_process_recovers_from_a_spurious_eof(self) -> None:
         """An ACTIVE process must never be pinned in a terminal state.
 

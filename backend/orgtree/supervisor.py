@@ -1048,26 +1048,30 @@ def _mcp_tool_count_unknown(slug: str, nid: str, owner: Any,
     with _state_lock:
         if st.get("mcp_tool_owner") is not owner:
             return False
-        # A surface must never NAME tools it cannot COUNT. This zeroed the
+        # UNIT 3 LIVES IN `_mcp_tool_surface_for_owner`, NOT HERE, and the
+        # split is the point. The defect is real — this publishes an unknown
         # count while leaving `mcp_tool_names` standing, so a LIVE generation
-        # reported `(None, ['a', 'b'])` — naming two tools while claiming no
-        # total. The boundary then recorded the names and dropped the count,
-        # producing the same list-without-count divergence by a second route.
+        # reads `(None, ['a', 'b'])`: two tools named, no total. The repair
+        # does not belong on this field.
         #
-        # The count follows the names rather than the names being discarded,
-        # and the reason is the rule this chain settled elsewhere: this
-        # function fires when an enumeration FAILED, and a failed observation
-        # is not evidence that the surface changed. Popping the names here
-        # would destroy a generation-correct enumeration because one call
-        # raised — the same "unobserved must not erase observed" error fixed at
-        # the turn boundary. `_mcp_tool_count_server` is NOT precedent for the
-        # other choice: there a NEW TOTAL arrived and contradicted the names,
-        # so the runtime really had changed; here nothing arrived at all.
+        # `mcp_tool_count` is the MEASURED-NOW carrier.
+        # `test_status_zero_vs_unknown`, written for a 2026-09-01 user report,
+        # pins three states across two fields: measured now, measured EARLIER
+        # (`last_turn_mcp_tool_count`, which `_mcp_tool_count_begin` threads
+        # through), and never measured. Deriving this count from an earlier
+        # enumeration puts a measured-earlier value in the measured-now field
+        # and collapses the distinction straight back out. §2's rule — "zero is
+        # never used to mean 'we could not ask'" — has an exact twin here: a
+        # STALE TOTAL is never used to mean "we could not ask" either.
         #
-        # With no names held, the count stays None — genuinely unknown, which
-        # is what this function is for on a provider that never enumerates.
-        held = st.get("mcp_tool_names")
-        count = len(held) if isinstance(held, set) else None
+        # So the names STAY (a failed enumeration is not evidence the surface
+        # changed; popping them would be the "unobserved must not erase
+        # observed" error, and `_mcp_tool_count_server` is no precedent because
+        # there a new total genuinely arrived and contradicted them), the live
+        # count goes honestly unknown, and the count-follows-names rule is
+        # applied by the SURFACE READER — which is what feeds the durable
+        # boundary record, where the incoherence actually mattered.
+        count = None
         cur = (st.get("mcp_tool_count"), st.get("mcp_tool_provider"),
                st.get("mcp_tool_source"), st.get("mcp_tool_reason"))
         nxt = (count, provider, source, reason)
@@ -1339,6 +1343,22 @@ def _mcp_tool_surface_for_owner(
         names = st.get("mcp_tool_names")
         exact = sorted(str(name) for name in names) \
             if isinstance(names, set) else None
+    # UNIT 3. A surface must never NAME tools it cannot COUNT, and THIS reader
+    # is where that has to hold: it feeds the turn boundary's durable
+    # `last_turn_mcp_tools` record and, through it, the readiness gate's
+    # baseline. `_mcp_tool_count_unknown` leaves an exact, generation-correct
+    # name set standing while the live count goes unknown — right on the live
+    # field, incoherent the moment both are read as one surface. A held name
+    # set already states its own total, so derive it rather than record a list
+    # with no count beside it.
+    #
+    # This only ever ADDS a count to names that are already held. It cannot
+    # contradict a published total — that path sets `count` above — and with no
+    # names it changes nothing, so an honest unknown stays unknown. The live
+    # three-state chip reads `mcp_tool_count` directly and never comes through
+    # here, which is exactly why the repair sits at this end.
+    if count is None and exact is not None:
+        count = len(exact)
     return count, exact
 
 
