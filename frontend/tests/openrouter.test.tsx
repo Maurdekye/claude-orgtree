@@ -112,15 +112,47 @@ test('§1 no key: the section offers key entry and nothing else; setting it '
       input.dispatchEvent(new Event('input', { bubbles: true }))
       await flush(2)
     })
-    const btn = [...view.el.querySelectorAll('button')]
-      .find((b) => b.textContent?.trim() === 'set key')!
+    // the entry row is the Claude section's "paste a new key" row: the ✓
+    // spans the two button columns
+    const btn = view.el.querySelector<HTMLButtonElement>('button.acct-add[title="set the key"]')!
+    assert.ok(btn, 'the ✓ button sets the key')
     await inAct(async () => { btn.click(); await flush(10) })
     const put = seen.find((r) => r.method === 'PUT' && r.path === '/api/openrouter/key')
     assert.deepEqual(put?.body, { key: 'sk-or-v1-testkey-000000000000' })
     assert.equal(view.el.textContent?.includes('sk-or-v1-testkey'), false,
       'the key never renders')
     assert.ok(view.el.querySelector('.orr-favs'), 'favorites row appears once a key is set')
-    assert.ok(view.el.textContent?.includes('connected'), 'connected standing shown')
+    // the key row: an ACCOUNT ROW — identity + verdict on line 1, the credit
+    // standing on line 2, three icon buttons in the account rows' columns
+    const row = view.el.querySelector('.acct-line > .acct-row.orr-keyrow')!
+    assert.ok(row, 'the key row is an account row')
+    const line1 = row.querySelector('.acct-main > .orr-standing')!
+    assert.ok(line1.textContent?.includes('sk-or-v1-abc…xyz'), 'the label is the identity')
+    assert.ok(line1.textContent?.includes('connected'), 'connected standing shown')
+    const line2 = row.querySelector('.acct-provenance')!.textContent ?? ''
+    for (const s of ['$1.25 spent', 'today $0.50', 'week $1.25', 'month $1.25']) {
+      assert.ok(line2.includes(s), `credit standing carries "${s}"`)
+    }
+    const btns = [...row.querySelectorAll<HTMLButtonElement>('.acct-main > .acct-btn')]
+    assert.deepEqual(btns.map((b) => b.title.split(' — ')[0]), [
+      're-check the key and its credit standing at openrouter.ai',
+      'replace the key', 'forget the key'])
+    // ⚠ `.acct-btn` is a 27px ICON button: a word in it spills out of the box
+    // and over its neighbours (the 2026-09-02 overlap). Icons only, ever.
+    for (const b of view.el.querySelectorAll('.acct-btn')) {
+      assert.equal(b.textContent?.trim(), '', `no text in an icon button (${b.getAttribute('title')})`)
+      assert.ok(b.querySelector('svg'), 'an icon button carries an icon')
+    }
+    // replace → the entry row comes back with a ✕ that keeps the current key
+    await inAct(async () => { btns[1]!.click(); await flush(4) })
+    assert.ok(view.el.querySelector('input[aria-label="OpenRouter API key"]'),
+      'replace opens the entry row')
+    const keep = view.el.querySelector<HTMLButtonElement>('button[title="keep the current key"]')!
+    assert.ok(keep, 'a ✕ keeps the current key')
+    await inAct(async () => { keep.click(); await flush(4) })
+    assert.ok(view.el.querySelector('.orr-keyrow .orr-standing'), 'the key row is back')
+    assert.equal(seen.filter((r) => r.path === '/api/openrouter/key').length, 1,
+      'replace/keep touched the key endpoint no further')
   } finally { await view.unmount(); delete g.fetch }
 })
 
