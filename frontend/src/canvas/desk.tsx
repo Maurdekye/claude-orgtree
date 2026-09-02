@@ -299,18 +299,108 @@ export function TurnStartingMark({ mcpWaiting, reason }: {
  * the absence of all evidence is not that. Do not reintroduce it — the case is
  * red now, and `test_cache_readiness` pins it.
  *
- * ⚠ AND AN UNREADABLE PAYLOAD IS NOT GREEN. An absent or unrecognised
- * readiness resolves to the named `internal_error` diagnostic, because a badge
- * that fails open is the single most expensive lie this component can tell.
+ * ⚠ AND AN UNREADABLE PAYLOAD IS NOT GREEN. A readiness value the badge does
+ * not recognise, or a verdict that arrives without its cause, resolves to the
+ * named `internal_error` diagnostic, because a badge that fails open is the
+ * single most expensive lie this component can tell.
+ *
+ * ⚠ BUT A PAYLOAD WITH NO TRIPLE AT ALL IS A PRE-D-226 ROW, NOT A FAULT. A
+ * backend older than this UI (the deployed build lagging a rebuilt `dist/`,
+ * which is how this was first seen) sends `state`/`source`/`lane` and nothing
+ * else. INV-002 says such a row "must not render grey": a schema migration is
+ * not a fault, and labelling every idle node `internal_error` buried the one
+ * grey that would have been a real incident. So the badge re-derives the
+ * verdict exactly the way `cachecontinuity.legacy_readiness` does on the
+ * server (same table, same expiry decay, same red-not-grey residue), and says
+ * in the tooltip that it did so and why. `internal_error` is now reserved for
+ * a payload that genuinely cannot be read: an unrecognised readiness value, a
+ * verdict with no cause, or a row with neither a triple nor a known state.
  */
+interface ReadinessVerdict { readiness: Readiness; cause: string; detail: string }
+
+const READINESS_VALUES: ReadonlySet<string> = new Set(['ready', 'not_ready', 'diagnostic'])
+const LEGACY_STATES: ReadonlySet<string> = new Set([
+  'known_incompatible', 'expired_known_entry', 'uncertain', 'compatible_observed'])
+
+/** Mirror of `cachecontinuity._LEGACY_CAUSE` — (state, source) → verdict for
+ * a forecast persisted before D-226. Keep the two in step: the server applies
+ * this to rows it healed itself; the badge applies it only when the server
+ * sent no verdict at all. */
+const LEGACY_CAUSE: Readonly<Record<string, readonly [Readiness, string]>> = {
+  'compatible_observed/authoritative_receipt': ['ready', 'receipt_valid'],
+  'compatible_observed/codex_subscription_fixed_estimate':
+    ['ready', 'receipt_valid_codex_estimate'],
+  'expired_known_entry/authoritative_receipt': ['not_ready', 'receipt_expired'],
+  'expired_known_entry/codex_subscription_fixed_estimate':
+    ['not_ready', 'receipt_expired'],
+  'uncertain/no_completed_fingerprint': ['not_ready', 'no_completed_fingerprint'],
+  'uncertain/history_unobserved': ['not_ready', 'history_unobserved'],
+  'uncertain/no_positive_receipt': ['not_ready', 'no_positive_receipt'],
+  'uncertain/receipt_prefix_unobserved': ['not_ready', 'receipt_prefix_unobserved'],
+  'uncertain/capability_unsupported': ['diagnostic', 'unsupported_capability'],
+  'uncertain/clock_skew': ['diagnostic', 'clock_anomaly'],
+}
+
+const legacyReadiness = (forecast: CacheForecast): ReadinessVerdict => {
+  let state: string = forecast.state
+  // A persisted `compatible_observed` is a past tense and decays (D-B7): an
+  // entry that was live when the row was written may have died since, and
+  // healing it straight to green would invent the one thing this badge must
+  // never invent. Equality is the boundary, as on the server.
+  if (state === 'compatible_observed' && forecast.expires_at) {
+    const at = Date.parse(forecast.expires_at)
+    if (Number.isFinite(at) && Date.now() >= at) state = 'expired_known_entry'
+  }
+  const source = forecast.source || ''
+  const lane = forecast.lane || ''
+  let verdict = LEGACY_CAUSE[`${state}/${source}`]
+  if (!verdict && source === 'ttl_unobserved') {
+    // The one ambiguous source; the lane resolves its two unambiguous ends.
+    if (lane === 'provider_unsupported') verdict = ['diagnostic', 'unsupported_capability']
+    else if (lane === 'unobserved') verdict = ['not_ready', 'lane_unobserved']
+  }
+  if (!verdict && state === 'known_incompatible') verdict = ['not_ready', 'prefix_changed']
+  // Residue is RED, never green and never a guessed grey: readiness is not
+  // established, and the row says so instead of inventing a fault.
+  if (!verdict) verdict = ['not_ready', 'legacy_forecast_unmigrated']
+  const [readiness, cause] = verdict
+  return {
+    readiness, cause,
+    detail: `Re-derived in the UI from a pre-D-226 forecast persisted as state `
+      + `'${forecast.state}', source '${source || 'unobserved'}', lane `
+      + `'${lane || 'unobserved'}': the backend sent no readiness verdict, so it `
+      + 'predates D-226 — redeploy it to get server-side verdicts.',
+  }
+}
+
+const internalError = (evidence: string): ReadinessVerdict => ({
+  readiness: 'diagnostic', cause: 'internal_error',
+  detail: `The badge could not read this forecast's readiness. ${evidence}`,
+})
+
+const readinessVerdict = (forecast: CacheForecast): ReadinessVerdict => {
+  const raw: unknown = forecast.readiness
+  if (raw === undefined || raw === null) {
+    return LEGACY_STATES.has(String(forecast.state))
+      ? legacyReadiness(forecast)
+      : internalError('The payload carries neither a readiness verdict nor a '
+        + `recognised state (state ${JSON.stringify(forecast.state)}).`)
+  }
+  if (typeof raw !== 'string' || !READINESS_VALUES.has(raw)) {
+    return internalError(`Unrecognised readiness value ${JSON.stringify(raw)}.`)
+  }
+  if (!forecast.readiness_cause) {
+    return internalError(`A '${raw}' verdict arrived with no readiness_cause.`)
+  }
+  return { readiness: raw as Readiness, cause: forecast.readiness_cause,
+    detail: forecast.readiness_detail || '' }
+}
+
 const readinessOf = (forecast: CacheForecast): Readiness =>
-  forecast.readiness === 'ready' || forecast.readiness === 'not_ready'
-    || forecast.readiness === 'diagnostic' ? forecast.readiness : 'diagnostic'
+  readinessVerdict(forecast).readiness
 
 const readinessCause = (forecast: CacheForecast): string =>
-  forecast.readiness === 'ready' || forecast.readiness === 'not_ready'
-    || forecast.readiness === 'diagnostic'
-    ? forecast.readiness_cause || 'internal_error' : 'internal_error'
+  readinessVerdict(forecast).cause
 
 const cacheForecastTitle = (forecast: CacheForecast): string => {
   const ttl = typeof forecast.ttl_seconds === 'number'
@@ -333,7 +423,9 @@ const cacheForecastTitle = (forecast: CacheForecast): string => {
     // D-226: a grey badge must ALWAYS be able to say why it is grey, and the
     // cause is machine-readable so a screenshot is still triage-able.
     `readiness: ${readiness} (${readinessCause(forecast)})`,
-    forecast.readiness_detail || '',
+    // The server's detail when it sent one; the UI's account of a re-derived
+    // or unreadable verdict otherwise — a grey must never arrive unexplained.
+    readinessVerdict(forecast).detail,
     `reason: ${forecast.reason || 'unavailable'}`,
     changed,
     `lane/source: ${forecast.lane || 'unknown'} / ${forecast.source || 'unknown'}`,

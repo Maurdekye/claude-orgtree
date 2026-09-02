@@ -191,14 +191,16 @@ test('D-226: every grey is a NAMED diagnostic; ordinary uncertainty is red', asy
 test('D-226: the badge FAILS CLOSED — no readiness is grey, never green', async () => {
   // ⚠ THE MOST EXPENSIVE LIE THIS COMPONENT COULD TELL is a green badge on a
   // payload it did not understand: the user would withhold a compaction, or
-  // send a large turn, on a promise nothing made. A row from an older backend,
-  // a hand-built object, or a field that arrives misspelled must all land on
-  // the named internal_error diagnostic — grey, explained, and greppable.
+  // send a large turn, on a promise nothing made. A field that arrives
+  // misspelled or a verdict nothing can read lands on the named
+  // internal_error diagnostic — grey, explained, and greppable. A row with NO
+  // triple and an unrecognised source (a hand-built object) is re-derived as
+  // legacy residue: RED, never green — see the pre-D-226 test below.
   const noReadiness = { ...forecast('compatible_observed') }
   delete (noReadiness as Partial<CacheForecast>).readiness
   delete (noReadiness as Partial<CacheForecast>).readiness_cause
   const cases: Array<[string, CacheForecast]> = [
-    ['readiness absent entirely', noReadiness as CacheForecast],
+    ['readiness absent entirely, source unrecognised', noReadiness as CacheForecast],
     ['readiness is an unrecognised value', {
       ...forecast('compatible_observed'),
       readiness: 'probably-fine' as unknown as CacheForecast['readiness'],
@@ -217,6 +219,109 @@ test('D-226: the badge FAILS CLOSED — no readiness is grey, never green', asyn
       assert.notEqual([...(mark?.classList ?? [])][1], 'compatible', label)
       // and never a live countdown, which would imply a trusted expiry
       assert.doesNotMatch(mark?.textContent ?? '', /\d+:\d\d/, label)
+    } finally { await view.unmount() }
+  }
+})
+
+/** A row exactly as a pre-D-226 backend sends it: state/source/lane and no
+ * readiness triple at all. */
+const legacy = (
+  state: CacheForecastState, overrides: Partial<CacheForecast> = {},
+): CacheForecast => {
+  const row = { ...forecast(state, 'not_applicable', overrides) }
+  delete (row as Partial<CacheForecast>).readiness
+  delete (row as Partial<CacheForecast>).readiness_cause
+  delete (row as Partial<CacheForecast>).readiness_detail
+  return row
+}
+
+test('a pre-D-226 payload (no triple) re-derives its verdict from state/source — never internal_error', async () => {
+  // ⚠ THIS IS WHAT A BACKEND OLDER THAN THE UI SENDS. A deployed build that
+  // predates D-226 emits no readiness triple for any node; the first version
+  // of this badge answered that with `internal_error` on EVERY node — a
+  // brand-new agent with no first turn, a known-cold seat, an unexpired
+  // receipt — all grey, all "internal error", none of them a fault. INV-002
+  // is explicit that a row predating the schema migration must not render
+  // grey, so the badge now applies `legacy_readiness`'s own table and says so.
+  const past = new Date(Date.now() - 60_000).toISOString()
+  const rows: Array<[string, CacheForecast, string, string, RegExp?]> = [
+    ['known cold', legacy('known_incompatible', {
+      source: 'fingerprint_and_receipt_mismatch' }), 'cold', 'prefix_changed'],
+    ['no first turn yet', legacy('uncertain', {
+      source: 'no_completed_fingerprint', lane: 'subscription' }),
+      'cold', 'no_completed_fingerprint', /NOT compatibility-ready/],
+    ['no positive receipt yet', legacy('uncertain', {
+      source: 'no_positive_receipt', lane: 'subscription' }),
+      'cold', 'no_positive_receipt'],
+    ['elapsed entry', legacy('expired_known_entry', {
+      source: 'authoritative_receipt' }), 'cold', 'receipt_expired'],
+    ['live receipt', legacy('compatible_observed', {
+      source: 'authoritative_receipt' }), 'compatible', 'receipt_valid',
+      /^cache \d+:\d\d(:\d\d)?$/],
+    // D-B7: a persisted `compatible_observed` decays — an entry that was live
+    // when the row was written and has since passed its expiry is RED.
+    ['receipt that died since it was written', legacy('compatible_observed', {
+      source: 'authoritative_receipt', expires_at: past }),
+      'cold', 'receipt_expired'],
+    ['real capability gap', legacy('uncertain', {
+      source: 'capability_unsupported', lane: 'provider_unsupported' }),
+      'uncertain', 'unsupported_capability', /lane 'provider_unsupported'/],
+    ['lane not observed yet', legacy('uncertain', {
+      source: 'ttl_unobserved', lane: 'unobserved' }), 'cold', 'lane_unobserved'],
+    ['ambiguous ttl_unobserved on a real lane', legacy('uncertain', {
+      source: 'ttl_unobserved', lane: 'subscription' }),
+      'cold', 'legacy_forecast_unmigrated'],
+    ['a source this table has never heard of', legacy('uncertain', {
+      source: 'something_new' }), 'cold', 'legacy_forecast_unmigrated'],
+  ]
+  for (const [label, row, cls, cause, extra] of rows) {
+    const view = await mountView(<CacheForecastMark forecast={row} />, (el) => el)
+    try {
+      const mark = view.el.querySelector<HTMLElement>('.cache-forecast')
+      assert.equal([...(mark?.classList ?? [])][1], cls, label)
+      const title = mark?.getAttribute('aria-label') ?? ''
+      assert.match(title, new RegExp(`readiness: (ready|not_ready|diagnostic) \\(${cause}\\)`), label)
+      assert.doesNotMatch(title, /internal_error/, `${label}: called a migration a fault`)
+      // …and the tooltip says the verdict was derived here and why, so a
+      // screenshot still tells the reader the backend is behind the UI.
+      assert.match(title, /Re-derived in the UI from a pre-D-226 forecast/, label)
+      assert.match(title, /predates D-226/, label)
+      if (extra) {
+        const haystack = cls === 'compatible' ? (mark?.textContent?.trim() ?? '') : title
+        assert.match(haystack, extra, label)
+      }
+    } finally { await view.unmount() }
+  }
+})
+
+test('internal_error is reserved for a verdict nothing can read, and it always says what it could not read', async () => {
+  const noCause = { ...forecast('compatible_observed') }
+  delete (noCause as Partial<CacheForecast>).readiness_cause
+  delete (noCause as Partial<CacheForecast>).readiness_detail
+  const cases: Array<[string, CacheForecast, RegExp]> = [
+    ['unrecognised readiness value', {
+      ...forecast('compatible_observed'),
+      readiness: 'probably-fine' as unknown as CacheForecast['readiness'],
+    }, /Unrecognised readiness value "probably-fine"/],
+    // A green verdict with no cause is not a green verdict: the cause is the
+    // half that makes a triple auditable, and a badge must not fail open on
+    // half a payload.
+    ['verdict without a cause', noCause as CacheForecast,
+      /A 'ready' verdict arrived with no readiness_cause/],
+    ['neither a triple nor a recognised state', legacy(
+      'mystery' as unknown as CacheForecastState),
+      /neither a readiness verdict nor a recognised state/],
+  ]
+  for (const [label, row, evidence] of cases) {
+    const view = await mountView(<CacheForecastMark forecast={row} />, (el) => el)
+    try {
+      const mark = view.el.querySelector<HTMLElement>('.cache-forecast')
+      assert.equal([...(mark?.classList ?? [])][1], 'uncertain', label)
+      assert.equal(mark?.textContent?.trim(), 'cache ?', label)
+      const title = mark?.getAttribute('aria-label') ?? ''
+      assert.match(title, /readiness: diagnostic \(internal_error\)/, label)
+      assert.match(title, /no verdict — internal error/, label)
+      assert.match(title, evidence, `${label}: grey arrived without its evidence`)
     } finally { await view.unmount() }
   }
 })

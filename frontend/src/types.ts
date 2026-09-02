@@ -35,8 +35,13 @@ export interface CacheForecast {
   generation: string
   state: CacheForecastState
   /** ⚠ OPTIONAL ON THE WIRE ONLY. A payload without it is not "fine by
-   * default" — the badge treats an absent or unknown readiness as the named
-   * `internal_error` diagnostic, never as green. */
+   * default". A row with NO triple but a recognised `state` is a pre-D-226
+   * forecast from an older backend and the badge re-derives its verdict from
+   * `state`/`source`/`lane` the way the server would (desk.tsx
+   * `legacyReadiness`, mirroring `cachecontinuity.legacy_readiness`). An
+   * unrecognised readiness value, a verdict with no cause, or a row with
+   * neither a triple nor a known state is the named `internal_error`
+   * diagnostic — never green. */
   readiness?: Readiness
   readiness_cause?: string
   readiness_detail?: string

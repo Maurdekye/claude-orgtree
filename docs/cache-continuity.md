@@ -59,9 +59,16 @@ Three rules that are easy to break later:
 
 * **There is no catch-all.** A cause the table does not know becomes
   `internal_error` — named, explained, logged — not a neutral grey.
-* **The badge fails closed.** A payload with an absent or unrecognised
-  readiness renders grey, never green. A green badge on a payload nothing
-  understood is the most expensive lie this UI can tell.
+* **The badge fails closed.** A payload whose readiness cannot be read — an
+  unrecognised value, a verdict with no cause, a row with neither a triple nor
+  a known state — renders grey `internal_error`, never green. A green badge on
+  a payload nothing understood is the most expensive lie this UI can tell.
+  A row with **no triple at all but a recognised `state`** is not unreadable:
+  it is a pre-D-226 forecast from a backend older than the UI, and the badge
+  re-derives its verdict from `state`/`source`/`lane` exactly as
+  `legacy_readiness` does on the server (same table, same expiry decay, red
+  residue), saying so in the tooltip. A schema migration is not a fault, and
+  a deployed backend lagging a rebuilt `dist/` used to paint every node grey.
 * **A known incompatibility outranks a capability gap.** A seat that moved to
   an unsupported lane is red (`prefix_changed`), not grey: a positive
   determination that the next turn is cold is strictly more informative than
