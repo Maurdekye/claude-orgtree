@@ -2618,7 +2618,13 @@ input:focus, select:focus, textarea:focus, button:focus-visible {
 .h1-usage.u-crit:hover, .iconbtn.u-crit:hover {
   color: var(--bad); border-color: var(--bad);
 }
-.h1-usage.u-warn, .h1-usage.u-crit { border-radius: 4px; }
+/* the glow is a box-shadow, so it takes the BUTTON's shape — and the sidebar
+   usage button is a 20px square around a circular ring icon (DataUsage).
+   4px here drew a rounded square of light around a circle (user report
+   2026-09-02); 50% on a square button is the circle the icon already is.
+   The header `.iconbtn` keeps its own radius: that one is a bordered square
+   and its glow should match the border, not the glyph. */
+.h1-usage.u-warn, .h1-usage.u-crit { border-radius: 50%; }
 .h1-usage.u-warn, .iconbtn.u-warn { box-shadow: 0 0 9px rgba(232, 176, 75, .45); }
 .iconbtn.u-warn { border-color: color-mix(in srgb, var(--tier-fable) 70%, var(--line)); }
 .iconbtn.u-crit { border-color: color-mix(in srgb, var(--bad) 70%, var(--line)); }

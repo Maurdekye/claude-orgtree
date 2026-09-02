@@ -5326,6 +5326,31 @@ Ruling (user spec, 2026-07-31): the agent tray hides archived rows behind a
 as the canvas retired-pile: long-running orgs fill with retirees.
 Was. "the tray lists every agent, archived rows dim."
 
+### D-228 · where an org opens is a browser habit, and a restored camera never glides
+Ruling (user spec, 2026-09-02): App settings → Display carries a **startup
+view** — *the full org* (default), *the switchboard*, or *where I left off* —
+and a separate **starting zoom** toggle (default on). The toggle governs the
+first two modes only: on, the camera wakes on the eye and glides to the
+destination; off, it opens there. *Where I left off* ignores the toggle
+entirely — a saved camera is restored exactly, with no glide, and an org this
+browser has no camera for (a new org, or the first open since the setting
+existed) plays the intro once, because there is nothing to restore.
+Why: the intro is how an org shows its shape, and that is worth seeing the
+first time and a tax every time after; a restored position that glided would
+not be "where I left off" but a tour ending there.
+Bounds: browser-local (`orgtree-start-view`, `orgtree-start-zoom`, both
+app-wide with defaults by ABSENCE so every existing user keeps the old
+behaviour; the camera itself is per org, `orgtree-view-<slug>`). The camera
+is saved in EVERY mode — debounced, and landed on org switch, unmount and
+pagehide — so switching to *where I left off* later finds a position rather
+than treating a long-lived org as brand new. On compact (mobile) the
+switchboard mode opens on the org: compact never reaches desk zoom (§5.1).
+Load-bearing: the startup switchboard and the HUD eye button compute the same
+camera through one function (`focusView`), so the two cannot disagree; the
+intro effect writes `viewRef` before `setView`, and the save effect reads
+`viewRef`, so an org switch never pairs the old org's camera with the new
+org's slug. Tests: `frontend/tests/startview.test.tsx` (11 checks).
+
 ---
 
 ## Process & bridging

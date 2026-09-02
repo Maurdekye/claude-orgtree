@@ -39,9 +39,10 @@ import {
 } from './settingskit'
 import type { SettingsTab } from './settingskit'
 import {
-  setCrowdPilesOn, setDeskDpi, TIER_LETTER, TIERS, useCrowdPiles,
-  useDeskDpi, useEsc,
+  setCrowdPilesOn, setDeskDpi, setStartView, setStartZoomOn, TIER_LETTER,
+  TIERS, useCrowdPiles, useDeskDpi, useEsc, useStartView, useStartZoom,
 } from './shared'
+import type { StartView } from './shared'
 
 // small local copies of the usage-modal label helpers (App.tsx owns the
 // originals beside UsageModal; importing them here would cycle App ↔ panel)
@@ -200,6 +201,46 @@ function CrowdStackToggle() {
       onChange={setCrowdPilesOn}
       hint={'a team with more than 8 active agents draws as a single '
         + 'stack instead of 8+ separate cards'} />
+  )
+}
+
+/* D-228: where an org opens, and whether the camera glides there. Two rows
+   because they are two decisions — a destination and a manner — and the
+   second is moot under "where I left off", which the toggle says by going
+   inert (disabled, hint rewritten) rather than by vanishing: a control that
+   disappears reads as a bug, one that explains itself reads as a rule. */
+const START_VIEW_OPTIONS: [StartView, string][] = [
+  ['org', 'the full org'],
+  ['switchboard', 'the switchboard'],
+  ['remember', 'where I left off'],
+]
+function StartupView() {
+  const mode = useStartView()
+  const zoom = useStartZoom()
+  const remember = mode === 'remember'
+  return (
+    <>
+      <SetRow label="open an org at"
+        hint={remember
+          ? 'the camera comes back exactly where it was in that org. A brand-new '
+            + 'org, with nowhere to come back to, plays the starting zoom once.'
+          : mode === 'switchboard'
+            ? 'straight to the eye’s desk, every agent in one row'
+            : 'the whole tree, fitted to the window'}>
+        <select aria-label="open an org at" value={mode}
+          onChange={(e) => setStartView(e.target.value as StartView)}>
+          {START_VIEW_OPTIONS.map(([v, label]) =>
+            <option key={v} value={v}>{label}</option>)}
+        </select>
+      </SetRow>
+      <SetToggle label="play the starting zoom" checked={zoom}
+        disabled={remember}
+        title={remember ? 'not used by “where I left off”' : undefined}
+        onChange={setStartZoomOn}
+        hint={remember
+          ? 'not used by “where I left off” — a restored view never glides'
+          : 'wakes on the eye, then glides out to the org (or in to the switchboard)'} />
+    </>
   )
 }
 
@@ -788,6 +829,9 @@ export function AccountsPanel({ toast, close }: {
           <SetGroup title="Desk" note="saved in this browser">
             <DeskTextSize />
             <CrowdStackToggle />
+          </SetGroup>
+          <SetGroup title="Startup" note="saved in this browser">
+            <StartupView />
           </SetGroup>
         </SettingsTabPanel>
 

@@ -618,6 +618,83 @@ const subscribeCrowdPiles = (fn: () => void): (() => void) => {
 export const useCrowdPiles = (): boolean =>
   useSyncExternalStore(subscribeCrowdPiles, crowdPilesOn)
 
+/* ------------------------------------------- the startup view (D-228)
+   What the canvas shows the moment an org OPENS, and whether it glides there.
+   Two settings, because they answer two different questions:
+
+     `orgtree-start-view`   'org' | 'switchboard' | 'remember'   (unset ⇒ 'org')
+     `orgtree-start-zoom`   '1' | '0'                             (unset ⇒ on)
+
+   ⚠ APP-WIDE (no slug in either key), for the same reason as the crowd
+   toggle above: where you like an org to open is a habit of yours, not a
+   property of one org. The REMEMBERED CAMERA is the exception and carries
+   the slug — `orgtree-view-<slug>` — because a position is only meaningful
+   in the org it was taken in.
+
+   The zoom toggle is read only by the 'org' and 'switchboard' modes.
+   'remember' ignores it: a restored camera never glides (the whole point is
+   to be back where you were, instantly), and a brand-new org — one this
+   browser has no camera for — plays the intro ONCE regardless, since there
+   is nothing to restore and the glide is how the org introduces itself.
+
+   Defaults are BY ABSENCE, as with the crowd key: a never-set view key reads
+   as 'org' and a never-set zoom key reads as on, so every existing user keeps
+   exactly the behaviour they had before these settings existed. */
+export type StartView = 'org' | 'switchboard' | 'remember'
+export const START_VIEW_KEY = 'orgtree-start-view'
+export const START_ZOOM_KEY = 'orgtree-start-zoom'
+export const startView = (): StartView => {
+  try {
+    const v = localStorage.getItem(START_VIEW_KEY)
+    return v === 'switchboard' || v === 'remember' ? v : 'org'
+  } catch { return 'org' }
+}
+export const startZoomOn = (): boolean => {
+  try { return localStorage.getItem(START_ZOOM_KEY) !== '0' } catch { return true }
+}
+const startSubs = new Set<() => void>()
+const notifyStart = () => { for (const fn of [...startSubs]) fn() }
+export const setStartView = (v: StartView): void => {
+  try { localStorage.setItem(START_VIEW_KEY, v) } catch { /* private mode */ }
+  notifyStart()
+}
+export const setStartZoomOn = (on: boolean): void => {
+  try { localStorage.setItem(START_ZOOM_KEY, on ? '1' : '0') } catch { /* private mode */ }
+  notifyStart()
+}
+// same subscribe contract as the crowd toggle: same-tab writes notify here,
+// another tab's write arrives as a `storage` event. Both snapshots are
+// primitives, so a wake that changes nothing is a render React bails out of.
+const subscribeStart = (fn: () => void): (() => void) => {
+  startSubs.add(fn)
+  window.addEventListener('storage', fn)
+  return () => { startSubs.delete(fn); window.removeEventListener('storage', fn) }
+}
+export const useStartView = (): StartView =>
+  useSyncExternalStore(subscribeStart, startView)
+export const useStartZoom = (): boolean =>
+  useSyncExternalStore(subscribeStart, startZoomOn)
+
+/** the camera this browser last had on `slug`, or null if it never had one
+ *  (a new org, a cleared cache, a hand-edited value — all the same answer) */
+export const savedView = (slug: string): View | null => {
+  try {
+    const raw = localStorage.getItem('orgtree-view-' + slug)
+    if (!raw) return null
+    const v = JSON.parse(raw) as Partial<View> | null
+    if (!v || typeof v.x !== 'number' || typeof v.y !== 'number'
+      || typeof v.z !== 'number') return null
+    if (![v.x, v.y, v.z].every(Number.isFinite) || v.z <= 0) return null
+    return { x: v.x, y: v.y, z: v.z }
+  } catch { return null }
+}
+export const saveView = (slug: string, v: View): void => {
+  try {
+    localStorage.setItem('orgtree-view-' + slug,
+      JSON.stringify({ x: v.x, y: v.y, z: v.z }))
+  } catch { /* private mode */ }
+}
+
 export function withDraftTree(tree: TreePayload, draft: DraftState | null): CanvasNode {
   const draftNode = (): CanvasNode => ({
     id: DRAFT, title: '', tier: draft!.tier, state: 'draft', children: [],

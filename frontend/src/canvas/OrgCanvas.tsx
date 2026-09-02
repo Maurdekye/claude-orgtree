@@ -14,7 +14,7 @@ import {
 } from '../icons'
 import {
   ago, attentionPip, CODEX_TIER_LETTER, CODEX_TIER_SEAT, CODEX_TIERS, DOG_H, DOG_W, DRAFT, ease, edgeJumpPlacement, type EJForm, EXTERN, fallbackActive, familyOffer, flatten, GEMINI_TIER_LETTER, GEMINI_TIER_SEAT, GEMINI_TIERS, hireOf, INBOX, INBOX_H, layout, NODE_H, NODE_W, orgPxc, presenceOf, segD,
-  providerOf, segPoint, sizeOf, smooth, SPRING_C, SPRING_K, TIER_LETTER, TIER_SEAT, TIERS, useCrowdPiles, usePolled, USER, USER_H,
+  providerOf, savedView, saveView, segPoint, sizeOf, smooth, SPRING_C, SPRING_K, startView, startZoomOn, TIER_LETTER, TIER_SEAT, TIERS, useCrowdPiles, usePolled, USER, USER_H,
   USER_W, withDraftTree, Z_DESK, Z_MAX, Z_MINI,
 } from './shared'
 import type {
@@ -894,20 +894,15 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
     animateTo({ x: cx - wx * z, y: cy - wy * z, z }, 220)
   }, [animateTo])
 
-  const centerOn = useCallback((id: string, z: number | null = null) => {
-    // focusing a BURIED pile member brings it to the front first (user spec
-    // 2026-08-05), then finishes the glide once the re-layout gives it a
-    // position (two frames: state commit, then layout)
-    const pile = pileOfRef.current.get(id)
-    if (pile && pile.front !== id) {
-      setFront(pile.key, id)
-      requestAnimationFrame(() => requestAnimationFrame(() =>
-        centerRef.current?.(id, z)))
-      return
-    }
+  // the camera that FOCUSES `id` — the desk (or, for the eye, the
+  // switchboard) filling the viewport. Split from `centerOn` (D-228) so the
+  // startup path can land there without a glide: the switchboard an org
+  // opens on is the same switchboard the HUD eye button reaches, by
+  // construction, because both ask this one function.
+  const focusView = useCallback((id: string, z: number | null = null): View | null => {
     const p = targetRef.current.get(id)
     const vp = viewportRef.current?.getBoundingClientRect()
-    if (!p || !vp) return
+    if (!p || !vp) return null
     // click-to-focus fills the window with the card, small margin all round.
     // The EYE fits by HEIGHT only — it is the one cell that expands in width
     // to the screen's aspect ratio (the switchboard), so height is the fit.
@@ -919,25 +914,39 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
     const zz = z ?? Math.max(Z_DESK, id === USER
       ? Math.min(Z_MAX, (vp.height - 48) / USER_H)
       : Math.min(Z_MAX, (Math.min(vp.width, vp.height) - 48) / NODE_H))
-    animateTo({
+    return {
       x: vp.width / 2 - (p.x + NODE_W / 2) * zz,
       y: vp.height / 2 - (p.y + NODE_H / 2) * zz,
       z: zz,
-    })
-  }, [animateTo, setFront])
+    }
+  }, [])
+  const centerOn = useCallback((id: string, z: number | null = null) => {
+    // focusing a BURIED pile member brings it to the front first (user spec
+    // 2026-08-05), then finishes the glide once the re-layout gives it a
+    // position (two frames: state commit, then layout)
+    const pile = pileOfRef.current.get(id)
+    if (pile && pile.front !== id) {
+      setFront(pile.key, id)
+      requestAnimationFrame(() => requestAnimationFrame(() =>
+        centerRef.current?.(id, z)))
+      return
+    }
+    const to = focusView(id, z)
+    if (to) animateTo(to)
+  }, [animateTo, focusView, setFront])
   const centerRef = useRef<typeof centerOn | null>(null)
   centerRef.current = centerOn
 
-  // a REAL fit: whole org inside the actual viewport
-  const fitAll = useCallback((animate = true, ms = 320) => {
+  // a REAL fit: the camera that puts the whole org inside the actual viewport
+  const fitView = useCallback((): View | null => {
     const vp = viewportRef.current?.getBoundingClientRect()
-    if (!vp) return
+    if (!vp) return null
     let minX = Infinity, minY = Infinity, maxX = 0, maxY = 0
     for (const p of targetRef.current.values()) {
       minX = Math.min(minX, p.x); minY = Math.min(minY, p.y)
       maxX = Math.max(maxX, p.x + NODE_W + 40); maxY = Math.max(maxY, p.y + NODE_H + 40)
     }
-    if (!isFinite(minX)) return
+    if (!isFinite(minX)) return null
     // extra top margin: the eye's infinite bar fades 110px above its card.
     // №23: NO zero-clamp — past ~64 leaf columns the leftmost nodes go
     // negative (the eye is pinned at x=6000) and a clamp silently cut them
@@ -945,14 +954,18 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
     minX -= 60; minY -= 130
     const z = Math.min(1.3, Math.max(0.24,
       Math.min((vp.width - 48) / (maxX - minX), (vp.height - 48) / (maxY - minY))))
-    const to = {
+    return {
       x: (vp.width - (maxX - minX) * z) / 2 - minX * z,
       y: (vp.height - (maxY - minY) * z) / 2 - minY * z,
       z,
     }
+  }, [])
+  const fitAll = useCallback((animate = true, ms = 320) => {
+    const to = fitView()
+    if (!to) return
     if (animate) animateTo(to, ms)
     else setView(to)
-  }, [animateTo])
+  }, [animateTo, fitView])
   // mobile zoom range (spec §5.1): compact retires Z_DESK — the map never
   // reaches desk zoom, so the camera-derived focusId never fires and the
   // sheet is the only desk. Desktop keeps [0.24, Z_MAX] untouched.
@@ -996,29 +1009,96 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
       }
     }
   }, [sheetId])
-  // opening an org: wake on the eye, then drift out to the whole tree.
-  // Wheel and drag both cancel the shared camera animation, so the intro is
-  // interruptible at any moment. Keyed on the LOADED org's slug — switching
-  // orgs keeps this component mounted, so a mount-only intro left the camera
-  // wherever the previous org parked it and the drift ran from way off-tree.
+  // opening an org (D-228): where the camera lands, and whether it glides.
+  //   'org'          the whole tree           — the historical default
+  //   'switchboard'  the eye's desk           — same camera the HUD eye reaches
+  //   'remember'     wherever it was last     — restored exactly, never a glide
+  // The glide ("wake on the eye, then drift") is the zoom toggle's business
+  // for the first two. 'remember' consults it never: a saved camera comes
+  // back as-is, and an org this browser has NO camera for — a new org, or
+  // the first open since the setting existed — plays the intro once anyway,
+  // because there is nothing to restore and the drift is how the org shows
+  // its shape. Wheel and drag both cancel the shared camera animation, so
+  // the intro is interruptible at any moment. Keyed on the LOADED org's slug
+  // — switching orgs keeps this component mounted, so a mount-only intro
+  // left the camera wherever the previous org parked it and the drift ran
+  // from way off-tree.
   useEffect(() => {
     const vp = viewportRef.current?.getBoundingClientRect()
     const eye = targetRef.current.get(USER)
     if (!vp || !eye) { fitAll(false); return }
+    const mode = startView()
+    const saved = mode === 'remember' ? savedView(tree.slug) : null
+    if (saved) {
+      viewRef.current = saved
+      setView(saved)
+      return
+    }
+    // the switchboard is a desk, and compact never reaches desk zoom (§5.1:
+    // the sheet is the only desk there) — so on a phone it opens on the org
+    const dest = (mode === 'switchboard' && !compactRef.current
+      ? focusView(USER) : null) ?? fitView()
+    if (!dest) return
+    if (mode !== 'remember' && !startZoomOn()) {
+      viewRef.current = dest
+      setView(dest)
+      return
+    }
     const z0 = 1.6                       // close, but under the desk threshold
     const v0 = {
       x: vp.width / 2 - (eye.x + USER_W / 2) * z0,
       y: vp.height / 2 - (eye.y + USER_H / 2) * z0,
       z: z0,
     }
-    // write the ref FIRST: the rAF'd fitAll reads viewRef for its start frame,
+    // write the ref FIRST: the rAF'd glide reads viewRef for its start frame,
     // and if it fires before React commits setView the drift would launch
     // from the stale camera instead of the eye
     viewRef.current = v0
     setView(v0)
-    const raf = requestAnimationFrame(() => fitAll(true, 1700))
+    const raf = requestAnimationFrame(() => animateTo(dest, 1700))
     return () => cancelAnimationFrame(raf)
   }, [tree.slug])   // eslint-disable-line react-hooks/exhaustive-deps
+
+  // …and the camera is REMEMBERED (D-228), whatever the startup mode: the
+  // position is saved in every mode so that switching to 'remember' later
+  // finds one, rather than treating a long-lived org as brand new. Debounced,
+  // because a pan or a glide writes the view every frame — so a glide in
+  // flight never lands a mid-air frame; the write happens once the camera
+  // has held still. The pending write is landed — not dropped — when the org
+  // changes underneath it (that is the previous org's "where I left off")
+  // and on pagehide (a closed tab is exactly the case the setting exists
+  // for).
+  // ⚠ reads `viewRef`, not `view`: on an org switch the intro effect above
+  // has already re-aimed the ref for the NEW slug in this same commit, while
+  // the `view` state still holds the OLD org's camera for one render.
+  // ⚠ NO FLUSH ON UNMOUNT. It looked free, and it was the bug the browser
+  // probe caught: under StrictMode's dev double-mount the cleanup ran
+  // between the intro effect's two runs, wrote the eye-park frame under the
+  // slug, and the second run "restored" it — an org that never glided. The
+  // last 250ms before a deliberate leave is not worth a write that can race
+  // the intro; pagehide covers the case that matters.
+  const saveRef = useRef<{ slug: string; view: View; t: ReturnType<typeof setTimeout> } | null>(null)
+  const flushSave = useCallback(() => {
+    const p = saveRef.current
+    if (!p) return
+    clearTimeout(p.t)
+    saveRef.current = null
+    saveView(p.slug, p.view)
+  }, [])
+  useEffect(() => {
+    const p = saveRef.current
+    if (p && p.slug !== slug) flushSave()
+    else if (p) clearTimeout(p.t)
+    const v = viewRef.current
+    saveRef.current = {
+      slug, view: v,
+      t: setTimeout(() => { saveRef.current = null; saveView(slug, v) }, 250),
+    }
+  }, [view, slug, flushSave])
+  useEffect(() => {
+    window.addEventListener('pagehide', flushSave)
+    return () => window.removeEventListener('pagehide', flushSave)
+  }, [flushSave])
 
   useEffect(() => {
     const el = viewportRef.current
