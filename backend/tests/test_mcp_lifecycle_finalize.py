@@ -114,7 +114,7 @@ class LifecycleFinalizeTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         org = store.create_org("zz mcp finalize")
         for nid in ("parked", "supersede", "killed", "parkback",
-                    "durable", "unobservable"):
+                    "durable", "unobservable", "stale"):
             org.hire(USER, None, "haiku", 5, nid)
         store.save_org(org)
         cls.slug = org.d["slug"]
@@ -405,6 +405,48 @@ class LifecycleFinalizeTests(unittest.TestCase):
         self.assertIs(after["owner"], owner, after)
         self.assertEqual(after["count"], len(TOOLS), after)
         self.assertEqual(after["names"], sorted(TOOLS), after)
+
+
+    # ── 7. the generation nobody was left holding ──────────────────────────
+    def test_a_stale_generation_killed_at_claim_is_still_finalized(self):
+        """`claim` kills a process whose identity hash no longer matches, and
+        it does so having ALREADY dropped the pool entry under the lock. The
+        process was never attached, so it is neither tracked nor claimed when
+        its pump reaches EOF — and the old callback gated ALL of its death
+        bookkeeping on exactly that (`if was_tracked or wp.claimed`). Nothing
+        published anything, so a killed generation stayed the MCP owner with
+        its inventory intact until some successor's `begin` happened to
+        supersede it.
+
+        This is why the finalizer's lifecycle and MCP publishes are no longer
+        under the registry gate: both carry a generation-identity check, which
+        protects a successor properly, and registry membership never did.
+        `discard` is NOT this case — a discarded process is still `claimed`,
+        so the old gate passed and it was always finalized.
+        """
+        nid = "stale"
+        proc = self._own(SLEEPER)
+        self._adopt(nid, proc)
+        wp = W.WarmProc(self.slug, nid, proc, "sid-c", "old-hash", "env-c")
+        with W._pool_lock:
+            W._pool[(self.slug, nid)] = wp
+        W._set_proc_lifecycle(self.slug, nid, live=True, owner=wp, adopt=True)
+        self.assertIs(_snap(self.slug, nid)["owner"], proc)
+
+        got, why = W.claim(self.slug, nid, "new-hash")
+        self.assertIsNone(got, "a stale-identity process must never be served")
+        self.assertEqual(why, "identity-changed")
+        self.assertFalse(wp.claimed, "precondition: it was never attached")
+
+        self.assertTrue(
+            _wait_for(lambda: _snap(self.slug, nid)["state"] == "process-ended",
+                      20.0),
+            f"killed-at-claim generation never finalized: "
+            f"{_snap(self.slug, nid)}")
+        end = _snap(self.slug, nid)
+        self.assertIsNone(end["owner"], end)
+        self.assertIsNone(end["count"], end)
+        self.assertIsNone(end["names"], end)
 
 
 if __name__ == "__main__":
