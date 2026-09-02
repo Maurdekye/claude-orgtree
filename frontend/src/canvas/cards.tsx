@@ -579,21 +579,30 @@ function SpawnChips({ onSpawn, free, seats, maxTier, side, soleHire,
     if (!tiers.length) return
     const offer = familyOffer(hire)
     if (offer === 'hide') return
+    // gpt-reserve carries its OWN narrower offer (`reserveOffer`) inside an
+    // otherwise-live codex family: OpenAI grants and withdraws that pool per
+    // account, so a Codex CLI that offers sol/terra/luna can be missing
+    // reserve alone. User ruling 2026-09-02 — "dont just grey out the reserve
+    // token. remove it entirely" — so that verdict is 'hide', and a hidden
+    // tier leaves the row completely rather than sitting in it disabled.
+    const offerOf = (t: string) =>
+      (t === 'gpt-reserve' ? reserveOffer(hire) : offer)
+    // ⚠ FILTERED BEFORE `tiers` IS STORED, because the inward-first sort below
+    // orders families by "number of available model tiers" — a hidden chip
+    // that still counted would push Codex inward for a row it does not render.
+    const vis = tiers.filter((t) => offerOf(t) !== 'hide')
+    // every tier hid: the same nothing-to-offer case as an empty family above
+    if (!vis.length) return
     fams.push({
-      key, tiers,
-      // gpt-reserve carries its OWN narrower offer (`reserveOffer`) inside an
-      // otherwise-live codex family: reserve capacity is a ChatGPT-only perk,
-      // so a keyed Codex session can offer sol/terra/luna while reserve alone
-      // renders as the disabled preview, with its own reason.
-      body: tiers.map((t) => {
-        const tOffer = t === 'gpt-reserve' ? reserveOffer(hire) : offer
-        return tOffer === 'offer'
+      key, tiers: vis,
+      body: vis.map((t) => (
+        offerOf(t) === 'offer'
           ? chip(t, letters[t])
           : outChip(t, letters[t], label,
               (t === 'gpt-reserve' ? hire?.reserveReason : null)
                 ?? hire?.reason ?? null,
               seatOf(t))
-      }),
+      )),
     })
   }
   // Claude's own list is the kiosk-capped `shown`, not the raw family: the cap

@@ -2479,6 +2479,11 @@ function HireSheet({ anchor, seats, codexHire, antigravityHire, claudeHire, open
             <div className="hs-tiers">
               {f.tiers.map((t) => {
                 const tOffer = tierOffer(f, t)
+                // 'hide' is a tier that leaves the sheet entirely, not one
+                // rendered disabled — user ruling 2026-09-02 about the
+                // gpt-reserve token, applied here from the same `reserveOffer`
+                // the canvas chips read.
+                if (tOffer === 'hide') return null
                 const tReason = t === 'gpt-reserve'
                   ? f.hire?.reserveReason ?? f.reason : f.reason
                 return (

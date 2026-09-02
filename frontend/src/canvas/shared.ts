@@ -258,15 +258,32 @@ export const hireOf = (p: ProviderInfo | null | undefined): HireState | null =>
          reserveEnabled: p.reserve_hire_enabled, reserveReason: p.reserve_reason } : null)
 
 /** gpt-reserve's own offer verdict — the family's, narrowed by its own gate.
- *  Never loosens what `familyOffer` already decided (a hidden/disabled
- *  family stays that way for reserve too); only tightens 'offer' down to
- *  'disable' when the family is live but reserve specifically is not
- *  (`reserveEnabled === false`, positively — `undefined` means an old
- *  backend never sent the field, which offers, same as everywhere else in
- *  this file). */
+ *  Never loosens what `familyOffer` already decided (a hidden/disabled family
+ *  stays that way for reserve too); only tightens 'offer' down when the family
+ *  is live but reserve specifically is not (`reserveEnabled === false`,
+ *  positively — `undefined` means an old backend never sent the field, which
+ *  offers, same as everywhere else in this file).
+ *
+ *  IT TIGHTENS TO 'hide', NOT 'disable' (user ruling 2026-09-02: "dont just
+ *  grey out the reserve token. remove it entirely"), and that lands on the
+ *  right side of this file's own split. `familyOffer` disables the
+ *  signed-out case because the user demonstrably HAS that harness and the
+ *  remedy is one command away, and hides the not-installed case because it is
+ *  a fact about the machine that no amount of repeating on hover makes more
+ *  actionable. A withdrawn reserve grant is the second kind and then some:
+ *  OpenAI took the pool back, THERE IS NOTHING THE USER CAN DO, and it
+ *  returns on its own schedule. A permanently greyed chip carrying "this
+ *  comes back on its own" on every card is the noise D-199 hid the
+ *  uninstalled case to avoid.
+ *
+ *  ⚠ ONLY the reserve-specific darkness hides. When the whole Codex account
+ *  is out of usage the FAMILY is 'disable' and reserve greys out beside its
+ *  three siblings, carrying the family's reason — that state is actionable
+ *  (buy credits, or wait for the reset the tooltip names) and it is not a
+ *  lone stray chip, which is what the ruling was about. */
 export const reserveOffer = (h: HireState | null | undefined): FamilyOffer => {
   const base = familyOffer(h)
-  return base === 'offer' && h?.reserveEnabled === false ? 'disable' : base
+  return base === 'offer' && h?.reserveEnabled === false ? 'hide' : base
 }
 
 /** D-202: is this provider part of the product on this machine AT ALL?

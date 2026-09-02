@@ -61,16 +61,28 @@ test('familyOffer: hiding is reserved for a POSITIVELY absent CLI', () => {
   assert.notEqual(familyOffer(signedOut), 'hide')
 })
 
-// gpt-reserve's own gate: reserve capacity is a ChatGPT-subscription perk,
-// so a keyed (api-key) Codex session can be `familyOffer`-'offer' for
-// sol/terra/luna while reserve alone stays dark.
+// gpt-reserve's own gate: OpenAI grants and withdraws the reserve pool per
+// account, so a Codex CLI that is `familyOffer`-'offer' for sol/terra/luna can
+// be missing reserve alone.
 
-test('reserveOffer: narrows an offered family when reserve is explicitly off',
+test('reserveOffer: an offered family with reserve explicitly off HIDES it —'
+  + ' user ruling 2026-09-02, "remove it entirely", not grey it out',
   () => {
     assert.equal(reserveOffer(
       { enabled: true, installed: true, reason: null,
-        reserveEnabled: false, reserveReason: 'api key' }), 'disable')
+        reserveEnabled: false, reserveReason: 'api key' }), 'hide')
   })
+
+test('reserveOffer: a family that is ITSELF disabled keeps reserve disabled'
+  + ' beside its siblings — only the reserve-specific darkness hides', () => {
+  // the boundary of the ruling. An out-of-usage Codex account disables all
+  // four tiers with one actionable reason (buy credits, or wait for the reset
+  // it names); that is not the lone stray chip the user asked to be removed,
+  // and erasing a whole family the machine HAS would be the D-199 bug again.
+  assert.equal(reserveOffer(
+    { enabled: false, installed: true, reason: 'no usage left',
+      reserveEnabled: false, reserveReason: 'no usage left' }), 'disable')
+})
 
 test('reserveOffer: an offered family with no opinion on reserve OFFERS —'
   + ' an old backend must not brick the reserve chip', () => {
@@ -170,24 +182,43 @@ surfaceTest('THE REPORT: codex set up, claude not — only codex tokens appear',
     }
   })
 
-surfaceTest('gpt-reserve alone goes dark on an api-key Codex session — its '
-  + 'siblings keep hiring', async (mount) => {
+surfaceTest('gpt-reserve is REMOVED, not greyed, when its grant is gone — '
+  + 'its siblings keep hiring', async (mount) => {
+  // User ruling 2026-09-02: "dont just grey out the reserve token. remove it
+  // entirely." There is nothing the user can do about a withdrawn grant, so a
+  // permanently disabled chip explaining that on every card is pure noise.
   const el = await mount({
     claudeHire: ABSENT, antigravityHire: ABSENT,
     codexHire: state({ enabled: true, installed: true,
                        reserveEnabled: false, reserveReason: 'api key' }),
   })
   const got = tokens(el, '.hsof')
-  assert.equal(got['gpt-reserve'], true,
-    'reserve capacity is a ChatGPT perk this api-key session never got')
+  assert.equal(got['gpt-reserve'], undefined,
+    'the reserve token must not render at all — not even disabled')
+  assert.equal(
+    [...el.querySelectorAll<HTMLButtonElement>('.hsof button')]
+      .filter((b) => b.className.split(/\s+/).includes('t-gpt-reserve')).length,
+    0, 'no element may carry the reserve chip class either')
+  // THE LEG THAT MUST HOLD: removing the tier must not take the row with it
   for (const t of ['luna', 'terra', 'sol']) {
     assert.equal(got[t], false, `${t} bills per-token and must stay offered`)
   }
-  const reserveBtn = [...el.querySelectorAll<HTMLButtonElement>('.hsof button')]
-    .find((b) => b.className.split(/\s+/).includes('t-gpt-reserve'))!
-  assert.match(reserveBtn.title, /api key/,
-    'the disabled reserve chip must carry its OWN reason, not the family\'s')
 })
+
+surfaceTest('…but a Codex family that is itself unavailable still shows all '
+  + 'four, disabled — the ruling removes a stray chip, not a whole harness',
+  async (mount) => {
+    const el = await mount({
+      claudeHire: ABSENT, antigravityHire: ABSENT,
+      codexHire: state({ installed: true, reason: 'no usage left this window',
+                         reserveEnabled: false,
+                         reserveReason: 'no usage left this window' }),
+    })
+    const got = tokens(el, '.hsof')
+    for (const t of CODEX) {
+      assert.equal(got[t], true, `${t} stays visible-but-disabled here`)
+    }
+  })
 
 surfaceTest('the mirror: claude set up, codex not', async (mount) => {
   const el = await mount({ claudeHire: ON, codexHire: ABSENT,

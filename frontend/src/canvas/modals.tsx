@@ -18,7 +18,7 @@ import { pickFolder } from '../picker'
 import {
   CloseIcon, DeleteIcon, FolderIcon, LayersIcon, SettingsIcon,
 } from '../icons'
-import { ago, ALL_PRESENT, anyTierSeat, CODEX_TIERS, ANTIGRAVITY_TIERS, isOpenRouterTier, MODEL_VERSIONS, openrouterTierIds, pileOrder, PROVIDER_LABEL, providerOf, TIER_LETTER, TIERS, tierShown, USER, useEsc } from './shared'
+import { ago, ALL_PRESENT, anyTierSeat, CODEX_TIERS, ANTIGRAVITY_TIERS, hireOf, isOpenRouterTier, MODEL_VERSIONS, openrouterTierIds, pileOrder, PROVIDER_LABEL, providerOf, reserveOffer, TIER_LETTER, TIERS, tierShown, USER, useEsc } from './shared'
 import type { ProviderPresence } from './shared'
 import type { CanvasNode, DraftScope, DraftState, OpFn, Pile } from './shared'
 import { ProcessLifecycleMark } from './desk'
@@ -769,8 +769,20 @@ export function NodeConfig({ node, map, tree, slug, op, toast, codexProvider,
   // whose provider is INSTALLED but signed out is still listed and disabled
   // with its reason (user confirmed 2026-08-30), while one whose provider is
   // absent is not listed at all. Two different claims, two different answers.
+  // gpt-reserve is REMOVED from the dropdown, not listed disabled, when its
+  // grant is withdrawn (user ruling 2026-09-02). Same verdict, same function
+  // as the hire chips — `reserveOffer` only says 'hide' for the
+  // reserve-specific case, so a Codex family that is merely signed out or out
+  // of usage still lists all four, disabled, with their reason.
+  //
+  // `node.tier` survives it, by the same `keep` rule `tierShown` applies one
+  // line down: a node ALREADY on gpt-reserve must still see its own tier as
+  // the truthful selected no-op, or the select would silently read as some
+  // other model.
+  const reserveHidden = reserveOffer(hireOf(codexProvider)) === 'hide'
   const shownTiers = (fam: readonly string[]) =>
-    fam.filter((t) => tierShown(presence, t, node.tier))
+    fam.filter((t) => tierShown(presence, t, node.tier)
+      && !(reserveHidden && t === 'gpt-reserve' && t !== node.tier))
   const modelOption = (t: string) => {
     const why = unavailable(t)
     return (

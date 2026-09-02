@@ -108,6 +108,36 @@ test('the header summary counts every provider family', async (t: TestContext) =
   )
 })
 
+configTest('a withdrawn reserve grant REMOVES gpt-reserve from the switch',
+  async (mount) => {
+    // user ruling 2026-09-02, the same verdict the hire chips take
+    const { el } = await mount({
+      provider: provider({ reserve_hire_enabled: false,
+                           reserve_reason: 'grant withdrawn' }),
+    })
+    assert.equal(option(el, 'gpt-reserve'), undefined,
+      'a withdrawn reserve grant is not listed, not listed-disabled')
+    // the leg that must hold: its siblings are untouched
+    for (const t of ['luna', 'terra', 'sol']) {
+      assert.equal(option(el, t)?.disabled, false, `${t} stays switchable`)
+    }
+  })
+
+configTest('…but a node ALREADY on gpt-reserve still sees its own tier',
+  async (mount) => {
+    // `node.tier` is the `keep` that survives every hide rule here. Without
+    // it the select would silently read as some other model — the switch
+    // would look like a change nobody asked for.
+    const { el } = await mount({
+      node: { ...node(), tier: 'gpt-reserve' } as CanvasNode,
+      provider: provider({ reserve_hire_enabled: false,
+                           reserve_reason: 'grant withdrawn' }),
+    })
+    const own = option(el, 'gpt-reserve')
+    assert.ok(own, 'the node\'s own tier must remain listed')
+    assert.equal(own.disabled, false, 'and selectable as a truthful no-op')
+  })
+
 configTest('the switch lists every provider family with its ledger seats',
   async (mount) => {
     const { el } = await mount()
