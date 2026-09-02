@@ -8228,3 +8228,90 @@ here rather than rendering as a silent grey. `internal_error` is unreachable
 from `classify` by design and is proved separately through `readiness_fields`
 and `public`. Frontend: `cacheforecast.test.tsx` and `cachecountdown.test.tsx`
 (16 checks) cover the three-way render, the D-214 reversal, and fail-closed.
+
+### D-227 · a message is delivered when it is ACCEPTED, and announced once
+
+Ruling (codex-stream-order, 2026-09-02, completing D-221): **mid-turn mail
+becomes durable and visible at the moment the provider ACCEPTS it, never at the
+moment orgtree merely picks it up — and the frame that announces it is emitted
+from the one place every lane passes.** D-221 made the answer wait for the
+question at the start of a turn. This is the same invariant DURING one, where
+the codex and gemini lanes were breaking it in two different directions.
+
+Why, from live evidence rather than reasoning. The user, on the deployed build
+carrying D-221: "i still observe timing issues in codex transcript events."
+Their original report names four shapes — the answer above a still-in-transit
+question, gaps, doubled-up messages, streamed events out of order. A 15-minute
+websocket + `/chat` capture of `coordinator` (the org's only live codex agent)
+and a scan of its journals found three surviving causes, all of them past the
+point D-221 looks at.
+
+ONE · THE REFUSED STEER CLAIMED A DELIVERY THAT NEVER HAPPENED. `pop_steer`
+committed on the FETCH: it wrote the durable steered row and confirmed the
+journal batch away, and only then did the lane ask the app-server to accept the
+text. `turn/steer` is refused whenever the turn ended inside the 2 s
+`CODEX_STEER_POLL` window — and on the gemini wire, which has no steer verb, it
+is refused EVERY time. The carriers then went back on the queue and the next
+turn delivered the same words again, so the message stood in the transcript
+twice, permanently. Measured on the live coordinator: `steered_log`
+2026-09-02T07:38:11.278Z and turn user row 07:38:13.986Z, the same 3512
+characters; 1 of 466 codex steered rows org-wide, and it is the ring buffer
+that bounds that count, not the defect. `defer_commit=True` moves the commit to
+the ACCEPTANCE. Nothing is claimed that was not done — which is also the safe
+direction if the process dies in between, since the unconfirmed batch is
+exactly what `_fold_back_undelivered` returns to the mailbox. The refusal now
+also writes the `_steer_fold_log` row the claude lane already wrote, so a miss
+is a dim system line where the wait happened rather than silence.
+
+TWO · THE CODEX AND GEMINI LANES ANNOUNCED NOTHING. The `steered` websocket
+frame was emitted by `api.node_steer`, the HTTP door the claude lane's
+PostToolUse hook comes through. The other two legs call `pop_steer` in-process
+from a pump thread and never pass that door, so their mid-turn mail went
+durable with nothing on the wire to say so: the desk learned of it at its next
+2.5 s heartbeat, and `convo.ingestStream` never got the frame it uses to retire
+the sender's optimistic ghost and to nudge the refetch. Measured: a steered row
+committed for coordinator at 09:21:57.667Z, with ZERO `steered` frames in the
+whole 15-minute capture of that node. Delivery and its announcement are one
+fact, so `commit_steer` states both, in that order — durable first, visible
+second — and the HTTP door no longer adds its own.
+
+THREE · D-221'S OWN BARRIER RELEASED OUT OF ORDER. `_open_journal` copied the
+held closures, dropped `jlock`, and only then emitted. A reader-thread
+`_visible` that observed `sid` inside that window emitted NEWER output while
+OLDER held closures were still in the release loop. The barrier made the
+question precede the answer; it did not make the answer precede itself. A
+second lock, `emit_lock`, is the ORDER of emission where `jlock` is the STATE
+it reads: every path takes them in that order, and the release holds it across
+the whole flush.
+
+FOUR (already landed, in `aec84e5` by way of another agent's staging) · THE
+DESK DREW THE QUESTION BELOW THE ANSWER REGARDLESS. Pending mail rendered at
+the very bottom of the scroller — under the transcript, under the live tail,
+under the streamed draft. But the payload already distinguishes two different
+things: `delivering` + `via:'turn'` is the message the RUNNING turn was started
+to answer, and everything live below it belongs to that turn, while any other
+pending entry is still waiting for a turn that has not begun. The first is
+hoisted above the live tail; the second stays at the bottom, where it is true.
+This is what makes the picture right independently of how promptly the backend
+commits anything — the backstop D-221 could not provide from the server side.
+
+NOT CHANGED, and stated rather than hidden: `Hub._send` awaits each socket in
+turn inside a task per frame, so with TWO OR MORE connected clients and real
+transport backpressure, frames can in principle reach the second socket out of
+order. It was not reproduced, and the obvious fix — one lock around the fanout
+— gives one stalled tab the power to freeze every other viewer's stream. The
+right shape is a per-socket writer queue, which is a larger change than the
+evidence justifies.
+
+Tests: `backend/tests/test_steer_delivery.py` (22 checks, new) drives the REAL
+`_codex_leg` against `fakecodex`, posts real mail through `send_message`'s own
+steer door mid-turn, and judges every payload crossing `supervisor.stream`
+against the durable state on disk AT THAT INSTANT. Anti-vacuity is measured,
+not asserted: against the product code at `aec84e5` the suite fails 10 of 22 —
+including "the message the steer refused renders EXACTLY ONCE", which reports
+`got 2, wanted 1` — and passes the other 12, which are the ones pinning what
+must not change. The new `steer_refuse` fixture scenario answers `turn/steer`
+with the `expectedTurnId` guard's own refusal. `frontend/tests/turnpend.test.tsx`
+(5 checks, new) pins the render order in both directions: against the previous
+order §1/§2/§4 fail, and against a mutant that hoists EVERY pending bubble
+§3/§4 fail instead.
