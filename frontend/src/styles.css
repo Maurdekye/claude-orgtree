@@ -3904,11 +3904,16 @@ html.mobile .md table { display: block; overflow-x: auto; max-width: 100%; }
    a key is registered — a ROW OF MODEL CARDS (the favorites) that highlights
    as one control and opens the model-selection modal. Cards are MONOGRAMS:
    the model's canonical letter on its canonical colour (`--orr-c`, inline per
-   card), the same visual language as the tier chips. ---- */
-.orr-key { display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
-  margin-left: var(--acct-rail); }
-.orr-key input { flex: 1 1 16em; min-width: 12em; }
-.orr-credits { font-variant-numeric: tabular-nums; }
+   card), the same visual language as the tier chips.
+   THE KEY ROW HAS NO RULES OF ITS OWN (2026-09-03): it is an `.acct-line` ›
+   `.acct-row` built from the account rows' parts above — ghost grip, the
+   `.acct-email` field, 27px `.acct-btn` ICON buttons, `.acct-provenance` for
+   the credit figures — so it inherits their rail, columns and heights. The
+   first cut was a prose note with three TEXT buttons wearing `.acct-btn`;
+   at 27px wide each label spilled over the next and over the wrapped note
+   (the user's 2026-09-02 screenshot). `tests/orrkey_probe.py` measures it. */
+.orr-standing .dim, .orr-standing .ask-warn-inline { font-weight: 400; }
+.orr-standing { font-variant-numeric: tabular-nums; }
 .orr-favs { display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
   margin-left: var(--acct-rail); padding: 6px 8px; min-height: 40px;
   border: 1px solid var(--line); border-radius: 8px; cursor: pointer;

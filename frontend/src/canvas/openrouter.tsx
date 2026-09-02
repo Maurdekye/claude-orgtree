@@ -18,6 +18,18 @@
 // The key is written here and never read back: the document this renders
 // says `key_set`, the key's LABEL at openrouter.ai and the credit standing —
 // nothing else, by construction of the backend (openrouter.py).
+//
+// THE KEY ROW IS AN ACCOUNT ROW (2026-09-03). It is built from the accounts
+// panel's own parts — `.acct-line` › `.acct-gutter` + `.acct-row` ›
+// `.acct-main` (ghost grip · field · 27px icon buttons) + `.acct-provenance`
+// — so it sits on the Claude rows' rail and ends on their button column, and
+// the standing has two lines the way theirs does: identity + verdict on the
+// bold, ellipsised first line; the credit figures dim on the second.
+// ⚠ `.acct-btn` IS A 27x27 ICON BUTTON. The first cut put the words
+// "refresh", "replace" and "clear" in it, and each label spilled ~35px out of
+// a 25px box, over its neighbours and over the wrapped standing line (the
+// user's 2026-09-02 screenshot: "$0.16efreeplacclear"). Icons only; the
+// words go in `title`. `tests/orrkey_probe.py` measures this in a browser.
 
 import { useEffect, useRef, useState } from 'react'
 import type { CSSProperties, ReactNode } from 'react'
@@ -25,6 +37,7 @@ import {
   clearOpenRouterKey, getOpenRouter, searchOpenRouterModels, setOpenRouterFavorite,
   setOpenRouterKey,
 } from '../api'
+import { AutorenewIcon, CheckIcon, CloseIcon, DeleteIcon, EditIcon } from '../icons'
 import type {
   OpenRouterDoc, OpenRouterModel, OpenRouterModelsPage, ProviderInfo, ProviderTier,
 } from '../types'
@@ -42,6 +55,28 @@ const perM = (v: number): string =>
 const ctxK = (n: number): string =>
   n >= 1_000_000 ? `${(n / 1_000_000).toFixed(n % 1_000_000 ? 1 : 0)}M`
     : n >= 1000 ? `${Math.round(n / 1000)}K` : String(n)
+/** "checked 01:20" — when the key was last verified, on the local clock */
+const clock = (iso: string): string => {
+  const d = new Date(iso)
+  return Number.isNaN(d.getTime()) ? iso
+    : d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+}
+
+/** the credit standing as the row's second line: one short phrase per figure,
+ *  only the figures openrouter.ai actually reported */
+function standingOf(doc: OpenRouterDoc): string[] {
+  const c = doc.credits
+  if (!doc.connected || !c) return []
+  const out = [c.limit_remaining != null
+    ? `${money(c.limit_remaining)} of ${money(c.limit)} left`
+    : `${money(c.usage)} spent`]
+  if (c.usage_daily != null) out.push(`today ${money(c.usage_daily)}`)
+  if (c.usage_weekly != null) out.push(`week ${money(c.usage_weekly)}`)
+  if (c.usage_monthly != null) out.push(`month ${money(c.usage_monthly)}`)
+  if (c.is_free_tier) out.push('free tier')
+  if (c.checked_at) out.push(`checked ${clock(c.checked_at)}`)
+  return out
+}
 
 /** the monogram card: letter on colour. One element, styled through `--orr-c`
  *  so the sheet owns every derived shade (border, wash) from one value. */
@@ -110,8 +145,12 @@ export function OpenRouterSection({ provider, headRight, toast, pickerOpen,
 
   const off = provider?.user_enabled === false
   const keySet = !!doc?.key_set
-  const credits = doc?.credits
   const favorites = doc?.tiers ?? []
+  const standing = doc ? standingOf(doc) : []
+  // line 1's verdict word, and the tone it reads in
+  const verdict = doc?.connected ? 'connected'
+    : doc?.reason ? 'not connected' : 'not checked yet'
+  const verdictClass = doc?.connected || !doc?.reason ? 'dim' : 'ask-warn-inline'
 
   return (
     <div className="set-group">
@@ -129,51 +168,76 @@ export function OpenRouterSection({ provider, headRight, toast, pickerOpen,
       {err && <div className="dim acct-prov-note">could not read OpenRouter state: {err}</div>}
       {!doc && !err && <div className="dim acct-prov-note">reading OpenRouter state…</div>}
 
+      {/* the ENTRY row — the Claude section's "paste a new key" row, same
+          columns: ghost grip · field · ✓ spanning the two button columns
+          (+ ✕ while replacing, so the current key is kept with one click) */}
       {doc && (!keySet || replacing) && (
-        <div className="orr-key">
-          <input type="password" autoComplete="off" spellCheck={false}
-            placeholder={replacing ? 'new OpenRouter API key…' : 'OpenRouter API key (sk-or-…)'}
-            aria-label="OpenRouter API key"
-            value={keyDraft} disabled={busy}
-            onChange={(e) => setKeyDraft(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter') saveKey() }} />
-          <button className="primary" disabled={busy || !keyDraft.trim()}
-            onClick={saveKey}>{replacing ? 'replace key' : 'set key'}</button>
-          {replacing && <button disabled={busy}
-            onClick={() => { setReplacing(false); setKeyDraft('') }}>cancel</button>}
-          <span className="dim" style={{ flexBasis: '100%' }}>
-            stored on this machine, never shown again — get one at openrouter.ai/keys
-          </span>
+        <div className="acct-line">
+          <span className="acct-gutter" />
+          <div className="acct-row acct-new orr-keyrow">
+            <div className="acct-main">
+              <span className="acct-grip acct-ghost">⠿</span>
+              <input type="password" autoComplete="off" spellCheck={false}
+                placeholder={replacing
+                  ? 'paste the new OpenRouter API key'
+                  : 'paste an OpenRouter API key (sk-or-…)'}
+                aria-label="OpenRouter API key"
+                value={keyDraft} disabled={busy}
+                onChange={(e) => setKeyDraft(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') saveKey() }} />
+              <button className="acct-btn acct-add"
+                title={replacing ? 'replace the key' : 'set the key'}
+                disabled={busy || !keyDraft.trim()} onClick={saveKey}>
+                <CheckIcon fontSize="inherit" /></button>
+              {replacing && <button className="acct-btn" title="keep the current key"
+                disabled={busy}
+                onClick={() => { setReplacing(false); setKeyDraft('') }}>
+                <CloseIcon fontSize="inherit" /></button>}
+            </div>
+            <div className="acct-provenance">
+              <span>stored on this machine, never shown again</span>
+              <span>get one at openrouter.ai/keys</span>
+            </div>
+          </div>
         </div>
       )}
 
+      {/* the KEY row — identity + verdict, then the credit standing, then
+          three icon buttons: re-check · replace · forget */}
       {doc && keySet && !replacing && (
-        <div className="acct-prov-note">
-          key set
-          {doc.connected
-            ? <>{' — '}connected{doc.label && <> as <b>{doc.label}</b></>}
-              {credits && (
-                <span className="orr-credits">
-                  {' · '}
-                  {credits.limit_remaining != null
-                    ? <>{money(credits.limit_remaining)} of {money(credits.limit)} left</>
-                    : <>{money(credits.usage)} spent</>}
-                  {credits.usage_daily != null && <> · today {money(credits.usage_daily)}</>}
-                  {credits.usage_weekly != null && <> · week {money(credits.usage_weekly)}</>}
-                  {credits.usage_monthly != null && <> · month {money(credits.usage_monthly)}</>}
-                  {credits.is_free_tier && <> · free tier</>}
-                </span>
-              )}
-            </>
-            : <>{' — '}<span className={doc.reason ? 'ask-warn-inline' : 'dim'}>
-              {doc.reason ?? 'not checked yet'}</span></>}
-          {' '}
-          <button className="acct-btn" title="re-check the key at openrouter.ai"
-            disabled={busy} onClick={() => run(getOpenRouter(true), '')}>refresh</button>
-          <button className="acct-btn" disabled={busy}
-            onClick={() => setReplacing(true)}>replace</button>
-          <button className="acct-btn danger" disabled={busy}
-            onClick={() => run(clearOpenRouterKey(), 'OpenRouter key cleared')}>clear</button>
+        <div className="acct-line">
+          <span className="acct-gutter" />
+          <div className="acct-row orr-keyrow">
+            <div className="acct-main">
+              <span className="acct-grip acct-ghost">⠿</span>
+              <span className="acct-email orr-standing"
+                title={[`${doc.label ?? 'OpenRouter key'} · ${verdict}`,
+                  ...(doc.connected ? standing : [doc.reason ?? ''])]
+                  .filter(Boolean).join(' · ')}>
+                {doc.label ?? 'OpenRouter key'}
+                <span className={verdictClass}> · {verdict}</span>
+              </span>
+              <button className="acct-btn"
+                title="re-check the key and its credit standing at openrouter.ai"
+                disabled={busy} onClick={() => run(getOpenRouter(true), '')}>
+                <AutorenewIcon fontSize="inherit" /></button>
+              <button className="acct-btn" title="replace the key — the favorites stay"
+                disabled={busy} onClick={() => setReplacing(true)}>
+                <EditIcon fontSize="inherit" /></button>
+              <button className="acct-btn acct-del"
+                title="forget the key — nothing on OpenRouter can be hired until a new one is set; the favorites stay"
+                disabled={busy}
+                onClick={() => run(clearOpenRouterKey(), 'OpenRouter key cleared')}>
+                <DeleteIcon fontSize="inherit" /></button>
+            </div>
+            <div className="acct-provenance">
+              {doc.connected
+                ? standing.map((s) => <span key={s}>{s}</span>)
+                : <span className={doc.reason ? 'acct-dead' : ''}>
+                  {doc.reason ?? 'not checked at openrouter.ai yet — re-check to see the credit standing'}
+                </span>}
+            </div>
+          </div>
         </div>
       )}
 

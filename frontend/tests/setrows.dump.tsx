@@ -19,7 +19,9 @@
 import '../tests/harness'
 import { writeFileSync } from 'node:fs'
 import { createElement } from 'react'
-import type { AccountsPayload, ProvidersPayload, TreePayload } from '../src/types'
+import type {
+  AccountsPayload, OpenRouterDoc, ProvidersPayload, ProviderTier, TreePayload,
+} from '../src/types'
 
 const PAYLOAD: AccountsPayload = {
   version: 2,
@@ -36,6 +38,19 @@ const PAYLOAD: AccountsPayload = {
     fable: { account: 'k1', available: false, refresh_at: null },
   },
 } as unknown as AccountsPayload
+
+// the OpenRouter favorites (see the OPENROUTER fixture below) — declared
+// first because the providers payload carries them too
+const ORR_TIERS: ProviderTier[] = [
+  { tier: 'or-anthropic-claude-sonnet-5', provider: 'openrouter', seat: 2,
+    model: 'anthropic/claude-sonnet-5', letter: 'S', color: '#f9907f',
+    name: 'Anthropic: Claude Sonnet 5', vendor: 'anthropic', prompt: 2,
+    completion: 10, context: 1000000 },
+  { tier: 'or-openai-gpt-5-6-luna', provider: 'openrouter', seat: 1,
+    model: 'openai/gpt-5.6-luna', letter: 'L', color: '#9fe3d1',
+    name: 'OpenAI: GPT-5.6 Luna', vendor: 'openai', prompt: 0.2,
+    completion: 1.2, context: 1050000 },
+]
 
 // Codex is installed but NOT hire-enabled, so its head renders the PREVIEW
 // tag beside the switch — the pair whose placement the probe checks.
@@ -55,7 +70,39 @@ const PROVIDERS: ProvidersPayload = { providers: [
       version: '0.4.0' },
     hire_enabled: false, user_enabled: false,
     reason: 'turned off in App settings → Providers' },
+  { id: 'openrouter', label: 'OpenRouter', cli: 'REST API (via Claude Code)',
+    tiers: orrTiers(), status: { installed: !orrEmpty(), connected: !orrEmpty(),
+      key_set: !orrEmpty() },
+    hire_enabled: orrTiers().length > 0, user_enabled: true,
+    reason: orrEmpty() ? 'no API key — add one in App settings → Providers'
+      : orrTiers().length ? null
+        : 'no hireable models yet — pick favorites in App settings → Providers' },
 ] } as unknown as ProvidersPayload
+
+// OpenRouter (2026-09-03). Default: a CONNECTED key with a credit standing
+// and two favorites — the state in which the key row carries its standing
+// text AND its buttons, which is the combination that overlapped on
+// 2026-09-02 (the text buttons wore the 27px icon-button class). Two flags
+// pick the other states the section renders:
+//   --orr-nofavs   key set, no favorites yet (the user's 2026-09-02 screenshot)
+//   --orr-empty    no key: the entry row
+function orrEmpty(): boolean { return process.argv.includes('--orr-empty') }
+function orrTiers(): ProviderTier[] {
+  return orrEmpty() || process.argv.includes('--orr-nofavs') ? [] : ORR_TIERS
+}
+const OPENROUTER: OpenRouterDoc = {
+  installed: !orrEmpty(), connected: !orrEmpty(), key_set: !orrEmpty(),
+  kind: orrEmpty() ? null : 'api-key',
+  // what openrouter.ai names a key that was never given a label: its own
+  // masked form — the longest standing line the row has to hold
+  label: orrEmpty() ? null : 'sk-or-v1-d3e…22c',
+  credits: { limit: null, limit_remaining: null, usage: 0.16,
+    usage_daily: 0.16, usage_weekly: 0.16, usage_monthly: 0.16,
+    is_free_tier: true, checked_at: '2026-09-02T23:20:00Z' },
+  reason: orrEmpty() ? 'no API key — add one in App settings → Providers' : null,
+  favorites: orrTiers().length, favorites_max: 0, tiers: orrTiers(),
+  user_enabled: true,
+}
 
 const ORG: TreePayload = {
   slug: 'acme', name: 'Acme Corporation', nodes: [], edges: [],
@@ -72,6 +119,7 @@ g.fetch = (url: string) => {
   const path = new URL(String(url), 'http://localhost').pathname
   const body = path === '/api/accounts' ? PAYLOAD
     : path === '/api/providers' ? PROVIDERS
+    : path === '/api/openrouter' ? OPENROUTER
       : path === '/api/app-settings/runtime'
         ? { warming_enabled: true, working_checkups_enabled: true,
             wait_for_mcp_tools_enabled: false }
@@ -102,6 +150,18 @@ const main = async () => {
   const tabs = [...view.el.querySelectorAll<HTMLButtonElement>('[role="tab"]')]
   for (const t of tabs) await act(async () => { t.click(); await flush(6) })
   if (tabs[0]) await act(async () => { tabs[0]!.click(); await flush(6) })
+
+  // `--orr-replacing`: press the OpenRouter key row's replace button first,
+  // so the dump carries the entry row in its widest form (field · ✓ · ✕)
+  if (process.argv.includes('--orr-replacing')) {
+    const btn = view.el.querySelector<HTMLButtonElement>(
+      '.orr-keyrow button[title^="replace the key"]')
+    if (!btn) throw new Error('no OpenRouter replace button to press')
+    await act(async () => { btn.click(); await flush(6) })
+    if (!view.el.querySelector('button[title="keep the current key"]')) {
+      throw new Error('the replacing row did not render — dump would be a lie')
+    }
+  }
 
   const html = view.last()
 
