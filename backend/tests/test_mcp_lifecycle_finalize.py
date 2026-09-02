@@ -114,7 +114,7 @@ class LifecycleFinalizeTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         org = store.create_org("zz mcp finalize")
         for nid in ("parked", "supersede", "killed", "parkback",
-                    "durable", "unobservable", "stale"):
+                    "durable", "unobservable", "stale", "codex"):
             org.hire(USER, None, "haiku", 5, nid)
         store.save_org(org)
         cls.slug = org.d["slug"]
@@ -140,11 +140,12 @@ class LifecycleFinalizeTests(unittest.TestCase):
         self._procs.append(p)
         return p
 
-    def _adopt(self, nid: str, proc, tools=TOOLS) -> None:
-        S._mcp_tool_count_begin(self.slug, nid, proc, "claude",
-                                "system/init.tools", "starting", None)
-        S._mcp_tool_count_names(self.slug, nid, proc, tools, "claude",
-                                "system/init.tools")
+    def _adopt(self, nid: str, proc, tools=TOOLS, provider="claude") -> None:
+        source = ("mcpServerStatus/list" if provider == "codex"
+                  else "system/init.tools")
+        S._mcp_tool_count_begin(self.slug, nid, proc, provider, source,
+                                "starting", None)
+        S._mcp_tool_count_names(self.slug, nid, proc, tools, provider, source)
 
     # ── 1. the whole transition, on a real parked process ──────────────────
     def test_parked_channel_eof_holds_loading_then_confirms_the_exit(self):
@@ -447,6 +448,67 @@ class LifecycleFinalizeTests(unittest.TestCase):
         self.assertIsNone(end["owner"], end)
         self.assertIsNone(end["count"], end)
         self.assertIsNone(end["names"], end)
+
+
+    # ── 8. the OTHER lane: Codex reaches the finalizer by its own road ─────
+    def test_the_codex_lane_finalizes_through_its_own_wire_reader(self):
+        """Everything above drives `WarmProc`'s stdout pump. Codex does not
+        have one — `AppServerClient` owns its wire, and the finalizer is
+        reached through `client.on_exit`, fired from `_pump`'s `finally`
+        (`codexrun.py:359-364`). That is a genuinely different road to the
+        same code, and it is the road on which "the reader thread blocks in
+        `proc.wait()`" has to be re-argued rather than assumed: this thread is
+        the one `close()` would be racing, and if anything joined it, blocking
+        here would deadlock teardown instead of fixing it. (It does not —
+        `_kill_tree` does its own `wait(timeout=5)` at :522 and joins nothing.)
+
+        The client is built with a substituted child, which is the shape its
+        own docstring names: "production passes [codex.exe], tests pass
+        [python, fakecodex.py]". Nothing is stubbed — this is the real
+        `AppServerClient`, its real reader thread, and the real `on_exit`
+        wiring copied from `_spawn_for`.
+        """
+        from orgtree import codexrun                     # noqa: PLC0415
+
+        nid = "codex"
+        client = codexrun.AppServerClient(
+            [sys.executable, "-c", CHILD], cwd=TMP)
+        proc = client.proc
+        self._procs.append(proc)
+        self._adopt(nid, proc, provider="codex")
+        wp = W.CodexWarmProc(self.slug, nid, client, "sid-x", "hash-x", {})
+        client.on_exit = lambda: W._on_proc_exit(wp)     # _spawn_for's line
+        with W._pool_lock:
+            W._pool[(self.slug, nid)] = wp
+        W._set_proc_lifecycle(self.slug, nid, live=True, owner=wp, adopt=True)
+
+        proc.stdin.write(b"go\n")            # binary wire, not text
+        proc.stdin.flush()
+
+        self.assertTrue(
+            _wait_for(lambda: (self.slug, nid) not in W._pool),
+            "the codex wire reader never reached EOF; nothing was proved")
+        self.assertIsNone(proc.poll(),
+                          "child exited before EOF was observed — vacuous")
+        eof = _snap(self.slug, nid)
+        self.assertIsNone(proc.poll(),
+                          "child exited while the state was read — vacuous")
+        self.assertEqual(eof["state"], "loading", eof)
+        self.assertIs(eof["owner"], proc, eof)
+        self.assertEqual(eof["count"], len(TOOLS), eof)
+        self.assertIs(eof["proc_live"], True, eof)
+        self.assertFalse(wp.exit_journaled)
+
+        self.assertTrue(
+            _wait_for(lambda: _snap(self.slug, nid)["state"] == "process-ended",
+                      LIVE_S + 15.0),
+            f"codex owner never finalized: {_snap(self.slug, nid)}")
+        end = _snap(self.slug, nid)
+        self.assertIsNone(end["owner"], end)
+        self.assertIsNone(end["count"], end)
+        self.assertIs(end["proc_live"], False, end)
+        self.assertTrue(wp.exit_journaled)
+        self.assertEqual(proc.poll(), 0, "the child was not left to exit")
 
 
 if __name__ == "__main__":
