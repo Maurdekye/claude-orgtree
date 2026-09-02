@@ -26,9 +26,9 @@ does not relaunch a process or invalidate the stable system-prefix cache.
   horizon are shown without including the key or another org's spend.
 - Codex: every cached app-server rate-limit window, with used percentage,
   authoritative reset and observation time. Stale evidence is labelled.
-- Gemini: subscription-limit usage is explicitly unsupported by the current
-  ACP integration. Per-turn token counts are not a provider quota and are not
-  presented as one.
+- Antigravity: subscription-limit usage is explicitly unsupported by the
+  current print-mode integration. Per-turn token counts are not a provider
+  quota and are not presented as one.
 
 Neither Claude nor Codex currently reports an authoritative absolute quota
 amount through Orgtree's normalized telemetry, so the stable `amount` column
@@ -52,7 +52,7 @@ Two existing non-envelope paths remain excluded:
   not a new turn envelope. The turn it joins already received its usage block.
 
 Rows are ordered Claude primary, Claude fallback ordinal, current-org API key,
-Codex, then Gemini; windows are session, weekly-all, weekly-scoped, then
+Codex, then Antigravity; windows are session, weekly-all, weekly-scoped, then
 provider-specific. `*` marks the lane selected for that turn.
 
 ## Repetition (D-223)

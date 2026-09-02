@@ -23,11 +23,11 @@ WHAT IS MEASURED AND WHAT IS NOT — read this before trusting a green run:
     `usage_limit` scenario replays the real ending: the exhausted bucket, the
     second empty bucket after it, and a `turn/completed` whose status is
     "failed", with nothing on stderr.
-  · the GEMINI half is BY CONSTRUCTION. No gemini usage wall has been observed
-    on this machine. §5 proves the shared seam freezes a gemini-lane failure
-    whose text names a limit; it does NOT prove that a real gemini limit
-    arrives wearing that text. That gap is deliberate and stated, not closed
-    by inventing a recording.
+  · the ANTIGRAVITY half is BY CONSTRUCTION. No antigravity usage wall has
+    been observed on this machine. §5 proves the shared seam freezes an
+    antigravity-lane failure whose text names a limit; it does NOT prove that
+    a real antigravity limit arrives wearing that text. That gap is deliberate
+    and stated, not closed by inventing a recording.
 
 Anti-vacuity: `tests/_mutate_provider_limit.py` breaks the shipped code six
 ways and requires a NAMED check here to go red for each. A suite that would
@@ -55,19 +55,14 @@ with open(os.path.join(DATA, "defaults.json"), "w", encoding="utf-8") as _f:
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 FAKECODEX = os.path.join(HERE, "fakecodex.py")
-FAKEGEMINI = os.path.join(HERE, "fakegemini.py")
+FAKEANTIGRAVITY = os.path.join(HERE, "fakeantigravity.py")
 CODEX_HOME = tempfile.mkdtemp(prefix="provlimit-chome-")
-GEMINI_HOME = tempfile.mkdtemp(prefix="provlimit-ghome-")
 os.environ["ORGTREE_CODEX"] = FAKECODEX
 os.environ["CODEX_HOME"] = CODEX_HOME
-os.environ["ORGTREE_GEMINI"] = FAKEGEMINI
-os.environ["ORGTREE_GEMINI_HOME"] = GEMINI_HOME
+os.environ["ORGTREE_ANTIGRAVITY"] = FAKEANTIGRAVITY   # signed in by default
 
 with open(os.path.join(CODEX_HOME, "auth.json"), "w", encoding="utf-8") as _f:
     _f.write('{"tokens": {}}')
-with open(os.path.join(GEMINI_HOME, "settings.json"), "w",
-          encoding="utf-8") as _f:
-    json.dump({"security": {"auth": {"selectedType": "gemini-api-key"}}}, _f)
 
 from orgtree import codex_limits, codexrun, store, supervisor      # noqa: E402
 from orgtree import limits                                         # noqa: E402
@@ -359,13 +354,13 @@ def main() -> int:
           "floor when no reset was offered", t_turn_failed)
 
     # ───────────────────────────────────────────────────────────────────────
-    print("§5 the gemini lane — the SEAM, not the wire (unmeasured, see the "
-          "module docstring)")
-    os.environ["FAKEGEMINI_SCENARIO"] = "usage_limit"
-    slug6, nid6 = mkorg("geminiwall", tier="pro")
+    print("§5 the antigravity lane — the SEAM, not the wire (unmeasured, see "
+          "the module docstring)")
+    os.environ["FAKEANTIGRAVITY_SCENARIO"] = "usage_limit"
+    slug6, nid6 = mkorg("agywall", tier="pro")
 
-    def t_gemini():
-        run_turn(slug6, nid6, "gemini thing")
+    def t_antigravity():
+        run_turn(slug6, nid6, "antigravity thing")
         st = supervisor.state(slug6, nid6)
         n = node_doc(slug6, nid6)
         eq(st["turns_run"], 0, "not a completed turn")
@@ -373,14 +368,14 @@ def main() -> int:
         fz = n.get("frozen")
         assert isinstance(fz, dict), f"no freeze record: {fz!r}"
         eq(fz.get("limit"), True, "a limit freeze")
-        # gemini offers no machine reset on this lane at all
+        # antigravity offers no machine reset on this lane at all
         eq(fz.get("reset_src"), "probe", "no reset time exists here")
         replay = fz.get("resume_texts") or []
         eq(len(replay), 1, "one replay text")
-        assert replay[0].endswith("gemini thing"), replay
+        assert replay[0].endswith("antigravity thing"), replay
         assert supervisor.resumable(n), "▶ must resume it"
-    check("§5 a gemini failure whose text names a quota freezes through the "
-          "SAME seam (wire wording unverified)", t_gemini)
+    check("§5 an antigravity failure whose text names a quota freezes through "
+          "the SAME seam (wire wording unverified)", t_antigravity)
 
     # ───────────────────────────────────────────────────────────────────────
     print("§6 the horizon guard, on the shared constant")

@@ -38,7 +38,7 @@ function eye(zoom: number) {
   return mountView(
     <UserNode pos={{ x: 0, y: 0 }} isDrop={false}
       stats={{ circ: 0, seats: 0, free: 0 }} pip={null} seats={seats}
-      codexHire={available} geminiHire={available} claudeHire={available}
+      codexHire={available} antigravityHire={available} claudeHire={available}
       pub={false} kiosk={undefined} kioskRemaining={null} pxc={1} zoom={zoom}
       onSpawn={noop} onMailLink={noop} focused={false} eyeW={124}
       posX={() => 0} map={new Map()} op={op} slug="org" toast={noop} />,

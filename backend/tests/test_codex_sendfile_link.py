@@ -1,4 +1,4 @@
-"""Regression test for the missing download card on Codex/Gemini-tier
+"""Regression test for the missing download card on Codex/Antigravity-tier
 agents' `orgtree_send_file` calls -- the sibling of the mail-link bug fixed
 in test_codex_mail_link.py, same shape, found by sweeping for the pattern
 after that fix (coordinator's request, 2026-08-30).
@@ -9,7 +9,7 @@ card, never as a pasted path -- a path is not a delivery. `read_chat`
 card by reading the result JSON's `sent` object. The check that recognizes
 the call was, until this fix, `entry.get("name") ==
 "mcp__orgtree__orgtree_send_file"` -- the name Claude Code's own MCP client
-prefixes automatically. Codex and Gemini register the SAME tool under its
+prefixes automatically. Codex and Antigravity register the SAME tool under its
 bare name (`orgtree_send_file`, from `mcptool.TOOLS`, confirmed live for the
 sibling mail-link bug straight from a real Codex agent's transcript) and
 journal their tool_use blocks with that bare name -- so the check never

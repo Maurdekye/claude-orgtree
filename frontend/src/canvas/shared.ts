@@ -41,7 +41,7 @@ export const TIER_SEAT: Record<string, number> =
  *  the head, or the menu reads as though the node is pinned to the older
  *  version it is merely listing. */
 export const MODEL_VERSIONS: Record<string, string[]> =
-  { opus: ['5', '4.8'], fable: ['5.1', '5'] }
+  { opus: ['5', '4.8'], fable: ['5.1', '5'], flash: ['3.8', '3.7', '3.6'] }
 /** The codex family (FR-15 preview) — ChatGPT/OpenAI tiers. A
  *  SEPARATE list, never merged into TIERS: every existing surface iterates
  *  TIERS, and a family that cannot be hired yet must not grow chips there by
@@ -55,17 +55,18 @@ export const CODEX_TIER_LETTER: Record<string, string> = {
   'gpt-reserve': 'R', luna: 'L', terra: 'T', sol: 'S' }
 export const CODEX_TIER_SEAT: Record<string, number> = {
   'gpt-reserve': 1, luna: 1, terra: 2, sol: 5 }
-/** The gemini family (D-189) — Google tiers: Gemini Flash (3.5-flash at
- *  launch, 3.7 via the version menu when it reaches the API) and Gemini Pro
- *  (3.1-pro). Same separate-list rule as the codex family. Seats by the
- *  standing rule: flash $1.50 → 1 (and still 1 at 3.7's $0.38), pro $2 → 2
- *  (the >200K long-context surcharge never sets a seat). */
-export const GEMINI_TIERS = ['flash', 'pro']
-export const GEMINI_TIER_LETTER: Record<string, string> = { flash: 'F', pro: 'P' }
-export const GEMINI_TIER_SEAT: Record<string, number> = { flash: 1, pro: 2 }
+/** The antigravity family (D-189, re-walked for the Antigravity CLI
+ *  2026-09-02) — Google tiers served by `agy`: flash (3.8-flash, with 3.7 and
+ *  3.6 in the version menu) and pro (3.1-pro). Same separate-list rule as the
+ *  codex family. Seats by the standing rule: flash $1.50 standing → 1 (the
+ *  $0.75 launch price is a promo), pro $2 → 2 (the >200K long-context
+ *  surcharge never sets a seat). */
+export const ANTIGRAVITY_TIERS = ['flash', 'pro']
+export const ANTIGRAVITY_TIER_LETTER: Record<string, string> = { flash: 'F', pro: 'P' }
+export const ANTIGRAVITY_TIER_SEAT: Record<string, number> = { flash: 1, pro: 2 }
 /** Provider-neutral surfaces (for example the live-agent summary) use this;
  * provider-specific controls keep using their family list. */
-export const ALL_TIERS = [...TIERS, ...CODEX_TIERS, ...GEMINI_TIERS]
+export const ALL_TIERS = [...TIERS, ...CODEX_TIERS, ...ANTIGRAVITY_TIERS]
 
 /** Which PROVIDER a tier runs on — the UI mirror of backend
  *  `providers.provider_of` (D-196). Derived from the family lists ABOVE
@@ -81,13 +82,13 @@ export const ALL_TIERS = [...TIERS, ...CODEX_TIERS, ...GEMINI_TIERS]
  *  at risk. */
 export const providerOf = (tier: string): 'openai' | 'google' | 'claude' =>
   (CODEX_TIERS.includes(tier) ? 'openai'
-    : GEMINI_TIERS.includes(tier) ? 'google' : 'claude')
+    : ANTIGRAVITY_TIERS.includes(tier) ? 'google' : 'claude')
 
 /** How a provider is named to the user in prose. The dialog says "Codex",
  *  not "openai" — the user picks tiers by the product name they see on the
  *  chips and in the accounts panel. */
 export const PROVIDER_LABEL: Record<string, string> = {
-  openai: 'Codex', google: 'Gemini', claude: 'Claude' }
+  openai: 'Codex', google: 'Antigravity', claude: 'Claude' }
 
 /** One provider's hire state as a hire surface needs it — the `/api/providers`
  *  entry narrowed to the three things any surface asks. `null`/`undefined`
@@ -194,9 +195,10 @@ export const reserveOffer = (h: HireState | null | undefined): FamilyOffer => {
 
 /** D-202: is this provider part of the product on this machine AT ALL?
  *
- *  USER RULING 2026-08-30: "if codex isnt installed at all, then codex
- *  shouldnt appear anywhere in the ui whatsoever; it should be entirely
- *  absent. same with gemini." So the question D-199 asked of the hire strips
+ *  USER RULING 2026-08-30: if codex isn't installed at all, then codex
+ *  shouldn't appear anywhere in the UI whatsoever; it should be entirely
+ *  absent — and the same for the other optional provider. So the question
+ *  D-199 asked of the hire strips
  *  is now asked of every surface, and it is deliberately THE SAME QUESTION —
  *  `familyOffer`'s 'hide' verdict, not a second test that could drift from it.
  *  The specific defect this shape prevents is a greyed-out Codex chip on a

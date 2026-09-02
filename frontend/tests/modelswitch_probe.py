@@ -39,7 +39,7 @@ def provider_payload(enabled: bool) -> dict:
     """The stubbed `/api/providers`, stating ALL THREE families.
 
     ⚠ IT USED TO STATE ONLY CODEX, and that stopped being harmless twice.
-    D-189 added a Gemini optgroup to the panel and nobody updated `want`, so
+    D-189 added a Antigravity optgroup to the panel and nobody updated `want`, so
     this probe has been red since then for a reason that has nothing to do
     with its subject. Then D-202 made an unstated provider mean "unknown", and
     unknown deliberately SHOWS — so a one-provider stub silently exercised the
@@ -48,8 +48,8 @@ def provider_payload(enabled: bool) -> dict:
 
     A real payload always speaks for every family, so this one does too:
     Claude present, Codex present with `enabled` as the axis under test, and
-    Gemini genuinely not installed on this throwaway root — which under D-202
-    is why the Gemini optgroup is absent from `want`, rather than the omission
+    Antigravity genuinely not installed on this throwaway root — which under D-202
+    is why the Antigravity optgroup is absent from `want`, rather than the omission
     being an oversight the way it was before.
     """
     return {"providers": [{
@@ -80,18 +80,18 @@ def provider_payload(enabled: bool) -> dict:
         "reason": None if enabled else "CONTROL: Codex is disconnected",
     }, {
         # NOT installed — so D-202 hides the family entirely. This is the leg
-        # that keeps `want` honest: the Gemini rows are absent because the
-        # machine has no Gemini, and the probe now says so out loud.
-        "id": "google", "label": "Gemini", "cli": "Gemini CLI",
+        # that keeps `want` honest: the Antigravity rows are absent because the
+        # machine has no Antigravity, and the probe now says so out loud.
+        "id": "google", "label": "Antigravity", "cli": "Antigravity CLI",
         "tiers": [
             {"tier": "flash", "provider": "google", "seat": 1,
-             "model": "gemini-flash", "letter": "F"},
+             "model": "antigravity-flash", "letter": "F"},
             {"tier": "pro", "provider": "google", "seat": 2,
-             "model": "gemini-pro", "letter": "P"},
+             "model": "antigravity-pro", "letter": "P"},
         ],
         "status": {"installed": False, "connected": False, "kind": None},
         "hire_enabled": False,
-        "reason": "Gemini CLI not installed",
+        "reason": "Antigravity CLI not installed",
     }]}
 
 

@@ -17,7 +17,7 @@ registers them under (`orgtree_message`, confirmed straight from a live
 transcript) -- never the `mcp__orgtree__orgtree_message` form Claude Code's
 own MCP client prefixes automatically. The link-detection check in
 `read_chat` (supervisor.py, in the tool_result branch) only ever matched the
-prefixed form, so it silently never fired for Codex (or Gemini, which shares
+prefixed form, so it silently never fired for Codex (or Antigravity, which shares
 the same bare-name registration) tool calls, even though the underlying mail
 send succeeded and carried everything (`id`, `delivered`) the link needs.
 

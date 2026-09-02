@@ -10,7 +10,7 @@ been told.
   I. A DELIVERED STEER IS ANNOUNCED. The durable steered row is written and
      then a `steered` frame goes over the websocket, in that order. The claude
      lane always had the frame, because its steering hook comes in through an
-     HTTP door that emitted one; the codex and gemini legs call `pop_steer`
+     HTTP door that emitted one; the codex and antigravity legs call `pop_steer`
      in-process from a pump thread and never pass that door, so their mid-turn
      mail went durable with NOTHING on the wire to say so. The desk then found
      out at its next 2.5 s heartbeat — and `convo.ingestStream` uses that frame
@@ -30,7 +30,7 @@ been told.
      it wrote the durable "the agent was told this" row and confirmed the
      journal batch away, and only afterwards did the lane ask the app-server to
      accept the text. When that ask was refused — the turn ended inside the 2 s
-     poll interval, or the wire has no steer verb at all (gemini, every time) —
+     poll interval, or the wire has no steer verb at all (antigravity, every time) —
      the carriers went back on the queue and the NEXT turn delivered the same
      words again. One message, two bubbles, permanently.
      Measured on the live coordinator, 2026-09-02: steered_log 07:38:11.278Z

@@ -1,0 +1,301 @@
+"""fakeantigravity — a scripted `agy` impostor for hermetic tests.
+
+The antigravity analog of fakecodex.py: speaks just enough of the CLI's
+print-mode stream-json wire (shapes copied from the probe logs banked
+2026-09-02, Antigravity CLI 1.1.24) for backend/orgtree/antigravityrun.py to
+run a full turn against it, with scenarios selected by
+FAKEANTIGRAVITY_SCENARIO:
+
+    text         (default) two agent_response steps with deltas, the second
+                 carrying per-request usage, then a SUCCESS result whose
+                 usage sums the turn (input EXCLUDES cache_read, output
+                 INCLUDES thinking — the measured semantics)
+    toolevents   adds a call_mcp_tool step (orgtree/orgtree_ping) and a
+                 run_command step between two priced requests, so the
+                 dispatch suite can prove journal/live-row folding and the
+                 last-request occupancy rule
+    interrupt    one priced request, then a stall until killed — the
+                 measured kill-mid-turn shape (no result event ever comes)
+    wrongmodel   init.model reports "fake-default-model" regardless of
+                 --model — the PLANTED FAULT the pin assertion must see
+    unknownmodel the measured refusal: a lone result event, status ERROR,
+                 "invalid model selection…", empty conversation_id, rc=1
+    hookdeny     a run_command step ERRORs with the measured pre-tool-hook
+                 denial message, and the run continues to SUCCESS
+    canceled     the measured headless auto-deny outcome: result CANCELED,
+                 empty response, the "no output produced" stderr line
+    usage_limit  a result ERROR naming a quota. ⚠ the SHAPE is measured
+                 (ERROR results carry `error`), the WORDING is invented: no
+                 antigravity usage wall has been captured here (D-209)
+
+`--conversation <id>` is honoured as a RESUME: the init echoes that id and
+the first delta is "RESUMED:<id> " so a suite can tell resume from fresh.
+
+Probes (credential hygiene and workspace discovery proven without any real
+credential or CLI near the tests):
+  FAKEANTIGRAVITY_ENVPROBE   comma-separated env keys → written as JSON to
+                             FAKEANTIGRAVITY_ENVPROBE_PATH at startup
+  FAKEANTIGRAVITY_WSPROBE    path → JSON of what the CLI would DISCOVER in
+                             --add-dir: AGENTS.md, the orgtree plugin's
+                             mcp_config.json, hooks.json, plus the prompt
+                             text received on stdin and the argv
+
+Subcommands the registry probe needs: `--version` prints 1.1.24; `models`
+prints the measured registry (tab-separated id/label rows) unless
+FAKEANTIGRAVITY_SIGNED_OUT=1, and writes the `--log-file` with the CLI's
+own auth line either way — "OAuth: authenticated successfully as
+fake-agy@example.test" when signed in, "You are not logged into
+Antigravity." when not (both measured wordings).
+"""
+import json
+import os
+import sys
+import time
+
+SCENARIO = os.environ.get("FAKEANTIGRAVITY_SCENARIO", "text")
+REGISTRY = [
+    ("gemini-3.8-flash-high", "Gemini 3.8 Flash (High)"),
+    ("gemini-3.8-flash-medium", "Gemini 3.8 Flash (Medium)"),
+    ("gemini-3.8-flash-low", "Gemini 3.8 Flash (Low)"),
+    ("gemini-3.7-flash-high", "Gemini 3.7 Flash (High)"),
+    ("gemini-3.7-flash-medium", "Gemini 3.7 Flash (Medium)"),
+    ("gemini-3.7-flash-low", "Gemini 3.7 Flash (Low)"),
+    ("gemini-3.6-flash-high", "Gemini 3.6 Flash (High)"),
+    ("gemini-3.6-flash-medium", "Gemini 3.6 Flash (Medium)"),
+    ("gemini-3.6-flash-low", "Gemini 3.6 Flash (Low)"),
+    ("gemini-3.1-pro-high", "Gemini 3.1 Pro (High)"),
+    ("gemini-3.1-pro-low", "Gemini 3.1 Pro (Low)"),
+    ("claude-sonnet-4-6", "Claude Sonnet 4.6 (Thinking)"),
+    ("claude-opus-4-6-thinking", "Claude Opus 4.6 (Thinking)"),
+    ("gpt-oss-120b-medium", "GPT-OSS 120B (Medium)"),
+]
+
+
+def emit(obj):
+    sys.stdout.write(json.dumps(obj) + "\n")
+    sys.stdout.flush()
+
+
+def flag(name, default=None):
+    """`--name value` or `--name=value`, first occurrence."""
+    for i, a in enumerate(sys.argv):
+        if a == name and i + 1 < len(sys.argv):
+            return sys.argv[i + 1]
+        if a.startswith(name + "="):
+            return a[len(name) + 1:]
+    return default
+
+
+def has(name):
+    return name in sys.argv or any(a.startswith(name + "=") for a in sys.argv)
+
+
+def write_log(path, signed_in):
+    if not path:
+        return
+    email = os.environ.get("FAKEANTIGRAVITY_EMAIL", "fake-agy@example.test")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("I0902 server.go:1491] Starting language server process\n")
+        f.write("E0902 errorreport.go:223] error getting token source: "
+                "You are not logged into Antigravity.\n")
+        if signed_in:
+            f.write("I0902 server_oauth.go:197] OAuth: authenticated "
+                    f"successfully as {email}\n")
+
+
+def main_models():
+    signed_in = os.environ.get("FAKEANTIGRAVITY_SIGNED_OUT") != "1"
+    write_log(flag("--log-file"), signed_in)
+    sys.stderr.write("Fetching available models...\n")
+    if signed_in:
+        for mid, label in REGISTRY:
+            sys.stdout.write(f"{mid}\t{label}\n")
+    sys.stdout.flush()
+
+
+def _ws_probe(add_dir, prompt):
+    probe = os.environ.get("FAKEANTIGRAVITY_WSPROBE")
+    if not probe:
+        return
+
+    def read(rel, as_json=False):
+        p = os.path.join(add_dir, *rel.split("/"))
+        if not os.path.exists(p):
+            return None
+        with open(p, encoding="utf-8") as f:
+            body = f.read()
+        return json.loads(body) if as_json else body
+
+    doc = {"add_dir": add_dir, "argv": sys.argv[1:], "prompt": prompt,
+           "agents_md": read("AGENTS.md"),
+           "plugin": read(".agents/plugins/orgtree/plugin.json", True),
+           "mcp_config": read(".agents/plugins/orgtree/mcp_config.json", True),
+           "hooks": read(".agents/hooks.json", True),
+           "wrapper_present": os.path.exists(os.path.join(
+               add_dir, ".agents", "orgtree-rights.cmd")) or os.path.exists(
+               os.path.join(add_dir, ".agents", "orgtree-rights.sh"))}
+    with open(probe, "w", encoding="utf-8") as f:
+        json.dump(doc, f)
+
+
+def _usage(inp, out, think, cached):
+    return {"input_tokens": inp, "output_tokens": out,
+            "thinking_tokens": think, "cache_read_tokens": cached,
+            "total_tokens": inp + out}
+
+
+def _step(cid, idx, state, kind, **more):
+    d = {"conversation_id": cid, "step_index": idx, "state": state,
+         "step_type": kind}
+    d.update(more)
+    emit({"event": "step_update", "step_update": d})
+
+
+def main_turn():
+    envprobe = os.environ.get("FAKEANTIGRAVITY_ENVPROBE", "")
+    if envprobe:
+        path = os.environ.get("FAKEANTIGRAVITY_ENVPROBE_PATH", "envprobe.json")
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump({k: os.environ.get(k) for k in envprobe.split(",")}, f)
+    write_log(flag("--log-file"), True)
+    model = flag("--model") or ""
+    add_dir = flag("--add-dir") or os.getcwd()
+    resume = flag("--conversation")
+    # the prompt: one NDJSON user event on stdin, then EOF
+    prompt = ""
+    for raw in sys.stdin:
+        try:
+            msg = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        if msg.get("event") == "user":
+            content = (msg.get("message") or {}).get("content")
+            prompt = content if isinstance(content, str) else json.dumps(content)
+        break
+    _ws_probe(add_dir, prompt)
+    if SCENARIO == "unknownmodel":
+        emit({"event": "result", "result": {
+            "conversation_id": "", "status": "ERROR", "response": "",
+            "error": (f"invalid model selection (--model \"{model}\" "
+                      f"--effort \"{flag('--effort') or ''}\"): model {model} "
+                      "is not recognized as a known model or custom model in "
+                      "settings\nAvailable models:\n  " + REGISTRY[0][1]),
+            "duration_seconds": 0, "num_turns": 0,
+            "usage": _usage(0, 0, 0, 0)}})
+        sys.exit(1)
+    cid = resume or os.environ.get("FAKEANTIGRAVITY_CONVERSATION_ID",
+                                   "fake-agy-conv-0001")
+    served = "fake-default-model" if SCENARIO == "wrongmodel" else model
+    yolo = has("--dangerously-skip-permissions")
+    emit({"event": "init", "conversation_id": cid, "init": {
+        "cwd": add_dir, "model": served,
+        "permission_mode": "always-proceed" if yolo else "request-review",
+        "tools": ["call_mcp_tool", "run_command", "write_to_file",
+                  "view_file"]}})
+    _step(cid, 0, "DONE", "user_input")
+    if SCENARIO == "usage_limit":
+        # ⚠ UNMEASURED WORDING (D-209): the shape is the measured ERROR
+        # result; no antigravity usage wall has been observed here.
+        emit({"event": "result", "result": {
+            "conversation_id": cid, "status": "ERROR", "response": "",
+            "error": ("Quota exceeded for quota metric 'Generate requests' "
+                      "and limit 'Generate requests per day'"),
+            "duration_seconds": 0.5, "num_turns": 1,
+            "usage": _usage(0, 0, 0, 0)}})
+        sys.exit(1)
+    if SCENARIO == "canceled":
+        _step(cid, 1, "DONE", "agent_response", duration_seconds=1.2,
+              usage=_usage(14073, 185, 0, 0))
+        _step(cid, 2, "ACTIVE", "tool", tool_name="run_command",
+              tool_info={"name": "run_command",
+                         "parameters": {"CommandLine": "echo x"}})
+        _step(cid, 2, "ERROR", "tool", tool_name="run_command",
+              tool_info={"name": "run_command",
+                         "parameters": {"CommandLine": "echo x"},
+                         "error": {"type": "TOOL_ERROR", "message":
+                                   "permission check failed for command "
+                                   "\"echo x\": user denied permission to "
+                                   "run command:\necho x"}})
+        emit({"event": "result", "result": {
+            "conversation_id": cid, "status": "CANCELED", "response": "",
+            "duration_seconds": 1.3, "num_turns": 1,
+            "usage": _usage(14073, 185, 0, 0)}})
+        sys.stderr.write(
+            'jetski: no output produced — a tool required the "command" '
+            "permission that headless mode cannot prompt for, so it was "
+            "auto-denied.\n")
+        sys.exit(0)
+    first = (f"RESUMED:{cid} " if resume else "") + "working… "
+    _step(cid, 1, "ACTIVE", "agent_response", text_delta=first)
+    _step(cid, 1, "DONE", "agent_response", text_delta="",
+          duration_seconds=1.6, usage=_usage(8290, 48, 30, 1200))
+    total_in, total_out, total_think, total_cached = 8290, 48, 30, 1200
+    if SCENARIO == "interrupt":
+        _step(cid, 2, "ACTIVE", "agent_response",
+              text_delta="stalling until killed… ")
+        time.sleep(8.0)
+        return
+    if SCENARIO in ("toolevents", "hookdeny"):
+        if SCENARIO == "toolevents":
+            _step(cid, 2, "ACTIVE", "tool", tool_name="call_mcp_tool",
+                  tool_info={"name": "call_mcp_tool", "parameters": {
+                      "Arguments": {"message": "hi"}, "ServerName": "orgtree",
+                      "ToolName": "orgtree_ping"}})
+            _step(cid, 2, "DONE", "tool", tool_name="call_mcp_tool",
+                  duration_seconds=0.01,
+                  tool_info={"name": "call_mcp_tool", "parameters": {
+                      "Arguments": {"message": "hi"}, "ServerName": "orgtree",
+                      "ToolName": "orgtree_ping"}, "output": "PONG:hi"})
+        params = {"CommandLine": "echo HOOK-CMD"}
+        _step(cid, 3, "ACTIVE", "tool", tool_name="run_command",
+              tool_info={"name": "run_command", "parameters": params})
+        if SCENARIO == "hookdeny":
+            _step(cid, 3, "ERROR", "tool", tool_name="run_command",
+                  duration_seconds=0.2,
+                  tool_info={"name": "run_command", "parameters": params,
+                             "error": {"type": "TOOL_ERROR", "message":
+                                       "tool call denied by pre-tool hook: "
+                                       "orgtree: this agent has no shell "
+                                       "rights (bash is off in its orgtree "
+                                       "scope) — do not retry the command"}})
+        else:
+            _step(cid, 3, "DONE", "tool", tool_name="run_command",
+                  duration_seconds=0.3,
+                  tool_info={"name": "run_command", "parameters": params,
+                             "output": "HOOK-CMD\r\n"})
+        # the second priced request: a SMALLER uncached input and a cache
+        # hit — the last request is what occupancy must read (measured
+        # shape: 4563 + 12175 for a ~16.7K context)
+        _step(cid, 4, "ACTIVE", "agent_response", text_delta="done.")
+        _step(cid, 4, "DONE", "agent_response", text_delta="\n",
+              duration_seconds=1.2, usage=_usage(4563, 110, 100, 12175))
+        total_in += 4563
+        total_out += 110
+        total_think += 100
+        total_cached += 12175
+        text = first + "done.\n"
+    else:
+        _step(cid, 2, "ACTIVE", "agent_response", text_delta="done.")
+        _step(cid, 2, "DONE", "agent_response", text_delta="\n",
+              duration_seconds=0.9, usage=_usage(8400, 12, 0, 0))
+        total_in += 8400
+        total_out += 12
+        text = first + "done.\n"
+    emit({"event": "result", "result": {
+        "conversation_id": cid, "status": "SUCCESS", "response": text,
+        "duration_seconds": 3.2, "num_turns": 2 if resume else 1,
+        "usage": _usage(total_in, total_out, total_think, total_cached)}})
+
+
+def main():
+    if "--version" in sys.argv:
+        sys.stdout.write("1.1.24\n")
+        return
+    if "models" in sys.argv:
+        main_models()
+        return
+    main_turn()
+
+
+if __name__ == "__main__":
+    main()

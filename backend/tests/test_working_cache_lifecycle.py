@@ -98,7 +98,7 @@ def cadence_and_provider_gate():
     store.save_org(org)
 
 
-check("Claude cadence splits by billing lane; Codex/Gemini/idle are skipped",
+check("Claude cadence splits by billing lane; Codex/Antigravity/idle are skipped",
       cadence_and_provider_gate)
 
 

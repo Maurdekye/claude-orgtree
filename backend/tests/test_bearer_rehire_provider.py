@@ -6,7 +6,7 @@ knowledgebearer rehire. is that by design or just a system quirk?"
 Both, in different halves, and that is the point of this suite.
 
 The PANEL was a quirk: `desk.tsx` hard-coded `['haiku','sonnet','opus']`, a
-list written before fable, codex and gemini existed. It under-offered its own
+list written before fable, codex and antigravity existed. It under-offered its own
 provider (`fable` was missing) and silently omitted the others.
 
 The BACKEND was the actual defect, in the opposite direction: `ledger.rehire`
@@ -22,7 +22,7 @@ and the two directions fail differently:
     hit for a codex thread, so `_build_cmd` takes its resume branch and hands
     the Claude CLI a `--resume <threadId>` it never issued.
   · away from claude — SILENT, and worse. The provider legs resume only when
-    `session_id` equals the harvested `codex_thread`/`gemini_session`; a claude
+    `session_id` equals the harvested `codex_thread`/`antigravity_conversation`; a claude
     id never does, so the leg quietly starts a FRESH thread. An empty session
     wakes wearing the bearer's name and PRESENTS AS INSTITUTIONAL MEMORY.
     Someone consults it, gets fluent answers drawn from nothing, and has no way
@@ -138,7 +138,7 @@ def claude_to_codex_refused() -> None:
     assert o.nodes["bearer"]["model"] == "opus", "the tier must not be written"
 
 
-def claude_to_gemini_refused() -> None:
+def claude_to_antigravity_refused() -> None:
     o = org_with("fable")
     expect_error(lambda: o.rehire(USER, "bearer", tier="pro"),
                  "cannot cross providers")
@@ -152,7 +152,7 @@ def codex_to_claude_refused() -> None:
                  "cannot cross providers")
 
 
-def gemini_to_codex_refused() -> None:
+def antigravity_to_codex_refused() -> None:
     """Neither side is claude — the rule is about the BOUNDARY, not about a
     privileged home provider."""
     o = org_with("flash")
@@ -177,11 +177,11 @@ def message_names_both_providers_and_a_way_out() -> None:
 
 
 check("claude → codex is refused (the SILENT direction)", claude_to_codex_refused)
-check("claude → gemini is refused", claude_to_gemini_refused)
+check("claude → antigravity is refused", claude_to_antigravity_refused)
 check("codex → claude is refused (the crash that killed a session)",
       codex_to_claude_refused)
-check("gemini → codex is refused — it is the boundary, not a home provider",
-      gemini_to_codex_refused)
+check("antigravity → codex is refused — it is the boundary, not a home provider",
+      antigravity_to_codex_refused)
 check("the refusal names both providers, the old tier, and the way out",
       message_names_both_providers_and_a_way_out)
 
@@ -209,7 +209,7 @@ def cheaper_same_provider_consult_still_works() -> None:
     assert o.nodes["bearer"]["state"] == "live"
 
 
-def gemini_bearer_keeps_its_family() -> None:
+def antigravity_bearer_keeps_its_family() -> None:
     o = org_with("pro")
     o.rehire(USER, "bearer", tier="flash")
     assert o.nodes["bearer"]["model"] == "flash"
@@ -235,7 +235,7 @@ check("a claude bearer may be rehired as FABLE — the missing option",
       fable_is_allowed_for_a_claude_bearer)
 check("a codex bearer consults cheaper at luna (№16)",
       cheaper_same_provider_consult_still_works)
-check("a gemini bearer may move flash↔pro", gemini_bearer_keeps_its_family)
+check("an antigravity bearer may move flash↔pro", antigravity_bearer_keeps_its_family)
 check("a rehire with NO tier override is untouched", no_override_is_untouched)
 check("re-stating the node's own tier is a no-op, not a refusal",
       same_tier_override_is_a_noop_not_a_refusal)
@@ -302,7 +302,7 @@ def foreign_reads_the_markers_not_the_tier() -> None:
     assert sup._foreign_session_provider(
         {"session_id": "t1", "codex_thread": "t1"}) == "openai"
     assert sup._foreign_session_provider(
-        {"session_id": "g1", "gemini_session": "g1"}) == "google"
+        {"session_id": "g1", "antigravity_conversation": "g1"}) == "google"
 
 
 def a_stale_marker_is_not_foreign() -> None:

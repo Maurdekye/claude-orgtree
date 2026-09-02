@@ -1268,7 +1268,7 @@ def org_tree(slug: str, request: Request) -> dict[str, Any]:
         # D-201 (contract frozen with styling 2026-08-30): is a pre-warmed
         # CLI process PARKED for this seat right now, holding a current
         # system prompt? A SPEED property, never health: false is the normal
-        # state for codex/gemini lanes, archived seats, mid-turn seats and
+        # state for codex/antigravity lanes, archived seats, mid-turn seats and
         # the kill-switch-off arm, and a false agent answers perfectly well —
         # it just pays a cold spawn. Always present (never absent) on every
         # node this block decorates.
@@ -2724,7 +2724,7 @@ def node_steer(slug: str, nid: str) -> dict[str, Any]:
     # to land MID-TURN (throttled + backgrounded inside)
     supervisor.maybe_storage_check(slug)
     # ⚠ the `steered` frame is NOT emitted here any more. It used to be, and
-    # that was the whole reason the codex and gemini legs had none: they call
+    # that was the whole reason the codex and antigravity legs had none: they call
     # `pop_steer` in-process and never pass this door, so their mid-turn mail
     # went durable with nothing on the wire to say so and the desk waited for
     # its next 2.5 s heartbeat to notice. Delivery and its announcement are one
@@ -6041,7 +6041,7 @@ def provider_hire_gate(
     if not tier:
         return
     provider_id = (
-        "google" if tier in providers.GEMINI_TIERS
+        "google" if tier in providers.ANTIGRAVITY_TIERS
         else "openai" if tier in providers.CODEX_TIERS
         else "claude" if tier in providers.CLAUDE_TIERS
         else None)
@@ -6052,37 +6052,39 @@ def provider_hire_gate(
             "in App settings → Providers")
     if user_choice_only:
         return
-    if tier in providers.GEMINI_TIERS:
-        gst = providers.gemini_status()
-        if not gst.get("installed"):
-            # ⚠ D-202: DO NOT point at "the accounts panel's Gemini section"
-            # here, which is what this said. That section no longer exists on
-            # a machine without the CLI — the user ruled an uninstalled
-            # provider absent from the entire UI, accounts page included, so
-            # the old message sent people looking for a panel that had been
-            # deliberately removed. A refusal must name a place that exists;
-            # when the UI stops being that place, the message carries the
-            # instruction itself.
+    if tier in providers.ANTIGRAVITY_TIERS:
+        ast = providers.antigravity_status()
+        if not ast.get("installed"):
+            # ⚠ D-202: DO NOT point at "the accounts panel's Antigravity
+            # section" here. That section does not exist on a machine
+            # without the CLI — the user ruled an uninstalled provider
+            # absent from the entire UI, accounts page included, so a
+            # pointer at it would send people looking for a panel that was
+            # deliberately removed. A refusal must name a place that
+            # exists; when the UI is not that place, the message carries
+            # the instruction itself.
             raise LedgerError(
-                f"tier '{tier}' is a Gemini tier and the Gemini CLI is not "
-                f"installed on this machine — "
+                f"tier '{tier}' is an Antigravity tier and the Antigravity "
+                f"CLI is not installed on this machine — "
                 f"{providers.install_hint('google')}")
-        if not gst.get("connected"):
+        if not ast.get("connected"):
             raise LedgerError(
-                f"tier '{tier}' is a Gemini tier and Gemini is not signed "
-                f"in — run `gemini` once on this machine and pick a login "
-                f"method (accounts panel → Gemini)")
+                f"tier '{tier}' is an Antigravity tier and Antigravity is "
+                f"not signed in — run `agy` once on this machine and sign in "
+                f"with your Google account (accounts panel → Antigravity)")
         if org.d.get("kiosk"):
             raise LedgerError(
-                "kiosk orgs cannot hire Gemini tiers yet — gemini is held "
-                "out of kiosks until its sandboxing is settled (the same "
-                "holdout as codex, user ruling 2026-08-28)")
-        if org.d.get("headless") and gst.get("kind") not in ("api-key",
-                                                             "vertex"):
+                "kiosk orgs cannot hire Antigravity tiers yet — antigravity "
+                "is held out of kiosks until its sandboxing is settled (the "
+                "same holdout as codex, user ruling 2026-08-28)")
+        if org.d.get("headless"):
+            # the CLI's ONLY login is a Google account (OAuth, OS keyring);
+            # it offers no API-key lane at all (measured, 1.1.24), so there
+            # is no keyed login for a headless org to stand on
             raise LedgerError(
                 "a headless org may only hire tiers from KEYED providers "
-                "(user ruling 2026-08-28) — Gemini here is signed in with a "
-                "Google account login, not an API key")
+                "(user ruling 2026-08-28) — the Antigravity CLI signs in "
+                "with a Google account only and offers no API-key login")
         return
     if tier not in providers.CODEX_TIERS:
         # D-199: the CLAUDE branch, and it is the last one because Claude is
@@ -6111,7 +6113,7 @@ def provider_hire_gate(
         raise LedgerError(
             # D-202: was "the accounts panel's Codex section has the install
             # command" — a section that no longer exists when Codex is absent.
-            # See the Gemini branch above.
+            # See the Antigravity branch above.
             f"tier '{tier}' is a Codex tier and the Codex CLI is not "
             f"installed on this machine — {providers.install_hint('openai')}")
     if not st.get("connected"):

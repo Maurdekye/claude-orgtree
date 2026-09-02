@@ -37,8 +37,8 @@ snowflake, lock, layers, fullscreen, hearing.
 - Hover any live card (or the eye) to reveal a row for each available provider
   family. Claude's round **H S O F** chips are haiku · sonnet · opus · fable
   (seat costs 1 · 2 · 5 · 10); Codex adds **R L T S** for gpt-reserve · luna ·
-  terra · sol (1 · 1 · 2 · 5); Gemini adds **F P** for flash · pro (1 · 2). A tier name picks
-  its provider—there is no separate provider setting. If Codex or Gemini is
+  terra · sol (1 · 1 · 2 · 5); Antigravity adds **F P** for flash · pro (1 · 2). A tier name picks
+  its provider—there is no separate provider setting. If Codex or Antigravity is
   not installed or signed in, its disabled row appears on the bottom edge with
   a tooltip explaining the next step; connected providers appear on every
   eligible edge. Kiosk orgs show Claude only.
@@ -333,7 +333,7 @@ is a plain quiet inbox shortcut.
 The agents chip summarizes the org at a glance: total live agents, how many
 are working right now, and a per-tier breakdown in the tier colors. It includes
 every provider family represented in the org, so repeated letters such as
-Claude Fable and Gemini Flash remain distinguishable by color. Beside it:
+Claude Fable and Antigravity Flash remain distinguishable by color. Beside it:
 cumulative cost, the ledger self-audit (only speaks
 when something is wrong), the fable-limit chip, and ▶ resume when agents are
 frozen by a usage limit. The resume button is **red** while the reported
@@ -601,7 +601,7 @@ toast repeats that warning. Refused while the agent is mid-turn.
 - **thinking effort**: this agent's effort level, or inherit — see "Thinking
   effort" below.
 - **model**: switchable ON THE FLY, any time. A switch within Claude, Codex,
-  or Gemini keeps the session and its context; the next turn runs the new
+  or Antigravity keeps the session and its context; the next turn runs the new
   model. A cross-provider switch asks for confirmation because the
   conversation cannot move between providers: confirming starts a fresh
   session. Scratch files, `breadcrumbs.md`, and mail survive the reset.

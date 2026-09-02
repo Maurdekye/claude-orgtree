@@ -18,7 +18,7 @@ import { pickFolder } from '../picker'
 import {
   CloseIcon, DeleteIcon, FolderIcon, LayersIcon, SettingsIcon,
 } from '../icons'
-import { ago, ALL_PRESENT, CODEX_TIER_SEAT, CODEX_TIERS, GEMINI_TIER_SEAT, GEMINI_TIERS, MODEL_VERSIONS, pileOrder, PROVIDER_LABEL, providerOf, TIER_LETTER, TIER_SEAT, TIERS, tierShown, USER, useEsc } from './shared'
+import { ago, ALL_PRESENT, CODEX_TIER_SEAT, CODEX_TIERS, ANTIGRAVITY_TIER_SEAT, ANTIGRAVITY_TIERS, MODEL_VERSIONS, pileOrder, PROVIDER_LABEL, providerOf, TIER_LETTER, TIER_SEAT, TIERS, tierShown, USER, useEsc } from './shared'
 import type { ProviderPresence } from './shared'
 import type { CanvasNode, DraftScope, DraftState, OpFn, Pile } from './shared'
 import { ProcessLifecycleMark } from './desk'
@@ -578,7 +578,7 @@ interface NodeConfigProps {
   op: OpFn
   toast: ToastFn
   codexProvider?: ProviderInfo | null
-  geminiProvider?: ProviderInfo | null
+  antigravityProvider?: ProviderInfo | null
   /** D-202: which provider families this machine has at all. Absent = the
    *  optimistic default (everything), so a caller that has not resolved the
    *  payload behaves exactly as this panel did before. */
@@ -587,7 +587,7 @@ interface NodeConfigProps {
 }
 
 export function NodeConfig({ node, map, tree, slug, op, toast, codexProvider,
-  geminiProvider, presence = ALL_PRESENT, close }: NodeConfigProps) {
+  antigravityProvider, presence = ALL_PRESENT, close }: NodeConfigProps) {
   useEsc(close)
   const [asking, setAsking] =
     useState<'delete' | 'dissolve' | 'retire' | 'rescind' | 'crossprovider' | null>(null)
@@ -722,7 +722,7 @@ export function NodeConfig({ node, map, tree, slug, op, toast, codexProvider,
   // while the frontend constants are only a startup fallback. Provider is an
   // axis over that one flat tier vocabulary, never a second price table.
   const tierSeat = (t: string) => tree.tiers?.[t]
-    ?? TIER_SEAT[t] ?? CODEX_TIER_SEAT[t] ?? GEMINI_TIER_SEAT[t] ?? 0
+    ?? TIER_SEAT[t] ?? CODEX_TIER_SEAT[t] ?? ANTIGRAVITY_TIER_SEAT[t] ?? 0
   // Keep the same refusal order as provider_hire_gate: provider presence and
   // login first, then org policy, then the headless authentication rule.
   const codexUnavailable = !codexProvider?.hire_enabled
@@ -732,13 +732,13 @@ export function NodeConfig({ node, map, tree, slug, op, toast, codexProvider,
       : tree.headless && codexProvider.status.kind !== 'api-key'
         ? 'headless requires a Codex API-key login'
         : null
-  const geminiUnavailable = !geminiProvider?.hire_enabled
-    ? geminiProvider?.reason ?? 'provider state unavailable'
+  const antigravityUnavailable = !antigravityProvider?.hire_enabled
+    ? antigravityProvider?.reason ?? 'provider state unavailable'
     : tree.kiosk
       ? 'unavailable in kiosk orgs'
-      : tree.headless && geminiProvider.status.kind !== 'api-key'
-        && geminiProvider.status.kind !== 'vertex'
-        ? 'headless requires a Gemini API-key login'
+      : tree.headless
+        // the CLI's only login is a Google account — no keyed lane exists
+        ? 'headless orgs cannot hire Antigravity (Google-account login only, no API key)'
         : null
   // gpt-reserve rides codexUnavailable AND its own gate: reserve capacity is
   // a per-account grant, so a Codex session that passes `codexUnavailable`
@@ -753,7 +753,7 @@ export function NodeConfig({ node, map, tree, slug, op, toast, codexProvider,
     if (t === node.tier) return null
     if (t === 'gpt-reserve') return reserveUnavailable
     if (CODEX_TIERS.includes(t) && codexUnavailable) return codexUnavailable
-    if (GEMINI_TIERS.includes(t) && geminiUnavailable) return geminiUnavailable
+    if (ANTIGRAVITY_TIERS.includes(t) && antigravityUnavailable) return antigravityUnavailable
     const cap = tree.kiosk?.max_tier
     if (cap && tierSeat(t) > tierSeat(cap)) return `above kiosk cap (${cap})`
     return null
@@ -964,7 +964,7 @@ export function NodeConfig({ node, map, tree, slug, op, toast, codexProvider,
         <select className="model-switch" aria-label="model tier"
           value={model} onChange={(e) => setModel(e.target.value)}>
           {([['Claude', TIERS], ['Codex', CODEX_TIERS],
-             ['Gemini', GEMINI_TIERS]] as const)
+             ['Antigravity', ANTIGRAVITY_TIERS]] as const)
             .map(([label, fam]) => [label, shownTiers(fam)] as const)
             .filter(([, fam]) => fam.length > 0)
             .map(([label, fam]) => (

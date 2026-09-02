@@ -483,7 +483,7 @@ button.badge.audience-fold.alert {
 .sq.prov-openai.desk.tier-gpt-reserve { border-top-color: var(--tier-luna); }
 .sq.prov-openai.desk.tier-terra { border-top-color: var(--tier-terra); }
 .sq.prov-openai.desk.tier-sol { border-top-color: var(--tier-sol); }
-/* the gemini family's card dressing (D-189) — the same inherited-chrome
+/* the antigravity family's card dressing (D-189) — the same inherited-chrome
    contract as the codex block above, bluish-violet where codex is blue. */
 .sq.prov-google.busy {
   border-color: color-mix(in srgb, var(--prov-google) 55%, transparent);
@@ -1236,10 +1236,10 @@ button.cc-name:hover {
   --tier-luna: #b9c4d6;
   --tier-terra: #7fae5f;
   --tier-sol: #ff8a3d;
-  /* the gemini family (D-189), to the user's spec (2026-08-29): flash a very
-     light icy blue, pro a DEEP bluish-violet that leans violet — while the
-     provider accent below leans BLUE. One blue-violet family (icy ~198° →
-     ~232° → ~256°) so gemini reads as a unit, each hue clear of sonnet's
+  /* the antigravity family (D-189), to the user's spec (2026-08-29): flash a
+     very light icy blue, pro a DEEP bluish-violet that leans violet — while
+     the provider accent below leans BLUE. One blue-violet family (icy ~198° →
+     ~232° → ~256°) so antigravity reads as a unit, each hue clear of sonnet's
      saturated mid-blue and opus's light lavender. F/P letters stay the
      redundant glyph. */
   --tier-flash: #aee2f9;
@@ -1248,7 +1248,7 @@ button.cc-name:hover {
      desk shadow ring and busy border for codex agents (dormant until codex
      hire lands; the class comes from cards.tsx `prov-openai`) */
   --prov-openai: #159acd;
-  /* the gemini provider accent — mid bluish-violet, MORE BLUE than violet
+  /* the antigravity provider accent — mid bluish-violet, MORE BLUE than violet
      (the pro chip is more violet than blue; user spec 2026-08-29) */
   --prov-google: #5f6fdb;
   --ice: #a8d4ea;           /* frozen (usage limit) — pale ice, deliberately

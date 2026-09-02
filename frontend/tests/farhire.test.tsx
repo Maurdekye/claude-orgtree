@@ -34,13 +34,13 @@ const available = { enabled: true, installed: true, reason: null }
 const absent = { enabled: false, installed: false, reason: null }
 
 function card(zoom: number, providers = {
-  codexHire: available, geminiHire: available, claudeHire: available,
+  codexHire: available, antigravityHire: available, claudeHire: available,
 }) {
   const nd = node()
   return mountView(
     <NodeSquare node={nd} pos={{ x: 0, y: 0 }} lod="norm" focused={false}
       dragging={false} isDrop={false} seats={seats}
-      codexHire={providers.codexHire} geminiHire={providers.geminiHire}
+      codexHire={providers.codexHire} antigravityHire={providers.antigravityHire}
       claudeHire={providers.claudeHire}
       map={new Map([[nd.id, nd]])} op={op} slug="org" toast={noop}
       pxc={1} zoom={zoom} compactAt={0.8} pub={false} maxTop={0}
@@ -115,7 +115,7 @@ test('a reduced provider set keeps direct buttons until its own row stops fittin
     // Codex now has four chips: 4×22 + 3×4 = 100px. At .82 the card is
     // 101.68px wide, so it still fits and stays direct.
     const view = await card(0.82, {
-      codexHire: available, geminiHire: absent, claudeHire: absent,
+      codexHire: available, antigravityHire: absent, claudeHire: absent,
     })
     t.after(() => view.unmount())
     assert.equal(view.el.querySelectorAll('.hsof.hire-compact').length, 0)
@@ -125,7 +125,7 @@ test('a reduced provider set keeps direct buttons until its own row stops fittin
 test('a no-harness row is never replaced with a needless compact arrow',
   async (t) => {
     const view = await card(0.24, {
-      codexHire: absent, geminiHire: absent, claudeHire: absent,
+      codexHire: absent, antigravityHire: absent, claudeHire: absent,
     })
     t.after(() => view.unmount())
     assert.equal(view.el.querySelectorAll('.hire-expand').length, 0)

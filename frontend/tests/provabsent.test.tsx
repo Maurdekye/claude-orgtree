@@ -2,7 +2,7 @@
 //
 // The user (2026-08-30): "if codex isnt installed at all, then codex shouldnt
 // appear anywhere in the ui whatsoever; it should be entirely absent. same
-// with gemini. with claude, since orgtree is built around it, do show that its
+// with antigravity. with claude, since orgtree is built around it, do show that its
 // not installed on the accounts page, but make it a very small piece of ui."
 //
 // D-199 answered that for the HIRE buttons. This widens it to every surface,
@@ -42,7 +42,7 @@ const noop = () => {}
 
 const CLAUDE = ['haiku', 'sonnet', 'opus', 'fable']
 const CODEX = ['gpt-reserve', 'luna', 'terra', 'sol']
-const GEMINI = ['flash', 'pro']
+const ANTIGRAVITY = ['flash', 'pro']
 
 // ------------------------------------------------------- provider fixtures
 // Built from the REAL payload shape (`ProviderInfo`) rather than a hand-made
@@ -56,8 +56,8 @@ function prov(id: string, o: {
   const connected = o.connected ?? true
   return {
     id,
-    label: id === 'openai' ? 'Codex' : id === 'google' ? 'Gemini' : 'Claude',
-    cli: id === 'openai' ? 'Codex CLI' : id === 'google' ? 'Gemini CLI'
+    label: id === 'openai' ? 'Codex' : id === 'google' ? 'Antigravity' : 'Claude',
+    cli: id === 'openai' ? 'Codex CLI' : id === 'google' ? 'Antigravity CLI'
       : 'Claude Code',
     tiers: [],
     status: { installed, connected, kind: 'chatgpt' },
@@ -115,7 +115,7 @@ test('§1 tierShown: a family that is absent contributes no tiers', () => {
   const pres = presenceOf({ claude: ON('claude'), openai: ABSENT('openai'),
                             google: ABSENT('google') })
   for (const t of CODEX) assert.equal(tierShown(pres, t), false, t)
-  for (const t of GEMINI) assert.equal(tierShown(pres, t), false, t)
+  for (const t of ANTIGRAVITY) assert.equal(tierShown(pres, t), false, t)
   for (const t of CLAUDE) assert.equal(tierShown(pres, t), true, t)
 })
 
@@ -139,7 +139,7 @@ test('§1 presenceOfPayload: an unresolved payload is ALL_PRESENT', () => {
 test('§1 presenceOfPayload: an entry the backend omits is shown, not hidden',
   () => {
     // an older backend that serves no 'google' entry must not read as
-    // "Gemini is uninstalled" — same optimism, same reason.
+    // "Antigravity is uninstalled" — same optimism, same reason.
     const pres = presenceOfPayload({ providers: [ABSENT('openai')] })
     assert.equal(pres.openai, false)
     assert.equal(pres.google, true)
@@ -183,7 +183,7 @@ function node(tier = 'haiku'): CanvasNode {
 
 function configTest(name: string, body: (mount: (o: {
   node?: CanvasNode; presence: ProviderPresence
-  codex?: ProviderInfo | null; gemini?: ProviderInfo | null
+  codex?: ProviderInfo | null; antigravity?: ProviderInfo | null
 }) => Promise<HTMLElement>) => Promise<void>): void {
   test(name, async (t: TestContext) => {
     installFetch(new FakeServer())
@@ -196,7 +196,7 @@ function configTest(name: string, body: (mount: (o: {
           slug="org" toast={noop}
           op={(_x: OpRequest) => Promise.resolve({} as OpResult)}
           codexProvider={o.codex === undefined ? ON('openai') : o.codex}
-          geminiProvider={o.gemini === undefined ? ON('google') : o.gemini}
+          antigravityProvider={o.antigravity === undefined ? ON('google') : o.antigravity}
           presence={o.presence} close={noop} />,
         (el) => el,
       )
@@ -217,26 +217,26 @@ configTest('§2 an absent provider contributes no optgroup and no option',
   async (mount) => {
     const el = await mount({
       presence: { claude: true, openai: false, google: false },
-      codex: ABSENT('openai'), gemini: ABSENT('google'),
+      codex: ABSENT('openai'), antigravity: ABSENT('google'),
     })
     assert.deepEqual(groups(el), ['Claude'],
       'a Codex optgroup on a Codex-less machine is the whole defect')
     const vals = optValues(el)
-    for (const t of [...CODEX, ...GEMINI]) {
+    for (const t of [...CODEX, ...ANTIGRAVITY]) {
       assert.ok(!vals.includes(t), `${t} must not be listed`)
     }
     for (const t of CLAUDE) assert.ok(vals.includes(t), `${t} missing`)
     // and not as an EMPTY group either — a bare "Codex" heading is still a
     // mention, and an empty optgroup renders its label.
     assert.ok(!(el.textContent ?? '').includes('Codex'))
-    assert.ok(!(el.textContent ?? '').includes('Gemini'))
+    assert.ok(!(el.textContent ?? '').includes('Antigravity'))
   })
 
 configTest('§2 SIGNED OUT is the opposite case: listed, disabled, with reason',
   async (mount) => {
     const el = await mount({
       presence: { claude: true, openai: true, google: false },
-      codex: SIGNED_OUT('openai'), gemini: ABSENT('google'),
+      codex: SIGNED_OUT('openai'), antigravity: ABSENT('google'),
     })
     assert.deepEqual(groups(el), ['Claude', 'Codex'])
     const opts = [...el.querySelectorAll<HTMLOptionElement>(
@@ -255,7 +255,7 @@ configTest('§2 the node KEEPS ITS OWN TIER when its provider vanished',
     const el = await mount({
       node: node('sol'),
       presence: { claude: true, openai: false, google: false },
-      codex: ABSENT('openai'), gemini: ABSENT('google'),
+      codex: ABSENT('openai'), antigravity: ABSENT('google'),
     })
     const vals = optValues(el)
     assert.ok(vals.includes('sol'), 'the current value must remain selectable')
@@ -271,7 +271,7 @@ configTest('§2 the default (no presence prop) offers everything', async (mount)
   // a caller that has not resolved the payload behaves exactly as before —
   // the same optimism as `providerShown(null)`, asserted at the surface.
   const el = await mount({ presence: ALL_PRESENT })
-  assert.deepEqual(groups(el), ['Claude', 'Codex', 'Gemini'])
+  assert.deepEqual(groups(el), ['Claude', 'Codex', 'Antigravity'])
 })
 
 // ============================================== §3 the lineage rehire panel
@@ -313,7 +313,7 @@ lineageTest('§3 the rehire picker drops families this machine lacks',
     const el = await mount(withBearer('haiku'),
       { claude: true, openai: false, google: false })
     const vals = rehireOpts(el).map((o) => o.value)
-    for (const t of [...CODEX, ...GEMINI]) {
+    for (const t of [...CODEX, ...ANTIGRAVITY]) {
       assert.ok(!vals.includes(t),
         `${t}: absent providers are not listed, not even disabled`)
     }
@@ -333,9 +333,9 @@ lineageTest('§3 an INSTALLED other provider is still listed and disabled',
     assert.ok(sol, 'codex IS installed here — it stays listed')
     assert.equal(sol.disabled, true)
     assert.match(sol.textContent ?? '', /cannot resume it/)
-    for (const t of GEMINI) {
+    for (const t of ANTIGRAVITY) {
       assert.ok(!rehireOpts(el).some((o) => o.value === t),
-        `${t}: gemini is absent and must be gone`)
+        `${t}: antigravity is absent and must be gone`)
     }
   })
 
@@ -386,7 +386,7 @@ test('§4 THE RULING: an absent Codex has no accounts-page section at all',
     const text = await accounts({ providers: [
       ON('claude'), ABSENT('openai'), ABSENT('google')] })
     assert.ok(!text.includes('Codex'), `Codex still mentioned: ${text}`)
-    assert.ok(!text.includes('Gemini'), `Gemini still mentioned: ${text}`)
+    assert.ok(!text.includes('Antigravity'), `Antigravity still mentioned: ${text}`)
     assert.ok(!text.includes('not installed on this machine'),
       'the absent-provider note is part of what must disappear')
     assert.ok(text.includes('Claude'), 'Claude is the exception, not a casualty')
@@ -397,7 +397,7 @@ test('§4 an INSTALLED but signed-out Codex keeps its full section', async () =>
     ON('claude'), SIGNED_OUT('openai'), ABSENT('google')] })
   assert.ok(text.includes('Codex'), 'installed means present')
   assert.ok(text.includes('not signed in'), 'and it carries its own reason')
-  assert.ok(!text.includes('Gemini'), 'while the absent one is still gone')
+  assert.ok(!text.includes('Antigravity'), 'while the absent one is still gone')
 })
 
 test('§4 CLAUDE IS THE EXCEPTION: absent, but reported in one small line',
@@ -412,7 +412,7 @@ test('§4 CLAUDE IS THE EXCEPTION: absent, but reported in one small line',
     assert.ok(!text.includes('preview'))
     assert.ok(!text.includes('seat 1'))
     assert.ok(!text.includes('Codex'), 'the exception is Claude ALONE')
-    assert.ok(!text.includes('Gemini'))
+    assert.ok(!text.includes('Antigravity'))
   })
 
 test('§4 an installed Claude says nothing — the line is about ABSENCE',
@@ -431,7 +431,7 @@ test('§4 unresolved provider state shows the sections, and claims nothing '
     // that line could get badly wrong).
     const text = await accounts({ providers: [] })
     assert.ok(text.includes('Codex'))
-    assert.ok(text.includes('Gemini'))
+    assert.ok(text.includes('Antigravity'))
     assert.ok(!/not installed/.test(text))
   })
 
@@ -495,7 +495,7 @@ test('§5 usageTitle names only the providers present', () => {
   // no dangling "— " when neither is present
   assert.equal(usageTitle({ claude: false, openai: false, google: false }),
     'usage limits')
-  // Gemini has no usage route, so its presence must not add a name
+  // Antigravity has no usage route, so its presence must not add a name
   assert.equal(usageTitle({ claude: true, openai: false, google: true }),
     'usage limits — Claude')
 })

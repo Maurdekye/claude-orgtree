@@ -249,7 +249,7 @@ CODEX_SUBSCRIPTION_TTL_SECONDS: Final = 30 * 60
 #: `unsupported_capability`, an accounted diagnostic rather than an unknown.
 #: ⚠ ONE SOURCE OF TRUTH: `ttl_seconds` reads this table, so a lane cannot be
 #: supported for the TTL and unsupported for the badge, or the reverse.
-#: Gemini publishes no such statistic at all, and Codex API-key sessions
+#: Antigravity publishes no such statistic at all, and Codex API-key sessions
 #: return no TTL in the app-server usage receipt — neither borrows another
 #: lane's number, so neither can establish readiness.
 SUPPORTED_LANES: Final[dict[tuple[str, str], int]] = {
@@ -337,8 +337,9 @@ def ttl_seconds(provider: str, lane: str) -> int | None:
     Claude receipts expose the two provider TTL lanes directly. Codex does not
     return a TTL in the app-server usage receipt, so its subscription value is
     the user's fixed estimate: the documented gpt-5.6 Responses API default
-    (30m, currently the only supported prompt_cache_options.ttl value). Gemini
-    and Codex API-key sessions remain unknown rather than borrowing a lane.
+    (30m, currently the only supported prompt_cache_options.ttl value).
+    Antigravity and Codex API-key sessions remain unknown rather than
+    borrowing a lane.
     """
     return SUPPORTED_LANES.get((provider, lane))
 

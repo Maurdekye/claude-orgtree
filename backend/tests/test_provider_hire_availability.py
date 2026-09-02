@@ -8,7 +8,7 @@ hire buttons for the agent harnesses they actually have set up."
 They saw both, and Claude was the exception that made it so: `providers_payload`
 hard-coded `hire_enabled: True` for the claude entry, the API layer hard-coded
 `installed: True` beside it, and `provider_hire_gate` deliberately ungated
-Claude tiers. Codex and Gemini had honest detection from the day they were
+Claude tiers. Codex and Antigravity had honest detection from the day they were
 added; Claude never did, because it predated the axis.
 
 TWO HALVES, AND THE UI HALF IS NOT A SUBSTITUTE FOR THIS ONE. The chips not
@@ -109,17 +109,17 @@ def claude_axis() -> None:
     assert set(providers.CLAUDE_TIERS) == {"haiku", "sonnet", "opus", "fable"}, \
         providers.CLAUDE_TIERS
     for t in providers.CLAUDE_TIERS:
-        assert t not in providers.CODEX_TIERS and t not in providers.GEMINI_TIERS
+        assert t not in providers.CODEX_TIERS and t not in providers.ANTIGRAVITY_TIERS
 
 
 def claude_tiers_reads_the_axis() -> None:
     """One rule, not two: `claude_tiers()` used to re-derive membership inline
-    with the same `not in CODEX / not in GEMINI` test."""
+    with the same `not in CODEX / not in ANTIGRAVITY` test."""
     assert [t["tier"] for t in providers.claude_tiers()] \
         == sorted(providers.CLAUDE_TIERS, key=lambda t: providers.CLAUDE_TIERS[t])
 
 
-check("CLAUDE_TIERS is exactly the non-codex, non-gemini family", claude_axis)
+check("CLAUDE_TIERS is exactly the non-codex, non-antigravity family", claude_axis)
 check("claude_tiers() reads that one table", claude_tiers_reads_the_axis)
 
 

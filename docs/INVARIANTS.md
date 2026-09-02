@@ -235,7 +235,7 @@ confirms the landing work is committed and tested.
   confirmed directly by `turn-envelope-cost`, the implementing owner):**
   the four violations this survey originally found standing on `main`
   (`a7934d8`) — D-214's green-on-no-evidence, ungrounded grey causes, a
-  silent generic-fallthrough coercion, and Gemini/Codex-API-key lanes
+  silent generic-fallthrough coercion, and Antigravity/Codex-API-key lanes
   reaching a vague `uncertain` instead of an explicit capability diagnostic
   — are fixed at `aec84e5`. One further cause was added during that work,
   `legacy_forecast_unmigrated`, specifically because a naive read of this
@@ -396,7 +396,7 @@ confirms the landing work is committed and tested.
   dead generation's names satisfying a live generation's wait or readiness
   report; an unobserved boundary erasing a known-good baseline; names
   reported with no corresponding count.
-- **Allowed exceptions:** Gemini (`provider == "google"`) is explicitly
+- **Allowed exceptions:** Antigravity (`provider == "google"`) is explicitly
   exempted from the optional wait gate — it exposes no authoritative
   runtime MCP tool list, so the gate reports `unsupported` and proceeds, by
   design. A missing/unreadable MCP configuration fails open as
@@ -492,7 +492,7 @@ confirms the landing work is committed and tested.
   transcript with no user row for a turn whose assistant output has already
   rendered; a duplicated completion producing two live rows for one durable
   record; mid-turn mail announced with no corresponding durable steered row
-  (silently un-witnessable on the codex/gemini legs, historically); a
+  (silently un-witnessable on the codex/antigravity legs, historically); a
   refused steer whose carrier was already treated as delivered, causing the
   same words to appear twice in the transcript; the ordering barrier's own
   release running out of order relative to older held closures still
@@ -512,13 +512,13 @@ confirms the landing work is committed and tested.
   survey, one of **four** mechanisms, three of which were live gaps
   reproduced on the org's own running `coordinator` node and are landing in
   an imminent commit at the time of writing:
-  1. Mid-turn steer on the codex/gemini legs called `pop_steer` in-process
+  1. Mid-turn steer on the codex/antigravity legs called `pop_steer` in-process
      and never emitted the `steered` WebSocket frame `api.node_steer`
      emits for Claude — measured zero `steered` frames across a 15-minute
      capture around a committed steered row.
   2. `pop_steer` committed delivery (durable row + `_confirm_delivered`)
      *before* asking the app-server to accept the text; a refusal (turn
-     ended inside the 2 s poll, or Gemini, which refuses every steer) left
+     ended inside the 2 s poll, or Antigravity, which refuses every steer) left
      the carrier requeued while a delivery was already claimed — measured:
      the same 3,512-character message appearing in the transcript twice.
   3. `_open_journal`'s barrier could release out of order: it copied held
@@ -611,7 +611,7 @@ confirms the landing work is committed and tested.
   user must resend to be heard. Tightens [INV-007](#inv-007--mail-is-at-least-once-it-may-stall-it-must-never-disappear)
   from "never lost" to "never ownerless".
 - **Scope:** every site that flips `responding` off — `_codex_leg` and
-  `_gemini_leg` at their exit, the claude lane at its result boundary, its
+  `_antigravity_leg` at their exit, the claude lane at its result boundary, its
   phantom-drop and stdin-closed recoveries and its turn exit — all through
   `_fold_steer`; the lane-agnostic `_run_one_turn` finally (the belt);
   `send_message`'s steer door; `_delivery_stages` (the receipt).
@@ -655,7 +655,7 @@ confirms the landing work is committed and tested.
   (helper to the front), M14/M15 (a recovery site that no longer folds) die
   on §8; M16 (queued on an idle node) dies on §5.
 - **Owning references:** `DECISIONS.md` D-229;
-  `backend/orgtree/supervisor.py` (`_codex_leg` / `_gemini_leg` finally,
+  `backend/orgtree/supervisor.py` (`_codex_leg` / `_antigravity_leg` finally,
   `_run_one_turn` finally, `_delivery_stages`, `delivering_mail`,
   `_steer_fold_log`); `backend/orgtree/api.py` (`node_chat` `stage` /
   `mail_stranded`); `backend/tests/test_midturn_mail_ingress.py`.

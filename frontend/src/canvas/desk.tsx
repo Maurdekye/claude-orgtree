@@ -25,7 +25,7 @@ import {
   HearingIcon, LayersIcon, LockIcon, MailIcon, PlayIcon, PsychologyIcon,
   SettingsIcon, SparkIcon, StopIcon, WarnIcon,
 } from '../icons'
-import { ago, ALL_PRESENT, ALL_TIERS, CODEX_TIER_SEAT, CODEX_TIERS, CopyIcon, EXTERN, freezeKind, FREEZE_LABEL, GEMINI_TIER_SEAT, GEMINI_TIERS, md, providerOf, TIER_LETTER, TIER_SEAT, tierShown, USER, useEsc, usePolled } from './shared'
+import { ago, ALL_PRESENT, ALL_TIERS, CODEX_TIER_SEAT, CODEX_TIERS, CopyIcon, EXTERN, freezeKind, FREEZE_LABEL, ANTIGRAVITY_TIER_SEAT, ANTIGRAVITY_TIERS, md, providerOf, TIER_LETTER, TIER_SEAT, tierShown, USER, useEsc, usePolled } from './shared'
 import type { ProviderPresence } from './shared'
 import {
   addPending, CHAT_WINDOW, dropPending, loadOlder as storeLoadOlder, markBusy,
@@ -833,7 +833,7 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
   // scroll position, its open tab, its composer draft.
   const convo = useConvo(slug, node.id)
   const providerClass = node.tier && CODEX_TIERS.includes(node.tier)
-    ? ' prov-openai' : node.tier && GEMINI_TIERS.includes(node.tier)
+    ? ' prov-openai' : node.tier && ANTIGRAVITY_TIERS.includes(node.tier)
       ? ' prov-google' : ''
   const processClass = node.state === 'live'
     ? (node.proc_warm ? ' proc-warm' : ' proc-cold') : ''
@@ -2040,10 +2040,10 @@ export function LineagePanel({ node, op, slug, presence = ALL_PRESENT,
       })
   }
   // D-197: seats for EVERY provider's tiers. This was `TIER_SEAT` alone —
-  // the claude-only table — so a codex or gemini bearer rendered "as sol ·
+  // the claude-only table — so a codex or antigravity bearer rendered "as sol ·
   // seat undefined" and "retire · frees undefined" in its own lineage panel.
   const SEAT = (t: string) =>
-    TIER_SEAT[t] ?? CODEX_TIER_SEAT[t] ?? GEMINI_TIER_SEAT[t] ?? 0
+    TIER_SEAT[t] ?? CODEX_TIER_SEAT[t] ?? ANTIGRAVITY_TIER_SEAT[t] ?? 0
   // D-197: which tiers a generation may be rehired at. A bearer is rehired to
   // be CONSULTED, and a consult resumes the transcript it holds — but a
   // transcript cannot cross providers, so the offer is every tier of the
@@ -2052,7 +2052,7 @@ export function LineagePanel({ node, op, slug, presence = ALL_PRESENT,
   //
   // The cross-provider tiers are still LISTED, disabled, each carrying its
   // own reason. That is deliberate: this list used to be the literal
-  // `['haiku','sonnet','opus']`, written before fable, codex and gemini
+  // `['haiku','sonnet','opus']`, written before fable, codex and antigravity
   // existed, and silently omitting the rest read to the user as a system
   // quirk rather than a rule — which is exactly how it was reported. A gap
   // explains nothing; a disabled row with a reason does. Same semantics as
@@ -2069,13 +2069,13 @@ export function LineagePanel({ node, op, slug, presence = ALL_PRESENT,
   // families that are ABSENT are not listed at all. The bearer's own family
   // is always kept — it is the tier it is rehired AS.
   const famOf = (t: string) => CODEX_TIERS.includes(t) ? 'codex'
-    : GEMINI_TIERS.includes(t) ? 'gemini' : 'claude'
+    : ANTIGRAVITY_TIERS.includes(t) ? 'antigravity' : 'claude'
   const providerKey = (t: string): keyof ProviderPresence =>
     CODEX_TIERS.includes(t) ? 'openai'
-      : GEMINI_TIERS.includes(t) ? 'google' : 'claude'
+      : ANTIGRAVITY_TIERS.includes(t) ? 'google' : 'claude'
   const providerName = (t: string): string =>
     CODEX_TIERS.includes(t) ? 'Codex'
-      : GEMINI_TIERS.includes(t) ? 'Gemini' : 'Claude'
+      : ANTIGRAVITY_TIERS.includes(t) ? 'Antigravity' : 'Claude'
   const rehireWhy = (t: string, bearerTier: string): string | null =>
     famOf(t) === famOf(bearerTier) ? null
       : `its transcript is a ${famOf(bearerTier)} session — ${famOf(t)} `

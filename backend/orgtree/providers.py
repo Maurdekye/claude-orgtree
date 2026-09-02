@@ -102,24 +102,25 @@ CODEX_PRICES: Final[dict[str, tuple[float, float, float]]] = {
 }
 
 
-# ── the gemini axis (D-184) ────────────────────────────────────────────────
+# ── the antigravity axis ───────────────────────────────────────────────────
 
-# chip letters for the gemini family. `flash` shares F with fable by collision
-# of English, the same accepted collision as sol/sonnet's S — the chip class
-# (t-flash) carries the family.
-_GEMINI_LETTER: Final[dict[str, str]] = {"flash": "F", "pro": "P"}
+# chip letters for the antigravity family. `flash` shares F with fable by
+# collision of English, the same accepted collision as sol/sonnet's S — the
+# chip class (t-flash) carries the family.
+_ANTIGRAVITY_LETTER: Final[dict[str, str]] = {"flash": "F", "pro": "P"}
 
-#: which tier names belong to the gemini provider — the AXIS, nothing more.
-#: Seats and model ids live in ledger.TIERS / ledger.MODELS; these views
-#: derive from them so there is exactly one copy to drift. Seat rule (§0 of
-#: docs/adding-a-provider.md): STANDING API $ per M input floored to 1 —
-#: pro $2 (the ≤200K band; the long-context surcharge never sets a seat),
-#: flash $1.50 → 1, and still 1 when the tier's model moves to 3.7-flash.
-_GEMINI_TIER_NAMES: Final = ("flash", "pro")
-GEMINI_TIERS: Final[dict[str, int]] = {
-    t: _LEDGER_TIERS[t] for t in _GEMINI_TIER_NAMES}
-GEMINI_MODELS: Final[dict[str, str]] = {
-    t: _LEDGER_MODELS[t] for t in _GEMINI_TIER_NAMES}
+#: which tier names belong to the antigravity provider — the AXIS, nothing
+#: more. Seats and model ids live in ledger.TIERS / ledger.MODELS; these
+#: views derive from them so there is exactly one copy to drift. Seat rule
+#: (§0 of docs/adding-a-provider.md): STANDING API $ per M input floored to
+#: 1 — pro $2 (the ≤200K band; the long-context surcharge never sets a
+#: seat), flash $1.50 standing (3.8-flash's $0.75 is launch pricing through
+#: 2026-12-31, and a promo never sets a seat) → 1.
+_ANTIGRAVITY_TIER_NAMES: Final = ("flash", "pro")
+ANTIGRAVITY_TIERS: Final[dict[str, int]] = {
+    t: _LEDGER_TIERS[t] for t in _ANTIGRAVITY_TIER_NAMES}
+ANTIGRAVITY_MODELS: Final[dict[str, str]] = {
+    t: _LEDGER_MODELS[t] for t in _ANTIGRAVITY_TIER_NAMES}
 
 #: which tier names belong to CLAUDE — everything in the ledger's tables that
 #: is not another provider's, which is the rule `claude_tiers()` already
@@ -130,7 +131,7 @@ GEMINI_MODELS: Final[dict[str, str]] = {
 #: about installing Claude Code.
 CLAUDE_TIERS: Final[dict[str, int]] = {
     t: seat for t, seat in _LEDGER_TIERS.items()
-    if t not in _CODEX_TIER_NAMES and t not in _GEMINI_TIER_NAMES}
+    if t not in _CODEX_TIER_NAMES and t not in _ANTIGRAVITY_TIER_NAMES}
 
 
 def provider_of(tier: str) -> str:
@@ -139,7 +140,7 @@ def provider_of(tier: str) -> str:
     THE one implementation of that axis (D-196). Tier names are one flat
     vocabulary and a tier implies its provider (ledger.TIERS' own comment), but
     until now every caller re-asked the question inline as
-    `tier in CODEX_TIERS` / `tier in GEMINI_TIERS`. D-182 is the standing
+    `tier in CODEX_TIERS` / `tier in ANTIGRAVITY_TIERS`. D-182 is the standing
     warning about exactly that shape: three copies of "which MCP servers may
     this node see" existed, two agreed, and the odd one out was a live bug.
 
@@ -151,20 +152,21 @@ def provider_of(tier: str) -> str:
     """
     if tier in CODEX_TIERS:
         return "openai"
-    if tier in GEMINI_TIERS:
+    if tier in ANTIGRAVITY_TIERS:
         return "google"
     return "claude"
 
 
 #: provider id → the name the UI calls it, and the name any message shown to a
 #: person must use. User ruling 2026-08-28: the CLI's OWN name is the
-#: provider's UI name — "Codex", not "ChatGPT (Codex)" or "OpenAI"; "Gemini",
-#: not "Google". `providers_payload` publishes these same three labels, and
+#: provider's UI name — "Codex", not "ChatGPT (Codex)" or "OpenAI";
+#: "Antigravity", not "Google". `providers_payload` publishes these same
+#: three labels, and
 #: reads them from here so a refusal written in the ledger and a heading drawn
 #: in the accounts panel cannot come to disagree about what a provider is
 #: called.
 PROVIDER_LABEL: Final[dict[str, str]] = {
-    "claude": "Claude", "openai": "Codex", "google": "Gemini"}
+    "claude": "Claude", "openai": "Codex", "google": "Antigravity"}
 
 
 def provider_label(tier: str) -> str:
@@ -181,104 +183,122 @@ def install_hint(provider: str) -> str:
     the only place it was maintained. That stopped being survivable when the
     user ruled an uninstalled provider absent from the whole UI including the
     accounts page: the gate's refusal became the ONLY place a user is ever
-    told how to install Codex or Gemini, so it cannot be the copy that drifts.
+    told how to install Codex or Antigravity, so it cannot be the copy that
+    drifts.
 
-    ⚠ NOT `npm i -g`. These CLIs install under the orgtree data dir with
+    ⚠ NOT `npm i -g` for codex: it installs under the orgtree data dir with
     `--prefix` so the version orgtree spawns is the one it manages, and a
-    global install is not what `codex_path`/`gemini_path` resolve first. The
-    hint must name the command that produces a CLI this machine will FIND,
-    which is why it interpolates `_DATA` rather than reading well.
+    global install is not what `codex_path` resolves first. The hint must
+    name the command that produces a CLI this machine will FIND, which is
+    why it interpolates `_DATA` rather than reading well. The Antigravity CLI
+    is a native binary with Google's own installer (no npm package exists),
+    and that installer drops it exactly where `antigravity_path` looks first.
     """
     if provider == "openai":
         return ("npm install --prefix "
                 f"{os.path.join(_DATA, 'codex')} @openai/codex")
     if provider == "google":
-        return ("npm install --prefix "
-                f"{os.path.join(_DATA, 'gemini')} @google/gemini-cli")
+        return ("winget install Google.AntigravityCLI" if os.name == "nt"
+                else "curl -fsSL https://antigravity.google/cli/install.sh "
+                     "| bash")
     return "npm install -g @anthropic-ai/claude-code"
 
 
-#: both launch models publish a 1M-token context window. As with the other
+#: both tier models publish a 1M-token context window (2×-checked 2026-09-02:
+#: benchlm.ai/google/api-pricing, artificialanalysis.ai). As with the other
 #: providers, the pinned model capability wins over any per-call observation.
-GEMINI_CONTEXT: Final[int] = 1_000_000
+ANTIGRAVITY_CONTEXT: Final[int] = 1_000_000
 
 #: CURRENT listed API prices per M tokens — (input, cached input, output) —
-#: keyed by MODEL ID, not tier: the CLI spends tokens on SIDE MODELS in the
-#: same turn (measured: a `utility_router` role on gemini-3.1-flash-lite), so
-#: the cost fold must price every model the usage document names. Sources
-#: (2×-checked 2026-08-29): benchlm.ai/google/api-pricing,
-#: developer.puter.com/tutorials/gemini-api-pricing, metacto.com pricing
-#: guide. Cached reads are 10% of input on every listed row.
-GEMINI_PRICES: Final[dict[str, tuple[float, float, float]]] = {
-    "gemini-3.5-flash": (1.50, 0.15, 9.00),
-    "gemini-3.1-pro-preview-customtools": (2.00, 0.20, 12.00),
-    "gemini-3.1-pro-preview": (2.00, 0.20, 12.00),
-    "gemini-3.1-flash-lite": (0.25, 0.025, 1.50),
+#: keyed by the BASE model id the CLI is handed (`--model gemini-3.8-flash`;
+#: the effort rides `--effort`, never the id). The Antigravity subscription
+#: publishes no per-token price of its own, so cost-dollars are the
+#: developer-API list price of the model that served the turn — the same
+#: "tokens × list price" fold every lane uses. Sources (2×-checked
+#: 2026-09-02): benchlm.ai/google/api-pricing, openrouter.ai/google/
+#: gemini-3.8-flash. 3.8-flash's $0.75/$3.75 is launch pricing through
+#: 2026-12-31 (standing $1.50/$7.50 from 2027-01-01 — the seat already
+#: prices the standing band); cached reads are 10% of input on every listed
+#: row. The wire's `output_tokens` INCLUDES thinking (measured: output 91 =
+#: thinking 89 + 2 answer tokens), so the output rate prices reasoning too,
+#: exactly as Google bills it.
+ANTIGRAVITY_PRICES: Final[dict[str, tuple[float, float, float]]] = {
+    "gemini-3.8-flash": (0.75, 0.075, 3.75),
+    "gemini-3.7-flash": (0.75, 0.075, 3.75),
+    "gemini-3.6-flash": (0.75, 0.075, 3.75),
+    "gemini-3.1-pro": (2.00, 0.20, 12.00),
 }
-#: a model id with no row above (a future side model) is priced at the PRO
-#: row: overstating a stranger's cost is recoverable, a silent $0 is not.
-GEMINI_PRICE_FALLBACK: Final[tuple[float, float, float]] = (2.00, 0.20, 12.00)
+#: a model id with no row above (a version the registry grows later) is
+#: priced at the PRO row: overstating a stranger's cost is recoverable, a
+#: silent $0 is not.
+ANTIGRAVITY_PRICE_FALLBACK: Final[tuple[float, float, float]] = (2.00, 0.20, 12.00)
 #: gemini-3.1-pro doubles above 200K prompt tokens ($4/$18, both sources).
 #: The cached long-context rate is unlisted; 10%-of-input is assumed — the
 #: ratio every listed row of both this provider and codex publishes.
-GEMINI_PRO_LONG: Final[tuple[float, float, float]] = (4.00, 0.40, 18.00)
-GEMINI_LONG_THRESHOLD: Final[int] = 200_000
-_GEMINI_PRO_IDS: Final = ("gemini-3.1-pro-preview-customtools",
-                          "gemini-3.1-pro-preview")
+ANTIGRAVITY_PRO_LONG: Final[tuple[float, float, float]] = (4.00, 0.40, 18.00)
+ANTIGRAVITY_LONG_THRESHOLD: Final[int] = 200_000
+_ANTIGRAVITY_PRO_IDS: Final = ("gemini-3.1-pro",)
+
+#: orgtree's effort vocabulary (ledger EFFORTS: low·medium·high·xhigh·max)
+#: → the CLI's `--effort`, per tier. Measured 2026-09-02 (agy 1.1.24): the
+#: flash models REQUIRE --effort and take low|medium|high; gemini-3.1-pro
+#: takes low|high only (medium is refused outright); an effort-suffixed id
+#: (`gemini-3.8-flash-high`) CONFLICTS with --effort, which is why the BASE
+#: id is what rides `--model`. Above the CLI's ceiling everything clamps to
+#: high — an effort the model cannot take is a whole failed turn, never a
+#: silent downgrade the other way.
+_ANTIGRAVITY_EFFORT: Final[dict[str, dict[str, str]]] = {
+    "flash": {"low": "low", "medium": "medium", "high": "high",
+              "xhigh": "high", "max": "high"},
+    "pro": {"low": "low", "medium": "high", "high": "high",
+            "xhigh": "high", "max": "high"},
+}
 
 
-def gemini_cost(usage: dict[str, Any] | None) -> float:
-    """Dollars for one turn from geminirun's NORMALIZED usage document:
-    {"models": {<model id>: {"input": n, "cached": n, "output": n,
-    "prompt": n}}, "main": <model id>}.
+def antigravity_effort(tier: str, effort: str) -> str:
+    """The `--effort` value for `tier` at orgtree effort `effort`."""
+    table = _ANTIGRAVITY_EFFORT.get(tier) or _ANTIGRAVITY_EFFORT["flash"]
+    return table.get(effort, "high")
 
-    The CLI reports tokens, never dollars. Wire semantics behind the
-    normalization (measured 2026-08-29, banked in the probe logs): the
-    one-shot stats split cached from input (`prompt = input + cached`) and
-    thoughts from candidates; the ACP lane's `_meta.quota` reports only
-    input/output per model — no cached split (cached reads priced as full
-    input, a slight overstatement) and output EXCLUDES reasoning (a slight
-    understatement). Documented approximation, not an accident."""
+
+def antigravity_cost(usage: dict[str, Any] | None) -> float:
+    """Dollars for one turn from antigravityrun's NORMALIZED usage document:
+    {"model": <base id>, "input": n, "cached": n, "output": n, "thinking": n,
+    "last_prompt": n, "requests": n}.
+
+    The CLI reports tokens, never dollars. Wire semantics (measured
+    2026-09-02, banked in the probe logs): print mode's `result.usage` SUMS
+    every model request of the turn — `input_tokens` is the UNCACHED input
+    (total_tokens = input + output; cache_read_tokens is reported beside it,
+    not inside it) and `output_tokens` includes thinking — so the bill is
+    input·p_in + cached·p_cached + output·p_out. The >200K band applies when
+    the turn's last (= largest: context only grows within a turn) prompt
+    crossed it — an approximation of the API's per-request banding, erring
+    toward overstatement."""
     if not usage:
         return 0.0
-    total = 0.0
-    models: dict[str, Any] = usage.get("models") or {}
-    for mid, tok in models.items():
-        if not isinstance(tok, dict):
-            continue
-        p = GEMINI_PRICES.get(str(mid), GEMINI_PRICE_FALLBACK)
-        prompt = int(tok.get("prompt") or 0)
-        if str(mid) in _GEMINI_PRO_IDS and prompt > GEMINI_LONG_THRESHOLD:
-            p = GEMINI_PRO_LONG
-        inp = max(int(tok.get("input") or 0), 0)
-        cached = max(int(tok.get("cached") or 0), 0)
-        out = max(int(tok.get("output") or 0), 0)
-        total += (inp * p[0] + cached * p[1] + out * p[2]) / 1e6
-    return round(total, 6)
+    mid = str(usage.get("model") or "")
+    p = ANTIGRAVITY_PRICES.get(mid, ANTIGRAVITY_PRICE_FALLBACK)
+    if mid in _ANTIGRAVITY_PRO_IDS and int(
+            usage.get("last_prompt") or 0) > ANTIGRAVITY_LONG_THRESHOLD:
+        p = ANTIGRAVITY_PRO_LONG
+    inp = max(int(usage.get("input") or 0), 0)
+    cached = max(int(usage.get("cached") or 0), 0)
+    out = max(int(usage.get("output") or 0), 0)
+    return round((inp * p[0] + cached * p[1] + out * p[2]) / 1e6, 6)
 
 
-def gemini_occupancy(usage: dict[str, Any] | None) -> int:
-    """Context occupancy after a turn: an ESTIMATE of the main model's last
-    prompt size. The wire reports only the SUM of every request's input
-    across the turn (measured — a ~30-round tool loop booked 3.6M against a
-    1M window before this divisor existed), so the sum is divided by the
-    turn's observed request count. A parallel tool batch makes the divisor
-    overcount and the estimate run LOW — the safe direction: a low estimate
-    delays compaction, the raw sum spuriously forced it. Side models'
-    prompts are other conversations and must not count. 0 means "no
-    measurement" to `_after_turn`, never an empty context."""
+def antigravity_occupancy(usage: dict[str, Any] | None) -> int:
+    """Context occupancy after a turn: the LAST model request's prompt size —
+    `input_tokens + cache_read_tokens` of the final `agent_response` step
+    (measured: 4,563 + 12,175 for a ~16.7K context), the same last-call rule
+    `codex_occupancy` follows. The turn total would overcount: it sums every
+    request (80K booked for that same 16.7K context — the "123% context"
+    bug in another coat). 0 means "no measurement" to `_after_turn`, never
+    an empty context."""
     if not usage:
         return 0
-    models: dict[str, Any] = usage.get("models") or {}
-    main = str(usage.get("main") or "")
-    tok = models.get(main)
-    if isinstance(tok, dict) and int(tok.get("prompt") or 0):
-        total = int(tok["prompt"])
-    else:
-        total = max((int(t.get("prompt") or 0) for t in models.values()
-                     if isinstance(t, dict)), default=0)
-    requests = max(1, int(usage.get("requests") or 1))
-    return total // requests
+    return max(int(usage.get("last_prompt") or 0), 0)
 
 
 def codex_cost(tier: str, token_usage: dict[str, Any] | None) -> float:
@@ -477,96 +497,87 @@ def codex_status(force: bool = False) -> dict[str, Any]:
     return st
 
 
-def gemini_tiers() -> list[TierInfo]:
+def antigravity_tiers() -> list[TierInfo]:
     return [
         {"tier": t, "provider": "google", "seat": seat,
-         "model": GEMINI_MODELS[t], "letter": _GEMINI_LETTER[t]}
-        for t, seat in sorted(GEMINI_TIERS.items(), key=lambda kv: kv[1])
+         "model": ANTIGRAVITY_MODELS[t], "letter": _ANTIGRAVITY_LETTER[t]}
+        for t, seat in sorted(ANTIGRAVITY_TIERS.items(), key=lambda kv: kv[1])
     ]
 
 
-# ── gemini CLI detection ───────────────────────────────────────────────────
-# The Gemini CLI is a Node bundle with NO native binary (bin →
-# bundle/gemini.js), so unlike codex the resolver's job is to find the JS
-# entry and let `gemini_argv` put `node` in front of it — never the npm
-# `.CMD`/`.ps1` shims (the argv-truncation hazard both other lanes document).
+# ── antigravity CLI detection ──────────────────────────────────────────────
+# The Antigravity CLI is ONE native binary (`agy`, Go) with no npm package
+# and no shim: Google's installer (`winget install Google.AntigravityCLI`,
+# the curl script elsewhere) drops it at a fixed per-user location, which is
+# the "pin" this resolver knows — there is nothing for orgtree to
+# `npm install --prefix` itself. Resolution mirrors the other lanes:
+#
+#     ORGTREE_ANTIGRAVITY > the installer's location > PATH `agy`
 
-def _gemini_pin() -> str | None:
-    """The private npm pin's JS entry, if installed
-    (`npm install --prefix <data>/gemini @google/gemini-cli`)."""
-    root = os.path.join(_DATA, "gemini", "node_modules", "@google",
-                        "gemini-cli")
-    for rel in (("bundle", "gemini.js"), ("dist", "index.js")):
-        p = os.path.join(root, *rel)
-        if os.path.exists(p):
-            return p
-    return None
-
-
-def _gemini_shim_js(exe: str) -> str | None:
-    """The real JS entry next to an npm-global shim (…\\npm\\gemini.cmd →
-    …\\npm\\node_modules\\@google\\gemini-cli\\bundle\\gemini.js)."""
-    root = os.path.join(os.path.dirname(exe), "node_modules", "@google",
-                        "gemini-cli")
-    for rel in (("bundle", "gemini.js"), ("dist", "index.js")):
-        p = os.path.join(root, *rel)
-        if os.path.exists(p):
-            return p
-    return None
+def _antigravity_install_path() -> str | None:
+    """The installer's own drop location, if the binary is there:
+    %LOCALAPPDATA%\\agy\\bin\\agy.exe on Windows (measured 2026-09-02),
+    ~/.local/bin/agy elsewhere (the install.sh default)."""
+    if os.name == "nt":
+        base = os.environ.get("LOCALAPPDATA") or os.path.expanduser(
+            "~/AppData/Local")
+        p = os.path.join(base, "agy", "bin", "agy.exe")
+    else:
+        p = os.path.expanduser("~/.local/bin/agy")
+    return p if os.path.exists(p) else None
 
 
-def gemini_path() -> tuple[str | None, str]:
-    """(resolved entry, how it was found) — 'env' | 'pin' | 'path' | ''.
-    A PATH hit is resolved through the shim to the JS entry when possible."""
-    env = os.environ.get("ORGTREE_GEMINI")
+def antigravity_path() -> tuple[str | None, str]:
+    """(resolved executable, how it was found) —
+    'env' | 'install' | 'path' | ''."""
+    env = os.environ.get("ORGTREE_ANTIGRAVITY")
     if env:
         return env, "env"
-    pin = _gemini_pin()
-    if pin:
-        return pin, "pin"
-    onpath = shutil.which("gemini")
+    inst = _antigravity_install_path()
+    if inst:
+        return inst, "install"
+    onpath = shutil.which("agy")
     if onpath:
-        return _gemini_shim_js(onpath) or onpath, "path"
+        return onpath, "path"
     return None, ""
 
 
-def gemini_argv(exe: str) -> list[str]:
-    """The argv HEAD for spawning this gemini entry — same contract as
-    `codex_argv`/`_claude_argv`. A `.py` path (the test double) runs under
-    this interpreter; a `.js` runs under node; a shim falls back to `cmd /c`
-    (safe here only because no gemini argv ever carries a newline)."""
-    low = exe.lower()
-    if low.endswith(".py"):
+def antigravity_argv(exe: str) -> list[str]:
+    """The argv HEAD for spawning this antigravity executable — the same
+    contract as `codex_argv`/`_claude_argv`. A `.py` path (the test double)
+    runs under this interpreter; anything else is the native binary, invoked
+    directly (no shim exists to truncate argv)."""
+    if exe.lower().endswith(".py"):
         return [sys.executable, exe]
-    if low.endswith((".js", ".mjs")):
-        return ["node", exe]
-    if os.name == "nt" and low.endswith((".cmd", ".bat", ".ps1")):
-        js = _gemini_shim_js(exe)
-        if js:
-            return ["node", js]
-        return ["cmd", "/c", exe]
     return [exe]
 
 
-def _gemini_version(exe: str) -> str:
-    """Version WITHOUT running anything when possible: walk up from the JS
-    entry to the @google/gemini-cli package.json, else probe `--version`
-    with a hard timeout (the accounts panel must never hang on a CLI)."""
-    probe = os.path.dirname(exe)
-    for _ in range(6):
-        p = os.path.join(probe, "package.json")
-        try:
-            pkg: dict[str, Any] = json.load(open(p, encoding="utf-8"))
-            if str(pkg.get("name", "")) == "@google/gemini-cli":
-                return str(pkg.get("version", "unknown"))
-        except OSError:
-            pass
-        except json.JSONDecodeError:
-            pass
-        probe = os.path.dirname(probe)
+def antigravity_env(base: dict[str, str] | None = None) -> dict[str, str]:
+    """The environment an antigravity child (turn or probe) is spawned with:
+    ONE CREDENTIAL PER SPAWN. The CLI self-authenticates from the OS keyring,
+    and its MCP children INHERIT every variable their spec does not name
+    (measured: ANTHROPIC_API_KEY / OPENAI_API_KEY / CLAUDECODE set on the
+    parent reached the orgtree MCP server), so the OTHER providers' material
+    is stripped here, at the one place every spawn passes through. The
+    CLI's own self-update is switched off for the child as well: the binary
+    orgtree tested is the binary it runs, never one that swapped itself
+    out mid-day."""
+    env = dict(os.environ if base is None else base)
+    for k in list(env):
+        if k.startswith(("ANTHROPIC_", "CLAUDE_CODE_")) or k in (
+                "CLAUDECODE", "OPENAI_API_KEY"):
+            env.pop(k, None)
+    env.setdefault("AGY_CLI_DISABLE_AUTO_UPDATE", "1")
+    return env
+
+
+def _antigravity_version(exe: str) -> str:
+    """`agy --version` prints the bare version and exits at once (measured);
+    the hard timeout keeps a wedged binary from ever hanging the panel."""
     try:
-        r = subprocess.run(gemini_argv(exe) + ["--version"],
-                           capture_output=True, text=True, timeout=15)
+        r = subprocess.run(antigravity_argv(exe) + ["--version"],
+                           capture_output=True, text=True, timeout=15,
+                           stdin=subprocess.DEVNULL, env=antigravity_env())
         m = re.search(r"\d+\.\d+\.\d+", r.stdout or "")
         if m:
             return m.group(0)
@@ -575,75 +586,100 @@ def _gemini_version(exe: str) -> str:
     return "unknown"
 
 
-def _gemini_home() -> str:
-    return (os.environ.get("ORGTREE_GEMINI_HOME")
-            or os.path.expanduser("~/.gemini"))
+_ANTIGRAVITY_EMAIL_RE: Final = re.compile(
+    r"authenticated successfully as (\S+@\S+)")
 
 
-def _gemini_account() -> dict[str, Any]:
-    """Connect state from the CLI's own auth records — EXISTENCE and display
-    identity only, never credential material. The CLI's selected auth method
-    lives in settings.json; an api-key selection stores the key itself in
-    the OS keychain (measured on Windows: Credential Manager target
-    `gemini-cli-api-key/…`), which orgtree deliberately never opens — the
-    child process self-authenticates from the CLI's own store, and a missing
-    key fails the turn with the CLI's own error, loudly."""
-    home = _gemini_home()
-    out: dict[str, Any] = {"connected": False, "email": None, "kind": None}
-    selected = ""
+def antigravity_probe_dir() -> str:
+    """Where the connect probe (and the turn logs) live under the data root
+    — orgtree's own files, never the user's."""
+    return os.path.join(_DATA, "antigravity")
+
+
+def _antigravity_account(exe: str) -> dict[str, Any]:
+    """Connect state from the CLI ITSELF — never from credential material.
+
+    The CLI keeps its OAuth token in the OS keyring (Windows Credential
+    Manager, measured) and offers no API-key login, so there is no auth file
+    whose existence could stand in for "signed in". What there is: `agy
+    models` prints the account's model registry when signed in and NOTHING
+    when it is not (its own log then says "Auth mode is unspecified,
+    skipping fetchAvailableModels"), and the log of that same run names the
+    account it authenticated as. The probe writes its log to a file under
+    the data dir via the root `--log-file` flag, so nothing of the user's is
+    read or touched, and `kind` is always "oauth" — the only login the CLI
+    has.
+
+    Also returns `models`: the registry is the authoritative list the
+    ledger's pins are checked against (an id the CLI does not know fails
+    the turn loudly — measured — but the panel can say so first)."""
+    out: dict[str, Any] = {"connected": False, "email": None, "kind": None,
+                           "models": []}
+    log_dir = antigravity_probe_dir()
+    log_path = os.path.join(log_dir, "models-probe.log")
     try:
-        doc: dict[str, Any] = json.load(
-            open(os.path.join(home, "settings.json"), encoding="utf-8"))
-        sec = doc.get("security")
-        auth = sec.get("auth") if isinstance(sec, dict) else None
-        if isinstance(auth, dict):
-            selected = str(auth.get("selectedType") or "")
-    except (OSError, json.JSONDecodeError):
-        pass
-    has_oauth = os.path.exists(os.path.join(home, "oauth_creds.json"))
-    if selected == "gemini-api-key":
-        out["connected"] = True
-        out["kind"] = "api-key"
-    elif selected == "vertex-ai":
-        out["connected"] = True
-        out["kind"] = "vertex"
-    elif selected == "oauth-personal" or (not selected and has_oauth):
-        out["connected"] = has_oauth
-        out["kind"] = "oauth" if has_oauth else None
-    if out["connected"] and has_oauth:
+        os.makedirs(log_dir, exist_ok=True)
         try:
-            acct: dict[str, Any] = json.load(
-                open(os.path.join(home, "google_accounts.json"),
-                     encoding="utf-8"))
-            active = acct.get("active")
-            if isinstance(active, str) and active:
-                out["email"] = active
-        except (OSError, json.JSONDecodeError):
+            os.remove(log_path)
+        except OSError:
+            pass
+        r = subprocess.run(
+            antigravity_argv(exe) + ["--log-file", log_path, "models"],
+            capture_output=True, text=True, timeout=45, cwd=log_dir,
+            stdin=subprocess.DEVNULL, env=antigravity_env())
+    except (OSError, subprocess.TimeoutExpired):
+        return out
+    models: list[str] = []
+    for line in (r.stdout or "").splitlines():
+        # registry rows are "<id>\t<label>"; the "Fetching available
+        # models..." banner has spaces and no tab
+        if "\t" not in line:
+            continue
+        mid = line.split("\t", 1)[0].strip()
+        if mid and " " not in mid:
+            models.append(mid)
+    out["models"] = models
+    if models:
+        out["connected"] = True
+        out["kind"] = "oauth"
+        try:
+            with open(log_path, encoding="utf-8", errors="replace") as f:
+                m = _ANTIGRAVITY_EMAIL_RE.search(f.read())
+            if m:
+                out["email"] = m.group(1)
+        except OSError:
             pass
     return out
 
 
-_gemini_status_cache: tuple[float, dict[str, Any]] | None = None
+_antigravity_status_cache: tuple[float, dict[str, Any]] | None = None
 
 
-def gemini_status(force: bool = False) -> dict[str, Any]:
+def antigravity_status(force: bool = False) -> dict[str, Any]:
     """Install + connect state for the accounts panel, cached 60s — the same
-    contract (and the same reasons) as `codex_status`."""
-    global _gemini_status_cache
+    contract (and the same reasons) as `codex_status`. The connect probe is
+    a subprocess of a few seconds, so the cache is what keeps the panel's
+    poll from spawning one per tick."""
+    global _antigravity_status_cache
     now = time.time()
-    if not force and _gemini_status_cache and now - _gemini_status_cache[0] < 60:
-        return _gemini_status_cache[1]
-    exe, source = gemini_path()
+    if not force and _antigravity_status_cache \
+            and now - _antigravity_status_cache[0] < 60:
+        return _antigravity_status_cache[1]
+    exe, source = antigravity_path()
+    # an ORGTREE_ANTIGRAVITY override is taken on faith as the PATH TO USE
+    # but not as proof of install (the codex resolver's rule): "installed"
+    # pointing at nothing would send the user to sign in instead of to their
+    # broken override
     exists = bool(exe) and os.path.exists(exe or "")
     st: dict[str, Any] = {
         "installed": exists,
         "path": exe,
         "source": source,
-        "version": _gemini_version(exe) if exe and exists else None,
-        "gemini_home": _gemini_home(),
+        "version": _antigravity_version(exe) if exe and exists else None,
     }
-    st.update(_gemini_account())
-    _gemini_status_cache = (now, st)
+    st.update(_antigravity_account(exe) if exe and exists else
+              {"connected": False, "email": None, "kind": None, "models": []})
+    _antigravity_status_cache = (now, st)
     return st
 
 
@@ -766,11 +802,11 @@ def providers_payload(claude_status: dict[str, Any]) -> dict[str, Any]:
     capacity = codex_capacity() if codex.get("connected") else offline
     reserve = (reserve_availability(codex) if codex.get("connected")
                else offline)
-    gemini = gemini_status()
+    antigravity = antigravity_status()
     choices = appsettings.provider_choices()
     claude_on = choices["claude"]
     codex_on = choices["openai"]
-    gemini_on = choices["google"]
+    antigravity_on = choices["google"]
     off_reason = "turned off in App settings → Providers"
     return {"providers": [
         {
@@ -850,20 +886,22 @@ def providers_payload(claude_status: dict[str, Any]) -> dict[str, Any]:
         },
         {
             "id": "google",
-            # "Gemini", by the same §0 naming rule that made "Codex" the
+            # "Antigravity", by the same §0 naming rule that made "Codex" the
             # label: the CLI's own product name, not the vendor's.
             "label": PROVIDER_LABEL["google"],
-            "cli": "Gemini CLI",
-            "tiers": gemini_tiers(),
-            "status": gemini,
-            "hire_enabled": bool(gemini_on and gemini.get("connected")),
-            "user_enabled": gemini_on,
+            "cli": "Antigravity CLI",
+            "tiers": antigravity_tiers(),
+            "status": antigravity,
+            "hire_enabled": bool(antigravity_on
+                                 and antigravity.get("connected")),
+            "user_enabled": antigravity_on,
             "reason": (
-                off_reason if not gemini_on
-                else None if gemini.get("connected")
-                else "not signed in — run `gemini` once on this machine and "
-                     "pick a login method"
-                if gemini.get("installed")
-                else f"Gemini CLI not installed — {install_hint('google')}"),
+                off_reason if not antigravity_on
+                else None if antigravity.get("connected")
+                else "not signed in — run `agy` once on this machine and "
+                     "sign in with your Google account"
+                if antigravity.get("installed")
+                else "Antigravity CLI not installed — "
+                     f"{install_hint('google')}"),
         },
     ]}

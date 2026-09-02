@@ -20,7 +20,7 @@ from .ledger import Org
 OPEN: Final = "[PROVIDER USAGE"
 CLOSE: Final = "[END PROVIDER USAGE]"
 
-_PROVIDER_ORDER: Final = {"claude": 0, "codex": 1, "gemini": 2}
+_PROVIDER_ORDER: Final = {"claude": 0, "codex": 1, "antigravity": 2}
 _WINDOW_ORDER: Final = {
     "session": 0,
     "weekly_all": 1,
@@ -378,7 +378,7 @@ def failure_block(now: float | None = None) -> str:
               "unavailable(telemetry-error)", "-", "-", "-", "unavailable"),
         _line("codex", "account", "usage",
               "unavailable(telemetry-error)", "-", "-", "-", "unavailable"),
-        _line("gemini", "account", "usage",
+        _line("antigravity", "account", "usage",
               "unavailable(unsupported)", "-", "-", "-", "unsupported"),
     ]
     return (f"{OPEN} — current as of {_iso(now)}; dynamic/cache-only]\n"
@@ -405,7 +405,7 @@ def board(org: Org, nid: str, *, selected_provider: str = "",
     Returns (text, material_key). The key is what D-223's suppression compares
     turn over turn — see `material_key`.
 
-    Provider order is Claude, Codex, Gemini.  Claude accounts are primary,
+    Provider order is Claude, Codex, Antigravity.  Claude accounts are primary,
     fallback ordinal, then this org's API-key lane.  Window order is session,
     weekly-all, weekly-scoped, then provider-specific.  Raw provider errors,
     account ids, emails, model labels and groups never enter the text.
@@ -462,7 +462,7 @@ def board(org: Org, nid: str, *, selected_provider: str = "",
                                "unavailable", selected=selected_provider == "openai")))
 
         rows.append(((2, "account", 99, "", 0),
-                     _line("gemini", "account", "usage",
+                     _line("antigravity", "account", "usage",
                            "unavailable(unsupported)", "-", "-", "-",
                            "unsupported", selected=selected_provider == "google")))
 

@@ -407,7 +407,7 @@ def click_hire_chip(pg, tag: str) -> None:
     # which was fine while side strips only ever carried offerable families.
     # D-199 removed the `!side` asymmetry, so an installed-but-signed-out
     # provider now renders on the LEFT strip too, disabled — and on this
-    # probe's throwaway HOME that is exactly what Gemini is, so the first chip
+    # probe's throwaway HOME that is exactly what Antigravity is, so the first chip
     # became a dead one and §4 started failing on a correct page.
     # A disabled chip is the wrong target regardless of which build put it
     # there: this section asserts that a real click REACHES the control

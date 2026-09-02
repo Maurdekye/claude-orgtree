@@ -51,7 +51,7 @@ def family(name: str, letters: str) -> str:
 ROWS = "".join((
     family("claude", "haiku sonnet opus fable"),
     family("codex", "gpt-reserve luna terra sol"),
-    family("gemini", "flash pro"),
+    family("antigravity", "flash pro"),
 ))
 
 

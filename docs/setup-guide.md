@@ -27,7 +27,7 @@ Every shape below starts here.
 
 | requirement | notes |
 |---|---|
-| **One or more provider CLIs**, installed and authenticated | Claude Code, Codex, and Gemini are supported. Install the CLI for every provider whose tiers you plan to hire; turns use that provider's subscription or API account — **real usage costs real money**. |
+| **One or more provider CLIs**, installed and authenticated | Claude Code, Codex, and Antigravity are supported. Install the CLI for every provider whose tiers you plan to hire; turns use that provider's subscription or API account — **real usage costs real money**. |
 | **Python 3.11+** | |
 | **Node.js 18+** | builds the frontend and runs the JavaScript-based provider CLIs where needed |
 | **Windows, macOS, or Linux** | the host-mode core (ledger, turns, canvas, kiosk URLs) runs anywhere; developed and battle-tested on Windows, POSIX paths handled but less traveled |
@@ -70,7 +70,7 @@ mid-task message delivery — an older CLI never runs tool hooks headless, so wi
 sent to a busy agent waits for its current response to finish rather than arriving after its next
 tool call.
 
-**Optional Codex and Gemini providers:** install and sign in to their CLIs on
+**Optional Codex and Antigravity providers:** install and sign in to their CLIs on
 the host. These private installs are discovered automatically; a global install
 on `PATH` works too.
 
@@ -79,13 +79,14 @@ on `PATH` works too.
 npm install --prefix ~/orgtree/codex @openai/codex
 npx --prefix ~/orgtree/codex codex login
 
-# Gemini: flash (seat 1), pro (2)
-npm install --prefix ~/orgtree/gemini @google/gemini-cli
-npx --prefix ~/orgtree/gemini gemini
+# Antigravity: flash (seat 1), pro (2) — Google's own installer, then sign in once
+winget install Google.AntigravityCLI                          # Windows
+curl -fsSL https://antigravity.google/cli/install.sh | bash   # macOS / Linux
+agy
 ```
 
-The first Gemini launch asks you to pick a login method. The Accounts panel
-then confirms each provider's connection state. See
+The first Antigravity launch signs you in with your Google account. The
+Accounts panel then confirms each provider's connection state. See
 [`configuration.md`](configuration.md#provider-clis-and-tier-availability)
 for CLI overrides, headless authentication requirements, and the current
 kiosk limitation.
@@ -100,7 +101,7 @@ dependencies, and restart the backend in the background with a health check.
 
 Nothing here is a separate mode to turn on — it's what you get by doing *only* the install above
 and none of the sections that follow. It is a persistent, visual organization
-of Claude Code, Codex, and Gemini agents running through the provider CLIs
+of Claude Code, Codex, and Antigravity agents running through the provider CLIs
 installed on this host (`README.md`).
 
 1. Start the backend (`python -m orgtree.api`, or `update.ps1`/`update.sh` if already installed)
@@ -110,7 +111,7 @@ installed on this host (`README.md`).
    live — §2–§4 below).
 3. Hover the eye and hire one top-level agent. Claude provides
    haiku/sonnet/opus/fable; a connected Codex CLI adds gpt-reserve/luna/terra/sol and a
-   connected Gemini CLI adds flash/pro. That single card, zoomed in, is a chat
+   connected Antigravity CLI adds flash/pro. That single card, zoomed in, is a chat
    desk with transcript, live tool feed, markdown, and a composer.
 
 That's the whole shape: one persistent, revisitable session instead of a terminal you close. You

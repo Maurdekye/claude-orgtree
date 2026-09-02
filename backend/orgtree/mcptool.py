@@ -647,8 +647,8 @@ TOOLS: list[dict[str, Any]] = [
             "reserve grant — OpenAI hands that pool out and takes it back on "
             "its own, so gpt-reserve comes and goes while Codex stays "
             "connected and its three siblings keep hiring); "
-            "flash 1, pro 2 (Gemini — hireable only while the Gemini CLI is "
-            "signed in on this machine); "
+            "flash 1, pro 2 (Antigravity — hireable only while the "
+            "Antigravity CLI is signed in on this machine); "
             "seat + grant must fit within YOUR free credits. "
             "ONE CALL IS ENOUGH: this tool also takes the fields you would "
             "otherwise have to orgtree_retool in straight afterwards "
@@ -1179,8 +1179,8 @@ TOOLS: list[dict[str, Any]] = [
             "whole chain lacks it. Tiers: haiku 1 · sonnet 2 · opus 5 · "
             "fable 10 (Claude); gpt-reserve 1 · luna 1 · terra 2 · sol 5 "
             "(Codex, needs the "
-            "CLI signed in); flash 1 · pro 2 (Gemini, needs the CLI signed "
-            "in)."),
+            "CLI signed in); flash 1 · pro 2 (Antigravity, needs the CLI "
+            "signed in)."),
         "inputSchema": {"type": "object",
                         "properties": {"node": {"type": "string"},
                                        "tier": {"type": "string",

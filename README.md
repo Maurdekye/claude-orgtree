@@ -3,7 +3,7 @@
 # claude-orgtree
 
 A persistent, visual **organization of coding agents** — a tree of real,
-addressable Claude Code, Codex, and Gemini sessions with a credit budget, an
+addressable Claude Code, Codex, and Antigravity sessions with a credit budget, an
 office-room canvas, and full agent-to-agent delegation. You sit at the root as
 the overseer; you hire top-level agents, they hire their own reports, and each
 agent runs through the provider CLI for its selected tier.
@@ -33,8 +33,8 @@ not spend** — a live node *holds* its seat plus its grant; retiring releases
 everything back; tokens are unlimited (real dollars are *tracked* per node and
 per org, but deliberately not capped). The tier name chooses the provider:
 Claude has haiku (1), sonnet (2), opus (5), and fable (10); Codex has
-gpt-reserve (1), luna (1), terra (2), and sol (5); Gemini has flash (1) and
-pro (2). Messaging is
+gpt-reserve (1), luna (1), terra (2), and sol (5); Antigravity has flash (1)
+and pro (2). Messaging is
 **downward any depth, one hop up, sideways between
 peers** — deep reach grants the recipient an audience to reply; only top-level
 agents write to your inbox unbidden. Every manual action you take notifies the
@@ -61,11 +61,11 @@ and per-tool feed, markdown rendering, and a composer whose send button
 turns into a red ■ STOP while the agent is responding.
 
 **Hire in one gesture.** Hover any card (or the eye) and pick a tier chip.
-The Claude, Codex, and Gemini families sit in separate rows: H/S/O/F,
+The Claude, Codex, and Antigravity families sit in separate rows: H/S/O/F,
 R/L/T/S, and F/P respectively. A dashed draft appears: name it, drag its credit
 bar to set the grant, optionally give it a **charter** (a standing role card —
 pick a named preset from `docs/charters/`, or write your own), and hire. The
-Codex and Gemini rows become active after their local CLI is installed and
+Codex and Antigravity rows become active after their local CLI is installed and
 signed in; otherwise the disabled chips explain what is missing. Your hires
 cascade credits automatically down the chain; agents hire their own reports
 through the same ledger with explicit, no-defaults specs. Drag cards onto
@@ -142,7 +142,7 @@ The full interaction manual — every gesture, badge, and panel — is
 ## Requirements
 
 - **At least one provider CLI** installed and authenticated. Claude Code,
-  Codex, and Gemini are supported; install only the providers whose tiers you
+  Codex, and Antigravity are supported; install only the providers whose tiers you
   want to hire. Agent turns use that provider's subscription or API account —
   **real usage costs real money**.
 - **Python 3.11+**
@@ -219,7 +219,7 @@ has not redeployed yet keeps working — `/api/host` reports both the resolved
 version and whether it knows the 5.1 id. Fable 5 also stays selectable per
 agent in the ⚙ gear, like Opus 4.8.
 
-### Optional providers: Codex and Gemini
+### Optional providers: Codex and Antigravity
 
 Install and sign in to either CLI on the machine running orgtree. The Accounts
 panel reports whether each provider is installed and connected; once it is,
@@ -230,21 +230,24 @@ its tier row is immediately available in the hire controls.
 npm install --prefix ~/orgtree/codex @openai/codex
 npx --prefix ~/orgtree/codex codex login
 
-# Gemini: flash (seat 1), pro (2)
-npm install --prefix ~/orgtree/gemini @google/gemini-cli
-npx --prefix ~/orgtree/gemini gemini
+# Antigravity: flash (seat 1), pro (2) — Google's own installer, then sign in once
+winget install Google.AntigravityCLI                          # Windows
+curl -fsSL https://antigravity.google/cli/install.sh | bash   # macOS / Linux
+agy
 ```
 
-The first Gemini launch asks you to select a login method. Existing global
+The first Antigravity launch signs you in with your Google account (the token
+lives in the OS keyring, never in a file orgtree reads). Existing global
 installs also work: orgtree resolves an explicit environment override, then
-its private install under `ORGTREE_DATA`, then the CLI on `PATH`. It leaves
-each CLI's credentials in that CLI's own home directory and never copies them.
+its private install under `ORGTREE_DATA` (Codex) or the installer's own
+location (Antigravity), then the CLI on `PATH`. It leaves each CLI's
+credentials in that CLI's own store and never copies them.
 
-Codex and Gemini agents can use the same orgtree tools, folder grants, and
-charters as Claude agents. They are currently host-mode providers: kiosk orgs
-cannot hire them. A headless org must use a keyed login for these providers
-(Codex API key; Gemini API key or Vertex AI), not a personal subscription or
-Google OAuth login.
+Codex and Antigravity agents can use the same orgtree tools, folder grants,
+and charters as Claude agents. They are currently host-mode providers: kiosk
+orgs cannot hire them. A headless org must use a keyed login for these
+providers (a Codex API key), not a personal subscription; the Antigravity CLI
+offers only a Google-account login, so headless orgs cannot hire its tiers.
 
 **Mail hub (cross-session and cross-machine mail):** to let orgs, other
 machines, and independent Claude Code sessions mail each other, start the hub
@@ -293,7 +296,7 @@ dragging, desks, lineage, audiences — is in
 
 No manual wiring is needed; the supervisor does all of it per turn:
 
-- The `claude`, `codex`, and `gemini` CLIs are each resolved from an explicit
+- The `claude`, `codex`, and `agy` CLIs are each resolved from an explicit
   `ORGTREE_*` override, then an orgtree private install, then `PATH`. On
   Windows orgtree bypasses unsafe command shims where a CLI's protocol can
   carry multiline input.
@@ -306,7 +309,7 @@ No manual wiring is needed; the supervisor does all of it per turn:
 - Nodes receive exactly the folders, tools, and MCP servers you grant. The
   provider adapters attach orgtree's MCP tools without changing your personal
   CLI configuration.
-- Claude transcripts stay in Claude Code's normal store. Codex and Gemini
+- Claude transcripts stay in Claude Code's normal store. Codex and Antigravity
   transcript records are kept in orgtree's journal store. Org state lives in
   **`~/orgtree/`** (ledger docs, per-org workspaces, per-node scratch dirs).
 

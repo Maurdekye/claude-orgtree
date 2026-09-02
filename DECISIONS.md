@@ -2083,16 +2083,11 @@ the previously deferred inclusion decision explicit.
 Sandbox remains excluded: the leash cannot reach in-container processes, so
 a parked one would SURVIVE shutdown — violates cause (3). Preserving oracles
 remain excluded: each consult is a deliberately discarded `--fork-session`;
-a parked process would accumulate state the oracle promises not to. Gemini
-also remains an **UNVERIFIED SCOPE EXCLUSION**, not a verified protocol
-impossibility: the real probe's
-`session/load` refusal ("No previous sessions found for this project") tests
-the post-respawn DISK path, while a persistent process keeps the session in
-`AcpSessionManager` and serves another turn through a direct second
-`session/prompt`. The installed 0.57 source confirms that distinction; a
-corrected real direct-prompt probe was inconclusive because initialization
-hung before either turn. Gemini remains excluded by scope pending that exact
-live test; zero live gemini agents today.
+a parked process would accumulate state the oracle promises not to.
+Antigravity remains excluded BY CONSTRUCTION: its print-mode process is one
+turn long and exits at stdin EOF (D-185). A persistent process would ride
+the CLI's stdin stream-json multi-turn mode, which is unprobed for parking
+and deliberately unused (D-190); zero live antigravity agents today.
 
 Bounds & residuals, stated rather than hidden:
 - **UNTESTED: N persistent clients against a live single-application MCP
@@ -2814,20 +2809,21 @@ Ruling (coordinator, 2026-08-29): `switch_model` compares
 `providers.provider_of(old)` with `providers.provider_of(new)`. Same provider →
 the session survives unchanged (№16). **Different provider → the session is
 replaced**: a freshly minted `session_id`, `session_unrun` re-armed, and the
-dead lane markers (`codex_thread`, `gemini_session`) dropped. The agent is told
+dead lane markers (`codex_thread`, `antigravity_conversation`) dropped. The agent is told
 its conversation could not carry over, and the ACTOR gets a warning at switch
 time. `providers.provider_of` is the one implementation of the tier→provider
 axis; callers must not re-ask it inline.
-Why: `session_id` holds a PROVIDER-OWNED handle — a codex threadId, a gemini ACP
-sessionId, a Claude session uuid — and no provider can resume another's. The old
+Why: `session_id` holds a PROVIDER-OWNED handle — a codex threadId, an
+antigravity conversation id, a Claude session uuid — and no provider can resume
+another's. The old
 code never touched the field on a switch, and its docstring explained why: "the
 session survives (№16: --resume honors a changed --model)". **True within the
 Claude lane, false across providers**, and nothing re-checked it when the codex
-and gemini lanes were added.
+and antigravity lanes were added.
 Left in place the stale id is not merely useless but FATAL, and the route is
 worth stating because it is not obvious. Each lane decides "may I resume?"
-differently: codex tests `session_id == codex_thread`, gemini tests
-`session_id == gemini_session` — explicit markers, so both correctly refuse a
+differently: codex tests `session_id == codex_thread`, antigravity tests
+`session_id == antigravity_conversation` — explicit markers, so both correctly refuse a
 foreign id and start fresh. The CLAUDE lane instead asks whether a transcript
 FILE EXISTS, and `transcript_path` deliberately falls back to the supervisor's
 own journal store so a codex thread's record counts as a real transcript (that
@@ -2903,7 +2899,7 @@ opposite one from D-196's. Crossing TO claude fails LOUDLY (the blinded
 detector: `transcript_path`'s journal-store fallback hits, the lane emits
 `--resume <foreign id>`). Crossing AWAY from claude does not fail at all —
 the provider legs resume only on `session_id == codex_thread` /
-`== gemini_session`, a claude id never matches, so the leg quietly starts a
+`== antigravity_conversation`, a claude id never matches, so the leg quietly starts a
 FRESH thread. **An empty session then wakes wearing the bearer's name and
 presents as institutional memory.** Someone consults it, gets fluent answers
 drawn from nothing, and has no way to tell they are reading an invention. A
@@ -2913,7 +2909,7 @@ generation, so the rule is an existing one applied at another door, not a new
 policy.
 THE ACTUAL DEFECT WAS THE BACKEND, NOT THE PANEL, and the inversion is the
 finding worth keeping: the picker was the literal `['haiku','sonnet','opus']`,
-written before fable/codex/gemini existed, so it UNDER-offered its own provider
+written before fable/codex/antigravity existed, so it UNDER-offered its own provider
 (`fable` was simply missing) — while `ledger.rehire` validated only
 `tier in d["tiers"]` and so ACCEPTED precisely the crossing the interface had
 merely forgotten to offer. A UI-only fix would have left that door open and
@@ -2942,7 +2938,7 @@ Also load-bearing: the consult path is a SEPARATE door with no safe fallback.
 nothing to consult — so a foreign session there cannot even degrade to the
 silent-fresh case. It refuses in writing (a `RuntimeError` with a written
 message, the shape `_run_one_turn`'s handler documents) rather than emitting a
-doomed `--resume`. The guard reads the harvested `codex_thread`/`gemini_session`
+doomed `--resume`. The guard reads the harvested `codex_thread`/`antigravity_conversation`
 markers, NOT the tier: the tier says which lane will run the node next, the
 markers say which lane wrote the session it carries, and their disagreeing is
 exactly the state worth refusing. Because it is the same equality the provider
@@ -2972,7 +2968,7 @@ actionable, here it would be the same sentence everywhere.
 CLAUDE WAS THE BUG, AND IT WAS EXEMPT BY CONSTRUCTION. `providers_payload`
 hard-coded `hire_enabled: True` for the claude entry, the API layer hard-coded
 `installed: True` beside it, and no hire surface had a `claudeHire` to consult
-at all — Claude's tiers came off the bare `TIERS` constant. Codex and Gemini
+at all — Claude's tiers came off the bare `TIERS` constant. Codex and Antigravity
 had honest detection from the day they were added. So on a Codex-only machine
 all four Claude tokens rendered as live buttons (measured in a real browser
 before the fix, with `connected=false` in the same payload). Claude now
@@ -3025,7 +3021,7 @@ control expands it like any other row instead of collapsing to a dead arrow.
 ### D-202 · an uninstalled provider is not part of the product
 Ruling (user, 2026-08-30): *"if codex isnt installed at all, then codex
 shouldnt appear anywhere in the ui whatsoever; it should be entirely absent.
-same with gemini. with claude, since orgtree is built around it, do show that
+same with [the other optional provider]. with claude, since orgtree is built around it, do show that
 its not installed on the accounts page, but make it a very small piece of ui."*
 Confirmed in the same breath for the middle state: *"if it is installed but not
 configured, thats when it appears in the ui with greyed out hire tokens."*
@@ -3038,7 +3034,7 @@ This WIDENS D-199 from the hire surfaces to every surface, and it OVERTURNS
 part of that entry on the user's authority. D-199 hid the buttons on the
 reasoning that the accounts panel was the install story's home, so
 discoverability survived. The user has now decided against that for Codex and
-Gemini: an uninstalled provider is simply not part of the product until it is
+Antigravity: an uninstalled provider is simply not part of the product until it is
 installed. The trade is real and is accepted once, here — someone who has never
 heard of Codex will not learn from this UI that a Codex lane exists.
 ONE RULE, AND IT IS THE SAME QUESTION D-199 ALREADY ASKED. `providerShown` in
@@ -3058,7 +3054,7 @@ node's own tier would turn "open this agent's settings, change nothing, save"
 into a silent model switch. It is also simply true — a codex agent IS running
 on codex, whatever happened to the CLI afterwards.
 The surfaces, enumerated rather than sampled, because the failure mode is one
-leftover mention: the accounts panel's Codex and Gemini sections (whole
+leftover mention: the accounts panel's Codex and Antigravity sections (whole
 sections, head and preview tag and tier list included), the model-switch
 dropdown's optgroups (dropped entirely, not rendered empty — an empty
 `<optgroup>` still shows its label), the lineage rehire picker, the usage
@@ -3082,8 +3078,9 @@ change DELETES on precisely the machines that get those refusals, and which for
 Claude never carried a command at all. The gate is now the only place a user is
 told how to install a provider, so it cannot be the copy that drifts:
 `providers.install_hint` is one source read by both the payload's `reason` and
-the gate. ⚠ Not `npm i -g`: codex and gemini install under the orgtree data dir
-with `--prefix`, because that is the copy `codex_path`/`gemini_path` resolve —
+the gate. ⚠ Not `npm i -g`: codex installs under the orgtree data dir with
+`--prefix`, because that is the copy `codex_path` resolves (the Antigravity
+CLI has Google's own installer instead, and its hint is that installer) —
 a globally-installed CLI would leave the user just as broken, and the first
 draft of this entry's own fix got that wrong from memory before the repo was
 grepped.
@@ -3631,7 +3628,7 @@ The fix sits at the **shared provider seam**, not inside `_codex_leg`: both
 non-claude legs raise `_ProviderTurnFailed`, carrying the provider's own words
 as `blob` (classifier input, kept separate from the operator prose in
 `str(exc)` — the `_for_the_record` split) and any machine reset as `reset_ts`.
-`_run_one_turn`'s shared handler freezes when that blob names a limit. Gemini
+`_run_one_turn`'s shared handler freezes when that blob names a limit. Antigravity
 was never frozen either; it merely failed loudly instead of silently, and it
 inherits the fix by construction.
 
@@ -3674,10 +3671,11 @@ aims at neither, and it fails quietly**; the harness now refuses any target that
 is not unique.
 
 Scope of the evidence, stated rather than implied: the codex half is
-transcribed from captured wire bytes; the gemini half is by construction from
-the shape of `geminirun`'s error path. No gemini usage wall has been observed
-on this machine, so the suite proves the seam freezes a gemini failure whose
-text names a quota — not that a real gemini limit wears that text.
+transcribed from captured wire bytes; the antigravity half is by construction
+from the shape of `antigravityrun`'s error path. No antigravity usage wall has
+been observed on this machine, so the suite proves the seam freezes an
+antigravity failure whose text names a quota — not that a real antigravity
+limit wears that text.
 
 ### D-203 · App settings are machine-wide, and provider off is an admission policy
 Ruling (user, 2026-08-30): the Accounts surface becomes a tabbed App settings
@@ -3749,138 +3747,155 @@ close/reopen, and the mailserver address survives tab switch. The sentinel is
 deliberately invalid and the probe never submits it, so no credential reaches
 the server.
 
-### D-183 · the gemini probe phase: ACP is the substrate, and four wire facts are load-bearing
-Findings (gemini-provider, 2026-08-29; every one measured live on gemini-cli
-0.57.0, probe logs banked in the implementing agent's scratch). The third
-provider's machine substrate is `gemini --acp` — a STABLE stdio JSON-RPC
-server surface (the deprecated `--experimental-acp` era is over), chosen per
-the playbook's prefer-the-server-surface rule. The facts the adapter stands
-on: **(1) unknown model ids fail SILENTLY** — `-m gemini-3.7-flash` served
-3.5-flash with no warning while `-m gemini-3.1-pro` 404'd loudly, so a pin
-must be asserted against the session result's `models.currentModelId`
-(reported by BOTH open verbs), never assumed. **(2) session/load REPLAYS the
-stored conversation** as session/update notifications before the live turn —
-an adapter without a replay gate re-streams and re-journals the node's whole
-history on every resume. **(3) an api-key login stores the key in the OS
-keychain** (Windows Credential Manager target `gemini-cli-api-key/…`), not in
-env or any file — connect-state detection reads settings.json's
-`selectedType` and never opens the secret; the child self-authenticates.
-**(4) GEMINI.md is re-read on session/load** (the ZORBLATT probe), so the
-identity door regenerates per spawn exactly like AGENTS.md and
-`--append-system-prompt`. Also settled here: "Gemini Flash 3.7" and the
-plain id "gemini-3.1-pro" do not exist on the reachable API — the CLI's own
-ACP registry is the authoritative model list, and it names
-`gemini-3.1-pro-preview-customtools` and `gemini-3.5-flash`.
+### D-183 · the antigravity probe phase: print mode is the substrate, and six wire facts are load-bearing
+Findings (antigravity-scope, 2026-09-02; every one measured live on the
+Antigravity CLI 1.1.24, probe logs banked in the implementing agent's
+scratch). Google's terminal agent is now the Antigravity CLI (`agy`, a native
+Go binary with its own installer; its predecessor stopped serving
+subscription requests on 2026-06-18), and it has NO server surface — an ACP
+mode is an open feature request — so the substrate is print mode itself:
+`-p= --input-format stream-json --output-format stream-json`, the prompt as
+one NDJSON `user` event on stdin, an NDJSON event stream (init / step_update
+/ result) back. The facts the adapter stands on: **(1) unknown model ids
+fail LOUDLY** (rc=1, `status: ERROR`, the registry listed) — and the `init`
+event echoes the base id serving the session, which the runner asserts as a
+belt. **(2) the base id and the effort are two flags**: `--model
+gemini-3.8-flash --effort low` is honoured, the registry's effort-suffixed id
+combined with `--effort` is refused, flash REQUIRES an effort and pro takes
+low|high only. **(3) the login is a Google OAuth token in the OS keyring**
+(Windows Credential Manager) with no auth file and no API-key lane;
+connect-state is read from the CLI's own `models` registry output and the
+account from its own log (`--log-file` is a ROOT flag, before the
+subcommand). **(4) the cwd is not the workspace** until `--add-dir <cwd>`
+says so — without it the agent's tools ran in the CLI's own scratch. **(5)
+headless print mode auto-denies** every command, write and MCP call in its
+review mode and ends the run with "no output produced", while a PreToolUse
+hook's `deny` blocks one call and the run continues. **(6) resuming a
+missing conversation id starts a FRESH conversation** with only a stderr
+warning. Also settled: the stdin lane carries 120K characters of prose
+intact where argv caps at 32K on Windows; a hard kill mid-turn leaves the
+conversation resumable; MCP servers inherit every env var their spec does
+not name; and `agy models` is the authoritative model list, naming
+`gemini-3.8-flash`, `gemini-3.1-pro` and their generations as base ids.
 
-### D-184 · the gemini axis: flash and pro join the flat vocabulary, priced per MODEL ID
-Ruling (user 2026-08-29, brief + endorsed recommendation): tiers `flash`
-("Gemini Flash", letter F — shares F with fable by the sol/sonnet-S
-precedent) and `pro` ("Gemini Pro", letter P). Seats by the standing rule:
-pro $2/M standing input → 2; flash $1.50 → 1, and STILL 1 when the tier's
-default model moves to 3.7-flash ($0.38) — the flash tier LAUNCHES on
-`gemini-3.5-flash` because 3.7 is not on the developer API yet (live 404),
-with the MODEL_VERSIONS mechanism as the upgrade path; the user approved
-launching under the "Gemini Flash" name rather than waiting. Two pricing
-divergences no earlier provider forced: **prices are keyed by MODEL ID, not
-tier**, because the CLI spends tokens on side models inside one turn
-(measured: a `utility_router` role on gemini-3.1-flash-lite), and an
-UNLISTED model is priced at the pro row rather than $0 — overstating a
-stranger is recoverable, a silent zero is not; and **gemini-3.1-pro doubles
-above 200K prompt tokens** ($4/$18, strict >, two sources), a band switch
-`codex_cost`'s flat rates never needed. The provider entry is id `google`,
-label "Gemini" (the CLI's own product name, the D-naming rule that produced
-"Codex").
+### D-184 · the antigravity axis: flash and pro keep the flat vocabulary, priced per BASE model id
+Ruling (user 2026-09-02, via coordinator): the family keeps its own class
+words — tiers `flash` (letter F, sharing F with fable by the sol/sonnet-S
+precedent) and `pro` (letter P), NO third tier and no themed names (the
+Opus-through-Antigravity tier that was offered is not wanted: Opus is
+already reachable through Claude). The flash tier is pinned to
+`gemini-3.8-flash` by direct user instruction ("make sure you update the
+models too so that we can use flash 3.8") with 3.7 and 3.6 as model
+VERSIONS; pro is `gemini-3.1-pro`. Seats by the standing rule: pro $2/M
+standing input → 2; flash $1.50 standing → 1 (3.8-flash's $0.75 is launch
+pricing through 2026-12-31, and a promo never sets a seat). Prices are keyed
+by the BASE model id the CLI is handed, an UNLISTED id is priced at the pro
+row rather than $0 — overstating a stranger is recoverable, a silent zero is
+not — and gemini-3.1-pro doubles above 200K prompt tokens ($4/$18, strict >,
+two sources). The provider entry keeps id `google` (the vendor axis, as
+`openai` is codex's) with label "Antigravity" — the CLI's own product name,
+the naming rule that produced "Codex".
 
-### D-185 · the gemini turn adapter: one ACP process per turn, and steer refuses by design
-Decision (gemini-provider, 2026-08-29): `geminirun.py` mirrors the codexrun
-seam contract — one process per turn, session id HARVESTED from session/new
-and resumed via session/load, `wait()` normalizing to
-completed/interrupted/failed. The wire has NO mid-turn steer verb: `steer()`
-always returns False and the supervisor's queue fallback delivers at the
-turn boundary — the pump still wraps and offers every message so the day the
-wire grows the verb, the envelope is already right. `session/cancel` is a
-NOTIFICATION whose effect is the in-flight prompt resolving
-`stopReason: "cancelled"` with NO usage metadata (measured) — an interrupted
-gemini turn books $0 and leaves occupancy unmeasured rather than fabricating
-a number. Usage telemetry is `_meta.quota.model_usage` — per model but with
-no cached/thoughts split, so the cost fold documents its approximation
-(cached reads priced as full input, reasoning output uncounted) instead of
-hiding it. MCP env entries are an ARRAY of {name,value} pairs and a var not
-named in the spec is INHERITED from the CLI process (measured leak), so the
-leg always names the full ORGTREE_* set.
+### D-185 · the antigravity turn adapter: one print-mode process per turn, kill is the interrupt, steer refuses by design
+Decision (antigravity-scope, 2026-09-02): `antigravityrun.py` mirrors the
+codexrun seam contract — one process per turn, the conversation id
+HARVESTED from the init event and resumed via `--conversation`, `wait()`
+normalizing to completed/interrupted/failed. The wire has NO mid-turn steer
+verb: `steer()` always returns False and the supervisor's queue fallback
+delivers at the turn boundary — the pump still wraps and offers every
+message so the day the wire grows the verb, the envelope is already right.
+Interrupt is a KILL of the process tree (the CLI forks a language-server
+child): the conversation store already holds the turn so far, and the turn
+is booked as interrupted-but-completed FROM THE PER-REQUEST USAGE the steps
+had reported — never $0 for work that was done. Usage telemetry:
+`input_tokens` is UNCACHED input, `cache_read_tokens` sits beside it,
+`output_tokens` includes thinking, and the result's usage sums every request
+of the turn, so occupancy is the LAST priced request's input + cache read
+and cost is the sum. The turn timeout rides `--print-timeout` too (the
+CLI's own default is five minutes, far under an agent turn), and the CLI's
+self-update is switched off for every child.
 
-### D-186 · the gemini dispatch leg rejoins through the shared finally, and the split refuses
-Decision (gemini-provider, 2026-08-29): the supervisor seam is the codex
+### D-186 · the antigravity dispatch leg rejoins through the shared finally; the rights are a hook; the split refuses
+Decision (antigravity-scope, 2026-09-02): the supervisor seam is the codex
 shape exactly — dispatch on tier membership after the provider-neutral
-prologue, the same success tail, `_GeminiTurnDone` unwinding to the SHARED
-finally (the queue-handoff proof is a live test: a mid-turn message lands on
-the queue and comes back as the follow carrier). Org powers attach as MCP
-SERVERS on the session verbs — the same `python -m orgtree.mcptool` stdio
-server the claude lane spawns, grant from `granted_mcp_servers` (D-182)
-narrowed only by expressibility, the undeliverable named in the identity
-(D-180). Identity rides GEMINI.md in the scratch cwd. The ⚙-rights seam maps
-approval modes: full edit+bash rights run yolo; a narrowed node runs default
-mode and the permission hook decides per ToolCallKind against the same
-capability switches, failing CLOSED. `interrupt_turn` learns the live
-handle. The generation SPLIT refuses cleanly on this lane (ACP has no
-fork/compact verb) instead of falling into the claude fork machinery — the
-cheap compact is the supported path, which is the same §8 exclusion the
-codex MVP shipped with, made explicit; the pre-split codex precedent (fall
-through to a claude error) is the bug this arm exists to not repeat.
+prologue, the same success tail, `_AntigravityTurnDone` unwinding to the
+SHARED finally (the queue-handoff proof is a live test: a mid-turn message
+lands on the queue and comes back as the follow carrier). Org powers attach
+as a WORKSPACE PLUGIN the CLI discovers in the scratch cwd
+(`.agents/plugins/orgtree/mcp_config.json`) — the same `python -m
+orgtree.mcptool` stdio server the claude lane spawns, grant from
+`granted_mcp_servers` (D-182) narrowed only by expressibility, the
+undeliverable named in the identity (D-180), nothing written to the user's
+own config. Identity rides AGENTS.md in the scratch cwd. THE ⚙-RIGHTS SEAM
+IS A HOOK, NOT A MODE: every turn runs with the CLI's prompts switched off
+(headless review mode would auto-deny the org powers themselves), and a
+narrowed node is held to its scope by a PreToolUse hook that denies the
+shell class (`run_command`, `send_command_input`, `notebook_execution`)
+and/or the edit class (`write_to_file`, `replace_file_content`,
+`multi_replace_file_content`, `sed_file`, `notebook_edit`), failing CLOSED
+— a hook that cannot run blocks the call. MCP calls arrive as
+`call_mcp_tool` and are journaled under the TOOL'S bare name (the form the
+download-card and mail-link readers match). A refused resume — the CLI
+answering a missing id with a fresh conversation — is written into the
+conversation as a turn-error row and the new id harvested. `interrupt_turn`
+learns the live handle. The generation SPLIT refuses cleanly on this lane
+(print mode has no fork/compact verb) instead of falling into the claude
+fork machinery — the cheap compact is the supported path.
 
-### D-187 · gemini transcripts ride the codex journal store unchanged
-Decision (gemini-provider, 2026-08-29): no third store. The gemini leg
-writes the SAME `journals/projects/<org>/<session>.jsonl` records through
-the same helper the codex leg uses, so every reader — desk history,
-reconcile liveness, the never-run pardon, the occupancy fold — works without
-learning anything new. The M3 playbook section predicted this exactly;
-nothing to fix there. Chunk streams journal differently than codex items:
-message deltas journal as ONE final assistant text record (plus one folded
-thinking record), while tool_call/tool_call_update fold to tool_use/
-tool_result rows as they happen.
+### D-187 · antigravity transcripts ride the codex journal store unchanged
+Decision (antigravity-scope, 2026-09-02, unchanged from the earlier Google
+walk): no third store. The antigravity leg writes the SAME
+`journals/projects/<org>/<session>.jsonl` records through the same helper
+the codex leg uses, so every reader — desk history, reconcile liveness, the
+never-run pardon, the occupancy fold — works without learning anything new.
+Text deltas journal as ONE final assistant text record, tool steps fold to
+tool_use/tool_result rows as they happen, and the usage record carries the
+turn's uncached input, cache reads and output.
 
-### D-188 · gemini hire enablement: the ledger rows land, the guards flip deliberately
-Decision (gemini-provider, 2026-08-29): `ledger.TIERS/MODELS` carry flash/pro
-(the add-only org-doc load hook migrates existing orgs), `provider_hire_gate`
-grows the gemini arm — installed → signed-in → kiosk holdout (mirroring the
-codex sandbox ruling) → headless-needs-keyed, where **api-key AND vertex
-count as keyed** and a Google-account login does not. The MCP cards'
-hand-written enums grow both tiers; the drift guards flip in the same
-commits that close the gaps (`test_ledger_authority` pins NINE bands,
-`test_providers` pins three providers, `modelswitch` pins three optgroups) —
-a test asserting a gap must flip the day the gap closes.
+### D-188 · antigravity hire enablement: the ledger rows land, the keyed-login set is empty
+Decision (antigravity-scope, 2026-09-02): `ledger.TIERS/MODELS` carry
+flash/pro (the add-only org-doc load hook migrates existing orgs, including
+the two old model ids to the new pins), `provider_hire_gate` grows the
+antigravity arm — installed → signed-in → kiosk holdout (mirroring the codex
+sandbox ruling) → headless refused OUTRIGHT, because the CLI's only login is
+a Google account and there is no API-key lane to count as keyed (measured;
+the user ruling that a headless org hires only keyed providers stands
+unchanged). The MCP cards' hand-written enums carry both tiers; the drift
+guards flip in the same commits that close the gaps — a test asserting a
+gap must flip the day the gap closes.
 
-### D-189 · the gemini colors: one blue-violet family, provider bluer than pro
-Ruling (user, 2026-08-29, spec refined across three messages): the flash
-chip is a very light icy blue (`--tier-flash: #aee2f9`), the pro chip a DEEP
-bluish-violet that leans VIOLET (`--tier-pro: #6b45d6`), and the provider
-accent a mid-toned bluish-violet that leans BLUE (`--prov-google: #5f6fdb`)
-— similar to pro but bluer and lighter. The three sit at ~198°/~232°/~256°
-so the family reads as a unit while each hue stays clear of sonnet's
-saturated mid-blue and opus's light lavender; F/P letters remain the
-redundant glyph channel. The provider chrome rides the same
+### D-189 · the antigravity colors: one blue-violet family, provider bluer than pro
+Ruling (user, 2026-08-29, spec refined across three messages; unchanged by
+the CLI swap because the tier words and the provider id did not move): the
+flash chip is a very light icy blue (`--tier-flash: #aee2f9`), the pro chip
+a DEEP bluish-violet that leans VIOLET (`--tier-pro: #6b45d6`), and the
+provider accent a mid-toned bluish-violet that leans BLUE (`--prov-google:
+#5f6fdb`) — similar to pro but bluer and lighter. The three sit at
+~198°/~232°/~256° so the family reads as a unit while each hue stays clear
+of sonnet's saturated mid-blue and opus's light lavender; F/P letters remain
+the redundant glyph channel. The provider chrome rides the same
 inherited-accent contract as prov-openai (desk border/shadow, busy ring,
 mini wash + rail, tray accent, accounts header) — a theme is rebound
 variables at the family root, never a list of individual recolors. The
 accounts panel's preview tag renders only while hiring is actually
 disabled.
 
-### D-190 · what stays deliberately OUT of the gemini MVP
-Decision (gemini-provider, 2026-08-29), so the gaps are chosen rather than
-discovered: **(1)** the generation split (D-186's refusal arm) — pending
-either a native provider verb or an emulated summarize-then-seed design;
-**(2)** a `codex_limits` analog — an api-key login has no usage windows to
-render; 429s surface as loud turn errors; **(3)** orgtree's effort
-vocabulary — the ACP wire exposes no reasoning-effort knob; the org's
-effort setting is accepted and unused on this lane; **(4)** exact cached/
-thoughts cost splitting — the ACP telemetry doesn't carry it (D-185
-documents the approximation); **(5)** account pooling/routing (Phase 2,
-same as codex) and kiosk admission (the sandbox story owns it). Each is
+### D-190 · what stays deliberately OUT of the antigravity MVP
+Decision (antigravity-scope, 2026-09-02), so the gaps are chosen rather
+than discovered: **(1)** the generation split (D-186's refusal arm) —
+pending either a native provider verb or an emulated summarize-then-seed
+design; **(2)** a `codex_limits` analog — print mode exposes no usage
+windows; a quota refusal surfaces as a loud turn error and freezes through
+the shared D-209 seam on wording that is UNMEASURED (no Antigravity usage
+wall has been observed here); **(3)** exact thinking cost splitting —
+thinking is inside `output_tokens` and priced at the output rate, which is
+how Google bills it; **(4)** inline images — print mode's stdin takes text
+blocks only, so an inlined image becomes a note naming the file in the
+working folder, which the CLI's own view_file renders; **(5)** account
+pooling/routing (Phase 2, same as codex) and kiosk admission (the sandbox
+story owns it); **(6)** a WARM process — the stdin lane can run several
+turns in one process, unprobed for parking and deliberately unused. Each is
 named in code where a reader would otherwise assume the capability.
-
----
-
-## Mail & messaging
 
 ### D-137 · notices are mail minus the wake
 Ruling (user, 2026-08-19): agents get `orgtree_send_notice` — mail that
@@ -8212,8 +8227,8 @@ Only a positive determination (provider AND lane both known, pair absent from
 Supported lanes are exactly three, and this is measured rather than assumed:
 `ttl_seconds()` returns a TTL only for claude/subscription (3600),
 claude/api_key (300) and openai/subscription (1800, the fixed Codex estimate).
-Gemini AND Codex API-key both fall outside — the user's ruling named only
-Gemini, but the same capability gap covers openai/api_key, and it is classified
+Antigravity AND Codex API-key both fall outside — the user's ruling named only
+the Google lane, but the same capability gap covers openai/api_key, and it is classified
 identically rather than left to fall through. `SUPPORTED_LANES` is now the
 single source of truth that `ttl_seconds()` itself reads, so a lane cannot be
 supported for the TTL and unsupported for the badge, or the reverse.
@@ -8267,7 +8282,7 @@ reason, exactly like a provider, lane, model or session-lineage switch.
 Why: `classify` had compared `account` since it was written, and every other
 lane's value already moved on a switch — a fallback key row id IS a hash of
 its token (`accounts.register_key`), an API key is digested, Codex hashes its
-own `account_id`, Gemini its account email. The main login alone was the
+own `account_id`, Antigravity its account email. The main login alone was the
 constant `accounts.PRIMARY`, which names a SEAT — "whoever this machine is
 signed into" — not an occupant. So the one comparison that looked like it
 covered the common case was the one that structurally could not fail: two
@@ -8313,7 +8328,7 @@ becomes durable and visible at the moment the provider ACCEPTS it, never at the
 moment orgtree merely picks it up — and the frame that announces it is emitted
 from the one place every lane passes.** D-221 made the answer wait for the
 question at the start of a turn. This is the same invariant DURING one, where
-the codex and gemini lanes were breaking it in two different directions.
+the codex and antigravity lanes were breaking it in two different directions.
 
 Why, from live evidence rather than reasoning. The user, on the deployed build
 carrying D-221: "i still observe timing issues in codex transcript events."
@@ -8327,7 +8342,7 @@ ONE · THE REFUSED STEER CLAIMED A DELIVERY THAT NEVER HAPPENED. `pop_steer`
 committed on the FETCH: it wrote the durable steered row and confirmed the
 journal batch away, and only then did the lane ask the app-server to accept the
 text. `turn/steer` is refused whenever the turn ended inside the 2 s
-`CODEX_STEER_POLL` window — and on the gemini wire, which has no steer verb, it
+`CODEX_STEER_POLL` window — and on the antigravity wire, which has no steer verb, it
 is refused EVERY time. The carriers then went back on the queue and the next
 turn delivered the same words again, so the message stood in the transcript
 twice, permanently. Measured on the live coordinator: `steered_log`
@@ -8340,7 +8355,7 @@ exactly what `_fold_back_undelivered` returns to the mailbox. The refusal now
 also writes the `_steer_fold_log` row the claude lane already wrote, so a miss
 is a dim system line where the wait happened rather than silence.
 
-TWO · THE CODEX AND GEMINI LANES ANNOUNCED NOTHING. The `steered` websocket
+TWO · THE CODEX AND ANTIGRAVITY LANES ANNOUNCED NOTHING. The `steered` websocket
 frame was emitted by `api.node_steer`, the HTTP door the claude lane's
 PostToolUse hook comes through. The other two legs call `pop_steer` in-process
 from a pump thread and never pass that door, so their mid-turn mail went
@@ -8418,11 +8433,11 @@ anywhere scheduled to move it. At 09:51:52.269Z the user gave up and sent
 "go"; that turn's pump popped the stale carrier at 09:51:59.997Z and steered it
 — 22.6 s after posting, 6 s after the second message, into a turn about
 something else. Codex-exclusive because the claude lane folds leftovers under
-the same lock take that ends steering; the gemini leg had the identical gap.
+the same lock take that ends steering; the antigravity leg had the identical gap.
 
 Fix: every site that ends steering folds the leftover steer store onto the
 BACK of the queue through one helper, `_fold_steer`, inside the same
-`_state_lock` take that flips `responding=False` — the codex and gemini legs
+`_state_lock` take that flips `responding=False` — the codex and antigravity legs
 at their exit, after the pump thread is joined (so nothing pops concurrently),
 and the claude lane at its result boundary, its phantom-drop and stdin-closed
 recoveries, and its turn exit — and records the miss with
@@ -8498,7 +8513,7 @@ old-CLI command output record — none ever has a sidecar row, none carries the
 envelope, and the first version hid them for eight seconds. ③ Leftovers fold
 to the BACK of the queue, not the front: every carrier already queued is older
 (queued before the turn began responding, or requeued by the pump after a
-refusal, which on gemini is the normal path), so the front handed the agent the
+refusal, which on antigravity is the normal path), so the front handed the agent the
 newer message first. The two pre-existing claude sites are aligned the same
 way. ④ Both legs fold as the FIRST statement of their `finally` after the pump
 join, before `unbind`/`boundary_check`/`park_back`/`discard`/`close`, any of
@@ -8605,3 +8620,29 @@ commit of the pending→held→projected handover for "exactly one copy, zero
 chrome", and §3 requires the instrument to report the old server's raw row),
 and `backend/tests/_mutate_midturn.py` (NOOP/SANITY controls plus sixteen
 value-replacement mutants, results recorded in its docstring).
+
+### D-231 · the Google lane IS the Antigravity CLI, and its predecessor leaves no trace
+Ruling (user, 2026-09-02, via coordinator): replace the previous Google CLI
+integration with the Antigravity CLI fully — no trace left anywhere in the
+project (code, config, docs, tests, UI strings, tier lists, env vars) — not
+side by side, not a soft deprecation. Google itself had already made the
+swap: the earlier CLI stopped serving subscription requests on 2026-06-18,
+so the old lane was dead on this machine's login type before this work
+began. What moved: module `geminirun` → `antigravityrun` (a different wire:
+print mode, D-183), the env overrides → the single `ORGTREE_ANTIGRAVITY`
+(the login needs no home override — it lives in the OS keyring), the node
+resume marker → `antigravity_conversation` (the org-doc load hook drops the
+old key and migrates the two old model ids to the new pins, so a
+pre-existing org's flash/pro agents run the moment the new code loads), the
+frozen manifest's google entry from an npm package to a `kind: binary` spec
+(version + the binary's sha256, resolved from the installer's location —
+`frozen_install` learned the shape), every label, hint and prose mention,
+and the D-183…D-190 records above, which now describe the Antigravity walk
+(the earlier lane's records were folded into them at the user's
+instruction; git history keeps the originals). What did NOT move, on
+purpose: the provider id `google` (the vendor axis, like `openai`), the tier
+words flash/pro (user decision, D-184), the `--prov-google` theme and the
+flash/pro chip hues (D-189), the journal store (D-187), the seat prices. The
+playbook (`docs/adding-a-provider.md`) carries the re-walk's corrections as
+`[antigravity:]` marks; the measured facts live in D-183 and the
+implementing agent's banked probe logs.

@@ -1,8 +1,8 @@
 """D-202 — where the install command lives, once the UI stops carrying it.
 
-THE RULING (user, 2026-08-30): "if codex isnt installed at all, then codex
-shouldnt appear anywhere in the ui whatsoever; it should be entirely absent.
-same with gemini."
+THE RULING (user, 2026-08-30): if codex isn't installed at all, then codex
+shouldn't appear anywhere in the UI whatsoever; it should be entirely absent
+— and the same for the other optional provider.
 
 That is mostly a frontend change (frontend/tests/provabsent.test.tsx), but it
 knocks a hole in the backend that is easy to miss: three refusals in
@@ -74,24 +74,24 @@ class Absent:
     """Every provider missing from this machine, for one check.
 
     Patches the three status readers the gate and the payload consult. Codex
-    and Gemini are dicts by contract; Claude comes through `supervisor`.
+    and Antigravity are dicts by contract; Claude comes through `supervisor`.
     """
 
     def __enter__(self):
         gone = {"installed": False, "connected": False, "path": "",
                 "source": "", "kind": None}
         self._c = providers.codex_status
-        self._g = providers.gemini_status
+        self._g = providers.antigravity_status
         self._i = sup.claude_install_state
         providers.codex_status = lambda *a, **k: dict(gone)      # type: ignore[assignment]
-        providers.gemini_status = lambda *a, **k: dict(gone)     # type: ignore[assignment]
+        providers.antigravity_status = lambda *a, **k: dict(gone)  # type: ignore[assignment]
         sup.claude_install_state = lambda force=False: {         # type: ignore[assignment]
             "installed": False, "path": "", "source": ""}
         return self
 
     def __exit__(self, *a) -> None:
         providers.codex_status = self._c                         # type: ignore[assignment]
-        providers.gemini_status = self._g                        # type: ignore[assignment]
+        providers.antigravity_status = self._g                   # type: ignore[assignment]
         sup.claude_install_state = self._i                       # type: ignore[assignment]
 
 
@@ -109,22 +109,32 @@ TIER_OF = {"openai": "sol", "google": "pro", "claude": "haiku"}
 
 def hint_names_the_package() -> None:
     assert "@openai/codex" in providers.install_hint("openai")
-    assert "@google/gemini-cli" in providers.install_hint("google")
+    assert ("Google.AntigravityCLI" in providers.install_hint("google")
+            or "antigravity.google/cli/install.sh" in providers.install_hint("google"))
     assert "@anthropic-ai/claude-code" in providers.install_hint("claude")
 
 
 def hint_installs_where_orgtree_looks() -> None:
-    """⚠ NOT `npm i -g`. Codex and Gemini install under the orgtree data dir
-    with --prefix, because that is the copy `codex_path`/`gemini_path` resolve.
-    A hint naming a global install would be a command that "works" and leaves
-    the user exactly as broken — the failure this check exists to prevent, and
-    the one the first draft of D-202 actually wrote before it was measured."""
-    for pid in ("openai", "google"):
-        h = providers.install_hint(pid)
-        assert "--prefix" in h, h
-        assert " -g " not in h, h
-        # and the prefix is THIS machine's data dir, not a hard-coded path
-        assert _TMP in h, (h, _TMP)
+    """⚠ NOT `npm i -g`. Codex installs under the orgtree data dir with
+    --prefix, because that is the copy `codex_path` resolves. A hint naming a
+    global install would be a command that "works" and leaves the user
+    exactly as broken — the failure this check exists to prevent, and the one
+    the first draft of D-202 actually wrote before it was measured."""
+    h = providers.install_hint("openai")
+    assert "--prefix" in h, h
+    assert " -g " not in h, h
+    # and the prefix is THIS machine's data dir, not a hard-coded path
+    assert _TMP in h, (h, _TMP)
+
+
+def antigravity_hint_is_its_own_installer() -> None:
+    """The Antigravity CLI is a native binary with Google's installer — there
+    is no npm package to pin, and the installer drops the binary exactly where
+    `antigravity_path` looks first. A hint naming npm would be a command that
+    cannot even run."""
+    h = providers.install_hint("google")
+    assert "npm" not in h, h
+    assert "--prefix" not in h, h
 
 
 def claude_is_global_and_that_is_correct() -> None:
@@ -137,8 +147,10 @@ def claude_is_global_and_that_is_correct() -> None:
 
 
 check("each hint names its own package", hint_names_the_package)
-check("codex/gemini install under the data dir orgtree resolves from",
+check("codex installs under the data dir orgtree resolves from",
       hint_installs_where_orgtree_looks)
+check("antigravity's hint is its own installer, never npm",
+      antigravity_hint_is_its_own_installer)
 check("claude's hint is the global install, deliberately",
       claude_is_global_and_that_is_correct)
 
@@ -186,7 +198,7 @@ def gate_refusals_carry_the_command() -> None:
 def gate_points_at_no_deleted_panel() -> None:
     """⚠ THE DEFECT D-202 INTRODUCED IF THIS IS NOT DONE. All three messages
     said "the accounts panel's <X> section has the install command". For Codex
-    and Gemini that section is now removed on precisely the machines that see
+    and Antigravity that section is now removed on precisely the machines that see
     this refusal; for Claude the section survives but never carried a command.
     A refusal must name a place that exists."""
     o = org()

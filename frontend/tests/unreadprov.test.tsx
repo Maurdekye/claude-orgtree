@@ -81,11 +81,11 @@ test('switchboard tabs: each unread count wears ITS agent\'s provider, like its 
 
 test('nav/jump chips theme by DESTINATION, not by the themed desk hosting them', async (t) => {
   // the named case: a Codex-hosted chip pointing at a Claude agent is Claude
-  // orange — plus the inverse and the Gemini variant
+  // orange — plus the inverse and the Antigravity variant
   const cases: [string, string][] = [
     ['prov-openai', 'haiku'],    // codex host → claude target
     ['prov-claude', 'sol'],      // claude host → codex target
-    ['prov-openai', 'flash'],    // codex host → gemini target
+    ['prov-openai', 'flash'],    // codex host → antigravity target
   ]
   for (const [hostProv, targetTier] of cases) {
     const target = agent('tgt-' + targetTier, targetTier, 4)
@@ -120,7 +120,7 @@ test('an agent card\'s own mail count is themed by that agent\'s provider', asyn
     const view = await mountView(
       <NodeSquare node={n} pos={{ x: 0, y: 0 }} lod="norm" focused={false}
         dragging={false} isDrop={false} seats={seats} codexHire={hire}
-        geminiHire={hire} claudeHire={hire} map={new Map([[n.id, n]])} op={op}
+        antigravityHire={hire} claudeHire={hire} map={new Map([[n.id, n]])} op={op}
         slug="org" toast={noop} pxc={1} zoom={1} compactAt={.8} pub={false}
         maxTop={0} kioskRemaining={null} cascadeAlloc onSpawn={noop}
         onSpawnSide={noop} onSpawnTop={noop} onConfig={noop} onInbox={noop}

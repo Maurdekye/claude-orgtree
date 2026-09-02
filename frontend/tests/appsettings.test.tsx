@@ -19,8 +19,8 @@ const ACCOUNTS: AccountsPayload = {
 const provider = (id: 'claude' | 'openai' | 'google', on = true,
                   installed = true): ProviderInfo => ({
   id,
-  label: id === 'openai' ? 'Codex' : id === 'google' ? 'Gemini' : 'Claude',
-  cli: id === 'openai' ? 'Codex CLI' : id === 'google' ? 'Gemini CLI'
+  label: id === 'openai' ? 'Codex' : id === 'google' ? 'Antigravity' : 'Claude',
+  cli: id === 'openai' ? 'Codex CLI' : id === 'google' ? 'Antigravity CLI'
     : 'Claude Code',
   tiers: [],
   status: { installed, connected: installed, source: 'path' },

@@ -347,21 +347,25 @@ export function AccountsPanel({ toast, close }: {
   }
   const claudeProv = providers?.find((p) => p.id === 'claude')
   const codex = providers?.find((p) => p.id === 'openai')
-  const gemini = providers?.find((p) => p.id === 'google')
+  const antigravity = providers?.find((p) => p.id === 'google')
   // D-202: the SAME verdict the hire chips use, so the accounts page and the
   // canvas cannot disagree about whether a provider exists. Undefined (the
   // payload has not arrived, or an old backend omits the entry) shows the
   // section — see `providerShown` for why unknown is optimistic.
   // Settings is the deliberate exception to provider hiding: an installed
   // provider the user switched off must stay visible here or it can never be
-  // switched back on. Truly absent Codex/Gemini remain absent (D-202).
+  // switched back on. Truly absent Codex/Antigravity remain absent (D-202).
   const codexShown = codex == null || !!codex.status.installed
     || codex.user_enabled === false
-  const geminiShown = gemini == null || !!gemini.status.installed
-    || gemini.user_enabled === false
-  const srcLabel: Record<string, string> = {
-    pin: 'private pin', env: 'ORGTREE_CODEX', path: 'on PATH',
-  }
+  const antigravityShown = antigravity == null || !!antigravity.status.installed
+    || antigravity.user_enabled === false
+  // how a CLI was found, per provider: the env override is named after the
+  // provider's own variable, and the Antigravity CLI has no npm pin — its
+  // installer's own location is the resolver's first stop
+  const srcLabelOf = (envVar: string): Record<string, string> => ({
+    pin: 'private pin', install: 'installer location', env: envVar,
+    path: 'on PATH',
+  })
 
   const run = (p: Promise<AccountsPayload>, ok: string) => {
     setBusy(true)
@@ -695,7 +699,7 @@ export function AccountsPanel({ toast, close }: {
                     ? <>
                       installed
                       {codex.status.source
-                        && <span className="dim"> ({srcLabel[codex.status.source]
+                        && <span className="dim"> ({srcLabelOf('ORGTREE_CODEX')[codex.status.source]
                           ?? codex.status.source})</span>}
                       {' — '}
                       {codex.status.connected
@@ -722,50 +726,50 @@ export function AccountsPanel({ toast, close }: {
             )}
             </div>}
 
-            {/* ── provider section: Gemini (D-189) — the same machine-level
-                install/connect surface, the CLI's own name as the label.
-                The preview tag only while hiring is actually off.
-                D-202 hides it whole when absent, exactly as Codex above. */}
-            {geminiShown && <div className="set-group">
+            {/* ── provider section: Antigravity (D-189, re-walked for the
+                Antigravity CLI) — the same machine-level install/connect
+                surface, the CLI's own name as the label. The preview tag
+                only while hiring is actually off. D-202 hides it whole when
+                absent, exactly as Codex above. */}
+            {antigravityShown && <div className="set-group">
             <div className={'set-group-head acct-provider-head prov-google'
-              + (gemini?.user_enabled === false ? ' provider-off' : '')}>
-              Gemini
-              <span className="dim"> · Gemini CLI
-                {gemini?.status.version ? ` ${gemini.status.version}` : ''}</span>
+              + (antigravity?.user_enabled === false ? ' provider-off' : '')}>
+              Antigravity
+              <span className="dim"> · Antigravity CLI
+                {antigravity?.status.version ? ` ${antigravity.status.version}` : ''}</span>
               <span className="set-head-right">
-                {gemini?.user_enabled !== false && !gemini?.hire_enabled
+                {antigravity?.user_enabled !== false && !antigravity?.hire_enabled
                   && <span className="acct-preview-tag">preview</span>}
-                <ProviderSwitch provider={gemini}
+                <ProviderSwitch provider={antigravity}
                   busy={providerBusy !== null} onChange={toggleProvider} />
               </span>
             </div>
-            {!gemini && (
+            {!antigravity && (
               <div className="dim acct-prov-note">
                 {providers ? 'provider state unavailable' : 'reading provider state…'}
               </div>
             )}
-            {gemini?.status.installed && (
+            {antigravity?.status.installed && (
               <>
                 <div className="acct-prov-note">
-                  {gemini.status.installed
+                  {antigravity.status.installed
                     ? <>
                       installed
-                      {gemini.status.source
-                        && <span className="dim"> ({srcLabel[gemini.status.source]
-                          ?? gemini.status.source})</span>}
+                      {antigravity.status.source
+                        && <span className="dim"> ({srcLabelOf('ORGTREE_ANTIGRAVITY')[antigravity.status.source]
+                          ?? antigravity.status.source})</span>}
                       {' — '}
-                      {gemini.status.connected
+                      {antigravity.status.connected
                         ? <>signed in
-                          {gemini.status.email && <> as <b>{gemini.status.email}</b></>}
-                          {gemini.status.kind === 'api-key' && <> (API key)</>}
-                          {gemini.status.kind === 'vertex' && <> (Vertex AI)</>}
+                          {antigravity.status.email && <> as <b>{antigravity.status.email}</b></>}
+                          {antigravity.status.kind === 'oauth' && <> (Google account)</>}
                         </>
                         : 'not signed in'}
                     </>
                     : 'not installed on this machine'}
                 </div>
                 <div className="acct-prov-tiers">
-                  {gemini.tiers.map((t) => (
+                  {antigravity.tiers.map((t) => (
                     <span key={t.tier} className="acct-prov-tier">
                       <span className={'tier t-' + t.tier}>{t.letter}</span>
                       {t.tier} · seat {t.seat}
@@ -773,8 +777,8 @@ export function AccountsPanel({ toast, close }: {
                     </span>
                   ))}
                 </div>
-                {gemini.reason && gemini.user_enabled !== false
-                  && <div className="dim acct-prov-note">{gemini.reason}</div>}
+                {antigravity.reason && antigravity.user_enabled !== false
+                  && <div className="dim acct-prov-note">{antigravity.reason}</div>}
               </>
             )}
             </div>}

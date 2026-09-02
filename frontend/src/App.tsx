@@ -107,7 +107,7 @@ export const patchMcpReadinessNode = (
 
 /** D-202: the usage button's tooltip named "Claude and Codex" as a literal,
  *  which is a Codex mention on a machine that has never had Codex. The bars
- *  behind it exist for exactly these two providers (Gemini has no usage
+ *  behind it exist for exactly these two providers (Antigravity has no usage
  *  route), so the label is the shown subset of them.
  *
  *  Falls back to the bare "usage limits" rather than an empty tail if neither

@@ -13,7 +13,7 @@ import {
   FullscreenIcon, PublicIcon, RemoveIcon, ViewListIcon,
 } from '../icons'
 import {
-  ago, attentionPip, CODEX_TIER_LETTER, CODEX_TIER_SEAT, CODEX_TIERS, DOG_H, DOG_W, DRAFT, ease, edgeJumpPlacement, type EJForm, EXTERN, fallbackActive, familyOffer, flatten, GEMINI_TIER_LETTER, GEMINI_TIER_SEAT, GEMINI_TIERS, hireOf, INBOX, INBOX_H, layout, NODE_H, NODE_W, orgPxc, presenceOf, reserveOffer, segD,
+  ago, attentionPip, CODEX_TIER_LETTER, CODEX_TIER_SEAT, CODEX_TIERS, DOG_H, DOG_W, DRAFT, ease, edgeJumpPlacement, type EJForm, EXTERN, fallbackActive, familyOffer, flatten, ANTIGRAVITY_TIER_LETTER, ANTIGRAVITY_TIER_SEAT, ANTIGRAVITY_TIERS, hireOf, INBOX, INBOX_H, layout, NODE_H, NODE_W, orgPxc, presenceOf, reserveOffer, segD,
   providerOf, savedView, saveView, segPoint, sizeOf, smooth, SPRING_C, SPRING_K, startView, startZoomOn, TIER_LETTER, TIER_SEAT, TIERS, useCrowdPiles, usePolled, USER, USER_H,
   USER_W, withDraftTree, Z_DESK, Z_MAX, Z_MINI,
 } from './shared'
@@ -126,7 +126,7 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
   const providerEntries = providerPayload?.providers ?? []
   const codexProvider = providerEntries.find(
     (v) => v.id === 'openai') ?? null
-  const geminiProvider = providerEntries.find(
+  const antigravityProvider = providerEntries.find(
     (v) => v.id === 'google') ?? null
   // D-199: Claude is read from the payload like the other two. It never was —
   // there was no `claudeProvider` at all, which is why a machine with only
@@ -138,19 +138,19 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
   // D-202 moved `hireOf` into shared.ts when the accounts panel and the two
   // dropdown surfaces started asking the same question.
   const codexHire = hireOf(codexProvider)
-  const geminiHire = hireOf(geminiProvider)
+  const antigravityHire = hireOf(antigravityProvider)
   const claudeHire = hireOf(claudeProvider)
   // D-202: which families exist on this machine at all, for the surfaces that
   // are not hire strips (the model-switch dropdown, the lineage rehire
   // dropdown). Same verdict the chips use — see `providerShown`.
   const presence = useMemo(() => presenceOf({
-    claude: claudeProvider, openai: codexProvider, google: geminiProvider,
-  }), [claudeProvider, codexProvider, geminiProvider])
+    claude: claudeProvider, openai: codexProvider, google: antigravityProvider,
+  }), [claudeProvider, codexProvider, antigravityProvider])
   const userDisabled = useMemo(() => ({
     claude: claudeProvider?.user_enabled === false,
     openai: codexProvider?.user_enabled === false,
-    google: geminiProvider?.user_enabled === false,
-  }), [claudeProvider, codexProvider, geminiProvider])
+    google: antigravityProvider?.user_enabled === false,
+  }), [claudeProvider, codexProvider, antigravityProvider])
   // canonical retired-stack slot (user note 2026-08-06): display-order every
   // parent's children so archived siblings sit CONTIGUOUSLY at the first
   // archived ordinal. Buried members take no layout space, so with a
@@ -1846,7 +1846,7 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
               ? Math.round(USER_H * (vp.width - 48) / (vp.height - 48))
               : Math.round(USER_H * 16 / 9)
             return <UserNode key={USER} pos={p} isDrop={dropId === USER} seats={seats}
-              codexHire={codexHire} geminiHire={geminiHire}
+              codexHire={codexHire} antigravityHire={antigravityHire}
               claudeHire={claudeHire} onNoHarness={onAccounts}
               stats={orgStats}
               kiosk={tree.kiosk} pub={!!tree.public} kioskRemaining={kioskRemaining}
@@ -1892,7 +1892,7 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
             <NodeSquare key={n.id} node={n} pos={p} lod={lod} focused={n.id === focusId}
               dragging={nodeDrag.current?.id === n.id && nodeDrag.current!.moved}
               isDrop={dropId === n.id}
-              seats={seats} codexHire={codexHire} geminiHire={geminiHire}
+              seats={seats} codexHire={codexHire} antigravityHire={antigravityHire}
               claudeHire={claudeHire} onNoHarness={onAccounts}
               map={map} op={op} slug={slug} toast={toast}
               pxc={pxPerCredit} zoom={view.z}
@@ -2155,7 +2155,7 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
                   className={'tray-row' + (n.state !== 'live' ? ' off' : '')
                     + (ghost ? ' ghost' : '')
                     + (n.tier && CODEX_TIERS.includes(n.tier) ? ' prov-openai'
-                       : n.tier && GEMINI_TIERS.includes(n.tier)
+                       : n.tier && ANTIGRAVITY_TIERS.includes(n.tier)
                          ? ' prov-google' : '')}
                   style={{ paddingLeft: 8 + depth * 14 }}
                   title={ghost
@@ -2214,7 +2214,7 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
       {configId && map.get(configId) && (
         <MaybePortal><NodeConfig node={map.get(configId)!} map={map} tree={tree} slug={slug}
           op={op} toast={toast} codexProvider={codexProvider}
-          geminiProvider={geminiProvider} presence={presence}
+          antigravityProvider={antigravityProvider} presence={presence}
           close={() => setConfigId(null)} /></MaybePortal>
       )}
       {lineageId && map.get(lineageId) && (
@@ -2318,7 +2318,7 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
       {hireOpen && sheetId && map.get(sheetId) && (
         <MaybePortal>
           <HireSheet anchor={map.get(sheetId)!} seats={seats} codexHire={codexHire}
-            geminiHire={geminiHire} claudeHire={claudeHire}
+            antigravityHire={antigravityHire} claudeHire={claudeHire}
             defaultGrant={!map.get(sheetId)!.parent ? (tree.default_top_grant ?? 50) : 0}
             onClose={() => setHireOpen(false)}
             onSettings={onAccounts ? () => {
@@ -2361,13 +2361,13 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
  *  is a full-screen form — and it carries PLACEMENT, so the F-03 side-hire
  *  and FR-25 splice semantics survive: below (report), left/right (coworker
  *  ordering), above (new superior — the anchor moves under the hire). */
-function HireSheet({ anchor, seats, codexHire, geminiHire, claudeHire, defaultGrant,
+function HireSheet({ anchor, seats, codexHire, antigravityHire, claudeHire, defaultGrant,
   onHire, onSettings,
   onClose }: {
   anchor: CanvasNode
   seats: Record<string, number>
   codexHire?: HireState | null
-  geminiHire?: HireState | null
+  antigravityHire?: HireState | null
   claudeHire?: HireState | null
   defaultGrant: number
   onHire: (tier: string, name: string, grant: number,
@@ -2383,14 +2383,14 @@ function HireSheet({ anchor, seats, codexHire, geminiHire, claudeHire, defaultGr
     { key: 'codex', label: 'Codex', tiers: CODEX_TIERS,
       letters: CODEX_TIER_LETTER, hire: codexHire,
       seatOf: (t: string) => seats[t] ?? CODEX_TIER_SEAT[t] ?? 0 },
-    { key: 'gemini', label: 'Gemini', tiers: GEMINI_TIERS,
-      letters: GEMINI_TIER_LETTER, hire: geminiHire,
-      seatOf: (t: string) => seats[t] ?? GEMINI_TIER_SEAT[t] ?? 0 },
+    { key: 'antigravity', label: 'Antigravity', tiers: ANTIGRAVITY_TIERS,
+      letters: ANTIGRAVITY_TIER_LETTER, hire: antigravityHire,
+      seatOf: (t: string) => seats[t] ?? ANTIGRAVITY_TIER_SEAT[t] ?? 0 },
   ] as const)
     .map((f) => ({ ...f, offer: familyOffer(f.hire),
                    reason: f.hire?.reason ?? 'hiring is not enabled yet' }))
     .filter((f) => f.offer !== 'hide'),
-  [claudeHire, codexHire, geminiHire, seats])
+  [claudeHire, codexHire, antigravityHire, seats])
   // ⚠ THE DEFAULT TIER IS THE FIRST OFFERABLE ONE, NOT A CONSTANT. It was the
   // literal 'sonnet', so on a machine with only Codex set up this sheet opened
   // pre-selected on a model that could not run — the same bug as the buttons,
@@ -2404,7 +2404,7 @@ function HireSheet({ anchor, seats, codexHire, geminiHire, claudeHire, defaultGr
     t === 'gpt-reserve' ? reserveOffer(f.hire) : f.offer
   const firstOfferable = famRows
     .flatMap((f) => f.tiers.filter((t) => tierOffer(f, t) === 'offer'))[0] ?? ''
-  const providersOff = [claudeHire, codexHire, geminiHire]
+  const providersOff = [claudeHire, codexHire, antigravityHire]
     .some((h) => h?.userEnabled === false)
   const [tier, setTier] = useState(firstOfferable)
   // the payload arrives after mount, so the first offerable tier can appear a

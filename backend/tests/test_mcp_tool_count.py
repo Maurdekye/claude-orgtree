@@ -844,15 +844,16 @@ class McpToolCountTests(unittest.TestCase):
             org.node(self.nid)["last_turn_mcp_tool_count"] = 2
             store.save_org(org)
         S._mcp_tool_count_begin(
-            self.slug, self.nid, owner, "gemini", "ACP",
-            "Gemini ACP does not expose runtime-loaded MCP inventory", 2)
+            self.slug, self.nid, owner, "antigravity", "print",
+            "Antigravity print mode does not expose runtime-loaded MCP "
+            "inventory", 2)
         payload = TestClient(api.app).get(f"/api/orgs/{self.slug}")
         self.assertEqual(payload.status_code, 200, payload.text[:300])
         node = payload.json()["roots"][0]
         self.assertIsNone(node["mcp_tool_count"])
         self.assertEqual(node["last_turn_mcp_tool_count"], 2)
-        self.assertEqual(node["mcp_tool_count_provider"], "gemini")
-        self.assertEqual(node["mcp_tool_count_source"], "ACP")
+        self.assertEqual(node["mcp_tool_count_provider"], "antigravity")
+        self.assertEqual(node["mcp_tool_count_source"], "print")
         self.assertIn("does not expose", node["mcp_tool_count_reason"])
         self.assertFalse(node["mcp_readiness_waiting"])
         self.assertEqual(node["mcp_readiness_state"], "initializing")

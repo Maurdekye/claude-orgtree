@@ -96,7 +96,7 @@ function gateTest(name: string,
           tree={tree()} slug="org"
           op={(x) => { ops.push(x); return Promise.resolve({} as OpResult) }}
           toast={noop} codexProvider={prov('openai', 'Codex')}
-          geminiProvider={prov('google', 'Gemini')}
+          antigravityProvider={prov('google', 'Antigravity')}
           close={noop} />,
         (el) => el,
       )
@@ -197,13 +197,13 @@ gateTest('a codex→codex switch is also one click', async (mount) => {
     { op: 'switch_model', node: 'agent', tier: 'sol' })
 })
 
-gateTest('codex→gemini asks: a crossing between two NON-claude providers',
+gateTest('codex→antigravity asks: a crossing between two NON-claude providers',
   async (mount) => {
     const m = await mount('sol')
     await m.pick('pro')
     await m.save()
     const txt = (m.dialog()?.textContent ?? '').toLowerCase()
-    assert.ok(m.dialog(), 'codex→gemini is a crossing and must ask')
-    assert.match(txt, /gemini/, 'the dialog does not name Gemini')
+    assert.ok(m.dialog(), 'codex→antigravity is a crossing and must ask')
+    assert.match(txt, /antigravity/, 'the dialog does not name Antigravity')
     assert.equal(m.ops.find((o) => o.op === 'switch_model'), undefined)
   })

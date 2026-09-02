@@ -157,16 +157,16 @@ def supported_coverage_and_schema() -> None:
     assert "claude/fallback-2* | haiku+sonnet+opus | unavailable(unsupported)" in block
     assert "codex/account | weekly_all | 39% | - |" in block
     assert "codex/account | codex_window | 8% | - |" in block
-    assert ("gemini/account | usage | unavailable(unsupported) | - | - | - | "
+    assert ("antigravity/account | usage | unavailable(unsupported) | - | - | - | "
             "unsupported") in block
     # No normalized source currently carries an authoritative absolute quota.
     # The stable amount column says so; it never derives one from a percent.
     for line in block.splitlines():
-        if line.startswith(("claude/", "codex/", "gemini/")):
+        if line.startswith(("claude/", "codex/", "antigravity/")):
             assert " | - | " in line, line
 
 
-check("stable schema covers Claude, fallbacks, Codex, and explicit Gemini unsupported",
+check("stable schema covers Claude, fallbacks, Codex, and explicit Antigravity unsupported",
       supported_coverage_and_schema)
 
 
@@ -222,7 +222,7 @@ def ordering_is_deterministic() -> None:
     positions = [a.index(x) for x in (
         "claude/primary | session", "claude/primary | weekly_all",
         "claude/primary | weekly_scoped:fable", "claude/fallback-1",
-        "claude/fallback-2", "codex/account", "gemini/account")]
+        "claude/fallback-2", "codex/account", "antigravity/account")]
     assert positions == sorted(positions), positions
 
 
@@ -249,7 +249,7 @@ def stale_unknown_and_unavailable_are_explicit() -> None:
     assert "unavailable | - | - |" in block, block
     assert "(1200s,stale) | stale" in block, block
     assert "codex/account | usage | unavailable(no-cache)" in block
-    assert "gemini/account | usage | unavailable(unsupported)" in block
+    assert "antigravity/account | usage | unavailable(unsupported)" in block
 
 
 check("unknown, stale, invalid, no-cache, and unsupported states are explicit",

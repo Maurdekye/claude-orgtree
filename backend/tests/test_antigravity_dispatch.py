@@ -1,0 +1,424 @@
+"""D-186 supervisor dispatch: an antigravity-tier node's turn runs the
+antigravity leg.
+
+    python backend/tests/test_antigravity_dispatch.py  (no pytest; asserts)
+
+Hermetic: drives `supervisor._run_one_turn` IN PROCESS against real org docs
+on disk, with the Antigravity CLI resolved (via ORGTREE_ANTIGRAVITY) to
+fakeantigravity.py — the scripted print-mode double test_antigravityrun.py
+already proves speaks the measured wire. What THIS suite proves is the seam
+on top: dispatch on tier membership, bookkeeping through `_after_turn`,
+conversation harvest + resume marker, identity via AGENTS.md, org powers
+riding the workspace plugin, the ⚙-rights hook, the queue handoff through
+the shared finally, interrupt through `interrupt_turn`, and the api hire
+gate.
+
+ORGTREE_PORT is a PORT NOBODY SERVES (test-rig hygiene, measured on the
+codex rig): this rig runs no backend, and an unset port would send a test's
+mcptool traffic to the operator's live deployment.
+
+Anti-vacuity: the signed-out plant, the wrong-model plant and the
+unknown-model plant must all be SEEN by their detectors, and the
+queue-handoff proof is a follow carrier the shared finally actually popped.
+"""
+
+import json
+import os
+import sys
+import tempfile
+import threading
+import time
+import traceback
+
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+DATA = tempfile.mkdtemp(prefix="orgtree-agydisp-")
+os.environ["ORGTREE_DATA"] = DATA
+os.environ["ORGTREE_PORT"] = "9"
+with open(os.path.join(DATA, "defaults.json"), "w", encoding="utf-8") as _f:
+    _f.write('{"net_hub_address": "http://127.0.0.1:9"}')
+
+FAKE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                    "fakeantigravity.py")
+os.environ["ORGTREE_ANTIGRAVITY"] = FAKE
+# hermetic on the codex axis too (the mirror of test_providers' new pin)
+os.environ["ORGTREE_CODEX"] = os.path.join(DATA, "nowhere", "codex.exe")
+os.environ["CODEX_HOME"] = os.path.join(DATA, "chome")
+
+
+def sign_in(yes: bool) -> None:
+    from orgtree import providers
+    if yes:
+        os.environ.pop("FAKEANTIGRAVITY_SIGNED_OUT", None)
+    else:
+        os.environ["FAKEANTIGRAVITY_SIGNED_OUT"] = "1"
+    providers._antigravity_status_cache = None   # the 60s panel cache must not lie
+
+
+sign_in(True)
+
+from orgtree import store, supervisor                              # noqa: E402
+from orgtree.ledger import USER                                    # noqa: E402
+
+PASS = 0
+FAIL: list[tuple[str, str]] = []
+
+STREAMED: list[dict] = []
+supervisor.stream = lambda slug, nid, payload: STREAMED.append(dict(payload))
+supervisor.CODEX_STEER_POLL = 0.2      # the pump must outrun the suite
+
+
+def check(label, fn):
+    global PASS
+    try:
+        fn()
+    except Exception:                                            # noqa: BLE001
+        FAIL.append((label, traceback.format_exc()))
+        print(f"  FAIL     {label}")
+        return
+    PASS += 1
+    print(f"  ok {PASS:2d}  {label}")
+
+
+def eq(got, want, what):
+    if got != want:
+        raise AssertionError(f"{what}: got {got!r}, wanted {want!r}")
+
+
+def mkorg(label: str, tier: str = "pro", **tools_over) -> tuple[str, str]:
+    org = store.create_org(f"zz agydisp {label}")
+    tools = {"bash": True, "web": False, "edit": True,
+             "subagents": False, "mcp": []}
+    tools.update(tools_over)
+    r = org.hire(USER, None, tier, 2, "ag", add_dirs=[], tools=tools,
+                 org_visibility="team",
+                 charter="an antigravity dispatch test agent")
+    nid = r["node"]
+    store.save_org(org)
+    return org.d["slug"], nid
+
+
+def run_turn(slug: str, nid: str, text: str, view: str | None = None):
+    st = supervisor.state(slug, nid)
+    with supervisor._state_lock:
+        st["busy"] = True
+    return supervisor._run_one_turn(
+        slug, nid, {"text": text, "view": text if view is None else view})
+
+
+def node_doc(slug: str, nid: str) -> dict:
+    return store.load_org(slug).d["nodes"][nid]
+
+
+def journal_lines(slug: str, sid: str) -> list[dict]:
+    p = os.path.join(supervisor.journal_store(), "projects", slug,
+                     sid + ".jsonl")
+    if not os.path.exists(p):
+        return []
+    with open(p, encoding="utf-8") as f:
+        return [json.loads(x) for x in f if x.strip()]
+
+
+def scratch_file(slug: str, nid: str, *rel: str) -> str:
+    return os.path.join(supervisor.scratch_dir(slug, nid), *rel)
+
+
+def main():
+    print("§1 dispatch + bookkeeping (the tier takes the antigravity leg)")
+    s1, n1 = mkorg("basic")
+    os.environ["FAKEANTIGRAVITY_SCENARIO"] = "text"
+
+    def t1():
+        follow = run_turn(s1, n1, "hello antigravity")
+        eq(follow, None, "no queued follow-on")
+        n = node_doc(s1, n1)
+        eq(n["session_id"], "fake-agy-conv-0001", "conversation harvested")
+        eq(n.get("antigravity_conversation"), "fake-agy-conv-0001",
+           "resume marker")
+        eq("session_unrun" in n, False, "pardon spent by the harvest")
+        # the fake's turn totals: 16690 in (uncached) / 1200 cached / 60 out
+        # at the pro row: (16690·2 + 1200·.2 + 60·12) / 1e6 = 0.03434
+        eq(round(float(n.get("cost_usd") or 0.0), 6), 0.03434, "cost booked")
+        eq(n.get("occupancy"), 8400, "occupancy = the last request's prompt")
+        eq(supervisor.state(s1, n1).get("last_error"), None, "no error")
+        deltas = "".join(p.get("text", "") for p in STREAMED
+                         if p.get("kind") == "delta")
+        eq("working… " in deltas and "done." in deltas, True,
+           f"live deltas streamed ({deltas!r})")
+    check("a pro-tier turn runs the antigravity leg and books exactly", t1)
+
+    def t1b():
+        recs = journal_lines(s1, "fake-agy-conv-0001")
+        kinds = [(r.get("type"),
+                  (r.get("message") or {}).get("content")[0].get("type")
+                  if isinstance((r.get("message") or {}).get("content"), list)
+                  and (r.get("message") or {}).get("content") else None)
+                 for r in recs]
+        eq(kinds[0][0], "user", f"first record is the user row ({kinds[0]!r})")
+        assert any(k == ("assistant", "text") for k in kinds), \
+            f"agent text journaled: {kinds}"
+        usage = [r for r in recs if (r.get("message") or {}).get("usage")]
+        assert usage, "usage record present"
+        u = usage[-1]["message"]["usage"]
+        eq((u["input_tokens"], u["cache_read_input_tokens"],
+            u["output_tokens"]), (16690, 1200, 60), "usage rec")
+    check("the journal holds user, text and usage records", t1b)
+
+    print("§2 tool events fold into the transcript vocabulary")
+    s2, n2 = mkorg("tools")
+    os.environ["FAKEANTIGRAVITY_SCENARIO"] = "toolevents"
+
+    def t2():
+        run_turn(s2, n2, "use your tool")
+        # the tool round means TWO priced requests: occupancy is the LAST
+        # one's prompt (4563 + 12175 cached), never the wire's summed input
+        eq(node_doc(s2, n2).get("occupancy"), 16738, "last-request occupancy")
+        recs = journal_lines(s2, "fake-agy-conv-0001")
+        uses = [c for r in recs
+                for c in (r.get("message") or {}).get("content") or []
+                if isinstance(c, dict) and c.get("type") == "tool_use"]
+        results = [c for r in recs
+                   for c in (r.get("message") or {}).get("content") or []
+                   if isinstance(c, dict) and c.get("type") == "tool_result"]
+        # an MCP call is journaled under the TOOL'S bare name (the form the
+        # download-card / mail-link readers match), a built-in under its own
+        eq([(u["name"], u["input"]) for u in uses],
+           [("orgtree_ping", {"message": "hi"}),
+            ("run_command", {"CommandLine": "echo HOOK-CMD"})], "tool_use fold")
+        eq([(r["content"], r["is_error"]) for r in results],
+           [("PONG:hi", False), ("HOOK-CMD\r\n", False)], "tool_result fold")
+    check("call_mcp_tool / built-in steps become tool_use/tool_result", t2)
+
+    print("§3 resume rides --conversation with org powers; a re-mint starts "
+          "fresh")
+    probe = os.path.join(DATA, "wsprobe.json")
+    os.environ["FAKEANTIGRAVITY_WSPROBE"] = probe
+    os.environ["FAKEANTIGRAVITY_SCENARIO"] = "text"
+
+    def t3():
+        run_turn(s1, n1, "second turn")
+        with open(probe, encoding="utf-8") as f:
+            ws = json.load(f)
+        argv = ws["argv"]
+        eq(argv[argv.index("--conversation") + 1], "fake-agy-conv-0001",
+           "resumed via --conversation")
+        srv = ws["mcp_config"]["mcpServers"]
+        assert "orgtree" in srv, f"orgtree server in the plugin: {srv.keys()}"
+        env = srv["orgtree"]["env"]
+        eq((env.get("ORGTREE_ORG"), env.get("ORGTREE_NODE"),
+            env.get("ORGTREE_PORT"), bool(env.get("PYTHONPATH"))),
+           (s1, n1, "9", True),
+           "per-agent identity in the server env, full set")
+        eq(argv[argv.index("--add-dir") + 1], supervisor.scratch_dir(s1, n1),
+           "the scratch is the workspace")
+        eq((argv[argv.index("--model") + 1], argv[argv.index("--effort") + 1]),
+           ("gemini-3.1-pro", "high"), "base model + effort")
+    check("a resumed turn hands the harvested conversation back and "
+          "re-attaches the org powers with per-agent identity", t3)
+
+    def t3b():
+        os.remove(probe)
+        with store.DOC_LOCK:
+            org = store.load_org(s1)
+            org.node(n1)["session_id"] = "minted-foreign-uuid"
+            org.node(n1)["session_unrun"] = True
+            store.save_org(org)
+        run_turn(s1, n1, "after a re-mint")
+        with open(probe, encoding="utf-8") as f:
+            ws = json.load(f)
+        eq("--conversation" in ws["argv"], False, "fresh conversation")
+        eq(node_doc(s1, n1)["session_id"], "fake-agy-conv-0001",
+           "harvest replaced the minted id")
+        os.environ.pop("FAKEANTIGRAVITY_WSPROBE", None)
+    check("a minted/re-minted id is never resumed — the conversation starts "
+          "fresh and the harvest takes over", t3b)
+
+    print("§4 identity + env hygiene at the leg")
+
+    def t4():
+        am = scratch_file(s1, n1, "AGENTS.md")
+        assert os.path.exists(am), "AGENTS.md written"
+        body = open(am, encoding="utf-8").read()
+        assert n1 in body, "identity names the node"
+        assert os.path.exists(scratch_file(
+            s1, n1, ".agents", "plugins", "orgtree", "plugin.json")), \
+            "the orgtree plugin marker exists"
+        assert not os.path.exists(scratch_file(s1, n1, ".agents",
+                                               "hooks.json")), \
+            "a full-rights node carries no rights hook"
+        envp = os.path.join(DATA, "envprobe.json")
+        os.environ["ANTHROPIC_API_KEY"] = "planted-anthropic"
+        os.environ["OPENAI_API_KEY"] = "planted-openai"
+        os.environ["FAKEANTIGRAVITY_ENVPROBE"] = (
+            "ANTHROPIC_API_KEY,OPENAI_API_KEY,ORGTREE_ORG,ORGTREE_NODE")
+        os.environ["FAKEANTIGRAVITY_ENVPROBE_PATH"] = envp
+        try:
+            run_turn(s1, n1, "probe the env")
+            with open(envp, encoding="utf-8") as f:
+                seen = json.load(f)
+            eq((seen["ANTHROPIC_API_KEY"], seen["OPENAI_API_KEY"]),
+               (None, None), "other providers stripped")
+            eq((seen["ORGTREE_ORG"], seen["ORGTREE_NODE"]), (s1, n1),
+               "own identity set")
+        finally:
+            for k in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY",
+                      "FAKEANTIGRAVITY_ENVPROBE",
+                      "FAKEANTIGRAVITY_ENVPROBE_PATH"):
+                os.environ.pop(k, None)
+    check("AGENTS.md carries the identity; the child env is hygienic", t4)
+
+    print("§5 the ⚙-rights seam: a narrowed node gets the hook")
+    s5r, n5r = mkorg("rights", bash=False)
+    os.environ["FAKEANTIGRAVITY_SCENARIO"] = "hookdeny"
+
+    def t5r():
+        run_turn(s5r, n5r, "try a command")
+        hooks = scratch_file(s5r, n5r, ".agents", "hooks.json")
+        assert os.path.exists(hooks), "hooks.json written for bash-off"
+        doc = json.load(open(hooks, encoding="utf-8"))
+        cmd = doc["orgtree-rights"]["PreToolUse"][0]["hooks"][0]["command"]
+        assert os.path.exists(cmd.strip('"')), f"wrapper exists: {cmd}"
+        rp = open(scratch_file(s5r, n5r, ".agents", "orgtree-rights.py"),
+                  encoding="utf-8").read()
+        assert '"run_command"' in rp and '"write_to_file"' not in rp, \
+            "only the shell class is denied for bash-off"
+        eq(supervisor.state(s5r, n5r).get("last_error"), None,
+           "a hook denial is not a failed turn")
+    check("bash-off writes the PreToolUse hook denying exactly the shell "
+          "class, and a denied call leaves the turn completed", t5r)
+
+    print("§6 the planted faults the detectors must SEE")
+    s6, n6 = mkorg("fault")
+    os.environ["FAKEANTIGRAVITY_SCENARIO"] = "text"
+
+    def t6():
+        sign_in(False)
+        try:
+            follow = run_turn(s6, n6, "doomed")
+            eq(follow, None, "no follow")
+            err = supervisor.state(s6, n6).get("last_error") or ""
+            assert "not signed in" in err, f"error names the remedy: {err!r}"
+            assert "antigravity" in err.lower(), err
+            n = node_doc(s6, n6)
+            assert "antigravity_conversation" not in n, "no turn ever started"
+        finally:
+            sign_in(True)
+    check("signed-out antigravity fails loudly, never silently", t6)
+
+    def t6b():
+        os.environ["FAKEANTIGRAVITY_SCENARIO"] = "wrongmodel"
+        try:
+            run_turn(s6, n6, "wrong model")
+            err = supervisor.state(s6, n6).get("last_error") or ""
+            assert "model pin refused" in err, \
+                f"the substituted model must be refused: {err!r}"
+        finally:
+            os.environ["FAKEANTIGRAVITY_SCENARIO"] = "text"
+    check("an init serving the wrong model fails the turn loudly", t6b)
+
+    def t6c():
+        os.environ["FAKEANTIGRAVITY_SCENARIO"] = "unknownmodel"
+        try:
+            run_turn(s6, n6, "unknown model")
+            err = supervisor.state(s6, n6).get("last_error") or ""
+            assert "invalid model selection" in err, \
+                f"the CLI's refusal must surface in its words: {err!r}"
+        finally:
+            os.environ["FAKEANTIGRAVITY_SCENARIO"] = "text"
+    check("the CLI's own refusal of an unknown model is the turn's error",
+          t6c)
+
+    print("§7 interrupt + the queue handoff through the shared finally")
+    s7, n7 = mkorg("live")
+
+    def t7():
+        os.environ["FAKEANTIGRAVITY_SCENARIO"] = "interrupt"
+        result: dict = {}
+
+        def _run():
+            result["follow"] = run_turn(s7, n7, "stall until killed")
+
+        th = threading.Thread(target=_run, daemon=True)
+        th.start()
+        st = supervisor.state(s7, n7)
+        deadline = time.time() + 10
+        while time.time() < deadline and "antigravity_turn" not in st:
+            time.sleep(0.05)
+        assert "antigravity_turn" in st, "the live turn handle appeared"
+        eq(st.get("responding"), True, "responding while live")
+        # mid-turn mail: the pump pops it, the wire refuses (no steer verb),
+        # and the text falls back to the queue for boundary delivery
+        with supervisor._state_lock:
+            st.setdefault("steer", []).append(
+                {"text": "boundary mail", "view": "boundary mail"})
+
+        def queued_boundary() -> bool:
+            return any((m.get("text") if isinstance(m, dict) else m)
+                       == "boundary mail" for m in (st.get("queue") or []))
+        deadline = time.time() + 5
+        while time.time() < deadline and not queued_boundary():
+            time.sleep(0.05)
+        assert queued_boundary(), "queued fallback"
+        r = supervisor.interrupt_turn(s7, n7)
+        eq(r.get("interrupted"), True, "interrupt accepted")
+        th.join(timeout=20)
+        assert not th.is_alive(), "the turn came back"
+        follow = result["follow"]
+        text = follow.get("text") if isinstance(follow, dict) else follow
+        eq(text, "boundary mail", "queue handoff via the shared finally")
+        eq(supervisor.state(s7, n7).get("last_error"), None,
+           "interrupted is a completed turn, not a failure")
+        # the request the CLI priced BEFORE the kill is billed: 8290 in /
+        # 1200 cached / 48 out at the pro row = 0.017396
+        cost = float(node_doc(s7, n7).get("cost_usd") or 0.0)
+        eq(round(cost, 6), 0.017396, "a killed turn books the usage it saw")
+        eq(node_doc(s7, n7).get("antigravity_conversation"),
+           "fake-agy-conv-0001", "the conversation survives the kill")
+    check("mid-turn mail falls back to the queue and the kill hands it to "
+          "the next turn, with the partial usage booked", t7)
+
+    print("§8 the connected-provider hire gate")
+    from orgtree.api import provider_hire_gate
+    from orgtree.ledger import LedgerError
+
+    def expect_refusal(fn, needle):
+        try:
+            fn()
+        except LedgerError as e:
+            assert needle in str(e), f"said {e!r}, wanted {needle!r}"
+            return
+        raise AssertionError(f"no refusal ({needle!r} expected)")
+
+    def t8():
+        org = store.load_org(s1)
+        provider_hire_gate(org, "pro")          # signed in: passes silently
+        provider_hire_gate(org, "flash")
+        provider_hire_gate(org, "fable")        # claude: never gated
+        sign_in(False)
+        try:
+            expect_refusal(lambda: provider_hire_gate(org, "flash"),
+                           "not signed in")
+        finally:
+            sign_in(True)
+        org.d["kiosk"] = {"pin": "x"}
+        expect_refusal(lambda: provider_hire_gate(org, "pro"), "kiosk")
+        org.d.pop("kiosk")
+        org.d["headless"] = True
+        # the CLI has no keyed login at all, so headless ALWAYS refuses
+        expect_refusal(lambda: provider_hire_gate(org, "pro"), "headless")
+        org.d.pop("headless")
+    check("gate: connected passes; signed-out, kiosk and headless refuse "
+          "naming the remedy (no keyed login exists on this provider)", t8)
+
+    print()
+    if FAIL:
+        print(f"{PASS} passed, {len(FAIL)} FAILED")
+        for label, tb in FAIL:
+            print(f"\n--- {label}\n{tb}")
+        sys.exit(1)
+    print(f"{PASS} checks passed")
+
+
+if __name__ == "__main__":
+    main()

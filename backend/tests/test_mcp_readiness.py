@@ -294,7 +294,7 @@ class McpReadinessTests(unittest.TestCase):
             store.load_org(self.slug), self.nid, owner, "claude", "fp",
             timeout_s=1), "ready")
 
-    def test_gemini_gap_is_explicit_and_fail_open(self) -> None:
+    def test_antigravity_gap_is_explicit_and_fail_open(self) -> None:
         appsettings.set_wait_for_mcp_tools_enabled(True)
         self._baseline(["mcp__a__one"])
         owner = object()
@@ -303,7 +303,7 @@ class McpReadinessTests(unittest.TestCase):
             store.load_org(self.slug), self.nid, owner, "google", "fp",
             timeout_s=1)
         self.assertEqual(outcome, "unsupported")
-        self.assertIn("Gemini ACP", S.state(self.slug, self.nid)
+        self.assertIn("Antigravity print mode", S.state(self.slug, self.nid)
                       ["mcp_readiness_reason"])
 
 

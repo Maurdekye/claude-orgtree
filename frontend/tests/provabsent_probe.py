@@ -2,7 +2,7 @@
 
 THE RULING (user, 2026-08-30): "if codex isnt installed at all, then codex
 shouldnt appear anywhere in the ui whatsoever; it should be entirely absent.
-same with gemini. with claude, since orgtree is built around it, do show that
+same with antigravity. with claude, since orgtree is built around it, do show that
 its not installed on the accounts page, but make it a very small piece of ui."
 
 D-199 proved the HIRE strips obey that. This probe exists because the strips
@@ -12,10 +12,10 @@ button's tooltip. Those surfaces are read here SEPARATELY, in a real browser,
 on a backend whose CLIs are genuinely absent — not mocked payloads, the same
 env-override resolution a real install uses.
 
-  SCENARIO claude-only  — Claude present and signed in; Codex and Gemini
+  SCENARIO claude-only  — Claude present and signed in; Codex and Antigravity
                           resolved to paths that do not exist. The common case
                           for a new user, and the one the ruling is about:
-                          the words "Codex" and "Gemini" must not appear in
+                          the words "Codex" and "Antigravity" must not appear in
                           ANY of the four surfaces.
   SCENARIO codex-signed-out
                         — Codex INSTALLED but not signed in. The user
@@ -26,7 +26,7 @@ env-override resolution a real install uses.
                           probe passing on a build that simply deletes Codex.
   SCENARIO bare         — nothing installed. Claude's exception is the whole
                           check: exactly one small line on the accounts page,
-                          and still no Codex or Gemini anywhere.
+                          and still no Codex or Antigravity anywhere.
 
 `--expect-fail` is the negative control. It does not assert the opposite; it
 PLANTS the pre-fix markup in the live page — a Codex accounts section and a
@@ -57,7 +57,7 @@ PORT = 7457
 BASE = f"http://127.0.0.1:{PORT}"
 
 CODEX_TIERS = ["gpt-reserve", "luna", "terra", "sol"]
-GEMINI_TIERS = ["flash", "pro"]
+ANTIGRAVITY_TIERS = ["flash", "pro"]
 
 # The pre-D-202 markup, recreated live for the control: the accounts panel's
 # Codex section and the model dropdown's Codex optgroup, both of which this
@@ -103,7 +103,7 @@ def api(method: str, path: str, body=None):
 
 
 def start_backend(tmp: str, *, claude: bool, codex: bool, codex_auth: bool,
-                  gemini: bool):
+                  antigravity: bool):
     """A throwaway install whose CLIs are present or absent to order.
 
     `codex_auth` is the axis D-202 turns on: a Codex that is INSTALLED but not
@@ -141,9 +141,9 @@ def start_backend(tmp: str, *, claude: bool, codex: bool, codex_auth: bool,
         "CODEX_HOME": codex_home,
         "ORGTREE_CODEX": (fake_codex if codex
                           else os.path.join(data, "no", "codex.exe")),
-        "ORGTREE_GEMINI": (fake_codex if gemini
+        "ORGTREE_ANTIGRAVITY": (fake_antigravity if antigravity
                            else os.path.join(data, "no", "gem.exe")),
-        "GEMINI_HOME": os.path.join(data, "ghome"),
+        "ANTIGRAVITY_HOME": os.path.join(data, "ghome"),
         "ORGTREE_CLAUDE": (fake_cli if claude
                            else os.path.join(data, "no", "claude.exe")),
         "ORGTREE_PORT": str(PORT), "ORGTREE_BRIDGE_PORT": "0",
@@ -245,9 +245,9 @@ def read_surfaces(page, *, plant: bool) -> dict:
 
 
 def scenario(tmp: str, *, claude: bool, codex: bool, codex_auth: bool,
-             gemini: bool, plant: bool) -> tuple[dict, dict]:
+             antigravity: bool, plant: bool) -> tuple[dict, dict]:
     proc, log = start_backend(tmp, claude=claude, codex=codex,
-                              codex_auth=codex_auth, gemini=gemini)
+                              codex_auth=codex_auth, antigravity=antigravity)
     try:
         pay = api("GET", "/api/providers")
         pstate = {p["id"]: p for p in pay["providers"]}
@@ -304,7 +304,7 @@ def judge_absent(out: dict, words: list[str]) -> list[str]:
     if "model dropdown" in out:
         text = " ".join(out.get("model optgroups", [])) + " " \
             + out["model dropdown"]
-        for t in CODEX_TIERS + GEMINI_TIERS:
+        for t in CODEX_TIERS + ANTIGRAVITY_TIERS:
             if mentions(text, t):
                 fail.append(f"model dropdown: offers tier {t!r}")
     return fail
@@ -352,18 +352,18 @@ def main() -> int:
     problems: list[str] = []
 
     print("=" * 70)
-    print("SCENARIO claude-only — codex and gemini genuinely not installed")
+    print("SCENARIO claude-only — codex and antigravity genuinely not installed")
     print("=" * 70)
     with tempfile.TemporaryDirectory(prefix="orgtree-d202-a-") as tmp:
         pstate, out = scenario(tmp, claude=True, codex=False, codex_auth=False,
-                               gemini=False, plant=plant)
+                               antigravity=False, plant=plant)
         for pid in ("claude", "openai", "google"):
             st = pstate[pid]["status"]
             print(f"  server: {pid:7s} installed={st.get('installed')} "
                   f"connected={st.get('connected')}")
         for label, val in out.items():
             print(f"  {label}: {val if isinstance(val, str) else val}"[:900])
-        fails = judge_absent(out, ["Codex", "Gemini"])
+        fails = judge_absent(out, ["Codex", "Antigravity"])
         fails += judge_claude_line(out, absent=False)
         problems += [f"[claude-only] {f}" for f in fails]
 
@@ -373,7 +373,7 @@ def main() -> int:
     print("=" * 70)
     with tempfile.TemporaryDirectory(prefix="orgtree-d202-b-") as tmp:
         pstate, out = scenario(tmp, claude=True, codex=True, codex_auth=False,
-                               gemini=False, plant=False)
+                               antigravity=False, plant=False)
         st = pstate["openai"]["status"]
         print(f"  server: openai installed={st.get('installed')} "
               f"connected={st.get('connected')}")
@@ -382,7 +382,7 @@ def main() -> int:
         # the user-confirmed middle state: present, greyed, with its reason
         fails = judge_present(out, "Codex")
         fails += judge_absent({"accounts panel": out["accounts panel"]},
-                              ["Gemini"])
+                              ["Antigravity"])
         problems += [f"[codex-signed-out] {f}" for f in fails]
 
     print()
@@ -391,10 +391,10 @@ def main() -> int:
     print("=" * 70)
     with tempfile.TemporaryDirectory(prefix="orgtree-d202-c-") as tmp:
         pstate, out = scenario(tmp, claude=False, codex=False,
-                               codex_auth=False, gemini=False, plant=False)
+                               codex_auth=False, antigravity=False, plant=False)
         for label, val in out.items():
             print(f"  {label}: {val if isinstance(val, str) else val}"[:900])
-        fails = judge_absent(out, ["Codex", "Gemini"])
+        fails = judge_absent(out, ["Codex", "Antigravity"])
         fails += judge_claude_line(out, absent=True)
         problems += [f"[bare] {f}" for f in fails]
 

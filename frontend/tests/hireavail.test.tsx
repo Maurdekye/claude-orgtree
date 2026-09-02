@@ -98,13 +98,13 @@ const ABSENT = state({ reason: 'not installed — npm i -g y' })
 
 const CLAUDE = ['haiku', 'sonnet', 'opus', 'fable']
 const CODEX = ['gpt-reserve', 'luna', 'terra', 'sol']
-const GEMINI = ['flash', 'pro']
+const ANTIGRAVITY = ['flash', 'pro']
 
 /** every hire token rendered, keyed by tier, with its disabled state */
 function tokens(el: HTMLElement, sel: string): Record<string, boolean> {
   const out: Record<string, boolean> = {}
   for (const b of el.querySelectorAll<HTMLButtonElement>(`${sel} button`)) {
-    const t = [...CLAUDE, ...CODEX, ...GEMINI]
+    const t = [...CLAUDE, ...CODEX, ...ANTIGRAVITY]
       .find((x) => b.className.split(/\s+/).includes('t-' + x))
     if (t) out[t] = b.disabled
   }
@@ -112,7 +112,7 @@ function tokens(el: HTMLElement, sel: string): Record<string, boolean> {
 }
 
 type Hires = { claudeHire: HireState; codexHire: HireState
-               geminiHire: HireState }
+               antigravityHire: HireState }
 
 function surfaceTest(name: string,
                      body: (mount: (h: Hires) => Promise<HTMLElement>)
@@ -146,7 +146,7 @@ function surfaceTest(name: string,
           onDragStart={noop} onDragMove={noop} onDragEnd={noop}
           onDragCancel={noop}
           claudeHire={h.claudeHire} codexHire={h.codexHire}
-          geminiHire={h.geminiHire} onNoHarness={noop} />,
+          antigravityHire={h.antigravityHire} onNoHarness={noop} />,
         (el) => el,
       )
       open.push(v)
@@ -158,13 +158,13 @@ function surfaceTest(name: string,
 surfaceTest('THE REPORT: codex set up, claude not — only codex tokens appear',
   async (mount) => {
     const el = await mount({ claudeHire: ABSENT, codexHire: ON,
-                             geminiHire: ABSENT })
+                             antigravityHire: ABSENT })
     const got = tokens(el, '.hsof')
     for (const t of CLAUDE) {
       assert.equal(got[t], undefined,
         `${t} must not render: Claude Code is not installed here`)
     }
-    for (const t of GEMINI) assert.equal(got[t], undefined)
+    for (const t of ANTIGRAVITY) assert.equal(got[t], undefined)
     for (const t of CODEX) {
       assert.equal(got[t], false, `${t} is set up and must be offered`)
     }
@@ -173,7 +173,7 @@ surfaceTest('THE REPORT: codex set up, claude not — only codex tokens appear',
 surfaceTest('gpt-reserve alone goes dark on an api-key Codex session — its '
   + 'siblings keep hiring', async (mount) => {
   const el = await mount({
-    claudeHire: ABSENT, geminiHire: ABSENT,
+    claudeHire: ABSENT, antigravityHire: ABSENT,
     codexHire: state({ enabled: true, installed: true,
                        reserveEnabled: false, reserveReason: 'api key' }),
   })
@@ -191,16 +191,16 @@ surfaceTest('gpt-reserve alone goes dark on an api-key Codex session — its '
 
 surfaceTest('the mirror: claude set up, codex not', async (mount) => {
   const el = await mount({ claudeHire: ON, codexHire: ABSENT,
-                           geminiHire: ABSENT })
+                           antigravityHire: ABSENT })
   const got = tokens(el, '.hsof')
   for (const t of CLAUDE) assert.equal(got[t], false)
-  for (const t of [...CODEX, ...GEMINI]) assert.equal(got[t], undefined)
+  for (const t of [...CODEX, ...ANTIGRAVITY]) assert.equal(got[t], undefined)
 })
 
 surfaceTest('installed but SIGNED OUT stays visible, disabled, with its reason',
   async (mount) => {
     const el = await mount({ claudeHire: ON, codexHire: SIGNED_OUT,
-                             geminiHire: ABSENT })
+                             antigravityHire: ABSENT })
     const got = tokens(el, '.hsof')
     for (const t of CODEX) {
       assert.equal(got[t], true, `${t} is installed — show it, disabled`)
@@ -209,22 +209,22 @@ surfaceTest('installed but SIGNED OUT stays visible, disabled, with its reason',
       .find((b) => b.className.split(/\s+/).includes('t-sol'))!
     assert.match(btn.title, /not signed in/,
       'a disabled family must carry the remedy, not just be dimmed')
-    for (const t of GEMINI) assert.equal(got[t], undefined)
+    for (const t of ANTIGRAVITY) assert.equal(got[t], undefined)
   })
 
 surfaceTest('EVERY STRIP AGREES — the divergence that shipped', async (mount) => {
-  // codex/gemini used to be a disabled preview on the subordinate strip and
+  // codex/antigravity used to be a disabled preview on the subordinate strip and
   // HIDDEN on the side/top strips, so one provider was visible on one edge of
   // a card and absent from another. All four strips render here.
   const el = await mount({ claudeHire: ON, codexHire: SIGNED_OUT,
-                           geminiHire: ABSENT })
+                           antigravityHire: ABSENT })
   const strips = [...el.querySelectorAll<HTMLElement>('.hsof')]
   assert.ok(strips.length >= 2, `expected several strips, saw ${strips.length}`)
   // each strip's own token map, computed from that strip alone
   const perStrip = strips.map((s) => {
     const out: Record<string, boolean> = {}
     for (const b of s.querySelectorAll<HTMLButtonElement>('button')) {
-      const t = [...CLAUDE, ...CODEX, ...GEMINI]
+      const t = [...CLAUDE, ...CODEX, ...ANTIGRAVITY]
         .find((x) => b.className.split(/\s+/).includes('t-' + x))
       if (t) out[t] = b.disabled
     }
@@ -234,8 +234,8 @@ surfaceTest('EVERY STRIP AGREES — the divergence that shipped', async (mount) 
     for (const t of CODEX) {
       assert.equal(got[t], true, 'codex is signed out — disabled on EVERY strip')
     }
-    for (const t of GEMINI) {
-      assert.equal(got[t], undefined, 'gemini is absent — hidden on EVERY strip')
+    for (const t of ANTIGRAVITY) {
+      assert.equal(got[t], undefined, 'antigravity is absent — hidden on EVERY strip')
     }
   }
 })
@@ -244,7 +244,7 @@ surfaceTest('NO HARNESS AT ALL says so, and is not an empty strip',
   async (mount) => {
     // the state a brand-new user on a fresh machine hits first
     const el = await mount({ claudeHire: ABSENT, codexHire: ABSENT,
-                             geminiHire: ABSENT })
+                             antigravityHire: ABSENT })
     assert.deepEqual(tokens(el, '.hsof'), {}, 'no tier token may render')
     const none = el.querySelector<HTMLButtonElement>('.hsof button.hs-none')
     assert.ok(none, 'an empty strip is indistinguishable from a broken one')
@@ -259,9 +259,9 @@ surfaceTest('while the payload is UNKNOWN the strip behaves as it always did',
     // that never resolves must not leave the user unable to hire anything
     const el = await mount({ claudeHire: null as unknown as HireState,
                              codexHire: null as unknown as HireState,
-                             geminiHire: null as unknown as HireState })
+                             antigravityHire: null as unknown as HireState })
     const got = tokens(el, '.hsof')
-    for (const t of [...CLAUDE, ...CODEX, ...GEMINI]) {
+    for (const t of [...CLAUDE, ...CODEX, ...ANTIGRAVITY]) {
       assert.equal(got[t], false, `${t} must stay hireable while unknown`)
     }
     assert.equal(el.querySelector('.hsof button.hs-none'), null,

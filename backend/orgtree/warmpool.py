@@ -9,7 +9,7 @@ per cold resume.
 
 This module keeps ONE parked CLI process per eligible live agent, spawned at
 boot and on hire, and hands it to `_run_one_turn` when a turn arrives. It owns
-both Claude's stream-json process and Codex's app-server process; Gemini stays
+both Claude's stream-json process and Codex's app-server process; Antigravity stays
 excluded pending its unresolved persistent-session probe. The rules are the
 user's, verbatim where it matters:
 
@@ -976,8 +976,9 @@ def eligible(org: Any, nid: str, *, ignore_exclusion: bool = False,
     """May this node hold a warm process at all? Everything outside this set
     keeps today's spawn-per-turn behaviour, which is also the universal
     fallback. The sandbox remains excluded (its spawn is a docker exec whose
-    parking is untested), as do Gemini (its persistent-session probe remains
-    unresolved) and preserving oracles (each consult is a --fork-session).
+    parking is untested), as do Antigravity (its print-mode process is one
+    turn long by construction) and preserving oracles (each consult is a
+    --fork-session).
     Codex app-server persistence is measured and shares this keeper."""
     from . import supervisor as sup                 # noqa: PLC0415
     from . import providers                         # noqa: PLC0415
@@ -989,7 +990,7 @@ def eligible(org: Any, nid: str, *, ignore_exclusion: bool = False,
     if sup.sbx.is_sandboxed(org):
         return False, "sandboxed"
     model = str(n.get("model") or "")
-    if model in providers.GEMINI_TIERS:
+    if model in providers.ANTIGRAVITY_TIERS:
         return False, "provider-lane"
     if n.get("bearer_state") == "preserving":
         return False, "preserving-oracle"
@@ -1055,7 +1056,7 @@ def _control_runtime(slug: str, nid: str) -> dict[str, Any]:
             "tasks": bool(st.get("tasks")),
             "bg_tasks": bool(st.get("bg_tasks")),
             "proc": bool(st.get("proc") or st.get("codex_turn")
-                         or st.get("gemini_turn")),
+                         or st.get("antigravity_turn")),
             "proc_live": bool(st.get("proc_live")),
             "proc_warm": bool(st.get("proc_warm")),
             "proc_relaunch": bool(st.get("proc_relaunch")),
@@ -1287,7 +1288,7 @@ def process_control(slug: str, nid: str, action: str,
                     "tasks": bool(st.get("tasks")),
                     "bg_tasks": bool(st.get("bg_tasks")),
                     "proc": bool(st.get("proc") or st.get("codex_turn")
-                                 or st.get("gemini_turn")),
+                                 or st.get("antigravity_turn")),
                     "proc_relaunch": bool(st.get("proc_relaunch")),
                     "proc_control": st.get("proc_control") is not None,
                     "claimed": False,

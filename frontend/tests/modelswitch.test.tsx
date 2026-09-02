@@ -49,7 +49,7 @@ type Mounted = { el: HTMLElement; ops: OpRequest[] }
 
 function configTest(name: string, body: (mount: (o?: {
   node?: CanvasNode; tree?: TreePayload; provider?: ProviderInfo | null
-  gemini?: ProviderInfo | null
+  antigravity?: ProviderInfo | null
 }) => Promise<Mounted>) => Promise<void> | void): void {
   test(name, async (t: TestContext) => {
     useFakeClock(); installFetch(new FakeServer())
@@ -66,11 +66,11 @@ function configTest(name: string, body: (mount: (o?: {
           tree={o.tree ?? tree()} slug="org"
           op={(x) => { ops.push(x); return Promise.resolve({} as OpResult) }}
           toast={noop} codexProvider={o.provider === undefined ? provider() : o.provider}
-          geminiProvider={o.gemini === undefined
-            ? provider({ id: 'google', label: 'Gemini', cli: 'Gemini CLI',
+          antigravityProvider={o.antigravity === undefined
+            ? provider({ id: 'google', label: 'Antigravity', cli: 'Antigravity CLI',
                          status: { installed: true, connected: true,
                                    kind: 'api-key' } })
-            : o.gemini}
+            : o.antigravity}
           close={noop} />,
         (el) => el,
       )
@@ -112,9 +112,9 @@ configTest('the switch lists every provider family with its ledger seats',
   async (mount) => {
     const { el } = await mount()
     const groups = [...el.querySelectorAll('select.model-switch optgroup')]
-    // grew to three at D-189 (gemini)
+    // grew to three at D-189 (antigravity)
     assert.deepEqual(groups.map((g) => g.getAttribute('label')),
-      ['Claude', 'Codex', 'Gemini'])
+      ['Claude', 'Codex', 'Antigravity'])
     assert.deepEqual(options(el).map((o) => [o.value, o.textContent?.trim()]), [
       ['haiku', 'haiku · seat 1'], ['sonnet', 'sonnet · seat 2'],
       ['opus', 'opus · seat 5'], ['fable', 'fable · seat 10'],
@@ -172,7 +172,7 @@ configTest('kiosk policy and seat cap disable options instead of hiding them',
     const { el } = await mount({ tree: tree({
       kiosk: { max_tier: 'sonnet' } as TreePayload['kiosk'],
     }) })
-    assert.equal(options(el).length, 10)   // 4 claude + 4 codex + 2 gemini
+    assert.equal(options(el).length, 10)   // 4 claude + 4 codex + 2 antigravity
     for (const tier of ['gpt-reserve', 'luna', 'terra', 'sol', 'flash', 'pro']) {
       assert.equal(option(el, tier).disabled, true)
       assert.match(option(el, tier).textContent ?? '', /unavailable in kiosk orgs/)

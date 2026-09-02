@@ -2,7 +2,7 @@
 //
 // The reported bug: "cant select non-claude models for knowledgebearer
 // rehire." The picker was the literal `['haiku','sonnet','opus']`, written
-// before fable, codex and gemini existed. Two separate defects came out of
+// before fable, codex and antigravity existed. Two separate defects came out of
 // that one line, and both are asserted here:
 //
 //   1. it UNDER-OFFERED its own provider — `fable` is a claude tier that
@@ -104,7 +104,7 @@ panelTest('cross-provider tiers are SHOWN and disabled, each saying why',
       assert.ok(o, `${t} must be listed, not omitted — a gap explains nothing`)
       assert.equal(o.disabled, true, `${t} must be disabled`)
       assert.match(o.textContent ?? '',
-        /transcript is a claude session — (codex|gemini) cannot resume it/)
+        /transcript is a claude session — (codex|antigravity) cannot resume it/)
     }
   })
 
@@ -122,18 +122,18 @@ panelTest('a codex bearer is offered ITS family, and claude is the disabled one'
       assert.match(option(el, t).textContent ?? '',
         /transcript is a codex session — claude cannot resume it/)
     }
-    // the direction that does not crash is the one worth naming: gemini too
+    // the direction that does not crash is the one worth naming: antigravity too
     for (const t of ['flash', 'pro']) {
       assert.equal(option(el, t).disabled, true)
     }
   })
 
-panelTest('a gemini bearer keeps flash and pro', async (mount) => {
+panelTest('a antigravity bearer keeps flash and pro', async (mount) => {
   const { el } = await mount(withBearer('pro'))
   assert.equal(option(el, 'flash').disabled, false)
   assert.equal(option(el, 'opus').disabled, true)
   assert.match(option(el, 'opus').textContent ?? '',
-    /transcript is a gemini session — claude cannot resume it/)
+    /transcript is a antigravity session — claude cannot resume it/)
 })
 
 // ------------------------------------------------------------- §3 the seats

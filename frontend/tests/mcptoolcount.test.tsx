@@ -45,9 +45,9 @@ test('realtime inventory payloads apply stepwise before any turn boundary', asyn
     <McpToolCountMark count={0} last={null} provider="claude" source="init" />
     <McpToolCountMark count={3} last={3} provider="claude" source="refresh" />
     <McpToolCountMark count={2} last={3} provider="claude" source="refresh" />
-    <McpToolCountMark count={null} last={3} provider="gemini" source="ACP"
+    <McpToolCountMark count={null} last={3} provider="antigravity" source="ACP"
       reason="runtime inventory unavailable" />
-    <McpToolCountMark count={null} last={null} provider="gemini" source="ACP"
+    <McpToolCountMark count={null} last={null} provider="antigravity" source="ACP"
       reason="runtime inventory unavailable" />
   </>, (el) => el)
   try {

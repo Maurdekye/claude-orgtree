@@ -10,7 +10,7 @@ The mechanism, which is subtler than "switch_model forgets session_id" (true, bu
 not sufficient on its own). Each lane decides "may I resume?" differently:
 
   · codex  — `session_id == codex_thread`   (an explicit marker)
-  · gemini — `session_id == gemini_session` (an explicit marker)
+  · antigravity — `session_id == antigravity_conversation` (an explicit marker)
   · claude — `transcript_path(sid) is not None`, i.e. DOES A FILE EXIST
 
 and `transcript_path` deliberately falls back to the supervisor's own journal
@@ -171,23 +171,23 @@ def main() -> int:
             o.switch_model(USER, nid, "pro")
             store.save_org(o)
         n = store.load_org(slug).node(nid)
-        assert str(n.get("session_id") or "") != str(n.get("gemini_session") or "") \
-            or n.get("session_unrun"), "gemini would resume a codex thread"
+        assert str(n.get("session_id") or "") != str(n.get("antigravity_conversation") or "") \
+            or n.get("session_unrun"), "antigravity would resume a codex thread"
         assert not n.get("codex_thread"), "the codex marker outlived its lane"
-    check("codex→gemini leaves nothing the gemini leg would resume", t3b)
+    check("codex→antigravity leaves nothing the antigravity leg would resume", t3b)
 
     def t3c():
         slug, nid = mkagent("gm2cl", "pro")
-        ran_a_turn(slug, nid, "acp-session-2222", "gemini_session")
+        ran_a_turn(slug, nid, "agy-conv-2222", "antigravity_conversation")
         with store.DOC_LOCK:
             o = store.load_org(slug)
             o.switch_model(USER, nid, "opus")
             store.save_org(o)
         assert resume_arg(slug, nid) is None, \
-            "the claude lane would resume an ACP session id"
-        assert not store.load_org(slug).node(nid).get("gemini_session"), \
-            "the gemini marker outlived its lane"
-    check("gemini→claude does not resume an ACP session id", t3c)
+            "the claude lane would resume a conversation id"
+        assert not store.load_org(slug).node(nid).get("antigravity_conversation"), \
+            "the antigravity marker outlived its lane"
+    check("antigravity→claude does not resume a conversation id", t3c)
 
     print("\n§4 the agent is TOLD, rather than failing two minutes later")
 

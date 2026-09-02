@@ -11,7 +11,7 @@ one of them:
 
   · a CLAUDE bearer  — every claude tier offered INCLUDING fable (the option
     the hard-coded ['haiku','sonnet','opus'] list never had), the five
-    codex/gemini tiers present-but-disabled with a written reason;
+    codex/antigravity tiers present-but-disabled with a written reason;
   · a CODEX bearer   — the mirror image: its own family enabled, the claude
     tiers disabled, and its seats rendering as NUMBERS (this panel's seat
     table was claude-only, so a sol bearer read "as sol · seat undefined").
@@ -45,7 +45,7 @@ BASE = f"http://127.0.0.1:{PORT}"
 
 CLAUDE = ["haiku", "sonnet", "opus", "fable"]
 CODEX = ["gpt-reserve", "luna", "terra", "sol"]
-GEMINI = ["flash", "pro"]
+ANTIGRAVITY = ["flash", "pro"]
 SEATS = {"haiku": 1, "sonnet": 2, "opus": 5, "fable": 10,
          "gpt-reserve": 1, "luna": 1, "terra": 2, "sol": 5,
          "flash": 1, "pro": 2}
@@ -84,9 +84,9 @@ def api(method: str, path: str, body=None):
 def findings(tier: str, rows: list[dict]) -> list[str]:
     """What the panel must show for a bearer that ran on `tier`."""
     fail: list[str] = []
-    fam = (CODEX if tier in CODEX else GEMINI if tier in GEMINI else CLAUDE)
+    fam = (CODEX if tier in CODEX else ANTIGRAVITY if tier in ANTIGRAVITY else CLAUDE)
     label = ("Codex" if tier in CODEX
-             else "Gemini" if tier in GEMINI else "Claude")
+             else "Antigravity" if tier in ANTIGRAVITY else "Claude")
     by = {r["value"]: r for r in rows}
 
     # ① every tier is LISTED — the omission is what read as a quirk

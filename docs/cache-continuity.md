@@ -49,7 +49,7 @@ the badge renders *those* — never `state`.
 
 Grey is not a third opinion about the cache — it is reserved for faults, and
 there are exactly four: `unsupported_capability` (the provider/lane publishes
-no readiness statistic: Gemini, and Codex API-key), `receipt_timestamp_unreadable`,
+no readiness statistic: Antigravity, and Codex API-key), `receipt_timestamp_unreadable`,
 `clock_anomaly` (a receipt stamped ahead of the backend clock), and
 `internal_error`. Every one of them must carry instance evidence naming the
 provider, the stamp, or the incident; a constant "unsupported" sentence is the
@@ -109,10 +109,10 @@ always are.
 
 Claude's startup component covers the native startup instruction manifest
 (managed and user CLAUDE files/imports, unscoped rules, and the loaded memory
-prefix). Codex and Gemini currently cover Orgtree's managed startup identity
+prefix). Codex and Antigravity currently cover Orgtree's managed startup identity
 and their normalized process/tool surfaces; provider-native global/project
 instruction discovery is not exposed authoritatively on those lanes. Their
-positive cached-input counts remain useful receipts. Gemini and Codex API-key
+positive cached-input counts remain useful receipts. Antigravity and Codex API-key
 time remain unknown; Codex subscription is the one explicit estimated lane.
 
 Positive provider usage is the only expiry-refresh evidence. For Claude,
@@ -125,7 +125,7 @@ supported value—not a TTL returned by the Codex receipt. At its boundary the
 forecast says a miss is expected, not guaranteed. A future receipt timestamp
 is clock-skew uncertainty — which D-226 renders as the named `clock_anomaly`
 diagnostic, with the two stamps and the measured skew as evidence. Codex
-API-key and Gemini have no usable TTL, which is why D-226 classes them as an
+API-key and Antigravity have no usable TTL, which is why D-226 classes them as an
 accounted `unsupported_capability` rather than leaving them silently unknown.
 `cachecontinuity.SUPPORTED_LANES` is the single source of truth for both the
 TTL table and that badge verdict, so the two cannot drift apart.

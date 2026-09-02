@@ -44,13 +44,14 @@ from .schema import (AudienceGrant, DirGrant, MailEntry, NodeDoc, NoticeEntry,
 # Sonnet was 3, then 2 (user ruling 2026-08-12: $2/M locked in). The codex
 # family (FR-15, same ruling): sol $5 standard (the current $4 is a promo
 # through ≥2026-11-21), terra $2, and gpt-reserve/luna $0.20 → floors to 1.
-# The gemini family
-# (D-188): pro $2 standard (the ≤200K band — the >200K long-context surcharge
-# is a cost-dollars concern, never a seat), flash $1.50 → floors to 1 and
-# STAYS 1 when the tier's default model moves to 3.7-flash ($0.38). Existing
-# orgs migrate in the load hook below IF they still carry the old shipped
-# default; a customised table keeps its own number. Tier names are ONE flat
-# vocabulary — a tier implies its provider (providers.py owns that axis).
+# The antigravity family (D-188, re-walked for the Antigravity CLI
+# 2026-09-02): pro $2 standard (the ≤200K band — the >200K long-context
+# surcharge is a cost-dollars concern, never a seat), flash $1.50 STANDING →
+# floors to 1 (3.8-flash's $0.75 launch price is a promo through 2026-12-31,
+# and a promo never sets a seat). Existing orgs migrate in the load hook
+# below IF they still carry the old shipped default; a customised table
+# keeps its own number. Tier names are ONE flat vocabulary — a tier implies
+# its provider (providers.py owns that axis).
 TIERS: Final[dict[str, int]] = {"fable": 10, "opus": 5, "sonnet": 2, "haiku": 1,
                                 "sol": 5, "terra": 2, "gpt-reserve": 1,
                                 "luna": 1,
@@ -83,16 +84,18 @@ MODELS: Final[dict[str, str]] = {
     "terra": "gpt-5.6-terra",
     "gpt-reserve": "gpt-reserve",
     "luna": "gpt-5.6-luna",
-    # the gemini family — ids EXACTLY as the CLI's ACP session/new registry
-    # reports them (measured, gemini-cli 0.57.0, 2026-08-29). ⚠ an id the CLI
-    # does not know is SILENTLY replaced by its default model (measured:
-    # `-m gemini-3.7-flash` served 3.5-flash with no warning), which is why
-    # geminirun asserts the served model against this pin every session.
-    # "Gemini Flash 3.7" is not on the developer API yet (404, verified) —
-    # the flash tier launches on 3.5-flash and moves via MODEL_VERSIONS the
-    # day 3.7 lands (user-approved recommendation, 2026-08-29).
-    "flash": "gemini-3.5-flash",
-    "pro": "gemini-3.1-pro-preview-customtools",
+    # the antigravity family — BASE ids exactly as `agy models` reports them
+    # (measured, Antigravity CLI 1.1.24, 2026-09-02), the effort suffix the
+    # registry shows (`gemini-3.8-flash-high`) stripped: the CLI takes the
+    # base id on `--model` and the effort on `--effort`, and REFUSES the two
+    # combined. An id the CLI does not know fails the turn loudly (rc=1, the
+    # registry listed — measured), and antigravityrun asserts the served
+    # model against this pin on every turn's init event as a belt. The flash
+    # tier pins 3.8 by user instruction (2026-09-02: "make sure you update
+    # the models too so that we can use flash 3.8"); 3.7 and 3.6 stay
+    # reachable as model VERSIONS below.
+    "flash": "gemini-3.8-flash",
+    "pro": "gemini-3.1-pro",
 }
 
 # A TIER is a price band — four of them, four chips. A model VERSION is a
@@ -115,6 +118,10 @@ MODEL_VERSIONS: Final[dict[str, dict[str, str]]] = {
     # same reason Opus 4.8 does — a version is a subcategory inside the band,
     # never a chip, and never a different price.
     "fable": {"5.1": clipin.FABLE_5_1, "5": clipin.FABLE_5},
+    # the flash tier's three registry generations (Antigravity CLI 1.1.24,
+    # measured 2026-09-02) — one price row, one seat, three `--model` ids.
+    "flash": {"3.8": "gemini-3.8-flash", "3.7": "gemini-3.7-flash",
+              "3.6": "gemini-3.6-flash"},
 }
 
 # Actors are one of three KINDS — user, system, agent — not one string namespace.
@@ -552,6 +559,24 @@ class Org:
         _m = cast("dict[str, Any]", _doc.get("models") or {})
         if _m.get("fable") == clipin.FABLE_5:
             _m["fable"] = clipin.FABLE_5_1
+        # ☞ the flash/pro rows moved with the provider lane (2026-09-02: the
+        # Antigravity CLI replaced the previous Google lane, and the ids its
+        # registry knows are not the ones the old lane pinned). Same rule:
+        # only the OLD SHIPPED DEFAULTS migrate — an operator's own pin stays.
+        # An org left on the old id would fail every flash/pro turn loudly
+        # ("invalid model selection"), so this is what keeps a pre-existing
+        # org's flash agents runnable the moment the new code loads.
+        if _m.get("flash") == "gemini-3.5-flash":
+            _m["flash"] = MODELS["flash"]
+        if _m.get("pro") == "gemini-3.1-pro-preview-customtools":
+            _m["pro"] = MODELS["pro"]
+        # …and the previous lane's resume marker is dead: no lane can resume
+        # what it recorded, and `session_id` equal to it would otherwise be
+        # taken for a live handle by nothing — dropped so the doc carries no
+        # stale marker (the antigravity leg only ever resumes a conversation
+        # id it harvested ITSELF, under its own marker).
+        for _n in self.nodes.values():
+            _n.pop("gemini_session", None)
         # pre-№41 spend freezes wrote the usage-limit keys (error, until=None);
         # re-tag them so clear_hard_freeze("spend") actually clears them
         # instead of leaving a stale-reason freeze the API reports as cleared
@@ -3006,7 +3031,7 @@ class Org:
         # thread, so `_build_cmd` takes the resume branch and hands the Claude
         # CLI a `--resume <threadId>` it never issued. Crossing AWAY from
         # claude does not fail at all: the provider legs resume only when
-        # `session_id` equals the harvested `codex_thread`/`gemini_session`,
+        # `session_id` equals the harvested `codex_thread`/`antigravity_conversation`,
         # a claude id never does, so the leg quietly starts a FRESH thread —
         # an empty session wakes wearing the bearer's name and presents as
         # institutional memory. Someone consults it, gets fluent answers drawn
@@ -3024,7 +3049,7 @@ class Org:
             was = providers.provider_of(n["model"])
             if was != providers.provider_of(tier):
                 # the LABELS, not the ids: this is read by a person, and the
-                # panel calls them Claude/Codex/Gemini (user ruling 2026-08-28)
+                # panel calls them Claude/Codex/Antigravity (user ruling 2026-08-28)
                 wl, nl = (providers.provider_label(n["model"]),
                           providers.provider_label(tier))
                 raise LedgerError(
@@ -3388,7 +3413,7 @@ class Org:
             n["grant"] -= cast(int, own)   # holding grows by exactly the shortfall
         # D-196: a switch that CROSSES PROVIDERS cannot keep the session, and
         # must not pretend to. `session_id` holds a provider-owned handle — a
-        # codex threadId, a gemini ACP sessionId, a Claude session uuid — and
+        # codex threadId, an antigravity conversation id, a Claude session uuid — and
         # no provider can resume another's. Left in place it is not merely
         # useless but ACTIVELY FATAL: the claude lane decides "may I resume?"
         # by asking whether a transcript file exists, and `transcript_path`
@@ -3408,11 +3433,11 @@ class Org:
         crossed = providers.provider_of(old) != providers.provider_of(tier)
         if crossed:
             # a MINTED id no lane will resume: the claude lane starts it with
-            # --session-id, and codex/gemini both fail their marker equality
+            # --session-id, and codex/antigravity both fail their marker equality
             n["session_id"] = str(uuid.uuid4())
             n["session_unrun"] = True          # the never-run pardon, re-armed
             n.pop("codex_thread", None)        # lane markers die with the lane
-            n.pop("gemini_session", None)
+            n.pop("antigravity_conversation", None)
             # the ACTOR is told at switch time, not left to discover it on the
             # next message — that is the whole point of moving this failure
             # forward. Whether the UI should REFUSE such a switch rather than

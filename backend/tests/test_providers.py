@@ -33,12 +33,10 @@ os.makedirs(os.environ["ORGTREE_DATA"], exist_ok=True)
 with open(os.path.join(os.environ["ORGTREE_DATA"], "defaults.json"), "w",
           encoding="utf-8") as _f:
     _f.write('{"net_hub_address": "http://127.0.0.1:9"}')
-# hermetic on the gemini axis too: providers_payload probes EVERY provider,
-# so an unpinned rig would read the operator's real ~/.gemini (D-184)
-os.environ["ORGTREE_GEMINI"] = os.path.join(
-    os.environ["ORGTREE_DATA"], "nowhere", "gemini.js")
-os.environ["ORGTREE_GEMINI_HOME"] = os.path.join(
-    os.environ["ORGTREE_DATA"], "ghome")
+# hermetic on the antigravity axis too: providers_payload probes EVERY
+# provider, so an unpinned rig would spawn the operator's real CLI (D-184)
+os.environ["ORGTREE_ANTIGRAVITY"] = os.path.join(
+    os.environ["ORGTREE_DATA"], "nowhere", "agy.exe")
 
 from orgtree import codex_limits, codex_models, providers          # noqa: E402
 from orgtree.ledger import (LedgerError, MODELS, Org, TIERS,       # noqa: E402
@@ -92,7 +90,7 @@ def main():
                      [(t, TIERS[t], MODELS[t])
                       for t in sorted(TIERS, key=lambda k: TIERS[k])
                       if t not in providers.CODEX_TIERS
-                      and t not in providers.GEMINI_TIERS],
+                      and t not in providers.ANTIGRAVITY_TIERS],
                      "claude family"))
     check("codex family is gpt-reserve 1 · luna 1 · terra 2 · sol 5",
           lambda: eq([(t["tier"], t["seat"], t["model"])
@@ -127,7 +125,7 @@ def main():
                    eq((org.d["nodes"][canary]["model"],
                        org.seat_cost(canary)), ("terra", 2), "switch"))[1])
     check("a truly unknown tier is still refused",
-          lambda: raises(lambda: org.hire(USER, top, "gemini-ultra", 0, "x"),
+          lambda: raises(lambda: org.hire(USER, top, "bard-ultra", 0, "x"),
                          "unknown tier", "unknown"))
 
     print("§3 detection — hermetic, against files this suite writes")
@@ -278,8 +276,9 @@ def main():
 
     print("§4 the payload the panel renders")
     pay = providers.providers_payload({"installed": True, "connected": True})
-    # grew to three at D-184 (gemini) — the gemini entry's own behaviour is
-    # test_gemini_providers.py's; here it only has to hold its place in line
+    # grew to three at D-184 — the antigravity entry's own behaviour is
+    # test_antigravity_providers.py's; here it only has to hold its place in
+    # line
     check("exactly three providers, claude first",
           lambda: eq([p["id"] for p in pay["providers"]],
                      ["claude", "openai", "google"], "order"))

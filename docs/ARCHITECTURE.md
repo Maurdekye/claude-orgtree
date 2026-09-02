@@ -86,10 +86,10 @@ ledger, supervisor, the gateways, or the canvas.
   shape.
 - **The steer store dies with the turn (D-229, INV-017).** `send_message`
   appends to `st["steer"]` whenever `responding` is True; only a turn's own
-  collector (the claude hook, the codex/gemini pump) ever pops it. So EVERY
+  collector (the claude hook, the codex/antigravity pump) ever pops it. So EVERY
   site that flips `responding=False` MUST fold the leftover store onto the
   BACK of `st["queue"]` in that same `_state_lock` take, through
-  `_fold_steer` — the codex and gemini legs at the top of their `finally`,
+  `_fold_steer` — the codex and antigravity legs at the top of their `finally`,
   after the pump is joined and before any teardown call that can raise; the
   claude lane at its result boundary, its phantom-drop and stdin-closed
   recoveries and its turn exit — and `_run_one_turn`'s `finally` does it

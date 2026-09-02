@@ -13,7 +13,7 @@ The user's invariant, not this module's convenience. Restated:
   * there is NO catch-all fallthrough — an unclassified condition is itself a
     named `internal_error` state, and it is logged;
   * GREEN requires affirmative evidence; a provider hit is never fabricated;
-  * a lane that publishes no readiness statistic (Gemini, Codex API-key) is an
+  * a lane that publishes no readiness statistic (Antigravity, Codex API-key) is an
     accounted capability diagnostic, never a silent unknown.
 
 ⚠ AN INVARIANT OUTRANKS A DECISION (user ruling 2026-09-02). D-226 exists to
@@ -282,7 +282,7 @@ def an_unobserved_lane_is_red_not_a_capability_claim() -> None:
     assert "resolve on its own" in row["readiness_detail"]
 
 
-check("Gemini and Codex API-key lanes are accounted capability diagnostics",
+check("Antigravity and Codex API-key lanes are accounted capability diagnostics",
       unsupported_lanes_are_accounted_diagnostics)
 check("a known incompatibility outranks the capability diagnostic",
       capability_never_outranks_a_known_incompatibility)
@@ -330,7 +330,7 @@ def every_reachable_cause_is_exercised() -> None:
     prior = book(receipt_at=NOW - 60)
     unreadable = book(receipt_at=NOW - 60)
     unreadable["receipt"]["observed_at"] = "not-a-timestamp"
-    gemini = {"provider": "google", "lane": "subscription", "account": "a",
+    antigravity = {"provider": "google", "lane": "subscription", "account": "a",
               "model": "m"}
     blank = {"provider": "", "lane": ""}
     rewritten = snapshot()
@@ -343,7 +343,7 @@ def every_reachable_cause_is_exercised() -> None:
         (rewritten, prior, NOW),                                  # changed
         (snapshot(last_turn_history_relation="unobserved"), prior, NOW),
         (snapshot(receipt_history_relation="unobserved"), prior, NOW),
-        (snapshot(**gemini), book(receipt_at=NOW - 60, **gemini), NOW),
+        (snapshot(**antigravity), book(receipt_at=NOW - 60, **antigravity), NOW),
         (snapshot(**blank), book(receipt_at=NOW - 60, **blank), NOW),
         (snapshot(), book(receipt_at=NOW + 300), NOW),            # clock
         (snapshot(), unreadable, NOW),                            # unreadable

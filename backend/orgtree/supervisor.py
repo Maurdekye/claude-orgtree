@@ -217,8 +217,8 @@ TIER_CONTEXT: dict[str, int] = {"haiku": 200_000, "sonnet": 1_000_000,
 # (providers.CODEX_CONTEXT).  It is added before the env override so the
 # user's ORGTREE_CONTEXT_WINDOWS still wins for these tiers too.
 TIER_CONTEXT.update({t: providers.CODEX_CONTEXT for t in providers.CODEX_TIERS})
-TIER_CONTEXT.update({t: providers.GEMINI_CONTEXT
-                     for t in providers.GEMINI_TIERS})
+TIER_CONTEXT.update({t: providers.ANTIGRAVITY_CONTEXT
+                     for t in providers.ANTIGRAVITY_TIERS})
 try:
     TIER_CONTEXT.update(json.loads(os.environ.get("ORGTREE_CONTEXT_WINDOWS") or "{}"))
 except (json.JSONDecodeError, TypeError):
@@ -270,7 +270,7 @@ def claude_install_state(force: bool = False) -> dict[str, Any]:
     `providers_payload` hard-coded `installed: True` and `hire_enabled: True`
     for it, so on a machine with only Codex set up the hire chips still offered
     all four Claude tiers as live buttons and the server accepted the hire,
-    which then failed at spawn. Codex and Gemini had honest detection from the
+    which then failed at spawn. Codex and Antigravity had honest detection from the
     day they were added; this is Claude catching up to its own axis.
 
     RE-PROBED behind a 60s cache rather than read off the module-level `CLAUDE`
@@ -1584,14 +1584,14 @@ def _mcp_infrastructure_fingerprint(org: Org, nid: str) -> str | None:
         from . import codexrun                         # noqa: PLC0415
         chosen, _ = codexrun.deliverable_mcp(chosen)
     elif provider == "google":
-        from . import geminirun                        # noqa: PLC0415
-        chosen, _ = geminirun.deliverable_mcp(chosen)
+        from . import antigravityrun                   # noqa: PLC0415
+        chosen, _ = antigravityrun.deliverable_mcp(chosen)
     elif sbx.is_sandboxed(org):
         chosen = sandbox_mcp_passthrough(sorted(chosen), registry)
     from . import mcptool                              # noqa: PLC0415
     # Codex receives Orgtree powers as dynamic functions, not through MCP;
     # they are deliberately excluded from both the runtime MCP count and its
-    # infrastructure generation. Claude/Gemini launch Orgtree as an MCP
+    # infrastructure generation. Claude/Antigravity launch Orgtree as an MCP
     # server, so its callable catalogue is part of their surface.
     builtin = ([] if provider == "openai" else
                sorted(str(tool.get("name") or "")
@@ -1653,8 +1653,9 @@ def _mcp_wait_for_surface(
     if provider == "google":
         _mcp_readiness_set(
             slug, nid, owner, waiting=False, state_name="unsupported",
-            reason=("Gemini ACP does not expose an authoritative runtime MCP "
-                    "tool list; this turn proceeds without waiting"))
+            reason=("Antigravity print mode does not expose an authoritative "
+                    "runtime MCP tool list; this turn proceeds without "
+                    "waiting"))
         return "unsupported"
     if fingerprint is None:
         _mcp_readiness_set(
@@ -3598,14 +3599,14 @@ def codex_mcp_grant(org: Org, nid: str) -> tuple[dict[str, Any], list[str]]:
     return codexrun.deliverable_mcp(granted_mcp_servers(org, nid))
 
 
-def gemini_mcp_grant(org: Org, nid: str) -> tuple[dict[str, Any], list[str]]:
-    """(external MCP servers a GEMINI node actually receives, granted names
-    its lane cannot attach). The same D-180/D-182 discipline as
+def antigravity_mcp_grant(org: Org, nid: str) -> tuple[dict[str, Any], list[str]]:
+    """(external MCP servers an ANTIGRAVITY node actually receives, granted
+    names its lane cannot attach). The same D-180/D-182 discipline as
     `codex_mcp_grant`: the grant comes from `granted_mcp_servers` — the ONE
     implementation — and this lane's expressibility filter may only NARROW
     it, returning what it narrowed away so the prompt can say so."""
-    from . import geminirun           # noqa: PLC0415 — gemini lane only
-    return geminirun.deliverable_mcp(granted_mcp_servers(org, nid))
+    from . import antigravityrun      # noqa: PLC0415 — antigravity lane only
+    return antigravityrun.deliverable_mcp(granted_mcp_servers(org, nid))
 
 
 # ------------------------------------------------------------------ identity
@@ -4281,20 +4282,21 @@ def identity_prompt(org: Org, nid: str, include_archived: bool = False) -> str:
                           f"provider (the server definition is not expressible "
                           f"in codex config) — do not plan around "
                           f"{'it' if len(codex_undeliverable) == 1 else 'them'}. ")
-    if str(n.get("model") or "") in providers.GEMINI_TIERS:
-        # the same discipline one lane over (D-186): the gemini leg attaches
-        # granted servers through ACP session/new's mcpServers param, which
-        # expresses command- and url-shaped registry entries only. Promise
-        # exactly what the lane delivers, and name what it cannot.
-        gem_ok, gem_undeliverable = gemini_mcp_grant(org, nid)
-        mcp_names = sorted(gem_ok)
-        if gem_undeliverable:
-            tool_line += (f"Note: {', '.join(gem_undeliverable)} "
-                          f"{'is' if len(gem_undeliverable) == 1 else 'are'} "
+    if str(n.get("model") or "") in providers.ANTIGRAVITY_TIERS:
+        # the same discipline one lane over (D-186): the antigravity leg
+        # attaches granted servers through the workspace plugin's
+        # mcp_config.json, which expresses command- and url-shaped registry
+        # entries only. Promise exactly what the lane delivers, and name
+        # what it cannot.
+        agy_ok, agy_undeliverable = antigravity_mcp_grant(org, nid)
+        mcp_names = sorted(agy_ok)
+        if agy_undeliverable:
+            tool_line += (f"Note: {', '.join(agy_undeliverable)} "
+                          f"{'is' if len(agy_undeliverable) == 1 else 'are'} "
                           f"in your grant but cannot be attached on the "
-                          f"Gemini provider (the server definition has no "
-                          f"command or url) — do not plan around "
-                          f"{'it' if len(gem_undeliverable) == 1 else 'them'}. ")
+                          f"Antigravity provider (the server definition has "
+                          f"no command or url) — do not plan around "
+                          f"{'it' if len(agy_undeliverable) == 1 else 'them'}. ")
     if mcp_names:
         tool_line += (f"MCP servers available to you: {', '.join(mcp_names)} "
                       f"(their tools are named mcp__<server>__<tool> — under "
@@ -5745,11 +5747,11 @@ def _foreign_session_provider(n: NodeDoc) -> str | None:
 
     Read off the harvested resume markers rather than off the tier, and that
     distinction is the whole point: the tier says which lane will RUN the node
-    next, while `codex_thread`/`gemini_session` say which lane actually WROTE
+    next, while `codex_thread`/`antigravity_conversation` say which lane actually WROTE
     the session it is carrying. They agree until something moves a node across
     the axis, and disagreeing is exactly the state worth refusing.
 
-    The equality is the same one `_codex_leg`/`_gemini_leg` resume on, so this
+    The equality is the same one `_codex_leg`/`_antigravity_leg` resume on, so this
     cannot drift from what those legs consider a live thread: a re-mint (a
     fresh hire, a compaction, a re-seed) breaks it there and here together, and
     a broken equality means the marker is stale — the node is claude-native
@@ -5760,7 +5762,7 @@ def _foreign_session_provider(n: NodeDoc) -> str | None:
         return None
     if sid == str(n.get("codex_thread") or ""):
         return "openai"
-    if sid == str(n.get("gemini_session") or ""):
+    if sid == str(n.get("antigravity_conversation") or ""):
         return "google"
     return None
 
@@ -5895,15 +5897,19 @@ def _cache_semantic_inputs(org: Org, nid: str, provider: str) -> tuple[str, str]
                 "mcp": spec.get("config_overrides") or [],
                 "exe": spec.get("exe") or ""}
         return cachecontinuity.digest(tools), cachecontinuity.digest(argv)
-    chosen, unavailable = gemini_mcp_grant(org, nid)
-    tools = {"grant": scope.get("tools") or {}, "mcp": chosen,
-             "unavailable": unavailable,
-             "approval": ("yolo" if (scope.get("tools") or {}).get("edit", True)
-                            and (scope.get("tools") or {}).get("bash", True)
-                            else "default")}
-    status = providers.gemini_status()
+    chosen, unavailable = antigravity_mcp_grant(org, nid)
+    _t = scope.get("tools") or {}
+    # the ⚙-rights seam on this lane is a PreToolUse hook written per spawn,
+    # so the rights ARE the tool surface the CLI sees
+    tools = {"grant": _t, "mcp": chosen, "unavailable": unavailable,
+             "rights": {"bash": bool(_t.get("bash", True)),
+                        "edit": bool(_t.get("edit", True))}}
+    status = providers.antigravity_status()
     argv = {"exe": status.get("path") or "", "mcp": chosen,
-            "model": org.model_for(nid)}
+            "model": org.model_for(nid),
+            "effort": providers.antigravity_effort(
+                str(org.node(nid).get("model") or ""),
+                org.effective_effort(nid))}
     return cachecontinuity.digest(tools), cachecontinuity.digest(argv)
 
 
@@ -6012,21 +6018,21 @@ def _cache_codex_account_namespace() -> tuple[str, str]:
     return "codex-account-unobserved", "unobserved"
 
 
-def _cache_gemini_account_namespace() -> str:
-    """Best locally observable Gemini account/auth namespace.
+def _cache_antigravity_account_namespace() -> str:
+    """Best locally observable Antigravity account/auth namespace.
 
-    OAuth exposes the selected account name in Gemini's own account record.
-    API-key and Vertex credentials live outside that file surface, so their
-    auth kind is known but the account remains explicitly unobserved.
+    The CLI's only login is a Google account (OAuth, OS keyring); its own
+    connect probe names the account it authenticated as, and that display
+    identity is the namespace. A connected CLI whose probe named no account
+    is a known auth kind with the account explicitly unobserved.
     """
-    status = providers._gemini_account()  # pyright: ignore[reportPrivateUsage]
-    kind = str(status.get("kind") or "")
+    status = providers.antigravity_status()
     email = status.get("email")
     if isinstance(email, str) and email:
-        return "gemini-" + (kind or "account") + ":" + \
+        return "antigravity-oauth:" + \
             cachecontinuity.digest({"account": email}, 16)
-    if kind:
-        return f"gemini-{kind}-account-unobserved"
+    if status.get("connected"):
+        return "antigravity-oauth-account-unobserved"
     return "unobserved"
 
 
@@ -6076,7 +6082,7 @@ def _cache_snapshot(org: Org, nid: str, *, now: float | None = None,
         account = account or resolved_account
         lane = lane or resolved_lane
     else:
-        account = account or _cache_gemini_account_namespace()
+        account = account or _cache_antigravity_account_namespace()
         lane = lane or "provider_unsupported"
     system = cachecontinuity.digest(identity_prompt(org, nid))
     tools_digest, argv_digest = _cache_semantic_inputs(org, nid, provider)
@@ -6703,7 +6709,7 @@ def _note_working_activity(slug: str, nid: str,
 def _working_cache_interval(org: Org, nid: str) -> tuple[float, bool] | None:
     """Return (cadence, billed_key) for a Claude keepalive, else None.
 
-    Provider selection is positive. Codex and Gemini own different CLIs and
+    Provider selection is positive. Codex and Antigravity own different CLIs and
     cache contracts, so they receive neither a synthetic Claude request nor a
     made-up TTL. `bills_the_key` is the real-turn billing resolver, including
     sandbox auth and active fallback windows.
@@ -7469,8 +7475,8 @@ class _CodexTurnDone(Exception):
     already fixed, stranding it (see the caller's comment at `_run_turn`)."""
 
 
-class _GeminiTurnDone(Exception):
-    """The gemini leg's control-flow twin of `_CodexTurnDone` — same
+class _AntigravityTurnDone(Exception):
+    """The antigravity leg's control-flow twin of `_CodexTurnDone` — same
     contract, same reasons, its own type so each leg's except arm stays
     exact."""
 
@@ -7478,7 +7484,7 @@ class _GeminiTurnDone(Exception):
 class _ProviderTurnFailed(RuntimeError):
     """A NON-claude leg's turn failed and the provider said why (D-209).
 
-    A plain `RuntimeError` from `_codex_leg`/`_gemini_leg` lands in
+    A plain `RuntimeError` from `_codex_leg`/`_antigravity_leg` lands in
     `_run_one_turn`'s general `except`, which writes `last_error` and a
     `turn_error_log` row and stops. That is the whole of what those lanes ever
     did with a failure — there is no freeze, no reset time and no auto-resume
@@ -7637,23 +7643,21 @@ def _codex_image_inputs(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
-def _gemini_image_inputs(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Validated inline image blocks → ACP ContentBlock::Image. `imgblock`
-    already decoded, size-limited and MIME-checked these bytes; ACP takes the
-    base64 data and mime type directly (promptCapabilities.image measured
-    true). Malformed blocks are skipped defensively; their attachment line
-    stays in the text, so a file is never silently hidden from the agent."""
-    out: list[dict[str, Any]] = []
-    for block in blocks:
-        source = (block.get("source")
-                  if isinstance(block.get("source"), dict) else {})
-        media = source.get("media_type")
-        data = source.get("data")
-        if (block.get("type") == "image" and source.get("type") == "base64"
-                and isinstance(media, str) and media.startswith("image/")
-                and isinstance(data, str) and data):
-            out.append({"type": "image", "data": data, "mimeType": media})
-    return out
+def _antigravity_image_note(blocks: list[dict[str, Any]]) -> str:
+    """What the antigravity lane says about images it cannot inline. Print
+    mode's stdin takes TEXT content blocks only (measured: any other block
+    type is refused), so the validated inline blocks the mail builder made
+    are not deliverable here — and D-180 says so out loud instead of
+    dropping them silently. The files already sit in the agent's working
+    folder (the ATTACHED FILE lines above name them) and the CLI's own
+    view_file renders an image (measured), so the note says exactly that."""
+    n = sum(1 for b in blocks if str(b.get("type") or "") == "image")
+    if not n:
+        return ""
+    return (f"\n\n[orgtree: the {n} image attachment"
+            f"{'s' if n != 1 else ''} above could not be inlined on this "
+            "provider — each is a file in your working folder; open it "
+            "with view_file to see it.]")
 
 
 def _codex_process_spec(org: Org, nid: str, *,
@@ -8538,108 +8542,96 @@ def _codex_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
     return res, providers.codex_occupancy(tu)
 
 
-def _gemini_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
-                text: str, toks: list[str],
-                images: list[dict[str, Any]] | None = None,
-                turn_view: str = ""
-                ) -> tuple[dict[str, Any], int]:
-    """One gemini turn behind the provider seam (D-186) — the `_codex_leg`
-    contract exactly: runs inside `_run_one_turn`'s try after the
-    provider-neutral prologue, returns `(res, occ)` as `_after_turn`
-    consumes them, raises RuntimeError with a written message on every
-    terminal failure.
+def _antigravity_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
+                     text: str, toks: list[str],
+                     images: list[dict[str, Any]] | None = None,
+                     turn_view: str = ""
+                     ) -> tuple[dict[str, Any], int]:
+    """One antigravity turn behind the provider seam (D-186, re-walked for
+    the Antigravity CLI) — the `_codex_leg` contract exactly: runs inside
+    `_run_one_turn`'s try after the provider-neutral prologue, returns
+    `(res, occ)` as `_after_turn` consumes them, raises RuntimeError with a
+    written message on every terminal failure.
 
-    The turn is `geminirun.GeminiTurn`: one `gemini --acp` process, session
-    loaded by the node's session id (the ACP sessionId — harvested from
-    `session/new`, never minted). Org powers attach as MCP SERVERS on the
-    session verbs — the same `python -m orgtree.mcptool` stdio server the
+    The turn is `antigravityrun.AntigravityTurn`: one `agy` print-mode
+    process, the conversation resumed by the node's session id (the CLI's
+    own conversation id — harvested from the init event, never minted).
+    Org powers ride the orgtree WORKSPACE PLUGIN this leg regenerates in
+    the scratch cwd — the same `python -m orgtree.mcptool` stdio server the
     claude lane spawns, so the ledger enforces authority identically and
-    per-agent identity is the env the spec names. Identity rides GEMINI.md
-    in the scratch cwd (re-read on load too — measured), regenerated per
-    spawn like the other lanes' doors. There is NO steer verb on this wire:
-    the pump wraps mid-turn mail in the standard envelope, the turn refuses,
-    and the texts fall back to the queue — the boundary-delivery semantics
-    mail already has.
+    per-agent identity is the env the spec names. Identity rides AGENTS.md
+    in the scratch cwd (a directory rule the CLI injects verbatim —
+    measured), regenerated per spawn like the other lanes' doors, and a
+    narrowed ⚙ scope rides a PreToolUse hook beside it. There is NO steer
+    verb on this wire: the pump wraps mid-turn mail in the standard
+    envelope, the turn refuses, and the texts fall back to the queue — the
+    boundary-delivery semantics mail already has.
     """
-    from . import geminirun             # noqa: PLC0415 — gemini lane only
+    from . import antigravityrun        # noqa: PLC0415 — antigravity lane only
 
     n = org.node(nid)
     tier = str(n.get("model") or "")
-    gstat = providers.gemini_status()
-    exe = str(gstat.get("path") or "")
-    if not (gstat.get("installed") and exe):
+    astat = providers.antigravity_status()
+    exe = str(astat.get("path") or "")
+    if not (astat.get("installed") and exe):
         raise RuntimeError(
-            "turn failed: the Gemini CLI is not installed — the accounts "
-            "panel's Gemini section shows the install command")
-    if not gstat.get("connected"):
+            "turn failed: the Antigravity CLI is not installed — "
+            f"{providers.install_hint('google')}")
+    if not astat.get("connected"):
         raise RuntimeError(
-            "turn failed: gemini is not signed in on this machine — run "
-            "`gemini` once and pick a login method (accounts panel → Gemini)")
+            "turn failed: Antigravity is not signed in on this machine — run "
+            "`agy` once and sign in with your Google account (accounts "
+            "panel → Antigravity)")
     if sbx.is_sandboxed(org):
         # same holdout as codex (user ruling 2026-08-28 pattern): kiosks
         # wait until the provider's sandbox story is settled; the hire guard
         # enforces this upstream, so this is a belt for a hand-edited doc
-        raise RuntimeError("turn failed: gemini agents cannot run in a "
+        raise RuntimeError("turn failed: antigravity agents cannot run in a "
                            "sandboxed kiosk org yet")
     tools_sc = n["scope"].get("tools", {})
     cwd = scratch_dir(slug, nid)
-    # identity through gemini's door: GEMINI.md in the scratch cwd is read at
-    # session/new AND re-read at session/load (measured — the ZORBLATT
-    # probe), so rewriting it pre-spawn is the same regenerate-per-turn
-    # self-healing as .orgtree-identity.md and the codex AGENTS.md.
     ident = identity_prompt(org, nid)
-    with open(os.path.join(cwd, "GEMINI.md"), "w", encoding="utf-8") as f:
-        f.write(ident)
-    # resume ONLY a session id this leg itself harvested (`gemini_session`
-    # equals it exactly then) — a fresh hire's minted uuid loads nothing,
-    # and a rehire/compact re-mint breaks the equality, so the session
-    # starts fresh instead of failing a load against a foreign id
-    resume_sid = (str(n.get("session_id") or "") or None
+    # resume ONLY a conversation id this leg itself harvested
+    # (`antigravity_conversation` equals it exactly then) — a fresh hire's
+    # minted uuid resumes nothing, and a rehire/compact re-mint breaks the
+    # equality, so the conversation starts fresh instead of asking the CLI
+    # for an id it never issued
+    resume_cid = (str(n.get("session_id") or "") or None
                   if not n.get("session_unrun")
                   and str(n.get("session_id") or "")
-                  == str(n.get("gemini_session") or "") else None)
+                  == str(n.get("antigravity_conversation") or "") else None)
     # D-182: the grant comes from the ONE implementation; this lane only
     # narrows it (expressibility), and the orgtree server rides beside the
     # grant exactly as the claude lane's --mcp-config composes it
-    mcp_chosen, _ = gemini_mcp_grant(org, nid)
+    mcp_chosen, _ = antigravity_mcp_grant(org, nid)
     port = os.environ.get("ORGTREE_PORT", "7360")
     servers = dict(mcp_chosen)
     servers["orgtree"] = {
         "command": sys.executable,
         "args": ["-m", "orgtree.mcptool"],
         # ⚠ the FULL set, always: an env var the spec does not name is
-        # INHERITED from the CLI process (measured — a stray ORGTREE_NODE
-        # leaked through), so partial specs would identity-confuse mcptool
+        # INHERITED from the CLI process (measured — the parent's
+        # ORGTREE_NODE reached the server), so partial specs would
+        # identity-confuse mcptool
         "env": {"ORGTREE_ORG": slug, "ORGTREE_NODE": nid,
                 "ORGTREE_PORT": port, "PYTHONPATH": BACKEND_DIR,
                 deployment.PROFILE_ENV: deployment.current_policy().name},
     }
-    mcp_list = geminirun.acp_mcp_servers(servers)
-
-    denials: list[dict[str, Any]] = []
-    # the ⚙-rights seam: full tool rights run yolo (no prompts at all); a
-    # narrowed node runs the CLI's default approval mode and this policy
-    # decides each session/request_permission by the SAME capability
-    # switches the claude lane enforces with --disallowed-tools
-    approval_mode = ("yolo" if tools_sc.get("edit", True)
-                     and tools_sc.get("bash", True) else "default")
-
-    def _decide(params: dict[str, Any]) -> str | None:
-        call = (params.get("toolCall")
-                if isinstance(params.get("toolCall"), dict) else {})
-        kind = str(call.get("kind") or "")
-        needs = ("edit" if kind in ("edit", "delete", "move") else
-                 "bash" if kind == "execute" else None)
-        allowed = tools_sc.get(needs, True) if needs else True
-        if not allowed:
-            denials.append({"tool_name": kind or "tool",
-                            "tool_input": call.get("title") or {}})
-            return None                       # → cancelled outcome (closed)
-        for opt in params.get("options") or []:
-            if (isinstance(opt, dict)
-                    and str(opt.get("kind") or "") == "allow_once"):
-                return str(opt.get("optionId"))
-        return None
+    # the ⚙-rights seam: every turn runs with the CLI's own prompts
+    # switched off (headless print mode cannot answer them — it auto-denies
+    # every command, write AND org-power call, measured), and a narrowed
+    # node is held to its scope by the PreToolUse hook the workspace writer
+    # installs, keyed on the SAME capability switches the claude lane
+    # enforces with --disallowed-tools
+    rights = {"bash": bool(tools_sc.get("bash", True)),
+              "edit": bool(tools_sc.get("edit", True))}
+    # identity through the CLI's door: AGENTS.md in the scratch cwd is a
+    # directory rule injected on every turn, resumed or not (measured), so
+    # rewriting it pre-spawn is the same regenerate-per-turn self-healing
+    # as .orgtree-identity.md and the codex AGENTS.md — and the plugin +
+    # hook files beside it are regenerated for the same reason
+    antigravityrun.write_workspace(cwd, identity=ident, mcp_servers=servers,
+                                   rights=rights)
 
     dstate: dict[str, Any] = {"buf": "", "timer": None}
     dlock = threading.Lock()
@@ -8672,8 +8664,7 @@ def _gemini_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
             _flush_draft()
 
     jlock = threading.Lock()
-    jstate: dict[str, Any] = {"sid": "", "pending": [], "tool_open": {},
-                              "thoughts": []}
+    jstate: dict[str, Any] = {"sid": "", "pending": [], "tool_open": {}}
 
     def _journal_records(recs: list[dict[str, Any]]) -> None:
         with jlock:
@@ -8683,56 +8674,57 @@ def _gemini_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
                 return
             _codex_journal(slug, sid, recs)
 
-    gemini_model = providers.GEMINI_MODELS.get(tier) or org.model_for(nid)
+    # the version pin (or the tier default) is the BASE id; the effort is a
+    # separate flag on this wire, and the CLI refuses the two combined
+    model_id = org.model_for(nid)
+    effort = providers.antigravity_effort(tier, org.effective_effort(nid))
 
-    def _tool_name(update: dict[str, Any]) -> str:
-        # the wire's title is "tool_name (server MCP Server)" (measured);
-        # the bare name is what the transcript vocabulary wants
-        return str(update.get("title") or "tool").split(" (")[0]
+    def _d(obj: Any) -> dict[str, Any]:
+        """A wire sub-document, or empty — the shapes are JSON objects by
+        contract and a malformed one must not kill the reader thread."""
+        return cast("dict[str, Any]", obj) if isinstance(obj, dict) else {}
 
-    def _tool_body(update: dict[str, Any]) -> str:
-        bits: list[str] = []
-        for c in update.get("content") or []:
-            inner = c.get("content") if isinstance(c, dict) else None
-            if isinstance(inner, dict) and inner.get("text") is not None:
-                bits.append(str(inner["text"]))
-        return "\n".join(bits)
+    def _tool_identity(step: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+        """(bare name, input) for one tool step. An MCP call is journaled
+        under the TOOL'S own name — the bare orgtree tool name the download
+        -card and mail-link readers match on (the codex lane's D-180-era
+        lesson, two lanes over) — a built-in under its own."""
+        info = _d(step.get("tool_info"))
+        params = _d(info.get("parameters"))
+        name = str(step.get("tool_name") or info.get("name") or "tool")
+        if name == "call_mcp_tool":
+            tname = str(params.get("ToolName") or "")
+            args = params.get("Arguments")
+            if tname:
+                return tname, (_d(args) if isinstance(args, dict)
+                               else {"input": args})
+        return name, params
 
-    def _on_update(update: dict[str, Any]) -> None:
-        kind = str(update.get("sessionUpdate") or "")
-        if kind == "agent_message_chunk":
-            content = update.get("content")
-            if isinstance(content, dict) and isinstance(
-                    content.get("text"), str):
-                _queue_delta(content["text"])
+    def _on_event(msg: dict[str, Any]) -> None:
+        if str(msg.get("event") or "") != "step_update":
             return
-        if kind == "agent_thought_chunk":
-            content = update.get("content")
-            body = (str(content.get("text"))
-                    if isinstance(content, dict) and content.get("text")
-                    else "")
-            if body:
-                jstate["thoughts"].append(body)
-                live_row(slug, nid, {"kind": "thought", "text": body[:2000]})
+        step = _d(msg.get("step_update"))
+        kind = str(step.get("step_type") or "")
+        state_ = str(step.get("state") or "")
+        if kind == "agent_response":
+            delta = step.get("text_delta")
+            if isinstance(delta, str) and delta:
+                _queue_delta(delta)
             return
-        if kind == "tool_call":
-            iid = str(update.get("toolCallId") or f"gem-{time.time_ns()}")
+        if kind != "tool":
+            return
+        iid = (f"agy-{str(step.get('conversation_id') or '')[:8]}-"
+               f"{step.get('step_index')}")
+        name, inp = _tool_identity(step)
+        if state_ == "ACTIVE":
             if iid in jstate["tool_open"]:
                 return
             _flush_draft()
-            name = _tool_name(update)
-            raw = _tool_body(update)
-            try:
-                inp: dict[str, Any] = json.loads(raw) if raw else {}
-                if not isinstance(inp, dict):
-                    inp = {"input": inp}
-            except json.JSONDecodeError:
-                inp = {"input": raw[:500]} if raw else {}
             jstate["tool_open"][iid] = name
             _journal_records([{
                 "type": "assistant", "timestamp": now_iso(),
-                "message": {"id": f"gem-{iid}", "role": "assistant",
-                            "model": gemini_model,
+                "message": {"id": f"agy-{iid}", "role": "assistant",
+                            "model": model_id,
                             "content": [{"type": "tool_use", "id": iid,
                                          "name": name, "input": inp}]}}])
             live_row(slug, nid, {"kind": "tool", "id": iid,
@@ -8740,44 +8732,40 @@ def _gemini_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
                                                  if _tool_arg(name, inp)
                                                  else "")})
             return
-        if kind == "tool_call_update":
-            status = str(update.get("status") or "")
-            if status not in ("completed", "failed"):
-                return
-            iid = str(update.get("toolCallId") or "")
-            if iid not in jstate["tool_open"]:
-                return
-            jstate["tool_open"].pop(iid, None)
-            _journal_records([{
-                "type": "user", "timestamp": now_iso(),
-                "message": {"role": "user", "content": [{
-                    "type": "tool_result", "tool_use_id": iid,
-                    "content": _tool_body(update) or status,
-                    "is_error": status == "failed"}]}}])
-            stream(slug, nid, {"kind": "journal", "text": ""})
-
-    def _on_event(msg: dict[str, Any]) -> None:
-        if str(msg.get("method") or "") != "session/update":
+        if state_ not in ("DONE", "ERROR"):
             return
-        params = (msg.get("params")
-                  if isinstance(msg.get("params"), dict) else {})
-        update = (params.get("update")
-                  if isinstance(params.get("update"), dict) else {})
-        if update:
-            _on_update(update)
+        if iid not in jstate["tool_open"]:
+            return
+        jstate["tool_open"].pop(iid, None)
+        info = _d(step.get("tool_info"))
+        err = _d(info.get("error"))
+        body = (str(info.get("output") or "") if state_ == "DONE"
+                else str(err.get("message") or "tool error"))
+        _journal_records([{
+            "type": "user", "timestamp": now_iso(),
+            "message": {"role": "user", "content": [{
+                "type": "tool_result", "tool_use_id": iid,
+                "content": body or state_.lower(),
+                "is_error": state_ == "ERROR"}]}}])
+        stream(slug, nid, {"kind": "journal", "text": ""})
 
-    turn = geminirun.GeminiTurn(
-        providers.gemini_argv(exe), cwd=cwd,
-        model=gemini_model,
-        session_id=resume_sid,
-        approval_mode=approval_mode,
-        mcp_servers=mcp_list,
-        on_event=_on_event, permission_decide=_decide,
+    log_dir = os.path.join(providers.antigravity_probe_dir(), "logs", slug)
+    os.makedirs(log_dir, exist_ok=True)
+    log_file = os.path.join(log_dir, f"{nid}.log")
+    turn = antigravityrun.AntigravityTurn(
+        providers.antigravity_argv(exe), cwd=cwd,
+        model=model_id, effort=effort,
+        conversation_id=resume_cid, yolo=True,
+        on_event=_on_event,
         env_extra={"ORGTREE_ORG": slug, "ORGTREE_NODE": nid,
-                   "ORGTREE_PORT": port})
+                   "ORGTREE_PORT": port},
+        log_file=log_file, turn_timeout=TURN_TIMEOUT)
+    # the turn object is the process generation's owner token here: the
+    # process itself does not exist until `start()`, and the accounting
+    # only ever compares owners by identity and polls them
     _mcp_tool_count_begin(
-        slug, nid, turn.client.proc, "gemini", "ACP",
-        "Gemini ACP does not expose runtime-loaded MCP inventory",
+        slug, nid, turn, "antigravity", "print",
+        "Antigravity print mode does not expose runtime-loaded MCP inventory",
         n.get("last_turn_mcp_tool_count"))
     try:
         turn_mcp_fingerprint = _mcp_infrastructure_fingerprint(org, nid)
@@ -8789,48 +8777,59 @@ def _gemini_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
     steer_thread: threading.Thread | None = None
     try:
         _mcp_gate_terminal(_mcp_wait_for_surface(
-            org, nid, turn.client.proc, "google", turn_mcp_fingerprint))
-        sid = turn.start(text, _gemini_image_inputs(images or []))
-        # session/prompt is on the wire: the agent holds this turn's input,
-        # so the journaled batch is delivered (the codex C1 proof transposed)
+            org, nid, turn, "google", turn_mcp_fingerprint))
+        cid = turn.start(text + _antigravity_image_note(images or []))
+        # the prompt is on the wire: the agent holds this turn's input, so
+        # the journaled batch is delivered (the codex C1 proof transposed)
         if toks:
             _confirm_delivered(slug, nid, toks)
-        if sid and (sid != n.get("session_id") or n.get("session_unrun")
-                    or sid != n.get("gemini_session")):
+        if resume_cid and cid != resume_cid:
+            # the CLI could not find the conversation it was asked to resume
+            # (measured: a warning on stderr and a FRESH conversation with a
+            # new id, the old context gone). Said in the conversation, in
+            # chronological place, rather than discovered later from an
+            # agent that no longer remembers anything.
+            _log_turn_error(
+                slug, nid, "the Antigravity CLI could not resume this "
+                "agent's previous conversation and started a fresh one — "
+                "its earlier context on this provider is gone")
+        if cid and (cid != n.get("session_id") or n.get("session_unrun")
+                    or cid != n.get("antigravity_conversation")):
             with store.DOC_LOCK:
                 o2 = store.load_org(slug)
                 if nid in o2.nodes:
-                    o2.node(nid)["session_id"] = sid
-                    # the resume marker: session_id is a REAL ACP sessionId
-                    o2.node(nid)["gemini_session"] = sid
+                    o2.node(nid)["session_id"] = cid
+                    # the resume marker: session_id is a REAL conversation id
+                    cast("dict[str, Any]", o2.node(nid))[
+                        "antigravity_conversation"] = cid
                     o2.node(nid).pop("session_unrun", None)
                     store.save_org(o2)
         with jlock:
-            jstate["sid"] = str(sid or "")
+            jstate["sid"] = str(cid or "")
             pending_recs = list(jstate["pending"])
             jstate["pending"].clear()
-            _record_prompt_view(slug, str(sid or ""), text, turn_view,
+            _record_prompt_view(slug, str(cid or ""), text, turn_view,
                                 at=_iso_ts(t0))
-            _codex_journal(slug, str(sid or ""), [
+            _codex_journal(slug, str(cid or ""), [
                 {"type": "user", "timestamp": _iso_ts(t0),
                  "message": {"role": "user", "content": text}},
                 *pending_recs,
             ])
         stream(slug, nid, {"kind": "journal", "text": ""})
         with _state_lock:
-            st["gemini_turn"] = turn   # the ⏸ escape hatch (interrupt_turn)
-            st["responding"] = True    # mail now steers instead of queueing
+            st["antigravity_turn"] = turn   # the ⏸ escape hatch (interrupt_turn)
+            st["responding"] = True         # mail now steers instead of queueing
         warmpool._set_proc_lifecycle(slug, nid, live=True, owner=turn,
                                      adopt=True)
 
         def _steer_pump() -> None:
             while not stop.wait(CODEX_STEER_POLL):
                 # ⚠ DEFERRED — and on THIS lane it is not an edge case. The
-                # gemini wire has no steer verb, so the refusal below is the
-                # normal path: committing on the fetch wrote a durable "the
-                # agent was told this" row and confirmed the batch away for
-                # EVERY mid-turn message, and the next turn then delivered the
-                # same words again. One message, two bubbles, every time.
+                # antigravity wire has no steer verb, so the refusal below is
+                # the normal path: committing on the fetch wrote a durable
+                # "the agent was told this" row and confirmed the batch away
+                # for EVERY mid-turn message, and the next turn then delivered
+                # the same words again. One message, two bubbles, every time.
                 carriers = pop_steer(slug, nid, defer_commit=True)
                 if not carriers:
                     continue
@@ -8853,113 +8852,102 @@ def _gemini_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
                     _steer_fold_log(slug, nid, len(carriers), "steer refused")
 
         steer_thread = threading.Thread(target=_steer_pump, daemon=True,
-                                        name=f"gemsteer-{slug}-{nid}")
+                                        name=f"agysteer-{slug}-{nid}")
         steer_thread.start()
         res_raw = turn.wait(timeout=TURN_TIMEOUT)
     finally:
         stop.set()
-        # before the client is closed and before the turn machinery folds
-        # undelivered batches back — see the codex leg's note. Gemini's
+        # before the process is closed and before the turn machinery folds
+        # undelivered batches back — see the codex leg's note. This lane's
         # `steer` returns False synchronously, so this is normally immediate.
         if steer_thread is not None:
             steer_thread.join()
         # same fold as the codex leg, same lock take, same reason, same
         # placement (D-229): a carrier appended after the pump's last poll
         # must leave with the turn, not wait in RAM for a turn that nothing
-        # will start — and it happens BEFORE `turn.client.close()`, which can
+        # will start — and it happens BEFORE `turn.close()`, which can
         # raise, so a failing teardown cannot leave `responding` True on an
         # idle node. To the back: see the codex leg's ordering note.
         with _state_lock:
-            st.pop("gemini_turn", None)
+            st.pop("antigravity_turn", None)
             st["responding"] = False
             leftover = _fold_steer(st)
         if leftover:
             _steer_fold_log(slug, nid, len(leftover), "turn exit",
                             why="the turn ended before the steer pump's "
                                 "next poll")
-        turn.client.close()
+        turn.close()
         warmpool._set_proc_lifecycle(slug, nid, live=False, owner=turn)
-        _mcp_tool_count_end(slug, nid, turn.client.proc)
+        _mcp_tool_count_end(slug, nid, turn)
     with dlock:
         draft_timer = dstate.get("timer")
         if draft_timer:
             draft_timer.cancel()
             dstate["timer"] = None
     _flush_draft()
-    status = str(res_raw.get("status") or geminirun.STATUS_FAILED)
-    if status == geminirun.STATUS_FAILED:
+    status = str(res_raw.get("status") or antigravityrun.STATUS_FAILED)
+    if status == antigravityrun.STATUS_FAILED:
         if time.time() - t0 >= TURN_TIMEOUT:
             raise RuntimeError(f"turn killed: exceeded the {TURN_TIMEOUT}s "
                                "per-message ceiling")
-        tail = " | ".join(turn.client.stderr_tail[-3:])[:300]
+        tail = " | ".join(turn.stderr_tail[-3:])[:300]
         detail = str(res_raw.get("stop_reason") or "")[:200]
-        # D-209: the same seam the codex leg raises through. Gemini already
-        # SURFACED its reason — a limit here stopped the agent loudly rather
-        # than silently — but it was never FROZEN either, so it got no reset
-        # time and never auto-resumed. Raising the shared type is the whole
-        # change on this lane; the freeze policy lives in one place.
-        # ⚠ UNMEASURED, and stated as such (report 2026-08-31): the codex half
-        # of D-209 was built from captured wire bytes, this half from the shape
-        # of the code. `stop_reason` carries whatever the gemini session put in
-        # its error, and no limit-shaped sample of it has been observed here —
-        # so it may or may not be prose `_looks_like_usage_limit` recognises.
+        # D-209: the same seam the codex leg raises through. The CLI already
+        # SURFACED its reason — a limit here stops the agent loudly rather
+        # than silently — but without this it would never be FROZEN either,
+        # so it got no reset time and never auto-resumed. Raising the shared
+        # type is the whole change on this lane; the freeze policy lives in
+        # one place.
+        # ⚠ UNMEASURED, and stated as such: no usage wall of this provider
+        # has been observed here. `stop_reason` carries whatever the CLI put
+        # in its ERROR result, and no limit-shaped sample of it exists — so
+        # it may or may not be prose `_looks_like_usage_limit` recognises.
         # There is no reset time on this lane at all; a limit that IS
         # recognised parks on the 5-minute probe floor.
         raise _ProviderTurnFailed(
-            "turn failed: the gemini session reported an error"
+            "turn failed: the Antigravity CLI reported an error"
             + (f" — {detail}" if detail else "")
             + (f" — {tail}" if tail else ""),
             blob=detail or tail)
     tu = res_raw.get("token_usage")
     final_recs: list[dict[str, Any]] = []
-    if jstate["thoughts"]:
-        final_recs.append({
-            "type": "assistant", "timestamp": now_iso(),
-            "message": {"id": f"gem-think-{time.time_ns()}",
-                        "role": "assistant", "model": gemini_model,
-                        "content": [{"type": "thinking",
-                                     "thinking": "\n".join(jstate["thoughts"]),
-                                     "signature": "gemini"}]}})
     if res_raw.get("agent_text"):
         final_recs.append({
             "type": "assistant", "timestamp": now_iso(),
-            "message": {"id": f"gem-{sid or 'turn'}",
-                        "role": "assistant", "model": gemini_model,
+            "message": {"id": f"agy-{cid or 'turn'}",
+                        "role": "assistant", "model": model_id,
                         "content": [{"type": "text",
                                      "text": str(res_raw["agent_text"])}]}})
-    main_tok: dict[str, Any] = (((tu or {}).get("models") or {})
-                                .get((tu or {}).get("main") or "") or {})
+    tu_in = int((tu or {}).get("input") or 0)
+    tu_cached = int((tu or {}).get("cached") or 0)
+    tu_out = int((tu or {}).get("output") or 0)
     final_recs.append({
         "type": "assistant", "timestamp": now_iso(),
-        "message": {"id": f"gem-{sid or 'turn'}-usage",
-                    "role": "assistant", "model": gemini_model, "content": [],
+        "message": {"id": f"agy-{cid or 'turn'}-usage",
+                    "role": "assistant", "model": model_id, "content": [],
                     "usage": {
-                        "input_tokens": int(main_tok.get("input") or 0),
-                        "cache_read_input_tokens":
-                            int(main_tok.get("cached") or 0),
-                        "output_tokens": int(main_tok.get("output") or 0)}}})
+                        "input_tokens": tu_in,
+                        "cache_read_input_tokens": tu_cached,
+                        "output_tokens": tu_out}}})
     _journal_records(final_recs)
-    out_total = sum(int(t.get("output") or 0)
-                    for t in ((tu or {}).get("models") or {}).values()
-                    if isinstance(t, dict))
     res: dict[str, Any] = {
         "status": status,
-        "total_cost_usd": providers.gemini_cost(tu),
-        "usage": {"output_tokens": out_total},
+        "total_cost_usd": providers.antigravity_cost(tu),
+        "usage": {"output_tokens": tu_out},
         "duration_ms": int((time.time() - t0) * 1000),
-        "permission_denials": denials,
+        "permission_denials": list(res_raw.get("denials") or []),
         "rate_limits": None,
         "result": str(res_raw.get("agent_text") or ""),
         "_mcp_tool_count": None,
         "_mcp_tool_names": None,
         "_mcp_tool_fingerprint": turn_mcp_fingerprint,
         "_cache_usage": {
-            "input_tokens": int(main_tok.get("input") or 0),
-            "cache_read_input_tokens": int(main_tok.get("cached") or 0),
+            "input_tokens": tu_in,
+            "cache_read_input_tokens": tu_cached,
             "cache_creation_input_tokens": 0,
         },
     }
-    return res, providers.gemini_occupancy(tu)
+    return res, providers.antigravity_occupancy(tu)
 
 
 def _run_one_turn(slug: str, nid: str,
@@ -9278,7 +9266,7 @@ def _run_one_turn(slug: str, nid: str,
             _turn_tier = str(org.node(nid).get("model") or "")
             # A limit marker belongs to a Claude result stream.  Retooling a
             # frozen node across providers must not let it survive a Codex or
-            # Gemini turn and attach to some unrelated future Claude result.
+            # Antigravity turn and attach to some unrelated future Claude result.
             _limit_cache_claude_state(st, _turn_tier)
             if _turn_tier in providers.CODEX_TIERS:
                 # THE PROVIDER SEAM (FR-15 M1b): a codex tier takes its own
@@ -9294,18 +9282,18 @@ def _run_one_turn(slug: str, nid: str,
                 _after_turn(slug, nid, org, res, st, codex_occ, on_key=False,
                             cache_attempt=cache_attempt)
                 raise _CodexTurnDone
-            if _turn_tier in providers.GEMINI_TIERS:
+            if _turn_tier in providers.ANTIGRAVITY_TIERS:
                 # the same seam one provider over (D-186): identical tail,
                 # its own control raise, the SHARED finally owns the queue.
-                res, gem_occ = _gemini_leg(
+                res, agy_occ = _antigravity_leg(
                     slug, nid, org, st, text, toks, turn_images, turn_view)
                 st["last_error"] = None
                 st["turns_run"] += 1
                 st["account_switches"] = 0
                 paid_booked = True     # _after_turn books `res`'s cost itself
-                _after_turn(slug, nid, org, res, st, gem_occ, on_key=False,
+                _after_turn(slug, nid, org, res, st, agy_occ, on_key=False,
                             cache_attempt=cache_attempt)
-                raise _GeminiTurnDone
+                raise _AntigravityTurnDone
             sandbox_name = None
             if sbx.is_sandboxed(org):
                 # actionable RuntimeError (no Docker / no API key) surfaces as
@@ -11437,8 +11425,8 @@ def _run_one_turn(slug: str, nid: str,
                         cache_attempt=cache_attempt)
     except _CodexTurnDone:
         pass    # the codex leg booked its turn; only the shared finally runs
-    except _GeminiTurnDone:
-        pass    # the gemini leg booked its turn; only the shared finally runs
+    except _AntigravityTurnDone:
+        pass    # the antigravity leg booked its turn; only the shared finally runs
     except Exception as e:                                  # noqa: BLE001
         # money first: the CLI reported this spend before the turn came apart,
         # and `_after_turn` — the only other booker — did not run. Skipped when
@@ -11452,7 +11440,7 @@ def _run_one_turn(slug: str, nid: str,
         # keeps the failure in the conversation, in chronological place
         _log_turn_error(slug, nid, str(e) or type(e).__name__)
         # ── D-209: THE PROVIDER SEAM'S USAGE-LIMIT DOOR ────────────────────
-        # A codex/gemini turn that hit a usage limit ended at the two lines
+        # A codex/antigravity turn that hit a usage limit ended at the two lines
         # above and went no further: a `last_error` and a log row, the node
         # left LIVE and unfrozen, no reset time, nothing to auto-resume. From
         # one level up that is indistinguishable from an agent quietly working
@@ -11523,7 +11511,7 @@ def _run_one_turn(slug: str, nid: str,
             # in it was accepted with {steering: true} and never collected.
             # Every lane is supposed to fold its own leftovers under the
             # lock that ends steering (the claude lane at its two boundary
-            # sites, the codex/gemini legs at their exit) — this is the
+            # sites, the codex/antigravity legs at their exit) — this is the
             # property stated ONCE, on the path every turn passes through,
             # so that no lane can leave the node idle with a message in
             # RAM. It appends the carriers to the BACK of the queue: every
@@ -12265,7 +12253,7 @@ def _after_turn(slug: str, nid: str, org: Org, res: dict[str, Any],
             # was waiting for — whatever this turn measured or failed to
             # measure, the successor's session is no longer only a summary
             n.pop("compacted_unrun", None)
-            # S1 belt: the provider lanes (codex/gemini) book their turns
+            # S1 belt: the provider lanes (codex/antigravity) book their turns
             # here without ever passing the claude boundary above — a
             # completed turn retires the breadcrumbs splice on every lane.
             # Idempotent: the claude boundary usually cleared it already.
@@ -13467,7 +13455,7 @@ def _compact_split_body(slug: str, nid: str) -> None:
         org = store.load_org(slug)
         n = org.node(nid)
         old_sid = n["session_id"]
-        # ⚠ resolved through claude_model_for even though the codex/gemini
+        # ⚠ resolved through claude_model_for even though the codex/antigravity
         # branches below also read it: the downgrade only ever rewrites the
         # fable id, so it is a no-op on those lanes, and computing it once
         # here is what keeps the fork's `--model` equal to the turn's.
@@ -13475,16 +13463,17 @@ def _compact_split_body(slug: str, nid: str) -> None:
     if str(n.get("model") or "") in providers.CODEX_TIERS:
         _compact_split_codex_body(slug, nid, org, n, old_sid, model)
         return
-    if str(n.get("model") or "") in providers.GEMINI_TIERS:
+    if str(n.get("model") or "") in providers.ANTIGRAVITY_TIERS:
         # DELIBERATE MVP hold-out (D-186, the §8 exclusion the codex MVP
-        # also shipped with): ACP has no fork/compact verb, so a generation
-        # split has no native lane yet. Refuse with a written remedy instead
-        # of falling into the claude fork machinery below — the cheap
-        # compact (♻ / the auto wake swap) is the supported path, and the
-        # long cooldown keeps the auto trigger from retrying a known no.
+        # also shipped with): print mode has no fork/compact verb, so a
+        # generation split has no native lane yet. Refuse with a written
+        # remedy instead of falling into the claude fork machinery below —
+        # the cheap compact (♻ / the auto wake swap) is the supported path,
+        # and the long cooldown keeps the auto trigger from retrying a known
+        # no.
         st0 = state(slug, nid)
         st0["last_error"] = (
-            "compaction split is not available on the gemini lane yet — "
+            "compaction split is not available on the antigravity lane yet — "
             "use the cheap compact (♻) instead; it swaps in a fresh session "
             "and archives this one's transcript")
         st0["compact_retry_at"] = time.time() + 3600
@@ -14076,11 +14065,12 @@ def interrupt_turn(slug: str, nid: str) -> dict[str, Any]:
     with _state_lock:
         proc = st.get("proc") if st.get("responding") else None
         codex_turn = st.get("codex_turn") if st.get("responding") else None
-        gemini_turn = st.get("gemini_turn") if st.get("responding") else None
+        antigravity_turn = (st.get("antigravity_turn")
+                            if st.get("responding") else None)
         readiness_wait = bool(st.get("mcp_readiness_waiting"))
         readiness_event = st.get("mcp_tool_event") if readiness_wait else None
         if proc is not None or codex_turn is not None \
-                or gemini_turn is not None or readiness_wait:
+                or antigravity_turn is not None or readiness_wait:
             st["interrupted"] = True
     if readiness_wait:
         # No provider prompt has been admitted yet. Wake the bounded gate
@@ -14098,11 +14088,12 @@ def interrupt_turn(slug: str, nid: str) -> dict[str, Any]:
             st.pop("interrupted", None)
         return {"interrupted": False,
                 "reason": "the turn was already over"}
-    if gemini_turn is not None:
-        # the gemini lane's graceful stop: session/cancel — the in-flight
-        # prompt resolves with stopReason "cancelled" (measured), which the
-        # leg books as an interrupted completed turn
-        if gemini_turn.interrupt():
+    if antigravity_turn is not None:
+        # the antigravity lane's stop: the process tree is killed — the
+        # conversation store already holds the turn so far (measured), and
+        # the leg books an interrupted completed turn from the per-request
+        # usage it had seen
+        if antigravity_turn.interrupt():
             return {"interrupted": True}
         with _state_lock:
             st.pop("interrupted", None)
@@ -14189,7 +14180,7 @@ def freeze_provider_limit(slug: str, nid: str, blob: str,
                           reset_ts: float | None = None,
                           replay: str | None = None,
                           replay_view: str = "") -> bool:
-    """A codex/gemini turn hit a usage limit: park the agent the way the claude
+    """A codex/antigravity turn hit a usage limit: park the agent the way the claude
     lane parks one (D-209). Returns True if a freeze was written.
 
     ⚠ THIS IS NOT A SECOND FREEZE SYSTEM, and the distinction is the whole
@@ -15929,7 +15920,7 @@ def _steer_fold_log(slug: str, nid: str, n: int, where: str,
     and it is called OUTSIDE _state_lock (same lock order as pop_steer).
 
     `why` names the lane's reason for the miss. The default is the claude
-    hook's ("no further tool call"); the codex/gemini pumps miss for a
+    hook's ("no further tool call"); the codex/antigravity pumps miss for a
     different reason — the turn ended before the pump's next poll — and a
     receipt that names the wrong mechanism sends the next reader after the
     wrong code (D-229)."""
@@ -15946,7 +15937,7 @@ def _steer_fold_log(slug: str, nid: str, n: int, where: str,
             # Fold rows are RECEIPTS; the `steered` rows beside them are the
             # only durable home of delivered mid-turn mail (see commit_steer).
             # They share this 40-row ring, and a lane that folds often — the
-            # gemini pump refuses every steer, and both pumps now fold at
+            # antigravity pump refuses every steer, and both pumps now fold at
             # turn exit — could evict every steered row with receipts. Keep
             # only the newest few folds before the ring trims (D-229).
             fold_idx = [i for i, e in enumerate(log) if e.get("fold")]
@@ -15979,7 +15970,7 @@ def commit_steer(slug: str, nid: str, msgs: list[Any], *,
     Both halves live here because they are one fact — "this message reached
     the agent" — and every lane that can deliver a steer has to state it the
     same way. The claude lane used to state the second half at its HTTP door
-    (`node_steer` emitted the `steered` frame itself) and the codex/gemini
+    (`node_steer` emitted the `steered` frame itself) and the codex/antigravity
     legs, which call `pop_steer` in-process, stated only the first: their
     mid-turn mail became durable with nothing on the wire to say so, so the
     desk did not learn of it until the next 2.5 s heartbeat — seconds during
@@ -16082,16 +16073,16 @@ def pop_steer(slug: str, nid: str, *, return_carriers: bool = False,
     enough and `commit_steer` runs here.
 
     ⚠ `defer_commit=True` is for a lane where the fetch is NOT the delivery.
-    The codex and gemini legs poll this from a pump thread and then have to ask
+    The codex and antigravity legs poll this from a pump thread and then have to ask
     the app-server to accept the text (`turn/steer`), which can be REFUSED —
     the turn ended inside the poll interval, or the wire has no steer verb at
-    all (gemini). Committing on the fetch there claimed a delivery that never
+    all (antigravity). Committing on the fetch there claimed a delivery that never
     happened: the durable steered row was written and the journal batch
     confirmed away, the carriers went back on the queue, and the NEXT turn
     delivered the same words again — so the message stood in the transcript
     TWICE. Measured on the live coordinator, 2026-09-02: steered_log
     07:38:11.278Z and turn user row 07:38:13.986Z, the same 3512 characters.
-    Gemini hits it on EVERY mid-turn message, since its refusal is the normal
+    Antigravity hits it on EVERY mid-turn message, since its refusal is the normal
     path.
 
     Deferring is also the safe direction if the process dies in between: the
@@ -18745,10 +18736,10 @@ def read_chat(org: Org, nid: str, last: int | None = None, *,
                         #
                         # ⚠ SAME BARE-NAME GAP AS THE MAIL LINK BELOW (found
                         # sweeping for the pattern after that fix, 2026-08-30):
-                        # Codex/Gemini journal this tool call as bare
+                        # Codex/Antigravity journal this tool call as bare
                         # `orgtree_send_file`, never the Claude-only
                         # `mcp__orgtree__`-prefixed form this used to require
-                        # — so a Codex- or Gemini-tier agent sending a file
+                        # — so a Codex- or Antigravity-tier agent sending a file
                         # got no download card at all, and "delivered by
                         # pasting a path" (explicitly ruled out — a path is
                         # not a delivery) was silently what happened instead.
@@ -18766,14 +18757,14 @@ def read_chat(org: Org, nid: str, last: int | None = None, *,
                         # "open in mailbox" link: the result's id + delivered
                         # name the exact mail in the exact box.
                         #
-                        # ⚠ THE NAME ARRIVES BARE FOR CODEX/GEMINI. Claude
+                        # ⚠ THE NAME ARRIVES BARE FOR CODEX/ANTIGRAVITY. Claude
                         # Code prefixes every MCP-server tool with
-                        # `mcp__<server>__` on its own; the codex/gemini lanes
+                        # `mcp__<server>__` on its own; the codex/antigravity lanes
                         # register these as plain function tools (mcptool.TOOLS'
                         # own names — see codexrun._dyn_tool / the `dyn` list
                         # in supervisor._run_codex_turn) and journal tool_use
                         # blocks with THAT bare name. Matching only the
-                        # prefixed form meant a Codex- or Gemini-tier agent's
+                        # prefixed form meant a Codex- or Antigravity-tier agent's
                         # own sent mail never carried this link at all (user
                         # report 2026-08-30) — the delivered TEXT was always
                         # identical across tiers; only this chip metadata,

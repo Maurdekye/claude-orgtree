@@ -101,10 +101,10 @@ print("\n§2  provider payload keeps choice and detection separate")
 
 
 def payload_keeps_real_install_state() -> None:
-    old_codex, old_gemini = providers.codex_status, providers.gemini_status
+    old_codex, old_agy = providers.codex_status, providers.antigravity_status
     providers.codex_status = lambda force=False: {            # type: ignore[assignment]
         "installed": True, "connected": True, "source": "path"}
-    providers.gemini_status = lambda force=False: {           # type: ignore[assignment]
+    providers.antigravity_status = lambda force=False: {      # type: ignore[assignment]
         "installed": False, "connected": False, "source": "none"}
     try:
         appsettings.set_provider_enabled("openai", False)
@@ -118,7 +118,7 @@ def payload_keeps_real_install_state() -> None:
         assert "App settings" in codex["reason"], codex
     finally:
         providers.codex_status = old_codex                   # type: ignore[assignment]
-        providers.gemini_status = old_gemini                 # type: ignore[assignment]
+        providers.antigravity_status = old_agy               # type: ignore[assignment]
 
 
 check("configured + user-disabled stays truthfully installed and connected",

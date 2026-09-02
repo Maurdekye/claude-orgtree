@@ -535,19 +535,19 @@ def the_turn_path_still_builds_both_blocks_and_commits_them() -> None:
 
 
 def every_provider_takes_the_same_door() -> None:
-    """Codex and Gemini turns rejoin through the same prologue, so suppression
+    """Codex and Antigravity turns rejoin through the same prologue, so suppression
     must be provider-neutral: it is decided before the seam and reads nothing
     provider-specific."""
     run = inspect.getsource(S._run_one_turn)
     i_state = run.index("state_block = _envelope_state_block")
-    for seam in ("_codex_leg(", "_gemini_leg("):
+    for seam in ("_codex_leg(", "_antigravity_leg("):
         assert i_state < run.index(seam), seam
     dec = inspect.getsource(S._envelope_decide)
-    for leaked in ("claude", "codex", "openai", "gemini", "google"):
+    for leaked in ("claude", "codex", "openai", "antigravity", "google"):
         assert leaked not in dec.lower(), leaked
     for tier, name in (("haiku", "zz-env-prov-claude"),
                        ("sol", "zz-env-prov-codex"),
-                       ("flash", "zz-env-prov-gemini")):
+                       ("flash", "zz-env-prov-antigravity")):
         org, nid = fixture(name, tier=tier)
         pending: dict[str, Any] = {}
         text = S._envelope_state_block(org, nid, NOW, pending)

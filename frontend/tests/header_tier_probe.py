@@ -4,7 +4,7 @@
     python -B tests/header_tier_probe.py --expect-fail
 
 The header is an inventory by model tier. Each count must keep its tier colour
-for Codex (Reserve/Luna/Terra/Sol) and Gemini (Flash/Pro), just as it does on
+for Codex (Reserve/Luna/Terra/Sol) and Antigravity (Flash/Pro), just as it does on
 cards. The negative control removes only those six colour rules and must be
 caught.
 """
@@ -59,12 +59,12 @@ def main() -> int:
         if len(failures) != len(EXPECTED):
             print("CONTROL FAILED — removing provider-tier header colours escaped detection")
             return 1
-        print("CONTROL OK — removing all Codex/Gemini header tier colours was detected")
+        print("CONTROL OK — removing all Codex/Antigravity header tier colours was detected")
         return 0
     if failures:
         print("\n".join("FAIL: " + failure for failure in failures))
         return 1
-    print("OK — Codex and Gemini header model counts use their tier colours")
+    print("OK — Codex and Antigravity header model counts use their tier colours")
     return 0
 
 

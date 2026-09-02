@@ -9,8 +9,8 @@ It drives the ACTUAL machine states rather than reasoning about them, by
 pointing each CLI's resolution at a real or absent path in a throwaway root:
 
   SCENARIO codex-only  — Codex installed + signed in, Claude's CLI resolved to
-                         a path that does not exist, Gemini likewise. The
-                         reported case. Claude and Gemini must be ABSENT from
+                         a path that does not exist, Antigravity likewise. The
+                         reported case. Claude and Antigravity must be ABSENT from
                          every strip; Codex must be offered.
   SCENARIO bare        — nothing installed at all. The state a brand-new user
                          on a fresh machine hits FIRST, and the easiest one to
@@ -51,8 +51,8 @@ BASE = f"http://127.0.0.1:{PORT}"
 
 CLAUDE = ["haiku", "sonnet", "opus", "fable"]
 CODEX = ["gpt-reserve", "luna", "terra", "sol"]
-GEMINI = ["flash", "pro"]
-ALL = CLAUDE + CODEX + GEMINI
+ANTIGRAVITY = ["flash", "pro"]
+ALL = CLAUDE + CODEX + ANTIGRAVITY
 
 # The pre-fix markup, re-created in the live page for the control: four
 # enabled Claude tokens in the first strip, which is exactly what this probe
@@ -109,7 +109,7 @@ def read_strip(page, sel: str) -> dict:
     return {"tiers": tiers, "none": none_badge}
 
 
-def start_backend(tmp: str, *, claude: bool, codex: bool, gemini: bool):
+def start_backend(tmp: str, *, claude: bool, codex: bool, antigravity: bool):
     """A throwaway install whose three CLIs are present or absent to order."""
     data = os.path.join(tmp, "data")
     home = os.path.join(tmp, "home")
@@ -130,9 +130,9 @@ def start_backend(tmp: str, *, claude: bool, codex: bool, gemini: bool):
         "CODEX_HOME": codex_home,
         "ORGTREE_CODEX": (os.path.join(REPO, "backend", "tests", "fakecodex.py")
                           if codex else os.path.join(data, "no", "codex.exe")),
-        "ORGTREE_GEMINI": (os.path.join(REPO, "backend", "tests", "fakecodex.py")
-                           if gemini else os.path.join(data, "no", "gem.exe")),
-        "GEMINI_HOME": os.path.join(data, "ghome"),
+        "ORGTREE_ANTIGRAVITY": (os.path.join(REPO, "backend", "tests", "fakecodex.py")
+                           if antigravity else os.path.join(data, "no", "gem.exe")),
+        "ANTIGRAVITY_HOME": os.path.join(data, "ghome"),
         # THE FIELD UNDER TEST. Claude resolves through the same override as
         # the others, so pointing it at nothing is a real not-installed machine
         # rather than a mocked payload.
@@ -165,9 +165,9 @@ def start_backend(tmp: str, *, claude: bool, codex: bool, gemini: bool):
     raise RuntimeError("backend did not start")
 
 
-def scenario(tmp: str, *, claude: bool, codex: bool, gemini: bool,
+def scenario(tmp: str, *, claude: bool, codex: bool, antigravity: bool,
              plant: bool) -> tuple[dict, dict]:
-    proc, log = start_backend(tmp, claude=claude, codex=codex, gemini=gemini)
+    proc, log = start_backend(tmp, claude=claude, codex=codex, antigravity=antigravity)
     try:
         pay = api("GET", "/api/providers")
         pstate = {p["id"]: p for p in pay["providers"]}
@@ -228,9 +228,9 @@ def judge_codex_only(out: dict) -> list[str]:
                 fail.append(f"{label}: Claude Code is NOT installed here, yet "
                             f"the {t} token still renders "
                             f"({'disabled' if got[t] else 'ENABLED'})")
-        for t in GEMINI:
+        for t in ANTIGRAVITY:
             if t in got:
-                fail.append(f"{label}: Gemini is not installed, yet {t} renders")
+                fail.append(f"{label}: Antigravity is not installed, yet {t} renders")
         live = [t for t in CODEX if got.get(t) is False]
         if len(live) != len(CODEX):
             fail.append(f"{label}: Codex IS set up; expected all of {CODEX} "
@@ -263,7 +263,7 @@ def main() -> int:
 
     with tempfile.TemporaryDirectory(prefix="orgtree-hireavail-a-") as t1:
         print("SCENARIO codex-only (the reported case)")
-        pstate, out = scenario(t1, claude=False, codex=True, gemini=False,
+        pstate, out = scenario(t1, claude=False, codex=True, antigravity=False,
                                plant=args.expect_fail)
         for pid in ("claude", "openai", "google"):
             p = pstate.get(pid, {})
@@ -290,7 +290,7 @@ def main() -> int:
 
     with tempfile.TemporaryDirectory(prefix="orgtree-hireavail-b-") as t2:
         print("\nSCENARIO bare (a fresh machine, nothing installed)")
-        _p2, out2 = scenario(t2, claude=False, codex=False, gemini=False,
+        _p2, out2 = scenario(t2, claude=False, codex=False, antigravity=False,
                              plant=False)
         for label, s in out2.items():
             print(f"  {label}: {sorted(s['tiers']) or 'no tier tokens'}"

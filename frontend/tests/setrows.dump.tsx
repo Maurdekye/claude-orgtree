@@ -50,7 +50,7 @@ const PROVIDERS: ProvidersPayload = { providers: [
       version: '0.9.1', email: 'neoja.dev@gmail.com', kind: 'oauth' },
     hire_enabled: false, user_enabled: true,
     reason: 'hiring stays off until the provider adapter lands' },
-  { id: 'google', label: 'Gemini', cli: 'Gemini CLI', tiers: [],
+  { id: 'google', label: 'Antigravity', cli: 'Antigravity CLI', tiers: [],
     status: { installed: true, connected: false, source: 'path',
       version: '0.4.0' },
     hire_enabled: false, user_enabled: false,

@@ -13,7 +13,7 @@ close to full input price when it wakes. The TTL is lane-specific: Orgtree now
 derives 60 minutes for a positive Claude subscription receipt and 5 minutes
 for a positive Claude API-key receipt. A Codex subscription receipt uses the
 fixed 30-minute estimate documented in `cache-continuity.md`; Codex API-key,
-Gemini and otherwise unknown lanes do not inherit another provider's number.
+Antigravity and otherwise unknown lanes do not inherit another provider's number.
 
 ## The arithmetic that sorts the ideas
 
@@ -86,7 +86,7 @@ before it resumes the durable session, so the two processes never overlap on one
 
 Cadence follows the spawn-captured billing lane: 50 minutes for OAuth/subscription (the CLI requests
 the one-hour tier) and 4 minutes for `ANTHROPIC_API_KEY` (five-minute tier). The environment variables
-in `configuration.md` can tune both. Codex and Gemini agents are skipped: their provider processes and
+in `configuration.md` can tune both. Codex and Antigravity agents are skipped: their provider processes and
 cache contracts are different, so the backend does not send them a synthetic Claude request. Frozen,
 remote-controlled, preserving-bearer, never-run, busy, waiting, responding, or queued nodes are also
 skipped. A real turn/status change always wins a recheck after keeper-slot contention.

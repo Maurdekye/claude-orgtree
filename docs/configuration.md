@@ -43,8 +43,7 @@ Set before the backend starts. Not visible in the UI, not per-org. A change requ
 | `ORGTREE_CLAUDE` / `ORGTREE_CLAUDE_CLI` | auto-detected | path to the Claude Code CLI (`supervisor.py:167,174`) |
 | `ORGTREE_CODEX` | auto-detected | path to the Codex CLI; resolution is override → private install under `<data>/codex` → `PATH` |
 | `CODEX_HOME` | `~/.codex` | Codex CLI home, including its own login state; orgtree passes it through and does not copy credentials |
-| `ORGTREE_GEMINI` | auto-detected | path to the Gemini CLI; resolution is override → private install under `<data>/gemini` → `PATH` |
-| `ORGTREE_GEMINI_HOME` | `~/.gemini` | Gemini CLI configuration and login home; useful when the CLI uses a non-default profile |
+| `ORGTREE_ANTIGRAVITY` | auto-detected | path to the Antigravity CLI (`agy`); resolution is override → the installer's own location (`%LOCALAPPDATA%\agy\bin\agy.exe` on Windows, `~/.local/bin/agy` elsewhere) → `PATH`. Its Google-account login lives in the OS keyring and needs no override |
 
 ### Provider CLIs and tier availability
 
@@ -56,17 +55,18 @@ provider argument to a hire or model switch.
 |---|---|---|
 | Claude Code | haiku (1), sonnet (2), opus (5), fable (10) | the Claude CLI can run turns |
 | Codex | gpt-reserve (1), luna (1), terra (2), sol (5) | Codex CLI is installed and signed in, **and** the account still has usage in its current window (all four tiers share one account, so a spent account offers none of them); gpt-reserve additionally requires OpenAI's reserve grant to be live — it is withdrawn and restored per account and orgtree reads the Codex CLI's own model registry to see it |
-| Gemini | flash (1), pro (2) | Gemini CLI is installed and signed in |
+| Antigravity | flash (1), pro (2) | Antigravity CLI is installed and signed in |
 
 Provider detection is read-only. It checks the CLI installation and its own
 login records, but never copies or alters credentials. The Accounts panel and
 the disabled hire-chip tooltip show the next required action.
 
-Codex and Gemini are not available in kiosk orgs while their sandbox support
-is intentionally held back. In a headless org, their personal-login modes are
-also unavailable: Codex requires an API-key login, while Gemini requires an
-API-key or Vertex AI login. Provider tiers otherwise use the same credit,
-scope, charter, and MCP-grant rules as Claude tiers.
+Codex and Antigravity are not available in kiosk orgs while their sandbox
+support is intentionally held back. In a headless org, personal-login modes
+are also unavailable: Codex requires an API-key login, and the Antigravity CLI
+(Google-account login only, no API-key lane) cannot be hired at all. Provider
+tiers otherwise use the same credit, scope, charter, and MCP-grant rules as
+Claude tiers.
 
 ### Turn behaviour
 
@@ -229,7 +229,7 @@ these; ⚠ **an agent hiring must state every one explicitly** — no defaults a
 | `default_visibility` | `self` \| `team` \| `subtree` \| `full` | how much of the org chart a hire can see |
 | `default_effort` | `""` (CLI default) \| `low`…`max` | thinking effort; resolved **live** at turn start, so changing it moves existing agents too |
 | `permission_mode` | `acceptEdits` (default) | the CLI permission mode |
-| `tiers` / `models` | Claude: fable 10, opus 5, sonnet 2, haiku 1; Codex: sol 5, terra 2, gpt-reserve 1, luna 1; Gemini: pro 2, flash 1 | credit cost per tier and the model each maps to (`ledger.py:49-80`) |
+| `tiers` / `models` | Claude: fable 10, opus 5, sonnet 2, haiku 1; Codex: sol 5, terra 2, gpt-reserve 1, luna 1; Antigravity: pro 2, flash 1 | credit cost per tier and the model each maps to (`ledger.py:49-80`) |
 
 MCP servers are discovered from the user's own `~/.claude.json` → `mcpServers`
 (`supervisor.py:466-472`), so orgtree grants from that list rather than defining servers itself.

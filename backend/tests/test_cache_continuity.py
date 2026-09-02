@@ -202,7 +202,7 @@ def unsupported_ttl() -> None:
 
 check("Codex subscription uses fixed 30-minute documented estimate",
       codex_subscription_ttl)
-check("Codex API-key and Gemini lanes are an accounted capability diagnostic",
+check("Codex API-key and Antigravity lanes are an accounted capability diagnostic",
       unsupported_ttl)
 
 
@@ -463,14 +463,17 @@ check("an unobserved/unmigrated main account is not read as an account switch",
 
 
 def other_provider_account_evidence() -> None:
+    from orgtree import providers
     old_codex = os.environ.get("CODEX_HOME")
-    old_gemini = os.environ.get("ORGTREE_GEMINI_HOME")
+    old_agy = os.environ.get("ORGTREE_ANTIGRAVITY")
+    old_agy_email = os.environ.get("FAKEANTIGRAVITY_EMAIL")
     codex_home = os.path.join(DATA, "codex-home")
-    gemini_home = os.path.join(DATA, "gemini-home")
     os.makedirs(codex_home, exist_ok=True)
-    os.makedirs(gemini_home, exist_ok=True)
     os.environ["CODEX_HOME"] = codex_home
-    os.environ["ORGTREE_GEMINI_HOME"] = gemini_home
+    # the antigravity account is whatever the CLI's own connect probe names
+    # (its log), so the scripted double plays the CLI here
+    os.environ["ORGTREE_ANTIGRAVITY"] = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "fakeantigravity.py")
     try:
         auth_path = os.path.join(codex_home, "auth.json")
         with open(auth_path, "w", encoding="utf-8") as f:
@@ -488,34 +491,32 @@ def other_provider_account_evidence() -> None:
         eq(key_lane, "api_key")
         assert "secret-key" not in codex_key
 
-        with open(os.path.join(gemini_home, "settings.json"), "w",
-                  encoding="utf-8") as f:
-            json.dump({"security": {"auth": {
-                "selectedType": "oauth-personal"}}}, f)
-        with open(os.path.join(gemini_home, "oauth_creds.json"), "w",
-                  encoding="utf-8") as f:
-            f.write("{}")
-        accounts_path = os.path.join(gemini_home, "google_accounts.json")
-        with open(accounts_path, "w", encoding="utf-8") as f:
-            json.dump({"active": "first@example.invalid"}, f)
-        gemini_a = S._cache_gemini_account_namespace()
-        with open(accounts_path, "w", encoding="utf-8") as f:
-            json.dump({"active": "second@example.invalid"}, f)
-        gemini_b = S._cache_gemini_account_namespace()
-        assert gemini_a != gemini_b
-        assert "example.invalid" not in gemini_a + gemini_b
+        os.environ["FAKEANTIGRAVITY_EMAIL"] = "first@example.invalid"
+        providers._antigravity_status_cache = None
+        agy_a = S._cache_antigravity_account_namespace()
+        os.environ["FAKEANTIGRAVITY_EMAIL"] = "second@example.invalid"
+        providers._antigravity_status_cache = None
+        agy_b = S._cache_antigravity_account_namespace()
+        assert agy_a != agy_b, (agy_a, agy_b)
+        assert agy_a.startswith("antigravity-oauth:"), agy_a
+        assert "example.invalid" not in agy_a + agy_b
     finally:
+        providers._antigravity_status_cache = None
         if old_codex is None:
             os.environ.pop("CODEX_HOME", None)
         else:
             os.environ["CODEX_HOME"] = old_codex
-        if old_gemini is None:
-            os.environ.pop("ORGTREE_GEMINI_HOME", None)
+        if old_agy is None:
+            os.environ.pop("ORGTREE_ANTIGRAVITY", None)
         else:
-            os.environ["ORGTREE_GEMINI_HOME"] = old_gemini
+            os.environ["ORGTREE_ANTIGRAVITY"] = old_agy
+        if old_agy_email is None:
+            os.environ.pop("FAKEANTIGRAVITY_EMAIL", None)
+        else:
+            os.environ["FAKEANTIGRAVITY_EMAIL"] = old_agy_email
 
 
-check("Codex/Gemini observable account changes move private namespaces safely",
+check("Codex/Antigravity observable account changes move private namespaces safely",
       other_provider_account_evidence)
 
 

@@ -765,7 +765,7 @@ added alongside it. **This is genuinely cheap** — no protocol change, no new s
 a per-org settings field plus a handful of new env vars threaded through the same `env` dict that
 already exists.
 
-**(B) Genuinely different model providers — GPT, Gemini, local/open-weight models via a different
+**(B) Genuinely different model providers — GPT, Google's models, local/open-weight models via a different
 CLI or SDK.** Claude Code CLI does not support this at all — it is an Anthropic-only client, full
 stop, and (A)'s door does not open any further than "Claude, hosted differently." This is the
 expensive branch, and the coupling runs much deeper than "swap a binary name":
@@ -789,7 +789,7 @@ expensive branch, and the coupling runs much deeper than "swap a binary name":
 - **The credit/tier model is priced against Claude specifically, not a generic notion of "model
   cost."** `TIERS`/`MODELS` (`ledger.py:39,51-54`) hardcode exactly four entries — `fable`/`opus`/
   `sonnet`/`haiku` — mapped 1:1 to Claude model strings (`claude-fable-5`, `claude-opus-5`, etc.),
-  with credit costs (10/5/3/1) reflecting Anthropic's own relative pricing ladder. A GPT or Gemini
+  with credit costs (10/5/3/1) reflecting Anthropic's own relative pricing ladder. A GPT or Google
   model doesn't have a natural slot in that ladder — either credits become provider-relative (two
   different "sonnet"-priced tiers meaning different real costs depending on provider, which breaks
   the flat mental model the whole ledger UI assumes), or a new cross-provider cost-normalization
@@ -824,7 +824,7 @@ turn loop, the credit ledger's accounting, and the permission model simultaneous
 them in isolation. Not something to start on this entry's say-so — flagging the shape and the real
 cost is the point, not proposing a build order.
 
-**Scope confirmed, same day:** the user named Gemini and ChatGPT explicitly — this is branch (B),
+**Scope confirmed, same day:** the user named Google's and OpenAI's CLIs explicitly — this is branch (B),
 not (A). The four numbered build requirements above are the ones that apply.
 
 **HELD, same day — explicit user instruction: "don't begin implementation now, hold off."**

@@ -42,7 +42,7 @@ MANIFEST_REL = Path("frozen") / "approved-install.json"
 # and all of its referenced files cannot be silently edited into a new
 # approval: this independently committed value must move too.
 APPROVED_MANIFEST_SHA256 = \
-    "2a605bb4c1d0e3bd70a07f6305c6373c79b57aa5e2d534399fb52ba060a1663f"
+    "49c5bf5f8f4872b1142b0f91382588f9f88b69fdaca4bb9e796c27f0359c1165"
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _EXACT_REQUIREMENT = re.compile(
@@ -394,11 +394,34 @@ def _provider_inventory(specs: Sequence[Mapping[str, Any]]) \
     statuses: dict[str, Mapping[str, Any]] = {
         "claude": supervisor.claude_install_state(force=True),
         "openai": providers.codex_status(force=True),
-        "google": providers.gemini_status(force=True),
+        "google": providers.antigravity_status(force=True),
     }
     out: dict[str, dict[str, Any]] = {}
     for spec in specs:
         pid = str(spec.get("id"))
+        if str(spec.get("kind") or "") == "binary":
+            # a provider that is ONE native binary with its own installer
+            # (the Antigravity CLI): no npm prefix, no package-lock. The
+            # attested facts are the binary's version and its sha256, from
+            # the installer's own location.
+            status = statuses.get(pid) or {}
+            path = status.get("path")
+            digest: str | None = None
+            if isinstance(path, str) and path and Path(path).is_file():
+                try:
+                    digest = "sha256:" + _file_sha256(Path(path))
+                except OSError:
+                    digest = None
+            out[pid] = {
+                "installed": bool(status.get("installed")),
+                "source": str(status.get("source") or ""),
+                "private_present": bool(status.get("installed"))
+                and str(status.get("source") or "") == "install",
+                "version": status.get("version"),
+                "integrity": digest,
+                "path": path,
+            }
+            continue
         prefix = data_root / str(spec.get("prefix"))
         package = str(spec.get("package"))
         package_json = _provider_package_path(prefix, package) / "package.json"
@@ -458,10 +481,14 @@ def _verify_providers(manifest: Mapping[str, Any], rec: _Recorder,
             rec.add("PROVIDER_OPTIONAL_ABSENT", pid, True,
                     "absent or approved private pin", "absent")
             continue
+        binary = str(spec.get("kind") or "") == "binary"
+        want_source = "install" if binary else "pin"
         rec.add("PROVIDER_PRESENT", pid, installed and private_present,
-                "installed from the orgtree private prefix",
+                "installed at its installer's own location" if binary
+                else "installed from the orgtree private prefix",
                 f"installed={installed}, private_present={private_present}")
-        rec.add("PROVIDER_SOURCE", pid, source == "pin", "pin", source or "none",
+        rec.add("PROVIDER_SOURCE", pid, source == want_source, want_source,
+                source or "none",
                 "environment/PATH overrides are not approved in frozen mode")
         rec.add("PROVIDER_VERSION", pid,
                 str(obs.get("version")) == str(spec.get("version")),
@@ -469,7 +496,8 @@ def _verify_providers(manifest: Mapping[str, Any], rec: _Recorder,
         rec.add("PROVIDER_INTEGRITY", pid,
                 str(obs.get("integrity")) == str(spec.get("integrity")),
                 spec.get("integrity"), obs.get("integrity") or "missing",
-                "the prefix package-lock records npm's registry integrity")
+                "the binary's own sha256" if binary
+                else "the prefix package-lock records npm's registry integrity")
 
 
 def _bridge_inventory(*, create_key: bool = False) -> dict[str, Any]:
