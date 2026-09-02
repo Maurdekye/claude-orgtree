@@ -94,6 +94,19 @@ receipt time, TTL, reasons with evidence timestamps, confidence, and expected
 input size. Raw prompts, tool definitions, environment values, and startup
 paths are reduced to digests before persistence.
 
+The account component names WHICH account, not merely which lane. A fallback
+key row id is already a hash of its token and an API key is digested, so those
+move on rotation; the MAIN LOGIN carries the digest of its own account uuid
+(`primary:<digest>`), because `primary` alone names a seat — "whoever this
+machine is signed into" — and would otherwise stay byte-identical across a
+`claude logout` and a login as somebody else, reporting the previous account's
+cache as valid for the next one's turns. The bare `primary` survives as the
+value for a login this machine cannot currently read, and in rows persisted
+before the account was qualified; neither is treated as a switch, because an
+unobserved identity is not a changed one (`cachecontinuity._namespace_changed`,
+the same rule the history relation follows). Two observed accounts that differ
+always are.
+
 Claude's startup component covers the native startup instruction manifest
 (managed and user CLAUDE files/imports, unscoped rules, and the loaded memory
 prefix). Codex and Gemini currently cover Orgtree's managed startup identity

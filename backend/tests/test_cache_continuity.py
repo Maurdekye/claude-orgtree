@@ -7,6 +7,7 @@ Plain deterministic checks; no provider/network calls. Run with:
 from __future__ import annotations
 
 import atexit
+import contextlib
 import copy
 import inspect
 import json
@@ -51,6 +52,22 @@ def check(label: str, fn: Callable[[], None]) -> None:
 
 def eq(got: Any, want: Any) -> None:
     assert got == want, f"got {got!r}; want {want!r}"
+
+
+@contextlib.contextmanager
+def login(uuid: str, email: str = "someone@example.invalid"):
+    """Pin WHO this machine is signed in as for the body of the block.
+
+    ⚠ REQUIRED wherever the primary account namespace is exercised: unstubbed,
+    `accounts.live_identity` reads the developer's real ~/.claude.json, so an
+    assertion about the main login would pass or fail on whose desk it ran.
+    """
+    real = S.accounts.live_identity
+    S.accounts.live_identity = lambda: {"uuid": uuid, "email": email}  # type: ignore[assignment]
+    try:
+        yield
+    finally:
+        S.accounts.live_identity = real                      # type: ignore[assignment]
 
 
 def snapshot(**changes: Any) -> dict[str, Any]:
@@ -343,8 +360,23 @@ def claude_namespace_evidence() -> None:
     eq(second[1], "api_key")
     assert first[0] != second[0]
     assert "secret-a" not in repr(first) and "secret-b" not in repr(second)
-    eq(S._cache_claude_namespace(org, "haiku", {}, NOW),
-       (S.accounts.PRIMARY, "subscription"))
+    # ⚠ STUB THE LOGIN — unstubbed this reads the developer's real
+    # ~/.claude.json, which is exactly the account the namespace now carries.
+    with login("uuid-primary-a", "a@example.invalid"):
+        primary_a = S._cache_claude_namespace(org, "haiku", {}, NOW)
+    with login("uuid-primary-b", "b@example.invalid"):
+        primary_b = S._cache_claude_namespace(org, "haiku", {}, NOW)
+    eq((primary_a[1], primary_b[1]), ("subscription", "subscription"))
+    assert primary_a[0].startswith(S.accounts.PRIMARY + ":")
+    # The whole bug: the main account changed, so the namespace must too.
+    assert primary_a[0] != primary_b[0]
+    assert "uuid-primary-a" not in repr(primary_a)
+    assert "a@example.invalid" not in repr(primary_a)
+    # Unobservable login ⇒ the bare sentinel, never a second namespace value:
+    # a transiently unreadable config must not read as an account switch.
+    with login("", ""):
+        eq(S._cache_claude_namespace(org, "haiku", {}, NOW),
+           (S.accounts.PRIMARY, "subscription"))
     resolved = S.clean_env()
     resolved.update({
         "ANTHROPIC_API_KEY": "secret-a",
@@ -360,6 +392,74 @@ def claude_namespace_evidence() -> None:
 
 check("Claude account evidence detects key rotation without persisting secrets",
       claude_namespace_evidence)
+
+
+def main_account_switch_is_a_cold_namespace() -> None:
+    """The reported bug, end to end: sign out, sign in as someone else.
+
+    Nothing else moves — same node, same model, same session, same prompt,
+    same history — so if this classified as anything but a known cold prefix,
+    a cache from the previous account was being reported valid for the next
+    one. The named `account` reason is part of the contract: the UI tooltip
+    must be able to say WHICH component moved.
+    """
+    org = store.create_org("zz-cache-account-switch")
+    org.hire(USER, None, "haiku", 0, "agent")
+    with login("uuid-was-signed-in-as-this"):
+        before = S._cache_snapshot(org, "agent", now=NOW, env={})
+    with login("uuid-now-signed-in-as-that"):
+        after = S._cache_snapshot(org, "agent", now=NOW, env={})
+    assert before["fingerprint"] != after["fingerprint"]
+    prior = {"last_turn": S._cache_persistable(before)}
+    row = C.classify(S._cache_prepare_relations(after, prior), prior, NOW)
+    eq(row["state"], "known_incompatible")
+    eq(row["readiness"], "not_ready")
+    eq(row["readiness_cause"], "prefix_changed")
+    eq([r["component"] for r in row["reasons"]], ["account"])
+    # And the same login twice is NOT a switch — only history is unobserved.
+    with login("uuid-was-signed-in-as-this"):
+        again = S._cache_snapshot(org, "agent", now=NOW, env={})
+    row = C.classify(S._cache_prepare_relations(again, prior), prior, NOW)
+    assert row["state"] != "known_incompatible", row
+
+
+check("a main-account switch is a cold cache namespace, named as `account`",
+      main_account_switch_is_a_cold_namespace)
+
+
+def unobserved_main_account_is_not_a_switch() -> None:
+    """Becoming observable is not moving.
+
+    Rows persisted before the main account was qualified carry the bare seat
+    name, and so does a login this machine cannot currently read. If either
+    counted as a switch, shipping this would flip every pre-existing agent to
+    a cold prefix on the first poll — and `will_compact` acts on cold.
+    """
+    # The pure classifier cannot import `accounts`, so the seat name is spelled
+    # twice. Pin the copies together rather than letting them drift apart in
+    # silence — a mismatch would quietly disable the tolerance below.
+    eq(C.UNQUALIFIED_PRIMARY, S.accounts.PRIMARY)
+    qualified = "primary:" + C.digest({"account": "uuid-a"}, 16)
+    other = "primary:" + C.digest({"account": "uuid-b"}, 16)
+    legacy = book()                                   # persisted as "primary"
+    eq(legacy["last_turn"]["account"], C.UNQUALIFIED_PRIMARY)
+    row = C.classify(snapshot(account=qualified), legacy, NOW)
+    assert row["state"] != "known_incompatible", row
+    prior = book()
+    prior["last_turn"]["account"] = qualified
+    row = C.classify(snapshot(), prior, NOW)           # observable → not
+    assert row["state"] != "known_incompatible", row
+    # Two qualified accounts that differ are still a real switch.
+    row = C.classify(snapshot(account=other), prior, NOW)
+    eq(row["state"], "known_incompatible")
+    eq([r["component"] for r in row["reasons"]], ["account"])
+    # …and the tolerance is account-only: no other component gets it.
+    row = C.classify(snapshot(model="claude-sonnet-4"), book(), NOW)
+    eq(row["state"], "known_incompatible")
+
+
+check("an unobserved/unmigrated main account is not read as an account switch",
+      unobserved_main_account_is_not_a_switch)
 
 
 def other_provider_account_evidence() -> None:

@@ -5907,6 +5907,36 @@ def _cache_semantic_inputs(org: Org, nid: str, provider: str) -> tuple[str, str]
     return cachecontinuity.digest(tools), cachecontinuity.digest(argv)
 
 
+def _cache_primary_namespace() -> str:
+    """The MAIN LOGIN's account namespace — `primary`, qualified by WHO it is.
+
+    ⚠ `accounts.PRIMARY` NAMES A SEAT, NOT AN ACCOUNT. It means "whoever this
+    machine is signed into", so a `claude logout` followed by a login as a
+    different person keeps that sentinel byte-identical while the provider-side
+    cache namespace underneath it is replaced wholesale. Every other account
+    lane here already moves on a switch — a key row id IS a hash of its token,
+    an API key is digested, Codex hashes its own account id — and the main
+    account was the one that could not, so the classifier's `account`
+    comparison was structurally unable to see the switch the doctrine calls a
+    new cache namespace. The uuid is the discriminator that makes it visible
+    (`accounts.live_identity`: stable across a token refresh, different between
+    accounts), digested because raw account ids never enter a persisted or
+    public forecast.
+
+    An UNOBSERVABLE login returns the bare sentinel, which is what this lane
+    returned unconditionally before. That is deliberately not a second
+    namespace value: an unobservable login is also an unroutable one
+    (`accounts._routing_order` drops `primary` when the uuid is empty), so a
+    turn actually served on this lane always has a uuid to read, and a
+    momentarily unreadable `~/.claude.json` must not read as a switch.
+    """
+    uuid = accounts.live_identity().get("uuid") or ""
+    if not uuid:
+        return accounts.PRIMARY
+    return accounts.PRIMARY + ":" + cachecontinuity.digest(
+        {"account": uuid}, 16)
+
+
 def _cache_claude_namespace(org: Org, tier: str,
                             resolved_env: dict[str, str], now: float
                             ) -> tuple[str, str]:
@@ -5914,15 +5944,20 @@ def _cache_claude_namespace(org: Org, tier: str,
 
     The returned account never enters the public forecast.  API keys are
     represented only by a digest so rotation is detectable without persisting
-    the credential.  Sandboxed proxy requests do not carry the credential in
-    the host spawn environment, so their namespace is resolved from the same
-    fallback-window and container-auth helpers used by the request relay.
+    the credential, and the primary login carries its own account digest so a
+    re-login as a different account is a namespace change (see
+    ``_cache_primary_namespace``).  Sandboxed proxy requests do not carry the
+    credential in the host spawn environment, so their namespace is resolved
+    from the same fallback-window and container-auth helpers used by the
+    request relay.
     """
     if sbx.is_sandboxed(org):
         selected = sbx.container_auth(org)
         fallback = api_fallback_active(org, now)
         if not bills_the_key(org, fallback):
-            return accounts.PRIMARY, "subscription"
+            # Billed to the host subscription, i.e. to the main login — so it
+            # is the main login's identity that bounds this cache namespace.
+            return _cache_primary_namespace(), "subscription"
         credential = (str(org.d.get("api_key") or "")
                       if fallback else selected)
         return ("sandbox-api-key:" + cachecontinuity.digest(
@@ -5932,6 +5967,8 @@ def _cache_claude_namespace(org: Org, tier: str,
         return ("api-key:" + cachecontinuity.digest(
                     {"credential": api_key}, 16), "api_key")
     account = identity_in_env(resolved_env)
+    if account == accounts.PRIMARY:
+        account = _cache_primary_namespace()
     return (account,
             "unobserved" if account == UNATTRIBUTED else "subscription")
 

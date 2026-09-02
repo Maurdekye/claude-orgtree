@@ -8254,6 +8254,58 @@ from `classify` by design and is proved separately through `readiness_fields`
 and `public`. Frontend: `cacheforecast.test.tsx` and `cachecountdown.test.tsx`
 (16 checks) cover the three-way render, the D-214 reversal, and fail-closed.
 
+### D-230 · the account namespace names WHO, not which seat
+
+Ruling (cache-account-check, 2026-09-02, on a user bug report relayed through
+coordinator — "cache validity doesn't check if the main account has changed or
+not"): the cache namespace's `account` component must identify the account
+itself. The main Claude login therefore carries the digest of its own account
+uuid (`primary:<digest>`, from `accounts.live_identity`), so signing out and
+back in as a different person is `known_incompatible` with a named `account`
+reason, exactly like a provider, lane, model or session-lineage switch.
+
+Why: `classify` had compared `account` since it was written, and every other
+lane's value already moved on a switch — a fallback key row id IS a hash of
+its token (`accounts.register_key`), an API key is digested, Codex hashes its
+own `account_id`, Gemini its account email. The main login alone was the
+constant `accounts.PRIMARY`, which names a SEAT — "whoever this machine is
+signed into" — not an occupant. So the one comparison that looked like it
+covered the common case was the one that structurally could not fail: two
+different accounts produced a byte-identical fingerprint, and a cache built by
+the previous account could be reported valid, and green, for the next one's
+turns. The bug was not a missing check; it was a check fed a value that could
+not move. That is the failure mode worth remembering — a comparison is only
+worth the discriminating power of what it compares.
+
+Bounds. ① The digest, never the uuid: raw account ids stay out of persisted and
+public forecasts, as everywhere else here. ② An UNOBSERVABLE login keeps the
+bare seat name and is NOT read as a switch, and neither are rows persisted
+before this shipped. Unobserved is not changed — the rule the history relation
+already follows — and the alternative was worse than a cosmetic flap: every
+pre-existing agent would have gone cold on the first poll after deploy, which
+`_cache_precompact_decision` can turn into an actual `will_compact`. A schema
+migration must not be able to destroy a context. ③ That tolerance is one
+string wide (`primary` ↔ `primary:<digest>`) and account-only; two observed
+accounts that differ always report as a switch. ④ Not established as green
+either — this decides only whether a switch is SEEN, not what an unobserved
+identity may claim.
+
+Load-bearing: `accounts.live_identity`'s uuid is stable across a token refresh
+and differs between accounts (its own docstring calls that the old probe
+battery's one durable finding), and `accounts._routing_order` drops `primary`
+from the pool when that uuid is empty — which is why an unreadable
+`~/.claude.json` cannot be the lane actually serving a turn, and why ② costs
+nothing in practice.
+
+Tests: `backend/tests/test_cache_continuity.py` — the namespace moves between
+two stubbed logins without carrying the uuid or email; the end-to-end snapshot
+→ classify path over a switch is `known_incompatible`/`prefix_changed` with
+`["account"]` as the sole changed component, while the same login twice is
+not; and the legacy/unobserved tolerance is proved in both directions, proved
+account-only, and proved not to swallow a real switch between two qualified
+accounts. Every check stubs `live_identity`: unstubbed it reads the
+developer's real login, so the assertion would turn on whose desk it ran.
+
 ### D-227 · a message is delivered when it is ACCEPTED, and announced once
 
 Ruling (codex-stream-order, 2026-09-02, completing D-221): **mid-turn mail

@@ -369,6 +369,41 @@ def _different(current: dict[str, Any], prior: dict[str, Any],
     return str(current.get(key) or "") != str(prior.get(key) or "")
 
 
+#: The main login's account namespace when WHICH account occupies it could not
+#: be observed — and the only value carried by rows persisted before the main
+#: account was qualified at all.  The supervisor's qualified form is
+#: ``primary:<digest>``; see ``supervisor._cache_primary_namespace``.
+UNQUALIFIED_PRIMARY: Final = "primary"
+
+
+def _namespace_changed(current: dict[str, Any], prior: dict[str, Any],
+                       key: str) -> bool:
+    """Did a namespace component MOVE — as opposed to becoming observable?
+
+    ⚠ THE ACCOUNT CARVE-OUT IS A MIGRATION RULE, NOT A LOOPHOLE. The main
+    login is now qualified by its own account digest so that signing in as a
+    different person is the namespace change it always was; the bare seat name
+    survives in exactly two places, neither of which is a different account:
+    a row persisted before that qualification existed, and a login this
+    machine currently cannot read. Counting either as a switch would report
+    every pre-existing agent's prefix cold on the first poll after this ships
+    — the same schema-migration-wearing-a-defect-label mistake
+    ``legacy_readiness`` exists to prevent, except that here ``will_compact``
+    can ACT on the false cold rather than merely display it. Unobserved is not
+    changed; the history relation already follows that rule. Two qualified
+    values that differ are a real switch and always report as one.
+    """
+    if not _different(current, prior, key):
+        return False
+    if key != "account":
+        return True
+    cur = str(current.get(key) or "")
+    old = str(prior.get(key) or "")
+    qualified = UNQUALIFIED_PRIMARY + ":"
+    return not ((cur == UNQUALIFIED_PRIMARY and old.startswith(qualified))
+                or (old == UNQUALIFIED_PRIMARY and cur.startswith(qualified)))
+
+
 def classify(current: dict[str, Any], continuity: dict[str, Any] | None,
              now: float) -> dict[str, Any]:
     """Classify the next turn from a current snapshot and durable evidence.
@@ -457,7 +492,7 @@ def classify(current: dict[str, Any], continuity: dict[str, Any] | None,
         "session": "session lineage changed",
     }
     for key in ("provider", "account", "lane", "model", "session"):
-        if _different(current, last, key):
+        if _namespace_changed(current, last, key):
             changed.append(_reason(key, labels[key], at))
     cur_parts = current.get("components")
     cur_parts = cast(dict[str, Any], cur_parts) if isinstance(cur_parts, dict) else {}
@@ -478,7 +513,7 @@ def classify(current: dict[str, Any], continuity: dict[str, Any] | None,
     receipt_relation = str(current.get("receipt_history_relation") or "unobserved")
     if receipt:
         for key in ("provider", "account", "lane", "model", "session"):
-            if _different(current, receipt, key):
+            if _namespace_changed(current, receipt, key):
                 receipt_changes.append(_reason(key, labels[key], at))
         receipt_parts = receipt.get("components")
         receipt_parts = (cast(dict[str, Any], receipt_parts)
