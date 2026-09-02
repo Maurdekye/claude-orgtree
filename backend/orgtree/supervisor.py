@@ -1119,6 +1119,32 @@ def _mcp_tool_count_end(slug: str, nid: str, owner: Any,
         if st.get("mcp_tool_owner") is not owner:
             return False
         provider = str(st.get("mcp_tool_provider") or "unknown")
+        # Hand this generation's FINAL surface to whoever still has to close
+        # its turn, before we erase it (measured 2026-09-02). This clear runs
+        # on the PUMP thread the instant stdout hits EOF, while the turn's own
+        # capture (`_mcp_tool_surface_for_owner`) sits in a `finally` that runs
+        # after `proc.wait()`. For a process that DIES at the boundary rather
+        # than parking, EOF wins the race, the capture saw an already-cleared
+        # owner and returned `(None, None)`, and the turn recorded no durable
+        # `last_turn_mcp_tools` at all.
+        #
+        # Not hypothetical, and not uniform — which is what hid it. A turn that
+        # PARKS records a baseline; a node whose process drains to exit every
+        # turn never does. Measured across the live pool: inventory-backup (3
+        # exits, 1 park) had no baseline while backup-coordinator (112 parks),
+        # coordinator (93) and mcp-reload-fix (2) all did. One park is enough,
+        # so every mixed node looked healthy.
+        #
+        # Keyed by the owner OBJECT, so only the exact generation it describes
+        # can read it: a foreign process reads nothing, and the SUCCESSOR reads
+        # nothing either — it must earn its own surface, which is the whole
+        # point of clearing names in `_mcp_tool_count_begin`. One slot,
+        # replaced at the next end: a handoff, not a history.
+        st["mcp_tool_final_surface"] = {
+            "owner": owner,
+            "count": st.get("mcp_tool_count"),
+            "names": st.get("mcp_tool_names"),
+        }
         st.pop("mcp_tool_owner", None)
         st["mcp_tool_count"] = None
         st["mcp_tool_source"] = "process"
@@ -1168,10 +1194,27 @@ def _mcp_tool_count_for_owner(slug: str, nid: str, owner: Any
 def _mcp_tool_surface_for_owner(
         slug: str, nid: str, owner: Any,
 ) -> tuple[int | None, list[str] | None]:
-    """Return one generation's authoritative count and exact names."""
+    """Return one generation's authoritative count and exact names.
+
+    Falls back to the FINAL surface stashed by `_mcp_tool_count_end` when this
+    generation has already been reaped: the turn boundary runs after the
+    process is gone, so on a die-at-boundary turn the live entry is already
+    cleared. Strictly owner-scoped, so neither a foreign process nor the
+    successor can be answered with it.
+    """
     st = state(slug, nid)
     with _state_lock:
         if st.get("mcp_tool_owner") is not owner:
+            final = st.get("mcp_tool_final_surface")
+            if isinstance(final, dict) and final.get("owner") is owner:
+                fval = final.get("count")
+                fcount = (fval if isinstance(fval, int)
+                          and not isinstance(fval, bool) and fval >= 0
+                          else None)
+                fnames = final.get("names")
+                fexact = sorted(str(name) for name in fnames) \
+                    if isinstance(fnames, set) else None
+                return fcount, fexact
             return None, None
         value = st.get("mcp_tool_count")
         count = (value if isinstance(value, int)

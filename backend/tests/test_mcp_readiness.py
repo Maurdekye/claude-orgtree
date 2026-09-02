@@ -150,8 +150,12 @@ class McpReadinessTests(unittest.TestCase):
                 timeout_s=1),
             "ready")
 
-        # the process is killed and replaced; the new one has published nothing
+        # the real sequence: stdout EOF reaps the old generation (which stashes
+        # its final surface for its own turn boundary), then the replacement is
+        # adopted having published nothing. The stash must not reach the gate —
+        # it exists to close out a dead turn, never to admit a live one.
         new = object()
+        S._mcp_tool_count_end(self.slug, self.nid, old, "process exited")
         self._begin(new)
         self.assertEqual(
             S._mcp_wait_for_surface(

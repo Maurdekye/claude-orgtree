@@ -156,6 +156,59 @@ class McpToolCountTests(unittest.TestCase):
             S._mcp_tool_surface_for_owner(self.slug, self.nid, new),
             (1, ["mcp__orgtree__one"]))
 
+    def test_surface_survives_a_process_that_dies_at_the_turn_boundary(
+            self) -> None:
+        """The turn boundary runs after the process is gone; it must still see it.
+
+        `_mcp_tool_count_end` fires on the pump thread at stdout EOF, while the
+        turn captures its surface in a `finally` after `proc.wait()`. On a turn
+        whose process DIES rather than parks, EOF wins and the capture used to
+        read `(None, None)` — so the turn recorded no durable
+        `last_turn_mcp_tools`. Measured live: nodes that park carry a baseline,
+        the one node that drains to exit every turn carried none.
+        """
+        gen = object()
+        S._mcp_tool_count_begin(
+            self.slug, self.nid, gen, "claude", "system/init.tools", "start")
+        S._mcp_tool_count_names(
+            self.slug, self.nid, gen,
+            ["mcp__orgtree__one", "mcp__alpha__two"], "claude",
+            "system/init.tools")
+        # stdout EOF: the pump reaps the generation…
+        S._mcp_tool_count_end(self.slug, self.nid, gen, "process exited")
+        # …and only now does the turn boundary get to capture it
+        self.assertEqual(
+            S._mcp_tool_surface_for_owner(self.slug, self.nid, gen),
+            (2, ["mcp__alpha__two", "mcp__orgtree__one"]))
+
+    def test_final_surface_is_readable_only_by_its_own_generation(self) -> None:
+        """The dying generation's handoff must not become a back door.
+
+        A successor must still earn its own surface (that is the whole point of
+        clearing names at `_begin`), and a foreign process must read nothing.
+        """
+        old, new, ghost = object(), object(), object()
+        S._mcp_tool_count_begin(
+            self.slug, self.nid, old, "claude", "system/init.tools", "start")
+        S._mcp_tool_count_names(
+            self.slug, self.nid, old, ["mcp__orgtree__one"], "claude",
+            "system/init.tools")
+        S._mcp_tool_count_end(self.slug, self.nid, old, "process exited")
+
+        self.assertEqual(
+            S._mcp_tool_surface_for_owner(self.slug, self.nid, ghost),
+            (None, None))
+        S._mcp_tool_count_begin(
+            self.slug, self.nid, new, "claude", "system/init.tools", "restart")
+        self.assertEqual(
+            S._mcp_tool_surface_for_owner(self.slug, self.nid, new),
+            (None, None),
+            "the successor was answered with its predecessor's final surface")
+        # the dead generation can still be closed out correctly
+        self.assertEqual(
+            S._mcp_tool_surface_for_owner(self.slug, self.nid, old),
+            (1, ["mcp__orgtree__one"]))
+
     def test_reclaiming_the_same_process_keeps_its_surface(self) -> None:
         """The clear above must fire on a NEW generation, never a re-adopted one.
 
