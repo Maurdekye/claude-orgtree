@@ -583,6 +583,15 @@ export function CacheForecastMark({ forecast }: {
  * low-occupancy cases the race still applies to. `cheapCompactOn` therefore
  * reads the compactor's own `enabled` flag, not the threshold decision.
  *
+ * ⚠ `cheapCompactOn` IS TRI-STATE. `true`/`false` are the backend's verdict on
+ * this node's compactor; `undefined` means the backend did not report one (a
+ * backend older than 2dc8cbb has no `cheap_compact_on` field at all). Absence
+ * is not "off" (D-226): the "cache miss could occur" sentence asserts that
+ * auto-compact is disabled, and rendering it on a missing field said exactly
+ * that to a user whose compactor was on (user report 2026-09-02 19:13Z). So
+ * the miss sentence is rendered ONLY on an explicit `false`; `undefined` gets
+ * a sentence that names the cold turn without claiming what it will cost.
+ *
  * ⚠ `midTurn` IS THE NARROW PREDICATE (an actually-running turn), not the
  * desk's broader `turnActive`. A queued or compacting agent has no steer
  * window to miss, so promising one would be fiction.
@@ -599,7 +608,7 @@ export function CacheForecastWarning({ forecast, midTurn, composerFocused,
   forecast?: CacheForecast | null
   midTurn: boolean
   composerFocused: boolean
-  cheapCompactOn: boolean
+  cheapCompactOn: boolean | undefined
 }) {
   // "Readiness confirmed invalid" is `not_ready` and ONLY `not_ready`. A grey
   // diagnostic is the absence of a verdict, not a negative one (D-226), and
@@ -609,11 +618,16 @@ export function CacheForecastWarning({ forecast, midTurn, composerFocused,
     const title = cacheForecastTitle(forecast)
     return <div className="cache-send-warning midturn" role="status" title={title}>
       <WarnIcon fontSize="inherit" />
-      <span>{cheapCompactOn
+      <span>{cheapCompactOn === true
         ? 'Cache warning — if this message misses the mid-turn steer window, '
           + 'it will trigger a cheap-compact before delivery.'
-        : 'Cache warning — a cache miss could occur before delivery if this '
-          + 'message misses the mid-turn steer window.'}</span>
+        : cheapCompactOn === false
+          ? 'Cache warning — a cache miss could occur before delivery if this '
+            + 'message misses the mid-turn steer window (automatic cheap '
+            + 'compaction is off).'
+          : 'Cache warning — if this message misses the mid-turn steer window, '
+            + 'it will start a fresh turn against a cold prefix (this backend '
+            + 'does not report whether cheap-compact is on).'}</span>
     </div>
   }
   // ⚠ MID-TURN ENDS HERE, FOCUSED OR NOT. Case 2's whole sentence — "sending
@@ -1806,7 +1820,7 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
           A queued or compacting agent has no window to miss. */}
       <CacheForecastWarning forecast={node.cache_forecast}
         midTurn={processActive} composerFocused={composerFocused}
-        cheapCompactOn={Boolean(node.cheap_compact_on)} />
+        cheapCompactOn={node.cheap_compact_on} />
       <div className={'cc-composer' + (canMail ? '' : ' off')}>
         <button className="cc-attach" disabled={!canMail}
           title="attach a file — it lands in the agent's uploads/ folder"

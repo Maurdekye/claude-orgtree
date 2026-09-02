@@ -365,10 +365,17 @@ test('mid-turn + invalid readiness + focused composer warns about the steer wind
     {/* compactor OFF → the miss costs a cache miss */}
     <CacheForecastWarning {...mid} cheapCompactOn={false}
       forecast={forecast('known_incompatible')} />
+    {/* compactor UNREPORTED (backend older than 2dc8cbb has no
+        `cheap_compact_on`) → NOT "off". The cache-miss sentence asserts that
+        auto-compact is disabled, and a missing field is not that verdict
+        (D-226): the user saw exactly this false claim with the compactor on.
+        So neither cost sentence — just the cold turn, honestly unknown. */}
+    <CacheForecastWarning {...mid} cheapCompactOn={undefined}
+      forecast={forecast('known_incompatible')} />
   </>, (el) => el)
   try {
     const w = [...view.el.querySelectorAll<HTMLElement>('.cache-send-warning')]
-    assert.equal(w.length, 2)
+    assert.equal(w.length, 3)
     // ALWAYS yellow: the cost is conditional on missing the window, and red is
     // reserved for a cost that is actually expected.
     for (const el of w) {
@@ -378,7 +385,12 @@ test('mid-turn + invalid readiness + focused composer warns about the steer wind
     assert.match(w[0]?.textContent ?? '', /misses the mid-turn steer window/)
     assert.match(w[0]?.textContent ?? '', /cheap-compact before delivery/)
     assert.match(w[1]?.textContent ?? '', /cache miss could occur before delivery/)
+    assert.match(w[1]?.textContent ?? '', /automatic cheap compaction is off/)
     assert.doesNotMatch(w[1]?.textContent ?? '', /cheap-compact/)
+    assert.match(w[2]?.textContent ?? '', /misses the mid-turn steer window/)
+    assert.match(w[2]?.textContent ?? '', /does not report whether cheap-compact is on/)
+    assert.doesNotMatch(w[2]?.textContent ?? '', /cache miss/, 'absent is not "off"')
+    assert.doesNotMatch(w[2]?.textContent ?? '', /trigger a cheap-compact/, 'absent is not "on"')
   } finally { await view.unmount() }
 })
 
