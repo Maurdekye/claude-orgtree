@@ -323,6 +323,83 @@ class McpToolCountTests(unittest.TestCase):
         self.assertEqual(saved["last_turn_mcp_fingerprint"],
                          "fingerprint-one")
 
+    def test_unobserved_surface_does_not_erase_a_known_good_baseline(
+            self) -> None:
+        """`None` means "not observed this turn", not "this node has no tools".
+
+        The boundary used to pop `last_turn_mcp_tools` whenever the snapshot
+        was `None`, so a turn that failed to observe its own surface DESTROYED
+        the baseline an earlier turn had recorded. Observation fails on exactly
+        the turns whose process dies at the boundary, so a node that never
+        parks was repeatedly stripped and its gate sat permanently at
+        `no-baseline` — fail-open on the nodes most likely to be replaced.
+
+        A node that genuinely has no MCP tools reports an observed EMPTY list,
+        which is recorded as the empty surface it is; that case is unaffected.
+        """
+        owner = object()
+        org = store.load_org(self.slug)
+        S._mcp_tool_count_begin(
+            self.slug, self.nid, owner, "claude", "system/init.tools", "init")
+        st = S.state(self.slug, self.nid)
+        st["interrupted"] = False
+        S._after_turn(self.slug, self.nid, org, {
+            "_mcp_tool_count": 2, "status": "completed",
+            "_mcp_tool_names": ["mcp__orgtree__one", "mcp__orgtree__two"],
+            "_mcp_tool_fingerprint": "fp-1",
+            "total_cost_usd": 0, "usage": {}, "duration_ms": 1,
+        }, st, 10, on_key=False)
+
+        # a LATER SUCCESSFUL turn whose surface could not be observed
+        org = store.load_org(self.slug)
+        S._after_turn(self.slug, self.nid, org, {
+            "_mcp_tool_count": None, "status": "completed",
+            "_mcp_tool_names": None, "_mcp_tool_fingerprint": "fp-1",
+            "total_cost_usd": 0, "usage": {}, "duration_ms": 1,
+        }, st, 10, on_key=False)
+        saved = store.load_org(self.slug).node(self.nid)
+        self.assertEqual(
+            saved.get("last_turn_mcp_tools"),
+            ["mcp__orgtree__one", "mcp__orgtree__two"],
+            "an unobserved turn erased the baseline a good turn recorded")
+        self.assertEqual(saved.get("last_turn_mcp_fingerprint"), "fp-1")
+
+        # …while an OBSERVED EMPTY surface is still recorded as empty
+        org = store.load_org(self.slug)
+        S._after_turn(self.slug, self.nid, org, {
+            "_mcp_tool_count": 0, "status": "completed",
+            "_mcp_tool_names": [], "_mcp_tool_fingerprint": "fp-1",
+            "total_cost_usd": 0, "usage": {}, "duration_ms": 1,
+        }, st, 10, on_key=False)
+        saved = store.load_org(self.slug).node(self.nid)
+        self.assertEqual(saved.get("last_turn_mcp_tools"), [])
+
+    def test_durable_surface_does_not_depend_on_teardown_running(self) -> None:
+        """The boundary's copy is written at PUBLISH time, not at reap time.
+
+        Teardown is not a reliable hook: `warmpool.discard()` never calls
+        `_mcp_tool_count_end`, `kill_node` early-returns on a claimed process
+        before reaching it, and a pump thread dying without a clean EOF never
+        fires it. So the surface must already be durable before any of that —
+        here the generation is replaced with NO `_end` call at all.
+        """
+        old, new = object(), object()
+        S._mcp_tool_count_begin(
+            self.slug, self.nid, old, "claude", "system/init.tools", "start")
+        S._mcp_tool_count_names(
+            self.slug, self.nid, old, ["mcp__orgtree__one"], "claude",
+            "system/init.tools")
+        # no _mcp_tool_count_end: the discard/kill paths simply never call it
+        S._mcp_tool_count_begin(
+            self.slug, self.nid, new, "claude", "system/init.tools", "restart")
+        self.assertEqual(
+            S._mcp_tool_surface_for_owner(self.slug, self.nid, old),
+            (1, ["mcp__orgtree__one"]),
+            "the dead generation's turn boundary lost its surface")
+        self.assertEqual(
+            S._mcp_tool_surface_for_owner(self.slug, self.nid, new),
+            (None, None))
+
     def test_unknown_provider_and_tree_contract(self) -> None:
         owner = object()
         with store.DOC_LOCK:

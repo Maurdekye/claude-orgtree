@@ -1025,6 +1025,12 @@ def _mcp_tool_count_publish(slug: str, nid: str, owner: Any, count: int,
             st["mcp_tool_source"] = source
             st["mcp_tool_reason"] = reason
             changed = True
+        # keep the boundary's durable copy in step with later count-only
+        # revisions (per-server refresh rows), so the stash never disagrees
+        # with the live entry it stands in for
+        final = st.get("mcp_tool_final_surface")
+        if isinstance(final, dict) and final.get("owner") is owner:
+            final["count"] = count
         payload = {
             "count": count, "provider": provider, "source": source,
             "reason": reason,
@@ -1074,6 +1080,25 @@ def _mcp_tool_count_names(slug: str, nid: str, owner: Any,
         if st.get("mcp_tool_owner") is not owner:
             return False
         st["mcp_tool_names"] = tools
+        # Durable copy for the TURN BOUNDARY, written on the happy path as the
+        # surface is published rather than on the way out (reviewer H4,
+        # 2026-09-02). The boundary capture runs after `proc.wait()`, i.e.
+        # after the process is already dead, so it cannot rely on live state —
+        # but it must not rely on TEARDOWN having run either, and teardown is
+        # not guaranteed: `warmpool.discard()` never calls
+        # `_mcp_tool_count_end` at all, `kill_node` early-returns on a claimed
+        # process before reaching it, and a pump thread that dies without a
+        # clean EOF never fires it. Recording here removes the ordering
+        # dependency instead of racing it.
+        #
+        # Owner-scoped by RETAINED OBJECT and compared with `is` — never by
+        # `id()`, which CPython reuses after GC, so a fresh Popen could alias a
+        # dead generation's entry and resurrect exactly the staleness the
+        # sibling fix removes. One slot, overwritten by the next publish: at
+        # most one corpse is retained, which matters on Windows where holding a
+        # Popen keeps the process handle (and its zombie) alive.
+        st["mcp_tool_final_surface"] = {
+            "owner": owner, "count": len(tools), "names": tools}
         servers: dict[str, int] = {}
         for name in tools:
             bits = name.split("__", 2)
@@ -1119,32 +1144,15 @@ def _mcp_tool_count_end(slug: str, nid: str, owner: Any,
         if st.get("mcp_tool_owner") is not owner:
             return False
         provider = str(st.get("mcp_tool_provider") or "unknown")
-        # Hand this generation's FINAL surface to whoever still has to close
-        # its turn, before we erase it (measured 2026-09-02). This clear runs
-        # on the PUMP thread the instant stdout hits EOF, while the turn's own
-        # capture (`_mcp_tool_surface_for_owner`) sits in a `finally` that runs
-        # after `proc.wait()`. For a process that DIES at the boundary rather
-        # than parking, EOF wins the race, the capture saw an already-cleared
-        # owner and returned `(None, None)`, and the turn recorded no durable
-        # `last_turn_mcp_tools` at all.
-        #
-        # Not hypothetical, and not uniform — which is what hid it. A turn that
-        # PARKS records a baseline; a node whose process drains to exit every
-        # turn never does. Measured across the live pool: inventory-backup (3
-        # exits, 1 park) had no baseline while backup-coordinator (112 parks),
-        # coordinator (93) and mcp-reload-fix (2) all did. One park is enough,
-        # so every mixed node looked healthy.
-        #
-        # Keyed by the owner OBJECT, so only the exact generation it describes
-        # can read it: a foreign process reads nothing, and the SUCCESSOR reads
-        # nothing either — it must earn its own surface, which is the whole
-        # point of clearing names in `_mcp_tool_count_begin`. One slot,
-        # replaced at the next end: a handoff, not a history.
-        st["mcp_tool_final_surface"] = {
-            "owner": owner,
-            "count": st.get("mcp_tool_count"),
-            "names": st.get("mcp_tool_names"),
-        }
+        # NOTE: the durable surface this generation's turn boundary will read
+        # is NOT written here. It is written as the surface is published
+        # (`_mcp_tool_count_names`), deliberately, because teardown is not a
+        # reliable hook: `warmpool.discard()` never calls this function,
+        # `kill_node` early-returns on a claimed process before reaching it,
+        # and a pump thread that dies without a clean EOF never fires it.
+        # Leave `mcp_tool_final_surface` standing — it belongs to the
+        # generation being reaped, is keyed to it, and its turn may still be
+        # unwinding.
         st.pop("mcp_tool_owner", None)
         st["mcp_tool_count"] = None
         st["mcp_tool_source"] = "process"
@@ -11514,9 +11522,21 @@ def _after_turn(slug: str, nid: str, org: Org, res: dict[str, Any],
                         and mcp_names_snapshot is not None):
                     n["last_turn_mcp_tools"] = mcp_names_snapshot
                     n["last_turn_mcp_fingerprint"] = mcp_fingerprint
-                else:
-                    n.pop("last_turn_mcp_tools", None)
-                    n.pop("last_turn_mcp_fingerprint", None)
+                # …and when it is None we KEEP the previous baseline rather
+                # than erasing it (reviewer §3, 2026-09-02). `None` here means
+                # "this turn's surface was not observed", NOT "this node has no
+                # tools" — a node that genuinely has none reports an observed
+                # EMPTY list, which takes the branch above and is recorded as
+                # the empty surface it is. Collapsing the two erased a
+                # known-good baseline every time observation failed, and since
+                # observation failed on exactly the turns whose process died at
+                # the boundary, a node that never parks was repeatedly
+                # STRIPPED — leaving the gate permanently at "no-baseline" and
+                # permanently fail-open on the nodes most likely to be
+                # replaced. A genuine configuration change is already handled,
+                # and handled better, by the fingerprint's
+                # `infrastructure-changed` branch, which rebases the
+                # expectation instead of destroying it.
             # №15: a small per-turn ring — cost + duration + denial count —
             # surfaced as a tooltip on the $ badge, never a new chip
             ring = n.setdefault("turns", [])
