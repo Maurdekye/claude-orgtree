@@ -30,6 +30,11 @@ test('desk header has bounded controls and a separate wrapping metadata row', as
     mcp_tool_count_provider: 'claude', mcp_tool_count_source: 'system/init.tools',
     cache_forecast: {
       generation: 'g', state: 'known_incompatible', reason: 'tools changed',
+      // D-226: a real payload carries the readiness triple, and the badge
+      // renders THAT. Without it this row is `internal_error` grey and the
+      // send-warning below cannot fire at all — the fixture would silently
+      // stop exercising the thing this test is about.
+      readiness: 'not_ready', readiness_cause: 'prefix_changed',
       source: 'identity', lane: 'subscription', last_receipt_at: '2026-09-01T10:00:00Z',
       ttl_seconds: 3600, expires_at: '2026-09-01T11:00:00Z',
       changed_inputs: ['callable tools'], precompact_action: 'miss_expected',
@@ -89,8 +94,27 @@ test('desk header has bounded controls and a separate wrapping metadata row', as
     'the desk header still renders separate live and warm lights')
   assert.equal(top.querySelector('.mcp-tool-count'), null)
   assert.equal(top.querySelector('.cache-forecast'), null)
-  assert.ok(view.el.querySelector('.cache-send-warning.miss'),
-    'known incompatibility warning is not attached above the composer')
+  // This desk is `busy: true`, i.e. mid-turn, and mounts `bare` so the
+  // composer does not autofocus. Both facts matter now:
+  //   · the ORIGINAL red "miss" banner is suppressed mid-turn — a send steers
+  //     into the running turn and cannot miss;
+  //   · the mid-turn steer-window banner needs a FOCUSED composer, so nothing
+  //     renders until the user is actually composing something to send.
+  assert.equal(view.el.querySelector('.cache-send-warning'), null,
+    'a mid-turn desk with an unfocused composer must show no send warning')
+  // Focusing the composer is what makes the warning appear, and it must
+  // appear ABOVE the composer rather than in the header — the layout contract
+  // this test has always been about.
+  const ta = view.el.querySelector('textarea')
+  assert.ok(ta, 'composer textarea missing')
+  ta!.focus()
+  await flush()
+  const warn = view.el.querySelector('.cache-send-warning.midturn')
+  assert.ok(warn, 'mid-turn cache warning is not attached above the composer')
+  assert.equal(view.el.querySelector('.cache-send-warning.miss'), null,
+    'the red send-time banner must not fire mid-turn')
+  assert.equal(head.querySelector('.cache-send-warning'), null,
+    'the send warning leaked into the header')
   assert.ok(head.nextElementSibling?.classList.contains('desk-nav'),
     'superior jump strip is not the distinct row immediately after header metadata')
 })

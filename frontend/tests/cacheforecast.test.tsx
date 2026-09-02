@@ -326,15 +326,20 @@ test('internal_error is reserved for a verdict nothing can read, and it always s
   }
 })
 
+// The original past-threshold warning is UNCHANGED by the mid-turn case; it is
+// simply not mid-turn. `idle` spells that out at every call so the two cases
+// stay visibly distinct in these tests.
+const idle = { midTurn: false, composerFocused: false, cheapCompactOn: false }
+
 test('only known-cold states warn at send time with policy-owned colour', async () => {
   const view = await mountView(<>
-    <CacheForecastWarning forecast={forecast('compatible_observed')} />
-    <CacheForecastWarning forecast={forecast('expired_known_entry')} />
-    <CacheForecastWarning forecast={forecast('uncertain')} />
-    <CacheForecastWarning forecast={forecast('known_incompatible', 'miss_expected')} />
-    <CacheForecastWarning forecast={forecast('expired_known_entry', 'miss_expected')} />
-    <CacheForecastWarning forecast={forecast('known_incompatible', 'will_compact')} />
-    <CacheForecastWarning forecast={forecast('expired_known_entry', 'will_compact')} />
+    <CacheForecastWarning {...idle} forecast={forecast('compatible_observed')} />
+    <CacheForecastWarning {...idle} forecast={forecast('expired_known_entry')} />
+    <CacheForecastWarning {...idle} forecast={forecast('uncertain')} />
+    <CacheForecastWarning {...idle} forecast={forecast('known_incompatible', 'miss_expected')} />
+    <CacheForecastWarning {...idle} forecast={forecast('expired_known_entry', 'miss_expected')} />
+    <CacheForecastWarning {...idle} forecast={forecast('known_incompatible', 'will_compact')} />
+    <CacheForecastWarning {...idle} forecast={forecast('expired_known_entry', 'will_compact')} />
   </>, (el) => el)
   try {
     const warnings = [...view.el.querySelectorAll<HTMLElement>('.cache-send-warning')]
@@ -348,6 +353,73 @@ test('only known-cold states warn at send time with policy-owned colour', async 
     assert.equal(warnings[3]?.classList.contains('compact'), true)
     assert.match(warnings[3]?.textContent ?? '', /will cheap-compact/)
   } finally { await view.unmount() }
+})
+
+test('mid-turn + invalid readiness + focused composer warns about the steer window', async () => {
+  const mid = { midTurn: true, composerFocused: true }
+  const view = await mountView(<>
+    {/* compactor ON → the miss costs a cheap-compact */}
+    <CacheForecastWarning {...mid} cheapCompactOn
+      forecast={forecast('known_incompatible')} />
+    {/* compactor OFF → the miss costs a cache miss */}
+    <CacheForecastWarning {...mid} cheapCompactOn={false}
+      forecast={forecast('known_incompatible')} />
+  </>, (el) => el)
+  try {
+    const w = [...view.el.querySelectorAll<HTMLElement>('.cache-send-warning')]
+    assert.equal(w.length, 2)
+    // ALWAYS yellow: the cost is conditional on missing the window, and red is
+    // reserved for a cost that is actually expected.
+    for (const el of w) {
+      assert.equal(el.classList.contains('midturn'), true)
+      assert.equal(el.classList.contains('miss'), false, 'must not be red')
+    }
+    assert.match(w[0]?.textContent ?? '', /misses the mid-turn steer window/)
+    assert.match(w[0]?.textContent ?? '', /cheap-compact before delivery/)
+    assert.match(w[1]?.textContent ?? '', /cache miss could occur before delivery/)
+    assert.doesNotMatch(w[1]?.textContent ?? '', /cheap-compact/)
+  } finally { await view.unmount() }
+})
+
+test('the mid-turn warning needs all three conditions, and overrides the original', async () => {
+  const cold = forecast('known_incompatible', 'will_compact')   // actionable too
+  const cases: Array<[string, JSX.Element, 'midturn' | 'compact' | 'none']> = [
+    ['all three → mid-turn banner, overriding the threshold banner',
+      <CacheForecastWarning forecast={cold} midTurn composerFocused
+        cheapCompactOn />, 'midturn'],
+    // ⚠ the override direction matters: this same forecast WOULD have produced
+    // the original yellow "sending will cheap-compact" banner. Mid-turn it must
+    // not, because that sentence describes a send that starts a turn.
+    // ⚠ MID-TURN IS SILENT UNLESS THE COMPOSER IS FOCUSED. The original banner
+    // is a false positive in EVERY mid-turn state, not merely the focused one:
+    // its sentence describes a send that starts a turn, and mid-turn a send
+    // steers instead. `cold` here is deliberately actionable — it WOULD have
+    // produced the original yellow banner — so this pins the suppression
+    // rather than trivially passing on a forecast that warns about nothing.
+    ['mid-turn but unfocused → silence, not the original banner',
+      <CacheForecastWarning forecast={cold} midTurn composerFocused={false}
+        cheapCompactOn />, 'none'],
+    ['not mid-turn → falls back to the ORIGINAL banner, unchanged',
+      <CacheForecastWarning forecast={cold} midTurn={false} composerFocused
+        cheapCompactOn />, 'compact'],
+    // grey is the ABSENCE of a verdict, not a negative one (D-226) — warning
+    // on it would assert something the backend declined to say.
+    ['grey diagnostic readiness is not "confirmed invalid"',
+      <CacheForecastWarning forecast={forecast('uncertain')} midTurn
+        composerFocused cheapCompactOn />, 'none'],
+    ['a ready forecast never warns',
+      <CacheForecastWarning forecast={forecast('compatible_observed')} midTurn
+        composerFocused cheapCompactOn />, 'none'],
+  ]
+  for (const [label, el, want] of cases) {
+    const view = await mountView(el, (v) => v)
+    try {
+      const w = view.el.querySelector<HTMLElement>('.cache-send-warning')
+      if (want === 'none') { assert.equal(w, null, label); continue }
+      assert.ok(w, label)
+      assert.equal(w?.classList.contains(want), true, label)
+    } finally { await view.unmount() }
+  }
 })
 
 test('manual compaction warning uses forecast evidence, never generic idle age', () => {

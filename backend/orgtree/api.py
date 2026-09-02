@@ -1319,6 +1319,15 @@ def org_tree(slug: str, request: Request) -> dict[str, Any]:
             if st.get("mcp_readiness_reason") else None)
         node["cache_forecast"] = supervisor.cache_forecast_public(
             org, node["id"])
+        # The composer's mid-turn steer-window warning has to say which of two
+        # things a missed window costs, and that depends on whether the
+        # compactor is on FOR THIS NODE. Resolved here rather than threaded
+        # through the UI from the org default: the effective value is the org
+        # setting merged with this node's own scope override, and only
+        # `_auto_cheap_cfg` knows that. Passing the org value down instead
+        # would render the wrong sentence on every node that overrides it.
+        node["cheap_compact_on"] = (
+            supervisor._auto_cheap_cfg(org, node["id"]) is not None)
         # concurrently running subagents (Task/Agent tool calls in flight) —
         # the desk header shows it beside the working clock, only when > 0
         node["tasks"] = int(st.get("tasks") or 0)

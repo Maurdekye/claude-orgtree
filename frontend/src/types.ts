@@ -335,6 +335,10 @@ export interface TreeNode {
   mcp_readiness_reason?: string | null
   /** Optional during the predictor rollout; absent until backend evidence exists. */
   cache_forecast?: CacheForecast | null
+  /** effective cheap-compact setting for THIS node (org default merged
+   *  with its own scope override) — resolved backend-side, because the
+   *  org value alone would be wrong on any node that overrides it. */
+  cheap_compact_on?: boolean
   waiting: boolean
   responding: boolean
   phase: string | null

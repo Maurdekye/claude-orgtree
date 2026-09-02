@@ -1001,7 +1001,11 @@ button.cc-name:hover {
   color: var(--bad); border-color: color-mix(in srgb, var(--bad) 68%, var(--line));
   background: color-mix(in srgb, var(--bad) 10%, transparent);
 }
-.cache-send-warning.compact {
+.cache-send-warning.compact,
+/* the mid-turn steer-window warning is ALWAYS yellow, whether or not
+   cheap-compact is on: it describes a cost that is conditional on missing the
+   window, not one that is expected. Red is reserved for the latter. */
+.cache-send-warning.midturn {
   color: var(--warn, #e5c07b);
   border-color: color-mix(in srgb, var(--warn, #e5c07b) 68%, var(--line));
   background: color-mix(in srgb, var(--warn, #e5c07b) 10%, transparent);

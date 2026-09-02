@@ -305,6 +305,10 @@ export interface CanvasNode {
   mcp_readiness_state?: string | null
   mcp_readiness_reason?: string | null
   cache_forecast?: CacheForecast | null
+  /** effective cheap-compact setting for THIS node (org default merged
+   *  with its own scope override) — resolved backend-side, because the
+   *  org value alone would be wrong on any node that overrides it. */
+  cheap_compact_on?: boolean
   /** G4: server-derived, from the supervisor's live tail (absent on the
    *  synthetic cards — eye root, draft, bearers — which never run turns) */
   activity?: ActivityInfo

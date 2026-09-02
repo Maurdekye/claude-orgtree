@@ -561,9 +561,68 @@ export function CacheForecastMark({ forecast }: {
   </span>
 }
 
-export function CacheForecastWarning({ forecast }: {
+/** Send-time cache warnings. TWO independent cases, not one with extra gates.
+ *
+ * ── CASE 1 (checked first, and it OVERRIDES case 2): the mid-turn window ──
+ * Fires on mid-turn AND confirmed-invalid readiness AND a focused composer.
+ *
+ * The reasoning is about a race the user cannot see. While a turn is running,
+ * a message normally STEERS into it — it joins the turn in flight, costing no
+ * new prefix and no compaction. But that window closes when the turn ends, and
+ * a message that arrives just after it lands as a fresh turn instead, against
+ * a prefix this forecast already says is not compatibility-ready. So the honest
+ * warning here is conditional, not predictive: it is about what happens IF the
+ * steer window is missed, which is why it says "if" and why it is always
+ * YELLOW. Red is reserved for a cost that is actually expected; this one may
+ * well cost nothing at all.
+ *
+ * ⚠ IT IS DELIBERATELY NOT THRESHOLD-GATED. Case 2 rides `precompact_action`,
+ * which the backend suppresses below its occupancy thresholds ("banner policy
+ * is deliberately stricter than badge policy"). That makes it useless as a
+ * signal here — it would silently withhold this warning in exactly the
+ * low-occupancy cases the race still applies to. `cheapCompactOn` therefore
+ * reads the compactor's own `enabled` flag, not the threshold decision.
+ *
+ * ⚠ `midTurn` IS THE NARROW PREDICATE (an actually-running turn), not the
+ * desk's broader `turnActive`. A queued or compacting agent has no steer
+ * window to miss, so promising one would be fiction.
+ *
+ * ── CASE 2: the original past-threshold warning, unchanged ──
+ * Cold, actionable, and reached only when case 1 does not apply.
+ *
+ * The gating props are REQUIRED. Defaulting them would let a future call site
+ * silently get the old behaviour back, and a missing gate here is invisible:
+ * the banner looks identical whether it was reasoned about or forgotten.
+ */
+export function CacheForecastWarning({ forecast, midTurn, composerFocused,
+  cheapCompactOn }: {
   forecast?: CacheForecast | null
+  midTurn: boolean
+  composerFocused: boolean
+  cheapCompactOn: boolean
 }) {
+  // "Readiness confirmed invalid" is `not_ready` and ONLY `not_ready`. A grey
+  // diagnostic is the absence of a verdict, not a negative one (D-226), and
+  // warning on it would be asserting something the backend declined to say.
+  const invalid = Boolean(forecast) && readinessOf(forecast!) === 'not_ready'
+  if (forecast && midTurn && invalid && composerFocused) {
+    const title = cacheForecastTitle(forecast)
+    return <div className="cache-send-warning midturn" role="status" title={title}>
+      <WarnIcon fontSize="inherit" />
+      <span>{cheapCompactOn
+        ? 'Cache warning — if this message misses the mid-turn steer window, '
+          + 'it will trigger a cheap-compact before delivery.'
+        : 'Cache warning — a cache miss could occur before delivery if this '
+          + 'message misses the mid-turn steer window.'}</span>
+    </div>
+  }
+  // ⚠ MID-TURN ENDS HERE, FOCUSED OR NOT. Case 2's whole sentence — "sending
+  // will cheap-compact this session first" / "cache miss expected" — describes
+  // a send that STARTS a turn. Mid-turn a send steers into the turn already
+  // running, so that cost cannot occur and the banner is a false positive in
+  // every mid-turn state, not merely the focused one. The focused case has
+  // already been answered above by case 1; the unfocused case gets silence.
+  if (midTurn) return null
   const cold = forecast?.state === 'known_incompatible'
     || forecast?.state === 'expired_known_entry'
   const actionable = forecast?.precompact_action === 'will_compact'
@@ -1121,6 +1180,11 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
   const fileRef = useRef<HTMLInputElement | null>(null)
   // attachments STAGE onto the next message (user spec 2026-07-31: mail
   // carries files) — the bytes upload immediately, the mail links them
+  // Whether the composer textarea currently holds focus. Local to the desk on
+  // purpose: it gates one banner and nothing above it should re-render when
+  // focus moves. Tracked rather than read from `document.activeElement` so the
+  // render stays a pure function of state.
+  const [composerFocused, setComposerFocused] = useState(false)
   const [attached, setAttached] = useState<{ name: string; path: string; bytes: number }[]>([])
   const attach = (file: File) => {
     uploadFile(slug, node.id, file)
@@ -1737,7 +1801,12 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
       )}
       {text.trimStart().startsWith('/') && canMail && (
         <SlashHints text={text} setText={setText} />)}
-      <CacheForecastWarning forecast={node.cache_forecast} />
+      {/* `processActive`, not `turnActive`: the mid-turn banner is about a
+          STEER WINDOW, which only exists while a turn is genuinely running.
+          A queued or compacting agent has no window to miss. */}
+      <CacheForecastWarning forecast={node.cache_forecast}
+        midTurn={processActive} composerFocused={composerFocused}
+        cheapCompactOn={Boolean(node.cheap_compact_on)} />
       <div className={'cc-composer' + (canMail ? '' : ' off')}>
         <button className="cc-attach" disabled={!canMail}
           title="attach a file — it lands in the agent's uploads/ folder"
@@ -1762,6 +1831,8 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
             : node.state === 'archived'
               ? `message ${node.id} — queued until rehire…` : node.state}
           onChange={(e) => { flashMode(''); setText(e.target.value); grow() }}
+          onFocus={() => setComposerFocused(true)}
+          onBlur={() => setComposerFocused(false)}
           onPaste={(e) => {
             // №6: Ctrl+V of an image/file auto-bridges to a real upload
             if (e.clipboardData?.files?.length) {
