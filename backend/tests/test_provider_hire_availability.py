@@ -22,6 +22,8 @@ the turn tried to spawn. A refusal at the door beats a failure at spawn.
     §3  the payload each family publishes, in all three states
     §4  the hire gate, now including Claude
     §5  controls: what would make the above vacuous
+    §6  gpt-reserve's own gate (OpenAI's grant comes and goes)
+    §7  the ACCOUNT's exhaustion, which is every Codex tier's
 
     python backend/tests/test_provider_hire_availability.py
 """
@@ -364,7 +366,13 @@ def reserve_refused_when_the_cli_stops_offering_it() -> None:
 def reserve_refused_when_the_account_is_spent() -> None:
     """The second live signal: a granted pool the account cannot reach.
     Measured — the reserve agent's first turn came back
-    `usage_limit_exceeded`, having already cost a seat."""
+    `usage_limit_exceeded`, having already cost a seat.
+
+    Since the family-wide follow-up (§7) this refusal arrives from the
+    FAMILY branch rather than the reserve one, because the exhaustion is the
+    account's. Same fact, same wording, one place — which is the point;
+    the check stays here so that stops being true loudly if it ever
+    changes."""
     with Codex(spent=True):
         expect_error(lambda: api.provider_hire_gate(org(), "gpt-reserve"),
                      "no usage left")
@@ -388,10 +396,12 @@ def unknown_evidence_is_not_a_refusal() -> None:
 
 def reserve_gate_never_touches_the_other_three() -> None:
     """Anti-vacuity: a gate that refused every codex tier under these
-    conditions would make the refusals above look right for the wrong
-    reason."""
-    for fixture in (Codex(kind="api-key"), Codex(offered=False),
-                    Codex(spent=True)):
+    conditions would make the refusals above look right for the wrong reason.
+
+    `spent` is deliberately NOT in this list — exhaustion is the account's
+    and §7 requires it to hit all four. The two RESERVE-specific signals
+    are what must stay off luna/terra/sol."""
+    for fixture in (Codex(kind="api-key"), Codex(offered=False)):
         with fixture:
             for t in ("luna", "terra", "sol"):
                 api.provider_hire_gate(org(), t)
@@ -409,6 +419,72 @@ check("no evidence either way is not a refusal",
       unknown_evidence_is_not_a_refusal)
 check("…and its own rule never leaks onto luna/terra/sol",
       reserve_gate_never_touches_the_other_three)
+
+
+# ------------------------------------------- §7 the family's own capacity
+print("\n§7  a spent ACCOUNT is a spent family, not a spent tier")
+
+
+def kiosk_org() -> Org:
+    o = org()
+    o.d["kiosk"] = True
+    return o
+
+
+def every_codex_tier_is_refused_when_the_account_is_spent() -> None:
+    """The follow-up (coordinator decision, 2026-09-02). One account, one set
+    of usage windows: sol has exactly as much left as gpt-reserve does, which
+    is none. The old gate accepted these hires, spent the seat, created the
+    node, and let the agent's first turn come back `usage_limit_exceeded` —
+    measured, on agent `timestamp` at 19:38Z."""
+    with Codex(spent=True):
+        for t in providers.CODEX_TIERS:
+            expect_error(lambda t=t: api.provider_hire_gate(org(), t),
+                         "no usage left", "seat")
+
+
+def claude_is_a_different_account() -> None:
+    """Anti-vacuity: a gate that refused everything while the Codex board
+    said 'spent' would pass the check above for the wrong reason."""
+    with Codex(spent=True), Fake(installed=True, signed_in=True):
+        for t in providers.CLAUDE_TIERS:
+            api.provider_hire_gate(org(), t)
+
+
+def every_codex_tier_passes_with_capacity() -> None:
+    """THE LEG THAT MUST HOLD."""
+    with Codex(spent=False):
+        for t in providers.CODEX_TIERS:
+            api.provider_hire_gate(org(), t)
+
+
+def an_unread_board_refuses_nothing() -> None:
+    """`exhausted()` answers None on a machine nobody has polled, and None is
+    not 'spent'. Failing closed here would take the whole Codex provider away
+    from anyone who has not opened the usage panel."""
+    with Codex(spent=None):
+        for t in providers.CODEX_TIERS:
+            api.provider_hire_gate(org(), t)
+
+
+def a_standing_rule_still_outranks_a_transient_one() -> None:
+    """Ordering, pinned: kiosk and headless are durable policy and the user
+    needs to hear THEM, not 'you are out of usage this week' — which would
+    imply the hire becomes possible on Sunday. It does not."""
+    with Codex(spent=True):
+        expect_error(lambda: api.provider_hire_gate(kiosk_org(), "sol"),
+                     "kiosk")
+
+
+check("every Codex tier is refused when the account has nothing left",
+      every_codex_tier_is_refused_when_the_account_is_spent)
+check("…and Claude, a different account, is untouched by it",
+      claude_is_a_different_account)
+check("…and all four PASS with capacity (the leg that must hold)",
+      every_codex_tier_passes_with_capacity)
+check("an unread usage board refuses nothing", an_unread_board_refuses_nothing)
+check("a kiosk still hears the kiosk rule, not the usage one",
+      a_standing_rule_still_outranks_a_transient_one)
 
 
 # ------------------------------------------------------------------ summary

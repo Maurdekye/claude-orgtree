@@ -28,6 +28,7 @@ board orgtree already polls.
     §2  the usage board — "can a turn run at all", credits included
     §3  the rule both doors ask
     §4  controls: what would make the above vacuous
+    §5  the follow-up: the ACCOUNT's exhaustion is every Codex tier's
 """
 
 import datetime as _dt
@@ -35,6 +36,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -267,14 +269,54 @@ def a_scoped_bucket_does_not_speak_for_the_account():
 def a_stale_board_answers_unknown():
     codex_limits.invalidate()
     eq(codex_limits.exhausted(), None, "no board at all")
-    codex_limits._cache.update(at=__import__("time").time(),
+    codex_limits._cache.update(at=time.time(),
                                data=codex_limits._normalize(
-                                   board(percent=100, reached=True,
+                                   board(percent=8, reached=False,
                                          credits=NO_CREDITS)))
-    eq(codex_limits.exhausted(), True, "a FRESH spent board says so")
+    eq(codex_limits.exhausted(), False, "a FRESH healthy board says so")
     codex_limits._cache["at"] -= codex_limits.MAX_EVIDENCE_AGE + 1
     eq(codex_limits.exhausted(), None,
        "…and the same board, gone stale, stops speaking")
+    codex_limits.invalidate()
+
+
+def a_spent_verdict_survives_its_own_window():
+    """THE ASYMMETRY, and why it is sound: usage inside a window only ever
+    goes UP. "Spent, resets Sep 7" is still true an hour later without anyone
+    re-asking, so a spent verdict is trusted to `exhausted_until` rather than
+    to MAX_EVIDENCE_AGE. Without this the family gate goes blind fifteen
+    minutes after the last Codex turn — exactly when a user who has just
+    burned their week is still trying to hire."""
+    data = codex_limits._normalize(
+        board(percent=100, reached=True, credits=NO_CREDITS))
+    eq(data["exhausted_until"], 1788764643.0, "dated by the window's reset")
+    codex_limits._cache.update(at=time.time(), data=data)
+    eq(codex_limits.exhausted(), True, "fresh and spent")
+    codex_limits._cache["at"] -= codex_limits.MAX_EVIDENCE_AGE + 1
+    eq(codex_limits.exhausted(), True, "stale, but the window has not rolled")
+    codex_limits.invalidate()
+
+
+def a_spent_verdict_expires_when_the_window_rolls():
+    """The other half — without it the extension above would be a
+    permanent refusal that no reset could ever clear."""
+    raw = board(percent=100, reached=True, credits=NO_CREDITS)
+    raw["rateLimits"]["primary"]["resetsAt"] = time.time() - 60
+    codex_limits._cache.update(
+        at=time.time() - codex_limits.MAX_EVIDENCE_AGE - 1,
+        data=codex_limits._normalize(raw))
+    eq(codex_limits.exhausted(), None, "a rolled window stops speaking")
+    codex_limits.invalidate()
+
+
+def an_undated_verdict_gets_no_extension():
+    raw = board(percent=100, reached=True, credits=NO_CREDITS)
+    raw["rateLimits"]["primary"].pop("resetsAt")
+    data = codex_limits._normalize(raw)
+    eq(data["exhausted_until"], 0.0, "no reset to trust past")
+    codex_limits._cache.update(
+        at=time.time() - codex_limits.MAX_EVIDENCE_AGE - 1, data=data)
+    eq(codex_limits.exhausted(), None, "so it ages out the ordinary way")
     codex_limits.invalidate()
 
 
@@ -286,6 +328,12 @@ check("a full MODEL-scoped window is not the account's state",
       a_scoped_bucket_does_not_speak_for_the_account)
 check("evidence too old to act on answers unknown, not exhausted",
       a_stale_board_answers_unknown)
+check("…but a SPENT verdict is trusted until its window resets",
+      a_spent_verdict_survives_its_own_window)
+check("…and stops being trusted once it has",
+      a_spent_verdict_expires_when_the_window_rolls)
+check("an undated spent verdict gets no extension at all",
+      an_undated_verdict_gets_no_extension)
 
 
 # ------------------------------------------------------------- §3 the rule
@@ -369,11 +417,45 @@ def the_reserve_tier_name_lives_once():
     assert providers.RESERVE_TIER in providers.CODEX_TIERS, providers.CODEX_TIERS
 
 
-def detection_never_touches_the_other_three():
-    """Anti-vacuity for the whole file: none of the reserve signals may take
-    luna/terra/sol away — the user's report was explicitly that those three
-    kept working."""
+def the_reserve_signal_never_touches_the_other_three():
+    """Anti-vacuity for the whole file: the RESERVE-specific signals may not
+    take luna/terra/sol away — the user's report was explicitly that those
+    three kept working while gpt-reserve did not."""
     write_registry(reserve="hide")
+    saved = codex_limits.exhausted
+    codex_limits.exhausted = lambda: False       # the account itself is fine
+    try:
+        with NoAppServer():
+            pay = providers.providers_payload(
+                {"installed": True, "connected": True})
+    finally:
+        codex_limits.exhausted = saved
+    cx = next(x for x in pay["providers"] if x["id"] == "openai")
+    eq(cx["hire_enabled"], True, "the family stays hireable")
+    eq(cx["reason"], None, "…with nothing to apologise for")
+    eq(cx["reserve_hire_enabled"], False, "only reserve goes dark")
+
+
+check("one implementation, asked by both doors",
+      the_gate_and_the_chip_are_one_function)
+check("the tier name is a constant, not a literal in two files",
+      the_reserve_tier_name_lives_once)
+check("the reserve-specific signals never leak onto luna/terra/sol",
+      the_reserve_signal_never_touches_the_other_three)
+
+
+# ------------------------------------------------- §5 the family follow-up
+print("\n§5  the ACCOUNT's exhaustion, which is every Codex tier's")
+
+
+def a_spent_account_darkens_the_whole_family():
+    """Coordinator decision, 2026-09-02: extend the exhaustion signal past
+    gpt-reserve. The four Codex tiers share ONE account and one set of usage
+    windows, so a spent account is a spent Sol exactly as much as a spent
+    reserve — and a hire into it is not a polite failure, it takes the seat
+    first and fails on the agent's opening turn (measured: agent `timestamp`,
+    19:38Z)."""
+    write_registry(reserve="list")     # the grant is live; the money is not
     saved = codex_limits.exhausted
     codex_limits.exhausted = lambda: True
     try:
@@ -383,16 +465,32 @@ def detection_never_touches_the_other_three():
     finally:
         codex_limits.exhausted = saved
     cx = next(x for x in pay["providers"] if x["id"] == "openai")
-    eq(cx["hire_enabled"], True, "the family stays hireable")
-    eq(cx["reserve_hire_enabled"], False, "only reserve goes dark")
+    eq(cx["hire_enabled"], False, "the whole family goes dark")
+    eq(cx["reserve_hire_enabled"], False, "reserve with it")
+    assert "no usage left" in (cx["reason"] or ""), cx
+    assert "seat" in (cx["reason"] or ""), (
+        "the tooltip must say WHY it matters — the seat goes either way")
+    claude = next(x for x in pay["providers"] if x["id"] == "claude")
+    eq(claude["hire_enabled"], True, "and Claude is another account entirely")
 
 
-check("one implementation, asked by both doors",
-      the_gate_and_the_chip_are_one_function)
-check("the tier name is a constant, not a literal in two files",
-      the_reserve_tier_name_lives_once)
-check("none of it leaks onto luna/terra/sol",
-      detection_never_touches_the_other_three)
+def an_unread_board_leaves_the_family_alone():
+    """THE LEG THAT MUST HOLD for the follow-up. `exhausted()` answers None on
+    a machine nobody has polled, and None must not take a whole provider
+    away — that would be a worse bug than the one being fixed."""
+    write_registry(reserve="list")
+    codex_limits.invalidate()
+    with NoAppServer():
+        pay = providers.providers_payload(
+            {"installed": True, "connected": True})
+    cx = next(x for x in pay["providers"] if x["id"] == "openai")
+    eq((cx["hire_enabled"], cx["reason"]), (True, None), "fail open")
+
+
+check("a spent account darkens sol/terra/luna too, not just reserve",
+      a_spent_account_darkens_the_whole_family)
+check("…and an unread board darkens nothing (the leg that must hold)",
+      an_unread_board_leaves_the_family_alone)
 
 
 print(f"\nPASS — gpt-reserve detection, {PASS} checks")

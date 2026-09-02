@@ -55,7 +55,7 @@ provider argument to a hire or model switch.
 | provider | tiers (seat credits) | available when |
 |---|---|---|
 | Claude Code | haiku (1), sonnet (2), opus (5), fable (10) | the Claude CLI can run turns |
-| Codex | gpt-reserve (1), luna (1), terra (2), sol (5) | Codex CLI is installed and signed in |
+| Codex | gpt-reserve (1), luna (1), terra (2), sol (5) | Codex CLI is installed and signed in, **and** the account still has usage in its current window (all four tiers share one account, so a spent account offers none of them); gpt-reserve additionally requires OpenAI's reserve grant to be live — it is withdrawn and restored per account and orgtree reads the Codex CLI's own model registry to see it |
 | Gemini | flash (1), pro (2) | Gemini CLI is installed and signed in |
 
 Provider detection is read-only. It checks the CLI installation and its own

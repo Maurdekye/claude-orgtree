@@ -6127,6 +6127,15 @@ def provider_hire_gate(
             "a headless org may only hire tiers from KEYED providers (user "
             "ruling 2026-08-28) — Codex here is signed in with a "
             "subscription login, not an API key")
+    capacity = providers.codex_capacity()
+    if not capacity["enabled"]:
+        # the whole family, not just gpt-reserve: one account, one set of
+        # usage windows. Placed after the durable policy refusals above so a
+        # kiosk or headless org still hears its own standing rule rather than
+        # a transient one, and before the reserve branch so the four tiers
+        # give the same answer to the same fact.
+        raise LedgerError(
+            f"tier '{tier}' is a Codex tier and {capacity['reason']}")
     if tier == providers.RESERVE_TIER:
         # gpt-reserve rides the family's connected-CLI gate above and then one
         # more of its own. Reserve capacity is a pool OpenAI grants and

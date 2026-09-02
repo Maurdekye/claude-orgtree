@@ -164,6 +164,24 @@ def _normalize(raw: dict[str, Any]) -> dict[str, Any]:
             })
     account_windows = [x for x in limits
                        if x["group"] == str(account.get("limitId") or "codex")]
+    spent = bool(
+        (blocked or any(x["percent"] >= 100 for x in account_windows))
+        and not (credits["has"] or credits["unlimited"]))
+    # WHEN the account stops being spent: the latest reset among its own
+    # windows.  Used by `exhausted()` to keep trusting a spent verdict past
+    # the ordinary evidence horizon — usage inside a window only ever goes
+    # UP, so "spent at 22:00, resets Sep 7" is still true at 23:00 without
+    # anyone re-asking.  The reverse is NOT true and is not claimed: a board
+    # that said "fine" ages out normally.
+    horizons: list[float] = []
+    for slot in ("primary", "secondary"):
+        window = account.get(slot)
+        if not isinstance(window, dict):
+            continue
+        try:
+            horizons.append(float(window.get("resetsAt") or 0))  # pyright: ignore[reportUnknownArgumentType]
+        except (TypeError, ValueError):
+            continue
     return {
         "available": bool(limits),
         "limits": limits,
@@ -173,9 +191,10 @@ def _normalize(raw: dict[str, Any]) -> dict[str, Any]:
         # all right now?  A window at 100% (or an explicit reached/spend-stop
         # flag) with nothing to spend past it is a turn that fails on send —
         # measured 2026-09-02, `usage_limit_exceeded` on the first message.
-        "exhausted": bool(
-            (blocked or any(x["percent"] >= 100 for x in account_windows))
-            and not (credits["has"] or credits["unlimited"])),
+        "exhausted": spent,
+        # epoch seconds; see `horizons` above.  None when nothing dated the
+        # verdict, which simply means it ages out the ordinary way.
+        "exhausted_until": (max(horizons) if spent and horizons else None),
     }
 
 
@@ -278,20 +297,37 @@ def exhausted() -> bool | None:
     """Is this account out of Codex capacity RIGHT NOW — cache-only.
 
     `None` means "no fresh evidence", and it is deliberately not `True`: this
-    answer gates hiring, and a board nobody has refreshed in a quarter of an
-    hour must not take a tier away.  Freshness is the same
-    `MAX_EVIDENCE_AGE` the glow uses, and the board is kept warm by both
-    doors already — the usage modal's `fetch` and every live Codex turn's
-    `observe` notification.
+    answer gates hiring, and a board nobody has refreshed must not take a
+    whole provider away on a guess.  The board is kept warm by two doors —
+    the usage modal's `fetch` and every live Codex turn's `observe`
+    notification.
+
+    ONE ASYMMETRY, and it is the difference between catching the user's wasted
+    seat and missing it by a quarter of an hour.  Usage inside a window only
+    ever goes UP, so a SPENT verdict stays true until that window resets, and
+    is trusted to `exhausted_until` rather than to `MAX_EVIDENCE_AGE`.  A verdict
+    of "fine" gets no such extension: it can be falsified by the very next turn
+    and ages out at `MAX_EVIDENCE_AGE` like everything else.  What can falsify a
+    stale "spent" is the user buying credits or changing plan — a deliberate
+    act, and opening the usage panel (or running one Codex turn) re-reads the
+    board immediately.
     """
+    now = time.time()
     with _lock:
         data = _cache.get("data")
-        age = time.time() - float(_cache.get("at") or 0)
+        age = now - float(_cache.get("at") or 0)
         copied = dict(data) if isinstance(data, dict) else None
-    if copied is None or not copied.get("available") or age > MAX_EVIDENCE_AGE:
+    if copied is None or not copied.get("available"):
         return None
     value = copied.get("exhausted")
-    return bool(value) if value is not None else None
+    if value is None:
+        return None
+    if age <= MAX_EVIDENCE_AGE:
+        return bool(value)
+    until = copied.get("exhausted_until")
+    if value and isinstance(until, (int, float)) and now < float(until):
+        return True
+    return None
 
 
 def peek() -> dict[str, Any]:
