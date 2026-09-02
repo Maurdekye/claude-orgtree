@@ -363,6 +363,11 @@ class McpToolCountTests(unittest.TestCase):
             ["mcp__orgtree__one", "mcp__orgtree__two"],
             "an unobserved turn erased the baseline a good turn recorded")
         self.assertEqual(saved.get("last_turn_mcp_fingerprint"), "fp-1")
+        # the COUNT is kept for the same reason and in the same breath: a node
+        # carrying a full tool list and no count is a divergence, and this is
+        # the value behind the "had N last turn, now loading" chip on exactly
+        # the replacement turns where it is most wanted
+        self.assertEqual(saved.get("last_turn_mcp_tool_count"), 2)
 
         # …while an OBSERVED EMPTY surface is still recorded as empty
         org = store.load_org(self.slug)

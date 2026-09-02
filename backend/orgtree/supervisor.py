@@ -1097,8 +1097,12 @@ def _mcp_tool_count_names(slug: str, nid: str, owner: Any,
         # sibling fix removes. One slot, overwritten by the next publish: at
         # most one corpse is retained, which matters on Windows where holding a
         # Popen keeps the process handle (and its zombie) alive.
+        # a COPY of the set, not the live object: sharing it made the durable
+        # copy mutate with the live entry, which is benign only for as long as
+        # nothing edits that set in place — a property no future edit should
+        # have to know about
         st["mcp_tool_final_surface"] = {
-            "owner": owner, "count": len(tools), "names": tools}
+            "owner": owner, "count": len(tools), "names": set(tools)}
         servers: dict[str, int] = {}
         for name in tools:
             bits = name.split("__", 2)
@@ -1129,6 +1133,17 @@ def _mcp_tool_count_server(slug: str, nid: str, owner: Any,
         # RefreshMcpTools' count-only shape proves the total but not canonical
         # identities. Never keep an earlier exact set under a changed runtime.
         st.pop("mcp_tool_names", None)
+        # …including the boundary's durable copy, which otherwise survives the
+        # very invalidation this pop exists to perform (reviewer, 2026-09-02).
+        # The live read stayed honest — `(6, None)` — while the recovered copy
+        # resurrected `(6, ['a', 'b'])`: names the runtime had just refused to
+        # vouch for, contradicted by the count sitting beside them, and durable
+        # as the gate's baseline so a later turn would wait on identities that
+        # may no longer exist. An instrument that abstains must not have its
+        # abstention overwritten by a cached answer.
+        final = st.get("mcp_tool_final_surface")
+        if isinstance(final, dict) and final.get("owner") is owner:
+            final["names"] = None
         event = st.get("mcp_tool_event")
     if isinstance(event, threading.Event):
         event.set()
@@ -11516,8 +11531,15 @@ def _after_turn(slug: str, nid: str, org: Org, res: dict[str, Any],
             if mcp_success:
                 if mcp_snapshot is not None:
                     n["last_turn_mcp_tool_count"] = mcp_snapshot
-                else:
-                    n.pop("last_turn_mcp_tool_count", None)
+                # …and, like the names below, an unobserved count is KEPT
+                # rather than erased. Popping it here while the names branch
+                # preserves would leave a node carrying a full tool list and no
+                # count — a divergence this change would itself have created.
+                # It also feeds `_mcp_tool_count_begin`'s `last_turn_count`,
+                # the chip that reads "had N last turn, now loading", so
+                # erasing it blanks that chip on exactly the replacement turns
+                # where someone most wants to see it. `None` is unobserved,
+                # not zero.
                 if (mcp_fingerprint is not None
                         and mcp_names_snapshot is not None):
                     n["last_turn_mcp_tools"] = mcp_names_snapshot
