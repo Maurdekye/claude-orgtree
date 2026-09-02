@@ -207,7 +207,15 @@ confirms the landing work is committed and tested.
   appear only while readiness is `ready` **and** an authoritative
   `expires_at` derived from a positive receipt exists (readiness alone is
   not sufficient); once elapsed, or once readiness is anything but `ready`,
-  the badge MUST fall back to the readiness verdict.
+  the badge MUST fall back to the readiness verdict. Two clarifying rules
+  added after the first implementation pass, both normative: **a row that
+  cannot establish readiness is red; grey requires an actual fault to have
+  occurred** — "this row predates a schema migration" is not a fault and
+  must not render grey. And **a known incompatibility outranks a capability
+  gap**: if a prefix change AND an unsupported-lane capability gap are both
+  true at once (e.g. a seat moved to a lane that cannot report), the known
+  incompatibility (red, informative) wins over the capability diagnostic
+  (grey) — grey is only for where *no* opinion can be formed at all.
 - **Scope:** the per-node cache forecast surfaced to agents (`cache_forecast`
   API/WebSocket field) and rendered on the desk badge.
 - **Prohibited states:** green with no affirmative evidence of compatibility
@@ -216,66 +224,57 @@ confirms the landing work is committed and tested.
   while readiness is not `ready`, or with no authoritative `expires_at`; a
   grey badge with no cause or no detail sentence; an unclassified cause
   defaulting to anything other than the named `internal_error`; a generic
-  catch-all coercion of an unrecognized state or lane.
+  catch-all coercion of an unrecognized state or lane; a capability-gap
+  grey masking a known incompatibility that should have rendered red.
 - **Allowed exceptions:** none stated — the cause table is exhaustive by
   construction, and the owning test suite asserts the invariant's
-  *properties* (exhaustiveness, fail-closed, no catch-all) rather than the
-  current contents of the cause table, specifically so table and invariant
-  cannot silently diverge.
-- **Observable enforcement / current state (verified directly with
-  `turn-envelope-cost`, the implementing owner, and `readiness-postreview`,
-  independent reviewer, 2026-09-02):** the invariant is **violated today on
-  committed `main` (`a7934d8`)** in at least four concrete, cited ways:
-  1. D-214 (`DECISIONS.md`) renders `no_completed_fingerprint` on a
-     supported lane green — directly contradicts this invariant. Pinned
-     (enforcing the *old* decision, not the invariant) by
-     `frontend/tests/cacheforecast.test.tsx:101`.
-  2. Multiple `uncertain` sources render grey `?` with no enumerated,
-     machine-readable cause: `backend/orgtree/cachecontinuity.py` lines 162
-     (`no_completed_fingerprint`), 243 (`history_unobserved`), 257
-     (`no_positive_receipt`), 268 (`receipt_prefix_unobserved`), 287
-     (`ttl_unobserved`), 299 (`clock_skew`); rendered by
-     `frontend/src/canvas/desk.tsx:427-431`.
-  3. Silent generic fallthrough: `cachecontinuity.py` `public()` lines
-     412-415 (unknown state → `"uncertain"`) and 427-429 (unknown lane →
-     `"unobserved"`).
-  4. Gemini and Codex API-key lanes reach `ttl_unobserved` /
-     `no_positive_receipt` instead of an explicit unsupported-capability
-     diagnostic (`ttl_seconds` lines 108-115 returns `None` for them without
-     naming the gap).
-  Correct today, already enforced: countdown expiry renders red, not grey
-  (`desk.tsx:419-431`; `heal_quantized_skew` line 366).
-
-  A fix for all four is **written, uncommitted, working-tree only** on
-  `main` at `a7934d8` (`backend/orgtree/cachecontinuity.py`,
-  `backend/orgtree/supervisor.py`, `backend/tests/test_cache_continuity.py`,
-  `frontend/src/canvas/desk.tsx`, `frontend/src/types.ts`) — no branch, no
-  commit. Its own new test file, `backend/tests/test_cache_readiness.py`
-  (18 checks), and `frontend/tests/cacheforecast.test.tsx` +
-  `frontend/tests/cachecountdown.test.tsx` (16 checks) are passing, but the
-  owner has **not** run the full repo suite against the change and
-  explicitly asked that this entry **not** be marked enforced until it is
-  committed and full-suite validated.
+  *properties* (exhaustiveness, fail-closed, no catch-all, incompatibility-
+  outranks-capability-gap) rather than the current contents of the cause
+  table, specifically so table and invariant cannot silently diverge.
+- **Observable enforcement (updated 2026-09-02, committed as `aec84e5`,
+  confirmed directly by `turn-envelope-cost`, the implementing owner):**
+  the four violations this survey originally found standing on `main`
+  (`a7934d8`) — D-214's green-on-no-evidence, ungrounded grey causes, a
+  silent generic-fallthrough coercion, and Gemini/Codex-API-key lanes
+  reaching a vague `uncertain` instead of an explicit capability diagnostic
+  — are fixed at `aec84e5`. One further cause was added during that work,
+  `legacy_forecast_unmigrated`, specifically because a naive read of this
+  invariant would have gotten it wrong: every forecast persisted before
+  this change lacks the readiness triple, and classifying that as
+  `internal_error` would have been literally invariant-compliant
+  (enumerated, explained, logged) and still wrong — it would label a schema
+  migration as a classifier defect and strand every idle node on grey.
+  Instead a pre-migration row re-derives its verdict from its persisted
+  `state`/`source`, and genuinely ambiguous residue renders red, never
+  green and never a guessed grey — the "a row that cannot establish
+  readiness is red" clarification above. Countdown-expiry-renders-red
+  (`desk.tsx:419-431`; `heal_quantized_skew`) remains correct and enforced,
+  unchanged.
 - **Owning references:** `backend/orgtree/cachecontinuity.py` (`READINESS`,
   `READINESS_DETAIL`, `EVIDENCE_REQUIRED`, `SUPPORTED_LANES`,
   `readiness_fields`, `capability_evidence`); `backend/orgtree/supervisor.py`
   (`_readiness_incident_log`, `cache_forecast_public`);
   `frontend/src/types.ts` (`Readiness`); `frontend/src/canvas/desk.tsx`
   (`readinessOf`, `readinessCause`, `cacheExpiryAt`);
-  `backend/tests/test_cache_readiness.py`;
-  `frontend/tests/cacheforecast.test.tsx`;
-  `frontend/tests/cachecountdown.test.tsx`;
+  `backend/tests/test_cache_readiness.py` (19 checks);
+  `frontend/tests/cacheforecast.test.tsx` +
+  `frontend/tests/cachecountdown.test.tsx` (16 checks);
   `public_projection_cannot_fail_open` (backend suite, fail-closed pin).
-  The pending diff now includes a drafted `DECISIONS.md` D-226 entry
-  (uncommitted, working tree only, as of this survey) that explicitly
-  states it **implements** this invariant and overrides the conflicting
-  D-214 decision — it does not create the invariant, and this entry is the
-  authority, not the decision.
-- **Status:** known_gap (on committed `main`, concretely per the four items
-  above), with its remediation `implementation_in_flight` (uncommitted,
-  passing its own new tests, not yet full-suite validated or merged). Do
-  not upgrade to `enforced` until the owner confirms commit + full-suite
-  pass.
+  Full suite at `aec84e5`: 117/117 suites run, 107 passed, 10 failed — a
+  strict subset of the 11 pre-existing failures at `a7934d8`, zero new
+  failures introduced. `DECISIONS.md` D-226 states explicitly that it
+  **implements** this invariant and overrides the conflicting D-214
+  decision — it does not create the invariant, and this entry is the
+  authority, not the decision. Provenance note: D-226's original text
+  landed inside commit `b07a354` (this register's own first commit, which
+  picked up the then-shared, then-uncommitted `DECISIONS.md` working tree
+  wholesale — confirmed intact, all 108 lines, by the D-226 author); only
+  the `legacy_forecast_unmigrated` amending paragraph is in `aec84e5`
+  itself. `DECISIONS.md` is edited concurrently by several agents — a bulk
+  `git add DECISIONS.md` sweeps up whatever anyone else has in flight; this
+  register's own commits stage that file hunk-by-hunk for exactly that
+  reason.
+- **Status:** enforced.
 - **Provenance:** user ruling, 2026-09-02: green requires affirmative
   evidence of compatibility, and the absence of all evidence is not that;
   the prior D-214 green-on-no-evidence reading is explicitly overruled.
@@ -283,7 +282,11 @@ confirms the landing work is committed and tested.
   model this readiness layer sits on top of, and
   [INV-003](#inv-003--a-local-restart-is-not-proof-of-a-cache-miss-and-provider-switching-is-a-known-break)
   for the base cache-namespace rule.
-- **Amendments:** none.
+- **Amendments:** 2026-09-02 — status raised from known_gap/
+  implementation_in_flight to enforced on confirmation of commit `aec84e5`
+  and a full-suite run introducing zero new failures; Statement gained the
+  two clarifying rules (red-not-grey-for-unestablished; incompatibility-
+  outranks-capability-gap) the implementation pass surfaced.
 
 ### INV-003 · a local restart is not proof of a cache miss, and provider switching is a known break
 
@@ -461,54 +464,109 @@ confirms the landing work is committed and tested.
 
 ## D · Transcript, journal, and stream ordering
 
-### INV-006 · a turn's user message is durable before any of its assistant output is visible
+### INV-006 · no assistant-visible output reaches a viewer before its turn's user message is durable, and nothing is announced twice
 
-- **Statement:** no assistant-visible output for a turn (a delta, a text
-  row, a tool row, or a thought row) MUST become visible before that turn's
-  own user message is durable in the transcript. This MUST hold for a fresh
-  thread's first turn and for every reconnect/resume of an existing thread
-  alike — the barrier is a property of the code path every assistant-visible
-  emission passes through, not of a sequence that happens to hold on the
-  common case. A replayed item completion MUST NOT produce a second durable
-  record and a second live row for the same logical answer.
-- **Scope:** the Codex lane's turn/journal pipeline
-  (`backend/orgtree/codexrun.py` / `AppServerClient`) and its render into
-  `supervisor.stream`.
+- **Statement:** no assistant-visible output for a turn may reach a viewer
+  before that turn's own user message is durable in the transcript. A
+  message counts as delivered only when the provider has **accepted** it;
+  delivery is made durable **before** it is announced, and it is **never
+  announced twice**. This binds every provider lane, not only the lane
+  implemented first — codex-stream-order's own framing, chosen specifically
+  so the invariant does not have to be rewritten each time a lane is added.
+  For mid-turn mail specifically: the durable steered row and its
+  delivery-token confirmation commit atomically, *then* the `steered`
+  WebSocket frame, *then* any provider journal/live output the delivery
+  caused — provider acceptance is the linearization point, not the
+  supervisor's fetch of the mail. If the provider refuses (no durable
+  steer/frame/confirmation resulted), the raw carrier — tokens included —
+  requeues and is delivered exactly once, on the next turn.
+- **Scope:** the ordering/journal barrier for every provider lane's
+  turn/mail pipeline (currently implemented for Codex; the statement is
+  written provider-agnostic on purpose). `backend/orgtree/codexrun.py`
+  (`CodexTurn.start(on_thread=…)`), `backend/orgtree/supervisor.py` (the
+  ordering barrier, `_visible`/`_visible_stream`/`_visible_live_row`,
+  `_open_journal`, `_first_time`, `commit_steer`/`pop_steer`), and its
+  render into `supervisor.stream` / the desk frontend.
 - **Prohibited states:** an agent's answer rendering above the question it
   is answering while that question still reads "delivering…"; a durable
   transcript with no user row for a turn whose assistant output has already
   rendered; a duplicated completion producing two live rows for one durable
-  record.
+  record; mid-turn mail announced with no corresponding durable steered row
+  (silently un-witnessable on the codex/gemini legs, historically); a
+  refused steer whose carrier was already treated as delivered, causing the
+  same words to appear twice in the transcript; the ordering barrier's own
+  release running out of order relative to older held closures still
+  in-flight.
 - **Allowed exceptions:** if the journal never opens at all (the thread id
   never arrived because `turn.start()` raised), held output is never
   released — there is no transcript for that turn, so releasing assistant
   prose would show it under a turn the server cannot account for; the
   turn's own durable error row is what renders instead. An item with no id
-  is explicitly NOT deduplicated — a missing identity is not evidence of a
-  repeat, by the ruling's own reasoning ("a duplicate is a blemish where a
-  gap is a lie"); this is stated here as a **named, accepted gap**, not a
-  silent one — confirm with `codex-stream-order` whether it has since been
-  tightened.
-- **Observable enforcement:** the journal opens at `on_thread` inside
-  `CodexTurn.start()`, before `turn/start` goes on the wire; every
-  assistant-visible emission passes an ordering barrier held until the
-  durable record exists; item completions are deduplicated by item id.
-  `backend/tests/test_codex_stream_order.py` checks `supervisor.stream`
-  (what the desk actually sees) against the on-disk journal at the same
-  instant, and is confirmed to fail against pre-ruling code on exactly the
-  four ordering checks it targets.
-- **Owning references:** `DECISIONS.md` D-221;
-  `backend/tests/test_codex_stream_order.py`.
-- **Status:** enforced, with the no-id-dedup case tracked as a named,
-  accepted exception rather than a gap (see Allowed exceptions) pending
-  confirmation from the owner.
-- **Provenance:** ruling (codex-stream-order, 2026-09-02), stated as: "no
-  assistant output for a turn may become VISIBLE before that turn's user
-  message is DURABLE in the transcript." Root-caused to a live symptom: the
-  desk drew the durable block first, the live tail under it, and the user's
-  own undelivered message at the very bottom — so a fast Codex response
-  could render above a question still shown as undelivered.
-- **Amendments:** none.
+  is explicitly NOT deduplicated (`_first_time()`) — a missing identity is
+  not evidence of a repeat, and the ruling behind this whole family is
+  stated verbatim because it generalizes: **"a duplicate is a blemish, a
+  gap is a lie."** This is a deliberate, accepted risk, not a tracked gap.
+- **Observable enforcement / current state (updated 2026-09-02 directly
+  from `codex-stream-order`, the owner — supersedes the D-221-only reading
+  below):** D-221 covers only the *start* of a turn and is, as of this
+  survey, one of **four** mechanisms, three of which were live gaps
+  reproduced on the org's own running `coordinator` node and are landing in
+  an imminent commit at the time of writing:
+  1. Mid-turn steer on the codex/gemini legs called `pop_steer` in-process
+     and never emitted the `steered` WebSocket frame `api.node_steer`
+     emits for Claude — measured zero `steered` frames across a 15-minute
+     capture around a committed steered row.
+  2. `pop_steer` committed delivery (durable row + `_confirm_delivered`)
+     *before* asking the app-server to accept the text; a refusal (turn
+     ended inside the 2 s poll, or Gemini, which refuses every steer) left
+     the carrier requeued while a delivery was already claimed — measured:
+     the same 3,512-character message appearing in the transcript twice.
+  3. `_open_journal`'s barrier could release out of order: it copied held
+     closures and dropped `jlock` before emitting, so a reader thread could
+     see a newer item's `sid` and emit it while older held closures were
+     still mid-release.
+  4. Already on `main` as of `aec84e5`: a render-layer issue where the desk
+     drew pending mail at the very bottom, below the live tail, so a
+     message the running turn was started to answer sat visually under
+     that turn's own answer regardless of backend timing.
+  Fix for items 1-3: atomic durable-steer-then-frame-then-effect ordering
+  per the Statement above; turn teardown joins in-flight carrier ownership
+  before fold-back/idle; the turn-start barrier flushes held output
+  atomically; the frontend only hoists output whose delivery is
+  `delivering` *and* `via=turn` above current output — merely queued or
+  `via=steer` output stays below. **Committed as `11f3f72`** ("Codex lane:
+  linearize steered mail before its answer"), same day.
+- **Owning references:** `DECISIONS.md` D-221 (start-of-turn barrier) and
+  D-227 (mid-turn/steer linearization, `11f3f72`);
+  `backend/tests/test_codex_stream_order.py` (24 checks — §4 covers
+  **resume**: two consecutive turns, asserting the second/resumed thread
+  also emits nothing before its own user row is durable; §6 covers
+  **replay** as a *dedupe* guarantee for a replayed `item/completed`, not
+  an ordering guarantee — orgtree does not reconnect an app-server
+  mid-turn, a lost process ends the turn, so state dedupe here, not
+  reconnect ordering); `backend/tests/test_steer_delivery.py` (403 lines,
+  new in `11f3f72`); `frontend/tests/turnpend.test.tsx` (223 lines, new in
+  `11f3f72`).
+- **Status:** enforced. The D-227 extension landed the same day it was
+  drafted; confirm with `codex-stream-order` if a full-suite run beyond
+  the new test files' own pass is needed before treating this as final.
+- **Provenance:** ruling (codex-stream-order, 2026-09-02): "no assistant
+  output for a turn may become VISIBLE before that turn's user message is
+  DURABLE in the transcript," generalized the same day, after further
+  investigation prompted by a user follow-up ("i still observe timing
+  issues"), to the provider-agnostic form quoted in the Statement. Original
+  root cause: the desk drew the durable block first, the live tail under
+  it, and the user's own undelivered message at the very bottom, so a fast
+  Codex response could render above a question still shown as undelivered.
+- **Amendments:** 2026-09-02 — Statement widened from a Codex-specific,
+  start-of-turn-only reading to the general, provider-agnostic,
+  mid-turn-inclusive form above, after the owner found and reproduced three
+  further live gaps the narrower wording did not cover, then landed the fix
+  as D-227/`11f3f72` the same day. Not a user amendment in the strict sense
+  (no new user statement); logged as an Amendment anyway because the change
+  is substantive, not a wording tightening — a reader who only saw the old
+  Statement would under-claim what today's user report ("i still observe
+  timing issues") actually requires.
 
 ### INV-007 · mail is at-least-once; it may stall, it must never disappear
 
