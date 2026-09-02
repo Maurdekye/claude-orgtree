@@ -344,16 +344,26 @@ def every_source_failure_is_fail_open_and_secret_free() -> None:
     assert block.count("telemetry-error") >= 3, block
     assert "sk-ant" not in block and "eyJ" not in block and "Bearer" not in block
 
-    real_render = turnusage.render
+    # D-223 moved the formatter seam: `turn_usage_block` now calls `board`,
+    # which returns (text, material_key), and `render` is the text-only wrapper
+    # for callers outside a turn. The invariant is unchanged and is what is
+    # being pinned — a formatter that raises must degrade to the failure block
+    # rather than fail the turn — so this patches the seam the turn actually
+    # travels. Patching `render` here would pass while testing nothing.
+    real_board = turnusage.board
     real_select = S._turn_usage_selection
-    turnusage.render = boom                                      # type: ignore[assignment]
+    turnusage.board = boom                                       # type: ignore[assignment]
     S._turn_usage_selection = lambda org, nid, now: ("claude", "primary")  # type: ignore[assignment]
     try:
         outer = S.turn_usage_block(org, nid, NOW)
     finally:
-        turnusage.render = real_render                           # type: ignore[assignment]
+        turnusage.board = real_board                             # type: ignore[assignment]
         S._turn_usage_selection = real_select                    # type: ignore[assignment]
     assert turnusage.CLOSE in outer and "telemetry-error" in outer
+    # …and `render` must still be the text half of `board`, or the wrapper has
+    # silently become a second renderer that can drift from the real one.
+    assert turnusage.render(org, nid, now=NOW) == turnusage.board(
+        org, nid, now=NOW)[0]
 
 
 check("source and formatter failures degrade to safe unavailable rows without blocking",

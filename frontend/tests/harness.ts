@@ -370,6 +370,10 @@ export interface MountedView<T> {
   /** every snapshot this view has rendered, oldest first */
   frames: T[]
   last(): T
+  /** re-render the same root with new props, inside `act` */
+  render(next: ReactNode): Promise<T>
+  /** advance a mocked clock and flush the resulting React work */
+  tick(ms: number, tick: (ms: number) => void): Promise<void>
   unmount(): Promise<void>
   el: HTMLElement
 }
@@ -391,6 +395,21 @@ export async function mountView<T>(
     frames,
     el: host,
     last: () => select(host),
+    // Re-render the SAME root with new props — for anything whose behaviour
+    // depends on a value changing under a mounted component (a replacement
+    // cache receipt, a superseded expiry). Mounting a second view would test
+    // a fresh component instead, which is the opposite of the question.
+    render: async (next: ReactNode) => {
+      await act(async () => { root.render(next) })
+      frames.push(select(host))
+      return select(host)
+    },
+    // Advance mocked timers with the resulting React work flushed inside
+    // `act`, so a subscriber that fires on a tick has actually repainted by
+    // the time the assertion runs.
+    tick: async (ms: number, tick: (ms: number) => void) => {
+      await act(async () => { tick(ms); await Promise.resolve() })
+    },
     unmount: async () => {
       await act(async () => { root.unmount() })
       host.remove()

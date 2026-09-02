@@ -35,6 +35,23 @@ Everything that works does one of three things: shrink C, move the payment into 
    prompt-audit line.
 3. **Tier-aware seat design** — long-lived dormant roles belong on cheap tiers; fable seats
    should be short-lived and task-shaped. Hire-card hint, not enforcement.
+4. **Envelope suppression** (D-223, shipped 2026-09-02) — the per-turn `[ORG STATE]` and
+   `[PROVIDER USAGE]` blocks re-send their unchanged bulk only when it has changed or a
+   staleness bound expires. This shrinks C *as it accumulates* rather than reclaiming it
+   afterwards, which is what distinguishes it from compaction: every byte not appended is a
+   byte no future turn re-reads and no cold resume re-pays.
+
+   Measured by `tools/envelope_cost.py` over 779 real enveloped turns: ORG STATE was 993
+   chars/turn of which the chart is 51.2%, and only **17.3% of its characters changed
+   semantically** turn over turn (33.0% byte-wise — the difference is entirely countdowns and
+   timestamps moving). Replaying real history through the shipped rules cuts the two blocks by
+   **21.6%** overall, and by 36.9% on a turn where the chart is actually suppressed.
+
+   ⚠ The envelope's largest line item is **MAIL** — 2,534 chars on 93% of turns — and it is
+   payload, not overhead. Nothing here compresses it and nothing should; an agent that is not
+   told what it was sent is the failure this whole subsystem is shaped around. Read D-223
+   before tuning any threshold, and re-run the tool first: those percentages are properties of
+   how this org happens to be shaped today, not constants.
 
 ## B. Pay at 0.1× — schedule work into warm windows
 

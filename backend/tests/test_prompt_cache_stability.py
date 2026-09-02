@@ -250,8 +250,16 @@ def _():
 def _():
     import inspect
     src = inspect.getsource(supervisor._run_one_turn)
-    assert "org_state_block(" in src, \
+    # D-223 put a decision in front of the renderer: the turn path calls
+    # `_envelope_state_block`, which decides whether the chart span rides this
+    # turn and then calls `org_state_block` either way. Follow the indirection
+    # rather than dropping the pin — the guarantee ("the turn path really does
+    # build this block") is what matters, and it now takes two hops to state.
+    assert "_envelope_state_block(" in src, \
         "the turn path never builds the block — agents would never see it"
+    assert "org_state_block(" in inspect.getsource(
+        supervisor._envelope_state_block), \
+        "the envelope decider stopped rendering the block it decides about"
     i_block = src.index("state_block + ")
     i_codex = src.index("_codex_leg(")
     assert i_block < i_codex, \

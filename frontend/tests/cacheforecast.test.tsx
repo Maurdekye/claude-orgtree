@@ -18,7 +18,15 @@ const forecast = (
   reason: state === 'known_incompatible' ? 'three identity components changed' : 'observed',
   source: 'provider receipts', lane: 'subscription',
   last_receipt_at: '2026-09-01T10:00:00Z', ttl_seconds: 3600,
-  expires_at: '2026-09-01T11:00:00Z',
+  // ⚠ RELATIVE, not a fixed instant. The green badge now counts down to this
+  // value and stops being green once it passes (user spec 2026-09-02), so a
+  // hard-coded stamp made every `compatible_observed` fixture render as an
+  // EXPIRED entry the moment that date went by — the state mapping below
+  // started failing on its own, with nothing changed. A fixture that decays
+  // into a different test than the one that was written is worse than no
+  // fixture. Countdown behaviour itself is pinned against a frozen clock in
+  // `cachecountdown.test.tsx`; this one only needs the entry to be live.
+  expires_at: new Date(Date.now() + 3600_000).toISOString(),
   changed_inputs: state === 'known_incompatible'
     ? ['system prompt', 'callable tools', 'credential lane'] : [],
   precompact_action: action,
@@ -39,8 +47,16 @@ test('cache badge has exactly the selected green/red/grey state mapping', async 
     const marks = [...view.el.querySelectorAll<HTMLElement>('.cache-forecast')]
     assert.deepEqual(marks.map((m) => [...m.classList][1]),
       ['compatible', 'cold', 'cold', 'uncertain'])
-    assert.deepEqual(marks.map((m) => m.textContent?.trim()),
-      ['cache ✓', 'cache ×', 'cache ×', 'cache ?'])
+    // ⚠ The green badge no longer carries a ✓ when it has a live expiry to
+    // count down to — the countdown REPLACES it (user spec 2026-09-02), and
+    // showing both was explicitly ruled out. The remaining three glyphs are
+    // unchanged. Asserted as a shape, not a string: the exact figure depends
+    // on how long this file took to get here, and pinning it would make the
+    // test fail on a slow machine. Countdown behaviour proper is pinned
+    // against a frozen clock in `cachecountdown.test.tsx`.
+    assert.match(marks[0]?.textContent?.trim() ?? '', /^cache \d+:\d\d(:\d\d)?$/)
+    assert.deepEqual(marks.slice(1).map((m) => m.textContent?.trim()),
+      ['cache ×', 'cache ×', 'cache ?'])
     const incompatible = marks[2]?.getAttribute('aria-label') ?? ''
     for (const item of ['system prompt', 'callable tools', 'credential lane']) {
       assert.match(incompatible, new RegExp(item), `tooltip omitted ${item}`)

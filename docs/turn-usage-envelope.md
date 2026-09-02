@@ -54,3 +54,41 @@ Two existing non-envelope paths remain excluded:
 Rows are ordered Claude primary, Claude fallback ordinal, current-org API key,
 Codex, then Gemini; windows are session, weekly-all, weekly-scoped, then
 provider-specific. `*` marks the lane selected for that turn.
+
+## Repetition (D-223)
+
+The board is not re-sent in full on every turn. `turnusage.board()` returns the
+rendered text *and* a **material key** — lane, window, usage band, reset rounded
+to the nearest five minutes, freshness and state — and `supervisor` re-sends the
+whole board only when that key changes, or when a staleness bound expires
+(60,000 tokens of context progressed, 10 turns, 900 seconds, a new session, or a
+context that shrank). Otherwise the turn carries a one-line stand-in naming the
+snapshot number and the **selected lane's exact percentages**.
+
+The bands are deliberately coarse and the exact numbers deliberately are not.
+Banding gates only whether the *other* lanes' rows are reprinted; the lane a turn
+actually runs on always reports its real usage, because that is the number an
+agent throttles itself against.
+
+Rounding the reset to the nearest five minutes rather than truncating it is
+load-bearing. Providers jitter the reported reset by about a second, and this
+org's own boards were measured reporting one window as `23:00:00Z` and then
+`22:59:59Z` on consecutive turns. Truncation puts those in different buckets —
+they straddle a minute boundary — so a whole board was re-sent because a clock
+wobbled backwards by one second.
+
+A telemetry failure returns a distinct key rather than an empty one. Two failures
+in a row are not evidence that the board did not move; the board is *unknown*, so
+the next successful render must read as a change and re-send in full.
+
+Two limits with the same window, percentage, reset and active flag are one fact
+reported twice, and are deduplicated **before** the `#N` disambiguation that
+would otherwise render them as `weekly_scoped` and `weekly_scoped#2`. Genuinely
+different buckets under one kind both survive — the Codex lane really does carry
+distinct buckets, and folding those would hide a real wall.
+
+Every lane keeps its own explicit row in the full board, including the constant
+`unavailable(unsupported)` ones. An earlier draft of D-223 folded those to save
+~260 characters a turn and it was withdrawn: suppression already removes them on
+the turns where they cost anything, and the explicitness of each state is an
+invariant this document and its suite state on purpose.

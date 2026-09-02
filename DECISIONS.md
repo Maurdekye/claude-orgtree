@@ -4764,6 +4764,131 @@ live report auto-dissolves the whole subtree (retire-with-live-reports is
 documented ledger behavior, not a bug) — the opus cannot be retired for as
 long as the fable line under it stays alive.
 
+### D-223 · the envelope repeats itself, so it stops repeating itself
+
+Ruling (turn-envelope-cost, 2026-09-02): the two dynamic blocks D-181 moved
+into the per-turn user envelope — `[ORG STATE]` and `[PROVIDER USAGE]` — now
+send their volatile facts every turn and their *unchanged* bulk only when it
+has actually changed, or when a staleness bound expires. `backend/orgtree/
+envelope.py` owns the decision; the renderers own everything else.
+
+D-181 is not being walked back. The envelope stays in the user-event stream,
+append-only, and nothing here touches the cached prefix. The point is that
+"rides the turn envelope" was never free either: a user event is appended to
+the conversation, so turn N's copy is still being re-read on turn N+40, and a
+cold resume re-pays it at full price.
+
+MEASURED, on this machine's own transcripts, by `tools/envelope_cost.py` —
+which is committed with this ruling precisely so the numbers can be re-derived
+and challenged. Run `python tools/envelope_cost.py --simulate --sweep`. Over
+779 enveloped turns in 81 transcripts:
+
+| block | chars/turn | composition |
+|---|---|---|
+| ORG STATE | 993 | chart+archived 509 (51.2%), header 182 (18.3%), roster 128 (12.9%), credits 82 (8.2%) |
+| PROVIDER USAGE | 1,072 | data rows, plus constant `unavailable(unsupported)` rows measured at ~260 chars (27%) and ~210 of static header, column header and legend |
+| MAIL | 2,534 on 93% of turns | irreducible payload; untouched by this ruling |
+
+…and, diffing consecutive renderings inside one session with timestamps,
+countdowns and observation ages masked out: **ORG STATE changes 17.3% of its
+characters per turn** (33.0% byte-wise) and **PROVIDER USAGE changes 41.2%**
+(81.0% byte-wise). The gap between those two columns is the whole ruling: the
+bytes move every turn, the meaning does not.
+
+⚠ TOKENS ARE ESTIMATES HERE AND CHARACTERS ARE NOT. No tokenizer is available
+offline on this machine, and two attempts to calibrate chars→tokens against the
+provider's own accounting both produced impossible ratios — warm-resume
+`cache_creation` gives 0.63 ch/token because cache writes are block-quantised,
+and total-prompt growth gives 2.10 because the harness injects system-reminders
+that never reach the transcript. Every number above is an exact character
+count. Percentages are ratios and survive whatever the real tokenizer does.
+
+WHAT IS SUPPRESSIBLE, AND WHAT IS NOT. Only the chart span, and only the whole
+provider board. Reports, peers, the credit balance, the fable lock, the
+CLAUDE.md caveat and the open-ask reminder ride EVERY turn in full — they are
+short, and they are exactly what an agent acts on without scrolling. The
+compact usage line carries the selected lane's *exact* percentages, never a
+band, because that is the lane the turn runs on and the one an agent throttles
+itself against. A suppressed block is never silence: it says what is unchanged,
+cites the snapshot number that holds it, and names `orgtree_chart` as the route
+to a fresh copy — which is how an agent whose context lost that snapshot
+recovers without anything server-side knowing it happened.
+
+THE BOUNDS. A suppressed span is at most one of these from a full re-send:
+**60,000 tokens of context progressed**, 10 turns, 900 seconds — plus immediate
+re-send on a changed digest, a different session, or a context that got
+*smaller* (which is compaction or a truncated resume dropping history). The
+token bound is the one the others cannot express: an agent can burn 200k tokens
+of tool output inside a single turn, and a snapshot two lines up is then a long
+way back. 60k is the measured knee — `envelope_cost.py --sweep` over real
+transcripts saves 19.9% at 25k, 21.6% at 60k, and is flat to 250k, so it buys
+the whole available saving without stretching the bound past what the evidence
+supports. The turn cap barely binds (10 and 25 score identically); it is kept
+as a cheap belt for the case where nothing else fires.
+
+WHAT IT ACTUALLY SAVES, two honest numbers rather than one flattering one.
+Replaying real history through these rules cuts the two blocks by **21.6%**
+overall — that is the average across every turn, full refreshes included. On a
+turn where the chart IS suppressed the ORG STATE block goes from 1,427 to 901
+characters, **36.9%**, measured against this org's live document. The first
+number is the one to plan with. Both exclude MAIL, which is 2,534 chars on 93%
+of turns and is payload, not overhead: the envelope's biggest line item is not
+something this ruling can or should compress.
+
+Every uncertain answer is "send it again". `decide` returns full on missing
+state, malformed state, an unparseable record, an unknown session, a backwards
+clock. A wrongly-suppressed block is an agent acting on a roster it cannot see;
+a wrongly-sent one costs a few hundred characters. Those are not comparable.
+
+⚠ LOAD-BEARING: THE RECORD IS COMMITTED ONLY AT `_confirm_delivered`, never at
+render time. `_run_one_turn` snapshots `inflight` BEFORE the envelope is
+attached, deliberately, so a replay re-renders a fresh block. A record written
+at render time would therefore let a turn that died before launch suppress on
+replay a block the agent never saw — and the replay could not put it back.
+`_commit_envelope` rides the same proof the mail journal does: the first stdout
+event the CLI cannot emit without having read stdin. It re-checks the session
+id under the lock, so a node re-seeded or cheap-compacted mid-turn does not
+inherit a snapshot delivered to its predecessor's conversation.
+
+Bounds: below `_CHART_SUPPRESS_MIN` (280 chars) the chart is rendered normally
+and no snapshot is recorded. A two-person org's chart is ~130 characters and
+the sentence explaining where it went is ~90; spending 90 to save 130, at the
+cost of a scroll, is not a saving. Slash-command turns still get no blocks at
+all, unchanged. Mail and notices are untouched — `envelope.py` cannot see them,
+and a source pin keeps every suppression decision downstream of the drain.
+
+Also fixed here, live-caught on this org's own board: `turnusage._cached_rows`
+rendered two limits with the same window, percentage, reset and active flag as
+`weekly_scoped` and `weekly_scoped#2` — two byte-different rows carrying one
+fact, ~110 characters of every turn. Deduped BEFORE the `#N` disambiguation,
+because after it nothing downstream can tell they were identical. Genuinely
+different buckets under one kind still both survive, and a test pins that:
+the codex lane really does carry distinct buckets and folding them would hide
+a real wall.
+
+CONSIDERED AND DECLINED, with the cost named rather than hidden:
+
+- **Moving the static envelope prose into `identity_prompt`.** ~340 chars/turn
+  of the two headers never change, and the prefix is where free bytes live. But
+  that string IS the cached prefix: rewriting it costs every live agent one
+  cold turn, and a restarted process resuming an unchanged system prompt can
+  still hit the provider cache, so that cost is real rather than already paid.
+  Compressed in place instead — the ORG STATE header went 181 → ~113 chars and
+  kept EARLIER COPIES ARE STALE, which the snapshot numbering now says twice.
+- **Folding the constant `unavailable(unsupported)` rows out of the board**
+  (~260 chars/turn, 27%). It broke four deliberate "every state is explicit"
+  pins in `test_turn_usage_envelope`. Suppression already removes those rows on
+  the turns where they cost anything, so the fold bought little and spent
+  another module's stated invariant to get it.
+- **Removing the `amount` column**, which every one of the six `_line` call
+  sites passes `"-"` to and which has never carried a value (~49 chars/turn).
+  `turnusage.py` is days old and its author may intend it. Left alone.
+
+Load-bearing: `backend/tests/test_envelope_budget.py` — 20 checks. The property
+under test is not "fewer bytes" but "fewer bytes and the agent still knows
+everything it could have acted on", because the failure mode is silent by
+construction: a suppressed block leaves no trace of what it did not say.
+
 ### D-224 · seats are exchanged, moves are batched, parents are inserted
 Ruling (user, 2026-09-02): three topology verbs, deliberately distinct
 because they answer three different questions, and collapsing any two of

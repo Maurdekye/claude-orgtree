@@ -40,7 +40,7 @@ from collections.abc import Callable, Iterable, Mapping
 from typing import Any, Final, cast
 
 from . import (accounts, appsettings, cachecontinuity, clipin, codex_limits,
-               deployment, imgblock,
+               deployment, envelope, imgblock,
                limits, net, providers, sandbox as sbx, store, tokens,
                turnusage, warmpool)
 from .ledger import EXTERN, SYSTEM, USER, LedgerError, Org, expand_mcp, now as now_iso
@@ -3224,9 +3224,26 @@ ORG_STATE_OPEN: Final = "[ORG STATE"
 ORG_STATE_CLOSE: Final = "[END ORG STATE]"
 
 
-def org_state_block(org: Org, nid: str, include_archived: bool = False) -> str:
+def org_state_block(org: Org, nid: str, include_archived: bool = False, *,
+                    seq: int | None = None,
+                    chart_ref: int | None = None) -> str:
     """D-181: the VOLATILE half of an agent's briefing, delivered per turn in
     the user-message envelope instead of in the appended system prompt.
+
+    `seq` numbers this snapshot so a later turn can cite it; `chart_ref`
+    replaces the chart span with a pointer at snapshot #chart_ref (D-223).
+    Both default to None, which renders exactly what this function always
+    rendered — every non-turn caller (orgtree_chart, the tests) gets the whole
+    block, unnumbered, with nothing behind a reference.
+
+    ⚠ THE HEADER EARNS ITS WORDS. This block is re-sent every turn, so an
+    agent's history accumulates SUPERSEDED copies of it — an older turn may
+    show a chart with an agent that has since been retired, or a stale free
+    count. In the system prompt there was only ever one copy and the question
+    never arose. Say plainly that the last one wins, or the agent will
+    eventually act on a chart it scrolled back to. D-223 shortened that
+    sentence (181 chars of every turn, measured) but did NOT drop it, and the
+    numbering it added makes the same point a second way.
 
     ⚠ WHY THIS IS NOT IN THE SYSTEM PROMPT ANY MORE, because it will look like
     gratuitous indirection to whoever reads this next and it is not. Everything
@@ -3260,26 +3277,61 @@ def org_state_block(org: Org, nid: str, include_archived: bool = False) -> str:
     ⚠ SO DO NOT MOVE ANY OF THIS BACK, and do not add a new live-org field to
     `identity_prompt` because it is "just one line". One line is all it takes;
     the whole defect was one line's worth of drift."""
+    roster, chart, tail = _org_state_parts(org, nid, include_archived)
+    header = (f"{ORG_STATE_OPEN}{'' if seq is None else f' #{seq}'} — "
+              f"current as of {now_iso()}. Newest wins; EARLIER COPIES IN "
+              f"THIS CONVERSATION ARE STALE.]")
+    if chart and chart_ref is not None:
+        # D-223: the chart is 51% of this block and moves only when the ORG
+        # moves. Point at the last one instead of reprinting it — and name the
+        # route to a fresh one, because an agent that cannot find snapshot
+        # #chart_ref (a compaction ate it, a transcript was truncated) must be
+        # able to recover without knowing that any of this happened.
+        chart = (f"\n(Chart unchanged since #{chart_ref}: {chart.count(chr(10))}"
+                 f" rows, read it there — or call orgtree_chart for a fresh "
+                 f"one.)")
+    return f"{header}\n{roster}{chart}\n{tail}\n{ORG_STATE_CLOSE}"
+
+
+def org_state_chart(org: Org, nid: str, include_archived: bool = False) -> str:
+    """Just the chart span, for D-223's change detection. Empty for a node
+    whose visibility renders no chart — which then never suppresses anything,
+    because there is nothing there to suppress."""
+    return _org_state_parts(org, nid, include_archived)[1]
+
+
+def _org_state_parts(org: Org, nid: str,
+                     include_archived: bool) -> tuple[str, str, str]:
+    """(roster, chart, tail) — the three spans D-223 treats differently.
+
+    ROSTER and TAIL are sent in full on every single turn, unconditionally.
+    That is deliberate and it is where this design stops being clever: reports,
+    peers, the credit balance, the fable lock and the open-ask reminder are
+    short, and they are exactly what an agent acts on without scrolling. Only
+    the CHART — the one span that is both large and rarely different — is ever
+    replaced by a pointer.
+    """
     n = org.node(nid)
     sc = n["scope"]
     vis = sc.get("org_visibility", "team")
     kids = org.children(nid) or ["none yet"]
 
     if vis == "self":
-        position = f"Your reports: {', '.join(kids)}."
+        roster = f"Your reports: {', '.join(kids)}."
     else:
         sibs = [s for s in org.children(n["parent"]) if s != nid] or ["none"]
-        position = (f"Your reports: {', '.join(kids)}. "
-                    f"Your peers: {', '.join(sibs)}.")
+        roster = (f"Your reports: {', '.join(kids)}. "
+                  f"Your peers: {', '.join(sibs)}.")
     stats: dict[str, int] = {}
+    chart = ""
     if vis == "subtree":
-        position += ("\nYour full suborganization:\n"
-                     + "\n".join(_render_chart(org, [nid], nid, 0,
-                                               include_archived, stats)))
+        chart = ("\nYour full suborganization:\n"
+                 + "\n".join(_render_chart(org, [nid], nid, 0,
+                                           include_archived, stats)))
     elif vis == "full":
-        position += ("\nThe full organization chart (root = the user):\n- user (overseer)\n"
-                     + "\n".join(_render_chart(org, org.children(None, live_only=False),
-                                               nid, 1, include_archived, stats)))
+        chart = ("\nThe full organization chart (root = the user):\n- user (overseer)\n"
+                 + "\n".join(_render_chart(org, org.children(None, live_only=False),
+                                           nid, 1, include_archived, stats)))
     if stats.get("hidden"):
         # ⚠ THE POINTER IS LOAD-BEARING — do not "tidy" it away (D-178).
         # Hiding the archived list is presentation; making it UNFINDABLE is
@@ -3292,7 +3344,7 @@ def org_state_block(org: Org, nid: str, include_archived: bool = False) -> str:
         # would hire a stranger to redo work an archived expert already did.
         # That is a far more expensive problem than a long list, so the count
         # and the route BOTH have to survive any future tidying of this text.
-        position += (
+        chart += (
             f"\n({stats['hidden']} archived agent"
             f"{'s' if stats['hidden'] != 1 else ''} hidden above"
             + (f", including {stats['bearers']} consultable knowledge bearer"
@@ -3342,22 +3394,11 @@ def org_state_block(org: Org, nid: str, include_archived: bool = False) -> str:
             "busy, use orgtree_prime_restart so the deploy fires when it is "
             "quiet; never restart speculatively.")
     guidance_line = f"\n{live_guidance}" if live_guidance else ""
-    # ⚠ THE HEADER EARNS ITS WORDS. This block is re-sent every turn, so an
-    # agent's history accumulates SUPERSEDED copies of it — an older turn may
-    # show a chart with an agent that has since been retired, or a stale free
-    # count. In the system prompt there was only ever one copy and the question
-    # never arose. Say plainly that the last one wins, or the agent will
-    # eventually act on a chart it scrolled back to.
-    return (
-        f"{ORG_STATE_OPEN} — current as of {now_iso()}. This block is re-sent "
-        f"every turn and EARLIER COPIES IN THIS CONVERSATION ARE STALE: where "
-        f"they disagree with this one, this one is right.]\n"
-        f"{position}\n"
-        f"Credits: seat {org.seat_cost(nid)}, grant {n['grant']}, "
-        f"free {org.free(nid):g} — credits bound concurrent agent capacity, "
-        f"not tokens."
-        f"{guidance_line}"
-        f"{fable_line}{ask_line}\n{ORG_STATE_CLOSE}")
+    tail = (f"Credits: seat {org.seat_cost(nid)}, grant {n['grant']}, "
+            f"free {org.free(nid):g} — credits bound concurrent agent "
+            f"capacity, not tokens."
+            f"{guidance_line}{fable_line}{ask_line}")
+    return roster, chart, tail
 
 
 def _turn_usage_selection(org: Org, nid: str,
@@ -3388,8 +3429,63 @@ def _turn_usage_selection(org: Org, nid: str,
         return provider, ""
 
 
-def turn_usage_block(org: Org, nid: str,
-                     now: float | None = None) -> str:
+def _envelope_decide(org: Org, nid: str, kind: str, dig: str, now: float,
+                     pending: dict[str, envelope.Snapshot]
+                     ) -> tuple[bool, int]:
+    """D-223's shared half: decide, stage the record, hand back (full, seq).
+
+    ⚠ THE RECORD IS ONLY STAGED. It goes into `pending` and reaches the org doc
+    at `_commit_envelope`, which the turn path calls beside `_confirm_delivered`
+    — the one event that proves the CLI read stdin. Writing it here instead
+    would suppress the next turn's block against text that a failed launch
+    never delivered, and the replay would not put it back (`inflight` is
+    snapshotted BEFORE the envelope is attached, by design).
+    """
+    n = org.node(nid)
+    prior = envelope.read(n, kind)
+    sid = str(n.get("session_id") or "")
+    occ = int(n.get("occupancy") or 0)
+    full, why = envelope.decide(prior, sid=sid, dig=dig, now=now, occ=occ)
+    snap = envelope.advance(prior, sid=sid, dig=dig, now=now, occ=occ,
+                            full=full, why=why)
+    pending[kind] = snap
+    return full, snap["seq"]
+
+
+def _commit_envelope(slug: str, nid: str,
+                     pending: dict[str, envelope.Snapshot]) -> None:
+    """Record what the agent has now demonstrably read (D-223).
+
+    Broad failure handling is deliberate and matches the rest of the envelope:
+    this is bookkeeping that makes later turns CHEAPER, and losing it costs one
+    redundant full block. It must never be able to fail a turn.
+    """
+    if not pending:
+        return
+    try:
+        with store.DOC_LOCK:
+            org = store.load_org(slug)
+            if nid in org.nodes:
+                n = org.node(nid)
+                live = str(n.get("session_id") or "")
+                for kind, snap in pending.items():
+                    # ⚠ RE-CHECK THE SESSION UNDER THE LOCK. Between rendering
+                    # and confirming, the node may have been re-seeded, forked
+                    # or cheap-compacted onto a different session. The block
+                    # went to the OLD conversation; recording it against the
+                    # new one would point a successor at a snapshot that is not
+                    # in its context and never was.
+                    if snap["sid"] == live:
+                        envelope.write(n, kind, snap)
+                store.save_org(org)
+    except Exception:                                      # noqa: BLE001
+        pass
+    pending.clear()
+
+
+def turn_usage_block(org: Org, nid: str, now: float | None = None, *,
+                     pending: dict[str, envelope.Snapshot] | None = None
+                     ) -> str:
     """The cache-only, dynamic provider-usage user-envelope block.
 
     This is deliberately adjacent to ``org_state_block`` and absent from
@@ -3401,11 +3497,51 @@ def turn_usage_block(org: Org, nid: str,
     now = time.time() if now is None else now
     try:
         provider, lane = _turn_usage_selection(org, nid, now)
-        return turnusage.render(
+        text, key = turnusage.board(
             org, nid, selected_provider=provider,
             selected_lane=lane, now=now)
+        if pending is None:
+            return text          # every non-turn caller: the whole board
+        full, seq = _envelope_decide(org, nid, envelope.USAGE, key, now,
+                                     pending)
+        if full:
+            return turnusage.number(text, seq)
+        return turnusage.compact(
+            [ln for ln in text.splitlines() if ln.count("|") >= 6], seq)
     except Exception:                                      # noqa: BLE001
         return turnusage.failure_block(now)
+
+
+# Roughly three times the length of the pointer that would replace the chart.
+# Under this, suppression is a rounding error that costs the agent a scroll.
+_CHART_SUPPRESS_MIN: Final = 280
+
+
+def _envelope_state_block(org: Org, nid: str, now: float,
+                          pending: dict[str, envelope.Snapshot]) -> str:
+    """The turn's ORG STATE block, with the chart span suppressed while the org
+    has not moved (D-223). A node whose visibility renders no chart has nothing
+    suppressible and simply gets the block it always got."""
+    try:
+        chart = org_state_chart(org, nid)
+        if len(chart) < _CHART_SUPPRESS_MIN:
+            # Nothing to suppress, or not enough to be worth suppressing. A
+            # two-person org's chart is ~130 characters and the sentence
+            # explaining where it went is ~90 — spending 90 to save 130, at
+            # the cost of making the agent scroll, is not a saving. Below the
+            # floor the block is simply rendered as it always was, and no
+            # snapshot is recorded: if the org later grows past the floor, the
+            # absent record reads as "first" and sends a full chart anyway.
+            return org_state_block(org, nid)
+        full, seq = _envelope_decide(org, nid, envelope.ORG_STATE,
+                                     envelope.digest(chart), now, pending)
+        return org_state_block(org, nid, seq=seq,
+                               chart_ref=None if full else seq)
+    except Exception:                                      # noqa: BLE001
+        # The roster and the credit balance are not optional. If anything in
+        # the suppression path misbehaves, fall all the way back to the block
+        # this function replaced rather than to nothing.
+        return org_state_block(org, nid)
 
 
 def identity_prompt(org: Org, nid: str, include_archived: bool = False) -> str:
@@ -8069,6 +8205,10 @@ def _run_one_turn(slug: str, nid: str,
             # into `prelude` — see the note at the assignment.
             state_block = ""
             usage_org: Org | None = None
+            # D-223: what this turn's envelope claims the agent has now read.
+            # STAGED here, committed only at the `_confirm_delivered` seam
+            # below — see `_envelope_decide`.
+            env_pending: dict[str, envelope.Snapshot] = {}
             if pending:
                 lines = "\n".join(f"- {p['at']}: {p['text']}" for p in pending)
                 prelude.append(f"[ORG NOTICES — {len(pending)} change(s) since your "
@@ -8155,7 +8295,8 @@ def _run_one_turn(slug: str, nid: str,
                     # (3) BEFORE the provider seam below, so the codex lane gets
                     #     the same block through the same door.
                     if not is_cmd:
-                        state_block = org_state_block(o2, nid)
+                        state_block = _envelope_state_block(
+                            o2, nid, time.time(), env_pending)
                         # Keep only the already-loaded doc across the lock
                         # boundary. Provider cache/registry locks must never
                         # sit underneath DOC_LOCK, and this block is advisory:
@@ -8166,7 +8307,8 @@ def _run_one_turn(slug: str, nid: str,
             # first character the CLI sees. Command turns are informationally
             # lean by existing design, not by an oversight here.
             if state_block:
-                usage_block = (turn_usage_block(usage_org, nid)
+                usage_block = (turn_usage_block(usage_org, nid,
+                                                pending=env_pending)
                                if usage_org is not None else "")
                 text = (state_block + "\n\n" + usage_block + "\n\n" + text)
             # a new turn supersedes the previous failure: the durable system
@@ -8644,6 +8786,11 @@ def _run_one_turn(slug: str, nid: str,
                         # chose.
                         _confirm_delivered(slug, nid, pend_toks)
                         pend_toks = []
+                        # D-223 rides the SAME proof. This event is the CLI
+                        # telling us it read stdin; until it arrives, the
+                        # envelope may never have reached the model and its
+                        # snapshot must not be recorded as delivered.
+                        _commit_envelope(slug, nid, env_pending)
                     if ev.get("type") == "stream_event":
                         # partial-message deltas → the UI renders the reply
                         # growing word-by-word (user spec); batched so the WS
@@ -9313,8 +9460,9 @@ def _run_one_turn(slug: str, nid: str,
                                 pass
                             try:
                                 if not ncmd and nusage_org is not None:
-                                    nxt = (turn_usage_block(nusage_org, nid)
-                                           + "\n\n" + nxt)
+                                    nxt = (turn_usage_block(
+                                        nusage_org, nid, pending=env_pending)
+                                        + "\n\n" + nxt)
                                 _record_prompt_view(slug, ran_sid or sid,
                                                     str(nxt), nview)
                                 proc.stdin.write(_user_event(nxt, nimgs))   # pyright: ignore[reportOptionalMemberAccess]

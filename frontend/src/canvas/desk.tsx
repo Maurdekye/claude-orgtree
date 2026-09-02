@@ -324,20 +324,119 @@ const cacheForecastTitle = (forecast: CacheForecast): string => {
   ].filter(Boolean).join('\n')
 }
 
+/** Epoch ms of an authoritative expiry, or null when there is not one.
+ *
+ * ⚠ ONLY `compatible_observed` QUALIFIES. `expires_at` is written beside a
+ * POSITIVE receipt — the backend stamps it from the lane's real TTL when a
+ * turn reported cache reads or writes — so it means "this observed entry dies
+ * at T". A forecast that is merely *not known to be broken* has no entry and
+ * no T, and counting down to one would invent confidence the backend never
+ * claimed. That includes the D-214 green case (`no_completed_fingerprint` on a
+ * supported lane), which stays green with its ✓ precisely because it is a
+ * statement about the absence of conflict, not about a live cache entry.
+ */
+const cacheExpiryAt = (forecast: CacheForecast): number | null => {
+  if (forecast.state !== 'compatible_observed') return null
+  if (typeof forecast.ttl_seconds !== 'number'
+    || !Number.isFinite(forecast.ttl_seconds)
+    || forecast.ttl_seconds <= 0) return null       // lane has no TTL semantics
+  if (!forecast.expires_at) return null
+  const at = Date.parse(forecast.expires_at)
+  return Number.isFinite(at) ? at : null
+}
+
+/** `4:07`, or `1:02:59` once it passes an hour. Never negative: an expiry in
+ * the past is `0:00`, which the caller stops rendering as green anyway. */
+const countdownText = (msLeft: number): string => {
+  const total = Math.max(0, Math.floor(msLeft / 1000))
+  const s = total % 60
+  const m = Math.floor(total / 60) % 60
+  const h = Math.floor(total / 3600)
+  const two = (n: number) => String(n).padStart(2, '0')
+  return h > 0 ? `${h}:${two(m)}:${two(s)}` : `${m}:${two(s)}`
+}
+
+/** Ticks once a second while an authoritative expiry is in the future.
+ *
+ * ⚠ THE STATE IS LOCAL AND STAYS LOCAL. This component owns its own interval
+ * and its own `useState`; nothing above it re-renders on a tick. Lifting the
+ * clock into the desk (or into a context) would re-render every card on the
+ * canvas once a second, which on a large org is the whole point of the
+ * measurement work this shipped alongside — a per-second full-canvas render is
+ * far more expensive than the thing it would be reporting on.
+ *
+ * ⚠ AND IT RE-ARMS ON `expiresAt`, not on a mount. A resumed session, a new
+ * receipt, or a provider/account/model namespace change all produce a NEW
+ * `expires_at` from the backend; keying the effect on that value makes every
+ * one of them reset the countdown for free, and makes a replacement receipt
+ * indistinguishable from a fresh one — which is what it is.
+ */
+const noAgeClock = () => () => {}
+
+function useCountdown(expiresAt: number | null): number | null {
+  // ⚠ THE SHARED CLOCK, NOT A NEW ONE. `desk.tsx` is allowed exactly one
+  // `setInterval` and a drift guard in `derived.test.mjs` counts them — the
+  // deliberate design is one module-level pulse that every mounted badge
+  // subscribes to, rather than one timer per agent. Adding a second timer here
+  // was caught by that guard, which is the guard doing its job: on a large
+  // canvas the per-card version is exactly the kind of cost the work this
+  // shipped alongside exists to remove.
+  //
+  // A card with no countdown subscribes to nothing, so the common case does
+  // not re-render once a second to display an unchanging glyph. Both subscribe
+  // functions are module-level constants, so swapping between them is a real
+  // re-subscribe and never a render-loop.
+  useSyncExternalStore(expiresAt === null ? noAgeClock : subscribeAgeClock,
+    () => ageClockSecond, () => ageClockSecond)
+  // Derived from the wall clock on every pulse rather than decremented, so a
+  // throttled background tab, a sleeping machine or a stepped clock lands on
+  // the truth at the next pulse instead of drifting by however long it was
+  // away. It also means a NEW `expires_at` — a replacement receipt, a resumed
+  // session, a provider/account/model namespace change — takes effect on the
+  // very next render with no reset logic to get wrong.
+  return expiresAt === null ? null : expiresAt - Date.now()
+}
+
 /** User-selected three-state cache forecast: compatible green, known cold
- * red, unknown grey. Glyphs keep every state distinct without colour. */
+ * red, unknown grey. Glyphs keep every state distinct without colour.
+ *
+ * The green card carries a LIVE COUNTDOWN to the observed entry's expiry in
+ * place of the ✓ (user spec 2026-09-02) — never both, and never a countdown
+ * without an authoritative expiry to count to. When the countdown reaches zero
+ * the card stops being green on its own, without waiting for the backend to
+ * re-forecast: the entry it was counting down to has expired, and continuing
+ * to show green until the next poll would be the one lie this badge exists to
+ * prevent. */
 export function CacheForecastMark({ forecast }: {
   forecast?: CacheForecast | null
 }) {
+  const expiresAt = forecast ? cacheExpiryAt(forecast) : null
+  const left = useCountdown(expiresAt)
   if (!forecast) return null
-  const compatible = forecast.state === 'compatible_observed'
-    || defaultCompatibleForecast(forecast)
-  const uncertain = forecast.state === 'uncertain'
+  // Hooks run before this branch on purpose — a null forecast must not change
+  // the hook order.
+  const live = left !== null && left > 0
+  // ⚠ AN ELAPSED COUNTDOWN IS `expired_known_entry`, AND RENDERS AS ONE.
+  // The backend already has a name and a colour for "a known entry passed the
+  // derived boundary", and it is red, not grey. Demoting to grey here would
+  // have the same fact wearing two different colours depending on which side
+  // of a poll it was observed from. Grey means "unknown"; this is not unknown.
+  const expired = expiresAt !== null && !live
+  const compatible = (forecast.state === 'compatible_observed'
+    || defaultCompatibleForecast(forecast)) && !expired
+  const uncertain = !expired && forecast.state === 'uncertain'
   const cls = compatible ? 'compatible' : uncertain ? 'uncertain' : 'cold'
-  const glyph = compatible ? '✓' : uncertain ? '?' : '×'
-  const title = cacheForecastTitle(forecast)
+  const body = compatible && live
+    ? countdownText(left)
+    : compatible ? '✓' : uncertain ? '?' : '×'
+  const title = compatible && live
+    ? `${cacheForecastTitle(forecast)}\nexpires in ${countdownText(left)}`
+    : expired
+      ? `${cacheForecastTitle(forecast)}\nthe observed cache entry has passed `
+        + 'its derived expiry'
+      : cacheForecastTitle(forecast)
   return <span className={`cache-forecast ${cls}`} title={title} aria-label={title}>
-    <span aria-hidden="true">cache {glyph}</span>
+    <span aria-hidden="true">cache {body}</span>
   </span>
 }
 

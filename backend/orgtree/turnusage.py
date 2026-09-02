@@ -195,6 +195,14 @@ def _cached_rows(snapshot: dict[str, Any], provider: str, lane: str,
     normalized.sort(key=lambda row: (
         _WINDOW_ORDER.get(row[0].split(":", 1)[0], 98), row[0],
         row[3], -1.0 if row[1] is None else row[1], row[4]))
+    # ⭐ D-223. Two limits with the same window, percentage, reset AND active
+    # flag are the same limit reported twice — the `#N` disambiguation below
+    # would otherwise render them as `weekly_scoped` and `weekly_scoped#2`,
+    # two byte-different rows carrying one fact. Live-caught 2026-09-01 on this
+    # org's own codex board, where it cost ~110 characters of every turn.
+    # Dedupe BEFORE numbering: after it, the rows are no longer identical and
+    # nothing downstream can tell they were.
+    normalized = list(dict.fromkeys(normalized))
     counts: dict[str, int] = {}
     out: list[tuple[tuple[Any, ...], str]] = []
     for window, pct, shown, reset, active in normalized:
@@ -265,6 +273,99 @@ def _fallback_rows(now: float, selected_lane: str,
     return rows
 
 
+def _cells(line: str) -> list[str]:
+    """One rendered row, split back into its columns.
+
+    Parsing our OWN output is safe here in a way it would not be generally:
+    `_line` is the single producer of every row in this module, and both the
+    producer and these readers live in this file. A test pins the round trip.
+    """
+    return [c.strip() for c in line.split("|")]
+
+
+def _band(used: str) -> str:
+    """Coarse usage band. A percentage that ticks 16→17 is not news; crossing a
+    quarter of the budget is. Only the BOARD's re-send is gated on this — the
+    compact line below always carries the selected lane's exact numbers, so no
+    agent ever loses sight of its own real usage."""
+    text = used.rstrip("%")
+    try:
+        pct = float(text)
+    except ValueError:
+        return used                       # "unavailable(...)" — compare as-is
+    band = 0
+    for edge in (0, 25, 50, 75, 90, 95, 100):
+        if pct >= edge:
+            band = edge
+    return f"b{band}"
+
+
+def _reset_bucket(reset: str) -> str:
+    """A reset instant, rounded to the nearest 5 minutes.
+
+    ⚠ ROUNDED, NOT TRUNCATED, and that is not fussiness. Providers jitter the
+    reported reset by a second or so, and this org's own boards were measured
+    reporting the same window as 23:00:00Z on one turn and 22:59:59Z on the
+    next (2026-09-01). Truncation puts those two in different buckets — they
+    straddle a minute boundary — so a whole board was being re-sent because a
+    clock wobbled backwards by one second. Rounding lands both on 23:00.
+
+    Any quantisation still has boundaries; with ~1s of jitter this one is
+    straddled about once in 300 comparisons, and the cost of that is one extra
+    full board. That is the right direction to be wrong in.
+    """
+    stamp = _epoch(reset.split(" ", 1)[0]) if reset and reset != "-" else None
+    if stamp is None:
+        return "-"
+    return str(int(round(stamp / 300.0)))
+
+
+def material_key(lines: list[str]) -> str:
+    """The board's MEANING, as a comparable string.
+
+    Everything that moves every single turn without telling an agent anything
+    it can act on — the countdown, the observation age, the exact percentage —
+    is reduced or dropped. What survives is what would change a decision: which
+    lanes exist, which one is selected, roughly how used each is, when its
+    window resets, whether the reading is stale, and its state.
+    """
+    keys: list[str] = []
+    for line in lines:
+        if line.count("|") < 6:
+            continue
+        lane, window, used, _amount, reset, observed, state = _cells(line)[:7]
+        fresh = "stale" if "stale" in observed else "fresh"
+        keys.append(f"{lane}|{window}|{_band(used)}|"
+                    f"{_reset_bucket(reset)}|{fresh}|{state}")
+    return "\n".join(sorted(keys))
+
+
+def compact(lines: list[str], seq: int) -> str:
+    """The one-line stand-in for an unchanged board.
+
+    It carries the SELECTED lane in full — exact percentages, and the reset
+    countdown for anything not plainly ready — because that is the lane this
+    turn actually runs on and the one an agent throttles itself against. The
+    other lanes are the ones being pointed at rather than repeated, and any
+    material move in them brings the whole board straight back.
+    """
+    bits: list[str] = []
+    for line in lines:
+        if line.count("|") < 6:
+            continue
+        cells = _cells(line)
+        lane, window, used, _amount, reset, _observed, state = cells[:7]
+        if not lane.endswith("*"):
+            continue
+        note = f"{window} {used} {state}"
+        if state != "ready" and reset != "-" and "(" in reset:
+            note += f" ({reset.split('(', 1)[1].rstrip(')')})"
+        bits.append(note)
+    body = " · ".join(bits) if bits else "no selected lane"
+    return (f"{OPEN} #{seq} — {body}. Other lanes unchanged since #{seq}; "
+            f"the full board returns on any material change.]")
+
+
 def failure_block(now: float | None = None) -> str:
     """Fixed, secret-free last resort when even formatting fails."""
     now = time.time() if now is None else now
@@ -284,9 +385,21 @@ def failure_block(now: float | None = None) -> str:
             + CLOSE)
 
 
-def render(org: Org, nid: str, *, selected_provider: str = "",
-           selected_lane: str = "", now: float | None = None) -> str:
+def number(text: str, seq: int) -> str:
+    """Stamp a rendered board with its snapshot number, so a later suppressed
+    turn can cite it. Separate from `board` on purpose: the number depends on
+    whether the board turned out to be a CHANGE, which is only known after the
+    material key exists — and the key comes from the rendered rows."""
+    return text.replace(OPEN, f"{OPEN} #{seq}", 1)
+
+
+def board(org: Org, nid: str, *, selected_provider: str = "",
+          selected_lane: str = "", now: float | None = None
+          ) -> tuple[str, str]:
     """Render one deterministic provider/account board; never raise.
+
+    Returns (text, material_key). The key is what D-223's suppression compares
+    turn over turn — see `material_key`.
 
     Provider order is Claude, Codex, Gemini.  Claude accounts are primary,
     fallback ordinal, then this org's API-key lane.  Window order is session,
@@ -350,11 +463,27 @@ def render(org: Org, nid: str, *, selected_provider: str = "",
                            "unsupported", selected=selected_provider == "google")))
 
         rows.sort(key=_row_order)
-        return (f"{OPEN} — current as of {_iso(now)}; dynamic/cache-only]\n"
-                "provider/lane | window | used | amount | reset (countdown) | "
-                "observed (age,freshness) | state\n"
-                + "\n".join(line for _key, line in rows)
-                + "\n* selected for this turn; - = not authoritatively reported.\n"
-                + CLOSE)
+        lines = [line for _key, line in rows]
+        key = material_key(lines)
+        return ((f"{OPEN} — current as of {_iso(now)}; "
+                 f"dynamic/cache-only]\n"
+                 "provider/lane | window | used | amount | reset (countdown) | "
+                 "observed (age,freshness) | state\n"
+                 + "\n".join(lines)
+                 + "\n* selected for this turn; - = not authoritatively "
+                   "reported.\n"
+                 + CLOSE), key)
     except Exception:  # noqa: BLE001 - telemetry is never an admission gate
-        return failure_block(now)
+        # ⚠ A DISTINCT KEY, not "". Two failures in a row are not evidence that
+        # the board is unchanged — the board is unknown. Keying failure to its
+        # own constant makes the next successful render read as a change and
+        # re-send in full, which is the only honest recovery.
+        return failure_block(now), "telemetry-failure"
+
+
+def render(org: Org, nid: str, *, selected_provider: str = "",
+           selected_lane: str = "", now: float | None = None) -> str:
+    """The board's text alone — the pre-D-223 entry point, unchanged for every
+    caller that just wants to read it (tests, and any non-turn surface)."""
+    return board(org, nid, selected_provider=selected_provider,
+                 selected_lane=selected_lane, now=now)[0]
