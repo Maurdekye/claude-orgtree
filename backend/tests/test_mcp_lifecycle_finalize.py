@@ -113,7 +113,8 @@ class LifecycleFinalizeTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         org = store.create_org("zz mcp finalize")
-        for nid in ("parked", "supersede", "killed", "parkback", "durable"):
+        for nid in ("parked", "supersede", "killed", "parkback",
+                    "durable", "unobservable"):
             org.hire(USER, None, "haiku", 5, nid)
         store.save_org(org)
         cls.slug = org.d["slug"]
@@ -367,6 +368,43 @@ class LifecycleFinalizeTests(unittest.TestCase):
         self.assertEqual(count, len(TOOLS))
         self.assertEqual(exact, sorted(TOOLS))
         self.assertIsNotNone(lwp)                       # (kept alive for kill)
+
+
+    # ── 6. an owner we cannot observe is not an owner we may bury ──────────
+    def test_an_owner_whose_poll_raises_is_never_reported_as_exited(self):
+        """`_mcp_owner_ended` is three-valued and the third value is the point:
+        `poll()` returning a code proves death, None proves life, and a `poll`
+        that RAISES proves neither. Asserting that a process we cannot see has
+        ended is a claim nothing supports, so the unobservable owner takes the
+        conservative branch — it keeps its seat, its inventory and `loading`.
+
+        Nothing pinned this: every existing unobservable owner in the suites is
+        a bare object with no `poll` at all, so the raising branch was reachable
+        only in principle. A mutant that folded a raising `poll` into "exited"
+        survived every suite.
+        """
+        class _Raises:
+            def poll(self):                             # noqa: ANN201
+                raise OSError("the handle is gone")
+
+        nid = "unobservable"                 # state-machine only; no process
+        owner = _Raises()
+        self._adopt(nid, owner)
+        self.assertEqual(_snap(self.slug, nid)["count"], len(TOOLS))
+
+        self.assertIs(S._mcp_owner_ended(owner), None)
+        self.assertIs(S._mcp_owner_running(owner), False)   # deliberately
+        # …the asymmetry is deliberate: REFUSING recovery on a process we
+        # cannot see is safe, ASSERTING it died is not.
+
+        self.assertFalse(S._mcp_tool_count_end(self.slug, nid, owner),
+                         "an unobservable owner was reported as reaped")
+        after = _snap(self.slug, nid)
+        self.assertEqual(after["state"], "loading", after)
+        self.assertFalse(after["waiting"], after)
+        self.assertIs(after["owner"], owner, after)
+        self.assertEqual(after["count"], len(TOOLS), after)
+        self.assertEqual(after["names"], sorted(TOOLS), after)
 
 
 if __name__ == "__main__":

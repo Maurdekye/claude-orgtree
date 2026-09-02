@@ -60,6 +60,33 @@ from orgtree.ledger import USER  # noqa: E402
 TOOLS = ["mcp__orgtree__message", "mcp__orgtree__status"]
 
 
+class _Owner:
+    """A stand-in provider process that can DIE.
+
+    `poll()` is the only thing the state machine reads to decide whether a
+    generation has ended, so an owner without one is UNOBSERVABLE — and since
+    unit 2 an unobservable owner keeps its seat, its inventory and its
+    ownership. These tests used bare `object()` owners, so after unit 2 landed
+    `_mcp_tool_count_end` stopped reaping them: every assertion below was
+    silently satisfied by the LIVE entry and none of them reached the stash
+    they exist to pin. Measured: mutant R4 (drop `final["names"] = None` from
+    `_mcp_tool_count_server`) survived all six suites.
+
+    Every test here is about what survives a generation's DEATH, so its owner
+    has to be able to die. `die()` is called at the point the real process
+    would have exited — before the EOF/teardown call, never after.
+    """
+
+    def __init__(self, alive: bool = True) -> None:
+        self._alive = alive
+
+    def poll(self):                                     # noqa: ANN201
+        return None if self._alive else 0
+
+    def die(self) -> None:
+        self._alive = False
+
+
 class McpSurfaceCaptureTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -94,10 +121,11 @@ class McpSurfaceCaptureTests(unittest.TestCase):
 
     def test_capture_before_eof_yields_the_final_surface(self) -> None:
         """The benign ordering — passes today, must keep passing."""
-        proc = object()
+        proc = _Owner()
         self._run_a_turn(proc)
 
         captured = S._mcp_tool_surface_for_owner(self.slug, self.nid, proc)
+        proc.die()      # the process really exits first
         S._mcp_tool_count_end(self.slug, self.nid, proc)
 
         self.assertEqual(captured, (2, TOOLS))
@@ -109,10 +137,11 @@ class McpSurfaceCaptureTests(unittest.TestCase):
         completed on it. Only the order of two threads decides whether that
         surface is remembered, and the order that actually happens is this one.
         """
-        proc = object()
+        proc = _Owner()
         self._run_a_turn(proc)
 
         # pump thread: stdout EOF -> _on_proc_exit -> _mcp_tool_count_end
+        proc.die()      # the process really exits first
         S._mcp_tool_count_end(self.slug, self.nid, proc)
         # main thread: the turn's `finally`, after proc.wait()
         captured = S._mcp_tool_surface_for_owner(self.slug, self.nid, proc)
@@ -132,11 +161,12 @@ class McpSurfaceCaptureTests(unittest.TestCase):
         Note this is precisely what keying a stash on ``id(owner)`` rather
         than a retained reference would break, since CPython reuses ids.
         """
-        old = object()
+        old = _Owner()
         self._run_a_turn(old)
+        old.die()      # the process really exits first
         S._mcp_tool_count_end(self.slug, self.nid, old)
 
-        new = object()
+        new = _Owner()
         S._mcp_tool_count_begin(
             self.slug, self.nid, new, "claude", "system/init.tools",
             "replacement starting")
@@ -148,12 +178,13 @@ class McpSurfaceCaptureTests(unittest.TestCase):
 
     def test_a_foreign_owner_recovers_nothing(self) -> None:
         """Neither the live read nor any recovery path answers a stranger."""
-        proc = object()
+        proc = _Owner()
         self._run_a_turn(proc)
+        proc.die()      # the process really exits first
         S._mcp_tool_count_end(self.slug, self.nid, proc)
 
         self.assertEqual(
-            S._mcp_tool_surface_for_owner(self.slug, self.nid, object()),
+            S._mcp_tool_surface_for_owner(self.slug, self.nid, _Owner()),
             (None, None))
 
     def test_a_live_surface_never_names_tools_it_cannot_count(self) -> None:
@@ -180,7 +211,7 @@ class McpSurfaceCaptureTests(unittest.TestCase):
           - keep the names and let the count follow from them, since a
             generation-correct name set already implies its own total.
         """
-        proc = object()
+        proc = _Owner()
         self._run_a_turn(proc)
 
         S._mcp_tool_count_unknown(
@@ -214,7 +245,7 @@ class McpSurfaceCaptureTests(unittest.TestCase):
         count, the boundary recovers a surface the runtime explicitly refused
         to vouch for — and one whose count and name list contradict each other.
         """
-        proc = object()
+        proc = _Owner()
         self._run_a_turn(proc)
 
         # the agent reloads MCP: the total is proven, the identities are not
@@ -227,6 +258,7 @@ class McpSurfaceCaptureTests(unittest.TestCase):
             "the LIVE read is honest: the exact names were invalidated")
 
         # the process then dies at the boundary and the capture falls back
+        proc.die()      # the process really exits first
         S._mcp_tool_count_end(self.slug, self.nid, proc)
         count, names = S._mcp_tool_surface_for_owner(
             self.slug, self.nid, proc)
