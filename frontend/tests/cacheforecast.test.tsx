@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import type { ReactElement } from 'react'
 import { CacheForecastMark, CacheForecastWarning } from '../src/canvas/desk'
 import type { CacheForecast, CacheForecastState } from '../src/types'
 
@@ -383,7 +384,7 @@ test('mid-turn + invalid readiness + focused composer warns about the steer wind
 
 test('the mid-turn warning needs all three conditions, and overrides the original', async () => {
   const cold = forecast('known_incompatible', 'will_compact')   // actionable too
-  const cases: Array<[string, JSX.Element, 'midturn' | 'compact' | 'none']> = [
+  const cases: Array<[string, ReactElement, 'midturn' | 'compact' | 'none']> = [
     ['all three → mid-turn banner, overriding the threshold banner',
       <CacheForecastWarning forecast={cold} midTurn composerFocused
         cheapCompactOn />, 'midturn'],
