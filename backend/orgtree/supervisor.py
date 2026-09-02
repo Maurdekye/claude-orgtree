@@ -7044,7 +7044,8 @@ def _codex_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
 
     jlock = threading.Lock()
     jstate: dict[str, Any] = {
-        "sid": "", "pending": [], "held": [], "agent_items": 0,
+        "sid": "", "barrier": True, "pending": [], "held": [],
+        "agent_items": 0,
         "tool_ids": set(), "item_ids": set()}
 
     # ── THE ORDERING BARRIER (D-221) ────────────────────────────────────────
@@ -7083,18 +7084,74 @@ def _codex_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
     # at all, so releasing would put assistant prose on screen under a turn
     # the server cannot show; nothing is the honest render, and the turn's own
     # durable error row is what the desk gets instead.
+    # ⚠ A SECOND LOCK, AND IT IS NOT REDUNDANT (2026-09-02). The barrier below
+    # made the QUESTION precede the ANSWER; it did not make the answer precede
+    # itself. `_open_journal` copied `held`, dropped `jlock` and only then
+    # emitted — so a reader-thread `_visible` that observed `sid` inside that
+    # window emitted NEWER output while OLDER held closures were still in the
+    # release loop, and the desk received them inverted. The window is small
+    # and the traffic is bursty, which is the profile of a defect that shows up
+    # as "sometimes out of order" and never reproduces on demand.
+    #
+    # `emit_lock` is the ORDER of emission, `jlock` is the STATE it reads.
+    # Every path takes them in that order (emit → j), so there is no cycle, and
+    # the release holds `emit_lock` across the whole flush: a concurrent
+    # emission then queues behind the release instead of overtaking it.
+    emit_lock = threading.Lock()
+
     def _visible(emit: Callable[[], None]) -> None:
-        with jlock:
-            if not jstate["sid"]:
-                cast("list[Any]", jstate["held"]).append(emit)
-                return
-        emit()             # outside the lock: emission reaches the websocket
+        with emit_lock:
+            with jlock:
+                if not jstate["sid"] or jstate["barrier"]:
+                    cast("list[Any]", jstate["held"]).append(emit)
+                    return
+            emit()         # outside jlock: emission reaches the websocket
 
     def _visible_stream(payload: dict[str, Any]) -> None:
         _visible(lambda: stream(slug, nid, payload))
 
     def _visible_live_row(payload: dict[str, Any]) -> None:
         _visible(lambda: live_row(slug, nid, payload))
+
+    def _begin_visible_barrier() -> str:
+        """Stop journal + desk output at a mid-turn input boundary.
+
+        The timestamp is the boundary's linearization candidate: captured
+        BEFORE `turn/steer` goes on the wire, so an accepted steer sorts above
+        every provider item it can cause even when the reader sees those item
+        notifications before the JSON-RPC response (the same cross-thread
+        ordering that caused D-221 at turn/start).
+
+        `emit_lock` closes the arm race: anything already emitting finishes
+        before this returns; everything after it queues without blocking the
+        app-server reader, which still has to read the steer response.
+        """
+        with emit_lock:
+            with jlock:
+                jstate["barrier"] = True
+                return now_iso()
+
+    def _release_visible_barrier() -> None:
+        """Persist held provider items, then release their desk frames.
+
+        The steer's own durable row is committed by the caller BEFORE this
+        runs. Holding `emit_lock` across the release prevents a newer reader
+        callback from overtaking an older held one; holding no lock while the
+        request itself is in flight prevents a reader-thread deadlock.
+        """
+        held: list[Callable[[], None]] = []
+        with emit_lock:
+            with jlock:
+                sid = str(jstate["sid"] or "")
+                pending_recs = list(jstate["pending"])
+                jstate["pending"].clear()
+                if sid and pending_recs:
+                    _codex_journal(slug, sid, pending_recs)
+                jstate["barrier"] = False
+                held = cast("list[Callable[[], None]]", jstate["held"])[:]
+                cast("list[Any]", jstate["held"]).clear()
+            for emit in held:
+                emit()
 
     def _first_time(iid: str) -> bool:
         """Is this the first `item/completed` seen for this item id?
@@ -7167,7 +7224,7 @@ def _codex_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
         activation writes the user row first, then this queue."""
         with jlock:
             sid = str(jstate["sid"] or "")
-            if not sid:
+            if not sid or jstate["barrier"]:
                 jstate["pending"].extend(recs)
                 return
             _codex_journal(slug, sid, recs)
@@ -7282,7 +7339,7 @@ def _codex_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
         # The start event already put a live tool row on screen. Nudge the
         # fetched transcript so its result body attaches without waiting for
         # the heartbeat or the end of the turn.
-        stream(slug, nid, {"kind": "journal", "text": ""})
+        _visible_stream({"kind": "journal", "text": ""})
 
     mcp_client: Any | None = None
     mcp_owner: Any | None = None
@@ -7382,6 +7439,9 @@ def _codex_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
     stop = threading.Event()
     res_raw: dict[str, Any] = {}
     parked = False
+    # bound BEFORE the try: the `finally` joins it, and an exception thrown
+    # anywhere above its start() must not become a NameError on the way out
+    steer_thread: threading.Thread | None = None
     # Capture before a cold process is closed and its generation-owned live
     # state is cleared.  The successful turn still authoritatively ran with
     # that inventory even when no process remains afterward.
@@ -7414,28 +7474,33 @@ def _codex_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
         durable stamp, so a user row stamped after the turn's first items
         would put the turn boundary in the wrong place."""
         held: list[Callable[[], None]] = []
-        with jlock:
-            if jstate["sid"]:
-                return                    # already open — nothing to re-do
-            jstate["sid"] = str(tid or "")
-            if not jstate["sid"]:
-                return                    # no thread id, no journal, no release
-            pending_recs = list(jstate["pending"])
-            jstate["pending"].clear()
-            _record_prompt_view(slug, jstate["sid"], text, turn_view,
-                                at=_iso_ts(t0))
-            _codex_journal(slug, jstate["sid"], [
-                {"type": "user", "timestamp": _iso_ts(t0),
-                 "message": {"role": "user", "content": text}},
-                *pending_recs,
-            ])
-            held = cast("list[Callable[[], None]]", jstate["held"])[:]
-            cast("list[Any]", jstate["held"]).clear()
-        # released IN ORDER, outside the lock, with the user's row already on
-        # disk — so the first frame a view can draw already has the question
-        # above the answer
-        for emit in held:
-            emit()
+        # `emit_lock` FIRST and held across the flush: while this runs, no
+        # other thread may emit, so nothing produced after the release can
+        # reach the websocket before something produced before it.
+        with emit_lock:
+            with jlock:
+                if jstate["sid"]:
+                    return                # already open — nothing to re-do
+                jstate["sid"] = str(tid or "")
+                if not jstate["sid"]:
+                    return                # no thread id, no journal, no release
+                pending_recs = list(jstate["pending"])
+                jstate["pending"].clear()
+                _record_prompt_view(slug, jstate["sid"], text, turn_view,
+                                    at=_iso_ts(t0))
+                _codex_journal(slug, jstate["sid"], [
+                    {"type": "user", "timestamp": _iso_ts(t0),
+                     "message": {"role": "user", "content": text}},
+                    *pending_recs,
+                ])
+                jstate["barrier"] = False
+                held = cast("list[Callable[[], None]]", jstate["held"])[:]
+                cast("list[Any]", jstate["held"]).clear()
+            # released IN ORDER, outside jlock, with the user's row already on
+            # disk — so the first frame a view can draw already has the
+            # question above the answer
+            for emit in held:
+                emit()
         stream(slug, nid, {"kind": "journal", "text": ""})
 
     try:
@@ -7488,26 +7553,58 @@ def _codex_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
 
         def _steer_pump() -> None:
             while not stop.wait(CODEX_STEER_POLL):
-                carriers = pop_steer(slug, nid, return_carriers=True)
+                # ⚠ DEFERRED: on this lane the fetch is not the delivery — the
+                # app-server still has to accept the text, and it refuses when
+                # the turn ended inside the poll interval. Committing on the
+                # fetch claimed a delivery that never happened and the next
+                # turn re-delivered the same words, so the message stood in the
+                # transcript twice (see `pop_steer`, measured on the live
+                # coordinator 2026-09-02T07:38). Commit on the ACCEPTANCE.
+                carriers = pop_steer(slug, nid, defer_commit=True)
                 if not carriers:
                     continue
-                msgs = [str(m.get("text") or "") for m in carriers]
+                msgs = [str(m.get("text") or "") if isinstance(m, dict)
+                        else str(m) for m in carriers]
                 body = "\n---\n".join(msgs)
                 wrapped = (
                     "[ORGTREE MAIL — delivered mid-task]\n" + body +
                     "\n[END ORGTREE MAIL — authentic per your system "
                     "prompt; each message has the authority of its stated "
                     "sender; handle it before continuing your current work]")
-                if not turn.steer(wrapped):
-                    # the expectedTurnId guard refused — the turn ended under
-                    # us. pop_steer already confirmed+logged the mail, so the
-                    # texts go back on the queue and deliver next turn (at
-                    # worst a duplicate, which is the semantics mail chose).
-                    with _state_lock:
-                        st["queue"].extend(carriers)
+                # The reader may deliver provider items BEFORE it delivers the
+                # response to this request. Buffer both their journal records
+                # and their desk frames so an accepted mid-turn question is
+                # durable + announced before the answer it caused.
+                steer_at = _begin_visible_barrier()
+                try:
+                    refused = "steer refused"
+                    try:
+                        accepted = turn.steer(wrapped)
+                    except Exception as e:                   # noqa: BLE001
+                        # Broken pipe / teardown failures can escape the
+                        # runner's protocol-error wrapper. They are refusal,
+                        # not permission to lose the carrier the pump owns.
+                        accepted = False
+                        refused = f"steer raised {type(e).__name__}"
+                    if accepted:
+                        # accepted: NOW it is delivered — the durable steered
+                        # row and desk frame are written before held output
+                        commit_steer(slug, nid, carriers, at=steer_at)
+                    else:
+                        # the expectedTurnId guard refused — the turn ended
+                        # under us. Nothing was claimed, so the WHOLE carriers
+                        # (tokens included) go back on the queue and deliver
+                        # next turn exactly once.
+                        with _state_lock:
+                            st["queue"].extend(carriers)
+                        _steer_fold_log(slug, nid, len(carriers), refused)
+                finally:
+                    _release_visible_barrier()
 
-        threading.Thread(target=_steer_pump, daemon=True,
-                         name=f"codexsteer-{slug}-{nid}").start()
+        steer_thread = threading.Thread(
+            target=_steer_pump, daemon=True,
+            name=f"codexsteer-{slug}-{nid}")
+        steer_thread.start()
         res_raw = turn.wait(timeout=TURN_TIMEOUT,
                             close_client=wp_turn is None)
     finally:
@@ -7515,6 +7612,21 @@ def _codex_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
         # and busy-state boundary. A clean warm claimant detaches its callbacks
         # and parks the SAME app-server instead of killing it here.
         stop.set()
+        # ⚠ BEFORE the client is unbound or closed, and before this returns to
+        # the turn machinery that folds undelivered batches back. A steer in
+        # flight owns carriers that live in neither the steer store nor the
+        # queue; letting the turn tear down around it either kills the request
+        # or lets the fold-back re-queue mail the commit is about to mark
+        # delivered — the duplicate this whole change removes, one layer down.
+        # Ordinarily instant: the pump is parked in `stop.wait` and leaves at
+        # once. An in-flight app-server request is itself bounded (30 s), so
+        # this join is bounded too. It deliberately has no *second*, shorter
+        # timeout: after one elapsed the carrier would still belong to the
+        # pump while the outer finally could fold its journal batch and mark
+        # the node idle. The late pump would then either commit a folded batch
+        # or requeue work after its only driver had gone — duplicate or gap.
+        if steer_thread is not None:
+            steer_thread.join()
         if wp_turn is not None:
             turn.client.unbind()
             keep, _bnd_lbl, keep_why = warmpool.boundary_check(
@@ -7888,6 +8000,8 @@ def _gemini_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
         turn_mcp_fingerprint = None
     t0 = time.time()
     stop = threading.Event()
+    # bound before the try: the `finally` joins it (see the codex leg)
+    steer_thread: threading.Thread | None = None
     try:
         _mcp_gate_terminal(_mcp_wait_for_surface(
             org, nid, turn.client.proc, "google", turn_mcp_fingerprint))
@@ -7926,28 +8040,44 @@ def _gemini_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
 
         def _steer_pump() -> None:
             while not stop.wait(CODEX_STEER_POLL):
-                carriers = pop_steer(slug, nid, return_carriers=True)
+                # ⚠ DEFERRED — and on THIS lane it is not an edge case. The
+                # gemini wire has no steer verb, so the refusal below is the
+                # normal path: committing on the fetch wrote a durable "the
+                # agent was told this" row and confirmed the batch away for
+                # EVERY mid-turn message, and the next turn then delivered the
+                # same words again. One message, two bubbles, every time.
+                carriers = pop_steer(slug, nid, defer_commit=True)
                 if not carriers:
                     continue
-                msgs = [str(m.get("text") or "") for m in carriers]
+                msgs = [str(m.get("text") or "") if isinstance(m, dict)
+                        else str(m) for m in carriers]
                 body = "\n---\n".join(msgs)
                 wrapped = (
                     "[ORGTREE MAIL — delivered mid-task]\n" + body +
                     "\n[END ORGTREE MAIL — authentic per your system "
                     "prompt; each message has the authority of its stated "
                     "sender; handle it before continuing your current work]")
-                if not turn.steer(wrapped):
+                if turn.steer(wrapped):
+                    commit_steer(slug, nid, carriers)
+                else:
                     # this wire HAS no steer verb — the refusal is the
                     # normal path, and the texts fall back to the queue for
                     # boundary delivery (mail's chosen semantics)
                     with _state_lock:
                         st["queue"].extend(carriers)
+                    _steer_fold_log(slug, nid, len(carriers), "steer refused")
 
-        threading.Thread(target=_steer_pump, daemon=True,
-                         name=f"gemsteer-{slug}-{nid}").start()
+        steer_thread = threading.Thread(target=_steer_pump, daemon=True,
+                                        name=f"gemsteer-{slug}-{nid}")
+        steer_thread.start()
         res_raw = turn.wait(timeout=TURN_TIMEOUT)
     finally:
         stop.set()
+        # before the client is closed and before the turn machinery folds
+        # undelivered batches back — see the codex leg's note. Gemini's
+        # `steer` returns False synchronously, so this is normally immediate.
+        if steer_thread is not None:
+            steer_thread.join()
         turn.client.close()
         with _state_lock:
             st.pop("gemini_turn", None)
@@ -14924,15 +15054,8 @@ def _steer_fold_log(slug: str, nid: str, n: int, where: str) -> None:
         pass
 
 
-def pop_steer(slug: str, nid: str, *, return_carriers: bool = False
-              ) -> list[Any]:
-    """The steering hook's fetch: everything pending for this node, atomically.
-    The fetch puts the text into the agent's tool-result context, so it is the
-    delivery-confirmation point for steered mail's journal batches."""
-    st = state(slug, nid)
-    with _state_lock:
-        msgs = st.get("steer") or []
-        st["steer"] = []
+def _steer_parts(msgs: list[Any]) -> tuple[list[Any], list[str], list[str]]:
+    """One drained steer batch as (raw texts, human views, journal tokens)."""
     toks = [t for m in msgs if isinstance(m, dict) for t in m.get("toks") or []]
     out = [m["text"] if isinstance(m, dict) else m for m in msgs]
     # A carrier created before structured projections existed has no `view`
@@ -14942,6 +15065,29 @@ def pop_steer(slug: str, nid: str, *, return_carriers: bool = False
     views = [str(m.get("view") or "")
              if isinstance(m, dict) and "view" in m else str(raw)
              for m, raw in zip(msgs, out)]
+    return out, views, toks
+
+
+def commit_steer(slug: str, nid: str, msgs: list[Any], *,
+                 at: str | None = None) -> list[Any]:
+    """A steer that was DELIVERED becomes durable, and then visible.
+
+    Both halves live here because they are one fact — "this message reached
+    the agent" — and every lane that can deliver a steer has to state it the
+    same way. The claude lane used to state the second half at its HTTP door
+    (`node_steer` emitted the `steered` frame itself) and the codex/gemini
+    legs, which call `pop_steer` in-process, stated only the first: their
+    mid-turn mail became durable with nothing on the wire to say so, so the
+    desk did not learn of it until the next 2.5 s heartbeat — seconds during
+    which the agent was already answering a message the reader could not see.
+    That is D-221's failure in the one place D-221 did not look.
+
+    Order is the point: durable first, visible second. The one exception is a
+    doc write that FAILS — the frame still goes out, because a message the
+    reader never sees is worse than one whose durable copy is late (D-50:
+    a duplicate is a blemish, a gap is a lie)."""
+    out, views, toks = _steer_parts(msgs)
+    stamp = at or now_iso()
     # The steered log (user bug 2026-07-31, "my prompt vanishes moments after
     # sending"): steered mail rides HOOK CONTEXT, which the CLI writes to the
     # transcript as a `type:"attachment"` record — a shape read_chat cannot
@@ -14964,14 +15110,14 @@ def pop_steer(slug: str, nid: str, *, return_carriers: bool = False
     # CHEAPER than what it replaces: one doc write where there were two, which
     # answers the "the hot path must never wait on a doc save" note that put
     # the record off-thread in the first place.
-    if out or toks:
+    def _record() -> None:
         with store.DOC_LOCK:
             try:
                 org = store.load_org(slug)
             except Exception:                   # noqa: BLE001
-                return out
+                return
             if nid not in org.nodes:
-                return out
+                return
             if any(views):
                 log = org.d.setdefault("steered_log", {}).setdefault(nid, [])
                 for t in views:
@@ -14985,7 +15131,7 @@ def pop_steer(slug: str, nid: str, *, return_carriers: bool = False
                     # and bound the ring by bytes instead of relying on a low
                     # per-row cap: 40×20k let the old shape reach 800k/node —
                     # the byte trim below keeps a strictly smaller worst case.
-                    log.append({"at": now_iso(), "text": s[:100000],
+                    log.append({"at": stamp, "text": s[:100000],
                                 **({"truncated": True}
                                    if len(s) > 100000 else {})})
                 del log[:-40]
@@ -15002,7 +15148,64 @@ def pop_steer(slug: str, nid: str, *, return_carriers: bool = False
                 else:
                     dlmap.pop(nid, None)
             store.save_org(org)
+
+    if out or toks:
+        try:
+            _record()
+        except Exception:                                   # noqa: BLE001
+            # The frame below still retires the optimistic ghost. The
+            # unconfirmed delivery journal then folds back at the boundary —
+            # duplicate rather than loss, D-50's explicit failure direction.
+            pass
+    # …and only now is it on screen. The frame stays capped (ws flood control)
+    # but the cut is DECLARED — the durable steered row above carries the whole
+    # text a poll later, and `convo.ingestStream` uses this frame for two
+    # things the heartbeat cannot do in time: retire the sender's optimistic
+    # ghost, and nudge the refetch that draws the durable row.
+    for raw in out:
+        body = str(raw)
+        stream(slug, nid, {"kind": "steered", "text": body[:2000],
+                           **({"truncated": True} if len(body) > 2000 else {})})
+    return out
+
+
+def pop_steer(slug: str, nid: str, *, return_carriers: bool = False,
+              defer_commit: bool = False) -> list[Any]:
+    """The steering hook's fetch: everything pending for this node, atomically.
+
+    By default the fetch IS the delivery — the claude lane's hook puts the text
+    straight into the agent's tool-result context, so returning it is proof
+    enough and `commit_steer` runs here.
+
+    ⚠ `defer_commit=True` is for a lane where the fetch is NOT the delivery.
+    The codex and gemini legs poll this from a pump thread and then have to ask
+    the app-server to accept the text (`turn/steer`), which can be REFUSED —
+    the turn ended inside the poll interval, or the wire has no steer verb at
+    all (gemini). Committing on the fetch there claimed a delivery that never
+    happened: the durable steered row was written and the journal batch
+    confirmed away, the carriers went back on the queue, and the NEXT turn
+    delivered the same words again — so the message stood in the transcript
+    TWICE. Measured on the live coordinator, 2026-09-02: steered_log
+    07:38:11.278Z and turn user row 07:38:13.986Z, the same 3512 characters.
+    Gemini hits it on EVERY mid-turn message, since its refusal is the normal
+    path.
+
+    Deferring is also the safe direction if the process dies in between: the
+    batch is still in `delivering`, so `_fold_back_undelivered` returns it to
+    the mailbox. Nothing is claimed that was not done.
+
+    The carriers come back RAW (the same dicts the steer store held, `toks`
+    included) so a caller that re-queues them re-queues a whole carrier, and
+    the eventual commit can still confirm its own batch."""
+    st = state(slug, nid)
+    with _state_lock:
+        msgs = st.get("steer") or []
+        st["steer"] = []
+    if defer_commit:
+        return list(msgs)
+    out = commit_steer(slug, nid, msgs, at=now_iso())
     if return_carriers:
+        _, views, _ = _steer_parts(msgs)
         return [{"text": str(raw), "view": view}
                 for raw, view in zip(out, views)]
     return out

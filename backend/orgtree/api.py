@@ -2695,21 +2695,25 @@ def node_message(slug: str, nid: str, body: Message) -> dict[str, Any]:
 
 
 @app.post("/api/orgs/{slug}/nodes/{nid}/steer")
-async def node_steer(slug: str, nid: str) -> dict[str, Any]:
+def node_steer(slug: str, nid: str) -> dict[str, Any]:
     """Called by the PostToolUse steering hook inside a node's turn: pops ALL
     the node's pending mid-task mail — user and agent alike — for immediate
-    delivery (sender attribution rides inside each message)."""
+    delivery (sender attribution rides inside each message).
+
+    Plain `def` (№22): this loads and saves the org document under DOC_LOCK,
+    which is not work to do ON the event loop — least of all here, where the
+    loop is what carries the very `steered` frame this call produces."""
     # storage-bypass audit: every tool call gives the storage limit a chance
     # to land MID-TURN (throttled + backgrounded inside)
     supervisor.maybe_storage_check(slug)
+    # ⚠ the `steered` frame is NOT emitted here any more. It used to be, and
+    # that was the whole reason the codex and gemini legs had none: they call
+    # `pop_steer` in-process and never pass this door, so their mid-turn mail
+    # went durable with nothing on the wire to say so and the desk waited for
+    # its next 2.5 s heartbeat to notice. Delivery and its announcement are one
+    # fact, so they are stated in one place — `supervisor.commit_steer`, which
+    # every lane reaches. Same frame, same cap, same declared truncation.
     msgs = supervisor.pop_steer(slug, nid)
-    if msgs:
-        for m in msgs:
-            # the frame stays capped (ws flood control) but a cut is DECLARED —
-            # the durable steered row carries the full text a poll later
-            await hub._send(slug, {"type": "node_stream", "org": slug,
-                                   "node": nid, "kind": "steered", "text": m[:2000],
-                                   **({"truncated": True} if len(m) > 2000 else {})})
     return {"messages": msgs}
 
 

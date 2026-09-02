@@ -7,8 +7,16 @@ scenarios selected by FAKECODEX_SCENARIO:
     tool       (default) the model "calls" the first registered dynamic tool
                (server-request item/tool/call) and echoes the client's answer
                into its agent text — proves the round trip codexrun relies on
-    steer      the turn stalls until a turn/steer arrives (≤8s), then echoes
-               STEERED[<text>] into the agent text and completes
+    steer      the turn stalls until a turn/steer arrives (≤8s), then emits
+               STEERED[<text>] BEFORE acknowledging the request and completes
+               — notifications and responses use the real independent paths
+    steer_refuse waits until turn/steer is in flight, emits turn/completed,
+               and only THEN answers that request with a JSON-RPC error — the
+               real `expectedTurnId` guard's answer when the turn ends between
+               the supervisor's fetch and the app-server's acceptance.
+               The refusal must leave NOTHING claimed: no durable steered row,
+               no confirmed journal batch, and the whole carrier back on the
+               queue so the NEXT turn delivers it exactly once
     delta_pause emits one short agent-message delta, then pauses long enough
                 to prove the client's time-based live flush actually fires
     replay     the same `item/completed` is sent TWICE for one message and
@@ -85,6 +93,11 @@ def notify(method, params):
 
 def reply(rid, result):
     send({"jsonrpc": "2.0", "id": rid, "result": result})
+
+
+def reply_error(rid, message, code=-32602):
+    send({"jsonrpc": "2.0", "id": rid,
+          "error": {"code": code, "message": message}})
 
 
 def server_request(method, params, timeout=10.0):
@@ -191,13 +204,31 @@ def run_turn(thread_id, turn_id, dyn_tools):
     elif SCENARIO == "steer":
         st = wait_request("turn/steer")
         if st:
-            reply(st["id"], {"turnId": turn_id})
             text = ""
             for part in (st.get("params", {}).get("input") or []):
                 text += str(part.get("text", ""))
+            # Adversarial but protocol-legal: the reader receives the answer
+            # notification before the request waiter receives acceptance.
+            # The supervisor must not expose or journal this above the steer.
             agent_message("msg-steer", f"STEERED[{text}]")
+            reply(st["id"], {"turnId": turn_id})
         else:
             agent_message("msg-nosteer", "no steer arrived")
+    elif SCENARIO == "steer_refuse":
+        # Force the exact production race instead of merely hoping the 2 s
+        # poll loses it: the request is already in flight (and therefore owns
+        # a drained carrier), then the turn boundary arrives, then the guard
+        # refuses the stale expectedTurnId. The supervisor must wait for that
+        # ownership decision before it tears the turn down.
+        st = wait_request("turn/steer")
+        if st:
+            notify("turn/completed", {
+                "threadId": thread_id,
+                "turn": {"id": turn_id, "status": "completed"}})
+            time.sleep(0.05)
+            reply_error(st["id"], "no such active turn: fake-turn-0001")
+            return
+        agent_message("msg-nosteer", "no steer arrived")
     elif SCENARIO == "usage_limit":
         # the exhausted bucket FIRST, carrying the only machine reset anyone
         # will ever get for this wall…
