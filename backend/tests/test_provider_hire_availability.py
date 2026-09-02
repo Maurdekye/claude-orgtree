@@ -307,6 +307,60 @@ check("the gate's docstring still describes what it does",
       the_docstring_still_claims_every_door)
 
 
+# --------------------------------------------------------- §6 gpt-reserve
+print("\n§6  gpt-reserve — its own gate, beside the family's")
+
+
+def _with_codex_kind(kind):
+    """`codex_status` pinned CONNECTED with a chosen login `kind` — the
+    family-level checks above already pass, so any refusal here is
+    gpt-reserve's OWN rule, not a re-run of §4's."""
+    saved = providers.codex_status
+    providers.codex_status = lambda force=False: {                 # type: ignore[assignment]
+        "installed": True, "connected": True, "kind": kind}
+    return saved
+
+
+def reserve_refused_on_api_key() -> None:
+    """Reserve capacity is a ChatGPT-subscription perk, never billed
+    per-token — an api-key session is genuinely connected (sol/terra/luna
+    hire fine there) but was never granted reserve capacity at all."""
+    saved = _with_codex_kind("api-key")
+    try:
+        expect_error(lambda: api.provider_hire_gate(org(), "gpt-reserve"),
+                     "chatgpt")
+        api.provider_hire_gate(org(), "sol")      # the leg that must hold
+    finally:
+        providers.codex_status = saved                             # type: ignore[assignment]
+
+
+def reserve_passes_on_chatgpt() -> None:
+    saved = _with_codex_kind("chatgpt")
+    try:
+        api.provider_hire_gate(org(), "gpt-reserve")
+    finally:
+        providers.codex_status = saved                             # type: ignore[assignment]
+
+
+def reserve_gate_never_touches_the_other_three() -> None:
+    """Anti-vacuity: a gate that refused every codex tier on api-key would
+    also make `reserve_refused_on_api_key` look right for the wrong reason."""
+    saved = _with_codex_kind("api-key")
+    try:
+        for t in ("luna", "terra", "sol"):
+            api.provider_hire_gate(org(), t)
+    finally:
+        providers.codex_status = saved                             # type: ignore[assignment]
+
+
+check("gpt-reserve is refused on an api-key session, naming ChatGPT — "
+      "sol still hires fine there", reserve_refused_on_api_key)
+check("gpt-reserve passes on a ChatGPT-subscription session",
+      reserve_passes_on_chatgpt)
+check("…and its own rule never leaks onto luna/terra/sol",
+      reserve_gate_never_touches_the_other_three)
+
+
 # ------------------------------------------------------------------ summary
 print(f"\n{'=' * 60}")
 if FAILED:

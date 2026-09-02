@@ -13,12 +13,12 @@ import {
   FullscreenIcon, PublicIcon, RemoveIcon, ViewListIcon,
 } from '../icons'
 import {
-  ago, attentionPip, CODEX_TIER_LETTER, CODEX_TIER_SEAT, CODEX_TIERS, DOG_H, DOG_W, DRAFT, ease, edgeJumpPlacement, type EJForm, EXTERN, fallbackActive, familyOffer, flatten, GEMINI_TIER_LETTER, GEMINI_TIER_SEAT, GEMINI_TIERS, hireOf, INBOX, INBOX_H, layout, NODE_H, NODE_W, orgPxc, presenceOf, segD,
+  ago, attentionPip, CODEX_TIER_LETTER, CODEX_TIER_SEAT, CODEX_TIERS, DOG_H, DOG_W, DRAFT, ease, edgeJumpPlacement, type EJForm, EXTERN, fallbackActive, familyOffer, flatten, GEMINI_TIER_LETTER, GEMINI_TIER_SEAT, GEMINI_TIERS, hireOf, INBOX, INBOX_H, layout, NODE_H, NODE_W, orgPxc, presenceOf, reserveOffer, segD,
   providerOf, savedView, saveView, segPoint, sizeOf, smooth, SPRING_C, SPRING_K, startView, startZoomOn, TIER_LETTER, TIER_SEAT, TIERS, useCrowdPiles, usePolled, USER, USER_H,
   USER_W, withDraftTree, Z_DESK, Z_MAX, Z_MINI,
 } from './shared'
 import type {
-  CanvasNode, DraftScope, DraftState, MailEvent, MailLinkFn,
+  CanvasNode, DraftScope, DraftState, FamilyOffer, MailEvent, MailLinkFn,
   HireState, OpFn, Pile, Pt, Seg, Spring, StreamEvent, View,
 } from './shared'
 import { Activity, ContextWheel, DeskChat, DestinationBusy, LineagePanel, ProcessLifecycleMark } from './desk'
@@ -2397,7 +2397,13 @@ function HireSheet({ anchor, seats, codexHire, geminiHire, claudeHire, defaultGr
   // one field over: the form's own initial value asserted an availability
   // nobody had checked. Falls back to '' when nothing is offerable, which the
   // submit guard below already treats as not-ready.
-  const firstOfferable = famRows.find((f) => f.offer === 'offer')?.tiers[0] ?? ''
+  // gpt-reserve can be individually dark inside an otherwise-'offer' codex
+  // row (`tierOffer`), so the default can't just be "the family's first
+  // tier" any more — it has to be the first tier that is ITSELF offerable.
+  const tierOffer = (f: (typeof famRows)[number], t: string): FamilyOffer =>
+    t === 'gpt-reserve' ? reserveOffer(f.hire) : f.offer
+  const firstOfferable = famRows
+    .flatMap((f) => f.tiers.filter((t) => tierOffer(f, t) === 'offer'))[0] ?? ''
   const providersOff = [claudeHire, codexHire, geminiHire]
     .some((h) => h?.userEnabled === false)
   const [tier, setTier] = useState(firstOfferable)
@@ -2432,16 +2438,21 @@ function HireSheet({ anchor, seats, codexHire, geminiHire, claudeHire, defaultGr
             <div className="field-label">
               {f.offer === 'offer' ? f.label : `${f.label} — ${f.reason}`}</div>
             <div className="hs-tiers">
-              {f.tiers.map((t) => (
-                <button key={t}
-                  className={'hs-tier t-' + t + (tier === t ? ' on' : '')}
-                  disabled={f.offer !== 'offer'}
-                  title={f.offer === 'offer' ? undefined : f.reason}
-                  onClick={() => pickTier(t)}>
-                  <span className={'tier t-' + t}>{f.letters[t]}</span>
-                  {t} · seat {f.seatOf(t)}
-                </button>
-              ))}
+              {f.tiers.map((t) => {
+                const tOffer = tierOffer(f, t)
+                const tReason = t === 'gpt-reserve'
+                  ? f.hire?.reserveReason ?? f.reason : f.reason
+                return (
+                  <button key={t}
+                    className={'hs-tier t-' + t + (tier === t ? ' on' : '')}
+                    disabled={tOffer !== 'offer'}
+                    title={tOffer === 'offer' ? undefined : tReason}
+                    onClick={() => pickTier(t)}>
+                    <span className={'tier t-' + t}>{f.letters[t]}</span>
+                    {t} · seat {f.seatOf(t)}
+                  </button>
+                )
+              })}
             </div>
           </Fragment>
         ))}

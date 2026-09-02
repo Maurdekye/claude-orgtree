@@ -18,7 +18,7 @@ import { installFetch, FakeServer, mountView } from './harness'
 import test from 'node:test'
 import type { TestContext } from 'node:test'
 import assert from 'node:assert/strict'
-import { familyOffer } from '../src/canvas/shared'
+import { familyOffer, reserveOffer } from '../src/canvas/shared'
 import type { HireState } from '../src/canvas/shared'
 
 const noop = () => {}
@@ -59,6 +59,32 @@ test('familyOffer: hiding is reserved for a POSITIVELY absent CLI', () => {
   const signedOut: HireState =
     { enabled: false, installed: true, reason: 'run `codex login`' }
   assert.notEqual(familyOffer(signedOut), 'hide')
+})
+
+// gpt-reserve's own gate: reserve capacity is a ChatGPT-subscription perk,
+// so a keyed (api-key) Codex session can be `familyOffer`-'offer' for
+// sol/terra/luna while reserve alone stays dark.
+
+test('reserveOffer: narrows an offered family when reserve is explicitly off',
+  () => {
+    assert.equal(reserveOffer(
+      { enabled: true, installed: true, reason: null,
+        reserveEnabled: false, reserveReason: 'api key' }), 'disable')
+  })
+
+test('reserveOffer: an offered family with no opinion on reserve OFFERS —'
+  + ' an old backend must not brick the reserve chip', () => {
+  assert.equal(reserveOffer(
+    { enabled: true, installed: true, reason: null }), 'offer')
+})
+
+test('reserveOffer: never LOOSENS what familyOffer already decided', () => {
+  const signedOut: HireState =
+    { enabled: false, installed: true, reason: 'run `codex login`' }
+  assert.equal(reserveOffer(signedOut), 'disable')
+  const absent: HireState =
+    { enabled: false, installed: false, reason: 'not installed' }
+  assert.equal(reserveOffer(absent), 'hide')
 })
 
 // --------------------------------------------------------- §2 the surfaces
@@ -143,6 +169,25 @@ surfaceTest('THE REPORT: codex set up, claude not — only codex tokens appear',
       assert.equal(got[t], false, `${t} is set up and must be offered`)
     }
   })
+
+surfaceTest('gpt-reserve alone goes dark on an api-key Codex session — its '
+  + 'siblings keep hiring', async (mount) => {
+  const el = await mount({
+    claudeHire: ABSENT, geminiHire: ABSENT,
+    codexHire: state({ enabled: true, installed: true,
+                       reserveEnabled: false, reserveReason: 'api key' }),
+  })
+  const got = tokens(el, '.hsof')
+  assert.equal(got['gpt-reserve'], true,
+    'reserve capacity is a ChatGPT perk this api-key session never got')
+  for (const t of ['luna', 'terra', 'sol']) {
+    assert.equal(got[t], false, `${t} bills per-token and must stay offered`)
+  }
+  const reserveBtn = [...el.querySelectorAll<HTMLButtonElement>('.hsof button')]
+    .find((b) => b.className.split(/\s+/).includes('t-gpt-reserve'))!
+  assert.match(reserveBtn.title, /api key/,
+    'the disabled reserve chip must carry its OWN reason, not the family\'s')
+})
 
 surfaceTest('the mirror: claude set up, codex not', async (mount) => {
   const el = await mount({ claudeHire: ON, codexHire: ABSENT,

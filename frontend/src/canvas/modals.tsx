@@ -740,10 +740,18 @@ export function NodeConfig({ node, map, tree, slug, op, toast, codexProvider,
         && geminiProvider.status.kind !== 'vertex'
         ? 'headless requires a Gemini API-key login'
         : null
+  // gpt-reserve rides codexUnavailable AND its own gate: reserve capacity is
+  // a ChatGPT-subscription perk, so a keyed Codex session (which passes
+  // `codexUnavailable`) can still lack it — same rule as `provider_hire_gate`.
+  const reserveUnavailable = codexUnavailable
+    ?? (codexProvider?.reserve_hire_enabled === false
+      ? codexProvider?.reserve_reason ?? 'reserve capacity unavailable'
+      : null)
   const unavailable = (t: string): string | null => {
     // The current tier remains a truthful selected no-op even if policy has
     // since tightened around it; save does not call switch_model for a no-op.
     if (t === node.tier) return null
+    if (t === 'gpt-reserve') return reserveUnavailable
     if (CODEX_TIERS.includes(t) && codexUnavailable) return codexUnavailable
     if (GEMINI_TIERS.includes(t) && geminiUnavailable) return geminiUnavailable
     const cap = tree.kiosk?.max_tier

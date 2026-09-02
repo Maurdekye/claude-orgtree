@@ -712,6 +712,26 @@ def providers_payload(claude_status: dict[str, Any]) -> dict[str, Any]:
                 else "not signed in — run `codex login` on this machine"
                 if codex.get("installed")
                 else f"Codex CLI not installed — {install_hint('openai')}"),
+            # gpt-reserve rides the SAME connected-CLI gate as the rest of the
+            # family, PLUS one more: reserve capacity is a ChatGPT-subscription
+            # perk, never granted to an api-key session (billed per-token
+            # instead, same as sol/terra/luna). This is the live "session
+            # condition" that makes gpt-reserve intermittent where its
+            # siblings are not — it tracks WHICH Codex login is active, not
+            # whether Codex is merely connected. `provider_hire_gate` enforces
+            # the same rule at the door (api.py).
+            "reserve_hire_enabled": bool(
+                codex_on and codex.get("connected")
+                and codex.get("kind") == "chatgpt"),
+            "reserve_reason": (
+                off_reason if not codex_on
+                else None if codex.get("connected")
+                and codex.get("kind") == "chatgpt"
+                else "not signed in — run `codex login` on this machine"
+                if not codex.get("connected")
+                else "signed in with an API key — reserve capacity is a "
+                     "ChatGPT subscription perk (run `codex login` with a "
+                     "ChatGPT account to get it)"),
         },
         {
             "id": "google",

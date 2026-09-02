@@ -14,7 +14,7 @@ import {
   LockIcon, MailIcon, RetireIcon, SettingsIcon,
 } from '../icons'
 import {
-  CODEX_TIER_LETTER, CODEX_TIER_SEAT, CODEX_TIERS, DESK_SCALE, deskDpi, DRAFT, familyOffer, freezeKind, FREEZE_LABEL_SHORT, GEMINI_TIER_LETTER, GEMINI_TIER_SEAT, GEMINI_TIERS, NODE_H, NODE_W, providerOf, TIER_LETTER, TIER_SEAT, TIERS, USER,
+  CODEX_TIER_LETTER, CODEX_TIER_SEAT, CODEX_TIERS, DESK_SCALE, deskDpi, DRAFT, familyOffer, freezeKind, FREEZE_LABEL_SHORT, GEMINI_TIER_LETTER, GEMINI_TIER_SEAT, GEMINI_TIERS, NODE_H, NODE_W, providerOf, reserveOffer, TIER_LETTER, TIER_SEAT, TIERS, USER,
   USER_H, USER_W,
 } from './shared'
 import type {
@@ -572,9 +572,19 @@ function SpawnChips({ onSpawn, free, seats, maxTier, side, soleHire,
     if (offer === 'hide') return
     fams.push({
       key, tiers,
-      body: tiers.map((t) => (offer === 'offer'
-        ? chip(t, letters[t])
-        : outChip(t, letters[t], label, hire?.reason ?? null, seatOf(t)))),
+      // gpt-reserve carries its OWN narrower offer (`reserveOffer`) inside an
+      // otherwise-live codex family: reserve capacity is a ChatGPT-only perk,
+      // so a keyed Codex session can offer sol/terra/luna while reserve alone
+      // renders as the disabled preview, with its own reason.
+      body: tiers.map((t) => {
+        const tOffer = t === 'gpt-reserve' ? reserveOffer(hire) : offer
+        return tOffer === 'offer'
+          ? chip(t, letters[t])
+          : outChip(t, letters[t], label,
+              (t === 'gpt-reserve' ? hire?.reserveReason : null)
+                ?? hire?.reason ?? null,
+              seatOf(t))
+      }),
     })
   }
   // Claude's own list is the kiosk-capped `shown`, not the raw family: the cap

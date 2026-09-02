@@ -176,6 +176,32 @@ def main():
           lambda: eq((st["connected"], st["kind"]), (True, "api-key"),
                      "key lane"))
 
+    def reserve_dark_on_api_key():
+        # gpt-reserve is a ChatGPT-subscription perk (reserve capacity is
+        # never billed per-token like sol/terra/luna), so an api-key session
+        # — CONNECTED, and hireable for the rest of the family — must still
+        # show reserve as unavailable, with a reason naming the remedy.
+        p = providers.providers_payload({"installed": True, "connected": True})
+        cx = next(p2 for p2 in p["providers"] if p2["id"] == "openai")
+        eq(cx["hire_enabled"], True, "codex family stays hireable")
+        eq(cx["reserve_hire_enabled"], False, "reserve is dark on api-key")
+        assert "chatgpt" in (cx["reserve_reason"] or "").lower(), cx
+    check("gpt-reserve is dark on an api-key session even though the rest "
+          "of codex is hireable", reserve_dark_on_api_key)
+
+    def reserve_lit_on_chatgpt():
+        payload = base64.urlsafe_b64encode(
+            json.dumps({"email": email}).encode()).decode().rstrip("=")
+        with open(os.path.join(os.environ["CODEX_HOME"], "auth.json"), "w",
+                  encoding="utf-8") as f:
+            json.dump({"tokens": {"id_token": f"eyJh.{payload}.sig"}}, f)
+        providers.codex_status(force=True)
+        p = providers.providers_payload({"installed": True, "connected": True})
+        cx = next(p2 for p2 in p["providers"] if p2["id"] == "openai")
+        eq((cx["reserve_hire_enabled"], cx["reserve_reason"]), (True, None),
+           "reserve lights up on a chatgpt login")
+    check("…and lights back up on a ChatGPT login", reserve_lit_on_chatgpt)
+
     print("§4 the payload the panel renders")
     pay = providers.providers_payload({"installed": True, "connected": True})
     # grew to three at D-184 (gemini) — the gemini entry's own behaviour is

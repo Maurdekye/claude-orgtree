@@ -105,6 +105,15 @@ export interface HireState {
    *  old backend, or one that has never heard of the setting, must not read
    *  as every provider disabled. */
   userEnabled?: boolean
+  /** gpt-reserve's OWN gate, riding beside the family's (D-2xx): reserve
+   *  capacity is a ChatGPT-subscription perk, not an api-key one, so a
+   *  connected-but-keyed Codex session offers sol/terra/luna while reserve
+   *  stays dark. `undefined` (an old backend, or a fixture that never set
+   *  it) means UNKNOWN — same "unknown means offer" rule as the rest of this
+   *  file, so a machine that has never heard of this field keeps today's
+   *  behaviour rather than bricking the reserve chip. */
+  reserveEnabled?: boolean
+  reserveReason?: string | null
 }
 
 /** What a hire surface should DO with one provider's tier family (D-199).
@@ -166,7 +175,20 @@ export const familyOffer = (h: HireState | null | undefined): FamilyOffer =>
  *  differently from the hire strips. */
 export const hireOf = (p: ProviderInfo | null | undefined): HireState | null =>
   (p ? { enabled: !!p.hire_enabled, installed: !!p.status?.installed,
-         reason: p.reason, userEnabled: p.user_enabled } : null)
+         reason: p.reason, userEnabled: p.user_enabled,
+         reserveEnabled: p.reserve_hire_enabled, reserveReason: p.reserve_reason } : null)
+
+/** gpt-reserve's own offer verdict — the family's, narrowed by its own gate.
+ *  Never loosens what `familyOffer` already decided (a hidden/disabled
+ *  family stays that way for reserve too); only tightens 'offer' down to
+ *  'disable' when the family is live but reserve specifically is not
+ *  (`reserveEnabled === false`, positively — `undefined` means an old
+ *  backend never sent the field, which offers, same as everywhere else in
+ *  this file). */
+export const reserveOffer = (h: HireState | null | undefined): FamilyOffer => {
+  const base = familyOffer(h)
+  return base === 'offer' && h?.reserveEnabled === false ? 'disable' : base
+}
 
 /** D-202: is this provider part of the product on this machine AT ALL?
  *
