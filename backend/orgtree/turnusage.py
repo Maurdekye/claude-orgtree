@@ -31,7 +31,7 @@ _WINDOW_ORDER: Final = {
 }
 _SAFE_MODELS: Final = {
     "fable", "opus", "sonnet", "haiku",
-    "sol", "terra", "luna", "flash", "pro",
+    "gpt-reserve", "sol", "terra", "luna", "flash", "pro",
 }
 
 

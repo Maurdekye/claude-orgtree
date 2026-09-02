@@ -266,8 +266,9 @@ def card(docs: bool, desk: bool, families: int = 1) -> str:
                        ("opus", "O"), ("fable", "F"))) + "</div>"
     codex = ("<div class='hs-fam'>" + "".join(
         f"<button class='t-{t}'>{ltr}</button>"
-        for t, ltr in (("luna", "L"), ("terra", "T"),
-                       ("sol", "S"))) + "</div>") if families > 1 else ""
+        for t, ltr in (("gpt-reserve", "R"), ("luna", "L"),
+                       ("terra", "T"), ("sol", "S"))) + "</div>") \
+        if families > 1 else ""
     chips_l = codex + claude          # away-edge: outer family first
     chips_r = claude + codex          # near-edge order
     chips_b = claude + codex          # bottom: inward-first, then outward

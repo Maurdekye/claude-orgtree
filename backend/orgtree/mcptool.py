@@ -640,7 +640,8 @@ TOOLS: list[dict[str, Any]] = [
             "editable later via orgtree_retool), and state exactly which "
             "folders, tools and org visibility it needs — you cannot grant "
             "anything you do not hold yourself. Seat costs: haiku 1, sonnet 2, "
-            "opus 5, fable 10 (Claude); luna 1, terra 2, sol 5 (Codex — "
+            "opus 5, fable 10 (Claude); gpt-reserve 1, luna 1, terra 2, "
+            "sol 5 (Codex — "
             "hireable only while the Codex CLI is signed in on this machine); "
             "flash 1, pro 2 (Gemini — hireable only while the Gemini CLI is "
             "signed in on this machine); "
@@ -664,7 +665,8 @@ TOOLS: list[dict[str, Any]] = [
                 "name": {"type": "string", "description": "1-2 words, the node id"},
                 "tier": {"type": "string",
                          "enum": ["haiku", "sonnet", "opus", "fable",
-                                  "luna", "terra", "sol", "flash", "pro"]},
+                                  "gpt-reserve", "luna", "terra", "sol",
+                                  "flash", "pro"]},
                 "grant": {"type": "integer", "minimum": 0,
                           "description": "credits it may spend on ITS OWN hires"},
                 "charter": {"type": "string",
@@ -1171,7 +1173,8 @@ TOOLS: list[dict[str, Any]] = [
             "the agent's own free allocation. Pricier: paid from its free first, "
             "any shortfall bubbles up the chain to YOU — refused only if the "
             "whole chain lacks it. Tiers: haiku 1 · sonnet 2 · opus 5 · "
-            "fable 10 (Claude); luna 1 · terra 2 · sol 5 (Codex, needs the "
+            "fable 10 (Claude); gpt-reserve 1 · luna 1 · terra 2 · sol 5 "
+            "(Codex, needs the "
             "CLI signed in); flash 1 · pro 2 (Gemini, needs the CLI signed "
             "in)."),
         "inputSchema": {"type": "object",
@@ -1179,8 +1182,8 @@ TOOLS: list[dict[str, Any]] = [
                                        "tier": {"type": "string",
                                                 "enum": ["haiku", "sonnet",
                                                          "opus", "fable",
-                                                         "luna", "terra",
-                                                         "sol", "flash",
+                                                         "gpt-reserve", "luna",
+                                                         "terra", "sol", "flash",
                                                          "pro"]}},
                         "required": ["node", "tier"]},
     },

@@ -44,10 +44,11 @@ PORT = 7452
 BASE = f"http://127.0.0.1:{PORT}"
 
 CLAUDE = ["haiku", "sonnet", "opus", "fable"]
-CODEX = ["luna", "terra", "sol"]
+CODEX = ["gpt-reserve", "luna", "terra", "sol"]
 GEMINI = ["flash", "pro"]
 SEATS = {"haiku": 1, "sonnet": 2, "opus": 5, "fable": 10,
-         "luna": 1, "terra": 2, "sol": 5, "flash": 1, "pro": 2}
+         "gpt-reserve": 1, "luna": 1, "terra": 2, "sol": 5,
+         "flash": 1, "pro": 2}
 
 # The pre-fix panel, re-created in the live page for the control: the literal
 # tier list this bug was reported about, and the claude-only seat table.
@@ -277,8 +278,9 @@ def main() -> int:
                 print("\n".join("FAIL: " + x for x in fail))
                 return 1
             print("OK — a real claude bearer offers all four claude tiers "
-                  "(fable included) and a real codex bearer offers luna/terra/"
-                  "sol, each cross-provider tier shown disabled with a reason, "
+                  "(fable included) and a real codex bearer offers "
+                  "gpt-reserve/luna/terra/sol, each cross-provider tier shown "
+                  "disabled with a reason, "
                   "every seat a number")
             return 0
         finally:

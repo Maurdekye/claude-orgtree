@@ -15,7 +15,8 @@ declare const __SRC_DIR__: string
 
 const noop = () => {}
 const op = () => Promise.resolve({} as OpResult)
-const seats = { haiku: 1, sonnet: 2, opus: 5, fable: 10, luna: 1, terra: 2, sol: 5, flash: 1, pro: 2 }
+const seats = { haiku: 1, sonnet: 2, opus: 5, fable: 10,
+  'gpt-reserve': 1, luna: 1, terra: 2, sol: 5, flash: 1, pro: 2 }
 const hire = { enabled: true, installed: true, reason: null }
 
 function node(warm: boolean): CanvasNode {

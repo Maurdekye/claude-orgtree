@@ -1636,14 +1636,14 @@ def section_edges():
 
     # model VERSIONS are a subcategory of a tier, never a tier (user ruling
     # 2026-08-04): a fixed set of tiers, one chip each; the version lives in
-    # the gear. Nine since D-188: the four Claude bands, the codex family
-    # (luna/terra/sol — user seat ruling 2026-08-28), and the gemini family
+    # the gear. Ten since D-188: the four Claude bands, the codex family
+    # (gpt-reserve/luna/terra/sol — user seat ruling 2026-08-28), and the gemini family
     # (flash/pro — user greenlight 2026-08-29).
     mv = deep_org()
-    check("the tier table is exactly the nine price bands",
+    check("the tier table is exactly the ten price bands",
           lambda: eq(sorted(mv.d["tiers"]),
-                     ["fable", "flash", "haiku", "luna", "opus",
-                      "pro", "sol", "sonnet", "terra"]))
+                     ["fable", "flash", "gpt-reserve", "haiku", "luna",
+                      "opus", "pro", "sol", "sonnet", "terra"]))
     check("model_for defaults to the tier's own model",
           lambda: eq(mv.model_for("top"), MODELS["opus"]))
     mv.set_scope(USER, "top", model_version="4.8")

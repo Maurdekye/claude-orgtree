@@ -19,7 +19,7 @@ const noop = () => {}
 const op = () => Promise.resolve({} as OpResult)
 const seats = {
   haiku: 1, sonnet: 2, opus: 5, fable: 10,
-  luna: 1, terra: 2, sol: 5, flash: 1, pro: 2,
+  'gpt-reserve': 1, luna: 1, terra: 2, sol: 5, flash: 1, pro: 2,
 }
 
 function node(): CanvasNode {
@@ -81,10 +81,17 @@ test('the full three-provider set collapses only after its rendered width stops 
     await inAct(() => { expand.click() })
     assert.equal(report.classList.contains('is-expanded'), true)
     const offered = [...report.querySelectorAll('.hs-fam button')]
-    assert.equal(offered.length, 9,
+    assert.equal(offered.length, 10,
       'opening renders the exact current provider/tier list, not a compact-only subset')
     assert.equal(new Set(offered.map((b) => b.className)).size, offered.length,
       'opening does not duplicate a tier while it reveals families')
+    const codexRow = [...report.querySelectorAll<HTMLElement>('.hs-fam')]
+      .find((row) => row.querySelector('.t-gpt-reserve'))
+    assert.ok(codexRow, 'the Codex spawn row is present')
+    assert.deepEqual(
+      [...codexRow.querySelectorAll('button')].map((b) => b.className),
+      ['t-gpt-reserve', 't-luna', 't-terra', 't-sol'],
+      'the reserve spawn token is leftmost in the Codex row')
 
     await inAct(() => { expand.click() })
     assert.equal(report.classList.contains('is-expanded'), false,
@@ -103,16 +110,16 @@ test('the full three-provider set stays direct once the actual panel is wider th
       'normal zoom still exposes individual hire tiers directly')
   })
 
-test('a reduced provider set keeps direct buttons until its own narrower row stops fitting',
+test('a reduced provider set keeps direct buttons until its own row stops fitting',
   async (t) => {
-    // Codex has three chips: 3×22 + 2×4 = 74px. At .61 the card is 75.64px
-    // wide, so collapsing here like the nine-tier machine would be premature.
-    const view = await card(0.61, {
+    // Codex now has four chips: 4×22 + 3×4 = 100px. At .82 the card is
+    // 101.68px wide, so it still fits and stays direct.
+    const view = await card(0.82, {
       codexHire: available, geminiHire: absent, claudeHire: absent,
     })
     t.after(() => view.unmount())
     assert.equal(view.el.querySelectorAll('.hsof.hire-compact').length, 0)
-    assert.equal(view.el.querySelectorAll('.hsof:not(.side) .t-luna').length, 1)
+    assert.equal(view.el.querySelectorAll('.hsof:not(.side) .t-gpt-reserve').length, 1)
   })
 
 test('a no-harness row is never replaced with a needless compact arrow',

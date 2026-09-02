@@ -30,7 +30,7 @@ const noop = () => {}
 const op = () => Promise.resolve({} as OpResult)
 const seats = {
   haiku: 1, sonnet: 2, opus: 5, fable: 10,
-  luna: 1, terra: 2, sol: 5, flash: 1, pro: 2,
+  'gpt-reserve': 1, luna: 1, terra: 2, sol: 5, flash: 1, pro: 2,
 }
 const available = { enabled: true, installed: true, reason: null }
 
@@ -48,7 +48,7 @@ function eye(zoom: number) {
 test('the eye’s own hire chips collapse once their rendered width stops '
   + 'fitting the card, exactly as an agent’s do',
   async (t) => {
-    // same math as farhire.test.tsx: nine tiers is 9×22 + 8×4 = 230px; a
+    // same math as farhire.test.tsx: the widest row is 4×22 + 3×4 = 100px; a
     // 124px card at .77 is 95.48px wide, well past the fit boundary
     const view = await eye(0.77)
     t.after(() => view.unmount())
@@ -66,7 +66,7 @@ test('the eye’s own hire chips collapse once their rendered width stops '
     await inAct(() => { expand.click() })
     assert.equal(strip.classList.contains('is-expanded'), true,
       'the compact control must still open the full tier list on click')
-    assert.equal(strip.querySelectorAll('.hs-fam button').length, 9,
+    assert.equal(strip.querySelectorAll('.hs-fam button').length, 10,
       'opening renders the exact current provider/tier list')
   })
 

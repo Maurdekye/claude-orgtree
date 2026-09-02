@@ -4,7 +4,7 @@ tier table each one brings (FR-15 / design-multi-provider.md, Phase-1 preview).
 
 A "provider" is the vendor axis the user never had to name while there was
 only one: Claude tiers (fable/opus/sonnet/haiku) come from Anthropic via the
-Claude Code CLI; the codex tiers (sol/terra/luna, GPT-5.6) come from OpenAI
+Claude Code CLI; the codex tiers (gpt-reserve/sol/terra/luna) come from OpenAI
 via the Codex CLI. Tier names stay ONE flat vocabulary — a tier implies its
 provider, so nothing anywhere takes a provider argument next to a tier.
 
@@ -64,7 +64,8 @@ class TierInfo(TypedDict):
 # hand-copy for a family it can't hire yet). `sol` shares S with sonnet by
 # collision of English; the chip class (t-sol) carries the family, and no
 # canvas node can wear both families until codex hire is enabled.
-_CODEX_LETTER: Final[dict[str, str]] = {"luna": "L", "terra": "T", "sol": "S"}
+_CODEX_LETTER: Final[dict[str, str]] = {
+    "gpt-reserve": "R", "luna": "L", "terra": "T", "sol": "S"}
 
 #: which tier names belong to the codex provider — the AXIS, nothing more.
 #: Seats and model ids live in ledger.TIERS / ledger.MODELS (the
@@ -72,8 +73,8 @@ _CODEX_LETTER: Final[dict[str, str]] = {"luna": "L", "terra": "T", "sol": "S"}
 #: views derive from them so there is exactly one copy to drift. Seat rule
 #: (user ruling 2026-08-28, ask card): STANDING API $ per M input — sol $5
 #: standard (the $4 promo, through ≥2026-11-21, never sets a seat), terra
-#: $2, luna $0.20 floored to 1.
-_CODEX_TIER_NAMES: Final = ("luna", "terra", "sol")
+#: $2, and gpt-reserve/luna $0.20 floored to 1.
+_CODEX_TIER_NAMES: Final = ("gpt-reserve", "luna", "terra", "sol")
 CODEX_TIERS: Final[dict[str, int]] = {
     t: _LEDGER_TIERS[t] for t in _CODEX_TIER_NAMES}
 CODEX_MODELS: Final[dict[str, str]] = {
@@ -96,6 +97,7 @@ CODEX_CONTEXT: Final[int] = 1_050_000
 CODEX_PRICES: Final[dict[str, tuple[float, float, float]]] = {
     "sol": (4.00, 0.40, 20.00),
     "terra": (2.00, 0.20, 12.00),
+    "gpt-reserve": (0.20, 0.02, 1.20),
     "luna": (0.20, 0.02, 1.20),
 }
 

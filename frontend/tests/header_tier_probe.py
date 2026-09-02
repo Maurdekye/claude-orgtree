@@ -4,8 +4,9 @@
     python -B tests/header_tier_probe.py --expect-fail
 
 The header is an inventory by model tier. Each count must keep its tier colour
-for Codex (Luna/Terra/Sol) and Gemini (Flash/Pro), just as it does on cards.
-The negative control removes only those five colour rules and must be caught.
+for Codex (Reserve/Luna/Terra/Sol) and Gemini (Flash/Pro), just as it does on
+cards. The negative control removes only those six colour rules and must be
+caught.
 """
 
 import argparse
@@ -16,6 +17,7 @@ from playwright.sync_api import sync_playwright
 
 CSS = pathlib.Path(__file__).resolve().parents[1] / "src" / "styles.css"
 EXPECTED = {
+    "gpt-reserve": "rgb(185, 196, 214)",
     "luna": "rgb(185, 196, 214)",
     "terra": "rgb(127, 174, 95)",
     "sol": "rgb(255, 138, 61)",
@@ -23,7 +25,7 @@ EXPECTED = {
     "pro": "rgb(107, 69, 214)",
 }
 CONTROL = """
-.chip.agents b.t-luna, .chip.agents b.t-terra, .chip.agents b.t-sol,
+.chip.agents b.t-gpt-reserve, .chip.agents b.t-luna, .chip.agents b.t-terra, .chip.agents b.t-sol,
 .chip.agents b.t-flash, .chip.agents b.t-pro { color: var(--ink) !important; }
 """
 

@@ -55,7 +55,7 @@ provider argument to a hire or model switch.
 | provider | tiers (seat credits) | available when |
 |---|---|---|
 | Claude Code | haiku (1), sonnet (2), opus (5), fable (10) | the Claude CLI can run turns |
-| Codex | luna (1), terra (2), sol (5) | Codex CLI is installed and signed in |
+| Codex | gpt-reserve (1), luna (1), terra (2), sol (5) | Codex CLI is installed and signed in |
 | Gemini | flash (1), pro (2) | Gemini CLI is installed and signed in |
 
 Provider detection is read-only. It checks the CLI installation and its own
@@ -229,7 +229,7 @@ these; ⚠ **an agent hiring must state every one explicitly** — no defaults a
 | `default_visibility` | `self` \| `team` \| `subtree` \| `full` | how much of the org chart a hire can see |
 | `default_effort` | `""` (CLI default) \| `low`…`max` | thinking effort; resolved **live** at turn start, so changing it moves existing agents too |
 | `permission_mode` | `acceptEdits` (default) | the CLI permission mode |
-| `tiers` / `models` | Claude: fable 10, opus 5, sonnet 2, haiku 1; Codex: sol 5, terra 2, luna 1; Gemini: pro 2, flash 1 | credit cost per tier and the model each maps to (`ledger.py:49-80`) |
+| `tiers` / `models` | Claude: fable 10, opus 5, sonnet 2, haiku 1; Codex: sol 5, terra 2, gpt-reserve 1, luna 1; Gemini: pro 2, flash 1 | credit cost per tier and the model each maps to (`ledger.py:49-80`) |
 
 MCP servers are discovered from the user's own `~/.claude.json` → `mcpServers`
 (`supervisor.py:466-472`), so orgtree grants from that list rather than defining servers itself.

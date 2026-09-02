@@ -75,7 +75,7 @@ the host. These private installs are discovered automatically; a global install
 on `PATH` works too.
 
 ```bash
-# Codex: luna (seat 1), terra (2), sol (5)
+# Codex: gpt-reserve (seat 1), luna (1), terra (2), sol (5)
 npm install --prefix ~/orgtree/codex @openai/codex
 npx --prefix ~/orgtree/codex codex login
 
@@ -109,7 +109,7 @@ installed on this host (`README.md`).
    the `advanced` disclosure closed (that's where kiosk, sandbox, and the mailserver connection
    live — §2–§4 below).
 3. Hover the eye and hire one top-level agent. Claude provides
-   haiku/sonnet/opus/fable; a connected Codex CLI adds luna/terra/sol and a
+   haiku/sonnet/opus/fable; a connected Codex CLI adds gpt-reserve/luna/terra/sol and a
    connected Gemini CLI adds flash/pro. That single card, zoomed in, is a chat
    desk with transcript, live tool feed, markdown, and a composer.
 

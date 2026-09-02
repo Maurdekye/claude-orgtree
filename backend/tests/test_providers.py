@@ -76,7 +76,8 @@ def main():
     # seat price exists in exactly one place.
     check("codex tiers are IN ledger.TIERS with the ruled seats (M4)",
           lambda: eq({t: TIERS.get(t) for t in providers.CODEX_TIERS},
-                     {"luna": 1, "terra": 2, "sol": 5}, "codex rows"))
+                     {"gpt-reserve": 1, "luna": 1, "terra": 2, "sol": 5},
+                     "codex rows"))
     check("…and providers' views are DERIVED, not copied",
           lambda: eq((providers.CODEX_TIERS,
                       providers.CODEX_MODELS),
@@ -92,15 +93,19 @@ def main():
                       if t not in providers.CODEX_TIERS
                       and t not in providers.GEMINI_TIERS],
                      "claude family"))
-    check("codex family is luna 1 · terra 2 · sol 5, gpt-5.6 ids, cheap first",
+    check("codex family is gpt-reserve 1 · luna 1 · terra 2 · sol 5",
           lambda: eq([(t["tier"], t["seat"], t["model"])
                       for t in providers.codex_tiers()],
-                     [("luna", 1, "gpt-5.6-luna"),
+                     [("gpt-reserve", 1, "gpt-reserve"),
+                      ("luna", 1, "gpt-5.6-luna"),
                       ("terra", 2, "gpt-5.6-terra"),
                       ("sol", 5, "gpt-5.6-sol")], "codex family"))
     check("every codex tier carries a chip letter",
           lambda: eq([bool(t["letter"]) for t in providers.codex_tiers()],
-                     [True, True, True], "letters"))
+                     [True, True, True, True], "letters"))
+    check("gpt-reserve has Luna's price band",
+          lambda: eq(providers.CODEX_PRICES["gpt-reserve"],
+                     providers.CODEX_PRICES["luna"], "gpt-reserve price"))
 
     print("§2 codex tiers are LEDGER-hireable since M4 (the connected-"
           "provider gate is api.py's, tested in test_codex_dispatch §6)")

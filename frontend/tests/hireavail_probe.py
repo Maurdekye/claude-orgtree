@@ -50,7 +50,7 @@ PORT = 7453
 BASE = f"http://127.0.0.1:{PORT}"
 
 CLAUDE = ["haiku", "sonnet", "opus", "fable"]
-CODEX = ["luna", "terra", "sol"]
+CODEX = ["gpt-reserve", "luna", "terra", "sol"]
 GEMINI = ["flash", "pro"]
 ALL = CLAUDE + CODEX + GEMINI
 

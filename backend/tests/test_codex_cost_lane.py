@@ -234,9 +234,10 @@ def main() -> int:
               "and every Codex tier does not — one predicate, both answers",
               lambda: eq(
                   {t: supervisor.api_fallback_active_for(org4, t)
-                   for t in ("opus", "fable", "sol", "terra", "luna")},
+                   for t in ("opus", "fable", "gpt-reserve", "sol", "terra", "luna")},
                   {"opus": True, "fable": True,
-                   "sol": False, "terra": False, "luna": False},
+                   "gpt-reserve": False, "sol": False, "terra": False,
+                   "luna": False},
                   "api_fallback_active_for by tier"))
         org5, _, _ = mkorg("shut", window=False)
         check("rule · …and with the window SHUT nobody bills it, so the "

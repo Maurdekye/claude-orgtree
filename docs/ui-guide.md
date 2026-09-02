@@ -36,8 +36,8 @@ snowflake, lock, layers, fullscreen, hearing.
 
 - Hover any live card (or the eye) to reveal a row for each available provider
   family. Claude's round **H S O F** chips are haiku · sonnet · opus · fable
-  (seat costs 1 · 2 · 5 · 10); Codex adds **L T S** for luna · terra · sol
-  (1 · 2 · 5); Gemini adds **F P** for flash · pro (1 · 2). A tier name picks
+  (seat costs 1 · 2 · 5 · 10); Codex adds **R L T S** for gpt-reserve · luna ·
+  terra · sol (1 · 1 · 2 · 5); Gemini adds **F P** for flash · pro (1 · 2). A tier name picks
   its provider—there is no separate provider setting. If Codex or Gemini is
   not installed or signed in, its disabled row appears on the bottom edge with
   a tooltip explaining the next step; connected providers appear on every

@@ -50,7 +50,7 @@ def family(name: str, letters: str) -> str:
 
 ROWS = "".join((
     family("claude", "haiku sonnet opus fable"),
-    family("codex", "luna terra sol"),
+    family("codex", "gpt-reserve luna terra sol"),
     family("gemini", "flash pro"),
 ))
 
@@ -101,12 +101,12 @@ def fit_case(key: str, label: str, zoom: float, compact: bool, rows: str) -> str
 
 def fit_document(css: str) -> str:
     full = ROWS
-    codex = family("codex", "luna terra sol")
+    codex = family("codex", "gpt-reserve luna terra sol")
     cases = "".join((
         fit_case("full-compact", "full 0.77 · 95.5px card / 100px row · compact", .77, True, full),
         fit_case("full-direct", "full 0.82 · 101.7px card / 100px row · direct", .82, False, full),
-        fit_case("codex-compact", "Codex 0.59 · 73.2px card / 74px row · compact", .59, True, codex),
-        fit_case("codex-direct", "Codex 0.61 · 75.6px card / 74px row · direct", .61, False, codex),
+        fit_case("codex-compact", "Codex 0.77 · 95.5px card / 100px row · compact", .77, True, codex),
+        fit_case("codex-direct", "Codex 0.82 · 101.7px card / 100px row · direct", .82, False, codex),
     ))
     return f"""<!doctype html><html><head><style>{css}
 body {{ margin:0; background:#17191c; }}
@@ -157,7 +157,7 @@ def main() -> None:
         if args.expanded:
             args.expanded.parent.mkdir(parents=True, exist_ok=True)
             page.screenshot(path=str(args.expanded))
-        if not after["expanded"] or after["families"] != 3 or after["buttons"] != 9:
+        if not after["expanded"] or after["families"] != 3 or after["buttons"] != 10:
             errors.append(f"the full max-provider list did not open: {after}")
         if args.fit_boundary:
             page.set_viewport_size({"width": 840, "height": 560})

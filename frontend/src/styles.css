@@ -360,6 +360,7 @@ button.badge.audience-fold.alert {
    the same tier colour it wears on cards and pickers. Provider identity
    belongs to the surrounding chrome; these tokens distinguish the models. */
 .chip.agents b.t-luna { color: var(--tier-luna); }
+.chip.agents b.t-gpt-reserve { color: var(--tier-luna); }
 .chip.agents b.t-terra { color: var(--tier-terra); }
 .chip.agents b.t-sol { color: var(--tier-sol); }
 .chip.agents b.t-flash { color: var(--tier-flash); }
@@ -420,11 +421,13 @@ button.badge.audience-fold.alert {
    busy ring follows. Keyed on `prov-openai` from cards.tsx, not on the tier
    classes, so a future codex tier joins the theme by joining the family. */
 .sq.tier-luna { border-top-color: color-mix(in srgb, var(--tier-luna) 55%, var(--line)); }
+.sq.tier-gpt-reserve { border-top-color: color-mix(in srgb, var(--tier-luna) 55%, var(--line)); }
 .sq.tier-terra { border-top-color: color-mix(in srgb, var(--tier-terra) 55%, var(--line)); }
 .sq.tier-sol { border-top-color: color-mix(in srgb, var(--tier-sol) 55%, var(--line)); }
 .sq.tier-flash { border-top-color: color-mix(in srgb, var(--tier-flash) 55%, var(--line)); }
 .sq.tier-pro { border-top-color: color-mix(in srgb, var(--tier-pro) 55%, var(--line)); }
 .sq.mini.tier-luna { --mini-tier: var(--tier-luna); }
+.sq.mini.tier-gpt-reserve { --mini-tier: var(--tier-luna); }
 .sq.mini.tier-terra { --mini-tier: var(--tier-terra); }
 .sq.mini.tier-sol { --mini-tier: var(--tier-sol); }
 .sq.mini.tier-flash { --mini-tier: var(--tier-flash); }
@@ -477,6 +480,7 @@ button.badge.audience-fold.alert {
    other three edges, but its greater specificity would also erase the tier
    stripe. Reassert the independent tier channel on the top edge. */
 .sq.prov-openai.desk.tier-luna { border-top-color: var(--tier-luna); }
+.sq.prov-openai.desk.tier-gpt-reserve { border-top-color: var(--tier-luna); }
 .sq.prov-openai.desk.tier-terra { border-top-color: var(--tier-terra); }
 .sq.prov-openai.desk.tier-sol { border-top-color: var(--tier-sol); }
 /* the gemini family's card dressing (D-189) — the same inherited-chrome
@@ -1226,8 +1230,8 @@ button.cc-name:hover {
      distinctive shades; just the desk view theme itself takes on the
      tealish color scheme"). Provider identity lives in the DESK theme
      (--prov-openai below), NOT in the chip hues — tiers separate by hue
-     like claude's four do: luna pale silver, terra olive, sol solar
-     orange. CVD ΔE pass still pending; L/T/S letters stay the redundant
+     like claude's four do: reserve/luna pale silver, terra olive, sol solar
+     orange. CVD ΔE pass still pending; R/L/T/S letters stay the redundant
      glyph. */
   --tier-luna: #b9c4d6;
   --tier-terra: #7fae5f;
@@ -1260,6 +1264,7 @@ button.cc-name:hover {
 .tier.t-opus { color: var(--tier-opus); border-color: color-mix(in srgb, var(--tier-opus) 45%, var(--line)); }
 .tier.t-fable { color: var(--tier-fable); border-color: color-mix(in srgb, var(--tier-fable) 45%, var(--line)); }
 .tier.t-luna { color: var(--tier-luna); border-color: color-mix(in srgb, var(--tier-luna) 45%, var(--line)); }
+.tier.t-gpt-reserve { color: var(--tier-luna); border-color: color-mix(in srgb, var(--tier-luna) 45%, var(--line)); }
 .tier.t-terra { color: var(--tier-terra); border-color: color-mix(in srgb, var(--tier-terra) 45%, var(--line)); }
 .tier.t-sol { color: var(--tier-sol); border-color: color-mix(in srgb, var(--tier-sol) 45%, var(--line)); }
 .tier.t-flash { color: var(--tier-flash); border-color: color-mix(in srgb, var(--tier-flash) 45%, var(--line)); }
@@ -2147,6 +2152,7 @@ button.cc-name:hover {
    permanently disabled, so no hover leg. A touch dimmer than the generic
    :disabled .35 would leave them: these are "coming", not "can't afford". */
 .hsof button.t-luna { color: var(--tier-luna); border-color: color-mix(in srgb, var(--tier-luna) 45%, var(--line)); }
+.hsof button.t-gpt-reserve { color: var(--tier-luna); border-color: color-mix(in srgb, var(--tier-luna) 45%, var(--line)); }
 .hsof button.t-terra { color: var(--tier-terra); border-color: color-mix(in srgb, var(--tier-terra) 45%, var(--line)); }
 .hsof button.t-sol { color: var(--tier-sol); border-color: color-mix(in srgb, var(--tier-sol) 45%, var(--line)); }
 .hsof button.t-flash { color: var(--tier-flash); border-color: color-mix(in srgb, var(--tier-flash) 45%, var(--line)); }

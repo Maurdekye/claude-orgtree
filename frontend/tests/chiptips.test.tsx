@@ -100,7 +100,7 @@ function backendSeats(): Record<string, number> {
   assert.ok(m, `could not read TIERS out of ${LEDGER} — this test must not `
     + 'fall back to a guess, because a guess is the bug it exists to prevent')
   const out: Record<string, number> = {}
-  for (const [, k, v] of m![1]!.matchAll(/"(\w+)"\s*:\s*(\d+)/g)) {
+  for (const [, k, v] of m![1]!.matchAll(/["']?([\w-]+)["']?\s*:\s*(\d+)/g)) {
     out[k!] = Number(v)
   }
   assert.ok(Object.keys(out).length >= 3,
@@ -278,7 +278,7 @@ uiTest('§5 the cost badge is the tier’s actual seat price, per tier',
     const seen: Record<string, number> = {}
     for (const b of [...el.querySelectorAll('.hsof.side-l button')] as HTMLElement[]) {
       const title = b.getAttribute('title') ?? ''
-      const tier = /^hire an? (\w+)/.exec(title)?.[1]
+      const tier = /^hire an? ([\w-]+)/.exec(title)?.[1]
       if (!tier) continue
       const { cost } = parts(title)
       assert.ok(cost !== null,
@@ -329,7 +329,7 @@ uiTest('§6 the overseer’s lone badge drops the role word and keeps the cost',
     const seen: Record<string, number> = {}
     for (const b of btns) {
       const s = b.getAttribute('title') ?? ''
-      const m = /^hire an? (\w+)/.exec(s)
+      const m = /^hire an? ([\w-]+)/.exec(s)
       if (!m) continue
       const tier = m[1]!
       // the role word is gone...
@@ -337,7 +337,7 @@ uiTest('§6 the overseer’s lone badge drops the role word and keeps the cost',
         `the overseer badge still names a role ("${s}") — under the eye there `
         + 'is only one hire badge, so the word distinguishes nothing')
       // ...and nothing else went with it: shape is `hire <a|an> <tier> (-N)`
-      assert.match(s, /^hire an? \w+ \(-\d+\)$/,
+      assert.match(s, /^hire an? [\w-]+ \(-\d+\)$/,
         `the overseer badge is not "hire <a|an> <tier> (-N)" ("${s}")`)
       const { phrase, cost } = parts(s)
       assert.equal(words(phrase).length, 3,
@@ -375,7 +375,8 @@ uiTest('§6 the overseer’s lone badge drops the role word and keeps the cost',
 // it is handed. The server hands it one — but `OrgCanvas` also carries a
 // literal fallback for a payload that arrives without `tiers`:
 //
-//     const seats = tree.tiers ?? { haiku: 1, sonnet: 2, opus: 5, fable: 10 }
+//     const seats = tree.tiers ?? { haiku: 1, sonnet: 2, opus: 5, fable: 10,
+//       'gpt-reserve': 1, luna: 1, terra: 2, sol: 5, flash: 1, pro: 2 }
 //
 // That is a genuine second price table living in the frontend. It agrees with
 // the backend today. Nothing made it agree, and nothing would notice if a
@@ -396,7 +397,7 @@ test('§8 the frontend’s fallback tier table matches the backend’s', () => {
   assert.ok(m, 'OrgCanvas no longer has a `tree.tiers ?? {…}` fallback — if it '
     + 'was removed, delete this check with it; if it moved, update the pattern')
   const fallback: Record<string, number> = {}
-  for (const [, k, v] of m![1]!.matchAll(/(\w+)\s*:\s*(\d+)/g)) fallback[k!] = Number(v)
+  for (const [, k, v] of m![1]!.matchAll(/["']?([\w-]+)["']?\s*:\s*(\d+)/g)) fallback[k!] = Number(v)
 
   assert.deepEqual(fallback, SEATS,
     'the tier prices hard-coded in OrgCanvas.tsx disagree with ledger.TIERS.\n'

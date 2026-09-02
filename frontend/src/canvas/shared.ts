@@ -22,7 +22,7 @@ import type {
 // `?` even though the hire sheet had a separate Codex-only map.
 export const TIER_LETTER: Record<string, string> = {
   haiku: 'H', sonnet: 'S', opus: 'O', fable: 'F',
-  luna: 'L', terra: 'T', sol: 'S',
+  'gpt-reserve': 'R', luna: 'L', terra: 'T', sol: 'S',
   // flash shares F with fable by the same accepted collision as sol/sonnet's
   // S — the chip class carries the family
   flash: 'F', pro: 'P',
@@ -42,16 +42,19 @@ export const TIER_SEAT: Record<string, number> =
  *  version it is merely listing. */
 export const MODEL_VERSIONS: Record<string, string[]> =
   { opus: ['5', '4.8'], fable: ['5.1', '5'] }
-/** The codex family (FR-15 preview) — ChatGPT/OpenAI tiers, GPT-5.6. A
+/** The codex family (FR-15 preview) — ChatGPT/OpenAI tiers. A
  *  SEPARATE list, never merged into TIERS: every existing surface iterates
  *  TIERS, and a family that cannot be hired yet must not grow chips there by
  *  accident. Mirrors backend providers.py (CODEX_TIERS / CODEX_MODELS) the
  *  same way TIER_SEAT mirrors ledger.TIERS. Seat costs RULED 2026-08-28:
  *  API $ per M input tokens at the STANDING price (sol $5 standard, not the
- *  promo $4; luna $0.20 floors to 1) — display-only until codex hire lands. */
-export const CODEX_TIERS = ['luna', 'terra', 'sol']
-export const CODEX_TIER_LETTER: Record<string, string> = { luna: 'L', terra: 'T', sol: 'S' }
-export const CODEX_TIER_SEAT: Record<string, number> = { luna: 1, terra: 2, sol: 5 }
+ *  promo $4; gpt-reserve/luna $0.20 floors to 1) — the hire surfaces use this
+ *  family list when the Codex CLI is available. */
+export const CODEX_TIERS = ['gpt-reserve', 'luna', 'terra', 'sol']
+export const CODEX_TIER_LETTER: Record<string, string> = {
+  'gpt-reserve': 'R', luna: 'L', terra: 'T', sol: 'S' }
+export const CODEX_TIER_SEAT: Record<string, number> = {
+  'gpt-reserve': 1, luna: 1, terra: 2, sol: 5 }
 /** The gemini family (D-189) — Google tiers: Gemini Flash (3.5-flash at
  *  launch, 3.7 via the version menu when it reaches the API) and Gemini Pro
  *  (3.1-pro). Same separate-list rule as the codex family. Seats by the

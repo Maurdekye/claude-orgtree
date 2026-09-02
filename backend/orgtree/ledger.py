@@ -43,7 +43,8 @@ from .schema import (AudienceGrant, DirGrant, MailEntry, NodeDoc, NoticeEntry,
 # sonnet-intro precedent, re-affirmed for sol by user ruling 2026-08-28).
 # Sonnet was 3, then 2 (user ruling 2026-08-12: $2/M locked in). The codex
 # family (FR-15, same ruling): sol $5 standard (the current $4 is a promo
-# through ≥2026-11-21), terra $2, luna $0.20 → floors to 1. The gemini family
+# through ≥2026-11-21), terra $2, and gpt-reserve/luna $0.20 → floors to 1.
+# The gemini family
 # (D-188): pro $2 standard (the ≤200K band — the >200K long-context surcharge
 # is a cost-dollars concern, never a seat), flash $1.50 → floors to 1 and
 # STAYS 1 when the tier's default model moves to 3.7-flash ($0.38). Existing
@@ -51,7 +52,8 @@ from .schema import (AudienceGrant, DirGrant, MailEntry, NodeDoc, NoticeEntry,
 # default; a customised table keeps its own number. Tier names are ONE flat
 # vocabulary — a tier implies its provider (providers.py owns that axis).
 TIERS: Final[dict[str, int]] = {"fable": 10, "opus": 5, "sonnet": 2, "haiku": 1,
-                                "sol": 5, "terra": 2, "luna": 1,
+                                "sol": 5, "terra": 2, "gpt-reserve": 1,
+                                "luna": 1,
                                 "flash": 1, "pro": 2}
 
 # №34 runaway insurance, and NOTHING else (user ruling 2026-08-04): "no need to
@@ -79,6 +81,7 @@ MODELS: Final[dict[str, str]] = {
     # them (measured, codex-cli 0.150.1)
     "sol": "gpt-5.6-sol",
     "terra": "gpt-5.6-terra",
+    "gpt-reserve": "gpt-reserve",
     "luna": "gpt-5.6-luna",
     # the gemini family — ids EXACTLY as the CLI's ACP session/new registry
     # reports them (measured, gemini-cli 0.57.0, 2026-08-29). ⚠ an id the CLI
@@ -2701,6 +2704,11 @@ class Org:
             # design motto: asking for what's already true is a no-op, not an error
             return {"freed": 0,
                     "warnings": [f"{nid} was already archived — nothing to do"]}
+        if self.node(nid).get("bg_open"):
+            raise LedgerError(
+                f"{nid} still owns open background tasks — wait for their "
+                "terminal notification (or provider-loss recovery) before "
+                "retiring it")
         live_kids = self.children(nid)
         if live_kids:
             if actor == nid:
@@ -2849,6 +2857,10 @@ class Org:
         if n["state"] != "live":
             raise LedgerError(f"{nid} is {n['state']} — cheap-compact "
                               f"replaces a LIVE agent's session")
+        if n.get("bg_open"):
+            raise LedgerError(
+                f"{nid} still owns open background tasks — cheap compaction "
+                "would replace the only session observing their outcome")
         gen = n.get("generation", 0)
         pred_id = f"{nid}@{gen}"
         old_sid = n["session_id"]
@@ -3207,6 +3219,12 @@ class Org:
         parent = self.node(nid)["parent"]
         # §8.5: dissolve takes each node's ENTIRE lineage stack with it
         order = sorted(self._taken_with(nid), key=self.depth, reverse=True)
+        open_nodes = [k for k in order if self.nodes[k].get("bg_open")]
+        if open_nodes:
+            raise LedgerError(
+                "cannot dissolve while background tasks are open on: "
+                + ", ".join(open_nodes)
+                + " — wait for terminal notification/provider-loss recovery")
         freed = 0
         for k in order:
             n = self.nodes[k]
@@ -3252,6 +3270,13 @@ class Org:
         parent = n["parent"]
         peers = self._peers_of(parent, nid)
         doomed_set = self._taken_with(nid)
+        open_nodes = [k for k in sorted(doomed_set)
+                      if self.nodes[k].get("bg_open")]
+        if open_nodes:
+            raise LedgerError(
+                "cannot delete while background tasks are open on: "
+                + ", ".join(open_nodes)
+                + " — wait for terminal notification/provider-loss recovery")
         # bank the burn BEFORE the nodes go — cost is history (see cost_total)
         lost = round(sum(float((self.nodes.get(k) or {}).get("cost_usd") or 0.0)
                          for k in doomed_set), 6)
@@ -6940,6 +6965,10 @@ class Org:
         is retired IN PLACE as an archived knowledge bearer at 0 credits, locked
         read-only. Lineage is a second axis — the predecessor is NOT a child."""
         n = self.node(nid)
+        if n.get("bg_open"):
+            raise LedgerError(
+                f"{nid} still owns open background tasks — compaction would "
+                "replace the session observing their outcome")
         gen = n.get("generation", 0)
         pred_id = f"{nid}@{gen}"
         pred = cast(NodeDoc, dict(n))  # dict() copy loses the TypedDict

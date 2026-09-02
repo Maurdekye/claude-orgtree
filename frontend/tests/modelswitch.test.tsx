@@ -31,7 +31,7 @@ function tree(extra: Partial<TreePayload> = {}): TreePayload {
   return {
     slug: 'org', dirs: [], tiers: {
       haiku: 1, sonnet: 2, opus: 5, fable: 10,
-      luna: 1, terra: 2, sol: 5, flash: 1, pro: 2,
+      'gpt-reserve': 1, luna: 1, terra: 2, sol: 5, flash: 1, pro: 2,
     }, max_top_grant: 100, default_effort: '', effort_default: 'high',
     cascade_hire: true, sandboxed: false, ...extra,
   } as TreePayload
@@ -87,7 +87,7 @@ const option = (el: HTMLElement, tier: string) =>
 
 test('the header summary counts every provider family', async (t: TestContext) => {
   useFakeClock()
-  const tiers = ['opus', 'luna', 'terra', 'sol', 'flash', 'pro']
+  const tiers = ['opus', 'gpt-reserve', 'luna', 'terra', 'sol', 'flash', 'pro']
   const roots = tiers.map((tier, i) => ({
     ...node(tier), id: tier, busy: i === tiers.length - 1,
   })) as unknown as TreeNode[]
@@ -96,12 +96,13 @@ test('the header summary counts every provider family', async (t: TestContext) =
     (el) => el,
   )
   t.after(async () => { await view.unmount(); realClock() })
-  assert.match(view.el.textContent ?? '', /6 live · 1 working/)
+  assert.match(view.el.textContent ?? '', /7 live · 1 working/)
   assert.deepEqual(
     [...view.el.querySelectorAll<HTMLBRElement>('.agents b')]
       .map((b) => [b.className, b.textContent]),
     [
-      ['t-opus', 'O1'], ['t-luna', 'L1'], ['t-terra', 'T1'], ['t-sol', 'S1'],
+      ['t-opus', 'O1'], ['t-gpt-reserve', 'R1'], ['t-luna', 'L1'],
+      ['t-terra', 'T1'], ['t-sol', 'S1'],
       ['t-flash', 'F1'], ['t-pro', 'P1'],
     ],
   )
@@ -117,6 +118,7 @@ configTest('the switch lists every provider family with its ledger seats',
     assert.deepEqual(options(el).map((o) => [o.value, o.textContent?.trim()]), [
       ['haiku', 'haiku · seat 1'], ['sonnet', 'sonnet · seat 2'],
       ['opus', 'opus · seat 5'], ['fable', 'fable · seat 10'],
+      ['gpt-reserve', 'gpt-reserve · seat 1'],
       ['luna', 'luna · seat 1'], ['terra', 'terra · seat 2'],
       ['sol', 'sol · seat 5'],
       ['flash', 'flash · seat 1'], ['pro', 'pro · seat 2'],
@@ -158,7 +160,7 @@ configTest('disconnected Codex tiers stay visible and explain why disabled',
       reason: 'not signed in — run `codex login` on this machine',
       status: { installed: true, connected: false, kind: null },
     }) })
-    for (const tier of ['luna', 'terra', 'sol']) {
+    for (const tier of ['gpt-reserve', 'luna', 'terra', 'sol']) {
       assert.equal(option(el, tier).disabled, true)
       assert.match(option(el, tier).textContent ?? '', /not signed in/)
     }
@@ -170,8 +172,8 @@ configTest('kiosk policy and seat cap disable options instead of hiding them',
     const { el } = await mount({ tree: tree({
       kiosk: { max_tier: 'sonnet' } as TreePayload['kiosk'],
     }) })
-    assert.equal(options(el).length, 9)   // 4 claude + 3 codex + 2 gemini
-    for (const tier of ['luna', 'terra', 'sol', 'flash', 'pro']) {
+    assert.equal(options(el).length, 10)   // 4 claude + 4 codex + 2 gemini
+    for (const tier of ['gpt-reserve', 'luna', 'terra', 'sol', 'flash', 'pro']) {
       assert.equal(option(el, tier).disabled, true)
       assert.match(option(el, tier).textContent ?? '', /unavailable in kiosk orgs/)
     }

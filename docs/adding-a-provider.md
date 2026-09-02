@@ -1,7 +1,7 @@
 # Adding a model provider to orgtree — the playbook
 
 Standing notes kept WHILE the second provider (Codex / OpenAI, tiers
-luna·terra·sol) was being implemented, at the user's instruction
+gpt-reserve·luna·terra·sol) was being implemented, at the user's instruction
 (2026-08-28): every step taken, generalized so the third provider (gemini,
 grok, kimi, z-ai, …) is a walk down a checklist instead of a re-derivation.
 The Codex-specific design record is `design-multi-provider.md` in the

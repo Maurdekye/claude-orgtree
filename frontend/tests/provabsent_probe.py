@@ -56,7 +56,7 @@ REPO = os.path.normpath(os.path.join(HERE, "..", ".."))
 PORT = 7457
 BASE = f"http://127.0.0.1:{PORT}"
 
-CODEX_TIERS = ["luna", "terra", "sol"]
+CODEX_TIERS = ["gpt-reserve", "luna", "terra", "sol"]
 GEMINI_TIERS = ["flash", "pro"]
 
 # The pre-D-202 markup, recreated live for the control: the accounts panel's
@@ -298,7 +298,7 @@ def judge_absent(out: dict, words: list[str]) -> list[str]:
                 fail.append(f"{label}: names {w!r} on a machine without it "
                             f"— {text.strip()[:200]!r}")
     # the tier words are a second, independent way to catch the same leak: a
-    # dropdown could drop the "Codex" label and still list luna/terra/sol.
+    # dropdown could drop the "Codex" label and still list Codex tiers.
     # Guarded because callers pass a SUBSET of the surfaces when they only
     # mean to ask about one of them.
     if "model dropdown" in out:

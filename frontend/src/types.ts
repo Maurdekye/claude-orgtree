@@ -975,8 +975,7 @@ export interface HostPayload {
 
 /** GET /api/providers — the provider axis (FR-15 preview): which model
  *  vendors this install knows, each with its tier family and this machine's
- *  install/connect state for its CLI. `hire_enabled` stays false for codex
- *  until the provider adapter lands; `reason` is the UI's tooltip/why. */
+ *  install/connect state for its CLI. `reason` is the UI's tooltip/why. */
 export interface ProviderTier {
   tier: string
   provider: string

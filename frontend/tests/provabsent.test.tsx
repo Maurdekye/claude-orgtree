@@ -41,7 +41,7 @@ import type {
 const noop = () => {}
 
 const CLAUDE = ['haiku', 'sonnet', 'opus', 'fable']
-const CODEX = ['luna', 'terra', 'sol']
+const CODEX = ['gpt-reserve', 'luna', 'terra', 'sol']
 const GEMINI = ['flash', 'pro']
 
 // ------------------------------------------------------- provider fixtures
@@ -164,7 +164,7 @@ function tree(extra: Partial<TreePayload> = {}): TreePayload {
   return {
     slug: 'org', dirs: [], tiers: {
       haiku: 1, sonnet: 2, opus: 5, fable: 10,
-      luna: 1, terra: 2, sol: 5, flash: 1, pro: 2,
+      'gpt-reserve': 1, luna: 1, terra: 2, sol: 5, flash: 1, pro: 2,
     }, max_top_grant: 100, default_effort: '', effort_default: 'high',
     cascade_hire: true, sandboxed: false, ...extra,
   } as TreePayload
@@ -259,7 +259,7 @@ configTest('§2 the node KEEPS ITS OWN TIER when its provider vanished',
     })
     const vals = optValues(el)
     assert.ok(vals.includes('sol'), 'the current value must remain selectable')
-    for (const t of ['luna', 'terra']) {
+    for (const t of ['gpt-reserve', 'luna', 'terra']) {
       assert.ok(!vals.includes(t),
         `${t}: keeping the current tier must not readmit its siblings`)
     }

@@ -105,7 +105,7 @@ print("\n§1  the tier→provider axis (the ONE implementation, D-196/D-182)")
 def axis_maps_each_family() -> None:
     for t in ("haiku", "sonnet", "opus", "fable"):
         assert providers.provider_of(t) == "claude", t
-    for t in ("luna", "terra", "sol"):
+    for t in ("gpt-reserve", "luna", "terra", "sol"):
         assert providers.provider_of(t) == "openai", t
     for t in ("flash", "pro"):
         assert providers.provider_of(t) == "google", t

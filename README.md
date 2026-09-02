@@ -32,8 +32,9 @@ with the `orgtree_*` MCP tools every node is given. **Credits are occupancy,
 not spend** — a live node *holds* its seat plus its grant; retiring releases
 everything back; tokens are unlimited (real dollars are *tracked* per node and
 per org, but deliberately not capped). The tier name chooses the provider:
-Claude has haiku (1), sonnet (2), opus (5), and fable (10); Codex has luna
-(1), terra (2), and sol (5); Gemini has flash (1) and pro (2). Messaging is
+Claude has haiku (1), sonnet (2), opus (5), and fable (10); Codex has
+gpt-reserve (1), luna (1), terra (2), and sol (5); Gemini has flash (1) and
+pro (2). Messaging is
 **downward any depth, one hop up, sideways between
 peers** — deep reach grants the recipient an audience to reply; only top-level
 agents write to your inbox unbidden. Every manual action you take notifies the
@@ -61,7 +62,7 @@ turns into a red ■ STOP while the agent is responding.
 
 **Hire in one gesture.** Hover any card (or the eye) and pick a tier chip.
 The Claude, Codex, and Gemini families sit in separate rows: H/S/O/F,
-L/T/S, and F/P respectively. A dashed draft appears: name it, drag its credit
+R/L/T/S, and F/P respectively. A dashed draft appears: name it, drag its credit
 bar to set the grant, optionally give it a **charter** (a standing role card —
 pick a named preset from `docs/charters/`, or write your own), and hire. The
 Codex and Gemini rows become active after their local CLI is installed and
@@ -225,7 +226,7 @@ panel reports whether each provider is installed and connected; once it is,
 its tier row is immediately available in the hire controls.
 
 ```bash
-# Codex: luna (seat 1), terra (2), sol (5)
+# Codex: gpt-reserve (seat 1), luna (1), terra (2), sol (5)
 npm install --prefix ~/orgtree/codex @openai/codex
 npx --prefix ~/orgtree/codex codex login
 
