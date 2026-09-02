@@ -968,6 +968,26 @@ def _mcp_tool_count_begin(slug: str, nid: str, owner: Any, provider: str,
         st["mcp_tool_source"] = source
         st["mcp_tool_reason"] = reason
         st["mcp_tool_server_counts"] = {}
+        # …and the NAMES, which used to survive here while the count and the
+        # server breakdown beside them were reset (measured 2026-09-02). A
+        # replaced process therefore reported `(None, <predecessor's tools>)`:
+        # the count honestly said "unknown" while the name list claimed a full
+        # surface belonging to a process that had already exited. Two things
+        # then went wrong, and both are about a DEAD generation's tools being
+        # read as a LIVE one's. `_mcp_tool_surface_for_owner` handed the
+        # predecessor's list to the turn boundary, so a turn completing on the
+        # new process wrote the OLD surface as the new generation's durable
+        # `last_turn_mcp_tools`; and the readiness gate, whenever it is
+        # enabled, could be satisfied by tools the new process had not
+        # registered — concluding "they came back" about a surface that never
+        # returned. Clearing it is also what makes the state honest: while a
+        # process is live its inventory is either LOADING (owner adopted,
+        # nothing published yet) or LOADED (its own publish landed), never a
+        # corpse's inventory wearing a live process's name.
+        # The `owner is owner` early-return above still protects a re-adopted
+        # SAME process (a warm re-claim keeps its surface) — this clears only
+        # on a genuine generation change.
+        st.pop("mcp_tool_names", None)
         st["mcp_tool_event"] = threading.Event()
         if isinstance(last_turn_count, int) and not isinstance(
                 last_turn_count, bool) and last_turn_count >= 0:

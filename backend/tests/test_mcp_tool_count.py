@@ -114,6 +114,88 @@ class McpToolCountTests(unittest.TestCase):
                             for e in count_events))
         self.assertEqual(count_events[1]["last_turn_count"], 4)
 
+    def test_replacement_does_not_inherit_the_dead_generation_names(
+            self) -> None:
+        """A replaced process starts with NO surface, not its predecessor's.
+
+        The regression (measured 2026-09-02, live CLI replacement): `_begin`
+        reset the count and the per-server breakdown but left `mcp_tool_names`
+        standing, so a brand-new process that had published nothing reported
+        `(None, <predecessor's tools>)` — an unknown count beside a dead
+        process's full tool list.
+        """
+        old, new = object(), object()
+        S._mcp_tool_count_begin(
+            self.slug, self.nid, old, "claude", "system/init.tools", "start")
+        S._mcp_tool_count_names(
+            self.slug, self.nid, old,
+            ["mcp__orgtree__one", "mcp__alpha__two", "Bash"],
+            "claude", "system/init.tools")
+        self.assertEqual(
+            S._mcp_tool_surface_for_owner(self.slug, self.nid, old),
+            (2, ["mcp__alpha__two", "mcp__orgtree__one"]))
+
+        # the CLI process is killed and replaced
+        S._mcp_tool_count_begin(
+            self.slug, self.nid, new, "claude", "system/init.tools",
+            "restarting")
+        count, names = S._mcp_tool_surface_for_owner(self.slug, self.nid, new)
+        self.assertIsNone(count)
+        self.assertIsNone(
+            names, "the new generation inherited the dead one's tool names")
+        st = S.state(self.slug, self.nid)
+        with S._state_lock:
+            self.assertIsNone(st.get("mcp_tool_names"))
+            self.assertEqual(st.get("mcp_tool_server_counts"), {})
+
+        # …and once the replacement publishes, the surface is ITS own
+        S._mcp_tool_count_names(
+            self.slug, self.nid, new, ["mcp__orgtree__one"], "claude",
+            "system/init.tools")
+        self.assertEqual(
+            S._mcp_tool_surface_for_owner(self.slug, self.nid, new),
+            (1, ["mcp__orgtree__one"]))
+
+    def test_reclaiming_the_same_process_keeps_its_surface(self) -> None:
+        """The clear above must fire on a NEW generation, never a re-adopted one.
+
+        A warm process is re-adopted by `_begin` on every turn it serves. If
+        that cleared the surface, this fix would trade a stale-tools bug for a
+        blind-warm-turn bug — the warm path publishes its names once, at its
+        own init, and would never publish them again.
+        """
+        warm = object()
+        S._mcp_tool_count_begin(
+            self.slug, self.nid, warm, "claude", "system/init.tools", "start")
+        S._mcp_tool_count_names(
+            self.slug, self.nid, warm, ["mcp__orgtree__one"], "claude",
+            "system/init.tools")
+        S._mcp_tool_count_begin(
+            self.slug, self.nid, warm, "claude", "system/init.tools",
+            "claimed again")
+        self.assertEqual(
+            S._mcp_tool_surface_for_owner(self.slug, self.nid, warm),
+            (1, ["mcp__orgtree__one"]))
+
+    def test_foreign_owner_can_neither_publish_nor_read(self) -> None:
+        """Negative control: only the current generation may write or be read."""
+        live, ghost = object(), object()
+        S._mcp_tool_count_begin(
+            self.slug, self.nid, live, "claude", "system/init.tools", "start")
+        S._mcp_tool_count_names(
+            self.slug, self.nid, live, ["mcp__orgtree__one"], "claude",
+            "system/init.tools")
+        self.assertFalse(S._mcp_tool_count_names(
+            self.slug, self.nid, ghost, ["mcp__evil__x"], "claude",
+            "system/init.tools"))
+        self.assertEqual(
+            S._mcp_tool_surface_for_owner(self.slug, self.nid, ghost),
+            (None, None))
+        # the live generation is untouched by the foreign write
+        self.assertEqual(
+            S._mcp_tool_surface_for_owner(self.slug, self.nid, live),
+            (1, ["mcp__orgtree__one"]))
+
     def test_claude_refresh_parser_handles_zero_removal(self) -> None:
         content = [{"type": "text", "text": (
             '{"servers":[{"server":"one","toolCount":3},'

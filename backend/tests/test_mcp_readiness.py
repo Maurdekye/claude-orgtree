@@ -128,6 +128,47 @@ class McpReadinessTests(unittest.TestCase):
         self.assertFalse(thread.is_alive(), "delta did not release gate")
         self.assertEqual(result, ["ready"])
 
+    def test_replaced_process_cannot_satisfy_the_gate_with_dead_tools(
+            self) -> None:
+        """A new generation must earn the gate, not inherit it.
+
+        This is the CLI-replacement case (measured 2026-09-02). `_begin` used
+        to leave `mcp_tool_names` standing, so the replacement — which had
+        published nothing — presented its predecessor's tool list and the gate
+        released instantly. The gate would then report that the prior surface
+        "came back" on a process that had registered none of it, which is the
+        one thing this gate exists to be able to say truthfully.
+        """
+        appsettings.set_wait_for_mcp_tools_enabled(True)
+        expected = ["mcp__a__one", "mcp__b__two"]
+        self._baseline(expected)
+        old = object()
+        self._begin(old, expected)
+        self.assertEqual(
+            S._mcp_wait_for_surface(
+                store.load_org(self.slug), self.nid, old, "claude", "fp",
+                timeout_s=1),
+            "ready")
+
+        # the process is killed and replaced; the new one has published nothing
+        new = object()
+        self._begin(new)
+        self.assertEqual(
+            S._mcp_wait_for_surface(
+                store.load_org(self.slug), self.nid, new, "claude", "fp",
+                timeout_s=0.4),
+            "timed-out",
+            "the replacement was admitted on its predecessor's tools")
+
+        # …and it releases honestly once its OWN surface arrives
+        S._mcp_tool_count_names(
+            self.slug, self.nid, new, expected, "claude", "system/init.tools")
+        self.assertEqual(
+            S._mcp_wait_for_surface(
+                store.load_org(self.slug), self.nid, new, "claude", "fp",
+                timeout_s=1),
+            "ready")
+
     def test_infrastructure_change_rebases_without_waiting(self) -> None:
         appsettings.set_wait_for_mcp_tools_enabled(True)
         self._baseline(["mcp__obsolete__tool"], "old-fingerprint")
