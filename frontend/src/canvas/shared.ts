@@ -14,7 +14,7 @@ import { onLiveBump } from '../livebus'
 import type { DependencyList } from 'react'
 import type {
   ActivityInfo, AskInfo, CacheForecast, DirGrant, MailEntry, NodeState, NodeStatus,
-  OpRequest, OpResult, ProviderInfo, ToolGrant, TreeNode, TreePayload,
+  OpRequest, OpResult, ProviderInfo, ProviderTier, ToolGrant, TreeNode, TreePayload,
 } from '../types'
 
 // One display alphabet for every provider-backed tier. Keeping the Codex rows
@@ -68,6 +68,79 @@ export const ANTIGRAVITY_TIER_SEAT: Record<string, number> = { flash: 1, pro: 2 
  * provider-specific controls keep using their family list. */
 export const ALL_TIERS = [...TIERS, ...CODEX_TIERS, ...ANTIGRAVITY_TIERS]
 
+/* ── THE OPENROUTER FAMILY (2026-09-02) — TIERS MINTED AT RUNTIME ─────────
+ *
+ * Every family above is a static list mirroring a backend constant. The
+ * OpenRouter lane has no constant to mirror: its tiers are the user's
+ * FAVORITES (App settings → Providers → the model picker), each one
+ * `or-<slugified model id>` with a seat, a letter and a canonical color the
+ * backend computes and serves in the /api/providers entry. So this family is
+ * a REGISTRY that the payload fills, not a list — and the surfaces that read
+ * `TIER_LETTER`, `providerOf` and the `t-<tier>` / `tier-<tier>` CSS classes
+ * keep working unchanged because:
+ *   · `setOpenRouterTiers` writes each favorite's letter INTO `TIER_LETTER`
+ *     (the one display alphabet), and
+ *   · it injects a <style> element carrying the SAME rule shapes the static
+ *     tiers get in styles.css (`.tier.t-x`, `.sq.tier-x`, …), so a card or
+ *     chip for a runtime tier is coloured by exactly the selectors a static
+ *     tier is — no render site learns a new prop for colour.
+ * Membership is the prefix, as on the backend (`openrouter.is_tier`). */
+export const OPENROUTER_PREFIX = 'or-'
+export const isOpenRouterTier = (tier: string): boolean =>
+  tier.startsWith(OPENROUTER_PREFIX)
+let orTiers: ProviderTier[] = []
+const OR_STYLE_ID = 'orgtree-openrouter-tiers'
+const OR_TIER_RE = /^or-[a-z0-9-]+$/
+const OR_COLOR_RE = /^#[0-9a-f]{6}$/i
+/** the injected stylesheet for the current favorites — the six selector
+ *  shapes styles.css writes per static tier, one block per favorite. Ids and
+ *  colors are validated before they reach CSS text: the payload is ours, but
+ *  a stylesheet built from strings is still a stylesheet built from strings. */
+export const openrouterTierCss = (tiers: ProviderTier[]): string => tiers
+  .filter((t) => OR_TIER_RE.test(t.tier))
+  .map((t) => {
+    const c = t.color && OR_COLOR_RE.test(t.color) ? t.color : '#9aa0a6'
+    const id = t.tier
+    const mix = (pct: number) => `color-mix(in srgb, ${c} ${pct}%, var(--line))`
+    return [
+      `.tier.t-${id}{color:${c};border-color:${mix(45)}}`,
+      `.hsof button.t-${id}{color:${c};border-color:${mix(45)}}`,
+      `.chip.agents b.t-${id}{color:${c}}`,
+      `.sq.tier-${id}{border-top-color:${mix(55)}}`,
+      `.sq.mini.tier-${id}{--mini-tier:${c}}`,
+      `.sq.prov-openrouter.desk.tier-${id}{border-top-color:${c}}`,
+    ].join('\n')
+  }).join('\n')
+/** adopt the payload's favorites as the live family. Idempotent and cheap
+ *  when nothing changed, so every surface that polls the payload may call it. */
+export const setOpenRouterTiers = (tiers: ProviderTier[] | null | undefined): void => {
+  const next = (tiers ?? []).filter((t) => OR_TIER_RE.test(t.tier))
+  const same = next.length === orTiers.length && next.every((t, i) => {
+    const o = orTiers[i]
+    return !!o && o.tier === t.tier && o.color === t.color
+      && o.letter === t.letter && o.seat === t.seat && o.name === t.name
+  })
+  if (same) return
+  orTiers = next.map((t) => ({ ...t }))
+  for (const t of orTiers) TIER_LETTER[t.tier] = t.letter
+  if (typeof document === 'undefined') return
+  let el = document.getElementById(OR_STYLE_ID)
+  if (!el) {
+    el = document.createElement('style')
+    el.id = OR_STYLE_ID
+    document.head.appendChild(el)
+  }
+  el.textContent = openrouterTierCss(orTiers)
+}
+export const openrouterTiers = (): ProviderTier[] => orTiers
+export const openrouterTierIds = (): string[] => orTiers.map((t) => t.tier)
+export const openrouterTier = (tier: string): ProviderTier | undefined =>
+  orTiers.find((t) => t.tier === tier)
+/** seat for ANY tier the static tables or the registry know */
+export const anyTierSeat = (tier: string): number =>
+  TIER_SEAT[tier] ?? CODEX_TIER_SEAT[tier] ?? ANTIGRAVITY_TIER_SEAT[tier]
+    ?? openrouterTier(tier)?.seat ?? 0
+
 /** Which PROVIDER a tier runs on — the UI mirror of backend
  *  `providers.provider_of` (D-196). Derived from the family lists ABOVE
  *  rather than a fresh table, so a tier added to one of them is classified
@@ -79,16 +152,19 @@ export const ALL_TIERS = [...TIERS, ...CODEX_TIERS, ...ANTIGRAVITY_TIERS]
  *  odd one out shipped. Unknown tiers answer 'claude', matching the backend:
  *  the answer decides whether a change CROSSES providers, and wrongly
  *  claiming a crossing would offer to destroy a conversation that was never
- *  at risk. */
-export const providerOf = (tier: string): 'openai' | 'google' | 'claude' =>
+ *  at risk. The OpenRouter answer is by PREFIX, as on the backend: a favorite
+ *  the registry has not seen yet is still an OpenRouter tier. */
+export type ProviderId = 'openai' | 'google' | 'claude' | 'openrouter'
+export const providerOf = (tier: string): ProviderId =>
   (CODEX_TIERS.includes(tier) ? 'openai'
-    : ANTIGRAVITY_TIERS.includes(tier) ? 'google' : 'claude')
+    : ANTIGRAVITY_TIERS.includes(tier) ? 'google'
+      : isOpenRouterTier(tier) ? 'openrouter' : 'claude')
 
 /** How a provider is named to the user in prose. The dialog says "Codex",
  *  not "openai" — the user picks tiers by the product name they see on the
  *  chips and in the accounts panel. */
 export const PROVIDER_LABEL: Record<string, string> = {
-  openai: 'Codex', google: 'Antigravity', claude: 'Claude' }
+  openai: 'Codex', google: 'Antigravity', claude: 'Claude', openrouter: 'OpenRouter' }
 
 /** One provider's hire state as a hire surface needs it — the `/api/providers`
  *  entry narrowed to the three things any surface asks. `null`/`undefined`
@@ -224,21 +300,26 @@ export const providerShown = (h: HireState | null | undefined): boolean =>
 /** Which provider families this machine exposes, by the id `providerOf`
  *  returns. Built once per surface that has the payload and threaded down, so
  *  a panel and the card behind it cannot disagree. */
-export type ProviderPresence = Record<'claude' | 'openai' | 'google', boolean>
+export type ProviderPresence = Record<ProviderId, boolean>
 
 /** Optimistic default for a surface whose payload has not arrived (or that
  *  has no access to one): everything shown, matching `providerShown(null)`. */
 export const ALL_PRESENT: ProviderPresence = {
-  claude: true, openai: true, google: true }
+  claude: true, openai: true, google: true, openrouter: true }
 
 export const presenceOf = (p: {
   claude?: ProviderInfo | null
   openai?: ProviderInfo | null
   google?: ProviderInfo | null
+  openrouter?: ProviderInfo | null
 }): ProviderPresence => ({
   claude: providerShown(hireOf(p.claude)),
   openai: providerShown(hireOf(p.openai)),
   google: providerShown(hireOf(p.google)),
+  // the OpenRouter entry's `installed` is "a key is stored" — an absent key
+  // hides the family exactly as an absent CLI hides Codex (D-202); the
+  // settings page stays the one place it is offered, as the install door
+  openrouter: providerShown(hireOf(p.openrouter)),
 })
 
 /** The same, straight off the `/api/providers` payload, for surfaces that
@@ -250,6 +331,7 @@ export const presenceOfPayload = (
   claude: p.providers.find((v) => v.id === 'claude'),
   openai: p.providers.find((v) => v.id === 'openai'),
   google: p.providers.find((v) => v.id === 'google'),
+  openrouter: p.providers.find((v) => v.id === 'openrouter'),
 }))
 
 /** Should a TIER appear in a list on this machine?

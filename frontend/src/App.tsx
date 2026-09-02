@@ -21,7 +21,7 @@ import {
 } from './icons'
 import { DirList } from './forms'
 import { FolderPickerHost } from './picker'
-import { ALL_TIERS, attentionPip, deskDpi, fallbackActive, freezeKind, orgPxc, presenceOfPayload, primedRestartChip, setDeskDpi, TIER_LETTER, usePolled } from './canvas/shared'
+import { ALL_TIERS, attentionPip, deskDpi, fallbackActive, freezeKind, isOpenRouterTier, orgPxc, presenceOfPayload, primedRestartChip, setDeskDpi, TIER_LETTER, usePolled } from './canvas/shared'
 import { AskCard } from './canvas/asks'
 import { AccountsPanel, UsageBars } from './canvas/accounts'
 import {
@@ -137,7 +137,9 @@ export function ActiveAgentSummary({ tree }: { tree: TreePayload }) {
     <span className="chip agents"
       title="live agents · currently working · breakdown by model">
       {nodes.length} live{busy > 0 ? ` · ${busy} working` : ''}
-      {ALL_TIERS
+      {/* the OpenRouter tiers are runtime-minted, so the inventory takes them
+          from what is actually running rather than from a static list */}
+      {[...ALL_TIERS, ...Object.keys(byTier).filter(isOpenRouterTier).sort()]
         .filter((tier) => byTier[tier])
         .map((tier) => (
           <b key={tier} className={'t-' + tier}>

@@ -38,8 +38,10 @@ import {
   SetGroup, SetRow, SettingsTabPanel, SettingsTabs, SetToggle,
 } from './settingskit'
 import type { SettingsTab } from './settingskit'
+import { OpenRouterSection } from './openrouter'
 import {
-  setCrowdPilesOn, setDeskDpi, setStartView, setStartZoomOn, TIER_LETTER,
+  setCrowdPilesOn, setDeskDpi, setOpenRouterTiers, setStartView, setStartZoomOn,
+  TIER_LETTER,
   TIERS, useCrowdPiles, useDeskDpi, useEsc, useStartView, useStartZoom,
 } from './shared'
 import type { StartView } from './shared'
@@ -279,7 +281,14 @@ export function AccountsPanel({ toast, close }: {
   // One Escape closes only the topmost layer. Previously the parent panel's
   // listener saw Escape while the nested usage modal was open and removed the
   // entire App settings surface behind it.
-  useEsc(() => { if (usageFor) setUsageFor(null); else close() })
+  // the OpenRouter model picker is a third layer (2026-09-02): same rule,
+  // one Escape closes only the topmost
+  const [orrPicker, setOrrPicker] = useState(false)
+  useEsc(() => {
+    if (usageFor) setUsageFor(null)
+    else if (orrPicker) setOrrPicker(false)
+    else close()
+  })
   // ⚠ a REF, not state: dragstart and drop can land in one React batch, and a
   // drop reading the dragged id from its render closure would see the
   // pre-drag null and silently do nothing. The state twin is styling only.
@@ -302,9 +311,15 @@ export function AccountsPanel({ toast, close }: {
   const [waitForMcpTools, setWaitForMcpTools] = useState<boolean | null>(null)
   const [waitForMcpToolsBusy, setWaitForMcpToolsBusy] = useState(false)
   const [warmingErr, setWarmingErr] = useState<string | null>(null)
-  useEffect(() => {
-    getProviders().then((p) => setProviders(p.providers)).catch(() => {})
-  }, [])
+  // the OpenRouter entry carries the runtime tiers (favorites); adopting them
+  // here colours this panel's own chips even before the canvas has polled
+  const adoptProviders = (list: ProviderInfo[]) => {
+    setProviders(list)
+    setOpenRouterTiers(list.find((p) => p.id === 'openrouter')?.tiers)
+  }
+  const refetchProviders = () =>
+    getProviders().then((p) => adoptProviders(p.providers)).catch(() => {})
+  useEffect(() => { void refetchProviders() }, [])
   useEffect(() => {
     getRuntimeSettings()
       .then((p) => {
@@ -348,6 +363,7 @@ export function AccountsPanel({ toast, close }: {
   const claudeProv = providers?.find((p) => p.id === 'claude')
   const codex = providers?.find((p) => p.id === 'openai')
   const antigravity = providers?.find((p) => p.id === 'google')
+  const openrouter = providers?.find((p) => p.id === 'openrouter')
   // D-202: the SAME verdict the hire chips use, so the accounts page and the
   // canvas cannot disagree about whether a provider exists. Undefined (the
   // payload has not arrived, or an old backend omits the entry) shows the
@@ -378,7 +394,7 @@ export function AccountsPanel({ toast, close }: {
     setProviderBusy(provider.id)
     setProviderEnabled(provider.id, enabled)
       .then((p) => {
-        setProviders(p.providers)
+        adoptProviders(p.providers)
         toast([`${provider.label} turned ${enabled ? 'on' : 'off'}`])
       })
       .catch((e: Error) => toast([`error: ${e.message}`]))
@@ -782,6 +798,19 @@ export function AccountsPanel({ toast, close }: {
               </>
             )}
             </div>}
+
+            {/* ── provider section: OpenRouter (2026-09-02) — the API-backed
+                lane. ALWAYS rendered, unlike Codex/Antigravity: D-202 hides an
+                uninstalled CLI because nothing here could install it, but a
+                key IS the install, and this section is the only door for it
+                (user spec: "key entry in providers list"). The section owns
+                its key row, favorites row and picker; the switch is the
+                panel's, like every other provider's. */}
+            <OpenRouterSection provider={openrouter} toast={toast}
+              pickerOpen={orrPicker} setPickerOpen={setOrrPicker}
+              onChanged={() => { void refetchProviders() }}
+              headRight={<ProviderSwitch provider={openrouter}
+                busy={providerBusy !== null} onChange={toggleProvider} />} />
           </>
         )}
         </SettingsTabPanel>

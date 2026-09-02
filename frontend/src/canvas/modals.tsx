@@ -18,7 +18,7 @@ import { pickFolder } from '../picker'
 import {
   CloseIcon, DeleteIcon, FolderIcon, LayersIcon, SettingsIcon,
 } from '../icons'
-import { ago, ALL_PRESENT, CODEX_TIER_SEAT, CODEX_TIERS, ANTIGRAVITY_TIER_SEAT, ANTIGRAVITY_TIERS, MODEL_VERSIONS, pileOrder, PROVIDER_LABEL, providerOf, TIER_LETTER, TIER_SEAT, TIERS, tierShown, USER, useEsc } from './shared'
+import { ago, ALL_PRESENT, anyTierSeat, CODEX_TIERS, ANTIGRAVITY_TIERS, isOpenRouterTier, MODEL_VERSIONS, openrouterTierIds, pileOrder, PROVIDER_LABEL, providerOf, TIER_LETTER, TIERS, tierShown, USER, useEsc } from './shared'
 import type { ProviderPresence } from './shared'
 import type { CanvasNode, DraftScope, DraftState, OpFn, Pile } from './shared'
 import { ProcessLifecycleMark } from './desk'
@@ -579,6 +579,7 @@ interface NodeConfigProps {
   toast: ToastFn
   codexProvider?: ProviderInfo | null
   antigravityProvider?: ProviderInfo | null
+  openrouterProvider?: ProviderInfo | null
   /** D-202: which provider families this machine has at all. Absent = the
    *  optimistic default (everything), so a caller that has not resolved the
    *  payload behaves exactly as this panel did before. */
@@ -587,7 +588,7 @@ interface NodeConfigProps {
 }
 
 export function NodeConfig({ node, map, tree, slug, op, toast, codexProvider,
-  antigravityProvider, presence = ALL_PRESENT, close }: NodeConfigProps) {
+  antigravityProvider, openrouterProvider, presence = ALL_PRESENT, close }: NodeConfigProps) {
   useEsc(close)
   const [asking, setAsking] =
     useState<'delete' | 'dissolve' | 'retire' | 'rescind' | 'crossprovider' | null>(null)
@@ -721,8 +722,7 @@ export function NodeConfig({ node, map, tree, slug, op, toast, codexProvider,
   // The ledger owns the actual seat table (including customized org values),
   // while the frontend constants are only a startup fallback. Provider is an
   // axis over that one flat tier vocabulary, never a second price table.
-  const tierSeat = (t: string) => tree.tiers?.[t]
-    ?? TIER_SEAT[t] ?? CODEX_TIER_SEAT[t] ?? ANTIGRAVITY_TIER_SEAT[t] ?? 0
+  const tierSeat = (t: string) => tree.tiers?.[t] ?? anyTierSeat(t)
   // Keep the same refusal order as provider_hire_gate: provider presence and
   // login first, then org policy, then the headless authentication rule.
   const codexUnavailable = !codexProvider?.hire_enabled
@@ -747,6 +747,11 @@ export function NodeConfig({ node, map, tree, slug, op, toast, codexProvider,
     ?? (codexProvider?.reserve_hire_enabled === false
       ? codexProvider?.reserve_reason ?? 'reserve capacity unavailable'
       : null)
+  // the OpenRouter lane: a key IS a keyed login, so headless never refuses
+  // it; kiosks hold it out like the other non-Claude lanes
+  const openrouterUnavailable = !openrouterProvider?.hire_enabled
+    ? openrouterProvider?.reason ?? 'provider state unavailable'
+    : tree.kiosk ? 'unavailable in kiosk orgs' : null
   const unavailable = (t: string): string | null => {
     // The current tier remains a truthful selected no-op even if policy has
     // since tightened around it; save does not call switch_model for a no-op.
@@ -754,6 +759,7 @@ export function NodeConfig({ node, map, tree, slug, op, toast, codexProvider,
     if (t === 'gpt-reserve') return reserveUnavailable
     if (CODEX_TIERS.includes(t) && codexUnavailable) return codexUnavailable
     if (ANTIGRAVITY_TIERS.includes(t) && antigravityUnavailable) return antigravityUnavailable
+    if (isOpenRouterTier(t) && openrouterUnavailable) return openrouterUnavailable
     const cap = tree.kiosk?.max_tier
     if (cap && tierSeat(t) > tierSeat(cap)) return `above kiosk cap (${cap})`
     return null
@@ -964,7 +970,9 @@ export function NodeConfig({ node, map, tree, slug, op, toast, codexProvider,
         <select className="model-switch" aria-label="model tier"
           value={model} onChange={(e) => setModel(e.target.value)}>
           {([['Claude', TIERS], ['Codex', CODEX_TIERS],
-             ['Antigravity', ANTIGRAVITY_TIERS]] as const)
+             ['Antigravity', ANTIGRAVITY_TIERS],
+             // the OpenRouter favorites, from the registry the payload fills
+             ['OpenRouter', openrouterTierIds()]] as const)
             .map(([label, fam]) => [label, shownTiers(fam)] as const)
             .filter(([, fam]) => fam.length > 0)
             .map(([label, fam]) => (

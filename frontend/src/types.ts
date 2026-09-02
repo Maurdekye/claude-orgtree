@@ -987,6 +987,67 @@ export interface ProviderTier {
   seat: number
   model: string
   letter: string
+  /** the OpenRouter lane (2026-09-02): its tiers are minted at runtime from
+   *  the user's favorites, so the payload carries what a static CSS class
+   *  would otherwise hold — the canonical chip color — plus the catalog
+   *  facts the hire surfaces show in tooltips. Absent on the CLI providers. */
+  color?: string
+  name?: string
+  vendor?: string
+  /** $ per MILLION tokens, in and out */
+  prompt?: number
+  completion?: number
+  context?: number
+}
+/** GET /api/openrouter — the API-backed lane's credit standing. Every field
+ *  is what `GET /api/v1/key` said, or null when it said nothing. */
+export interface OpenRouterCredits {
+  limit: number | null
+  limit_remaining: number | null
+  usage: number | null
+  usage_daily: number | null
+  usage_weekly: number | null
+  usage_monthly: number | null
+  is_free_tier: boolean | null
+  checked_at: string | null
+}
+/** GET /api/openrouter — secret-free: `key_set` says a key is stored, never
+ *  what it is; `connected` says openrouter.ai accepted it. */
+export interface OpenRouterDoc {
+  installed: boolean
+  connected: boolean
+  key_set: boolean
+  kind: string | null
+  label: string | null
+  credits: OpenRouterCredits
+  reason: string | null
+  favorites: number
+  favorites_max: number
+  tiers: ProviderTier[]
+  user_enabled: boolean
+}
+/** one catalog row as the picker shows it (prices per MILLION tokens) */
+export interface OpenRouterModel {
+  id: string
+  name: string
+  vendor: string
+  prompt: number
+  completion: number
+  cache_read: number
+  context: number
+  tools: boolean
+  free: boolean
+  letter: string
+  color: string
+  /** already a favorite */
+  selected?: boolean
+}
+export interface OpenRouterModelsPage {
+  query: string
+  offset: number
+  limit: number
+  total: number
+  items: OpenRouterModel[]
 }
 export interface ProviderInfo {
   id: string
@@ -1004,6 +1065,12 @@ export interface ProviderInfo {
     /** 'chatgpt' (subscription login) or 'api-key' */
     kind?: string | null
     codex_home?: string
+    /** the OpenRouter entry only: a key is stored (its "installed"), the
+     *  key's label at openrouter.ai, the credit standing, favorites count */
+    key_set?: boolean
+    label?: string | null
+    credits?: OpenRouterCredits
+    favorites?: number
   }
   hire_enabled: boolean
   reason: string | null

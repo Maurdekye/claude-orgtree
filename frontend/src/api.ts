@@ -7,7 +7,8 @@ import type {
   DiskDeleteResult, DiskDirPayload, DiskPayload, EventsPayload, FsPayload,
   HireDefaultsRequest, HistoryPayload, HostPayload,
   InboxPayload, KioskCfgRequest, KioskSaveResult, KioskSpecRequest,
-  McpServersPayload, OpRequest, OpResult, OrgListEntry, OrgMdPayload,
+  McpServersPayload, OpenRouterDoc, OpenRouterModelsPage,
+  OpRequest, OpResult, OrgListEntry, OrgMdPayload,
   OrgNetReveal, ProvidersPayload, ReorderRequest, RuntimeSettingsPayload,
   ScopeRequest, ScratchPayload,
   SendMessageResult,
@@ -277,6 +278,32 @@ export const setProviderEnabled = (
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ enabled }),
+  })
+// the OpenRouter lane (2026-09-02): machine-wide like the provider switch —
+// the key (stored, never returned), the credit standing, the catalog page the
+// picker shows, and the favorites that become hireable tiers
+export const getOpenRouter = (force = false): Promise<OpenRouterDoc> =>
+  req(`/api/openrouter${force ? '?force=true' : ''}`)
+export const setOpenRouterKey = (key: string): Promise<OpenRouterDoc> =>
+  req('/api/openrouter/key', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ key }),
+  })
+export const clearOpenRouterKey = (): Promise<OpenRouterDoc> =>
+  req('/api/openrouter/key', { method: 'DELETE' })
+export const searchOpenRouterModels = (
+  q: string, offset = 0, limit = 8,
+): Promise<OpenRouterModelsPage> =>
+  req(`/api/openrouter/models?q=${encodeURIComponent(q)}`
+    + `&offset=${offset}&limit=${limit}`)
+export const setOpenRouterFavorite = (
+  id: string, selected: boolean,
+): Promise<OpenRouterDoc> =>
+  req('/api/openrouter/favorites', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id, selected }),
   })
 export const getRuntimeSettings = (): Promise<RuntimeSettingsPayload> =>
   req('/api/app-settings/runtime')

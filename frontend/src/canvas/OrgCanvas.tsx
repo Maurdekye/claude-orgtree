@@ -13,7 +13,7 @@ import {
   FullscreenIcon, PublicIcon, RemoveIcon, ViewListIcon,
 } from '../icons'
 import {
-  ago, attentionPip, CODEX_TIER_LETTER, CODEX_TIER_SEAT, CODEX_TIERS, DOG_H, DOG_W, DRAFT, ease, edgeJumpPlacement, type EJForm, EXTERN, fallbackActive, familyOffer, flatten, ANTIGRAVITY_TIER_LETTER, ANTIGRAVITY_TIER_SEAT, ANTIGRAVITY_TIERS, hireOf, INBOX, INBOX_H, layout, NODE_H, NODE_W, orgPxc, presenceOf, reserveOffer, segD,
+  ago, anyTierSeat, attentionPip, CODEX_TIER_LETTER, CODEX_TIER_SEAT, CODEX_TIERS, DOG_H, DOG_W, DRAFT, ease, edgeJumpPlacement, type EJForm, EXTERN, fallbackActive, familyOffer, flatten, ANTIGRAVITY_TIER_LETTER, ANTIGRAVITY_TIER_SEAT, ANTIGRAVITY_TIERS, hireOf, INBOX, INBOX_H, layout, NODE_H, NODE_W, openrouterTierIds, orgPxc, presenceOf, reserveOffer, segD, setOpenRouterTiers,
   providerOf, savedView, saveView, segPoint, sizeOf, smooth, SPRING_C, SPRING_K, startView, startZoomOn, TIER_LETTER, TIER_SEAT, TIERS, useCrowdPiles, usePolled, USER, USER_H,
   USER_W, withDraftTree, Z_DESK, Z_MAX, Z_MINI,
 } from './shared'
@@ -133,6 +133,14 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
     (v) => v.id === 'openai') ?? null
   const antigravityProvider = providerEntries.find(
     (v) => v.id === 'google') ?? null
+  // the OpenRouter lane (2026-09-02): its entry ALSO carries the runtime
+  // tiers (the user's favorites) that every hire surface draws from the
+  // shared registry — adopted here, on the canvas's own poll, so the chips
+  // and the generated tier CSS follow the settings panel within one poll
+  const openrouterProvider = providerEntries.find(
+    (v) => v.id === 'openrouter') ?? null
+  useEffect(() => { setOpenRouterTiers(openrouterProvider?.tiers) },
+    [openrouterProvider])
   // D-199: Claude is read from the payload like the other two. It never was —
   // there was no `claudeProvider` at all, which is why a machine with only
   // Codex set up still offered four live Claude hire buttons.
@@ -145,17 +153,20 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
   const codexHire = hireOf(codexProvider)
   const antigravityHire = hireOf(antigravityProvider)
   const claudeHire = hireOf(claudeProvider)
+  const openrouterHire = hireOf(openrouterProvider)
   // D-202: which families exist on this machine at all, for the surfaces that
   // are not hire strips (the model-switch dropdown, the lineage rehire
   // dropdown). Same verdict the chips use — see `providerShown`.
   const presence = useMemo(() => presenceOf({
     claude: claudeProvider, openai: codexProvider, google: antigravityProvider,
-  }), [claudeProvider, codexProvider, antigravityProvider])
+    openrouter: openrouterProvider,
+  }), [claudeProvider, codexProvider, antigravityProvider, openrouterProvider])
   const userDisabled = useMemo(() => ({
     claude: claudeProvider?.user_enabled === false,
     openai: codexProvider?.user_enabled === false,
     google: antigravityProvider?.user_enabled === false,
-  }), [claudeProvider, codexProvider, antigravityProvider])
+    openrouter: openrouterProvider?.user_enabled === false,
+  }), [claudeProvider, codexProvider, antigravityProvider, openrouterProvider])
   // canonical retired-stack slot (user note 2026-08-06): display-order every
   // parent's children so archived siblings sit CONTIGUOUSLY at the first
   // archived ordinal. Buried members take no layout space, so with a
@@ -1860,6 +1871,7 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
               : Math.round(USER_H * 16 / 9)
             return <UserNode key={USER} pos={p} isDrop={dropId === USER} seats={seats}
               codexHire={codexHire} antigravityHire={antigravityHire}
+              openrouterHire={openrouterHire}
               claudeHire={claudeHire} onNoHarness={onAccounts}
               stats={orgStats}
               kiosk={tree.kiosk} pub={!!tree.public} kioskRemaining={kioskRemaining}
@@ -1906,6 +1918,7 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
               dragging={nodeDrag.current?.id === n.id && nodeDrag.current!.moved}
               isDrop={dropId === n.id}
               seats={seats} codexHire={codexHire} antigravityHire={antigravityHire}
+              openrouterHire={openrouterHire}
               claudeHire={claudeHire} onNoHarness={onAccounts}
               map={map} op={op} slug={slug} toast={toast}
               pxc={pxPerCredit} zoom={view.z}
@@ -2227,7 +2240,8 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
       {configId && map.get(configId) && (
         <MaybePortal><NodeConfig node={map.get(configId)!} map={map} tree={tree} slug={slug}
           op={op} toast={toast} codexProvider={codexProvider}
-          antigravityProvider={antigravityProvider} presence={presence}
+          antigravityProvider={antigravityProvider} openrouterProvider={openrouterProvider}
+          presence={presence}
           close={() => setConfigId(null)} /></MaybePortal>
       )}
       {lineageId && map.get(lineageId) && (
@@ -2332,6 +2346,7 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
         <MaybePortal>
           <HireSheet anchor={map.get(sheetId)!} seats={seats} codexHire={codexHire}
             antigravityHire={antigravityHire} claudeHire={claudeHire}
+            openrouterHire={openrouterHire}
             defaultGrant={!map.get(sheetId)!.parent ? (tree.default_top_grant ?? 50) : 0}
             onClose={() => setHireOpen(false)}
             onSettings={onAccounts ? () => {
@@ -2374,7 +2389,8 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
  *  is a full-screen form — and it carries PLACEMENT, so the F-03 side-hire
  *  and FR-25 splice semantics survive: below (report), left/right (coworker
  *  ordering), above (new superior — the anchor moves under the hire). */
-function HireSheet({ anchor, seats, codexHire, antigravityHire, claudeHire, defaultGrant,
+function HireSheet({ anchor, seats, codexHire, antigravityHire, claudeHire, openrouterHire,
+  defaultGrant,
   onHire, onSettings,
   onClose }: {
   anchor: CanvasNode
@@ -2382,6 +2398,7 @@ function HireSheet({ anchor, seats, codexHire, antigravityHire, claudeHire, defa
   codexHire?: HireState | null
   antigravityHire?: HireState | null
   claudeHire?: HireState | null
+  openrouterHire?: HireState | null
   defaultGrant: number
   onHire: (tier: string, name: string, grant: number,
     placement: 'below' | 'left' | 'right' | 'above') => void
@@ -2399,11 +2416,20 @@ function HireSheet({ anchor, seats, codexHire, antigravityHire, claudeHire, defa
     { key: 'antigravity', label: 'Antigravity', tiers: ANTIGRAVITY_TIERS,
       letters: ANTIGRAVITY_TIER_LETTER, hire: antigravityHire,
       seatOf: (t: string) => seats[t] ?? ANTIGRAVITY_TIER_SEAT[t] ?? 0 },
+    // the OpenRouter family: the favorites, from the registry the payload
+    // fills (their letters already live in TIER_LETTER)
+    { key: 'openrouter', label: 'OpenRouter', tiers: openrouterTierIds(),
+      letters: TIER_LETTER, hire: openrouterHire,
+      seatOf: (t: string) => seats[t] ?? anyTierSeat(t) },
   ] as const)
     .map((f) => ({ ...f, offer: familyOffer(f.hire),
                    reason: f.hire?.reason ?? 'hiring is not enabled yet' }))
-    .filter((f) => f.offer !== 'hide'),
-  [claudeHire, codexHire, antigravityHire, seats])
+    // an OpenRouter row with no favorites yet has no buttons to draw
+    .filter((f) => f.offer !== 'hide' && f.tiers.length > 0),
+  // the registry is not React state: its ids ride the deps so a favorite
+  // added while this sheet is open reaches the rows on the next payload
+  [claudeHire, codexHire, antigravityHire, openrouterHire, seats,   // eslint-disable-line react-hooks/exhaustive-deps
+   openrouterTierIds().join(',')])
   // ⚠ THE DEFAULT TIER IS THE FIRST OFFERABLE ONE, NOT A CONSTANT. It was the
   // literal 'sonnet', so on a machine with only Codex set up this sheet opened
   // pre-selected on a model that could not run — the same bug as the buttons,
@@ -2417,7 +2443,7 @@ function HireSheet({ anchor, seats, codexHire, antigravityHire, claudeHire, defa
     t === 'gpt-reserve' ? reserveOffer(f.hire) : f.offer
   const firstOfferable = famRows
     .flatMap((f) => f.tiers.filter((t) => tierOffer(f, t) === 'offer'))[0] ?? ''
-  const providersOff = [claudeHire, codexHire, antigravityHire]
+  const providersOff = [claudeHire, codexHire, antigravityHire, openrouterHire]
     .some((h) => h?.userEnabled === false)
   const [tier, setTier] = useState(firstOfferable)
   // the payload arrives after mount, so the first offerable tier can appear a

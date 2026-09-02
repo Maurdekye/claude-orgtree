@@ -14,7 +14,7 @@ import {
   LockIcon, MailIcon, RetireIcon, SettingsIcon,
 } from '../icons'
 import {
-  CODEX_TIER_LETTER, CODEX_TIER_SEAT, CODEX_TIERS, DESK_SCALE, deskDpi, DRAFT, familyOffer, freezeKind, FREEZE_LABEL_SHORT, ANTIGRAVITY_TIER_LETTER, ANTIGRAVITY_TIER_SEAT, ANTIGRAVITY_TIERS, NODE_H, NODE_W, providerOf, reserveOffer, TIER_LETTER, TIER_SEAT, TIERS, USER,
+  anyTierSeat, CODEX_TIER_LETTER, CODEX_TIER_SEAT, CODEX_TIERS, DESK_SCALE, deskDpi, DRAFT, familyOffer, freezeKind, FREEZE_LABEL_SHORT, ANTIGRAVITY_TIER_LETTER, ANTIGRAVITY_TIER_SEAT, ANTIGRAVITY_TIERS, isOpenRouterTier, NODE_H, NODE_W, openrouterTierIds, providerOf, reserveOffer, TIER_LETTER, TIER_SEAT, TIERS, USER,
   USER_H, USER_W,
 } from './shared'
 import type {
@@ -43,6 +43,7 @@ interface UserNodeProps {
   codexHire?: HireState | null
   antigravityHire?: HireState | null
   claudeHire?: HireState | null
+  openrouterHire?: HireState | null
   /** D-199: route out of the no-harness state (opens the accounts panel). */
   onNoHarness?: () => void
   kiosk: TreePayload['kiosk']
@@ -75,7 +76,7 @@ interface UserNodeProps {
 }
 
 export function UserNode({ pos, isDrop, stats, pip, seats, codexHire, claudeHire, onNoHarness,
-  antigravityHire,
+  antigravityHire, openrouterHire,
   kiosk, pub, kioskRemaining, kioskSegs, pxc, zoom, onInbox, onGear, onSpawn,
   onMailLink,
   focused, eyeW, onFocus, posX, onJump, map, op, slug, toast,
@@ -175,7 +176,7 @@ export function UserNode({ pos, isDrop, stats, pip, seats, codexHire, claudeHire
       <SpawnChips onSpawn={onSpawn} free={kioskRemaining ?? Infinity} seats={seats}
         maxTier={kiosk?.max_tier} soleHire codexHire={codexHire}
         claudeHire={claudeHire} onNoHarness={onNoHarness}
-        antigravityHire={antigravityHire}
+        antigravityHire={antigravityHire} openrouterHire={openrouterHire}
         zoom={focused ? undefined : zoom} expanded={expandedHire}
         onToggleExpanded={() => setExpandedHire((v) => !v)} />
       {focused && (
@@ -464,6 +465,9 @@ interface SpawnChipsProps {
   codexHire?: HireState | null
   /** D-189: the antigravity family's hire state, same contract. */
   antigravityHire?: HireState | null
+  /** the OpenRouter family (2026-09-02), same contract; its TIERS come from
+   *  the shared registry (`openrouterTierIds`), filled by the same payload */
+  openrouterHire?: HireState | null
   /** D-199: ...and Claude's, which nothing used to ask for. Same contract:
    *  absent means "not known yet", not "not installed". */
   claudeHire?: HireState | null
@@ -481,14 +485,14 @@ interface SpawnChipsProps {
 }
 
 function SpawnChips({ onSpawn, free, seats, maxTier, side, soleHire,
-  codexHire, antigravityHire, claudeHire, onNoHarness, zoom,
+  codexHire, antigravityHire, claudeHire, openrouterHire, onNoHarness, zoom,
   expanded = false, onToggleExpanded }: SpawnChipsProps) {
   // kiosk tier cap (user spec): tokens above the cap DISAPPEAR entirely —
   // seat cost doubles as the tier rank, so the cap is a simple cost compare
   const shown = TIERS.filter((t) =>
     !maxTier || (seats[t] ?? 0) <= (seats[maxTier] ?? Infinity))
   const chip = (t: string, letter: string | undefined) => {
-    const seat = seats[t] ?? CODEX_TIER_SEAT[t] ?? ANTIGRAVITY_TIER_SEAT[t] ?? 0
+    const seat = seats[t] ?? anyTierSeat(t)
     const cant = Number.isFinite(free) && free < seat
     return (
       <button key={t} disabled={cant} className={'t-' + t}
@@ -568,6 +572,11 @@ function SpawnChips({ onSpawn, free, seats, maxTier, side, soleHire,
                seatOf: (t: string) => number,
                kioskHeld = false): void => {
     if (kioskHeld) return
+    // a family with no tiers has nothing to offer or to explain — only the
+    // OpenRouter registry can be empty (no favorites picked yet), and an
+    // empty row must not count as "a harness exists" for the no-harness
+    // fallback below
+    if (!tiers.length) return
     const offer = familyOffer(hire)
     if (offer === 'hide') return
     fams.push({
@@ -593,11 +602,16 @@ function SpawnChips({ onSpawn, free, seats, maxTier, side, soleHire,
       (t) => seats[t] ?? TIER_SEAT[t] ?? 0)
   fam('codex', CODEX_TIERS, CODEX_TIER_LETTER, 'Codex', codexHire,
       (t) => seats[t] ?? CODEX_TIER_SEAT[t] ?? 0, !!maxTier)
-  fam('antigravity', ANTIGRAVITY_TIERS, ANTIGRAVITY_TIER_LETTER, 'Antigravity',
-      antigravityHire,
+  fam('antigravity', ANTIGRAVITY_TIERS, ANTIGRAVITY_TIER_LETTER, 'Antigravity', antigravityHire,
       (t) => seats[t] ?? ANTIGRAVITY_TIER_SEAT[t] ?? 0, !!maxTier)
+  // the OpenRouter family (2026-09-02): its tiers are the user's favorites,
+  // read from the shared registry the providers payload fills; the letters
+  // were written into TIER_LETTER by the same call. Kiosk-held like the
+  // other non-Claude lanes until its sandboxing is settled.
+  fam('openrouter', openrouterTierIds(), TIER_LETTER, 'OpenRouter',
+      openrouterHire, (t) => seats[t] ?? anyTierSeat(t), !!maxTier)
   fams.sort((a, b) => b.tiers.length - a.tiers.length)   // inward-first
-  const providersOff = [claudeHire, codexHire, antigravityHire]
+  const providersOff = [claudeHire, codexHire, antigravityHire, openrouterHire]
     .some((h) => h?.userEnabled === false)
   // D-199, the state a brand-new user on a fresh machine hits FIRST: no
   // provider is installed, so every family hid and the strip would render
@@ -914,7 +928,8 @@ export function DraftNode({ pos, draft, map, seats, maxTop, defaultTop, kioskRem
   // chrome: otherwise the dashed "uninitialized" Codex card briefly wears
   // Claude terracotta and flips to teal only after creation.
   const providerClass = CODEX_TIERS.includes(draft.tier) ? ' prov-openai'
-    : ANTIGRAVITY_TIERS.includes(draft.tier) ? ' prov-google' : ''
+    : ANTIGRAVITY_TIERS.includes(draft.tier) ? ' prov-google'
+      : isOpenRouterTier(draft.tier) ? ' prov-openrouter' : ''
   return (
     <div className={'sq draft' + providerClass} style={{
       transform: `translate(${pos.x}px, ${pos.y}px)`, width: NODE_W, height: NODE_H,
@@ -1015,6 +1030,7 @@ interface NodeSquareProps {
   codexHire?: HireState | null
   antigravityHire?: HireState | null
   claudeHire?: HireState | null
+  openrouterHire?: HireState | null
   /** D-199: route out of the no-harness state (opens the accounts panel). */
   onNoHarness?: () => void
   map: Map<string, CanvasNode>
@@ -1060,7 +1076,7 @@ interface NodeSquareProps {
   oneShotDogs?: number
 }
 
-export function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, codexHire, antigravityHire, claudeHire, onNoHarness, map, op, slug,
+export function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, codexHire, antigravityHire, claudeHire, openrouterHire, onNoHarness, map, op, slug,
   toast, pxc, zoom, onSpawn, onSpawnSide, onSpawnTop, onConfig, onInbox, onLineage, onOpenDoc,
   onRecenter, onJump, pub, kioskRemaining, cascadeAlloc, maxTop, pile, compactAt, maxTier,
   onMailLink, onDragStart, onDragMove, onDragEnd, onDragCancel,
@@ -1103,6 +1119,7 @@ export function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, c
   // family so it needs no new payload field.
   if (node.tier && CODEX_TIERS.includes(node.tier)) cls.push('prov-openai')
   if (node.tier && ANTIGRAVITY_TIERS.includes(node.tier)) cls.push('prov-google')
+  if (node.tier && isOpenRouterTier(node.tier)) cls.push('prov-openrouter')
   if (live) cls.push(node.proc_warm ? 'proc-warm' : 'proc-cold')
   if (node.busy) cls.push('busy')
   // api_fallback (user feature 2026-08-19): a turn RUNNING on the org's own
@@ -1342,6 +1359,7 @@ export function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, c
         <SpawnChips onSpawn={onSpawn} free={kioskRemaining ?? Infinity} seats={seats}
           maxTier={maxTier} codexHire={codexHire} antigravityHire={antigravityHire}
           claudeHire={claudeHire} onNoHarness={onNoHarness}
+          openrouterHire={openrouterHire}
           zoom={focused ? undefined : zoom} expanded={expandedHireEdge === 'b'}
           onToggleExpanded={() => toggleCompactHire('b')} />}
       {/* FR-03: presented documents pop out the card's side as square icon
@@ -1369,12 +1387,14 @@ export function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, c
           <SpawnChips side="left" onSpawn={(t) => onSpawnSide(t, 'left')}
             free={kioskRemaining ?? Infinity} seats={seats} maxTier={maxTier}
             codexHire={codexHire} antigravityHire={antigravityHire}
+            openrouterHire={openrouterHire}
             claudeHire={claudeHire} onNoHarness={onNoHarness}
             zoom={focused ? undefined : zoom} expanded={expandedHireEdge === 'l'}
             onToggleExpanded={() => toggleCompactHire('l')} />
           <SpawnChips side="right" onSpawn={(t) => onSpawnSide(t, 'right')}
             free={kioskRemaining ?? Infinity} seats={seats} maxTier={maxTier}
             codexHire={codexHire} antigravityHire={antigravityHire}
+            openrouterHire={openrouterHire}
             claudeHire={claudeHire} onNoHarness={onNoHarness}
             zoom={focused ? undefined : zoom} expanded={expandedHireEdge === 'r'}
             onToggleExpanded={() => toggleCompactHire('r')} />
@@ -1388,6 +1408,7 @@ export function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, c
         <SpawnChips side="top" onSpawn={(t) => onSpawnTop(t)}
           free={kioskRemaining ?? Infinity} seats={seats} maxTier={maxTier}
           codexHire={codexHire} antigravityHire={antigravityHire}
+          openrouterHire={openrouterHire}
           claudeHire={claudeHire} onNoHarness={onNoHarness}
           zoom={focused ? undefined : zoom} expanded={expandedHireEdge === 't'}
           onToggleExpanded={() => toggleCompactHire('t')} />

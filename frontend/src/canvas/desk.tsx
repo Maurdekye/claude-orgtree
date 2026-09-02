@@ -25,7 +25,7 @@ import {
   HearingIcon, LayersIcon, LockIcon, MailIcon, PlayIcon, PsychologyIcon,
   SettingsIcon, SparkIcon, StopIcon, WarnIcon,
 } from '../icons'
-import { ago, ALL_PRESENT, ALL_TIERS, CODEX_TIER_SEAT, CODEX_TIERS, CopyIcon, EXTERN, freezeKind, FREEZE_LABEL, ANTIGRAVITY_TIER_SEAT, ANTIGRAVITY_TIERS, md, providerOf, TIER_LETTER, TIER_SEAT, tierShown, USER, useEsc, usePolled } from './shared'
+import { ago, ALL_PRESENT, ALL_TIERS, anyTierSeat, CODEX_TIERS, CopyIcon, EXTERN, freezeKind, FREEZE_LABEL, ANTIGRAVITY_TIERS, isOpenRouterTier, md, openrouterTierIds, PROVIDER_LABEL, providerOf, TIER_LETTER, tierShown, USER, useEsc, usePolled } from './shared'
 import type { ProviderPresence } from './shared'
 import {
   addPending, CHAT_WINDOW, dropPending, loadOlder as storeLoadOlder, markBusy,
@@ -834,7 +834,8 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
   const convo = useConvo(slug, node.id)
   const providerClass = node.tier && CODEX_TIERS.includes(node.tier)
     ? ' prov-openai' : node.tier && ANTIGRAVITY_TIERS.includes(node.tier)
-      ? ' prov-google' : ''
+      ? ' prov-google' : node.tier && isOpenRouterTier(node.tier)
+        ? ' prov-openrouter' : ''
   const processClass = node.state === 'live'
     ? (node.proc_warm ? ' proc-warm' : ' proc-cold') : ''
   const { chat, live_feed, draft, thinking, thinkSecs, pending } = {
@@ -2011,7 +2012,7 @@ interface LineagePanelProps {
 }
 
 export function LineagePanel({ node, op, slug, presence = ALL_PRESENT,
-  userDisabled = { claude: false, openai: false, google: false },
+  userDisabled = { claude: false, openai: false, google: false, openrouter: false },
   close }: LineagePanelProps) {
   // spitshined (user request): generation cards in the app's current visual
   // language — tier token, per-generation consult-tier picker (№16: a bearer
@@ -2042,8 +2043,7 @@ export function LineagePanel({ node, op, slug, presence = ALL_PRESENT,
   // D-197: seats for EVERY provider's tiers. This was `TIER_SEAT` alone —
   // the claude-only table — so a codex or antigravity bearer rendered "as sol ·
   // seat undefined" and "retire · frees undefined" in its own lineage panel.
-  const SEAT = (t: string) =>
-    TIER_SEAT[t] ?? CODEX_TIER_SEAT[t] ?? ANTIGRAVITY_TIER_SEAT[t] ?? 0
+  const SEAT = (t: string) => anyTierSeat(t)
   // D-197: which tiers a generation may be rehired at. A bearer is rehired to
   // be CONSULTED, and a consult resumes the transcript it holds — but a
   // transcript cannot cross providers, so the offer is every tier of the
@@ -2068,14 +2068,14 @@ export function LineagePanel({ node, op, slug, presence = ALL_PRESENT,
   // INSTALLED are listed, disabled, with their reason exactly as before;
   // families that are ABSENT are not listed at all. The bearer's own family
   // is always kept — it is the tier it is rehired AS.
+  // an OpenRouter favorite runs on the Claude Code harness, but its session
+  // is a different NAMESPACE (another endpoint, another key — D-196 /
+  // INV-003), so for resume purposes it is its own family
   const famOf = (t: string) => CODEX_TIERS.includes(t) ? 'codex'
-    : ANTIGRAVITY_TIERS.includes(t) ? 'antigravity' : 'claude'
-  const providerKey = (t: string): keyof ProviderPresence =>
-    CODEX_TIERS.includes(t) ? 'openai'
-      : ANTIGRAVITY_TIERS.includes(t) ? 'google' : 'claude'
-  const providerName = (t: string): string =>
-    CODEX_TIERS.includes(t) ? 'Codex'
-      : ANTIGRAVITY_TIERS.includes(t) ? 'Antigravity' : 'Claude'
+    : ANTIGRAVITY_TIERS.includes(t) ? 'antigravity'
+      : isOpenRouterTier(t) ? 'openrouter' : 'claude'
+  const providerKey = (t: string): keyof ProviderPresence => providerOf(t)
+  const providerName = (t: string): string => PROVIDER_LABEL[providerOf(t)] ?? 'Claude'
   const rehireWhy = (t: string, bearerTier: string): string | null =>
     famOf(t) === famOf(bearerTier) ? null
       : `its transcript is a ${famOf(bearerTier)} session — ${famOf(t)} `
@@ -2116,7 +2116,7 @@ export function LineagePanel({ node, op, slug, presence = ALL_PRESENT,
                   <select value={tiers[b.id] ?? ''} onChange={(e) =>
                     setTiers((t) => ({ ...t, [b.id]: e.target.value }))}>
                     <option value="">as {b.tier} · seat {SEAT(b.tier)}</option>
-                    {ALL_TIERS
+                    {[...ALL_TIERS, ...openrouterTierIds()]
                       .filter((t) => t !== b.tier
                         && tierShown(presence, t, b.tier))
                       .map((t) => {
