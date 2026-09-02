@@ -1709,6 +1709,7 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
       <div className="canvas-bg" style={{
         backgroundPosition: `${view.x * PARALLAX_BG}px ${view.y * PARALLAX_BG}px`,
         backgroundSize: `${28 * view.z}px ${28 * view.z}px`,
+        '--dot-r': `${Math.max(1, 1.1 * view.z).toFixed(2)}px`,
       }} />
       <div className="space" style={{
         width: bounds.w, height: bounds.h,

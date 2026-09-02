@@ -589,6 +589,8 @@ declare module 'react' {
     '--invz'?: string
     /** the UNCLAMPED inverse zoom — the hire chips' counter-scale */
     '--invzf'?: string
+    /** dot grid radius scaled against zoom */
+    '--dot-r'?: string
   }
 }
 // dev/demo hook (see the launchSpark effect)

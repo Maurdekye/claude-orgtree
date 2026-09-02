@@ -188,7 +188,7 @@ main {
    moving object. */
 .canvas-bg {
   position: absolute; inset: 0; pointer-events: none;
-  background-image: radial-gradient(circle, #2a2a2a 1px, transparent 1px);
+  background-image: radial-gradient(circle, #343434 var(--dot-r, 1.1px), transparent calc(var(--dot-r, 1.1px) + 0.5px));
   background-size: 28px 28px;
 }
 .space {
