@@ -224,9 +224,12 @@ def main():
     providers.antigravity_status(force=True)
     providers.codex_status(force=True)
     pay = providers.providers_payload({"installed": True, "connected": True})
-    check("three providers, claude first, antigravity (id google) last",
+    # four since D-232: openrouter, the API-backed lane, sits LAST — its own
+    # behaviour is test_openrouter.py's; antigravity holds third place
+    check("four providers, claude first, antigravity (id google) third, "
+          "openrouter last",
           lambda: eq([p["id"] for p in pay["providers"]],
-                     ["claude", "openai", "google"], "order"))
+                     ["claude", "openai", "google", "openrouter"], "order"))
     agy = next(p for p in pay["providers"] if p["id"] == "google")
     check("the label is the CLI's product name, 'Antigravity', cli "
           "'Antigravity CLI'",
