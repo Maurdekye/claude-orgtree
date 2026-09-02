@@ -1305,7 +1305,15 @@ def _mcp_tool_count_end(slug: str, nid: str, owner: Any,
     function is entered: `_on_proc_exit` has removed the generation from
     `_pool` and `_serving`, so it can never be claimed for another turn, and
     nothing will publish into its inventory again. That is `withdrawn` —
-    terminal for readiness with NO kill, NO timer and NO probe, which is
+
+    …and `withdrawn` means withdrawn from THE POOL, not from existence. It
+    looks like it should contradict `b236c72` re-adopting the same generation
+    a moment later; it does not, and this is the sentence that saves the next
+    reader the trace. No FURTHER turn can claim it, while the turn already in
+    flight on it carries on — which is precisely the spurious-EOF case, where
+    the process is alive, still working, and about to speak again.
+
+    Terminal for readiness with NO kill, NO timer and NO probe, which is
     exactly why it can be published on a lane where re-observation is
     impossible (every caller of `_mcp_tool_count_names` reads the stdout that
     just closed, so no probe can ever be scheduled there).
@@ -11800,16 +11808,30 @@ def _after_turn(slug: str, nid: str, org: Org, res: dict[str, Any],
         kcfg = kiosk_cfg(org)
     if mcp_success:
         with _state_lock:
+            # The STATE twin of the node write above, and it used to POP on an
+            # unobserved turn while the node copy sixty lines up deliberately
+            # KEPT — one rule, applied two ways, in one function. Found by
+            # Orgtree's reviewers on `b20b1f4`.
+            #
+            # This is the reader the UI actually sees first: the emitted
+            # payload below feeds `App.tsx:76`, which writes `null` for
+            # anything that is not a number. So an unobserved die-at-boundary
+            # turn blanked the "had N last turn" chip for the whole idle
+            # window, until the next `_mcp_tool_count_begin` re-seeded state
+            # from the node -- a count we HAD measured, erased because a later
+            # turn failed to measure it again. `None` is unobserved, not zero.
             if mcp_snapshot is not None:
                 st["last_turn_mcp_tool_count"] = mcp_snapshot
-            else:
-                st.pop("last_turn_mcp_tool_count", None)
             payload = {
                 "count": st.get("mcp_tool_count"),
                 "provider": st.get("mcp_tool_provider") or "unknown",
                 "source": st.get("mcp_tool_source"),
                 "reason": st.get("mcp_tool_reason"),
-                "last_turn_count": mcp_snapshot,
+                # …and the payload reads the RETAINED value, like every other
+                # emitter in this file (`:1000`, `:1037`, `:1087`, `:1384`).
+                # Sending the raw snapshot would blank the chip anyway, so
+                # keeping the state without this line fixes nothing.
+                "last_turn_count": st.get("last_turn_mcp_tool_count"),
             }
         _mcp_tool_emit(slug, nid, payload)
     if cache_event is not None:

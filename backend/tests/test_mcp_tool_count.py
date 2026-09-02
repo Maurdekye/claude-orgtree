@@ -379,6 +379,65 @@ class McpToolCountTests(unittest.TestCase):
         saved = store.load_org(self.slug).node(self.nid)
         self.assertEqual(saved.get("last_turn_mcp_tools"), [])
 
+    def test_an_unobserved_turn_does_not_blank_the_had_n_last_turn_chip(
+            self) -> None:
+        """The STATE twin of the rule above, and the payload it feeds.
+
+        `_after_turn` writes `last_turn_mcp_tool_count` twice, sixty lines
+        apart: once onto the org NODE and once into process STATE. The node
+        write kept an unobserved count, with a comment saying why; the state
+        write popped it, doing exactly what that comment forbids. One rule,
+        two implementations, one function. Found by Orgtree's reviewers.
+
+        State is the copy the reader sees first. The emitted payload feeds
+        `App.tsx:76`, which writes `null` for anything that is not a number,
+        so an unobserved die-at-boundary turn blanked the "had N last turn,
+        now loading" chip for the whole idle window — until the next
+        `_mcp_tool_count_begin` happened to re-seed state from the node. A
+        count we HAD measured, erased because a LATER turn failed to measure
+        it again.
+
+        Both halves are asserted because either alone is insufficient: the
+        payload used to send the raw snapshot rather than the retained value,
+        so keeping state without fixing the emit would still blank the chip,
+        and fixing the emit without keeping state would send a value that had
+        just been popped.
+        """
+        owner = object()
+        org = store.load_org(self.slug)
+        S._mcp_tool_count_begin(
+            self.slug, self.nid, owner, "claude", "system/init.tools", "init")
+        st = S.state(self.slug, self.nid)
+        st["interrupted"] = False
+        S._after_turn(self.slug, self.nid, org, {
+            "_mcp_tool_count": 2, "status": "completed",
+            "_mcp_tool_names": ["mcp__orgtree__one", "mcp__orgtree__two"],
+            "_mcp_tool_fingerprint": "fp-1",
+            "total_cost_usd": 0, "usage": {}, "duration_ms": 1,
+        }, st, 10, on_key=False)
+        self.assertEqual(
+            st.get("last_turn_mcp_tool_count"), 2,
+            "precondition: an observed turn seeds the state copy")
+
+        self.events.clear()
+        org = store.load_org(self.slug)
+        S._after_turn(self.slug, self.nid, org, {
+            "_mcp_tool_count": None, "status": "completed",
+            "_mcp_tool_names": None, "_mcp_tool_fingerprint": "fp-1",
+            "total_cost_usd": 0, "usage": {}, "duration_ms": 1,
+        }, st, 10, on_key=False)
+
+        self.assertEqual(
+            st.get("last_turn_mcp_tool_count"), 2,
+            "an unobserved turn erased the state copy of a measured count")
+        counted = [e for e in self.events
+                   if e.get("kind") == "mcp_tool_count"]
+        self.assertTrue(counted, "the boundary emitted no inventory event")
+        self.assertEqual(
+            counted[-1].get("last_turn_count"), 2,
+            "the emit sent the unobserved snapshot instead of the retained "
+            "count, so the UI blanks the chip whatever state holds")
+
     def test_durable_surface_does_not_depend_on_teardown_running(self) -> None:
         """The boundary's copy is written at PUBLISH time, not at reap time.
 
@@ -642,6 +701,52 @@ class McpToolCountTests(unittest.TestCase):
         self.assertFalse(S._mcp_tool_count_names(
             self.slug, self.nid, opaque, ["mcp__orgtree__one"], "claude",
             "system/init.tools"))
+
+    def test_a_foreign_live_process_cannot_take_a_reaped_generations_seat(
+            self) -> None:
+        """The `final.get("owner") is owner` clause, which nothing pinned.
+
+        The recovery in `_mcp_tool_count_names` has four conjuncts and three
+        of them were already covered: no current owner (the successor test
+        below), the owner demonstrably running (the dead-owner test above),
+        and the owner-identity guard itself. The fourth — that this process is
+        the one whose surface is in the stash — was free to be deleted without
+        any suite noticing. Reported by Orgtree's `readiness-postreview` as R3
+        and confirmed here by mutation.
+
+        Without it, ANY live process that publishes into a node whose
+        generation was just reaped is adopted as that generation, inherits its
+        seat and its readiness, and its tools are recorded as the reaped
+        generation's surface. That is the staleness `7305e9a` removed, in a
+        rarer and harder-to-see form: a live stranger rather than a corpse.
+        """
+        reaped, stranger = self._Proc(8080), self._Proc(9090)
+        S._mcp_tool_count_begin(
+            self.slug, self.nid, reaped, "claude", "system/init.tools", "s")
+        S._mcp_tool_count_names(
+            self.slug, self.nid, reaped, ["mcp__orgtree__one"], "claude",
+            "system/init.tools")
+        S._mcp_tool_count_end(self.slug, self.nid, reaped, "pump saw EOF")
+        st = S.state(self.slug, self.nid)
+        self.assertIsNone(st.get("mcp_tool_owner"),
+                          "precondition: the seat is empty")
+
+        # the stranger satisfies every OTHER clause: no current owner, and it
+        # is demonstrably running. Only the stash-identity check refuses it.
+        self.assertFalse(
+            S._mcp_tool_count_names(
+                self.slug, self.nid, stranger, ["mcp__stranger__tool"],
+                "claude", "system/init.tools"),
+            "a live process that never owned this generation was adopted "
+            "into its seat")
+        self.assertIsNone(
+            st.get("mcp_tool_owner"),
+            "the stranger took the reaped generation's seat")
+        self.assertEqual(
+            S._mcp_tool_surface_for_owner(self.slug, self.nid, reaped),
+            (1, ["mcp__orgtree__one"]),
+            "the stranger's tools overwrote the reaped generation's surface, "
+            "which is what the turn boundary records as durable")
 
     def test_recovery_never_displaces_an_adopted_successor(self) -> None:
         """A live predecessor must not steal the seat from its replacement."""
