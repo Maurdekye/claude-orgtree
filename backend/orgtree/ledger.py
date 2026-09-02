@@ -23,6 +23,7 @@ revoke is explicit; re-parenting intersects the moved subtree's dirs with the ne
 
 from __future__ import annotations
 
+import copy
 import json
 import math
 import os
@@ -3506,6 +3507,632 @@ class Org:
                            and self.is_ancestor(tgt, cur)):
             return self.promote(actor, nid, tgt)
         return self.demote(actor, nid, tgt)
+
+    # ------------------------------------------- seat exchange & move batches
+    def subjugate(self, actor: str, nid: str, target: str) -> dict[str, Any]:
+        """D-224 ①: the SELF-SUBJUGATION verb — `nid` exchanges seats with a
+        live descendant `target` (swap_seats' semantics, plus the contract
+        that the pair is commander-and-subordinate). The flagship workflow:
+        hire a replacement, subjugate to it, hand over, then self-retire
+        beneath it under the normal leaf-only rule (№26)."""
+        self._require_authority(actor, nid, allow_self=True)
+        if target == nid:
+            raise LedgerError("subjugation needs a second party — name one "
+                              "of the seat's live subordinates as the target")
+        self.node(target)
+        if target not in self.descendants(nid):
+            raise LedgerError(
+                f'"{target}" is not a live descendant of "{nid}" — '
+                f"subjugation reaches only into that seat's own subtree; for "
+                f"two unrelated agents use the pairwise swap (D-224)")
+        out = self.swap_seats(actor, nid, target, _op="subjugate")
+        if actor == nid:
+            new_sup = self.node(nid)["parent"]
+            disp = f'"{new_sup}"' if new_sup else "the top level"
+            out["next_step"] = (
+                f"You now report to {disp}. For a hand-over retirement: "
+                f"transfer any loose ends, then orgtree_retire yourself — "
+                f"self-retire requires you to be a leaf (№26).")
+        return out
+
+    def swap_seats(self, actor: str, a: str, b: str,
+                   _op: str = "swap_seats") -> dict[str, Any]:
+        """D-224 ②: two agents EXCHANGE SEATS — a pure relabeling of two
+        positions in the tree (user spec 2026-09-02: the swap tool carries
+        exactly this one semantics; "swap positions, each keeping its own
+        team" is instead a batched pair of moves, see move_batch).
+
+        Because the shape is untouched, no cycle is constructible and the
+        depth/children caps hold by construction — for ANY pair, nested or
+        disjoint. What follows from the relabeling:
+
+        • the SEAT keeps what the chain clamps and funds — its reports
+          (archived dependents included), its grant, its team charter, its
+          display slot, and the four chain-clamped scope sets (dirs, tools,
+          visibility, permission mode — №30 + D-021 + D-102). Every
+          containment edge keeps its pre-swap ⊆ relation, so no bystander
+          is ever swept;
+        • the AGENT keeps what identifies it — charter, session, mailbox,
+          watchdogs, external handles, lineage stack (which follows it,
+          §8.5), and the personal scope keys that clamp against nothing
+          (effort, auto_cheap_compact, model_version);
+        • grants ride the seats, so a same-tier exchange is budget-neutral
+          at EVERY node, and a cross-tier one surfaces exactly the
+          seat-cost difference at the two boundary payers — pre-checked
+          below, so a refusal mutates nothing (§2b atomicity). The grant
+          VALUE seated at top level never changes, so D-014 cannot trip on
+          this route;
+        • a nested, non-adjacent pair keeps a standing audience (grantee =
+          the descended, grantor = the risen), §7.3-anchored on the grantor
+          so it lives exactly while the risen still commands the other.
+        """
+        if a == b:
+            raise LedgerError("a seat swap needs two different agents")
+        if self.is_ancestor(b, a):
+            a, b = b, a                  # nested pairs: the commander first
+        n_a, n_b = self.node(a), self.node(b)
+        nested = self.is_ancestor(a, b)
+        self._require_authority(actor, a, allow_self=True)
+        self._require_authority(actor, b, allow_self=True)
+        self._require_live(a)
+        self._require_live(b)
+        p_a, p_b = n_a["parent"], n_b["parent"]
+        direct = p_b == a
+        if (p_a is None or p_b is None) and actor != USER:
+            # promote()'s §7.4 gate on THIS route too (the D-014 lesson: one
+            # end state, one gate): the top level is the privileged class —
+            # unbidden user mail, org voice, extern recipients — and only
+            # the user decides who occupies a top seat.
+            raise LedgerError(
+                "only the user reseats the top level (§7.4) — ask the user "
+                "to perform this swap")
+        for who_ in (a, b):
+            succ = self.nodes[who_].get("successor")
+            if succ and succ in self.nodes:
+                raise LedgerError(
+                    f'{who_} is a lineage bearer of "{succ}" — the stack '
+                    f'shares its successor\'s slot (§8.5) and holds no seat '
+                    f'of its own to swap')
+            live_b = [k for k in self.lineage_stack(who_)
+                      if self.nodes[k]["state"] != "archived"]
+            if live_b:
+                raise LedgerError(
+                    f"{who_} has live lineage bearer(s) {live_b} under "
+                    f"consultation — retire them first; a stack follows its "
+                    f"owner through the swap (§8.5)")
+
+        # ⚠ THE SLOT EACH AGENT LANDS IN MUST NOT BE ITS OWN STACK, and must
+        # be LIVE (redteam 2026-09-02, reproduced). _move carries the same
+        # guard and this method was written without it on the reasoning that
+        # a relabeling cannot build a cycle. That is true of the ORG axis and
+        # false of §8.5's second one: an archived bearer shares its owner's
+        # parent slot, so it travels with the owner — and if the other agent
+        # happens to sit UNDER that bearer, the owner is sent into the slot
+        # its own stack is being moved to. Measured: `a@0.parent == "a@0"`, a
+        # real self-cycle, plus free(a@0) = -25, from one legal-looking
+        # orgtree_swap. The liveness half is the same shape one step out: a
+        # destination that is archived would strand a live agent under it.
+        for mover, dest in ((a, b if direct else p_b), (b, p_a)):
+            if dest is None:
+                continue
+            if dest in self._stack_region(mover):
+                raise LedgerError(
+                    f'"{mover}" would land on the branch of its own lineage '
+                    f'bearer (at "{dest}"), and that branch travels with it '
+                    f"(§8.5) — the result is a cycle, not a swap. Retire or "
+                    f"re-parent the stack first")
+            if self.nodes[dest]["state"] == "archived":
+                raise LedgerError(
+                    f'"{mover}" would report to "{dest}", which is archived '
+                    f"— a live agent may not hang under an archived one")
+
+        s_a, s_b = self.seat_cost(a), self.seat_cost(b)
+        g_a, g_b = n_a["grant"], n_b["grant"]
+        warnings: list[str] = []
+        free_a0 = self.free(a)
+        free_pa0 = 0.0 if p_a is None else self.free(p_a)
+        free_pb0 = 0.0 if p_b is None else self.free(p_b)
+        # ⚠ SIBLINGS PAY NOTHING, and pricing them as if they did broke the
+        # verb's whole promise on its most obvious use (redteam 2026-09-02).
+        # When both agents hang off the SAME superior, that superior loses and
+        # gains both seats at once: its committed goes
+        # (s_a+g_a)+(s_b+g_b) → (s_a+g_b)+(s_b+g_a), the same total. The two
+        # checks below each price one leg as though the other never happened,
+        # so a fully-occupied parent (free 0) saw a swap of its own haiku and
+        # opus reports refused for a cost of 4 that does not exist — against
+        # §4.5's "a fully occupied tree can still reorganize".
+        siblings = p_a is not None and p_a == p_b
+        if s_a != s_b and not siblings:
+            # cross-tier: the seats trade their occupants' tiers, so each
+            # boundary payer sees exactly the seat-cost difference — the
+            # grants trade WITH the seats and cancel out (D-224).
+            if p_a is not None and free_pa0 + s_a - s_b < 0:
+                raise LedgerError(
+                    f'seating "{b}" ({n_b["model"]}, seat {s_b}) where '
+                    f'"{a}" ({n_a["model"]}, seat {s_a}) sat costs '
+                    f"{s_b - s_a} more than {p_a}'s free ({free_pa0:g}) — "
+                    f"reallocate first (§4.6)")
+            if direct and free_a0 + s_b - s_a < 0:
+                raise LedgerError(
+                    f'"{b}" would fund "{a}"\'s seat ({s_a}) out of the '
+                    f"exchanged grant with free {free_a0 + s_b - s_a:g} — "
+                    f"the seat-cost difference does not fit; reallocate "
+                    f"first (§4.6)")
+            if not direct and p_b is not None and free_pb0 + s_b - s_a < 0:
+                raise LedgerError(
+                    f'seating "{a}" ({n_a["model"]}, seat {s_a}) where '
+                    f'"{b}" ({n_b["model"]}, seat {s_b}) sat costs '
+                    f"{s_a - s_b} more than {p_b}'s free ({free_pb0:g}) — "
+                    f"reallocate first (§4.6)")
+
+        prior_peers_a = self._peers_of(p_a, a)
+        prior_peers_b = self._peers_of(p_b, b)
+        kids_a = [k for k in self.children(a) if k != b]
+        kids_b = [k for k in self.children(b) if k != a]
+
+        # ---- mutation: a pure relabeling plus field trades; nothing below
+        # raises, so a refusal above has left the tree byte-identical (§2b)
+        for k, v in self.nodes.items():
+            if k == a or k == b:
+                continue
+            if v["parent"] == a:
+                v["parent"] = b
+            elif v["parent"] == b:
+                v["parent"] = a
+        n_b["parent"] = p_a
+        n_a["parent"] = b if direct else p_b
+        for k in self.lineage_stack(a):        # §8.5: a stack shares its
+            self.nodes[k]["parent"] = n_a["parent"]     # successor's slot
+        for k in self.lineage_stack(b):
+            self.nodes[k]["parent"] = n_b["parent"]
+        n_a["grant"], n_b["grant"] = g_b, g_a
+        n_a["ui_order"], n_b["ui_order"] = n_b["ui_order"], n_a["ui_order"]
+        sa, sb = n_a["scope"], n_b["scope"]
+        # each side gains whatever the OTHER seat held — said out loud for the
+        # same reason insert_parent says it (see _scope_raises)
+        raised = {k: v for k, v in ((a, self._scope_raises(sa, sb)),
+                                    (b, self._scope_raises(sb, sa))) if v}
+        sa["add_dirs"], sb["add_dirs"] = sb["add_dirs"], sa["add_dirs"]
+        sa["tools"], sb["tools"] = sb["tools"], sa["tools"]
+        sa["org_visibility"], sb["org_visibility"] = (
+            sb.get("org_visibility", "full"), sa.get("org_visibility", "full"))
+        sa["permission_mode"], sb["permission_mode"] = (
+            sb.get("permission_mode", "acceptEdits"),
+            sa.get("permission_mode", "acceptEdits"))
+        tc_a = n_a.pop("team_charter", None)
+        tc_b = n_b.pop("team_charter", None)
+        if tc_b is not None:
+            n_a["team_charter"] = tc_b
+        if tc_a is not None:
+            n_b["team_charter"] = tc_a
+
+        retained = False
+        if nested and not direct and not self._has_audience(a, b):
+            # coordinator spec: a swapped commander-and-subordinate pair must
+            # still be able to talk. The risen (b) reaches the descended (a)
+            # natively — a report at any depth — while a → b needs a standing
+            # grant. Anchored on the GRANTOR (§7.3), so it lives exactly as
+            # long as b still commands a.
+            entry: AudienceGrant = {
+                "grantee": a, "grantor": b, "granted_at": now(),
+                "reason": f'retained across the seat swap with "{b}"'}
+            self.d["audiences"].append(entry)
+            retained = True
+        for who_, gains in raised.items():
+            warnings.append(f'"{who_}" took the other seat\'s scope, which '
+                            f"GRANTS IT " + "; ".join(gains)
+                            + " — retool it if that is more than you meant "
+                              "to give.")
+        swept = self._sweep_audiences()
+        warnings += [f"audience revoked (no longer ancestral): {g}→{t}"
+                     for g, t in swept]
+        dropped = self._sweep_dirs(b) + self._sweep_dirs(a)
+        if dropped:
+            # provably nothing to drop for dirs/tools/visibility (every edge
+            # keeps its old ⊆); what CAN die here is a D-101 permission-mode
+            # raise held by either party — relocation re-derives it (D-102),
+            # exactly as a move would.
+            warnings.append(
+                f"capabilities the new chain does not hold were dropped "
+                f"(№30): {dropped}")
+        if s_a != s_b and not siblings:
+            if p_a is not None:
+                warnings += self._stranding_warnings(
+                    p_a, free_pa0, self.free(p_a))
+            if direct:
+                warnings += self._stranding_warnings(b, free_a0, self.free(b))
+            elif p_b is not None:
+                warnings += self._stranding_warnings(
+                    p_b, free_pb0, self.free(p_b))
+
+        who = "the user" if actor == USER else f'"{actor}"'
+        a_disp = f'"{n_a["parent"]}"' if n_a["parent"] else "the top level"
+        b_disp = f'"{p_a}"' if p_a else "the top level"
+        if p_a == p_b:
+            self._notify([p for p in [p_a] if p != actor],
+                         f'{who.capitalize()} swapped the seats of your '
+                         f'reports "{a}" and "{b}" — each now leads the '
+                         f'other\'s former team.')
+            self._notify([p for p in prior_peers_a if p != actor and p != b],
+                         f'Your peers "{a}" and "{b}" swapped seats — each '
+                         f'now leads the other\'s former team.')
+        else:
+            self._notify([p for p in [p_a] if p != actor],
+                         f'{who.capitalize()} seated "{b}" in "{a}"\'s place '
+                         f'— "{b}" now reports to you, leading that seat\'s '
+                         f'team.')
+            self._notify([p for p in prior_peers_a if p != actor],
+                         f'"{a}" and "{b}" swapped seats — "{b}" now holds '
+                         f'"{a}"\'s seat beside you.')
+            if not direct:
+                self._notify([p for p in [p_b] if p != actor],
+                             f'{who.capitalize()} seated "{a}" in "{b}"\'s '
+                             f'place — "{a}" now reports to you.')
+                self._notify([p for p in prior_peers_b if p != actor],
+                             f'"{a}" and "{b}" swapped seats — "{a}" now '
+                             f'holds "{b}"\'s seat beside you.')
+        self._notify([k for k in kids_a if k != actor],
+                     f'Seat change above you: "{b}" took over "{a}"\'s seat. '
+                     f'You now report to "{b}"; your own team, grant and '
+                     f'scope are unchanged.')
+        self._notify([k for k in kids_b if k != actor],
+                     f'Seat change above you: "{a}" took over "{b}"\'s seat. '
+                     f'You now report to "{a}"; your own team, grant and '
+                     f'scope are unchanged.')
+        aud_a = (f' You keep a standing audience with "{b}" — message it '
+                 f'directly.' if retained else "")
+        aud_b = (f' "{a}" keeps a standing audience with you.'
+                 if retained else "")
+        self._notify([p for p in [a] if p != actor],
+                     f'{who.capitalize()} swapped your seat with "{b}": you '
+                     f'now report to {a_disp} and hold that seat\'s team, '
+                     f'grant ({g_b}) and scope; your identity, charter and '
+                     f'mailbox are unchanged.{aud_a}')
+        self._notify([p for p in [b] if p != actor],
+                     f'{who.capitalize()} seated you in "{a}"\'s place: you '
+                     f'now report to {b_disp}, lead its former team, and '
+                     f'hold the seat\'s grant ({g_a}) and scope; your '
+                     f'identity, charter and mailbox are unchanged.{aud_b}')
+        self._log(_op, actor,
+                  {"a": a, "b": b, "nested": nested,
+                   "a_to": n_a["parent"], "b_to": p_a}, warnings)
+        return {"swapped": [a, b], "nested": nested,
+                "now_under": {a: n_a["parent"] or "top level",
+                              b: p_a or "top level"},
+                "audience_retained": retained, "warnings": warnings}
+
+    def move_batch(self, actor: str,
+                   moves: list[tuple[str, str | None]]) -> dict[str, Any]:
+        """D-224 ③: several §4.5 moves as ONE all-or-nothing transaction, in
+        the caller's order (user spec 2026-09-02: "allow moves to be batched
+        atomically"). Each step is a full ordinary move() with its own
+        validations against the then-current tree; a refusal at ANY step
+        restores the tree to before the FIRST (D-160's shape: the caller is
+        never told "moved" while quietly getting less than it asked). The
+        classic use: the two moves of a position swap in which each node
+        keeps its own suborganization — [a → parent(b), b → parent(a)] —
+        which no single move can express and which two separate calls could
+        leave half-done."""
+        mv = [(str(n or ""), (p or None)) for n, p in moves]
+        if not mv:
+            raise LedgerError("an empty batch moves nothing — pass 1..20 "
+                              "moves")
+        if len(mv) > 20:
+            raise LedgerError(f"at most 20 moves per batch (got {len(mv)})")
+        snap = copy.deepcopy(self.d)
+        results: list[dict[str, Any]] = []
+        for i, (n, p) in enumerate(mv):
+            try:
+                results.append(self.move(actor, n, p))
+            except LedgerError as e:
+                self.d = snap    # `nodes` is a property over d — rebound too
+                raise LedgerError(
+                    f"batch refused at step {i + 1}/{len(mv)} "
+                    f"({n} → {p or 'the top level'}): {e} — nothing was "
+                    f"applied; the tree is as it was")
+        warnings = [w for r in results for w in r.get("warnings", [])]
+        self._log("move_batch", actor,
+                  {"moves": [{"node": n, "to": p} for n, p in mv]}, warnings)
+        return {"moved": len(mv), "warnings": warnings}
+
+    def _stack_region(self, nid: str) -> set[str]:
+        """Everything that travels with `nid` when it changes seats: its §8.5
+        lineage stack, and everything hanging off those bearers.
+
+        ⚠ The DESCENDANTS are the half that matters and the half the first
+        cut of this guard missed (redteam 2026-09-02). A bearer is dragged to
+        its owner's new parent slot; its own subtree keeps pointing at the
+        bearer and so is dragged with it — while nothing re-parents that
+        subtree, so a destination anywhere ON that branch closes a loop. The
+        measured shape was two levels down: `q0.parent == "a@0"` and
+        `a@0.parent == "q0"`, with the owner orphaned inside the cycle.
+
+        Deliberately NOT closed over `{nid} ∪ descendants(nid)` the way
+        `_move` is: a seat exchange leaves the org axis' shape alone (the
+        relabel re-points each child to whichever agent now holds its seat),
+        so descending into one's own org descendant is the NESTED CASE, not a
+        cycle. Only §8.5's second axis lacks that protection."""
+        bad: set[str] = set()
+        for s in self.lineage_stack(nid):
+            bad.add(s)
+            bad.update(self.descendants(s, live_only=False))
+        return bad
+
+    @staticmethod
+    def _scope_raises(had: NodeScope, gets: NodeScope) -> list[str]:
+        """D-224: what moving into a seat GRANTS its new occupant, named one
+        capability at a time.
+
+        Scope rides the seat, so an agent that rises into one gains whatever
+        that seat holds — never more than the seat already held, and never
+        more than the actor could hand over with a retool, so this is no
+        escalation. It is, however, a capability the agent was not hired
+        with: a seat deliberately set to `plan` with no tools can come back
+        from an exchange or an insertion holding `bypassPermissions` and the
+        seat's folders (redteam 2026-09-02). Refusing would be wrong — the
+        containment invariant needs the transfer — but arriving in silence
+        is how nobody notices, so every verb that moves a scope says this
+        out loud in its result."""
+        out: list[str] = []
+        gained = ({d["path"] for d in gets["add_dirs"]}
+                  - {d["path"] for d in had["add_dirs"]})
+        if gained:
+            out.append("folders " + ", ".join(sorted(gained)))
+        for k in ("bash", "web", "edit", "subagents"):
+            if gets["tools"].get(k) and not had["tools"].get(k):
+                out.append(f"tool {k}")
+        mcp = set(gets["tools"].get("mcp") or []) - set(had["tools"].get("mcp") or [])
+        if mcp:
+            out.append("mcp " + ", ".join(sorted(mcp)))
+        pg = gets.get("permission_mode", "acceptEdits")
+        ph = had.get("permission_mode", "acceptEdits")
+        if pg in PM_LEVELS and ph in PM_LEVELS \
+                and PM_LEVELS.index(pg) > PM_LEVELS.index(ph):
+            out.append(f"permission mode {ph} → {pg}")
+        vg = gets.get("org_visibility", "full")
+        vh = had.get("org_visibility", "full")
+        if vg in VIS_LEVELS and vh in VIS_LEVELS \
+                and VIS_LEVELS.index(vg) > VIS_LEVELS.index(vh):
+            out.append(f"visibility {vh} → {vg}")
+        return out
+
+    HIRE_TYPES: Final[tuple[str, ...]] = ("subordinate", "superior")
+
+    def check_placement(self, actor: str, target: str, hire_type: str,
+                        rising: str | None = None) -> None:
+        """D-224 ④, the destination contract shared by hire and rehire
+        (user correction 2026-09-02). `target` is the caller itself or any
+        live node in its subtree — never anything outside it; `hire_type`
+        says which side of that target the seat lands on. Validated BEFORE
+        anything is created, so a bad destination costs nothing."""
+        if hire_type not in self.HIRE_TYPES:
+            raise LedgerError(
+                f"hire_type must be one of {list(self.HIRE_TYPES)} "
+                f"(got {hire_type!r})")
+        self.node(target)
+        self._require_live(target)
+        if actor_kind(actor) not in ("user", "system"):
+            if target != actor and not self.is_ancestor(actor, target):
+                raise LedgerError(
+                    f'"{target}" is outside your subtree — a destination is '
+                    f"yourself or one of your own descendants (§7.1)")
+        if hire_type != "superior":
+            return
+        if self.node(target)["parent"] is None and actor != USER:
+            # §7.4, promote()'s gate: inserting above a TOP-LEVEL target
+            # seats the new agent at top level, and only the user does that.
+            raise LedgerError(
+                f'"{target}" is a top-level agent — inserting a superior '
+                f"above it would seat that agent at top level, which only "
+                f"the user may do (§7.4). Ask the user with orgtree_ask")
+        succ = self.node(target).get("successor")
+        if succ and succ in self.nodes:
+            raise LedgerError(
+                f'{target} is a lineage bearer of "{succ}" — it shares its '
+                f"successor's slot (§8.5) and has no seat to insert above")
+        live_b = [k for k in self.lineage_stack(target)
+                  if self.nodes[k]["state"] != "archived"]
+        if live_b:
+            # checked HERE, not just in insert_parent: this is what a hire
+            # consults before it creates anything, and a stack that cannot
+            # follow its owner must refuse the whole call at the door
+            raise LedgerError(
+                f"{target} has live lineage bearer(s) {live_b} under "
+                f"consultation — retire them first (a stack follows its "
+                f"owner through the insertion, §8.5)")
+        cap_d = self.d.get("max_depth", MAX_DEPTH)
+        # ⚠ `rising` is the report that will BECOME the superior, and its own
+        # branch therefore moves UP one, not down (redteam 2026-09-02: pricing
+        # it as descending refused an insertion above a leaf a whole level
+        # early). Only what stays beneath the target descends. From the hire
+        # path there is no rising node yet — the seat does not exist — and
+        # every existing descendant really does drop one.
+        risen: set[str] = set()
+        if rising:
+            risen = {rising, *self.descendants(rising, live_only=False)}
+        sub = [k for k in self.descendants(target, live_only=False)
+               if k not in risen]
+        deepest = max((self.depth(k) for k in sub), default=self.depth(target))
+        if deepest + 1 >= cap_d:
+            raise LedgerError(
+                f"max org depth {cap_d} reached — inserting a superior above "
+                f'"{target}" pushes its whole branch one level down, seating '
+                f"its deepest report at {deepest + 1}")
+
+    def insert_parent(self, actor: str, nid: str, target: str) -> dict[str, Any]:
+        """D-224 ④: ATOMIC PARENT INSERTION. `nid` — a live direct report of
+        `target` — takes `target`'s own position under `target`'s former
+        superior, and `target`, with its ENTIRE existing subtree, becomes
+        `nid`'s report. Nobody else moves.
+
+        The accounting is the whole point, so it is stated exactly. Write
+        s(x) for seat cost and g(x) for grant, and let P be target's former
+        superior. The mutation is
+
+            g(target) -= s(nid) + g(nid)        # target hands back nid's stake
+            g(nid)     = s(target) + g(target)  # …and nid now funds target
+                         + g(nid)               #    while keeping its own
+
+        under which P commits s(nid)+g(nid) = s(target)+g(target) — exactly
+        what it committed before — and free() is UNCHANGED at every node in
+        the org, target and nid included. So the insertion itself is
+        budget-neutral and cannot fail on credits: the whole price of the
+        operation was the ordinary hire that created `nid` as target's
+        report, paid out of target's own free at that moment (§4.6). Making
+        the caller pay the ordinary price of an ordinary hire is what keeps
+        this from being a way to spend a superior's credits without asking.
+
+        Scope rides the SEAT (D-224's rule for the exchange, and forced
+        here): `nid` takes target's dirs, tools, visibility and permission
+        mode, because target's branch is about to sit beneath it and
+        child ⊆ parent must hold — an inserted parent holding LESS would
+        silently clamp the caller's whole team on the next sweep."""
+        if nid == target:
+            raise LedgerError("a node cannot be inserted above itself")
+        n_new, n_t = self.node(nid), self.node(target)
+        self._require_authority(actor, target, allow_self=True)
+        self._require_authority(actor, nid, allow_self=True)
+        self._require_live(nid)
+        self._require_live(target)
+        if n_new["parent"] != target:
+            raise LedgerError(
+                f'"{nid}" must already report to "{target}" to be inserted '
+                f'above it (it reports to {n_new["parent"] or "the top level"})')
+        self.check_placement(actor, target, "superior", rising=nid)
+        succ = n_new.get("successor")
+        if succ and succ in self.nodes:
+            raise LedgerError(
+                f'{nid} is a lineage bearer of "{succ}" — the stack shares '
+                f"its successor's slot (§8.5)")
+        for who_ in (nid, target):
+            live_b = [k for k in self.lineage_stack(who_)
+                      if self.nodes[k]["state"] != "archived"]
+            if live_b:
+                raise LedgerError(
+                    f"{who_} has live lineage bearer(s) {live_b} under "
+                    f"consultation — retire them first (a stack follows its "
+                    f"owner, §8.5)")
+        cap_c = self.d.get("max_children", MAX_CHILDREN)
+        if len(self.org_children(nid)) + 1 > cap_c:
+            raise LedgerError(
+                f"{nid} would hold {len(self.org_children(nid)) + 1} reports "
+                f"(cap {cap_c}) once {target}'s branch moves beneath it")
+        p = n_t["parent"]
+        # the same §8.5 slot guard swap_seats carries: `nid` rises into the
+        # target's slot and its own stack rises with it, so that slot may not
+        # BE one of those bearers, nor an archived node
+        if p is not None:
+            if p in {nid, *self.lineage_stack(nid)}:
+                raise LedgerError(
+                    f'"{nid}" would land in the slot of "{p}", which moves '
+                    f"with it (§8.5 lineage stack) — that is a cycle, not an "
+                    f"insertion")
+            if self.nodes[p]["state"] == "archived":
+                raise LedgerError(
+                    f'"{target}" reports to "{p}", which is archived — '
+                    f"insertion would strand a live agent under it")
+        seat_n, seat_t = self.seat_cost(nid), self.seat_cost(target)
+        g_n, g_t = n_new["grant"], n_t["grant"]
+        stake_n = seat_n + g_n
+        if g_t - stake_n < 0:
+            # unreachable while free() >= 0 (target funded nid's stake out of
+            # that grant); refuse rather than write a negative grant, the same
+            # call _move makes on the release leg
+            raise LedgerError(
+                f"cannot insert {nid} above {target}: {target} holds a grant "
+                f"of {g_t}, less than the {stake_n} its own report commits — "
+                f"the chain's accounting is inconsistent (§4.5)")
+        if p is None:
+            # D-014: the top-level GRANT VALUE changes (the holding does not)
+            self._check_top_grant(seat_t + g_t - seat_n,
+                                  f"inserting {nid} above {target}")
+
+        # ---- mutation: nothing below raises (§2b — a refusal above has left
+        # the tree byte-identical)
+        n_new["parent"] = p
+        n_t["parent"] = nid
+        for k in self.lineage_stack(nid):        # §8.5: stacks share the slot
+            self.nodes[k]["parent"] = p
+        for k in self.lineage_stack(target):
+            self.nodes[k]["parent"] = nid
+        n_t["grant"] = g_t - stake_n
+        n_new["grant"] = seat_t + n_t["grant"] + g_n
+        n_new["ui_order"] = n_t["ui_order"]      # it holds target's old slot
+        sc_t, sc_n = n_t["scope"], n_new["scope"]
+        # ⚠ SAY WHAT THE SEAT JUST HANDED OVER (redteam 2026-09-02). Taking
+        # the target's scope is forced — its branch is about to sit beneath
+        # this node and child ⊆ parent must hold, permission mode included
+        # (a lower one would clamp the whole branch on the next sweep). But
+        # an agent deliberately seated at `plan` with no tools can come back
+        # from an insertion holding `bypassPermissions` and the seat's
+        # folders, and doing that SILENTLY is how a capability arrives that
+        # nobody chose. It is never MORE than the target already held, and
+        # never more than the actor could grant with retool — so it is not
+        # an escalation, and it is not the caller's to discover later.
+        raises = self._scope_raises(sc_n, sc_t)
+        # …and the other direction: a hire in this mode passes its own
+        # add_dirs/tools/visibility/mode in the same call, and the seat's
+        # scope REPLACES them. Naming only the gains would leave a caller
+        # believing the narrower thing it asked for had survived.
+        removed = self._scope_raises(sc_t, sc_n)
+        sc_n["add_dirs"] = cast("list[DirGrant]",
+                                [dict(d) for d in sc_t["add_dirs"]])
+        sc_n["tools"] = cast("ToolGrant",
+                             {**sc_t["tools"],
+                              "mcp": list(sc_t["tools"].get("mcp") or [])})
+        sc_n["org_visibility"] = sc_t.get("org_visibility", "full")
+        sc_n["permission_mode"] = sc_t.get("permission_mode", "acceptEdits")
+        warnings: list[str] = []
+        if raises or removed:
+            warnings.append(
+                f'"{nid}" took "{target}"\'s scope — an inserted superior '
+                f"must hold exactly what the branch beneath it holds, so "
+                f"this REPLACES the scope it was hired with"
+                + (". GRANTS IT " + "; ".join(raises) if raises else "")
+                + (". REMOVES " + "; ".join(removed) if removed else "")
+                + ". Retool it if that is not the seat you meant.")
+        swept = self._sweep_audiences()
+        warnings += [f"audience revoked (no longer ancestral): {g}→{t}"
+                     for g, t in swept]
+        # sweep_pm=False deliberately: this is not a relocation into a new
+        # chain (D-102's case) — target keeps the superior it had, so a
+        # permission mode the USER deliberately raised on that branch (D-101)
+        # must survive, and `nid` was just given target's own mode.
+        dropped = self._sweep_dirs(nid, sweep_pm=False)
+        if dropped:
+            warnings.append(f"capabilities the chain does not hold were "
+                            f"dropped (№30): {dropped}")
+        who = "the user" if actor == USER else f'"{actor}"'
+        kids = [k for k in self.children(target) if k != nid]
+        self._notify([x for x in [p] if x != actor],
+                     f'{who.capitalize()} inserted "{nid}" above your report '
+                     f'"{target}": "{nid}" now holds that position and '
+                     f'"{target}" reports to it, keeping its own team.')
+        self._notify([x for x in self._peers_of(p, nid) if x != actor
+                      and x != target],
+                     f'"{nid}" joined your team (inserted by {who} above '
+                     f'"{target}", which now reports to it).')
+        self._notify([x for x in [target] if x != actor],
+                     f'{who.capitalize()} inserted "{nid}" directly above '
+                     f'you: you now report to "{nid}" instead of '
+                     f'{p or "the top level"}, and your entire team, scope '
+                     f'and remaining grant ({n_t["grant"]}) came with you.')
+        self._notify([x for x in kids if x != actor],
+                     f'"{target}" now reports to "{nid}", inserted above it '
+                     f'by {who}. You still report to "{target}"; your own '
+                     f'team, grant and scope are unchanged.')
+        self._notify([x for x in [nid] if x != actor],
+                     f'{who.capitalize()} placed you in "{target}"\'s '
+                     f'position: you report to {p or "the top level"}, '
+                     f'"{target}" and its whole team now report to YOU, and '
+                     f"you hold that seat's scope with a grant of "
+                     f'{n_new["grant"]} (of which {seat_t + n_t["grant"]} is '
+                     f'committed to "{target}").')
+        self._log("insert_parent", actor,
+                  {"node": nid, "target": target, "under": p}, warnings)
+        return {"node": nid, "inserted_above": target, "under": p,
+                "grant": n_new["grant"], "target_grant": n_t["grant"],
+                "warnings": warnings}
 
     def _move(self, op: str, actor: str, nid: str,
               new_parent: str | None) -> dict[str, Any]:

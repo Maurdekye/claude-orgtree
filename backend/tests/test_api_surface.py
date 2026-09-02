@@ -1467,7 +1467,8 @@ AGENT_TOOLS = ["orgtree_message", "orgtree_hire", "orgtree_retool",
                "orgtree_dissolve", "orgtree_reallocate", "orgtree_switch_model",
                "orgtree_status", "orgtree_audience", "orgtree_request_credits",
                "orgtree_read_transcript", "orgtree_read_scratch",
-               "orgtree_chart", "orgtree_send_file", "orgtree_list_orgs"]
+               "orgtree_chart", "orgtree_send_file", "orgtree_list_orgs",
+               "orgtree_swap", "orgtree_self_subjugate"]
 JUNK_ARGS = [
     {},
     {"node": 5, "to": [], "body": {}, "tier": 1, "grant": None, "delta": [],

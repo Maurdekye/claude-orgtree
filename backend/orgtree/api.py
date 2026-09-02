@@ -3840,7 +3840,11 @@ _ARG_STRS = ("node", "to", "from", "target", "grantee", "parent", "new_parent",
              # the clamp instead of 422ing at the door like every sibling.
              # `audiences` is deliberately ABSENT: it is a list (see
              # _seat_finish, which type-checks it itself).
-             "permission_mode", "kickoff", "kickoff_kind")
+             "permission_mode", "kickoff", "kickoff_kind",
+             # D-224's topology verbs. `moves` is deliberately ABSENT for the
+             # same reason as `audiences` — it is a list, and the move branch
+             # type-checks it itself.
+             "a", "b", "hire_type")
 
 
 def _norm_args(a: dict[str, Any]) -> dict[str, Any]:
@@ -4559,7 +4563,46 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
                 provider_hire_gate(org, a.get("tier"))
                 hdirs, dwarns = supervisor.sandbox_dirs_to_host(
                     org, a.get("add_dirs"))
-                result = org.hire(body.node, a.get("parent") or body.node,
+                # D-224 ④: the destination pair. `target` (default: the
+                # caller) says WHERE, `hire_type` says on WHICH SIDE of it.
+                # `parent` is the pre-D-224 spelling of `target` and still
+                # works; both omitted = exactly today's behaviour.
+                _dest = str(a.get("target") or a.get("parent") or body.node)
+                _htype = str(a.get("hire_type") or "subordinate")
+                # validated BEFORE the hire, so a bad destination creates
+                # nothing (the seat would otherwise be discarded with the
+                # unsaved doc — correct, but the refusal reads better here)
+                org.check_placement(body.node, _dest, _htype)
+                if _htype == "superior":
+                    # THE SEAT'S SCOPE IS NOT THE CALLER'S TO CHOOSE HERE, and
+                    # accepting the fields anyway produced a response that
+                    # contradicted itself: a caller asking for `plan` was
+                    # answered `applied: ["permission_mode"]` while the seat
+                    # came out at `bypassPermissions` (redteam 2026-09-02).
+                    # An inserted superior must hold exactly what the branch
+                    # beneath it holds, so the four clamped sets are taken
+                    # from the target — say that at the door instead of
+                    # overwriting the caller behind its back. Refusing is
+                    # free here (nothing is created yet) and asks for LESS
+                    # typing than the ordinary form, not more.
+                    _conflict = [f for f in ("add_dirs", "tools",
+                                             "org_visibility",
+                                             "permission_mode")
+                                 if a.get(f) is not None]
+                    if _conflict:
+                        raise LedgerError(
+                            f"hire_type='superior' seats the new agent in "
+                            f'"{_dest}"\'s own position, so it takes that '
+                            f"seat's folders, tools, visibility and "
+                            f"permission mode — it cannot also take yours. "
+                            f"Omit {', '.join(_conflict)} (retool it after "
+                            f"the insertion if it should hold less)")
+                    _tsc = org.node(_dest)["scope"]
+                    hdirs = [dict(d) for d in _tsc["add_dirs"]]
+                    a = dict(a, tools={**_tsc["tools"],
+                                       "mcp": list(_tsc["tools"].get("mcp") or [])},
+                             org_visibility=_tsc.get("org_visibility", "full"))
+                result = org.hire(body.node, _dest,
                                   a.get("tier"), _arg_int(a, "grant", 0),  # type: ignore[arg-type]  # ledger 422s a missing tier
                                   a.get("name") or "", add_dirs=hdirs,
                                   tools=a.get("tools"),
@@ -4571,8 +4614,31 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
                     # D-160: the scope fields, the audience grants and the
                     # kickoff — all of it inside this same transaction, with
                     # the kickoff strictly last. See _seat_finish.
+                    #
+                    # ⚠ `permission_mode` is refused up front in `superior`
+                    # mode (the seat's is the target's), so it must not be in
+                    # the field list either — `applied: ["permission_mode"]`
+                    # beside a seat holding a different mode is a response
+                    # contradicting itself, and `applied` is the
+                    # machine-readable half (redteam 2026-09-02).
+                    _fields = tuple(f for f in _SEAT_SCOPE_HIRE
+                                    if not (_htype == "superior"
+                                            and f == "permission_mode"))
                     _seat_finish(org, body.org, body.node,
-                                 str(result["node"]), a, result, drive)
+                                 str(result["node"]), a, result, drive,
+                                 fields=_fields)
+                if result.get("node") and _htype == "superior":
+                    # …and the topology LAST of all: the seat is fully the
+                    # agent that was described before it is spliced in, and
+                    # `drive` is consumed after the save, so its first turn
+                    # can only ever see the final tree (_seat_finish ①).
+                    _ins = org.insert_parent(body.node, str(result["node"]),
+                                             _dest)
+                    result["inserted_above"] = _dest
+                    result["reports_to"] = _ins["under"] or "the top level"
+                    result["grant"] = _ins["grant"]
+                    result.setdefault("warnings", []).extend(
+                        _ins.get("warnings") or [])
                 # observed on another install (user report 2026-08-02): an
                 # agent hires, writes a thorough charter, and considers the
                 # delegation DONE — the hire then sits idle forever, because
@@ -4635,6 +4701,29 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
                 # reached `int(grant)` in the ledger and 500ed (mcptool suite,
                 # 2026-08-04). None/"" stays None — rehire's "no explicit grant".
                 _g = a.get("grant")
+                # D-224 ④: rehire takes the same destination pair as hire —
+                # both omitted restores the seat exactly where it was
+                _dest = str(a.get("target") or "")
+                _htype = str(a.get("hire_type") or "subordinate")
+                if _dest or _htype != "subordinate":
+                    _dest = _dest or body.node
+                    org.check_placement(body.node, _dest, _htype)
+                    if _htype == "superior":
+                        # same rule as the hire door: an inserted superior
+                        # takes the target seat's scope, so the caller may
+                        # not also dictate it (redteam 2026-09-02)
+                        _conflict = [f for f in ("add_dirs", "tools",
+                                                 "org_visibility",
+                                                 "permission_mode")
+                                     if a.get(f) is not None]
+                        if _conflict:
+                            raise LedgerError(
+                                f"hire_type='superior' restores the agent "
+                                f'into "{_dest}"\'s own position, so it takes '
+                                f"that seat's folders, tools, visibility and "
+                                f"permission mode. Omit "
+                                f"{', '.join(_conflict)} (retool it after the "
+                                f"insertion if it should hold less)")
                 result = org.rehire(body.node, a.get("node"),  # type: ignore[arg-type]  # node() 422s on None
                                     None if _g is None or _g == ""
                                     else _arg_int(a, "grant", 0))
@@ -4655,6 +4744,24 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
                 result["node"] = _rid
                 _seat_finish(org, body.org, body.node, _rid, a, result, drive,
                              fields=_SEAT_SCOPE_REHIRE)
+                if _dest:
+                    # topology last, exactly as the hire path: the restored
+                    # seat is whole before it is placed. A rehire lands the
+                    # node where it was archived, so reach the destination
+                    # with an ordinary move first (budget-neutral, §4.5) —
+                    # `move` is also what refuses a cycle here.
+                    if org.node(_rid)["parent"] != _dest:
+                        _mv = org.move(body.node, _rid, _dest)
+                        result.setdefault("warnings", []).extend(
+                            _mv.get("warnings") or [])
+                    if _htype == "superior":
+                        _ins = org.insert_parent(body.node, _rid, _dest)
+                        result["inserted_above"] = _dest
+                        result["reports_to"] = _ins["under"] or "the top level"
+                        result.setdefault("warnings", []).extend(
+                            _ins.get("warnings") or [])
+                    else:
+                        result["reports_to"] = _dest
                 if _renamed_to:
                     result["renamed_to"] = _renamed_to
                     result.setdefault("warnings", []).extend(_rename_warnings)
@@ -4671,8 +4778,49 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
                     f'orgtree_message, or pass `kickoff` to this tool next '
                     f'time, or it will sit there.')
             elif body.tool == "orgtree_move":
-                result = org.move(body.node, a.get("node", ""),
-                                  a.get("new_parent") or None)
+                _batch = a.get("moves")
+                if _batch:
+                    # D-224 ③: several moves as one transaction — the whole
+                    # list rides this handler's load-mutate-save window, and
+                    # the ledger restores its own doc on a mid-batch refusal
+                    if not isinstance(_batch, list):
+                        raise LedgerError("`moves` must be a list of "
+                                          "{node, new_parent}")
+                    # …and so must every ELEMENT (redteam 2026-09-02): the
+                    # list check alone let `["abc"]`, `[5]`, `[True]` reach
+                    # `.get` on a str/int/bool → AttributeError → a 500 out of
+                    # the gateway an agent is holding a tool result open on.
+                    # An LLM writes ["a","b"] for this shape readily; D-169's
+                    # rule is that a bad argument 422s with a reason.
+                    _mv: list[tuple[str, str | None]] = []
+                    for i, m in enumerate(cast("list[Any]", _batch)):
+                        if not isinstance(m, dict):
+                            raise LedgerError(
+                                f"moves[{i}] must be an object "
+                                f"{{node, new_parent}}, not "
+                                f"{type(cast('object', m)).__name__}")
+                        _m = cast("dict[str, Any]", m)
+                        if "new_parent" not in _m:
+                            # the schema marks it required, and its absence
+                            # silently meant THE TOP LEVEL — a promotion the
+                            # caller never typed (and one only the user may
+                            # make). Say so instead of guessing.
+                            raise LedgerError(
+                                f"moves[{i}] has no `new_parent` — name the "
+                                f'new superior, or pass "" for the top level '
+                                f"(user only)")
+                        _mv.append((str(_m.get("node") or ""),
+                                    _m.get("new_parent") or None))
+                    result = org.move_batch(body.node, _mv)
+                else:
+                    result = org.move(body.node, a.get("node", ""),
+                                      a.get("new_parent") or None)
+            elif body.tool == "orgtree_swap":
+                result = org.swap_seats(body.node, a.get("a", ""),
+                                        a.get("b", ""))
+            elif body.tool == "orgtree_self_subjugate":
+                result = org.subjugate(body.node, body.node,
+                                       a.get("target", ""))
             elif body.tool == "orgtree_list_orgs":
                 # №43 (user-approved): the @org: channel was advertised but
                 # undiscoverable from inside — agents had no org listing.

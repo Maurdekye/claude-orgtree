@@ -229,8 +229,8 @@ def main():
                        props["urgent_reason"]["description"].lower()))
     # adding PARAMETERS must not have added a CARD — two suites assert the
     # catalogue size and both would go red together
-    check("the tool catalogue is still 27 cards (params, not a new card)",
-          lambda: (None if len(TOOLS) == 27
+    check("the tool catalogue is still 29 cards (params, not a new card)",
+          lambda: (None if len(TOOLS) == 29
                    else (_ for _ in ()).throw(AssertionError(len(TOOLS)))))
 
     print(f"\n{PASS} checks passed")

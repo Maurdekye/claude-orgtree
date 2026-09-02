@@ -4764,6 +4764,103 @@ live report auto-dissolves the whole subtree (retire-with-live-reports is
 documented ledger behavior, not a bug) — the opus cannot be retired for as
 long as the fable line under it stays alive.
 
+### D-224 · seats are exchanged, moves are batched, parents are inserted
+Ruling (user, 2026-09-02): three topology verbs, deliberately distinct
+because they answer three different questions, and collapsing any two of
+them produces the wrong shape silently.
+
+① **Seat exchange** — `orgtree_swap(a, b)`, and `orgtree_self_subjugate(target)`
+for the case where the caller is one of the pair. Two agents trade
+POSITIONS. What stays with the SEAT: its superior, its reports (archived
+dependents included), its grant, its team charter, its display slot, and the
+four chain-clamped capability sets (folders, tools, visibility, permission
+mode). What travels with the AGENT: its identity, charter, session, mailbox,
+watchdogs, external handles, lineage stack, and the personal scope keys that
+clamp against nothing (effort, auto-compaction, model version). It is a
+relabeling of two positions, so the tree's SHAPE is untouched — which is the
+whole safety argument: no cycle is constructible, and the depth and report
+caps hold by construction, for any pair, nested or disjoint.
+
+② **Atomic batch move** — `orgtree_move` with `moves`. Several ordinary §4.5
+re-parentings applied in the caller's order as one transaction; a refusal at
+any step restores the tree to before the first and says which step failed.
+This is what expresses "two agents trade positions and each KEEPS its own
+team" (`[a → parent(b), b → parent(a)]`), which no single verb can, and
+which two separate calls could leave half-done.
+
+③ **Parent insertion** — the `target` × `hire_type` pair on BOTH `orgtree_hire`
+and `orgtree_rehire`. `target` is the caller or any live node in its subtree
+(never anything outside it, §7.1); `hire_type` is `subordinate` (the
+default — today's behaviour exactly) or `superior`, which seats the new or
+restored agent in the TARGET'S OWN position under the target's former
+superior and moves the target, with its entire existing subtree, beneath it.
+Both omitted is byte-for-byte the old behaviour, and `parent` survives as the
+older spelling of `target`. With `target` = the caller this hires one's own
+replacement into one's own seat in a single call, which is the workflow the
+whole entry exists to serve: hire the replacement, hand the seat over, then
+self-retire beneath it under the ordinary leaf-only rule (№26).
+
+Why ① and ③ are not the same verb, stated because the shapes are one edge
+apart: an EXCHANGE gives each agent the other's reports (reports belong to
+seats); an INSERTION leaves the target holding its own reports and puts the
+newcomer above it. Reversing either silently yields the other's tree.
+
+Why the accounting is safe, which is the part that had to be derived rather
+than asserted. An exchange trades the two grants along with the seats, so a
+same-tier swap moves nothing anywhere and a cross-tier one surfaces exactly
+the seat-cost difference, and only at the two agents and their two former
+superiors — pre-checked, so an unaffordable one refuses without touching the
+tree. An insertion rotates credits between exactly two nodes in amounts that
+cancel (`g(target) -= s(new)+g(new)`; `g(new) = s(target)+g(target)+g(new)`),
+under which the superior commits precisely what it committed before and
+`free()` is unchanged at EVERY node — so the insertion itself cannot fail on
+credits, and the only price of the whole operation is the ordinary hire that
+made the newcomer the target's report, paid out of the target's own free.
+That equality is the authority argument too: inserting an agent above
+yourself costs exactly what hiring an ordinary report costs, so it is never
+a way to spend a superior's credits without asking.
+
+Bounds. The top level is the user's (§7.4, promote()'s rule): any exchange
+touching a top-level seat, and any insertion above a top-level target, is
+refused for an agent actor — the user performs it, or nobody does. An
+inserted parent is GIVEN the target's capability scope, because the target's
+branch is about to sit beneath it and child ⊆ parent must hold; an inserted
+parent holding less would silently clamp the caller's whole team at the next
+sweep, which is D-058's failure in a new place. So the four capability fields
+are REFUSED at the hire/rehire door in `superior` mode rather than accepted and
+overwritten (redteam 2026-09-02): a caller that passed `permission_mode: plan`
+was answered `applied: ["permission_mode"]` while the seat came out at
+`bypassPermissions` — one response contradicting itself, with the
+machine-readable half carrying the false claim. Omitting them is now enough
+even for an agent hire, whose no-defaults rule (D-056) is satisfied by the
+seat's own scope; a seat exchange, where nothing was requested to contradict,
+DISCLOSES the transfer instead, naming every folder, tool, mode and visibility
+level each side gained. A swapped
+commander-and-subordinate pair that ends non-adjacent keeps a standing
+audience (§7.3-anchored on the risen, so it lives exactly as long as that
+authority does); an adjacent pair gets none, a report already reaching its
+own superior. Lineage bearers refuse on every route: a stack shares its
+successor's slot (§8.5) and has no seat of its own to trade, and a live
+rehired bearer must be retired before its owner moves.
+
+Load-bearing, and the trap this entry was one guard short of: the "a
+relabeling cannot build a cycle" argument holds on the ORG axis ONLY. §8.5's
+lineage axis has no such protection — an archived bearer is dragged to its
+owner's new parent slot while its own subtree keeps pointing at it and is
+dragged along unprotected — so a seat exchange must refuse any destination
+sitting ANYWHERE on that branch, not merely the bearer itself. Measured at
+depth two before the guard was widened (redteam 2026-09-02): `q0.parent ==
+"a@0"` and `a@0.parent == "q0"`, a persisted 2-cycle with the owner orphaned
+inside it. The closure stops at the stack's branch and deliberately does not
+cover the mover's own org descendants, which is what a NESTED swap legally
+descends into.
+
+Load-bearing: the agent dispatch loads the doc fresh, mutates under one lock
+and saves ONCE (D-160) — that is what makes "refuse the whole call" free for
+the composite hire-configure-insert path, with the ledger's own snapshot
+covering direct callers of the batch verb; and `drive` is consumed after
+that save, so a hire's kickoff turn can only ever see the final topology.
+
 ---
 
 ## Kiosks & sandboxing

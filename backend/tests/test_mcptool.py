@@ -400,8 +400,9 @@ def _():
     # +orgtree_present (FR-03); +orgtree_withdraw_ask; +orgtree_self_update;
     # +orgtree_cheap_compact (FR-24); +orgtree_request_scope (FR-13);
     # +orgtree_watchdog (FR-18); +orgtree_send_notice (2026-08-19);
-    # +orgtree_prime_restart (FR-27, 2026-08-27)
-    assert len(tools) == 27, [x["name"] for x in tools]
+    # +orgtree_prime_restart (FR-27, 2026-08-27);
+    # +orgtree_swap +orgtree_self_subjugate (D-224, 2026-09-02)
+    assert len(tools) == 29, [x["name"] for x in tools]
     for c in tools:
         assert c["name"].startswith("orgtree_"), c
         assert len(c["description"]) > 20, c
@@ -566,8 +567,9 @@ def _():
     # +orgtree_cheap_compact (FR-24, 2026-08-11);
     # +orgtree_request_scope (FR-13) + orgtree_watchdog (FR-18, 2026-08-12);
     # +orgtree_send_notice (mail that never wakes, 2026-08-19);
-    # +orgtree_prime_restart (FR-27, the deferred restart, 2026-08-27)
-    assert len(CARDS) == 27, len(CARDS)
+    # +orgtree_prime_restart (FR-27, the deferred restart, 2026-08-27);
+    # +orgtree_swap +orgtree_self_subjugate (D-224, seat exchange, 2026-09-02)
+    assert len(CARDS) == 29, len(CARDS)
 
 
 @t("☠ the deprecated self_update alias is dispatchable but NOT advertised")
@@ -717,11 +719,17 @@ def _():
     # to ASK — a whole round trip that returns the agent's account of events
     # instead of the events. Reading is instant, downward-only and costs the
     # report nothing, so the trigger belongs where the moment happens.
-    # The four that REMAIN absent are deliberate: rename/move/list_orgs/
-    # switch_model have no moment that arrives unbidden — an agent reaches for
-    # them having already decided to reorganize, and finds them in their cards.
-    assert absent == ["orgtree_list_orgs", "orgtree_move",
-                      "orgtree_rename", "orgtree_switch_model"], \
+    # The six that REMAIN absent are deliberate: rename/move/list_orgs/
+    # switch_model, and D-224's swap/self_subjugate, have no moment that
+    # arrives unbidden — an agent reaches for them having already decided to
+    # reorganize, and finds them in their cards. (Checked against the
+    # substring trap the warning above documents: the prompt's compaction
+    # paragraph says "swaps only the session", which is not this node's
+    # prompt, so `orgtree_swap` really is absent rather than accidentally
+    # satisfied.)
+    assert absent == ["orgtree_list_orgs", "orgtree_move", "orgtree_rename",
+                      "orgtree_self_subjugate", "orgtree_swap",
+                      "orgtree_switch_model"], \
         f"the recital gap changed — update or retire this pin: {absent}"
     # D-181 audit amendment: capability guidance is identity, while today's
     # child count is live state. The leaf must already know the read/retire

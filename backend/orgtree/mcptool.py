@@ -682,7 +682,34 @@ TOOLS: list[dict[str, Any]] = [
                 "org_visibility": {"type": "string",
                                    "enum": ["self", "team", "subtree", "full"]},
                 "parent": {"type": "string",
-                           "description": "omit to hire directly under yourself"},
+                           "description": "the older spelling of `target` — "
+                                          "still honoured; omit to hire "
+                                          "directly under yourself"},
+                "target": {"type": "string",
+                           "description": "WHERE the seat goes: yourself "
+                                          "(default) or any live agent in "
+                                          "your subtree — never anything "
+                                          "outside it"},
+                "hire_type": {
+                    "type": "string", "enum": ["subordinate", "superior"],
+                    "description":
+                        "which side of `target` the seat lands on. "
+                        "'subordinate' (default) = a report of the target, "
+                        "today's behaviour. 'superior' = INSERT ABOVE the "
+                        "target: the new agent takes the target's own "
+                        "position under the target's superior, and the "
+                        "target with its entire team becomes its report. ⚠ "
+                        "In this mode OMIT add_dirs, tools, org_visibility "
+                        "and permission_mode: the seat takes the TARGET's "
+                        "(the team below it must stay within what it "
+                        "holds), so passing your own is refused rather than "
+                        "silently overwritten — retool it afterwards if it "
+                        "should hold less. Costs you exactly what the same "
+                        "ordinary hire costs; the insertion itself moves no "
+                        "credits. With target=yourself this hires your own "
+                        "replacement into your seat and puts you under it; "
+                        "only the user may do it above a TOP-LEVEL "
+                        "target."},
                 # D-160 — the retool-only trio, now settable at hire. Same
                 # rules retool enforces (it IS retool underneath): capped at
                 # your own, and you cannot grant what you do not hold.
@@ -876,6 +903,23 @@ TOOLS: list[dict[str, Any]] = [
             "properties": {
                 "node": {"type": "string"},
                 "grant": {"type": "integer", "minimum": 0},
+                "target": {"type": "string",
+                           "description": "D-224: WHERE to restore it — "
+                                          "yourself or any live agent in "
+                                          "your subtree. Omit to wake it "
+                                          "exactly where it was archived"},
+                "hire_type": {
+                    "type": "string", "enum": ["subordinate", "superior"],
+                    "description":
+                        "which side of `target` it lands on. 'subordinate' "
+                        "(default) = a report of the target. 'superior' = "
+                        "INSERT ABOVE the target: the restored agent takes "
+                        "the target's position under the target's superior, "
+                        "and the target with its whole team reports to it. "
+                        "⚠ It takes the TARGET's folders, tools, visibility "
+                        "and permission mode, so omit those four here — "
+                        "passing them is refused, not overwritten. Only the "
+                        "user may do this above a TOP-LEVEL target"},
                 "name": {"type": "string",
                          "description": "rename it as it wakes (D-160). The "
                                         "one step that cannot be rolled back "
@@ -948,11 +992,65 @@ TOOLS: list[dict[str, Any]] = [
             "in your reach (promote toward you or demote under a descendant). "
             "Budget-neutral along the chain — a fully occupied tree can still "
             "reorganize (§4.5). The node's whole suborganization moves with "
-            "it. Only the user can seat agents at top level."),
+            "it. Only the user can seat agents at top level. To apply SEVERAL "
+            "re-parentings as ONE all-or-nothing transaction, pass `moves` "
+            "instead — they run in order, and a refusal at any step applies "
+            "none of them (the classic use: [a→parent(b), b→parent(a)] swaps "
+            "two positions with each node keeping its own suborganization)."),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "node": {"type": "string"},
+                "new_parent": {"type": "string"},
+                "moves": {
+                    "type": "array", "maxItems": 20,
+                    "items": {"type": "object",
+                              "properties": {
+                                  "node": {"type": "string"},
+                                  "new_parent": {"type": "string"}},
+                              "required": ["node", "new_parent"]},
+                    "description": "batch form — give EITHER node+new_parent "
+                                   "OR this list ('' new_parent = top level, "
+                                   "user only)"},
+            }},
+    },
+    {
+        "name": "orgtree_swap",
+        "description": (
+            "Two agents in your reach EXCHANGE SEATS: each takes over the "
+            "other's position — superior, reports, grant, team charter and "
+            "clamped scope (folders/tools/visibility/permission mode) stay "
+            "with the SEAT; identity, session, charter and mailbox travel "
+            "with the AGENT. Works for any pair, nested or disjoint; the "
+            "tree's shape never changes, so no cycles are possible and a "
+            "same-tier swap moves no credits at all. A swapped "
+            "commander-and-subordinate pair that ends non-adjacent keeps a "
+            "standing audience so they can still talk. To swap POSITIONS "
+            "with each agent keeping its own team instead, batch the two "
+            "moves via orgtree_move `moves`. Only the user may reseat the "
+            "top level."),
         "inputSchema": {"type": "object",
-                        "properties": {"node": {"type": "string"},
-                                       "new_parent": {"type": "string"}},
-                        "required": ["node", "new_parent"]},
+                        "properties": {"a": {"type": "string"},
+                                       "b": {"type": "string"}},
+                        "required": ["a", "b"]},
+    },
+    {
+        "name": "orgtree_self_subjugate",
+        "description": (
+            "Step down: swap SEATS with one of your own live subordinates "
+            "(any depth). It takes your place — your superior, your reports, "
+            "your grant, your team charter and your folder/tool scope stay "
+            "with the seat — and you take its place, keeping your identity, "
+            "session, charter and mailbox. Same-tier swaps move no credits; "
+            "a non-direct target keeps you a standing audience with it. THE "
+            "HAND-OVER PATTERN: hire a replacement (same tier, your full "
+            "scope, a successor charter), self-subjugate to it, transfer "
+            "loose ends, then orgtree_retire yourself (self-retire needs "
+            "you to be a leaf). Top-level agents: only the user may reseat "
+            "the top level — use orgtree_ask."),
+        "inputSchema": {"type": "object",
+                        "properties": {"target": {"type": "string"}},
+                        "required": ["target"]},
     },
     {
         "name": "orgtree_dissolve",

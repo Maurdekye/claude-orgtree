@@ -248,6 +248,25 @@ GRANT_WRITE_SITES = {
     # FR-22 rescind: SUBTRACTION only, min-clamped at free(parent) so it can
     # neither exceed max_top_grant (it never raises) nor push free negative
     'p["grant"] -= clawed': "rescind claw-back — only shrinks, clamped at free",
+    # D-224 seat exchange: the two grants TRADE. Neither is a new number —
+    # each already sat on a live seat — so the multiset of grants in the org
+    # is unchanged, and a top seat receives a grant that was legal on the
+    # other seat. The cap is a per-node ceiling, and the one node that can
+    # be at top level here holds a value that already passed it… EXCEPT
+    # across the top boundary, which is why swap_seats refuses outright
+    # unless the actor is the user (§7.4) — the user is the only actor who
+    # may reseat top level, exactly as in promote().
+    'n_b["grant"] = g_b, g_a':
+        "swap_seats — grants trade between two existing seats",
+    # D-224 insertion: target hands back exactly the stake it committed to
+    # the inserted node (a SHRINK, never a raise) …
+    'n_t["grant"] = g_t - stake_n':
+        "insert_parent — target's grant only shrinks",
+    # … and the inserted node absorbs that stake plus its own. At top level
+    # the VALUE changes (seat costs differ), so insert_parent calls
+    # _check_top_grant on exactly that branch before it writes anything.
+    'n_new["grant"] = seat_t + n_t["grant"] + g_n':
+        "insert_parent — _check_top_grant when the target is top-level",
 }
 
 
@@ -349,7 +368,15 @@ def section_ceiling_census():
 # =====================================================================  §3
 OPS = ("hire", "retire", "rehire", "dissolve", "realloc", "switch",
        "move", "reorder", "compact", "unrecoverable", "reseed", "delete",
-       "request_credits", "scope")
+       "request_credits", "scope",
+       # D-224's topology verbs. They are here rather than in their own
+       # suite for the reason §3b exists at all: each one is budget-neutral
+       # BY CONSTRUCTION, and the way that claim dies is a shape the author
+       # did not think of (a lineage bearer with a subtree, an archived
+       # parent, a cascade that inflated a grant on the way past). The
+       # randomized walk builds those; a hand-written fixture builds what
+       # its author already suspected.
+       "swap", "subjugate", "batch", "insert")
 
 
 def build_random(rnd, cap):
@@ -378,14 +405,17 @@ def pick_lineaged(rnd, org, pool):
 
 
 def random_op(rnd, org):
-    """Apply one random op. Returns (op, applied?) — LedgerError = a refusal,
-    which is a legitimate outcome; anything else is a crash and re-raises."""
+    """Apply one random op. Returns (op, applied?, who) — LedgerError = a
+    refusal, which is a legitimate outcome; anything else is a crash and
+    re-raises. `who` names the nodes a D-224 topology verb touched, so the
+    caller can hold it to the exact neutrality its docstring claims."""
     live = [k for k, v in org.nodes.items() if v["state"] == "live"]
     arch = [k for k, v in org.nodes.items() if v["state"] == "archived"]
     allk = list(org.nodes)
     if not allk:
-        return ("none", False)
+        return ("none", False, ())
     op = rnd.choice(OPS)
+    who: tuple[str, ...] = ()
     try:
         if op == "hire":
             parent = rnd.choice(live + [None]) if live else None
@@ -423,11 +453,36 @@ def random_op(rnd, org):
         elif op == "scope" and live:
             org.set_scope(USER, rnd.choice(live),
                           org_visibility=rnd.choice(list(VIS_LEVELS)))
+        elif op == "swap" and len(live) >= 2:
+            a, b = rnd.sample(live, 2)
+            who = (a, b, org.nodes[a]["parent"], org.nodes[b]["parent"])
+            org.swap_seats(USER, a, b)
+        elif op == "subjugate" and live:
+            n = rnd.choice(live)
+            kids = org.descendants(n)
+            if not kids:
+                return (op, False, ())
+            tgt = rnd.choice(kids)
+            who = (n, tgt, org.nodes[n]["parent"], org.nodes[tgt]["parent"])
+            org.subjugate(USER, n, tgt)
+        elif op == "batch" and len(live) >= 2:
+            org.move_batch(USER, [(rnd.choice(live),
+                                   rnd.choice(live + [None]))
+                                  for _ in range(rnd.randint(1, 3))])
+        elif op == "insert" and live:
+            # the shape the API composes: an ordinary hire, then the seat
+            # rotation. Only the rotation runs here — it is the half that
+            # claims to move no credits whatsoever.
+            tgt = rnd.choice(live)
+            kids = org.children(tgt)
+            if not kids:
+                return (op, False, ())
+            org.insert_parent(USER, rnd.choice(kids), tgt)
         else:
-            return (op, False)
+            return (op, False, ())
     except LedgerError:
-        return (op, False)
-    return (op, True)
+        return (op, False, ())
+    return (op, True, tuple(x for x in who if x))
 
 
 def assert_sound(org, cap, where):
@@ -629,6 +684,7 @@ def section_conservation():
     print("§3b conservation (randomized trees × op sequences):")
     seeds = range(1200)
     ops_run = applied = moves = refusals = 0
+    swaps = inserts = batches = 0
     # `rehire` is the one op that legitimately half-applies: rehiring a node
     # under an archived superior rehires that superior FIRST, as its own
     # complete op, and a later refusal (the chain cannot afford the seat)
@@ -644,7 +700,7 @@ def section_conservation():
             before_hold = org.audit()["top_level_holds"]
             before_parents = {k: v["parent"] for k, v in org.nodes.items()}
             before_fp = fingerprint(org)
-            op, applied_now = random_op(rnd, org)
+            op, applied_now, who = random_op(rnd, org)
             ops_run += 1
             applied += bool(applied_now)
             if not applied_now and op not in partial_ok:
@@ -654,19 +710,43 @@ def section_conservation():
                 eq(fingerprint(org), before_fp,
                    f"seed {s} step {step}: refused {op} still changed the tree")
             assert_sound(org, cap, f"seed {s} step {step} after {op}")
-            if op == "move" and applied_now:
+            if op in ("move", "batch", "insert") and applied_now:
                 moves += 1
+                batches += op == "batch"
+                inserts += op == "insert"
                 after_f = frees(org)
                 # _move's docstring: release and acquire cancel hop by hop, so
-                # every node's free is unchanged — budget-neutral by construction
+                # every node's free is unchanged — budget-neutral by construction.
+                # A BATCH is a sequence of those, and D-224's insertion rotates
+                # credits between exactly two nodes in amounts that cancel — so
+                # all three make the identical claim, and are held to it.
                 for k in set(before_f) & set(after_f):
                     eq(after_f[k], before_f[k],
-                       f"seed {s} step {step}: move changed free({k})")
+                       f"seed {s} step {step}: {op} changed free({k})")
                 eq(org.audit()["top_level_holds"], before_hold,
-                   f"seed {s} step {step}: move changed top_level_holds")
+                   f"seed {s} step {step}: {op} changed top_level_holds")
                 _ = before_parents
+            if op in ("swap", "subjugate") and applied_now:
+                swaps += 1
+                after_f = frees(org)
+                # A seat exchange trades the two grants along with the seats.
+                # Same tier on both sides ⇒ nothing moves anywhere. Different
+                # tiers ⇒ the seat-cost difference appears, and may appear
+                # ONLY at the two agents and their two former superiors.
+                touched = {k for k in set(before_f) & set(after_f)
+                           if after_f[k] != before_f[k]}
+                true(touched <= set(who),
+                     f"seed {s} step {step}: {op} moved credits at "
+                     f"{sorted(touched - set(who))}, outside the pair "
+                     f"{sorted(who)}")
+                if org.seat_cost(who[0]) == org.seat_cost(who[1]):
+                    eq(org.audit()["top_level_holds"], before_hold,
+                       f"seed {s} step {step}: a same-tier {op} changed "
+                       f"top_level_holds")
     print(f"      … {len(seeds)} random orgs · {ops_run} ops attempted · "
-          f"{applied} applied · {moves} moves verified budget-neutral · "
+          f"{applied} applied · {moves} moves/batches/insertions verified "
+          f"budget-neutral ({batches} batches, {inserts} insertions) · "
+          f"{swaps} seat exchanges verified contained · "
           f"{refusals} refusals verified no-op")
     check("randomized sequences: no overdraft, no negative or float grant, "
           "free always derivable, cap never exceeded", lambda: None)
@@ -675,6 +755,12 @@ def section_conservation():
     check("randomized sequences: every applied move was budget-neutral "
           "(every node's free unchanged, top_level_holds conserved)",
           lambda: true(moves > 50, f"only {moves} moves exercised"))
+    check("randomized sequences: D-224's batches and insertions are "
+          "budget-neutral too, and its seat exchanges move credits at "
+          "nothing but the pair and their two former superiors",
+          lambda: true(swaps > 50 and inserts > 20 and batches > 20,
+                       f"thin coverage: {swaps} exchanges, {inserts} "
+                       f"insertions, {batches} batches"))
 
 
 # =====================================================================  §4
