@@ -1093,6 +1093,17 @@ def _mcp_tool_count_names(slug: str, nid: str, owner: Any,
              if isinstance(n, str) and n.startswith("mcp__")}
     st = state(slug, nid)
     recovered = False
+    # The liveness probe is deliberately OUTSIDE `_state_lock` (reviewer,
+    # 2026-09-02): `poll()` is a subprocess syscall, and running it under the
+    # lock every MCP transition in the process contends on makes hold time
+    # depend on OS process-table behaviour — not a hang today, but the kind of
+    # coupling that is invisible until it isn't. Hoisting it costs no
+    # correctness, because liveness is a SNAPSHOT wherever it is taken: a
+    # process may exit the instant after the call returns, inside the lock or
+    # out of it. What makes the recovery below atomic is the owner-identity
+    # re-check under the lock, not the probe.
+    owner_may_recover = st.get("mcp_tool_owner") is not owner
+    owner_running = _mcp_owner_running(owner) if owner_may_recover else False
     with _state_lock:
         if st.get("mcp_tool_owner") is not owner:
             # A generation can be reaped while its process is STILL RUNNING: a
@@ -1116,7 +1127,7 @@ def _mcp_tool_count_names(slug: str, nid: str, owner: Any,
             if (st.get("mcp_tool_owner") is None
                     and isinstance(final, dict)
                     and final.get("owner") is owner
-                    and _mcp_owner_running(owner)):
+                    and owner_running):
                 st["mcp_tool_owner"] = owner
                 st["mcp_tool_provider"] = provider
                 st["mcp_tool_source"] = source
