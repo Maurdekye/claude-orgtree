@@ -156,6 +156,49 @@ class McpSurfaceCaptureTests(unittest.TestCase):
             S._mcp_tool_surface_for_owner(self.slug, self.nid, object()),
             (None, None))
 
+    def test_a_live_surface_never_names_tools_it_cannot_count(self) -> None:
+        """Coherence, stated without presuming which repair is right.
+
+        `_mcp_tool_count_unknown` ("publish a truthful unknown without
+        replacing the process owner") zeroes the count but does NOT pop
+        `mcp_tool_names`, and it is reachable AFTER a successful enumeration:
+        warmpool.py:1798-1812 calls it when a LATER `mcp_tool_names()` refresh
+        raises. The generation is alive, its owner is still current, and its
+        surface reads `(None, [<two names>])` — two tools named, no count.
+
+        The boundary then writes `last_turn_mcp_tools` while popping
+        `last_turn_mcp_tool_count`, so the node carries a full tool list and no
+        count. Note this producer is NOT the one `ae101e6` introduced; it is on
+        the Codex path and predates it. Fixing only the unobserved-turn path
+        leaves this one standing.
+
+        Two coherent repairs, both of which satisfy this test, and the choice
+        belongs to whoever owns the landing:
+          - pop the names too (if you cannot enumerate, you cannot vouch for
+            the previous enumeration either — the `_mcp_tool_count_server`
+            precedent), or
+          - keep the names and let the count follow from them, since a
+            generation-correct name set already implies its own total.
+        """
+        proc = object()
+        self._run_a_turn(proc)
+
+        S._mcp_tool_count_unknown(
+            self.slug, self.nid, proc, "codex", "mcpServerStatus/list",
+            "Codex runtime inventory unavailable: TimeoutError")
+
+        st = S.state(self.slug, self.nid)
+        with S._state_lock:
+            self.assertIs(st.get("mcp_tool_owner"), proc,
+                          "precondition: the process is still live and owned")
+
+        count, names = S._mcp_tool_surface_for_owner(self.slug, self.nid, proc)
+        if names is not None:
+            self.assertIsNotNone(
+                count,
+                "a live generation named its tools while reporting no count; "
+                "the boundary then records the list and pops the count")
+
     def test_a_count_only_refresh_invalidates_the_recovered_names(
             self) -> None:
         """A recovered surface may not outlive the identities it names.

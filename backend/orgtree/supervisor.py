@@ -1048,17 +1048,37 @@ def _mcp_tool_count_unknown(slug: str, nid: str, owner: Any,
     with _state_lock:
         if st.get("mcp_tool_owner") is not owner:
             return False
+        # A surface must never NAME tools it cannot COUNT. This zeroed the
+        # count while leaving `mcp_tool_names` standing, so a LIVE generation
+        # reported `(None, ['a', 'b'])` — naming two tools while claiming no
+        # total. The boundary then recorded the names and dropped the count,
+        # producing the same list-without-count divergence by a second route.
+        #
+        # The count follows the names rather than the names being discarded,
+        # and the reason is the rule this chain settled elsewhere: this
+        # function fires when an enumeration FAILED, and a failed observation
+        # is not evidence that the surface changed. Popping the names here
+        # would destroy a generation-correct enumeration because one call
+        # raised — the same "unobserved must not erase observed" error fixed at
+        # the turn boundary. `_mcp_tool_count_server` is NOT precedent for the
+        # other choice: there a NEW TOTAL arrived and contradicted the names,
+        # so the runtime really had changed; here nothing arrived at all.
+        #
+        # With no names held, the count stays None — genuinely unknown, which
+        # is what this function is for on a provider that never enumerates.
+        held = st.get("mcp_tool_names")
+        count = len(held) if isinstance(held, set) else None
         cur = (st.get("mcp_tool_count"), st.get("mcp_tool_provider"),
                st.get("mcp_tool_source"), st.get("mcp_tool_reason"))
-        nxt = (None, provider, source, reason)
-        st["mcp_tool_count"] = None
+        nxt = (count, provider, source, reason)
+        st["mcp_tool_count"] = count
         st["mcp_tool_provider"] = provider
         st["mcp_tool_source"] = source
         st["mcp_tool_reason"] = reason
         changed = cur != nxt
         event = st.get("mcp_tool_event")
         payload = {
-            "count": None, "provider": provider, "source": source,
+            "count": count, "provider": provider, "source": source,
             "reason": reason,
             "last_turn_count": st.get("last_turn_mcp_tool_count"),
         }
