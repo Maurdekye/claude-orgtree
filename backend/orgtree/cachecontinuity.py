@@ -173,7 +173,9 @@ _LEGACY_CAUSE: Final[dict[tuple[str, str], str]] = {
 }
 
 
-def legacy_readiness(state: str, source: str, lane: str) -> dict[str, str]:
+def legacy_readiness(state: str, source: str, lane: str, *,
+                     expires_at: Any = None,
+                     now: float | None = None) -> dict[str, str]:
     """Re-derive the readiness triple for a row persisted before D-226.
 
     ⚠ WHY THIS EXISTS RATHER THAN LETTING `public` CALL IT AN INTERNAL ERROR.
@@ -192,7 +194,20 @@ def legacy_readiness(state: str, source: str, lane: str) -> dict[str, str]:
     (`legacy_forecast_unmigrated`), never green and never a guessed grey. Red
     is the correct default under the invariant: readiness is not established,
     and it says so honestly instead of inventing a fault that did not happen.
+
+    ⚠ A PERSISTED STATE IS A PAST TENSE, AND `compatible_observed` DECAYS.
+    The row records what was true when it was WRITTEN; an entry that was live
+    then may have died since. Healing such a row straight to `receipt_valid`
+    would manufacture the one thing this system must never invent — a green
+    with no live evidence behind it. So when the caller can supply a clock,
+    an elapsed expiry demotes the state before it is mapped. Callers that
+    cannot supply one get the undecayed answer, which is why every caller
+    inside this repo does supply one.
     """
+    if state == "compatible_observed" and now is not None:
+        expiry = epoch(expires_at)
+        if expiry is not None and now >= expiry:   # equality is the boundary
+            state = "expired_known_entry"
     cause = _LEGACY_CAUSE.get((state, source))
     if cause is None and source == "ttl_unobserved":
         # The one ambiguous source. Lane resolves the two unambiguous ends of

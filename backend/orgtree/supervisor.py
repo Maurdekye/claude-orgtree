@@ -6403,6 +6403,9 @@ def cache_forecast_public(org: Org, nid: str,
     changes remain conservative until admission; no UI request is allowed to
     manufacture that proof by repeatedly hashing a large transcript.
     """
+    # Resolved BEFORE the legacy early return below, which needs a clock to
+    # decide whether a persisted `compatible_observed` has since expired.
+    now = time.time() if now is None else now
     n = org.node(nid)
     raw = n.get("cache_continuity")
     book = raw if isinstance(raw, dict) else {}
@@ -6418,13 +6421,30 @@ def cache_forecast_public(org: Org, nid: str,
         # would render it grey, so the invariant holds either way — but it
         # would hold by accident, and the honest verdict is recoverable from
         # what was persisted. Heal it here rather than relying on the UI.
+        #
+        # ⚠ AND IT APPLIES THE EXPIRY FLIP THE MAIN PATH APPLIES BELOW. This
+        # return happens BEFORE that logic, so without the clock a row saved
+        # as `compatible_observed` whose entry has since died would heal to
+        # `receipt_valid` — a backend triple claiming green for an expired
+        # receipt. The badge would still show red, but only because the
+        # frontend's own expiry lock overrides it; every other consumer of
+        # this row would read green. The invariant must hold in the DATA, not
+        # in one renderer. (Found by readiness-postreview as D-B7.)
         if not old.get("readiness_cause"):
+            state = str(old.get("state") or "")
+            expiry = cachecontinuity.epoch(old.get("expires_at"))
+            if (state == "compatible_observed"
+                    and expiry is not None and now >= expiry):
+                # Same demotion the main path performs, so one fact does not
+                # wear two states depending on which branch observed it.
+                state = "expired_known_entry"
+                old["state"] = state
             old.update(cachecontinuity.legacy_readiness(
-                str(old.get("state") or ""), str(old.get("source") or ""),
-                str(old.get("lane") or "")))
+                state, str(old.get("source") or ""),
+                str(old.get("lane") or ""),
+                expires_at=old.get("expires_at"), now=now))
         return old
     internal = dict(internal_raw)
-    now = time.time() if now is None else now
 
     # Rows persisted before the serialization-quantum tolerance can carry a
     # false `clock_skew` verdict minted against their own receipt stamp. Heal

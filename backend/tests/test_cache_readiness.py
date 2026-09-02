@@ -46,7 +46,11 @@ with open(os.path.join(DATA, "defaults.json"), "w", encoding="utf-8") as f:
     f.write('{"net_hub_address":"http://127.0.0.1:9"}')
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 
-from orgtree import cachecontinuity as C  # noqa: E402
+from orgtree import cachecontinuity as C, store, supervisor as S  # noqa: E402
+from orgtree.ledger import USER                                   # noqa: E402
+
+S.chatq_register_org = lambda slug: None
+S.chatq_deregister_org = lambda slug: None
 
 atexit.register(lambda: shutil.rmtree(DATA, ignore_errors=True))
 
@@ -476,6 +480,62 @@ def legacy_rows_migrate_instead_of_reporting_a_defect() -> None:
 
 check("the emitted cause set is exactly the declared set (exhaustiveness)",
       every_reachable_cause_is_exercised)
+def an_elapsed_legacy_row_is_never_green() -> None:
+    """A persisted `compatible_observed` DECAYS; healing must not revive it.
+
+    ⚠ REGRESSION GUARD FOR D-B7, found by readiness-postreview after the first
+    landing. `cache_forecast_public` returns early when a node has a PUBLIC row
+    but no internal forecast, and that return happens BEFORE the expiry flip
+    the main path applies. The first fix healed such a row straight from its
+    persisted state, so a row saved as `compatible_observed` whose entry had
+    since died came back `ready` / `receipt_valid` — a backend triple claiming
+    green for an expired receipt. The badge still rendered red, but only
+    because the frontend's own expiry lock overrode it; every other consumer of
+    the row saw green. The invariant has to hold in the DATA, not in one
+    renderer, which is why this asserts on the returned row and not on markup.
+
+    It also covers B11: the mutant "early-return healing removed" survived all
+    three backend suites, because nothing exercised that branch end to end.
+    """
+    org = store.create_org("zz-cache-readiness-legacy")
+    org.hire(USER, None, "haiku", 4, "legacy")
+    nid = "legacy"
+    live = C.iso_us(NOW + 1800)
+    dead = C.iso_us(NOW - 600)
+
+    def poll(expires_at: str) -> dict[str, Any]:
+        org.node(nid)["cache_continuity"] = {          # PUBLIC ONLY, no forecast
+            "public": {"generation": "g", "state": "compatible_observed",
+                       "source": "authoritative_receipt", "lane": "subscription",
+                       "ttl_seconds": 3600, "expires_at": expires_at,
+                       "last_receipt_at": C.iso_us(NOW - 1800),
+                       "precompact_action": "not_applicable",
+                       "precompact_reason": "", "changed_inputs": []}}
+        store.save_org(org)
+        row = S.cache_forecast_public(org, nid, now=NOW)
+        assert isinstance(row, dict)
+        return row
+
+    # Still inside its window: green is correct and must survive healing.
+    ok = poll(live)
+    eq(ok["readiness"], "ready")
+    eq(ok["readiness_cause"], "receipt_valid")
+
+    # Elapsed: green would be a lie, and the row must say so itself.
+    gone = poll(dead)
+    eq(gone["readiness"], "not_ready")
+    eq(gone["readiness_cause"], "receipt_expired")
+    # ...and `state` is demoted too, so one fact does not wear two labels
+    # depending on which branch happened to observe it.
+    eq(gone["state"], "expired_known_entry")
+
+    # B11: the branch is genuinely reached — a row with NO triple at all comes
+    # back carrying one, so deleting the healing cannot pass silently.
+    assert gone.get("readiness_cause"), "early-return healing did not run"
+
+
+check("an elapsed legacy public-only row is never healed to green",
+      an_elapsed_legacy_row_is_never_green)
 check("pre-D-226 rows migrate honestly instead of reporting a false defect",
       legacy_rows_migrate_instead_of_reporting_a_defect)
 check("the public projection fails closed, never open",
