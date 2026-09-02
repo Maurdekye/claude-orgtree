@@ -385,6 +385,20 @@ def _registered_from_config_dir() -> str:
     return os.path.abspath(os.path.expanduser(value))
 
 
+def normalize_setup_token(value: str) -> str:
+    """Canonicalize a pasted setup-token without inspecting its secret bytes.
+
+    Claude's token alphabet contains no whitespace, but copying the long value
+    from a wrapped terminal can insert CR/LF or spaces. Passing those bytes on
+    produces an upstream 401 that is indistinguishable from revocation. Only
+    the positively identified ``sk-ant-oat`` family gets internal whitespace
+    removal; unknown future credential shapes retain their bytes apart from
+    the established outer trim.
+    """
+    token = str(value or "").strip()
+    return re.sub(r"\s+", "", token) if token.startswith("sk-ant-oat") else token
+
+
 def register_key(token: str, mint_config_dir: str | None = None) -> dict[str, Any]:
     """Register a pasted `claude setup-token` key as a secondary account row.
 
@@ -400,7 +414,7 @@ def register_key(token: str, mint_config_dir: str | None = None) -> dict[str, An
     its existing row (same id — the id IS a hash of the token) and keeps its
     place in the order. Returns `{"id", "created", "account_uuid"}`.
     """
-    token = str(token or "").strip()
+    token = normalize_setup_token(token)
     if not token:
         raise ValueError("refusing to register an empty key")
     mint_config_dir = _optional_mint_config_dir(mint_config_dir)

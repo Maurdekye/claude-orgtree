@@ -166,6 +166,9 @@ def registry_and_schedule() -> None:
     os.environ["CLAUDE_CONFIG_DIR"] = "C:\\backend-registration-config"
     try:
         rec = accounts.register_key("second-test-token", "C:\\mint-session")
+        wrapped = "sk-ant-oat01-not-a-real\r\n  wrapped-token"
+        normalized = "sk-ant-oat01-not-a-realwrapped-token"
+        wrapped_rec = accounts.register_key(wrapped)
     finally:
         accounts.resolve_key_identity = old_identity
         if old_cfg is None:
@@ -179,6 +182,11 @@ def registry_and_schedule() -> None:
         row.get("mint_config_dir"), "C:\\mint-session"))
     check("backend registration session is separately and honestly named", lambda: eq(
         row.get("registered_from_config_dir"), "C:\\backend-registration-config"))
+    check("wrapped setup-token whitespace is removed before durable routing", lambda: eq(
+        (tokens.get(wrapped_rec["id"]), accounts.key_for_token(normalized)),
+        (normalized, wrapped_rec["id"])))
+    check("the whitespace-contaminated spelling is not retained", lambda: eq(
+        accounts.key_for_token(wrapped), ""))
     check("unknown mint provenance is absent rather than guessed", lambda: eq(
         "mint_config_dir" in next(k for k in accounts.load()["keys"] if k["id"] == KID),
         False))
