@@ -493,10 +493,15 @@ class McpToolCountTests(unittest.TestCase):
         """An ACTIVE process must never be pinned in a terminal state.
 
         A spurious stdout EOF reaps the generation while its process is still
-        running: `_end` pops the owner and publishes `process-ended`. The live
-        process's own inventory was then refused forever by the owner guard —
-        reporting neither LOADING nor LOADED, the one combination the
-        lifecycle invariant forbids.
+        running: `_end` pops the owner and publishes a terminal readiness
+        state. The live process's own inventory was then refused forever by the
+        owner guard — reporting neither LOADING nor LOADED, the one
+        combination the lifecycle invariant forbids.
+
+        Since unit 2 the terminal state it publishes here is `withdrawn`, not
+        `process-ended`: `poll()` says the process is alive, so the strong
+        claim is unavailable and the honest one — removed from service,
+        inventory final — is published instead.
         """
         live = self._Proc(4242)
         S._mcp_tool_count_begin(
@@ -506,7 +511,10 @@ class McpToolCountTests(unittest.TestCase):
             "system/init.tools")
         S._mcp_tool_count_end(self.slug, self.nid, live, "pump saw EOF")
         st = S.state(self.slug, self.nid)
-        self.assertEqual(st.get("mcp_readiness_state"), "process-ended")
+        self.assertEqual(
+            st.get("mcp_readiness_state"), "withdrawn",
+            "a live process was reported ENDED on the strength of a closed "
+            "channel")
 
         # the same, still-running process reports its inventory again
         self.assertTrue(S._mcp_tool_count_names(
@@ -609,14 +617,19 @@ class McpToolCountTests(unittest.TestCase):
         S._mcp_tool_count_names(
             self.slug, self.nid, dead, ["mcp__orgtree__one"], "claude",
             "system/init.tools")
-        S._mcp_tool_count_end(self.slug, self.nid, dead, "process exited")
+        # dead BEFORE teardown — the ordering a genuine exit produces, and the
+        # one that lets `_end` observe the death rather than assume it
         dead.die()
+        S._mcp_tool_count_end(self.slug, self.nid, dead, "process exited")
         self.assertFalse(S._mcp_tool_count_names(
             self.slug, self.nid, dead, ["mcp__ghost__tool"], "claude",
             "system/init.tools"))
         st = S.state(self.slug, self.nid)
         self.assertIsNone(st.get("mcp_tool_owner"))
-        self.assertEqual(st.get("mcp_readiness_state"), "process-ended")
+        self.assertEqual(
+            st.get("mcp_readiness_state"), "process-ended",
+            "an OBSERVED death must still reach the strong terminal state; "
+            "unit 2 narrows the claim, it must not weaken a real exit")
 
         # an owner that cannot even be asked is likewise never revived
         opaque = object()
@@ -673,9 +686,15 @@ class McpToolCountTests(unittest.TestCase):
         payload = TestClient(api.app).get(f"/api/orgs/{self.slug}").json()
         node = payload["roots"][0]
         self.assertIsNone(node["mcp_tool_count"])
+        # The INVENTORY reason is unchanged by unit 2 and stays pinned here:
+        # in this field the phrase means "nothing is publishing this node's
+        # inventory", which is true once the owner is popped.
         self.assertEqual(node["mcp_tool_count_reason"],
                          "no live provider process")
-        self.assertEqual(node["mcp_readiness_state"], "process-ended")
+        # The READINESS state is the one that names the process, and `owner` is
+        # a bare object with no `poll` — nothing observed an exit, so the API
+        # reports the withdrawal rather than a death it cannot see.
+        self.assertEqual(node["mcp_readiness_state"], "withdrawn")
 
     def test_runtime_counts_do_not_change_warm_identity(self) -> None:
         org = store.load_org(self.slug)

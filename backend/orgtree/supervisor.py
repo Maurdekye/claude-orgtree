@@ -1109,6 +1109,29 @@ def _mcp_owner_running(owner: Any) -> bool:
         return False
 
 
+def _mcp_owner_ended(owner: Any) -> bool | None:
+    """Has this owner DEMONSTRABLY exited? ``None`` when it cannot be observed.
+
+    Three-valued, and the third value is the whole point: `poll()` returning an
+    exit code proves the process is gone, `poll()` returning None proves it is
+    alive, and anything else — no `poll` at all, a `poll` that raises — proves
+    neither. Folding that last case into either answer is the error this chain
+    keeps removing, so it is returned as itself.
+
+    This is NOT the negation of `_mcp_owner_running`, and the asymmetry is
+    deliberate. That function folds the unobservable case into "dead" because
+    REFUSING a recovery on a process we cannot see is safe. ASSERTING that a
+    process we cannot see has ended is a claim nothing supports.
+    """
+    poll = getattr(owner, "poll", None)
+    if not callable(poll):
+        return None
+    try:
+        return poll() is not None
+    except Exception:                                       # noqa: BLE001
+        return None
+
+
 def _mcp_tool_count_names(slug: str, nid: str, owner: Any,
                           names: Iterable[Any], provider: str,
                           source: str) -> bool:
@@ -1141,13 +1164,16 @@ def _mcp_tool_count_names(slug: str, nid: str, owner: Any,
     owner_running = _mcp_owner_running(owner)
     with _state_lock:
         if st.get("mcp_tool_owner") is not owner:
-            # A generation can be reaped while its process is STILL RUNNING: a
-            # spurious stdout EOF fires `_mcp_tool_count_end`, which pops the
-            # owner and publishes the terminal `process-ended` readiness. After
-            # that the live process's own inventory was refused here forever by
-            # the guard above — an ACTIVE process pinned in a TERMINAL state,
-            # reporting neither LOADING nor LOADED, which is precisely the
-            # combination the lifecycle invariant forbids.
+            # A generation can be reaped while its process is STILL RUNNING:
+            # a spurious stdout EOF fires `_mcp_tool_count_end`, which pops the
+            # owner and publishes a terminal readiness state (`withdrawn` since
+            # unit 2 — it used to say `process-ended` about a process that had
+            # not ended). After that the live process's own inventory was
+            # refused here forever by the guard above — an ACTIVE process
+            # pinned in a TERMINAL state, reporting neither LOADING nor LOADED,
+            # which is precisely the combination the lifecycle invariant
+            # forbids. Renaming the state made it honest; only this recovery
+            # makes it reversible.
             #
             # Recovery is deliberately the narrowest thing that fixes it, and
             # every clause is load-bearing:
@@ -1262,8 +1288,68 @@ def _mcp_tool_count_server(slug: str, nid: str, owner: Any,
 
 def _mcp_tool_count_end(slug: str, nid: str, owner: Any,
                         reason: str = "no live provider process") -> bool:
-    """Clear only the generation that actually exited."""
+    """Withdraw one generation from service; say ENDED only when observed.
+
+    UNIT 2. This is the only producer of the terminal readiness state, and it
+    published `process-ended` unconditionally — a claim about the operating
+    system that its callers cannot support. On the Claude lane the trigger is a
+    stdout EOF from the pump thread's `finally` (`warmpool.py:391`), and a
+    channel closing is not a process exiting: a CLI that closes stdout while
+    its background children run is still alive, and `proc exit
+    reason="background-children"` is a measured case on this machine. Saying
+    `process-ended` there states a falsehood about a live process — the same
+    defect class as the rest of this chain, asserting a strong answer where
+    only a narrower one was observed.
+
+    The narrower claim every caller CAN support is already true before this
+    function is entered: `_on_proc_exit` has removed the generation from
+    `_pool` and `_serving`, so it can never be claimed for another turn, and
+    nothing will publish into its inventory again. That is `withdrawn` —
+    terminal for readiness with NO kill, NO timer and NO probe, which is
+    exactly why it can be published on a lane where re-observation is
+    impossible (every caller of `_mcp_tool_count_names` reads the stdout that
+    just closed, so no probe can ever be scheduled there).
+
+    `process-ended` survives for the case where it is TRUE, established by
+    observation and not by policy: `poll()` returning an exit code proves the
+    process is gone. A real death therefore still reaches the strong terminal
+    state immediately — the negative control that stops this from making
+    genuine exits slow to notice.
+
+    Recycling stays out of this function on purpose. It is an accounting
+    function; ending processes is the lifecycle owner's job, and it is the
+    owner that holds the attempt counters and the background-child awareness a
+    safe recycle needs.
+    """
     st = state(slug, nid)
+    # Observed OUTSIDE the lock, for the reason `_mcp_tool_count_names` gives:
+    # `poll()` is a subprocess syscall and lock hold time must not depend on
+    # the OS process table. Nothing below is made atomic by this probe — the
+    # owner-identity check under the lock is what decides whether we act.
+    ended = _mcp_owner_ended(owner)
+    if ended is True:
+        readiness_state = "process-ended"
+        observed = "the provider process has exited"
+    else:
+        readiness_state = "withdrawn"
+        observed = (
+            "the provider channel closed while the process was still running"
+            if ended is False else
+            "the provider channel closed and the process could not be "
+            "observed")
+    # `reason` — the INVENTORY reason — is deliberately left alone, including
+    # its "no live provider process" default. It reads as an OS claim but is
+    # not one: `api.py:1308` substitutes the same phrase for ANY unknown count,
+    # including a node that never had a process at all, so in this field it
+    # means "nothing is publishing this node's inventory" — true once the
+    # owner is popped, however the OS process is faring.
+    # `test_status_zero_vs_unknown` §3 pins that wording against a 2026-09-01
+    # user report, and unit 2 has no business moving it: the claim that was
+    # actually false lives in the readiness state, which names the PROCESS.
+    readiness_reason = (
+        reason if ended is True else
+        f"{observed}; this generation was withdrawn from service and its "
+        f"inventory is final")
     with _state_lock:
         if st.get("mcp_tool_owner") is not owner:
             return False
@@ -1288,10 +1374,10 @@ def _mcp_tool_count_end(slug: str, nid: str, owner: Any,
             bool(st.get("mcp_readiness_waiting")),
             st.get("mcp_readiness_state"),
             st.get("mcp_readiness_reason"),
-        ) != (False, "process-ended", reason)
+        ) != (False, readiness_state, readiness_reason)
         st["mcp_readiness_waiting"] = False
-        st["mcp_readiness_state"] = "process-ended"
-        st["mcp_readiness_reason"] = reason
+        st["mcp_readiness_state"] = readiness_state
+        st["mcp_readiness_reason"] = readiness_reason
         payload = {
             "count": None, "provider": provider, "source": "process",
             "reason": reason,
@@ -1304,7 +1390,7 @@ def _mcp_tool_count_end(slug: str, nid: str, owner: Any,
         try:
             stream(slug, nid, {
                 "kind": "mcp_readiness", "waiting": False,
-                "state": "process-ended", "reason": reason,
+                "state": readiness_state, "reason": readiness_reason,
                 "emitted_at_ms": round(time.time() * 1000),
             })
         except Exception:                                   # noqa: BLE001
