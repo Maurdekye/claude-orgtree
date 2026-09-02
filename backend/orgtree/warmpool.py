@@ -1663,10 +1663,19 @@ def _on_proc_channel_eof(wp: WarmProcess) -> bool:
     While the process is still OS-live (or cannot be observed) the MCP
     surface is published as channel-closed/LOADING: G1 binds a live process
     to `loading | loaded`, and this is the window an unpublished surface used
-    to strand in. When the exit is ALREADY observable at EOF — the ordinary
-    death, by far the common case — nothing is published here at all, so the
-    sequence the finalizer then runs is byte-for-byte the one this function
-    was split out of.
+    to strand in. When the exit is ALREADY observable at EOF the publish is
+    skipped and the finalizer's sequence is byte-for-byte the one this
+    function was split out of.
+
+    THAT SKIP IS RARER THAN IT LOOKS, and the honest version is worth stating:
+    `poll()` lags the EOF by about a millisecond on this machine, so an
+    ORDINARY death usually arrives here still reading as live and does publish
+    a transient `loading` — measured at 15/15 immediate deaths, roughly 1ms
+    before `process-ended`. That is a cosmetic extra stream event, not a wrong
+    state: at the instant it is published the OS genuinely has not yet
+    reported the exit, and publishing anything else would be guessing. Do not
+    "fix" it with a sleep, a retry or a poll loop; the correction arrives on
+    its own, from an observation, which is the entire principle here.
     """
     was_tracked = False
     with _pool_lock:

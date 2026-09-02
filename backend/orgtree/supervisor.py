@@ -1482,12 +1482,15 @@ def _mcp_tool_surface_for_owner(
     the live entry is already cleared. SECOND, it is still the owner but its
     live entry has been RE-ADOPTED and reset — `_mcp_tool_count_begin` clears
     count and names by design, and `warmpool._mcp_reclaim_from_loser` re-adopts
-    a survivor through it when a double-spawn is resolved. Before that fallback
-    existed, a survivor that had a durable surface and lost the seat's
-    ownership to the loser got `(None, None)` here, and `supervisor.py:11509`
-    does not treat that as "no news" — it POPS `last_turn_mcp_tools`. Unobserved
-    must not erase observed (`ae101e6`), and a re-adoption is unobserved, not
-    contradictory.
+    a survivor through it when a double-spawn is resolved. Without the fallback
+    such a survivor answers `(None, None)`, and its own freshly measured
+    inventory is dropped on the floor at the very boundary that was about to
+    record it. The BASELINE is no longer at risk — `:11514-11532` now KEEPS the
+    previous one on an unobserved `None` rather than popping it (reviewer §3,
+    2026-09-02) — so what is lost is the new measurement, not the old record.
+    Unobserved must not erase observed (`ae101e6`); a re-adoption is unobserved
+    rather than contradictory, and a generation that DID observe its own
+    surface should not be made to answer as though it never had one.
 
     Strictly owner-scoped in both cases: the stash is consulted only when it is
     keyed to THIS owner, so neither a foreign process nor the successor can ever

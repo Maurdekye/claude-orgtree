@@ -233,6 +233,31 @@ class McpToolCountTests(unittest.TestCase):
         self.assertEqual(
             S._mcp_tool_surface_for_owner(self.slug, self.nid, warm),
             (1, ["mcp__orgtree__one"]))
+        # …and the LIVE entry, not merely what the reader can reconstruct.
+        # `_mcp_tool_surface_for_owner` falls back to this owner's own durable
+        # stash when the live entry is empty, so on its own the assertion above
+        # is satisfied whether or not the same-owner early return still exists:
+        # it stopped discriminating the moment that fallback landed, and a
+        # mutant deleting the early return survived every suite. What the early
+        # return actually protects is what a SERVING process publishes about
+        # itself, which is a live-entry fact — a warm re-claim would otherwise
+        # reset every 2nd-and-later turn to an unknown count and `initializing`
+        # readiness on a process that is running and has already told us its
+        # tools.
+        #
+        # Readiness is deliberately NOT asserted here. It is `initializing`
+        # either way: `_mcp_tool_count_begin` sets it and `_mcp_tool_count_names`
+        # only moves it on the RECOVERY branch, which this flow never takes. An
+        # assertion that it is not `initializing` fails on a clean tree, so it
+        # would be a broken discriminator rather than a stricter one. The live
+        # count and names are the real ones — under the mutant they become None
+        # and absent.
+        st = S.state(self.slug, self.nid)
+        with S._state_lock:
+            self.assertEqual(st.get("mcp_tool_count"), 1,
+                             "a re-claimed warm process lost its live count")
+            self.assertEqual(st.get("mcp_tool_names"), {"mcp__orgtree__one"},
+                             "a re-claimed warm process lost its live names")
 
     def test_foreign_owner_can_neither_publish_nor_read(self) -> None:
         """Negative control: only the current generation may write or be read."""

@@ -114,7 +114,8 @@ class LifecycleFinalizeTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         org = store.create_org("zz mcp finalize")
         for nid in ("parked", "supersede", "killed", "parkback",
-                    "durable", "unobservable", "stale", "codex"):
+                    "durable", "unobservable", "stale", "codex",
+                    "prewarm"):
             org.hire(USER, None, "haiku", 5, nid)
         store.save_org(org)
         cls.slug = org.d["slug"]
@@ -448,7 +449,51 @@ class LifecycleFinalizeTests(unittest.TestCase):
         self.assertIsNone(end["owner"], end)
         self.assertIsNone(end["count"], end)
         self.assertIsNone(end["names"], end)
+        self.assertIs(end["proc_live"], False, end)
+        self.assertTrue(wp.exit_journaled)
 
+    # ── 9. the prewarm abort reaps what it killed ──────────────────────────
+    def test_codex_prewarm_abort_publishes_process_ended_not_loading(self):
+        """`_codex_prewarm_finish`'s failure arm is the third ungated path: it
+        drops the pool entry, kills, and publishes — on a process that was
+        never attached, so the wire reader's callback finds it untracked and
+        cannot be relied on to close it out. Without the reap between the kill
+        and the publish it announces `loading` for a process it has just
+        destroyed, and nothing corrects it.
+
+        As in the `kill_node` test the kill is patched to return before the OS
+        has reaped, which is what the real one does — made deterministic here
+        rather than left to a race that usually resolves the convenient way.
+        """
+        nid = "prewarm"
+        proc = self._own(SLEEPER)
+        self._adopt(nid, proc, provider="codex")
+
+        class _RefusingClient:
+            def __init__(self, p) -> None:
+                self.proc = p
+
+            def initialize(self, timeout=None):      # noqa: ANN001, ANN201
+                raise RuntimeError("handshake refused")
+
+        wp = W.CodexWarmProc(self.slug, nid, _RefusingClient(proc),
+                             "sid-p", "hash-p", {})
+        with W._pool_lock:
+            W._pool[(self.slug, nid)] = wp
+        W._set_proc_lifecycle(self.slug, nid, live=True, owner=wp, adopt=True)
+
+        saved = S._wd_kill_tree
+        S._wd_kill_tree = lambda p: threading.Timer(0.4, p.kill).start()
+        try:
+            W._codex_prewarm_finish(None, nid, wp)   # org unused on this arm
+        finally:
+            S._wd_kill_tree = saved
+
+        end = _snap(self.slug, nid)
+        self.assertEqual(end["state"], "process-ended", end)
+        self.assertIsNone(end["owner"], end)
+        self.assertIsNone(end["count"], end)
+        self.assertIs(end["proc_live"], False, end)
 
     # ── 8. the OTHER lane: Codex reaches the finalizer by its own road ─────
     def test_the_codex_lane_finalizes_through_its_own_wire_reader(self):
