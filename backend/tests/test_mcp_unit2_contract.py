@@ -22,12 +22,29 @@ THE SHAPE OF THE FIX, and why it is this shape:
     unobservable case is NOT folded into "dead" — asserting an exit nothing saw
     is the same error one layer along.
 
-  · The weaker state is `withdrawn`, and it is true in every case, which is why
-    it needs no timer, no probe and no kill to justify. Before this function is
-    reached, `_on_proc_exit` has already removed the generation from `_pool`
-    and `_serving`: it can never be claimed for another turn, and nothing will
-    publish into its inventory again. Withdrawn from service, inventory final —
-    a statement about OUR bookkeeping, which we can actually make.
+  · A live generation is NOT REAPED AT ALL. An earlier draft answered this
+    trigger with a terminal state called `withdrawn`, justified by defining
+    `active` as "eligible to serve a turn" — true, since `_on_proc_exit` has
+    already removed the generation from `_pool` and `_serving`. G1 (Orgtree,
+    2026-09-02) held that the word is not ours to narrow: `active` means
+    OS-live, and a process the OS still lists owes the reader `loading` or
+    `loaded` whatever our own bookkeeping says. That is the right call, and it
+    is the same error this chain has been removing everywhere else — making a
+    claim true by shrinking the term inside it rather than by observing.
+
+    So the owner stays, the last observed inventory stays, and readiness says
+    `loading` with the channel-closed fact as its reason. The inventory is
+    kept because the owner is still current: `_mcp_tool_surface_for_owner`
+    answers from the live entry rather than the stash, so clearing it would
+    hand the turn boundary `(None, None)`, which POPS `last_turn_mcp_tools`
+    and strips the gate's baseline — the defect `ae101e6` removed.
+
+  · Termination is a CONFIRMED LIFECYCLE TRANSITION. A lifecycle caller that
+    later observes the exit calls `_mcp_tool_count_end` again; that call sees
+    the exit code and publishes `process-ended` truthfully. If no later exit is
+    observed, a replacement generation supersedes the old owner in the normal
+    begin path. No timer, no probe, no kill, and stdout silence is never
+    treated as evidence of death.
 
   · It could not have been `loaded`. The last-known surface really is accurate
     at the instant of the EOF (MCP tools do not unregister because a pipe
@@ -36,11 +53,13 @@ THE SHAPE OF THE FIX, and why it is this shape:
     closed. `loaded` is present tense. Asserting it would be a cached answer
     standing in for an abstention — the defect class this whole chain removes.
 
-  · No re-observation probe exists on the Claude lane and none is pretended.
+  · No inventory re-observation probe exists on the Claude lane and none is
+    pretended.
     Every caller of `_mcp_tool_count_names` reads the stdout that just closed
     (`supervisor.py:8425`, `:8791`, `warmpool.py:375`), so a "degraded pending
     a probe" state would be permanently pending there. The recovery that does
-    exist (`b236c72`) is event-driven: if the live process speaks again, it is
+    exist (`b236c72`) is defence in depth: if another path empties a live
+    generation's seat and it speaks again, its authoritative inventory can be
     accepted again.
 
   · Recycling stays out. Live background children are a concrete unsafe state
@@ -54,18 +73,19 @@ design (`unit2-design.md` §4b) also specifies a bounded re-observation probe on
 the CODEX lane, where the JSON-RPC transport survives the trigger and a probe
 genuinely can be scheduled. It is not implemented here. `b236c72` already
 recovers that lane the moment any ordinary request enumerates, which on a
-serving node is the next turn; a dedicated probe would add retry, backoff and
-storm-guard machinery to accelerate a recovery that already arrives. §§6-7
-below therefore pin the ABSENCE — that nothing schedules, and that no state
-requiring a probe was introduced — so that if the probe is ever added these
-tests fail loudly rather than passing vacuously.
+    serving node is the next turn; a dedicated probe would add retry, backoff and
+    storm-guard machinery to accelerate a recovery that already arrives. The
+    `loading` state is not waiting for that probe: a confirmed lifecycle exit
+    retires it and a replacement supersedes it. §§7 pins the ABSENCE of a
+    scheduled transport probe so that adding one later requires an explicit
+    contract change.
 
     §1  a spurious EOF never reports the surface as ready/loaded
-    §2  a spurious EOF never claims the process ended
+    §2  a live generation stays ACTIVE and LOADING, and is never claimed ended
     §3  the durable last-known surface survives it
     §4  nothing in this layer is keyed on elapsed time
     §5  the readiness layer touches nothing but `poll()` — it cannot kill
-    §6  no state was introduced that requires a probe to resolve
+    §6  the loading state resolves, and only a confirmed exit resolves it
     §7  the transport is never probed; the bound is structural, not a counter
     §8  an OBSERVED death still reaches `process-ended` immediately
 
@@ -76,6 +96,7 @@ generation-ownership tests, rather than duplicated here.
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 import tempfile
 import threading
@@ -200,37 +221,109 @@ class McpUnit2ContractTests(unittest.TestCase):
             "a terminal state must not leave a reader waiting")
 
     # §2 ---------------------------------------------------------------------
-    def test_a_spurious_eof_never_claims_the_process_ended(self) -> None:
-        """The whole unit, in one assertion — and its reason must say why."""
+    def test_real_process_closing_stdout_while_alive_stays_loading(self) -> None:
+        """Real-process witness for G1, not a permissive fake handle.
+
+        The child closes the exact pipe the Claude pump reads, then remains
+        OS-live long enough for `poll()` to prove it. EOF must not remove its
+        owner or inventory, and must not publish any terminal readiness state.
+        """
+        code = (
+            "import sys,time; "
+            "sys.stderr.write('ready\\n'); sys.stderr.flush(); "
+            "sys.stdout.close(); sys.stdout=None; time.sleep(1)"
+        )
+        proc = subprocess.Popen(  # noqa: S603
+            [sys.executable, "-c", code], stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE)
+        try:
+            self.assertEqual(proc.stderr.readline().rstrip(b"\r\n"), b"ready")
+            self.assertEqual(proc.stdout.read(1), b"",
+                             "precondition: stdout did not reach EOF")
+            self.assertIsNone(proc.poll(),
+                              "precondition: the EOF process already exited")
+            self._publish(proc)
+
+            self.assertFalse(
+                S._mcp_tool_count_end(
+                    self.slug, self.nid, proc, "pump saw real stdout EOF"))
+            st = S.state(self.slug, self.nid)
+            self.assertIs(st.get("mcp_tool_owner"), proc)
+            self.assertEqual(st.get("mcp_tool_count"), 2)
+            self.assertEqual(st.get("mcp_tool_names"), set(TOOLS))
+            self.assertEqual(st.get("mcp_readiness_state"), "loading")
+            self.assertFalse(st.get("mcp_readiness_waiting"))
+            self.assertIn("still running",
+                          str(st.get("mcp_readiness_reason")))
+
+            self.assertEqual(proc.wait(timeout=5), 0,
+                             "the witness did not exit naturally")
+            self.assertTrue(
+                S._mcp_tool_count_end(
+                    self.slug, self.nid, proc, "process exited naturally"))
+            self.assertIsNone(st.get("mcp_tool_owner"))
+            self.assertIsNone(st.get("mcp_tool_count"))
+            self.assertIsNone(st.get("mcp_tool_names"))
+            self.assertEqual(st.get("mcp_readiness_state"), "process-ended")
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+            proc.wait(timeout=5)
+            if proc.stdout is not None:
+                proc.stdout.close()
+            if proc.stderr is not None:
+                proc.stderr.close()
+
+    def test_a_live_generation_stays_active_and_loading(self) -> None:
+        """The whole unit, in one test: the invariant, and the diagnosis."""
         proc = RecordingProc()
         self._publish(proc)
-        S._mcp_tool_count_end(self.slug, self.nid, proc, "pump saw EOF")
+        self.assertFalse(
+            S._mcp_tool_count_end(self.slug, self.nid, proc, "pump saw EOF"),
+            "a closed channel retired a process the OS still lists")
 
         st = S.state(self.slug, self.nid)
-        self.assertEqual(
-            st.get("mcp_readiness_state"), "withdrawn",
-            "a live process was published as ENDED on the strength of a "
-            "closed channel")
+        self.assertIs(
+            st.get("mcp_tool_owner"), proc,
+            "an ACTIVE generation lost its seat, so it reports neither "
+            "LOADING nor LOADED — the combination the invariant forbids")
+        self.assertEqual(st.get("mcp_readiness_state"), "loading")
+        self.assertFalse(
+            st.get("mcp_readiness_waiting"),
+            "the diagnosis became an admission barrier; no turn may be gated "
+            "on this")
         self.assertIn(
             "still running", str(st.get("mcp_readiness_reason")),
-            "terminal must not mean silent: the reason has to state what was "
-            "actually observed, or an operator sees a dead agent")
+            "loading must not mean silent: the reason has to state what was "
+            "actually observed, or an operator sees a stuck agent")
+        self.assertEqual(
+            S._mcp_tool_surface_for_owner(self.slug, self.nid, proc),
+            (2, sorted(TOOLS)),
+            "the last observed surface was erased while the owner is still "
+            "current, so the boundary will pop the durable baseline")
         published = [p for p in self.streamed
                      if p.get("kind") == "mcp_readiness"]
         self.assertTrue(
-            published and published[-1].get("state") == "withdrawn",
-            "the UI was not told; a stored state nobody streams leaves a live "
+            published and published[-1].get("state") == "loading",
+            "the UI was not told; a stored state nobody streams leaves the "
             "agent showing whatever it showed before")
 
     def test_an_unobservable_owner_is_not_evidence_of_an_exit(self) -> None:
-        """The third value. Not observed is not the same as observed dead."""
+        """The third value, and it takes the conservative branch.
+
+        We cannot establish that this process exited, and we cannot rule out
+        that it is active. The invariant binds wherever it MIGHT, so the
+        unobservable case is treated as active: owned, loading, not retired.
+        """
         opaque = object()                       # no `poll` to ask
         self._publish(opaque)
         S._mcp_tool_count_end(self.slug, self.nid, opaque, "teardown")
 
         st = S.state(self.slug, self.nid)
+        self.assertIs(st.get("mcp_tool_owner"), opaque,
+                      "a process nothing could observe was retired anyway")
         self.assertEqual(
-            st.get("mcp_readiness_state"), "withdrawn",
+            st.get("mcp_readiness_state"), "loading",
             "an exit was asserted about a process nothing could observe")
         self.assertIn("could not be observed",
                       str(st.get("mcp_readiness_reason")))
@@ -295,28 +388,29 @@ class McpUnit2ContractTests(unittest.TestCase):
             "nothing else")
 
     # §6 ---------------------------------------------------------------------
-    def test_no_state_was_introduced_that_needs_a_probe_to_resolve(
-            self) -> None:
-        """Every published state resolves without re-observation.
+    def test_a_later_confirmed_exit_resolves_the_loading_state(self) -> None:
+        """The state transition accepts a later, stronger observation.
 
-        A "degraded, pending a probe" state is only honest on a lane where a
-        probe can actually be scheduled, and on Claude none can: stdout EOF IS
-        the trigger and every publisher reads stdout. A state whose exit
-        condition is unreachable is `loading` that never finishes — the same
-        invariant break, quieter. So the terminal states here are reachable in
-        one call, with no second observation pending.
+        This is deliberately a state-function test, not a claim that every
+        lifecycle caller is exercised end to end here. The integration suites
+        own those callers; this negative control pins the rule they invoke:
+        channel EOF cannot retire, while an observed exit must.
         """
-        for alive in (True, False):
-            proc = RecordingProc()
-            self._publish(proc)
-            if not alive:
-                proc.die()
-            S._mcp_tool_count_end(self.slug, self.nid, proc, "EOF")
-            st = S.state(self.slug, self.nid)
-            self.assertIn(
-                st.get("mcp_readiness_state"), ("withdrawn", "process-ended"),
-                "an unresolved intermediate state was published by a layer "
-                "that has no way to resolve it")
+        proc = RecordingProc()
+        self._publish(proc)
+        S._mcp_tool_count_end(self.slug, self.nid, proc, "pump saw EOF")
+        st = S.state(self.slug, self.nid)
+        self.assertEqual(st.get("mcp_readiness_state"), "loading",
+                         "precondition: the live generation is loading")
+
+        # the lifecycle owner, after `proc.wait()` returns
+        proc.die()
+        self.assertTrue(
+            S._mcp_tool_count_end(self.slug, self.nid, proc, "process exited"))
+        self.assertEqual(
+            st.get("mcp_readiness_state"), "process-ended",
+            "the loading state had no way out; a confirmed exit must end it")
+        self.assertIsNone(st.get("mcp_tool_owner"))
 
     # §7 ---------------------------------------------------------------------
     def test_the_transport_is_never_probed_and_the_poll_is_bounded(

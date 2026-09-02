@@ -78,7 +78,24 @@ def mkorg(label: str) -> tuple[str, str]:
 
 
 class _Owner:
-    """Stand-in for a provider process handle — identity is all that matters."""
+    """Stand-in for a provider process handle.
+
+    `poll()` is no longer optional here. `_mcp_tool_count_end` only RETIRES a
+    generation whose exit it can observe: a handle that reports itself alive,
+    or cannot be asked at all, is left owned and merely marked `loading`,
+    because a process the OS still lists is active and an active process owes
+    the reader `loading` or `loaded` rather than a terminal state. §3's
+    "retired process" is a genuinely exited one, so it says so.
+    """
+
+    def __init__(self, alive: bool = True) -> None:
+        self._alive = alive
+
+    def poll(self):                                          # noqa: ANN201
+        return None if self._alive else 0
+
+    def die(self) -> None:
+        self._alive = False
 
 
 def main() -> int:
@@ -147,6 +164,7 @@ def main() -> int:
     check("a published count reports NO reason — a known number needs no "
           "excuse, least of all a false one",
           lambda: eq(reason_for("known"), None, "reason with known count"))
+    owner.die()                 # a RETIRED process is one that has exited
     supervisor._mcp_tool_count_end(slug, nid, owner)
     check("…and a retired process is unknown again, with the honest cause",
           lambda: eq(reason_for("ended"), "no live provider process", "reason"))

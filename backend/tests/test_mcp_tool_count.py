@@ -67,7 +67,10 @@ class McpToolCountTests(unittest.TestCase):
         S.stream = self.saved_stream
 
     def test_stepwise_websocket_deltas_and_stale_generation(self) -> None:
-        old, new = object(), object()
+        # real process handles, because the closing `None` below is emitted
+        # only for a generation whose EXIT was observed: a handle that still
+        # reports itself alive is left owned and merely marked `loading`
+        old, new = self._Proc(101), self._Proc(102)
         S._mcp_tool_count_begin(
             self.slug, self.nid, old, "claude", "system/init.tools",
             "initializing", 4)
@@ -103,6 +106,7 @@ class McpToolCountTests(unittest.TestCase):
             self.slug, self.nid, new,
             ["Bash", "mcp__alpha__one", "mcp__alpha__two"],
             "claude", "system/init.tools")
+        new.die()
         S._mcp_tool_count_end(self.slug, self.nid, new)
 
         count_events = [e for e in self.events
@@ -476,6 +480,9 @@ class McpToolCountTests(unittest.TestCase):
         def die(self) -> None:
             self._alive = False
 
+        def revive(self) -> None:
+            self._alive = True
+
     def test_a_failed_enumeration_leaves_an_unknown_count_and_kept_names(
             self) -> None:
         """Unit 3, and specifically WHERE it lives. Two fields, three states.
@@ -548,19 +555,25 @@ class McpToolCountTests(unittest.TestCase):
             (None, None),
             "an unmeasured surface was given a fabricated total")
 
-    def test_a_live_process_recovers_from_a_spurious_eof(self) -> None:
+    def test_a_spurious_eof_leaves_a_live_generation_owned_and_loading(
+            self) -> None:
         """An ACTIVE process must never be pinned in a terminal state.
 
-        A spurious stdout EOF reaps the generation while its process is still
-        running: `_end` pops the owner and publishes a terminal readiness
-        state. The live process's own inventory was then refused forever by the
-        owner guard — reporting neither LOADING nor LOADED, the one
-        combination the lifecycle invariant forbids.
+        `active` means OS-LIVE, and that is not ours to narrow: a generation
+        the operating system still lists owes the reader `loading` or
+        `loaded`. So a spurious stdout EOF — the pump's `finally`, firing on
+        a process that closed its channel while its background children run —
+        no longer reaps anything. The owner stays, the last observed inventory
+        stays, and readiness says `loading` with the channel-closed fact as
+        its reason.
 
-        Since unit 2 the terminal state it publishes here is `withdrawn`, not
-        `process-ended`: `poll()` says the process is alive, so the strong
-        claim is unavailable and the honest one — removed from service,
-        inventory final — is published instead.
+        The inventory is deliberately NOT cleared. The owner is still current,
+        so `_mcp_tool_surface_for_owner` answers from the live entry rather
+        than the stash, and clearing it would hand the turn boundary
+        `(None, None)` — which pops `last_turn_mcp_tools` and strips the
+        gate's baseline, the defect `ae101e6` removed.
+
+        Nothing here waits: this is a diagnosis, not a barrier.
         """
         live = self._Proc(4242)
         S._mcp_tool_count_begin(
@@ -568,23 +581,43 @@ class McpToolCountTests(unittest.TestCase):
         S._mcp_tool_count_names(
             self.slug, self.nid, live, ["mcp__orgtree__one"], "claude",
             "system/init.tools")
-        S._mcp_tool_count_end(self.slug, self.nid, live, "pump saw EOF")
+        self.assertFalse(
+            S._mcp_tool_count_end(self.slug, self.nid, live, "pump saw EOF"),
+            "a live generation was retired by a closed channel")
         st = S.state(self.slug, self.nid)
+        self.assertIs(
+            st.get("mcp_tool_owner"), live,
+            "a process the OS still lists lost its seat to a pipe closing")
         self.assertEqual(
-            st.get("mcp_readiness_state"), "withdrawn",
-            "a live process was reported ENDED on the strength of a closed "
-            "channel")
+            st.get("mcp_readiness_state"), "loading",
+            "an ACTIVE process reported neither LOADING nor LOADED")
+        self.assertFalse(st.get("mcp_readiness_waiting"),
+                         "the diagnosis became an admission barrier")
+        self.assertIn("still running", str(st.get("mcp_readiness_reason")))
+        self.assertEqual(
+            S._mcp_tool_surface_for_owner(self.slug, self.nid, live),
+            (1, ["mcp__orgtree__one"]),
+            "the last observed surface was erased, so the boundary will pop "
+            "the durable baseline")
 
-        # the same, still-running process reports its inventory again
+        # the same, still-running process reports its inventory again: an
+        # ordinary publish, because it never lost the seat in the first place
         self.assertTrue(S._mcp_tool_count_names(
             self.slug, self.nid, live,
             ["mcp__orgtree__one", "mcp__orgtree__two"], "claude",
             "system/init.tools"))
         self.assertIs(st.get("mcp_tool_owner"), live)
-        self.assertEqual(st.get("mcp_readiness_state"), "recovered")
         self.assertEqual(
             S._mcp_tool_surface_for_owner(self.slug, self.nid, live),
             (2, ["mcp__orgtree__one", "mcp__orgtree__two"]))
+
+        # …and the CONFIRMED exit, observed by the lifecycle owner after
+        # `proc.wait()`, is what finally retires it
+        live.die()
+        self.assertTrue(
+            S._mcp_tool_count_end(self.slug, self.nid, live, "process exited"))
+        self.assertIsNone(st.get("mcp_tool_owner"))
+        self.assertEqual(st.get("mcp_readiness_state"), "process-ended")
 
     class _ReapingLock:
         """`_state_lock` stand-in that fires a spurious EOF as it is taken.
@@ -619,23 +652,29 @@ class McpToolCountTests(unittest.TestCase):
         def __exit__(self, *exc):                            # noqa: ANN002
             return self._real.__exit__(*exc)
 
-    def test_an_eof_inside_the_pre_lock_window_still_recovers(self) -> None:
+    def test_a_reap_inside_the_pre_lock_window_still_recovers(self) -> None:
         """The liveness probe may not be gated on a dirty pre-lock read.
 
-        `_mcp_tool_count_names` observes liveness outside `_state_lock` so that
-        a subprocess syscall never sets the lock's hold time. Gating that probe
-        on an unlocked "does this generation already look reaped?" read put the
-        defect back in a smaller window, which is the whole finding: the read
-        sees the owner still current, so no probe runs and `owner_running`
-        stays False; a spurious EOF then reaps the generation before the lock
-        is taken, the recovery branch IS entered, and it refuses a live process
-        on the strength of a liveness answer that was never asked for.
+        WHAT REACHES THIS NOW. Since `active` was held to mean OS-live, a
+        closed channel no longer reaps a running process, so the spurious-EOF
+        trigger cannot produce a reaped-but-live generation any more — only a
+        CONFIRMED exit empties the seat. This branch is therefore
+        defence-in-depth: it is the guard that keeps a live generation from
+        being pinned in a terminal state if anything ever empties the seat
+        again. The scenario below is constructed rather than observed, and it
+        is written down as constructed so nobody mistakes it for a live path.
 
-        Self-healing on the next publish — and on the Claude lane there may not
-        be one, because stdout EOF is the trigger and every publisher reads
-        stdout. Probing unconditionally removes the window instead of narrowing
-        it, at the cost of one non-blocking `poll()` on an init-or-refresh
-        event.
+        WHY THE GUARD STILL HAS TO BE RIGHT. `_mcp_tool_count_names` observes
+        liveness OUTSIDE `_state_lock`, so a subprocess syscall never sets the
+        lock's hold time. Gating that probe on an unlocked "does this
+        generation already look reaped?" read put the defect back in a smaller
+        window: the read sees the owner still current, so no probe runs and
+        `owner_running` stays False; the seat is then emptied before the lock
+        is taken, the recovery branch IS entered, and it refuses a live
+        process on the strength of a liveness answer nobody asked for.
+
+        Here the probe runs while the process is alive, the reap lands in the
+        window, and the publish under the lock must still be accepted.
         """
         live = self._Proc(2718)
         S._mcp_tool_count_begin(
@@ -644,11 +683,15 @@ class McpToolCountTests(unittest.TestCase):
             self.slug, self.nid, live, ["mcp__orgtree__one"], "claude",
             "system/init.tools")
 
+        def reap() -> None:
+            # observed dead at teardown — the only thing that empties a seat —
+            # while the probe a moment earlier had already seen it alive
+            live.die()
+            S._mcp_tool_count_end(self.slug, self.nid, live, "process exited")
+            live.revive()
+
         saved = S._state_lock
-        S._state_lock = self._ReapingLock(
-            saved,
-            lambda: S._mcp_tool_count_end(
-                self.slug, self.nid, live, "pump saw EOF"))
+        S._state_lock = self._ReapingLock(saved, reap)
         try:
             accepted = S._mcp_tool_count_names(
                 self.slug, self.nid, live,
@@ -726,7 +769,9 @@ class McpToolCountTests(unittest.TestCase):
         S._mcp_tool_count_names(
             self.slug, self.nid, reaped, ["mcp__orgtree__one"], "claude",
             "system/init.tools")
-        S._mcp_tool_count_end(self.slug, self.nid, reaped, "pump saw EOF")
+        # a CONFIRMED exit, which is now the only thing that empties the seat
+        reaped.die()
+        S._mcp_tool_count_end(self.slug, self.nid, reaped, "process exited")
         st = S.state(self.slug, self.nid)
         self.assertIsNone(st.get("mcp_tool_owner"),
                           "precondition: the seat is empty")
@@ -768,7 +813,7 @@ class McpToolCountTests(unittest.TestCase):
         self.assertIsNone(st.get("mcp_tool_names"))
 
     def test_unknown_provider_and_tree_contract(self) -> None:
-        owner = object()
+        owner = self._Proc(7070)
         with store.DOC_LOCK:
             org = store.load_org(self.slug)
             org.node(self.nid)["last_turn_mcp_tool_count"] = 2
@@ -787,6 +832,7 @@ class McpToolCountTests(unittest.TestCase):
         self.assertFalse(node["mcp_readiness_waiting"])
         self.assertEqual(node["mcp_readiness_state"], "initializing")
 
+        owner.die()             # only a CONFIRMED exit retires a generation
         S._mcp_tool_count_end(self.slug, self.nid, owner)
         payload = TestClient(api.app).get(f"/api/orgs/{self.slug}").json()
         node = payload["roots"][0]
@@ -796,10 +842,9 @@ class McpToolCountTests(unittest.TestCase):
         # inventory", which is true once the owner is popped.
         self.assertEqual(node["mcp_tool_count_reason"],
                          "no live provider process")
-        # The READINESS state is the one that names the process, and `owner` is
-        # a bare object with no `poll` — nothing observed an exit, so the API
-        # reports the withdrawal rather than a death it cannot see.
-        self.assertEqual(node["mcp_readiness_state"], "withdrawn")
+        # …and the exit was OBSERVED, so the strong terminal state is the
+        # honest one and the API says so.
+        self.assertEqual(node["mcp_readiness_state"], "process-ended")
 
     def test_runtime_counts_do_not_change_warm_identity(self) -> None:
         org = store.load_org(self.slug)

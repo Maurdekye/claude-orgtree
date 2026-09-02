@@ -8,15 +8,23 @@ The recovery is correct where it fires. These tests record WHERE IT DOES NOT,
 so the bounded-unobservable redesign is scoped against measurements rather than
 against the commit message.
 
-Two of the three publish paths cannot recover a spuriously-reaped generation:
+⚠ READ THIS FIRST — THE TRIGGER THIS SUITE WAS BUILT AROUND NO LONGER REAPS.
+`active` was held to mean OS-LIVE, so a closed channel on a running process
+now leaves the generation OWNED and merely `loading`; only a CONFIRMED exit
+empties the seat. A spurious stdout EOF therefore cannot produce the
+reaped-but-live generation these tests recover from, and the narrow reach
+measured below is no longer the thing standing between a live agent and a
+permanent terminal state — the fix for that is upstream, in not reaping it.
+
+The measurements are kept, and the helper now MANUFACTURES the reaped-but-live
+state (observed exit, then the handle reports alive again) rather than getting
+it free from the EOF path. They still earn their place: the recovery branch is
+defence-in-depth for anything that empties the seat in future, and its reach is
+worth knowing before someone relies on it.
 
     republish via _names             accepted=True   readiness=recovered
-    republish via _server (refresh)  accepted=False  readiness=withdrawn
-    republish via _unknown           accepted=False  readiness=withdrawn
-
-(`withdrawn` since unit 2. These rows are all LIVE processes, and the terminal
-state for a live process no longer claims it ended — the reach measured here
-is unchanged, only the name of the state it is stuck in.)
+    republish via _server (refresh)  accepted=False  readiness=process-ended
+    republish via _unknown           accepted=False  readiness=process-ended
 
 And the reach is narrower still once you ask which lane can reach `_names` at
 all after the trigger fires:
@@ -69,10 +77,23 @@ TOOLS = ["mcp__a__one", "mcp__b__two"]
 
 
 class LiveProc:
-    """Demonstrably still running: `poll()` returns None."""
+    """Demonstrably still running: `poll()` returns None.
 
-    def poll(self) -> None:
-        return None
+    `die`/`revive` exist only so the helper can MANUFACTURE a reaped-but-live
+    generation, which the product no longer produces on its own — see header.
+    """
+
+    def __init__(self) -> None:
+        self._alive = True
+
+    def poll(self):                                          # noqa: ANN201
+        return None if self._alive else 0
+
+    def die(self) -> None:
+        self._alive = False
+
+    def revive(self) -> None:
+        self._alive = True
 
 
 class DeadProc:
@@ -104,28 +125,31 @@ class McpRecoveryReachTests(unittest.TestCase):
         S.stream = self.saved_stream
 
     def _spuriously_reap(self, owner: object) -> None:
-        """Publish a real surface, then reap it while the process still runs."""
+        """Publish a real surface, then MANUFACTURE a reaped-but-live state.
+
+        Constructed, not observed: the handle reports an exit at teardown —
+        the only thing that empties a seat — and reports itself alive again
+        afterwards. Nothing in the product produces this today; see the header.
+        """
         S._mcp_tool_count_begin(
             self.slug, self.nid, owner, "codex", "mcpServerStatus/list",
             "starting")
         S._mcp_tool_count_names(
             self.slug, self.nid, owner, TOOLS, "codex",
             "mcpServerStatus/list")
+        was_alive = getattr(owner, "poll", lambda: 0)() is None
+        if was_alive:
+            owner.die()
         S._mcp_tool_count_end(self.slug, self.nid, owner)
-        # Unit 2 made the terminal state depend on what was OBSERVED, so the
-        # expected value here does too: a process `poll()` reports alive is
-        # `withdrawn` (removed from service, inventory final — the honest claim
-        # when the channel closed but the process did not), and only an
-        # observed exit is `process-ended`. Deriving it rather than hard-coding
-        # it keeps this helper usable by both the live and the dead cases, and
-        # keeps the precondition it exists to establish unchanged: the
-        # generation was reaped into a TERMINAL readiness state.
-        terminal = ("withdrawn" if getattr(owner, "poll", lambda: 0)() is None
-                    else "process-ended")
+        if was_alive:
+            owner.revive()
         self.assertEqual(
             S.state(self.slug, self.nid).get("mcp_readiness_state"),
-            terminal,
+            "process-ended",
             "precondition: the generation was reaped into a terminal state")
+        self.assertIsNone(
+            S.state(self.slug, self.nid).get("mcp_tool_owner"),
+            "precondition: the seat is empty")
 
     def test_a_full_republish_recovers_the_live_generation(self) -> None:
         """The path b236c72 fixes. Positive control for the two below."""
@@ -168,7 +192,7 @@ class McpRecoveryReachTests(unittest.TestCase):
 
         self.assertFalse(accepted)
         self.assertIsNone(st.get("mcp_tool_owner"))
-        self.assertEqual(st.get("mcp_readiness_state"), "withdrawn",
+        self.assertEqual(st.get("mcp_readiness_state"), "process-ended",
                          "a live process is still pinned in a terminal state")
 
     def test_a_failed_refresh_cannot_recover(self) -> None:
@@ -182,7 +206,7 @@ class McpRecoveryReachTests(unittest.TestCase):
         st = S.state(self.slug, self.nid)
 
         self.assertFalse(accepted)
-        self.assertEqual(st.get("mcp_readiness_state"), "withdrawn")
+        self.assertEqual(st.get("mcp_readiness_state"), "process-ended")
 
     def test_recovery_never_displaces_an_adopted_successor(self) -> None:
         """The clause that keeps recovery from resurrecting a predecessor."""
