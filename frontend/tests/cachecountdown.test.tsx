@@ -20,9 +20,16 @@ import type { CacheForecast } from '../src/types'
 /** A fixed instant with nothing special about it. */
 const NOW = Date.parse('2026-09-02T12:00:00Z')
 
+// D-226: a real payload always carries the readiness triple, so the fixture
+// does too. Tests that want a row WITHOUT it override it explicitly — see
+// "a payload with no readiness is grey, never green".
 const green = (overrides: Partial<CacheForecast> = {}): CacheForecast => ({
   generation: 'opaque-generation',
   state: 'compatible_observed',
+  readiness: 'ready',
+  readiness_cause: 'receipt_valid',
+  readiness_detail: 'A positive cache receipt for this exact prefix is still '
+    + "inside the lane's TTL. A provider hit is likely but never guaranteed.",
   reason: 'observed',
   source: 'provider receipts',
   lane: 'subscription',
@@ -119,20 +126,30 @@ test('no confident countdown without an authoritative expiry', async () => {
       green({ ttl_seconds: 0 }), 'compatible', 'cache ✓'],
     ['an unparseable stamp',
       green({ expires_at: 'not-a-timestamp' }), 'compatible', 'cache ✓'],
-    // D-214's green: no completed turn exists to conflict with the next one.
-    // There is no cache entry here at all, so there is nothing to count down
-    // to — but it stays green, because that ruling is about the ABSENCE of a
-    // conflict and this feature does not overturn it.
-    ['no completed fingerprint', green({
+    // ⚠ D-226 REVERSES D-214 HERE. This case used to be GREEN, on the
+    // argument that with no completed turn there is nothing to conflict with.
+    // The user ruled that green requires AFFIRMATIVE evidence of
+    // compatibility, and the absence of all evidence is not that. It is red.
+    ['no completed fingerprint is RED, not green', green({
       state: 'uncertain', source: 'no_completed_fingerprint',
+      readiness: 'not_ready', readiness_cause: 'no_completed_fingerprint',
       expires_at: null,
-    }), 'compatible', 'cache ✓'],
-    ['ordinary uncertainty', green({
-      state: 'uncertain', source: 'no_positive_receipt', expires_at: null,
-    }), 'uncertain', 'cache ?'],
-    ['known incompatible', green({
-      state: 'known_incompatible', expires_at: null,
     }), 'cold', 'cache ×'],
+    ['no positive receipt is red, not grey', green({
+      state: 'uncertain', source: 'no_positive_receipt',
+      readiness: 'not_ready', readiness_cause: 'no_positive_receipt',
+      expires_at: null,
+    }), 'cold', 'cache ×'],
+    ['known incompatible', green({
+      state: 'known_incompatible', readiness: 'not_ready',
+      readiness_cause: 'prefix_changed', expires_at: null,
+    }), 'cold', 'cache ×'],
+    // The ONLY grey left: an enumerated fault, not an opinion about the cache.
+    ['an unsupported lane is a named grey diagnostic', green({
+      state: 'uncertain', source: 'capability_unsupported',
+      readiness: 'diagnostic', readiness_cause: 'unsupported_capability',
+      lane: 'provider_unsupported', ttl_seconds: null, expires_at: null,
+    }), 'uncertain', 'cache ?'],
   ]
   for (const [label, row, cls, body] of cases) {
     const view = await mountView(<CacheForecastMark forecast={row} />, (el) => el)

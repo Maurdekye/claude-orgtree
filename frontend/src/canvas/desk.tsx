@@ -8,7 +8,8 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import type { ReactNode } from 'react'
 import type {
-  CacheForecast, ChatMessage, ChatPayload, HistoryItem, ScratchPayload, TurnStat,
+  CacheForecast, ChatMessage, ChatPayload, HistoryItem, PendingMail, Readiness,
+  ScratchPayload, TurnStat,
   ToolChip as ToolChipData, ToastFn,
 } from '../types'
 import {
@@ -289,10 +290,27 @@ export function TurnStartingMark({ mcpWaiting, reason }: {
   </div>
 }
 
-const defaultCompatibleForecast = (forecast: CacheForecast): boolean =>
-  forecast.state === 'uncertain'
-  && forecast.source === 'no_completed_fingerprint'
-  && (forecast.lane === 'subscription' || forecast.lane === 'api_key')
+/** D-226. The badge renders READINESS and nothing else.
+ *
+ * ⚠ THIS REPLACES `defaultCompatibleForecast`, WHICH WAS D-214'S GREEN. That
+ * helper turned `no_completed_fingerprint` on a supported lane green, arguing
+ * that with no completed turn there is nothing to conflict with. The user
+ * overruled it: green now requires AFFIRMATIVE evidence of compatibility, and
+ * the absence of all evidence is not that. Do not reintroduce it — the case is
+ * red now, and `test_cache_readiness` pins it.
+ *
+ * ⚠ AND AN UNREADABLE PAYLOAD IS NOT GREEN. An absent or unrecognised
+ * readiness resolves to the named `internal_error` diagnostic, because a badge
+ * that fails open is the single most expensive lie this component can tell.
+ */
+const readinessOf = (forecast: CacheForecast): Readiness =>
+  forecast.readiness === 'ready' || forecast.readiness === 'not_ready'
+    || forecast.readiness === 'diagnostic' ? forecast.readiness : 'diagnostic'
+
+const readinessCause = (forecast: CacheForecast): string =>
+  forecast.readiness === 'ready' || forecast.readiness === 'not_ready'
+    || forecast.readiness === 'diagnostic'
+    ? forecast.readiness_cause || 'internal_error' : 'internal_error'
 
 const cacheForecastTitle = (forecast: CacheForecast): string => {
   const ttl = typeof forecast.ttl_seconds === 'number'
@@ -301,18 +319,21 @@ const cacheForecastTitle = (forecast: CacheForecast): string => {
       : forecast.ttl_seconds === 300 ? '5 minutes (API-key inference)'
         : `${forecast.ttl_seconds} seconds (derived from inference lane)`
     : 'unavailable'
-  const compatibility = defaultCompatibleForecast(forecast)
-    ? 'No completed turn exists to conflict with this one; no known cache invalidation (provider cache hit not guaranteed).'
-    : forecast.state === 'compatible_observed'
-      ? 'known compatible locally (provider hit not guaranteed)'
-      : forecast.state === 'known_incompatible' ? 'known incompatible'
-        : forecast.state === 'expired_known_entry' ? 'known cold at the configured boundary'
-          : 'unknown'
+  const readiness = readinessOf(forecast)
+  const compatibility = readiness === 'ready'
+    ? 'compatibility-ready — a positive receipt for this exact prefix is still inside its window (provider hit not guaranteed)'
+    : readiness === 'not_ready'
+      ? 'NOT compatibility-ready — compatibility is not established for the next turn'
+      : `no verdict — ${readinessCause(forecast).replace(/_/g, ' ')}`
   const changed = forecast.changed_inputs?.length
     ? `changed components:\n${forecast.changed_inputs.map((v) => `• ${v}`).join('\n')}`
     : 'changed components: none reported'
   return [
     `next-turn cache compatibility: ${compatibility}`,
+    // D-226: a grey badge must ALWAYS be able to say why it is grey, and the
+    // cause is machine-readable so a screenshot is still triage-able.
+    `readiness: ${readiness} (${readinessCause(forecast)})`,
+    forecast.readiness_detail || '',
     `reason: ${forecast.reason || 'unavailable'}`,
     changed,
     `lane/source: ${forecast.lane || 'unknown'} / ${forecast.source || 'unknown'}`,
@@ -331,11 +352,16 @@ const cacheForecastTitle = (forecast: CacheForecast): string => {
  * turn reported cache reads or writes — so it means "this observed entry dies
  * at T". A forecast that is merely *not known to be broken* has no entry and
  * no T, and counting down to one would invent confidence the backend never
- * claimed. That includes the D-214 green case (`no_completed_fingerprint` on a
- * supported lane), which stays green with its ✓ precisely because it is a
- * statement about the absence of conflict, not about a live cache entry.
+ * claimed.
+ *
+ * ⚠ D-226 ADDS A SECOND LOCK: the countdown is GREEN-ONLY. Requiring
+ * `readiness === 'ready'` as well as `compatible_observed` means a row whose
+ * observational state and readiness ever disagree cannot produce a ticking
+ * clock — it falls back to the readiness verdict, which is the one the user
+ * ruled the badge must show.
  */
 const cacheExpiryAt = (forecast: CacheForecast): number | null => {
+  if (readinessOf(forecast) !== 'ready') return null
   if (forecast.state !== 'compatible_observed') return null
   if (typeof forecast.ttl_seconds !== 'number'
     || !Number.isFinite(forecast.ttl_seconds)
@@ -420,15 +446,18 @@ export function CacheForecastMark({ forecast }: {
   // The backend already has a name and a colour for "a known entry passed the
   // derived boundary", and it is red, not grey. Demoting to grey here would
   // have the same fact wearing two different colours depending on which side
-  // of a poll it was observed from. Grey means "unknown"; this is not unknown.
+  // of a poll it was observed from. Grey is a named fault; this is not one.
   const expired = expiresAt !== null && !live
-  const compatible = (forecast.state === 'compatible_observed'
-    || defaultCompatibleForecast(forecast)) && !expired
-  const uncertain = !expired && forecast.state === 'uncertain'
-  const cls = compatible ? 'compatible' : uncertain ? 'uncertain' : 'cold'
+  // D-226: three outcomes, decided by readiness alone. An elapsed countdown
+  // overrides `ready` locally rather than waiting for the next poll — the
+  // whole point of counting down is to stop being green on time.
+  const readiness = readinessOf(forecast)
+  const compatible = readiness === 'ready' && !expired
+  const diagnostic = readiness === 'diagnostic' && !expired
+  const cls = compatible ? 'compatible' : diagnostic ? 'uncertain' : 'cold'
   const body = compatible && live
     ? countdownText(left)
-    : compatible ? '✓' : uncertain ? '?' : '×'
+    : compatible ? '✓' : diagnostic ? '?' : '×'
   const title = compatible && live
     ? `${cacheForecastTitle(forecast)}\nexpires in ${countdownText(left)}`
     : expired
@@ -866,6 +895,64 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
     if (force) setStuck(true)
     return refreshConvo(slug, node.id, { force })
   }, [slug, node.id])
+  // ⭐ WHERE A PENDING BUBBLE BELONGS IS A QUESTION ABOUT WHOSE TURN IT IS.
+  // `delivering` + `via:'turn'` means the mailbox has already handed this
+  // message to the turn that is running now: it is that turn's QUESTION, and
+  // everything live below is that turn's answer, so it sorts above them. Every
+  // other pending entry is still waiting for a turn that has not started, so it
+  // sorts after the running turn's output — which is where they all used to
+  // sit, question and all (user report 2026-09-01).
+  // Steered mail (`delivering`, no `via`) stays below too: it arrived DURING
+  // the turn, so the live rows above it really did happen first.
+  const pendMail = (chat?.pending_mail ?? []).filter((m) => m.from === USER)
+  const pendNow = pendMail.filter((m) => m.delivering && m.via === 'turn')
+  const pendLater = pendMail.filter((m) => !(m.delivering && m.via === 'turn'))
+  // ONE renderer, two places (it is the same bubble; only its position says
+  // something different). Kept as a function rather than a component so it
+  // keeps closing over this desk's slug/node/refresh exactly as it did inline.
+  const pendBubble = (m: PendingMail) => (
+    <div key={m.id ?? m.at} className="msg user pending pendrow">
+      {/* ⚠ THIS IS A PREVIEW OF `Msg`, SO IT IS BUILT LIKE `Msg`
+          (user, 2026-08-28): text in its own block, then the attachments in an
+          `.attach-row` beneath it — a COLUMN. It used to lay text and
+          thumbnails side by side, so the same message rearranged itself the
+          instant it was delivered; a preview that does not predict its own
+          result is the bug. Ruling (user): "the columnar display is best for
+          this, yes".
+          ⚠ The two blocks are GATED like Msg's too — an empty body renders no
+          text block and no attachments render no row, so an image with no
+          caption has no blank line above it and text with no image has no
+          empty row below it.
+          The `.pendrow` flex stays, with exactly one content child: that is
+          what keeps the delivery tag / retract ✕ pinned at the top right where
+          it already was, which the user asked for by name. */}
+      <div className="pendbody">
+        {m.body && <div className="msgtext md"
+          dangerouslySetInnerHTML={md(m.body, fileBase(slug, node.id))} />}
+        {/* a queued image renders viewable (dimmed like the bubble) — the
+            upload already landed, only the MAIL is undelivered */}
+        {(m.attachments ?? []).length > 0 && (
+          <div className="attach-row">
+            {(m.attachments ?? []).map((a) => (a.path && isImg(a.name ?? a.path)
+              ? <AttachThumb key={a.path} dim href={fileUrl(slug, node.id, a.path)}
+                  name={a.name ?? a.path} meta={a.bytes != null ? fmtBytes(a.bytes) : undefined} />
+              : <span key={a.path ?? a.name} className="attach-chip dim">
+                  <FileIcon fontSize="inherit" /> {a.name}</span>))}
+          </div>)}
+      </div>
+      {/* journal-riding mail (drained for a mid-task delivery) shows as queued
+          but is past the point of retraction */}
+      {m.delivering
+        ? <span className="dim pend-tag">{m.via === 'turn'
+          ? 'delivering…' : 'delivering mid-task…'}</span>
+        : m.id && (
+          <button className="chip-x" title="retract (undelivered)"
+            onClick={() => retractMail(slug, node.id, m.id!)
+              .then(() => refresh(true))
+              .catch((e: Error) => toast([`error: ${e.message}`]))}>
+            <CloseIcon fontSize="inherit" /></button>)}
+    </div>
+  )
   useEffect(() => {
     if (!convo.loaded) void refreshConvo(slug, node.id)
   }, [slug, node.id, convo.loaded])
@@ -1385,6 +1472,21 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
               </div>
             )
           })}
+          {/* ⭐ THE QUESTION, ABOVE ITS OWN ANSWER (user report 2026-09-01:
+              "the message appears to still be mid-transit, but the streamed
+              response begins appearing before it enters the transcript").
+              A `delivering · via:turn` entry is not queued mail — it is the
+              message the RUNNING turn was started to answer, drained out of
+              the mailbox and not yet echoed into the transcript (D-54 keeps
+              the handover inside one payload). Everything below this line
+              belongs to that turn, so the bubble belongs above it; drawn at
+              the bottom, it put the answer above the question for as long as
+              the provider took to write the user row — measured on the live
+              codex coordinator at 0.6 s warm, and the whole of a cold
+              app-server's start otherwise.
+              The remaining pending mail is genuinely still waiting and stays
+              at the bottom, after the live tail, where it is true. */}
+          {pendNow.map(pendBubble)}
           {/* keyed on the server's row id (`n`), never the index: rows retire
               from the MIDDLE of this list as the transcript catches up, and an
               index key would rename every row below the one that left */}
@@ -1433,51 +1535,11 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
             <TurnStartingMark mcpWaiting={mcpReadinessWaiting}
               reason={mcpReadinessReason} />)}
           {/* №11: pending bubbles render from the DURABLE server copy, each
-              retractable until delivery (№17) */}
-          {(chat?.pending_mail ?? []).filter((m) => m.from === USER).map((m) => (
-            <div key={m.id ?? m.at} className="msg user pending pendrow">
-              {/* ⚠ THIS IS A PREVIEW OF `Msg`, SO IT IS BUILT LIKE `Msg`
-                  (user, 2026-08-28): text in its own block, then the
-                  attachments in an `.attach-row` beneath it — a COLUMN. It
-                  used to lay text and thumbnails side by side, so the same
-                  message rearranged itself the instant it was delivered; a
-                  preview that does not predict its own result is the bug.
-                  Ruling (user): "the columnar display is best for this, yes".
-                  ⚠ The two blocks are GATED like Msg's too — an empty body
-                  renders no text block and no attachments render no row, so
-                  an image with no caption has no blank line above it and text
-                  with no image has no empty row below it.
-                  The `.pendrow` flex stays, with exactly one content child:
-                  that is what keeps the delivery tag / retract ✕ pinned at the
-                  top right where it already was, which the user asked for by
-                  name. */}
-              <div className="pendbody">
-                {m.body && <div className="msgtext md"
-                  dangerouslySetInnerHTML={md(m.body, fileBase(slug, node.id))} />}
-                {/* a queued image renders viewable (dimmed like the bubble) —
-                    the upload already landed, only the MAIL is undelivered */}
-                {(m.attachments ?? []).length > 0 && (
-                  <div className="attach-row">
-                    {(m.attachments ?? []).map((a) => (a.path && isImg(a.name ?? a.path)
-                      ? <AttachThumb key={a.path} dim href={fileUrl(slug, node.id, a.path)}
-                          name={a.name ?? a.path} meta={a.bytes != null ? fmtBytes(a.bytes) : undefined} />
-                      : <span key={a.path ?? a.name} className="attach-chip dim">
-                          <FileIcon fontSize="inherit" /> {a.name}</span>))}
-                  </div>)}
-              </div>
-              {/* journal-riding mail (drained for a mid-task delivery) shows
-                  as queued but is past the point of retraction */}
-              {m.delivering
-                ? <span className="dim pend-tag">{m.via === 'turn'
-                  ? 'delivering…' : 'delivering mid-task…'}</span>
-                : m.id && (
-                  <button className="chip-x" title="retract (undelivered)"
-                    onClick={() => retractMail(slug, node.id, m.id!)
-                      .then(() => refresh(true))
-                      .catch((e: Error) => toast([`error: ${e.message}`]))}>
-                    <CloseIcon fontSize="inherit" /></button>)}
-            </div>
-          ))}
+              retractable until delivery (№17).
+              ⚠ Only the ones that are still WAITING render here, at the
+              bottom. The one being delivered INTO the running turn was hoisted
+              above the live tail — see pendNow. */}
+          {pendLater.map(pendBubble)}
           {pending.map((p) => (
             <div key={'q' + p.id} className="msg user pending md"
               dangerouslySetInnerHTML={md(p.text, fileBase(slug, node.id))} />

@@ -26,9 +26,20 @@ export type CacheForecastState =
   | 'expired_known_entry'
   | 'uncertain'
   | 'compatible_observed'
+/** D-226. What the badge RENDERS, as opposed to `state`, which is what was
+ * observed. Binary in normal operation; `diagnostic` is grey and is reserved
+ * for an enumerated fault that stopped an opinion being formed at all. */
+export type Readiness = 'ready' | 'not_ready' | 'diagnostic'
+
 export interface CacheForecast {
   generation: string
   state: CacheForecastState
+  /** ⚠ OPTIONAL ON THE WIRE ONLY. A payload without it is not "fine by
+   * default" — the badge treats an absent or unknown readiness as the named
+   * `internal_error` diagnostic, never as green. */
+  readiness?: Readiness
+  readiness_cause?: string
+  readiness_detail?: string
   reason: string
   source: string
   lane: string

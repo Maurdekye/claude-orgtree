@@ -8200,7 +8200,27 @@ therefore cannot produce a ticking clock; it falls back to the readiness
 verdict, which is the one the ruling says the badge must show. At zero it turns
 red on its own rather than waiting for the next poll, unchanged from D-223.
 
-Tests: `backend/tests/test_cache_readiness.py` (18 checks, new) proves the
+LEGACY ROWS ARE A MIGRATION, NOT A DEFECT. Every forecast persisted before
+this change lacks the readiness triple. The first implementation sent all of
+them through the unknown-cause door, which meant the first tree poll after
+deploy would render EVERY idle node grey as `internal_error` and log an
+UNCLASSIFIED incident for each one, on every poll, until that node next
+completed a turn. Invariant-compliant on a literal reading — enumerated,
+explained, logged — and wrong: it labels a schema migration as a classifier
+defect, strands idle agents on grey indefinitely, and buries a real incident in
+predictable noise. `legacy_readiness()` re-derives the verdict from the
+persisted `state`/`source` pair, which is deterministic for every row the
+classifier could actually have produced. The one genuinely ambiguous case
+(`ttl_unobserved` cannot distinguish an unsupported lane from an unreadable
+stamp without the provider, which the public row does not carry) resolves to
+RED `legacy_forecast_unmigrated` — never green, and never a guessed grey,
+because red is the invariant's correct default for "not established". The same
+healing is applied on `cache_forecast_public`'s early return, which hands back
+a persisted row without passing through `public()`; the frontend already fails
+closed there, but the invariant should hold by construction rather than by
+accident. Found in review by `readiness-postreview` before landing.
+
+Tests: `backend/tests/test_cache_readiness.py` (19 checks, new) proves the
 mapping is total in BOTH directions — every emitted cause is declared, and
 every declared cause except `internal_error` is reachable from a real
 `classify` sweep, so a branch added tomorrow with a forgotten verdict fails

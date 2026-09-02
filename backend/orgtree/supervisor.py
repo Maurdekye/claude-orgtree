@@ -4296,6 +4296,13 @@ def _has_deliverable(slug: str, nid: str) -> bool:
                 or (org.d.get("notices") or {}).get(nid))
 
 
+def _readiness_incident_log(slug: str, nid: str, detail: str) -> None:
+    """Say it out loud (D-226). An unclassified cache-readiness condition is a
+    defect in the classifier, and a grey badge is not a bug report: without
+    this line the only trace of it is a colour nobody can grep for."""
+    print(f"[orgtree] {slug}/{nid}: cache readiness UNCLASSIFIED — {detail}")
+
+
 def _phantom_log(slug: str, nid: str, where: str) -> None:
     """Say it out loud. A dropped wake is invisible by construction, and an
     invisible fix cannot be told apart from a bug that stopped reproducing."""
@@ -5710,6 +5717,16 @@ def cache_forecast_public(org: Org, nid: str,
     old = dict(public_row)
     internal_raw = book.get("forecast")
     if not isinstance(internal_raw, dict):
+        # D-226: this early return hands back a PERSISTED row that never went
+        # through `cachecontinuity.public`, so a pre-D-226 row would reach the
+        # badge with no readiness triple at all. The frontend fails closed and
+        # would render it grey, so the invariant holds either way — but it
+        # would hold by accident, and the honest verdict is recoverable from
+        # what was persisted. Heal it here rather than relying on the UI.
+        if not old.get("readiness_cause"):
+            old.update(cachecontinuity.legacy_readiness(
+                str(old.get("state") or ""), str(old.get("source") or ""),
+                str(old.get("lane") or "")))
         return old
     internal = dict(internal_raw)
     now = time.time() if now is None else now
@@ -5756,11 +5773,24 @@ def cache_forecast_public(org: Org, nid: str,
                     if codex_estimate else
                     f"The observed {int(old.get('ttl_seconds') or 0) // 60}"
                     "-minute cache entry has expired."),
+                # D-226: this path rewrites the verdict without going back
+                # through `classify`, so it must restate the readiness triple
+                # too. Leaving the old row's fields here would keep a GREEN
+                # readiness on a forecast that just became expired — the exact
+                # "same fact, two colours" split the badge exists to prevent.
+                **cachecontinuity.readiness_fields("receipt_expired"),
             })
     action, action_reason = _cache_precompact_decision(org, nid, internal)
     candidate = cachecontinuity.public(
         internal, generation=str(old.get("generation") or ""),
         precompact_action=action, precompact_reason=action_reason)
+    # D-226 requires an unclassified readiness state to be OBSERVABLE, not
+    # merely rendered. `public` already converts every unknown into the named
+    # `internal_error`; this is the half that makes it findable afterwards.
+    if candidate.get("readiness_cause") == "internal_error":
+        _readiness_incident_log(
+            org.d.get("slug") or "", nid,
+            str(candidate.get("readiness_detail") or ""))
     without_generation = {k: v for k, v in candidate.items()
                           if k != "generation"}
     old_without_generation = {k: v for k, v in old.items()

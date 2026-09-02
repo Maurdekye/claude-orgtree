@@ -2,7 +2,9 @@
 
 *(implementer, 2026-08-11; updated 2026-09-01. The numbered ideas remain
 historical design context. Current receipt/TTL and automatic-compaction
-behavior is normative in `cache-continuity.md` and D-214.)*
+behavior is normative in `cache-continuity.md` and D-214, as amended by D-226 —
+which reverses D-214's green for `no_completed_fingerprint` and makes the badge
+binary green/red with grey reserved for enumerated faults.)*
 
 ## The problem
 

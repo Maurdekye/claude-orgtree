@@ -19,9 +19,229 @@ State = Literal[
     "compatible_observed",
 ]
 
+#: READINESS — what the badge renders, as distinct from ``State``, which is
+#: what was observed.  User ruling 2026-09-02: compatibility readiness is
+#: BINARY in normal operation.  Grey is not a third opinion about the cache;
+#: it is reserved for an enumerated fault that prevented an opinion from being
+#: formed at all, and every one of those carries a machine-readable cause and
+#: a sentence a human can act on.  There is deliberately no catch-all: a cause
+#: this table does not know is itself a named state (``internal_error``), so an
+#: unclassified condition is loud rather than quietly grey.
+Readiness = Literal["ready", "not_ready", "diagnostic"]
+
+#: The closed set.  ⚠ ADDING A BRANCH TO ``classify`` MEANS ADDING A CAUSE
+#: HERE — `test_cache_readiness` asserts every emitted cause is in this table
+#: and that every entry in this table is reachable, so a new branch that
+#: forgets its verdict fails the suite rather than rendering as a silent grey.
+READINESS: Final[dict[str, Readiness]] = {
+    # GREEN — affirmative evidence of compatibility.  Never a claim that the
+    # provider will hit; only that nothing local contradicts the receipt.
+    "receipt_valid": "ready",
+    "receipt_valid_codex_estimate": "ready",
+    # RED — "not compatibility-ready / not established".  Note the phrasing:
+    # with the single exception of an elapsed entry, none of these is proof of
+    # an actual provider miss, and the copy must not pretend otherwise.
+    "no_completed_fingerprint": "not_ready",
+    "history_unobserved": "not_ready",
+    "no_positive_receipt": "not_ready",
+    "receipt_prefix_unobserved": "not_ready",
+    "prefix_changed": "not_ready",
+    "receipt_expired": "not_ready",
+    "lane_unobserved": "not_ready",
+    "legacy_forecast_unmigrated": "not_ready",
+    # GREY — enumerated diagnostics ONLY.  Each names a fault, not a cache
+    # state: the provider cannot report, the data would not parse, the clock
+    # disagrees with itself, or we failed to classify.
+    "unsupported_capability": "diagnostic",
+    "receipt_timestamp_unreadable": "diagnostic",
+    "clock_anomaly": "diagnostic",
+    "internal_error": "diagnostic",
+}
+
+#: User-facing explanation per cause.  Every grey MUST be able to say why it
+#: is grey, so this is required for a diagnostic and merely useful for the
+#: rest.  Kept beside the table so a new cause cannot ship without its copy.
+READINESS_DETAIL: Final[dict[str, str]] = {
+    "receipt_valid":
+        "A positive cache receipt for this exact prefix is still inside the "
+        "lane's TTL. A provider hit is likely but never guaranteed.",
+    "receipt_valid_codex_estimate":
+        "A positive cache receipt for this exact prefix is still inside the "
+        "fixed 30-minute Codex subscription estimate. That window is an "
+        "estimate, not a reported TTL, and a provider hit is not guaranteed.",
+    "no_completed_fingerprint":
+        "No completed turn has been observed for this agent yet, so there is "
+        "nothing to establish cache readiness from. This is not a miss — it "
+        "is the absence of evidence either way.",
+    "history_unobserved":
+        "Local history continuity could not be observed, so a matching prefix "
+        "cannot be established.",
+    "no_positive_receipt":
+        "The local prefix matches, but no positive cache receipt has been "
+        "observed on this lane, so readiness is not established.",
+    "receipt_prefix_unobserved":
+        "The prefix the cache receipt was observed against could not be "
+        "verified locally, so readiness is not established.",
+    "prefix_changed":
+        "A component of the cached prefix changed — provider, account, lane, "
+        "model, session lineage, or the already-sent prompt or history. The "
+        "previous entry does not apply to the next turn.",
+    "receipt_expired":
+        "The observed cache entry has passed its lane boundary. A provider "
+        "miss is expected, though not guaranteed.",
+    "lane_unobserved":
+        "This seat's provider and authentication lane have not been observed "
+        "yet, so no cache boundary can be derived. Unlike an unsupported "
+        "lane, this is expected to resolve on its own once a turn runs.",
+    "legacy_forecast_unmigrated":
+        "This forecast was persisted before the readiness classifier existed "
+        "and carries no verdict that can be re-derived, so readiness is not "
+        "established. It resolves on this agent's next completed turn.",
+    "unsupported_capability":
+        "This provider and authentication lane publish no cache-readiness "
+        "statistic, so readiness cannot be established here for any turn. "
+        "This is an accounted provider capability gap, not a fault in this "
+        "session and not an unknown: it would resolve only if the provider "
+        "began reporting a cache TTL or a positive cache receipt for this "
+        "lane, or if the seat moved to a lane that already does.",
+    "receipt_timestamp_unreadable":
+        "A cache receipt exists for a lane with a known TTL, but its "
+        "observation timestamp could not be read, so no boundary can be "
+        "derived from it. The next completed turn on this lane writes a fresh "
+        "receipt and clears this.",
+    "clock_anomaly":
+        "The cache receipt is stamped in the future relative to this "
+        "backend's clock. Readiness cannot be derived from a boundary that "
+        "depends on a clock disagreeing with itself. Check this machine's "
+        "clock synchronisation; the state clears once the receipt stamp is no "
+        "longer ahead of the backend clock, and a genuinely quantized stamp "
+        "is healed automatically on the next read.",
+    "internal_error":
+        "This condition was not classified. That is a defect in the "
+        "readiness classifier itself, not a statement about the cache. It is "
+        "logged with the incident detail below for follow-up.",
+}
+
+#: Causes whose user-facing text is incomplete without instance evidence.
+#: ⚠ ENFORCED, NOT DOCUMENTED: `test_cache_readiness` asserts each of these
+#: carries evidence whenever it is emitted, because "grey with an accounted
+#: cause" is worth nothing if the account is a constant sentence that never
+#: names the provider, the stamp, or the incident that produced it.
+EVIDENCE_REQUIRED: Final = (
+    "unsupported_capability", "receipt_timestamp_unreadable",
+    "clock_anomaly", "internal_error",
+)
+
+
+def readiness_fields(cause: str, *, evidence: str = "") -> dict[str, str]:
+    """The three readiness fields for one cause, or the named internal error.
+
+    ⚠ THE UNKNOWN-CAUSE PATH IS THE POINT. A cause this table does not carry
+    cannot be rendered as "probably fine" or as a neutral unknown; it collapses
+    to ``internal_error``, which is grey, named, explained and logged, and the
+    rejected cause is preserved in the evidence so the incident is traceable
+    to the branch that produced it. That is what makes "no catch-all
+    fallthrough" enforceable rather than aspirational.
+    """
+    readiness = READINESS.get(cause)
+    if readiness is None:
+        unknown = f"Unclassified readiness cause {cause!r}."
+        evidence = f"{unknown} {evidence}".strip()
+        cause = "internal_error"
+        readiness = READINESS[cause]
+    detail = READINESS_DETAIL[cause]
+    if evidence:
+        detail = f"{detail} {evidence}"
+    return {"readiness": readiness, "readiness_cause": cause,
+            "readiness_detail": detail}
+
+
+#: (state, source) → cause, for forecasts persisted BEFORE D-226 existed.
+_LEGACY_CAUSE: Final[dict[tuple[str, str], str]] = {
+    ("compatible_observed", "authoritative_receipt"): "receipt_valid",
+    ("compatible_observed", "codex_subscription_fixed_estimate"):
+        "receipt_valid_codex_estimate",
+    ("expired_known_entry", "authoritative_receipt"): "receipt_expired",
+    ("expired_known_entry", "codex_subscription_fixed_estimate"):
+        "receipt_expired",
+    ("uncertain", "no_completed_fingerprint"): "no_completed_fingerprint",
+    ("uncertain", "history_unobserved"): "history_unobserved",
+    ("uncertain", "no_positive_receipt"): "no_positive_receipt",
+    ("uncertain", "receipt_prefix_unobserved"): "receipt_prefix_unobserved",
+    ("uncertain", "capability_unsupported"): "unsupported_capability",
+    ("uncertain", "clock_skew"): "clock_anomaly",
+}
+
+
+def legacy_readiness(state: str, source: str, lane: str) -> dict[str, str]:
+    """Re-derive the readiness triple for a row persisted before D-226.
+
+    ⚠ WHY THIS EXISTS RATHER THAN LETTING `public` CALL IT AN INTERNAL ERROR.
+    Every forecast persisted before this change lacks the triple. Without this
+    function the first poll after deploy would render EVERY idle node grey as
+    `internal_error` — and keep doing so until that node's next completed turn
+    — while logging an UNCLASSIFIED incident each time. That is a schema
+    migration wearing a classifier-defect label: it would slander working code,
+    bury a real defect in noise, and strand idle agents on grey indefinitely.
+
+    The mapping is deterministic where the persisted `state`/`source` pair
+    already carries the answer, which is the overwhelming majority of rows.
+    Where it genuinely does not — `ttl_unobserved` cannot say whether the lane
+    was unsupported or the stamp unreadable without the provider, which the
+    public row does not carry — the row resolves to RED
+    (`legacy_forecast_unmigrated`), never green and never a guessed grey. Red
+    is the correct default under the invariant: readiness is not established,
+    and it says so honestly instead of inventing a fault that did not happen.
+    """
+    cause = _LEGACY_CAUSE.get((state, source))
+    if cause is None and source == "ttl_unobserved":
+        # The one ambiguous source. Lane resolves the two unambiguous ends of
+        # it; anything else is left to the honest red below.
+        if lane == "provider_unsupported":
+            cause = "unsupported_capability"
+        elif lane == "unobserved":
+            cause = "lane_unobserved"
+    if cause is None and state == "known_incompatible":
+        cause = "prefix_changed"       # every known_incompatible source
+    if cause is None:
+        return readiness_fields(
+            "legacy_forecast_unmigrated",
+            evidence=f"Persisted as state {state!r}, source {source!r}.")
+    if cause in EVIDENCE_REQUIRED:
+        return readiness_fields(cause, evidence=(
+            f"Re-derived from a pre-D-226 forecast persisted as state "
+            f"{state!r}, source {source!r}, lane {lane!r}."))
+    return readiness_fields(cause)
+
+
+def capability_evidence(provider: str, lane: str) -> str:
+    """Name the provider, the lane and the missing capability, concretely.
+
+    A grey that says only "unsupported" is the generic unknown the user ruled
+    out; this is what makes it accounted for.
+    """
+    known = ", ".join(f"{p}/{ln}" for p, ln in SUPPORTED_LANES)
+    return (f"Provider {provider or 'unknown'} on the "
+            f"{lane or 'unobserved'} lane reports no cache TTL. "
+            f"Lanes that do: {known}.")
+
 SUBSCRIPTION_TTL_SECONDS: Final = 60 * 60
 API_KEY_TTL_SECONDS: Final = 5 * 60
 CODEX_SUBSCRIPTION_TTL_SECONDS: Final = 30 * 60
+
+#: The ONLY (provider, lane) pairs with a usable cache-readiness statistic —
+#: which here means a real TTL to derive a boundary from. Everything else is
+#: `unsupported_capability`, an accounted diagnostic rather than an unknown.
+#: ⚠ ONE SOURCE OF TRUTH: `ttl_seconds` reads this table, so a lane cannot be
+#: supported for the TTL and unsupported for the badge, or the reverse.
+#: Gemini publishes no such statistic at all, and Codex API-key sessions
+#: return no TTL in the app-server usage receipt — neither borrows another
+#: lane's number, so neither can establish readiness.
+SUPPORTED_LANES: Final[dict[tuple[str, str], int]] = {
+    ("claude", "subscription"): SUBSCRIPTION_TTL_SECONDS,
+    ("claude", "api_key"): API_KEY_TTL_SECONDS,
+    ("openai", "subscription"): CODEX_SUBSCRIPTION_TTL_SECONDS,
+}
 
 #: The serialization quantum of durable receipt timestamps. `observed_at` is
 #: the microsecond-rounded ISO image of the float clock the same call still
@@ -105,14 +325,7 @@ def ttl_seconds(provider: str, lane: str) -> int | None:
     (30m, currently the only supported prompt_cache_options.ttl value). Gemini
     and Codex API-key sessions remain unknown rather than borrowing a lane.
     """
-    if provider == "claude":
-        if lane == "subscription":
-            return SUBSCRIPTION_TTL_SECONDS
-        if lane == "api_key":
-            return API_KEY_TTL_SECONDS
-    if provider == "openai" and lane == "subscription":
-        return CODEX_SUBSCRIPTION_TTL_SECONDS
-    return None
+    return SUPPORTED_LANES.get((provider, lane))
 
 
 def positive_usage(usage: Any) -> tuple[int, int]:
@@ -157,7 +370,50 @@ def classify(current: dict[str, Any], continuity: dict[str, Any] | None,
     at = str(current.get("captured_at") or iso(now))
     expected = int(current.get("expected_input_tokens") or 0)
 
+    # A lane that publishes no readiness statistic cannot be made ready by any
+    # later turn, so answering it with "no completed fingerprint" or "no
+    # positive receipt" would be true but misleading — both read as "not ready
+    # YET". The capability gap is the honest answer for those cases.
+    #
+    # ⚠ BUT IT DOES NOT OUTRANK A KNOWN INCOMPATIBILITY, and the ordering below
+    # is load-bearing. A seat that moved TO an unsupported lane has both facts
+    # true at once: the prefix changed, and the new lane cannot report. The
+    # prefix change is a POSITIVE determination that the next turn is cold,
+    # which is strictly more informative than "cannot tell" — and the ruling
+    # wants red wherever an opinion can be formed, reserving grey for where one
+    # cannot. So capability is consulted only where the alternative would have
+    # been an unestablished red, never where it would have been a known red.
+    #
+    # Only a POSITIVE determination counts as a gap. An empty or unobserved
+    # provider/lane is not a capability claim — we simply have not looked yet —
+    # so it falls through to `lane_unobserved`, which is red and self-resolving.
+    provider_id = str(current.get("provider") or "")
+    lane_id = str(current.get("lane") or "")
+    capability_gap = lane_id == "provider_unsupported" or bool(
+        provider_id and lane_id
+        and (provider_id, lane_id) not in SUPPORTED_LANES)
+
+    def capability_row() -> dict[str, Any]:
+        return {
+            "state": "uncertain", "source": "capability_unsupported",
+            "reason": ("This provider/auth lane publishes no cache-readiness "
+                       "statistic."),
+            "reasons": [_reason("ttl", "provider lane publishes no cache TTL",
+                                at, "unobserved")],
+            "observed_at": at, "last_receipt_at": receipt.get("observed_at"),
+            "lane": lane_id or "unobserved",
+            "ttl_seconds": None, "expires_at": None,
+            "confidence": "unobserved", "expected_input_tokens": expected,
+            **readiness_fields(
+                "unsupported_capability",
+                evidence=capability_evidence(provider_id, lane_id)),
+        }
+
     if not last:
+        # Nothing to diff against, so no known incompatibility is possible
+        # here and capability is the more honest of the two available answers.
+        if capability_gap:
+            return capability_row()
         return {
             "state": "uncertain", "source": "no_completed_fingerprint",
             "reason": "No completed turn fingerprint has been observed yet.",
@@ -168,6 +424,13 @@ def classify(current: dict[str, Any], continuity: dict[str, Any] | None,
             "ttl_seconds": None, "expires_at": None,
             "confidence": "unobserved",
             "expected_input_tokens": expected,
+            # ⚠ THIS IS THE D-214 OVERRIDE (user ruling 2026-09-02). This case
+            # used to render GREEN on a supported lane, on the reasoning that
+            # no completed turn exists to conflict with the next one. Green now
+            # requires affirmative evidence of compatibility, and the absence
+            # of any evidence is not that. It is red, and worded as "not
+            # established" rather than as a predicted miss.
+            **readiness_fields("no_completed_fingerprint"),
         }
 
     changed: list[dict[str, str]] = []
@@ -237,7 +500,13 @@ def classify(current: dict[str, Any], continuity: dict[str, Any] | None,
             "ttl_seconds": receipt.get("ttl_seconds"),
             "expires_at": receipt.get("expires_at"),
             "confidence": "known", "expected_input_tokens": expected,
+            **readiness_fields("prefix_changed"),
         }
+    # Past the known-incompatible gate: from here every remaining outcome would
+    # be an "unestablished" red, so a lane that can never establish anything is
+    # better described by its capability gap than by a red it can never clear.
+    if capability_gap:
+        return capability_row()
     if relation == "unobserved":
         return {
             "state": "uncertain", "source": "history_unobserved",
@@ -250,6 +519,7 @@ def classify(current: dict[str, Any], continuity: dict[str, Any] | None,
             "ttl_seconds": receipt.get("ttl_seconds"),
             "expires_at": receipt.get("expires_at"),
             "confidence": "uncertain", "expected_input_tokens": expected,
+            **readiness_fields("history_unobserved"),
         }
 
     if not receipt:
@@ -262,6 +532,7 @@ def classify(current: dict[str, Any], continuity: dict[str, Any] | None,
             "lane": str(current.get("lane") or "unobserved"),
             "ttl_seconds": None, "expires_at": None,
             "confidence": "uncertain", "expected_input_tokens": expected,
+            **readiness_fields("no_positive_receipt"),
         }
     if receipt_relation == "unobserved":
         return {
@@ -275,6 +546,7 @@ def classify(current: dict[str, Any], continuity: dict[str, Any] | None,
             "ttl_seconds": receipt.get("ttl_seconds"),
             "expires_at": receipt.get("expires_at"),
             "confidence": "uncertain", "expected_input_tokens": expected,
+            **readiness_fields("receipt_prefix_unobserved"),
         }
 
     provider = str(current.get("provider") or "")
@@ -283,6 +555,15 @@ def classify(current: dict[str, Any], continuity: dict[str, Any] | None,
     codex_estimate = provider == "openai" and lane == "subscription"
     observed = epoch(receipt.get("observed_at"))
     if ttl is None or observed is None:
+        # ⚠ TWO DIFFERENT FAULTS SHARE THIS SOURCE, and they are not the same
+        # colour. A missing TTL here can no longer mean "unsupported provider"
+        # — the capability gate above already returned for every positively
+        # unsupported pair — so it means the lane was never observed, which is
+        # RED and resolves itself once a turn runs. An unreadable receipt
+        # STAMP on a lane that does have a TTL is a data fault, which is a
+        # named GREY diagnostic. Collapsing the two would either slander a
+        # working provider or hide a corrupt receipt.
+        unreadable = ttl is not None and observed is None
         return {
             "state": "uncertain", "source": "ttl_unobserved",
             "reason": "A positive cache receipt exists, but this provider/auth lane has no authoritative TTL.",
@@ -292,6 +573,14 @@ def classify(current: dict[str, Any], continuity: dict[str, Any] | None,
             "lane": str(current.get("lane") or "unobserved"),
             "ttl_seconds": None, "expires_at": None,
             "confidence": "uncertain", "expected_input_tokens": expected,
+            **(readiness_fields(
+                "receipt_timestamp_unreadable",
+                evidence=("Receipt observed_at "
+                          f"{str(receipt.get('observed_at') or '(absent)')!r} "
+                          f"could not be parsed on the {lane or 'unobserved'} "
+                          f"lane, whose TTL is {ttl}s."))
+               if unreadable else
+               readiness_fields("lane_unobserved")),
         }
     expires = observed + ttl
     if observed - now > SERIALIZATION_QUANTUM_S:
@@ -304,6 +593,10 @@ def classify(current: dict[str, Any], continuity: dict[str, Any] | None,
             "lane": str(current.get("lane") or "unobserved"),
             "ttl_seconds": ttl, "expires_at": iso_us(expires),
             "confidence": "uncertain", "expected_input_tokens": expected,
+            **readiness_fields("clock_anomaly", evidence=(
+                f"Receipt stamped {iso_us(observed)}, backend clock "
+                f"{iso_us(now)}, ahead by {observed - now:.6f}s (tolerance "
+                f"{SERIALIZATION_QUANTUM_S:g}s).")),
         }
     if observed > now:
         now = observed          # inside one quantum: the same instant, clamped
@@ -339,6 +632,7 @@ def _receipt_verdict(*, expired: bool, codex_estimate: bool, at: str,
             "ttl_seconds": ttl, "expires_at": iso_us(expires),
             "confidence": ("estimated" if codex_estimate else "known"),
             "expected_input_tokens": expected,
+            **readiness_fields("receipt_expired"),
         }
     return {
         "state": "compatible_observed",
@@ -360,6 +654,10 @@ def _receipt_verdict(*, expired: bool, codex_estimate: bool, at: str,
         "lane": lane,
         "ttl_seconds": ttl, "expires_at": iso_us(expires),
         "confidence": "observed", "expected_input_tokens": expected,
+        # The ONLY two green causes in the system. Both require a positive
+        # receipt whose prefix still matches and whose boundary has not passed.
+        **readiness_fields("receipt_valid_codex_estimate" if codex_estimate
+                           else "receipt_valid"),
     }
 
 
@@ -408,10 +706,21 @@ def heal_quantized_skew(forecast: Any, now: float) -> dict[str, Any] | None:
 
 def public(forecast: dict[str, Any], *, generation: str,
            precompact_action: str, precompact_reason: str) -> dict[str, Any]:
-    """Credential-free, atomic UI/WebSocket forecast projection."""
+    """Credential-free, atomic UI/WebSocket forecast projection.
+
+    ⚠ THE COERCIONS BELOW ARE NOT SILENT ANY MORE. This function used to fold
+    an unrecognised ``state`` or ``lane`` into "uncertain"/"unobserved" and say
+    nothing, which is precisely the catch-all the readiness ruling forbids: a
+    classifier bug arrived at the badge wearing the same neutral grey as a
+    provider that simply cannot report. Anything unrecognised now ALSO sets the
+    readiness triple to ``internal_error``, carrying the rejected value as
+    incident detail, so the defect is visible instead of averaged away.
+    """
+    salvage: list[str] = []
     state = str(forecast.get("state") or "uncertain")
     if state not in ("known_incompatible", "expired_known_entry", "uncertain",
                      "compatible_observed"):
+        salvage.append(f"unrecognised state {state!r}")
         state = "uncertain"
     changed_inputs: list[str] = []
     if state == "known_incompatible":
@@ -426,11 +735,37 @@ def public(forecast: dict[str, Any], *, generation: str,
     lane = str(forecast.get("lane") or "unobserved")
     if lane not in ("subscription", "api_key", "provider_unsupported",
                     "unobserved"):
+        salvage.append(f"unrecognised lane {lane!r}")
         lane = "unobserved"
     if precompact_action not in (
             "will_compact", "miss_expected", "not_applicable"):
+        salvage.append(f"unrecognised precompact_action {precompact_action!r}")
         precompact_action = "not_applicable"
+
+    # The readiness triple is decided where the evidence is — in `classify` —
+    # so this only VALIDATES it. A row without one (a legacy persisted
+    # forecast, a caller that built a dict by hand) is not assumed good: an
+    # absent or unknown cause resolves to `internal_error` through the same
+    # single door every other unknown uses.
+    cause = str(forecast.get("readiness_cause") or "")
+    if cause and cause not in READINESS:
+        salvage.append(f"unrecognised readiness_cause {cause!r}")
+    if salvage:
+        readiness = readiness_fields("internal_error",
+                                     evidence="; ".join(salvage) + ".")
+    elif not cause:
+        # A row with no triple at all is a PRE-D-226 forecast, not a defect —
+        # re-derive it from what was persisted rather than reporting an
+        # incident that did not occur. See `legacy_readiness`.
+        readiness = legacy_readiness(
+            state, str(forecast.get("source") or ""), lane)
+    else:
+        readiness = readiness_fields(cause)
+        detail = str(forecast.get("readiness_detail") or "")
+        if detail:
+            readiness["readiness_detail"] = detail   # keep instance evidence
     return {
+        **readiness,
         "generation": generation,
         "state": state,
         "reason": str(forecast.get("reason") or "Cache continuity is uncertain."),

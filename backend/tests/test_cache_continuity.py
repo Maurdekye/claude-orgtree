@@ -173,12 +173,20 @@ def unsupported_ttl() -> None:
                                "lane": lane, "model": "provider-model"})
         row = C.classify(cur, prior, NOW)
         eq(row["state"], "uncertain")
-        eq(row["source"], "ttl_unobserved")
+        # D-226 overrides the old "stays unknown" contract: a lane that
+        # publishes no readiness statistic is an ACCOUNTED diagnostic, not a
+        # silent unknown, and it must name the provider and lane it is about.
+        eq(row["source"], "capability_unsupported")
+        eq(row["readiness"], "diagnostic")
+        eq(row["readiness_cause"], "unsupported_capability")
+        assert provider in row["readiness_detail"], row["readiness_detail"]
+        assert lane in row["readiness_detail"], row["readiness_detail"]
 
 
 check("Codex subscription uses fixed 30-minute documented estimate",
       codex_subscription_ttl)
-check("Codex API-key and Gemini TTLs remain unknown", unsupported_ttl)
+check("Codex API-key and Gemini lanes are an accounted capability diagnostic",
+      unsupported_ttl)
 
 
 def warning_boundaries() -> None:
@@ -600,7 +608,10 @@ def quantized_lane_sweep() -> None:
         row = C.classify(cur, prior, roundup_now)
         eq((provider, lane, row["state"]), (provider, lane, want))
         if ttl is None:
-            eq(row["source"], "ttl_unobserved")
+            # D-226: no usable readiness statistic on this lane is a named
+            # grey diagnostic, never a bare unknown.
+            eq(row["source"], "capability_unsupported")
+            eq(row["readiness_cause"], "unsupported_capability")
         else:
             observed = C.epoch(prior["receipt"]["observed_at"])
             expired = C.classify(cur, prior, observed + ttl)
