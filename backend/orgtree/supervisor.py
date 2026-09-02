@@ -1069,6 +1069,22 @@ def _mcp_tool_count_unknown(slug: str, nid: str, owner: Any,
     return changed
 
 
+def _mcp_owner_running(owner: Any) -> bool:
+    """Is this owner DEMONSTRABLY a still-running process? Defaults to no.
+
+    Only a `poll()` that returns None proves a live process. Anything else —
+    an exit code, no `poll` at all, a raising `poll` — is treated as dead, so
+    recovery can never resurrect a generation that has really gone.
+    """
+    poll = getattr(owner, "poll", None)
+    if not callable(poll):
+        return False
+    try:
+        return poll() is None
+    except Exception:                                       # noqa: BLE001
+        return False
+
+
 def _mcp_tool_count_names(slug: str, nid: str, owner: Any,
                           names: Iterable[Any], provider: str,
                           source: str) -> bool:
@@ -1076,9 +1092,42 @@ def _mcp_tool_count_names(slug: str, nid: str, owner: Any,
     tools = {str(n) for n in names
              if isinstance(n, str) and n.startswith("mcp__")}
     st = state(slug, nid)
+    recovered = False
     with _state_lock:
         if st.get("mcp_tool_owner") is not owner:
-            return False
+            # A generation can be reaped while its process is STILL RUNNING: a
+            # spurious stdout EOF fires `_mcp_tool_count_end`, which pops the
+            # owner and publishes the terminal `process-ended` readiness. After
+            # that the live process's own inventory was refused here forever by
+            # the guard above — an ACTIVE process pinned in a TERMINAL state,
+            # reporting neither LOADING nor LOADED, which is precisely the
+            # combination the lifecycle invariant forbids.
+            #
+            # Recovery is deliberately the narrowest thing that fixes it, and
+            # every clause is load-bearing:
+            #   · no current owner — a successor that has already been adopted
+            #     is NEVER displaced, so this cannot resurrect a predecessor
+            #     over a live replacement;
+            #   · this exact object is the generation we just reaped, compared
+            #     with `is` against the retained reference, never `id()`;
+            #   · and it is demonstrably still running.
+            # Fail any one of them and the publish is refused exactly as before.
+            final = st.get("mcp_tool_final_surface")
+            if (st.get("mcp_tool_owner") is None
+                    and isinstance(final, dict)
+                    and final.get("owner") is owner
+                    and _mcp_owner_running(owner)):
+                st["mcp_tool_owner"] = owner
+                st["mcp_tool_provider"] = provider
+                st["mcp_tool_source"] = source
+                st["mcp_readiness_waiting"] = False
+                st["mcp_readiness_state"] = "recovered"
+                st["mcp_readiness_reason"] = (
+                    "The provider process was reported ended while still "
+                    "running; its live inventory was accepted again")
+                recovered = True
+            else:
+                return False
         st["mcp_tool_names"] = tools
         # Durable copy for the TURN BOUNDARY, written on the happy path as the
         # surface is published rather than on the way out (reviewer H4,
@@ -1112,6 +1161,20 @@ def _mcp_tool_count_names(slug: str, nid: str, owner: Any,
         event = st.get("mcp_tool_event")
     if isinstance(event, threading.Event):
         event.set()
+    if recovered:
+        # the UI was told this process had ended; tell it that was wrong,
+        # rather than leaving a live agent showing a terminal state
+        try:
+            stream(slug, nid, {
+                "kind": "mcp_readiness", "waiting": False,
+                "state": "recovered",
+                "reason": ("The provider process was reported ended while "
+                           "still running; its live inventory was accepted "
+                           "again"),
+                "emitted_at_ms": round(time.time() * 1000),
+            })
+        except Exception:                                   # noqa: BLE001
+            pass
     return _mcp_tool_count_publish(
         slug, nid, owner, len(tools), provider, source)
 

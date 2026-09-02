@@ -405,6 +405,96 @@ class McpToolCountTests(unittest.TestCase):
             S._mcp_tool_surface_for_owner(self.slug, self.nid, new),
             (None, None))
 
+    class _Proc:
+        """A stand-in CLI process: poll() is None while running."""
+
+        def __init__(self, pid: int, alive: bool = True) -> None:
+            self.pid, self._alive = pid, alive
+
+        def poll(self):                                  # noqa: ANN201
+            return None if self._alive else 0
+
+        def die(self) -> None:
+            self._alive = False
+
+    def test_a_live_process_recovers_from_a_spurious_eof(self) -> None:
+        """An ACTIVE process must never be pinned in a terminal state.
+
+        A spurious stdout EOF reaps the generation while its process is still
+        running: `_end` pops the owner and publishes `process-ended`. The live
+        process's own inventory was then refused forever by the owner guard —
+        reporting neither LOADING nor LOADED, the one combination the
+        lifecycle invariant forbids.
+        """
+        live = self._Proc(4242)
+        S._mcp_tool_count_begin(
+            self.slug, self.nid, live, "claude", "system/init.tools", "start")
+        S._mcp_tool_count_names(
+            self.slug, self.nid, live, ["mcp__orgtree__one"], "claude",
+            "system/init.tools")
+        S._mcp_tool_count_end(self.slug, self.nid, live, "pump saw EOF")
+        st = S.state(self.slug, self.nid)
+        self.assertEqual(st.get("mcp_readiness_state"), "process-ended")
+
+        # the same, still-running process reports its inventory again
+        self.assertTrue(S._mcp_tool_count_names(
+            self.slug, self.nid, live,
+            ["mcp__orgtree__one", "mcp__orgtree__two"], "claude",
+            "system/init.tools"))
+        self.assertIs(st.get("mcp_tool_owner"), live)
+        self.assertEqual(st.get("mcp_readiness_state"), "recovered")
+        self.assertEqual(
+            S._mcp_tool_surface_for_owner(self.slug, self.nid, live),
+            (2, ["mcp__orgtree__one", "mcp__orgtree__two"]))
+
+    def test_a_truly_dead_owner_is_never_revived(self) -> None:
+        """Recovery proves liveness or refuses. Negative control."""
+        dead = self._Proc(5150)
+        S._mcp_tool_count_begin(
+            self.slug, self.nid, dead, "claude", "system/init.tools", "start")
+        S._mcp_tool_count_names(
+            self.slug, self.nid, dead, ["mcp__orgtree__one"], "claude",
+            "system/init.tools")
+        S._mcp_tool_count_end(self.slug, self.nid, dead, "process exited")
+        dead.die()
+        self.assertFalse(S._mcp_tool_count_names(
+            self.slug, self.nid, dead, ["mcp__ghost__tool"], "claude",
+            "system/init.tools"))
+        st = S.state(self.slug, self.nid)
+        self.assertIsNone(st.get("mcp_tool_owner"))
+        self.assertEqual(st.get("mcp_readiness_state"), "process-ended")
+
+        # an owner that cannot even be asked is likewise never revived
+        opaque = object()
+        S._mcp_tool_count_begin(
+            self.slug, self.nid, opaque, "claude", "system/init.tools", "s")
+        S._mcp_tool_count_names(
+            self.slug, self.nid, opaque, ["mcp__orgtree__one"], "claude",
+            "system/init.tools")
+        S._mcp_tool_count_end(self.slug, self.nid, opaque, "exited")
+        self.assertFalse(S._mcp_tool_count_names(
+            self.slug, self.nid, opaque, ["mcp__orgtree__one"], "claude",
+            "system/init.tools"))
+
+    def test_recovery_never_displaces_an_adopted_successor(self) -> None:
+        """A live predecessor must not steal the seat from its replacement."""
+        old, new = self._Proc(1), self._Proc(2)
+        S._mcp_tool_count_begin(
+            self.slug, self.nid, old, "claude", "system/init.tools", "start")
+        S._mcp_tool_count_names(
+            self.slug, self.nid, old, ["mcp__orgtree__one"], "claude",
+            "system/init.tools")
+        S._mcp_tool_count_end(self.slug, self.nid, old, "pump saw EOF")
+        S._mcp_tool_count_begin(
+            self.slug, self.nid, new, "claude", "system/init.tools", "restart")
+        # `old` is still running, but the seat is taken
+        self.assertFalse(S._mcp_tool_count_names(
+            self.slug, self.nid, old, ["mcp__stale__tool"], "claude",
+            "system/init.tools"))
+        st = S.state(self.slug, self.nid)
+        self.assertIs(st.get("mcp_tool_owner"), new)
+        self.assertIsNone(st.get("mcp_tool_names"))
+
     def test_unknown_provider_and_tree_contract(self) -> None:
         owner = object()
         with store.DOC_LOCK:
