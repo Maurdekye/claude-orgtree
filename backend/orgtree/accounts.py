@@ -476,6 +476,15 @@ def _liveness_state(doc: dict[str, Any], kid: str) -> str | None:
     return str(state) if state in {"alive", "limited", "dead"} else None
 
 
+def key_liveness(doc: dict[str, Any], kid: str) -> str | None:
+    """The credential-only probe verdict for a stored row, if decisive.
+
+    Public because both routing and the provider-usage serializer must answer
+    from the same verdict. It never reads or returns credential material.
+    """
+    return _liveness_state(doc, str(kid or ""))
+
+
 def _claim_probe(kid: str, now: float) -> bool:
     """Atomically reserve this key's once-hourly probe slot.
 
@@ -863,6 +872,21 @@ def account_usage(account: str) -> dict[str, Any]:
                 "available": False, "error": "no stored key for this row"}
     ordinal = fallback_ordinal(doc, account)      # the one count, shared
     label = f"fallback {ordinal}" if ordinal else "fallback"
+    if key_liveness(doc, account) == "dead":
+        # This is not the D-147 capability gap below. The usage endpoint is
+        # unsupported for every setup-token, but this row has an independent,
+        # isolated inference probe proving that its credential was rejected.
+        # Returning the ordinary standing table here used to say both "has
+        # capacity" and "authentication: dead" on the same settings row.
+        return {
+            "account": account, "label": label, "available": False,
+            "error": "the isolated authentication probe rejected this stored "
+                     "`claude setup-token` credential, so it is not routed. "
+                     "Run `claude setup-token` while signed in to the intended "
+                     "fallback account, paste the fresh token as a new "
+                     "fallback row, and remove this rejected row only after "
+                     "the new row reports authentication alive or limited.",
+        }
     # ⚠ WE DO NOT ASK. A `claude setup-token` key is INFERENCE-ONLY and the
     # usage endpoint needs the `user:profile` scope it will never carry, so
     # every such request was forbidden before it left this machine — see

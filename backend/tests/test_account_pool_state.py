@@ -45,6 +45,7 @@ import os
 import sys
 import tempfile
 import time
+from types import SimpleNamespace
 from typing import Any
 
 _TMP = tempfile.mkdtemp(prefix="orgtree-poolstate-")
@@ -61,7 +62,7 @@ for _s in (sys.stdout, sys.stderr):
     except (AttributeError, ValueError):
         pass
 
-from orgtree import accounts, tokens  # noqa: E402
+from orgtree import accounts, supervisor, tokens  # noqa: E402
 
 FAILS: list[str] = []
 CHECKS = 0
@@ -188,6 +189,18 @@ def s1_pool() -> None:
         r = accounts.resolve("haiku")
         check("1.7 haiku now routes OFF an account whose sonnet hit the wall",
               r["account"] == KID and r["available"] is True, repr(r))
+        live_429 = ("Error in API request: 429 rate_limit_error: This request "
+                    "would exceed your account's rate limit. Please try again "
+                    "later.")
+        check("1.7a the live primary 429 wording enters the limit path",
+              supervisor._looks_like_usage_limit(live_429), live_429)
+        env = supervisor.spawn_env(
+            SimpleNamespace(d={"slug": "fixture"}), "haiku")
+        check("1.7b the post-limit spawn carries only the fallback OAuth lane",
+              supervisor.identity_in_env(env) == KID
+              and "CLAUDE_CODE_OAUTH_TOKEN" in env
+              and "ANTHROPIC_API_KEY" not in env,
+              supervisor.identity_in_env(env))
         rf = accounts.resolve("fable")
         # 1.8 ⚠ AMENDED 2026-08-26 (D-152): fable used to STAY on the primary
         #     here. It now rides along and moves off with the pool. That it

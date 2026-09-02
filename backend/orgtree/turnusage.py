@@ -242,6 +242,7 @@ def _fallback_rows(now: float, selected_lane: str,
             continue
         account = str(raw.get("id") or "")
         lane = f"fallback-{ordinal}"
+        liveness = accounts.key_liveness(doc, account)
         try:
             standings = accounts.tier_standing(doc, account, now)
         except Exception:  # noqa: BLE001
@@ -261,12 +262,15 @@ def _fallback_rows(now: float, selected_lane: str,
             grouped[(('usage',), False, "")] = None
         for pool, available, refresh in sorted(grouped, key=lambda x: x[0]):
             selected = lane == selected_lane
-            state = ("frozen" if selected and frozen else
+            state = ("credential-rejected" if liveness == "dead" else
+                     "frozen" if selected and frozen else
                      "ready" if available else "cooldown")
             reset_value: Any = freeze_reset if selected and frozen else refresh
             window = "+".join(pool)
             line = _line(
-                "claude", lane, window, "unavailable(unsupported)", "-",
+                "claude", lane, window,
+                ("unavailable(authentication-rejected)" if liveness == "dead"
+                 else "unavailable(unsupported)"), "-",
                 _reset_cell(reset_value, now), f"{_iso(now)} (live)", state,
                 selected=selected)
             rows.append(((0, lane, 10, window, 0), line))

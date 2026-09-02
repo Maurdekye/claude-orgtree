@@ -85,6 +85,7 @@ UUID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 def seed(uuid: str | None = UUID) -> None:
     doc = accounts.load()
     doc["keys"] = [{"id": KID, "account_uuid": uuid}]
+    doc["key_liveness"] = {}
     accounts.save(doc)
     tokens.put(KID, "sk-ant-oat01-" + "x" * 80)
 
@@ -149,6 +150,27 @@ def s1_key_rows() -> None:
             limits.fetch = real_fetch                      # type: ignore[assignment]
         check("1.9 usage_all() makes no PER-KEY call", tw.calls == 0,
               f"{tw.calls} call(s)")
+
+        # A rejected inference probe is a different fact from unsupported
+        # usage telemetry. Do not show the ordinary "has capacity" table or
+        # tell the operator nothing is wrong with a credential we excluded.
+        doc = accounts.load()
+        doc["key_liveness"] = {
+            KID: {"state": "dead", "checked_at": 12345.0}}
+        accounts.save(doc)
+        rejected = accounts.account_usage(KID)
+        rejected_msg = str(rejected.get("error") or "").lower()
+        check("1.10 a rejected credential is not described as usable capacity",
+              not rejected.get("tiers") and not rejected.get("unsupported"),
+              repr(rejected))
+        check("1.11 the rejection gives the exact safe recovery order",
+              "not routed" in rejected_msg
+              and "claude setup-token" in rejected_msg
+              and "new fallback row" in rejected_msg
+              and "only after" in rejected_msg,
+              repr(rejected_msg))
+        check("1.12 rejected-row rendering still makes no network call",
+              tw.calls == 0, f"{tw.calls} call(s)")
     finally:
         restore()
 

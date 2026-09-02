@@ -170,6 +170,35 @@ check("stable schema covers Claude, fallbacks, Codex, and explicit Gemini unsupp
       supported_coverage_and_schema)
 
 
+def rejected_fallback_is_not_serialized_as_ready() -> None:
+    org, nid = fixture("zz-turnusage-rejected")
+    rejected = registry()
+    rejected["key_liveness"] = {
+        "sk-ant-secret-fallback-one": {
+            "state": "dead", "checked_at": NOW - 10}}
+    limits.snapshot = lambda now=None: copy.deepcopy(claude_board())  # type: ignore[assignment]
+    codex_limits.snapshot = lambda now=None: copy.deepcopy(codex_board())  # type: ignore[assignment]
+    accounts.load = lambda strict=False: copy.deepcopy(rejected)    # type: ignore[assignment]
+    try:
+        block = turnusage.render(org, nid, now=NOW)
+    finally:
+        restore_sources()
+    rejected_lines = [line for line in block.splitlines()
+                      if line.startswith("claude/fallback-1")]
+    assert rejected_lines, block
+    assert all("unavailable(authentication-rejected)" in line
+               and line.endswith("| credential-rejected")
+               for line in rejected_lines), rejected_lines
+    healthy_lines = [line for line in block.splitlines()
+                     if line.startswith("claude/fallback-2")]
+    assert healthy_lines and all("unavailable(unsupported)" in line
+                                 for line in healthy_lines), healthy_lines
+
+
+check("a rejected fallback is distinct from unsupported usage telemetry and never ready",
+      rejected_fallback_is_not_serialized_as_ready)
+
+
 def ordering_is_deterministic() -> None:
     org, nid = fixture("zz-turnusage-order")
     reg = registry()
