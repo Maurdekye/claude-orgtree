@@ -54,7 +54,7 @@ provider argument to a hire or model switch.
 | provider | tiers (seat credits) | available when |
 |---|---|---|
 | Claude Code | haiku (1), sonnet (2), opus (5), fable (10) | the Claude CLI can run turns |
-| Codex | gpt-reserve (1), luna (1), terra (2), sol (5) | Codex CLI is installed and signed in, **and** the account still has usage in its current window (all four tiers share one account, so a spent account offers none of them); gpt-reserve additionally requires OpenAI's reserve grant to be live — it is withdrawn and restored per account and orgtree reads the Codex CLI's own model registry to see it |
+| Codex | gpt-reserve (1), luna (1), terra (2), sol (5) | Codex CLI is installed and signed in. A spent usage window does NOT withhold them — hiring prepares an agent and the turn is what needs capacity (user ruling 2026-09-02). gpt-reserve additionally requires OpenAI's reserve grant to be live — it is withdrawn and restored per account, and orgtree reads the Codex CLI's own model registry to see it |
 | Antigravity | flash (1), pro (2) | Antigravity CLI is installed and signed in |
 | OpenRouter | one `or-<model>` tier per favorited model (seat = its $/M input, floored to 1) | an API key is set in App settings → Providers and openrouter.ai accepts it |
 

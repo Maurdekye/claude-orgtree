@@ -700,38 +700,23 @@ def antigravity_status(force: bool = False) -> dict[str, Any]:
 RESERVE_TIER: Final = "gpt-reserve"
 
 
-def codex_capacity() -> dict[str, Any]:
-    """Can ANY Codex tier run a turn on this account right now?
-
-    A SIGNED-IN CLI IS NOT A RUNNABLE ONE.  Every Codex tier shares one
-    account and one set of usage windows, so when those are spent with no
-    credits behind them, a hire does not fail politely — it takes the seat,
-    creates the node, and the agent's FIRST turn comes back
-    `usage_limit_exceeded`.  That is not hypothetical: it happened to an
-    orgtree agent (`timestamp`, gpt-reserve) at 19:38Z on 2026-09-02, whose
-    seat was spent on a turn that could never have run.
-
-    Follow-up to the gpt-reserve fix, by the coordinator's decision: the same
-    signal that took the reserve chip down applies to sol/terra/luna, because
-    the exhaustion is the ACCOUNT's, not the tier's.  Kept as its own function
-    so the family rule, the reserve rule and the hire gate share one wording
-    and one verdict.
-
-    Cache-only and fail-open — `codex_limits.exhausted()` answers `None`
-    unless it has evidence it is willing to stand behind, and `None` leaves
-    every tier offered.  Assumes install/sign-in are already established.
-
-    Returns ``{"enabled": bool, "reason": str | None, "evidence": str}``.
-    """
-    from . import codex_limits   # cycle: codex_limits imports this module
-
-    if codex_limits.exhausted() is True:
-        return {"enabled": False, "evidence": "usage-limits", "reason":
-                "this account has no usage left in its current Codex window "
-                "and no credits to spend past it — an agent hired now would "
-                "spend its seat and then fail on its first turn (accounts "
-                "panel → Codex usage for the reset time)"}
-    return {"enabled": True, "evidence": "capacity", "reason": None}
+# ⚠ THERE IS NO CAPACITY GATE ON HIRING, AND THAT IS A RULING, NOT AN OVERSIGHT.
+# 65273fa added one: a Codex account with its usage window spent refused every
+# hire, on the reasoning that the seat is taken before the agent's first turn
+# comes back `usage_limit_exceeded`. The user reversed it the same evening —
+# "i should still be able to hire agents if my usage window is up; i would like
+# the ability to prepare an agent with a charter, even if i cant run it
+# actively".
+#
+# That is the better model of what a hire IS. Hiring names an agent, writes its
+# charter and fixes its scope; none of that spends a token, and a window that
+# resets on a schedule is a reason to prepare work, not to be locked out of
+# preparing it. The capacity question belongs to the TURN, where the Codex CLI
+# already answers it loudly and where refusing costs nothing but that turn.
+#
+# So do not re-add `codex_capacity` here or in `provider_hire_gate`.
+# `test_provider_hire_availability` §7 and `test_gpt_reserve_detection` §5 pin
+# the ruling from both doors.
 
 
 def reserve_availability(
@@ -758,9 +743,9 @@ def reserve_availability(
       2. is the Codex CLI itself still offering the model (`codex_models` —
          when the grant lapsed, `gpt-reserve` went `visibility: "hide"` and
          left the app-server's `model/list` while its siblings stayed), and
-      3. does the account have any Codex capacity left at all (`codex_capacity`
-         — the family-wide question, asked here too so this function is a
-         complete answer when called on its own).
+      3. — there is no third question. A spent usage window deliberately does
+         NOT refuse a hire (see the ruling above `RESERVE_TIER`); reserve is
+         prepared like any other tier and the TURN answers for capacity.
 
     Each may answer "unknown" (no CLI evidence, a stale board), and unknown
     NEVER refuses: the tier stays offered and the CLI fails the turn loudly,
@@ -792,12 +777,6 @@ def reserve_availability(
                 "model on this account — OpenAI grants reserve capacity in "
                 "bursts and withdraws it again, so this comes back on its "
                 "own (the other Codex tiers are unaffected)"}
-    capacity = codex_capacity()
-    if not capacity["enabled"]:
-        # not reserve's OWN rule — the account is spent for every tier — but
-        # asked here too so this function is a complete answer when called on
-        # its own. One wording, from one place.
-        return capacity
     return {"enabled": True, "evidence": "granted", "reason": None}
 
 
@@ -806,13 +785,11 @@ def providers_payload(claude_status: dict[str, Any]) -> dict[str, Any]:
     layer from state it already owns (accounts registry, cli_version) — this
     module never reaches into those, so it stays importable from anywhere."""
     codex = codex_status()
-    # asked once each, before the document is built: these read the CLI's
-    # model registry and the usage board, and asking them again inside a dict
-    # literal would double that work for one answer.
-    offline = {"enabled": False, "reason": None, "evidence": "offline"}
-    capacity = codex_capacity() if codex.get("connected") else offline
+    # asked once, before the document is built: the reserve rule reads the
+    # CLI's model registry, and asking it again inside a dict literal would
+    # double that work for one answer.
     reserve = (reserve_availability(codex) if codex.get("connected")
-               else offline)
+               else {"enabled": False, "reason": None, "evidence": "offline"})
     antigravity = antigravity_status()
     orr = openrouter.status()
     choices = appsettings.provider_choices()
@@ -865,20 +842,16 @@ def providers_payload(claude_status: dict[str, Any]) -> dict[str, Any]:
             "status": codex,
             # the vision, live (M1–M8 standing): a CONNECTED CLI is a
             # hireable provider — same predicate the api hire gate enforces.
-            # ⚠ CONNECTED IS NOT ENOUGH SINCE 2026-09-02: every Codex tier
-            # shares one account's usage windows, so a spent account is a
-            # provider that cannot run a turn even though it is signed in,
-            # and hiring into it burns the seat before failing. `capacity`
-            # carries that (see `codex_capacity`), and it fails OPEN — an
-            # unread usage board leaves the family exactly as hireable as it
-            # was. The reason is the UI's tooltip, so it speaks to the user,
-            # in order of what they'd have to do next.
-            "hire_enabled": bool(codex_on and codex.get("connected")
-                                 and capacity["enabled"]),
+            # A SPENT USAGE WINDOW IS NOT PART OF THIS, by the user's ruling
+            # (see above `RESERVE_TIER`): hiring prepares an agent, and being
+            # out of usage until Sunday is not a reason to be locked out of
+            # writing a charter. The reason is the UI's tooltip, so it speaks
+            # to the user, in order of what they'd have to do next.
+            "hire_enabled": bool(codex_on and codex.get("connected")),
             "user_enabled": codex_on,
             "reason": (
                 off_reason if not codex_on
-                else capacity["reason"] if codex.get("connected")
+                else None if codex.get("connected")
                 else "not signed in — run `codex login` on this machine"
                 if codex.get("installed")
                 else f"Codex CLI not installed — {install_hint('openai')}"),

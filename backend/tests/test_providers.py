@@ -38,7 +38,7 @@ with open(os.path.join(os.environ["ORGTREE_DATA"], "defaults.json"), "w",
 os.environ["ORGTREE_ANTIGRAVITY"] = os.path.join(
     os.environ["ORGTREE_DATA"], "nowhere", "agy.exe")
 
-from orgtree import codex_limits, codex_models, providers          # noqa: E402
+from orgtree import codex_models, providers                        # noqa: E402
 from orgtree.ledger import (LedgerError, MODELS, Org, TIERS,       # noqa: E402
                             USER)
 
@@ -238,23 +238,6 @@ def main():
         assert "not currently offering" in (cx["reserve_reason"] or ""), cx
     check("gpt-reserve goes dark when the CLI stops offering the model, on an "
           "unchanged ChatGPT login", reserve_dark_when_the_cli_stops_offering_it)
-
-    def reserve_dark_when_the_account_is_out_of_usage():
-        """The second live signal: a granted reserve pool the account cannot
-        reach because its window is spent and there are no credits — measured
-        as `usage_limit_exceeded` on the agent's first turn."""
-        chatgpt_login()
-        registry(reserve_visible=True)
-        saved = codex_limits.exhausted
-        codex_limits.exhausted = lambda: True          # type: ignore[assignment]
-        try:
-            cx = openai_entry()
-        finally:
-            codex_limits.exhausted = saved             # type: ignore[assignment]
-        eq(cx["reserve_hire_enabled"], False, "reserve is dark when spent")
-        assert "no usage left" in (cx["reserve_reason"] or ""), cx
-    check("…and dark when the freshest usage board says the account is spent",
-          reserve_dark_when_the_account_is_out_of_usage)
 
     def unknown_evidence_never_refuses():
         """ANTI-VACUITY, and the rule that keeps this from being a new bug:

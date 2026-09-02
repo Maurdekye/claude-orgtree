@@ -25,10 +25,9 @@ app-server's `model/list` while sol/terra/luna stayed listed) and the usage
 board orgtree already polls.
 
     §1  the registry read — visibility, freshness, and the fallback
-    §2  the usage board — "can a turn run at all", credits included
+    §2  the usage board — and why it is NOT a hire gate (ruling)
     §3  the rule both doors ask
     §4  controls: what would make the above vacuous
-    §5  the follow-up: the ACCOUNT's exhaustion is every Codex tier's
 """
 
 import datetime as _dt
@@ -209,131 +208,90 @@ check("no registry and no app-server is UNKNOWN, not 'no'",
 check("…and so is a corrupt one", a_corrupt_registry_is_unknown_too)
 
 
-# -------------------------------------------------------- §2 the usage board
-print("\n§2  the usage board — can a turn run on this account at all")
+# ------------------------------- §2 the usage board is NOT a hire gate
+print("\n§2  the usage board — deliberately not a hire gate")
 
 
-def board(*, percent, reached, credits, scoped_percent=0.0):
+def board(*, percent, reached):
     """The shape `account/rateLimits/read` returns, as measured."""
     return {
         "rateLimits": {
             "limitId": "codex", "limitName": None,
             "primary": {"usedPercent": percent, "windowDurationMins": 10080,
                         "resetsAt": 1788764643},
-            "secondary": None, "credits": credits,
+            "secondary": None,
+            "credits": {"hasCredits": False, "unlimited": False,
+                        "balance": "0"},
             "spendControlReached": False, "planType": "prolite",
             "rateLimitReachedType": "rate_limit_reached" if reached else None,
         },
-        "rateLimitsByLimitId": {"codex_bengalfox": {
-            "limitId": "codex_bengalfox", "limitName": "GPT-5.3-Codex-Spark",
-            "primary": {"usedPercent": scoped_percent,
-                        "windowDurationMins": 300, "resetsAt": 1788403179},
-            "secondary": None, "credits": None,
-            "rateLimitReachedType": None, "planType": "prolite"}},
+        "rateLimitsByLimitId": {},
     }
 
 
-NO_CREDITS = {"hasCredits": False, "unlimited": False, "balance": "0"}
-SOME_CREDITS = {"hasCredits": True, "unlimited": False, "balance": "1200"}
+def spend_the_account():
+    codex_limits._cache.update(at=time.time(), data=codex_limits._normalize(
+        board(percent=100, reached=True)))
 
 
-def spent_account_reads_as_exhausted():
-    got = codex_limits._normalize(
-        board(percent=100, reached=True, credits=NO_CREDITS))
-    eq(got["exhausted"], True, "spent, nothing to spend past it")
-    eq(got["credits"]["balance"], "0", "the balance survives normalization")
+def the_board_really_does_say_spent():
+    """ANTI-VACUITY FIRST. Everything below asserts that a spent account
+    changes nothing; if the fixture were not actually spent, all of it would
+    pass for the wrong reason."""
+    data = codex_limits._normalize(board(percent=100, reached=True))
+    account = [x for x in data["limits"] if x["group"] == "codex"]
+    eq([x["percent"] for x in account], [100.0], "the window is full")
+    eq([x["is_active"] for x in account], [True], "and flagged rate-limited")
 
 
-def credits_are_a_way_through():
-    got = codex_limits._normalize(
-        board(percent=100, reached=True, credits=SOME_CREDITS))
-    eq(got["exhausted"], False, "credits keep the account runnable")
+def a_spent_window_withholds_no_codex_tier():
+    """USER RULING 2026-09-02: "i should still be able to hire agents if my
+    usage window is up; i would like the ability to prepare an agent with a
+    charter, even if i cant run it actively."
+
+    65273fa refused every Codex hire on exactly this board. Hiring names an
+    agent, writes its charter and fixes its scope — none of that spends a
+    token, and a window that resets on a schedule is a reason to PREPARE work,
+    not to be locked out of preparing it. Capacity is the TURN's question, and
+    the Codex CLI already answers it loudly there."""
+    spend_the_account()
+    write_registry(reserve="list")
+    try:
+        with NoAppServer():
+            pay = providers.providers_payload(
+                {"installed": True, "connected": True})
+    finally:
+        codex_limits.invalidate()
+    cx = next(x for x in pay["providers"] if x["id"] == "openai")
+    eq(cx["hire_enabled"], True, "the family stays hireable while spent")
+    eq(cx["reason"], None, "and carries no apology for it")
+    eq(cx["reserve_hire_enabled"], True,
+       "reserve is prepared like any other tier — its own gate is the GRANT")
 
 
-def a_healthy_account_is_not_exhausted():
-    got = codex_limits._normalize(
-        board(percent=8, reached=False, credits=NO_CREDITS))
-    eq(got["exhausted"], False, "8% is not spent")
+def a_spent_window_refuses_no_hire_at_the_door():
+    """The other door. The chip not stopping a click is not the same as the
+    server accepting one, and 65273fa gated both."""
+    from orgtree import api
+    from orgtree.ledger import Org
+    spend_the_account()
+    write_registry(reserve="list")
+    org = Org.create("ruling")
+    org.d["max_top_grant"] = 200
+    try:
+        with NoAppServer():
+            for tier in providers.CODEX_TIERS:
+                api.provider_hire_gate(org, tier)
+    finally:
+        codex_limits.invalidate()
 
 
-def a_scoped_bucket_does_not_speak_for_the_account():
-    """`codex_bengalfox` (Spark) is one model's own window. It being full says
-    nothing about whether a reserve turn can run, and reading it as account
-    state would take every Codex tier away for the wrong reason."""
-    got = codex_limits._normalize(
-        board(percent=8, reached=False, credits=NO_CREDITS,
-              scoped_percent=100))
-    eq(got["exhausted"], False, "a scoped window is not the account")
-
-
-def a_stale_board_answers_unknown():
-    codex_limits.invalidate()
-    eq(codex_limits.exhausted(), None, "no board at all")
-    codex_limits._cache.update(at=time.time(),
-                               data=codex_limits._normalize(
-                                   board(percent=8, reached=False,
-                                         credits=NO_CREDITS)))
-    eq(codex_limits.exhausted(), False, "a FRESH healthy board says so")
-    codex_limits._cache["at"] -= codex_limits.MAX_EVIDENCE_AGE + 1
-    eq(codex_limits.exhausted(), None,
-       "…and the same board, gone stale, stops speaking")
-    codex_limits.invalidate()
-
-
-def a_spent_verdict_survives_its_own_window():
-    """THE ASYMMETRY, and why it is sound: usage inside a window only ever
-    goes UP. "Spent, resets Sep 7" is still true an hour later without anyone
-    re-asking, so a spent verdict is trusted to `exhausted_until` rather than
-    to MAX_EVIDENCE_AGE. Without this the family gate goes blind fifteen
-    minutes after the last Codex turn — exactly when a user who has just
-    burned their week is still trying to hire."""
-    data = codex_limits._normalize(
-        board(percent=100, reached=True, credits=NO_CREDITS))
-    eq(data["exhausted_until"], 1788764643.0, "dated by the window's reset")
-    codex_limits._cache.update(at=time.time(), data=data)
-    eq(codex_limits.exhausted(), True, "fresh and spent")
-    codex_limits._cache["at"] -= codex_limits.MAX_EVIDENCE_AGE + 1
-    eq(codex_limits.exhausted(), True, "stale, but the window has not rolled")
-    codex_limits.invalidate()
-
-
-def a_spent_verdict_expires_when_the_window_rolls():
-    """The other half — without it the extension above would be a
-    permanent refusal that no reset could ever clear."""
-    raw = board(percent=100, reached=True, credits=NO_CREDITS)
-    raw["rateLimits"]["primary"]["resetsAt"] = time.time() - 60
-    codex_limits._cache.update(
-        at=time.time() - codex_limits.MAX_EVIDENCE_AGE - 1,
-        data=codex_limits._normalize(raw))
-    eq(codex_limits.exhausted(), None, "a rolled window stops speaking")
-    codex_limits.invalidate()
-
-
-def an_undated_verdict_gets_no_extension():
-    raw = board(percent=100, reached=True, credits=NO_CREDITS)
-    raw["rateLimits"]["primary"].pop("resetsAt")
-    data = codex_limits._normalize(raw)
-    eq(data["exhausted_until"], 0.0, "no reset to trust past")
-    codex_limits._cache.update(
-        at=time.time() - codex_limits.MAX_EVIDENCE_AGE - 1, data=data)
-    eq(codex_limits.exhausted(), None, "so it ages out the ordinary way")
-    codex_limits.invalidate()
-
-
-check("a spent window with no credits is an exhausted account",
-      spent_account_reads_as_exhausted)
-check("…but credits are a way through", credits_are_a_way_through)
-check("a healthy window is not exhausted", a_healthy_account_is_not_exhausted)
-check("a full MODEL-scoped window is not the account's state",
-      a_scoped_bucket_does_not_speak_for_the_account)
-check("evidence too old to act on answers unknown, not exhausted",
-      a_stale_board_answers_unknown)
-check("…but a SPENT verdict is trusted until its window resets",
-      a_spent_verdict_survives_its_own_window)
-check("…and stops being trusted once it has",
-      a_spent_verdict_expires_when_the_window_rolls)
-check("an undated spent verdict gets no extension at all",
-      an_undated_verdict_gets_no_extension)
+check("the spent-account fixture is really spent (anti-vacuity)",
+      the_board_really_does_say_spent)
+check("a spent usage window withholds no Codex tier — user ruling: hiring "
+      "PREPARES an agent", a_spent_window_withholds_no_codex_tier)
+check("…and refuses no hire at the door either",
+      a_spent_window_refuses_no_hire_at_the_door)
 
 
 # ------------------------------------------------------------- §3 the rule
@@ -363,19 +321,6 @@ def the_grant_going_away_is_seen():
     assert "comes back on its own" in (got["reason"] or ""), got
 
 
-def a_spent_account_is_seen():
-    write_registry(reserve="list")
-    saved = codex_limits.exhausted
-    codex_limits.exhausted = lambda: True
-    try:
-        with NoAppServer():
-            got = providers.reserve_availability(chatgpt())
-    finally:
-        codex_limits.exhausted = saved
-    eq(got["enabled"], False, "spent account")
-    eq(got["evidence"], "usage-limits", "which signal refused")
-
-
 def a_live_grant_passes():
     """THE LEG THAT MUST HOLD."""
     write_registry(reserve="list")
@@ -389,7 +334,6 @@ check("an api-key login can never hold reserve capacity",
       api_key_never_holds_reserve)
 check("a WITHDRAWN grant is seen, on an unchanged ChatGPT login",
       the_grant_going_away_is_seen)
-check("a spent account is seen too", a_spent_account_is_seen)
 check("…and a live grant passes (the leg that must hold)", a_live_grant_passes)
 
 
@@ -417,19 +361,27 @@ def the_reserve_tier_name_lives_once():
     assert providers.RESERVE_TIER in providers.CODEX_TIERS, providers.CODEX_TIERS
 
 
+def the_ruling_is_written_where_it_would_be_undone():
+    """The 2026-09-02 reversal is a JUDGEMENT, not a bug fix, so the next
+    reader has to find it where they would be tempted to re-add the gate —
+    beside `RESERVE_TIER`, which both doors already reference. A test alone
+    would only tell them they broke something, not why it was chosen."""
+    import inspect
+    src = inspect.getsource(providers)
+    assert "do not re-add `codex_capacity`" in src,         "the ruling's note has gone missing from providers.py"
+    assert not hasattr(providers, "codex_capacity"),         "the capacity gate is back — see the note above RESERVE_TIER"
+    from orgtree import codex_limits
+    assert not hasattr(codex_limits, "exhausted"),         "codex_limits.exhausted is back and nothing should be asking it"
+
+
 def the_reserve_signal_never_touches_the_other_three():
-    """Anti-vacuity for the whole file: the RESERVE-specific signals may not
+    """Anti-vacuity for the whole file: the RESERVE-specific signal may not
     take luna/terra/sol away — the user's report was explicitly that those
     three kept working while gpt-reserve did not."""
     write_registry(reserve="hide")
-    saved = codex_limits.exhausted
-    codex_limits.exhausted = lambda: False       # the account itself is fine
-    try:
-        with NoAppServer():
-            pay = providers.providers_payload(
-                {"installed": True, "connected": True})
-    finally:
-        codex_limits.exhausted = saved
+    with NoAppServer():
+        pay = providers.providers_payload(
+            {"installed": True, "connected": True})
     cx = next(x for x in pay["providers"] if x["id"] == "openai")
     eq(cx["hire_enabled"], True, "the family stays hireable")
     eq(cx["reason"], None, "…with nothing to apologise for")
@@ -442,55 +394,8 @@ check("the tier name is a constant, not a literal in two files",
       the_reserve_tier_name_lives_once)
 check("the reserve-specific signals never leak onto luna/terra/sol",
       the_reserve_signal_never_touches_the_other_three)
-
-
-# ------------------------------------------------- §5 the family follow-up
-print("\n§5  the ACCOUNT's exhaustion, which is every Codex tier's")
-
-
-def a_spent_account_darkens_the_whole_family():
-    """Coordinator decision, 2026-09-02: extend the exhaustion signal past
-    gpt-reserve. The four Codex tiers share ONE account and one set of usage
-    windows, so a spent account is a spent Sol exactly as much as a spent
-    reserve — and a hire into it is not a polite failure, it takes the seat
-    first and fails on the agent's opening turn (measured: agent `timestamp`,
-    19:38Z)."""
-    write_registry(reserve="list")     # the grant is live; the money is not
-    saved = codex_limits.exhausted
-    codex_limits.exhausted = lambda: True
-    try:
-        with NoAppServer():
-            pay = providers.providers_payload(
-                {"installed": True, "connected": True})
-    finally:
-        codex_limits.exhausted = saved
-    cx = next(x for x in pay["providers"] if x["id"] == "openai")
-    eq(cx["hire_enabled"], False, "the whole family goes dark")
-    eq(cx["reserve_hire_enabled"], False, "reserve with it")
-    assert "no usage left" in (cx["reason"] or ""), cx
-    assert "seat" in (cx["reason"] or ""), (
-        "the tooltip must say WHY it matters — the seat goes either way")
-    claude = next(x for x in pay["providers"] if x["id"] == "claude")
-    eq(claude["hire_enabled"], True, "and Claude is another account entirely")
-
-
-def an_unread_board_leaves_the_family_alone():
-    """THE LEG THAT MUST HOLD for the follow-up. `exhausted()` answers None on
-    a machine nobody has polled, and None must not take a whole provider
-    away — that would be a worse bug than the one being fixed."""
-    write_registry(reserve="list")
-    codex_limits.invalidate()
-    with NoAppServer():
-        pay = providers.providers_payload(
-            {"installed": True, "connected": True})
-    cx = next(x for x in pay["providers"] if x["id"] == "openai")
-    eq((cx["hire_enabled"], cx["reason"]), (True, None), "fail open")
-
-
-check("a spent account darkens sol/terra/luna too, not just reserve",
-      a_spent_account_darkens_the_whole_family)
-check("…and an unread board darkens nothing (the leg that must hold)",
-      an_unread_board_leaves_the_family_alone)
+check("a spent window is not a hire gate, and the code says so out loud",
+      the_ruling_is_written_where_it_would_be_undone)
 
 
 print(f"\nPASS — gpt-reserve detection, {PASS} checks")

@@ -23,7 +23,7 @@ the turn tried to spawn. A refusal at the door beats a failure at spawn.
     §4  the hire gate, now including Claude
     §5  controls: what would make the above vacuous
     §6  gpt-reserve's own gate (OpenAI's grant comes and goes)
-    §7  the ACCOUNT's exhaustion, which is every Codex tier's
+    §7  a spent usage window is NOT a hire gate (user ruling)
 
     python backend/tests/test_provider_hire_availability.py
 """
@@ -32,6 +32,7 @@ from __future__ import annotations
 import os
 import sys
 import tempfile
+import time
 
 _TMP = tempfile.mkdtemp(prefix="orgtree-hireavail-")
 os.environ["ORGTREE_DATA"] = _TMP
@@ -315,32 +316,28 @@ print("\n§6  gpt-reserve — its own gate, beside the family's")
 
 
 class Codex:
-    """The three live facts gpt-reserve's rule reads, all pinned.
+    """The two live facts gpt-reserve's rule reads, both pinned.
 
-    `kind` is the login (d7b98c7's question), `offered` is whether the Codex
-    CLI still lists the gpt-reserve model (None = no evidence), and `spent` is
-    whether the freshest usage board says the account can run a turn at all
-    (None = no fresh board). The family-level checks in §4 already pass under
-    this fixture, so every refusal below is gpt-reserve's OWN rule.
+    `kind` is the login (d7b98c7's question) and `offered` is whether the
+    Codex CLI still lists the gpt-reserve model (None = no evidence). There is
+    deliberately no `spent` knob: usage windows do not gate hiring (§7).
+    The family-level checks in §4 already pass under this fixture, so every
+    refusal below is gpt-reserve's OWN rule.
     """
 
-    def __init__(self, kind="chatgpt", offered=True, spent=False) -> None:
-        self.kind, self.offered, self.spent = kind, offered, spent
+    def __init__(self, kind="chatgpt", offered=True) -> None:
+        self.kind, self.offered = kind, offered
 
     def __enter__(self):
-        self._s, self._o, self._e = (providers.codex_status,
-                                     codex_models.offers,
-                                     codex_limits.exhausted)
-        providers.codex_status = lambda force=False: {              # type: ignore[assignment]
+        self._s, self._o = providers.codex_status, codex_models.offers
+        providers.codex_status = lambda force=False: {               # type: ignore[assignment]
             "installed": True, "connected": True, "kind": self.kind}
         codex_models.offers = lambda slug, force=False: self.offered  # type: ignore[assignment]
-        codex_limits.exhausted = lambda: self.spent                 # type: ignore[assignment]
         return self
 
     def __exit__(self, *a) -> None:
-        providers.codex_status = self._s                            # type: ignore[assignment]
-        codex_models.offers = self._o                               # type: ignore[assignment]
-        codex_limits.exhausted = self._e                            # type: ignore[assignment]
+        providers.codex_status = self._s                             # type: ignore[assignment]
+        codex_models.offers = self._o                                # type: ignore[assignment]
 
 
 def reserve_refused_on_api_key() -> None:
@@ -363,21 +360,6 @@ def reserve_refused_when_the_cli_stops_offering_it() -> None:
                      "not currently offering")
 
 
-def reserve_refused_when_the_account_is_spent() -> None:
-    """The second live signal: a granted pool the account cannot reach.
-    Measured — the reserve agent's first turn came back
-    `usage_limit_exceeded`, having already cost a seat.
-
-    Since the family-wide follow-up (§7) this refusal arrives from the
-    FAMILY branch rather than the reserve one, because the exhaustion is the
-    account's. Same fact, same wording, one place — which is the point;
-    the check stays here so that stops being true loudly if it ever
-    changes."""
-    with Codex(spent=True):
-        expect_error(lambda: api.provider_hire_gate(org(), "gpt-reserve"),
-                     "no usage left")
-
-
 def reserve_passes_when_the_grant_is_live() -> None:
     """THE LEG THAT MUST HOLD. Every other §6 check asserts a refusal, and a
     gate that refused gpt-reserve unconditionally would satisfy all of them
@@ -390,7 +372,7 @@ def unknown_evidence_is_not_a_refusal() -> None:
     """A machine whose registry cannot be read and whose usage board is cold
     knows NOTHING about the grant — and must therefore not take the tier
     away. Failing closed here would turn a detection bug into an outage."""
-    with Codex(offered=None, spent=None):
+    with Codex(offered=None):
         api.provider_hire_gate(org(), "gpt-reserve")
 
 
@@ -411,8 +393,6 @@ check("gpt-reserve is refused on an api-key session, naming ChatGPT — "
       "sol still hires fine there", reserve_refused_on_api_key)
 check("…refused when the Codex CLI no longer offers the model, on an "
       "UNCHANGED ChatGPT login", reserve_refused_when_the_cli_stops_offering_it)
-check("…refused when the freshest usage board says the account is spent",
-      reserve_refused_when_the_account_is_spent)
 check("…and PASSES while the grant is live (the leg that must hold)",
       reserve_passes_when_the_grant_is_live)
 check("no evidence either way is not a refusal",
@@ -421,70 +401,61 @@ check("…and its own rule never leaks onto luna/terra/sol",
       reserve_gate_never_touches_the_other_three)
 
 
-# ------------------------------------------- §7 the family's own capacity
-print("\n§7  a spent ACCOUNT is a spent family, not a spent tier")
+# --------------------------------- §7 a spent window does NOT gate hiring
+print("\n§7  a spent usage window is not a hire gate (user ruling)")
 
 
-def kiosk_org() -> Org:
-    o = org()
-    o.d["kiosk"] = True
-    return o
+def spent_board() -> None:
+    """The account with its weekly window full and nothing to spend past it —
+    the exact state 65273fa refused every Codex hire on."""
+    codex_limits._cache.update(at=time.time(), data=codex_limits._normalize({
+        "rateLimits": {
+            "limitId": "codex", "limitName": None,
+            "primary": {"usedPercent": 100, "windowDurationMins": 10080,
+                        "resetsAt": 1788764643},
+            "secondary": None,
+            "credits": {"hasCredits": False, "unlimited": False,
+                        "balance": "0"},
+            "rateLimitReachedType": "rate_limit_reached", "planType": "prolite",
+        },
+        "rateLimitsByLimitId": {},
+    }))
 
 
-def every_codex_tier_is_refused_when_the_account_is_spent() -> None:
-    """The follow-up (coordinator decision, 2026-09-02). One account, one set
-    of usage windows: sol has exactly as much left as gpt-reserve does, which
-    is none. The old gate accepted these hires, spent the seat, created the
-    node, and let the agent's first turn come back `usage_limit_exceeded` —
-    measured, on agent `timestamp` at 19:38Z."""
-    with Codex(spent=True):
-        for t in providers.CODEX_TIERS:
-            expect_error(lambda t=t: api.provider_hire_gate(org(), t),
-                         "no usage left", "seat")
+def the_fixture_is_really_spent() -> None:
+    """Anti-vacuity: without this, "hiring still works" proves nothing."""
+    spent_board()
+    try:
+        data = codex_limits._cache["data"]
+        assert data["limits"] and data["limits"][0]["percent"] == 100.0, data
+        assert data["limits"][0]["is_active"] is True, data
+    finally:
+        codex_limits.invalidate()
 
 
-def claude_is_a_different_account() -> None:
-    """Anti-vacuity: a gate that refused everything while the Codex board
-    said 'spent' would pass the check above for the wrong reason."""
-    with Codex(spent=True), Fake(installed=True, signed_in=True):
-        for t in providers.CLAUDE_TIERS:
-            api.provider_hire_gate(org(), t)
+def every_codex_tier_still_hires_while_spent() -> None:
+    """USER RULING 2026-09-02: "i should still be able to hire agents if my
+    usage window is up; i would like the ability to prepare an agent with a
+    charter, even if i cant run it actively."
+
+    65273fa put a capacity refusal here, on the reasoning that the seat is
+    taken before the first turn fails. The user reversed it, and the reversal
+    is the better model of what a hire IS: naming an agent, writing its
+    charter and fixing its scope spend no tokens at all. Capacity belongs to
+    the TURN, where the Codex CLI answers it and refusing costs only that
+    turn."""
+    spent_board()
+    try:
+        with Codex():
+            for t in providers.CODEX_TIERS:
+                api.provider_hire_gate(org(), t)
+    finally:
+        codex_limits.invalidate()
 
 
-def every_codex_tier_passes_with_capacity() -> None:
-    """THE LEG THAT MUST HOLD."""
-    with Codex(spent=False):
-        for t in providers.CODEX_TIERS:
-            api.provider_hire_gate(org(), t)
-
-
-def an_unread_board_refuses_nothing() -> None:
-    """`exhausted()` answers None on a machine nobody has polled, and None is
-    not 'spent'. Failing closed here would take the whole Codex provider away
-    from anyone who has not opened the usage panel."""
-    with Codex(spent=None):
-        for t in providers.CODEX_TIERS:
-            api.provider_hire_gate(org(), t)
-
-
-def a_standing_rule_still_outranks_a_transient_one() -> None:
-    """Ordering, pinned: kiosk and headless are durable policy and the user
-    needs to hear THEM, not 'you are out of usage this week' — which would
-    imply the hire becomes possible on Sunday. It does not."""
-    with Codex(spent=True):
-        expect_error(lambda: api.provider_hire_gate(kiosk_org(), "sol"),
-                     "kiosk")
-
-
-check("every Codex tier is refused when the account has nothing left",
-      every_codex_tier_is_refused_when_the_account_is_spent)
-check("…and Claude, a different account, is untouched by it",
-      claude_is_a_different_account)
-check("…and all four PASS with capacity (the leg that must hold)",
-      every_codex_tier_passes_with_capacity)
-check("an unread usage board refuses nothing", an_unread_board_refuses_nothing)
-check("a kiosk still hears the kiosk rule, not the usage one",
-      a_standing_rule_still_outranks_a_transient_one)
+check("the spent-window fixture is really spent", the_fixture_is_really_spent)
+check("every Codex tier still hires on a spent account — hiring PREPARES, "
+      "the turn is what needs capacity", every_codex_tier_still_hires_while_spent)
 
 
 # ------------------------------------------------------------------ summary

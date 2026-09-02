@@ -75,13 +75,13 @@ test('reserveOffer: an offered family with reserve explicitly off HIDES it —'
 
 test('reserveOffer: a family that is ITSELF disabled keeps reserve disabled'
   + ' beside its siblings — only the reserve-specific darkness hides', () => {
-  // the boundary of the ruling. An out-of-usage Codex account disables all
-  // four tiers with one actionable reason (buy credits, or wait for the reset
-  // it names); that is not the lone stray chip the user asked to be removed,
-  // and erasing a whole family the machine HAS would be the D-199 bug again.
+  // the boundary of the ruling. A signed-out Codex CLI disables all four
+  // tiers with one actionable reason (`codex login`); that is not the lone
+  // stray chip the user asked to be removed, and erasing a whole family the
+  // machine HAS would be the D-199 bug again.
   assert.equal(reserveOffer(
-    { enabled: false, installed: true, reason: 'no usage left',
-      reserveEnabled: false, reserveReason: 'no usage left' }), 'disable')
+    { enabled: false, installed: true, reason: 'not signed in',
+      reserveEnabled: false, reserveReason: 'not signed in' }), 'disable')
 })
 
 test('reserveOffer: an offered family with no opinion on reserve OFFERS —'
@@ -210,9 +210,9 @@ surfaceTest('…but a Codex family that is itself unavailable still shows all '
   async (mount) => {
     const el = await mount({
       claudeHire: ABSENT, antigravityHire: ABSENT,
-      codexHire: state({ installed: true, reason: 'no usage left this window',
+      codexHire: state({ installed: true, reason: 'not signed in — run x',
                          reserveEnabled: false,
-                         reserveReason: 'no usage left this window' }),
+                         reserveReason: 'not signed in — run x' }),
     })
     const got = tokens(el, '.hsof')
     for (const t of CODEX) {
