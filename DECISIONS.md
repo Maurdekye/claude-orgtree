@@ -8340,3 +8340,216 @@ with the `expectedTurnId` guard's own refusal. `frontend/tests/turnpend.test.tsx
 (5 checks, new) pins the render order in both directions: against the previous
 order §1/§2/§4 fail, and against a mutant that hoists EVERY pending bubble
 §3/§4 fail instead.
+
+### D-229 · a mid-turn message leaves with the turn that missed it; a user event waits for its projection
+
+Ruling (user, 2026-09-02, two reports against the codex coordinator): "if i
+send a message mid-turn with the wrong timing it just never gets delivered, and
+i have to send another message to actually get you to receive it … it seems to
+be a codex-exclusive issue"; and "i saw the turn envelope associated information
+for a second there before it reverted to a normal user turn message". Both are
+fixed here, both were measured first, and both are now invariants
+([INV-017, INV-018](docs/INVARIANTS.md)).
+
+**The lost message.** Forensics on the org document and the codex journal, to
+the millisecond: turn 1 started 09:51:27.868Z; the user posted "attempt to use
+the fallback, i just reconfigured it" at 09:51:37.383Z while the node was
+`responding`, so `send_message` drained the mailbox into `delivering` and
+appended the carrier to the in-memory steer store; turn 1 ENDED at 09:51:38.389Z
+— one second later — and the codex steer pump, which polls every 2 s and
+leaves the instant `stop` is set, never looked again. The codex leg's `finally`
+then set `responding=False` and folded NOTHING: the two fold sites the claude
+lane has (result boundary and turn exit) exist only on that lane.
+`_run_one_turn`'s `finally` found an empty queue and cleared `busy`. The user's
+message sat in RAM, its bubble reading "delivering mid-task…", with nothing
+anywhere scheduled to move it. At 09:51:52.269Z the user gave up and sent
+"go"; that turn's pump popped the stale carrier at 09:51:59.997Z and steered it
+— 22.6 s after posting, 6 s after the second message, into a turn about
+something else. Codex-exclusive because the claude lane folds leftovers under
+the same lock take that ends steering; the gemini leg had the identical gap.
+
+Fix: every site that ends steering folds the leftover steer store onto the
+BACK of the queue through one helper, `_fold_steer`, inside the same
+`_state_lock` take that flips `responding=False` — the codex and gemini legs
+at their exit, after the pump thread is joined (so nothing pops concurrently),
+and the claude lane at its result boundary, its phantom-drop and stdin-closed
+recoveries, and its turn exit — and records the miss with
+`_steer_fold_log(…, why=…)`, a receipt that names the lane's actual mechanism
+("the turn ended before the steer pump's next poll"), since the claude default
+("no further tool call") sends the next reader after the wrong code. And once
+more as a BELT in `_run_one_turn`'s `finally`, lane-agnostic: residual steer
+carriers move to the queue before `alive` is computed and before the
+pop-or-clear-busy, under that one lock, so no lane can ever leave a node idle
+with a message in RAM. The belt is defense in depth, not the fix: disabling a
+lane fold alone changes only the receipt's `where` (mutant M1), and the belt
+is pinned on its own by a lane that forgets to fold (§7, mutant M3).
+
+**The delivery receipt.** `delivering_mail` now labels every drained-but-
+unconfirmed row with a `stage`, computed in one `_state_lock` take
+(`_delivery_stages`): `turn` (riding the running turn's own text), `steer` (in a
+responding turn's steer store, or popped by its pump awaiting acceptance),
+`queued` (behind a busy turn), `stranded` (in neither carrier and the node not
+busy/waiting/responding/under process control/lease-owned — nothing will move
+it). `node_chat` passes `stage` through and rolls up `mail_stranded`; the desk
+renders the stage as the bubble's tag, and `stranded` is a WARNING ("stuck — no
+turn owns this message"), never the "delivering…" the user watched for 22
+seconds. Against the coordinator's requested vocabulary: *injected* = a
+`steered` row or the turn's own user row; *deferred* = a `fold` row plus stage
+`steer`/`queued`; *replayed* = the restart-replay row and reconcile's journal
+fold-back; *failed-to-admit-but-queued* = stage `queued` (and, once the
+admission lease lands, a `drive_lease` counts as owned); *impossible/error* =
+stage `stranded` / `mail_stranded > 0`. The tests plant the pre-fix state by
+hand and require the receipt to say `stranded`, so the "never stranded" checks
+are falsifiable.
+
+**The flash.** The desk strips no markers, by ruling (D-192's successor: the
+browser must never guess authorship from marker-looking strings;
+`orgstate.test.tsx` pins it). The only thing hiding `[ORG STATE]`,
+`[PROVIDER USAGE]` and the raw `[MAIL]` block is `read_chat`'s projection of
+each provider user event through its durable sidecar row. `read_chat` loaded
+the sidecar ONCE, up front, then streamed the transcript. A codex turn's
+`_open_journal` appends the view and then the user row — correct on its own —
+but a `read_chat` that loaded the sidecar just before that append and then
+reached the new row at the end of the transcript had no row to project it, and
+rendered the whole prompt as the user's bubble for one poll. The next poll's
+load saw the row: "reverted". Fix: on a FRESH miss (`_prompt_is_fresh`, within
+`PROMPT_VIEW_GRACE_S` = 8 s) `read_chat` reloads the sidecar once
+(`_reload_prompt_views`, minus the rows it has already spent, so an identical
+later prompt cannot be handed an earlier turn's projection) and, if the row is
+still missing, HOLDS the event back for that poll (`prompts_withheld`) instead
+of rendering it raw. Nothing goes missing on screen: the pending bubble is still
+covering the message, because `node_chat`'s `_in_transcript` cannot match a row
+that is not in `messages`, and the next poll draws the projected row in the
+same payload that retires the bubble (D-54). A torn sidecar row (an append of a
+long row read between its writes) fails to parse, is skipped, and lands in the
+same fresh-miss path. And the sidecar now TRAVELS with its transcript: both
+compaction splits (the Claude fork and the Codex fork+compact) copy the
+predecessor's history into the successor's transcript with the raw envelopes
+and original timestamps intact, and until now copied nothing to project them —
+so the successor's history showed every copied user row raw, permanently, and
+the hold-back would have hidden the fresh ones. `_copy_prompt_views` runs at
+both sites, before the successor's first row is appended (the differential run
+of `test_codex_dispatch` §6 is what found this).
+
+**What the adversarial review changed (round 1, 2026-09-02).** ① The hold-back
+is bounded by COVERAGE, not only by age: `read_chat` holds an event back only
+while its delivery batch is still unconfirmed in `delivering`
+(`_covered_by_pending`), because that is what keeps the pending bubble on
+screen; once `_confirm_delivered` has run — on the codex lane the instant
+`turn.start()` returns, right after the sidecar write — the bubble is gone and
+a held event would put the message on screen ZERO times, the state INV-018
+itself forbids. The review reproduced that with a failed sidecar write. Such
+an event now renders raw, loudly, at once. ② The hold-back applies only to
+events that carry the machine blocks (`_carries_envelope`): a slash-command
+echo (`<command-name>…`), a prompt typed into a remote-controlled CLI, an
+old-CLI command output record — none ever has a sidecar row, none carries the
+envelope, and the first version hid them for eight seconds. ③ Leftovers fold
+to the BACK of the queue, not the front: every carrier already queued is older
+(queued before the turn began responding, or requeued by the pump after a
+refusal, which on gemini is the normal path), so the front handed the agent the
+newer message first. The two pre-existing claude sites are aligned the same
+way. ④ Both legs fold as the FIRST statement of their `finally` after the pump
+join, before `unbind`/`boundary_check`/`park_back`/`discard`/`close`, any of
+which can raise: a fold placed after them would never run on that path, and
+while the belt would still move the mail, `responding` would stay True on an
+idle node forever and the receipt would read every later batch as owned.
+⑤ `stranded` has hysteresis (`STRANDED_GRACE_S`, 10 s): the killswitch clears
+both carriers a second before the interrupted turn's finally folds the batches
+back, and `send_message`'s two-phase steer decision leaves a sub-millisecond
+gap — both look exactly like a strand for a moment, and a real strand is
+permanent. The tag's remedy is "report it", not "resend it": the batch is
+durable and a restart re-presents it, so a resend would deliver twice. ⑥ Fold
+receipts keep only the newest twelve before the 40-row `steered_log` ring
+trims, so a lane that folds often cannot evict the `steered` rows that are the
+only durable copy of delivered mid-turn mail. ⑦ The belt is pinned by a test
+that plants a lane which forgets to fold (with a pump-requeued carrier ahead
+of the late steer), so the mutation harness now requires "belt off" to die.
+
+**What the adversarial review changed (round 2, 2026-09-02).** ① Round 1's
+fold-to-the-back rests on a premise — everything already queued is older than
+a steer leftover — that holds only if EVERY site that flips `responding` off
+folds in the same lock take. The claude lane had two that did not: the
+phantom drop at the result boundary and the stdin-closed recovery. With `busy`
+still True, a message posted after either took the queue door, and the fold at
+turn exit then appended the earlier steer BEHIND it — the inversion round 1
+removed, produced by its own fix one lane over. The fold is now one helper
+(`_fold_steer`) called at all six `responding=False` sites plus the belt, and
+`test_midturn_mail_ingress` §8 is a structural guard (comments stripped before
+any window is taken) that every such site in `supervisor.py` calls it inside
+its `with _state_lock:` block; mutants M12/M14/M15 must die. ② The cover marker
+— the stamp immediately followed by the body — never occurred in the raw event
+for an FR-05 reply (the "↩ IN REPLY TO" snapshot sits between them) or a
+passive notice (the header carries a trailing clause), so for those shapes the
+hold-back never engaged AND `node_chat`'s `_in_transcript` never handed the
+bubble over: both prohibited states of INV-018 in one frame. One function now,
+`mail_marker_in`, used from both sides — the stamp and the head of the raw
+body matched separately — pinned against every `_mail_block` shape (race §2d,
+mutant M13). ③ `_carries_envelope` was unpinned (race §2c rendered its records
+because nothing covered them); it is now pinned with a covered record that
+only the gate can let through (§2c′, mutant M11), and it also recognises
+`[ORG NOTICES …]`, which `_envelope` puts in the raw event only. ④
+`orgtree_read_transcript` returns `messages[]` with no pending bubble, so a held
+event would reach an agent reading its report ZERO times: that reader calls
+`read_chat(…, hold_back=False)` and gets the raw event (race §3b). ⑤ A carrier
+in the QUEUE of a node nothing owns is as stranded as one in the steer store;
+the receipt said `queued` forever — now `stranded` past the grace (ingress §5,
+mutant M16). ⑥ The strand hysteresis is measured from the batch's drain stamp,
+the only durable clock it carries: it shields the two-phase steer gap (young by
+construction) and does NOT shield an old batch that loses its owner, which is a
+real strand; the killswitch needs no shield because it leaves `busy` True until
+its own fold-back. The docstring now says exactly that. ⑦ The claude turn-exit
+receipt is written before the lifecycle calls that can raise, like the legs'.
+⑧ The harness no longer swallows an exception in its restore, and `--recover`
+refuses to roll back a file changed by hand since the kill. Accepted,
+unchanged: `envelopeflash.test.tsx` §1 does not construct "bubble retired AND
+row withheld" — the desk deliberately renders no placeholder for a message it
+cannot see (a placeholder would be a new transient row), and the server side
+of that state is pinned by race §2b.
+
+**Round 3 (2026-09-02) found no defect in the shipped code** — every round-2
+fix verified fixed or correctly accepted, nothing regressed, and the
+BACK-fold argument re-derived independently as an inductive invariant. It
+found one defect in the harness: two mutants (M7, NOOP) carried no `# MUTANT`
+marker, and both safety nets round 2 added key on that marker, so a run
+killed during M7 would have left the grace disabled, unrefused and
+unrecoverable. Every replacement now carries the marker and the harness
+asserts it at import. Also from round 3: ingress §8's guard only looked
+upward for a lock take and would have passed a future site planted outside
+any block — it now verifies enclosure and self-tests against exactly that
+plant; INV-017's prohibited-state sentence and ui-guide's "next turn" promise
+were tightened to what the code does. Known and accepted, not changed:
+`mail_marker_in` has two contrived false-positive shapes (a message that
+quotes an older entry's header AND body verbatim; two entries posted in the
+same millisecond riding one event) of the same class the old needle had;
+the two claude recovery sites are pinned structurally (§8) and by mutants, not
+by a driven claude-lane run; `node_chat`'s 800-row pending cap (pre-existing)
+can in a spam scenario retire the bubble that covers a held event.
+
+Bounds. ① An unprojected event renders raw — past the grace, or at once when
+its batch is already confirmed: the sidecar write is fail-open by design, and a
+message that never appears would be a gap, which is the worse lie (D-50). The
+grace bounds a one-poll authorship lie; it does not create a hole. ②
+`interrupt_all` still clears the steer store on purpose — that is the
+killswitch's documented contract; the mail stays in the org document for
+whenever the user drives again. ③ The claude lane's two boundary folds already
+existed; round 2 added its two recovery sites and made all six sites one
+helper. ④ The `[MAIL …]` block stays
+in the projection deliberately — it is the structured envelope the desk parses
+into a mail card, not chrome; only the machine blocks are chrome.
+
+Load-bearing: `backend/tests/test_midturn_mail_ingress.py` (57 checks; the fake
+app-server's new `stall` scenario ends the turn on its own clock while
+`CODEX_STEER_POLL` exceeds the stall, so the miss is certain rather than racy;
+§3 injects a message at the finalization seam by hooking `_after_turn`; §6
+proves reconcile recovers a planted strand across a restart; §7 a lane that
+forgets to fold behind a pump requeue; §8 the fold helper's order and the
+structural guard over every `responding=False` site; §9 a teardown that raises
+after the lane's fold), `backend/tests/test_prompt_view_race.py` (14 cases; §1
+appends row+view from inside the sidecar loader — the exact race — and
+requires the reload; §7 shows the pre-fix order produces the raw render, so a
+clean §1 is clean, not blind; §2b/§2c′/§2d/§3b the round-1 and round-2 bounds),
+`frontend/tests/envelopeflash.test.tsx` (a MutationObserver judges EVERY DOM
+commit of the pending→held→projected handover for "exactly one copy, zero
+chrome", and §3 requires the instrument to report the old server's raw row),
+and `backend/tests/_mutate_midturn.py` (NOOP/SANITY controls plus sixteen
+value-replacement mutants, results recorded in its docstring).

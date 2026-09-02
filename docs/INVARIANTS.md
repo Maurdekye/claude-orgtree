@@ -596,6 +596,160 @@ confirms the landing work is committed and tested.
   read-back of a stalled mailbox.
 - **Amendments:** none.
 
+### INV-017 · an accepted mid-turn message is owned at every instant, never parked in RAM on an idle node
+
+- **Statement:** once a user (or agent) message is accepted while its
+  recipient is mid-turn, it MUST at every observable instant be in exactly
+  one of: (a) injected into the running turn (a durable `steered_log` row);
+  (b) drained into a turn's own text (`delivering` via `turn`) with that turn
+  running or lease-owned; (c) an in-memory carrier (`st["steer"]`,
+  `st["queue"]`) on a node that is busy, waiting, responding or under process
+  control; or (d) the durable mailbox / delivery journal with a driver
+  scheduled (a queued carrier, an admission lease, or reconcile at startup).
+  It MUST NOT sit in an in-memory carrier while the node is idle — the
+  `stranded` stage — because nothing is then scheduled to move it and the
+  user must resend to be heard. Tightens [INV-007](#inv-007--mail-is-at-least-once-it-may-stall-it-must-never-disappear)
+  from "never lost" to "never ownerless".
+- **Scope:** every site that flips `responding` off — `_codex_leg` and
+  `_gemini_leg` at their exit, the claude lane at its result boundary, its
+  phantom-drop and stdin-closed recoveries and its turn exit — all through
+  `_fold_steer`; the lane-agnostic `_run_one_turn` finally (the belt);
+  `send_message`'s steer door; `_delivery_stages` (the receipt).
+- **Prohibited states:** a non-empty `st["steer"]` with `busy=False`; a
+  `delivering` batch whose token is in neither in-memory carrier while the
+  node is not busy/waiting/responding/proc-controlled/lease-owned, once the
+  batch is older than `STRANDED_GRACE_S` since its DRAIN — the grace shields
+  only a batch drained moments ago (the two-phase steer gap), never an old
+  one that loses its owner (reported as `stage: "stranded"`, counted in
+  `mail_stranded`); a `responding=False` site that does not fold the steer
+  store in its own lock take (with `busy` still True a later message then
+  takes the queue door ahead of the earlier steer, and the exit fold inverts
+  them — review round 2 found two such sites on the claude lane); a fold
+  that runs after a teardown call that can raise; a fold that puts a later
+  message ahead of an earlier one (leftovers go to the BACK of the queue,
+  which keeps the order precisely because every site folds in its own take);
+  a queued carrier on an unowned node reported as `queued` rather than
+  `stranded`.
+- **Allowed exceptions:** `interrupt_all` (the killswitch) clears the steer
+  store and queue on purpose; the drained mail stays in the org document and
+  is re-presented when the user drives the agent again — a documented user
+  ruling, not an oversight. A backend restart loses the in-memory carrier
+  (INV-010 accepts that) and `reconcile()` folds the journal back and
+  re-drives — accepted as at-least-once, tested.
+- **Observable enforcement:** `backend/tests/test_midturn_mail_ingress.py`
+  (57 checks): §1 makes the miss certain (fake app-server `stall` scenario,
+  `CODEX_STEER_POLL` longer than the stall) and requires an empty steer store,
+  one owned carrier, a `turn exit` fold receipt, and exactly-once delivery by
+  the next turn; §2 two messages in the window, in order; §3 a message at the
+  finalization seam; §5 plants the pre-fix state and requires the receipt to
+  say `stranded` — for a steer-store carrier and for a queued one on an idle
+  node; §6 a planted strand survives a simulated restart via `reconcile()`;
+  §7 a lane that forgets to fold behind a pump requeue (the belt alone, A
+  before B); §8 `_fold_steer`'s order plus a structural guard, comments
+  stripped first, that every `responding = False` site in `supervisor.py`
+  calls it inside its ENCLOSING `with _state_lock:` block (enclosure
+  verified, and the guard self-tested against a planted outside site —
+  review round 3); §9 a teardown that raises after the lane's fold. `backend/tests/_mutate_midturn.py`: M2 (both folds
+  off — the original defect) kills §1; M1 (lane fold off) changes only the
+  receipt's `where`; M3 (belt off) and M9 (belt to the front) die on §7; M12
+  (helper to the front), M14/M15 (a recovery site that no longer folds) die
+  on §8; M16 (queued on an idle node) dies on §5.
+- **Owning references:** `DECISIONS.md` D-229;
+  `backend/orgtree/supervisor.py` (`_codex_leg` / `_gemini_leg` finally,
+  `_run_one_turn` finally, `_delivery_stages`, `delivering_mail`,
+  `_steer_fold_log`); `backend/orgtree/api.py` (`node_chat` `stage` /
+  `mail_stranded`); `backend/tests/test_midturn_mail_ingress.py`.
+- **Status:** enforced (on the `fix/midturn-mail-ingress` branch that carries
+  D-229; verified by its owning suite and mutation harness at commit time).
+- **Provenance:** user report, 2026-09-02 09:55:01Z, to the coordinator: "if
+  i send a message mid-turn with the wrong timing it just never gets
+  delivered, and i have to send another message to actually get you to
+  receive it … it seems to be a codex-exclusive issue now"; user direction
+  09:57Z to fix, relayed by the coordinator. Root-caused by `midturn-mail`
+  from the org document and the codex journal (22.6 s strand, D-229).
+- **Amendments:** 2026-09-02 (adversarial review round 2, same branch): the
+  claude lane's phantom-drop and stdin-closed recovery sites flipped
+  `responding` off without folding, so the round-1 fold-to-the-back could
+  put a later message ahead of an earlier steer there; all six sites now
+  share `_fold_steer`, pinned structurally (§8); a queued carrier on an
+  unowned node is reported `stranded`.
+
+### INV-018 · the machine envelope is never rendered as the user's words, not even for one poll
+
+- **Statement:** a provider user event MUST reach the reader only through
+  its durable projection (the prompt-view sidecar). While a fresh event's
+  projection is not yet readable, `read_chat` MUST reload the sidecar once
+  and, failing that, WITHHOLD the event for that poll — but ONLY while the
+  message's pending bubble still covers it (its delivery batch unconfirmed),
+  so that the message is on screen exactly once throughout; an uncovered
+  unprojected event MUST render (raw, loudly) rather than be hidden, and a
+  reader whose payload carries no pending bubble at all
+  (`orgtree_read_transcript`, `hold_back=False`) MUST NOT hold anything. The
+  `[ORG STATE]`, `[PROVIDER USAGE]` and other per-turn machine blocks MUST
+  NOT appear as a user bubble in any frame the desk paints while the
+  durable provenance exists or is still arriving. The browser MUST NOT be
+  the layer that hides them (it strips no markers, so a human who types them
+  literally keeps every byte).
+- **Scope:** `backend/orgtree/supervisor.py` `read_chat`'s user-row
+  projection (`_take_prompt_view`, `_reload_prompt_views`,
+  `_prompt_is_fresh`, `PROMPT_VIEW_GRACE_S`, `_carries_envelope` — the
+  `[ORG STATE]`, `[PROVIDER USAGE]` and `[ORG NOTICES]` headers —
+  `_covered_by_pending` and the `mail_marker_in` it shares with
+  `node_chat._in_transcript`); every writer of a provider
+  user event, which MUST write the sidecar row first (`_open_journal`, the
+  two `_record_prompt_view` → `stdin.write` pairs) and every copier of a
+  transcript, which MUST copy its sidecar with it (`_copy_prompt_views` at
+  both compaction splits); the desk's rendering of `messages[]` and
+  `pending_mail[]`.
+- **Prohibited states:** a `messages[]` user row carrying the machine blocks
+  for an event younger than the grace; a frame in which the user's message is
+  on screen zero or two times during the pending→projected handover; a
+  marker-based scrubber in the frontend.
+- **Allowed exceptions:** an event whose sidecar row never arrives renders
+  raw — past `PROMPT_VIEW_GRACE_S` (8 s), or at once when its delivery batch
+  is already confirmed (the bubble is gone, so hiding it would show the
+  message zero times) — because the sidecar write is fail-open by design and
+  a message that never appears would be a gap, the worse lie (D-50); both
+  cases are logged. Events that never carry the machine blocks (slash-
+  command echoes, prompts typed into a remote-controlled CLI, old-CLI
+  command output) have no sidecar row by construction and are never held.
+  The `[MAIL …]` block stays in the projection: it is the structured
+  envelope the desk parses into a mail card, not chrome.
+- **Observable enforcement:** `backend/tests/test_prompt_view_race.py` (14
+  cases: the TOCTOU with row+view appended from inside the sidecar loader;
+  a torn sidecar row; hold-back with the pending bubble covering the message
+  exactly once and a one-payload handover; an uncovered event rendered raw
+  at once; the envelope gate pinned with a covered record only it can let
+  through; the cover marker against every `_mail_block` shape (reply,
+  notice, attachment) and the desk's handover for a reply; a no-bubble
+  reader given the raw event; the grace edge both sides; no re-spend of a
+  consumed row; the sidecar copied with a compacted transcript; the pre-fix
+  order shown to produce the raw render);
+  `backend/tests/test_codex_dispatch.py` §6 (copied history stays visible
+  across a Codex fork+compact); `frontend/tests/envelopeflash.test.tsx` (a MutationObserver judges
+  every DOM commit of the handover for one copy and zero chrome, and its §3
+  requires the instrument to report the old server's raw row);
+  `frontend/tests/orgstate.test.tsx` (no frontend scrubber).
+  `backend/tests/_mutate_midturn.py` M6 (no reload), M7 (no grace), M8
+  (re-spend), M10 (coverage ignored), M11 (the gate says yes to everything)
+  and M13 (the marker matches everything) kill the race suite.
+- **Owning references:** `DECISIONS.md` D-229 (mechanism), D-192 (the
+  display ruling this refines); `backend/tests/test_prompt_view_race.py`;
+  `frontend/tests/envelopeflash.test.tsx`.
+- **Status:** enforced (on the `fix/midturn-mail-ingress` branch that carries
+  D-229; verified by its owning suites and mutation harness at commit time).
+- **Provenance:** user report, 2026-09-02 09:55:35Z, to the coordinator:
+  "i saw the turn envelope associated information for a second there before
+  it reverted to a normal user turn message; thats no doubt another bug";
+  invariant wording supplied by the coordinator on the user's behalf
+  (09:55:51Z): internal turn-envelope/control/receipt state must never be
+  rendered as a transient user-visible message. Root-caused by
+  `midturn-mail` to `read_chat`'s sidecar-then-transcript read order (D-229).
+- **Amendments:** 2026-09-02 (adversarial review round 2, same branch): the
+  cover marker missed reply and notice mail (`mail_marker_in`, now shared
+  with the desk's handover); `[ORG NOTICES]` joins the envelope gate; a
+  reader with no pending bubble (`orgtree_read_transcript`) never holds.
+
 ---
 
 ## E · Ledger, credits, and permission containment

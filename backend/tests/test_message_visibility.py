@@ -941,7 +941,8 @@ def main() -> None:
           _transcript_disappears)
 
     # --------------------------------------------------- the marker itself
-    print("\nthe D-55 identity marker (`· {at}\\n{body}`[:400]):")
+    print("\nthe D-55 identity marker (`· {at}`, then the body's head — "
+          "`mail_marker_in`):")
 
     def _marker_identity():
         """Two mails with identical BODIES and different times: echoing the

@@ -816,6 +816,14 @@ export interface PendingMail {
    *  so the transcript will take over as soon as the CLI echoes it (D-54).
    *  Absent = steered mid-task, which the transcript never carries. */
   via?: 'turn'
+  /** the delivery RECEIPT (D-229, supervisor.delivering_mail): where the
+   *  drained message is right now. `turn` — riding the running turn's own
+   *  text; `steer` — in the steer store of a responding turn, delivered at
+   *  its next tool boundary; `queued` — behind a busy turn, delivered at the
+   *  next boundary or as the next turn; `stranded` — NO turn owns it and the
+   *  node is idle, which the backend now prevents and the desk must never
+   *  present as an ordinary "delivering…". Absent on a plain mailbox row. */
+  stage?: 'turn' | 'steer' | 'queued' | 'stranded'
   attachments?: MailAttachment[]
 }
 
@@ -857,6 +865,19 @@ export interface ChatPayload {
   live?: LiveRowPayload[]
   init?: ChatInit | null
   mail_pending: number
+  /** D-229: how many pending rows carry `stage: 'stranded'` — drained
+   *  messages no turn owns. Zero on a healthy backend; absent on an older one.
+   *  A DIAGNOSTIC roll-up: the desk renders the per-row `stage` (see
+   *  PendingMail), and this number is what the backend suites and an operator
+   *  reading the payload check. */
+  mail_stranded?: number
+  /** D-229: fresh user rows read_chat is HOLDING BACK this poll because their
+   *  durable projection has not landed yet — rendering them raw would put the
+   *  machine envelope on screen as the user's words. Held ONLY while the
+   *  message's pending bubble still covers it, so the desk never shows the
+   *  message zero times. Absent on an older backend; diagnostic like
+   *  `mail_stranded`. */
+  prompts_withheld?: number
   pending_mail: PendingMail[]
 }
 

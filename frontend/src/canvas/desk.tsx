@@ -941,10 +941,13 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
           </div>)}
       </div>
       {/* journal-riding mail (drained for a mid-task delivery) shows as queued
-          but is past the point of retraction */}
+          but is past the point of retraction. The tag is the message's
+          delivery RECEIPT (D-229): it names where the message is, and a
+          message no turn owns is said out loud instead of wearing the same
+          "delivering…" as one that is genuinely on its way. */}
       {m.delivering
-        ? <span className="dim pend-tag">{m.via === 'turn'
-          ? 'delivering…' : 'delivering mid-task…'}</span>
+        ? <span className={'dim pend-tag' + (m.stage === 'stranded' ? ' warn' : '')}>
+            {pendTag(m)}</span>
         : m.id && (
           <button className="chip-x" title="retract (undelivered)"
             onClick={() => retractMail(slug, node.id, m.id!)
@@ -1961,6 +1964,22 @@ const splitNotices = (t: string | null | undefined) => {
   // literally and must get the exact text back.
   return { notices: [] as string[], rest: t ?? '' }
 }
+
+/** The pending bubble's delivery RECEIPT (D-229). `stage` is where the server
+ *  says the drained message is right now; the two legacy labels are kept
+ *  byte-for-byte for rows from a backend that does not send one. A message no
+ *  turn owns must never wear "delivering…" — that label was the whole of what
+ *  the user saw while a stranded message sat in RAM (2026-09-02). */
+export const pendTag = (m: PendingMail): string =>
+  // ⚠ not "resend it": the batch is still durable and a restart re-presents
+  // it, so a resend would deliver the message twice (review round 1)
+  m.stage === 'stranded'
+    ? '⚠ stuck — no turn owns this message; report it (an orgtree restart re-presents it)'
+    : m.stage === 'queued'
+      ? 'queued — delivers at the next turn boundary…'
+      : m.stage === 'turn' || (!m.stage && m.via === 'turn')
+        ? 'delivering…'
+        : 'delivering mid-task…'
 
 /** A turn-start envelope can carry several authors.  Keep it structured until
  * render time: treating its raw text as one user markdown bubble made passive

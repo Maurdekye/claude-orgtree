@@ -339,8 +339,17 @@ _SOURCE_CONTRACTS = [
      "the pendrow render filter is ported in Desk.renders"),
     ("frontend/src/canvas/desk.tsx", r"addPending\(slug, node\.id, t\)",
      "the composer creates a ghost before the POST"),
-    ("backend/orgtree/api.py", r'mark = \(f"· \{at\}\\n\{body\}" if at else body\)\[:400\]',
+    # the D-55 identity marker moved into one function shared with read_chat's
+    # hold-back (D-229, review round 2: a reply snapshot or a notice header
+    # sits between the stamp and the body, so the two are matched separately)
+    ("backend/orgtree/api.py",
+     r"any\(supervisor\.mail_marker_in\(t, m\) for t in _seen_user\)",
      "the D-55 identity marker is what the transcript-echo tests exercise"),
+    ("backend/orgtree/supervisor.py", r'stamp = f"· \{at\}"',
+     "the marker's first half is the entry's own stamp"),
+    ("backend/orgtree/supervisor.py",
+     r"return \(not head\) or head in raw\[i \+ len\(stamp\):\]",
+     "…and its second half is the head of the raw body, after the stamp"),
     ("backend/orgtree/supervisor.py", r'b\.get\("via", "steer"\) == "turn"',
      "delivering_mail's carrier split is what the via axis exercises"),
 ]

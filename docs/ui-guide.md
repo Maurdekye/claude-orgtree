@@ -444,8 +444,20 @@ chips are non-live reports.
   its next tool call finishes** — never interrupting it (your sent bubble
   shows dimmed until delivered; the agent's system prompt authenticates this
   channel). If the agent makes no further tool calls, delivery falls back to
-  the end of its current response. Requires the private agent CLI (see
-  README). This applies to ALL mail — agent-to-agent messages deliver
+  the end of its current response — and never later than that: a message the
+  turn missed leaves with the turn and is delivered by the agent's next turn,
+  behind anything you sent before it — or, if the agent is frozen or not
+  live, waits durably in its mailbox until it can run again (D-229). The
+  dimmed bubble's tag is the message's delivery receipt and says
+  where it is: "delivering…" (riding the running turn), "delivering
+  mid-task…" (waiting for the next tool boundary), "queued — delivers at the
+  next turn boundary…" (behind a busy turn). A message no turn owns for more
+  than a few seconds is shown as a warning ("stuck — no turn owns this
+  message; report it") rather than as "delivering…"; on a healthy backend that
+  tag never appears, and seeing it is a bug report — do not resend, the
+  message is still durable and a restart re-presents it. Requires the private
+  agent CLI (see README).
+  This applies to ALL mail — agent-to-agent messages deliver
   mid-task the same way; each message carries its sender's authority (user
   mail outranks the chain, agent mail has its normal standing).
   Undelivered mail persists in the org document, so it survives server

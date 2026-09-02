@@ -84,6 +84,56 @@ ledger, supervisor, the gateways, or the canvas.
   (`{"toks": [...], "text": ...}`), not bare strings — `_run_turn`
   normalizes. Code treating entries as plain strings reads the pre-journal
   shape.
+- **The steer store dies with the turn (D-229, INV-017).** `send_message`
+  appends to `st["steer"]` whenever `responding` is True; only a turn's own
+  collector (the claude hook, the codex/gemini pump) ever pops it. So EVERY
+  site that flips `responding=False` MUST fold the leftover store onto the
+  BACK of `st["queue"]` in that same `_state_lock` take, through
+  `_fold_steer` — the codex and gemini legs at the top of their `finally`,
+  after the pump is joined and before any teardown call that can raise; the
+  claude lane at its result boundary, its phantom-drop and stdin-closed
+  recoveries and its turn exit — and `_run_one_turn`'s `finally` does it
+  once more as a lane-agnostic belt before it pops the queue or clears
+  `busy`; `test_midturn_mail_ingress` §8 guards the rule structurally. The
+  back, not the front: everything already queued is older than a steer
+  leftover (queued before the turn began responding, or requeued by the
+  pump after a refusal) — but ONLY because every such site folds in its own
+  take; a site that flips the flag without folding lets a later message
+  queue ahead of the earlier steer (review round 2, two claude sites). A
+  lane that forgets leaves a message in
+  RAM on an idle node with nothing scheduled to move it (the live
+  coordinator, 22.6 s, 2026-09-02). The desk's `pending_mail[].stage`
+  (`turn` / `steer` / `queued` / `stranded`, from `_delivery_stages`) is the
+  receipt: `stranded` is that exact state once it has lasted past
+  `STRANDED_GRACE_S` (the killswitch and the two-phase steer decision open
+  benign windows of the same shape for a moment), rendered as a warning,
+  and `node_chat`'s `mail_stranded` counts it. A new terminal path that
+  clears `busy` must go through that `finally` or replicate the fold.
+- **`read_chat` shows a user event only through its projection (D-229,
+  INV-018).** The desk strips no markers, so the prompt-view sidecar is the
+  only thing hiding the per-turn machine blocks. The sidecar is loaded up
+  front and the transcript streamed after it; a row appended in between
+  arrives unprojected. On a FRESH miss (`_prompt_is_fresh`, within
+  `PROMPT_VIEW_GRACE_S`) of an event that carries the machine blocks
+  (`_carries_envelope`: `[ORG STATE]`, `[PROVIDER USAGE]`, `[ORG NOTICES]`
+  — command echoes and remote-control prompts never do and never have a
+  sidecar row) `read_chat` reloads the sidecar once
+  (`_reload_prompt_views`, minus rows already spent) and otherwise HOLDS the
+  event back for that poll (`prompts_withheld`) — but ONLY while the
+  message's batch is still unconfirmed in `delivering`
+  (`_covered_by_pending`), because that is what keeps the pending bubble on
+  screen: `_in_transcript` cannot match a row that is not in `messages`.
+  Both sides use one marker, `mail_marker_in` — the entry's stamp and the
+  head of its raw body, matched separately, since a reply snapshot or a
+  notice header sits between them. A reader with no bubble in its payload
+  (`orgtree_read_transcript`) passes `hold_back=False` and gets the raw
+  event instead of a hidden one.
+  Once the batch is confirmed the bubble is gone and a held event would be
+  on screen zero times, so it renders raw, loudly (fail-open; the sidecar
+  write failed). Every lane writes the sidecar row BEFORE the provider
+  event (`_open_journal`; the two `_record_prompt_view` → `stdin.write`
+  pairs) and every transcript copy carries its sidecar (`_copy_prompt_views`
+  at both compaction splits) — keep both, or the fallback becomes common.
 - **The `drive` contract**: ledger ops and mail posts return a `drive` list
   of nodes the caller MUST wake (outside the doc lock). Rehire depends on it
   so mail queued while archived is finally acted on. A new caller that

@@ -31,6 +31,14 @@ scenarios selected by FAKECODEX_SCENARIO:
                 instead of merely likely (see test_codex_stream_order.py)
     interrupt  the turn stalls until turn/interrupt, then completes with
                status "interrupted"
+    stall      the turn stays open for FAKECODEX_STALL_S seconds (default
+               1.0) making no tool call and then completes on its own — a
+               turn whose end is not caused by anything the supervisor
+               sends. It is the deterministic shape of "the user's message
+               arrived in the last two seconds of the turn": with the steer
+               poll set longer than the stall, the pump never polls again
+               and the carrier is exactly where the live coordinator lost
+               one (test_midturn_mail_ingress.py, D-229)
     usage_limit (D-209) the turn ends the way a REAL subscription wall ends
                one, replayed from captured bytes — see below
 
@@ -229,6 +237,12 @@ def run_turn(thread_id, turn_id, dyn_tools):
             reply_error(st["id"], "no such active turn: fake-turn-0001")
             return
         agent_message("msg-nosteer", "no steer arrived")
+    elif SCENARIO == "stall":
+        # no tool call, no steer wait: the turn simply takes this long. The
+        # supervisor's pump polls on its own clock, so whether it sees a
+        # message posted during the stall is decided by CODEX_STEER_POLL
+        # alone — which is what lets a test make the miss CERTAIN.
+        time.sleep(float(os.environ.get("FAKECODEX_STALL_S", "1.0")))
     elif SCENARIO == "usage_limit":
         # the exhausted bucket FIRST, carrying the only machine reset anyone
         # will ever get for this wall…

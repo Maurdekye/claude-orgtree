@@ -1923,6 +1923,35 @@ def _record_prompt_view(slug: str, session_id: str, raw: str, visible: str,
         print(f"[orgtree] {slug}: prompt-view journal write failed: {e!r}")
 
 
+def _copy_prompt_views(slug: str, old_sid: str, new_sid: str) -> bool:
+    """A transcript's projection sidecar travels with the transcript (D-229).
+
+    A compaction split copies the predecessor's visible history into the
+    successor's journal — the user rows keep their original timestamps and
+    their original RAW text, machine envelope included. Without their sidecar
+    rows the successor's read_chat has no projection for any of them: rows
+    older than the grace render raw (the machine blocks as the user's words,
+    permanently, in the successor's history) and rows younger than it are
+    held back. Copying the sidecar alongside the journal keeps every copied
+    user event projected exactly as it was. Best effort, like every sidecar
+    write: never a reason for a compaction to fail. Returns True if a sidecar
+    was copied."""
+    if not old_sid or not new_sid or old_sid == new_sid:
+        return False
+    src = _prompt_view_path(slug, old_sid)
+    dst = _prompt_view_path(slug, new_sid)
+    try:
+        if not os.path.isfile(src):
+            return False
+        with _view_journal_lock:
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            shutil.copyfile(src, dst)
+        return True
+    except OSError as e:
+        print(f"[orgtree] {slug}: prompt-view sidecar copy failed: {e!r}")
+        return False
+
+
 def _load_prompt_views(slug: str, session_id: str
                        ) -> dict[str, list[dict[str, Any]]]:
     """Load ordered structured projections.  Corrupt rows are ignored."""
@@ -1934,6 +1963,14 @@ def _load_prompt_views(slug: str, session_id: str
                 try:
                     row = json.loads(line)
                 except json.JSONDecodeError:
+                    # ⚠ also the head of an append in progress: a row longer
+                    # than the writer's buffer reaches the disk in more than
+                    # one write, and a reader that opens the file between
+                    # them sees a torn line. It is skipped here and the user
+                    # event it projects is then FRESH-and-unprojected in
+                    # read_chat, which reloads once and otherwise holds the
+                    # event back for the poll rather than rendering it raw
+                    # (D-229) — the next read sees the row whole.
                     continue
                 if (not isinstance(row, dict)
                         or not isinstance(row.get("sha256"), str)
@@ -1946,13 +1983,20 @@ def _load_prompt_views(slug: str, session_id: str
 
 
 def _take_prompt_view(views: dict[str, list[dict[str, Any]]], raw: str,
-                      event_at: Any = None) -> tuple[bool, str]:
+                      event_at: Any = None,
+                      consumed: list[dict[str, Any]] | None = None
+                      ) -> tuple[bool, str]:
     """Consume the provenance row matching this exact provider user event.
 
     A timestamp proximity check prevents a newly-created sidecar row from
     being consumed by an identical legacy prompt earlier in the transcript.
     Provider and sidecar writes are adjacent; five minutes is deliberately
     generous for slow disks while still separating historical repetitions.
+
+    `consumed`, when given, receives every row this call pops — so a caller
+    that has to RELOAD the sidecar mid-read (`_reload_prompt_views`) can
+    subtract what it already spent and cannot hand an earlier turn's
+    projection to a later identical prompt.
     """
     key = hashlib.sha256(raw.encode("utf-8")).hexdigest()
     rows = views.get(key) or []
@@ -1970,8 +2014,135 @@ def _take_prompt_view(views: dict[str, list[dict[str, Any]]], raw: str,
             except (TypeError, ValueError, OverflowError):
                 continue
         rows.pop(i)
+        if consumed is not None:
+            consumed.append(row)
         return True, str(row.get("visible") or "")
     return False, raw
+
+
+#: How long a provider user event may go without its durable projection
+#: before read_chat gives up waiting and renders it raw (D-229). The sidecar
+#: row is written BEFORE the provider event on every lane (`_open_journal` for
+#: codex, the two `_record_prompt_view` → `stdin.write` pairs for claude), so
+#: a fresh event with no row means the reader raced the writer — reload once,
+#: and if the row is still missing, hold the event back for this poll rather
+#: than put the machine envelope on screen as the user's words. Past this age
+#: the row is not coming (the sidecar write failed, and it is fail-open by
+#: design) and raw is the honest fallback: a lie about authorship for one poll
+#: is what this bounds; a message that never appears would be a gap, and a gap
+#: is the worse lie.
+PROMPT_VIEW_GRACE_S = 8.0
+
+
+def _prompt_is_fresh(event_at: Any, now: float | None = None) -> bool:
+    """Is this provider user event young enough that its sidecar row may
+    simply not have been read yet? Unparseable = not fresh (render as today)."""
+    if not event_at:
+        return False
+    try:
+        ts = _dtm.datetime.fromisoformat(
+            str(event_at).replace("Z", "+00:00")).timestamp()
+    except (TypeError, ValueError, OverflowError):
+        return False
+    return abs((now if now is not None else time.time()) - ts) \
+        <= PROMPT_VIEW_GRACE_S
+
+
+def _carries_envelope(raw: str) -> bool:
+    """Does this provider user event carry orgtree's own per-turn machine
+    blocks — the thing INV-018 forbids showing as the user's words?
+
+    The read-side fallback only ever concerns events that DO: a slash-command
+    echo (`<command-name>…`), a prompt the user typed straight into a
+    remote-controlled CLI, an old-CLI command output record — none of them
+    ever has a sidecar row, none of them carries the envelope, and holding
+    them back for the grace hid real content for eight seconds (review round
+    1). This is the server recognising its own block headers on its own
+    provider event, not a frontend scrubber guessing at a human's text: a
+    human who types the header literally is projected like anyone else."""
+    # `[ORG NOTICES …]` too: `_envelope` puts the notices block in the raw
+    # event only, never in the projection, and a boundary-fed event whose
+    # usage block was skipped carries no other header (review round 2)
+    return (ORG_STATE_OPEN in raw or "[PROVIDER USAGE" in raw
+            or "[ORG NOTICES" in raw)
+
+
+def mail_marker_in(raw: str, m: Mapping[str, Any]) -> bool:
+    """Does this text carry THIS mail entry — identity, not resemblance?
+
+    Shared by `api.node_chat._in_transcript` (is the pending bubble's message
+    already on screen as a transcript row?) and `_covered_by_pending` (is the
+    event read_chat may hold back still covered by that bubble?) — the same
+    question from both sides, so it is answered in one place (D-229).
+
+    `_mail_block` writes the entry's own `at` into its header line and the
+    body on the line(s) after — but not always ADJACENT: an FR-05 reply
+    snapshot ("↩ IN REPLY TO …") sits between them, and a notice's header
+    carries a trailing clause after the stamp. The old `· {at}\\n{body}` needle
+    silently missed both shapes (review round 2): their pending bubble stayed
+    up beside the transcript row, and read_chat's hold-back never engaged for
+    them. So the halves are matched separately — the stamp `· {at}` (unique
+    per entry to the millisecond), then the head of the body anywhere AFTER
+    it. The body is used RAW, unstripped, as `_mail_block` wrote it (see the
+    whitespace note in `_in_transcript`); a legacy entry without `at` falls
+    back to the bare body, which must then be non-empty or it would match
+    every bubble."""
+    body = str(m.get("body") or "")
+    at = m.get("at")
+    if not at:
+        return bool(body.strip()) and body[:400] in raw
+    stamp = f"· {at}"
+    i = raw.find(stamp)
+    if i < 0:
+        return False
+    head = body[:400]
+    return (not head) or head in raw[i + len(stamp):]
+
+
+def _covered_by_pending(org: Org, nid: str, raw: str) -> bool:
+    """Is the message this provider event carries STILL on screen as a
+    pending bubble — i.e. is its journal batch unconfirmed in `delivering`?
+
+    Only then may read_chat hold the event back: the bubble covers it and the
+    handover lands in one payload. Once the batch is confirmed the bubble is
+    gone, and a held event would be on screen ZERO times — the state INV-018
+    itself forbids and D-50 calls the worse lie. Found by review round 1: a
+    failed sidecar write plus a confirmed batch produced several polls of
+    nothing. The marker is `mail_marker_in` — the one `node_chat`'s
+    `_in_transcript` applies from the other side."""
+    for b in (org.d.get("delivering") or {}).get(nid, []):
+        for m in b.get("mail") or []:
+            if mail_marker_in(raw, m):
+                return True
+    return False  # not covered
+
+
+def _reload_prompt_views(slug: str, session_id: str,
+                         consumed: list[dict[str, Any]]
+                         ) -> dict[str, list[dict[str, Any]]]:
+    """The sidecar, read again mid-read_chat, minus the rows already spent.
+
+    ⚠ THE RACE THIS CLOSES (D-229, user report 2026-09-02: "i saw the turn
+    envelope associated information for a second there before it reverted to
+    a normal user turn message"). read_chat loads the sidecar ONCE, up front,
+    then streams the transcript. A codex turn's `_open_journal` appends the
+    view and then the user row, under one lock, in that order — correct on its
+    own — but a read_chat that loaded the sidecar just before that append and
+    then reached the new row at the end of the transcript found no row for
+    it. The desk strips no markers by ruling (the browser must never guess
+    authorship from marker-looking strings), so that one poll rendered the
+    whole prompt: ORG STATE, PROVIDER USAGE, the raw MAIL envelope, as the
+    user's bubble. The next poll's load saw the row and the bubble "reverted".
+    Reloading on a miss costs one read of a small file, and only on the poll
+    that actually raced."""
+    fresh = _load_prompt_views(slug, session_id)
+    for row in consumed:
+        rows = fresh.get(str(row.get("sha256") or "")) or []
+        for i, cand in enumerate(rows):
+            if cand == row:
+                rows.pop(i)
+                break
+    return fresh
 
 
 def transcript_path(session_id: str, root: str | None = None) -> str | None:
@@ -4484,16 +4655,163 @@ def delivering_mail(org: Org, nid: str,
 
     With no `shown` (a caller that cannot see the transcript) everything is
     surfaced: showing a duplicate is the failure this system prefers over
-    hiding a message. Old entries have no `via` and default to "steer"."""
+    hiding a message. Old entries have no `via` and default to "steer".
+
+    Every row also carries its `stage` — the delivery RECEIPT (D-229), see
+    `_delivery_stages`. The desk renders it as the bubble's tag, and the one
+    stage that is not "on its way" (`stranded`) is rendered as a warning, so
+    the failure this whole family produces is said out loud on the row it
+    concerns instead of wearing the same "delivering mid-task…" as a message
+    that really is about to arrive."""
+    batches = (org.d.get("delivering") or {}).get(nid, [])
+    # a durable, retry-owned admission carrier (a `drive_lease`, when the
+    # admission machinery writes one) OWNS the node's next turn even while
+    # nothing is in memory yet — it is the opposite of stranded
+    leased = bool((org.nodes.get(nid) or {}).get("drive_lease"))
+    stages = _delivery_stages(org.d["slug"], nid, batches, leased=leased)
     out = []
-    for b in (org.d.get("delivering") or {}).get(nid, []):
+    for b in batches:
         turn = b.get("via", "steer") == "turn"
+        stage = stages.get(str(b.get("tok") or ""), "")
         for m in b.get("mail") or []:
             if shown is not None and shown(m):
                 continue        # the transcript is showing it — hand over
             out.append({**m, "delivering": True,
-                        **({"via": "turn"} if turn else {})})
+                        **({"via": "turn"} if turn else {}),
+                        **({"stage": stage} if stage else {})})
     return out
+
+
+def _delivery_stages(slug: str, nid: str,
+                     batches: list[dict[str, Any]], *,
+                     leased: bool = False) -> dict[str, str]:
+    """Where each drained-but-unconfirmed batch is RIGHT NOW — the delivery
+    receipt (D-229), keyed by journal token.
+
+      turn      riding the running turn's own text (drained at its start);
+                the transcript takes over when the provider echoes it
+      steer     in the steer store of a responding turn, or popped by its
+                pump and awaiting the provider's acceptance — delivered at
+                the next tool boundary
+      queued    behind a busy turn, in the in-memory queue — delivered at
+                the next result boundary or as the next turn; on a node
+                nothing owns it is `stranded` like any other carrier
+                (review round 2)
+      stranded  NO turn owns it: the node is idle (not busy, not waiting on
+                a slot, not responding, not under process control) and the
+                token is in neither in-memory carrier. Nothing will move it
+                until an unrelated event does. This is the state the live
+                coordinator sat in for 22 s on 2026-09-02, and the state the
+                lane-exit folds now make unreachable; naming it is what lets
+                the suite prove that, and what lets the desk stop calling it
+                "delivering".
+
+    `leased`: the node document carries a durable retry-owned admission
+    carrier (`drive_lease`) — a turn WILL start for it, so nothing it holds
+    is stranded even though no in-memory owner exists yet.
+
+    `stranded` has HYSTERESIS (review round 1): a batch younger than
+    `STRANDED_GRACE_S` — measured from its DRAIN stamp, the only durable
+    clock a batch carries — is never called stranded, because a benign window
+    looks exactly like it for a moment: `send_message`'s two-phase steer
+    decision has the mailbox drained for a sub-millisecond gap before it
+    re-owns the carrier, and that batch is young by construction. (The
+    killswitch, `interrupt_all`, is covered differently: it clears both
+    carriers but leaves `busy` True until the interrupted turn's finally has
+    folded the batches back to the mailbox, so nothing it touches is ever
+    unowned here — review round 2.) The grace does NOT shield an OLD batch
+    that loses its owner: that is a real strand, reported at once. A REAL
+    strand is permanent, so a ten-second delay before the warning costs
+    nothing and a false alarm on an alarm the docs promise never fires costs
+    trust (and, if the reader resends, a duplicate).
+
+    Read under `_state_lock` in one take, so a batch is never labelled from a
+    queue and a busy bit observed at different instants."""
+    if not batches:
+        return {}
+    st = state(slug, nid)
+    with _state_lock:
+        steer_toks = {str(t) for x in (st.get("steer") or [])
+                      if isinstance(x, dict) for t in x.get("toks") or []}
+        queue_toks = {str(t) for x in st["queue"]
+                      if isinstance(x, dict) for t in x.get("toks") or []}
+        owned = bool(st.get("busy") or st.get("waiting")
+                     or st.get("responding") or st.get("proc_control")
+                     or leased)
+    t_now = time.time()
+    out: dict[str, str] = {}
+    for b in batches:
+        tok = str(b.get("tok") or "")
+        if not tok:
+            # a legacy/hostile batch with no token has no identity to label;
+            # several of them would otherwise share one stage under ""
+            continue
+        via_turn = b.get("via", "steer") == "turn"
+        young = _batch_is_young(b, t_now)
+        if tok in queue_toks:
+            # a queued carrier is owned only while something will pop it: on
+            # a node nothing owns it is as stranded as one in the steer store
+            # (review round 2), and the receipt must say so
+            out[tok] = "queued" if (owned or young) else "stranded"
+        elif owned or young:
+            out[tok] = ("steer" if tok in steer_toks
+                        else "turn" if via_turn else "steer")
+        else:
+            out[tok] = "stranded"
+    return out
+
+
+#: how old a drained-but-unowned batch must be before `_delivery_stages`
+#: calls it `stranded` — see the hysteresis note in that docstring
+STRANDED_GRACE_S = 10.0
+
+
+def _batch_is_young(b: Mapping[str, Any], now: float) -> bool:
+    """Is this delivery batch younger than the strand hysteresis? An
+    unparseable or absent stamp is NOT young — an old-shape batch that nobody
+    owns is exactly what the label exists for."""
+    try:
+        ts = _dtm.datetime.fromisoformat(
+            str(b.get("at") or "").replace("Z", "+00:00")).timestamp()
+    except (TypeError, ValueError, OverflowError):
+        return False
+    return (now - ts) < STRANDED_GRACE_S
+
+
+def _fold_steer(st: dict[str, Any]) -> list[Any]:
+    """Empty the steer store into the BACK of the queue. CALL UNDER
+    `_state_lock`, IN THE SAME TAKE THAT SETS `responding = False` (D-229,
+    INV-017).
+
+    The steer store only means anything while `responding` is True — that is
+    the flag `send_message` reads to append there instead of to the queue. So
+    every site that flips the flag off must drain the store in that same lock
+    take, or one of two things happens:
+
+      * nothing else drains it and the carrier sits in RAM with the node idle
+        (the codex leg's exit, measured on the live coordinator 2026-09-02:
+        posted 09:51:37.383Z, turn ended 09:51:38.389Z, delivered 09:51:59.997Z
+        into the NEXT turn, which the user had to start by hand);
+      * `busy` is still True, so a LATER message takes the queue door and
+        lands AHEAD of the carrier still in the store — and the fold at turn
+        exit then hands the agent the newer message first (review round 2:
+        the claude lane's phantom-drop and stdin-closed sites flipped the flag
+        and folded nothing).
+
+    To the BACK, at every site: whatever is already queued arrived before this
+    response began steering (mail cannot take the queue door while
+    `responding` is True) or was requeued by a pump after a refusal that
+    happened before any later steer — so appending keeps the user's order,
+    and the front (the pre-D-229 fold) put the newer message first (review
+    round 1). Returns the carriers moved so the caller can write the receipt
+    (`_steer_fold_log`) OUTSIDE the lock. test_midturn_mail_ingress §8 pins
+    the order and that every `responding = False` site in this file calls it
+    inside the same lock take."""
+    leftover = st.get("steer") or []
+    st["steer"] = []
+    if leftover:
+        st["queue"].extend(leftover)
+    return leftover
 
 
 def _confirm_delivered(slug: str, nid: str, toks: Iterable[str]) -> None:
@@ -8004,6 +8322,42 @@ def _codex_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
         # or requeue work after its only driver had gone — duplicate or gap.
         if steer_thread is not None:
             steer_thread.join()
+        # ⚠ THE STEER STORE IS EMPTIED FIRST, IN THE SAME LOCK TAKE THAT ENDS
+        # STEERING (D-229). `send_message` appends to `st["steer"]` whenever
+        # `responding` is True, and the pump above only pops on its poll —
+        # so a message that arrived after the pump's last poll and before
+        # this line was appended to a store nobody would ever read again:
+        # the pump had left (`stop.wait` returns True once `stop` is set),
+        # the claude lane's two fold sites are never reached on this leg,
+        # and `_run_one_turn`'s finally found an empty queue and cleared
+        # `busy`. The node sat idle with the user's message in RAM, its mail
+        # already drained into `delivering`, its bubble reading "delivering
+        # mid-task…" until the NEXT turn's pump happened to pop it.
+        # Measured on the live coordinator, 2026-09-02: posted 09:51:37.383Z
+        # into a turn that ended 09:51:38.389Z; steered 09:51:59.997Z — into
+        # the turn the user's follow-up "go" had started six seconds
+        # earlier. That is the user's report verbatim ("i have to send
+        # another message to actually get you to receive it"), and it is
+        # codex-exclusive because the claude lane folds under this same lock.
+        #
+        # HERE and not after the teardown below (review round 1): unbind,
+        # boundary_check, park_back, discard and close can each raise, and a
+        # fold placed after them would then never run — the belt in
+        # `_run_one_turn` would still move the mail, but `responding` would
+        # stay True on an idle node forever, `codex_turn` would point at a
+        # dead turn, and the delivery receipt would read every later batch
+        # as owned. Nothing above this point can throw once the join has
+        # returned, and the join is what makes the fold safe: no pump pops
+        # concurrently. Folding atomically with `responding=False` leaves
+        # no instant where the store can be appended to and not drained.
+        with _state_lock:
+            st.pop("codex_turn", None)
+            st["responding"] = False
+            leftover = _fold_steer(st)      # to the BACK — see the helper
+        if leftover:
+            _steer_fold_log(slug, nid, len(leftover), "turn exit",
+                            why="the turn ended before the steer pump's "
+                                "next poll")
         if wp_turn is not None:
             turn.client.unbind()
             keep, _bnd_lbl, keep_why = warmpool.boundary_check(
@@ -8031,9 +8385,6 @@ def _codex_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
             # `wait` normally closed the cold client; this also covers a
             # start/initialize exception before wait was reached.
             turn.client.close()
-        with _state_lock:
-            st.pop("codex_turn", None)
-            st["responding"] = False
         turn_mcp_count, turn_mcp_names = _mcp_tool_surface_for_owner(
             slug, nid, turn.client.proc)
         if not parked:
@@ -8455,10 +8806,21 @@ def _gemini_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
         # `steer` returns False synchronously, so this is normally immediate.
         if steer_thread is not None:
             steer_thread.join()
-        turn.client.close()
+        # same fold as the codex leg, same lock take, same reason, same
+        # placement (D-229): a carrier appended after the pump's last poll
+        # must leave with the turn, not wait in RAM for a turn that nothing
+        # will start — and it happens BEFORE `turn.client.close()`, which can
+        # raise, so a failing teardown cannot leave `responding` True on an
+        # idle node. To the back: see the codex leg's ordering note.
         with _state_lock:
             st.pop("gemini_turn", None)
             st["responding"] = False
+            leftover = _fold_steer(st)
+        if leftover:
+            _steer_fold_log(slug, nid, len(leftover), "turn exit",
+                            why="the turn ended before the steer pump's "
+                                "next poll")
+        turn.client.close()
         warmpool._set_proc_lifecycle(slug, nid, live=False, owner=turn)
         _mcp_tool_count_end(slug, nid, turn.client.proc)
     with dlock:
@@ -9806,10 +10168,7 @@ def _run_one_turn(slug: str, nid: str,
                         nxt = None
                         with _state_lock:
                             st["responding"] = False
-                            leftover = st.get("steer") or []
-                            st["steer"] = []
-                            if leftover:
-                                st["queue"][0:0] = leftover
+                            leftover = _fold_steer(st)     # D-229, to the BACK
                         if leftover:
                             _steer_fold_log(slug, nid, len(leftover),
                                             "result boundary")
@@ -9970,6 +10329,24 @@ def _run_one_turn(slug: str, nid: str,
                                     _phantom_log(slug, nid, "result boundary")
                                     with _state_lock:
                                         st["responding"] = False
+                                        # …and the store folds in the SAME
+                                        # take (review round 2): a message
+                                        # that steered in while this pointer
+                                        # was being enveloped would otherwise
+                                        # wait in RAM with `busy` still True,
+                                        # a later message would take the
+                                        # queue door AHEAD of it, and the
+                                        # exit fold would then hand the agent
+                                        # the newer one first. Folded here it
+                                        # is simply the next carrier the loop
+                                        # below pops.
+                                        dropped_fold = _fold_steer(st)
+                                    if dropped_fold:
+                                        _steer_fold_log(
+                                            slug, nid, len(dropped_fold),
+                                            "result boundary",
+                                            why="a queued pointer enveloped "
+                                                "to nothing and was dropped")
                                     continue
                             break
                         if nxt is not None:
@@ -10045,6 +10422,16 @@ def _run_one_turn(slug: str, nid: str,
                                         **({"cmd": True} if ncmd else {})}
                                         if (ntoks or ncmd or nview) else nxt)
                                     st["responding"] = False
+                                    # the store folds BEHIND the requeued
+                                    # carrier, in the same take (review
+                                    # round 2 — see `_fold_steer`)
+                                    closed_fold = _fold_steer(st)
+                                if closed_fold:
+                                    _steer_fold_log(
+                                        slug, nid, len(closed_fold),
+                                        "result boundary",
+                                        why="the process's stdin closed "
+                                            "under the boundary feed")
                         # D-201: PARK instead of ending the process, when
                         # everything is clean — warm turn, hash still
                         # current, no usage limit, no live background
@@ -10104,16 +10491,15 @@ def _run_one_turn(slug: str, nid: str,
                     st["responding"] = False
                     st["tasks"] = 0     # a dead process runs nothing
                     st["bg_tasks"] = 0  # …its background children included
-                    leftover = st.get("steer") or []
-                    st["steer"] = []
-                    if leftover:
-                        st["queue"][0:0] = leftover
+                    leftover = _fold_steer(st)       # D-229, to the BACK
+                if leftover:
+                    # the receipt BEFORE the lifecycle calls below, which can
+                    # raise (review round 2 — the same rule as the legs)
+                    _steer_fold_log(slug, nid, len(leftover), "turn exit")
                 if not parked:
                     warmpool._set_proc_lifecycle(
                         slug, nid, live=False, owner=wp_turn or proc)
                     _mcp_tool_count_end(slug, nid, proc)
-                if leftover:
-                    _steer_fold_log(slug, nid, len(leftover), "turn exit")
                 # ⛔ FAIL LOUD (user ruling 2026-08-20). The process is gone.
                 # Anything still in the live set died with it and will never
                 # report: the CLI queues its own "killed" notification, but
@@ -11075,8 +11461,29 @@ def _run_one_turn(slug: str, nid: str,
         # the mailbox — mail survives a turn that failed to launch. Batches
         # whose text still rides an in-memory carrier stay journaled.
         with _state_lock:
-            alive = [t for x in (st["queue"] + (st.get("steer") or []))
+            # THE BELT (D-229). The steer store only means anything while a
+            # turn is responding, and this turn is over: whatever is still
+            # in it was accepted with {steering: true} and never collected.
+            # Every lane is supposed to fold its own leftovers under the
+            # lock that ends steering (the claude lane at its two boundary
+            # sites, the codex/gemini legs at their exit) — this is the
+            # property stated ONCE, on the path every turn passes through,
+            # so that no lane can leave the node idle with a message in
+            # RAM. It appends the carriers to the BACK of the queue: every
+            # carrier already there is OLDER than a steer leftover (queued
+            # before the turn began responding, or requeued by a pump after
+            # a refusal — both before any later steer could arrive), so the
+            # back keeps the user's order and the front inverted it (review
+            # round 1). Under the same lock, so no `send_message` can
+            # observe a non-empty store with nobody owning it; the pop below
+            # then hands the oldest carrier straight back as `follow`.
+            residual = _fold_steer(st)
+            alive = [t for x in st["queue"]
                      if isinstance(x, dict) for t in x.get("toks") or []]
+        if residual:
+            _steer_fold_log(slug, nid, len(residual), "turn boundary",
+                            why="left in the steer store after the turn "
+                                "ended (lane fold missed — belt)")
         _fold_back_undelivered(slug, nid, keep_toks=alive)
         st.pop("on_fallback", None)     # this turn's lane is spent
         with _state_lock:
@@ -12913,6 +13320,11 @@ def _compact_split_codex_body(slug: str, nid: str, org: Org,
             new_journal = os.path.join(jdir, new_sid + ".jsonl")
             if os.path.exists(old_journal):
                 shutil.copyfile(old_journal, new_journal)
+                # …and the projection that hides its machine envelope, or
+                # every copied user row comes back raw (D-229). The sidecar
+                # is copied BEFORE the successor's first row is appended, the
+                # same view-before-event order every lane writes in.
+                _copy_prompt_views(slug, old_sid, new_sid)
             records: list[dict[str, Any]] = [{
                 "type": "system", "subtype": "compact_boundary",
                 "timestamp": now_iso(), "content": "Conversation compacted",
@@ -13064,6 +13476,11 @@ def _compact_split_body(slug: str, nid: str) -> None:
             new_sid = None
         if proc.returncode != 0 or not new_sid or new_sid == old_sid:
             raise RuntimeError(f"fork/compact failed (rc={proc.returncode})")
+        # The fork copied the visible history into the successor's transcript
+        # with its raw machine envelopes intact; the projection that hides
+        # them travels with it (D-229), or the successor's history shows the
+        # copied user rows raw. Best effort — never a reason to fail the split.
+        _copy_prompt_views(slug, old_sid, new_sid)
     except Exception as e:                                   # noqa: BLE001
         st = state(slug, nid)
         st["last_error"] = f"compaction split failed: {e}"
@@ -15437,7 +15854,12 @@ def start_prime_restart_engine() -> None:
     threading.Thread(target=run, daemon=True, name="prime-restart").start()
 
 
-def _steer_fold_log(slug: str, nid: str, n: int, where: str) -> None:
+#: how many steer-miss receipts the steered_log ring keeps (see _steer_fold_log)
+FOLD_ROWS_KEEP = 12
+
+
+def _steer_fold_log(slug: str, nid: str, n: int, where: str,
+                    why: str = "no further tool call") -> None:
     """The steer MISS record (redteam gap 2026-08-06, user report: 'org
     inbox mail didn't arrive until the turn ended'). A message accepted
     with {steering: true} that no hook ever collected folds back into the
@@ -15447,7 +15869,13 @@ def _steer_fold_log(slug: str, nid: str, n: int, where: str) -> None:
     answer was never revised. One row per fold, `fold`-marked; read_chat
     renders it as a dim system line where the wait actually happened.
     Best-effort by design — the diagnostic must never break the turn path,
-    and it is called OUTSIDE _state_lock (same lock order as pop_steer)."""
+    and it is called OUTSIDE _state_lock (same lock order as pop_steer).
+
+    `why` names the lane's reason for the miss. The default is the claude
+    hook's ("no further tool call"); the codex/gemini pumps miss for a
+    different reason — the turn ended before the pump's next poll — and a
+    receipt that names the wrong mechanism sends the next reader after the
+    wrong code (D-229)."""
     try:
         with store.DOC_LOCK:
             org = store.load_org(slug)
@@ -15456,8 +15884,17 @@ def _steer_fold_log(slug: str, nid: str, n: int, where: str) -> None:
             log = org.d.setdefault("steered_log", {}).setdefault(nid, [])
             log.append({"at": now_iso(), "fold": n, "where": where,
                         "text": f"{n} mid-turn message(s) missed the steer "
-                                f"window ({where}: no further tool call) — "
+                                f"window ({where}: {why}) — "
                                 f"delivered at the next turn"})
+            # Fold rows are RECEIPTS; the `steered` rows beside them are the
+            # only durable home of delivered mid-turn mail (see commit_steer).
+            # They share this 40-row ring, and a lane that folds often — the
+            # gemini pump refuses every steer, and both pumps now fold at
+            # turn exit — could evict every steered row with receipts. Keep
+            # only the newest few folds before the ring trims (D-229).
+            fold_idx = [i for i, e in enumerate(log) if e.get("fold")]
+            for i in reversed(fold_idx[:-FOLD_ROWS_KEEP]):
+                log.pop(i)
             del log[:-40]
             store.save_org(org)
     except Exception:                                        # noqa: BLE001
@@ -17955,7 +18392,8 @@ def session_occupancy(org: Org, nid: str,
         return None, False
 
 
-def read_chat(org: Org, nid: str, last: int | None = None) -> dict[str, Any]:
+def read_chat(org: Org, nid: str, last: int | None = None, *,
+              hold_back: bool = True) -> dict[str, Any]:
     """Parse the node's transcript into renderable messages + context occupancy.
 
     Parity waves A+C (2026-07-31): tool chips carry their identifying argument,
@@ -17994,6 +18432,12 @@ def read_chat(org: Org, nid: str, last: int | None = None) -> dict[str, Any]:
     # a provider user event are human conversation.  The raw transcript stays
     # untouched for audit/replay; only this response projection changes.
     prompt_views = _load_prompt_views(org.d["slug"], n["session_id"])
+    # D-229: the rows spent so far (so a mid-read reload cannot re-spend them),
+    # whether the one permitted reload has happened, and how many fresh user
+    # events were held back this poll for want of their projection
+    views_consumed: list[dict[str, Any]] = []
+    views_reloaded = False
+    withheld = 0
     msgs = []
     fill = _OccTracker(context_window(n))
     by_tool_id: dict[str, dict[str, Any]] = {}
@@ -18089,7 +18533,52 @@ def read_chat(org: Org, nid: str, last: int | None = None) -> dict[str, Any]:
             projected, human_text = ((False, "") if raw_prompt is None else
                                       _take_prompt_view(
                                           prompt_views, raw_prompt,
-                                          rec.get("timestamp")))
+                                          rec.get("timestamp"),
+                                          consumed=views_consumed))
+            if (not projected and raw_prompt is not None
+                    and _prompt_is_fresh(rec.get("timestamp"))
+                    and _carries_envelope(raw_prompt)):
+                # D-229: a FRESH event carrying the machine envelope with no
+                # projection means this read raced the writer (the sidecar
+                # row is written before the provider event on every lane)
+                # or read a torn row. Reload once. If the row is still
+                # missing, hold the event back ONLY while its pending bubble
+                # still covers it (its batch unconfirmed in `delivering`):
+                # then nothing goes missing on screen and the next poll
+                # draws the projected row in the same payload that retires
+                # the bubble (D-54). Once the batch is confirmed the bubble
+                # is gone, and holding the event would show the message
+                # zero times — so it renders raw, loudly: the sidecar write
+                # failed, and a message shown with its chrome beats a
+                # message not shown at all (D-50). Events that never carry
+                # the envelope (command echoes, remote-control prompts) are
+                # never held: they have no sidecar row by construction.
+                if not views_reloaded:
+                    views_reloaded = True
+                    prompt_views = _reload_prompt_views(
+                        org.d["slug"], n["session_id"], views_consumed)
+                    projected, human_text = _take_prompt_view(
+                        prompt_views, raw_prompt, rec.get("timestamp"),
+                        consumed=views_consumed)
+                if not projected:
+                    # `hold_back=False` is a reader with NO pending bubble
+                    # in its payload (`orgtree_read_transcript`, review
+                    # round 2): for it a held event would be on screen zero
+                    # times, so it gets the raw event instead
+                    if hold_back and _covered_by_pending(org, nid, raw_prompt):
+                        withheld += 1
+                        print(f"[orgtree] {org.d['slug']}/{nid}: a user "
+                              f"event ({rec.get('timestamp')}) has no "
+                              f"durable projection yet — held back this "
+                              f"poll, its pending bubble covers it (D-229)")
+                        continue
+                    print(f"[orgtree] {org.d['slug']}/{nid}: a user event "
+                          f"({rec.get('timestamp')}) has no durable "
+                          f"projection — rendered RAW rather than hidden "
+                          + ("(D-229 fail-open: this reader has no pending "
+                             "bubble to cover it)" if not hold_back else
+                             "(D-229 fail-open: its delivery is already "
+                             "confirmed, so the sidecar write failed)"))
             if projected:
                 # An empty projection is a machine-only turn (automatic
                 # checkup/recovery/state plumbing).  It reached the provider
@@ -18327,6 +18816,10 @@ def read_chat(org: Org, nid: str, last: int | None = None) -> dict[str, Any]:
         msgs.append(mrow)
         if think_only and mid:
             prev_think = (len(msgs) - 1, mid)
+    # D-229: say how many fresh user events this poll is holding back for
+    # want of their projection — zero on every ordinary read, and the desk's
+    # evidence that a message it cannot see in `messages` yet is on its way
+    out["prompts_withheld"] = withheld
     # steered deliveries (user bug 2026-07-31): mid-task mail rides hook
     # context the CLI never transcripts — without this merge the message
     # vanished from the chat forever once its live row aged out. The

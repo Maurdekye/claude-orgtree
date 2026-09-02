@@ -4119,7 +4119,11 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
                 if target != body.node and not org.is_ancestor(body.node, target):
                     raise LedgerError("read access is strictly DOWNWARD (§7.6) — you "
                                       "may read yourself and your descendants only")
-                chat = supervisor.read_chat(org, target)
+                # no pending bubble in THIS payload, so read_chat must not
+                # hold a fresh unprojected event back for one — an agent
+                # reading its report inside the grace would get the newest
+                # message zero times (D-229, review round 2); raw is honest
+                chat = supervisor.read_chat(org, target, hold_back=False)
                 last = max(1, min(_arg_int(a, "last", 30), 80))
                 msgs = chat["messages"][-last:]
                 return {"node": target, "busy": chat["busy"],
@@ -5755,13 +5759,13 @@ def node_chat(slug: str, nid: str, last: int = 300) -> dict[str, Any]:
         forbids one; only the composer trims) is identified like any other. It
         is only the legacy `at`-less entry that falls back to a bare body, and
         THAT needle must not be empty or it would match every bubble."""
-        body = m.get("body") or ""
-        at = m.get("at")
-        if not at and not body.strip():
-            return False
-        # the head is enough to identify it and survives truncation either side
-        mark = (f"· {at}\n{body}" if at else body)[:400]
-        return any(mark in t for t in _seen_user)
+        # the marker itself lives in `supervisor.mail_marker_in`, shared with
+        # read_chat's `_covered_by_pending` (D-229): the stamp `· {at}` and
+        # the head of the raw body, matched SEPARATELY, because a reply
+        # snapshot or a notice header sits between them (review round 2 —
+        # the adjacent needle missed both shapes and the bubble stayed up
+        # beside the transcript row)
+        return any(supervisor.mail_marker_in(t, m) for t in _seen_user)
 
     # ⚠ The same evidence test applies to the MAILBOX rows, not only the
     # journal's. `_fold_back_undelivered` re-queues a batch whose delivery was
@@ -5780,6 +5784,14 @@ def node_chat(slug: str, nid: str, last: int = 300) -> dict[str, Any]:
                         if not _in_transcript(m)],
                      key=lambda m: m.get("at") or "")
     out["mail_pending"] = len(pending)
+    # D-229: the impossible state, counted where the reader can see it. A
+    # drained batch that no turn owns — not in flight in a turn's text, not
+    # in the steer store of a responding turn, not queued behind a busy one,
+    # and the node idle — is a message that will not move until something
+    # unrelated happens. `delivering_mail` labels each row's `stage`; this
+    # is the roll-up the tests and the desk read.
+    out["mail_stranded"] = sum(1 for m in pending
+                               if m.get("stage") == "stranded")
     # ⚠ NOT `pending[-20:]`. A fixed row cap on a list that only GROWS while
     # the agent cannot run is the same bug as everything else in this family:
     # the 21st queued message pushed the 1st off the payload, its ghost had
@@ -5810,6 +5822,11 @@ def node_chat(slug: str, nid: str, last: int = 300) -> dict[str, Any]:
                             # the two in-flight carriers read differently to a
                             # human: "mid-task" is only true of a steer
                             **({"via": "turn"} if m.get("via") == "turn"
+                               else {}),
+                            # D-229: the delivery receipt — WHERE the drained
+                            # message is right now (turn / steer / queued),
+                            # or `stranded` when no turn owns it
+                            **({"stage": m["stage"]} if m.get("stage")
                                else {}),
                             **({"attachments": m["attachments"]}  # type: ignore[typeddict-item]  # guard proves the key
                                if m.get("attachments") else {})}

@@ -3293,6 +3293,10 @@ svg.MuiSvgIcon-root {
 .lin-id .dim { font-size: 11px; }
 .lin-row select { max-width: 11em; }
 .pend-tag { font-size: 10px; font-style: italic; margin-left: 6px; white-space: nowrap; }
+/* D-229: a drained message that no turn owns. It is the one receipt that is
+   not "on its way", so it does not dress like one: warn colour, upright, and
+   not dimmed with the rest of the tag family. */
+.pend-tag.warn { color: var(--warn, #e5c07b); font-style: normal; font-weight: 600; opacity: 1; }
 /* mail attachments (user spec 2026-07-31): staged chips on the composer,
    ride-along chips on pending bubbles and the inbox reading pane */
 .attach-row { display: flex; flex-wrap: wrap; gap: 5px; padding: 3px 2px; }
