@@ -30,6 +30,9 @@ Markdown file in this repository as current operating guidance.
 
 - [`ARCHITECTURE.md`](ARCHITECTURE.md) records implementation invariants and
   traps for contributors.
+- [`INVARIANTS.md`](INVARIANTS.md) is the canonical register of explicit
+  user-stated app-state invariants — narrower than, and outranking,
+  `DECISIONS.md`.
 - [`adding-a-provider.md`](adding-a-provider.md) is the implementation
   playbook for a new model provider.
 - [`../DECISIONS.md`](../DECISIONS.md) is the normative decision register.

@@ -6,6 +6,13 @@ rewritten **in place** with the old reading preserved in its `Was.` slot —
 never appended as a new entry elsewhere. That single mechanism is what keeps
 reconciling cheaper than appending; it is the reason this file exists.
 
+**Not the same file as [`docs/INVARIANTS.md`](docs/INVARIANTS.md).** That
+register holds only explicit user-stated app-state invariants, is narrower
+than this one, and outranks it: a decision here may implement or explain an
+invariant, or add a stricter guarantee, but must never weaken, supersede, or
+quietly narrow one. This file stays the normative decision history; the
+invariant register is not duplicated here.
+
 Sorting rule for new material (the register/traps split): if the rule would
 **survive a refactor**, it is a decision and belongs here; if it would
 evaporate the moment the code was restructured, it is an operational trap and
@@ -8092,3 +8099,112 @@ failures, all a strict subset of the 12 pre-existing failures
 worktree (`bearer-rehire-provider`, `extern-handle-attach`, `external-mail`,
 `harvest`, `headless`, `ledger-authority`, `run-completion`) — no new
 failure introduced.
+
+### D-226 · cache readiness is binary; grey is a fault, not an opinion
+
+Ruling (turn-envelope-cost, 2026-09-02, implementing a user invariant relayed
+through coordinator in three messages at 07:12, 07:13 and 07:39Z): the cache
+badge stops having a neutral middle. Compatibility readiness is GREEN or RED
+in normal operation, and GREY is permitted only for an explicit, enumerated
+error or diagnostic condition — each carrying a machine-readable cause and a
+user-facing explanation, with no catch-all fallthrough.
+
+AUTHORITY, stated first because it decides how to read the rest. Per the user
+ruling of 2026-09-02 09:09Z, an app-state INVARIANT outranks an ordinary
+decision. This entry IMPLEMENTS the readiness invariant; it does not create,
+weaken, reinterpret or except it. Where this entry and the invariant ever
+disagree, the invariant wins and the disagreement is an enforcement bug, not a
+licence. `test_cache_readiness.py` is written that way deliberately: the
+exhaustiveness checks assert the invariant's PROPERTIES rather than the current
+contents of the cause table, so a table that drifts away from the invariant
+fails the suite instead of being ratified by it.
+
+THIS OVERRIDES D-214, which is a decision superseding a decision and therefore
+permitted. D-214 rendered `no_completed_fingerprint` on a supported lane GREEN,
+reasoning that with no completed turn there is nothing for the next turn to
+conflict with. That reasoning is not wrong, but it answers a different
+question. Green now means "compatibility is established", which requires
+AFFIRMATIVE evidence, and the absence of all evidence is not evidence. The case
+is red, worded "not compatibility-ready / not established" and explicitly NOT
+as a predicted miss. D-223's countdown work, landed hours earlier the same day,
+had explicitly declined to disturb D-214's green; that declination is what this
+reverses.
+
+The shape: `state` (what was observed) is preserved untouched, and a parallel
+`readiness` / `readiness_cause` / `readiness_detail` triple is added.
+The badge renders READINESS ONLY. Rewriting `state` was considered and
+rejected with the cost named: it would ripple into the supervisor's legacy
+receipt-healing path and into four deliberate "every state is explicit" pins in
+`test_turn_usage_envelope`, for no user-visible gain, since the badge is the
+only consumer whose behaviour the ruling changes.
+
+THE CLOSED TAXONOMY (`cachecontinuity.READINESS`), 13 causes, no others:
+  - GREEN: `receipt_valid`, `receipt_valid_codex_estimate`.
+  - RED: `no_completed_fingerprint`, `history_unobserved`, `no_positive_receipt`,
+    `receipt_prefix_unobserved`, `prefix_changed`, `receipt_expired`,
+    `lane_unobserved`.
+  - GREY: `unsupported_capability`, `receipt_timestamp_unreadable`,
+    `clock_anomaly`, `internal_error`.
+
+Three properties that are easy to break later, each pinned by a named check:
+
+  1. NO CATCH-ALL. `readiness_fields()` maps an unknown cause to
+     `internal_error` and PRESERVES the rejected cause in the detail, so the
+     incident is traceable to the branch that produced it. `public()` used to
+     fold an unrecognised `state` or `lane` into "uncertain"/"unobserved"
+     silently — precisely the banned fallthrough — and now records each
+     coercion as incident detail instead. `_readiness_incident_log` in
+     `supervisor.py` makes it greppable; a grey badge is not a bug report.
+  2. FAIL CLOSED. A payload with absent or unrecognised readiness renders
+     grey, never green. A green badge on a payload nothing understood is the
+     most expensive lie this component can tell: the user withholds a
+     compaction, or sends a large turn, on a promise nobody made.
+  3. GREY MUST BE ACCOUNTED. Every diagnostic carries instance evidence —
+     `unsupported_capability` names the provider, the lane and what would
+     enable it; `clock_anomaly` carries both stamps, the measured skew and a
+     remediation. A constant "unsupported" sentence would be the generic
+     unknown the ruling forbids, so `EVIDENCE_REQUIRED` is asserted, not
+     merely documented.
+
+LOAD-BEARING ORDERING, and the one thing an implementer will get wrong. The
+capability gate is consulted TWICE and in a specific relation to the change
+detector. A seat that MOVED to an unsupported lane has two true facts at once:
+the prefix changed, and the new lane cannot report. A known incompatibility is
+a POSITIVE determination that the next turn is cold, which is strictly more
+informative than "cannot tell" — so it wins, and the row is RED
+(`prefix_changed`), not grey. Capability is answered only where the alternative
+would have been an unestablished red, never where it would have been a known
+one. A first draft hoisted the gate to the top of `classify` and silently lost
+`known_incompatible` for every unsupported lane; `test_cache_continuity`'s
+"known-incompatible reports every changed safe component" caught it.
+
+The mirror-image error is also guarded: an EMPTY or unobserved provider/lane is
+not a capability claim — we have not looked yet — so it is red
+(`lane_unobserved`) and self-resolving, never a slander on a working provider.
+Only a positive determination (provider AND lane both known, pair absent from
+`SUPPORTED_LANES`) counts as a gap.
+
+Supported lanes are exactly three, and this is measured rather than assumed:
+`ttl_seconds()` returns a TTL only for claude/subscription (3600),
+claude/api_key (300) and openai/subscription (1800, the fixed Codex estimate).
+Gemini AND Codex API-key both fall outside — the user's ruling named only
+Gemini, but the same capability gap covers openai/api_key, and it is classified
+identically rather than left to fall through. `SUPPORTED_LANES` is now the
+single source of truth that `ttl_seconds()` itself reads, so a lane cannot be
+supported for the TTL and unsupported for the badge, or the reverse.
+
+The countdown carries a SECOND lock beyond D-223's: it requires
+`readiness === 'ready'` as well as `compatible_observed` and an authoritative
+`expires_at`. A row whose observational state and readiness ever disagree
+therefore cannot produce a ticking clock; it falls back to the readiness
+verdict, which is the one the ruling says the badge must show. At zero it turns
+red on its own rather than waiting for the next poll, unchanged from D-223.
+
+Tests: `backend/tests/test_cache_readiness.py` (18 checks, new) proves the
+mapping is total in BOTH directions — every emitted cause is declared, and
+every declared cause except `internal_error` is reachable from a real
+`classify` sweep, so a branch added tomorrow with a forgotten verdict fails
+here rather than rendering as a silent grey. `internal_error` is unreachable
+from `classify` by design and is proved separately through `readiness_fields`
+and `public`. Frontend: `cacheforecast.test.tsx` and `cachecountdown.test.tsx`
+(16 checks) cover the three-way render, the D-214 reversal, and fail-closed.
