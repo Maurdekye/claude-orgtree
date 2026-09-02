@@ -73,78 +73,121 @@ outside this vocabulary.
 
 ### INV-001 · a running task is never silently both-inactive
 
-- **Statement:** while an agent owns a task the org believes is running,
-  exactly one of {the task/turn is actually active, a recovery turn or
-  lease to deal with its end is active} MUST hold at any observed instant.
-  Both being inactive at once — the org still believes the task is live,
-  nothing is driving a turn for that agent, and nothing has scheduled one —
-  is an invalid state. A superior's periodic checkup MUST NOT be the
-  mechanism that discovers or corrects this; checkups are a backstop for
-  unrelated staleness, not the intended path back to correctness.
-- **Scope:** every backgrounded task (`Bash run_in_background:true` today;
-  the fix is explicitly not shell-specific) and every turn/process a node
-  owns.
-- **Prohibited states:** a task or turn ends (process death, or an abnormal
-  stop the CLI reports without the process dying) while the owning agent's
-  turn has already parked believing it is still running, and nothing
-  durable wakes that agent.
-- **Allowed exceptions:** purely informational status (`"completed"`, or any
-  unrecognized/absent status, which is left alone rather than guessed at)
-  stays passive by construction — nothing new fires for it. That is not an
-  exception to the invariant; it is the case where the task genuinely is not
-  both-inactive.
-- **Observable enforcement:** an abnormal stop produces durable mail
+- **Statement:** for every background task T a node's agent has caused to
+  start, while T is classified OPEN, the system MUST NOT expose any
+  observable state where BOTH (a) no process or turn remains able to
+  observe T's outcome, AND (b) no durable, retry-backed recovery is
+  scheduled. T's OPEN record MAY be cleared only in the same atomic durable
+  write that either (i) records T's confirmed outcome, or (ii) establishes
+  durable, drive-capable recovery mail when T's true outcome cannot be
+  confirmed (teardown, restart, compaction, or lost owner). A superior's or
+  the user's periodic checkup MUST NOT be the mechanism that discovers or
+  corrects a both-inactive state; a checkup is defense-in-depth only, never
+  the correctness path.
+- **Scope:** every backgrounded task a node's agent starts (`Bash
+  run_in_background:true` today; the mechanism is explicitly not
+  shell-specific) and every turn/process a node owns.
+- **Prohibited states:** any point where T is still classified OPEN, no
+  process or turn can observe its outcome, and no durable recovery mail has
+  been scheduled — regardless of *why* observability was lost (process
+  death, an abnormal stop the CLI reports without the process dying, a
+  keeper-initiated kill of a parked process for any reason, a backend
+  restart, or a cheap-compaction/reconcile boundary finding a stale OPEN
+  record with no fresher resolution).
+- **Allowed exceptions:** purely informational status (`"completed"`, or
+  any unrecognized/absent status, left alone rather than guessed at) stays
+  passive by construction. Two scoping choices, stated by the implementing
+  owner with reasoning rather than silently narrowing the invariant: (1)
+  the exact content of a stdout event dropped while a process is parked is
+  not preserved — the durable OPEN record is the source of truth, checked
+  at every teardown/restart/next-turn point, so only the *fact* that
+  something was outstanding needs to survive, not its payload; (2) there is
+  no proactive staleness timeout for a task that finishes cleanly while
+  parked and is never observed again by any teardown — the safety property
+  requires only that recovery be atomic *whenever* the state is next
+  observed, not a time bound on when that happens. Frozen-node recovery is
+  a related, pre-existing, timer-only mechanism that `reconcile()`
+  deliberately excludes; it is flagged to coordinator as a distinct area,
+  not folded into this invariant.
+- **Observable enforcement:** the tested subset — a task stopping without
+  its process dying (D-225) and a process dying outright
+  (`_bg_orphaned`/`_turn_abandoned`) — both produce durable mail
   (`kind="message"`, never `"notice"`) that wakes the owning agent exactly
-  once; `backend/tests/test_bg_task_stopped_notification.py` D1 (line 158)
-  reproduces the incident end-to-end and fails against pre-fix code, D2
-  (line 206) proves a normal completion raises no false alarm, D3 (line
-  237) pins `kind="message"` and that the agent was actually driven a
-  second time (exact count, not mere mail presence). The process-death path
-  is the older, sibling mechanism (`_bg_orphaned`/`_turn_abandoned`),
-  exercised by `backend/tests/test_turn_lifecycle.py:2963` ("bg · killing a
-  CLI with live children mails their parent") and `:3019` ("...and that
-  notice actually wakes it") — D-225's own docstrings say it mirrors these.
+  once: `backend/tests/test_bg_task_stopped_notification.py` D1 (line 158,
+  fails against pre-fix code), D2 (line 206, no false alarm on normal
+  completion), D3 (line 237, `kind="message"` and an actual second driven
+  reply, not mere mail presence); `backend/tests/test_turn_lifecycle.py`
+  lines 2963 and 3019 for the process-death path D-225 mirrors. The
+  broader state machine below is landing now and does not yet have cited
+  test names for its new terminal state.
 - **Owning references:** `DECISIONS.md` D-225;
   `backend/tests/test_bg_task_stopped_notification.py`;
-  `backend/tests/test_turn_lifecycle.py:2963,3019`.
-- **Status:** enforced for the tested surface, with the caveat and named
-  gap below. Verified unchanged since commit `53bd4a1` (HEAD `a7934d8`)
-  directly with `stopped-task-wake`, the owning agent, 2026-09-02.
+  `backend/tests/test_turn_lifecycle.py:2963,3019`;
+  `backend/orgtree/warmpool.py` (`kill_node`, `_pump_out`, `attach`,
+  `reconcile`); `backend/orgtree/supervisor.py` (`_bg_task_stopped`,
+  `_bg_orphaned`).
+- **Status:** implementation_in_flight for the full invariant as stated
+  above. The D-225/`_bg_orphaned` subset (task-stops-without-death,
+  process-dies) is enforced today, verified unchanged since commit
+  `53bd4a1` (HEAD `a7934d8`) directly with `stopped-task-wake`, 2026-09-02.
+  The generalization — a per-task state machine `UNOBSERVED` → `OPEN` →
+  {`RESOLVED-CLEAN` | `RESOLVED-REPORTED` | `RESOLVED-UNKNOWN`}, all
+  resolutions terminal and idempotent, with `RESOLVED-UNKNOWN` newly
+  covering every loss of ownership not already handled by D-225 or
+  `_bg_orphaned` (any
+  `warmpool.kill_node` regardless of reason — identity-changed, retired,
+  org-deleted, excluded-by-flag, cheap-compact-induced — and a stale OPEN
+  record found by `reconcile()` at boot) — is **landing now, not yet
+  committed or tested**. Do not mark it enforced until `stopped-task-wake`
+  confirms it is committed with passing tests, and do not treat the
+  previously-recorded keeper-kill gap as closed until then.
 - **Provenance:** user report via coordinator, incident evidence from
-  `fable-cli-migration` (D-225, 2026-09-01): a backgrounded shell died
-  mid-flight and nothing woke the owning agent for 30 minutes, until an
-  unrelated heartbeat incidentally surfaced the CLI's own passive
-  reconciliation message. Coordinator's mail (2026-09-02) additionally
-  states the invariant in its general, atomic form — one of {task active,
-  recovery turn/lease active} must always hold — which is broader than
-  D-225's single incident; `stopped-task-wake` is actively formalizing that
-  general state machine (drive/`send_message` contract, freeze-resume,
-  restart replay, warm-pool keeper interactions) and will hand this agent
-  the canonical wording to fold in here.
-- **Amendments:** none yet — pending formal wording from `stopped-task-wake`
-  covering the cases below.
+  `fable-cli-migration` (D-225, 2026-09-01). Coordinator's 2026-09-02 mail
+  additionally stated the invariant in its general form. The Statement
+  above is `stopped-task-wake`'s canonical formalization of that same
+  invariant (2026-09-02, sent as "please treat this paragraph as the
+  canonical statement, separate from the implementation detail after it"),
+  supplied after mapping the actual mechanism (`bg_live`/`task_notification`
+  handling, drive/`send_message`, freeze-resume, restart reconcile,
+  warm-pool keeper) — this is a tightened restatement of the same
+  user-stated rule by its implementing owner, not a new user amendment, so
+  it replaces the prior draft Statement in place rather than logging as an
+  Amendment.
+- **Amendments:** none — see Provenance for why the Statement was rewritten
+  without one.
+
+**Root-cause finding worth keeping regardless of the fix's fate (from
+`stopped-task-wake`, 2026-09-01):** `warmpool.py`'s `_pump_out` (lines
+350-391) discards all non-`init` stdout while a process is parked, and
+`attach()` (lines 405-419) abandons anything unread on reuse. This is the
+likely literal mechanism behind an observed post-turn
+`<task-notification><status>stopped` event bypassing the reader entirely —
+cited here because it explains *why* a durable-record-as-source-of-truth
+design (rather than trying to preserve the dropped stdout event) is the
+correct fix shape, not just a convenient one.
 
 **Caveat, not yet resolved either way (do not read D-225 as closing this):**
 `stopped-task-wake` reports D-225's mechanism is durable-mail-then-drive as
 two *sequential* calls (write mail, then `send_message` to drive), and has
 not yet confirmed there is no crash window between them, nor that the drive
-call is retried/leased rather than fire-and-forget. Treat the tested surface
+call is retried/leased rather than fire-and-forget. Treat the D-225 subset
 as **provisionally enforced, atomicity unverified** until that audit lands.
 Backend-restart/crash replay, freeze/resume auto-wake, and cheap-compaction's
-handling of an outstanding background task are separately unconfirmed.
+handling of an outstanding background task remain unconfirmed pending the
+landing work above.
 
-**Named gap (`known_gap` scope within this entry, confirmed real):**
+**Named gap, being actively closed (not yet closed as of this entry):**
 `warmpool._keeper_pass` → `kill_node("identity-changed")`
 (`warmpool.py` ~2092-2199) kills a **parked** process with zero check for a
 live background task and no notification/mail/drive as a result. D-225's
-own forensics name this exact gap (`DECISIONS.md:8048-8051`) as "real and
-separately orphan-blind... a candidate for a narrower follow-up, not folded
-into this fix." The only existing test touching this path,
-`backend/tests/test_warmpool.py:469` ("D5 · an idle identity change respawns
-immediately", body ~line 437), asserts only exit-reason bookkeeping and says
-nothing about background-task notification. `stopped-task-wake` is actively
-closing this gap (in scope as of coordinator's 2026-09-02 mail); update this
-entry when it lands rather than leaving it stale.
+own forensics name this exact gap (`DECISIONS.md:8048-8051`). The only
+existing test touching this path, `backend/tests/test_warmpool.py:469`
+("D5 · an idle identity change respawns immediately", body ~line 437),
+asserts only exit-reason bookkeeping and says nothing about background-task
+notification. This is exactly the case the new `RESOLVED-UNKNOWN` state
+folds in; update this paragraph to `enforced` (and delete it as a separate
+gap, since it becomes part of the Status line) once `stopped-task-wake`
+confirms the landing work is committed and tested.
 
 ---
 

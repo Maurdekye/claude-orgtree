@@ -109,18 +109,24 @@ class InvariantRegisterTests(unittest.TestCase):
             f"{ALLOWED_STATUS}: {bad}")
 
     def test_no_status_line_uses_a_generic_unknown_word(self) -> None:
+        """A named, enumerated state (e.g. `RESOLVED-UNKNOWN`, presented as
+        code) is a real, accounted status and is allowed — it is prose use
+        of "unknown"/"unaccounted" as a shrug, outside a code span, that this
+        register's status vocabulary exists to forbid."""
         offenders: dict[str, list[str]] = {}
         for eid, _title, body in self.entries:
             m = re.search(
                 r"^- \*\*Status:\*\*(.*?)(?=\n- \*\*|\n\n)", body,
                 re.MULTILINE | re.DOTALL)
-            status_text = (m.group(1) if m else "").lower()
-            hits = [w for w in FORBIDDEN_STATUS_WORDS if w in status_text]
+            status_text = (m.group(1) if m else "")
+            prose = re.sub(r"`[^`]*`", "", status_text).lower()
+            hits = [w for w in FORBIDDEN_STATUS_WORDS if w in prose]
             if hits:
                 offenders[eid] = hits
         self.assertFalse(
             offenders,
-            f"Status text uses a forbidden generic word: {offenders}")
+            f"Status text uses a forbidden generic word outside a code "
+            f"span: {offenders}")
 
     def test_enforced_entries_name_an_owning_reference(self) -> None:
         """An `enforced` verdict with an empty owning-reference line is an
