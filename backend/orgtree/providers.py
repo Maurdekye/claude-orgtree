@@ -647,11 +647,87 @@ def gemini_status(force: bool = False) -> dict[str, Any]:
     return st
 
 
+#: the one tier whose availability is a live SERVER GRANT rather than a fact
+#: about this machine.  Named so the rule below and the hire gate in `api.py`
+#: cannot drift apart on a string literal.
+RESERVE_TIER: Final = "gpt-reserve"
+
+
+def reserve_availability(
+        status: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Is `gpt-reserve` hireable right now — the tier's OWN rule.
+
+    THE REPORT (user, 2026-09-02): "i had access to gpt-reserve in my codex
+    limit earlier today and could use it via the codex cli. however i no
+    longer have access. yet the reserve token still appears."
+
+    d7b98c7 answered that with the login KIND (a ChatGPT subscription, not an
+    API key).  Necessary, and nowhere near sufficient: the login did not
+    change across the user's outage.  What changed was the grant.  Measured on
+    that machine the same evening — a gpt-reserve session at 16:06Z billed to
+    its own weekly window (2%, resetting Sep 9) while the account's plan
+    window sat spent (100%, resetting Sep 7); by 19:15Z reserve turns reported
+    a `premium` limit with no windows at all, zero credits, and failed
+    `usage_limit_exceeded` on the first message.  Reserve is a pool OpenAI
+    hands out and takes back, and DETECTION HAS TO ASK SOMETHING THAT MOVES.
+
+    Three questions, cheapest and most durable first:
+
+      1. is the login one that can EVER hold reserve capacity (d7b98c7),
+      2. is the Codex CLI itself still offering the model (`codex_models` —
+         when the grant lapsed, `gpt-reserve` went `visibility: "hide"` and
+         left the app-server's `model/list` while its siblings stayed), and
+      3. does the freshest usage board say the account can run a turn at all.
+
+    Each may answer "unknown" (no CLI evidence, a stale board), and unknown
+    NEVER refuses: the tier stays offered and the CLI fails the turn loudly,
+    which is strictly better than a detection bug hiding a tier the user has.
+
+    Assumes the family-level facts are already settled — Codex installed,
+    signed in, the provider not turned off in App settings.  Both callers
+    (`providers_payload` below, `api.provider_hire_gate`) check those first
+    and then ask this, so there is one implementation of the reserve rule.
+
+    Returns ``{"enabled": bool, "reason": str | None, "evidence": str}``,
+    where `reason` is written to be read by the user as a tooltip and as a
+    refusal message, and `evidence` names which of the three answered.
+    """
+    # imported HERE, not at module scope: `codex_limits` and `codex_models`
+    # both import this module for the CLI path and the signed-in status, so a
+    # top-level import either way is a cycle.
+    from . import codex_limits, codex_models
+
+    st = status if status is not None else codex_status()
+    if st.get("kind") != "chatgpt":
+        return {"enabled": False, "evidence": "login-kind", "reason":
+                "signed in with an API key — reserve capacity is a ChatGPT "
+                "subscription grant (run `codex login` with a ChatGPT "
+                "account to get it)"}
+    if codex_models.offers(RESERVE_TIER) is False:
+        return {"enabled": False, "evidence": "model-registry", "reason":
+                "the Codex CLI is not currently offering the gpt-reserve "
+                "model on this account — OpenAI grants reserve capacity in "
+                "bursts and withdraws it again, so this comes back on its "
+                "own (the other Codex tiers are unaffected)"}
+    if codex_limits.exhausted() is True:
+        return {"enabled": False, "evidence": "usage-limits", "reason":
+                "this Codex account has no usage left in its current window "
+                "and no credits to spend past it — a reserve agent would "
+                "fail on its first turn (accounts panel → Codex usage for "
+                "the reset time)"}
+    return {"enabled": True, "evidence": "granted", "reason": None}
+
+
 def providers_payload(claude_status: dict[str, Any]) -> dict[str, Any]:
     """The /api/providers document. `claude_status` is composed by the API
     layer from state it already owns (accounts registry, cli_version) — this
     module never reaches into those, so it stays importable from anywhere."""
     codex = codex_status()
+    # asked once, before the document is built: the reserve rule reads the
+    # CLI's model registry and the usage board, and asking it twice inside a
+    # dict literal would double that work for one answer.
+    reserve = (reserve_availability(codex) if codex.get("connected")
+               else {"enabled": False, "reason": None, "evidence": "offline"})
     gemini = gemini_status()
     choices = appsettings.provider_choices()
     claude_on = choices["claude"]
@@ -712,26 +788,20 @@ def providers_payload(claude_status: dict[str, Any]) -> dict[str, Any]:
                 else "not signed in — run `codex login` on this machine"
                 if codex.get("installed")
                 else f"Codex CLI not installed — {install_hint('openai')}"),
-            # gpt-reserve rides the SAME connected-CLI gate as the rest of the
-            # family, PLUS one more: reserve capacity is a ChatGPT-subscription
-            # perk, never granted to an api-key session (billed per-token
-            # instead, same as sol/terra/luna). This is the live "session
-            # condition" that makes gpt-reserve intermittent where its
-            # siblings are not — it tracks WHICH Codex login is active, not
-            # whether Codex is merely connected. `provider_hire_gate` enforces
-            # the same rule at the door (api.py).
+            # gpt-reserve rides the SAME connected-CLI gate as the rest of
+            # the family, PLUS its own: reserve capacity is a pool OpenAI
+            # grants and withdraws while the login never changes, which is why
+            # this tier flickers where its siblings do not. `reserve` holds
+            # that whole rule (see `reserve_availability` above) and
+            # `provider_hire_gate` asks the SAME function at the door, so the
+            # chip and the refusal can never disagree.
             "reserve_hire_enabled": bool(
-                codex_on and codex.get("connected")
-                and codex.get("kind") == "chatgpt"),
+                codex_on and codex.get("connected") and reserve["enabled"]),
             "reserve_reason": (
                 off_reason if not codex_on
-                else None if codex.get("connected")
-                and codex.get("kind") == "chatgpt"
                 else "not signed in — run `codex login` on this machine"
                 if not codex.get("connected")
-                else "signed in with an API key — reserve capacity is a "
-                     "ChatGPT subscription perk (run `codex login` with a "
-                     "ChatGPT account to get it)"),
+                else reserve["reason"]),
         },
         {
             "id": "google",

@@ -18,6 +18,7 @@ is an email this suite invented.
 """
 
 import base64
+import datetime as _dt
 import json
 import os
 import sys
@@ -39,7 +40,7 @@ os.environ["ORGTREE_GEMINI"] = os.path.join(
 os.environ["ORGTREE_GEMINI_HOME"] = os.path.join(
     os.environ["ORGTREE_DATA"], "ghome")
 
-from orgtree import providers                                      # noqa: E402
+from orgtree import codex_limits, codex_models, providers          # noqa: E402
 from orgtree.ledger import (LedgerError, MODELS, Org, TIERS,       # noqa: E402
                             USER)
 
@@ -176,13 +177,43 @@ def main():
           lambda: eq((st["connected"], st["kind"]), (True, "api-key"),
                      "key lane"))
 
-    def reserve_dark_on_api_key():
-        # gpt-reserve is a ChatGPT-subscription perk (reserve capacity is
-        # never billed per-token like sol/terra/luna), so an api-key session
-        # — CONNECTED, and hireable for the rest of the family — must still
-        # show reserve as unavailable, with a reason naming the remedy.
+    def chatgpt_login():
+        payload = base64.urlsafe_b64encode(
+            json.dumps({"email": email}).encode()).decode().rstrip("=")
+        with open(os.path.join(os.environ["CODEX_HOME"], "auth.json"), "w",
+                  encoding="utf-8") as f:
+            json.dump({"tokens": {"id_token": f"eyJh.{payload}.sig"}}, f)
+        providers.codex_status(force=True)
+
+    def registry(*, reserve_visible):
+        """Author the CLI's own model registry in this rig's CODEX_HOME.
+
+        Hermetic AND load-bearing: `codex_models` reads this file first, so
+        without one the suite would fall through to spawning the operator's
+        real codex app-server (D-184's lesson, on a new axis).
+        """
+        codex_models.invalidate()
+        with open(codex_models.registry_path(os.environ["CODEX_HOME"]), "w",
+                  encoding="utf-8") as f:
+            json.dump({"fetched_at": _dt.datetime.now(
+                _dt.timezone.utc).isoformat().replace("+00:00", "Z"),
+                "models": [
+                    {"slug": "gpt-5.6-sol", "visibility": "list"},
+                    {"slug": "gpt-5.6-luna", "visibility": "list"},
+                    {"slug": "gpt-reserve",
+                     "visibility": "list" if reserve_visible else "hide"},
+                ]}, f)
+
+    def openai_entry():
         p = providers.providers_payload({"installed": True, "connected": True})
-        cx = next(p2 for p2 in p["providers"] if p2["id"] == "openai")
+        return next(x for x in p["providers"] if x["id"] == "openai")
+
+    def reserve_dark_on_api_key():
+        # reserve capacity is a ChatGPT-subscription grant, so an api-key
+        # session — CONNECTED, and hireable for the rest of the family — must
+        # still show reserve as unavailable, with a reason naming the remedy.
+        registry(reserve_visible=True)   # the registry is NOT what refuses
+        cx = openai_entry()
         eq(cx["hire_enabled"], True, "codex family stays hireable")
         eq(cx["reserve_hire_enabled"], False, "reserve is dark on api-key")
         assert "chatgpt" in (cx["reserve_reason"] or "").lower(), cx
@@ -190,17 +221,60 @@ def main():
           "of codex is hireable", reserve_dark_on_api_key)
 
     def reserve_lit_on_chatgpt():
-        payload = base64.urlsafe_b64encode(
-            json.dumps({"email": email}).encode()).decode().rstrip("=")
-        with open(os.path.join(os.environ["CODEX_HOME"], "auth.json"), "w",
-                  encoding="utf-8") as f:
-            json.dump({"tokens": {"id_token": f"eyJh.{payload}.sig"}}, f)
-        providers.codex_status(force=True)
-        p = providers.providers_payload({"installed": True, "connected": True})
-        cx = next(p2 for p2 in p["providers"] if p2["id"] == "openai")
+        chatgpt_login()
+        registry(reserve_visible=True)
+        cx = openai_entry()
         eq((cx["reserve_hire_enabled"], cx["reserve_reason"]), (True, None),
            "reserve lights up on a chatgpt login")
     check("…and lights back up on a ChatGPT login", reserve_lit_on_chatgpt)
+
+    def reserve_dark_when_the_cli_stops_offering_it():
+        """THE 2026-09-02 REPORT. Same login, same machine, same connected
+        CLI — and the reserve grant is gone. Login kind cannot see that; the
+        CLI's own model registry can, and did (`visibility: "hide"`)."""
+        chatgpt_login()
+        registry(reserve_visible=False)
+        cx = openai_entry()
+        eq(cx["hire_enabled"], True, "the other three tiers are unaffected")
+        eq(cx["reserve_hire_enabled"], False, "reserve goes dark with the grant")
+        assert "not currently offering" in (cx["reserve_reason"] or ""), cx
+    check("gpt-reserve goes dark when the CLI stops offering the model, on an "
+          "unchanged ChatGPT login", reserve_dark_when_the_cli_stops_offering_it)
+
+    def reserve_dark_when_the_account_is_out_of_usage():
+        """The second live signal: a granted reserve pool the account cannot
+        reach because its window is spent and there are no credits — measured
+        as `usage_limit_exceeded` on the agent's first turn."""
+        chatgpt_login()
+        registry(reserve_visible=True)
+        saved = codex_limits.exhausted
+        codex_limits.exhausted = lambda: True          # type: ignore[assignment]
+        try:
+            cx = openai_entry()
+        finally:
+            codex_limits.exhausted = saved             # type: ignore[assignment]
+        eq(cx["reserve_hire_enabled"], False, "reserve is dark when spent")
+        assert "no usage left" in (cx["reserve_reason"] or ""), cx
+    check("…and dark when the freshest usage board says the account is spent",
+          reserve_dark_when_the_account_is_out_of_usage)
+
+    def unknown_evidence_never_refuses():
+        """ANTI-VACUITY, and the rule that keeps this from being a new bug:
+        no registry file and no reachable app-server is UNKNOWN, and unknown
+        must leave the tier alone. A detection that failed closed would take
+        gpt-reserve away from every machine it cannot read."""
+        chatgpt_login()
+        codex_models.invalidate()
+        os.remove(codex_models.registry_path(os.environ["CODEX_HOME"]))
+        saved = codex_models._from_app_server
+        codex_models._from_app_server = lambda status: None  # type: ignore[assignment]
+        try:
+            cx = openai_entry()
+        finally:
+            codex_models._from_app_server = saved            # type: ignore[assignment]
+        eq((cx["reserve_hire_enabled"], cx["reserve_reason"]), (True, None),
+           "unknown evidence leaves reserve offered")
+    check("no evidence either way is not a refusal", unknown_evidence_never_refuses)
 
     print("§4 the payload the panel renders")
     pay = providers.providers_payload({"installed": True, "connected": True})

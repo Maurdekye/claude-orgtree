@@ -97,10 +97,41 @@ def _snapshots_of(raw: dict[str, Any]) -> list[dict[str, Any]]:
     return out
 
 
+def _credits(snapshot: dict[str, Any]) -> dict[str, Any]:
+    """The account's spend-anyway pocket, as the CLI reports it.
+
+    Codex keeps this beside the windows because it is what a spent window
+    falls back to: `{"hasCredits": false, "unlimited": false, "balance": "0"}`
+    is the shape a turn hits right before it fails `usage_limit_exceeded`,
+    while credits (or an unlimited account) mean a full window is not the end
+    of the story.  `_normalize` used to drop the field entirely, which made
+    "out of capacity" unanswerable from the board.
+    """
+    raw = snapshot.get("credits")
+    if not isinstance(raw, dict):
+        return {"known": False, "has": False, "unlimited": False,
+                "balance": None}
+    balance = raw.get("balance")  # pyright: ignore[reportUnknownMemberType]
+    return {
+        "known": True,
+        "has": bool(raw.get("hasCredits")),  # pyright: ignore[reportUnknownMemberType]
+        "unlimited": bool(raw.get("unlimited")),  # pyright: ignore[reportUnknownMemberType]
+        "balance": str(balance) if balance is not None else None,
+    }
+
+
 def _normalize(raw: dict[str, Any]) -> dict[str, Any]:
     snapshots = _snapshots_of(raw)
     limits: list[dict[str, Any]] = []
     plan: str | None = None
+    # `_snapshots_of` puts the ACCOUNT-WIDE bucket first (`raw["rateLimits"]`,
+    # `limitId "codex"` here) and any model-scoped bucket after it.  Only the
+    # first one speaks for the whole account: `codex_bengalfox` (Spark) being
+    # spent says nothing about whether a Sol turn can run.
+    account = snapshots[0] if snapshots else {}
+    blocked = bool(account.get("rateLimitReachedType")
+                   or account.get("spendControlReached"))
+    credits = _credits(account)
     for snapshot in snapshots:
         limit_id = str(snapshot.get("limitId") or "codex")
         limit_name_raw = snapshot.get("limitName")
@@ -131,7 +162,21 @@ def _normalize(raw: dict[str, Any]) -> dict[str, Any]:
                 "label": ((limit_name + " · ") if limit_name else "")
                          + _duration(duration),
             })
-    return {"available": bool(limits), "limits": limits, "plan": plan}
+    account_windows = [x for x in limits
+                       if x["group"] == str(account.get("limitId") or "codex")]
+    return {
+        "available": bool(limits),
+        "limits": limits,
+        "plan": plan,
+        "credits": credits,
+        # THE question a hire gate asks: can a turn on this account run at
+        # all right now?  A window at 100% (or an explicit reached/spend-stop
+        # flag) with nothing to spend past it is a turn that fails on send —
+        # measured 2026-09-02, `usage_limit_exceeded` on the first message.
+        "exhausted": bool(
+            (blocked or any(x["percent"] >= 100 for x in account_windows))
+            and not (credits["has"] or credits["unlimited"])),
+    }
 
 
 def _account(data: dict[str, Any]) -> dict[str, Any]:
@@ -227,6 +272,26 @@ def observe(snapshot: Any) -> None:
         raw = {"rateLimits": _snapshots.get("codex", ordered[0]),
                "rateLimitsByLimitId": dict(_snapshots)}
         _cache.update(at=time.time(), data=_normalize(raw))
+
+
+def exhausted() -> bool | None:
+    """Is this account out of Codex capacity RIGHT NOW — cache-only.
+
+    `None` means "no fresh evidence", and it is deliberately not `True`: this
+    answer gates hiring, and a board nobody has refreshed in a quarter of an
+    hour must not take a tier away.  Freshness is the same
+    `MAX_EVIDENCE_AGE` the glow uses, and the board is kept warm by both
+    doors already — the usage modal's `fetch` and every live Codex turn's
+    `observe` notification.
+    """
+    with _lock:
+        data = _cache.get("data")
+        age = time.time() - float(_cache.get("at") or 0)
+        copied = dict(data) if isinstance(data, dict) else None
+    if copied is None or not copied.get("available") or age > MAX_EVIDENCE_AGE:
+        return None
+    value = copied.get("exhausted")
+    return bool(value) if value is not None else None
 
 
 def peek() -> dict[str, Any]:

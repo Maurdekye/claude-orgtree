@@ -1013,9 +1013,11 @@ export interface ProviderInfo {
    *  the UI needs to tell "absent" from "turned off". See `HireState`. */
   user_enabled?: boolean
   /** gpt-reserve's own gate, beside the family's `hire_enabled` (D-2xx):
-   *  reserve capacity is a ChatGPT-subscription perk, not an api-key one, so
-   *  it can be false while the rest of Codex is `hire_enabled: true`.
-   *  OMITTED on providers other than "openai", and on an old backend. */
+   *  reserve capacity is a per-account grant that OpenAI withdraws and
+   *  restores on its own, so this can be false while the rest of Codex is
+   *  `hire_enabled: true` — and can flip back without anything on this
+   *  machine changing. OMITTED on providers other than "openai", and on an
+   *  old backend. */
   reserve_hire_enabled?: boolean
   reserve_reason?: string | null
 }

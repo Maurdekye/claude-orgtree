@@ -6127,21 +6127,20 @@ def provider_hire_gate(
             "a headless org may only hire tiers from KEYED providers (user "
             "ruling 2026-08-28) — Codex here is signed in with a "
             "subscription login, not an API key")
-    if tier == "gpt-reserve" and st.get("kind") != "chatgpt":
-        # gpt-reserve is OpenAI's spare-capacity lane — a perk of a signed-in
-        # ChatGPT subscription, never billed per-token like sol/terra/luna, so
-        # it is NOT just "Codex is connected": an API-key session is
-        # genuinely connected and can hire sol/terra/luna, but was never
-        # granted reserve capacity at all. This is the live "session
-        # condition" the user's report described as intermittent — the tier
-        # comes and goes with WHICH Codex login is active, not with Codex's
-        # install/connect state, which is why the other three tiers never
-        # flicker the same way.
-        raise LedgerError(
-            "tier 'gpt-reserve' is Codex's reserve-capacity lane and only "
-            "a ChatGPT subscription login carries it — this machine's Codex "
-            "CLI is signed in with an API key, which never has reserve "
-            "capacity (run `codex login` with a ChatGPT account instead)")
+    if tier == providers.RESERVE_TIER:
+        # gpt-reserve rides the family's connected-CLI gate above and then one
+        # more of its own. Reserve capacity is a pool OpenAI grants and
+        # withdraws per account while the login sits still, so the tier goes
+        # away under a CLI that is installed, signed in, and hiring
+        # sol/terra/luna perfectly well — the user's report. The rule itself
+        # lives in `providers.reserve_availability`, which the /api/providers
+        # payload asks too, so the chip and this refusal cannot drift apart.
+        reserve = providers.reserve_availability(st)
+        if not reserve["enabled"]:
+            raise LedgerError(
+                f"tier '{providers.RESERVE_TIER}' is Codex's reserve-capacity "
+                f"lane and it is not available on this machine right now: "
+                f"{reserve['reason']}")
 
 
 @app.post("/api/orgs/{slug}/ops")

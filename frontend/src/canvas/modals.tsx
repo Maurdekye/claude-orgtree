@@ -741,8 +741,8 @@ export function NodeConfig({ node, map, tree, slug, op, toast, codexProvider,
         ? 'headless requires a Gemini API-key login'
         : null
   // gpt-reserve rides codexUnavailable AND its own gate: reserve capacity is
-  // a ChatGPT-subscription perk, so a keyed Codex session (which passes
-  // `codexUnavailable`) can still lack it — same rule as `provider_hire_gate`.
+  // a per-account grant, so a Codex session that passes `codexUnavailable`
+  // can still lack it — same rule as `provider_hire_gate`.
   const reserveUnavailable = codexUnavailable
     ?? (codexProvider?.reserve_hire_enabled === false
       ? codexProvider?.reserve_reason ?? 'reserve capacity unavailable'

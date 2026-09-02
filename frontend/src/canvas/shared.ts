@@ -106,12 +106,14 @@ export interface HireState {
    *  as every provider disabled. */
   userEnabled?: boolean
   /** gpt-reserve's OWN gate, riding beside the family's (D-2xx): reserve
-   *  capacity is a ChatGPT-subscription perk, not an api-key one, so a
-   *  connected-but-keyed Codex session offers sol/terra/luna while reserve
-   *  stays dark. `undefined` (an old backend, or a fixture that never set
-   *  it) means UNKNOWN — same "unknown means offer" rule as the rest of this
-   *  file, so a machine that has never heard of this field keeps today's
-   *  behaviour rather than bricking the reserve chip. */
+   *  capacity is a grant OpenAI hands out and takes back per account, so it
+   *  comes and goes while the login sits still and sol/terra/luna keep
+   *  hiring. The backend decides (an api-key login can never hold it; past
+   *  that it reads the Codex CLI's own model registry and usage board) —
+   *  this side only renders the verdict. `undefined` (an old backend, or a
+   *  fixture that never set it) means UNKNOWN — same "unknown means offer"
+   *  rule as the rest of this file, so a machine that has never heard of
+   *  this field keeps today's behaviour rather than bricking the chip. */
   reserveEnabled?: boolean
   reserveReason?: string | null
 }

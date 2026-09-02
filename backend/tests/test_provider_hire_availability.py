@@ -43,7 +43,8 @@ for _s in (sys.stdout, sys.stderr):
     except (AttributeError, ValueError):
         pass
 
-from orgtree import api, providers, supervisor as sup      # noqa: E402
+from orgtree import (api, codex_limits, codex_models,      # noqa: E402
+                     providers, supervisor as sup)
 from orgtree.ledger import USER, LedgerError, Org          # noqa: E402
 
 FAILED: list[str] = []
@@ -311,52 +312,101 @@ check("the gate's docstring still describes what it does",
 print("\n§6  gpt-reserve — its own gate, beside the family's")
 
 
-def _with_codex_kind(kind):
-    """`codex_status` pinned CONNECTED with a chosen login `kind` — the
-    family-level checks above already pass, so any refusal here is
-    gpt-reserve's OWN rule, not a re-run of §4's."""
-    saved = providers.codex_status
-    providers.codex_status = lambda force=False: {                 # type: ignore[assignment]
-        "installed": True, "connected": True, "kind": kind}
-    return saved
+class Codex:
+    """The three live facts gpt-reserve's rule reads, all pinned.
+
+    `kind` is the login (d7b98c7's question), `offered` is whether the Codex
+    CLI still lists the gpt-reserve model (None = no evidence), and `spent` is
+    whether the freshest usage board says the account can run a turn at all
+    (None = no fresh board). The family-level checks in §4 already pass under
+    this fixture, so every refusal below is gpt-reserve's OWN rule.
+    """
+
+    def __init__(self, kind="chatgpt", offered=True, spent=False) -> None:
+        self.kind, self.offered, self.spent = kind, offered, spent
+
+    def __enter__(self):
+        self._s, self._o, self._e = (providers.codex_status,
+                                     codex_models.offers,
+                                     codex_limits.exhausted)
+        providers.codex_status = lambda force=False: {              # type: ignore[assignment]
+            "installed": True, "connected": True, "kind": self.kind}
+        codex_models.offers = lambda slug, force=False: self.offered  # type: ignore[assignment]
+        codex_limits.exhausted = lambda: self.spent                 # type: ignore[assignment]
+        return self
+
+    def __exit__(self, *a) -> None:
+        providers.codex_status = self._s                            # type: ignore[assignment]
+        codex_models.offers = self._o                               # type: ignore[assignment]
+        codex_limits.exhausted = self._e                            # type: ignore[assignment]
 
 
 def reserve_refused_on_api_key() -> None:
-    """Reserve capacity is a ChatGPT-subscription perk, never billed
-    per-token — an api-key session is genuinely connected (sol/terra/luna
-    hire fine there) but was never granted reserve capacity at all."""
-    saved = _with_codex_kind("api-key")
-    try:
+    """Reserve capacity is a ChatGPT-subscription grant — an api-key session
+    is genuinely connected (sol/terra/luna hire fine there) and was never
+    granted reserve capacity at all."""
+    with Codex(kind="api-key"):
         expect_error(lambda: api.provider_hire_gate(org(), "gpt-reserve"),
                      "chatgpt")
         api.provider_hire_gate(org(), "sol")      # the leg that must hold
-    finally:
-        providers.codex_status = saved                             # type: ignore[assignment]
 
 
-def reserve_passes_on_chatgpt() -> None:
-    saved = _with_codex_kind("chatgpt")
-    try:
+def reserve_refused_when_the_cli_stops_offering_it() -> None:
+    """THE 2026-09-02 REPORT, at the door. The user had reserve that morning,
+    lost it by evening, and NOTHING about the login moved — d7b98c7's check
+    passes throughout. What moved is the grant, and the CLI's own model
+    registry is where that shows (`gpt-reserve` went `visibility: "hide"`)."""
+    with Codex(offered=False):
+        expect_error(lambda: api.provider_hire_gate(org(), "gpt-reserve"),
+                     "not currently offering")
+
+
+def reserve_refused_when_the_account_is_spent() -> None:
+    """The second live signal: a granted pool the account cannot reach.
+    Measured — the reserve agent's first turn came back
+    `usage_limit_exceeded`, having already cost a seat."""
+    with Codex(spent=True):
+        expect_error(lambda: api.provider_hire_gate(org(), "gpt-reserve"),
+                     "no usage left")
+
+
+def reserve_passes_when_the_grant_is_live() -> None:
+    """THE LEG THAT MUST HOLD. Every other §6 check asserts a refusal, and a
+    gate that refused gpt-reserve unconditionally would satisfy all of them
+    while making the tier permanently unhireable."""
+    with Codex():
         api.provider_hire_gate(org(), "gpt-reserve")
-    finally:
-        providers.codex_status = saved                             # type: ignore[assignment]
+
+
+def unknown_evidence_is_not_a_refusal() -> None:
+    """A machine whose registry cannot be read and whose usage board is cold
+    knows NOTHING about the grant — and must therefore not take the tier
+    away. Failing closed here would turn a detection bug into an outage."""
+    with Codex(offered=None, spent=None):
+        api.provider_hire_gate(org(), "gpt-reserve")
 
 
 def reserve_gate_never_touches_the_other_three() -> None:
-    """Anti-vacuity: a gate that refused every codex tier on api-key would
-    also make `reserve_refused_on_api_key` look right for the wrong reason."""
-    saved = _with_codex_kind("api-key")
-    try:
-        for t in ("luna", "terra", "sol"):
-            api.provider_hire_gate(org(), t)
-    finally:
-        providers.codex_status = saved                             # type: ignore[assignment]
+    """Anti-vacuity: a gate that refused every codex tier under these
+    conditions would make the refusals above look right for the wrong
+    reason."""
+    for fixture in (Codex(kind="api-key"), Codex(offered=False),
+                    Codex(spent=True)):
+        with fixture:
+            for t in ("luna", "terra", "sol"):
+                api.provider_hire_gate(org(), t)
 
 
 check("gpt-reserve is refused on an api-key session, naming ChatGPT — "
       "sol still hires fine there", reserve_refused_on_api_key)
-check("gpt-reserve passes on a ChatGPT-subscription session",
-      reserve_passes_on_chatgpt)
+check("…refused when the Codex CLI no longer offers the model, on an "
+      "UNCHANGED ChatGPT login", reserve_refused_when_the_cli_stops_offering_it)
+check("…refused when the freshest usage board says the account is spent",
+      reserve_refused_when_the_account_is_spent)
+check("…and PASSES while the grant is live (the leg that must hold)",
+      reserve_passes_when_the_grant_is_live)
+check("no evidence either way is not a refusal",
+      unknown_evidence_is_not_a_refusal)
 check("…and its own rule never leaks onto luna/terra/sol",
       reserve_gate_never_touches_the_other_three)
 
