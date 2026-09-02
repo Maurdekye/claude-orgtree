@@ -34,7 +34,8 @@ everything back; tokens are unlimited (real dollars are *tracked* per node and
 per org, but deliberately not capped). The tier name chooses the provider:
 Claude has haiku (1), sonnet (2), opus (5), and fable (10); Codex has
 gpt-reserve (1), luna (1), terra (2), and sol (5); Antigravity has flash (1)
-and pro (2). Messaging is
+and pro (2); OpenRouter has one tier per model you favorite in App settings (its
+seat is the model's $/M input price, floored to 1). Messaging is
 **downward any depth, one hop up, sideways between
 peers** — deep reach grants the recipient an audience to reply; only top-level
 agents write to your inbox unbidden. Every manual action you take notifies the
@@ -61,12 +62,14 @@ and per-tool feed, markdown rendering, and a composer whose send button
 turns into a red ■ STOP while the agent is responding.
 
 **Hire in one gesture.** Hover any card (or the eye) and pick a tier chip.
-The Claude, Codex, and Antigravity families sit in separate rows: H/S/O/F,
-R/L/T/S, and F/P respectively. A dashed draft appears: name it, drag its credit
-bar to set the grant, optionally give it a **charter** (a standing role card —
-pick a named preset from `docs/charters/`, or write your own), and hire. The
-Codex and Antigravity rows become active after their local CLI is installed and
-signed in; otherwise the disabled chips explain what is missing. Your hires
+The Claude, Codex, Antigravity and OpenRouter families sit in separate rows:
+H/S/O/F, R/L/T/S, F/P, and one monogram chip per favorited OpenRouter model (its
+letter and colour derive from the model id). A dashed draft appears: name it,
+drag its credit bar to set the grant, optionally give it a **charter** (a
+standing role card — pick a named preset from `docs/charters/`, or write your
+own), and hire. The Codex and Antigravity rows become active after their local
+CLI is installed and signed in, the OpenRouter row once a key is set and models
+are picked; otherwise the disabled chips explain what is missing. Your hires
 cascade credits automatically down the chain; agents hire their own reports
 through the same ledger with explicit, no-defaults specs. Drag cards onto
 other cards to re-parent whole subtrees; every hire, retire, move, or grant
@@ -144,7 +147,9 @@ The full interaction manual — every gesture, badge, and panel — is
 - **At least one provider CLI** installed and authenticated. Claude Code,
   Codex, and Antigravity are supported; install only the providers whose tiers you
   want to hire. Agent turns use that provider's subscription or API account —
-  **real usage costs real money**.
+  **real usage costs real money**. OpenRouter is the exception: it needs no
+  CLI, only an API key, and runs its models through Claude Code against the
+  key's prepaid credits.
 - **Python 3.11+**
 - **Node.js 18+** (builds the frontend; also used to invoke the Claude Code
   CLI in a newline-safe way on Windows)
@@ -242,6 +247,20 @@ installs also work: orgtree resolves an explicit environment override, then
 its private install under `ORGTREE_DATA` (Codex) or the installer's own
 location (Antigravity), then the CLI on `PATH`. It leaves each CLI's
 credentials in that CLI's own store and never copies them.
+
+### Optional provider: OpenRouter (API key, no CLI)
+
+Open App settings → Providers, paste an [OpenRouter](https://openrouter.ai)
+API key into the OpenRouter row, and click the row of model cards under it to
+pick, from the live catalog, which models can be hired. Each favorite becomes
+its own tier (`or-<model>`; seat = the model's $/M input price, floored to 1)
+with a monogram chip whose letter and colour derive from the model id. Turns
+run through Claude Code pointed at openrouter.ai's Anthropic-compatible
+endpoint and are billed to the key's prepaid credits — the Providers row shows
+the key's label and credit standing. Anthropic models run first-class;
+other vendors are best-effort. The key is stored under `ORGTREE_DATA` and
+never displayed again. OpenRouter is always keyed, so headless orgs may hire
+its tiers; kiosk orgs cannot, the same holdout as the CLI providers below.
 
 Codex and Antigravity agents can use the same orgtree tools, folder grants,
 and charters as Claude agents. They are currently host-mode providers: kiosk

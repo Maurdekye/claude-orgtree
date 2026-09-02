@@ -47,7 +47,7 @@ Set before the backend starts. Not visible in the UI, not per-org. A change requ
 
 ### Provider CLIs and tier availability
 
-The installed backend supports three provider families. A tier name is global
+The installed backend supports four provider families. A tier name is global
 within an org, so it already identifies its provider; do not supply a separate
 provider argument to a hire or model switch.
 
@@ -56,15 +56,27 @@ provider argument to a hire or model switch.
 | Claude Code | haiku (1), sonnet (2), opus (5), fable (10) | the Claude CLI can run turns |
 | Codex | gpt-reserve (1), luna (1), terra (2), sol (5) | Codex CLI is installed and signed in, **and** the account still has usage in its current window (all four tiers share one account, so a spent account offers none of them); gpt-reserve additionally requires OpenAI's reserve grant to be live — it is withdrawn and restored per account and orgtree reads the Codex CLI's own model registry to see it |
 | Antigravity | flash (1), pro (2) | Antigravity CLI is installed and signed in |
+| OpenRouter | one `or-<model>` tier per favorited model (seat = its $/M input, floored to 1) | an API key is set in App settings → Providers and openrouter.ai accepts it |
 
 Provider detection is read-only. It checks the CLI installation and its own
 login records, but never copies or alters credentials. The Accounts panel and
 the disabled hire-chip tooltip show the next required action.
 
-Codex and Antigravity are not available in kiosk orgs while their sandbox
-support is intentionally held back. In a headless org, personal-login modes
-are also unavailable: Codex requires an API-key login, and the Antigravity CLI
-(Google-account login only, no API-key lane) cannot be hired at all. Provider
+OpenRouter has no CLI: its turns run through the Claude Code CLI pointed at
+openrouter.ai's Anthropic-compatible endpoint (`ANTHROPIC_BASE_URL` +
+`ANTHROPIC_AUTH_TOKEN`, injected per spawn — the key never reaches any other
+provider's child). The key and the favorites live in
+`<data>/openrouter/state.json`; the catalog is cached in
+`<data>/openrouter/models.json` for an hour. Costs are real (prepaid credits):
+Anthropic models are priced by the CLI at list, which is OpenRouter's rate;
+other vendors are repriced by orgtree from the turn's token usage at the
+favorite's snapshot prices.
+
+Codex, Antigravity and OpenRouter are not available in kiosk orgs while their
+sandbox support is intentionally held back. In a headless org, personal-login
+modes are also unavailable: Codex requires an API-key login, and the
+Antigravity CLI (Google-account login only, no API-key lane) cannot be hired
+at all; OpenRouter is always keyed, so headless orgs may hire it. Provider
 tiers otherwise use the same credit, scope, charter, and MCP-grant rules as
 Claude tiers.
 

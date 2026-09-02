@@ -18,9 +18,15 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 os.environ["ORGTREE_DATA"] = tempfile.mkdtemp(prefix="orgtree-openrouter-")
 os.makedirs(os.environ["ORGTREE_DATA"], exist_ok=True)
+os.environ.pop("ORGTREE_WARM", None)
 with open(os.path.join(os.environ["ORGTREE_DATA"], "defaults.json"), "w",
           encoding="utf-8") as _f:
     _f.write('{"net_hub_address": "http://127.0.0.1:9"}')
+# hermetic on the OTHER providers too: §7 renders the whole providers payload,
+# which probes every CLI — pin them at paths that do not exist
+os.environ["ORGTREE_CODEX"] = os.path.join(os.environ["ORGTREE_DATA"], "nowhere", "codex.exe")
+os.environ["CODEX_HOME"] = os.path.join(os.environ["ORGTREE_DATA"], "chome")
+os.environ["ORGTREE_ANTIGRAVITY"] = os.path.join(os.environ["ORGTREE_DATA"], "nowhere", "agy.exe")
 
 from orgtree import openrouter as orr                                # noqa: E402
 
@@ -297,6 +303,130 @@ def main():
           lambda: (eq(orr.key_set(), False, "key_set"),
                    eq(orr.status()["connected"], False, "connected"),
                    eq(orr.status()["credits"]["limit_remaining"], None, "credits")))
+
+    print("§7 the doors: API endpoints, providers payload, hire gate, ledger, MCP, spawn env")
+    from fastapi.testclient import TestClient                          # noqa: PLC0415
+    from orgtree import api, cachecontinuity, mcptool, providers, supervisor  # noqa: PLC0415
+    from orgtree.ledger import LedgerError, Org                        # noqa: PLC0415
+    client = TestClient(api.app)
+
+    def refused(fn, needle, what):
+        """the gate speaks LedgerError (both API layers 422 it)"""
+        try:
+            fn()
+        except LedgerError as e:
+            if needle not in str(e):
+                raise AssertionError(f"{what}: refusal said {e!r}, wanted {needle!r}")
+            return
+        raise AssertionError(f"{what}: the gate did not refuse")
+    orr._catalog_mem.update({"cards": None, "at": 0.0})
+    for f in orr.favorites():
+        orr.remove_favorite(f["id"])
+    r0 = client.get("/api/openrouter").json()
+    check("GET /api/openrouter without a key: key_set False, a written reason",
+          lambda: (eq(r0["key_set"], False, "key_set"),
+                   eq("App settings" in str(r0["reason"]), True, "reason"),
+                   eq(r0["tiers"], [], "no tiers")))
+    r1 = client.put("/api/openrouter/key", json={"key": FAKE_KEY})
+    check("PUT /api/openrouter/key stores it; the reply is connected and SECRET-FREE",
+          lambda: (eq(r1.status_code, 200, "status"),
+                   eq(r1.json()["key_set"], True, "key_set"),
+                   eq(r1.json()["connected"], True, "connected"),
+                   eq(r1.json()["label"], "orgtree desk", "label"),
+                   no_secret(r1.json(), "key reply")))
+    check("a junk key is refused with 422",
+          lambda: eq(client.put("/api/openrouter/key", json={"key": "x"}).status_code,
+                     422, "422"))
+    page = client.get("/api/openrouter/models", params={"q": "claude", "limit": 5}).json()
+    check("GET /api/openrouter/models pages the catalog for the picker",
+          lambda: (eq(page["total"], 2, "two claudes"), eq(page["limit"], 5, "limit"),
+                   eq(page["items"][0]["selected"], False, "unselected")))
+    r2 = client.put("/api/openrouter/favorites",
+                    json={"id": "anthropic/claude-sonnet-5", "selected": True}).json()
+    TIER = "or-anthropic-claude-sonnet-5"
+    check("PUT /api/openrouter/favorites selects a model → a tier row with letter+color",
+          lambda: (eq([t["tier"] for t in r2["tiers"]], [TIER], "tiers"),
+                   eq(r2["tiers"][0]["seat"], 2, "seat"),
+                   eq(r2["tiers"][0]["letter"], "S", "letter"),
+                   eq(r2["tiers"][0]["color"].startswith("#"), True, "color")))
+    check("…an unknown model is refused with 422",
+          lambda: eq(client.put("/api/openrouter/favorites",
+                                json={"id": "nobody/nope", "selected": True}).status_code,
+                     422, "422"))
+    pay = client.get("/api/providers").json()
+    entry = next(p for p in pay["providers"] if p["id"] == "openrouter")
+    check("/api/providers carries the openrouter entry: hireable, one tier, secret-free",
+          lambda: (eq(entry["label"], "OpenRouter", "label"),
+                   eq(entry["hire_enabled"], True, "hire_enabled"),
+                   eq(entry["reason"], None, "reason"),
+                   eq([t["tier"] for t in entry["tiers"]], [TIER], "tiers"),
+                   eq(entry["status"]["installed"], True, "installed"),
+                   no_secret(pay, "providers payload")))
+    check("the provider axis: provider_of / label / install hint",
+          lambda: (eq(providers.provider_of(TIER), "openrouter", "provider_of"),
+                   eq(providers.provider_label(TIER), "OpenRouter", "label"),
+                   eq("App settings" in providers.install_hint("openrouter"), True, "hint"),
+                   eq(providers.provider_of("sonnet"), "claude", "claude unchanged")))
+    org = Org.create("orr-org", dirs=[], permission_mode="acceptEdits")
+    check("a NEW org doc carries the dynamic tier at its snapshot seat (ledger merge)",
+          lambda: (eq(org.d["tiers"][TIER], 2, "seat"),
+                   eq(org.d["models"][TIER], "anthropic/claude-sonnet-5", "model")))
+    check("hire gate: the favorite passes; a stranger or-* tier and a kiosk are refused",
+          lambda: (api.provider_hire_gate(org, TIER),
+                   refused(lambda: api.provider_hire_gate(org, "or-nobody-nope"),
+                           "not among the OpenRouter favorites", "stranger"),
+                   refused(lambda: api.provider_hire_gate(
+                       Org({**org.d, "kiosk": {"max_tier": "fable"}}), TIER),
+                           "kiosk", "kiosk holdout")))
+    check("…a HEADLESS org may hire it (a key is a keyed login)",
+          lambda: api.provider_hire_gate(Org({**org.d, "headless": True}), TIER))
+    check("…plain rehire (user_choice_only) skips the connect checks",
+          lambda: api.provider_hire_gate(org, "or-nobody-nope", user_choice_only=True))
+    cards = {c["name"]: c for c in mcptool.available_tools()}
+    check("MCP hire/switch cards grow the favorite into their tier enum at serve time",
+          lambda: (eq(TIER in cards["orgtree_hire"]["inputSchema"]["properties"]["tier"]["enum"],
+                      True, "hire enum"),
+                   eq(TIER in cards["orgtree_switch_model"]["inputSchema"]["properties"]["tier"]["enum"],
+                      True, "switch enum"),
+                   eq(TIER in json.dumps(mcptool.TOOLS), False,
+                      "the module constant itself stays static")))
+    env = supervisor.spawn_env(org, tier=TIER)
+    check("spawn_env for an or-* tier: the cookbook recipe, one credential, no account lane",
+          lambda: (eq(env.get("ANTHROPIC_BASE_URL"), orr.ANTHROPIC_BASE, "base"),
+                   eq(env.get("ANTHROPIC_AUTH_TOKEN"), FAKE_KEY, "token"),
+                   eq(env.get("ANTHROPIC_API_KEY"), "", "api key EMPTY"),
+                   eq("CLAUDE_CODE_OAUTH_TOKEN" in env, False, "no account token")))
+    env_c = supervisor.spawn_env(org, tier="sonnet")
+    check("…and a Claude tier's env carries NONE of it (lane exclusivity)",
+          lambda: (eq("ANTHROPIC_BASE_URL" in env_c, False, "no base"),
+                   eq("ANTHROPIC_AUTH_TOKEN" in env_c, False, "no token")))
+    check("identity_in_env reads the lane as 'openrouter', never the primary login",
+          lambda: (eq(supervisor.identity_in_env(env), "openrouter", "identity"),
+                   eq(supervisor.identity_in_env(env_c) == "openrouter", False, "claude")))
+    ns, lane = supervisor._cache_claude_namespace(org, TIER, env, 0.0)
+    check("cache namespace: openrouter-key:<digest> on the api_key lane, 5-minute TTL",
+          lambda: (eq(ns.startswith("openrouter-key:"), True, "namespace"),
+                   eq(FAKE_KEY in ns, False, "digest, not the key"),
+                   eq(lane, "api_key", "lane"),
+                   eq(cachecontinuity.ttl_seconds("openrouter", "api_key"), 300, "ttl")))
+    check("tier_context reads the favorite's catalog window for an or-* tier",
+          lambda: eq(supervisor.tier_context(TIER), 1000000, "context"))
+    r3 = client.delete("/api/openrouter/key").json()
+    check("DELETE /api/openrouter/key: gone, and the gate now names the missing key",
+          lambda: (eq(r3["key_set"], False, "key_set"),
+                   refused(lambda: api.provider_hire_gate(org, TIER),
+                           "no OpenRouter API key", "gate"),
+                   eq(supervisor.identity_in_env(env_c), "primary", "claude lane intact")))
+
+    def spawn_without_key():
+        try:
+            supervisor.spawn_env(org, tier=TIER)
+        except RuntimeError as e:
+            assert "no OpenRouter API key" in str(e), e
+            return
+        raise AssertionError("spawn_env silently fell through to the subscription")
+    check("…and spawn_env for the or-* tier fails LOUDLY instead of billing the subscription",
+          spawn_without_key)
 
     print(f"\nall {PASS} checks passed")
 

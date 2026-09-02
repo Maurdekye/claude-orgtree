@@ -256,6 +256,13 @@ SUPPORTED_LANES: Final[dict[tuple[str, str], int]] = {
     ("claude", "subscription"): SUBSCRIPTION_TTL_SECONDS,
     ("claude", "api_key"): API_KEY_TTL_SECONDS,
     ("openai", "subscription"): CODEX_SUBSCRIPTION_TTL_SECONDS,
+    # the OpenRouter lane (2026-09-02): Claude Code against openrouter.ai's
+    # Anthropic-compatible endpoint. MEASURED on 2.1.258: every cache write
+    # came back as `ephemeral_5m_input_tokens` (the 1h bucket stayed 0) and a
+    # resume 40 s later read the whole prefix back — the gateway honours the
+    # 5-minute window, never the hour. Its own namespace (another endpoint,
+    # another key), never the Claude subscription's.
+    ("openrouter", "api_key"): API_KEY_TTL_SECONDS,
 }
 
 #: The serialization quantum of durable receipt timestamps. `observed_at` is

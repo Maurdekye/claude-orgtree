@@ -332,3 +332,52 @@ between commits · breadcrumbs updated as things happen, written for a
 stranger · an instrument that reports "nothing found" must first prove it
 can find a planted fault · commit BEFORE running anything that mutates and
 restores the tree.
+
+## 10. An API-BACKED lane — the OpenRouter walk (2026-09-02)
+
+Provider #4 was not a CLI. OpenRouter is a REST gateway with one API key in
+front of ~425 models, so §1–§7 did not apply as written: nothing to detect,
+no auth store, no session substrate. What was reused instead, and what was
+new — recorded for the next gateway (Vercel AI Gateway, Requesty, a
+self-hosted LiteLLM all speak the same recipe):
+
+- **The harness is borrowed, not built** (user decision: Claude Code, one
+  lane). The Claude lane's `spawn_env` injects the gateway's own cookbook —
+  `ANTHROPIC_BASE_URL`, the key as `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_API_KEY`
+  explicitly empty, every `ANTHROPIC_DEFAULT_*_MODEL` pinned to the node's
+  model — and everything else (resume, `--mcp-config`, steer, journals,
+  fork/compact, warm pool) comes free. MEASURED on 2.1.258: resume hits the
+  cache inside the 5-minute window; Bash tool round-trips work; a
+  non-Anthropic model (gpt-5.6-luna) completed a tool task, another
+  (gemini-3.5-flash) ran but answered empty — "best-effort" is the honest
+  label for them, and the picker says so.
+- **"Installed" is a stored key, "connected" is the gateway accepting it**
+  (`GET /api/v1/key`, cached 60s), both in `openrouter.py`. The key is
+  written by one endpoint and never read back by any; `status()` is
+  secret-free by construction and a test asserts it.
+- **Tiers are minted at runtime.** The user's favorites become
+  `or-<slugified model id>` tiers with the §0 seat rule applied to the
+  catalog's own price (floor of $/M input, min 1), snapshot at selection.
+  Two consequences drove most of the work: the ledger's add-only load hook
+  merges the dynamic tables into every org doc (a deselected favorite keeps
+  its row — nodes on it keep their seat price), and the MCP hire/switch
+  cards grow their `tier` enum at `tools/list` time. Letter and colour are
+  CANONICAL from the model id (vendor hue, price-band lightness, OKLCH) and
+  ride the providers payload; the frontend injects a generated `<style>`
+  block with the same selector shapes the static tiers use, so no render
+  site learned a colour prop.
+- **Cost:** the CLI prices an `anthropic/…` id at list (`costBasis:
+  "list"`), which is the gateway's pass-through rate — kept. Any other
+  vendor comes back `costBasis: "unknown"` and an order of magnitude wrong
+  (measured), so `_after_turn` reprices those from the result's usage at the
+  favorite's snapshot prices.
+- **Namespaces:** `identity_in_env` answers the `openrouter` sentinel (never
+  the primary login) and the cache namespace is `openrouter-key:<digest>` on
+  the `api_key` lane with a measured 5-minute TTL (`SUPPORTED_LANES`).
+- **Gate:** keyed ⇒ headless may hire; kiosks hold it out like codex/antigravity;
+  a deselected favorite is refused at the door but survives plain rehire.
+- **Not done:** a native harness for third-party models (an ACP one —
+  OpenCode, Goose — needs an ACP client of its own; none is in the tree
+  since D-231), the Codex lane as an
+  alternative engine, account pooling, per-org key override, spend caps
+  beyond the key's own.

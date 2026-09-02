@@ -117,7 +117,11 @@ time remain unknown; Codex subscription is the one explicit estimated lane.
 
 Positive provider usage is the only expiry-refresh evidence. For Claude,
 subscription-auth receipts derive a 3,600-second TTL and API-key receipts a
-300-second TTL. Codex app-server receipts report cached input but not TTL;
+300-second TTL. The OpenRouter lane (Claude Code against openrouter.ai, its
+own `openrouter-key:` namespace keyed by a digest of the key) is a 300-second
+lane too — measured 2026-09-02: every cache write came back in the
+`ephemeral_5m` bucket and a resume inside the window read the whole prefix.
+Codex app-server receipts report cached input but not TTL;
 Orgtree therefore uses 1,800 seconds for a detected ChatGPT/subscription login.
 That is a fixed estimate from the official OpenAI `gpt-5.6-sol` Responses API
 default—`prompt_cache_options.ttl` defaults to `30m`, currently its only

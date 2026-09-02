@@ -2755,7 +2755,27 @@ def identity_in_env(env: dict[str, str]) -> str:
         return accounts.key_for_token(tok) or "key:unattributed"
     if env.get("ANTHROPIC_API_KEY"):
         return "api-key"
+    if openrouter_env(env):
+        # the OpenRouter lane (2026-09-02): a bearer token bound for
+        # openrouter.ai. NOT the primary login — reading it as such would
+        # attribute a gateway 402/429 to the subscription and mark the main
+        # account limited for a wall it never hit.
+        return OPENROUTER_IDENTITY
     return accounts.PRIMARY
+
+
+#: the `ran_as` sentinel of a turn billed to the OpenRouter key — beside
+#: "api-key" and "key:unattributed", never a stored account row
+OPENROUTER_IDENTITY: Final = "openrouter"
+
+
+def openrouter_env(env: dict[str, str]) -> bool:
+    """Is this resolved spawn env the OpenRouter lane's? Both halves of the
+    cookbook recipe must be present: the gateway base URL AND a bearer
+    token — a stray base URL with no token is not a lane, it is a
+    misconfiguration the CLI will report on its own."""
+    return (env.get("ANTHROPIC_BASE_URL") == openrouter.ANTHROPIC_BASE
+            and bool(env.get("ANTHROPIC_AUTH_TOKEN")))
 
 
 def api_fallback_active(org: Org, now: float | None = None) -> bool:
@@ -6020,6 +6040,15 @@ def _cache_claude_namespace(org: Org, tier: str,
     if api_key:
         return ("api-key:" + cachecontinuity.digest(
                     {"credential": api_key}, 16), "api_key")
+    if openrouter_env(resolved_env):
+        # the OpenRouter lane: its own namespace (another endpoint, another
+        # key — INV-003), keyed by a digest of the token so a key rotation is
+        # a namespace change without the credential ever being persisted;
+        # the lane is `api_key`, whose 5-minute window was MEASURED on the
+        # gateway (cachecontinuity.SUPPORTED_LANES).
+        return ("openrouter-key:" + cachecontinuity.digest(
+                    {"credential": resolved_env["ANTHROPIC_AUTH_TOKEN"]}, 16),
+                "api_key")
     account = identity_in_env(resolved_env)
     if account == accounts.PRIMARY:
         account = _cache_primary_namespace()
@@ -12247,6 +12276,34 @@ def _after_turn(slug: str, nid: str, org: Org, res: dict[str, Any],
     if nid not in org.nodes:
         return
     cost = float(res.get("total_cost_usd") or 0.0)
+    # THE OPENROUTER LANE'S COST (2026-09-02, measured on 2.1.258). The CLI
+    # canonicalizes an `anthropic/…` id (modelUsage.canonicalModel) and
+    # prices it at LIST (`costBasis: "list"`) — exactly OpenRouter's
+    # pass-through rate — so its own `total_cost_usd` is right for Anthropic
+    # models and is kept. For any OTHER vendor the CLI still reports a
+    # figure, but with `costBasis: "unknown"` and WRONG by an order of
+    # magnitude (measured: a $0.004 gpt-5.6-luna tool turn booked as $0.134,
+    # a gemini-3.5-flash one 25× over) — a default-table guess, not a price.
+    # That case is repriced here from the result's usage at the favorite's
+    # snapshot prices, which is what OpenRouter actually bills. ⚠ `usage` is
+    # process-cumulative on a warm process (only output_tokens carries a
+    # warm baseline — see the park site), so a warm continuation on such a
+    # model can OVERSTATE input; overstating is the recoverable direction
+    # (codex/antigravity precedent).
+    _tier0 = str(org.node(nid).get("model") or "")
+    if openrouter.is_tier(_tier0):
+        _model_id = org.model_for(nid)
+        _mu = cast("dict[str, Any]", res.get("modelUsage") or {})
+        _row = cast("dict[str, Any]", _mu.get(_model_id) or {})
+        if str(_row.get("costBasis") or "") != "list" or cost <= 0.0:
+            _u = cast("dict[str, Any]", res.get("usage") or {})
+            cost = openrouter.cost(
+                _model_id,
+                int(_u.get("input_tokens") or 0),
+                int(_u.get("cache_read_input_tokens") or 0),
+                int(_u.get("output_tokens") or 0),
+                int(_u.get("cache_creation_input_tokens") or 0))
+            res = {**res, "total_cost_usd": cost}
     mcp_success = (
         not res.get("is_error") and not st.get("interrupted")
         and str(res.get("status") or "").lower() not in (

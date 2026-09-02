@@ -27,7 +27,7 @@ Every shape below starts here.
 
 | requirement | notes |
 |---|---|
-| **One or more provider CLIs**, installed and authenticated | Claude Code, Codex, and Antigravity are supported. Install the CLI for every provider whose tiers you plan to hire; turns use that provider's subscription or API account — **real usage costs real money**. |
+| **One or more provider CLIs**, installed and authenticated | Claude Code, Codex, and Antigravity are supported. Install the CLI for every provider whose tiers you plan to hire; turns use that provider's subscription or API account — **real usage costs real money**. OpenRouter needs no CLI of its own: an API key entered in App settings → Providers runs its models through Claude Code, billed to the key's prepaid credits. |
 | **Python 3.11+** | |
 | **Node.js 18+** | builds the frontend and runs the JavaScript-based provider CLIs where needed |
 | **Windows, macOS, or Linux** | the host-mode core (ledger, turns, canvas, kiosk URLs) runs anywhere; developed and battle-tested on Windows, POSIX paths handled but less traveled |
@@ -91,6 +91,14 @@ Accounts panel then confirms each provider's connection state. See
 for CLI overrides, headless authentication requirements, and the current
 kiosk limitation.
 
+**Optional OpenRouter provider (no CLI):** open App settings → Providers,
+paste an OpenRouter API key into the OpenRouter row, then click the row of
+model cards under it to pick which catalog models can be hired. Each picked
+model becomes a chip on the canvas (seat = its $/M input price, floored to 1)
+and runs through Claude Code against openrouter.ai, billed to the key's
+prepaid credits. Anthropic models run as first-class; other vendors are
+best-effort (Claude Code's tool scaffolding is tuned for Claude).
+
 **Updating, once installed:** `update.ps1` (or double-click `update.cmd`) on Windows, `./update.sh`
 on Linux/macOS (also runs under Git Bash on Windows). Both pull, rebuild the UI, install any new
 dependencies, and restart the backend in the background with a health check.
@@ -110,8 +118,9 @@ installed on this host (`README.md`).
    the `advanced` disclosure closed (that's where kiosk, sandbox, and the mailserver connection
    live — §2–§4 below).
 3. Hover the eye and hire one top-level agent. Claude provides
-   haiku/sonnet/opus/fable; a connected Codex CLI adds gpt-reserve/luna/terra/sol and a
-   connected Antigravity CLI adds flash/pro. That single card, zoomed in, is a chat
+   haiku/sonnet/opus/fable; a connected Codex CLI adds gpt-reserve/luna/terra/sol, a
+   connected Antigravity CLI adds flash/pro, and an OpenRouter key adds one chip per
+   model you picked. That single card, zoomed in, is a chat
    desk with transcript, live tool feed, markdown, and a composer.
 
 That's the whole shape: one persistent, revisitable session instead of a terminal you close. You

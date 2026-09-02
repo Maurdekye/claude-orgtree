@@ -320,14 +320,14 @@ def _hash01(s: str) -> float:
     return int(hashlib.sha1(s.encode("utf-8")).hexdigest()[:8], 16) / 0xFFFFFFFF
 
 
-def _oklch_hex(L: float, C: float, h_deg: float) -> str:
+def _oklch_hex(light: float, chroma: float, h_deg: float) -> str:
     """OKLCH → sRGB hex, reducing chroma until the color is in gamut."""
     h = math.radians(h_deg)
     for _ in range(24):
-        a, b = C * math.cos(h), C * math.sin(h)
-        l_ = L + 0.3963377774 * a + 0.2158037573 * b
-        m_ = L - 0.1055613458 * a - 0.0638541728 * b
-        s_ = L - 0.0894841775 * a - 1.2914855480 * b
+        a, b = chroma * math.cos(h), chroma * math.sin(h)
+        l_ = light + 0.3963377774 * a + 0.2158037573 * b
+        m_ = light - 0.1055613458 * a - 0.0638541728 * b
+        s_ = light - 0.0894841775 * a - 1.2914855480 * b
         l, m, s = l_ ** 3, m_ ** 3, s_ ** 3
         r = 4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s
         g = -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s
@@ -338,7 +338,7 @@ def _oklch_hex(L: float, C: float, h_deg: float) -> str:
                 v = 12.92 * c if c <= 0.0031308 else 1.055 * c ** (1 / 2.4) - 0.055
                 return int(round(v * 255))
             return "#%02x%02x%02x" % (gam(r), gam(g), gam(bl))
-        C *= 0.88
+        chroma *= 0.88
     return "#808080"
 
 
@@ -354,14 +354,14 @@ def color_for(model_id: str, prompt_per_m: float) -> str:
         base = int(_hash01("vendor:" + vendor) * 360)
     hue = (base + (_hash01("model:" + model_id) * 24 - 12)) % 360
     if prompt_per_m < 1.0:
-        L, C = 0.86, 0.10
+        light, chroma = 0.86, 0.10
     elif prompt_per_m < 3.0:
-        L, C = 0.76, 0.13
+        light, chroma = 0.76, 0.13
     elif prompt_per_m < 8.0:
-        L, C = 0.66, 0.16
+        light, chroma = 0.66, 0.16
     else:
-        L, C = 0.56, 0.17
-    return _oklch_hex(L, C, hue)
+        light, chroma = 0.56, 0.17
+    return _oklch_hex(light, chroma, hue)
 
 
 def _per_m(v: Any) -> float:
@@ -377,11 +377,16 @@ def card_of(m: dict[str, Any]) -> ModelCard | None:
     mid = str(m.get("id") or "")
     if not mid or mid.endswith(":batch"):
         return None
-    arch = m.get("architecture") if isinstance(m.get("architecture"), dict) else {}
-    outs = arch.get("output_modalities") if isinstance(arch, dict) else None
-    if isinstance(outs, list) and outs and "text" not in outs:
+    arch_raw = m.get("architecture")
+    arch: dict[str, Any] = (cast("dict[str, Any]", arch_raw)
+                            if isinstance(arch_raw, dict) else {})
+    outs_raw = arch.get("output_modalities")
+    outs = cast("list[Any]", outs_raw) if isinstance(outs_raw, list) else []
+    if outs and "text" not in outs:
         return None
-    pricing = m.get("pricing") if isinstance(m.get("pricing"), dict) else {}
+    pricing_raw = m.get("pricing")
+    pricing: dict[str, Any] = (cast("dict[str, Any]", pricing_raw)
+                               if isinstance(pricing_raw, dict) else {})
     if not pricing:
         return None
     prompt = _per_m(pricing.get("prompt"))
