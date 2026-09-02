@@ -1625,11 +1625,49 @@ def _kill_proc(wp: WarmProcess) -> None:
             pass
 
 
-def _on_proc_exit(wp: WarmProcess) -> None:
-    """Pump saw EOF: the process ended (kill, crash, or backend teardown).
-    Drop it from whichever registry holds it. A parked death journals here;
-    a SERVING death only leaves the registry — its turn owns the aftermath
-    and the story (park refusal, error path, its own journal lines)."""
+# kill → reap bound. NOT a readiness timer and not a new one: it is the same
+# bound `codexrun.AppServerClient._kill_tree` already waits on after its own
+# taskkill (codexrun.py:522), for the same reason.
+_REAP_TIMEOUT_S = 5.0
+
+
+def _reap(proc: Any) -> None:
+    """Wait for a process we just killed, so the death bookkeeping that
+    follows OBSERVES an exit instead of racing the kill.
+
+    `_wd_kill_tree` returns before the OS has necessarily reaped anything, and
+    `_mcp_tool_count_end` decides what to publish from `poll()`. Without this
+    wait a deliberate teardown can publish `loading` for a process it has just
+    destroyed — and on the paths that drop the pool entry BEFORE killing there
+    is no later observer to correct it. If the wait times out the process
+    really is still alive, and `loading` is then the honest answer.
+    """
+    try:
+        proc.wait(timeout=_REAP_TIMEOUT_S)
+    except Exception:                               # noqa: BLE001
+        pass
+
+
+def _on_proc_channel_eof(wp: WarmProcess) -> bool:
+    """The output channel closed. Free the seat; assert NOTHING about the
+    process. Returns whether this generation is ours to journal an exit for.
+
+    Stdout EOF does not prove an exit — a CLI whose MCP children still hold
+    the pipe is a measured case on this machine, and it is the case unit 2
+    exists for. What EOF DOES prove is that the seat is unusable: nothing can
+    be read from a closed channel, so the registries drop it now and a
+    replacement may spawn. The death bookkeeping — the exit row, `proc_live`,
+    `process-ended` — is deliberately NOT done here. It belongs to
+    `_finalize_proc_exit`, which runs only after `proc.wait()` has returned.
+
+    While the process is still OS-live (or cannot be observed) the MCP
+    surface is published as channel-closed/LOADING: G1 binds a live process
+    to `loading | loaded`, and this is the window an unpublished surface used
+    to strand in. When the exit is ALREADY observable at EOF — the ordinary
+    death, by far the common case — nothing is published here at all, so the
+    sequence the finalizer then runs is byte-for-byte the one this function
+    was split out of.
+    """
     was_tracked = False
     with _pool_lock:
         if _serving.get((wp.slug, wp.nid)) is wp:
@@ -1640,21 +1678,74 @@ def _on_proc_exit(wp: WarmProcess) -> None:
             del _pool[(wp.slug, wp.nid)]
             was_tracked = True
             _set_proc_warm(wp.slug, wp.nid, False)
-    # EOF is the one observation point EVERY warm-origin process passes —
-    # the journal-once guard makes this the backstop, not a duplicate: a
-    # deliberate kill already wrote its row and this no-ops; a serving
-    # process that drained to exit carries the reason its turn noted; a
-    # true crash falls back to observed-death. (A process that already
-    # left both registries — claimed out and discarded — journaled at the
-    # discard; the guard covers it too.)
-    if was_tracked or wp.claimed:
-        _journal_exit_once(wp)
-        _set_proc_lifecycle(wp.slug, wp.nid, live=False, owner=wp)
-        try:
-            from . import supervisor as sup             # noqa: PLC0415
+    try:
+        from . import supervisor as sup                 # noqa: PLC0415
+        if sup._mcp_owner_ended(wp.proc) is not True:
             sup._mcp_tool_count_end(wp.slug, wp.nid, wp.proc)
-        except Exception:                               # noqa: BLE001
-            pass
+    except Exception:                                   # noqa: BLE001
+        pass
+    return was_tracked or wp.claimed
+
+
+def _finalize_proc_exit(wp: WarmProcess, tracked: bool) -> None:
+    """The exit was OBSERVED. The one place a warm-origin death is published.
+
+    THE EXIT ROW keeps the registry gate it has always had, and the
+    journal-once guard makes this the backstop rather than a duplicate: a
+    deliberate kill already wrote its row and this no-ops; a serving process
+    that drained to exit carries the reason its turn noted; a true crash falls
+    back to observed-death. (A process that already left both registries —
+    claimed out and discarded — journaled at the discard.)
+
+    LIFECYCLE AND MCP are published unconditionally, and that is the change,
+    not an oversight. Both carry a generation-identity check of their own —
+    `proc_lifecycle_owner is owner` (`_set_proc_lifecycle`) and
+    `mcp_tool_owner is owner` (`_mcp_tool_count_end`) — which is a strictly
+    stronger guard than registry membership and the only one that actually
+    protects a SUCCESSOR. Gating them on the registry is what let the
+    teardown paths that drop `_pool` BEFORE they kill (`kill_node`,
+    `_codex_prewarm_finish`'s abort) leave a killed generation published as
+    `loading` with nobody left in the world to finalize it.
+    """
+    if tracked:
+        _journal_exit_once(wp)
+    _set_proc_lifecycle(wp.slug, wp.nid, live=False, owner=wp)
+    try:
+        from . import supervisor as sup                 # noqa: PLC0415
+        sup._mcp_tool_count_end(wp.slug, wp.nid, wp.proc)
+    except Exception:                                   # noqa: BLE001
+        pass
+
+
+def _on_proc_exit(wp: WarmProcess) -> None:
+    """A warm-origin process's own reader thread, at EOF: free the seat, then
+    WAIT for the real exit and publish it.
+
+    THE WAIT IS THE UNIT. `_mcp_tool_count_end` refuses to reap a generation
+    whose exit it has not observed, and names the lifecycle owner as the thing
+    that later confirms it. That confirmation existed on exactly one path —
+    a serving turn waits (`supervisor.py:9766`/`:9770`) and ends
+    (`:9787`) — and did not exist here. A PARKED process that closed its
+    channel while alive therefore kept a live owner published as `loading`
+    forever: this callback fired once, at EOF, and nothing observed the death
+    that followed. Now it does, on the one thread that is guaranteed to be
+    present for the process's whole life and has nothing left to do.
+
+    Blocking is safe and is the point. Both callers reach here having already
+    finished their read loop — the stdout pump's `finally` and
+    `codexrun.AppServerClient._pump`'s — and both threads are daemon;
+    `_kill_tree` does its own bounded wait and joins neither.
+
+    NO timer, transport probe, readiness-layer kill or admission wait is
+    introduced: the only thing that moves a generation to `process-ended` is
+    still an observed process death, and stdout silence is never an input.
+    """
+    tracked = _on_proc_channel_eof(wp)
+    try:
+        wp.proc.wait()
+    except Exception:                                   # noqa: BLE001
+        pass
+    _finalize_proc_exit(wp, tracked)
 
 
 def _spawn_for(org: Any, nid: str, why: str) -> WarmProcess | None:
@@ -1701,8 +1792,12 @@ def _spawn_for(org: Any, nid: str, why: str) -> WarmProcess | None:
                 # claim's bind() replaces this handler with the turn's own.
                 client.on_event = _codex_prewarm_events(wp)
             except Exception:
-                sup._mcp_tool_count_end(slug, nid, proc,
-                                        "process setup failed")
+                # KILL, REAP, THEN END — in that order. This path has NO exit
+                # observer at all: the WarmProc that would have carried the
+                # pump is exactly what failed to be built, so whatever is
+                # published here is final. Ending first would publish
+                # `loading` for a child about to be destroyed, and nothing
+                # would ever correct it.
                 try:
                     sup._wd_kill_tree(proc)
                 except Exception:                   # noqa: BLE001
@@ -1710,6 +1805,9 @@ def _spawn_for(org: Any, nid: str, why: str) -> WarmProcess | None:
                         proc.kill()
                     except Exception:               # noqa: BLE001
                         pass
+                _reap(proc)
+                sup._mcp_tool_count_end(slug, nid, proc,
+                                        "process setup failed")
                 raise
             _journal_proc("respawn-done", slug, nid, why, ih,
                           elapsed_ms=int((time.time() - t0) * 1000),
@@ -1750,9 +1848,11 @@ def _spawn_for(org: Any, nid: str, why: str) -> WarmProcess | None:
         except Exception:
             # setup died AFTER the child existed: reap it or every keeper
             # retry leaks a CLI+MCP tree while turns stay correct — the
-            # silent-fallback shape (process-cache-2's spawn-cleanup probe)
-            sup._mcp_tool_count_end(slug, nid, proc,
-                                    "process setup failed")
+            # silent-fallback shape (process-cache-2's spawn-cleanup probe).
+            # KILL, REAP, THEN END: `WarmProc.__init__` is what starts the
+            # pump, so a failure here leaves the process with no exit observer
+            # and this the last word on it. Ending before the kill would
+            # publish `loading` for a doomed child forever.
             try:
                 sup._wd_kill_tree(proc)
             except Exception:                       # noqa: BLE001
@@ -1760,6 +1860,9 @@ def _spawn_for(org: Any, nid: str, why: str) -> WarmProcess | None:
                     proc.kill()
                 except Exception:                   # noqa: BLE001
                     pass
+            _reap(proc)
+            sup._mcp_tool_count_end(slug, nid, proc,
+                                    "process setup failed")
             raise
         _journal_proc("respawn-done", slug, nid, why, ih,
                       elapsed_ms=int((time.time() - t0) * 1000))
@@ -1871,6 +1974,10 @@ def _codex_prewarm_finish(org: Any, nid: str, wp: CodexWarmProc) -> None:
         if not ours:
             return          # already reaped/replaced; nothing left to clean
         _kill_proc(wp)
+        # the pool entry went above, BEFORE the kill, so the wire reader's
+        # `on_exit` will find this generation untracked; reap it here so the
+        # end below observes the corpse rather than racing the kill
+        _reap(wp.proc)
         _set_proc_warm(slug, nid, False)
         _set_proc_lifecycle(slug, nid, live=False, owner=wp)
         try:
@@ -1943,6 +2050,10 @@ def kill_node(slug: str, nid: str, reason: str,
             return False
         del _pool[(slug, nid)]
     _kill_proc(wp)
+    # same reason as `_codex_prewarm_finish`: the pool entry is already gone,
+    # so the pump's EOF callback finds this generation untracked and cannot be
+    # relied on to close it out. Observe the death here before publishing it.
+    _reap(wp.proc)
     _set_proc_warm(slug, nid, False)
     _set_proc_lifecycle(slug, nid, live=False, owner=wp)
     try:
@@ -2021,6 +2132,56 @@ def claim(slug: str, nid: str,
     return None, ("identity-changed" if was_alive else "crashed")
 
 
+def _mcp_reclaim_from_loser(winner: WarmProcess, loser: WarmProcess) -> None:
+    """A double-spawn is resolved in favour of the process that ran the turn —
+    but the LOSER may hold the seat's MCP ownership, because it spawned second
+    and its `_mcp_tool_count_begin` therefore adopted last. Killing it then
+    publishes `process-ended` and clears the surface, and the survivor — parked,
+    OS-LIVE, the seat's only process — is left with no surface at all. That is
+    the G1 violation stated exactly: an active process whose MCP state is
+    neither loading nor loaded.
+
+    Ownership moves to the winner here, through the ordinary adoption path:
+    unknown count, no names, readiness `initializing`. The loser's inventory is
+    deliberately NOT inherited — a corpse's tools wearing a live process's name
+    is the defect `_mcp_tool_count_begin` documents at length — and the durable
+    `last_turn_mcp_tool_count` is read and handed back, because passing None
+    there POPS it, which would discard a measured-earlier value this race has
+    no business touching.
+
+    THE CONDITION IS ABOUT THE WINNER, NOT THE LOSER, and that is load-bearing:
+    the loser's own pump is racing this call, and if its finalizer lands first
+    the seat is ALREADY cleared — asking "does the loser still own it?" then
+    answers no and adopts nothing, which is the very hole this closes (measured:
+    the race is lost about as often as it is won). Asking "does the WINNER own
+    it?" is correct from either side of that race, and if the winner already
+    owns it `_mcp_tool_count_begin`'s same-owner early return makes this a
+    no-op rather than a surface reset. The loser's finalizer, arriving after,
+    fails its own owner check and cannot take the seat back.
+
+    Confined to the double-spawn branch: on an ordinary park there is no loser
+    and this is never reached.
+    """
+    try:
+        from . import supervisor as sup                 # noqa: PLC0415
+        ent = sup.state(winner.slug, winner.nid)
+        with sup._state_lock:
+            if ent.get("mcp_tool_owner") is winner.proc:
+                return                          # already the seat's surface
+            last = ent.get("last_turn_mcp_tool_count")
+        codex = getattr(winner, "client", None) is not None
+        sup._mcp_tool_count_begin(
+            winner.slug, winner.nid, winner.proc,
+            "codex" if codex else "claude",
+            "mcpServerStatus/list" if codex else "system/init.tools",
+            "a double-spawn was resolved in favour of this process; its "
+            "runtime tools are not resolved yet",
+            last if isinstance(last, int) and not isinstance(last, bool)
+            else None)
+    except Exception:                                   # noqa: BLE001
+        pass
+
+
 def park_back(wp: WarmProcess, cost_base: float, out_base: int = 0) -> bool:
     """A turn finished on this process and nothing dirtied it: return it to
     the pool. If the pool already holds a DIFFERENT process for the seat (the
@@ -2048,6 +2209,7 @@ def park_back(wp: WarmProcess, cost_base: float, out_base: int = 0) -> bool:
     if other is not None:
         _kill_proc(other)
         _journal_exit_once(other, "superseded")
+        _mcp_reclaim_from_loser(wp, other)
     _set_proc_warm(wp.slug, wp.nid, True)
     _set_proc_lifecycle(wp.slug, wp.nid, live=True, owner=wp, adopt=True)
     _journal_proc("park", wp.slug, wp.nid, "turn-end", wp.hash)

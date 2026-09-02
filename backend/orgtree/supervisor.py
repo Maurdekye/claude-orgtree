@@ -1475,32 +1475,48 @@ def _mcp_tool_surface_for_owner(
 ) -> tuple[int | None, list[str] | None]:
     """Return one generation's authoritative count and exact names.
 
-    Falls back to the FINAL surface stashed by `_mcp_tool_count_end` when this
-    generation has already been reaped: the turn boundary runs after the
-    process is gone, so on a die-at-boundary turn the live entry is already
-    cleared. Strictly owner-scoped, so neither a foreign process nor the
-    successor can be answered with it.
+    Falls back to the FINAL surface stashed as this generation published, in
+    the two situations where the live entry cannot answer for a generation that
+    really did report one. FIRST, the generation has already been reaped: the
+    turn boundary runs after the process is gone, so on a die-at-boundary turn
+    the live entry is already cleared. SECOND, it is still the owner but its
+    live entry has been RE-ADOPTED and reset — `_mcp_tool_count_begin` clears
+    count and names by design, and `warmpool._mcp_reclaim_from_loser` re-adopts
+    a survivor through it when a double-spawn is resolved. Before that fallback
+    existed, a survivor that had a durable surface and lost the seat's
+    ownership to the loser got `(None, None)` here, and `supervisor.py:11509`
+    does not treat that as "no news" — it POPS `last_turn_mcp_tools`. Unobserved
+    must not erase observed (`ae101e6`), and a re-adoption is unobserved, not
+    contradictory.
+
+    Strictly owner-scoped in both cases: the stash is consulted only when it is
+    keyed to THIS owner, so neither a foreign process nor the successor can ever
+    be answered with it, and it is consulted only when the live entry holds
+    neither a count nor names — a live surface, even a partial one, always wins.
     """
     st = state(slug, nid)
     with _state_lock:
+        final = st.get("mcp_tool_final_surface")
+        stash = (final if isinstance(final, dict)
+                 and final.get("owner") is owner else None)
         if st.get("mcp_tool_owner") is not owner:
-            final = st.get("mcp_tool_final_surface")
-            if isinstance(final, dict) and final.get("owner") is owner:
-                fval = final.get("count")
-                fcount = (fval if isinstance(fval, int)
-                          and not isinstance(fval, bool) and fval >= 0
-                          else None)
-                fnames = final.get("names")
-                fexact = sorted(str(name) for name in fnames) \
-                    if isinstance(fnames, set) else None
-                return fcount, fexact
+            count, exact = None, None
+        else:
+            value = st.get("mcp_tool_count")
+            count = (value if isinstance(value, int)
+                     and not isinstance(value, bool) and value >= 0 else None)
+            names = st.get("mcp_tool_names")
+            exact = sorted(str(name) for name in names) \
+                if isinstance(names, set) else None
+    if count is None and exact is None:
+        if stash is None:
             return None, None
-        value = st.get("mcp_tool_count")
-        count = (value if isinstance(value, int)
-                 and not isinstance(value, bool) and value >= 0 else None)
-        names = st.get("mcp_tool_names")
-        exact = sorted(str(name) for name in names) \
-            if isinstance(names, set) else None
+        fval = stash.get("count")
+        count = (fval if isinstance(fval, int)
+                 and not isinstance(fval, bool) and fval >= 0 else None)
+        fnames = stash.get("names")
+        exact = sorted(str(name) for name in fnames) \
+            if isinstance(fnames, set) else None
     # UNIT 3. A surface must never NAME tools it cannot COUNT, and THIS reader
     # is where that has to hold: it feeds the turn boundary's durable
     # `last_turn_mcp_tools` record and, through it, the readiness gate's
