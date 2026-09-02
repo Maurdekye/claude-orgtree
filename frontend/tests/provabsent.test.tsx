@@ -216,7 +216,7 @@ const optValues = (el: HTMLElement) =>
 configTest('§2 an absent provider contributes no optgroup and no option',
   async (mount) => {
     const el = await mount({
-      presence: { claude: true, openai: false, google: false },
+      presence: { claude: true, openai: false, google: false, openrouter: false },
       codex: ABSENT('openai'), antigravity: ABSENT('google'),
     })
     assert.deepEqual(groups(el), ['Claude'],
@@ -235,7 +235,7 @@ configTest('§2 an absent provider contributes no optgroup and no option',
 configTest('§2 SIGNED OUT is the opposite case: listed, disabled, with reason',
   async (mount) => {
     const el = await mount({
-      presence: { claude: true, openai: true, google: false },
+      presence: { claude: true, openai: true, google: false, openrouter: false },
       codex: SIGNED_OUT('openai'), antigravity: ABSENT('google'),
     })
     assert.deepEqual(groups(el), ['Claude', 'Codex'])
@@ -254,7 +254,7 @@ configTest('§2 the node KEEPS ITS OWN TIER when its provider vanished',
     // would blank the select and let a no-op save rewrite the model.
     const el = await mount({
       node: node('sol'),
-      presence: { claude: true, openai: false, google: false },
+      presence: { claude: true, openai: false, google: false, openrouter: false },
       codex: ABSENT('openai'), antigravity: ABSENT('google'),
     })
     const vals = optValues(el)
@@ -311,7 +311,7 @@ const rehireOpts = (el: HTMLElement) =>
 lineageTest('§3 the rehire picker drops families this machine lacks',
   async (mount) => {
     const el = await mount(withBearer('haiku'),
-      { claude: true, openai: false, google: false })
+      { claude: true, openai: false, google: false, openrouter: false })
     const vals = rehireOpts(el).map((o) => o.value)
     for (const t of [...CODEX, ...ANTIGRAVITY]) {
       assert.ok(!vals.includes(t),
@@ -328,7 +328,7 @@ lineageTest('§3 an INSTALLED other provider is still listed and disabled',
     // holds for a provider the user HAS — being told why terra is unavailable
     // is information. D-202 only removes the families that are not there.
     const el = await mount(withBearer('haiku'),
-      { claude: true, openai: true, google: false })
+      { claude: true, openai: true, google: false, openrouter: false })
     const sol = rehireOpts(el).find((o) => o.value === 'sol')
     assert.ok(sol, 'codex IS installed here — it stays listed')
     assert.equal(sol.disabled, true)
@@ -343,7 +343,7 @@ lineageTest('§3 a codex bearer keeps its own default option', async (mount) => 
   // the "as <tier>" default is the control's identity; it must survive even
   // when codex has been uninstalled under it.
   const el = await mount(withBearer('sol'),
-    { claude: true, openai: false, google: false })
+    { claude: true, openai: false, google: false, openrouter: false })
   assert.match(el.textContent ?? '', /as sol · seat 5/,
     'the bearer still IS a sol session — say so, and with a real seat number')
 })
@@ -488,14 +488,14 @@ test('§5 …and keeps it when Codex is installed', async () => {
 
 test('§5 usageTitle names only the providers present', () => {
   assert.equal(usageTitle(ALL_PRESENT), 'usage limits — Claude and Codex')
-  assert.equal(usageTitle({ claude: true, openai: false, google: false }),
+  assert.equal(usageTitle({ claude: true, openai: false, google: false, openrouter: false }),
     'usage limits — Claude')
-  assert.equal(usageTitle({ claude: false, openai: true, google: false }),
+  assert.equal(usageTitle({ claude: false, openai: true, google: false, openrouter: false }),
     'usage limits — Codex')
   // no dangling "— " when neither is present
-  assert.equal(usageTitle({ claude: false, openai: false, google: false }),
+  assert.equal(usageTitle({ claude: false, openai: false, google: false, openrouter: false }),
     'usage limits')
   // Antigravity has no usage route, so its presence must not add a name
-  assert.equal(usageTitle({ claude: true, openai: false, google: true }),
+  assert.equal(usageTitle({ claude: true, openai: false, google: true, openrouter: false }),
     'usage limits — Claude')
 })
