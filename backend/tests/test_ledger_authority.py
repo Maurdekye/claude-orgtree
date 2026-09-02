@@ -1394,9 +1394,15 @@ def section_addressing():
           )(deep_org()))
     o8 = deep_org()
     o8.retire(USER, "leaf-a2")
-    check("an ARCHIVED node still receives mail, queued with a warning",
+    # 88804ce (2026-08-30): the warning no longer says "queued" — that read as
+    # a delivery someone had scheduled. It now states the condition ("NOTHING
+    # WILL READ IT until somebody rehires") and promises no rehire; this
+    # check asserted the old word and failed on every run since.
+    check("an ARCHIVED node still receives mail, saved with a warning that "
+          "promises no rehire",
           lambda: (lambda rr: (eq(rr["deferred"], True),
-                               true(any("queued" in w for w in rr["warnings"])))[-1]
+                               true(any("NOTHING WILL READ IT" in w
+                                        for w in rr["warnings"])))[-1]
                    )(o8.post_mail("mid-a", "leaf-a2", "hi")))
 
     # the request state machine

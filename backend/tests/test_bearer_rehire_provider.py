@@ -375,9 +375,24 @@ def the_gate_covers_the_rehire_door() -> None:
     from orgtree import api
 
     doc = inspect.getdoc(api.provider_hire_gate) or ""
-    assert "FIVE doors" in doc, (
-        "provider_hire_gate's door count changed — update it and this check "
-        "together, or the next missing door hides the same way")
+    # b11f96a (D-203) replaced the docstring's "FIVE doors" count with an
+    # enumerated "·" list — "named so completeness is checkable instead of
+    # hidden behind a count" — and this check kept asserting the old
+    # sentence, so it failed on every run from 2026-08-30 on. Pin the LIST:
+    # a door added to the code without a bullet, or a bullet dropped, fails
+    # here for the same reason the count used to.
+    # The door list is the bullet paragraph right after the one that opens
+    # "One gate for every…"; the docstring has other "·" bullets further
+    # down (provider rulings), so count within that paragraph only.
+    paras = doc.split("\n\n")
+    lead = next((i for i, p in enumerate(paras)
+                 if p.startswith("One gate for")), None)
+    para = paras[lead + 1] if lead is not None and lead + 1 < len(paras) else ""
+    doors = [ln for ln in para.splitlines() if ln.strip().startswith("·")]
+    assert len(doors) == 7, (
+        "provider_hire_gate's door list changed — update it and this check "
+        f"together, or the next missing door hides the same way (found "
+        f"{len(doors)} bullets)")
     src = inspect.getsource(api._org_op_locked)
     assert src.count("provider_hire_gate(org,") >= 3, (
         "the user ops path must gate hire, switch_model AND a tier-overriding "
