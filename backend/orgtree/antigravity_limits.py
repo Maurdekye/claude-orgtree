@@ -33,7 +33,7 @@ import os
 import re
 import threading
 import time
-from typing import Any, Final
+from typing import Any, Final, TypedDict
 
 from . import providers
 
@@ -60,9 +60,19 @@ _UNIT: Final = {"d": 86400.0, "h": 3600.0, "m": 60.0, "s": 1.0}
 #: the fake/legacy wording names its metric — surface it as the bar label
 _METRIC_RE: Final = re.compile(r"limit\s+'([^']{1,60})'", re.IGNORECASE)
 
+
+class _Wall(TypedDict):
+    """One observed wall: the CLI's words, when, and the reset they named."""
+    message: str
+    observed_at: float
+    resets_at: float | None
+    tier: str
+
+
 _lock = threading.Lock()
-#: {"wall": {...} | None, "ok_at": epoch | None, "loaded": bool}
-_state: dict[str, Any] = {"wall": None, "ok_at": None, "loaded": False}
+_wall: _Wall | None = None
+_ok_at: float | None = None
+_loaded = False
 
 
 def reset_in_seconds(text: str) -> float | None:
@@ -106,6 +116,13 @@ def _label(message: str) -> str:
     return "individual quota"
 
 
+def _number(value: object) -> float | None:
+    """A JSON number (never a bool) as a float, else None."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
+
+
 # ── durability ──────────────────────────────────────────────────────────
 
 def _path() -> str:
@@ -113,29 +130,29 @@ def _path() -> str:
 
 
 def _load_unlocked() -> None:
-    if _state["loaded"]:
+    global _wall, _ok_at, _loaded
+    if _loaded:
         return
-    _state["loaded"] = True
+    _loaded = True
     try:
         with open(_path(), encoding="utf-8") as f:
-            raw: Any = json.load(f)
+            raw: object = json.load(f)
     except (OSError, ValueError):
         return
     if not isinstance(raw, dict):
         return
-    wall = raw.get("wall")
-    if isinstance(wall, dict) and isinstance(wall.get("observed_at"),
-                                             (int, float)):
-        _state["wall"] = {
-            "message": str(wall.get("message") or "")[:300],
-            "observed_at": float(wall["observed_at"]),
-            "resets_at": (float(wall["resets_at"])
-                          if isinstance(wall.get("resets_at"), (int, float))
-                          else None),
-            "tier": str(wall.get("tier") or ""),
-        }
-    ok_at = raw.get("ok_at")
-    _state["ok_at"] = float(ok_at) if isinstance(ok_at, (int, float)) else None
+    doc: dict[str, object] = {str(k): v for k, v in raw.items()}  # type: ignore[misc]
+    wall_raw = doc.get("wall")
+    if isinstance(wall_raw, dict):
+        fields: dict[str, object] = {
+            str(k): v for k, v in wall_raw.items()}  # type: ignore[misc]
+        observed = _number(fields.get("observed_at"))
+        if observed is not None:
+            _wall = {"message": str(fields.get("message") or "")[:300],
+                     "observed_at": observed,
+                     "resets_at": _number(fields.get("resets_at")),
+                     "tier": str(fields.get("tier") or "")}
+    _ok_at = _number(doc.get("ok_at"))
 
 
 def _save_unlocked() -> None:
@@ -144,10 +161,19 @@ def _save_unlocked() -> None:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         tmp = path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
-            json.dump({"wall": _state["wall"], "ok_at": _state["ok_at"]}, f)
+            json.dump({"wall": _wall, "ok_at": _ok_at}, f)
         os.replace(tmp, path)
     except OSError:
         pass          # the in-memory standing still serves this process
+
+
+def forget_memory() -> None:
+    """Drop the in-process copy only — what a backend restart does. The file
+    stays, and the next reader loads from it. A test hook, public so the
+    restart proof does not have to reach into module state."""
+    global _wall, _ok_at, _loaded
+    with _lock:
+        _wall, _ok_at, _loaded = None, None, False
 
 
 # ── observation (the leg's two calls) ───────────────────────────────────
@@ -157,44 +183,46 @@ def observe_wall(message: str, *, tier: str = "",
     """A turn ended on a usage wall.  Records it and returns the reset
     instant parsed from the message, or None when it names none — the
     caller's freeze then falls to its own prose parse / probe floor."""
+    global _wall
     now = time.time() if now is None else now
     ts = reset_at(message, now)
     with _lock:
         _load_unlocked()
-        _state["wall"] = {"message": str(message or "")[:300],
-                          "observed_at": now, "resets_at": ts,
-                          "tier": str(tier or "")}
+        _wall = {"message": str(message or "")[:300], "observed_at": now,
+                 "resets_at": ts, "tier": str(tier or "")}
         _save_unlocked()
     return ts
 
 
 def observe_clear(now: float | None = None) -> None:
     """A turn completed: whatever wall stood is down."""
+    global _wall, _ok_at
     now = time.time() if now is None else now
     with _lock:
         _load_unlocked()
-        changed = _state["wall"] is not None
-        _state["wall"] = None
-        _state["ok_at"] = now
+        changed = _wall is not None
+        _wall = None
+        _ok_at = now
         if changed:
             _save_unlocked()
 
 
-def _current(now: float) -> tuple[dict[str, Any] | None, bool]:
+def _current(now: float) -> tuple[_Wall | None, bool]:
     """(the standing wall or None, stale?) — a wall whose reset has passed
     is presumed lifted; one that never named a reset ages out."""
     _load_unlocked()
-    wall = _state["wall"]
-    if not isinstance(wall, dict):
+    wall = _wall
+    if wall is None:
         return None, False
-    resets = wall.get("resets_at")
-    age = now - float(wall.get("observed_at") or 0.0)
-    if isinstance(resets, (int, float)):
-        return (dict(wall), False) if now < float(resets) else (None, False)
-    return dict(wall), age > MAX_EVIDENCE_AGE
+    # the record itself, never a copy: observations REPLACE `_wall`, nothing
+    # mutates one in place, so readers can hold it without a defensive copy
+    resets = wall["resets_at"]
+    if resets is not None:
+        return (wall, False) if now < resets else (None, False)
+    return wall, now - wall["observed_at"] > MAX_EVIDENCE_AGE
 
 
-def _limits(wall: dict[str, Any]) -> list[dict[str, Any]]:
+def _limits(wall: _Wall) -> list[dict[str, Any]]:
     return [{
         # the CLI states remaining time, never the window's length, so the
         # kind is the provider-specific one — a 165-hour reset is not proof
@@ -204,10 +232,10 @@ def _limits(wall: dict[str, Any]) -> list[dict[str, Any]]:
         "group": ACCOUNT,
         "percent": 100.0,
         "severity": "critical",
-        "resets_at": _iso(wall.get("resets_at")),
+        "resets_at": _iso(wall["resets_at"]),
         "is_active": True,
         "model": None,
-        "label": _label(str(wall.get("message") or "")),
+        "label": _label(wall["message"]),
     }]
 
 
@@ -235,7 +263,7 @@ def fetch(force: bool = False) -> dict[str, Any]:
     now = time.time()
     with _lock:
         wall, stale = _current(now)
-        ok_at = _state["ok_at"]
+        ok_at = _ok_at
     if wall is None:
         last_ok = _iso(ok_at) if ok_at else None
         return _account({
@@ -262,7 +290,7 @@ def peek() -> dict[str, Any]:
         return {"available": False, "provider": PROVIDER}
     return {"available": True, "provider": PROVIDER,
             "limits": _limits(wall),
-            "age": round(now - float(wall.get("observed_at") or now), 1)}
+            "age": round(now - wall["observed_at"], 1)}
 
 
 def snapshot(now: float | None = None) -> dict[str, Any]:
@@ -274,12 +302,12 @@ def snapshot(now: float | None = None) -> dict[str, Any]:
     now = time.time() if now is None else now
     with _lock:
         wall, stale = _current(now)
-        observed = _state["wall"] if isinstance(_state["wall"], dict) else None
+        observed = _wall is not None
     if wall is None:
         return {"available": False, "provider": PROVIDER, "limits": [],
                 "observed_at": None, "age": None, "stale": False,
-                "unsupported": observed is None}
-    at = float(wall.get("observed_at") or 0.0)
+                "unsupported": not observed}
+    at = wall["observed_at"]
     return {"available": True, "provider": PROVIDER, "limits": _limits(wall),
             "observed_at": _iso(at), "age": max(0.0, now - at),
             "stale": stale, "unsupported": False}
@@ -287,8 +315,9 @@ def snapshot(now: float | None = None) -> dict[str, Any]:
 
 def invalidate() -> None:
     """Forget everything, in memory AND on disk (tests, and a sign-out)."""
+    global _wall, _ok_at, _loaded
     with _lock:
-        _state.update(wall=None, ok_at=None, loaded=True)
+        _wall, _ok_at, _loaded = None, None, True
         try:
             os.remove(_path())
         except OSError:

@@ -33,6 +33,10 @@ Markdown file in this repository as current operating guidance.
 - [`INVARIANTS.md`](INVARIANTS.md) is the canonical register of explicit
   user-stated app-state invariants — narrower than, and outranking,
   `DECISIONS.md`.
+- [`antigravity-warm-and-steer.md`](antigravity-warm-and-steer.md) is the
+  design — not yet built — for warming a parked Antigravity process and
+  steering it mid-turn through the CLI's PreInvocation hook, with the
+  probes that gate each (D-233 records what the lane can know today).
 - [`adding-a-provider.md`](adding-a-provider.md) is the implementation
   playbook for a new model provider.
 - [`../DECISIONS.md`](../DECISIONS.md) is the normative decision register.

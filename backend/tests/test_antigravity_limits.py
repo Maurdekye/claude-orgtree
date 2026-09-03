@@ -248,18 +248,18 @@ def main():
         path = A._path()
         assert os.path.exists(path), path
         # a restart: fresh module state, the file is all that remains
-        A._state.update(wall=None, ok_at=None, loaded=False)
+        A.forget_memory()           # a restart: only the file remains
         snap = A.snapshot(now + 5)
         eq((snap["available"], snap["limits"][0]["resets_at"]),
            (True, A._iso(now + SPECIMEN_SECS)), "the wall came back from disk")
         with io.open(path, "w", encoding="utf-8") as f:
             f.write("{not json")
-        A._state.update(wall=None, ok_at=None, loaded=False)
+        A.forget_memory()           # a restart: only the file remains
         eq(A.snapshot(now)["unsupported"], True,
            "a torn file loads as nothing, never raises")
         with io.open(path, "w", encoding="utf-8") as f:
             json.dump({"wall": {"message": "x", "observed_at": "soon"}}, f)
-        A._state.update(wall=None, ok_at=None, loaded=False)
+        A.forget_memory()           # a restart: only the file remains
         eq(A.snapshot(now)["unsupported"], True,
            "a mis-shaped record is ignored")
         A.invalidate()
