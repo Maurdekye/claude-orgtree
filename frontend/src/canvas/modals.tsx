@@ -18,7 +18,7 @@ import { pickFolder } from '../picker'
 import {
   CloseIcon, DeleteIcon, FolderIcon, LayersIcon, SettingsIcon,
 } from '../icons'
-import { ago, ALL_PRESENT, anyTierSeat, CODEX_TIERS, ANTIGRAVITY_TIERS, hireOf, isOpenRouterTier, MODEL_VERSIONS, openrouterTierIds, pileOrder, PROVIDER_LABEL, providerOf, reserveOffer, TIER_LETTER, TIERS, tierShown, USER, useEsc } from './shared'
+import { ago, ALL_PRESENT, anyTierSeat, CODEX_TIERS, ANTIGRAVITY_TIERS, hireOf, isOpenRouterTier, MODEL_VERSIONS, openrouterTierIds, pileOrder, PROVIDER_LABEL, providerOf, reserveOffer, TIER_LETTER, tierLabel, TIERS, tierShown, USER, useEsc } from './shared'
 import type { ProviderPresence } from './shared'
 import type { CanvasNode, DraftScope, DraftState, OpFn, Pile } from './shared'
 import { ProcessLifecycleMark } from './desk'
@@ -787,7 +787,7 @@ export function NodeConfig({ node, map, tree, slug, op, toast, codexProvider,
     const why = unavailable(t)
     return (
       <option key={t} value={t} disabled={!!why}>
-        {t} · seat {tierSeat(t)}{why ? ` — ${why}` : ''}
+        {tierLabel(t)} · seat {tierSeat(t)}{why ? ` — ${why}` : ''}
       </option>
     )
   }
@@ -800,7 +800,7 @@ export function NodeConfig({ node, map, tree, slug, op, toast, codexProvider,
           {node.state === 'live' && <ProcessLifecycleMark warm={Boolean(node.proc_warm)}
             live={node.proc_live} relaunch={node.proc_relaunch}
             reason={node.proc_relaunch_reason} busy={node.busy} tier={node.tier} />}
-          <span className="dim">· {node.tier} · configuration</span></h3>
+          <span className="dim">· {tierLabel(node.tier ?? '')} · configuration</span></h3>
         {/* FULL identity rename (user ruling 2026-08-05): id, mailbox,
             working folder and session all move; history keeps the old name
             (the warning rides the toast). Refused while mid-turn. */}

@@ -33,6 +33,14 @@ Tier ids are one flat vocabulary with every other provider's (providers.py):
 the `or-` prefix is what keeps a favorite's id clear of fable/sol/flash and
 lets `providers.provider_of` answer "openrouter" for it without a registry
 lookup.
+
+WHAT THE USER SEES IS NOT THE ID (user ask 2026-09-03: "remove the or- and
+provider name prefix from openrouter model names"). Every surface prints the
+`label` — the model id after its vendor namespace (`claude-sonnet-5`), the
+`:free`-style variant suffix kept — and the `name` without its `Vendor: `
+prefix (`Claude Sonnet 5`). The tier id and the full model id stay exactly
+what they were everywhere they are stored, keyed or sent upstream; see
+`model_label`, `pretty_name`, `labels_for` and `tier_label`.
 """
 
 from __future__ import annotations
@@ -47,6 +55,8 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from collections import Counter
+from collections.abc import Iterable, Mapping
 from typing import Any, Final, TypedDict, cast
 
 from . import store
@@ -84,7 +94,11 @@ class ModelCard(TypedDict):
     """One catalog entry as the picker and the registry need it — prices in
     $ per MILLION tokens (the catalog publishes $ per token)."""
     id: str
+    #: the display name without its `Vendor: ` prefix (`Claude Sonnet 5`)
     name: str
+    #: the display id without its vendor namespace (`claude-sonnet-5`) — what
+    #: every surface prints where it used to print the id or the tier
+    label: str
     vendor: str
     prompt: float
     completion: float
@@ -253,6 +267,53 @@ def vendor_of(model_id: str) -> str:
     return model_id.split("/", 1)[0] if "/" in model_id else "openrouter"
 
 
+# ── display names (2026-09-03) ─────────────────────────────────────────────
+#
+# DISPLAY ONLY. Nothing below is ever stored as a key, compared to a catalog
+# id, or sent to openrouter.ai: the full `vendor/model[:variant]` id stays the
+# identity everywhere, these are what the user reads.
+
+def model_label(model_id: str) -> str:
+    """The id after its vendor namespace: `anthropic/claude-sonnet-5` →
+    `claude-sonnet-5`, `z-ai/glm-5.2:free` → `glm-5.2:free`. The variant
+    suffix is KEPT: it is a different model at a different price, and
+    dropping it would fold 74 pairs of the live catalog's 425 rows into one
+    name each (measured 2026-09-03), where keeping it folds none."""
+    return model_id.split("/", 1)[1] if "/" in model_id else model_id
+
+
+#: the catalog's `Vendor: ` name prefix — one short run before the first
+#: colon, never a parenthesised qualifier (`Claude Sonnet 5 (batch)` keeps
+#: its parenthesis, `SpaceXAI: Grok 4.6` loses its vendor)
+_NAME_PREFIX: Final = re.compile(r"^[^:()]{1,40}:\s+")
+
+
+def pretty_name(name: str, model_id: str) -> str:
+    """The catalog's display name without its vendor prefix: `Anthropic:
+    Claude Sonnet 5` → `Claude Sonnet 5`. Measured on the live catalog
+    2026-09-03: 398 of 425 names carry the prefix, it is constant per vendor,
+    and stripping it leaves no two names equal. An empty name falls back to
+    the label so the picker never shows a blank row."""
+    n = (name or "").strip()
+    if not n:
+        return model_label(model_id)
+    return _NAME_PREFIX.sub("", n, count=1) or n
+
+
+def labels_for(ids: Iterable[str]) -> dict[str, str]:
+    """Labels for one DISPLAYED SET of model ids. Each gets its short label
+    unless another id in the SAME set would read the same — then both keep
+    their full id, so the user is never shown two identical rows. The live
+    catalog has no such pair today (0 of 425 with the variant suffix kept);
+    a set is still disambiguated against itself, never against a catalog
+    that may not be loaded (favorites are read on every org load, offline
+    or not)."""
+    ids = list(ids)
+    short = {i: model_label(i) for i in ids}
+    counts = Counter(short.values())
+    return {i: (i if counts[s] > 1 else s) for i, s in short.items()}
+
+
 def tier_id(model_id: str) -> str:
     """`or-` + the model id with every non-alphanumeric run folded to `-`
     (`anthropic/claude-sonnet-5` → `or-anthropic-claude-sonnet-5`). Safe as a
@@ -402,7 +463,8 @@ def card_of(m: dict[str, Any]) -> ModelCard | None:
         ctx = 0
     return {
         "id": mid,
-        "name": str(m.get("name") or mid),
+        "name": pretty_name(str(m.get("name") or ""), mid),
+        "label": model_label(mid),
         "vendor": vendor_of(mid),
         "prompt": prompt,
         "completion": completion,
@@ -513,7 +575,11 @@ def search(q: str, offset: int = 0, limit: int = 8) -> dict[str, Any]:
             hits.append((rank, i, c))
     hits.sort(key=lambda h: (h[0], h[1]))
     fav_ids = {f["id"] for f in favorites()}
-    page = [dict(c, selected=c["id"] in fav_ids) for _, _, c in hits[offset:offset + limit]]
+    # labels are disambiguated across the WHOLE result set, so a model reads
+    # the same on every page of one query
+    labels = labels_for(c["id"] for _, _, c in hits)
+    page = [dict(c, selected=c["id"] in fav_ids, label=labels[c["id"]])
+            for _, _, c in hits[offset:offset + limit]]
     return {"query": q, "offset": offset, "limit": limit,
             "total": len(hits), "items": page}
 
@@ -531,10 +597,15 @@ def favorites() -> list[Favorite]:
     out: list[Favorite] = []
     for f in _load_state()["favorites"]:
         try:
+            mid = str(f["id"])
             out.append({
-                "id": str(f["id"]), "tier": str(f["tier"]),
-                "name": str(f.get("name") or f["id"]),
-                "vendor": str(f.get("vendor") or vendor_of(str(f["id"]))),
+                "id": mid, "tier": str(f["tier"]),
+                # the display forms are DERIVED on every read, never trusted
+                # from the record: a favorite added before 2026-09-03 stored
+                # `Anthropic: Claude Sonnet 5` and no label at all
+                "name": pretty_name(str(f.get("name") or ""), mid),
+                "label": model_label(mid),
+                "vendor": str(f.get("vendor") or vendor_of(mid)),
                 "prompt": float(f.get("prompt") or 0.0),
                 "completion": float(f.get("completion") or 0.0),
                 "cache_read": float(f.get("cache_read") or 0.0),
@@ -551,6 +622,11 @@ def favorites() -> list[Favorite]:
             })
         except (KeyError, TypeError, ValueError):
             continue
+    # the favorites are one displayed set (the hire surfaces): two that would
+    # read the same keep their full ids
+    labels = labels_for(x["id"] for x in out)
+    for x in out:
+        x["label"] = labels[x["id"]]
     return out
 
 
@@ -615,6 +691,24 @@ def favorite_for_tier(tier: str) -> Favorite | None:
         if f["tier"] == tier:
             return f
     return None
+
+
+def tier_label(tier: str, models: Mapping[str, Any] | None = None) -> str:
+    """The display name of a TIER id — what a message prints where it used
+    to print `or-anthropic-claude-sonnet-5`. A current favorite answers from
+    the registry; a DESELECTED one from the org doc's own tier→model table
+    (`models`, which the ledger hook merges add-only, so a node still running
+    on it keeps its short name); anything else falls back to the slug without
+    its `or-` prefix. A static tier passes through untouched."""
+    if not is_tier(tier):
+        return tier
+    f = favorite_for_tier(tier)
+    if f is not None:
+        return f["label"]
+    mid = (models or {}).get(tier)
+    if isinstance(mid, str) and mid:
+        return model_label(mid)
+    return tier[len(TIER_PREFIX):]
 
 
 def cost(model_id: str, inp: int, cached: int, out: int,
@@ -733,7 +827,7 @@ def tier_infos() -> list[dict[str, Any]]:
     return [{
         "tier": f["tier"], "provider": PROVIDER_ID, "seat": f["seat"],
         "model": f["id"], "letter": f["letter"], "color": f["color"],
-        "name": f["name"], "vendor": f["vendor"],
+        "name": f["name"], "label": f["label"], "vendor": f["vendor"],
         "prompt": f["prompt"], "completion": f["completion"],
         "context": f["context"],
     } for f in favorites()]

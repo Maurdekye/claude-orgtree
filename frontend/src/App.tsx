@@ -22,7 +22,7 @@ import {
 } from './icons'
 import { DirList } from './forms'
 import { FolderPickerHost } from './picker'
-import { ALL_TIERS, attentionPip, deskDpi, fallbackActive, freezeKind, isOpenRouterTier, orgPxc, presenceOfPayload, primedRestartChip, setDeskDpi, TIER_LETTER, usePolled } from './canvas/shared'
+import { ALL_TIERS, attentionPip, deskDpi, fallbackActive, freezeKind, isOpenRouterTier, orgPxc, presenceOfPayload, primedRestartChip, setDeskDpi, TIER_LETTER, tierLabel, usePolled } from './canvas/shared'
 import { AskCard } from './canvas/asks'
 import { AccountsPanel, UsageBars } from './canvas/accounts'
 import {
@@ -1565,7 +1565,7 @@ function SenderChip({ id, nodes }: { id: string; nodes: Map<string, TreeNode> })
   const n = nodes.get(id)
   if (!n) return <b>{id}</b>
   return (
-    <span className={'sender ' + n.state} title={`${n.tier} · ${n.state}`}>
+    <span className={'sender ' + n.state} title={`${tierLabel(n.tier)} · ${n.state}`}>
       <span className={'tier t-' + n.tier}>{TIER_LETTER[n.tier] ?? '?'}</span>
       <b>{id}</b>
     </span>

@@ -44,12 +44,12 @@ const PAYLOAD: AccountsPayload = {
 const ORR_TIERS: ProviderTier[] = [
   { tier: 'or-anthropic-claude-sonnet-5', provider: 'openrouter', seat: 2,
     model: 'anthropic/claude-sonnet-5', letter: 'S', color: '#f9907f',
-    name: 'Anthropic: Claude Sonnet 5', vendor: 'anthropic', prompt: 2,
-    completion: 10, context: 1000000 },
+    name: 'Claude Sonnet 5', label: 'claude-sonnet-5', vendor: 'anthropic',
+    prompt: 2, completion: 10, context: 1000000 },
   { tier: 'or-openai-gpt-5-6-luna', provider: 'openrouter', seat: 1,
     model: 'openai/gpt-5.6-luna', letter: 'L', color: '#9fe3d1',
-    name: 'OpenAI: GPT-5.6 Luna', vendor: 'openai', prompt: 0.2,
-    completion: 1.2, context: 1050000 },
+    name: 'GPT-5.6 Luna', label: 'gpt-5.6-luna', vendor: 'openai',
+    prompt: 0.2, completion: 1.2, context: 1050000 },
 ]
 
 // Codex is installed but NOT hire-enabled, so its head renders the PREVIEW

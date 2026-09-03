@@ -13,8 +13,8 @@ import {
   FullscreenIcon, PublicIcon, RemoveIcon, ViewListIcon,
 } from '../icons'
 import {
-  ago, anyTierSeat, attentionPip, CODEX_TIER_LETTER, CODEX_TIER_SEAT, CODEX_TIERS, DOG_H, DOG_W, DRAFT, ease, edgeJumpPlacement, type EJForm, EXTERN, fallbackActive, familyOffer, flatten, ANTIGRAVITY_TIER_LETTER, ANTIGRAVITY_TIER_SEAT, ANTIGRAVITY_TIERS, hireOf, INBOX, INBOX_H, layout, NODE_H, NODE_W, openrouterTierIds, orgPxc, presenceOf, reserveOffer, segD, setOpenRouterTiers,
-  providerOf, savedView, saveView, segPoint, sizeOf, smooth, SPRING_C, SPRING_K, startView, startZoomOn, TIER_LETTER, TIER_SEAT, TIERS, useCrowdPiles, usePolled, USER, USER_H,
+  ago, anyTierSeat, attentionPip, CODEX_TIER_LETTER, CODEX_TIER_SEAT, CODEX_TIERS, DOG_H, DOG_W, DRAFT, ease, edgeJumpPlacement, type EJForm, EXTERN, fallbackActive, familyOffer, flatten, ANTIGRAVITY_TIER_LETTER, ANTIGRAVITY_TIER_SEAT, ANTIGRAVITY_TIERS, hireOf, INBOX, INBOX_H, layout, NODE_H, NODE_W, noteTierModels, openrouterTierIds, orgPxc, presenceOf, reserveOffer, segD, setOpenRouterTiers,
+  providerOf, savedView, saveView, segPoint, sizeOf, smooth, SPRING_C, SPRING_K, startView, startZoomOn, TIER_LETTER, TIER_SEAT, tierLabel, TIERS, useCrowdPiles, usePolled, USER, USER_H,
   USER_W, withDraftTree, Z_DESK, Z_MAX, Z_MINI,
 } from './shared'
 import type {
@@ -141,6 +141,9 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
     (v) => v.id === 'openrouter') ?? null
   useEffect(() => { setOpenRouterTiers(openrouterProvider?.tiers) },
     [openrouterProvider])
+  // …and the org doc's own tier→model table, so a node still running on a
+  // favorite that was since deselected is named by its model, not its slug
+  useEffect(() => { noteTierModels(tree.models) }, [tree.models])
   // D-199: Claude is read from the payload like the other two. It never was —
   // there was no `claudeProvider` at all, which is why a machine with only
   // Codex set up still offered four live Claude hire buttons.
@@ -2494,7 +2497,7 @@ function HireSheet({ anchor, seats, codexHire, antigravityHire, claudeHire, open
                     title={tOffer === 'offer' ? undefined : tReason}
                     onClick={() => pickTier(t)}>
                     <span className={'tier t-' + t}>{f.letters[t]}</span>
-                    {t} · seat {f.seatOf(t)}
+                    {tierLabel(t)} · seat {f.seatOf(t)}
                   </button>
                 )
               })}

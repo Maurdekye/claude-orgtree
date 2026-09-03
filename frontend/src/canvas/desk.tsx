@@ -25,7 +25,7 @@ import {
   HearingIcon, LayersIcon, LockIcon, MailIcon, PlayIcon, PsychologyIcon,
   SettingsIcon, SparkIcon, StopIcon, WarnIcon,
 } from '../icons'
-import { ago, ALL_PRESENT, ALL_TIERS, anyTierSeat, CODEX_TIERS, CopyIcon, EXTERN, freezeKind, FREEZE_LABEL, ANTIGRAVITY_TIERS, isOpenRouterTier, md, openrouterTierIds, PROVIDER_LABEL, providerOf, TIER_LETTER, tierShown, USER, useEsc, usePolled } from './shared'
+import { ago, ALL_PRESENT, ALL_TIERS, anyTierSeat, CODEX_TIERS, CopyIcon, EXTERN, freezeKind, FREEZE_LABEL, ANTIGRAVITY_TIERS, isOpenRouterTier, md, openrouterTierIds, PROVIDER_LABEL, providerOf, TIER_LETTER, tierLabel, tierShown, USER, useEsc, usePolled } from './shared'
 import type { ProviderPresence } from './shared'
 import {
   addPending, CHAT_WINDOW, dropPending, loadOlder as storeLoadOlder, markBusy,
@@ -2115,7 +2115,7 @@ export function LineagePanel({ node, op, slug, presence = ALL_PRESENT,
                 ) : <>
                   <select value={tiers[b.id] ?? ''} onChange={(e) =>
                     setTiers((t) => ({ ...t, [b.id]: e.target.value }))}>
-                    <option value="">as {b.tier} · seat {SEAT(b.tier)}</option>
+                    <option value="">as {tierLabel(b.tier)} · seat {SEAT(b.tier)}</option>
                     {[...ALL_TIERS, ...openrouterTierIds()]
                       .filter((t) => t !== b.tier
                         && tierShown(presence, t, b.tier))
@@ -2123,7 +2123,7 @@ export function LineagePanel({ node, op, slug, presence = ALL_PRESENT,
                       const why = rehireWhy(t, b.tier)
                       return (
                         <option key={t} value={t} disabled={!!why}>
-                          as {t} · seat {SEAT(t)}{why ? ` — ${why}` : ''}
+                          as {tierLabel(t)} · seat {SEAT(t)}{why ? ` — ${why}` : ''}
                         </option>
                       )
                     })}

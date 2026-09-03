@@ -10,7 +10,7 @@ import type { TestContext } from 'node:test'
 import assert from 'node:assert/strict'
 import { ActiveAgentSummary } from '../src/App'
 import { NodeConfig } from '../src/canvas/modals'
-import { USER } from '../src/canvas/shared'
+import { setOpenRouterTiers, USER } from '../src/canvas/shared'
 import type { CanvasNode } from '../src/canvas/shared'
 import type { OpRequest, OpResult, ProviderInfo, TreeNode, TreePayload } from '../src/types'
 
@@ -107,6 +107,26 @@ test('the header summary counts every provider family', async (t: TestContext) =
     ],
   )
 })
+
+configTest('an OpenRouter tier is named by its model, never by its or- slug (user ask 2026-09-03)',
+  async (mount) => {
+    const TIER = 'or-anthropic-claude-sonnet-5'
+    setOpenRouterTiers([{ tier: TIER, provider: 'openrouter', seat: 2,
+      model: 'anthropic/claude-sonnet-5', letter: 'C', color: '#f9907f',
+      name: 'Claude Sonnet 5', label: 'claude-sonnet-5', vendor: 'anthropic' }])
+    try {
+      const { el } = await mount({
+        node: { ...node(), tier: TIER } as CanvasNode,
+        tree: tree({ tiers: { haiku: 1, sonnet: 2, opus: 5, fable: 10, [TIER]: 2 } }),
+      })
+      assert.match(el.querySelector('h3')?.textContent ?? '', /· claude-sonnet-5 · configuration/,
+        'the header names the model')
+      const own = option(el, TIER)
+      assert.ok(own, 'listed under its tier id — the value the op sends is untouched')
+      assert.match(own.textContent?.trim() ?? '', /^claude-sonnet-5 · seat 2/, 'the option reads the label')
+      assert.equal((el.textContent ?? '').includes('or-anthropic'), false, 'the slug never shows')
+    } finally { setOpenRouterTiers([]) }
+  })
 
 configTest('a withdrawn reserve grant REMOVES gpt-reserve from the switch',
   async (mount) => {

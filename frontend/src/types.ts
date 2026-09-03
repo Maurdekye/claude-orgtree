@@ -645,6 +645,9 @@ export interface TreePayload {
   effort_default?: string
   credit_requests: CreditRequest[]
   tiers: Record<string, number>
+  /** tier → model id, the org's own add-only table (2026-09-03): how an
+   *  OpenRouter tier is named even after its favorite was deselected */
+  models?: Record<string, string>
   audiences: AudienceGrant[]
   roots: TreeNode[]
   audit: AuditReport
@@ -992,7 +995,13 @@ export interface ProviderTier {
    *  would otherwise hold — the canonical chip color — plus the catalog
    *  facts the hire surfaces show in tooltips. Absent on the CLI providers. */
   color?: string
+  /** the display name without its `Vendor: ` prefix (`Claude Sonnet 5`) */
   name?: string
+  /** the DISPLAY id — the model id without its vendor namespace
+   *  (`claude-sonnet-5`), what every surface prints where it used to print
+   *  the tier id; the backend keeps two favorites that would read the same
+   *  at their full ids. Absent from an older backend: `modelLabel(model)`. */
+  label?: string
   vendor?: string
   /** $ per MILLION tokens, in and out */
   prompt?: number
@@ -1029,7 +1038,10 @@ export interface OpenRouterDoc {
 /** one catalog row as the picker shows it (prices per MILLION tokens) */
 export interface OpenRouterModel {
   id: string
+  /** without its `Vendor: ` prefix */
   name: string
+  /** the id without its vendor namespace (see `ProviderTier.label`) */
+  label?: string
   vendor: string
   prompt: number
   completion: number

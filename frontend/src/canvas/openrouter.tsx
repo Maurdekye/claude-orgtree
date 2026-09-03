@@ -41,7 +41,7 @@ import { AutorenewIcon, CheckIcon, CloseIcon, DeleteIcon, EditIcon } from '../ic
 import type {
   OpenRouterDoc, OpenRouterModel, OpenRouterModelsPage, ProviderInfo, ProviderTier,
 } from '../types'
-import { setOpenRouterTiers } from './shared'
+import { modelLabel, setOpenRouterTiers } from './shared'
 
 type ToastFn = (lines: string[]) => void
 
@@ -94,8 +94,10 @@ export function ModelCard({ letter, color, title, large }: {
   )
 }
 
+/** the card's tooltip: the label the hire surfaces print, the full display
+ *  name, the vendor (once — it is no longer part of either name), prices, seat */
 const tierTitle = (t: ProviderTier): string =>
-  `${t.name ?? t.model} — ${t.vendor ?? ''} · `
+  `${t.label ?? modelLabel(t.model)} · ${t.name ?? ''} — ${t.vendor ?? ''} · `
   + `${perM(t.prompt ?? 0)} in / ${perM(t.completion ?? 0)} out per 1M · seat ${t.seat}`
   + (t.vendor && t.vendor !== 'anthropic'
     ? ' · runs on Claude Code best-effort (non-Anthropic model)' : '')
@@ -332,8 +334,12 @@ export function ModelPicker({ doc, busy, onToggle, onClose }: {
                 onClick={() => onToggle(m, !on)}>
                 <ModelCard letter={m.letter} color={m.color} large />
                 <span className="orr-name">
+                  {/* the display forms (user ask 2026-09-03): the name without
+                      its `Vendor: ` prefix, the id without its namespace; the
+                      vendor stands alone on the dim line, so two vendors'
+                      same-named models still read apart */}
                   <b>{m.name}</b>
-                  <span className="dim">{m.vendor} · {m.id}
+                  <span className="dim">{m.vendor} · {m.label ?? modelLabel(m.id)}
                     {m.context ? ` · ${ctxK(m.context)} ctx` : ''}
                     {!m.tools ? ' · no tool use' : ''}
                     {m.vendor !== 'anthropic' ? ' · best-effort on Claude Code' : ''}

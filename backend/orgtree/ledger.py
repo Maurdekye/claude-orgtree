@@ -7645,6 +7645,10 @@ class Org:
                          + sum(1 for r in self.d.get("scope_requests", [])
                                if r["status"] == "pending"),
             "tiers": self.d["tiers"],
+            # tier → model id, the org's own add-only table (2026-09-03): the
+            # UI names an OpenRouter tier by its model, and a node running on
+            # a favorite that was since DESELECTED has no other source for it
+            "models": self.d.get("models", {}),
             "audiences": self.d["audiences"],
             "roots": [build(c) for c in self.org_children(None)],
             "audit": self.audit(),

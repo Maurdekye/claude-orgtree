@@ -6151,10 +6151,13 @@ def provider_hire_gate(
         else "claude" if tier in providers.CLAUDE_TIERS
         else openrouter.PROVIDER_ID if openrouter.is_tier(tier)
         else None)
+    # the refusal names the tier the way the UI names it: an OpenRouter tier
+    # by its display label (`claude-sonnet-5`), never `or-anthropic-…`
+    shown = openrouter.tier_label(tier, org.d.get("models"))
     if provider_id and not appsettings.provider_enabled(provider_id):
         label = providers.PROVIDER_LABEL[provider_id]
         raise LedgerError(
-            f"tier '{tier}' is a {label} tier and {label} is turned off "
+            f"tier '{shown}' is a {label} tier and {label} is turned off "
             "in App settings → Providers")
     if user_choice_only:
         return
@@ -6168,15 +6171,15 @@ def provider_hire_gate(
         ost = openrouter.status()
         if not ost.get("key_set"):
             raise LedgerError(
-                f"tier '{tier}' is an OpenRouter tier and no OpenRouter API "
+                f"tier '{shown}' is an OpenRouter tier and no OpenRouter API "
                 f"key is set — {providers.install_hint(openrouter.PROVIDER_ID)}")
         if not ost.get("connected"):
             raise LedgerError(
-                f"tier '{tier}' is an OpenRouter tier and openrouter.ai did "
+                f"tier '{shown}' is an OpenRouter tier and openrouter.ai did "
                 f"not accept the stored key — {ost.get('reason')}")
         if openrouter.favorite_for_tier(tier) is None:
             raise LedgerError(
-                f"tier '{tier}' is not among the OpenRouter favorites — "
+                f"tier '{shown}' is not among the OpenRouter favorites — "
                 "select the model in App settings → Providers first")
         if org.d.get("kiosk"):
             raise LedgerError(

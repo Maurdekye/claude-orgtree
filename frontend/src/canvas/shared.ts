@@ -119,10 +119,14 @@ export const setOpenRouterTiers = (tiers: ProviderTier[] | null | undefined): vo
     const o = orTiers[i]
     return !!o && o.tier === t.tier && o.color === t.color
       && o.letter === t.letter && o.seat === t.seat && o.name === t.name
+      && o.label === t.label && o.model === t.model
   })
   if (same) return
   orTiers = next.map((t) => ({ ...t }))
-  for (const t of orTiers) TIER_LETTER[t.tier] = t.letter
+  for (const t of orTiers) {
+    TIER_LETTER[t.tier] = t.letter
+    tierModels[t.tier] = t.model
+  }
   if (typeof document === 'undefined') return
   let el = document.getElementById(OR_STYLE_ID)
   if (!el) {
@@ -136,6 +140,44 @@ export const openrouterTiers = (): ProviderTier[] => orTiers
 export const openrouterTierIds = (): string[] => orTiers.map((t) => t.tier)
 export const openrouterTier = (tier: string): ProviderTier | undefined =>
   orTiers.find((t) => t.tier === tier)
+
+/* ── WHAT THE USER READS FOR A TIER (2026-09-03) ──────────────────────────
+ * User ask, verbatim: "remove the or- and provider name prefix from openrouter
+ * model names". An OpenRouter tier is `or-anthropic-claude-sonnet-5` in every
+ * key, class name and request — and `claude-sonnet-5` in every place a person
+ * reads it. `tierLabel` is the ONE door: every surface that prints a tier
+ * name goes through it, so a static tier still prints itself (`sonnet`) and
+ * an OpenRouter tier prints its model's label. */
+/** the model id after its vendor namespace — `anthropic/claude-sonnet-5` →
+ *  `claude-sonnet-5`, the `:free` variant suffix KEPT (a different model at
+ *  a different price; the live catalog has 74 such pairs). Mirrors backend
+ *  `openrouter.model_label`; where the payload carries a `label` that wins,
+ *  because the backend is the one that sees when two favorites would read
+ *  the same and keeps both at their full ids. */
+export const modelLabel = (modelId: string): string =>
+  modelId.includes('/') ? modelId.slice(modelId.indexOf('/') + 1) : modelId
+/** tier → model id, remembered from every providers payload and tree payload
+ *  seen. A node still running on a favorite that was since DESELECTED has no
+ *  registry row; the org doc's own add-only `models` table is where its name
+ *  comes from, and a tier once seen is never forgotten within the session. */
+const tierModels: Record<string, string> = {}
+export const noteTierModels = (
+  models: Record<string, string> | null | undefined): void => {
+  for (const [tier, model] of Object.entries(models ?? {})) {
+    if (OR_TIER_RE.test(tier) && typeof model === 'string' && model) tierModels[tier] = model
+  }
+}
+/** what the user reads for ANY tier: a static tier is its own name; an
+ *  OpenRouter tier is its model's label — from the registry, else from the
+ *  remembered tier→model table, else (a tier nothing has ever described)
+ *  the slug without its `or-` prefix. */
+export const tierLabel = (tier: string): string => {
+  if (!isOpenRouterTier(tier)) return tier
+  const t = openrouterTier(tier)
+  if (t) return t.label ?? modelLabel(t.model)
+  const m = tierModels[tier]
+  return m ? modelLabel(m) : tier.slice(OPENROUTER_PREFIX.length)
+}
 /** seat for ANY tier the static tables or the registry know */
 export const anyTierSeat = (tier: string): number =>
   TIER_SEAT[tier] ?? CODEX_TIER_SEAT[tier] ?? ANTIGRAVITY_TIER_SEAT[tier]

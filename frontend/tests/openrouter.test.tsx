@@ -8,20 +8,24 @@ import { flush, inAct, mountView } from './harness'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { OpenRouterSection } from '../src/canvas/openrouter'
-import { openrouterTierIds, TIER_LETTER } from '../src/canvas/shared'
+import {
+  modelLabel, noteTierModels, openrouterTierIds, setOpenRouterTiers, TIER_LETTER, tierLabel,
+} from '../src/canvas/shared'
 import type { OpenRouterDoc, OpenRouterModel, ProviderInfo } from '../src/types'
 
 type Seen = { method: string; path: string; body: unknown }
 const g = globalThis as unknown as Record<string, unknown>
 
+// what the backend serves since 2026-09-03: `name` without its `Vendor: `
+// prefix, `label` = the id without its vendor namespace
 const CATALOG: OpenRouterModel[] = [
-  { id: 'anthropic/claude-sonnet-5', name: 'Anthropic: Claude Sonnet 5',
+  { id: 'anthropic/claude-sonnet-5', name: 'Claude Sonnet 5', label: 'claude-sonnet-5',
     vendor: 'anthropic', prompt: 2, completion: 10, cache_read: 0.2,
     context: 1000000, tools: true, free: false, letter: 'S', color: '#f9907f' },
-  { id: 'openai/gpt-5.6-luna', name: 'OpenAI: GPT-5.6 Luna', vendor: 'openai',
+  { id: 'openai/gpt-5.6-luna', name: 'GPT-5.6 Luna', label: 'gpt-5.6-luna', vendor: 'openai',
     prompt: 0.2, completion: 1.2, cache_read: 0.02, context: 1050000,
     tools: true, free: false, letter: 'L', color: '#9fe3d1' },
-  { id: 'moonshotai/kimi-k3', name: 'MoonshotAI: Kimi K3', vendor: 'moonshotai',
+  { id: 'moonshotai/kimi-k3', name: 'Kimi K3', label: 'kimi-k3', vendor: 'moonshotai',
     prompt: 3, completion: 15, cache_read: 0.3, context: 1048576,
     tools: true, free: false, letter: 'K', color: '#8fc9e8' },
 ]
@@ -40,7 +44,7 @@ function stubFetch(seen: Seen[], opts: { keySet?: boolean } = {}) {
     tiers: favorites.map((m) => ({
       tier: 'or-' + m.id.replace(/[^a-z0-9]+/g, '-'), provider: 'openrouter',
       seat: Math.max(1, Math.floor(m.prompt)), model: m.id, letter: m.letter,
-      color: m.color, name: m.name, vendor: m.vendor, prompt: m.prompt,
+      color: m.color, name: m.name, label: m.label, vendor: m.vendor, prompt: m.prompt,
       completion: m.completion, context: m.context })),
     user_enabled: true,
   })
@@ -178,8 +182,12 @@ test('§2 the favorites row opens the picker; search, select and deselect '
     const rows = view.el.querySelectorAll<HTMLButtonElement>('.orr-row')
     assert.equal(rows.length, 3, 'catalog rows listed')
     const first = rows[0]!
-    assert.ok(first.textContent?.includes('Anthropic: Claude Sonnet 5'), 'full name')
-    assert.ok(first.textContent?.includes('anthropic'), 'vendor')
+    // the display forms (user ask 2026-09-03): no `Vendor: ` prefix on the
+    // name, no vendor namespace on the id — the vendor stands alone
+    assert.ok(first.textContent?.includes('Claude Sonnet 5'), 'display name')
+    assert.equal(first.textContent?.includes('Anthropic:'), false, 'no vendor prefix on the name')
+    assert.ok(first.textContent?.includes('anthropic · claude-sonnet-5'), 'vendor, then the short id')
+    assert.equal(first.textContent?.includes('anthropic/claude'), false, 'no namespace on the id')
     assert.ok(first.textContent?.includes('$2 in'), 'price in per 1M')
     assert.ok(first.textContent?.includes('$10 out'), 'price out per 1M')
     assert.ok(first.querySelector('.orr-card')?.textContent === 'S', 'monogram card letter')
@@ -206,9 +214,12 @@ test('§2 the favorites row opens the picker; search, select and deselect '
     const cards = view.el.querySelectorAll('.orr-favs .orr-card')
     assert.equal(cards.length, 1, 'the favorites row grew a card')
     assert.equal(cards[0]!.textContent, 'L')
-    // …and the shared registry learned the runtime tier + letter
+    assert.match(cards[0]!.getAttribute('title') ?? '', /^gpt-5\.6-luna · GPT-5\.6 Luna — openai · /,
+      'the card tooltip leads with the label, then the name, then the vendor once')
+    // …and the shared registry learned the runtime tier + letter + name
     assert.deepEqual(openrouterTierIds(), ['or-openai-gpt-5-6-luna'])
     assert.equal(TIER_LETTER['or-openai-gpt-5-6-luna'], 'L')
+    assert.equal(tierLabel('or-openai-gpt-5-6-luna'), 'gpt-5.6-luna')
     assert.ok(document.getElementById('orgtree-openrouter-tiers')?.textContent
       ?.includes('.tier.t-or-openai-gpt-5-6-luna{color:#9fe3d1'),
       'generated tier CSS injected')
@@ -218,5 +229,23 @@ test('§2 the favorites row opens the picker; search, select and deselect '
     const put2 = seen.filter((r) => r.path === '/api/openrouter/favorites').at(-1)
     assert.deepEqual(put2?.body, { id: 'openai/gpt-5.6-luna', selected: false })
     assert.equal(view.el.querySelectorAll('.orr-favs .orr-card').length, 0)
+    assert.equal(tierLabel('or-openai-gpt-5-6-luna'), 'gpt-5.6-luna',
+      'a tier once seen keeps its name after deselection (a node may still run on it)')
   } finally { await view.unmount(); delete g.fetch }
+})
+
+test('§3 tierLabel: a static tier is its own name; an OpenRouter tier is its model — '
+  + 'from the registry, else the org doc table, else (last) the bare slug', () => {
+  assert.equal(tierLabel('sonnet'), 'sonnet')
+  assert.equal(tierLabel('or-nobody-has-described-this'), 'nobody-has-described-this')
+  noteTierModels({ 'or-z-ai-glm-5-2-free': 'z-ai/glm-5.2:free', sonnet: 'claude-sonnet-5' })
+  assert.equal(tierLabel('or-z-ai-glm-5-2-free'), 'glm-5.2:free', 'the variant suffix stays')
+  assert.equal(modelLabel('anthropic/claude-sonnet-5'), 'claude-sonnet-5')
+  assert.equal(modelLabel('bare'), 'bare')
+  setOpenRouterTiers([{ tier: 'or-a-b', provider: 'openrouter', seat: 1, model: 'a/b', letter: 'B' }])
+  assert.equal(tierLabel('or-a-b'), 'b', 'a registry row without a label → derived from its model')
+  setOpenRouterTiers([{ tier: 'or-a-b', provider: 'openrouter', seat: 1, model: 'a/b',
+    letter: 'B', label: 'a/b' }])
+  assert.equal(tierLabel('or-a-b'), 'a/b', "the backend's label wins — it is what knows about collisions")
+  setOpenRouterTiers([])
 })

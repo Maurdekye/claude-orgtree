@@ -14,7 +14,7 @@ import {
   LockIcon, MailIcon, RetireIcon, SettingsIcon,
 } from '../icons'
 import {
-  anyTierSeat, CODEX_TIER_LETTER, CODEX_TIER_SEAT, CODEX_TIERS, DESK_SCALE, deskDpi, DRAFT, familyOffer, freezeKind, FREEZE_LABEL_SHORT, ANTIGRAVITY_TIER_LETTER, ANTIGRAVITY_TIER_SEAT, ANTIGRAVITY_TIERS, isOpenRouterTier, NODE_H, NODE_W, openrouterTierIds, providerOf, reserveOffer, TIER_LETTER, TIER_SEAT, TIERS, USER,
+  anyTierSeat, CODEX_TIER_LETTER, CODEX_TIER_SEAT, CODEX_TIERS, DESK_SCALE, deskDpi, DRAFT, familyOffer, freezeKind, FREEZE_LABEL_SHORT, ANTIGRAVITY_TIER_LETTER, ANTIGRAVITY_TIER_SEAT, ANTIGRAVITY_TIERS, isOpenRouterTier, NODE_H, NODE_W, openrouterTierIds, providerOf, reserveOffer, TIER_LETTER, TIER_SEAT, tierLabel, TIERS, USER,
   USER_H, USER_W,
 } from './shared'
 import type {
@@ -494,12 +494,16 @@ function SpawnChips({ onSpawn, free, seats, maxTier, side, soleHire,
   const chip = (t: string, letter: string | undefined) => {
     const seat = seats[t] ?? anyTierSeat(t)
     const cant = Number.isFinite(free) && free < seat
+    // the tooltip names the tier the way the user reads it everywhere else:
+    // an OpenRouter favorite by its model (`claude-sonnet-5`), never by its
+    // `or-…` tier id (user ask 2026-09-03)
+    const name = tierLabel(t)
     return (
       <button key={t} disabled={cant} className={'t-' + t}
         title={cant
           // user report: an exhausted kiosk cap read as an opaque dead
           // end — the tooltip now carries the REMEDY, not just the number
-          ? `${t}: needs ${seat} free (has ${free}) — the kiosk credit `
+          ? `${name}: needs ${seat} free (has ${free}) — the kiosk credit `
             + 'cap is fully held; drag an agent’s credit bar down '
             + 'or retire one to free credits'
           // ONE SHAPE FOR ALL THREE (user request 2026-08-28: "make them
@@ -524,7 +528,7 @@ function SpawnChips({ onSpawn, free, seats, maxTier, side, soleHire,
           // word is dropped entirely — see `soleHire`. The cost badge
           // stays: it is the one part that still says something the user
           // cannot read off the badge's position.
-          : `hire ${/^[aeiou]/.test(t) ? 'an' : 'a'} ${t}`
+          : `hire ${/^[aeiou]/.test(name) ? 'an' : 'a'} ${name}`
             + (soleHire ? ''
               : ` ${side === 'top' ? 'superior' : side ? 'coworker' : 'subordinate'}`)
             + ` (-${seat})`}
@@ -540,7 +544,7 @@ function SpawnChips({ onSpawn, free, seats, maxTier, side, soleHire,
   const outChip = (t: string, letter: string | undefined, label: string,
                    reason: string | null, seat: number) => (
     <button key={t} disabled className={'t-' + t + ' codex-preview'}
-      title={`${t} — ${label}; `
+      title={`${tierLabel(t)} — ${label}; `
         + (reason ?? 'hiring is not enabled yet') + ` (-${seat})`}>
       {letter}
     </button>

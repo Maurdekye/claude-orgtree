@@ -174,6 +174,23 @@ def main():
                    eq(sonnet["context"], 1000000, "context"),
                    eq(sonnet["tools"], True, "tools"),
                    eq(sonnet["vendor"], "anthropic", "vendor")))
+    check("display names: no vendor namespace, no `Vendor: ` prefix, the variant suffix stays",
+          lambda: (eq(sonnet["name"], "Claude Sonnet 5", "name"),
+                   eq(sonnet["label"], "claude-sonnet-5", "label"),
+                   eq(next(c for c in cards if c["id"] == "someone/llama-4-maverick:free")["label"],
+                      "llama-4-maverick:free", "variant kept"),
+                   eq(orr.pretty_name("Someone: Llama 4 Maverick (free)", "x/y"),
+                      "Llama 4 Maverick (free)", "prefix off, parenthesis kept"),
+                   eq(orr.pretty_name("Claude Opus 5", "anthropic/claude-opus-5"),
+                      "Claude Opus 5", "no prefix → unchanged"),
+                   eq(orr.pretty_name("", "openrouter/auto"), "auto", "empty → the label"),
+                   eq(orr.model_label("openrouter/auto"), "auto", "namespace off"),
+                   eq(orr.model_label("bare-id"), "bare-id", "no namespace → unchanged")))
+    check("labels_for disambiguates a displayed SET: an equal pair keeps its full ids",
+          lambda: (eq(orr.labels_for(["a/m-1", "b/m-2"]),
+                      {"a/m-1": "m-1", "b/m-2": "m-2"}, "distinct"),
+                   eq(orr.labels_for(["a/m-1", "b/m-1", "c/m-2"]),
+                      {"a/m-1": "a/m-1", "b/m-1": "b/m-1", "c/m-2": "m-2"}, "collision")))
     check("the catalog is banked on disk and re-read without the network",
           lambda: (eq(os.path.exists(orr._catalog_path()), True, "file"),
                    WIRE["calls"].clear(),
@@ -226,6 +243,14 @@ def main():
           lambda: (eq(fav["tier"], "or-anthropic-claude-sonnet-5", "tier"),
                    eq(fav["seat"], 2, "seat"), eq(fav["letter"], "S", "letter"),
                    eq(fav["color"], c1, "color"), eq(fav["prompt"], 2.0, "prompt")))
+    check("a favorite carries its label; search pages and tier_label answer the same",
+          lambda: (eq(fav["label"], "claude-sonnet-5", "label"),
+                   eq(orr.search("claude")["items"][0]["label"], "claude-sonnet-5", "page"),
+                   eq(orr.tier_label("or-anthropic-claude-sonnet-5"), "claude-sonnet-5", "tier"),
+                   eq(orr.tier_label("or-gone-model", {"or-gone-model": "gone/model:free"}),
+                      "model:free", "deselected → the org doc's own table"),
+                   eq(orr.tier_label("or-gone-model"), "gone-model", "unknown → bare slug"),
+                   eq(orr.tier_label("sonnet"), "sonnet", "static passthrough")))
     orr.add_favorite("deepseek/deepseek-v4")
     orr.add_favorite("anthropic/claude-sonnet-5")          # idempotent
     check("favorites de-duplicate; tiers()/models() are the dynamic tables",
@@ -270,6 +295,26 @@ def main():
         orr.refresh_catalog()
     check("no favorites cap (user ruling): 20 more land, in order", fill)
 
+    def collide():
+        # two favorites that would READ the same keep their full ids, on the
+        # hire surfaces and on the picker page alike — and read short again
+        # the moment one of them goes
+        CATALOG["data"].append({"id": "other/claude-sonnet-5", "name": "Other: Claude Sonnet 5",
+                                "context_length": 1,
+                                "pricing": {"prompt": "0.000001", "completion": "0.000001"}})
+        orr.refresh_catalog()
+        orr.add_favorite("other/claude-sonnet-5")
+        labels = {f["id"]: f["label"] for f in orr.favorites()}
+        eq(labels["anthropic/claude-sonnet-5"], "anthropic/claude-sonnet-5", "full id")
+        eq(labels["other/claude-sonnet-5"], "other/claude-sonnet-5", "both sides")
+        eq([i["label"] for i in orr.search("sonnet")["items"]],
+           ["anthropic/claude-sonnet-5", "other/claude-sonnet-5"], "the page too")
+        orr.remove_favorite("other/claude-sonnet-5")
+        del CATALOG["data"][-1]
+        orr.refresh_catalog()
+        eq(orr.favorites()[0]["label"], "claude-sonnet-5", "short again once alone")
+    check("two favorites that would read the same keep their full ids", collide)
+
     print("§5 cost fold and tier infos")
     check("cost() prices non-cached input, cached reads and output separately",
           lambda: eq(orr.cost("anthropic/claude-sonnet-5", 1_000_000, 1_000_000, 100_000),
@@ -279,7 +324,8 @@ def main():
                    eq(orr.tier_infos()[0]["provider"], "openrouter", "provider"),
                    eq(sorted(orr.tier_infos()[0]),
                       sorted(["tier", "provider", "seat", "model", "letter", "color",
-                              "name", "vendor", "prompt", "completion", "context"]), "keys"),
+                              "name", "label", "vendor", "prompt", "completion", "context"]),
+                      "keys"),
                    no_secret(orr.tier_infos(), "tier_infos")))
 
     print("§6 failure honesty")
@@ -370,11 +416,15 @@ def main():
     org = Org.create("orr-org", dirs=[], permission_mode="acceptEdits")
     check("a NEW org doc carries the dynamic tier at its snapshot seat (ledger merge)",
           lambda: (eq(org.d["tiers"][TIER], 2, "seat"),
-                   eq(org.d["models"][TIER], "anthropic/claude-sonnet-5", "model")))
+                   eq(org.d["models"][TIER], "anthropic/claude-sonnet-5", "model"),
+                   eq(org.tree()["models"][TIER], "anthropic/claude-sonnet-5",
+                      "the tree payload carries the table (the UI's label source)")))
     check("hire gate: the favorite passes; a stranger or-* tier and a kiosk are refused",
           lambda: (api.provider_hire_gate(org, TIER),
                    refused(lambda: api.provider_hire_gate(org, "or-nobody-nope"),
                            "not among the OpenRouter favorites", "stranger"),
+                   refused(lambda: api.provider_hire_gate(org, "or-nobody-nope"),
+                           "tier 'nobody-nope'", "the refusal names the display label"),
                    refused(lambda: api.provider_hire_gate(
                        Org({**org.d, "kiosk": {"max_tier": "fable"}}), TIER),
                            "kiosk", "kiosk holdout")))
