@@ -9,11 +9,16 @@ Anyone may edit it — it is only worth what its last measurement is worth.
 > measured tip when you re-measure.
 
 **Backend list last measured 2026-09-03 against `f2d42f5`**, re-confirmed
-identical at `6f354b4` and `9e15f3c` either side of it. Main has since moved
-past `9fe5bae`, and **`sqlite-review` measured NINE at a later tip** — so the
-list below is already known to be one behind. That is the normal condition of
-this document, not a defect in it: see the warning immediately below, and
-re-measure rather than quoting these names at anyone.
+identical at `6f354b4` and `9e15f3c` either side of it, and **independently
+re-confirmed by `sqlite-review` at `f071dc7`** in a fresh worktree with no
+`node_modules` — its raw run showed 9, which resolved on solo re-runs to
+exactly these 8 plus `warmpool`. Two agents, different tips, different
+branches, same names.
+
+That is the strongest this list has been. It is still one tip behind main and
+will be again by the time you read it — which is the normal condition of this
+document rather than a defect in it. Re-measure at your own tip; do not quote
+these names at anyone as current.
 
 > ⚠ **RE-MEASURE THIS LIST WHENEVER MAIN MOVES. Do not trust the names below
 > because they are written down.** Three of the eight (`harvest`, `headless`,
@@ -117,23 +122,77 @@ The general point: **`skipped` in the runner's summary is not `passed`.** If
 you invoke a skipped suite by hand because it covers your change, baseline it
 by hand too, at the same commit, before you read anything into the result.
 
-### Flaky, not baseline
+### ⚠ ON A LOADED MACHINE, SOLO RE-RUNS ARE NOT A CHECK — THEY ARE THE METHOD
 
-`warmpool` — `PermissionError [WinError 32]` on a temp file. **Fails in the
-full parallel run and passes when run alone** (`storage-design` measured
-26/26, exit 0, immediately after a failure). Observed 1-in-4 on a quiet
-machine and 1-in-2 on a busy one, so the rate tracks machine load, not code.
+This began as a `warmpool` footnote. It is not one. `sqlite-review` measured
+it properly on 2026-09-03 and the number is the headline of this document:
 
-If a suite fails in the full run, **re-run that one suite alone before
-investigating.** It costs seconds and it is the difference between "flake" and
-twenty minutes spent convincing yourself your change broke something it never
-touched. `warmpool` is the known one; the parallel runner makes any
-temp-file-or-port suite a candidate.
+> **24 of one run's 33 failures passed when re-run alone.**
+
+Named, so nobody re-derives the list: `sandbox`, `net-identity`,
+`seat-topology`, `skills-grant`, `midturn-mail-ingress`, `steer-delivery`,
+`steer-window-latency`, `inline-images`, `identity-set-order`,
+`kiosk-ceiling-identity`, `working-checkup`, `working-cache-lifecycle`,
+`prompt-cache-stability`, `prompt-view-race`, `provider-limit-freeze`,
+`provider-switch-session`, `status-zero-vs-unknown`,
+`report-guidance-identity`, `warm-native-identity`, `frozen-network-policy`,
+`frozen-policy-enforcement`, `d211-cache-break-emission`, `mcp-tool-count`,
+`warmpool`. Treat that as a sample of what CAN phantom-fail, not the closed
+set — every one of these spawns a backend, a port or a temp tree, and this
+machine routinely has several agents' rigs live at once.
+
+**So: a raw full-run failure list is not a result.** It is a list of suites to
+re-run individually. The count means nothing until you have done that, and a
+number quoted before you have is not evidence of anything.
+
+`warmpool` is merely the best-characterised one — `PermissionError
+[WinError 32]` on a temp file, 26/26 and exit 0 immediately after failing in
+a full run (`storage-design`), at roughly 1-in-4 on a quiet machine and
+1-in-2 on a busy one. The rate tracks machine load, not code.
+
+#### The signature: a 132-byte log
+
+`sqlite-review` found the tell that makes this diagnosable rather than
+superstitious. **A phantom failure's log contains the command line and
+nothing else** — the child produced no output at all and exited non-zero.
+Check the log SIZE of every failing suite before you believe a count.
+
+Two things that sharpen it:
+
+- It is **not** a timeout. The runner marks those `⏱ TIMEOUT` explicitly, so
+  a silent 132-byte log is a different animal: the process died, it did not
+  run long.
+- **A fast run is a suspicious run.** The bad run finished in 222 s against a
+  healthy 396 s, because suites were dying early rather than executing. If
+  your full run comes back unusually quick, distrust it before you enjoy it.
+
+#### If you automate the solo re-runs
+
+`sqlite-review`'s `solo.sh` lives at `scratch/orgtree/sqlite-review/solo.sh`.
+Two bugs it hit first are worth stealing the fixes for, because both produced
+**a measurement that looked complete and was not** — strictly worse than one
+that visibly fails:
+
+1. **The child eats the loop's stdin.** A `while read` loop feeding suite
+   names to a child gives that child the *name list* as its stdin, and the
+   child consumes it. A 33-name list produced 14 runs and the loop then ended
+   silently, looking like a finished result. Redirect the child:
+   `… < /dev/null`.
+2. **`--quick` is not universal.** A suite that rejects the flag exits 2 with
+   a ~232-byte argparse error that reads exactly like a failure. Retry bare
+   before believing it — and note the size tell above will not save you here,
+   since 232 bytes is not 132.
 
 ## Reading the result
 
-Same 8 names → you broke nothing, land on parity.
-A 9th name → that one is yours. Open its log; the ✗ line has the path.
+⚠ First, **solo-re-run every failing suite** and check its log size — see the
+loaded-machine section above. What you compare is the SOLO-CONFIRMED list,
+never the raw one; on a busy machine the raw list has been three times the
+size of the real one.
+
+Then: same 8 names → you broke nothing, land on parity.
+A 9th name that survives a solo re-run → that one is yours. Open its log; the
+✗ line has the path.
 
 A worked example: rewording one string tripped `test_mcptool:1006`, which pins
 the literal `"next turn"`. It showed up as exactly one extra name against a
