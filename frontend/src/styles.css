@@ -2469,6 +2469,12 @@ main.solo { width: 100%; }
    accent while healthy, the fable gold as the warning band, --bad critical —
    matching the meaning those colors already carry elsewhere in the chrome. */
 .usage-modal { width: 520px; }
+/* the documents gallery (user request 2026-09-03) — .hist-row rows, one per
+   presented-document card, org-wide */
+.doc-gallery-row { cursor: pointer; }
+.doc-gallery-row:hover { background: var(--panel-2); }
+.doc-gallery-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.badge.evicted { color: var(--dim); }
 .usage-row { display: flex; flex-direction: column; gap: 5px; }
 .usage-row .u-head { display: flex; align-items: baseline; gap: 10px; }
 .usage-row .u-label { font-weight: 600; color: var(--ink-strong); }

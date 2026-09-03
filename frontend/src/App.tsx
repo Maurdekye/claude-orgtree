@@ -17,7 +17,7 @@ import { AudienceFold, ConfirmModal, MailFolders, MailList, OrgCanvas, OrgRecord
 import { DiskBrowser, DiskFullAlert } from './DiskBrowser'
 import {
   AutorenewIcon, BlockIcon, CheckIcon, ChevronRightIcon, CloseIcon, CopyIcon, EyeIcon, LanIcon,
-  DataUsageIcon, DeleteIcon, ExpandMoreIcon, GitHubIcon, HearingIcon, HomeIcon, LockIcon,
+  DataUsageIcon, DeleteIcon, ExpandMoreIcon, GalleryIcon, GitHubIcon, HearingIcon, HomeIcon, LockIcon,
   LockOpenIcon, MailIcon, MenuIcon, PlayIcon, PublicIcon, SettingsIcon,
   SparkIcon, StopIcon, StorageIcon, WarnIcon,
 } from './icons'
@@ -26,6 +26,7 @@ import { FolderPickerHost } from './picker'
 import { ALL_TIERS, attentionPip, availableAutopsyModels, deskDpi, fallbackActive, freezeKind, isOpenRouterTier, orgPxc, presenceOfPayload, primedRestartChip, setDeskDpi, TIER_LETTER, tierLabel, usePolled } from './canvas/shared'
 import { AskCard } from './canvas/asks'
 import { AccountsPanel, UsageBars } from './canvas/accounts'
+import { DocGalleryModal } from './canvas/gallery'
 import {
   SetBlock, SetGroup, SetRow, SettingsTabPanel, SettingsTabs, SetToggle,
   useVisitedTabs,
@@ -204,6 +205,12 @@ export default function App() {
   const [showDefaults, setShowDefaults] = useState(false)   // global new-org defaults
   const [showAccounts, setShowAccounts] = useState(false)   // D-144 account registry
   const [showUsage, setShowUsage] = useState(false)         // host subscription usage bars
+  // the documents gallery (user request 2026-09-03): every presented card,
+  // org-wide, one place. `docView` is lifted here (not left inside
+  // OrgCanvas) so a gallery row click can hand off to the SAME DocReader the
+  // canvas's own doc chips already open.
+  const [showGallery, setShowGallery] = useState(false)
+  const [docView, setDocView] = useState<string | null>(null)
   const [killArmed, setKillArmed] = useState(false)  // the killswitch latch
   // the usage button GLOWS once a lane nears its wall (user feature
   // 2026-08-19), so a freeze stops being the first notice. It rides
@@ -810,6 +817,9 @@ export default function App() {
                     title={usageAlert?.title ?? usageTitle(provPresence)}
                     onClick={() => setShowUsage(true)}>
                     <DataUsageIcon fontSize="inherit" /></button>}
+                <button className="iconbtn" title="documents — every presented card, org-wide"
+                  onClick={() => setShowGallery(true)}>
+                  <GalleryIcon fontSize="inherit" /></button>
                 {!tree.public &&
                   <button onClick={() => setShowSettings(true)}><SettingsIcon fontSize="inherit" /> settings</button>}
                 <a className="gh-link" href="https://github.com/Maurdekye/claude-orgtree"
@@ -819,6 +829,7 @@ export default function App() {
               <OrgCanvas tree={tree} op={op} slug={slug} toast={toast}
                 mailEvt={mailEvt}
                 onAccounts={BASE ? undefined : () => setShowAccounts(true)}
+                docView={docView} onDocView={setDocView}
                 onInbox={(jump: unknown) => {
                   setInboxJump(typeof jump === 'string' ? jump : null)
                   setShowInbox(true)
@@ -863,6 +874,10 @@ export default function App() {
       )}
       {showUsage && (
         <UsageModal close={() => setShowUsage(false)} />
+      )}
+      {showGallery && slug && (
+        <DocGalleryModal slug={slug} close={() => setShowGallery(false)}
+          onOpen={setDocView} />
       )}
       {showAccounts && (
         <AccountsPanel toast={toast} close={() => setShowAccounts(false)} />
