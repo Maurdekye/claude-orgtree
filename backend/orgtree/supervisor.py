@@ -15037,6 +15037,71 @@ def interrupt_all(slug: str) -> dict[str, Any]:
     return {"interrupted": stopped}
 
 
+# how long an archiving op waits for an interrupted node's turn boundary
+# (_after_turn, D-234's queued switch, `busy` clearing) to actually finish
+# before proceeding anyway. Bounded, not indefinite: a wedged CLI must not
+# hang a retire forever, but the number needs to be generous enough to cover
+# a real graceful stop (a codex/antigravity `interrupt()` is itself an RPC
+# with its OWN 30s budget, and a tool call already in flight when the
+# interrupt lands may still need to finish before the turn can exit).
+ARCHIVE_INTERRUPT_TIMEOUT_S = 10.0
+
+
+def interrupt_before_archive(slug: str, org: Org, nid: str,
+                             timeout: float = ARCHIVE_INTERRUPT_TIMEOUT_S,
+                             ) -> list[str]:
+    """Interrupt `nid`'s in-flight turn — and every LIVE descendant's, since
+    retire/dissolve/rescind can take a whole subtree with them — before an
+    archiving op commits. Fixes the bug where retiring a busy agent left it
+    running: it kept editing the shared repo, raced its own live replacement,
+    and sent status reports from a seat it no longer held (user report
+    2026-09-03). Each node's queue is cleared first, `interrupt_all`'s own
+    pattern, so nothing chains a new turn behind the interrupt on a node
+    about to be archived.
+
+    Waits up to `timeout`s PER NODE for `busy` to clear — the signal that the
+    turn's `finally` (cost booking, occupancy, compaction, and D-234's queued
+    model switch) has actually finished — so the caller is never told
+    "archived" while that bookkeeping, or the agent's last tool call, is
+    still landing on disk. A node whose turn has not settled within the
+    timeout is reported back as a warning; the archive proceeds regardless
+    (a wedged CLI must not hang retire forever) — see each call site's
+    warning text for what that means for in-flight file writes.
+
+    ⚠ MUST be called with `store.DOC_LOCK` NOT held by this thread. The
+    interrupted turn's own `finally` block needs that lock to book its cost
+    and apply any queued switch; `DOC_LOCK` is a same-thread-reentrant
+    `RLock`, not a cross-thread one, so holding it here while waiting for
+    that OTHER thread's `finally` to acquire it would deadlock against the
+    very turn this function is waiting on. Every call site loads its own org
+    snapshot for this and re-validates authority inside the real lock via
+    the ledger op that follows (retire/dissolve/rescind), so this function
+    never itself mutates or saves the org doc."""
+    if nid not in org.nodes or org.node(nid)["state"] != "live":
+        return []
+    targets = [nid] + org.descendants(nid, live_only=True)
+    interrupted: list[str] = []
+    for t in targets:
+        st = state(slug, t)
+        with _state_lock:
+            st["queue"].clear()
+            st["steer"] = []
+        if interrupt_turn(slug, t).get("interrupted"):
+            interrupted.append(t)
+    warnings: list[str] = []
+    for t in interrupted:
+        deadline = time.monotonic() + timeout
+        while state(slug, t)["busy"] and time.monotonic() < deadline:
+            time.sleep(0.1)
+        if state(slug, t)["busy"]:
+            warnings.append(
+                f'"{t}" was interrupted but its turn had not finished '
+                f"settling {timeout:g}s later — its cost/occupancy "
+                f"bookkeeping, and any tool call it had already started, "
+                f"may still land on disk after this call returns")
+    return warnings
+
+
 def _resumable(n: NodeDoc) -> FrozenInfo | None:
     """The freeze record ▶ would actually act on, or None if some OTHER
     mechanism owns this node. Extracted from resume_frozen 2026-08-10 so the

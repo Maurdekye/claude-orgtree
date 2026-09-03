@@ -4374,6 +4374,28 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
         a = dict(a, node=_new)
     else:
         _renamed_to, _rename_warnings = None, []
+    # retire/dissolve interrupt the node's in-flight turn (and every live
+    # descendant's) and wait for the turn boundary to settle BEFORE the
+    # archive commits (user report 2026-09-03: a retired-but-still-running
+    # agent kept editing the repo and raced its own replacement). This runs
+    # OUTSIDE the lock below — the wait needs DOC_LOCK free so the
+    # interrupted turn's own `finally` can acquire it (see
+    # interrupt_before_archive's docstring for why holding it here would
+    # deadlock). The authority check here is a pre-guard only, so a caller
+    # with no business over the target cannot interrupt it; org.retire /
+    # org.dissolve repeat the real check under the lock once the archive runs.
+    _archive_warnings: list[str] = []
+    if body.tool in ("orgtree_retire", "orgtree_dissolve"):
+        _arch_node = str(a.get("node") or "")
+        try:
+            _pre_org = store.load_org(body.org)
+            _pre_org._require_authority(
+                body.node, _arch_node,
+                allow_self=(body.tool == "orgtree_retire"))
+        except LedgerError as e:
+            raise HTTPException(422, str(e))
+        _archive_warnings = supervisor.interrupt_before_archive(
+            body.org, _pre_org, _arch_node)
     with store.DOC_LOCK:
         try:
             org = store.load_org(body.org)
@@ -4858,6 +4880,8 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
                     result.setdefault("warnings", []).extend(dwarns)
             elif body.tool == "orgtree_retire":
                 result = org.retire(body.node, a.get("node"))  # type: ignore[arg-type]  # node() 422s on None
+                if _archive_warnings:
+                    result.setdefault("warnings", []).extend(_archive_warnings)
             elif body.tool == "orgtree_cheap_compact":
                 # FR-24: superior-only by _require_authority; the transcript
                 # copy rides the same locked save window as the ledger change
@@ -5027,6 +5051,8 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
                     for o in locs] + peers}
             elif body.tool == "orgtree_dissolve":
                 result = org.dissolve(body.node, a.get("node"))  # type: ignore[arg-type]  # node() 422s on None
+                if _archive_warnings:
+                    result.setdefault("warnings", []).extend(_archive_warnings)
             elif body.tool == "orgtree_reallocate":
                 result = org.reallocate(body.node, a.get("node"), _arg_int(a, "delta", 0))  # type: ignore[arg-type]  # node() 422s on None
             elif body.tool == "orgtree_switch_model":
@@ -5115,6 +5141,20 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
                 else:
                     raise LedgerError("action must be request|forward|grant|deny|revoke")
                 drive.extend(result.pop("drive", []))
+            elif body.tool == "orgtree_interrupt":
+                # ⏸ in isolation — the agent stays live and is not archived,
+                # so (unlike retire/dissolve above) this fires and returns:
+                # no wait for the turn boundary to settle, matching the
+                # existing UI ⏸ control's own behavior exactly. Any queued
+                # D-234 model switch, or queued mail, applies/delivers at the
+                # boundary the interrupted turn's own `finally` reaches
+                # right after this call returns — that boundary is
+                # unconditional (interrupt_turn.__doc__), so this is never a
+                # second, competing way to end a turn.
+                _int_node = str(a.get("node") or "")
+                org.node(_int_node)     # 422s a bogus target before it acts
+                org._require_authority(body.node, _int_node)
+                result = supervisor.interrupt_turn(body.org, _int_node)
             else:
                 raise LedgerError(f"unknown orgtree tool {body.tool!r}")
             # a verb whose result ROUTED to a superior as mail (an ask or a
@@ -6389,8 +6429,27 @@ def org_op(slug: str, body: Op, request: Request) -> dict[str, Any]:
         supervisor.remote_reap(slug)     # FR-01: a rename re-keys the seat
         hub_changed(slug)
         return result
+    # retire/dissolve/rescind interrupt the target's in-flight turn (and
+    # every live descendant's) and wait for the turn boundary to settle
+    # BEFORE the archive commits — same fix and same reasoning as the
+    # mcptool door above (see interrupt_before_archive's docstring). Runs
+    # OUTSIDE the lock: the wait needs DOC_LOCK free for the interrupted
+    # turn's own `finally` to acquire it. The authority check here is a
+    # pre-guard only; the real op re-validates under the lock below.
+    _archive_warnings: list[str] = []
+    if body.op in ("retire", "dissolve", "rescind") and body.node:
+        try:
+            _pre_org = store.load_org(slug)
+            _pre_org._require_authority(
+                body.actor, body.node, allow_self=(body.op != "dissolve"))
+        except LedgerError as e:
+            raise HTTPException(422, str(e))
+        _archive_warnings = supervisor.interrupt_before_archive(
+            slug, _pre_org, body.node)
     with store.DOC_LOCK:
         result = _org_op_locked(slug, body, allow_raise=not pub)
+        if _archive_warnings and isinstance(result, dict):
+            result.setdefault("warnings", []).extend(_archive_warnings)
     # FR-01 (redteam): retire/dissolve/delete must not orphan a running
     # remote-control server — reap any whose seat is gone or no longer live
     if body.op in ("retire", "dissolve", "delete", "rescind", "cheap_compact"):

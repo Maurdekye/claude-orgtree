@@ -513,6 +513,86 @@ def main() -> int:
         eq(st["busy"], False, "busy cleared")
     check("⏸ interrupts the live codex turn gracefully", t6)
 
+    def t6b():
+        # interrupt_before_archive (the retire/dissolve fix, 2026-09-03):
+        # a busy node is interrupted AND waited on — the caller never learns
+        # "archived" while the turn's own `finally` (cost, D-234's queued
+        # switch) is still running. A queued follow-up must not chain behind
+        # the interrupt either — the node is about to be archived.
+        os.environ["FAKECODEX_SCENARIO"] = "interrupt"
+        s6, n6 = mkorg("intr-arch")
+        st = supervisor.state(s6, n6)
+        with supervisor._state_lock:                        # noqa: SLF001
+            st["queue"].append({"text": "should never run", "toks": []})
+        done: list = []
+        th = threading.Thread(
+            target=lambda: done.append(run_turn(s6, n6, "stall for archive")))
+        th.start()
+        for _ in range(300):
+            if st.get("responding"):
+                break
+            time.sleep(0.02)
+        assert st.get("responding"), "turn never reached responding"
+        org = store.load_org(s6)
+        warnings = supervisor.interrupt_before_archive(s6, org, n6)
+        eq(warnings, [], "the fake CLI settles well inside the timeout")
+        eq(st["busy"], False,
+           "interrupt_before_archive returned only after busy cleared")
+        eq(st["queue"], [], "the queued follow-up was cleared, not chained")
+        th.join(5)
+        assert not th.is_alive(), "the interrupted turn's own thread lingered"
+    check("interrupt_before_archive waits for the turn boundary and drops "
+          "the queue", t6b)
+
+    def t6c():
+        # D-234 end-to-end, both interrupt paths: a switch queued mid-turn
+        # actually APPLIES once the turn ends via interrupt. Neither path is
+        # a second way to end a turn — both just wait on the SAME shared
+        # `finally` (`_apply_pending_switch_locked` fires there
+        # unconditionally on every exit) that a plain completed turn reaches;
+        # this proves that by observing the model actually flip.
+        os.environ["FAKECODEX_SCENARIO"] = "interrupt"
+
+        def start_and_queue(label):
+            slug, nid = mkorg(label)
+            st = supervisor.state(slug, nid)
+            done: list = []
+            th = threading.Thread(
+                target=lambda: done.append(
+                    run_turn(slug, nid, "stall for switch")))
+            th.start()
+            for _ in range(300):
+                if st.get("responding"):
+                    break
+                time.sleep(0.02)
+            assert st.get("responding"), "turn never reached responding"
+            with store.DOC_LOCK:
+                o = store.load_org(slug)
+                r = o.switch_model(USER, nid, "luna")
+                store.save_org(o)
+            assert r.get("queued") is True, r
+            return slug, nid, th
+
+        # path A: the bare ⏸ (what the standalone orgtree_interrupt tool calls)
+        slug_a, nid_a, th_a = start_and_queue("d234-a")
+        r = supervisor.interrupt_turn(slug_a, nid_a)
+        eq(r.get("interrupted"), True, "path A (bare interrupt) accepted")
+        th_a.join(20)
+        assert not th_a.is_alive(), "path A turn never ended"
+        eq(store.load_org(slug_a).node(nid_a)["model"], "luna",
+           "path A: the queued switch applied through the bare interrupt")
+
+        # path B: interrupt_before_archive (what retire/dissolve call first)
+        slug_b, nid_b, th_b = start_and_queue("d234-b")
+        org_b = store.load_org(slug_b)
+        warnings = supervisor.interrupt_before_archive(slug_b, org_b, nid_b)
+        eq(warnings, [], "path B settles well inside the timeout")
+        th_b.join(5)
+        assert not th_b.is_alive(), "path B turn never ended"
+        eq(store.load_org(slug_b).node(nid_b)["model"], "luna",
+           "path B: the queued switch applied through interrupt_before_archive")
+    check("D-234: a queued switch applies through BOTH interrupt paths", t6c)
+
     print("§5 the planted fault — failure must be SEEN (anti-vacuity)")
 
     def t7():

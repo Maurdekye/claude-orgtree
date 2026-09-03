@@ -852,6 +852,13 @@ TOOLS: list[dict[str, Any]] = [
                         "back to its parent), or yourself if you have no live reports. "
                         "Retiring a node that still has live reports dissolves its whole "
                         "subtree (you'll be told). "
+                        "If the node (or any of its live reports) is MID-TURN, its turn "
+                        "is interrupted first and this call waits for that turn to "
+                        "actually settle before the node is archived — it never comes "
+                        "back 'retired' while the agent is still running. A tool call "
+                        "already in flight when the interrupt lands may still finish "
+                        "and touch disk; you're warned if a turn had not settled in "
+                        "time. "
                         "Its session is preserved and can be rehired with context intact. "
                         "Retirement is the MOST you can do — permanent deletion is the "
                         "user's alone; if you believe an agent should be deleted, retire "
@@ -1061,7 +1068,31 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "orgtree_dissolve",
-        "description": "Dissolve a node in your subtree AND everything beneath it (recursive retire, deepest first).",
+        "description": ("Dissolve a node in your subtree AND everything beneath it "
+                        "(recursive retire, deepest first). Any node in the subtree "
+                        "that is MID-TURN is interrupted and waited on before the "
+                        "archive commits — same guarantee as orgtree_retire."),
+        "inputSchema": {"type": "object",
+                        "properties": {"node": {"type": "string"}},
+                        "required": ["node"]},
+    },
+    {
+        "name": "orgtree_interrupt",
+        "description": (
+            "Stop a node's CURRENT turn in your subtree, at any depth, "
+            "WITHOUT retiring it — the ⏸ control, in isolation. The process "
+            "stays alive and the node is not archived: it goes idle, ready "
+            "for its next turn. Anything queued behind the turn (a mid-turn "
+            "orgtree_switch_model, which QUEUES rather than applying while "
+            "the target is busy — asking for one and then interrupting to "
+            "apply it at once is the standard pattern; any queued mail) "
+            "delivers/applies right at the boundary this creates. Fires and "
+            "returns immediately — it does not wait for that boundary to "
+            "settle, unlike orgtree_retire/orgtree_dissolve, which archive "
+            "the node and so do wait. A tool call the target had already "
+            "started before the interrupt lands may still finish and touch "
+            "disk; this stops the AGENT, not an in-flight write. No-op "
+            "(with a reason) if the target is not mid-turn."),
         "inputSchema": {"type": "object",
                         "properties": {"node": {"type": "string"}},
                         "required": ["node"]},

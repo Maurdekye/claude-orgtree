@@ -1468,7 +1468,7 @@ AGENT_TOOLS = ["orgtree_message", "orgtree_hire", "orgtree_retool",
                "orgtree_status", "orgtree_audience", "orgtree_request_credits",
                "orgtree_read_transcript", "orgtree_read_scratch",
                "orgtree_chart", "orgtree_send_file", "orgtree_list_orgs",
-               "orgtree_swap", "orgtree_self_subjugate"]
+               "orgtree_swap", "orgtree_self_subjugate", "orgtree_interrupt"]
 JUNK_ARGS = [
     {},
     {"node": 5, "to": [], "body": {}, "tier": 1, "grant": None, "delta": [],
@@ -1494,6 +1494,173 @@ def _agent_fuzz(tool):
 for _tool in AGENT_TOOLS:
     check(f"{_tool} survives {len(JUNK_ARGS)} hostile arg sets",
           _agent_fuzz(_tool))
+
+
+# ------------------------------ §8b retire/dissolve interrupt a busy target
+print("\n§8b  retire/dissolve interrupt a busy target before archiving")
+
+
+class _FakeProc:
+    """A stand-in for the live CLI subprocess `interrupt_turn` writes the
+    control_request interrupt to — records the write without a real process.
+    If `settle_after` is given, the WRITE ITSELF (not an independent timer)
+    schedules `busy`/`proc`/`responding` to clear shortly after — matching
+    the real system's own dependency (the turn only ends once the interrupt
+    it was sent actually lands) rather than racing it. An earlier, timer-only
+    version cleared on its own clock regardless of whether interrupt_turn had
+    even been called yet, and would occasionally settle BEFORE a slow test
+    run reached the write — a false negative in the fixture, not the code."""
+    def __init__(self, slug=None, nid=None, settle_after=None):
+        self.writes = []
+        self._slug, self._nid, self._settle_after = slug, nid, settle_after
+
+        class _Stdin:
+            def write(_s, data):
+                self.writes.append(data)
+                if self._settle_after is not None:
+                    def clear():
+                        time.sleep(self._settle_after)
+                        with supervisor._state_lock:            # noqa: SLF001
+                            st = supervisor.state(self._slug, self._nid)
+                            st["busy"] = False
+                            st["proc"] = None
+                            st["responding"] = False
+                    threading.Thread(target=clear, daemon=True).start()
+
+            def flush(_s):
+                pass
+        self.stdin = _Stdin()
+
+
+def _mark_busy(slug, nid, settle_after=None):
+    """Simulate a node genuinely mid-turn: `responding`+`proc` so
+    interrupt_turn has something to write to, `busy` so the caller has
+    something to wait on. See _FakeProc for what `settle_after` does."""
+    st = supervisor.state(slug, nid)
+    proc = _FakeProc(slug, nid, settle_after)
+    with supervisor._state_lock:                                # noqa: SLF001
+        st["responding"] = True
+        st["proc"] = proc
+        st["busy"] = True
+    return proc
+
+
+@t("orgtree_retire (mcptool door) interrupts a busy target and waits for it "
+   "to settle before archiving")
+def _():
+    r = call(ADMIN, "POST", f"/api/orgs/{K}/ops",
+             {"op": "hire", "tier": "haiku", "name": "busy-retire",
+              "parent": NID, "grant": 0})
+    ok200(r, "hire busy-retire")
+    target = r.json["node"]
+    proc = _mark_busy(K, target, settle_after=0.15)
+    r = ag(NID, "orgtree_retire", {"node": target})
+    ok200(r, "retire of a busy target")
+    assert proc.writes and '"subtype": "interrupt"' in proc.writes[0], \
+        f"the control_request interrupt was never sent: {proc.writes!r}"
+    assert not (r.json.get("warnings") or []), \
+        f"settled well inside the timeout, no warning expected: {r.json}"
+    assert store.load_org(K).node(target)["state"] == "archived", \
+        "the node was not actually retired"
+    assert supervisor.state(K, target)["busy"] is False, \
+        "retire returned before the turn boundary settled"
+
+
+@t("orgtree_dissolve (mcptool door) interrupts every live descendant first")
+def _():
+    r = call(ADMIN, "POST", f"/api/orgs/{K}/ops",
+             {"op": "hire", "tier": "haiku", "name": "busy-parent",
+              "parent": NID, "grant": 5})
+    ok200(r, "hire busy-parent")
+    parent = r.json["node"]
+    r = call(ADMIN, "POST", f"/api/orgs/{K}/ops",
+             {"op": "hire", "tier": "haiku", "name": "busy-child",
+              "parent": parent, "grant": 0})
+    ok200(r, "hire busy-child")
+    child = r.json["node"]
+    proc_p = _mark_busy(K, parent, settle_after=0.15)
+    proc_c = _mark_busy(K, child, settle_after=0.15)
+    r = ag(NID, "orgtree_dissolve", {"node": parent})
+    ok200(r, "dissolve with a busy subtree")
+    for proc in (proc_p, proc_c):
+        assert proc.writes and '"subtype": "interrupt"' in proc.writes[0], \
+            f"a subtree member was never interrupted: {proc.writes!r}"
+    org = store.load_org(K)
+    assert org.node(parent)["state"] == "archived"
+    assert org.node(child)["state"] == "archived"
+
+
+@t("retire (UI ops door) interrupts a busy target the same way")
+def _():
+    r = call(ADMIN, "POST", f"/api/orgs/{K}/ops",
+             {"op": "hire", "tier": "haiku", "name": "busy-ui",
+              "parent": NID, "grant": 0})
+    ok200(r, "hire busy-ui")
+    target = r.json["node"]
+    proc = _mark_busy(K, target, settle_after=0.15)
+    r = call(ADMIN, "POST", f"/api/orgs/{K}/ops", {"op": "retire", "node": target})
+    ok200(r, "retire via the ops door")
+    assert proc.writes and '"subtype": "interrupt"' in proc.writes[0]
+    assert store.load_org(K).node(target)["state"] == "archived"
+
+
+@t("a target that never settles is archived anyway, with a warning — retire "
+   "never hangs forever")
+def _():
+    r = call(ADMIN, "POST", f"/api/orgs/{K}/ops",
+             {"op": "hire", "tier": "haiku", "name": "wedged",
+              "parent": NID, "grant": 0})
+    ok200(r, "hire wedged")
+    target = r.json["node"]
+    _mark_busy(K, target)      # no settle_after: busy stays True forever
+    warnings = supervisor.interrupt_before_archive(
+        K, store.load_org(K), target, timeout=0.2)
+    assert warnings and target in warnings[0], warnings
+    with supervisor._state_lock:                                 # noqa: SLF001
+        supervisor.state(K, target)["busy"] = False   # tidy up for later tests
+
+
+@t("orgtree_interrupt: stops a busy target WITHOUT archiving it, fires and "
+   "returns (does not wait to settle)")
+def _():
+    r = call(ADMIN, "POST", f"/api/orgs/{K}/ops",
+             {"op": "hire", "tier": "haiku", "name": "just-interrupt",
+              "parent": NID, "grant": 0})
+    ok200(r, "hire just-interrupt")
+    target = r.json["node"]
+    proc = _mark_busy(K, target)      # never settles on its own
+    t0 = time.monotonic()
+    r = ag(NID, "orgtree_interrupt", {"node": target})
+    elapsed = time.monotonic() - t0
+    ok200(r, "orgtree_interrupt")
+    assert r.json.get("interrupted") is True, r.json
+    assert proc.writes and '"subtype": "interrupt"' in proc.writes[0]
+    assert elapsed < 2.0, \
+        f"orgtree_interrupt waited {elapsed:g}s — it must fire and return"
+    assert store.load_org(K).node(target)["state"] == "live", \
+        "orgtree_interrupt must never archive the node"
+    with supervisor._state_lock:                                 # noqa: SLF001
+        supervisor.state(K, target)["busy"] = False   # tidy up
+
+
+@t("orgtree_interrupt: refused on a node outside the caller's subtree")
+def _():
+    r = ag(NID2, "orgtree_interrupt", {"node": NID})
+    assert r.status == 422, r
+    r = ag(NID2, "orgtree_interrupt", {"node": NID2})   # no self-interrupt
+    assert r.status == 422, r
+
+
+@t("orgtree_interrupt: a no-op with a reason when the target is not mid-turn")
+def _():
+    r = call(ADMIN, "POST", f"/api/orgs/{K}/ops",
+             {"op": "hire", "tier": "haiku", "name": "idle-node",
+              "parent": NID, "grant": 0})
+    ok200(r, "hire idle-node")
+    target = r.json["node"]
+    r = ag(NID, "orgtree_interrupt", {"node": target})
+    ok200(r, "orgtree_interrupt on an idle node")
+    assert r.json.get("interrupted") is False and r.json.get("reason"), r.json
 
 
 # ------------------------------------------------- §9 uploads and traversal
