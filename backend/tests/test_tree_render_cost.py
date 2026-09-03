@@ -443,6 +443,49 @@ def filesystem_work_must_not_scale_with_node_count() -> None:
         f"memoise the lookup (`supervisor.transcript_path`).")
 
 
+# ── §7 · the children index is an ACCELERATOR, never a second answer ────────
+def the_children_index_agrees_with_the_scan_everywhere() -> None:
+    """`tree()` asks who every node's children are, and `children()` answered
+    by scanning the whole node table each time — O(n²).
+
+    The index that replaces the scan is only allowed to be faster, never
+    different, and this is the check that says so: for EVERY parent slot in a
+    real-shaped org (including `None`, the root slot), in both `live_only`
+    modes, and through `org_children`'s successor filter as well, the indexed
+    answer must equal the scanned one — same members, same ORDER, since the
+    canvas lays cards out in it.
+
+    Verified the same way against the live 189-node document while this was
+    written: 190 parent slots × 2 modes × both entry points, all agreeing.
+    """
+    org = build("zz-children-index", archived=30)
+    # a shape the flat fixture would miss: grandchildren, mixed states, and a
+    # retired predecessor wearing a `successor` link (the one case
+    # `org_children` filters and `children` does not)
+    org.hire(USER, None, "haiku", 4, "second")
+    org.hire(USER, "boss", "haiku", 0, "mid")
+    org.hire(USER, "mid", "haiku", 0, "leaf")
+    org.node("old0")["successor"] = "boss"
+    store.save_org(org)
+
+    idx = org.children_index()
+    slots: list[str | None] = [None, *org.nodes.keys()]
+    for nid in slots:
+        for live_only in (True, False):
+            assert org.children(nid, live_only=live_only, index=idx) \
+                == org.children(nid, live_only=live_only), (
+                    f"children({nid!r}, live_only={live_only}) disagrees "
+                    f"between the index and the scan")
+        assert org.org_children(nid, idx) == org.org_children(nid), (
+            f"org_children({nid!r}) disagrees between the index and the scan")
+
+    # and the index must partition ALL nodes — a node missing from it would
+    # silently vanish from the canvas rather than fail anything above
+    assert sum(len(v) for v in idx.values()) == len(org.nodes), (
+        f"{sum(len(v) for v in idx.values())} indexed vs "
+        f"{len(org.nodes)} nodes — the partition drops seats")
+
+
 try:
     print("tree render cost")
     check("§1 an archived seat carries an explicit null forecast",
@@ -457,6 +500,8 @@ try:
           a_remembered_transcript_is_verified_before_it_is_served)
     check("§6 filesystem work must not scale with node count",
           filesystem_work_must_not_scale_with_node_count)
+    check("§7 the children index agrees with the scan everywhere",
+          the_children_index_agrees_with_the_scan_everywhere)
     print(f"\n{PASS} passed, {FAIL} FAILED")
 finally:
     shutil.rmtree(RIG, ignore_errors=True)

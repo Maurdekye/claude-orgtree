@@ -843,11 +843,47 @@ class Org:
     def seat_cost(self, nid: str) -> float:
         return self.d["tiers"][self.node(nid)["model"]]
 
-    def children(self, nid: str | None, live_only: bool = True) -> list[str]:
+    def children_index(self) -> dict[str | None, list[str]]:
+        """`parent → [nid]`, one pass over `nodes`, for a caller that is about
+        to ask about EVERY node.
+
+        `children` answers one parent by scanning the whole node table, which
+        is right for the 36 call sites that ask about one node and wrong for
+        `tree`, which asks about all of them: that is O(n²), and at 140 nodes
+        it is 19,600 comparisons plus a sort per node. MEASURED 2026-09-03 on
+        the live org, py-spy: `tree()` cost 0.34 s of a ~1 s request, and
+        `org_children` → `children` was 0.28 s of it.
+
+        The redteam raised this on 2026-08-06 and the ruling was "not relevant
+        until the typical execution time exceeds one second". It is still
+        under that bar and this changes nothing about the ruling — it is taken
+        now only because the request around it became user-visible and this is
+        an eighth of it, with no behaviour to get wrong.
+
+        ⚠ AN ACCELERATOR, NEVER A SECOND ANSWER. It is passed BACK INTO
+        `children`, which still applies the same state filter and the same
+        sort to it, so there is exactly one definition of what a child is and
+        what order they come in. Reimplementing the filter here would be the
+        two-expressions-of-one-rule mistake this file objects to elsewhere,
+        and the copy would drift the first time `live_only` grew a case.
+        """
+        idx: dict[str | None, list[str]] = {}
+        for k, v in self.nodes.items():
+            idx.setdefault(v["parent"], []).append(k)
+        return idx
+
+    def children(self, nid: str | None, live_only: bool = True,
+                 index: dict[str | None, list[str]] | None = None) -> list[str]:
         # "live" for budget purposes includes unrecoverable — a broken session still
         # holds its seat until deliberately retired (№31)
-        kids = [k for k, v in self.nodes.items()
-                if v["parent"] == nid and (v["state"] != "archived" or not live_only)]
+        #
+        # `index` (see `children_index`) only supplies the candidates — the
+        # same ones the scan would have found, partitioned by the same key.
+        # Everything that DECIDES anything is below it and runs either way.
+        cand = (index.get(nid, ()) if index is not None
+                else [k for k, v in self.nodes.items() if v["parent"] == nid])
+        kids = [k for k in cand
+                if self.nodes[k]["state"] != "archived" or not live_only]
         kids.sort(key=lambda k: (self.nodes[k].get("ui_order", 0), self.nodes[k]["created"]))
         return kids
 
@@ -896,7 +932,9 @@ class Org:
             return False
         return a == USER or a in self.ancestors(nid)
 
-    def org_children(self, nid: str | None) -> list[str]:
+    def org_children(self, nid: str | None,
+                     index: dict[str | None, list[str]] | None = None
+                     ) -> list[str]:
         """Children on the ORG axis only — an ARCHIVED lineage predecessor
         shares the parent slot but is not an organizational child (§8.5).
 
@@ -918,7 +956,7 @@ class Org:
         NOWHERE when its successor was archived (a pseudo-card positions
         only via a placed successor): an unreachable node holding a seat.
         Archived is the one state that steps off the axis."""
-        return [k for k in self.children(nid, live_only=False)
+        return [k for k in self.children(nid, live_only=False, index=index)
                 if not (self.nodes[k].get("successor")
                         and self.nodes[k]["state"] == "archived")]
 
@@ -8048,6 +8086,11 @@ class Org:
     # ------------------------------------------------------------------- view
     def tree(self) -> dict[str, Any]:
         """Derived view for the API/UI: nested nodes with computed fields."""
+        # ONE parent partition for the whole walk. `build` recurses over
+        # every node, and without this each step re-scanned the entire node
+        # table to find one parent's children — see `children_index`.
+        _kids = self.children_index()
+
         def build(nid: str) -> dict[str, Any]:
             n = self.nodes[nid]
             _cc = n.get("cache_continuity")
@@ -8175,7 +8218,7 @@ class Org:
                               if x["node"] == nid] or None,
                 "bearer_state": n["bearer_state"],
                 "generation": n["generation"],
-                "children": [build(c) for c in self.org_children(nid)],
+                "children": [build(c) for c in self.org_children(nid, _kids)],
                 "lineage": [{
                     "id": k,
                     "generation": self.nodes[k].get("generation", 0),
@@ -8229,7 +8272,7 @@ class Org:
             # a favorite that was since DESELECTED has no other source for it
             "models": self.d.get("models", {}),
             "audiences": self.d["audiences"],
-            "roots": [build(c) for c in self.org_children(None)],
+            "roots": [build(c) for c in self.org_children(None, _kids)],
             "audit": self.audit(),
             "cost_usd_total": self.cost_total(),
             # api_fallback split: the slice of cost_usd_total billed to the

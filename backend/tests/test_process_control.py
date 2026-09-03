@@ -63,7 +63,13 @@ def request(scope_state: dict[str, object] | None = None) -> Request:
     return Request({
         "type": "http", "method": "POST", "path": "/api/test",
         "raw_path": b"/api/test", "query_string": b"", "headers": [],
-        "client": ("127.0.0.1", 1), "server": ("127.0.0.1", 7360),
+        # ⚠ DELIBERATELY NOT THE LIVE DEPLOYMENT'S PORT. This suite opens
+        # no socket — `server` is metadata on a hand-built ASGI scope, and
+        # every request here is a direct in-process call — but
+        # `tools/run_tests.py` skips any suite whose SOURCE names that
+        # port and cannot tell a dict literal from a bind. This suite was
+        # silently skipped in BOTH tiers while passing when run by hand.
+        "client": ("127.0.0.1", 1), "server": ("127.0.0.1", 7999),
         "scheme": "http", "state": scope_state or {},
     })
 
