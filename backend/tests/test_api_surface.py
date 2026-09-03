@@ -1520,8 +1520,17 @@ class _FakeProc:
                 if self._settle_after is not None:
                     def clear():
                         time.sleep(self._settle_after)
+                        # ⚠ state() takes _state_lock ITSELF and the lock is
+                        # NOT reentrant — resolve the dict first, mutate
+                        # under the lock second. Doing it the other way round
+                        # self-deadlocks this thread WHILE IT HOLDS the lock,
+                        # which wedges every other thread that touches
+                        # supervisor state (measured: it hung the whole
+                        # suite, and the stall LOOKED like it was hundreds of
+                        # checks earlier because redirected stdout is
+                        # block-buffered).
+                        st = supervisor.state(self._slug, self._nid)
                         with supervisor._state_lock:            # noqa: SLF001
-                            st = supervisor.state(self._slug, self._nid)
                             st["busy"] = False
                             st["proc"] = None
                             st["responding"] = False
@@ -1616,8 +1625,9 @@ def _():
     warnings = supervisor.interrupt_before_archive(
         K, store.load_org(K), target, timeout=0.2)
     assert warnings and target in warnings[0], warnings
+    _st = supervisor.state(K, target)       # resolve OUTSIDE the lock (above)
     with supervisor._state_lock:                                 # noqa: SLF001
-        supervisor.state(K, target)["busy"] = False   # tidy up for later tests
+        _st["busy"] = False                       # tidy up for later tests
 
 
 @t("orgtree_interrupt: stops a busy target WITHOUT archiving it, fires and "
@@ -1639,8 +1649,9 @@ def _():
         f"orgtree_interrupt waited {elapsed:g}s — it must fire and return"
     assert store.load_org(K).node(target)["state"] == "live", \
         "orgtree_interrupt must never archive the node"
+    _st = supervisor.state(K, target)       # resolve OUTSIDE the lock (above)
     with supervisor._state_lock:                                 # noqa: SLF001
-        supervisor.state(K, target)["busy"] = False   # tidy up
+        _st["busy"] = False                                      # tidy up
 
 
 @t("orgtree_interrupt: refused on a node outside the caller's subtree")
