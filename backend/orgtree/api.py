@@ -1522,7 +1522,8 @@ class Settings(Body):
     compact_at: int | None = None           # compaction threshold in percent, 50..95
     clear_fable_lock: bool = False
     fable_limit_policy: str | None = None   # halt | opus | dissolve
-    fable_filter_policy: str | None = None  # halt | opus (content-filter flags)
+    fable_filter_policy: str | None = None  # halt | opus | auto-autopsy (content-filter flags)
+    fable_filter_model: str | None = None   # model tier when policy == auto-autopsy (fable not selectable)
     default_tools: dict[str, Any] | None = None  # {bash, web, edit, subagents, mcp: []|["*"]}
     default_visibility: str | None = None   # self|team|subtree|full
     permission_mode: str | None = None      # default|acceptEdits|bypassPermissions
@@ -1569,6 +1570,7 @@ class Settings(Body):
 _DEFAULTS_BASE = {
     "max_top_grant": 1000, "default_top_grant": 50, "compact_at": 0.80,
     "fable_limit_policy": "halt", "fable_filter_policy": "halt",
+    "fable_filter_model": "opus",
     "cascade_hire": True, "cascade_alloc": True, "auto_resume": False,
     "auto_resume_compact": False,
     # F-06: NOT an org-doc key — popped + translated into the "local" hub
@@ -1609,8 +1611,14 @@ def defaults_set(body: Settings) -> dict[str, Any]:
         d["compact_at"] = min(95, max(50, int(body.compact_at))) / 100.0
     if body.fable_limit_policy in ("halt", "opus", "dissolve"):
         d["fable_limit_policy"] = body.fable_limit_policy
-    if body.fable_filter_policy in ("halt", "opus"):
+    if body.fable_filter_policy in ("halt", "opus", "auto-autopsy"):
         d["fable_filter_policy"] = body.fable_filter_policy
+    if body.fable_filter_model is not None:
+        if body.fable_filter_model == "fable":
+            raise HTTPException(422, "fable cannot be used as the auto-autopsy model")
+        if not providers.is_known_tier(body.fable_filter_model):
+            raise HTTPException(422, f"unknown model tier '{body.fable_filter_model}'")
+        d["fable_filter_model"] = body.fable_filter_model
     if body.default_tools is not None:
         d["default_tools"] = norm_tools(body.default_tools)
     if body.default_visibility in VIS_LEVELS:
@@ -1727,8 +1735,14 @@ def _org_settings_locked(slug: str, body: Settings) -> dict[str, Any]:
         warnings.append("fable lock cleared — fable agents may run and be rehired again")
     if body.fable_limit_policy in ("halt", "opus", "dissolve"):
         org.d["fable_limit_policy"] = body.fable_limit_policy
-    if body.fable_filter_policy in ("halt", "opus"):
+    if body.fable_filter_policy in ("halt", "opus", "auto-autopsy"):
         org.d["fable_filter_policy"] = body.fable_filter_policy
+    if body.fable_filter_model is not None:
+        if body.fable_filter_model == "fable":
+            raise HTTPException(422, "fable cannot be used as the auto-autopsy model")
+        if not providers.is_known_tier(body.fable_filter_model):
+            raise HTTPException(422, f"unknown model tier '{body.fable_filter_model}'")
+        org.d["fable_filter_model"] = body.fable_filter_model
     if (body.default_tools is not None or body.default_visibility in VIS_LEVELS
             or body.permission_mode is not None):
         # agent defaults: applied to unspecified hires — top level directly,
@@ -2284,6 +2298,26 @@ def antigravity_usage() -> dict[str, Any]:
 def antigravity_usage_peek() -> dict[str, Any]:
     """Cache-only Antigravity standing for the header warning glow."""
     return antigravity_limits.peek()
+
+
+@app.get("/api/openrouter/usage")
+async def openrouter_usage() -> dict[str, Any]:
+    """The stored OpenRouter key's credit standing for the header modal.
+
+    OpenRouter is a prepaid credit balance, not a rolling percentage window
+    (see `openrouter_limits`'s module docstring); `GET /api/v1/key` is a
+    plain HTTP call routed off the event loop like every other fetch here.
+    """
+    from . import openrouter_limits              # noqa: PLC0415 — one lane
+    from fastapi.concurrency import run_in_threadpool
+    return await run_in_threadpool(openrouter_limits.fetch)
+
+
+@app.get("/api/openrouter/usage/peek")
+def openrouter_usage_peek() -> dict[str, Any]:
+    """Cache-only OpenRouter standing for the header warning glow."""
+    from . import openrouter_limits              # noqa: PLC0415
+    return openrouter_limits.peek()
 
 
 # ------------------------------------------ machine-local account routing

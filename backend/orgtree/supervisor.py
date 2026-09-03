@@ -4011,7 +4011,7 @@ def _org_state_parts(org: Org, nid: str,
             "busy, use orgtree_prime_restart so the deploy fires when it is "
             "quiet; never restart speculatively.")
     guidance_line = f"\n{live_guidance}" if live_guidance else ""
-    tail = (f"Credits: seat {org.seat_cost(nid)}, grant {n['grant']}, "
+    tail = (f"Credits: seat {org.seat_cost(nid):g}, grant {n['grant']:g}, "
             f"free {org.free(nid):g} — credits bound concurrent agent "
             f"capacity, not tokens."
             f"{guidance_line}{fable_line}{ask_line}")
@@ -10807,10 +10807,21 @@ def _run_one_turn(slug: str, nid: str,
                             # top of the copy already inside `text`
                             st["queue"].insert(0, {"toks": list(pend_toks),
                                                    "text": text}
-                                               if pend_toks else text)
+                                                if pend_toks else text)
                         raise RuntimeError(
                             "a Fable content filter flagged the message — "
                             "converted to opus and retrying (org policy)")
+                    if applied == "auto-autopsy":
+                        # D-174 auto-autopsy was invoked: autopsy agent has mail waiting
+                        _m = re.match(r"^(.*?)(?:-(\d+))?$", nid)
+                        _base = _m.group(1) if _m else nid
+                        _autopsy_nid = f"{_base}-autopsy"
+                        send_message(slug, _autopsy_nid,
+                                     "(orgtree) You have new mail above — handle it as appropriate, and use "
+                                     "orgtree_status when your own task state changes.", mail_ping=True)
+                        raise RuntimeError(
+                            f"a Fable content filter flagged the message — "
+                            f"auto-autopsy started on {o2.d.get('fable_filter_model', 'opus')} (org policy)")
                     raise RuntimeError(
                         "a Fable content filter flagged the message — turn "
                         "halted (org policy): " + err_blob[:250])
@@ -12314,15 +12325,36 @@ def _after_turn(slug: str, nid: str, org: Org, res: dict[str, Any],
         _model_id = org.model_for(nid)
         _mu = cast("dict[str, Any]", res.get("modelUsage") or {})
         _row = cast("dict[str, Any]", _mu.get(_model_id) or {})
-        if str(_row.get("costBasis") or "") != "list" or cost <= 0.0:
-            _u = cast("dict[str, Any]", res.get("usage") or {})
+        _u = cast("dict[str, Any]", res.get("usage") or {})
+        # ⚠ OPPORTUNISTIC, UNVERIFIED. We read `usage.cost` if the CLI
+        # happens to surface it; we do NOT own the transport and cannot
+        # request it (the fork's runner can, because it makes the HTTP
+        # call itself — we go through the Claude Code CLI). Whether the
+        # CLI ever surfaces `usage.cost` when proxied to OpenRouter is
+        # UNVERIFIED against a live turn as of 2026-09-03, so catalogue
+        # estimation with `_cost_complete=False` is the EXPECTED normal
+        # path, not an error case. test_openrouter_cost.py constructs
+        # the native case synthetically — it proves the branch works if
+        # reached, not that it is ever reached.
+        _native_cost = _u.get("cost")
+        if _native_cost is None and isinstance(res.get("cost"), (int, float)):
+            _native_cost = res.get("cost")
+        if _native_cost is not None:
+            try:
+                cost = float(_native_cost)
+                res = {**res, "total_cost_usd": cost, "_cost_complete": True}
+            except (ValueError, TypeError):
+                _native_cost = None
+        if _native_cost is None and (str(_row.get("costBasis") or "") != "list" or cost <= 0.0):
             cost = openrouter.cost(
                 _model_id,
                 int(_u.get("input_tokens") or 0),
                 int(_u.get("cache_read_input_tokens") or 0),
                 int(_u.get("output_tokens") or 0),
                 int(_u.get("cache_creation_input_tokens") or 0))
-            res = {**res, "total_cost_usd": cost}
+            res = {**res, "total_cost_usd": cost, "_cost_complete": False}
+        elif _native_cost is None:
+            res = {**res, "_cost_complete": False}
     mcp_success = (
         not res.get("is_error") and not st.get("interrupted")
         and str(res.get("status") or "").lower() not in (
@@ -12437,6 +12469,10 @@ def _after_turn(slug: str, nid: str, org: Org, res: dict[str, Any],
                                "denials": len(denials)}
             if out_toks:
                 entry["toks"] = out_toks
+            if res.get("_cost_complete") is not None:
+                entry["cost_complete"] = bool(res["_cost_complete"])
+                if not res["_cost_complete"]:
+                    entry["estimated"] = True
             _stamp_ran_as(entry, slug, nid)
             ring.append(entry)
             del ring[:-20]

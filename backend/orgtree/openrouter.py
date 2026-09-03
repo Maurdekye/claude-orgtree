@@ -118,7 +118,7 @@ class ModelCard(TypedDict):
 
 class Favorite(ModelCard):
     tier: str
-    seat: int
+    seat: float          # fractional below $1/M (seat_for) — whole at/above it
     added_at: str
 
 
@@ -328,11 +328,39 @@ def is_tier(tier: str) -> bool:
     return tier.startswith(TIER_PREFIX)
 
 
-def seat_for(prompt_per_m: float) -> int:
-    """The standing seat rule (ledger.py §3.1, re-affirmed 2026-08-28): API $
-    per M INPUT tokens, floored to 1 — sol $5 → 5, terra $2 → 2, flash $1.50
-    → 1, a $0.20 model → 1."""
-    return max(1, int(math.floor(prompt_per_m + 1e-9)))
+#: the smallest seat a model may cost, and the grid every fractional seat is
+#: quantised to (ledger.SEAT_FLOOR / ledger.CREDIT_QUANTUM carry the same
+#: numbers for the ledger's own arithmetic; they are re-stated here rather
+#: than imported because openrouter must not import ledger).
+SEAT_FLOOR: Final = 0.10
+SEAT_QUANTUM: Final = 2          # decimal places — the 0.01 grid
+
+
+def seat_for(prompt_per_m: float) -> float:
+    """The standing seat rule (ledger.py §3.1), extended below $1 (user
+    ruling 2026-09-03). API $ per M INPUT tokens:
+
+        seat(p) = floor(p)                     when p >= 1
+                = max(0.10, round(p, 2))       when p <  1
+
+    sol $5 → 5, terra $2 → 2, flash $1.50 → 1 (UNCHANGED — at or above $1 the
+    old floor still governs, so no tier that already exists is re-priced and
+    no saved org can become overdrawn), gpt-reserve/luna $0.20 → 0.2,
+    gemini-3.8-flash $0.75 → 0.75, a $0.02 model → 0.1.
+
+    ⚠ THE 0.10 FLOOR IS LOAD-BEARING, NOT COSMETIC. OpenRouter's catalog
+    carries `:free` variants that price at $0.00/M, and the old rule's
+    `max(1, …)` was the only thing standing between them and a seat of ZERO.
+    A zero seat bounds nothing: `free(N) = grant(N) − Σ(seat + grant)` never
+    decreases when you hire one, so an org could spawn such agents without
+    limit — each a real OS process — with MAX_CHILDREN as the only brake.
+    Credits are OCCUPANCY, not spend (ledger.py's opening note: "a credit is
+    not a dollar"), so a seat that costs nothing is a contradiction in the
+    allocator's own terms. At 0.10 the cheapest model on the market still
+    admits at most ten agents per haiku-equivalent."""
+    if prompt_per_m >= 1.0:
+        return float(math.floor(prompt_per_m + 1e-9))
+    return max(SEAT_FLOOR, round(prompt_per_m, SEAT_QUANTUM))
 
 
 def letter_for(model_id: str) -> str:
@@ -726,7 +754,9 @@ def favorites() -> list[Favorite]:
                 "letter": letter_for(mid),
                 "color": color_for(mid, float(f.get("prompt") or 0.0)),
                 "accent": accent_for(mid),
-                "seat": int(f.get("seat") or 1),
+                # a favorite snapshotted before 2026-09-03 carries an INT
+                # seat and keeps it — the record is the price, never recomputed
+                "seat": float(f.get("seat") or 1),
                 "added_at": str(f.get("added_at") or ""),
             })
         except (KeyError, TypeError, ValueError):
@@ -781,7 +811,7 @@ def remove_favorite(model_id: str) -> bool:
     return True
 
 
-def tiers() -> dict[str, int]:
+def tiers() -> dict[str, float]:
     """tier id → seat, for every favorite (the dynamic half of ledger.TIERS)."""
     return {f["tier"]: f["seat"] for f in favorites()}
 
@@ -865,9 +895,11 @@ def key_status(force: bool = False) -> dict[str, Any]:
     k = _key()
     out: dict[str, Any] = {
         "key_set": bool(k), "connected": None, "label": None,
-        "limit": None, "limit_remaining": None, "usage": None,
-        "usage_daily": None, "usage_weekly": None, "usage_monthly": None,
-        "is_free_tier": None, "reason": None, "checked_at": None,
+        "limit": None, "limit_remaining": None, "limit_reset": None,
+        "usage": None, "usage_daily": None, "usage_weekly": None,
+        "usage_monthly": None, "is_free_tier": None,
+        "total_credits": None, "total_usage": None,
+        "reason": None, "checked_at": None,
     }
     if not k:
         out["reason"] = "no API key — add one in App settings → Providers"
@@ -893,19 +925,61 @@ def key_status(force: bool = False) -> dict[str, Any]:
         except (UnicodeDecodeError, json.JSONDecodeError):
             raw = None
         doc: dict[str, Any] = (cast("dict[str, Any]", raw)
-                               if isinstance(raw, dict) else {})
+                                if isinstance(raw, dict) else {})
         data_raw = doc.get("data")
         if isinstance(data_raw, dict):
             data = cast("dict[str, Any]", data_raw)
             out["connected"] = True
-            for f in ("label", "limit", "limit_remaining", "usage",
-                      "usage_daily", "usage_weekly", "usage_monthly",
-                      "is_free_tier"):
+            for f in ("label", "limit", "limit_remaining", "limit_reset",
+                      "usage", "usage_daily", "usage_weekly",
+                      "usage_monthly", "is_free_tier"):
                 out[f] = data.get(f)
+            # GET /api/v1/credits — OpenRouter's official docs claim this
+            # endpoint requires a management key and 403s for a normal inference
+            # key, but testing directly against a real inference key on this
+            # machine returned 200 with real data (total_credits, total_usage),
+            # verified 2026-09-03. This provides the authoritative prepaid
+            # balance (total_credits - total_usage) for uncapped keys.
+            try:
+                c_status, c_body = _http_get(f"{API_BASE}/credits", {
+                    **_ua_headers(), "Authorization": f"Bearer {k}"})
+                if c_status == 200:
+                    c_raw = json.loads(c_body.decode("utf-8"))
+                    if isinstance(c_raw, dict) and isinstance(c_raw.get("data"), dict):
+                        c_data = cast("dict[str, Any]", c_raw["data"])
+                        out["total_credits"] = c_data.get("total_credits")
+                        out["total_usage"] = c_data.get("total_usage")
+            except Exception:
+                pass
         else:
             out["reason"] = "the key check answered without a `data` record"
     _key_cache = (now, out)
     return dict(out)
+
+
+def cached_key_status() -> dict[str, Any] | None:
+    """The last `GET /api/v1/key` answer, or None — NEVER fetches. For a
+    cache-only read (the header glow, the dynamic turn envelope) that must
+    not spend a request the ordinary 60s poll has not already paid for. See
+    `openrouter_limits`, which is the one caller."""
+    if _key_cache is None:
+        return None
+    return dict(_key_cache[1])
+
+
+def key_status_age() -> float | None:
+    """Seconds since the cached `/api/v1/key` answer arrived, or None when
+    nothing is cached yet."""
+    if _key_cache is None:
+        return None
+    return time.time() - _key_cache[0]
+
+
+def forget_key_status() -> None:
+    """Drop the cached `/api/v1/key` answer (tests; `set_key` already does
+    this as a side effect of a key replacement)."""
+    global _key_cache
+    _key_cache = None
 
 
 def status(force: bool = False) -> dict[str, Any]:
@@ -922,8 +996,10 @@ def status(force: bool = False) -> dict[str, Any]:
         "email": None,
         "label": ks["label"],
         "credits": {k: ks[k] for k in (
-            "limit", "limit_remaining", "usage", "usage_daily",
-            "usage_weekly", "usage_monthly", "is_free_tier", "checked_at")},
+            "limit", "limit_remaining", "limit_reset", "usage", "usage_daily",
+            "usage_weekly", "usage_monthly", "is_free_tier", "total_credits",
+            "total_usage", "checked_at")
+            if k in ks},
         "reason": ks["reason"],
         "favorites": len(favs),
         "favorites_max": FAVORITES_MAX,

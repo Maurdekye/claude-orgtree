@@ -344,6 +344,13 @@ export const getAntigravityUsage = (): Promise<AccountUsage> =>
   req('/api/antigravity/usage')
 export const getAntigravityUsagePeek = (): Promise<UsagePeek> =>
   req('/api/antigravity/usage/peek')
+// OpenRouter: a prepaid credit balance read off the stored key's
+// `GET /api/v1/key`, cached 60s server-side — the modal costs a fetch, the
+// glow polls the cache-only peek
+export const getOpenRouterUsage = (): Promise<AccountUsage> =>
+  req('/api/openrouter/usage')
+export const getOpenRouterUsagePeek = (): Promise<UsagePeek> =>
+  req('/api/openrouter/usage/peek')
 // ---- machine-local account routing (user redesign 2026-08-25) ----------
 // The primary row is the machine's own login; `keys` are pasted
 // `claude setup-token` fallbacks. NO token material in any response — a key

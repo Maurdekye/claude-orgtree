@@ -94,6 +94,7 @@ class TurnStat(TypedDict):
     toks: NotRequired[int]
     killed: NotRequired[bool]
     estimated: NotRequired[bool]
+    cost_complete: NotRequired[bool]
     # WHICH ACCOUNT SERVED THIS TURN (2026-08-25) — an account uuid, or a
     # sentinel ("ambient" / "api-key" / "token:unattributed"). Captured at
     # spawn from the resolved env, never from intent, and never a credential.
@@ -211,7 +212,10 @@ class NodeDoc(TypedDict):
     session_id: str
     model: str                      # tier key into OrgDoc["tiers"]
     parent: str | None              # None = top level (§7.4: the user is root)
-    grant: int
+    # WHOLE in every saved doc and in everything the user or an agent asks
+    # for. Typed float because `switch_model`'s melt lands a SEAT DIFFERENCE
+    # here, and seats are fractional below $1/M (ledger.TIERS, 2026-09-03).
+    grant: float
     state: NodeState
     title: str
     charter: str | None
@@ -489,7 +493,9 @@ class OrgDoc(TypedDict):
     slug: str
     name: str
     created: str
-    tiers: dict[str, int]
+    # seat cost per tier. Fractional below $1/M (ledger.TIERS, user ruling
+    # 2026-09-03); every tier at or above $1 stays the whole number it was.
+    tiers: dict[str, float]
     models: dict[str, str]
     workspace: str | None
     dirs: list[DirGrant]
@@ -505,6 +511,7 @@ class OrgDoc(TypedDict):
     compact_at: float
     fable_limit_policy: str
     fable_filter_policy: str
+    fable_filter_model: NotRequired[str | None]
     nodes: dict[str, NodeDoc]
     audiences: list[AudienceGrant]
     audience_requests: list[dict[str, Any]]

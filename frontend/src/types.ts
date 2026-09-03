@@ -29,7 +29,7 @@ export type CacheForecastState =
 /** D-226. What the badge RENDERS, as opposed to `state`, which is what was
  * observed. Binary in normal operation; `diagnostic` is grey and is reserved
  * for an enumerated fault that stopped an opinion being formed at all. */
-export type Readiness = 'ready' | 'not_ready' | 'diagnostic'
+export type Readiness = 'ready' | 'not_ready' | 'diagnostic' | 'none'
 
 export interface CacheForecast {
   generation: string
@@ -105,6 +105,7 @@ export interface TurnStat {
   toks?: number
   killed?: boolean
   estimated?: boolean
+  cost_complete?: boolean
 }
 
 // schema.py AudienceGrant (§7.3)
@@ -683,6 +684,7 @@ export interface TreePayload {
   auto_resume_compact?: boolean
   fable_limit_policy: string
   fable_filter_policy: string
+  fable_filter_model?: string | null
   cascade_hire: boolean
   cascade_alloc: boolean
   sandboxed: boolean
@@ -1267,6 +1269,7 @@ export interface DefaultsPayload {
   compact_at: number
   fable_limit_policy: string
   fable_filter_policy: string
+  fable_filter_model?: string | null
   cascade_hire: boolean
   cascade_alloc: boolean
   auto_resume: boolean
@@ -1347,6 +1350,7 @@ export interface SettingsRequest {
   clear_fable_lock?: boolean
   fable_limit_policy?: string | null
   fable_filter_policy?: string | null
+  fable_filter_model?: string | null
   default_tools?: Partial<ToolGrant> | null
   default_visibility?: string | null
   /** D-101 — the mode NEW hires are born with; admin-only (this endpoint is

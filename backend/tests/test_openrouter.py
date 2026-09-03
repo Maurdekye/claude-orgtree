@@ -45,6 +45,11 @@ def eq(got, want, what):
         raise AssertionError(f"{what}: got {got!r}, wanted {want!r}")
 
 
+def ne(got, unwanted, what):
+    if got == unwanted:
+        raise AssertionError(f"{what}: got {got!r}, wanted anything else")
+
+
 def raises(fn, needle, what):
     try:
         fn()
@@ -367,10 +372,32 @@ def main():
                       "or-some-vendor-model-x-free", "punctuation"),
                    eq(orr.is_tier("or-x"), True, "prefix"),
                    eq(orr.is_tier("sol"), False, "static")))
-    check("seat = floor($/M input), floored to 1 (the standing rule)",
+    # seat_for, user ruling 2026-09-03: floor(p) at or above $1/M, and
+    # max(0.10, round(p, 2)) below it. The $1.00 BOUNDARY is the whole point —
+    # everything at or above it keeps the number it had before this change, so
+    # no existing tier is re-priced and no saved org can become overdrawn.
+    check("seat at/above $1/M is unchanged: floor($/M input)",
           lambda: (eq(orr.seat_for(2.0), 2, "$2"), eq(orr.seat_for(1.5), 1, "$1.50"),
-                   eq(orr.seat_for(0.2), 1, "$0.20"), eq(orr.seat_for(5.0), 5, "$5"),
-                   eq(orr.seat_for(10.0), 10, "$10"), eq(orr.seat_for(0.0), 1, "free")))
+                   eq(orr.seat_for(5.0), 5, "$5"), eq(orr.seat_for(10.0), 10, "$10"),
+                   eq(orr.seat_for(1.0), 1, "$1.00 exactly — the boundary"),
+                   eq(orr.seat_for(1.99), 1, "$1.99 floors, never rounds up")))
+    check("seat below $1/M is FRACTIONAL — the ranking the old floor destroyed",
+          lambda: (eq(orr.seat_for(0.99), 0.99, "$0.99 — just under the boundary"),
+                   eq(orr.seat_for(0.75), 0.75, "$0.75 gemini-3.8-flash"),
+                   eq(orr.seat_for(0.2), 0.2, "$0.20 gpt-reserve/luna"),
+                   eq(orr.seat_for(0.6), 0.6, "$0.60"),
+                   eq(orr.seat_for(0.123), 0.12, "quantised to the 0.01 grid"),
+                   ne(orr.seat_for(0.2), orr.seat_for(0.6),
+                      "two cheap models no longer collapse to one seat")))
+    # ⚠ the floor is load-bearing: a $0 `:free` model priced at seat 0 would
+    # bound NO concurrency (free() never decreases when you hire one) while
+    # still spawning a real OS process. See openrouter.seat_for's docstring.
+    check("a $0 :free model seats at the 0.10 FLOOR, never at zero",
+          lambda: (eq(orr.seat_for(0.0), 0.10, "free"),
+                   eq(orr.seat_for(0.02), 0.10, "$0.02 — under the floor"),
+                   eq(orr.seat_for(0.05), 0.10, "$0.05 — under the floor"),
+                   eq(orr.seat_for(0.10), 0.10, "$0.10 — exactly the floor"),
+                   eq(orr.seat_for(0.11), 0.11, "$0.11 — just above it")))
     fav = orr.add_favorite("anthropic/claude-sonnet-5")
     check("add_favorite snapshots seat, prices, letter, color, tier",
           lambda: (eq(fav["tier"], "or-anthropic-claude-sonnet-5", "tier"),
@@ -398,8 +425,11 @@ def main():
     orr.add_favorite("anthropic/claude-sonnet-5")          # idempotent
     check("favorites de-duplicate; tiers()/models() are the dynamic tables",
           lambda: (eq(len(orr.favorites()), 2, "count"),
+                   # deepseek-v4 is $0.14/M — under the old floor-to-1 rule it
+                   # seated at 1, indistinguishable from every other cheap
+                   # model. That collapse is the defect this change fixed.
                    eq(orr.tiers(), {"or-anthropic-claude-sonnet-5": 2,
-                                    "or-deepseek-deepseek-v4": 1}, "tiers"),
+                                    "or-deepseek-deepseek-v4": 0.14}, "tiers"),
                    eq(orr.models()["or-deepseek-deepseek-v4"],
                       "deepseek/deepseek-v4", "models"),
                    eq(orr.contexts()["or-anthropic-claude-sonnet-5"], 1000000, "ctx")))

@@ -144,6 +144,12 @@ export function UsageBars({ u }: { u: AccountUsage }) {
     <>
       {u.plan && <div className="dim">{u.provider ?? 'Claude'} {u.plan}</div>}
       {(u.limits ?? []).map((l) => {
+        // `percent: null` is a real state (UsageLimit's own type), not an
+        // absent 0 — OpenRouter reports it for an uncapped key, where the
+        // dollar figure rides `label` instead: a bar reading 0% would claim
+        // nothing has been spent, which is exactly the fabrication the task
+        // must not make. No bar, no badge; the label carries the fact.
+        const known = l.percent != null
         const pct = Math.max(0, Math.min(100, l.percent ?? 0))
         const sev = sevOf(l)
         return (
@@ -152,13 +158,13 @@ export function UsageBars({ u }: { u: AccountUsage }) {
             <div className="u-head">
               <span className="u-label">{usageLabel(l)}</span>
               <span className="u-reset">{usageResets(l.resets_at)}</span>
-              <span className={'u-pct' + (sev ? ' ' + sev : '')}>
-                {Math.round(l.percent ?? 0)}%</span>
+              {known && <span className={'u-pct' + (sev ? ' ' + sev : '')}>
+                {Math.round(l.percent ?? 0)}%</span>}
             </div>
-            <div className="usage-track">
+            {known && <div className="usage-track">
               <div className={'usage-fill' + (sev ? ' ' + sev : '')}
                 style={{ width: pct + '%' }} />
-            </div>
+            </div>}
           </div>
         )
       })}

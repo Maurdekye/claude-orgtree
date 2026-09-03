@@ -4,7 +4,8 @@ import {
   audienceAction, BASE, clearInbox, createOrg, deleteOrg,
   fileBase, fileUrl, getAudiences, getDefaults, getEvents, getHost, getInbox, getOrgMd,
   getAntigravityUsage, getAntigravityUsagePeek,
-  getCodexUsage, getCodexUsagePeek, getOrgNet, getProviders, getSweepPreview, getTree,
+  getCodexUsage, getCodexUsagePeek, getOpenRouterUsage, getOpenRouterUsagePeek,
+  getOrgNet, getProviders, getSweepPreview, getTree,
   getUsageAll, getUsagePeek, killAll, listOrgs,
   markRead, openWs,
   probeHub, putOrgMd,
@@ -22,7 +23,7 @@ import {
 } from './icons'
 import { DirList } from './forms'
 import { FolderPickerHost } from './picker'
-import { ALL_TIERS, attentionPip, deskDpi, fallbackActive, freezeKind, isOpenRouterTier, orgPxc, presenceOfPayload, primedRestartChip, setDeskDpi, TIER_LETTER, tierLabel, usePolled } from './canvas/shared'
+import { ALL_TIERS, attentionPip, availableAutopsyModels, deskDpi, fallbackActive, freezeKind, isOpenRouterTier, orgPxc, presenceOfPayload, primedRestartChip, setDeskDpi, TIER_LETTER, tierLabel, usePolled } from './canvas/shared'
 import { AskCard } from './canvas/asks'
 import { AccountsPanel, UsageBars } from './canvas/accounts'
 import {
@@ -216,9 +217,13 @@ export default function App() {
   // the Antigravity standing is observed from turns (a wall + its reset),
   // never fetched — the same cache-only contract, so it may ride the glow
   const agyUsagePeek = usePolled(BASE ? noUsagePeek : getAntigravityUsagePeek, [], 60000)
+  // OpenRouter: a prepaid credit balance, cache-only here too — see
+  // openrouter_limits's module docstring for why a plain key never earns a
+  // percentage without a spend cap, which is also why this lane rarely glows
+  const orrUsagePeek = usePolled(BASE ? noUsagePeek : getOpenRouterUsagePeek, [], 60000)
   const usageAlert = useMemo(
-    () => usagePeak(usagePeek, codexUsagePeek, agyUsagePeek),
-    [usagePeek, codexUsagePeek, agyUsagePeek])
+    () => usagePeak(usagePeek, codexUsagePeek, agyUsagePeek, orrUsagePeek),
+    [usagePeek, codexUsagePeek, agyUsagePeek, orrUsagePeek])
   // D-202: which providers this machine actually has, for the usage button's
   // label. Polled rather than fetched once so installing a CLI mid-session is
   // picked up; unresolved is ALL_PRESENT, i.e. exactly today's wording.
@@ -1033,6 +1038,13 @@ export function UsageModal({ close }: { close: () => void }) {
   // publishes no readout — see antigravity_limits); with no wall on record
   // the section carries the settled `unsupported` note, not an error
   const agy = usePolled(getAntigravityUsage, [], 60000)
+  // OpenRouter: a prepaid credit balance read off the stored key, not a
+  // subscription lane — see openrouter_limits's module docstring. `fetch`
+  // answers `{available:false, error:"no API key…"}` rather than nothing
+  // when no key is stored, same shape as the other providers' "not
+  // installed" case, so it degrades through the same `shown.openrouter &&`
+  // gate below rather than a bespoke branch.
+  const orr = usePolled(getOpenRouterUsage, [], 60000)
   // D-202. ⚠ `codex` IS TRUTHY ON A MACHINE WITH NO CODEX — measured, not
   // assumed: codex_limits.fetch returns {available:false, error:"Codex CLI is
   // not installed"} rather than nothing, so the bare `codex &&` gate below
@@ -1048,6 +1060,7 @@ export function UsageModal({ close }: { close: () => void }) {
             half this machine has — otherwise a Codex-less box would skip the
             spinner and show a blank modal until the Claude bars land */}
         {!all && !(shown.openai && codex) && !(shown.google && agy)
+          && !(shown.openrouter && orr)
           ? <div className="dim">loading…</div>
           : <>
           {(all?.accounts ?? []).map((a) => (
@@ -1073,6 +1086,13 @@ export function UsageModal({ close }: { close: () => void }) {
               <span className="dim"> · {agy.label}</span>
             </div>
             <UsageBars u={agy} />
+          </div>}
+          {shown.openrouter && orr && <div className="usage-acct" key={orr.account}>
+            <div className="usage-acct-head">
+              <span className="acct-label">{orr.provider ?? 'OpenRouter'}</span>
+              <span className="dim"> · {orr.label}</span>
+            </div>
+            <UsageBars u={orr} />
           </div>}
           </>}
         {all && !(all.accounts ?? []).length &&
@@ -1788,6 +1808,10 @@ function DefaultsPanel({ toast, close }: { toast: ToastFn; close: () => void }) 
     )
   }
   const set = (k: string, v: unknown) => setD({ ...d, [k]: v })
+  const provPayload = usePolled(getProviders, [], 60000)
+  const autopsyGroups = useMemo(
+    () => availableAutopsyModels(provPayload, d.fable_filter_model ?? 'opus'),
+    [provPayload, d.fable_filter_model])
   return (
     <div className="overlay" onClick={close}>
       <div className="settings" onClick={(e) => e.stopPropagation()}>
@@ -1828,7 +1852,25 @@ function DefaultsPanel({ toast, close }: { toast: ToastFn; close: () => void }) 
           onChange={(e) => set('fable_filter_policy', e.target.value)}>
           <option value="halt">halt (default)</option>
           <option value="opus">switch to opus + retry</option>
+          <option value="auto-autopsy">auto-autopsy</option>
         </select>
+        {(d.fable_filter_policy ?? 'halt') === 'auto-autopsy' && (
+          <>
+            <div className="field-label">autopsy model (fable not selectable)</div>
+            <select value={d.fable_filter_model ?? 'opus'} aria-label="autopsy model"
+              onChange={(e) => set('fable_filter_model', e.target.value)}>
+              {autopsyGroups.map((g) => (
+                <optgroup key={g.label} label={g.label}>
+                  {g.models.map((m) => (
+                    <option key={m.tier} value={m.tier}>
+                      {m.label}{m.seat != null ? ` · seat ${m.seat}` : ''}
+                    </option>
+                  ))}
+                </optgroup>
+              ))}
+            </select>
+          </>
+        )}
         <div className="field-label">credit cost bubbling</div>
         <label className="checkline">
           <input type="checkbox" checked={d.cascade_hire !== false}
@@ -1862,6 +1904,8 @@ function DefaultsPanel({ toast, close }: { toast: ToastFn; close: () => void }) 
               compact_at: Math.round((d.compact_at ?? 0.8) * 100),
               fable_limit_policy: d.fable_limit_policy,
               fable_filter_policy: d.fable_filter_policy,
+              fable_filter_model: d.fable_filter_policy === 'auto-autopsy'
+                ? (d.fable_filter_model ?? 'opus') : undefined,
               default_effort: d.default_effort ?? '',
               cascade_hire: d.cascade_hire !== false,
               cascade_alloc: d.cascade_alloc !== false,
@@ -2049,6 +2093,12 @@ export function SettingsPanel({ tree, toast, close }: {
   const setFablePolicy = set('fablePolicy', fablePolicy)
   const filterPolicy = val('filterPolicy', tree.fable_filter_policy ?? 'halt')
   const setFilterPolicy = set('filterPolicy', filterPolicy)
+  const filterModel = val('filterModel', tree.fable_filter_model ?? 'opus')
+  const setFilterModel = set('filterModel', filterModel)
+  const provPayload = usePolled(getProviders, [], 60000)
+  const autopsyGroups = useMemo(
+    () => availableAutopsyModels(provPayload, filterModel),
+    [provPayload, filterModel])
   const defEffort = val('defEffort', tree.default_effort ?? '')
   const setDefEffort = set('defEffort', defEffort)
   const cascadeHire = val('cascadeHire', tree.cascade_hire !== false)
@@ -2228,14 +2278,32 @@ export function SettingsPanel({ tree, toast, close }: {
                 </select>
               </SetRow>
               <SetRow label="content-filter policy"
-                hint={'a flagged message halts the turn, or converts the '
-                  + 'agent to opus and retries'}>
+                hint={'a flagged message halts the turn, converts the '
+                  + 'agent to opus and retries, or runs an auto-autopsy'}>
                 <select value={filterPolicy} aria-label="fable content-filter policy"
                   onChange={(e) => setFilterPolicy(e.target.value)}>
                   <option value="halt">halt (default)</option>
                   <option value="opus">switch to opus + retry</option>
+                  <option value="auto-autopsy">auto-autopsy</option>
                 </select>
               </SetRow>
+              {filterPolicy === 'auto-autopsy' && (
+                <SetRow label="autopsy model"
+                  hint="model used to run the autopsy and re-brief the replacement agent (fable not selectable)">
+                  <select value={filterModel} aria-label="autopsy model"
+                    onChange={(e) => setFilterModel(e.target.value)}>
+                    {autopsyGroups.map((g) => (
+                      <optgroup key={g.label} label={g.label}>
+                        {g.models.map((m) => (
+                          <option key={m.tier} value={m.tier}>
+                            {m.label}{m.seat != null ? ` · seat ${m.seat}` : ''}
+                          </option>
+                        ))}
+                      </optgroup>
+                    ))}
+                  </select>
+                </SetRow>
+              )}
             </SetGroup>
             <SetGroup title="Cache-protective cheap compaction">
               <SetToggle label="reset a session before a known-cold turn"
@@ -2422,6 +2490,7 @@ export function SettingsPanel({ tree, toast, close }: {
                   compact_at: Number.isFinite(+compactAt) ? +compactAt : undefined,
                   fable_limit_policy: fablePolicy,
                   fable_filter_policy: filterPolicy,
+                  fable_filter_model: filterPolicy === 'auto-autopsy' ? filterModel : undefined,
                   default_effort: defEffort,
                   cascade_hire: cascadeHire,
                   cascade_alloc: cascadeAlloc,
