@@ -245,6 +245,22 @@ def _read(path):
         return ""
 
 
+def _store_backend_defaults_to_sqlite():
+    """Whether THIS checkout's store.py falls back to the sqlite backend when
+    ORGTREE_STORE is unset -- read straight from source, never imported.
+    Importing store.py runs its own DATA_ROOT-resolution logic (and, on a
+    sqlite-defaulting tree, its own migration machinery) before this runner
+    has decided whether letting that happen is safe; a launcher-side check
+    that itself triggers the danger it is meant to head off is worse than no
+    check. A drift detector like the port guard above: if this literal's
+    shape changes, this should be revisited rather than silently passing."""
+    m = re.search(
+        r'^STORE_BACKEND:\s*str\s*=\s*os\.environ\.get\(\s*"ORGTREE_STORE"\s*,'
+        r'\s*"(\w+)"\s*\)',
+        _read(os.path.join(REPO, "backend", "orgtree", "store.py")), re.M)
+    return bool(m) and m.group(1) == "sqlite"
+
+
 def _interpreter():
     """The venv's python if there is one, else the one running this file."""
     for rel in (os.path.join(".venv", "Scripts", "python.exe"),
@@ -545,6 +561,37 @@ def main():
     args = ap.parse_args()
     args.only = [t.strip() for chunk in args.only for t in chunk.split(",")
                  if t.strip()]
+
+    # ⚠ SQLITE RIG GUARD -- deliberately redundant with store.py's own
+    # ORGTREE_MIGRATE gate (see docs/test-baseline.md, "THE RUNNER STRIPS
+    # ORGTREE_DATA"). child_env() below strips ORGTREE_DATA from every
+    # suite's environment ON PURPOSE, for isolation -- so on a checkout whose
+    # store.py defaults STORE_BACKEND to sqlite, a suite that forgets to mint
+    # its own throwaway root falls straight through to DATA_ROOT's own
+    # default, the operator's live ~/orgtree, and claim_data_root() migrates
+    # whatever it is pointed at. That already happened once (2026-09-03).
+    # The check belongs HERE, before ANY suite is spawned, read against the
+    # UNSTRIPPED environment the operator actually invoked this runner with --
+    # inside child_env() is exactly where this guard would be useless, since
+    # that function's whole job is stripping, not deciding whether to run.
+    # --list is exempted: it runs nothing, so there is nothing to refuse.
+    if not args.list and "ORGTREE_DATA" not in os.environ \
+            and _store_backend_defaults_to_sqlite():
+        print("orgtree · test runner")
+        print(f"  repo    {REPO}")
+        print()
+        print("REFUSING TO RUN: this checkout's store.py defaults "
+              "STORE_BACKEND to sqlite, and ORGTREE_DATA is not set in the "
+              "environment this runner was invoked with.")
+        print("Every suite's ORGTREE_* is stripped before it runs (for "
+              "isolation) -- so a suite that does not mint its own scratch "
+              "ORGTREE_DATA falls through to the live default (~/orgtree) "
+              "and a sqlite-backed claim_data_root() migrates it.")
+        print("Set ORGTREE_DATA to an explicit scratch path before running "
+              "this, e.g.:")
+        print(r'  $env:ORGTREE_DATA = "C:\...\scratch\...\rig-data"; '
+              r'python tools\run_tests.py')
+        return 2
 
     py = _interpreter()
     jobs = 1 if args.serial else (args.jobs or min(4, os.cpu_count() or 1))
