@@ -28,7 +28,7 @@ test('desk header has bounded controls and a separate wrapping metadata row', as
     id, state: 'live', tier: 'haiku', model_id: 'haiku', children: [], parent: 'superior',
     seat: 1, grant: 4, free: 1, cost_usd: 12.34,
     occupancy: 85000, context_window: 100000,
-    scope: { tools: {}, add_dirs: [] },
+    scope: { tools: { mcp: ['alpha'] }, add_dirs: [] },
     audiences_held: ['@user', '@extern', 'very-long-audience-name-that-must-wrap'],
     last_status: { status: 'working', summary: 'still working', at: '2026-09-01T10:00:00Z' },
     busy: true, waiting: false, responding: true, inflight_at: '2026-09-01T10:00:00Z',
@@ -168,6 +168,50 @@ test('fresh desk preserves empty context, off process, and neutral Idle banner',
   assert.equal(banner.textContent, 'Idle—')
   assert.equal(top.querySelector('.turnago'), null)
   assert.equal(banner.querySelector('svg,.cc-spin'), null)
+})
+
+test('the MCP badge is absent for zero configured servers, not zero or unknown', async (t) => {
+  installFetch(new FakeServer())
+  // Case 1: no MCP servers granted at all — a claim about nothing that
+  // exists. Even a stray runtime count (which should never happen on a
+  // node with no grant) must not resurrect the badge.
+  const noneId = 'no-mcp-agent'
+  const none: CanvasNode = {
+    id: noneId, state: 'live', tier: 'haiku', model_id: 'haiku', children: [],
+    seat: 1, grant: 0, free: 0, scope: { tools: { mcp: [] }, add_dirs: [] },
+    mcp_tool_count: 0, last_turn_mcp_tool_count: 0,
+  }
+  const noneView = await mountView(
+    <DeskChat node={none} map={new Map([[noneId, none]])} op={op} slug={noneId}
+      toast={noop} pub={false} bare />,
+    (el) => el,
+  )
+  t.after(() => noneView.unmount())
+  await flush()
+  assert.equal(noneView.el.querySelector('.mcp-tool-count'), null,
+    'a node with an empty MCP grant rendered a badge for tools it does not have')
+
+  // Case 2: servers ARE configured but the runtime surface has not been
+  // snapshotted yet (no live count, no last-turn count) — "not yet known"
+  // is a different claim from "not configured", so the badge stays and
+  // must read unknown, never assert a zero it has no evidence for.
+  const pendingId = 'pending-mcp-agent'
+  const pending: CanvasNode = {
+    id: pendingId, state: 'live', tier: 'haiku', model_id: 'haiku', children: [],
+    seat: 1, grant: 0, free: 0, scope: { tools: { mcp: ['alpha'] }, add_dirs: [] },
+    mcp_tool_count: null, last_turn_mcp_tool_count: null,
+  }
+  const pendingView = await mountView(
+    <DeskChat node={pending} map={new Map([[pendingId, pending]])} op={op} slug={pendingId}
+      toast={noop} pub={false} bare />,
+    (el) => el,
+  )
+  t.after(() => pendingView.unmount())
+  await flush()
+  const mark = pendingView.el.querySelector('.mcp-tool-count')
+  assert.ok(mark, 'a configured but not-yet-snapshotted node hid the badge outright')
+  assert.match(mark!.textContent ?? '', /MCP\s+—/,
+    'an unsnapshotted surface must read unknown, never a definitive zero')
 })
 
 test('layout CSS wraps naturally and pins finite controls above metadata', () => {

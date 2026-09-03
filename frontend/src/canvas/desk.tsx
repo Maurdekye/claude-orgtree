@@ -1394,6 +1394,13 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
   const mcpReadinessWaiting = Boolean(node.mcp_readiness_waiting)
   const mcpReadinessState = node.mcp_readiness_state
   const mcpReadinessReason = node.mcp_readiness_reason
+  // A card is a claim about something assumed to exist. `scope.tools.mcp` is
+  // the CONFIGURED grant — a static scope fact, known the instant the node
+  // exists, unlike the runtime `mcp_tool_count` snapshot it can lag behind.
+  // Empty means no MCP server was ever granted, so there is nothing for the
+  // badge to claim; this is not the "not yet known" case (that stays a
+  // runtime concern for McpToolCountMark's own '—'/'~N' fallback below).
+  const mcpConfigured = (node.scope?.tools.mcp?.length ?? 0) > 0
   // held-audience badges: retired grantor-agents fold behind one chip (user
   // feature 2026-08-17) — USER/EXTERN are pseudo-peers, always "live"
   const held = node.audiences_held ?? []
@@ -1481,13 +1488,13 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
         </span>
         </div>
         <div className="cc-head-meta">
-        <McpToolCountMark count={node.mcp_tool_count}
+        {mcpConfigured && <McpToolCountMark count={node.mcp_tool_count}
           last={node.last_turn_mcp_tool_count}
           provider={node.mcp_tool_count_provider}
           source={node.mcp_tool_count_source}
           reason={node.mcp_tool_count_reason}
           readinessState={mcpReadinessState}
-          readinessReason={mcpReadinessReason} />
+          readinessReason={mcpReadinessReason} />}
         <CacheForecastMark forecast={node.cache_forecast} busy={processActive} />
         {node.last_status && !bannerDuplicatesStatus &&
           <span className={'statuschip ' + node.last_status.status}
