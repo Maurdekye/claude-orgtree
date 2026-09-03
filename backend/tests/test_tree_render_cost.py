@@ -71,6 +71,7 @@ from __future__ import annotations
 import builtins
 import glob
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -540,6 +541,106 @@ def local_net_slugs_does_not_re_read_the_document_it_was_given() -> None:
         f"answer would be short — opened: {opened}")
 
 
+# ── §9 · the ask history is capped to what the desk renders ─────────────────
+def the_ask_history_is_capped_without_changing_what_the_desk_sees() -> None:
+    """122,692 B of an 844 KB payload, every 6 s, for eight rendered rows.
+
+    `App.tsx` renders `asks.filter(!askOpen).slice(-8)`; the payload shipped
+    `[-60:]` of the whole history. MEASURED 2026-09-03 on the live org:
+    122,692 B → 30,890 B, and what the desk renders is BYTE-IDENTICAL.
+
+    The two properties that matter are opposites, which is why both are here:
+    the history must get shorter, and the OPEN asks must not — an open ask is
+    a question waiting on the user, and capping it away would lose it with
+    nothing erroring.
+    """
+    org = store.create_org("zz-asks")
+    from orgtree.ledger import ASK_HISTORY_KEEP, OPEN_ASK_STATUS
+    n_open = ASK_HISTORY_KEEP + 5
+
+    # ⚠ built through `ask_user`/`ask_answer`, never hand-rolled. A synthetic
+    # entry missing `questions` makes `node_ask` raise on `tabs[0]` and the
+    # whole tree 500s — which is how the first draft of this test failed, and
+    # is fair warning that this row's shape is not one to guess at.
+    org.hire(USER, None, "haiku", 4, "boss")
+    # `_prune_asks` already caps the DOCUMENT at 30 resolved, so asking for
+    # far more than that just exercises the existing prune; what matters here
+    # is only that the document ends up holding MORE than the payload cap.
+    for i in range(ASK_HISTORY_KEEP * 3):
+        org.ask_user("boss", question=f"resolved {i}", options=["y", "n"])
+        # `ask_user` returns {asked, status}, not the row — the id is the
+        # entry it just appended
+        org.ask_answer(str(org.d["asks"][-1]["id"]), selected=["y"])
+
+    # ⚠ TOP-LEVEL, and that is not incidental: `ask_user` from a node holding
+    # no user audience is ROUTED to its superior and creates no ask at all
+    # ("you hold no user audience — the question was mailed to your
+    # superior"). A fixture of child nodes yields ZERO open asks and every
+    # check below passes vacuously.
+    for i in range(n_open):                     # one OPEN ask per node: the
+        nid = f"open{i}"                        # batch rule merges per node
+        org.hire(USER, None, "haiku", 0, nid)
+        org.ask_user(nid, question=f"open {i}", options=["y", "n"])
+    store.save_org(org)
+
+    doc = list(org.d.get("asks", []))
+    doc_open = [a for a in doc if a["status"] in OPEN_ASK_STATUS]
+    doc_res = [a for a in doc if a["status"] not in OPEN_ASK_STATUS]
+    assert len(doc_open) == n_open, (len(doc_open), n_open)
+    assert len(doc_res) > ASK_HISTORY_KEEP, (
+        f"the fixture left only {len(doc_res)} resolved asks, at or under the "
+        f"{ASK_HISTORY_KEEP} cap — nothing would be trimmed and this check "
+        f"would pass without testing anything")
+
+    got = org.tree()["asks"]
+    kept_open = [a for a in got if a["status"] in OPEN_ASK_STATUS]
+    kept_res = [a for a in got if a["status"] not in OPEN_ASK_STATUS]
+
+    # ① every open ask survives, however many there are
+    assert len(kept_open) == n_open, (
+        f"{len(kept_open)} of {n_open} open asks survived the cap — an open "
+        f"ask is a question waiting on the user and may never be dropped")
+
+    # ② the resolved history is capped, and it is the NEWEST that are kept
+    assert len(kept_res) == ASK_HISTORY_KEEP, len(kept_res)
+    assert kept_res == doc_res[-ASK_HISTORY_KEEP:], (
+        "the cap kept the wrong end of the history")
+
+    # ③ the desk's own expression sees exactly what it would have seen from
+    #    the uncapped list — the whole point of the change
+    def desk(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return [a for a in rows if a["status"] not in OPEN_ASK_STATUS][-8:]
+    assert desk(got) == desk(doc), (
+        "the desk's rendered asks changed; the cap is not transparent")
+
+    # ④ ORDER is the document's, not status-grouped — a payload whose order
+    #    depends on status is a trap for the next reader
+    assert got == [a for a in doc if a in got], "the payload was reordered"
+
+
+def the_ask_cap_cannot_drift_below_what_the_desk_slices() -> None:
+    """A cross-file drift guard, because the two numbers live apart.
+
+    If `App.tsx` ever renders more history than the backend ships, old asks
+    silently stop appearing — no error, no log line, just a shorter list. The
+    inequality is the contract, so it is read out of the source rather than
+    restated here.
+    """
+    from orgtree.ledger import ASK_HISTORY_KEEP
+    app = os.path.join(os.path.dirname(BACKEND), "frontend", "src", "App.tsx")
+    with open(app, encoding="utf-8") as f:
+        src = f.read()
+    m = re.search(r"askDone\s*=\s*asks[^\n]*?\.slice\(-(\d+)\)", src)
+    assert m, ("could not find the desk's ask-history slice in App.tsx — the "
+               "expression moved, and this guard is now blind rather than "
+               "satisfied. Re-point it before trusting a green run.")
+    want = int(m.group(1))
+    assert ASK_HISTORY_KEEP >= want, (
+        f"App.tsx renders the last {want} resolved asks but the payload ships "
+        f"only {ASK_HISTORY_KEEP} (ledger.ASK_HISTORY_KEEP). The desk's "
+        f"history would silently be short. Raise ASK_HISTORY_KEEP.")
+
+
 try:
     print("tree render cost")
     check("§1 an archived seat carries an explicit null forecast",
@@ -558,6 +659,10 @@ try:
           the_children_index_agrees_with_the_scan_everywhere)
     check("§8 local_net_slugs does not re-read the document it was given",
           local_net_slugs_does_not_re_read_the_document_it_was_given)
+    check("§9 the ask history is capped without changing what the desk sees",
+          the_ask_history_is_capped_without_changing_what_the_desk_sees)
+    check("§9b the ask cap cannot drift below the desk's slice",
+          the_ask_cap_cannot_drift_below_what_the_desk_slices)
     print(f"\n{PASS} passed, {FAIL} FAILED")
 finally:
     shutil.rmtree(RIG, ignore_errors=True)

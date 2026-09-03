@@ -105,6 +105,19 @@ def _q(x: float) -> float:
 MAX_DEPTH: Final = 1024
 MAX_CHILDREN: Final = 1024
 
+#: An ask that is still waiting on the user. Named once because three places
+#: ask the question and a fourth spelling would be a silent disagreement.
+OPEN_ASK_STATUS: Final = frozenset({"open", "pending"})
+
+#: How many RESOLVED asks ride the tree payload. The desk renders
+#: `asks.filter(!askOpen).slice(-8)` (App.tsx), so anything >= 8 is correct
+#: and the surplus is pure payload: the full history measured 122,692 B of an
+#: 844 KB tree on the live org, refetched every 6 s. 12 leaves 50% headroom
+#: for the desk to show more without a backend change; `test_tree_render_cost`
+#: §9 reads the desk's slice and fails if this ever drops below it.
+#: ⚠ Open asks are NOT capped by this — see `tree`.
+ASK_HISTORY_KEEP: Final = 12
+
 # §5 — full model ids only; aliases drift (spike: 'sonnet' resolved to sonnet-4-5).
 MODELS: Final[dict[str, str]] = {
     # Fable 5.1 (2026-09-02). The tier default moves with the CLI's own — in
@@ -8227,6 +8240,41 @@ class Org:
                     "tier": self.nodes[k]["model"],
                 } for k in self.lineage_stack(nid)],
             }
+        # F-04 history, capped by what the DESK ACTUALLY RENDERS. The full
+        # list was shipped at `[-60:]` and measured 122,692 B on the live org
+        # — 15% of an 844 KB payload refetched every 6 s and on every save —
+        # while `App.tsx` renders `asks.filter(!askOpen).slice(-8)`, i.e. the
+        # last EIGHT resolved ones. Open asks are not read from here at all;
+        # the desk takes those from each node's own `ask`.
+        #
+        # ⚠ OPEN/PENDING ARE NEVER CAPPED. Only the resolved history is, and
+        # only after every open one is kept: an open ask is a question waiting
+        # on the user, and dropping one off the end of a list would lose it
+        # silently. The cap is a HISTORY cap, not a list cap.
+        #
+        # ⚠ ORIGINAL ORDER IS PRESERVED — the surplus is filtered out in
+        # place rather than the list being rebuilt open-first. The desk sorts
+        # for itself, but a payload whose order depends on status is a trap
+        # for the next reader of it.
+        #
+        # ⚠ THIS NUMBER IS COUPLED TO `App.tsx` AND A TEST ENFORCES THAT.
+        # `ASK_HISTORY_KEEP` must stay >= the desk's slice or the history
+        # silently gets shorter than the UI asks for — the failure would be
+        # "old asks stopped appearing", with nothing erroring.
+        # `test_tree_render_cost.py` §9 reads the slice out of `App.tsx` and
+        # asserts the inequality, so the two cannot drift apart unnoticed.
+        _asks_all = (self.d.get("asks", [])
+                     + [{**r, "kind": "credit"}
+                        for r in self.d.get("credit_requests", [])
+                        if r["status"] != "withdrawn"]
+                     + [{**r, "kind": "scope"}
+                        for r in self.d.get("scope_requests", [])
+                        if r["status"] != "withdrawn"])
+        _keep = {i for i, a in enumerate(_asks_all)
+                 if a.get("status") not in OPEN_ASK_STATUS}
+        _keep = set(sorted(_keep)[-ASK_HISTORY_KEEP:])
+        _asks = [a for i, a in enumerate(_asks_all)
+                 if a.get("status") in OPEN_ASK_STATUS or i in _keep]
         return {
             "slug": self.d["slug"],
             "name": self.d["name"],
@@ -8253,13 +8301,7 @@ class Org:
             # withdrawn hidden, moot SHOWN — same rule as node_ask (redteam
             # 2026-08-06: a mooted credit request reached no reader at all,
             # while its question twin left a nulled card explaining itself)
-            "asks": (self.d.get("asks", [])
-                     + [{**r, "kind": "credit"}
-                        for r in self.d.get("credit_requests", [])
-                        if r["status"] != "withdrawn"]
-                     + [{**r, "kind": "scope"}
-                        for r in self.d.get("scope_requests", [])
-                        if r["status"] != "withdrawn"])[-60:],
+            "asks": _asks,
             "asks_open": sum(1 for a in self.d.get("asks", [])
                              if a["status"] == "open")
                          + sum(1 for r in self.d.get("credit_requests", [])
