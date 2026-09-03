@@ -31,7 +31,7 @@ function tree(extra: Partial<TreePayload> = {}): TreePayload {
   return {
     slug: 'org', dirs: [], tiers: {
       haiku: 1, sonnet: 2, opus: 5, fable: 10,
-      'gpt-reserve': 1, luna: 1, terra: 2, sol: 5, flash: 1, pro: 2,
+      'gpt-reserve': 0.2, luna: 0.2, terra: 2, sol: 5, flash: 1, pro: 2,
     }, max_top_grant: 100, default_effort: '', effort_default: 'high',
     cascade_hire: true, sandboxed: false, ...extra,
   } as TreePayload
@@ -168,8 +168,8 @@ configTest('the switch lists every provider family with its ledger seats',
     assert.deepEqual(options(el).map((o) => [o.value, o.textContent?.trim()]), [
       ['haiku', 'haiku · seat 1'], ['sonnet', 'sonnet · seat 2'],
       ['opus', 'opus · seat 5'], ['fable', 'fable · seat 10'],
-      ['gpt-reserve', 'gpt-reserve · seat 1'],
-      ['luna', 'luna · seat 1'], ['terra', 'terra · seat 2'],
+      ['gpt-reserve', 'gpt-reserve · seat 0.2'],
+      ['luna', 'luna · seat 0.2'], ['terra', 'terra · seat 2'],
       ['sol', 'sol · seat 5'],
       ['flash', 'flash · seat 1'], ['pro', 'pro · seat 2'],
     ])

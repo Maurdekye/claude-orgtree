@@ -155,7 +155,10 @@ async function tips(mount: (el: React.ReactElement) => Promise<{ el: HTMLElement
  *  distinction explicit instead of letting a looser word-count quietly absorb
  *  it, which is how "3-5 words" would rot into "about five-ish words". */
 function parts(s: string): { phrase: string; cost: number | null } {
-  const m = /^(.*?)\s*\((-\d+)\)$/.exec(s.trim())
+  // `-[\d.]+`: a seat may be fractional below $1/M (2026-09-03). An
+  // integer-only pattern does not merely mis-parse "(-0.2)" — it fails to
+  // match at all and reports `cost: null`, which reads as "no cost badge"
+  const m = /^(.*?)\s*\((-[\d.]+)\)$/.exec(s.trim())
   if (!m) return { phrase: s.trim(), cost: null }
   return { phrase: m[1]!, cost: Number(m[2]) }
 }
@@ -340,8 +343,12 @@ uiTest('§6 the overseer’s lone badge drops the role word and keeps the cost',
       assert.doesNotMatch(s, /\b(subordinate|coworker|superior)\b/,
         `the overseer badge still names a role ("${s}") — under the eye there `
         + 'is only one hire badge, so the word distinguishes nothing')
-      // ...and nothing else went with it: shape is `hire <a|an> <tier> (-N)`
-      assert.match(s, /^hire an? [\w-]+ \(-\d+\)$/,
+      // ...and nothing else went with it: shape is `hire <a|an> <tier> (-N)`,
+      // where N may be FRACTIONAL — a sub-$1/M tier costs a fraction of a
+      // credit (gpt-reserve and luna are 0.2 since 2026-09-03), and the badge
+      // shows the real price rather than rounding it to something the ledger
+      // does not charge
+      assert.match(s, /^hire an? [\w-]+ \(-[\d.]+\)$/,
         `the overseer badge is not "hire <a|an> <tier> (-N)" ("${s}")`)
       const { phrase, cost } = parts(s)
       assert.equal(words(phrase).length, 3,
@@ -380,7 +387,7 @@ uiTest('§6 the overseer’s lone badge drops the role word and keeps the cost',
 // literal fallback for a payload that arrives without `tiers`:
 //
 //     const seats = tree.tiers ?? { haiku: 1, sonnet: 2, opus: 5, fable: 10,
-//       'gpt-reserve': 1, luna: 1, terra: 2, sol: 5, flash: 1, pro: 2 }
+//       'gpt-reserve': 0.2, luna: 0.2, terra: 2, sol: 5, flash: 1, pro: 2 }
 //
 // That is a genuine second price table living in the frontend. It agrees with
 // the backend today. Nothing made it agree, and nothing would notice if a
@@ -401,7 +408,12 @@ test('§8 the frontend’s fallback tier table matches the backend’s', () => {
   assert.ok(m, 'OrgCanvas no longer has a `tree.tiers ?? {…}` fallback — if it '
     + 'was removed, delete this check with it; if it moved, update the pattern')
   const fallback: Record<string, number> = {}
-  for (const [, k, v] of m![1]!.matchAll(/["']?([\w-]+)["']?\s*:\s*(\d+)/g)) fallback[k!] = Number(v)
+  // `[\d.]+`, not `\d+`: seats are FRACTIONAL below $1/M since 2026-09-03
+  // (gpt-reserve and luna are 0.2). An integer-only pattern reads "0.2" as
+  // "0" and the comparison then fails for a reason that has nothing to do
+  // with the two tables disagreeing — or, worse, would have quietly matched
+  // a fallback of 0, which is a seat that bounds nothing.
+  for (const [, k, v] of m![1]!.matchAll(/["']?([\w-]+)["']?\s*:\s*([\d.]+)/g)) fallback[k!] = Number(v)
 
   assert.deepEqual(fallback, SEATS,
     'the tier prices hard-coded in OrgCanvas.tsx disagree with ledger.TIERS.\n'
@@ -410,6 +422,51 @@ test('§8 the frontend’s fallback tier table matches the backend’s', () => {
     + 'A payload without `tiers` would make the UI quote a price the backend '
     + 'does not charge. Update the fallback, or drop it and let the tooltip '
     + 'render nothing rather than a number nobody honours.')
+})
+
+// ===================================================================== §8b
+// THE THIRD, FOURTH AND FIFTH COPIES. §8 guards ONE frontend price table —
+// the `tree.tiers ?? {…}` fallback — and `shared.ts` carries three more:
+// TIER_SEAT, CODEX_TIER_SEAT and ANTIGRAVITY_TIER_SEAT. They are not dead
+// code: `anyTierSeat` falls back through all three, and the desk, the cards
+// and the hire surfaces all price through it, so a stale entry here is a
+// price quoted at a seat the ledger does not charge.
+//
+// Found the hard way (2026-09-03): the sub-$1 repricing moved gpt-reserve and
+// luna to 0.2 in the backend, §8 went green because it only reads OrgCanvas,
+// and CODEX_TIER_SEAT sat at the old 1 until a rehire panel rendered
+// "seat 1" in a test that happened to assert the number. That is precisely
+// the drift §8's own comment warns about, in the table §8 does not read.
+// Parsed as SOURCE for the same reason §8 is: these are literals, the
+// agreement is a property of the text, and importing them would prove only
+// that the module loads.
+
+test('§8b every static seat table in shared.ts matches the backend’s', () => {
+  const src = readFileSync(path.join(__SRC_DIR__, 'canvas', 'shared.ts'), 'utf8')
+  const table = (name: string): Record<string, number> => {
+    const m = new RegExp(`${name}:\\s*Record<string,\\s*number>\\s*=\\s*\\{([^}]*)\\}`)
+      .exec(src)
+    assert.ok(m, `shared.ts no longer declares ${name} as a literal record — `
+      + 'if it moved or was derived, update this check; do not delete it '
+      + 'without replacing the guarantee')
+    const out: Record<string, number> = {}
+    // `[\d.]+`, as in §8: a seat may be fractional below $1/M
+    for (const [, k, v] of m![1]!.matchAll(/["']?([\w-]+)["']?\s*:\s*([\d.]+)/g)) {
+      out[k!] = Number(v)
+    }
+    return out
+  }
+  const merged = {
+    ...table('TIER_SEAT'),
+    ...table('CODEX_TIER_SEAT'),
+    ...table('ANTIGRAVITY_TIER_SEAT'),
+  }
+  assert.deepEqual(merged, SEATS,
+    'the seat tables in src/canvas/shared.ts disagree with ledger.TIERS.\n'
+    + `  frontend tables: ${JSON.stringify(merged)}\n`
+    + `  backend charges: ${JSON.stringify(SEATS)}\n`
+    + '`anyTierSeat` prices the desk, the cards and the hire chips through '
+    + 'these three, so a stale row quotes a seat nobody is charged.')
 })
 
 uiTest('§7 an ordinary agent card keeps its role words',

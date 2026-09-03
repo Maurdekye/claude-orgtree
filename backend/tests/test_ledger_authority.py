@@ -54,9 +54,9 @@ with open(os.path.join(os.environ["ORGTREE_DATA"], "defaults.json"), "w",
     _f.write('{"net_hub_address": "http://127.0.0.1:9"}')
 
 
-from orgtree.ledger import (EXTERN, MODELS, PM_LEVELS, SYSTEM,  # noqa: E402
-                            TIERS, TOOL_KEYS, USER, VIS_LEVELS, LedgerError,
-                            Org, slugify)
+from orgtree.ledger import (CREDIT_PLACES, EXTERN, MODELS,  # noqa: E402
+                            PM_LEVELS, SYSTEM, TIERS, TOOL_KEYS, USER,
+                            VIS_LEVELS, LedgerError, Org, slugify)
 
 PASS = 0
 DEFECTS = []          # (id, one-line description) — printed in the tail
@@ -503,11 +503,34 @@ def random_op(rnd, org):
 def assert_sound(org, cap, where):
     for k, n in org.nodes.items():
         g = n["grant"]
-        true(isinstance(g, int) and not isinstance(g, bool),
-             f"{where}: {k} grant is {type(g).__name__} {g!r}, not int")
+        # ⚠ this used to demand `isinstance(g, int)`, and that assertion is
+        # STALE, not violated: credits became fractional by user ruling
+        # 2026-09-03, so a grant of 7.2 is correct arithmetic. The check went
+        # on passing only because the pool this suite draws from
+        # (`list(TIERS)`) was all-whole; on main today, switching a node onto
+        # a $0.20 OpenRouter favorite already yields a float grant, and the
+        # sub-$1 repricing merely put such a tier INTO `TIERS` where this
+        # property test would finally pick it. Replaced with the invariant
+        # that actually holds and is stronger for the fractional world: a
+        # real, non-bool number sitting EXACTLY on the 0.01 grid. That is
+        # what `ledger._q` maintains and what makes `free() >= 0` exact
+        # rather than approximate — a residue here is the drift the grid
+        # exists to prevent, and an int can no longer catch it.
+        true(isinstance(g, (int, float)) and not isinstance(g, bool),
+             f"{where}: {k} grant is {type(g).__name__} {g!r}, not a number")
+        true(g == round(g, CREDIT_PLACES),
+             f"{where}: {k} grant {g!r} is off the 0.01 credit grid")
         true(g >= 0, f"{where}: {k} grant went negative ({g})")
-        derived = g - sum(org.seat_cost(c) + org.nodes[c]["grant"]
-                          for c in org.children(k))
+        # …and the shadow derivation is quantised for the same reason the
+        # ledger quantises its own (`ledger._q`, CREDIT_PLACES): with
+        # fractional seats a naive left-to-right float sum carries a residue
+        # the ledger deliberately does not — seed 5 produced a `derived` of
+        # 1.2000000000000028 against a correct `free()` of 1.2. Rounding both
+        # onto the 0.01 grid keeps the real content of the check (any actual
+        # accounting error is orders of magnitude larger) without asserting
+        # that float addition is associative.
+        derived = round(g - sum(org.seat_cost(c) + org.nodes[c]["grant"]
+                                for c in org.children(k)), CREDIT_PLACES)
         eq(org.free(k), derived, f"{where}: free({k}) not derivable")
         if n["state"] == "live":
             true(org.free(k) >= 0, f"{where}: {k} overdrafted (free {org.free(k)})")
@@ -1654,6 +1677,77 @@ def section_edges():
           lambda: eq(reloaded.d["models"].get("fable"), MODELS["fable"]))
     check("…while a per-org custom seat price is NOT overwritten",
           lambda: eq(reloaded.d["tiers"]["sonnet"], 42))
+
+    # ☞ …and a RE-PRICE is not an ADD, so the merge above cannot carry it:
+    # `setdefault` finds gpt-reserve/luna already present and leaves the old
+    # 1 there forever. Measured on the dev machine 2026-09-03 — all three
+    # live org docs carried `gpt-reserve: 1, luna: 1` — which is what the
+    # sub-$1 repricing (user ruling, same day) would have silently shipped to
+    # nobody without its own migration block. This is that block's test, and
+    # the first test the sonnet 3→2 precedent ever had.
+    rp = deep_org()
+    rp.d["tiers"]["gpt-reserve"] = 1                  # the OLD shipped default
+    rp.d["tiers"]["luna"] = 1
+    rp.d["tiers"]["sonnet"] = 3                       # …and the older one
+    rp.d["tiers"]["terra"] = 7                        # an operator's own price
+    repriced = Org(json.loads(json.dumps(rp.d)))      # what load_org does
+    check("a sub-$1 RE-PRICE reaches an org that predates it (a plain "
+          "add-only merge could not)",
+          lambda: eq((repriced.d["tiers"]["gpt-reserve"],
+                      repriced.d["tiers"]["luna"]), (0.2, 0.2)))
+    check("…the sonnet 3→2 precedent still migrates alongside it",
+          lambda: eq(repriced.d["tiers"]["sonnet"], 2))
+    check("…and an operator's OWN price is left alone, as ever",
+          lambda: eq(repriced.d["tiers"]["terra"], 7))
+    # anti-vacuity: only the old shipped default moves. A doc that already
+    # carries the NEW price must survive a reload unchanged (idempotence),
+    # and a doc carrying some third value must not be dragged to either.
+    twice = Org(json.loads(json.dumps(repriced.d)))
+    check("…the migration is idempotent — a second load changes nothing",
+          lambda: eq(twice.d["tiers"]["luna"], 0.2))
+    cu = deep_org()
+    cu.d["tiers"]["luna"] = 4                         # neither old nor new
+    check("…and a customised sub-$1 seat is not repriced either",
+          lambda: eq(Org(json.loads(json.dumps(cu.d))).d["tiers"]["luna"], 4))
+
+    # the repricing is a DROP, and a drop only frees capacity: committed falls
+    # by the difference per live seat, free rises by it, and `free() >= 0`
+    # cannot begin to fail. Proved against a doc frozen at the old price
+    # rather than asserted.
+    bud = Org.create("reprice-budget")
+    bud.hire(USER, None, "opus", 40, "boss")
+    bud.d["tiers"]["luna"] = 1                        # pretend it is yesterday
+    bud.hire(USER, "boss", "luna", 3, "cheap")
+    before = (bud.committed("boss"), bud.free("boss"))
+    after = Org(json.loads(json.dumps(bud.d)))        # …and reload into today
+    check("re-pricing a live agent's tier DOWN frees exactly the difference",
+          lambda: eq((after.committed("boss"), after.free("boss")),
+                     (round(before[0] - 0.8, 2), round(before[1] + 0.8, 2)),
+                     "committed/free move by 1 − 0.2"))
+    check("…and the seat cost of the already-hired node follows the table, "
+          "because a node stores its MODEL and never its seat",
+          lambda: eq(after.seat_cost("cheap"), 0.2))
+    check("…so no invariant tightens: the audit still reports no overdraft "
+          "and no problems",
+          lambda: eq((after.audit()["no_overdraft"], after.audit()["problems"]),
+                     (True, [])))
+
+    # ⚠ the ONE place a cheaper seat can REFUSE something it used to allow.
+    # `_check_tier_ceiling` compares seats as an ORDERING, so tiers that tied
+    # at 1 under the old floor no longer tie: a `max_tier="luna"` ceiling used
+    # to admit haiku (five times luna's price) because 1 > 1 is false. Pinned
+    # here because it is a real behaviour change on a saved ceiling, even
+    # though no live org had a kiosk ceiling set on the day (measured).
+    ceil = Org.create("reprice-ceiling")
+    ceil.d["kiosk"] = {"enabled": True}
+    ceil.set_kiosk_ceiling({"max_tier": "luna"})
+    check("a luna ceiling now REFUSES haiku — the 1-vs-1 tie is gone",
+          lambda: expect_error(
+              lambda: ceil.hire(USER, None, "haiku", 1, "h"),
+              "caps agent tier at luna"))
+    check("…and still admits luna itself",
+          lambda: eq((ceil.hire(USER, None, "luna", 1, "l"),
+                      ceil.node("l")["model"])[1], "luna"))
 
     # model VERSIONS are a subcategory of a tier, never a tier (user ruling
     # 2026-08-04): a fixed set of tiers, one chip each; the version lives in

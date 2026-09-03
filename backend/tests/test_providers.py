@@ -76,7 +76,7 @@ def main():
     # seat price exists in exactly one place.
     check("codex tiers are IN ledger.TIERS with the ruled seats (M4)",
           lambda: eq({t: TIERS.get(t) for t in providers.CODEX_TIERS},
-                     {"gpt-reserve": 1, "luna": 1, "terra": 2, "sol": 5},
+                     {"gpt-reserve": 0.2, "luna": 0.2, "terra": 2, "sol": 5},
                      "codex rows"))
     check("…and providers' views are DERIVED, not copied",
           lambda: eq((providers.CODEX_TIERS,
@@ -93,11 +93,11 @@ def main():
                       if t not in providers.CODEX_TIERS
                       and t not in providers.ANTIGRAVITY_TIERS],
                      "claude family"))
-    check("codex family is gpt-reserve 1 · luna 1 · terra 2 · sol 5",
+    check("codex family is gpt-reserve 0.2 · luna 0.2 · terra 2 · sol 5",
           lambda: eq([(t["tier"], t["seat"], t["model"])
                       for t in providers.codex_tiers()],
-                     [("gpt-reserve", 1, "gpt-reserve"),
-                      ("luna", 1, "gpt-5.6-luna"),
+                     [("gpt-reserve", 0.2, "gpt-reserve"),
+                      ("luna", 0.2, "gpt-5.6-luna"),
                       ("terra", 2, "gpt-5.6-terra"),
                       ("sol", 5, "gpt-5.6-sol")], "codex family"))
     check("every codex tier carries a chip letter",
@@ -106,6 +106,42 @@ def main():
     check("gpt-reserve has Luna's price band",
           lambda: eq(providers.CODEX_PRICES["gpt-reserve"],
                      providers.CODEX_PRICES["luna"], "gpt-reserve price"))
+
+    # ── the sub-$1 repricing (user ruling 2026-09-03) ──────────────────────
+    # The point of the whole change: a seat is the $/M input price, so two
+    # tiers that are 10× apart in dollars must be 10× apart in seats. Under
+    # the old floor-to-1 rule luna and terra BOTH cost 1 and the ranking was
+    # gone. This pins the rule against the price table rather than against a
+    # hand-copied number, so a price revision that forgets the seat fails.
+    print("§1b seats follow the STANDING $/M input, fractional below $1")
+
+    def _expect(p: float) -> float:
+        """ledger §3.1 / openrouter.seat_for, restated independently here."""
+        return float(int(p)) if p >= 1 else max(0.10, round(p, 2))
+
+    check("every codex seat equals its own standing input price by the rule",
+          lambda: eq({t: TIERS[t] for t in providers.CODEX_TIERS},
+                     # sol's $4 is a promo; the STANDING $5 sets the seat, so
+                     # sol is priced from its documented standing band, not
+                     # from the promotional CODEX_PRICES row
+                     {"gpt-reserve": _expect(0.20), "luna": _expect(0.20),
+                      "terra": _expect(2.00), "sol": _expect(5.00)},
+                     "codex seats vs prices"))
+    check("…so luna is 10× cheaper than terra in SEATS, as it is in dollars",
+          lambda: eq(round(TIERS["terra"] / TIERS["luna"], 6),
+                     round(providers.CODEX_PRICES["terra"][0]
+                           / providers.CODEX_PRICES["luna"][0], 6),
+                     "seat ratio == price ratio"))
+    check("no seat sits below the 0.10 floor",
+          lambda: eq(sorted({t: s for t, s in TIERS.items() if s < 0.10}),
+                     [], "sub-floor seats"))
+    check("flash stays 1 — $0.75 is launch pricing and a promo never sets a "
+          "seat (user rulings 2026-09-02 and 2026-08-28)",
+          lambda: eq((TIERS["flash"],
+                      providers.ANTIGRAVITY_PRICES["gemini-3.8-flash"][0]),
+                     (1, 0.75), "flash seat vs promo price"))
+    check("haiku stays 1 — exactly $1/M lands on the >=$1 branch",
+          lambda: eq(TIERS["haiku"], _expect(1.00), "haiku"))
 
     print("§2 codex tiers are LEDGER-hireable since M4 (the connected-"
           "provider gate is api.py's, tested in test_codex_dispatch §6)")

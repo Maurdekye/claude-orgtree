@@ -27,7 +27,7 @@ function tree(watchdogs: Watchdog[]): TreePayload {
     default_top_grant: 50, compact_at: 0, default_tools: null,
     default_visibility: 'team', default_effort: '', credit_requests: [],
     tiers: { haiku: 1, sonnet: 2, opus: 5, fable: 10,
-      'gpt-reserve': 1, luna: 1, terra: 2, sol: 5 },
+      'gpt-reserve': 0.2, luna: 0.2, terra: 2, sol: 5 },
     audiences: [], roots: [{
       id: 'owner', title: 'owner', tier: 'haiku', model_id: 'haiku', state: 'live',
       seat: 1, grant: 0, free: 0, ui_order: 0, cost_usd: 0, occupancy: null,

@@ -33,9 +33,10 @@ not spend** — a live node *holds* its seat plus its grant; retiring releases
 everything back; tokens are unlimited (real dollars are *tracked* per node and
 per org, but deliberately not capped). The tier name chooses the provider:
 Claude has haiku (1), sonnet (2), opus (5), and fable (10); Codex has
-gpt-reserve (1), luna (1), terra (2), and sol (5); Antigravity has flash (1)
-and pro (2); OpenRouter has one tier per model you favorite in App settings (its
-seat is the model's $/M input price, floored to 1). Messaging is
+gpt-reserve (0.2), luna (0.2), terra (2), and sol (5); Antigravity has flash
+(1) and pro (2); OpenRouter has one tier per model you favorite in App settings
+(its seat is the model's $/M input price — whole at or above $1/M, fractional
+below it, never under 0.1). Messaging is
 **downward any depth, one hop up, sideways between
 peers** — deep reach grants the recipient an audience to reply; only top-level
 agents write to your inbox unbidden. Every manual action you take notifies the
@@ -231,7 +232,7 @@ panel reports whether each provider is installed and connected; once it is,
 its tier row is immediately available in the hire controls.
 
 ```bash
-# Codex: gpt-reserve (seat 1), luna (1), terra (2), sol (5)
+# Codex: gpt-reserve (seat 0.2), luna (0.2), terra (2), sol (5)
 npm install --prefix ~/orgtree/codex @openai/codex
 npx --prefix ~/orgtree/codex codex login
 

@@ -27,8 +27,13 @@ match reality, fix the step — this document is only worth what it predicts.
   §1 principle 3, user 2026-08-28).
 - **Tier names stay ONE flat vocabulary** — a tier implies its provider;
   nothing takes a provider argument next to a tier (providers.py docstring).
-- **Seats = API $ per M input tokens at the STANDING price**, floored to 1
-  (promos don't set seats — sonnet-intro precedent). **Cost-dollars use
+- **Seats = API $ per M input tokens at the STANDING price**, floored to a
+  whole number at or above $1/M and taken as the price itself below it —
+  never under 0.1 (`openrouter.seat_for`, user ruling 2026-09-03; a $0.20/M
+  tier costs 0.2, which is how sub-dollar models keep their ranking instead
+  of all collapsing onto 1). Promos don't set seats — sonnet-intro
+  precedent, re-affirmed for sol 2026-08-28 and flash 2026-09-02, so price
+  the STANDING band even when a launch discount is live. **Cost-dollars use
   CURRENT listed prices** (promos included). Dollars ≠ seats; write both in
   providers.py with sources and dates.
 - **Naming: the CLI's own product name** ("Codex", not "ChatGPT (Codex)" or

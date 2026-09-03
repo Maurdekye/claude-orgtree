@@ -148,7 +148,7 @@ function surfaceTest(name: string,
         <NodeSquare node={node} pos={{ x: 0, y: 0 }} lod="norm" focused={false}
           dragging={false} isDrop={false}
           seats={{ haiku: 1, sonnet: 2, opus: 5, fable: 10,
-                   'gpt-reserve': 1, luna: 1, terra: 2, sol: 5, flash: 1, pro: 2 }}
+                   'gpt-reserve': 0.2, luna: 0.2, terra: 2, sol: 5, flash: 1, pro: 2 }}
           map={new Map()} op={() => Promise.resolve({} as never)} slug="org"
           toast={noop} pxc={1} zoom={1}
           onSpawn={noop} onSpawnSide={noop} onSpawnTop={noop}

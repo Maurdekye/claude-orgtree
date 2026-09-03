@@ -147,7 +147,10 @@ panelTest('every provider\'s seats render as numbers, never "undefined"',
     assert.equal(dflt.textContent?.trim(), 'as sol · seat 5')
     assert.doesNotMatch(el.textContent ?? '', /undefined/,
       'no seat in the panel may render as undefined')
-    for (const [t, seat] of [['gpt-reserve', 1], ['luna', 1], ['terra', 2], ['flash', 1],
+    // gpt-reserve/luna are 0.2 since the sub-$1 repricing (2026-09-03):
+    // the panel prints the seat verbatim, so a fraction must survive the
+    // round trip rather than being floored or rendered as `undefined`
+    for (const [t, seat] of [['gpt-reserve', 0.2], ['luna', 0.2], ['terra', 2], ['flash', 1],
                              ['pro', 2], ['fable', 10]] as const) {
       assert.match(option(el, t).textContent ?? '',
         new RegExp(`as ${t} · seat ${seat}\\b`))

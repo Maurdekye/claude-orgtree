@@ -75,7 +75,7 @@ the host. These private installs are discovered automatically; a global install
 on `PATH` works too.
 
 ```bash
-# Codex: gpt-reserve (seat 1), luna (1), terra (2), sol (5)
+# Codex: gpt-reserve (seat 0.2), luna (0.2), terra (2), sol (5)
 npm install --prefix ~/orgtree/codex @openai/codex
 npx --prefix ~/orgtree/codex codex login
 
@@ -94,7 +94,8 @@ kiosk limitation.
 **Optional OpenRouter provider (no CLI):** open App settings → Providers,
 paste an OpenRouter API key into the OpenRouter row, then click the row of
 model cards under it to pick which catalog models can be hired. Each picked
-model becomes a chip on the canvas (seat = its $/M input price, floored to 1)
+model becomes a chip on the canvas (seat = its $/M input price — whole at or
+above $1/M, fractional below it, never under 0.1)
 and runs through Claude Code against openrouter.ai, billed to the key's
 prepaid credits. Anthropic models run as first-class; other vendors are
 best-effort (Claude Code's tool scaffolding is tuned for Claude).

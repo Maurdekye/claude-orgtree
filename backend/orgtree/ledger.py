@@ -39,11 +39,12 @@ from .schema import (AudienceGrant, DirGrant, MailEntry, NodeDoc, NoticeEntry,
                      OrgDoc, OrgInboxEntry, ToolGrant, UserMailEntry)
 
 # §3.1 — derived from published API pricing: a seat is the API $ per M INPUT
-# tokens at the STANDING price, floored to 1 (promos never set seats — the
-# sonnet-intro precedent, re-affirmed for sol by user ruling 2026-08-28).
-# Sonnet was 3, then 2 (user ruling 2026-08-12: $2/M locked in). The codex
-# family (FR-15, same ruling): sol $5 standard (the current $4 is a promo
-# through ≥2026-11-21), terra $2, and gpt-reserve/luna $0.20 → floors to 1.
+# tokens at the STANDING price. Promos never set seats — the sonnet-intro
+# precedent, re-affirmed for sol by user ruling 2026-08-28 and for flash by
+# user ruling 2026-09-02. Sonnet was 3, then 2 (user ruling 2026-08-12: $2/M
+# locked in). The codex family (FR-15, same ruling): sol $5 standard (the
+# current $4 is a promo through ≥2026-11-21), terra $2, and gpt-reserve/luna
+# $0.20 → 0.2 each (they used to floor to 1; see the sub-$1 note below).
 # The antigravity family (D-188, re-walked for the Antigravity CLI
 # 2026-09-02): pro $2 standard (the ≤200K band — the >200K long-context
 # surcharge is a cost-dollars concern, never a seat), flash $1.50 STANDING →
@@ -53,18 +54,28 @@ from .schema import (AudienceGrant, DirGrant, MailEntry, NodeDoc, NoticeEntry,
 # keeps its own number. Tier names are ONE flat vocabulary — a tier implies
 # its provider (providers.py owns that axis).
 #
-# ☞ SEATS MAY BE FRACTIONAL BELOW $1/M (user ruling 2026-09-03). The rule is
+# ☞ SEATS ARE FRACTIONAL BELOW $1/M (user ruling 2026-09-03). The rule is
 # `openrouter.seat_for`: floor(p) at or above $1, max(0.10, round(p, 2))
-# below it. NOTHING IN THIS TABLE MOVES — at or above $1 the old floor still
-# governs, so flash stays 1 (not 1.5), pro 2, sol 5, opus 5, fable 10, and no
-# saved org gets a TIGHTER seat than it was loaded with. Only newly-priced
-# sub-$1 models (OpenRouter favorites, and any future cheap tier) carry a
-# fraction, which is exactly the ranking information the old floor-to-1
-# destroyed. The static table stays whole and is typed `float` only so the
-# dynamic half can join it. See `_q` below for why floats are safe here.
+# below it. At or above $1 the old floor still governs, so flash stays 1 (not
+# 1.5), pro 2, terra 2, sol 5, opus 5, fable 10, and haiku 1 (exactly $1/M
+# lands on the ≥$1 branch, not the fractional one). BELOW $1 the seat is now
+# the price: gpt-reserve and luna are $0.20/M and cost 0.2, which is the
+# ranking information the old floor-to-1 destroyed — four Codex tiers that
+# used to read 1·1·2·5 now read 0.2·0.2·2·5.
+#
+# ⚠ REPRICING A TIER IS A SEPARATE ACT FROM ADDING ONE, and it is the reason
+# the second migration block below exists. The user's follow-on ruling
+# (2026-09-03, verbatim: "i think if we are supporting fractional credts we
+# should reprice agents that are under $1/m") moved gpt-reserve and luna
+# AFTER the fractional machinery landed re-pricing nothing. A DROP is safe in
+# the budget (`committed` falls, `free` rises, `free() >= 0` cannot start
+# failing) but it is NOT safe unconditionally: `_check_tier_ceiling` compares
+# seats as an ORDERING, so tiers that used to TIE at 1 no longer do — see the
+# ⚠ in `_check_tier_ceiling`. A future RAISE would be the dangerous
+# direction: it can overdraw a saved org, and nothing here handles that.
 TIERS: Final[dict[str, float]] = {"fable": 10, "opus": 5, "sonnet": 2, "haiku": 1,
-                                  "sol": 5, "terra": 2, "gpt-reserve": 1,
-                                  "luna": 1,
+                                  "sol": 5, "terra": 2, "gpt-reserve": 0.2,
+                                  "luna": 0.2,
                                   "flash": 1, "pro": 2}
 
 # The credit grid. Every seat is quantised to 0.01 and every credit quantity
@@ -585,6 +596,28 @@ class Org:
         _t = cast("dict[str, Any]", _doc.get("tiers") or {})
         if _t.get("sonnet") == 3:
             _t["sonnet"] = 2
+        # ☞ …and the SUB-$1 REPRICING, by the same rule and for the same
+        # reason (user ruling 2026-09-03: "if we are supporting fractional
+        # credts we should reprice agents that are under $1/m"). gpt-reserve
+        # and luna are $0.20/M and used to floor to 1; they now cost 0.2.
+        #
+        # WITHOUT THIS BLOCK THE REPRICING REACHES NOBODY. `Org.create`
+        # snapshots the module table into the doc and the merge above is
+        # `setdefault`, so editing the constant is invisible to every org
+        # that already exists — measured 2026-09-03: all three live docs on
+        # the dev machine carried `gpt-reserve: 1, luna: 1`. That is the same
+        # silent no-op the tier-ADD migration above was written for, in its
+        # price-change costume.
+        #
+        # Only the OLD SHIPPED DEFAULT (1) migrates; any other value is an
+        # operator's own price and stays. Nothing else has to move with it:
+        # a node records `model` and `grant`, NEVER a seat (`seat_cost` reads
+        # this very table on every call), so `committed`/`free` re-derive from
+        # the new number the moment it lands — there is no stored holding to
+        # backfill and no credit quantity is rewritten here.
+        for _cheap in ("gpt-reserve", "luna"):
+            if _t.get(_cheap) == 1:
+                _t[_cheap] = TIERS[_cheap]
         # ☞ …and a MODEL-ID change needs one for exactly the same reason: the
         # add-only rule above means `MODELS["fable"] = claude-fable-5-1` reaches
         # NO org that already exists — `setdefault` finds the key present and
@@ -1029,7 +1062,21 @@ class Org:
         a HARD refusal for every actor — agents can't spawn above the cap and
         neither can direct API calls; the admin changes the cap itself in
         kiosk settings. No raise_ceiling bridge here: a cost cap should never
-        rise as a side effect of a hire."""
+        rise as a side effect of a hire.
+
+        ⚠ THIS IS THE ONE PLACE A SEAT IS AN ORDERING RATHER THAN A BUDGET,
+        which is why the sub-$1 repricing (2026-09-03) is not the pure
+        loosening the rest of the ledger sees. Everywhere else a cheaper seat
+        only frees capacity; here it can REFUSE a hire that used to pass, by
+        breaking a TIE. Before the repricing haiku·flash·gpt-reserve·luna all
+        sat at 1, so `max_tier="luna"` admitted haiku — a model five times
+        luna's price — because 1 > 1 is false. At luna 0.2 that tie is gone
+        and haiku is correctly refused. That is a fix, not a regression (the
+        floor-to-1 tie-collapse was the same information loss the repricing
+        exists to undo), but it IS a behaviour change on a saved ceiling, so
+        it is pinned by test rather than left to be discovered. Measured
+        2026-09-03: no live org had a kiosk ceiling set at all, so nothing
+        real changed on the day."""
         mt = (self.kiosk_ceiling() or {}).get("max_tier")
         if (mt in TIERS and tier in TIERS
                 and TIERS[tier] > TIERS[mt]):

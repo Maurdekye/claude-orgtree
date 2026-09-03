@@ -65,9 +65,9 @@ def provider_payload(enabled: bool) -> dict:
     }, {
         "id": "openai", "label": "Codex", "cli": "Codex CLI",
         "tiers": [
-            {"tier": "gpt-reserve", "provider": "openai", "seat": 1,
+            {"tier": "gpt-reserve", "provider": "openai", "seat": 0.2,
              "model": "gpt-reserve", "letter": "R"},
-            {"tier": "luna", "provider": "openai", "seat": 1,
+            {"tier": "luna", "provider": "openai", "seat": 0.2,
              "model": "gpt-5.6-luna", "letter": "L"},
             {"tier": "terra", "provider": "openai", "seat": 2,
              "model": "gpt-5.6-terra", "letter": "T"},
@@ -100,8 +100,8 @@ def findings(rows: list[dict]) -> list[str]:
     want = [
         ("haiku", "Claude", 1), ("sonnet", "Claude", 2),
         ("opus", "Claude", 5), ("fable", "Claude", 10),
-        ("gpt-reserve", "Codex", 1),
-        ("luna", "Codex", 1), ("terra", "Codex", 2),
+        ("gpt-reserve", "Codex", 0.2),
+        ("luna", "Codex", 0.2), ("terra", "Codex", 2),
         ("sol", "Codex", 5),
     ]
     got = [(r["value"], r["group"], r["seat"]) for r in rows]

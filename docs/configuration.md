@@ -54,9 +54,9 @@ provider argument to a hire or model switch.
 | provider | tiers (seat credits) | available when |
 |---|---|---|
 | Claude Code | haiku (1), sonnet (2), opus (5), fable (10) | the Claude CLI can run turns |
-| Codex | gpt-reserve (1), luna (1), terra (2), sol (5) | Codex CLI is installed and signed in. A spent usage window does NOT withhold them — hiring prepares an agent and the turn is what needs capacity (user ruling 2026-09-02). gpt-reserve additionally requires OpenAI's reserve grant to be live — it is withdrawn and restored per account, and orgtree sees that on the Codex usage board: a granted pool carries a rate-limit window of its own there (named after the model) and a withdrawn one carries none. PRESENCE of that window, never how full it is. NOT the CLI's model registry — `gpt-reserve` is `visibility: "hide"` there even while granted |
+| Codex | gpt-reserve (0.2), luna (0.2), terra (2), sol (5) | Codex CLI is installed and signed in. A spent usage window does NOT withhold them — hiring prepares an agent and the turn is what needs capacity (user ruling 2026-09-02). gpt-reserve additionally requires OpenAI's reserve grant to be live — it is withdrawn and restored per account, and orgtree sees that on the Codex usage board: a granted pool carries a rate-limit window of its own there (named after the model) and a withdrawn one carries none. PRESENCE of that window, never how full it is. NOT the CLI's model registry — `gpt-reserve` is `visibility: "hide"` there even while granted |
 | Antigravity | flash (1), pro (2) | Antigravity CLI is installed and signed in |
-| OpenRouter | one `or-<model>` tier per favorited model (seat = its $/M input, floored to 1), shown everywhere by the model's own name — `claude-sonnet-5`, never `or-anthropic-claude-sonnet-5` | an API key is set in App settings → Providers and openrouter.ai accepts it |
+| OpenRouter | one `or-<model>` tier per favorited model (seat = its $/M input — whole at or above $1/M, fractional below it, never under 0.1), shown everywhere by the model's own name — `claude-sonnet-5`, never `or-anthropic-claude-sonnet-5` | an API key is set in App settings → Providers and openrouter.ai accepts it |
 
 Provider detection is read-only. It checks the CLI installation and its own
 login records, but never copies or alters credentials. The Accounts panel and
@@ -241,7 +241,7 @@ these; ⚠ **an agent hiring must state every one explicitly** — no defaults a
 | `default_visibility` | `self` \| `team` \| `subtree` \| `full` | how much of the org chart a hire can see |
 | `default_effort` | `""` (CLI default) \| `low`…`max` | thinking effort; resolved **live** at turn start, so changing it moves existing agents too |
 | `permission_mode` | `acceptEdits` (default) | the CLI permission mode |
-| `tiers` / `models` | Claude: fable 10, opus 5, sonnet 2, haiku 1; Codex: sol 5, terra 2, gpt-reserve 1, luna 1; Antigravity: pro 2, flash 1 | credit cost per tier and the model each maps to (`ledger.py:49-80`) |
+| `tiers` / `models` | Claude: fable 10, opus 5, sonnet 2, haiku 1; Codex: sol 5, terra 2, gpt-reserve 0.2, luna 0.2; Antigravity: pro 2, flash 1 | credit cost per tier and the model each maps to (`ledger.py:49-80`) |
 
 MCP servers are discovered from the user's own `~/.claude.json` → `mcpServers`
 (`supervisor.py:466-472`), so orgtree grants from that list rather than defining servers itself.

@@ -54,7 +54,11 @@ class TierInfo(TypedDict):
     """One tier as the UI needs it — name, price band, default model id."""
     tier: str
     provider: str
-    seat: int
+    #: FLOAT, not int (2026-09-03): a sub-$1 tier costs a fraction of a
+    #: credit — gpt-reserve and luna are 0.2 — and the OpenRouter favorites
+    #: this shape is shared with have been fractional since `seat_for` grew
+    #: its below-$1 branch. The frontend already types it `number`.
+    seat: float
     model: str
     letter: str
 
@@ -73,9 +77,12 @@ _CODEX_LETTER: Final[dict[str, str]] = {
 #: views derive from them so there is exactly one copy to drift. Seat rule
 #: (user ruling 2026-08-28, ask card): STANDING API $ per M input — sol $5
 #: standard (the $4 promo, through ≥2026-11-21, never sets a seat), terra
-#: $2, and gpt-reserve/luna $0.20 floored to 1.
+#: $2, and gpt-reserve/luna $0.20 → 0.2 each since the sub-$1 repricing
+#: (user ruling 2026-09-03); they used to floor to 1, which made the four
+#: bands read 1·1·2·5 and lost luna's 10× advantage over terra.
 _CODEX_TIER_NAMES: Final = ("gpt-reserve", "luna", "terra", "sol")
-CODEX_TIERS: Final[dict[str, int]] = {
+#: float, not int: this is THE table the codex fractions live in.
+CODEX_TIERS: Final[dict[str, float]] = {
     t: _LEDGER_TIERS[t] for t in _CODEX_TIER_NAMES}
 CODEX_MODELS: Final[dict[str, str]] = {
     t: _LEDGER_MODELS[t] for t in _CODEX_TIER_NAMES}
@@ -117,7 +124,10 @@ _ANTIGRAVITY_LETTER: Final[dict[str, str]] = {"flash": "F", "pro": "P"}
 #: seat), flash $1.50 standing (3.8-flash's $0.75 is launch pricing through
 #: 2026-12-31, and a promo never sets a seat) → 1.
 _ANTIGRAVITY_TIER_NAMES: Final = ("flash", "pro")
-ANTIGRAVITY_TIERS: Final[dict[str, int]] = {
+#: float for the same reason CODEX_TIERS is, even though neither antigravity
+#: seat is fractional today: the type follows ledger.TIERS, not the values
+#: that happen to be in it.
+ANTIGRAVITY_TIERS: Final[dict[str, float]] = {
     t: _LEDGER_TIERS[t] for t in _ANTIGRAVITY_TIER_NAMES}
 ANTIGRAVITY_MODELS: Final[dict[str, str]] = {
     t: _LEDGER_MODELS[t] for t in _ANTIGRAVITY_TIER_NAMES}
@@ -129,7 +139,7 @@ ANTIGRAVITY_MODELS: Final[dict[str, str]] = {
 #: cannot: it answers "claude" for both, deliberately (see its docstring). A
 #: gate keyed on `provider_of` alone would refuse a typo'd tier with a message
 #: about installing Claude Code.
-CLAUDE_TIERS: Final[dict[str, int]] = {
+CLAUDE_TIERS: Final[dict[str, float]] = {
     t: seat for t, seat in _LEDGER_TIERS.items()
     if t not in _CODEX_TIER_NAMES and t not in _ANTIGRAVITY_TIER_NAMES}
 

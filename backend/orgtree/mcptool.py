@@ -641,7 +641,7 @@ TOOLS: list[dict[str, Any]] = [
             "editable later via orgtree_retool), and state exactly which "
             "folders, tools and org visibility it needs — you cannot grant "
             "anything you do not hold yourself. Seat costs: haiku 1, sonnet 2, "
-            "opus 5, fable 10 (Claude); gpt-reserve 1, luna 1, terra 2, "
+            "opus 5, fable 10 (Claude); gpt-reserve 0.2, luna 0.2, terra 2, "
             "sol 5 (Codex — "
             "hireable only while the Codex CLI is signed in on this machine; "
             "gpt-reserve ALSO needs a ChatGPT subscription sign-in AND a live "
@@ -1188,11 +1188,13 @@ TOOLS: list[dict[str, Any]] = [
             "the agent's own free allocation. Pricier: paid from its free first, "
             "any shortfall bubbles up the chain to YOU — refused only if the "
             "whole chain lacks it. Tiers: haiku 1 · sonnet 2 · opus 5 · "
-            "fable 10 (Claude); gpt-reserve 1 · luna 1 · terra 2 · sol 5 "
+            "fable 10 (Claude); gpt-reserve 0.2 · luna 0.2 · terra 2 · sol 5 "
             "(Codex, needs the "
             "CLI signed in); flash 1 · pro 2 (Antigravity, needs the CLI "
             "signed in); any `or-…` tier listed in this card's enum is an "
-            "OpenRouter favorite (seat = its $/M input, floored to 1)."),
+            "OpenRouter favorite (seat = its $/M input — floored to a whole "
+            "number at or above $1, the price itself below it, never under "
+            "0.1)."),
         "inputSchema": {"type": "object",
                         "properties": {"node": {"type": "string"},
                                        "tier": {"type": "string",
@@ -1271,7 +1273,8 @@ def _with_dynamic_tiers(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
         tier["enum"] = enum + [t for t in extra if t not in enum]
         tier["description"] = (
             "static tiers, plus the OpenRouter favorites this machine offers "
-            "(`or-…`, seat = their $/M input floored to 1): " + ", ".join(extra))
+            "(`or-…`, seat = their $/M input — whole at or above $1, "
+            "fractional below it): " + ", ".join(extra))
         out.append(tool)
     return out
 

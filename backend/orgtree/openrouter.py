@@ -15,7 +15,8 @@ module owns what a CLI would otherwise have owned:
   · the FAVORITES (the user's curated list — user spec 2026-09-02: "those are
     the models that have tokens that can be hired"), and
   · the DYNAMIC TIERS the favorites become: tier id `or-<slugified model id>`,
-    seat = the repo's standing rule (API $ per M INPUT tokens, floored to 1 —
+    seat = the repo's standing rule (API $ per M INPUT tokens — floored to a
+    whole number at or above $1, the price itself below it, `seat_for` /
     ledger.py §3.1), letter + color derived CANONICALLY from the model id so
     ~425 models never need a hand-picked palette.
 

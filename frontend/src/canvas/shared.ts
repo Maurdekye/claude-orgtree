@@ -49,13 +49,16 @@ export const MODEL_VERSIONS: Record<string, string[]> =
  *  accident. Mirrors backend providers.py (CODEX_TIERS / CODEX_MODELS) the
  *  same way TIER_SEAT mirrors ledger.TIERS. Seat costs RULED 2026-08-28:
  *  API $ per M input tokens at the STANDING price (sol $5 standard, not the
- *  promo $4; gpt-reserve/luna $0.20 floors to 1) — the hire surfaces use this
- *  family list when the Codex CLI is available. */
+ *  promo $4; gpt-reserve/luna $0.20). Those two used to floor to 1 and now
+ *  cost 0.2 — sub-$1 tiers are priced fractionally by user ruling
+ *  2026-09-03, so a `Record<string, number>` here genuinely holds a
+ *  fraction. The hire surfaces use this family list when the Codex CLI is
+ *  available. */
 export const CODEX_TIERS = ['gpt-reserve', 'luna', 'terra', 'sol']
 export const CODEX_TIER_LETTER: Record<string, string> = {
   'gpt-reserve': 'R', luna: 'L', terra: 'T', sol: 'S' }
 export const CODEX_TIER_SEAT: Record<string, number> = {
-  'gpt-reserve': 1, luna: 1, terra: 2, sol: 5 }
+  'gpt-reserve': 0.2, luna: 0.2, terra: 2, sol: 5 }
 /** The antigravity family (D-189, re-walked for the Antigravity CLI
  *  2026-09-02) — Google tiers served by `agy`: flash (3.8-flash, with 3.7 and
  *  3.6 in the version menu) and pro (3.1-pro). Same separate-list rule as the
