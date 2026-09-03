@@ -14,7 +14,7 @@ import {
   LockIcon, MailIcon, RetireIcon, SettingsIcon,
 } from '../icons'
 import {
-  anyTierSeat, CODEX_TIER_LETTER, CODEX_TIER_SEAT, CODEX_TIERS, DESK_SCALE, deskDpi, DRAFT, familyOffer, fmtCredits, freezeKind, FREEZE_LABEL_SHORT, ANTIGRAVITY_TIER_LETTER, ANTIGRAVITY_TIER_SEAT, ANTIGRAVITY_TIERS, isOpenRouterTier, NODE_H, NODE_W, openrouterTierIds, providerOf, reserveOffer, TIER_LETTER, TIER_SEAT, tierLabel, TIERS, USER,
+  anyTierSeat, CODEX_TIER_LETTER, CODEX_TIER_SEAT, CODEX_TIERS, DESK_SCALE, deskDpi, DRAFT, familyOffer, fmtCredits, freezeKind, FREEZE_LABEL_SHORT, ANTIGRAVITY_TIER_LETTER, ANTIGRAVITY_TIER_SEAT, ANTIGRAVITY_TIERS, isOpenRouterTier, NODE_H, NODE_W, openrouterTierIds, providerOf, queuedSwitchTitle, reserveOffer, TIER_LETTER, TIER_SEAT, tierLabel, TIERS, USER,
   USER_H, USER_W,
 } from './shared'
 import type {
@@ -1186,6 +1186,9 @@ export function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, c
       <div className={cls.join(' ') + ' maplod'} style={style}>
         <div className="map-top">
           <span className={'tier t-' + node.tier}>{TIER_LETTER[node.tier!] ?? '?'}</span>
+          {node.pending_switch &&
+            <span className="queued-mark" title={queuedSwitchTitle(node)}>
+              →{TIER_LETTER[node.pending_switch.tier] ?? '?'}</span>}
           {node.busy
             ? <span className="statusdot waiting" />
             : node.frozen ? <FrozenIcon fontSize="inherit" className="tray-frozen" />
@@ -1257,6 +1260,9 @@ export function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, c
           and tier chip blow up to poster size at desk zoom) */}
       {!focused && <div className="sq-head">
         <span className={'tier t-' + node.tier}>{TIER_LETTER[node.tier!] ?? '?'}</span>
+        {node.pending_switch &&
+          <span className="queued-mark" title={queuedSwitchTitle(node)}>
+            →{TIER_LETTER[node.pending_switch.tier] ?? '?'}</span>}
         <span className="name" title={node.id}>{node.id}</span>
         <button className={'mailbtn' + ((node.mail_pending ?? 0) > 0 ? ' has' : '')}
           onPointerDown={(e) => e.stopPropagation()}
@@ -1354,6 +1360,15 @@ export function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, c
             <span className="badge frozen"
               title="the user is driving this session from another device — mail queues until release (gear panel)">
               remote</span>}
+          {/* D-234 (user requirement 2026-09-03: "some flag somewhere visible
+              on the agent that it will occur next turn"): a switch queued
+              behind the running turn is WORN by the agent for as long as it
+              waits — not only in the dialog at the moment of action. It names
+              the target, and it clears with the field: applied, cancelled, or
+              replaced (then it names the new target). */}
+          {node.pending_switch &&
+            <span className="badge queued" title={queuedSwitchTitle(node)}>
+              → {node.pending_switch.tier} next turn</span>}
           {node.limit_locked && <span className="badge dim"><LockIcon fontSize="inherit" /> limit</span>}
           {stackN > 0 &&
             <button className="badge stackbadge"

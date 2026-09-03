@@ -25,7 +25,7 @@ import {
   HearingIcon, LayersIcon, LockIcon, MailIcon, PlayIcon, PsychologyIcon,
   SettingsIcon, SparkIcon, StopIcon, WarnIcon,
 } from '../icons'
-import { ago, ALL_PRESENT, ALL_TIERS, anyTierSeat, CODEX_TIERS, CopyIcon, EXTERN, fmtCredits, freezeKind, FREEZE_LABEL, ANTIGRAVITY_TIERS, isOpenRouterTier, md, openrouterTierIds, PROVIDER_LABEL, providerOf, TIER_LETTER, tierLabel, tierShown, USER, useEsc, usePolled } from './shared'
+import { ago, ALL_PRESENT, ALL_TIERS, anyTierSeat, CODEX_TIERS, CopyIcon, EXTERN, fmtCredits, freezeKind, FREEZE_LABEL, ANTIGRAVITY_TIERS, isOpenRouterTier, md, openrouterTierIds, PROVIDER_LABEL, providerOf, queuedSwitchTitle, TIER_LETTER, tierLabel, tierShown, USER, useEsc, usePolled } from './shared'
 import type { ProviderPresence } from './shared'
 import {
   addPending, CHAT_WINDOW, dropPending, loadOlder as storeLoadOlder, markBusy,
@@ -1398,6 +1398,9 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
         <div className="cc-head-top">
         <span className="cc-head-left">
           <span className={'tier t-' + node.tier}>{TIER_LETTER[node.tier!] ?? '?'}</span>
+          {node.pending_switch &&
+            <span className="queued-mark" title={queuedSwitchTitle(node)}>
+              →{TIER_LETTER[node.pending_switch.tier] ?? '?'}</span>}
           {/* in a switchboard panel the NAME is also a jump: focus this
               agent's own desk — same glide as clicking its card (user
               feature 2026-08-17; the tab strip's ⌖ button stays) */}

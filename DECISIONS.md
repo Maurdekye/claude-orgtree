@@ -2891,6 +2891,8 @@ floor was put at the ledger in the first place.
 Bounds: the gate keys on the PROVIDER changing, never on the tier changing, via
 the shared `providerOf` in `canvas/shared.ts` (the UI mirror of the backend
 helper). Two Codex tiers, or two Claude tiers, are one click apart as before.
+A switch asked for while the node is MID-TURN, on either side of that line, is
+not applied at all but QUEUED behind the turn — D-234.
 Knowledge-bearer REHIRE across providers is the same family and is handled
 separately by D-197, which refuses rather than confirms — including the
 `bearer_state == "preserving"` consult path, which resumes unconditionally and
@@ -2942,6 +2944,64 @@ a freshly minted `session_id`, `session_unrun` re-armed, and the dead lane
 markers dropped" — replaced in place, no bearer. The reset was announced
 correctly and the transcript stayed on disk, but nothing in the ledger pointed
 at it any more, and every desk reader followed the ledger.
+
+### D-234 · a model switch asked for mid-turn is QUEUED behind the turn, and the agent wears the queue
+Ruling (user, 2026-09-03, three refinements the same morning): "changing a
+model mid-task is a *queue*, not just an immediate switch: if the user wants
+an immediate switch, they need to interrupt the turn" — and "there should be
+some flag somewhere visible on the agent that it will occur next turn". So
+`switch_model` on a node that is mid-turn (the seat's durable `inflight`
+marker, or the supervisor's live `busy`, which both API doors pass in)
+applies NOTHING: the model stays what the running turn launched with, the
+request is recorded on the node as `pending_switch {tier, from, by, at,
+crossing}`, the result says `queued: true` and opens with "QUEUED, not
+switched", and the switch applies at the turn boundary — the `finally` of
+`_run_one_turn`, the one block every exit passes through (result, interrupt,
+watchdog kill, CLI death, content-filter halt, unexpected exception).
+Interrupting the turn is therefore the documented way to make a switch
+immediate, and the confirmation says so in one line. An idle node switches at
+once, exactly as before. Same-provider switches queue too: the rule is about
+the model, and a chart that says opus while the process runs fable — with the
+turn's cost booked against opus — is the lie this ruling exists to prevent.
+The flag rides on the node in the tree payload; the card wears "→ flash next
+turn" in its badge row, the map/mini card, the jump chips, the agent tray and
+the desk header wear a compact "→F", and all of it clears with the field.
+Second request while one is queued: REPLACE (last wins) — the flag shows the
+new target and the result names the replaced one. Asking for the node's
+CURRENT tier cancels the queue (the gear panel's "cancel queued switch" button
+is exactly that op). Queueing two would apply a switch nobody wants and pay a
+cold open for it; refusing would leave no way to change one's mind.
+Cannot apply at the boundary (the node left `live` mid-turn, credits no longer
+there): the queue is DROPPED WITH A RECORD — event `switch_queue_dropped`, a
+notice to the requesting agent and the live superior — and the node stays on
+the tier it ran, a whole state rather than a half one. Every refusal the
+immediate path raises (kiosk tier cap, top-grant cap, an agent funding a
+top-level upgrade, unpayable shortfall) fires at the REQUEST instead: the
+queue runs the real switch on a copy of the doc through the identical code
+path before recording anything (D-182: one implementation, no drift). No
+credit reservation — a queue rarely outlives one turn. A backend that dies
+mid-turn keeps the queue in the doc; `reconcile` applies it at startup BEFORE
+replaying the interrupted turn, so the replay is the successor's first turn
+on the lane the user asked for.
+Why: the coordinator's own instinct was warn-and-apply; the user chose queue
+because a busy agent must stay switchable (refusing would make it
+unswitchable) while nothing may be displayed that the running process is not
+doing. The boundary is where the choice costs nothing: the process that ran
+the turn is finished with its model, a crossing's split lands on a session no
+turn is writing to (D-196's mid-turn oddity disappears), and the parked warm
+process needs no special handling because its identity hash already carries
+the session id and the model, so the next turn relaunches on its own.
+Bounds: `cheap_compact` and `reseed` are not queued — they replace the session
+on purpose and their callers accept the mid-turn shape. The queue does not
+survive the node leaving `live`; it is dropped with the record above. The
+user, who is not a node, learns of a drop from the event log and from the
+badge vanishing over an unchanged tier — there is no user-facing push channel
+for it.
+Load-bearing: `inflight` is persisted BEFORE any lane speaks and popped in the
+same `finally` that applies the queue, so "mid-turn" and "the boundary" are
+one marker, read and cleared in one place. Pinned by
+`backend/tests/test_provider_switch_session.py` §7 and
+`frontend/tests/crossprovider.test.tsx` §7 / `queuedswitch.test.tsx`.
 
 ### D-197 · a knowledge bearer may be rehired at any tier of its OWN provider, and no other
 Ruling (coordinator, 2026-08-29, from a user report: *"cant select non-claude

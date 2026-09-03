@@ -255,6 +255,16 @@ export interface LineageEntry {
 // ---------------------------------------------------------------- tree view
 // ledger.py Org.tree() build() + api.py org_tree annotate(); _scrub_public
 // pops session_id for kiosk visitors, hence optional
+// D-234: a model switch asked for while the node was mid-turn, waiting for
+// the turn boundary — `switch_model`'s `pending_switch` record, verbatim
+export interface PendingSwitch {
+  tier: string
+  from: string
+  by: string
+  at: string
+  crossing: boolean
+}
+
 export interface TreeNode {
   id: string
   title: string
@@ -297,6 +307,9 @@ export interface TreeNode {
   last_status: NodeStatus | null
   prev_status: NodeStatus | null
   inflight_at: string | null
+  /** D-234: the switch queued behind the running turn; null/absent once it
+   *  applied, was cancelled, or the node was idle when asked */
+  pending_switch?: PendingSwitch | null
   last_denials: Denial[]
   turns: TurnStat[]
   frozen: TreeFrozen | null

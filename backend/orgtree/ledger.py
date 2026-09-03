@@ -3449,28 +3449,62 @@ class Org:
         return {"deleted": sorted(doomed_set), "warnings": []}
 
     # ------------------------------------------------------------- reallocate
-    def switch_model(self, actor: str, nid: str, tier: str) -> dict[str, Any]:
+    def switch_model(self, actor: str, nid: str, tier: str, *,
+                     busy: bool | None = None,
+                     _queued: dict[str, Any] | None = None) -> dict[str, Any]:
         """User spec: swap an agent's model ON THE FLY, mid-life — the session
         survives (№16: --resume honors a changed --model; the next turn runs
         the new model). CHEAPER: the seat difference melts into the node's own
         grant — holding unchanged, free grows. PRICIER: paid from the node's
         own free first; the shortfall bubbles up the chain to the actor
         (§4.6-generalized). Agents may switch models anywhere in their
-        SUBTREE, but never their own (user spec); the user switches anyone."""
+        SUBTREE, but never their own (user spec); the user switches anyone.
+
+        D-234 (user ruling 2026-09-03): a switch asked for while the node is
+        MID-TURN is QUEUED, not applied — the model stays what the running
+        turn launched with, `pending_switch` records the target, and the
+        switch applies at the turn boundary (the supervisor's `_run_one_turn`
+        finally block, the one place every exit passes through; `reconcile`
+        for a turn the backend's death ended). Interrupting the turn is the
+        documented way to make it immediate. `busy` is the supervisor's live
+        answer (the API doors pass it); the seat's durable `inflight` marker
+        is read regardless, so the ledger alone answers correctly for a turn
+        persisted before its process spoke. A second request while one is
+        queued REPLACES the target; asking for the CURRENT tier cancels it.
+        `_queued` is the pending record when the boundary applies it: the
+        authority was checked when it was queued, the turn is over by
+        construction, and the log row says when it was asked for."""
         if tier not in self.d["tiers"]:
             raise LedgerError(f"unknown tier {tier!r}; know {sorted(self.d['tiers'])}")
         self._require_live(nid)
         n = self.node(nid)
-        if actor != USER:
+        if actor != USER and _queued is None:
             if actor == nid:
                 raise LedgerError("you cannot switch your OWN model (user "
                                   "ruling) — your superior or the user can")
             if not self.is_ancestor(actor, nid):
                 raise LedgerError("model switches cover your own subtree only")
         old = n["model"]
+        pend = cast("dict[str, Any] | None", n.get("pending_switch"))
         if tier == old:
+            if pend and _queued is None:
+                # D-234: asking for the tier it ALREADY runs while a switch is
+                # queued is the cancel — the one control a queue needs, and
+                # the same door the queue came in by
+                n.pop("pending_switch", None)
+                w = [f"CANCELLED the queued switch of {nid} to {pend['tier']} "
+                     f"— it stays on {old}; nothing changes when its turn ends."]
+                self._log("switch_queue_cancelled", actor,
+                          {"node": nid, "was": pend["tier"], "kept": old}, w)
+                self._notify([x for x in [n["parent"]] if x not in (actor, None)],
+                             f'{"The user" if actor == USER else actor} cancelled '
+                             f'the queued switch of "{nid}" to {pend["tier"]}.')
+                return {"model": old, "seat": self.d["tiers"][old], "freed": 0,
+                        "queued": False, "cancelled": pend["tier"],
+                        "warnings": w}
             # design motto: asking for what's already true is a no-op, not an error
             return {"model": tier, "seat": self.d["tiers"][tier], "freed": 0,
+                    "queued": False,
                     "warnings": [f"{nid} already runs {tier} — nothing to do"]}
         # the kiosk tier cap is checked HERE, after the no-op return and after
         # the authority checks. It used to run first, so switching a
@@ -3481,6 +3515,61 @@ class Org:
         self._check_tier_ceiling(tier)
         if tier == "fable" and self.d.get("fable_lock") and actor == USER:
             self.clear_fable_lock()      # a user fable-switch is the decree
+        # D-234: MID-TURN → QUEUE. The model the running turn launched with is
+        # the model the chart must keep showing until that turn ends; a
+        # switch applied under it would make the card, the cost booking and
+        # the running process disagree — and for a crossing it would replace
+        # the session a turn is still writing to. `inflight` is the seat's
+        # durable "a turn is running" marker (persisted before any lane
+        # speaks, popped at the boundary); `busy` is the supervisor's live
+        # answer for the window before the marker lands. Either says busy.
+        from . import providers        # noqa: PLC0415 — avoids a cycle: providers reads TIERS from this module
+        crossed = providers.provider_of(old) != providers.provider_of(tier)
+        if _queued is None and (busy or n.get("inflight")):
+            # every refusal the immediate path would raise — the top-grant
+            # cap, an unpayable shortfall, a top-level upgrade by an agent —
+            # must fire NOW, at the request, not at the boundary where nobody
+            # is listening. Run the real switch on a COPY of the doc: the
+            # same code path, so the queue cannot drift from the immediate
+            # switch (D-182), and no reservation machinery — a queue rarely
+            # outlives one turn, and the boundary re-checks anyway.
+            Org(json.loads(json.dumps(self.d))).switch_model(
+                actor, nid, tier, _queued={"at": now(), "by": actor})
+            replaced = pend["tier"] if pend else None
+            n["pending_switch"] = {"tier": tier, "from": old, "by": actor,
+                                   "at": now(), "crossing": crossed}
+            gen = n.get("generation", 0)
+            w = ((f"Replaces the queued switch to {replaced}. " if replaced else "")
+                 + f"QUEUED, not switched: {nid} is mid-turn, so it stays on "
+                 f"{old} until this turn ends and moves to {tier} from its "
+                 f"next turn. To switch it NOW, interrupt the turn first (⏸ "
+                 f"on its desk) — the queued switch applies the moment the "
+                 f"turn ends, however it ends."
+                 + (f" That is a provider crossing "
+                    f"({providers.provider_of(old)}→"
+                    f"{providers.provider_of(tier)}): when it applies, the "
+                    f"conversation cannot carry over — the pre-switch self is "
+                    f"archived in place as \"{nid}@{gen}\" and the successor "
+                    f"starts fresh, cold; scratch, breadcrumbs and mail "
+                    f"survive." if crossed else ""))
+            warnings = [w]
+            self._log("switch_queued", actor,
+                      {"node": nid, "from": old, "to": tier,
+                       "replaced": replaced, "crossing": crossed}, warnings)
+            who = "the user" if actor == USER else f'"{actor}"'
+            self._notify([x for x in [n["parent"]] if x not in (actor, None)],
+                         f'{who.capitalize()} queued a model switch for '
+                         f'"{nid}": {old}→{tier}, applied when its current '
+                         f'turn ends.')
+            return {"model": old, "seat": self.d["tiers"][tier], "freed": 0,
+                    "queued": True, "tier": tier, "from": old,
+                    "replaced": replaced, "crossing": crossed,
+                    "warnings": warnings}
+        if pend:
+            # an immediate switch supersedes whatever was queued (the seat is
+            # idle: the boundary already ran, or a restart's reconcile did —
+            # this is the belt for a marker that somehow outlived both)
+            n.pop("pending_switch", None)
         # ☞ THE ONE PATH THAT MAKES A *GRANT* FRACTIONAL. Everywhere else a
         # grant is a whole number the user or an agent asked for; here a seat
         # DIFFERENCE lands in it (melt on a downgrade, absorb on an upgrade),
@@ -3528,8 +3617,6 @@ class Org:
         # between them), so promising continuity would be D-180's failure in
         # another field. A failure the user sees when they act is worth far
         # more than one that surfaces on their next message.
-        from . import providers        # noqa: PLC0415 — avoids a cycle: providers reads TIERS from this module
-        crossed = providers.provider_of(old) != providers.provider_of(tier)
         pred_id: str | None = None
         old_sid: str | None = None
         if crossed:
@@ -3570,8 +3657,8 @@ class Org:
             self._fold_notices(nid)
             # the ACTOR is told at switch time, not left to discover it on the
             # next message — that is the whole point of moving this failure
-            # forward. Whether the UI should REFUSE such a switch rather than
-            # warn is a user-facing rule and deliberately not decided here.
+            # forward. (Refuse-vs-warn for a BUSY node was the open question
+            # here; the user's answer is neither — D-234 queues it.)
             # Both messages name the COST as well as the loss. An agent (or a
             # user) told only "the conversation does not carry over" can read
             # the switch as cheap. It is not: the parked warm process and the
@@ -3593,9 +3680,12 @@ class Org:
                 f"it can have. Its scratch folder, breadcrumbs and mail are "
                 f"untouched.")
         who = "the user" if actor == USER else f'"{actor}"'
+        qnote = (" — queued while you were mid-turn, applied when that turn "
+                 "ended" if _queued else "")
         self._notify([x for x in [nid] if x != actor],
                      f'{who.capitalize()} switched your model {old}→{tier} '
-                     f'(seat {self.d["tiers"][old]:g}→{self.d["tiers"][tier]:g}). '
+                     f'(seat {self.d["tiers"][old]:g}→{self.d["tiers"][tier]:g})'
+                     f'{qnote}. '
                      + ('Your context is intact — carry on.' if not crossed else
                         f'That is a different PROVIDER '
                         f'({providers.provider_of(old)}→'
@@ -3620,10 +3710,55 @@ class Org:
         # the conversation went
         split = ({"bearer": pred_id, "old_session": old_sid}
                  if crossed else {})
+        # D-234: an applied queue says when it was asked for, so the log row
+        # and the result both read "queued at T, applied now"
+        queued = ({"queued_at": _queued.get("at"), "queued_by": _queued.get("by")}
+                  if _queued else {})
         self._log("switch_model", actor,
-                  {"node": nid, "from": old, "to": tier, **split}, warnings)
+                  {"node": nid, "from": old, "to": tier, **split, **queued},
+                  warnings)
         return {"model": tier, "seat": self.d["tiers"][tier],
-                "freed": max(0, -delta), "warnings": warnings, **split}
+                "freed": max(0, -delta), "queued": False,
+                "warnings": warnings, **split, **queued}
+
+    def apply_pending_switch(self, nid: str) -> dict[str, Any] | None:
+        """D-234: the turn the queue waited for is over — apply it, or say
+        why not. Called by the supervisor at the turn boundary and by
+        `reconcile` at startup; both hold DOC_LOCK and save afterwards.
+
+        Returns None when nothing was queued, the switch result when it
+        applied, or `{"dropped": reason}` when it could not. A queued switch
+        is NEVER silently forgotten: a drop is logged as an event and told to
+        the requesting agent and the live superior, and the node simply
+        stays on the tier it ran — a whole state rather than a half one. The
+        common refusals cannot reach here: the queue ran the real switch on
+        a copy of the doc at the request, so what is left is the node having
+        left `live` mid-turn, or credits that moved since."""
+        n = self.nodes.get(nid)
+        if n is None:
+            return None
+        pend = cast("dict[str, Any] | None", n.pop("pending_switch", None))
+        if not pend:
+            return None
+        by, tier = str(pend.get("by") or USER), str(pend.get("tier") or "")
+        try:
+            if n["state"] != "live":
+                raise LedgerError(f"{nid} is {n['state']}, not live — it "
+                                  f"left before its turn ended")
+            return self.switch_model(by, nid, tier, _queued=pend)
+        except LedgerError as e:
+            reason = str(e)
+            w = [f"the queued switch of {nid} to {tier} was DROPPED at the "
+                 f"end of its turn: {reason}. It stays on {n['model']}; ask "
+                 f"again once that is resolved."]
+            self._log("switch_queue_dropped", by,
+                      {"node": nid, "to": tier, "reason": reason,
+                       "queued_at": pend.get("at")}, w)
+            tell = [x for x in {by, n.get("parent")}
+                    if x and x != nid and x in self.nodes
+                    and self.nodes[x]["state"] == "live"]
+            self._notify(tell, w[0])
+            return {"dropped": reason, "tier": tier, "warnings": w}
 
     def reallocate(self, actor: str, nid: str, delta: float) -> dict[str, Any]:
         """±Δ between a node and its parent (§4.2). -Δ is the classic stranding op."""
@@ -7766,6 +7901,9 @@ class Org:
                 "last_status": n.get("last_status"),
                 "prev_status": n.get("prev_status"),
                 "inflight_at": (n.get("inflight") or {}).get("at"),
+                # D-234: a switch queued behind the running turn — the card
+                # wears it until the boundary applies (or a cancel clears) it
+                "pending_switch": n.get("pending_switch"),
                 "last_denials": n.get("last_denials") or [],
                 "turns": (n.get("turns") or [])[-8:],
                 # the `if n.get("frozen")` guard proves the key present — the

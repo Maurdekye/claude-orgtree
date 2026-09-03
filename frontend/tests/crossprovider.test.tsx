@@ -79,7 +79,8 @@ interface Mounted {
 }
 
 function gateTest(name: string,
-  body: (mount: (from?: string) => Promise<Mounted>) => Promise<void>): void {
+  body: (mount: (from?: string, extra?: Partial<CanvasNode>) => Promise<Mounted>)
+    => Promise<void>): void {
   test(name, async (t: TestContext) => {
     useFakeClock()
     const transport = installFetch(new FakeServer())
@@ -88,9 +89,9 @@ function gateTest(name: string,
       for (const v of open) await v.unmount()
       realClock()
     })
-    await body(async (from = 'haiku') => {
+    await body(async (from = 'haiku', extra: Partial<CanvasNode> = {}) => {
       const ops: OpRequest[] = []
-      const nd = node(from)
+      const nd = { ...node(from), ...extra }
       const v = await mountView(
         <NodeConfig node={nd} map={new Map([[nd.id, nd]])}
           tree={tree()} slug="org"
@@ -207,3 +208,51 @@ gateTest('codex→antigravity asks: a crossing between two NON-claude providers'
     assert.match(txt, /antigravity/, 'the dialog does not name Antigravity')
     assert.equal(m.ops.find((o) => o.op === 'switch_model'), undefined)
   })
+
+// §7 D-234 (user ruling 2026-09-03): a switch asked for while the agent is
+// MID-TURN is a QUEUE, not a switch — and the dialog must say so at the moment
+// of the action, name the interrupt as the way to make it immediate, and its
+// confirm button must not read "switch". §7c is the counterweight: the busy
+// flag alone, with no model change, must not conjure a dialog.
+
+gateTest('☠ §7 a MID-TURN switch asks, says QUEUED, and names the interrupt',
+  async (mount) => {
+    const m = await mount('haiku', { busy: true })   // Claude → Claude, busy
+    await m.pick('opus')
+    await m.save()
+    assert.ok(m.dialog(), 'a mid-turn switch must ask — it is a queue, not a switch')
+    const txt = (m.dialog()?.textContent ?? '').toLowerCase()
+    assert.match(txt, /queued/, 'the dialog does not say the switch is queued')
+    assert.match(txt, /interrupt/,
+      'the dialog does not name the interrupt as the immediate path')
+    assert.equal(m.ops.find((o) => o.op === 'switch_model'), undefined,
+      'the switch fired before the user confirmed')
+    const go = m.dialogButton(/^queue the switch/)
+    assert.ok(go, 'the confirm button must say "queue", never "switch"')
+    const { act } = await import('react')
+    await act(async () => { go!.click() })
+    assert.deepEqual(m.ops.find((o) => o.op === 'switch_model'),
+      { op: 'switch_model', node: 'agent', tier: 'opus' },
+      'confirming the queue did not send the switch')
+  })
+
+gateTest('§7b a mid-turn CROSSING says both: queued now, reset when it applies',
+  async (mount) => {
+    const m = await mount('sol', { busy: true })      // Codex → Claude, busy
+    await m.pick('opus')
+    await m.save()
+    const txt = (m.dialog()?.textContent ?? '').toLowerCase()
+    assert.match(txt, /queued/)
+    assert.match(txt, /conversation/, 'the crossing paragraph is missing')
+    assert.match(txt, /scratch/, 'the crossing paragraph is missing its survivors')
+    assert.ok(m.dialogButton(/^queue the switch/),
+      'a busy crossing must still confirm as a queue')
+  })
+
+gateTest('☠ §7c busy alone, with no model change, asks nothing', async (mount) => {
+  const m = await mount('haiku', { busy: true })
+  await m.save()
+  assert.equal(m.dialog(), null,
+    'a save that changes no model must not ask about queueing')
+  assert.equal(m.ops.find((o) => o.op === 'switch_model'), undefined)
+})

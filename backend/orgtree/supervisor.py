@@ -7426,6 +7426,26 @@ def _retire_breadcrumb_splice(slug: str, nid: str) -> None:
         pass
 
 
+def _apply_pending_switch_locked(o2: Org, slug: str, nid: str) -> bool:
+    """D-234: apply the model switch queued behind `nid`'s turn, on the doc
+    the caller already holds under DOC_LOCK (the caller saves). True when the
+    doc changed. The transcript copy a crossing owes the successor rides the
+    same save window, exactly as the API doors do for an immediate switch."""
+    if nid not in o2.nodes or not o2.node(nid).get("pending_switch"):
+        return False
+    r = o2.apply_pending_switch(nid)
+    if r is None:
+        return False
+    if r.get("old_session"):
+        export_predecessor_transcript(o2, nid,
+                                      old_sid=cast(str, r["old_session"]))
+    print(f"[orgtree] {slug}/{nid}: queued model switch "
+          + (f"DROPPED — {r['dropped']}" if r.get("dropped")
+             else f"applied → {r.get('model')}"
+                  + (f" (bearer {r['bearer']})" if r.get("bearer") else "")))
+    return True
+
+
 def _run_turn(slug: str, nid: str, text: str | dict[str, Any]) -> None:
     """Run a turn, then keep running whatever the queue has, until it is empty.
 
@@ -11596,7 +11616,19 @@ def _run_one_turn(slug: str, nid: str,
         try:
             with store.DOC_LOCK:
                 o2 = store.load_org(slug)
-                if nid in o2.nodes and o2.node(nid).pop("inflight", None) is not None:
+                changed = (nid in o2.nodes
+                           and o2.node(nid).pop("inflight", None) is not None)
+                # D-234: a model switch asked for DURING this turn was queued
+                # behind it; the turn is over, so it applies here — on every
+                # exit (result, interrupt, watchdog kill, CLI death, halt,
+                # exception), because this block is the one every exit passes
+                # through. Before the pardon check below on purpose: a
+                # crossing mints the successor's session and re-arms its
+                # pardon, while `ran_sid` names the session this turn
+                # actually ran — the bearer's now — so that spend is a no-op.
+                if _apply_pending_switch_locked(o2, slug, nid):
+                    changed = True
+                if changed:
                     store.save_org(o2)
                 # cheap pre-check on the doc already in hand: the (rare) node
                 # holding a never-run pardon pays for the transcript lookup,
@@ -18038,6 +18070,15 @@ def reconcile(slug: str) -> list[str]:
                     # "reconcile · its inflight marker is cleared").
                     dropped_cmd = True
         if inflight or dropped_cmd:
+            store.save_org(org)
+        # D-234: a switch queued behind a turn the backend's death ended
+        # applies NOW, before that turn is replayed below — the replay is the
+        # successor's first turn, on the lane the user asked for
+        queued = [k for k, n in org.nodes.items()
+                  if n["state"] == "live" and n.get("pending_switch")]
+        if queued:
+            for nid in queued:
+                _apply_pending_switch_locked(org, slug, nid)
             store.save_org(org)
         # delivery-journal fold-back: batches drained for a turn whose
         # delivery never confirmed — the backend died in between. The mail

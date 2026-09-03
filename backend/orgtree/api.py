@@ -5015,8 +5015,13 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
                 result = org.reallocate(body.node, a.get("node"), _arg_int(a, "delta", 0))  # type: ignore[arg-type]  # node() 422s on None
             elif body.tool == "orgtree_switch_model":
                 provider_hire_gate(org, a.get("tier"))
-                result = org.switch_model(body.node, a.get("node", ""),
-                                          a.get("tier", ""))
+                # D-234: the supervisor's live answer rides in — the ledger
+                # also reads the seat's durable inflight marker; either says
+                # "mid-turn" and the switch QUEUES instead of applying
+                result = org.switch_model(
+                    body.node, a.get("node", ""), a.get("tier", ""),
+                    busy=bool(a.get("node") and supervisor.state(
+                        body.org, str(a.get("node")))["busy"]))
                 if result.get("old_session"):
                     # a crossing archived the old session as a bearer — the
                     # transcript copy into the seat's scratch rides the same
@@ -6461,7 +6466,11 @@ def _org_op_locked(slug: str, body: Op, allow_raise: bool = False) -> dict[str, 
             if body.tier is None:
                 raise LedgerError("switch_model needs tier")
             provider_hire_gate(org, body.tier)
-            result = org.switch_model(body.actor, body.node, body.tier)  # type: ignore[arg-type]
+            # D-234: mid-turn → queued (see the agent door)
+            result = org.switch_model(
+                body.actor, body.node, body.tier,  # type: ignore[arg-type]
+                busy=bool(body.node
+                          and supervisor.state(slug, body.node)["busy"]))
             if result.get("old_session"):
                 # a crossing archived the old session as a bearer — the
                 # transcript copy rides the same save window as for

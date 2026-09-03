@@ -285,6 +285,7 @@ class NodeDoc(TypedDict):
     last_turn_mcp_tools: NotRequired[list[str]]
     last_turn_mcp_fingerprint: NotRequired[str]
     inflight: NotRequired[InflightInfo | None]
+    pending_switch: NotRequired[dict[str, Any] | None]   # D-234 {tier, from, by, at, crossing}
     last_denials: NotRequired[list[Denial]]
     turns: NotRequired[list[TurnStat]]
     frozen: NotRequired[FrozenInfo | None]

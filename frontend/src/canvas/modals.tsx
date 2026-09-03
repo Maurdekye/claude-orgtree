@@ -666,6 +666,12 @@ export function NodeConfig({ node, map, tree, slug, op, toast, codexProvider,
   // second copy of that question is what D-182 was about.
   const crossProvider = model !== node.tier
     && providerOf(model) !== providerOf(node.tier ?? '')
+  // D-234 (user ruling 2026-09-03): a switch asked for while the agent is
+  // MID-TURN is queued, not applied — and the user must understand that at
+  // the moment of the action, so a busy node's switch asks too, whatever the
+  // provider. `busy` is the supervisor's live answer layered onto the node.
+  const midTurn = model !== node.tier && Boolean(node.busy)
+  const asksFirst = crossProvider || midTurn
   // ONE save implementation, reached either directly or through the
   // confirmation. Extracted rather than duplicated so the confirmed path
   // cannot drift from the unconfirmed one — and so CANCEL is simply "never
@@ -1079,6 +1085,21 @@ export function NodeConfig({ node, map, tree, slug, op, toast, codexProvider,
         )}
         {/* D-106: the cascade preview, BEFORE the save (user ruling) — the
             grant is legal either way, so this warns, never blocks */}
+        {/* D-234: the queue is visible where the switch is made, with its one
+            control — cancel — which is the same op asked with the current
+            tier (the ledger's cancel door). An unchanged save does NOT cancel:
+            saving scope must never silently withdraw a switch. */}
+        {node.pending_switch && (
+          <div className="cascade-warn queued-warn">
+            ⏳ a switch to <b>{node.pending_switch.tier}</b> is QUEUED — it applies
+            when the current turn ends; interrupting the turn applies it now.{' '}
+            <button className="badge queued"
+              onClick={() => op({ op: 'switch_model', node: node.id,
+                tier: node.tier ?? '' })
+                .then((r) => toast(r.warnings ?? [])).catch(() => {})}>
+              cancel queued switch</button>
+          </div>
+        )}
         {cascade.length > 0 && (
           <div className="cascade-warn" title={cascade.map((c) =>
             `${c.id} gains ${c.gains.join(', ')}`).join('\n')}>
@@ -1096,18 +1117,30 @@ export function NodeConfig({ node, map, tree, slug, op, toast, codexProvider,
             // must leave the agent exactly as it was, and a half-applied save
             // (scope written, model refused) would be worse than no dialog.
             // A within-provider switch stays a plain one-click save.
-            (crossProvider ? setAsking('crossprovider') : doSave())}>save</button>
+            (asksFirst ? setAsking('crossprovider') : doSave())}>save</button>
           <button onClick={close}>cancel</button>
         </div>
       </div>
       {asking === 'crossprovider' && (
         <ConfirmModal
-          title={`move ${node.id} from ${PROVIDER_LABEL[providerOf(node.tier ?? '')]} to ${PROVIDER_LABEL[providerOf(model)]}?`}
+          title={midTurn
+            ? `queue ${node.id}'s switch to ${model}?`
+            : `move ${node.id} from ${PROVIDER_LABEL[providerOf(node.tier ?? '')]} to ${PROVIDER_LABEL[providerOf(model)]}?`}
           // names what is SPENT and what SURVIVES. Only naming the loss reads
           // as more destructive than it is, and someone would avoid a switch
-          // they should make.
-          body={`${node.id} is running on ${PROVIDER_LABEL[providerOf(node.tier ?? '')]} and ${model} runs on ${PROVIDER_LABEL[providerOf(model)]}. Its conversation CANNOT move between providers, so it will be reset from its next turn and it will not remember this conversation. The conversation is not lost: its current self is archived in place as the knowledge bearer ${node.id}@${node.generation ?? 0} — readable from the lineage panel, and rehireable there on ${PROVIDER_LABEL[providerOf(node.tier ?? '')]} to consult it. Its scratch files, breadcrumbs.md and mail all survive, and it is told to read them to pick up where it left off.`}
-          confirmLabel={`switch to ${model} and reset the conversation`}
+          // they should make. D-234: a busy node's dialog leads with the
+          // QUEUE — nothing changes until this turn ends — and names the
+          // escape hatch, because the user's stated way to get an immediate
+          // switch is to interrupt first; there is no separate control.
+          body={(midTurn
+            ? `${node.id} is MID-TURN. A model switch asked for mid-turn is QUEUED, not applied: nothing changes until this turn ends, then ${model} applies from its next turn. To switch it now, interrupt the turn first (⏸ on its desk), then save.${crossProvider ? ' ' : ''}`
+            : '')
+            + (crossProvider
+              ? `${node.id} is running on ${PROVIDER_LABEL[providerOf(node.tier ?? '')]} and ${model} runs on ${PROVIDER_LABEL[providerOf(model)]}. Its conversation CANNOT move between providers, so ${midTurn ? 'when the switch applies it' : 'it'} will be reset from its next turn and it will not remember this conversation. The conversation is not lost: its current self is archived in place as the knowledge bearer ${node.id}@${node.generation ?? 0} — readable from the lineage panel, and rehireable there on ${PROVIDER_LABEL[providerOf(node.tier ?? '')]} to consult it. Its scratch files, breadcrumbs.md and mail all survive, and it is told to read them to pick up where it left off.`
+              : '')}
+          confirmLabel={midTurn
+            ? `queue the switch to ${model}`
+            : `switch to ${model} and reset the conversation`}
           onConfirm={doSave}
           close={() => setAsking(null)} />
       )}

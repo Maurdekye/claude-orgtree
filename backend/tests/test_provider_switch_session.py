@@ -472,6 +472,211 @@ def main() -> int:
         assert o.node(nid).get("generation") == 2
     check("every crossing leaves its own generation", t6h)
 
+    print("\n§7 D-234: a switch asked for MID-TURN is queued behind the turn")
+
+    def mid_turn(slug, nid, cmd=False):
+        """What `_run_one_turn` persists before any lane speaks."""
+        with store.DOC_LOCK:
+            o = store.load_org(slug)
+            inf = {"at": "2026-09-03T10:00:00Z", "text": "working",
+                   "view": "working"}
+            if cmd:
+                inf["cmd"] = True
+            o.node(nid)["inflight"] = inf
+            store.save_org(o)
+
+    def boundary(slug, nid):
+        """The finally block's doc half: inflight popped, the queue applied."""
+        with store.DOC_LOCK:
+            o = store.load_org(slug)
+            o.node(nid).pop("inflight", None)
+            changed = supervisor._apply_pending_switch_locked(o, slug, nid)
+            store.save_org(o)
+        return changed
+
+    def tree_node(o, nid):
+        stack = list(o.tree()["roots"])
+        while stack:
+            x = stack.pop()
+            if x["id"] == nid:
+                return x
+            stack.extend(x.get("children") or [])
+        raise AssertionError(f"{nid} not in tree()")
+
+    def queue(slug, nid, tier, actor=USER):
+        with store.DOC_LOCK:
+            o = store.load_org(slug)
+            r = o.switch_model(actor, nid, tier)
+            store.save_org(o)
+        return r
+
+    def t7():
+        slug, nid = mkagent("queue", "opus")
+        ran_a_turn(slug, nid, "claude-uuid-q001", None)
+        mid_turn(slug, nid)
+        r = queue(slug, nid, "sol")
+        o = store.load_org(slug)
+        n = o.node(nid)
+        assert r.get("queued") is True and r.get("tier") == "sol", r
+        assert n["model"] == "opus", "☠ the model changed under a running turn"
+        assert n["session_id"] == "claude-uuid-q001" and f"{nid}@0" not in o.nodes, \
+            "☠ the session was split under a running turn"
+        assert (n.get("pending_switch") or {}).get("tier") == "sol", n.get("pending_switch")
+        assert n["pending_switch"]["crossing"] is True
+        w = " ".join(r["warnings"])
+        assert "QUEUED, not switched" in w and "interrupt" in w.lower(), w
+        assert [e for e in o.d["events"] if e["op"] == "switch_queued"], \
+            "no switch_queued event"
+        assert tree_node(o, nid)["pending_switch"]["tier"] == "sol", \
+            "the tree payload does not carry the queue"
+    check("☠ mid-turn: nothing applies, the queue is recorded, the actor is told QUEUED", t7)
+
+    def t7b():
+        slug, nid = mkagent("boundary", "opus")
+        ran_a_turn(slug, nid, "claude-uuid-q002", None)
+        mid_turn(slug, nid)
+        queue(slug, nid, "sol")
+        assert boundary(slug, nid), "the boundary reported no change"
+        o = store.load_org(slug)
+        n = o.node(nid)
+        assert n["model"] == "sol" and "pending_switch" not in n, n.get("pending_switch")
+        assert o.node(f"{nid}@0")["session_id"] == "claude-uuid-q002", \
+            "the pre-switch session is not the bearer's"
+        assert o.node(f"{nid}@0")["model"] == "opus"
+        assert n.get("session_unrun") and n["session_id"] != "claude-uuid-q002"
+        ev = [e for e in o.d["events"] if e["op"] == "switch_model"][-1]["detail"]
+        assert ev.get("queued_at") and ev.get("bearer") == f"{nid}@0", ev
+        assert os.path.exists(os.path.join(supervisor.scratch_dir(slug, nid),
+                                           "transcript.jsonl")), \
+            "the crossing's transcript copy did not land in the successor's scratch"
+        assert tree_node(o, nid)["pending_switch"] is None
+        told = " ".join(str(x.get("text") or "")
+                        for x in o.d.get("notices", {}).get(nid, []))
+        assert "queued while you were mid-turn" in told, told
+    check("☠ the boundary applies it: bearer, fresh session, transcript copy, flag cleared", t7b)
+
+    def t7c():
+        # a SAME-provider switch queues too, and at the boundary keeps its session
+        slug, nid = mkagent("samelane", "opus")
+        ran_a_turn(slug, nid, "claude-uuid-q003", None)
+        mid_turn(slug, nid)
+        r = queue(slug, nid, "sonnet")
+        assert r.get("queued") is True and r.get("crossing") is False, r
+        assert store.load_org(slug).node(nid)["model"] == "opus", \
+            "☠ a same-lane mid-turn switch changed the chart under the turn"
+        boundary(slug, nid)
+        o = store.load_org(slug)
+        assert o.node(nid)["model"] == "sonnet"
+        assert o.node(nid)["session_id"] == "claude-uuid-q003", \
+            "a same-lane switch must keep its session"
+        assert f"{nid}@0" not in o.nodes, "a same-lane switch minted a bearer"
+    check("☠ a same-provider mid-turn switch queues too, and keeps its session when applied", t7c)
+
+    def t7d():
+        slug, nid = mkagent("replace", "opus")
+        ran_a_turn(slug, nid, "claude-uuid-q004", None)
+        mid_turn(slug, nid)
+        queue(slug, nid, "sol")
+        r2 = queue(slug, nid, "flash")
+        assert r2.get("queued") and r2.get("replaced") == "sol", r2
+        o = store.load_org(slug)
+        assert o.node(nid)["pending_switch"]["tier"] == "flash", \
+            "the second request did not replace the target"
+        assert "Replaces the queued switch to sol" in " ".join(r2["warnings"])
+        r3 = queue(slug, nid, "opus")        # the CURRENT tier: cancel
+        assert r3.get("cancelled") == "flash" and r3.get("queued") is False, r3
+        o = store.load_org(slug)
+        assert "pending_switch" not in o.node(nid)
+        assert [e for e in o.d["events"] if e["op"] == "switch_queue_cancelled"]
+        assert boundary(slug, nid) is False, \
+            "a cancelled queue must be nothing at the boundary"
+        assert store.load_org(slug).node(nid)["model"] == "opus"
+    check("a second request REPLACES the target; asking for the current tier CANCELS", t7d)
+
+    def t7e():
+        # a refusal the immediate path would raise fires at the REQUEST
+        slug, nid = mkagent("cap", "fable")
+        ran_a_turn(slug, nid, "claude-uuid-q005", None)
+        with store.DOC_LOCK:
+            o = store.load_org(slug)
+            o.node(nid)["grant"] = 45          # fable seat 10: the melt to
+            o.d["max_top_grant"] = 50          # haiku would push it to 54
+            store.save_org(o)
+        mid_turn(slug, nid)
+        try:
+            queue(slug, nid, "haiku")
+        except Exception:                                            # noqa: BLE001
+            pass
+        else:
+            raise AssertionError("an unaffordable switch was queued instead of refused")
+        n = store.load_org(slug).node(nid)
+        assert "pending_switch" not in n and n["model"] == "fable"
+    check("☠ a refusal fires at the request — nothing is queued that cannot apply", t7e)
+
+    def t7f():
+        # the node leaves `live` before its turn ends: dropped WITH a record
+        slug, boss = mkagent("boss", "opus")
+        with store.DOC_LOCK:
+            o = store.load_org(slug)
+            o.node(boss)["grant"] = 20         # room to fund the kid's crossing
+            r = o.hire(USER, boss, "haiku", 0, "kid", add_dirs=[],
+                       tools=dict(ALL_TOOLS), org_visibility="team",
+                       charter="a report")
+            kid = r["node"]
+            store.save_org(o)
+        ran_a_turn(slug, kid, "claude-uuid-q006", None)
+        mid_turn(slug, kid)
+        queue(slug, kid, "sol", actor=boss)
+        with store.DOC_LOCK:
+            o = store.load_org(slug)
+            o.retire(USER, kid)
+            store.save_org(o)
+        assert boundary(slug, kid), "the drop must still count as a change (the flag clears)"
+        o = store.load_org(slug)
+        n = o.node(kid)
+        assert n["model"] == "haiku" and "pending_switch" not in n
+        assert f"{kid}@0" not in o.nodes, "a dropped queue minted a bearer"
+        ev = [e for e in o.d["events"] if e["op"] == "switch_queue_dropped"]
+        assert ev and "not live" in ev[-1]["detail"]["reason"], ev
+        told = " ".join(str(x.get("text") or "")
+                        for x in o.d.get("notices", {}).get(boss, []))
+        assert "DROPPED" in told, "the requester was not told"
+    check("☠ a node that leaves live mid-turn: the queue is dropped WITH an event and a notice", t7f)
+
+    def t7g():
+        # the backend died mid-turn: reconcile applies the queue at startup
+        slug, nid = mkagent("restart", "opus")
+        ran_a_turn(slug, nid, "claude-uuid-q007", None)
+        mid_turn(slug, nid, cmd=True)          # a command turn is dropped, not replayed
+        queue(slug, nid, "sol")
+        supervisor.reconcile(slug)
+        o = store.load_org(slug)
+        n = o.node(nid)
+        assert n["model"] == "sol" and "pending_switch" not in n and "inflight" not in n
+        assert o.node(f"{nid}@0")["session_id"] == "claude-uuid-q007"
+    check("☠ a queue that outlived the backend applies at startup, not never", t7g)
+
+    def t7h():
+        # ANTI-VACUITY: an IDLE node still switches at once
+        slug, nid = mkagent("idle", "opus")
+        ran_a_turn(slug, nid, "claude-uuid-q008", None)
+        r = queue(slug, nid, "sol")
+        assert r.get("queued") is False and r.get("bearer") == f"{nid}@0", r
+        assert store.load_org(slug).node(nid)["model"] == "sol"
+    check("☠ an idle node switches immediately — the queue is for busy nodes only", t7h)
+
+    def t7i():
+        # the supervisor's live `busy` answer queues even before the marker lands
+        slug, nid = mkagent("busyflag", "opus")
+        ran_a_turn(slug, nid, "claude-uuid-q009", None)
+        with store.DOC_LOCK:
+            o = store.load_org(slug)
+            r = o.switch_model(USER, nid, "sonnet", busy=True)
+            store.save_org(o)
+        assert r.get("queued") is True
+        assert store.load_org(slug).node(nid)["model"] == "opus"
+    check("the API doors' live busy answer queues too", t7i)
+
     print(f"\n{PASS} checks passed, {len(FAIL)} failed")
     for label, tb in FAIL:
         print(f"\n--- {label} ---\n{tb}")

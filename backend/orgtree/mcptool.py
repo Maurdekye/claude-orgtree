@@ -1173,7 +1173,12 @@ TOOLS: list[dict[str, Any]] = [
         "name": "orgtree_switch_model",
         "description": (
             "Switch the model of an agent in your SUBTREE on the fly (never your "
-            "own — your superior can). Within one provider its session and "
+            "own — your superior can). If the agent is MID-TURN the switch is "
+            "QUEUED (result: queued=true), not applied: it stays on its model "
+            "until that turn ends, then moves from its next turn — "
+            "interrupting the turn applies it at once; asking again with "
+            "another tier replaces the queued target, asking for its current "
+            "tier cancels it. Within one provider its session and "
             "context survive; the next turn runs the new model. ACROSS providers "
             "the conversation cannot move: the agent's pre-switch self is "
             "archived in place as a knowledge bearer (<node>@<gen> — readable "

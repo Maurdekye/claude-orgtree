@@ -14,7 +14,7 @@ import {
 } from '../icons'
 import {
   ago, anyTierSeat, attentionPip, CODEX_TIER_LETTER, CODEX_TIER_SEAT, CODEX_TIERS, DOG_H, DOG_W, DRAFT, ease, edgeJumpPlacement, type EJForm, EXTERN, fallbackActive, familyOffer, flatten, ANTIGRAVITY_TIER_LETTER, ANTIGRAVITY_TIER_SEAT, ANTIGRAVITY_TIERS, hireOf, INBOX, INBOX_H, layout, NODE_H, NODE_W, noteTierModels, openrouterTierIds, orgPxc, presenceOf, reserveOffer, segD, setOpenRouterTiers,
-  providerOf, savedView, saveView, segPoint, sizeOf, smooth, SPRING_C, SPRING_K, startView, startZoomOn, TIER_LETTER, TIER_SEAT, tierLabel, TIERS, useCrowdPiles, usePolled, USER, USER_H,
+  providerOf, queuedSwitchTitle, savedView, saveView, segPoint, sizeOf, smooth, SPRING_C, SPRING_K, startView, startZoomOn, TIER_LETTER, TIER_SEAT, tierLabel, TIERS, useCrowdPiles, usePolled, USER, USER_H,
   USER_W, withDraftTree, Z_DESK, Z_MAX, Z_MINI,
 } from './shared'
 import type {
@@ -2088,6 +2088,9 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
           onClick={() => centerOn(e.n.id)}>
           {e.side === 'l' && <ChevronLeftIcon fontSize="inherit" />}
           <span className={'tier t-' + e.n.tier}>{TIER_LETTER[e.n.tier!] ?? '?'}</span>
+          {e.n.pending_switch &&
+            <span className="queued-mark" title={queuedSwitchTitle(e.n)}>
+              →{TIER_LETTER[e.n.pending_switch.tier] ?? '?'}</span>}
           <span className="ej-name">{e.n.id}</span>
           {e.n.busy && <DestinationBusy tier={e.n.tier} />}
           {(e.n.mail_pending ?? 0) > 0 &&
@@ -2196,6 +2199,9 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
                   onKeyDown={(e) => { if (e.key === 'Enter') go() }}>
                   <div className="tray-main">
                     <span className={'tier t-' + n.tier}>{TIER_LETTER[n.tier!] ?? '?'}</span>
+                    {n.pending_switch &&
+                      <span className="queued-mark" title={queuedSwitchTitle(n)}>
+                        →{TIER_LETTER[n.pending_switch.tier] ?? '?'}</span>}
                     <span className="tray-name"
                       title={(n.charter || '').split('\n')[0] || n.id}>{n.id}</span>
                     <ContextWheel occ={n.occupancy} cw={n.context_window}

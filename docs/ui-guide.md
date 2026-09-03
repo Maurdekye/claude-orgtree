@@ -539,6 +539,16 @@ consult everything the compaction summary flattened). A bearer cannot rehire
 on another provider because its saved conversation cannot cross that boundary;
 the lineage picker shows those choices as disabled. To move it deliberately,
 rehire it on its own provider first, then use the confirmed model switch.
+
+A model switch asked for while an agent is **mid-turn** is **queued**, not
+applied (user ruling 2026-09-03): the agent keeps its model until the current
+turn ends, then moves from its next turn. The confirmation says so and names
+the escape hatch — interrupt the turn (⏸ on its desk) and the queued switch
+applies at once. While it waits the agent wears the queue: a "→ flash next
+turn" badge on its card, a small "→F" mark beside its tier letter at map zoom,
+in the agent tray, the jump chips and the desk header, and a line in its gear
+panel with the one control, **cancel queued switch**. Asking again with
+another tier replaces the queued target; the mark shows whichever is current.
 When its own headroom runs out it becomes a **preserving oracle**: still
 answers, retains nothing. Live bearers float tethered above their successor. A
 predecessor is NOT an org child — it holds no authority.
