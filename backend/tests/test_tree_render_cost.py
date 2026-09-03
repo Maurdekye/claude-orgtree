@@ -68,6 +68,8 @@ distinction directly, because it is the plausible-looking wrong fix.
 """
 from __future__ import annotations
 
+import builtins
+import glob
 import os
 import shutil
 import sys
@@ -324,6 +326,115 @@ def a_remembered_transcript_is_verified_before_it_is_served() -> None:
         shutil.rmtree(b, ignore_errors=True)
 
 
+# ── §6 · THE RULE ITSELF: filesystem work must not scale with node count ────
+class CountFS:
+    """Counts real filesystem syscalls made inside the block.
+
+    Patches the primitives rather than one named function on purpose: this
+    check must catch a per-node filesystem call that NOBODY HAS THOUGHT OF —
+    including one made through a helper that does not exist yet. Naming
+    `transcript_path` or `accounts.load` here would only re-guard the two
+    instances already known, which is precisely the mistake `_tree_slow_warned`
+    made.
+    """
+
+    SCANS = ("listdir", "scandir", "glob")     # the expensive kind: whole dirs
+
+    def __enter__(self) -> "CountFS":
+        self.n: dict[str, int] = {}
+        self._real = {
+            "stat": os.stat, "lstat": os.lstat, "listdir": os.listdir,
+            "scandir": os.scandir, "open": builtins.open, "glob": glob.glob,
+        }
+
+        def wrap(name: str, fn: Any) -> Any:
+            def counted(*a: Any, **k: Any) -> Any:
+                self.n[name] = self.n.get(name, 0) + 1
+                return fn(*a, **k)
+            return counted
+
+        os.stat = wrap("stat", self._real["stat"])
+        os.lstat = wrap("lstat", self._real["lstat"])
+        os.listdir = wrap("listdir", self._real["listdir"])
+        os.scandir = wrap("scandir", self._real["scandir"])
+        builtins.open = wrap("open", self._real["open"])
+        glob.glob = wrap("glob", self._real["glob"])
+        S.glob.glob = glob.glob                # supervisor holds its own ref
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        os.stat = self._real["stat"]
+        os.lstat = self._real["lstat"]
+        os.listdir = self._real["listdir"]
+        os.scandir = self._real["scandir"]
+        builtins.open = self._real["open"]
+        glob.glob = self._real["glob"]
+        S.glob.glob = self._real["glob"]
+
+    @property
+    def total(self) -> int:
+        return sum(self.n.values())
+
+    @property
+    def scans(self) -> int:
+        return sum(self.n.get(k, 0) for k in self.SCANS)
+
+
+# MEASURED 2026-09-03 with this exact harness, after both D-239 fixes:
+#   5 nodes -> 18 calls (2 scans) | 25 -> 21 (2) | 125 -> 24 (2)
+# i.e. 0.05 calls per added node, and directory scans FLAT.
+# Before the fixes the same harness measured 23 / 46 / 149 — 1.05 per node.
+# The budget is set an order of magnitude above what the code does and an
+# order of magnitude below what the two known regressions cost.
+_FS_PER_NODE_BUDGET = 0.25
+
+
+def filesystem_work_must_not_scale_with_node_count() -> None:
+    """The rule D-239 states, in the only form that can fail.
+
+    Every other check in this file guards an INSTANCE — this one guards the
+    RULE, and it is the only thing here that would have caught `6190b83` on
+    the day it landed, from a reviewer who had never heard of
+    `cache_forecast_public`. It is also how the second violation was found:
+    `accounts.serving_label` was loading and parsing `accounts.json` once per
+    seat, 1:1 with org size, and nothing in the codebase said so.
+    """
+    build("zz-fs-small", archived=4)
+    build("zz-fs-big", archived=124)
+    # warm both: the FIRST render of an org creates scratch directories and
+    # populates the transcript memo, which is setup cost, not render cost
+    api.org_tree("zz-fs-small", request())
+    api.org_tree("zz-fs-big", request())
+
+    with CountFS() as small:
+        api.org_tree("zz-fs-small", request())
+    with CountFS() as big:
+        api.org_tree("zz-fs-big", request())
+
+    grew = big.total - small.total
+    per_node = grew / 120.0
+    assert per_node <= _FS_PER_NODE_BUDGET, (
+        f"THE TREE RENDER IS DOING FILESYSTEM WORK PER NODE. "
+        f"5-node org: {small.total} syscalls {small.n}; "
+        f"125-node org: {big.total} syscalls {big.n}. "
+        f"That is {per_node:.2f} extra calls per added seat, over the "
+        f"{_FS_PER_NODE_BUDGET} budget. `annotate` runs for EVERY node on a "
+        f"6 s heartbeat and on every save_org, so anything per-node here is "
+        f"multiplied by the org and by the poll rate — see D-239, where one "
+        f"such call (a glob per seat) made refresh take 11-38 s. Whatever you "
+        f"just added to annotate: hoist it out of the loop, cache it per "
+        f"render, or skip it for archived seats.")
+
+    # …and the hard half. A directory scan is the expensive kind — the D-239
+    # glob stat-ed 349 project dirs EACH TIME — so it may not grow at all.
+    assert big.scans <= small.scans, (
+        f"DIRECTORY SCANS NOW SCALE WITH ORG SIZE: {small.scans} at 5 nodes, "
+        f"{big.scans} at 125. A per-node listdir/scandir/glob is the exact "
+        f"shape of D-239 and it is never acceptable in a render path; build "
+        f"the index once per request (`supervisor.transcript_index`) or "
+        f"memoise the lookup (`supervisor.transcript_path`).")
+
+
 try:
     print("tree render cost")
     check("§1 an archived seat carries an explicit null forecast",
@@ -336,6 +447,8 @@ try:
           a_live_seat_with_no_process_still_gets_its_forecast)
     check("§5 a remembered transcript is verified before it is served",
           a_remembered_transcript_is_verified_before_it_is_served)
+    check("§6 filesystem work must not scale with node count",
+          filesystem_work_must_not_scale_with_node_count)
     print(f"\n{PASS} passed, {FAIL} FAILED")
 finally:
     shutil.rmtree(RIG, ignore_errors=True)
