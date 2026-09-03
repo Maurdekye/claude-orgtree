@@ -2905,6 +2905,38 @@ nothing, so "just split on every switch" — the lazy fix that passes every
 cross-provider check — cannot pass it; and §6 pins that after a crossing the
 old session is held by exactly one node, the bearer's desk still renders it,
 and the successor's desk is empty rather than broken.
+Scar (recorded 2026-09-03; the repair was CANCELLED by the user — "just dont
+bother repairing them, then. we probably wont rehire any of them anyway"):
+eleven rows written by the first shape still point at ids that never ran,
+while their real transcripts sit on disk referenced by NO node. Rehiring any
+of them wakes an EMPTY session wearing the name — an agent with amnesia, not
+the expert the name implies — and `orgtree_read_transcript` on the row shows
+nothing, though the file is intact and readable. The analysis, a ready repair
+script (dry-run by default) and a backup of both org docs are kept in
+`nocon-bug`'s scratch (`probe/repair_rows.py`, `probe/repair-dryrun.txt`,
+`backup/20260903T095719Z/`) should anyone ever want one back. The lost
+session of each row, all under `~/.claude/projects/C--Users-ncola-k8bx-orgtree-
+scratch-<org>-<node>/<session>.jsonl`:
+- orgtree/openrouter-scope — fable session `68623ebf-50bc…` (5.2 MB, 09:00–
+  09:09Z, minted over at the 09:04:12Z fable→pro switch). The row's current
+  session `1d4387fa…` (flash, from the 09:41Z rehire) is real, so a rehire
+  resumes THAT and knows nothing of the fable work.
+- orgtree/openrouter-usage — row points at `517e6400…` (minted at the
+  09:04:17Z sonnet→flash switch, never ran); real sonnet session
+  `a97b912b-f290…` (1.6 MB).
+- the 2026-09-02 fleet switch to Codex (09:35–10:28Z), each row's pre-switch
+  Claude session: orgtree/codex-stream-order `8bdfcbd5…` (opus, 1.9 MB) ·
+  stopped-task-wake `860d896a…` (sonnet, 1.8 MB) · readiness-postreview
+  `cd018350…` (fable, 2.2 MB — it PREDATES the row's existing @0, a later
+  cheap compact) · mcp-readiness `774e68e0…` (opus, 1.9 MB); resonite/
+  stopped-task-fix `c9f558bb…` (opus, 0.8 MB) · mcp-reload-fix `02dd5e2c…`
+  (opus, 1.7 MB) · coordinator `193de23b…` (opus, 0.6 MB) · landing-gate
+  `5d974e18…` (opus, 0.9 MB) · inventory-backup `9e9f78a2…` (opus, 0.6 MB).
+  The four orgtree rows were switched back to Claude at 09:52Z and ran on
+  fresh sessions; the four live resonite rows run on Codex threads that are
+  real. In every case the session listed here is the one nobody points at.
+No codex-side orphan exists: every journal under `journals/projects` is held
+by some node's `session_id` or `codex_thread`.
 Was. (2026-08-29 → 2026-09-03) "Different provider → the session is REPLACED:
 a freshly minted `session_id`, `session_unrun` re-armed, and the dead lane
 markers dropped" — replaced in place, no bearer. The reset was announced
