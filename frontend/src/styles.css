@@ -182,6 +182,45 @@ main {
   position: relative; flex: 1; min-height: 0; overflow: hidden;
   border: 1px solid var(--line-soft); border-radius: 8px;
   background: var(--bg); cursor: grab; touch-action: none;
+  /* user bug 2026-09-03, the one three fixes missed: "after the first drag
+     finishes, all subsequent drags immediately fail" / "my mouse lets go
+     after only a few pixels".
+     A background pan is, as far as the browser is concerned, ALSO a native
+     text-selection drag — touch-action only speaks for touch, and cancelling
+     pointerdown does NOT suppress the compat mousedown for a MOUSE (verified
+     in msedge: selectstart still fires), so JS cannot call this off. So pan #1
+     left a real, non-collapsed Range behind: anchor .cbar-infinite -> focus
+     .canvas-bg, one client rect spanning the whole canvas. Its toString() is
+     EMPTY, so no highlight is ever painted and it is completely invisible —
+     which is why it survived three rounds of investigation and two jsdom
+     suites (jsdom models neither selection nor native DnD).
+     Pan #2's press then lands inside that Range, and Chromium's rule for a
+     press inside an existing selection is DRAG THE SELECTION, not extend it:
+     dragstart fires, a native drag revokes pointer capture, pointercancel
+     lands on the viewport (see onPointerCancel in OrgCanvas.tsx) and nulls
+     panRef mid-gesture. The pan dies after the single pointermove that had
+     already arrived — about 10px. The Range survives its own drag, so every
+     later pan dies the same way, and clicking a node re-arms exactly one pan
+     because the click collapses the selection.
+     The cure is to stop the Range ever forming. Every other gesture that
+     takes pointer capture over the canvas — the node reparent-drag, the grant
+     dial — sits in the same trap for the same reason, and is fixed by the
+     same rule. See the paired :is()-free re-enable list below. */
+  user-select: none; -webkit-user-select: none;
+}
+/* ...and selection comes back exactly where a press can NEVER become a pan.
+   Every selector here has a matching stopPropagation guard on the way to the
+   viewport's pan handler (.desk-over's content list in desk.tsx, .overlay's
+   own onPointerDown, .tray-wrap's), so re-enabling selection on them cannot
+   reintroduce the bug above. That equivalence is the rule: KEEP THE TWO LISTS
+   IN STEP — a new text surface on the canvas needs both, or it becomes either
+   unselectable or a pan-killer. Unfocused cards are deliberately absent: a
+   press there is already claimed by the reparent-drag, so there was never a
+   text selection to lose. */
+.viewport input, .viewport textarea, .viewport [contenteditable],
+.viewport .msgs, .viewport .mailrow, .viewport .overlay,
+.viewport .tray-wrap, .viewport .eff-pop {
+  user-select: text; -webkit-user-select: text;
 }
 .viewport:active { cursor: grabbing; }
 /* sandboxed orgs: the office border wears a light blue instead of the grey */

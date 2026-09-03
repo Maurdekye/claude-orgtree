@@ -1725,6 +1725,13 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
       // turns are actually spending it.
       + (fallbackActive(tree) ? ' onfallback' : '')} ref={viewportRef}
       onPointerDown={onPointerDown} onPointerMove={onPointerMove}
+      /* onPointerCancel routes to onPointerUp, which nulls panRef — correct,
+         but it means ANY pointercancel kills the gesture outright. The one
+         that used to fire here came from the browser starting a native drag
+         of an invisible canvas-wide text selection left behind by the
+         previous pan; that is now prevented in CSS, at `.viewport`'s
+         user-select rule in styles.css. Read that comment before adding a
+         text surface to the canvas. */
       onPointerUp={onPointerUp} onPointerCancel={onPointerUp}
       onScroll={(e) => {
         // the viewport pans by TRANSFORM only — any native scroll is the
