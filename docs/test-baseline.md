@@ -150,6 +150,17 @@ number quoted before you have is not evidence of anything.
 a full run (`storage-design`), at roughly 1-in-4 on a quiet machine and
 1-in-2 on a busy one. The rate tracks machine load, not code.
 
+**`mcptool` phantom-fails too, and that one stings**, because it is the suite
+that catches string-level regressions in tool results — it is what caught a
+reworded delivery note pinned at `test_mcptool:1006`. Signature:
+`AssertionError: the MCP server DIED on tools/call (stderr: b'')` — the same
+no-output-then-nonzero shape as the empty logs. Measured by `sqlite-review`
+on 2026-09-03: failed once in a full run and once solo, then passed **3/3**
+on re-run at 177 checks each, plus once earlier in the session and again in
+a different tree's full run. So a red `mcptool` is not automatically a real
+regression — but re-run it until it is clean rather than shrugging, because
+when it IS real it is telling you something a diff would not.
+
 #### The signature: a 132-byte log
 
 `sqlite-review` found the tell that makes this diagnosable rather than
@@ -179,9 +190,66 @@ that visibly fails:
    silently, looking like a finished result. Redirect the child:
    `… < /dev/null`.
 2. **`--quick` is not universal.** A suite that rejects the flag exits 2 with
-   a ~232-byte argparse error that reads exactly like a failure. Retry bare
-   before believing it — and note the size tell above will not save you here,
-   since 232 bytes is not 132.
+   a ~232-byte argparse error that reads exactly like a failure. **If a solo
+   re-run reports `rc=2`, retrying bare is not optional** — `mcp-tool-count`
+   and `prompt-view-race` both do this and both pass bare. Note the size tell
+   above will NOT save you here: 232 bytes is not 132, so this one has to be
+   caught by the exit code.
+
+## The tree you measured in may not be real
+
+The tells above say when a *result* is not real. This one says when the
+*tree* is not, which is worse, because a phantom failure is loud and this is
+silent.
+
+**A `finally` does not run when the process is killed.**
+
+`sqlite-review`'s mutation tester
+(`scratch/orgtree/sqlite-review/probes/p4_mutants.py`) plants a deliberate
+defect in the real `backend/orgtree/store.py`, runs the suite, and restores
+the file in a `finally`. A stray `pkill` took one run mid-mutant, and this
+was left behind in `store.py`:
+
+```python
+conn.execute("PRAGMA synchronous=NORMAL")   # should be FULL
+```
+
+Of every defect that tool plants, that is precisely the one no in-process
+test can catch: `synchronous=NORMAL` only loses data on a power cut, so
+nothing observable changes. **The suite ran green over it.** It was caught by
+diffing against the tool's own backup before sign-off — not by any test.
+
+Generalise past mutation testing: **any tool that edits the tree it measures**
+— a bisect script, a "temporarily disable X and re-run" one-liner, a probe
+that swaps a config — can die holding its edit, and every later run in that
+tree is then measuring something else while looking perfectly healthy.
+
+- **After running any tool that edits the tree, diff it.** `git -C <worktree>
+  diff --stat` takes a second and is usually enough.
+- **Make such tools self-heal on startup.** A leftover backup file is
+  unambiguous evidence that a previous run died holding an edit. ⚠ **Restore
+  from it BEFORE reading the baseline** — reading first captures the planted
+  defect *as* the baseline and bakes it in, which turns a one-run accident
+  into a permanent one.
+- **Assert the restore on the way out**, so the tool tells you rather than
+  you having to remember to ask.
+- **Do not `pkill -f` a broad pattern** while such a tool is running. That is
+  how this happened.
+
+### The pattern all of these share
+
+Three of the entries in this document were found on the same day by three
+different agents, and they are one defect wearing three faces: **the cleanup
+that silently did not happen, leaving a result that looks complete and is
+not.** A `finally` skipped by a kill. A `while read` loop whose child ate the
+name list, so 33 suites became 14 and then a clean-looking finish. And, in
+the app itself, an optimistic message bubble whose retirement depended on a
+row that was never going to be written, so it sat there looking queued
+forever.
+
+None of the three announced itself. Each produced something that read as a
+normal, finished, believable result. That is the thing to be suspicious of in
+this repo — not the loud failures, which take care of themselves.
 
 ## Reading the result
 
