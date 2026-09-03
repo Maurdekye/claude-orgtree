@@ -476,6 +476,50 @@ out["names_after"] = sorted(x["slug"] for x in store.list_orgs())
     check("a non-owner is refused the same restore, keeps serving the rest, and may migrate it once it sets the opt-in",
           non_owner_restore_refused_then_optin)
 
+    def release_revokes_authority() -> None:
+        # sqlite-review's repro: claim with the flag, give the claim back,
+        # drop the flag — a hand-restored .json must now be REFUSED. Before
+        # the fix `_gate_passed` outlived the claim that justified it.
+        root = fresh_root()
+        r = child('''
+os.environ["ORGTREE_MIGRATE"] = "1"
+store.claim_data_root()                    # authorised: migrates alpha, beta
+store.release_data_root()
+os.environ.pop("ORGTREE_MIGRATE")
+out["after_release"] = {"owner_held": store._owner_fd is not None,
+                        "authorised": store.migration_authorised(),
+                        "gate_passed": store._gate_passed,
+                        "allowed": store._migration_allowed()}
+od = os.path.join(store.DATA_ROOT, "orgs")
+import shutil
+shutil.copy(os.path.join(od, "alpha.json.premigration"), os.path.join(od, "sneaked.json"))
+before = sorted(os.listdir(od))
+try:
+    store.load_org("sneaked")
+    out["load"] = "MIGRATED ANYWAY"
+except store.MigrationRefused:
+    out["load"] = "refused"
+out["files_same"] = sorted(os.listdir(od)) == before
+''', root)
+        eq(r["err_type"], None, r.get("tb"))
+        eq(r["after_release"], {"owner_held": False, "authorised": False,
+                                "gate_passed": False, "allowed": False})
+        eq(r["load"], "refused")
+        eq(r["files_same"], True, "the refusal must write nothing: ")
+    check("release_data_root revokes the owner exemption: claim+flag, release, drop flag ⇒ a hand-restored .json is refused",
+          release_revokes_authority)
+
+    def pending_other_root_bad_slugs() -> None:
+        # pending_migrations(root=other) checks slugs against ITS root
+        other = fresh_root()
+        od = os.path.join(other, "orgs")
+        for bad in ("..", ".hidden", "a b "):
+            with open(os.path.join(od, f"{bad}.json"), "w") as f:
+                f.write("{}")
+        eq(store.pending_migrations(other), ["alpha", "beta"])
+    check("pending_migrations(root=other) ignores malformed slugs without consulting DATA_ROOT",
+          pending_other_root_bad_slugs)
+
     def interrupted_finished() -> None:
         # a verified candidate whose final rename was interrupted: the org
         # would otherwise be invisible. Finished without the opt-in — that

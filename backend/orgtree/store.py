@@ -350,8 +350,13 @@ def claim_data_root(root: str | None = None) -> None:
 def release_data_root() -> None:
     """Drop the claim early (tests, a graceful shutdown). Normally unnecessary
     — process exit does it."""
-    global _owner_fd
+    global _owner_fd, _gate_passed
     fd, _owner_fd = _owner_fd, None
+    # the claim is what authorised on-demand migration (`_migration_allowed`);
+    # giving the claim back gives that back too. Found by sqlite-review: with
+    # this line missing, claim → release → drop the flag → load_org still
+    # converted a hand-restored .json with neither claim nor flag.
+    _gate_passed = False
     if fd is None:
         return
     try:
@@ -386,6 +391,22 @@ def _safe_slug(slug: str) -> str:
     Reject by SHAPE, then confirm the resolved path really lands in orgs/ —
     the second check is what keeps this correct if the slug charset ever
     widens."""
+    _slug_shape(slug)
+    if not _slug_contained(slug, _orgs_dir()):
+        raise LedgerError(f"invalid org slug: {slug!r}")
+    return slug
+
+
+def _slug_contained(slug: str, orgs_dir: str) -> bool:
+    """Does `<orgs_dir>/<slug>.json` resolve to a direct child of `orgs_dir`?
+    Pure path arithmetic — touches nothing."""
+    p = os.path.join(orgs_dir, slug + ".json")
+    return os.path.dirname(os.path.abspath(p)) == os.path.abspath(orgs_dir)
+
+
+def _slug_shape(slug: str) -> None:
+    """The SHAPE half of `_safe_slug`: raises `LedgerError` for anything
+    that is not a plain file-name-safe slug. No filesystem, no DATA_ROOT."""
     if not isinstance(slug, str) or not slug or len(slug) > 128:  # pyright: ignore[reportUnnecessaryIsInstance]
         raise LedgerError(f"invalid org slug: {slug!r}")
     if (slug in (".", "..") or slug.startswith((".", "-"))
@@ -404,10 +425,6 @@ def _safe_slug(slug: str) -> str:
             # and test_persistence.py asserts they round-trip.
             or any(ord(c) < 0x20 or ord(c) == 0x7f for c in slug)):
         raise LedgerError(f"invalid org slug: {slug!r}")
-    p = os.path.join(_orgs_dir(), slug + ".json")
-    if os.path.dirname(os.path.abspath(p)) != os.path.abspath(_orgs_dir()):
-        raise LedgerError(f"invalid org slug: {slug!r}")
-    return slug
 
 
 def _json_path(slug: str) -> str:
@@ -554,7 +571,8 @@ class MigrationRefused(MigrationError):
 def pending_migrations(root: str | None = None) -> list[str]:
     """Slugs with an `orgs/<slug>.json` and no `orgs/<slug>.db` under `root`
     (DATA_ROOT by default). A pure read: one `listdir`, no directory made,
-    nothing opened. Sorted."""
+    nothing opened, and the slug check is against `root`'s own orgs dir —
+    not `_safe_slug`, which resolves through DATA_ROOT. Sorted."""
     d = os.path.join(root or DATA_ROOT, "orgs")
     try:
         names = set(os.listdir(d))
@@ -566,8 +584,10 @@ def pending_migrations(root: str | None = None) -> list[str]:
             continue
         slug = f[:-5]
         try:
-            _safe_slug(slug)
+            _slug_shape(slug)
         except LedgerError:
+            continue
+        if not _slug_contained(slug, d):
             continue
         if f"{slug}.db" not in names:
             out.append(slug)
