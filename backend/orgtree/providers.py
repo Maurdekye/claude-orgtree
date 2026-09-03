@@ -441,7 +441,9 @@ def _codex_version(exe: str) -> str:
         argv = (["cmd", "/c", exe] if os.name == "nt"
                 and exe.lower().endswith((".cmd", ".bat")) else [exe])
         r = subprocess.run(argv + ["--version"], capture_output=True,
-                           text=True, timeout=15)
+                           text=True, timeout=15,
+                           creationflags=(subprocess.CREATE_NO_WINDOW  # type: ignore[attr-defined]
+                                          if os.name == "nt" else 0))
         m = re.search(r"\d+\.\d+\.\d+", r.stdout or "")
         if m:
             return m.group(0)
@@ -598,7 +600,9 @@ def _antigravity_version(exe: str) -> str:
     try:
         r = subprocess.run(antigravity_argv(exe) + ["--version"],
                            capture_output=True, text=True, timeout=15,
-                           stdin=subprocess.DEVNULL, env=antigravity_env())
+                           stdin=subprocess.DEVNULL, env=antigravity_env(),
+                           creationflags=(subprocess.CREATE_NO_WINDOW  # type: ignore[attr-defined]
+                                          if os.name == "nt" else 0))
         m = re.search(r"\d+\.\d+\.\d+", r.stdout or "")
         if m:
             return m.group(0)
@@ -647,7 +651,9 @@ def _antigravity_account(exe: str) -> dict[str, Any]:
         r = subprocess.run(
             antigravity_argv(exe) + ["--log-file", log_path, "models"],
             capture_output=True, text=True, timeout=45, cwd=log_dir,
-            stdin=subprocess.DEVNULL, env=antigravity_env())
+            stdin=subprocess.DEVNULL, env=antigravity_env(),
+            creationflags=(subprocess.CREATE_NO_WINDOW  # type: ignore[attr-defined]
+                           if os.name == "nt" else 0))
     except (OSError, subprocess.TimeoutExpired):
         return out
     models: list[str] = []
