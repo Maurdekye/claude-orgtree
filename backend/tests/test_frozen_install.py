@@ -7,6 +7,10 @@ operator's real data directory are never touched.
 
 from __future__ import annotations
 
+# see tools/run_tests.py PORT_LITERAL_IS_DATA — this suite names the admin
+# port as fixture DATA and opens no socket; without this it is silently skipped
+ORGTREE_PORT_LITERAL_IS_DATA = "the admin port appears only in launch_inventory fixtures asserting what a frozen deployment's listener table must be; this suite opens no socket (no uvicorn.run/.serve()/socket()/bind(), verified 2026-09-03)"
+
 import hashlib
 import json
 import os
