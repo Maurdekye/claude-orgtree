@@ -92,9 +92,12 @@ test('desk header has bounded controls and a separate wrapping metadata row', as
   // yellow relaunch icon are ONE fact — the sent prefix has moved — seen by two
   // owners (the cache projection and the process lifecycle). This fixture is
   // busy with a changed prefix and a pending relaunch; both must render, and
-  // the card must be red: mid-turn it is red or nothing.
-  assert.ok(meta.querySelector('.cache-forecast.cold'),
-    'mid-turn card on a changed prefix is not red')
+  // the card must be the yellow steer warning: mid-turn it is that or nothing,
+  // never the red that promises a miss (user, 2026-09-03 10:36Z).
+  assert.ok(meta.querySelector('.cache-forecast.steer'),
+    'mid-turn card on a changed prefix is not the yellow steer warning')
+  assert.equal(meta.querySelector('.cache-forecast.cold'), null,
+    'mid-turn card wore red')
   assert.ok(top.querySelector('.proc-state .proc-relaunch'),
     'relaunch icon missing while the mid-turn red card shows')
   assert.equal(meta.querySelector('.statuschip.working'), null,

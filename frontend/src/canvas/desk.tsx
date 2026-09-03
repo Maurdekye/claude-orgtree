@@ -425,7 +425,8 @@ const cacheForecastTitle = (forecast: CacheForecast, midTurn = false): string =>
     // Mid-turn the badge survives only for a claim the running turn cannot
     // change (see CacheForecastMark); say so, so the reader knows why this
     // one is still here while the countdown and the rest are not.
-    midTurn ? 'a turn is running — this is shown because its outcome cannot change it' : '',
+    midTurn ? 'a turn is running — the prefix has moved since it was sent: a message that '
+      + 'steers into this turn is unaffected; one that misses the steer window lands cold' : '',
     `next-turn cache compatibility: ${compatibility}`,
     // D-226: a grey badge must ALWAYS be able to say why it is grey, and the
     // cause is machine-readable so a screenshot is still triage-able.
@@ -458,7 +459,7 @@ const cacheForecastTitle = (forecast: CacheForecast, midTurn = false): string =>
  *
  *   · `not_ready` / `prefix_changed` is the fact. It compares the prefix that
  *     would be sent now against the one already sent (the backend takes it
- *     against the request in flight, D-234); whatever entry the running turn
+ *     against the request in flight, D-235); whatever entry the running turn
  *     leaves behind belongs to the old prefix, so a message that misses the
  *     steer window lands cold regardless. It is the same fact the process
  *     mark's yellow relaunch icon shows from the lifecycle side.
@@ -600,16 +601,26 @@ export function CacheForecastMark({ forecast, busy }: {
   // whole point of counting down is to stop being green on time.
   const compatible = readiness === 'ready' && !expired
   const diagnostic = readiness === 'diagnostic' && !expired
-  const cls = compatible ? 'compatible' : diagnostic ? 'uncertain' : 'cold'
-  const body = compatible && live
-    ? countdownText(left)
-    : compatible ? '✓' : diagnostic ? '?' : '×'
-  const title = compatible && live
-    ? `${cacheForecastTitle(forecast)}\nexpires in ${countdownText(left)}`
-    : expired
-      ? `${cacheForecastTitle(forecast)}\nthe observed cache entry has passed `
-        + 'its derived expiry'
-      : cacheForecastTitle(forecast, Boolean(busy))
+  // Mid-turn the only card is the steer-window WARNING (user ruling
+  // 2026-09-03 10:36Z, D-235): red and green are guarantees about the next
+  // message sent — it will miss, it will hit — while this is conditional on
+  // missing the window, so it wears the composer banner's yellow and a "!"
+  // rather than the red × that would promise a miss a steered message never
+  // pays. `midTurnRenderable` has already ensured this is `prefix_changed`.
+  const steer = Boolean(busy)
+  const cls = steer ? 'steer'
+    : compatible ? 'compatible' : diagnostic ? 'uncertain' : 'cold'
+  const body = steer ? '!'
+    : compatible && live ? countdownText(left)
+      : compatible ? '✓' : diagnostic ? '?' : '×'
+  const title = steer
+    ? cacheForecastTitle(forecast, true)
+    : compatible && live
+      ? `${cacheForecastTitle(forecast)}\nexpires in ${countdownText(left)}`
+      : expired
+        ? `${cacheForecastTitle(forecast)}\nthe observed cache entry has passed `
+          + 'its derived expiry'
+        : cacheForecastTitle(forecast)
   return <span className={`cache-forecast ${cls}`} title={title} aria-label={title}>
     <span aria-hidden="true">cache {body}</span>
   </span>

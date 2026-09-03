@@ -579,14 +579,19 @@ test('mid-turn, the badge is red for a miss known for a fact, and otherwise abse
       }
     } finally { await busy.unmount() }
   }
-  // The red mark mid-turn is the same red mark — same class, same glyph — and
-  // it still names every changed component: that list is the actionable part.
+  // Mid-turn the mark is the yellow steer-window WARNING (user, 10:36Z): red
+  // and green are guarantees about the next message, this is conditional on
+  // missing the window. It still names every changed component — the
+  // actionable part — and idle the same forecast is the red ×.
   const cold = rows[1][1]
   const coldView = await mountView(<CacheForecastMark forecast={cold} busy />, (v) => v)
   try {
-    const mark = coldView.el.querySelector<HTMLElement>('.cache-forecast.cold')
-    assert.ok(mark, 'mid-turn prefix_changed lost its red class')
-    assert.equal(mark.textContent?.trim(), 'cache ×')
+    const mark = coldView.el.querySelector<HTMLElement>('.cache-forecast.steer')
+    assert.ok(mark, 'mid-turn prefix_changed is not the yellow steer warning')
+    assert.equal(mark.textContent?.trim(), 'cache !')
+    assert.equal(coldView.el.querySelector('.cache-forecast.cold'), null,
+      'mid-turn must never wear the red that promises a miss')
+    assert.match(mark.getAttribute('title') ?? '', /misses the steer window/)
     for (const item of cold.changed_inputs ?? []) {
       assert.match(mark.getAttribute('aria-label') ?? '', new RegExp(item),
         `mid-turn tooltip dropped changed component ${item}`)

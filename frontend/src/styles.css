@@ -4225,3 +4225,9 @@ label.set-row { cursor: pointer; }
 .usage-acct { display: flex; flex-direction: column; gap: 6px;
   border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
 .usage-acct-head { font-size: 13px; }
+/* mid-turn steer-window warning (D-235): conditional on missing the window,
+   so the composer banner yellow, never the red that promises a miss */
+.cache-forecast.steer {
+  color: var(--warn, #e5c07b);
+  border-color: color-mix(in srgb, var(--warn, #e5c07b) 68%, var(--line));
+}
