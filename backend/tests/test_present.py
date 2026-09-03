@@ -377,6 +377,97 @@ def sec_after_the_ruling() -> None:
           "rather than just saying no", _headless_refusal_names_the_alternative)
 
 
+# ══════════════════════════════════════════════════════════════════════════ §5
+def sec_gallery() -> None:
+    print("\n§5  the org-wide gallery — a view over documents, not the tree")
+
+    def _flat_not_the_tree():
+        o = org3()
+        o.audience_grant(USER, "kid", USER)
+        live = o.present_document("boss", "from the top", "body")["presented"]
+        retired = o.present_document("kid", "from a report", "kid body")["presented"]
+        o.retire(USER, "kid")
+        # a second top-level, presented, then permanently deleted — delete() of
+        # boss would take the whole tree and collapse the two cases into one
+        o.hire(USER, None, "haiku", 2, "ghost")
+        gone = o.present_document("ghost", "from a ghost", "ghost body")["presented"]
+        o.delete(USER, "ghost")
+        g = o.document_gallery()
+        by_id = {r["id"]: r for r in g}
+        assert live in by_id and retired in by_id and gone in by_id, g
+        assert by_id[live]["node_state"] == "live", by_id[live]
+        assert by_id[retired]["node_state"] == "archived", by_id[retired]
+        assert by_id[gone]["node_state"] == "deleted", by_id[gone]
+        assert by_id[live]["evicted"] is False
+        assert [r["id"] for r in g] == sorted(
+            [r["id"] for r in g],
+            key=lambda i: by_id[i]["at"], reverse=True)
+    check("gallery · reads the flat list: live, retired and deleted presenters "
+          "all keep their rows, newest first", _flat_not_the_tree)
+
+    def _evicted_rows_from_the_log():
+        o = org3()
+        first = o.present_document("boss", "the one being read", "body")
+        did = first["presented"]
+        for i in range(10):
+            o.present_document("boss", f"later {i}", "body")
+        assert not [d for d in docs(o, "boss") if d["id"] == did], "fixture"
+        g = o.document_gallery()
+        row = next(r for r in g if r["id"] == did)
+        assert row.get("evicted") is True, row
+        assert row["title"] == "the one being read", row
+        assert row["node"] == "boss", row
+        live = [r for r in g if not r.get("evicted")]
+        assert len(live) == 10, len(live)
+        assert all("later" in r["title"] for r in live)
+    check("gallery · an evicted body still has a row (title + content-evicted "
+          "flag) reconstructed from the present_evicted log",
+          _evicted_rows_from_the_log)
+
+    def _dismissed_is_gone():
+        o = org3()
+        did = o.present_document("boss", "read me", "body")["presented"]
+        o.dismiss_document(did)
+        assert not o.document_gallery()
+    check("gallery · a dismissed card is omitted — the user removed it",
+          _dismissed_is_gone)
+
+    def _no_body_on_the_wire():
+        o = org3()
+        o.present_document("boss", "secret", "the body must not leak")
+        g = o.document_gallery()
+        assert "body" not in g[0], g[0]
+    check("gallery · metadata only — the body stays off the list payload",
+          _no_body_on_the_wire)
+
+    def _no_extra_gallery_cap():
+        # live documents already cap at 100 org-wide. The gallery must still
+        # surface the evicted log line rather than applying a second 100-row
+        # prune that would hide the card the user is hunting for.
+        o = org3()
+        names = ["boss"]
+        for i in range(9):
+            name = f"a{i}"
+            o.hire(USER, None, "haiku", 2, name)
+            names.append(name)
+        first = o.present_document("boss", "the one being read", "body")["presented"]
+        for name in names:
+            n_already = 1 if name == "boss" else 0
+            for i in range(10 - n_already):
+                o.present_document(name, f"{name} later {i}", "body")
+        assert len(docs(o)) == 100, len(docs(o))
+        # 101st present: per-node prune drops `first`. A gallery-side rows[:100]
+        # would then hide it; the view must still return the log line.
+        o.present_document("boss", "the overflow", "body")
+        assert len(docs(o)) == 100, len(docs(o))
+        g = o.document_gallery()
+        assert len(g) == 101, len(g)
+        row = next(r for r in g if r["id"] == first)
+        assert row["evicted"] is True and row["title"] == "the one being read"
+    check("gallery · no extra 100-row cap: live 100 + one evicted log line "
+          "are all returned", _no_extra_gallery_cap)
+
+
 # ═════════════════════════════════════════════════════════════════════════ main
 
 def main() -> None:
@@ -385,6 +476,7 @@ def main() -> None:
     sec_replaces()
     sec_neighbours()
     sec_after_the_ruling()
+    sec_gallery()
 
     print(f"\n{'═' * 70}\n{PASS} checks passed, {len(FAIL)} failed, "
           f"{len(GAPS)} gaps")

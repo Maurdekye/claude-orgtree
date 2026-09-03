@@ -146,6 +146,33 @@ check("GET .../documents · node_state badges retired (archived) and "
       "permanently deleted presenting agents", node_state_badges_archived_and_deleted)
 
 
+def no_extra_gallery_cap_hides_evicted() -> None:
+    """Live `documents` is already 100 org-wide. A second gallery-side
+    `rows[:100]` would drop the evicted log line the user is hunting for."""
+    org, slug = fresh_org()
+    names = ["boss"]
+    for i in range(9):
+        name = f"a{i}"
+        org.hire(USER, None, "haiku", 2, name)
+        names.append(name)
+    first = org.present_document("boss", "the one being read", "body")["presented"]
+    for name in names:
+        n_already = 1 if name == "boss" else 0
+        for i in range(10 - n_already):
+            org.present_document(name, f"{name} later {i}", "body")
+    org.present_document("boss", "the overflow", "body")
+    store.save_org(org)
+    rows = client.get(f"/api/orgs/{slug}/documents").json()["documents"]
+    assert len(rows) == 101, len(rows)
+    evicted = next(r for r in rows if r["id"] == first)
+    assert evicted["evicted"] is True
+    assert evicted["title"] == "the one being read"
+
+
+check("GET .../documents · no extra 100-row gallery cap hiding evicted "
+      "log lines", no_extra_gallery_cap_hides_evicted)
+
+
 print(f"\n{PASSED} passed, {len(FAILED)} failed")
 for f in FAILED:
     print(f"\nFAIL  {f}")

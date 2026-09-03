@@ -6865,6 +6865,68 @@ class Org:
                   {"id": did, "node": doc["node"]}, [])
         return {"node": doc["node"], "title": doc["title"]}
 
+    def document_gallery(self) -> list[dict[str, Any]]:
+        """The org-wide presented-document list — a VIEW over `documents`, not
+        a second store. The per-node tree walk (`node.documents`) silently
+        drops a rehired predecessor's cards (`org_children` hides an archived
+        node that has a `successor`) and anything whose node was `delete()`d;
+        reading the flat list does not.
+
+        Rows whose body the per-node/org-wide prune has evicted still appear,
+        reconstructed from the `present_evicted` log line (id+title only) so a
+        user hunting for a card they remember learns that it existed and is
+        gone. Dismissed cards are omitted — the user removed those. Newest
+        first. Metadata only; the reader still fetches the body by id.
+
+        No extra gallery cap: live `documents` is already bounded (10/node,
+        100 org-wide). Evicted log lines ride along because they are the
+        reachable record of a card the user already saw; inventing a third
+        prune here would hide them again."""
+        docs = list(self.d.get("documents") or [])
+        seen: set[str] = set()
+        rows: list[dict[str, Any]] = []
+
+        def _state(nid: str) -> str:
+            n = self.nodes.get(nid)
+            if n is None:
+                return "deleted"
+            st = n.get("state")
+            return str(st) if st else "deleted"
+
+        for i, x in enumerate(docs):
+            did = str(x.get("id") or "")
+            if not did or did in seen:
+                continue
+            seen.add(did)
+            nid = str(x.get("node") or "")
+            rows.append({
+                "id": did, "node": nid, "title": x.get("title") or "",
+                "at": x.get("at") or "", "evicted": False,
+                "node_state": _state(nid), "_seq": i,
+            })
+        for i, e in enumerate(self.d.get("events") or []):
+            if e.get("op") != "present_evicted":
+                continue
+            detail = e.get("detail") or {}
+            did = str(detail.get("id") or "")
+            if not did or did in seen:
+                continue
+            seen.add(did)
+            nid = str(e.get("actor") or "")
+            rows.append({
+                "id": did, "node": nid,
+                "title": str(detail.get("title") or ""),
+                "at": e.get("at") or "", "evicted": True,
+                "node_state": _state(nid), "_seq": i,
+            })
+        # both source lists are append-only (oldest→newest); `at` is ms ISO
+        # so two presents in the same loop tick still need `_seq` as the
+        # within-list tiebreaker
+        rows.sort(key=lambda r: (str(r.get("at") or ""), r["_seq"]), reverse=True)
+        for r in rows:
+            del r["_seq"]
+        return rows
+
     def ask_dismiss(self, aid: str) -> dict[str, Any]:
         """The card's ✕ (mirrors AskUserQuestion's Esc/close): the user closes
         the question WITHOUT answering. Nulled grey as 'dismissed'; the agent

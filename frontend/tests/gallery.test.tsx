@@ -71,15 +71,25 @@ uiTest('§2 live cards render title, node and timestamp; no evicted badge',
       'a live card carries no evicted badge')
   })
 
-uiTest('§3 an evicted card still shows, badged, distinct from a live one',
+uiTest('§3 an evicted card still shows, badged, and is not clickable',
   async (mount) => {
-    mockDocuments([row({ id: 'd1', title: 'gone but logged', evicted: true })])
+    const opened: string[] = []
+    mockDocuments([
+      row({ id: 'dlive', title: 'still here' }),
+      row({ id: 'd1', title: 'gone but logged', evicted: true }),
+    ])
     const { el } = await mount(
-      <DocGalleryModal slug="org1" close={() => {}} onOpen={() => {}} />)
+      <DocGalleryModal slug="org1" close={() => {}} onOpen={(id) => opened.push(id)} />)
     await flush()
-    const r = rows(el)[0]
-    assert.match(r.textContent ?? '', /gone but logged/)
-    assert.ok(r.querySelector('.evicted'), 'evicted rows must be visibly marked')
+    const gone = rows(el).find((r) => r.classList.contains('evicted'))
+    assert.ok(gone, 'evicted row missing')
+    assert.match(gone.textContent ?? '', /gone but logged/)
+    assert.match(gone.textContent ?? '', /content evicted/)
+    await inAct(() => { (gone as HTMLElement).click() })
+    assert.deepEqual(opened, [], 'an evicted row must not open the reader')
+    const live = rows(el).find((r) => !r.classList.contains('evicted'))!
+    await inAct(() => { (live as HTMLElement).click() })
+    assert.deepEqual(opened, ['dlive'])
   })
 
 uiTest('§4 a deleted presenting node badges as such, not omitted or blank',
@@ -105,11 +115,12 @@ uiTest('§5 clicking a row hands its id off and closes the gallery', async (moun
   assert.ok(closed, 'the gallery closes so the reader is not stacked under it')
 })
 
-uiTest('§6 a failed fetch surfaces the error instead of an endless spinner',
+uiTest('§6 a failed fetch does not invent rows (usePolled swallows like UsageModal)',
   async (mount) => {
     mockDocuments({ status: 500, detail: 'boom' })
     const { el } = await mount(
       <DocGalleryModal slug="org1" close={() => {}} onOpen={() => {}} />)
     await flush()
-    assert.match(el.textContent ?? '', /boom/)
+    assert.equal(rows(el).length, 0)
+    assert.match(el.textContent ?? '', /loading/)
   })

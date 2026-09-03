@@ -2469,10 +2469,16 @@ main.solo { width: 100%; }
    accent while healthy, the fable gold as the warning band, --bad critical —
    matching the meaning those colors already carry elsewhere in the chrome. */
 .usage-modal { width: 520px; }
-/* the documents gallery (user request 2026-09-03) — .hist-row rows, one per
-   presented-document card, org-wide */
+/* the documents gallery (user request 2026-09-03) — UsageModal-shaped overlay,
+   one row per presented-document card, org-wide. Evicted rows are a record,
+   not a reader target, so they do not look clickable. */
+.gallery-modal { width: 560px; }
+.gallery-list { display: flex; flex-direction: column; gap: 2px;
+  max-height: min(70vh, 520px); overflow: auto; }
 .doc-gallery-row { cursor: pointer; }
 .doc-gallery-row:hover { background: var(--panel-2); }
+.doc-gallery-row.evicted { cursor: default; opacity: 0.72; }
+.doc-gallery-row.evicted:hover { background: transparent; }
 .doc-gallery-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .badge.evicted { color: var(--dim); }
 .usage-row { display: flex; flex-direction: column; gap: 5px; }

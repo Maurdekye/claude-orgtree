@@ -3134,48 +3134,17 @@ def remote_control(slug: str, nid: str, body: RemoteControl,
 
 @app.get("/api/orgs/{slug}/documents")
 def documents_list(slug: str) -> dict[str, Any]:
-    """The gallery (user request 2026-09-03): every presented-document card,
-    org-wide, one place — the per-node tree payload only carries the
-    presenting node's own cards, and finding one later means remembering
-    which agent sent it. Reads `documents` directly, NOT the tree
-    (`org_children` hides an archived node that has a successor, which would
-    silently drop a rehired predecessor's cards).
-
-    Evicted-but-logged rows ride along too: `present_document` prunes
-    (newest 10/node, 100 org-wide) but logs what it drops, so a card the
-    user already saw doesn't just vanish from the gallery — it shows with
-    `evicted: true` and no body (the per-doc GET's existing 404 message
-    already explains why, once opened). A plain dismiss is NOT resurfaced
-    this way — that is the user removing their own card on purpose, not a
-    retention eviction.
-
-    Bounded the same way the live list already is: merge live + evicted rows,
-    newest-first, capped at 100 total — an unbounded eviction-log walk would
-    grow forever since `events` is itself never pruned.
-    """
+    """FR-03 gallery: every presented document in the org, newest first.
+    Reads `documents` directly (not the tree walk) so a retired, rehired or
+    deleted presenter still has its cards. Evicted bodies surface as rows
+    with `evicted: true` from the `present_evicted` log. Metadata only —
+    the reader still fetches the body by id. Kiosk visitors are the user
+    of their org — readable."""
     try:
         org = store.load_org(slug)
     except LedgerError as e:
         raise HTTPException(404, str(e))
-    rows = [{"id": x["id"], "node": x["node"], "title": x["title"],
-             "at": x["at"], "evicted": False, "_seq": i}
-            for i, x in enumerate(org.d.get("documents", []))]
-    rows += [{"id": ev["detail"]["id"], "node": ev["actor"],
-              "title": ev["detail"]["title"], "at": ev["at"], "evicted": True,
-              "_seq": i}
-             for i, ev in enumerate(org.d.get("events", []))
-             if ev["op"] == "present_evicted"]
-    # both source lists are append-only (oldest→newest), so a same-millisecond
-    # tie within one list still needs its own position as the tiebreaker —
-    # `at`'s ms resolution is coarser than two calls in the same loop tick
-    rows.sort(key=lambda r: (r["at"], r["_seq"]), reverse=True)
-    rows = rows[:100]
-    for r in rows:
-        del r["_seq"]
-    for r in rows:
-        n = org.nodes.get(r["node"])
-        r["node_state"] = n["state"] if n else "deleted"
-    return {"documents": rows}
+    return {"documents": org.document_gallery()}
 
 
 @app.get("/api/orgs/{slug}/documents/{did}")
