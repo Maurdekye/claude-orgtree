@@ -525,14 +525,16 @@ test('manual compaction warning uses forecast evidence, never generic idle age',
   assert.doesNotMatch(modal, /Date\.parse|60\s*\*\s*60e3|lastAt/)
 })
 
-test('mid-turn, the badge is red for a miss known for a fact, and otherwise absent', async () => {
+test('mid-turn, the badge is the yellow steer warning for a moved prefix, and otherwise absent', async () => {
   // User ruling 2026-09-03. Hiding the whole card while a turn runs threw
   // away the one claim that is settled mid-turn: a changed prefix is a
   // comparison the running turn's outcome cannot undo, and it is what tells
   // the user to let a queued message steer NOW rather than pay a cold open
   // after the turn ends. Everything else — green, the other reds, AND grey —
   // is a prediction about how the running turn ends, which the UI must not
-  // make, so it renders nothing: red or no card, never a placeholder.
+  // make, so it renders nothing: the yellow steer warning or no card, never a
+  // placeholder. (D-235 made that one shown state yellow rather than red —
+  // red and green are guarantees, and a steered message pays neither.)
   const at = (ms: number) => new Date(Date.now() + ms).toISOString()
   const rows: Array<[string, CacheForecast, boolean]> = [
     ['ready + countdown', forecast('compatible_observed', 'not_applicable', {

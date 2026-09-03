@@ -99,7 +99,7 @@ test('desk header has bounded controls and a separate wrapping metadata row', as
   assert.equal(meta.querySelector('.cache-forecast.cold'), null,
     'mid-turn card wore red')
   assert.ok(top.querySelector('.proc-state .proc-relaunch'),
-    'relaunch icon missing while the mid-turn red card shows')
+    'relaunch icon missing while the mid-turn steer card shows')
   assert.equal(meta.querySelector('.statuschip.working'), null,
     'durable working summary duplicated the live Working banner')
   assert.match(top.querySelector('.turn-status-banner')?.getAttribute('title') ?? '',

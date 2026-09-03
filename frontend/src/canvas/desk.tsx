@@ -455,7 +455,9 @@ const cacheForecastTitle = (forecast: CacheForecast, midTurn = false): string =>
  * shows, because the answer takes effect the instant a turn starts. Mid-turn
  * the answer can be given in advance ONLY when a miss is known for a fact;
  * anything else is predicting how the running turn ends, which the UI must
- * not try to do, so it shows no card at all — red or nothing.
+ * not try to do, so it shows no card at all — the yellow steer-window
+ * warning or nothing. (Red mid-turn was the interim state; D-235 replaced it,
+ * because red is a GUARANTEE of a miss and a steered message never pays one.)
  *
  *   · `not_ready` / `prefix_changed` is the fact. It compares the prefix that
  *     would be sent now against the one already sent (the backend takes it
