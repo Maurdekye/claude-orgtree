@@ -8674,6 +8674,25 @@ tool enums carry the favorites at tools/list time, and the frontend
 generates the tier CSS from the backend's canonical colour with the same
 rule shapes the static tiers use, so no render site learned a colour prop.
 
+Addendum (2026-09-03, brand palette): the vendor hues became BRAND-SOURCED
+from first-party research (each vendor's own site CSS, logo SVG or
+theme-color tag — Mistral is orange-red, not blue; Qwen is violet, not
+Alibaba's orange; Nvidia green, Perplexity turquoise, Reka cyan exact).
+Six brands are the same blue to within a few degrees (Meta, Kimi, Amazon
+Nova, IBM, Cohere, DeepSeek) with Google's lane between them, so hue
+fidelity and legibility could not both be had: the cluster is SPREAD in
+brand order around Google's fixed 262°, neighbours alternate chroma, IBM
+wears its Granite page's Carbon Purple-60 rather than the Blue-60 that
+equals Nova's and Gemini's hue (granite-* and gemini-* share the G glyph),
+and the palette states plainly that adjacent blues are told apart by the
+LETTER, not the colour. Three dark vendors are FILLED and rimmed: xAI black
+(no accent — black is the identity), MiniMax navy with its orange-red
+accent, Z.AI's neutral mark with the cyan from z.ai's decorative palette (a
+deliberate choice, not a mark colour); the payload carries that `accent`
+beside the colour. Vendors with no first-party value (AI21, Microsoft,
+Liquid, …) stay placeholders, slotted off the researched hues, never
+dressed as research.
+
 The lane is Claude Code pointed at openrouter.ai's Anthropic-compatible
 endpoint (`ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN`, an EMPTY
 `ANTHROPIC_API_KEY`, and the `--model` carries the OpenRouter id straight

@@ -111,8 +111,13 @@ export const openrouterTierCss = (tiers: ProviderTier[]): string => tiers
       // guarantees a light colour gets for free (text contrast, a border,
       // a lift) are kept, not the literal rules. The node card's top edge
       // and the mini card's wash take the colour itself: black IS the theme
-      // there, and both sit on a lighter panel.
-      const rim = 'color-mix(in srgb, var(--ink) 40%, var(--line))'
+      // there, and both sit on a lighter panel. Where the backend serves an
+      // ACCENT beside a dark colour (the brand palette, 2026-09-03: MiniMax's
+      // orange-red, Z.AI's cyan) it IS the rim — the fill of a near-black
+      // cannot carry identity, so the rim does; the xAI black serves none
+      // and keeps the grey. A light colour never draws an accent.
+      const rim = t.accent && OR_COLOR_RE.test(t.accent)
+        ? t.accent : 'color-mix(in srgb, var(--ink) 40%, var(--line))'
       const fill = `color:var(--ink-strong);background:${c};border-color:${rim}`
       return [
         `.tier.t-${id}{${fill}}`,
@@ -153,6 +158,7 @@ export const setOpenRouterTiers = (tiers: ProviderTier[] | null | undefined): vo
   const same = next.length === orTiers.length && next.every((t, i) => {
     const o = orTiers[i]
     return !!o && o.tier === t.tier && o.color === t.color
+      && (o.accent ?? null) === (t.accent ?? null)
       && o.letter === t.letter && o.seat === t.seat && o.name === t.name
       && o.label === t.label && o.model === t.model
   })

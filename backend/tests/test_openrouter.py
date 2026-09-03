@@ -244,6 +244,121 @@ def main():
         eq(orr.color_for("openai/gpt-5.6-sol", 2.0) != grok, True, "nobody else went black")
     check("xAI models are near-black (the black theme), still banded, never a hole", xai_black)
 
+    import math
+    from itertools import combinations
+
+    def wcag(h):  # WCAG relative luminance — the frontend's isDarkTierColor cut (< .03)
+        def lin(c):
+            c /= 255
+            return c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
+        r, g, b = (lin(int(h[i:i + 2], 16)) for i in (1, 3, 5))
+        return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+    def oklab(h):  # sRGB → OKLab, the inverse of orr._oklch_hex
+        def lin(c):
+            c /= 255
+            return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+        r, g, b = (lin(int(h[i:i + 2], 16)) for i in (1, 3, 5))
+        l_ = (0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b) ** (1 / 3)
+        m_ = (0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b) ** (1 / 3)
+        s_ = (0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b) ** (1 / 3)
+        return (0.2104542553 * l_ + 0.7936177850 * m_ - 0.0040720468 * s_,
+                1.9779984951 * l_ - 2.4285922050 * m_ + 0.4505937099 * s_,
+                0.0259040371 * l_ + 0.7827717662 * m_ - 0.8086757660 * s_)
+
+    def hue(h):
+        _, a, b = oklab(h)
+        return math.degrees(math.atan2(b, a)) % 360
+
+    def dark_trio():
+        # brand-colors-2 (2026-09-03): MiniMax is a near-black navy (#181E25),
+        # Z.AI's mark a neutral #2D2D2D — both dark, so both are FILLED like
+        # the xAI black (under the frontend's luminance cut in every band),
+        # and each carries an ACCENT for its rim so three dark vendors are
+        # three chips; the xAI black carries none — black is its identity
+        for mid, price in (("minimax/minimax-m3", 0.4), ("minimax/minimax-x", 9.0),
+                           ("z-ai/glm-5.2:free", 0.0), ("z-ai/glm-dear", 9.0),
+                           ("x-ai/grok-4.6", 2.0), ("x-ai/grok-cheap", 0.5)):
+            c = orr.color_for(mid, price)
+            eq(wcag(c) < 0.03, True, f"{mid} {c} is under the dark cut (wcag {wcag(c):.3f})")
+        navy = orr.color_for("minimax/minimax-m3", 0.4)
+        r, g, b = (int(navy[i:i + 2], 16) for i in (1, 3, 5))
+        eq(b > r + 12, True, f"MiniMax is NAVY, not the xAI neutral ({navy})")
+        eq(lum(navy) > lum(orr.color_for("minimax/minimax-x", 9.0)), True, "navy banded by price")
+        glm = orr.color_for("z-ai/glm-5.2:free", 0.0)
+        r, g, b = (int(glm[i:i + 2], 16) for i in (1, 3, 5))
+        eq(r == g == b, True, f"Z.AI is the neutral grey of its mark ({glm})")
+        eq(0x2a <= r <= 0x30, True, f"…the cheap band IS the mark, #2d2d2d ± ({glm})")
+        eq(glm != orr.color_for("x-ai/grok-cheap", 0.5), True, "grey is not the xAI black")
+        eq(orr.accent_for("minimax/minimax-m3"), "#ff5530", "MiniMax rim: its orange-red accent")
+        eq(orr.accent_for("z-ai/glm-5.2:free"), "#00d4ff", "Z.AI rim: its site cyan (deliberate)")
+        eq(orr.accent_for("~z-ai/glm-latest"), "#00d4ff", "the ~alias vendor too")
+        eq(orr.accent_for("x-ai/grok-4.6"), None, "xAI: no accent, black is the identity")
+        eq(orr.accent_for("anthropic/claude-sonnet-5"), None, "a light colour carries none")
+        eq(orr.card_of({"id": "minimax/minimax-m3", "name": "MiniMax: M3",
+                        "pricing": {"prompt": "0.0000004", "completion": "0.0000022"},
+                        "context_length": 200000,
+                        "supported_parameters": ["tools"]})["accent"],  # type: ignore[index]
+           "#ff5530", "card_of serves the accent beside the colour")
+    check("the dark trio: MiniMax navy + orange rim, Z.AI grey + cyan rim, xAI black + none",
+          dark_trio)
+
+    def brand_hues():
+        # brand-colors-2 (2026-09-03): the minted hue lands on the brand slot
+        # (deepest band — the most chroma, the cleanest hue; ±nudge ±rounding)
+        for mid, lo, hi, why in (
+                ("nvidia/nemotron-x", 122, 138, "Nvidia green #76B900"),
+                ("mistralai/mistral-large", 46, 62, "Mistral: orange-red ramp, NOT blue"),
+                ("perplexity/sonar-pro", 202, 218, "Perplexity True Turquoise #20808D"),
+                ("qwen/qwen4-plus", 280, 296, "Qwen violet #615CED, NOT Alibaba orange"),
+                ("ibm-granite/granite-4", 296, 312, "IBM: Carbon Purple-60, off the Gemini blue"),
+                ("reka/reka-flash", 220, 236, "Reka cyan #00BFFF")):
+            c = orr.color_for(mid, 9.0)
+            eq(lo <= hue(c) <= hi, True, f"{why}: {c} at {hue(c):.0f}°")
+        # two orange-family vendors, ≥ 10° apart in every band: Claude's
+        # terracotta (37°) and Mistral (its ramp's orange step) never merge
+        for price in (0.5, 2.0, 5.0, 9.0):
+            d = abs(hue(orr.color_for("mistralai/codestral", price))
+                    - hue(orr.color_for("anthropic/claude-sonnet-5", price)))
+            eq(d >= 10, True, f"Claude C vs Codestral C at ${price}: {d:.0f}° apart")
+    check("brand hues: Nvidia green, Mistral orange, Perplexity teal, Qwen violet, IBM purple, "
+          "Reka cyan — and Mistral clear of Claude's terracotta", brand_hues)
+
+    def blue_cluster():
+        # six brands 1–4° apart plus Google and Reka: spread in BRAND ORDER
+        # over the family, every neighbour ≥ 8°, the family's two ends far
+        # apart in every band, no two vendors the same hex in any band. What
+        # this does NOT promise: adjacent vendors distinguishable by colour
+        # alone — the letters (R L K N G C D Q G) carry that; see _VENDOR_HUE.
+        order = [("reka", "reka/reka-flash"), ("meta-llama", "meta-llama/llama-4-maverick"),
+                 ("moonshotai", "moonshotai/kimi-k3"), ("amazon", "amazon/nova-pro"),
+                 ("google", "google/gemini-3.5-pro"), ("cohere", "cohere/command-a"),
+                 ("deepseek", "deepseek/deepseek-v4"), ("qwen", "qwen/qwen4-plus"),
+                 ("ibm-granite", "ibm-granite/granite-4")]
+        for price in (0.5, 2.0, 5.0, 9.0):
+            cols = [(v, orr.color_for(m, price)) for v, m in order]
+            eq(len({c for _, c in cols}), len(cols), f"no two vendors share a hex at ${price}")
+            hues = [hue(c) for _, c in cols]
+            eq(hues == sorted(hues), True, f"brand order kept at ${price}: {[round(h) for h in hues]}")
+            # table slots are ≥ 8° apart (asserted below); the ±2° model nudge
+            # and 8-bit rounding at the pale band's low chroma eat up to ~5°
+            gaps = [b - a for a, b in zip(hues, hues[1:])]
+            eq(min(gaps) >= 2.5, True, f"neighbours apart at ${price} (min {min(gaps):.1f}°)")
+            ends = math.dist(oklab(cols[0][1]), oklab(cols[-1][1]))
+            eq(ends >= 0.10, True, f"cyan end vs violet end at ${price}: ΔE {ends:.3f}")
+        # in the deep band every pair of the nine is at least just-noticeable
+        deep = {v: oklab(orr.color_for(m, 9.0)) for v, m in order}
+        worst = min((math.dist(deep[a], deep[b]), a, b) for a, b in combinations(deep, 2))
+        eq(worst[0] >= 0.015, True, f"closest deep-band pair {worst[1]}/{worst[2]}: ΔE {worst[0]:.3f}")
+    check("the blue cluster: spread in brand order, neighbours apart, ends far apart, "
+          "no shared hex; the letters do the rest", blue_cluster)
+
+    check("placeholders never sit on a researched hue: every table hue ≥ 8° from every other",
+          lambda: eq(min(abs(a - b) if abs(a - b) <= 180 else 360 - abs(a - b)
+                         for (ka, a), (kb, b) in combinations(orr._VENDOR_HUE.items(), 2)
+                         if ka != kb and {ka, kb} != {"ibm", "ibm-granite"}) >= 8,
+                     True, "min hue gap in _VENDOR_HUE"))
+
     print("§4 favorites become tiers")
     check("tier id = or- + slugified model id, clear of the static vocabulary",
           lambda: (eq(orr.tier_id("anthropic/claude-sonnet-5"),
@@ -352,7 +467,8 @@ def main():
                    eq(orr.tier_infos()[0]["provider"], "openrouter", "provider"),
                    eq(sorted(orr.tier_infos()[0]),
                       sorted(["tier", "provider", "seat", "model", "letter", "color",
-                              "name", "label", "vendor", "prompt", "completion", "context"]),
+                              "accent", "name", "label", "vendor", "prompt", "completion",
+                              "context"]),
                       "keys"),
                    no_secret(orr.tier_infos(), "tier_infos")))
 

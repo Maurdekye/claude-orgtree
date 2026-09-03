@@ -112,6 +112,8 @@ class ModelCard(TypedDict):
     free: bool
     letter: str
     color: str
+    #: the rim of a DARK chip (`accent_for`), None for every light colour
+    accent: str | None
 
 
 class Favorite(ModelCard):
@@ -351,33 +353,118 @@ def letter_for(model_id: str) -> str:
     return (toks[0][:1].upper() if toks else "") or "?"
 
 
-#: canonical hue per vendor (degrees, OKLCH). Chosen to sit near the desk
-#: themes the app already uses for the CLI providers (--prov-claude terracotta,
-#: --prov-openai teal, --prov-google blue-violet) and to spread the big open
-#: vendors. Anyone missing hashes to a hue instead — the table is a courtesy,
-#: not a requirement.
+#: canonical hue per vendor (degrees, OKLCH). Since 2026-09-03 the hues are
+#: BRAND-SOURCED where a first-party value exists (brand-colors-2 research:
+#: each vendor's own site CSS, logo SVG or theme-color tag; the data sits in
+#: the researcher's brand-colors.json), the three CLI lanes stay on the desk
+#: themes the app already wears (--prov-claude terracotta, --prov-openai
+#: teal, --prov-google blue-violet), and the rest are PLACEHOLDERS — never
+#: researched (brand-colors-2 found no first-party value for ai21, microsoft
+#: or liquid; the others were out of its scope) — slotted into the gaps the
+#: researched hues leave, so a placeholder never sits on a brand hue and
+#: never looks researched. Anyone missing hashes to a hue instead.
+#:
+#: ⚠ THE BLUE CLUSTER. Six researched brands are the SAME blue to within a
+#: few degrees — Meta #0082FB 255°, Kimi #1783FF 256°, Amazon Nova #0066FF
+#: 261°, IBM Blue-60 #0F62FE 262°, Cohere #4C6EE6 268°, DeepSeek #4D6BFE
+#: 270° — and Google's lane sits at 262° between them, so hue fidelity and
+#: legibility cannot both be had: six chips 1–4° apart are one chip. What is
+#: shipped instead: the cluster is SPREAD over 228°–304° in BRAND ORDER (a
+#: vendor keeps its neighbours and its side of Google, and moves at most
+#: ~20°), Google's 262° is the fixed point in the middle, every vendor is
+#: ≥ 8° from its neighbours, neighbours alternate CHROMA (`_VENDOR_CHROMA`
+#: below: a periwinkle brand is minted soft, an electric one full, so an
+#: adjacent pair differs in saturation as well as hue), and the per-model
+#: nudge is ±2° so it cannot eat the spacing. IBM takes the Granite page's
+#: own Carbon Purple-60 (#8A3FFC, 295°) rather than its Blue-60: Blue-60 is
+#: 1° from Amazon Nova AND on Google's hue, and granite-* shares the G glyph
+#: with gemini-*, so on Blue-60 a Granite chip and a Gemini chip would be the
+#: same chip. What still tells the six apart at chip size is the LETTER —
+#: llama L, kimi K, nova N, granite G, command C, deepseek D are all
+#: different — and the palette leans on that: colour places a chip in the
+#: cyan-blue / electric / periwinkle-violet third of the family, the letter
+#: names the vendor. Two brand twins (Amazon Nova / IBM Blue-60, 1° apart in
+#: the brands' own hexes) were never going to be told apart by colour.
+#:
+#: Mistral is orange-red #FA500F (37°) — NOT blue — and 37° is Anthropic's
+#: terracotta, so it wears the orange step of its own red→orange→yellow ramp
+#: (#ff8204, 54°). Qwen is violet #615CED (279°), deliberately not parent
+#: Alibaba's orange. Perplexity's True Turquoise #20808D is a MUTED teal
+#: (chroma .09), minted soft to stay so. Nvidia #76B900 is exact.
 _VENDOR_HUE: Final[dict[str, int]] = {
-    "anthropic": 40, "openai": 175, "google": 262, "meta-llama": 225,
-    "mistralai": 25, "deepseek": 240, "x-ai": 305, "qwen": 285,
-    "moonshotai": 200, "cohere": 330, "amazon": 55, "microsoft": 205,
-    "nvidia": 135, "perplexity": 190, "minimax": 350, "z-ai": 268,
-    "xiaomi": 15, "tencent": 212, "baidu": 245, "bytedance": 320,
-    "ai21": 65, "inception": 95, "nousresearch": 105, "liquid": 160,
-    "openrouter": 0,
+    # the CLI lanes (fixed, the desk themes)
+    "anthropic": 40, "openai": 175, "google": 262,
+    # brand-sourced (brand-colors-2, 2026-09-03; brand hue → slot)
+    "mistralai": 54,       # #ff8204 orange step of the #FA500F ramp (37° is Claude's)
+    "nvidia": 131,         # #76B900, exact
+    "perplexity": 209,     # #20808D True Turquoise, exact (soft)
+    "reka": 228,           # #00BFFF 232°
+    "meta-llama": 238,     # #0082FB 255°, the cyan-leaning end of the cluster
+    "moonshotai": 246,     # #1783FF 256°
+    "amazon": 254,         # #0066FF 261°
+    "cohere": 272,         # #4C6EE6 268° (soft)
+    "deepseek": 282,       # #4D6BFE 270°
+    "qwen": 292,           # #615CED 279°
+    "ibm-granite": 304,    # #8A3FFC Carbon Purple-60 295° (see above), not Blue-60
+    "ibm": 304,
+    # placeholders — NOT researched; in the gaps the brand hues leave
+    "xiaomi": 15, "ai21": 80, "inception": 95, "nousresearch": 105,
+    "liquid": 160, "microsoft": 190, "bytedance": 320, "baidu": 335,
+    "tencent": 350, "openrouter": 0,
 }
 
 
-#: vendors whose canonical look is BLACK (user ask 2026-09-03: "give xai
-#: models a black theme"). Achromatic, still banded by price like every other
-#: vendor but compressed into near-blacks (OKLCH L .08–.20 → #020202…#161616),
-#: every band darker than the panel (#252526) a card sits on. ⚠ A dark tier
-#: colour cannot be the INK it is for every other vendor — black text on a
-#: dark UI is a hole — so the frontend renders a dark colour FILLED: the
-#: colour becomes the chip's background, the letter reads in the UI's strong
-#: ink, a lifted grey rim keeps the edge off the background (shared.ts
-#: `openrouterTierCss`, styles.css `.orr-card.dark`). Same selectors, same
-#: three guarantees (text contrast, border, lift) a light colour gets free.
-_BLACK_VENDORS: Final = frozenset({"x-ai"})
+#: the second axis inside the blue cluster: a chroma SCALE on the price band's
+#: chroma (1.0 when absent). Soft = the brand is the softer one of a pair
+#: (Meta's #0082FB sits at L .62 against Kimi's electric #1783FF; Cohere's
+#: #4C6EE6 is C .19 against DeepSeek's .22; Perplexity's turquoise is C .09),
+#: full/plus = the electric brands (Amazon Nova and Qwen are the most
+#: saturated hexes in the set). Neighbours in the table above alternate, so
+#: an adjacent pair differs in saturation as well as hue.
+_VENDOR_CHROMA: Final[dict[str, float]] = {
+    "perplexity": 0.7, "meta-llama": 0.8, "amazon": 1.1, "cohere": 0.7,
+    "qwen": 1.1,
+}
+
+
+#: the model-to-model hue nudge, degrees either side of the vendor hue (was
+#: ±12° when the table was hand-spread; brand slots 8° apart cannot afford
+#: it — two neighbours nudged toward each other still keep ≥ 4°). Siblings
+#: are told apart by their band and their label; this is a courtesy.
+_MODEL_NUDGE: Final = 2.0
+
+
+#: vendors whose canonical look is DARK: hue, chroma, and the lightness of
+#: the dearest and the cheapest price band (OKLCH). Still banded by price like
+#: every other vendor but compressed into near-blacks, every band darker
+#: than the panel (#252526) a card sits on — so the frontend renders them
+#: FILLED (colour = background, letter in the UI's strong ink, a rim keeps
+#: the edge off the background: shared.ts `openrouterTierCss`, styles.css
+#: `.orr-card.dark`; `isDarkTierColor` decides by WCAG luminance < .03, so
+#: every band here must stay under that — L .30 achromatic is #2e2e2e, .027).
+#:   x-ai    — user ask 2026-09-03 "give xai models a black theme": achromatic
+#:             #020202…#161616, no accent: pure black IS the identity.
+#:   minimax — brand #181E25 (near-black navy, minimax.io CSS): the navy is
+#:             deepened (chroma .04 against the brand's .016) so it reads as
+#:             navy beside the xAI black, and rimmed with the brand's
+#:             orange-red accent #FF5530 (⚠ third-party corroborated only,
+#:             not seen on-domain by the researcher).
+#:   z-ai    — no chromatic identity at all: the official logomark is neutral
+#:             #2D2D2D (z-cdn.chatglm.cn), so the fill is that grey, banded
+#:             #1e1e1e…#2e2e2e, and the rim is the cyan #00d4ff from z.ai's
+#:             own decorative palette — ⚠ a DELIBERATE choice, not an official
+#:             mark colour, taken so three dark vendors are not one dark chip.
+#: The ACCENT (`_VENDOR_ACCENT`) is served beside the colour; the frontend
+#: draws it as the rim of a dark chip and ignores it on a light one.
+_DARK_VENDORS: Final[dict[str, tuple[int, float, float, float]]] = {
+    "x-ai": (0, 0.0, 0.08, 0.20),
+    "minimax": (252, 0.04, 0.15, 0.26),
+    "z-ai": (0, 0.0, 0.23, 0.30),
+}
+_BLACK_VENDORS: Final = frozenset(_DARK_VENDORS)
+_VENDOR_ACCENT: Final[dict[str, str]] = {
+    "minimax": "#ff5530", "z-ai": "#00d4ff",
+}
 
 
 def _hash01(s: str) -> float:
@@ -408,31 +495,37 @@ def _oklch_hex(light: float, chroma: float, h_deg: float) -> str:
 
 def color_for(model_id: str, prompt_per_m: float) -> str:
     """The canonical chip color (recommended scheme, ask card 2026-09-02):
-    hue from the VENDOR (table above, hash fallback) nudged ±12° per model so
+    hue from the VENDOR (table above, hash fallback) nudged ±2° per model so
     siblings differ; LIGHTNESS from the price band — cheap models pale,
     expensive ones deep — the same lightness axis flash/pro and luna/sol
-    already use, and the one axis colour-vision deficiency preserves."""
-    vendor = vendor_of(model_id)
-    if vendor.lstrip("~") in _BLACK_VENDORS:
-        # the same four price bands as below, mapped onto near-black: deep
-        # (expensive) to merely very dark (cheap); no chroma, no hue nudge —
-        # black is the identity, the band is the only axis left
-        light = (0.08 if prompt_per_m >= 8.0 else 0.12 if prompt_per_m >= 3.0
-                 else 0.16 if prompt_per_m >= 1.0 else 0.20)
-        return _oklch_hex(light, 0.0, 0.0)
+    already use, and the one axis colour-vision deficiency preserves; the
+    band's chroma scaled per vendor (`_VENDOR_CHROMA`) where the blue cluster
+    needs saturation as a second axis. Dark vendors take their own range."""
+    vendor = vendor_of(model_id).lstrip("~")
+    band = (3 if prompt_per_m >= 8.0 else 2 if prompt_per_m >= 3.0
+            else 1 if prompt_per_m >= 1.0 else 0)
+    dark = _DARK_VENDORS.get(vendor)
+    if dark is not None:
+        # the same four price bands, mapped onto the vendor's dark range: deep
+        # (expensive) to merely very dark (cheap); no hue nudge — the dark
+        # tone is the identity, the band is the only axis left
+        hue, chroma, deep, pale = dark
+        return _oklch_hex(deep + (pale - deep) * (3 - band) / 3, chroma, hue)
     base = _VENDOR_HUE.get(vendor)
     if base is None:
         base = int(_hash01("vendor:" + vendor) * 360)
-    hue = (base + (_hash01("model:" + model_id) * 24 - 12)) % 360
-    if prompt_per_m < 1.0:
-        light, chroma = 0.86, 0.10
-    elif prompt_per_m < 3.0:
-        light, chroma = 0.76, 0.13
-    elif prompt_per_m < 8.0:
-        light, chroma = 0.66, 0.16
-    else:
-        light, chroma = 0.56, 0.17
-    return _oklch_hex(light, chroma, hue)
+    hue = (base + (_hash01("model:" + model_id) * 2 - 1) * _MODEL_NUDGE) % 360
+    light, chroma = ((0.86, 0.10), (0.76, 0.13), (0.66, 0.16), (0.56, 0.17))[band]
+    return _oklch_hex(light, chroma * _VENDOR_CHROMA.get(vendor, 1.0), hue)
+
+
+def accent_for(model_id: str) -> str | None:
+    """The chip's ACCENT, or None: a second colour served beside `color_for`
+    for the vendors whose canonical look is dark (`_DARK_VENDORS`), where the
+    fill alone cannot carry identity — the frontend draws it as the rim of a
+    dark chip (shared.ts `openrouterTierCss`, styles.css `.orr-card.dark`)
+    and ignores it on a light one. Pure function of the id, like the colour."""
+    return _VENDOR_ACCENT.get(vendor_of(model_id).lstrip("~"))
 
 
 def _per_m(v: Any) -> float:
@@ -485,6 +578,7 @@ def card_of(m: dict[str, Any]) -> ModelCard | None:
         "free": mid.endswith(":free") or (prompt == 0 and completion == 0),
         "letter": letter_for(mid),
         "color": color_for(mid, prompt),
+        "accent": accent_for(mid),
     }
 
 
@@ -631,6 +725,7 @@ def favorites() -> list[Favorite]:
                 # migration. The record's own copies are for older readers.
                 "letter": letter_for(mid),
                 "color": color_for(mid, float(f.get("prompt") or 0.0)),
+                "accent": accent_for(mid),
                 "seat": int(f.get("seat") or 1),
                 "added_at": str(f.get("added_at") or ""),
             })
@@ -841,6 +936,7 @@ def tier_infos() -> list[dict[str, Any]]:
     return [{
         "tier": f["tier"], "provider": PROVIDER_ID, "seat": f["seat"],
         "model": f["id"], "letter": f["letter"], "color": f["color"],
+        "accent": f["accent"],
         "name": f["name"], "label": f["label"], "vendor": f["vendor"],
         "prompt": f["prompt"], "completion": f["completion"],
         "context": f["context"],

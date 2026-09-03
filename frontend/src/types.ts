@@ -995,6 +995,11 @@ export interface ProviderTier {
    *  would otherwise hold — the canonical chip color — plus the catalog
    *  facts the hire surfaces show in tooltips. Absent on the CLI providers. */
   color?: string
+  /** the rim of a DARK chip — the vendor accent the backend serves beside a
+   *  dark colour (MiniMax orange-red, Z.AI cyan; brand palette 2026-09-03),
+   *  so three dark vendors are not one dark chip. Null/absent on every light
+   *  colour and on the xAI black, whose identity is the black itself. */
+  accent?: string | null
   /** the display name without its `Vendor: ` prefix (`Claude Sonnet 5`) */
   name?: string
   /** the DISPLAY id — the model id without its vendor namespace
@@ -1051,6 +1056,8 @@ export interface OpenRouterModel {
   free: boolean
   letter: string
   color: string
+  /** the rim of a dark card (see ProviderTier.accent); null on a light one */
+  accent?: string | null
   /** already a favorite */
   selected?: boolean
 }

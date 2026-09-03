@@ -79,16 +79,23 @@ function standingOf(doc: OpenRouterDoc): string[] {
 }
 
 /** the monogram card: letter on colour. One element, styled through `--orr-c`
- *  so the sheet owns every derived shade (border, wash) from one value. */
-export function ModelCard({ letter, color, title, large }: {
+ *  so the sheet owns every derived shade (border, wash) from one value — plus
+ *  `--orr-a`, the rim, on a DARK card whose vendor serves an accent (the
+ *  brand palette, 2026-09-03): a near-black fill cannot carry identity, so
+ *  the rim does. A light card never draws one; a malformed one is ignored. */
+export function ModelCard({ letter, color, accent, title, large }: {
   letter: string
   color: string
+  accent?: string | null
   title?: string
   large?: boolean
 }) {
+  const dark = isDarkTierColor(color)
+  const style: Record<string, string> = { '--orr-c': color }
+  if (dark && accent && /^#[0-9a-f]{6}$/i.test(accent)) style['--orr-a'] = accent
   return (
-    <span className={'orr-card' + (large ? ' lg' : '') + (isDarkTierColor(color) ? ' dark' : '')}
-      title={title} style={{ '--orr-c': color } as CSSProperties} aria-hidden={!title}>
+    <span className={'orr-card' + (large ? ' lg' : '') + (dark ? ' dark' : '')}
+      title={title} style={style as CSSProperties} aria-hidden={!title}>
       {letter}
     </span>
   )
@@ -253,7 +260,7 @@ export function OpenRouterSection({ provider, headRight, toast, pickerOpen,
           onClick={() => setPickerOpen(true)}>
           {favorites.map((t) => (
             <ModelCard key={t.tier} letter={t.letter} color={t.color ?? '#9aa0a6'}
-              title={tierTitle(t)} />
+              accent={t.accent} title={tierTitle(t)} />
           ))}
           <span className="orr-hint">
             {favorites.length
@@ -332,7 +339,7 @@ export function ModelPicker({ doc, busy, onToggle, onClose }: {
                 className={'orr-row' + (on ? ' on' : '')}
                 aria-pressed={on} disabled={busy}
                 onClick={() => onToggle(m, !on)}>
-                <ModelCard letter={m.letter} color={m.color} large />
+                <ModelCard letter={m.letter} color={m.color} accent={m.accent} large />
                 <span className="orr-name">
                   {/* the display forms (user ask 2026-09-03): the name without
                       its `Vendor: ` prefix, the id without its namespace; the

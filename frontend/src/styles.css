@@ -3933,9 +3933,12 @@ html.mobile .md table { display: block; overflow-x: auto; max-width: 100%; }
    in the strong ink, and a lifted grey rim keeps the edge off the background
    — the same three guarantees (text contrast, border, lift) every light
    colour gets for free. shared.ts `openrouterTierCss` applies the same rule
-   to the generated chip and strip selectors; `isDarkTierColor` decides. */
+   to the generated chip and strip selectors; `isDarkTierColor` decides.
+   `--orr-a` (the vendor ACCENT, brand palette 2026-09-03) replaces the grey
+   rim where the backend serves one — MiniMax orange-red, Z.AI cyan — so the
+   three dark vendors are three cards; the xAI black keeps the grey. */
 .orr-card.dark { color: var(--ink-strong); background: var(--orr-c);
-  border-color: color-mix(in srgb, var(--ink) 40%, var(--line)); }
+  border-color: var(--orr-a, color-mix(in srgb, var(--ink) 40%, var(--line))); }
 .orr-picker { width: min(680px, 94vw); }
 .orr-search { width: 100%; box-sizing: border-box; }
 .orr-list { display: flex; flex-direction: column; gap: 4px; margin: 8px 0;

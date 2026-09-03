@@ -371,7 +371,14 @@ self-hosted LiteLLM all speak the same recipe):
   CANONICAL from the model id (vendor hue, price-band lightness, OKLCH) and
   ride the providers payload; the frontend injects a generated `<style>`
   block with the same selector shapes the static tiers use, so no render
-  site learned a colour prop.
+  site learned a colour prop. The vendor hues are BRAND-SOURCED where a
+  first-party value exists (`_VENDOR_HUE` in openrouter.py says which, and
+  why the six near-identical brand blues are spread in brand order around
+  Google's lane); a DARK vendor (xAI black, MiniMax navy, Z.AI grey) is
+  rendered filled, and the payload's `accent` is the rim that keeps three
+  dark vendors three chips. `frontend/tests/palette_probe.py --shot x.png`
+  renders the whole palette beside the brand swatches — look at it before
+  touching the table.
 - **Cost:** the CLI prices an `anthropic/…` id at list (`costBasis:
   "list"`), which is the gateway's pass-through rate — kept. Any other
   vendor comes back `costBasis: "unknown"` and an order of magnitude wrong

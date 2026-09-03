@@ -291,3 +291,56 @@ test('§4 a DARK tier colour (the xAI black) renders FILLED with light ink and a
     assert.deepEqual(cards.map((c) => c.classList.contains('dark')), [true, false])
   } finally { await view.unmount() }
 })
+
+test('§4b a dark tier with a vendor ACCENT wears it as the rim (MiniMax, Z.AI — the brand '
+  + 'palette 2026-09-03); the xAI black keeps the grey rim, a light colour never draws one',
+async () => {
+  const m3 = { tier: 'or-minimax-minimax-m3', provider: 'openrouter', seat: 1,
+    model: 'minimax/minimax-m3', letter: 'M', color: '#152537', accent: '#ff5530',
+    label: 'minimax-m3' }
+  const glm = { tier: 'or-z-ai-glm-5-2-free', provider: 'openrouter', seat: 1,
+    model: 'z-ai/glm-5.2:free', letter: 'G', color: '#2e2e2e', accent: '#00d4ff',
+    label: 'glm-5.2:free' }
+  const grok = { tier: 'or-x-ai-grok-4-6', provider: 'openrouter', seat: 2,
+    model: 'x-ai/grok-4.6', letter: 'G', color: '#0d0d0d', accent: null, label: 'grok-4.6' }
+  const luna = { tier: 'or-openai-gpt-5-6-luna', provider: 'openrouter', seat: 1,
+    model: 'openai/gpt-5.6-luna', letter: 'G', color: '#9fe3d1', accent: '#ff0000',
+    label: 'gpt-5.6-luna' }
+  const bad = { ...m3, tier: 'or-minimax-bad', accent: 'red' }
+  const css = openrouterTierCss([m3, glm, grok, luna, bad])
+  assert.ok(css.includes(`.tier.t-${m3.tier}{color:var(--ink-strong);background:#152537;border-color:#ff5530}`),
+    'MiniMax: navy fill, orange-red rim')
+  assert.ok(css.includes(`.hsof button.t-${glm.tier}{color:var(--ink-strong);background:#2e2e2e;border-color:#00d4ff}`),
+    'Z.AI: grey fill, cyan rim — on the hire strip too')
+  assert.ok(css.includes(`.chip.agents b.t-${m3.tier}{color:var(--ink-strong);background:#152537;border-color:#ff5530;border:1px solid #ff5530;`),
+    'the inventory chip draws the accent as its border')
+  assert.ok(/\.tier\.t-or-x-ai-grok-4-6\{[^}]*border-color:color-mix\(in srgb, var\(--ink\) 40%, var\(--line\)\)/.test(css),
+    'no accent → the lifted grey rim')
+  assert.ok(/\.tier\.t-or-minimax-bad\{[^}]*border-color:color-mix\(in srgb, var\(--ink\) 40%/.test(css),
+    'a malformed accent falls back to the grey rim, never reaches the stylesheet')
+  assert.equal(css.includes('#ff0000'), false, 'a light tier never draws an accent')
+  assert.equal(css.includes('red'), false)
+  // the monogram card: `--orr-a` set only where the sheet will use it
+  const view = await mountView(
+    <>
+      <ModelCard letter="M" color="#152537" accent="#ff5530" title="m3" />
+      <ModelCard letter="G" color="#9fe3d1" accent="#ff5530" />
+      <ModelCard letter="G" color="#0d0d0d" accent={null} />
+      <ModelCard letter="G" color="#2e2e2e" accent="cyan" />
+    </>, (el) => el)
+  try {
+    const cards = [...view.el.querySelectorAll('.orr-card')] as HTMLElement[]
+    assert.deepEqual(cards.map((c) => c.classList.contains('dark')), [true, false, true, true])
+    assert.deepEqual(cards.map((c) => /--orr-a/.test(c.getAttribute('style') ?? '')),
+      [true, false, false, false], 'only the dark card with a well-formed accent carries --orr-a')
+    assert.ok(/--orr-a:\s*#ff5530/.test(cards[0]!.getAttribute('style') ?? ''))
+  } finally { await view.unmount() }
+  // the live family notices an accent change (same colour, new rim)
+  setOpenRouterTiers([m3])
+  const before = document.getElementById('orgtree-openrouter-tiers')?.textContent ?? ''
+  setOpenRouterTiers([{ ...m3, accent: '#00d4ff' }])
+  const after = document.getElementById('orgtree-openrouter-tiers')?.textContent ?? ''
+  assert.ok(before.includes('#ff5530') && after.includes('#00d4ff') && !after.includes('#ff5530'),
+    'the injected sheet follows the accent')
+  setOpenRouterTiers([])
+})
