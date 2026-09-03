@@ -32,9 +32,13 @@ const CATALOG: OpenRouterModel[] = [
     tools: true, free: false, letter: 'K', color: '#8fc9e8' },
 ]
 
-function stubFetch(seen: Seen[], opts: { keySet?: boolean } = {}) {
+function stubFetch(seen: Seen[], opts: { keySet?: boolean; favorites?: string[] } = {}) {
   let keySet = opts.keySet ?? false
-  const favorites: OpenRouterModel[] = []
+  // favorites already on the server when the UI first reads it — the state
+  // the user's 2026-09-03 bug needed: a search page fetched with rows ALREADY
+  // selected, then deselected without a refetch
+  const favorites: OpenRouterModel[] = (opts.favorites ?? [])
+    .map((id) => CATALOG.find((c) => c.id === id)!)
   const doc = (): OpenRouterDoc => ({
     installed: keySet, connected: keySet, key_set: keySet,
     kind: keySet ? 'api-key' : null, label: keySet ? 'sk-or-v1-abc…xyz' : null,
@@ -233,6 +237,82 @@ test('§2 the favorites row opens the picker; search, select and deselect '
     assert.equal(view.el.querySelectorAll('.orr-favs .orr-card').length, 0)
     assert.equal(tierLabel('or-openai-gpt-5-6-luna'), 'gpt-5.6-luna',
       'a tier once seen keeps its name after deselection (a node may still run on it)')
+  } finally { await view.unmount(); delete g.fetch }
+})
+
+test('§2b the SELECTED list on the modal (user ask 2026-09-03): every favorite as a chip '
+  + 'with a ✕; deselecting there — or on a search row fetched as selected — round-trips: '
+  + 'PUT, gone from the list, the row reads "select", the favorites row shrinks', async () => {
+  const seen: Seen[] = []
+  stubFetch(seen, { keySet: true, favorites: ['anthropic/claude-sonnet-5', 'moonshotai/kimi-k3'] })
+  const view = await mountSection({ open: true })
+  // the catalog page lands after a debounce and a fetch: under the full
+  // suite's load a fixed number of ticks is not enough (0 rows at 456 tests,
+  // 3 rows alone), so every wait here is for the CONDITION, bounded
+  const until = async (cond: () => boolean, what: string) => {
+    for (let i = 0; i < 100 && !cond(); i++) await inAct(async () => { await flush(4) })
+    assert.ok(cond(), `timed out waiting for: ${what}`)
+  }
+  const chips = () => [...view.el.querySelectorAll('.orr-selected .orr-sel')]
+  const rows = () => [...view.el.querySelectorAll<HTMLButtonElement>('.orr-row')]
+  try {
+    await until(() => rows().length === 3 && chips().length === 2, 'the page and the doc')
+    // the list: two chips, in the doc's order, each card + label + ✕
+    const list = view.el.querySelector('[role="dialog"] .orr-selected')!
+    assert.ok(list, 'the selected list renders on the modal itself')
+    assert.deepEqual(chips().map((c) => c.querySelector('.orr-sel-name')?.textContent),
+      ['claude-sonnet-5', 'kimi-k3'], 'one chip per favorite, the display label')
+    assert.deepEqual(chips().map((c) => c.querySelector('.orr-card')?.textContent), ['C', 'K'])
+    const xs = [...view.el.querySelectorAll<HTMLButtonElement>('.orr-selected .orr-sel-x')]
+    assert.deepEqual(xs.map((b) => b.getAttribute('aria-label')),
+      ['deselect claude-sonnet-5', 'deselect kimi-k3'])
+    for (const b of xs) {
+      assert.equal(b.textContent?.trim(), '', 'icon only in the small button')
+      assert.ok(b.querySelector('svg'))
+    }
+    assert.ok(view.el.querySelector('[role="dialog"] h3')?.textContent?.includes('2 selected'))
+    // the search rows were FETCHED with `selected: true` for both favorites
+    assert.equal(rows().length, 3)
+    const isOn = (r: HTMLButtonElement) => r.classList.contains('on')
+      && r.getAttribute('aria-pressed') === 'true' && !!r.textContent?.includes('✓ selected')
+    assert.deepEqual(rows().map(isOn), [true, false, true], 'both favorites read selected')
+
+    // 1 · THE BUG: click the selected SEARCH ROW to deselect. Before the fix
+    // the row OR-ed the page item's stale server flag into its state and
+    // stayed "✓ selected" forever.
+    await inAct(async () => { rows()[0]!.click() })
+    await until(() => chips().length === 1, 'the deselect to land')
+    assert.deepEqual(seen.filter((r) => r.path === '/api/openrouter/favorites').at(-1)?.body,
+      { id: 'anthropic/claude-sonnet-5', selected: false })
+    assert.equal(seen.filter((r) => r.path === '/api/openrouter/models').length, 1,
+      'no refetch of the page — the row must read the live doc, not a fresh flag')
+    assert.deepEqual(rows().map(isOn), [false, false, true],
+      'the deselected row renders deselected (stale page flag ignored)')
+    assert.equal(rows()[0]!.textContent?.includes('select'), true)
+    assert.equal(rows()[0]!.textContent?.includes('✓ selected'), false)
+    assert.deepEqual(chips().map((c) => c.querySelector('.orr-sel-name')?.textContent), ['kimi-k3'],
+      'gone from the selected list too')
+    assert.equal(view.el.querySelectorAll('.orr-favs .orr-card').length, 1, 'favorites row shrank')
+    assert.ok(view.el.querySelector('[role="dialog"] h3')?.textContent?.includes('1 selected'))
+
+    // 2 · deselect from the LIST: the ✕ on kimi, never searched for
+    const x = view.el.querySelector<HTMLButtonElement>('.orr-sel-x[aria-label="deselect kimi-k3"]')!
+    await inAct(async () => { x.click() })
+    await until(() => chips().length === 0, 'the ✕ to land')
+    assert.deepEqual(seen.filter((r) => r.path === '/api/openrouter/favorites').at(-1)?.body,
+      { id: 'moonshotai/kimi-k3', selected: false })
+    assert.deepEqual(chips(), [], 'the list is empty')
+    assert.ok(view.el.querySelector('.orr-selected .dim')?.textContent?.includes('nothing selected yet'),
+      'the empty state says so')
+    assert.deepEqual(rows().map(isOn), [false, false, false], "kimi's search row reads deselected")
+    assert.equal(view.el.querySelectorAll('.orr-favs .orr-card').length, 0)
+
+    // 3 · and back: select from a search row → appears in the list
+    await inAct(async () => { rows()[1]!.click() })
+    await until(() => chips().length === 1, 'the select to land')
+    assert.deepEqual(chips().map((c) => c.querySelector('.orr-sel-name')?.textContent), ['gpt-5.6-luna'])
+    assert.deepEqual(rows().map(isOn), [false, true, false])
+    assert.equal(view.el.querySelectorAll('.orr-favs .orr-card').length, 1)
   } finally { await view.unmount(); delete g.fetch }
 })
 

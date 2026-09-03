@@ -3940,6 +3940,31 @@ html.mobile .md table { display: block; overflow-x: auto; max-width: 100%; }
 .orr-card.dark { color: var(--ink-strong); background: var(--orr-c);
   border-color: var(--orr-a, color-mix(in srgb, var(--ink) 40%, var(--line))); }
 .orr-picker { width: min(680px, 94vw); }
+/* the SELECTED list on the modal (user ask 2026-09-03): every favorite at a
+   glance and a ✕ on each, so deselecting never means searching for the model
+   first. It wears the selected row's tint (`.orr-row.on`) — same meaning,
+   same colour — and its chips are the favorites row's cards with a name and
+   a 22px icon button (icons only in small buttons: see the key row's note). */
+.orr-selected { display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+  margin: 8px 0; padding: 6px 8px; min-height: 40px; box-sizing: border-box;
+  border: 1px solid color-mix(in srgb, var(--prov-openrouter) 60%, var(--line));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--prov-openrouter) 12%, transparent); }
+.orr-selected > .dim { font-size: 12px; }
+.orr-sel { display: inline-flex; align-items: center; gap: 6px;
+  padding: 2px 2px 2px 3px; max-width: 100%; box-sizing: border-box;
+  border: 1px solid var(--line); border-radius: 8px; background: var(--panel);
+  font-size: 12px; }
+.orr-sel-name { font-family: var(--mono); max-width: 16em; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; }
+.orr-sel-x { display: inline-flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px; padding: 0; flex: none; font-size: 14px;
+  border: 1px solid transparent; border-radius: 6px; background: transparent;
+  color: var(--dim); cursor: pointer; }
+.orr-sel-x:hover, .orr-sel-x:focus-visible { color: var(--ink-strong); outline: none;
+  border-color: var(--prov-openrouter);
+  background: color-mix(in srgb, var(--prov-openrouter) 18%, transparent); }
+.orr-sel-x:disabled { opacity: .5; cursor: default; }
 .orr-search { width: 100%; box-sizing: border-box; }
 .orr-list { display: flex; flex-direction: column; gap: 4px; margin: 8px 0;
   min-height: 14em; }

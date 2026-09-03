@@ -285,11 +285,15 @@ export function OpenRouterSection({ provider, headRight, toast, pickerOpen,
 }
 
 /** the model-selection modal (user spec): search → 5–10 results with card,
- *  full name, vendor, $/1M in and out → select/deselect */
+ *  full name, vendor, $/1M in and out → select/deselect — and (user ask
+ *  2026-09-03) the SELECTED list on the modal itself: every favorite at a
+ *  glance, each with a ✕ that deselects it without searching for it first. */
 export function ModelPicker({ doc, busy, onToggle, onClose }: {
   doc: OpenRouterDoc
   busy: boolean
-  onToggle: (m: OpenRouterModel, selected: boolean) => void
+  /** id + display name are all a toggle needs — a search row hands over its
+   *  catalog entry, a chip in the selected list hands over its tier */
+  onToggle: (m: Pick<OpenRouterModel, 'id' | 'name'>, selected: boolean) => void
   onClose: () => void
 }) {
   const [q, setQ] = useState('')
@@ -300,6 +304,12 @@ export function ModelPicker({ doc, busy, onToggle, onClose }: {
   // request guard: a slow page for an old query must not land over a fast
   // one for the current query
   const seq = useRef(0)
+  // THE ONLY AUTHORITY on "selected" is the live doc — the favorites the
+  // backend returned from the last PUT. A search page also carries a
+  // `selected` flag per item, but that flag is the server's answer AT FETCH
+  // TIME and the page is not refetched on a toggle: OR-ing it in (the first
+  // cut) meant a row fetched as selected could never render deselected —
+  // the user's 2026-09-03 bug. The flag is not read here at all.
   const selected = new Set(doc.tiers.map((t) => t.model))
 
   useEffect(() => {
@@ -324,6 +334,29 @@ export function ModelPicker({ doc, busy, onToggle, onClose }: {
         onClick={(e) => e.stopPropagation()}>
         <h3>OpenRouter models
           <span className="dim"> · {doc.tiers.length} selected</span></h3>
+        {/* the SELECTED list: the same models the section's favorites row
+            shows, here as editable chips — card, label, ✕. Order is the
+            user's own (the doc's), so a chip stays where it was. */}
+        <div className="orr-selected" role="group" aria-label="selected models">
+          {!doc.tiers.length && (
+            <span className="dim">nothing selected yet — search below and select the models that can be hired</span>
+          )}
+          {doc.tiers.map((t) => {
+            const label = t.label ?? modelLabel(t.model)
+            return (
+              <span key={t.tier} className="orr-sel" title={tierTitle(t)}>
+                <ModelCard letter={t.letter} color={t.color ?? '#9aa0a6'} accent={t.accent} />
+                <span className="orr-sel-name">{label}</span>
+                <button type="button" className="orr-sel-x" disabled={busy}
+                  aria-label={`deselect ${label}`}
+                  title="deselect — it can no longer be hired; agents already on it keep running"
+                  onClick={() => onToggle({ id: t.model, name: t.name ?? label }, false)}>
+                  <CloseIcon fontSize="inherit" />
+                </button>
+              </span>
+            )
+          })}
+        </div>
         <input ref={inputRef} className="orr-search" type="search"
           placeholder="search the catalog — name, vendor, id…"
           aria-label="search OpenRouter models"
@@ -333,7 +366,7 @@ export function ModelPicker({ doc, busy, onToggle, onClose }: {
           {!page && !err && <div className="dim">reading the catalog…</div>}
           {page && !page.items.length && <div className="dim">no models match</div>}
           {page?.items.map((m) => {
-            const on = selected.has(m.id) || !!m.selected
+            const on = selected.has(m.id)
             return (
               <button type="button" key={m.id}
                 className={'orr-row' + (on ? ' on' : '')}
