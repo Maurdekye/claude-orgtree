@@ -7,9 +7,10 @@
 import { flush, inAct, mountView } from './harness'
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { OpenRouterSection } from '../src/canvas/openrouter'
+import { ModelCard, OpenRouterSection } from '../src/canvas/openrouter'
 import {
-  modelLabel, noteTierModels, openrouterTierIds, setOpenRouterTiers, TIER_LETTER, tierLabel,
+  isDarkTierColor, modelLabel, noteTierModels, openrouterTierCss, openrouterTierIds,
+  setOpenRouterTiers, TIER_LETTER, tierLabel,
 } from '../src/canvas/shared'
 import type { OpenRouterDoc, OpenRouterModel, ProviderInfo } from '../src/types'
 
@@ -249,4 +250,44 @@ test('§3 tierLabel: a static tier is its own name; an OpenRouter tier is its mo
     letter: 'B', label: 'a/b' }])
   assert.equal(tierLabel('or-a-b'), 'a/b', "the backend's label wins — it is what knows about collisions")
   setOpenRouterTiers([])
+})
+
+test('§4 a DARK tier colour (the xAI black) renders FILLED with light ink and a rim; '
+  + 'a light one stays ink on the panel', async () => {
+  // the backend's xAI near-blacks are dark; every hue-bearing colour is not;
+  // the chrome's own line colour is the boundary
+  assert.equal(isDarkTierColor('#0d0d0d'), true)
+  assert.equal(isDarkTierColor('#161616'), true, 'the lightest xAI band is still a fill')
+  assert.equal(isDarkTierColor('#3c3c3c'), false, 'the chrome line (#3c3c3c) is above the cut')
+  assert.equal(isDarkTierColor('#f9907f'), false)
+  assert.equal(isDarkTierColor('#8f7f7f'), false, 'the darkest hue-bearing band is ink')
+  assert.equal(isDarkTierColor('not-a-colour'), false)
+  const grok = { tier: 'or-x-ai-grok-4-6', provider: 'openrouter', seat: 2,
+    model: 'x-ai/grok-4.6', letter: 'G', color: '#0d0d0d', label: 'grok-4.6' }
+  const luna = { tier: 'or-openai-gpt-5-6-luna', provider: 'openrouter', seat: 1,
+    model: 'openai/gpt-5.6-luna', letter: 'G', color: '#9fe3d1', label: 'gpt-5.6-luna' }
+  const css = openrouterTierCss([grok, luna])
+  // the same selectors both ways — the dark one inverts them
+  for (const sel of ['.tier.t-', '.hsof button.t-', '.chip.agents b.t-', '.sq.tier-',
+    '.sq.mini.tier-', '.sq.prov-openrouter.desk.tier-']) {
+    assert.ok(css.includes(sel + grok.tier), `${sel} rule for the dark tier`)
+    assert.ok(css.includes(sel + luna.tier), `${sel} rule for the light tier`)
+  }
+  assert.ok(css.includes(`.tier.t-${grok.tier}{color:var(--ink-strong);background:#0d0d0d;`),
+    'dark: the colour is the FILL, the letter is the strong ink')
+  assert.ok(css.includes(`.tier.t-${luna.tier}{color:#9fe3d1;`), 'light: the colour is the ink')
+  assert.ok(/\.hsof button\.t-or-x-ai-grok-4-6\{[^}]*border-color:color-mix\(in srgb, var\(--ink\) 40%, var\(--line\)\)/.test(css),
+    'dark: a lifted grey rim, not a mix of black into the line')
+  assert.ok(css.includes(`.sq.tier-${grok.tier}{border-top-color:#0d0d0d}`),
+    "dark: the card's top edge is the black itself")
+  assert.equal(css.includes(`.tier.t-${luna.tier}{color:var(--ink-strong)`), false,
+    'a light tier is never inverted')
+  // the monogram card takes the `dark` class from the same test
+  const view = await mountView(
+    <><ModelCard letter="G" color="#0d0d0d" title="grok" /><ModelCard letter="G" color="#9fe3d1" /></>,
+    (el) => el)
+  try {
+    const cards = [...view.el.querySelectorAll('.orr-card')]
+    assert.deepEqual(cards.map((c) => c.classList.contains('dark')), [true, false])
+  } finally { await view.unmount() }
 })

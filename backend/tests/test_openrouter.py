@@ -229,6 +229,21 @@ def main():
                      > lum(orr.color_for("deepseek/deepseek-r9", 9.0)),
                      True, "lightness by price band"))
 
+    def xai_black():
+        # user ask 2026-09-03: "give xai models a black theme" — achromatic
+        # near-blacks, darker than the panel they sit on, still banded by price
+        grok = orr.color_for("x-ai/grok-4.6", 2.0)
+        r, g, b = (int(grok[i:i + 2], 16) for i in (1, 3, 5))
+        eq(r == g == b, True, f"achromatic ({grok})")
+        eq(r < 0x20, True, f"darker than the panel #252526 ({grok})")
+        eq(lum(orr.color_for("x-ai/grok-cheap", 0.5))
+           > lum(orr.color_for("x-ai/grok-dear", 9.0)), True, "band axis kept")
+        eq(orr.color_for("x-ai/grok-dear", 9.0) != "#000000", True,
+           "never pure #000 — the deepest band is still a colour, not a hole")
+        eq(orr.color_for("~x-ai/grok-latest", 2.0), grok, "the ~alias vendor is xAI too")
+        eq(orr.color_for("openai/gpt-5.6-sol", 2.0) != grok, True, "nobody else went black")
+    check("xAI models are near-black (the black theme), still banded, never a hole", xai_black)
+
     print("§4 favorites become tiers")
     check("tier id = or- + slugified model id, clear of the static vocabulary",
           lambda: (eq(orr.tier_id("anthropic/claude-sonnet-5"),

@@ -102,6 +102,28 @@ export const openrouterTierCss = (tiers: ProviderTier[]): string => tiers
     const c = t.color && OR_COLOR_RE.test(t.color) ? t.color : '#9aa0a6'
     const id = t.tier
     const mix = (pct: number) => `color-mix(in srgb, ${c} ${pct}%, var(--line))`
+    if (isDarkTierColor(c)) {
+      // A DARK TIER COLOUR (the xAI black, 2026-09-03) cannot be the ink the
+      // way every light colour is — black text on the dark UI is a hole —
+      // so the same selectors invert: the colour becomes the FILL, the
+      // letter reads in the UI's strong ink, and a lifted grey rim keeps
+      // the edge off the panel and off the canvas dot grid. The three
+      // guarantees a light colour gets for free (text contrast, a border,
+      // a lift) are kept, not the literal rules. The node card's top edge
+      // and the mini card's wash take the colour itself: black IS the theme
+      // there, and both sit on a lighter panel.
+      const rim = 'color-mix(in srgb, var(--ink) 40%, var(--line))'
+      const fill = `color:var(--ink-strong);background:${c};border-color:${rim}`
+      return [
+        `.tier.t-${id}{${fill}}`,
+        `.hsof button.t-${id}{${fill}}`,
+        `.hsof button.t-${id}:hover:not(:disabled){border-color:var(--ink-strong)}`,
+        `.chip.agents b.t-${id}{${fill};border:1px solid ${rim};border-radius:3px;padding:0 3px}`,
+        `.sq.tier-${id}{border-top-color:${c}}`,
+        `.sq.mini.tier-${id}{--mini-tier:${c}}`,
+        `.sq.prov-openrouter.desk.tier-${id}{border-top-color:${c}}`,
+      ].join('\n')
+    }
     return [
       `.tier.t-${id}{color:${c};border-color:${mix(45)}}`,
       `.hsof button.t-${id}{color:${c};border-color:${mix(45)}}`,
@@ -111,6 +133,19 @@ export const openrouterTierCss = (tiers: ProviderTier[]): string => tiers
       `.sq.prov-openrouter.desk.tier-${id}{border-top-color:${c}}`,
     ].join('\n')
   }).join('\n')
+/** is this tier colour too dark to be INK on the dark UI? WCAG relative
+ *  luminance under 0.03 (≈ #323232). The xAI near-blacks (#020202…#161616,
+ *  ≤ 0.007) are far below; the chrome's own line (#3c3c3c, ~0.045) and every
+ *  hue-bearing tier colour the backend mints (OKLCH L ≥ .56, ≳ 0.2) are
+ *  above — so no colour that was ever ink flips to a fill. */
+export const isDarkTierColor = (hex: string): boolean => {
+  if (!OR_COLOR_RE.test(hex)) return false
+  const lin = (i: number) => {
+    const c = parseInt(hex.slice(i, i + 2), 16) / 255
+    return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4
+  }
+  return 0.2126 * lin(1) + 0.7152 * lin(3) + 0.0722 * lin(5) < 0.03
+}
 /** adopt the payload's favorites as the live family. Idempotent and cheap
  *  when nothing changed, so every surface that polls the payload may call it. */
 export const setOpenRouterTiers = (tiers: ProviderTier[] | null | undefined): void => {

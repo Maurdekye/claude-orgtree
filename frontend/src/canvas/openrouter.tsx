@@ -41,7 +41,7 @@ import { AutorenewIcon, CheckIcon, CloseIcon, DeleteIcon, EditIcon } from '../ic
 import type {
   OpenRouterDoc, OpenRouterModel, OpenRouterModelsPage, ProviderInfo, ProviderTier,
 } from '../types'
-import { modelLabel, setOpenRouterTiers } from './shared'
+import { isDarkTierColor, modelLabel, setOpenRouterTiers } from './shared'
 
 type ToastFn = (lines: string[]) => void
 
@@ -87,8 +87,8 @@ export function ModelCard({ letter, color, title, large }: {
   large?: boolean
 }) {
   return (
-    <span className={'orr-card' + (large ? ' lg' : '')} title={title}
-      style={{ '--orr-c': color } as CSSProperties} aria-hidden={!title}>
+    <span className={'orr-card' + (large ? ' lg' : '') + (isDarkTierColor(color) ? ' dark' : '')}
+      title={title} style={{ '--orr-c': color } as CSSProperties} aria-hidden={!title}>
       {letter}
     </span>
   )

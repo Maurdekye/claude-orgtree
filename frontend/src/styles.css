@@ -3928,6 +3928,14 @@ html.mobile .md table { display: block; overflow-x: auto; max-width: 100%; }
   border: 1px solid color-mix(in srgb, var(--orr-c) 45%, var(--line));
   background: color-mix(in srgb, var(--orr-c) 16%, var(--panel)); }
 .orr-card.lg { width: 34px; height: 34px; font-size: 16px; }
+/* a DARK tier colour (the xAI black, 2026-09-03) cannot be the ink on a dark
+   panel, so the card inverts: the colour becomes the fill, the letter reads
+   in the strong ink, and a lifted grey rim keeps the edge off the background
+   — the same three guarantees (text contrast, border, lift) every light
+   colour gets for free. shared.ts `openrouterTierCss` applies the same rule
+   to the generated chip and strip selectors; `isDarkTierColor` decides. */
+.orr-card.dark { color: var(--ink-strong); background: var(--orr-c);
+  border-color: color-mix(in srgb, var(--ink) 40%, var(--line)); }
 .orr-picker { width: min(680px, 94vw); }
 .orr-search { width: 100%; box-sizing: border-box; }
 .orr-list { display: flex; flex-direction: column; gap: 4px; margin: 8px 0;

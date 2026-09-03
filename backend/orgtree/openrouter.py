@@ -367,6 +367,19 @@ _VENDOR_HUE: Final[dict[str, int]] = {
 }
 
 
+#: vendors whose canonical look is BLACK (user ask 2026-09-03: "give xai
+#: models a black theme"). Achromatic, still banded by price like every other
+#: vendor but compressed into near-blacks (OKLCH L .08–.20 → #020202…#161616),
+#: every band darker than the panel (#252526) a card sits on. ⚠ A dark tier
+#: colour cannot be the INK it is for every other vendor — black text on a
+#: dark UI is a hole — so the frontend renders a dark colour FILLED: the
+#: colour becomes the chip's background, the letter reads in the UI's strong
+#: ink, a lifted grey rim keeps the edge off the background (shared.ts
+#: `openrouterTierCss`, styles.css `.orr-card.dark`). Same selectors, same
+#: three guarantees (text contrast, border, lift) a light colour gets free.
+_BLACK_VENDORS: Final = frozenset({"x-ai"})
+
+
 def _hash01(s: str) -> float:
     return int(hashlib.sha1(s.encode("utf-8")).hexdigest()[:8], 16) / 0xFFFFFFFF
 
@@ -400,6 +413,13 @@ def color_for(model_id: str, prompt_per_m: float) -> str:
     expensive ones deep — the same lightness axis flash/pro and luna/sol
     already use, and the one axis colour-vision deficiency preserves."""
     vendor = vendor_of(model_id)
+    if vendor.lstrip("~") in _BLACK_VENDORS:
+        # the same four price bands as below, mapped onto near-black: deep
+        # (expensive) to merely very dark (cheap); no chroma, no hue nudge —
+        # black is the identity, the band is the only axis left
+        light = (0.08 if prompt_per_m >= 8.0 else 0.12 if prompt_per_m >= 3.0
+                 else 0.16 if prompt_per_m >= 1.0 else 0.20)
+        return _oklch_hex(light, 0.0, 0.0)
     base = _VENDOR_HUE.get(vendor)
     if base is None:
         base = int(_hash01("vendor:" + vendor) * 360)
