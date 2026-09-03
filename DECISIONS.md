@@ -8961,6 +8961,72 @@ payload — the fix is pinned against a reproduction of the defect, not a
 description of it — and whose §3 regexes the module so a future
 `.get(<counter>, 0)` cannot come back.
 
+### D-239 · the tree render may do NO filesystem work per node, and an archived seat pays for nothing
+Ruling (perf-latency, 2026-09-03, from a user report of 10-15 s refresh /
+hire / org-switch): `annotate` in `api.py` runs for EVERY node in the
+document, and `GET /api/orgs/{slug}` is fetched on a 6 s heartbeat, on every
+websocket `changed` frame (i.e. every `save_org` by anyone), on every org
+switch and after every hire, per open tab. So a per-node call there is
+multiplied by the whole org and by the poll rate. No per-node filesystem work
+belongs in it, and a seat whose `state` is `archived` is annotated with
+`None` rather than computed.
+Why: `6190b83` (2026-09-01) added one line — `node["cache_forecast"] =
+supervisor.cache_forecast_public(...)` — which reaches `_cache_snapshot` ->
+`_cache_semantic_inputs` -> `_build_cmd` -> `transcript_path`, a glob whose
+WILDCARD COMPONENT is the project directory. Every call therefore re-listed
+the user's entire `~/.claude/projects` (349 dirs, 14 ms). MEASURED
+2026-09-03 on the live install (6 live seats, 179 archived): `GET
+/api/orgs/orgtree` took 11-38 s alone and 113.7 s with two in flight, against
+the client's 45 s `AbortSignal.timeout` — the "signal timed out" banner.
+py-spy put 53.5 s of 58.5 s cumulative in `org_tree` (91%) on that one line.
+131 of the 137 nodes in the payload were archived and 70 carried a public
+cache row, so 70 full forecasts ran per render for an answer nothing renders:
+`CacheForecastMark` and `CacheForecastWarning` both return null on a null
+forecast. Skipping archived seats measured 1226-4036 ms -> 76-118 ms.
+⚠ THE DOCUMENT SIZE WAS NOT THE CAUSE, and the plausible story that it was
+cost real time before it was killed by measurement. A full parse AND full
+rewrite of the entire 11.5 MB org document costs 250 ms (read 2.6 / parse 55
+/ dumps 200 / write+fsync+replace 19), and the client receives an 881 KB
+projection, never the document. Serialization, disk I/O and payload size were
+collectively ~2% of the problem.
+⚠ THE GATE IS `state == "archived"`, NEVER "has no warm process". An idle
+live seat holds no parked CLI and is precisely who the forecast is FOR — its
+next turn is the one whose cache is at risk. A liveness or warm-pool gate
+would look identical and silently blank the feature for every idle agent.
+Bounds: the value is an explicit `None`, never a dropped key. `Org.tree()`
+has already placed the node's PERSISTED `cache_continuity.public` row on the
+payload, and that row is a durable record of a past turn that never went
+through `cachecontinuity.classify`; omitting the key leaves that stale
+verdict on screen.
+The institutional part: THE FIX ALREADY EXISTED. `transcript_index()` sits
+directly beneath `transcript_path` and has carried a docstring since
+2026-08-04 predicting this exact failure — "`transcript_path` is a `glob`
+whose WILDCARD COMPONENT is the project directory, so every call re-lists
+`projects/` … Measured: with 3,000 project dirs and 50 nodes, one
+`transcript_path` cost 40 ms and `reconcile` cost 2,253 ms". `reconcile`
+adopted the index. The render path, written later, did not, and nothing
+connected the two. A known trap documented next to its own remedy is not a
+guard; only an executable check is. Hence the second half of the fix
+(`transcript_path` now remembers a resolved path and re-verifies it with one
+`stat` — 225x, and sound because the session id IS the file name, so a path
+that still exists is still that session's transcript) and hence the two rules
+above being pinned by a suite rather than by prose.
+⚠ A COMMENT ASSERTING A COST IS NOT A MEASUREMENT. `App.tsx`'s heartbeat
+carried "the payload is ~4 KB and the endpoint answers in 2-12 ms, so the
+pull costs nothing worth counting". It was 881 KB and 11-38 s, and every
+per-node field added since had been weighed against it. Rewritten with the
+measurement and the rule.
+Load-bearing: `backend/tests/test_tree_render_cost.py`. §2 pins the COST
+rather than the content, because a forecast computed for an archived seat and
+then discarded satisfies every content assertion while restoring the entire
+regression — content assertions cannot see cost. §3 states the property in
+general (30x the archive, identical work), §4 pins the liveness-gate wrong
+fix, §5 the memo's four properties. The client-side half is `App.tsx`'s
+coalescing in-flight guard: the pile-up is what turned 4 s into 113 s, and
+because HTTP/1.1 caps a browser at ~6 sockets per origin, it was also what
+stopped AGENT CHATS loading — `/chat` measured 2.3-2.7 s throughout and was
+never at fault; it could not get a socket.
+
 ### D-233 · the Antigravity standing is observed from the wire, not fetched — and a wall names its own reset
 Measured 2026-09-03 02:36 local (agy 1.1.24, a Google AI Pro login): the
 account's first usage wall arrived as a lone ERROR result after `init` —
