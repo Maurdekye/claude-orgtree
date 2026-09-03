@@ -22,10 +22,12 @@
 
 import { useState } from 'react'
 import type { DocRow } from '../api'
-import { fileBase, getDocuments } from '../api'
+import { fileBase, getDocuments, sendMessage } from '../api'
+import { addPending } from '../convo'
 import type { ToastFn } from '../types'
 import { CloseIcon, DocIcon } from '../icons'
 import { dismissDoc, useDoc } from './docs'
+import { MailReplyBox } from './mail'
 import { ago, md, TIER_LETTER, tierLabel, useEsc, usePolled } from './shared'
 
 /** the presenting agent's model, as the letter chip every other surface uses
@@ -59,10 +61,12 @@ const STATE_WHY: Record<DocRow['node_state'], string | null> = {
  *  filter opens empty — they chose "default hired + 'show retired'". */
 const isHired = (r: DocRow) => r.node_state === 'live'
 
-export function DocGalleryModal({ slug, toast, close }: {
+export function DocGalleryModal({ slug, toast, close, onFocusAgent, onReply }: {
   slug: string
   toast: ToastFn
   close: () => void
+  onFocusAgent?: (agentId: string) => void
+  onReply?: (node: string, text: string) => Promise<unknown> | void
 }) {
   useEsc(close)
   const data = usePolled(() => getDocuments(slug), [slug])
@@ -148,7 +152,10 @@ export function DocGalleryModal({ slug, toast, close }: {
                   <div className="mailer-read">
                     {cur
                       ? <DocPane key={cur.id} slug={slug} row={cur} toast={toast}
-                          onDismissed={() => setSelId(null)} />
+                          onDismissed={() => setSelId(null)}
+                          close={close}
+                          onFocusAgent={onFocusAgent}
+                          onReply={onReply} />
                       : <div className="dim pad mailer-none">
                           select a document to read it</div>}
                   </div>
@@ -166,16 +173,23 @@ export function DocGalleryModal({ slug, toast, close }: {
  *  dismissal of them from the viewer directly") — one control, on the thing
  *  you are actually looking at. Title sits on its own separate line; the
  *  dismiss button mirrors the desk view document card (right-aligned chip-x
- *  with CloseIcon). */
-function DocPane({ slug, row, toast, onDismissed }: {
+ *  with CloseIcon).
+ *  Agent name links directly to focus the agent (same as switchboard).
+ *  A reply box below the body allows messaging the owning agent directly
+ *  (only if not retired). */
+function DocPane({ slug, row, toast, onDismissed, close, onFocusAgent, onReply }: {
   slug: string
   row: DocRow
   toast: ToastFn
   onDismissed: () => void
+  close: () => void
+  onFocusAgent?: (agentId: string) => void
+  onReply?: (node: string, text: string) => Promise<unknown> | void
 }) {
   // an evicted row has no body to fetch — say so instead of spending a
   // request to render the 404 the endpoint would answer with
   const { doc, err } = useDoc(slug, row.evicted ? '' : row.id)
+  const replyable = !row.evicted && isHired(row) && Boolean(row.node && !row.node.startsWith('@'))
   return (
     <>
       <div className="mailer-head doc-pane-head">
@@ -191,7 +205,14 @@ function DocPane({ slug, row, toast, onDismissed }: {
         </div>
         <div className="doc-pane-meta-row">
           <TierChip tier={row.tier} />
-          <span className="dim">{row.node || '?'}</span>
+          {row.node ? (
+            <button className="cc-name cc-name-jump" title={`focus ${row.node}'s desk`}
+              onClick={() => { close(); onFocusAgent?.(row.node) }}>
+              {row.node}
+            </button>
+          ) : (
+            <span className="dim">?</span>
+          )}
           {/* the OPEN document names the agent's state in words. The row only
               greys (user ruling — no badge in the row), but here there is room,
               and "why can I not dismiss this / who wrote it" is exactly the
@@ -215,6 +236,17 @@ function DocPane({ slug, row, toast, onDismissed }: {
             {doc && <div className="mailer-body md"
               dangerouslySetInnerHTML={md(doc.body, fileBase(slug, doc.node))} />}
             {!doc && !err && <div className="dim pad">loading…</div>}
+            {replyable && (
+              <MailReplyBox target={row.node}
+                onSend={(text) => {
+                  if (onReply) return onReply(row.node, text)
+                  addPending(slug, row.node, text)
+                  return sendMessage(slug, row.node, text, undefined, {
+                    id: row.id, from: row.node, at: row.at,
+                    gist: row.title || '(untitled)',
+                  }).catch((e: Error) => toast([`error: ${e.message}`]))
+                }} />
+            )}
           </>
         )}
     </>

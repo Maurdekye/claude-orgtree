@@ -39,6 +39,9 @@ export interface OrgCanvasProps {
   /** D-199: open the accounts panel — the route out of the no-harness state,
    *  which the canvas can reach but cannot render itself (it lives in App). */
   onAccounts?: () => void
+  /** focus an agent's desk on the canvas (camera centerOn / mobile sheet) */
+  focusAgent?: string | null
+  onFocusAgentHandled?: () => void
 }
 
 /** has this spring arrived? Both the spring loop (which snaps to the target on
@@ -57,7 +60,7 @@ const atRest = (s: Spring, tgt: Pt): boolean =>
   && Math.abs(s.vx) <= 2 && Math.abs(s.vy) <= 2
 
 export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
-  onAccounts }: OrgCanvasProps) {
+  onAccounts, focusAgent, onFocusAgentHandled }: OrgCanvasProps) {
   const [draft, setDraft] = useState<DraftState | null>(null)
   const [configId, setConfigId] = useState<string | null>(null)
   const [lineageId, setLineageId] = useState<string | null>(null)
@@ -962,6 +965,23 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
   }, [animateTo, focusView, setFront])
   const centerRef = useRef<typeof centerOn | null>(null)
   centerRef.current = centerOn
+
+  useEffect(() => {
+    if (!focusAgent) return
+    if (hidden.has(focusAgent)) {
+      const par = map.get(focusAgent)?.parent
+      const node = map.get(focusAgent)
+      if (par && node) {
+        setFront(par + (node.state === 'archived' ? '|a' : '|c'), focusAgent)
+      }
+    }
+    if (sheetGate()) {
+      setSheetId(focusAgent)
+    } else {
+      centerOn(focusAgent)
+    }
+    onFocusAgentHandled?.()
+  }, [focusAgent, map, hidden, setFront, centerOn, onFocusAgentHandled])
 
   // a REAL fit: the camera that puts the whole org inside the actual viewport
   const fitView = useCallback((): View | null => {

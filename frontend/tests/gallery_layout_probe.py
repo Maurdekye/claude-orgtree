@@ -64,7 +64,7 @@ HTML = f"""
             </div>
             <div class="doc-pane-meta-row">
               <span class="tier t-sonnet">S</span>
-              <span class="dim">some-agent-1</span>
+              <button class="cc-name cc-name-jump" id="agent-link" title="focus some-agent-1's desk">some-agent-1</button>
               <span class="dim">this agent has been retired</span>
               <span class="dim">2026-09-03T09:12:44.001Z</span>
             </div>
@@ -205,6 +205,16 @@ def failures(page, width: int) -> list[str]:
         // 7. dismiss button is right-aligned in the viewer pane
         if (btn.right < rr.right - 25)
           bad.push(`dismiss button is not right-aligned (btn right ${btn.right}, read right ${rr.right})`);
+        // 8. agent name link is rendered in the meta row
+        const link = document.querySelector('#agent-link');
+        if (!link) {
+          bad.push('agent name link is missing');
+        } else {
+          const lr = link.getBoundingClientRect();
+          if (lr.width < 1 || lr.height < 1) bad.push('agent name link not rendered');
+          if (lr.top < mr2.top - 1 || lr.bottom > mr2.bottom + 1)
+            bad.push('agent name link is not vertically aligned with meta row');
+        }
       }
       return bad.map((v) => `${width}px: ${v}`);
     }""", width)

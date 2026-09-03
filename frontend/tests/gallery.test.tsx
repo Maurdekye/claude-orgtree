@@ -81,8 +81,13 @@ const pane = (el: HTMLElement) => el.querySelector('.mailer-read')
 const showRetired = (el: HTMLElement) =>
   el.querySelector('.gallery-showretired input') as HTMLInputElement
 
-const gallery = (extra?: Partial<{ close: () => void }>) => (
-  <DocGalleryModal slug="org1" toast={noop} close={extra?.close ?? noop} />
+const gallery = (extra?: Partial<{
+  close: () => void
+  onFocusAgent: (id: string) => void
+  onReply: (node: string, text: string) => void
+}>) => (
+  <DocGalleryModal slug="org1" toast={noop} close={extra?.close ?? noop}
+    onFocusAgent={extra?.onFocusAgent} onReply={extra?.onReply} />
 )
 
 uiTest('§1 an empty org says so rather than rendering a blank panel', async (mount) => {
@@ -258,7 +263,7 @@ uiTest('§7 an evicted card is listed and explained, fetches nothing, and offers
     'the pane explains the empty body instead of showing a raw 404')
   assert.equal(calls.filter((c) => /\/documents\/dgone$/.test(c.url)).length, 0,
     'no body request for a card whose body is known to be gone')
-  assert.equal(el.querySelectorAll('.mailer-head button').length, 0,
+  assert.equal(el.querySelectorAll('.mailer-head button.chip-x').length, 0,
     'nothing to dismiss — the card is already gone')
 })
 
@@ -270,6 +275,110 @@ uiTest('§8 CONTROL: the same fixture with the presenter still hired DOES list �
   assert.equal(rows(el).length, 1,
     'flipping only node_state to live makes the row appear — §3 saw the filter')
 })
+
+uiTest('§10 clicking the agent name link closes the viewer and focuses that agent',
+  async (mount) => {
+    let focused: string | null = null
+    let closed = false
+    mockDocs([row({ id: 'd1', title: 'the plan', node: 'agent-42' })], { d1: 'body' })
+    const { el } = await mount(gallery({
+      close: () => { closed = true },
+      onFocusAgent: (id) => {
+        // order check: close before focus
+        assert.ok(closed, 'viewer is closed before focusing agent')
+        focused = id
+      },
+    }))
+    await flush()
+    await inAct(() => { (rows(el)[0] as HTMLElement).click() })
+    await flush()
+    const link = el.querySelector('.mailer-head .doc-pane-meta-row button.cc-name') as HTMLElement
+    assert.ok(link, 'agent name link is rendered')
+    assert.equal(link.textContent, 'agent-42')
+    await inAct(() => link.click())
+    assert.ok(closed, 'modal was closed')
+    assert.equal(focused, 'agent-42', 'focused owning agent')
+  })
+
+uiTest('§10b agent name link still functions for a retired agent',
+  async (mount) => {
+    let focused: string | null = null
+    let closed = false
+    mockDocs([row({ id: 'dret', title: 'old doc', node: 'ret-agent', node_state: 'archived' })], { dret: 'old body' })
+    const { el } = await mount(gallery({
+      close: () => { closed = true },
+      onFocusAgent: (id) => { focused = id },
+    }))
+    await flush()
+    // reveal retired
+    await inAct(() => showRetired(el).click())
+    await flush()
+    await inAct(() => { (rows(el)[0] as HTMLElement).click() })
+    await flush()
+    const link = el.querySelector('.mailer-head .doc-pane-meta-row button.cc-name') as HTMLElement
+    assert.ok(link, 'retired agent link is rendered')
+    assert.equal(link.textContent, 'ret-agent')
+    await inAct(() => link.click())
+    assert.ok(closed, 'modal closed')
+    assert.equal(focused, 'ret-agent', 'focuses retired agent')
+  })
+
+uiTest('§11 reply box is present below document for live owner and sends message',
+  async (mount) => {
+    let replied: { node: string; text: string } | null = null
+    mockDocs([row({ id: 'd1', title: 'the plan', node: 'agent-live', node_state: 'live' })], { d1: 'body markdown' })
+    const { el } = await mount(gallery({
+      onReply: (node, text) => { replied = { node, text } },
+    }))
+    await flush()
+    await inAct(() => { (rows(el)[0] as HTMLElement).click() })
+    await flush()
+    const replyBox = el.querySelector('.mailer-read .mail-reply')
+    assert.ok(replyBox, 'mail-reply box is present below the document')
+    const textarea = replyBox.querySelector('textarea') as HTMLTextAreaElement
+    assert.ok(textarea, 'textarea is rendered')
+    assert.match(textarea.placeholder, /reply to agent-live/, 'placeholder names target agent')
+    const sendBtn = replyBox.querySelector('button') as HTMLButtonElement
+    assert.ok(sendBtn.disabled, 'reply button disabled while draft is empty')
+    await inAct(() => {
+      const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')?.set
+      nativeSetter?.call(textarea, 'Looks good, proceed!')
+      textarea.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    await flush()
+    assert.ok(!sendBtn.disabled, 'reply button enabled once text is entered')
+    await inAct(() => sendBtn.click())
+    await flush()
+    assert.deepEqual(replied, { node: 'agent-live', text: 'Looks good, proceed!' })
+  })
+
+uiTest('§12 reply box is ABSENT when the owning agent is retired or document is evicted',
+  async (mount) => {
+    mockDocs([
+      row({ id: 'dret', title: 'from retired', node: 'ret-agent', node_state: 'archived' }),
+      row({ id: 'devict', title: 'evicted doc', node: 'live-agent', node_state: 'live', evicted: true }),
+    ], { dret: 'retired body' })
+    const { el } = await mount(gallery())
+    await flush()
+    await inAct(() => showRetired(el).click())
+    await flush()
+
+    // 1. Retired agent document
+    const retRow = rows(el).find((r) => r.textContent?.includes('from retired')) as HTMLElement
+    assert.ok(retRow, 'found retired row')
+    await inAct(() => retRow.click())
+    await flush()
+    assert.equal(el.querySelector('.mailer-read .mail-reply'), null,
+      'no reply box for retired agent')
+
+    // 2. Evicted document (even if live agent)
+    const evictRow = rows(el).find((r) => r.textContent?.includes('evicted doc')) as HTMLElement
+    assert.ok(evictRow, 'found evicted row')
+    await inAct(() => evictRow.click())
+    await flush()
+    assert.equal(el.querySelector('.mailer-read .mail-reply'), null,
+      'no reply box for evicted document')
+  })
 
 // ── the toolbar button's corner count ────────────────────────────────────
 // Counted off the TREE rather than the gallery's own fetch, so the button

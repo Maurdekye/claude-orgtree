@@ -210,6 +210,7 @@ export default function App() {
   // idiom the user asked for), so nothing about the canvas's reader is
   // lifted up here — that panel owns its selection.
   const [showGallery, setShowGallery] = useState(false)
+  const [focusAgent, setFocusAgent] = useState<string | null>(null)
   const [killArmed, setKillArmed] = useState(false)  // the killswitch latch
   // the usage button GLOWS once a lane nears its wall (user feature
   // 2026-08-19), so a freeze stops being the first notice. It rides
@@ -929,6 +930,8 @@ export default function App() {
               </header>
               <OrgCanvas tree={tree} op={op} slug={slug} toast={toast}
                 mailEvt={mailEvt}
+                focusAgent={focusAgent}
+                onFocusAgentHandled={() => setFocusAgent(null)}
                 onAccounts={BASE ? undefined : () => setShowAccounts(true)}
                 onInbox={(jump: unknown) => {
                   setInboxJump(typeof jump === 'string' ? jump : null)
@@ -977,6 +980,10 @@ export default function App() {
       )}
       {showGallery && slug && (
         <DocGalleryModal slug={slug} toast={toast}
+          onFocusAgent={(id) => {
+            setShowGallery(false)
+            setFocusAgent(id)
+          }}
           close={() => setShowGallery(false)} />
       )}
       {showAccounts && (

@@ -104,7 +104,6 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, outg
   // №26: hunting an hour-old message decayed your unread set click by click —
   // a plain client-side filter over sender+body, no index, no server
   const [q, setQ] = useState('')
-  const [draft, setDraft] = useState('')
   // windowed like the transcript: a long-lived org's folders grow without
   // bound and every row is a live DOM node. Newest MAIL_WINDOW render, the
   // rest page in. ⚠ the filter runs over the WHOLE set before the window, so
@@ -393,22 +392,8 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, outg
               </div>
             )}
             {replyable && (
-              <div className="mail-reply">
-                <textarea rows={2} value={draft}
-                  placeholder={`reply to ${party(cur)}…`}
-                  onChange={(e) => setDraft(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' && !e.shiftKey && draft.trim() && !isMobile) {
-                      e.preventDefault()
-                      onReply!(cur, draft.trim())
-                      setDraft('')
-                    }
-                  }} />
-                <button disabled={!draft.trim()}
-                  onClick={() => { onReply!(cur, draft.trim()); setDraft('') }}>
-                  reply
-                </button>
-              </div>
+              <MailReplyBox target={party(cur)}
+                onSend={(text) => onReply!(cur, text)} />
             )}
           </>
         )}
@@ -418,6 +403,39 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, outg
           </div>
         )}
       </div>
+    </div>
+  )
+}
+
+/** №11: inline mail reply box — textarea + reply button.
+ *  Shared between the mailbox reader (mail.tsx) and the presented
+ *  documents viewer (gallery.tsx). */
+export function MailReplyBox({ target, onSend, placeholder }: {
+  target?: string
+  onSend: (text: string) => void | Promise<unknown>
+  placeholder?: string
+}) {
+  const [draft, setDraft] = useState('')
+  const send = () => {
+    const t = draft.trim()
+    if (!t) return
+    onSend(t)
+    setDraft('')
+  }
+  return (
+    <div className="mail-reply">
+      <textarea rows={2} value={draft}
+        placeholder={placeholder ?? (target ? `reply to ${target}…` : 'reply…')}
+        onChange={(e) => setDraft(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' && !e.shiftKey && draft.trim() && !isMobile) {
+            e.preventDefault()
+            send()
+          }
+        }} />
+      <button disabled={!draft.trim()} onClick={send}>
+        reply
+      </button>
     </div>
   )
 }
