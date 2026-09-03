@@ -43,6 +43,13 @@ Markdown file in this repository as current operating guidance.
 - [`typing-plan.md`](typing-plan.md), [`social-preview.md`](social-preview.md),
   and [`message-visibility-suite.md`](message-visibility-suite.md) document
   maintained engineering workflows.
+- [`test-baseline.md`](test-baseline.md) is how to tell YOUR breakage from
+  the suites that were already failing. `main` is not green, so "expect
+  green" is the wrong bar and the right one is parity against a baseline you
+  measured yourself, at your own tip. Read it before you quote a failure
+  count at anyone: three separate things silently change the number — where
+  you ran it, whether your `node_modules` is a symlink, and which suites the
+  runner skipped.
 
 ## Historical and exploratory records
 
