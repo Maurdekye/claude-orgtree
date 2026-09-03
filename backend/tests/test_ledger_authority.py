@@ -234,20 +234,35 @@ def section_move_ceiling():
 
 
 # =====================================================================  §2
+# ⚠ EVERY SITE HERE NOW GOES THROUGH ledger._q (fractional seats, user ruling
+# 2026-09-03). That changed the TEXT of nearly every write but not one of the
+# guards: _q only snaps a value onto the 0.01 grid, so a write that could not
+# exceed the cap before still cannot, and a write that was pre-checked is
+# pre-checked on the same value. The audit question each entry answers is
+# unchanged; only the fragment matching it moved.
 GRANT_WRITE_SITES = {
     # line-fragment → the guard that must stand between it and the cap
-    '["grant"] += cast(int, c)': "_chain_acquire — D-014 pre-check above it",
-    '["grant"] += cast(int, remaining)': "_chain_acquire — D-014 pre-check",
+    'hop_n["grant"] = _q(hop_n["grant"] + c)':
+        "_chain_acquire — D-014 pre-check above it",
+    '["grant"] = _q(self.nodes[k]["grant"] + remaining)':
+        "_chain_acquire — D-014 pre-check",
     'n["grant"] = grant': "rehire — _check_top_grant when grant rises at top",
-    'n["grant"] += -delta': "switch_model downgrade — _check_top_grant",
-    'n["grant"] -= cast(int, own)': "switch_model upgrade — grant only shrinks",
-    'n["grant"] += delta': "reallocate — _check_top_grant on +Δ at top",
-    'self.nodes[hop]["grant"] -= c': "_move release — only shrinks",
-    'self.nodes[hop]["grant"] += c': "_move acquire — §1 fix",
+    'n["grant"] = _q(n["grant"] - delta)':
+        "switch_model downgrade — _check_top_grant (delta < 0 here, so this "
+        "is the melt: it RAISES the grant, which is why it is pre-checked)",
+    'n["grant"] = _q(n["grant"] - own)':
+        "switch_model upgrade — grant only shrinks",
+    'n["grant"] = _q(n["grant"] + delta)':
+        "reallocate — _check_top_grant on +Δ at top",
+    'self.nodes[hop]["grant"] = _q(self.nodes[hop]["grant"] - c)':
+        "_move release — only shrinks",
+    'self.nodes[hop]["grant"] = _q(self.nodes[hop]["grant"] + c)':
+        "_move acquire — §1 fix",
     'n["grant"] = 0': "reseed of a lost bearer — zeroes, never raises",
     # FR-22 rescind: SUBTRACTION only, min-clamped at free(parent) so it can
     # neither exceed max_top_grant (it never raises) nor push free negative
-    'p["grant"] -= clawed': "rescind claw-back — only shrinks, clamped at free",
+    'p["grant"] = _q(p["grant"] - clawed)':
+        "rescind claw-back — only shrinks, clamped at free",
     # D-224 seat exchange: the two grants TRADE. Neither is a new number —
     # each already sat on a live seat — so the multiset of grants in the org
     # is unchanged, and a top seat receives a grant that was legal on the
@@ -260,12 +275,12 @@ GRANT_WRITE_SITES = {
         "swap_seats — grants trade between two existing seats",
     # D-224 insertion: target hands back exactly the stake it committed to
     # the inserted node (a SHRINK, never a raise) …
-    'n_t["grant"] = g_t - stake_n':
+    'n_t["grant"] = _q(g_t - stake_n)':
         "insert_parent — target's grant only shrinks",
     # … and the inserted node absorbs that stake plus its own. At top level
     # the VALUE changes (seat costs differ), so insert_parent calls
     # _check_top_grant on exactly that branch before it writes anything.
-    'n_new["grant"] = seat_t + n_t["grant"] + g_n':
+    'n_new["grant"] = _q(seat_t + n_t["grant"] + g_n)':
         "insert_parent — _check_top_grant when the target is top-level",
 }
 

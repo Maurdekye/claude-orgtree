@@ -14,7 +14,7 @@ import {
   LockIcon, MailIcon, RetireIcon, SettingsIcon,
 } from '../icons'
 import {
-  anyTierSeat, CODEX_TIER_LETTER, CODEX_TIER_SEAT, CODEX_TIERS, DESK_SCALE, deskDpi, DRAFT, familyOffer, freezeKind, FREEZE_LABEL_SHORT, ANTIGRAVITY_TIER_LETTER, ANTIGRAVITY_TIER_SEAT, ANTIGRAVITY_TIERS, isOpenRouterTier, NODE_H, NODE_W, openrouterTierIds, providerOf, reserveOffer, TIER_LETTER, TIER_SEAT, tierLabel, TIERS, USER,
+  anyTierSeat, CODEX_TIER_LETTER, CODEX_TIER_SEAT, CODEX_TIERS, DESK_SCALE, deskDpi, DRAFT, familyOffer, fmtCredits, freezeKind, FREEZE_LABEL_SHORT, ANTIGRAVITY_TIER_LETTER, ANTIGRAVITY_TIER_SEAT, ANTIGRAVITY_TIERS, isOpenRouterTier, NODE_H, NODE_W, openrouterTierIds, providerOf, reserveOffer, TIER_LETTER, TIER_SEAT, tierLabel, TIERS, USER,
   USER_H, USER_W,
 } from './shared'
 import type {
@@ -140,9 +140,12 @@ export function UserNode({ pos, isDrop, stats, pip, seats, codexHire, claudeHire
         : <div className="cbar-inf-wrap">
             <div className="cbar-infinite" />
             <div className="cbar-tip">
-              <div>circulation <b className="n-fill">{stats.circ}</b></div>
-              <div>seats <b className="n-seat">{stats.seats}</b></div>
-              <div>free <b className="n-free">{stats.free}</b></div>
+              {/* fmtCredits: these three are SUMS of per-node holdings, so
+                  with a fractional seat in the org they are exactly where
+                  float drift would surface (0.1 + 0.2 = 0.30000000000000004) */}
+              <div>circulation <b className="n-fill">{fmtCredits(stats.circ)}</b></div>
+              <div>seats <b className="n-seat">{fmtCredits(stats.seats)}</b></div>
+              <div>free <b className="n-free">{fmtCredits(stats.free)}</b></div>
             </div>
           </div>}
       <svg className="eye" viewBox="0 0 48 26">
@@ -503,7 +506,7 @@ function SpawnChips({ onSpawn, free, seats, maxTier, side, soleHire,
         title={cant
           // user report: an exhausted kiosk cap read as an opaque dead
           // end — the tooltip now carries the REMEDY, not just the number
-          ? `${name}: needs ${seat} free (has ${free}) — the kiosk credit `
+          ? `${name}: needs ${fmtCredits(seat)} free (has ${fmtCredits(free)}) — the kiosk credit `
             + 'cap is fully held; drag an agent’s credit bar down '
             + 'or retire one to free credits'
           // ONE SHAPE FOR ALL THREE (user request 2026-08-28: "make them
@@ -1267,8 +1270,8 @@ export function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, c
         {live && !node.isBearerOf && !node.bearer_state &&
           <button className="retirebtn"
             title={liveKids
-              ? `dissolve — retire ${node.id} and its whole suborganization, freeing ${(node.seat ?? 0) + (node.grant ?? 0)} credit(s)`
-              : `retire — frees ${(node.seat ?? 0) + (node.grant ?? 0)} credit(s); context kept, rehire brings it back`}
+              ? `dissolve — retire ${node.id} and its whole suborganization, freeing ${fmtCredits((node.seat ?? 0) + (node.grant ?? 0))} credit(s)`
+              : `retire — frees ${fmtCredits((node.seat ?? 0) + (node.grant ?? 0))} credit(s); context kept, rehire brings it back`}
             onPointerDown={(e) => e.stopPropagation()}
             onClick={(e) => {
               e.stopPropagation()
@@ -1438,7 +1441,7 @@ export function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, c
           close={() => setAsking(null)} />, document.body)}
       {asking === 'retire' && createPortal(
         <ConfirmModal title={`retire ${node.id}?`}
-          body={`It stops working and frees ${(node.seat ?? 0) + (node.grant ?? 0)} credit(s) back to its superior. Its context is KEPT — rehire brings it back exactly as it was.`
+          body={`It stops working and frees ${fmtCredits((node.seat ?? 0) + (node.grant ?? 0))} credit(s) back to its superior. Its context is KEPT — rehire brings it back exactly as it was.`
             + (node.busy ? ' ⚠ It is mid-turn right now; that turn is cut off.' : '')}
           confirmLabel="retire"
           onConfirm={() => op({ op: 'retire', node: node.id }).then(() =>

@@ -18,7 +18,7 @@ import { pickFolder } from '../picker'
 import {
   CloseIcon, DeleteIcon, FolderIcon, LayersIcon, SettingsIcon,
 } from '../icons'
-import { ago, ALL_PRESENT, anyTierSeat, CODEX_TIERS, ANTIGRAVITY_TIERS, hireOf, isOpenRouterTier, MODEL_VERSIONS, openrouterTierIds, pileOrder, PROVIDER_LABEL, providerOf, reserveOffer, TIER_LETTER, tierLabel, TIERS, tierShown, USER, useEsc } from './shared'
+import { ago, ALL_PRESENT, anyTierSeat, CODEX_TIERS, ANTIGRAVITY_TIERS, fmtCredits, hireOf, isOpenRouterTier, MODEL_VERSIONS, openrouterTierIds, pileOrder, PROVIDER_LABEL, providerOf, reserveOffer, TIER_LETTER, tierLabel, TIERS, tierShown, USER, useEsc } from './shared'
 import type { ProviderPresence } from './shared'
 import type { CanvasNode, DraftScope, DraftState, OpFn, Pile } from './shared'
 import { ProcessLifecycleMark } from './desk'
@@ -321,7 +321,7 @@ export function UserConfig({ tree, slug, toast, close }: UserConfigProps) {
           body="Every agent in the entire org is retired at once. Context is kept; rehire brings any of them back."
           confirmLabel="dissolve all"
           onConfirm={() => dissolveAll(slug)
-            .then((r) => { toast([`dissolved ${r.nodes} node(s), freed ${r.freed} credits`]); close() })
+            .then((r) => { toast([`dissolved ${r.nodes} node(s), freed ${fmtCredits(r.freed)} credits`]); close() })
             .catch((e: Error) => toast([`error: ${e.message}`]))}
           close={() => setAsking(false)} />
       )}
@@ -1113,7 +1113,7 @@ export function NodeConfig({ node, map, tree, slug, op, toast, codexProvider,
       )}
       {asking === 'retire' && (
         <ConfirmModal title={`retire ${node.id}?`}
-          body={`It stops working and frees ${(node.seat ?? 0) + (node.grant ?? 0)} credit(s) back to its superior. Its context is KEPT — rehire brings it back exactly as it was.`}
+          body={`It stops working and frees ${fmtCredits((node.seat ?? 0) + (node.grant ?? 0))} credit(s) back to its superior. Its context is KEPT — rehire brings it back exactly as it was.`}
           confirmLabel="retire"
           onConfirm={() => op({ op: 'retire', node: node.id })
             .then(close).catch(() => {})}
@@ -1128,7 +1128,7 @@ export function NodeConfig({ node, map, tree, slug, op, toast, codexProvider,
       )}
       {asking === 'rescind' && (
         <ConfirmModal title={`rescind ${node.id}?`}
-          body={`Retired (subtree included), AND its superior's grant shrinks by the ${(node.seat ?? 0) + (node.grant ?? 0)}-credit stake — the freed headroom does not return. Rehiring this seat later needs new capacity granted from above. Context is kept.`}
+          body={`Retired (subtree included), AND its superior's grant shrinks by the ${fmtCredits((node.seat ?? 0) + (node.grant ?? 0))}-credit stake — the freed headroom does not return. Rehiring this seat later needs new capacity granted from above. Context is kept.`}
           confirmLabel="rescind"
           onConfirm={() => op({ op: 'rescind', node: node.id })
             .then(close).catch(() => {})}

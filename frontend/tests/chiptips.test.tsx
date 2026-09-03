@@ -96,11 +96,15 @@ const LEDGER = path.join(__SRC_DIR__, '..', '..', 'backend', 'orgtree', 'ledger.
 
 function backendSeats(): Record<string, number> {
   const src = readFileSync(LEDGER, 'utf8')
-  const m = /^TIERS:\s*Final\[dict\[str,\s*int\]\]\s*=\s*\{([^}]*)\}/m.exec(src)
+  // `int` OR `float`: seats went fractional below $1/M on 2026-09-03 (the
+  // static tiers in this table all stayed whole, but the annotation widened
+  // so the dynamic OpenRouter half can join it). The VALUE pattern accepts a
+  // decimal for the same reason — a favorite at $0.20 seats at 0.2.
+  const m = /^TIERS:\s*Final\[dict\[str,\s*(?:int|float)\]\]\s*=\s*\{([^}]*)\}/m.exec(src)
   assert.ok(m, `could not read TIERS out of ${LEDGER} — this test must not `
     + 'fall back to a guess, because a guess is the bug it exists to prevent')
   const out: Record<string, number> = {}
-  for (const [, k, v] of m![1]!.matchAll(/["']?([\w-]+)["']?\s*:\s*(\d+)/g)) {
+  for (const [, k, v] of m![1]!.matchAll(/["']?([\w-]+)["']?\s*:\s*(\d+(?:\.\d+)?)/g)) {
     out[k!] = Number(v)
   }
   assert.ok(Object.keys(out).length >= 3,
