@@ -281,9 +281,54 @@ export default function App() {
   }, [])
   const refreshOrgs = useCallback(() =>
     listOrgs().then((o) => { setOrgs(o); fetchOk() }).catch(fetchErr), [fetchOk, fetchErr])
+  // G1b — ONE TREE FETCH IN FLIGHT, AND NEVER A LOST ONE.
+  //
+  // `refreshTree` is called from two unthrottled sources: the 6 s heartbeat
+  // below, and EVERY websocket `changed` frame — i.e. every `save_org` by any
+  // agent, the supervisor or another tab. Neither knew whether the last fetch
+  // had come back, so a slow render multiplied itself: MEASURED 2026-09-03,
+  // one `GET /api/orgs/{slug}` took 11-38 s alone and 113 s with two in
+  // flight, past `DEFAULT_TIMEOUT_MS` — the "signal timed out" banner. Worse,
+  // HTTP/1.1 caps a browser at ~6 sockets per origin, so a stack of stalled
+  // tree polls starves everything else on the page; that is why the agent
+  // CHAT stopped loading while the backend was answering chat in ~2 s.
+  //
+  // ⚠ COALESCE, NEVER DROP. A `changed` frame means the doc really moved, so
+  // skipping its refetch would leave the UI stale against a change it was
+  // told about — a new bug wearing a fix's clothes. A frame that arrives
+  // mid-flight therefore sets `pending`, and the settle handler runs exactly
+  // one more fetch, which starts AFTER the change landed. Any number of
+  // frames during one fetch collapse into that single trailing refetch.
+  const treeBusy = useRef(false)
+  const treePending = useRef<string | null>(null)
+  // …and the slug the app actually wants right now, for the guard below.
+  // A ref rather than a dep so coalescing never re-creates this callback
+  // (which would restart the heartbeat interval on every org switch).
+  const wantSlug = useRef(slug)
+  useEffect(() => { wantSlug.current = slug }, [slug])
   const refreshTree = useCallback((s: string | null) => {
     if (!s) return
-    getTree(s).then((t) => { setTree(t); fetchOk() }).catch(fetchErr)
+    if (treeBusy.current) { treePending.current = s; return }
+    const run = (want: string) => {
+      treeBusy.current = true
+      getTree(want).then((t) => {
+        // ⚠ an ORG SWITCH mid-flight: this payload is the PREVIOUS org's
+        // tree and painting it would show the old org under the new org's
+        // header until the next poll. Not new caution — before coalescing,
+        // the two fetches raced and the loser was whichever the network
+        // happened to settle last, so the stale one could win. Now the
+        // ordering is deterministic and the stale one is simply not applied;
+        // the switch has already queued its own fetch as `pending`.
+        if (wantSlug.current === want) setTree(t)
+        fetchOk()
+      }).catch(fetchErr).finally(() => {
+        treeBusy.current = false
+        const next = treePending.current
+        treePending.current = null
+        if (next) run(next)
+      })
+    }
+    run(s)
   }, [fetchOk, fetchErr])
 
   useEffect(() => { refreshOrgs() }, [refreshOrgs])
@@ -298,9 +343,20 @@ export default function App() {
   //
   // This is the same lesson as the chat heartbeat (convo.beat, D-34) applied to
   // the other half of the app: the gate is "an org view is mounted", which is
-  // known LOCALLY and cannot be stale. The payload is ~4 KB and the endpoint
-  // answers in 2-12 ms, so the pull costs nothing worth counting; pushes stay
-  // and simply make it feel instant instead of being the only way to learn.
+  // known LOCALLY and cannot be stale.
+  //
+  // ⚠ THIS PULL IS NOT FREE, AND THE CLAIM THAT IT WAS IS HOW IT GOT
+  // EXPENSIVE. Until 2026-09-03 the line here read "the payload is ~4 KB and
+  // the endpoint answers in 2-12 ms, so the pull costs nothing worth
+  // counting". MEASURED that day on an org with 6 live and 179 archived
+  // seats: 881 KB and 11-38 s. Nothing warned, because the assertion of
+  // cheapness sat in a comment where no test could reach it — and every
+  // per-node field added to the tree payload since was weighed against it.
+  // The COST OF ONE RENDER IS THE BUDGET THIS HEARTBEAT SPENDS SIX TIMES A
+  // MINUTE, per open tab, plus once per `save_org`: measure it before adding
+  // a per-node call to `annotate`, and never do filesystem work per node
+  // there. `G1b` above now bounds the damage to one in-flight fetch; it does
+  // not make the render cheap.
   useEffect(() => {
     if (!slug) return
     const t = setInterval(() => refreshTree(slug), TREE_POLL_MS)
