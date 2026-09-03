@@ -208,6 +208,33 @@ def fixture(ok, msg) -> None:
         raise RuntimeError(f"fixture: {msg}")
 
 
+def raw_doc(slug: str):
+    """The document AS PERSISTED, without constructing an `Org`.
+
+    Two checks below deliberately refuse to read their precondition through
+    `store.load_org`, and the reason is subtle enough to be worth keeping:
+    LOADING IS WHAT RELEASES the state they are testing for (a timeless fable
+    lock, an orphaned `limit_locked`). Check the precondition with a load and
+    you consume it, and the check passes vacuously ever after.
+
+    Under the JSON backend that meant opening `orgs/<slug>.json`. Under
+    SQLite there is no such file, and both checks failed with
+    `FileNotFoundError` — not a store defect, the same class as the nine
+    format assertions in `test_persistence.py`: a test reaching past the
+    store to the format. The equivalent is the eager loader WITHOUT the
+    `Org`: same document, same "before anything ran" moment, no release hook.
+    Returned as-is rather than as a `dict` — a `LazyDoc` answers `.get` and
+    `["nodes"]` directly, and converting would raise questions about which
+    lazy sections a `dict()` walk materialises. (sqlite-review, 2026-09-04.)
+    """
+    if store.STORE_BACKEND == "sqlite":
+        with store._POOL.acquire(slug) as conn:
+            return store._load_lazy(conn, slug)
+    with open(os.path.join(store.DATA_ROOT, "orgs", slug + ".json"),
+              encoding="utf-8") as f:
+        return json.load(f)
+
+
 GAPS: list[tuple[str, str, str]] = []
 
 
@@ -495,13 +522,12 @@ def hermetic() -> None:
                             until_ts=_time.time() - 1)
         org.d["fable_lock"].pop("until_ts", None)   # the pre-d40dd82 shape
         store.save_org(org)
-        # ⚠ guard on the RAW FILE, not a loaded Org: since the STUCK-1
-        # migration `store.load_org` is the very thing that releases a
+        # ⚠ guard on the PERSISTED DOCUMENT, not a loaded Org: since the
+        # STUCK-1 migration `store.load_org` is the very thing that releases a
         # timeless lock, so loading to check the precondition would consume
         # the state under test and the check would pass vacuously.
-        raw = json.load(open(os.path.join(
-            os.environ["ORGTREE_DATA"], "orgs", org.d["slug"] + ".json"),
-            encoding="utf-8"))
+        # (`raw_doc`, not the raw file — same moment, either backend.)
+        raw = raw_doc(org.d["slug"])
         fixture(bool((raw.get("fable_lock") or {}))
                 and not (raw.get("fable_lock") or {}).get("until_ts")
                 and bool(raw["nodes"]["f1"].get("limit_locked")),
@@ -733,14 +759,13 @@ def hermetic() -> None:
         org.d.pop("fable_lock", None)               # nothing org-level to clear
         store.save_org(org)
         slug = org.d["slug"]
-        # ⚠ fixture on the RAW FILE (implementer, on promotion): the (a) fix
-        # releases an orphaned flag AT LOAD, so loading to check the
-        # precondition would consume the state under test — the same trap
-        # the STUCK-1 repair named, third appearance today. The disk carries
-        # both states; the first load IS the release.
-        with open(os.path.join(store.DATA_ROOT, "orgs", slug + ".json"),
-                  encoding="utf-8") as f:
-            _raw = json.load(f)["nodes"]["f1"]
+        # ⚠ fixture on the PERSISTED DOCUMENT (implementer, on promotion):
+        # the (a) fix releases an orphaned flag AT LOAD, so loading to check
+        # the precondition would consume the state under test — the same trap
+        # the STUCK-1 repair named, third appearance today. The store carries
+        # both states; the first load IS the release. (`raw_doc`, not the raw
+        # file — under SQLite there is no file, and the moment is the same.)
+        _raw = raw_doc(slug)["nodes"]["f1"]
         fixture(bool(_raw.get("limit_locked")) and bool(_raw.get("frozen")),
                 "the fixture did not persist both states")
         supervisor.resume_frozen(slug)
