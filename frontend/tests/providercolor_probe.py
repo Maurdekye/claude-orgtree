@@ -23,7 +23,7 @@ for stream in (sys.stdout, sys.stderr):
 
 HERE = pathlib.Path(__file__).resolve().parent
 CSS = (HERE.parent / "src" / "styles.css").read_text(encoding="utf-8")
-CODEX = "rgb(21, 154, 205)"
+CODEX = "rgb(34, 196, 189)"
 
 
 def main() -> int:
@@ -118,7 +118,7 @@ def main() -> int:
         for failure in failures:
             print(f"  · {failure}")
         return 1
-    print("OK — far and middle cards carry distinct Claude orange / Codex #159acd blue cues")
+    print("OK — far and middle cards carry distinct Claude orange / Codex #22c4bd teal cues")
     return 0
 
 

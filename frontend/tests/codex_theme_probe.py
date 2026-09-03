@@ -3,7 +3,7 @@
     python -B tests/codex_theme_probe.py
     python -B tests/codex_theme_probe.py --expect-fail
 
-The provider chrome is #159acd blue, including the agent-tray context wheel,
+The provider chrome is #22c4bd teal, including the agent-tray context wheel,
 while the model-tier badge and top stripe remain tier-colored (Sol = reddish
 orange). The known-negative control restores Claude terracotta as the provider
 accent and must be detected.
@@ -15,7 +15,7 @@ from playwright.sync_api import sync_playwright
 
 
 CSS = pathlib.Path(__file__).resolve().parents[1] / "src" / "styles.css"
-PROVIDER = "rgb(21, 154, 205)"
+PROVIDER = "rgb(34, 196, 189)"
 SOL = "rgb(255, 138, 61)"
 AUDIENCE = "rgb(217, 119, 87)"
 CONTROL = """
@@ -122,7 +122,7 @@ def main() -> int:
     if fail:
         print("\n".join("FAIL: " + x for x in fail))
         return 1
-    print("OK — Codex desk, draft, and tray wheel are #159acd blue; Sol badge/top stripe stay tier orange; ask aura is provider-themed")
+    print("OK — Codex desk, draft, and tray wheel are #22c4bd teal; Sol badge/top stripe stay tier orange; ask aura is provider-themed")
     return 0
 
 

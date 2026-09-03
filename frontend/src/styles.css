@@ -28,6 +28,12 @@
   --kiosk-hover: rgba(75, 163, 199, .16);
   --ok: #6fd377;            /* == the done status green (one green, one meaning) */
   --bad: #f14c4c;
+  /* the caution band (compacting, one-shot dogs, pending tags, ask warnings).
+     Every one of its ~15 call sites was already written `var(--warn, #e5c07b)`
+     and riding the FALLBACK, because the token itself was never declared — so
+     this line is a zero-pixel change that simply makes it themeable and stops
+     the next edit from having to change the literal in fifteen places. */
+  --warn: #e5c07b;
   --work: #7cc0ff;          /* task-state "working" (sky). Deliberately NOT the
                                terracotta accent: the accent pulse means "a turn
                                is running right now"; this chip means "the task
@@ -1336,19 +1342,39 @@ button.cc-name:hover {
      redundant glyph. */
   --tier-flash: #aee2f9;
   --tier-pro: #6b45d6;
-  /* the provider ACCENT — the blue counterpart of --accent: desk border,
-     desk shadow ring and busy border for codex agents (dormant until codex
-     hire lands; the class comes from cards.tsx `prov-openai`) */
-  --prov-openai: #159acd;
-  /* the antigravity provider accent — mid bluish-violet, MORE BLUE than violet
-     (the pro chip is more violet than blue; user spec 2026-08-29) */
-  --prov-google: #5f6fdb;
+  /* the provider ACCENT — the teal counterpart of --accent: desk border,
+     desk shadow ring and busy border for codex agents (the class comes from
+     cards.tsx `prov-openai`).
+     ⚠ MEASURED, NOT CHOSEN (2026-09-03) — and NOT the raw brand color, because
+     both of OpenAI's fail here. Its monochrome identity (#0f0f0f / #fafafa)
+     lands ΔE 3.3 from --tier-luna and 4.5 from --ice: this palette's neutral
+     band is full. The ChatGPT green #10a37f collides with claude's terracotta
+     under PROTANOPIA at ΔE 6.8 — orange-vs-green, in a palette anchored on
+     orange. #22c4bd is that green lifted and cooled just clear of both.
+     It replaced #159acd, which sat ΔE 4.3 from --kiosk #4ba3c7 and ΔE 12.6
+     from --prov-google — both under the 15 normal-vision floor, i.e. the two
+     provider blues were not reliably tellable apart at chip size. */
+  --prov-openai: #22c4bd;
+  /* the antigravity provider accent — GOOGLE BLUE, the family anchor
+     (#4285f4), lifted to #5090f5 for contrast.
+     ⚠ Raw #4285f4 is 4.30:1 on --panel and FAILS the 4.5:1 text floor, which
+     this token must clear because the .prov-google block below rebinds it to
+     --accent — so it paints body text, not just borders. The old #5f6fdb was
+     worse on both counts: 3.49:1, and ΔE 7.3 from --prov-openrouter under
+     DEUTERANOPIA (under the 8 floor). F/P letters stay the redundant glyph. */
+  --prov-google: #5090f5;
   /* the OpenRouter provider accent (user correction 2026-09-03) — official
      violet from openrouter.ai (hsl(263.7 90.4% 54.9%)), clear of claude's
-     terracotta, codex's teal and antigravity's blue-violet. Its TIER colours
+     terracotta, codex's teal and antigravity's blue. Its TIER colours
      are not here at all: they are generated per favorite (shared.ts
      `openrouterTierCss`) from the canonical color the backend derives for each
-     model. */
+     model.
+     ⚠ KNOWN DEFECT, DELIBERATELY LEFT (2026-09-03): this is 2.43:1 on --panel,
+     the worst contrast failure in this file, and it is rebound to --accent
+     like the others — so it paints text. It is NOT fixed here because every
+     lightening that clears 4.5:1 collapses it into --prov-google under CVD
+     (ΔE 1.0–4.1); it needs a joint decision with that token, not a lone
+     nudge. Do not "fix" this value in isolation. */
   --prov-openrouter: hsl(263.7 90.4% 54.9%);
   --ice: #a8d4ea;           /* frozen (usage limit) — pale ice, deliberately
                                whiter than the saturated credit-bar cyans */
@@ -3205,7 +3231,7 @@ svg.MuiSvgIcon-root {
 .tray-row.off { opacity: .5; }
 /* The tray is outside a card's provider-theme root, so give its context wheel
    the row's provider accent explicitly. Without this, Codex rows inherit the
-   page's Claude-orange --accent instead of their own #159acd blue. */
+   page's Claude-orange --accent instead of their own #22c4bd teal. */
 .tray-row.prov-openai { --accent: var(--prov-openai); }
 .tray-row.prov-google { --accent: var(--prov-google); }
 .tray-row.prov-openrouter { --accent: var(--prov-openrouter); }
