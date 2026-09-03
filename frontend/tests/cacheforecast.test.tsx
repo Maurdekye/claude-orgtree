@@ -509,3 +509,36 @@ test('manual compaction warning uses forecast evidence, never generic idle age',
   assert.match(modal, /known_incompatible/)
   assert.doesNotMatch(modal, /Date\.parse|60\s*\*\s*60e3|lastAt/)
 })
+
+test('CacheForecastMark renders nothing while a turn is running (busy)', async () => {
+  // While a turn is running, the next turn does not exist yet and its cache
+  // state will be dictated by the running turn's outcome. The UI shows no card.
+  const ready = forecast('compatible_observed', 'not_applicable', {
+    source: 'authoritative_receipt', lane: 'subscription',
+    readiness: 'ready', readiness_cause: 'receipt_valid',
+    ttl_seconds: 3600, expires_at: new Date(Date.now() + 1800_000).toISOString(),
+  })
+  const cold = forecast('known_incompatible', 'not_applicable', {
+    source: 'fingerprint_and_receipt_mismatch', lane: 'subscription',
+    readiness: 'not_ready', readiness_cause: 'prefix_changed',
+  })
+  const diag = forecast('uncertain', 'not_applicable', {
+    source: 'capability_unsupported', lane: 'provider_unsupported',
+    readiness: 'diagnostic', readiness_cause: 'unsupported_capability',
+  })
+
+  for (const [label, f] of [['ready', ready], ['not_ready', cold], ['diagnostic', diag]] as const) {
+    const idleView = await mountView(<CacheForecastMark forecast={f} />, (v) => v)
+    try {
+      const mark = idleView.el.querySelector('.cache-forecast')
+      assert.ok(mark, `${label} idle rendered no mark`)
+    } finally { await idleView.unmount() }
+
+    const busyView = await mountView(<CacheForecastMark forecast={f} busy={true} />, (v) => v)
+    try {
+      const mark = busyView.el.querySelector('.cache-forecast')
+      assert.equal(mark, null, `${label} mid-turn rendered a mark`)
+    } finally { await busyView.unmount() }
+  }
+})
+

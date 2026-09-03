@@ -528,12 +528,16 @@ function useCountdown(expiresAt: number | null): number | null {
  * re-forecast: the entry it was counting down to has expired, and continuing
  * to show green until the next poll would be the one lie this badge exists to
  * prevent. */
-export function CacheForecastMark({ forecast }: {
+export function CacheForecastMark({ forecast, busy }: {
   forecast?: CacheForecast | null
+  busy?: boolean
 }) {
   const expiresAt = forecast ? cacheExpiryAt(forecast) : null
   const left = useCountdown(expiresAt)
-  if (!forecast) return null
+  // When a turn is running (`busy`), readiness is moot: the running turn has
+  // not completed, will produce a new fingerprint and receipt upon finishing,
+  // and no next turn can launch until this one finishes. The UI renders nothing.
+  if (!forecast || busy) return null
   const readiness = readinessOf(forecast)
   if (readiness === 'none'
       || forecast.readiness_cause === 'no_completed_fingerprint'
@@ -1416,7 +1420,7 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
           reason={node.mcp_tool_count_reason}
           readinessState={mcpReadinessState}
           readinessReason={mcpReadinessReason} />
-        <CacheForecastMark forecast={node.cache_forecast} />
+        <CacheForecastMark forecast={node.cache_forecast} busy={processActive} />
         {node.last_status && !bannerDuplicatesStatus &&
           <span className={'statuschip ' + node.last_status.status}
             title={node.last_status.summary}>{node.last_status.status}</span>}
