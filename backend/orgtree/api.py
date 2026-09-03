@@ -230,11 +230,12 @@ def _kiosk_token_map() -> dict[str, str]:
     invalidated on any kiosk-config write, so rotation revokes instantly."""
     if time.time() - _token_cache["at"] > 5:
         m: dict[str, str] = {}
-        for o in store.list_orgs():
-            try:
-                k = store.load_org(o["slug"]).d.get("kiosk") or {}
-            except LedgerError:
-                continue
+        # ONE parse per org, not two (see `store.list_orgs_with_docs`). An org
+        # whose document will not read is still absent from the map — it is
+        # dropped by the scan instead of by a `LedgerError` here — so an
+        # unreadable org still fails CLOSED.
+        for o, org in store.list_orgs_with_docs():
+            k = org.d.get("kiosk") or {}
             if k.get("enabled") and k.get("token"):
                 m[k["token"]] = o["slug"]  # type: ignore[typeddict-item]  # guard proves the key
         _token_cache.update(at=time.time(), map=m)
@@ -400,11 +401,10 @@ _STEER_RE = re.compile(r"^/api/orgs/([a-z0-9@-]+)/nodes/([^/]+)/steer$")
 def _bridge_secret_map() -> dict[str, str]:
     if time.time() - _bridge_cache["at"] > 5:
         m: dict[str, str] = {}
-        for o in store.list_orgs():
-            try:
-                d = store.load_org(o["slug"]).d
-            except LedgerError:
-                continue
+        # ONE parse per org, not two — and fails closed on an unreadable org
+        # for the same reason as `_kiosk_token_map` above.
+        for o, org in store.list_orgs_with_docs():
+            d = org.d
             # kiosk sandboxes and normal-org sandboxes alike (user ruling)
             for s in ((d.get("kiosk") or {}).get("sandbox_secret"),
                       (d.get("sandbox") or {}).get("secret")):
