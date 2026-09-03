@@ -1014,6 +1014,7 @@ button.cc-name:hover {
 .badge.prov-claude { color: var(--prov-claude); border-color: color-mix(in srgb, var(--prov-claude) 45%, var(--line)); }
 .badge.prov-openai { color: var(--prov-openai); border-color: color-mix(in srgb, var(--prov-openai) 45%, var(--line)); }
 .badge.prov-google { color: var(--prov-google); border-color: color-mix(in srgb, var(--prov-google) 45%, var(--line)); }
+.badge.prov-openrouter { color: var(--prov-openrouter); border-color: color-mix(in srgb, var(--prov-openrouter) 45%, var(--line)); }
 /* jump cards re-scope the whole accent surface to the JUMP TARGET: hover/
    focus border and wash, the shed-form mail dot, and the inline count all
    follow one override — the focus ring and hover geometry are untouched, so
@@ -1029,6 +1030,10 @@ button.cc-name:hover {
 .edge-jump.prov-google, .desk-nav-chip.prov-google {
   --accent: var(--prov-google);
   --accent-soft: color-mix(in srgb, var(--prov-google) 16%, transparent);
+}
+.edge-jump.prov-openrouter, .desk-nav-chip.prov-openrouter {
+  --accent: var(--prov-openrouter);
+  --accent-soft: color-mix(in srgb, var(--prov-openrouter) 16%, transparent);
 }
 /* -- composer: the Claude Code input box -- */
 /* send beside the input, no footer row (user ruling: reclaim vertical space) */
@@ -1288,12 +1293,13 @@ button.cc-name:hover {
   /* the antigravity provider accent — mid bluish-violet, MORE BLUE than violet
      (the pro chip is more violet than blue; user spec 2026-08-29) */
   --prov-google: #5f6fdb;
-  /* the OpenRouter provider accent (2026-09-02) — a rose-magenta clear of
-     claude's terracotta, codex's teal and antigravity's blue-violet. Its TIER
-     colours are not here at all: they are generated per favorite
-     (shared.ts `openrouterTierCss`) from the canonical color the backend
-     derives for each model. */
-  --prov-openrouter: #c4569b;
+  /* the OpenRouter provider accent (user correction 2026-09-03) — official
+     violet from openrouter.ai (hsl(263.7 90.4% 54.9%)), clear of claude's
+     terracotta, codex's teal and antigravity's blue-violet. Its TIER colours
+     are not here at all: they are generated per favorite (shared.ts
+     `openrouterTierCss`) from the canonical color the backend derives for each
+     model. */
+  --prov-openrouter: hsl(263.7 90.4% 54.9%);
   --ice: #a8d4ea;           /* frozen (usage limit) — pale ice, deliberately
                                whiter than the saturated credit-bar cyans */
 }
@@ -3069,6 +3075,7 @@ svg.MuiSvgIcon-root {
    page's Claude-orange --accent instead of their own #159acd blue. */
 .tray-row.prov-openai { --accent: var(--prov-openai); }
 .tray-row.prov-google { --accent: var(--prov-google); }
+.tray-row.prov-openrouter { --accent: var(--prov-openrouter); }
 /* FR-16: a filtered-out ancestor kept visible so a matching descendant's
    indent still has a parent above it — dimmer than .off, and italic so it
    reads as context rather than a result */
