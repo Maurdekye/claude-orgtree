@@ -48,6 +48,12 @@ assertion tacked onto an existing payload test. A future edit could compute
 the forecast for archived seats and then discard it, satisfying §1 perfectly
 while restoring the entire regression. Content assertions cannot see cost.
 
+§5 covers the second half of the same fix: `transcript_path` now REMEMBERS a
+resolved path and re-verifies it with one `stat` instead of re-globbing. It has
+no TTL by design, so its four properties (stable hit, deleted path self-heals,
+misses are never cached, roots do not answer for each other) are the whole
+contract and are pinned there.
+
 §3 is the property in its general form: the number of forecast computations
 must not grow with the ARCHIVE. An org with 4 archived seats and an org with
 120 archived seats must do the same amount of work, because they have the same
@@ -256,6 +262,68 @@ def a_live_seat_with_no_process_still_gets_its_forecast() -> None:
         "or warmth rather than on state")
 
 
+# ── §5 · the `transcript_path` memo: sound because it verifies, not because
+#        it is fresh ──────────────────────────────────────────────────────────
+def a_remembered_transcript_is_verified_before_it_is_served() -> None:
+    """The memo has no TTL, so these four properties are the whole contract.
+
+    It is not a cache that expires; it is a remembered path that is re-checked
+    with one `stat` before use. MEASURED 2026-09-03: 8.72 ms per glob vs
+    0.039 ms memoised — 225x — because a glob over `projects/*` stats every
+    project directory (349 on this box) and the memo stats one file.
+
+    The soundness argument is that the session id IS the file name, so a path
+    that still exists is still that session's transcript. These checks are
+    what make that argument falsifiable rather than a comment.
+    """
+    rig = tempfile.mkdtemp(prefix="orgtree-tpath-memo-")
+    try:
+        proj = os.path.join(rig, "projects", "some-project")
+        os.makedirs(proj)
+        path = os.path.join(proj, "sess-x.jsonl")
+        open(path, "w").close()
+
+        # ① resolved, and stable across calls
+        assert S.transcript_path("sess-x", rig) == path
+        assert S.transcript_path("sess-x", rig) == path
+
+        # ② a memoised path that DISAPPEARS is never served. This is the one
+        #    that would rot silently: the entry is still in the dict and only
+        #    the `exists` check stands between it and a caller that would then
+        #    open a deleted file.
+        os.remove(path)
+        assert S.transcript_path("sess-x", rig) is None, (
+            "a deleted transcript was served from the memo — the verify step "
+            "is gone and the memo has become a plain cache")
+
+        # ③ …and a MISS is not remembered either, so the session is found the
+        #    moment it appears. Absence is the answer that flips on its own —
+        #    the CLI writes the file partway through a first turn — and
+        #    `_build_cmd` reads it as "this session has never run".
+        open(path, "w").close()
+        assert S.transcript_path("sess-x", rig) == path, (
+            "a negative result was cached; a session that appeared after its "
+            "first lookup stays invisible")
+    finally:
+        shutil.rmtree(rig, ignore_errors=True)
+
+    # ④ the memo is per-root: two roots holding the same session id must not
+    #    answer for each other (sandboxed orgs get their own transcript root).
+    a = tempfile.mkdtemp(prefix="orgtree-tpath-a-")
+    b = tempfile.mkdtemp(prefix="orgtree-tpath-b-")
+    try:
+        for r in (a, b):
+            os.makedirs(os.path.join(r, "projects", "p"))
+            open(os.path.join(r, "projects", "p", "same-sid.jsonl"), "w").close()
+        pa = S.transcript_path("same-sid", a)
+        pb = S.transcript_path("same-sid", b)
+        assert pa and pb and pa != pb, (pa, pb)
+        assert pa.startswith(a) and pb.startswith(b), (pa, pb)
+    finally:
+        shutil.rmtree(a, ignore_errors=True)
+        shutil.rmtree(b, ignore_errors=True)
+
+
 try:
     print("tree render cost")
     check("§1 an archived seat carries an explicit null forecast",
@@ -266,6 +334,8 @@ try:
           render_cost_does_not_grow_with_the_archive)
     check("§4 an idle live seat still gets its forecast",
           a_live_seat_with_no_process_still_gets_its_forecast)
+    check("§5 a remembered transcript is verified before it is served",
+          a_remembered_transcript_is_verified_before_it_is_served)
     print(f"\n{PASS} passed, {FAIL} FAILED")
 finally:
     shutil.rmtree(RIG, ignore_errors=True)

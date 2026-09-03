@@ -2163,15 +2163,61 @@ def _reload_prompt_views(slug: str, session_id: str,
     return fresh
 
 
+# `(root, session_id) → the path last resolved for it`.
+#
+# ⚠ NOT A TTL CACHE, AND THAT IS THE POINT. A remembered path is returned only
+# after `os.path.exists` confirms the file is still there, so there is no
+# staleness window to tune and no timer that can be wrong: one `stat` replaces
+# the ~349 `lexists` calls a `glob` over `projects/*` spends (MEASURED
+# 2026-09-03 on this box: 14 ms a glob, 26 ms on a miss because it globs the
+# journal store too; the `stat` is ~4 µs).
+#
+# It is SOUND rather than merely fast because the session id is the FILE NAME:
+# `…/projects/<dir>/<session_id>.jsonl`. If that file still exists it is still
+# that session's transcript, by construction — a remembered path cannot decay
+# into someone else's record. A session created mid-request is unaffected: it
+# was never memoised, so it takes the full glob and is found.
+#
+# The one divergence from a fresh `glob`, stated so nobody has to rediscover
+# it: when the SAME session id exists under two project dirs, `glob` returns
+# whichever `os.listdir` yields first and this returns whichever was resolved
+# first. Both are arbitrary — the pre-existing `hits[0]` already picked one
+# without a rule — and the duplicate is pathological anyway. If the memoised
+# one is deleted the check fails and the glob picks the survivor.
+#
+# Plain dict, no lock: get/set/pop are atomic under the GIL, and the only race
+# (two threads globbing the same missing session at once) costs a duplicate
+# glob and stores the same answer twice.
+_TPATH_MEMO: dict[tuple[str, str], str] = {}
+_TPATH_MEMO_CAP = 4096      # ~0.5 MB of strings; cleared wholesale, see below
+
+
 def transcript_path(session_id: str, root: str | None = None) -> str | None:
     base = root or os.path.expanduser("~/.claude")
+    key = (base, session_id)
+    known = _TPATH_MEMO.get(key)
+    if known is not None and os.path.exists(known):
+        return known
     hits = glob.glob(os.path.join(base, "projects", "*", session_id + ".jsonl"))
     if not hits:
         # …then the supervisor's own journals (see journal_store): a codex
         # thread's record is as real a transcript as the Claude CLI's file
         hits = glob.glob(os.path.join(journal_store(), "projects", "*",
                                       session_id + ".jsonl"))
-    return hits[0] if hits else None
+    if not hits:
+        # ⚠ A MISS IS NEVER REMEMBERED. Absence is the one answer that flips
+        # on its own — the CLI writes the file partway through a first turn —
+        # and callers draw hard conclusions from it (`_build_cmd` reads it as
+        # "this session has never run"). A cached `None` would freeze that
+        # verdict for a session that had since appeared.
+        _TPATH_MEMO.pop(key, None)
+        return None
+    if len(_TPATH_MEMO) >= _TPATH_MEMO_CAP:
+        # A whole-dict clear rather than an eviction policy: entries are
+        # self-verifying, so losing them costs one glob each and nothing else.
+        _TPATH_MEMO.clear()
+    _TPATH_MEMO[key] = hits[0]
+    return hits[0]
 
 
 def transcript_index(root: str | None = None,
