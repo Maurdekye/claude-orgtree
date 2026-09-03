@@ -117,7 +117,7 @@ def classify(cur: dict[str, Any], prior: dict[str, Any] | None,
 def every_cause_has_a_verdict_and_copy() -> None:
     eq(set(C.READINESS), set(C.READINESS_DETAIL))
     for cause, readiness in C.READINESS.items():
-        assert readiness in ("ready", "not_ready", "diagnostic"), cause
+        assert readiness in ("ready", "not_ready", "diagnostic", "none"), cause
         detail = C.READINESS_DETAIL[cause]
         # Copy must be a real sentence a user can act on, not a slug echo.
         assert len(detail) > 40, f"{cause}: explanation too thin: {detail!r}"
@@ -156,10 +156,12 @@ check("grey is exactly the enumerated fault set, all evidence-bearing",
 
 # ── §2 the user's explicitly requested matrix ─────────────────────────────
 
-def fresh_supported_lane_is_red() -> None:
-    # THE D-214 OVERRIDE. This was green; the ruling makes it red.
+def fresh_supported_lane_has_no_cache_flag() -> None:
+    # A cache flag is a statement about an existing cache. When there has been
+    # no completed turn there is no cache at all, so neither "ready" nor
+    # "not ready" is true. Readiness is "none", rendering no cache flag.
     row = classify(snapshot(), {})
-    eq(row["readiness"], "not_ready")
+    eq(row["readiness"], "none")
     eq(row["readiness_cause"], "no_completed_fingerprint")
     # Red here must NOT claim a miss — there is no entry to miss.
     assert "not a miss" in row["readiness_detail"], row["readiness_detail"]
@@ -224,8 +226,8 @@ def unverifiable_receipt_prefix_is_red() -> None:
     eq(row["readiness_cause"], "receipt_prefix_unobserved")
 
 
-check("a supported lane with no completed turn is RED (D-214 overridden)",
-      fresh_supported_lane_is_red)
+check("a supported lane with no completed turn has readiness NONE (no cache flag)",
+      fresh_supported_lane_has_no_cache_flag)
 check("a matching unexpired receipt is GREEN and carries its boundary",
       compatible_receipt_is_green_with_a_boundary)
 check("an elapsed entry is RED", expiry_is_red)
@@ -439,7 +441,7 @@ def legacy_rows_migrate_instead_of_reporting_a_defect() -> None:
         ("known_incompatible", "fingerprint_mismatch", "subscription"):
             ("not_ready", "prefix_changed"),
         ("uncertain", "no_completed_fingerprint", "subscription"):
-            ("not_ready", "no_completed_fingerprint"),
+            ("none", "no_completed_fingerprint"),
         ("uncertain", "no_positive_receipt", "subscription"):
             ("not_ready", "no_positive_receipt"),
         ("uncertain", "clock_skew", "subscription"):

@@ -103,41 +103,27 @@ test('Codex subscription tooltip names the fixed estimate without promising a hi
   } finally { await view.unmount() }
 })
 
-test('D-226 reverses D-214: a supported lane with no completed turn is RED', async () => {
-  // ⚠ THIS TEST USED TO ASSERT THE OPPOSITE. Under D-214 both rows below were
-  // green, reasoning that with no completed turn there is nothing to conflict
-  // with. The user ruled that green requires affirmative evidence of
-  // compatibility; absence of evidence is not evidence. Both are now red, and
-  // the copy must say "not established" rather than predict a miss.
+test('a supported lane with no completed turn renders NO cache flag', async () => {
+  // A cache flag is a statement about an existing cache. When there has been
+  // no completed turn there is no cache at all, so neither "ready" nor
+  // "not ready" is true. The UI renders NO flag at all.
   const view = await mountView(<>
     <CacheForecastMark forecast={forecast('uncertain', 'not_applicable', {
       source: 'no_completed_fingerprint', lane: 'subscription',
-      readiness: 'not_ready', readiness_cause: 'no_completed_fingerprint',
+      readiness: 'none', readiness_cause: 'no_completed_fingerprint',
       readiness_detail: 'No completed turn has been observed for this agent '
         + 'yet, so there is nothing to establish cache readiness from.',
     })} />
     <CacheForecastMark forecast={forecast('uncertain', 'not_applicable', {
       source: 'no_completed_fingerprint', lane: 'api_key', ttl_seconds: 300,
-      readiness: 'not_ready', readiness_cause: 'no_completed_fingerprint',
+      readiness: 'none', readiness_cause: 'no_completed_fingerprint',
       readiness_detail: 'No completed turn has been observed for this agent '
         + 'yet, so there is nothing to establish cache readiness from.',
     })} />
   </>, (el) => el)
   try {
     const marks = [...view.el.querySelectorAll<HTMLElement>('.cache-forecast')]
-    assert.deepEqual(marks.map((m) => [...m.classList][1]), ['cold', 'cold'])
-    assert.deepEqual(marks.map((m) => m.textContent?.trim()),
-      ['cache ×', 'cache ×'])
-    for (const mark of marks) {
-      const title = mark.getAttribute('aria-label') ?? ''
-      assert.match(title, /NOT compatibility-ready/)
-      assert.match(title, /not established/)
-      assert.match(title, /no_completed_fingerprint/)
-      // Red here is NOT a claim that the provider will miss — there is no
-      // entry to miss. The wording must not overclaim in either direction.
-      assert.doesNotMatch(title, /observed hit/i)
-      assert.doesNotMatch(title, /miss is expected/i)
-    }
+    assert.equal(marks.length, 0, 'no cache flag rendered when there is no completed turn')
   } finally { await view.unmount() }
 })
 
@@ -245,12 +231,18 @@ test('a pre-D-226 payload (no triple) re-derives its verdict from state/source �
   // is explicit that a row predating the schema migration must not render
   // grey, so the badge now applies `legacy_readiness`'s own table and says so.
   const past = new Date(Date.now() - 60_000).toISOString()
+  // A pre-D-226 row with no completed turn re-derives readiness 'none' and renders NO flag
+  const noFirstTurn = legacy('uncertain', {
+    source: 'no_completed_fingerprint', lane: 'subscription' })
+  const nftView = await mountView(<CacheForecastMark forecast={noFirstTurn} />, (el) => el)
+  try {
+    const mark = nftView.el.querySelector<HTMLElement>('.cache-forecast')
+    assert.equal(mark, null, 'no first turn renders no cache flag')
+  } finally { await nftView.unmount() }
+
   const rows: Array<[string, CacheForecast, string, string, RegExp?]> = [
     ['known cold', legacy('known_incompatible', {
       source: 'fingerprint_and_receipt_mismatch' }), 'cold', 'prefix_changed'],
-    ['no first turn yet', legacy('uncertain', {
-      source: 'no_completed_fingerprint', lane: 'subscription' }),
-      'cold', 'no_completed_fingerprint', /NOT compatibility-ready/],
     ['no positive receipt yet', legacy('uncertain', {
       source: 'no_positive_receipt', lane: 'subscription' }),
       'cold', 'no_positive_receipt'],

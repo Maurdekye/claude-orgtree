@@ -25,7 +25,7 @@ import {
   HearingIcon, LayersIcon, LockIcon, MailIcon, PlayIcon, PsychologyIcon,
   SettingsIcon, SparkIcon, StopIcon, WarnIcon,
 } from '../icons'
-import { ago, ALL_PRESENT, ALL_TIERS, anyTierSeat, CODEX_TIERS, CopyIcon, EXTERN, freezeKind, FREEZE_LABEL, ANTIGRAVITY_TIERS, isOpenRouterTier, md, openrouterTierIds, PROVIDER_LABEL, providerOf, TIER_LETTER, tierLabel, tierShown, USER, useEsc, usePolled } from './shared'
+import { ago, ALL_PRESENT, ALL_TIERS, anyTierSeat, CODEX_TIERS, CopyIcon, EXTERN, fmtCredits, freezeKind, FREEZE_LABEL, ANTIGRAVITY_TIERS, isOpenRouterTier, md, openrouterTierIds, PROVIDER_LABEL, providerOf, TIER_LETTER, tierLabel, tierShown, USER, useEsc, usePolled } from './shared'
 import type { ProviderPresence } from './shared'
 import {
   addPending, CHAT_WINDOW, dropPending, loadOlder as storeLoadOlder, markBusy,
@@ -318,7 +318,7 @@ export function TurnStartingMark({ mcpWaiting, reason }: {
  */
 interface ReadinessVerdict { readiness: Readiness; cause: string; detail: string }
 
-const READINESS_VALUES: ReadonlySet<string> = new Set(['ready', 'not_ready', 'diagnostic'])
+const READINESS_VALUES: ReadonlySet<string> = new Set(['ready', 'not_ready', 'diagnostic', 'none'])
 const LEGACY_STATES: ReadonlySet<string> = new Set([
   'known_incompatible', 'expired_known_entry', 'uncertain', 'compatible_observed'])
 
@@ -333,7 +333,8 @@ const LEGACY_CAUSE: Readonly<Record<string, readonly [Readiness, string]>> = {
   'expired_known_entry/authoritative_receipt': ['not_ready', 'receipt_expired'],
   'expired_known_entry/codex_subscription_fixed_estimate':
     ['not_ready', 'receipt_expired'],
-  'uncertain/no_completed_fingerprint': ['not_ready', 'no_completed_fingerprint'],
+  'uncertain/no_completed_fingerprint': ['none', 'no_completed_fingerprint'],
+  'uncertain/no_completed_turn': ['none', 'no_completed_fingerprint'],
   'uncertain/history_unobserved': ['not_ready', 'history_unobserved'],
   'uncertain/no_positive_receipt': ['not_ready', 'no_positive_receipt'],
   'uncertain/receipt_prefix_unobserved': ['not_ready', 'receipt_prefix_unobserved'],
@@ -414,7 +415,9 @@ const cacheForecastTitle = (forecast: CacheForecast): string => {
     ? 'compatibility-ready — a positive receipt for this exact prefix is still inside its window (provider hit not guaranteed)'
     : readiness === 'not_ready'
       ? 'NOT compatibility-ready — compatibility is not established for the next turn'
-      : `no verdict — ${readinessCause(forecast).replace(/_/g, ' ')}`
+      : readiness === 'none'
+        ? 'no cache established — no completed turn has been observed yet'
+        : `no verdict — ${readinessCause(forecast).replace(/_/g, ' ')}`
   const changed = forecast.changed_inputs?.length
     ? `changed components:\n${forecast.changed_inputs.map((v) => `• ${v}`).join('\n')}`
     : 'changed components: none reported'
@@ -531,6 +534,14 @@ export function CacheForecastMark({ forecast }: {
   const expiresAt = forecast ? cacheExpiryAt(forecast) : null
   const left = useCountdown(expiresAt)
   if (!forecast) return null
+  const readiness = readinessOf(forecast)
+  if (readiness === 'none'
+      || forecast.readiness_cause === 'no_completed_fingerprint'
+      || forecast.readiness_cause === 'no_completed_turn'
+      || forecast.source === 'no_completed_fingerprint'
+      || forecast.source === 'no_completed_turn') {
+    return null
+  }
   // Hooks run before this branch on purpose — a null forecast must not change
   // the hook order.
   const live = left !== null && left > 0
@@ -543,7 +554,6 @@ export function CacheForecastMark({ forecast }: {
   // D-226: three outcomes, decided by readiness alone. An elapsed countdown
   // overrides `ready` locally rather than waiting for the next poll — the
   // whole point of counting down is to stop being green on time.
-  const readiness = readinessOf(forecast)
   const compatible = readiness === 'ready' && !expired
   const diagnostic = readiness === 'diagnostic' && !expired
   const cls = compatible ? 'compatible' : diagnostic ? 'uncertain' : 'cold'
@@ -1536,7 +1546,7 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
       )}
       {asking === 'retire' && (
         <ConfirmModal title={`retire ${node.id}?`}
-          body={`It stops working and frees ${(node.seat ?? 0) + (node.grant ?? 0)} credit(s) back to its superior. Its context is KEPT — rehire brings it back exactly as it was.`
+          body={`It stops working and frees ${fmtCredits((node.seat ?? 0) + (node.grant ?? 0))} credit(s) back to its superior. Its context is KEPT — rehire brings it back exactly as it was.`
             + (node.busy || chat?.busy
               ? ' ⚠ It is mid-turn right now; that turn is cut off.' : '')}
           confirmLabel="retire"
@@ -1945,7 +1955,30 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
     {...dropProps}>{content}</div>
   return (
     <div className="desk-over" onWheel={(e) => e.stopPropagation()}
-      onPointerDown={(e) => e.stopPropagation()} {...dropProps}
+      onPointerDown={(e) => {
+        // ROOT CAUSE (user bug 2026-09-03: "after the first drag finishes,
+        // all subsequent drags immediately fail" / "focusing a node allows
+        // it to work again once"). A focused desk fills most or all of the
+        // viewport, so once ANY node ends up focused — an explicit click, or
+        // just proximity to screen-centre past Z_DESK, which a pan itself
+        // can trigger — every later canvas-pan gesture starts with its
+        // pointerdown landing somewhere inside this div. Unconditionally
+        // stopping propagation here ate that pointerdown before it could
+        // ever reach NodeSquare/UserNode's own handlers, which already
+        // special-case this: UserNode explicitly bypasses its own
+        // stopPropagation via `.closest('.desk-over')` and NodeSquare skips
+        // onDragStart `if (!focused)` — both exist ONLY to let a focused
+        // desk's background bubble up into the viewport's pan machinery.
+        // That bubbling never actually happened; this div ate the gesture
+        // one level below where those checks run. Only claim the gesture
+        // for real content/controls (typing, clicking, selecting message
+        // text must never also drag the map) — a bare press on the desk's
+        // own chrome must reach the canvas so the pan can restart.
+        if ((e.target as Element).closest(
+          'button, input, textarea, select, a, label, .msgs, .mailrow, .eff-pop')) {
+          e.stopPropagation()
+        }
+      }} {...dropProps}
       onClick={(e) => {
         // clicking the desk's non-interactive space recenters the camera on
         // it (user ruling) — but never steal clicks meant for controls, and

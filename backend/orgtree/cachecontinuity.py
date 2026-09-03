@@ -27,7 +27,7 @@ State = Literal[
 #: a sentence a human can act on.  There is deliberately no catch-all: a cause
 #: this table does not know is itself a named state (``internal_error``), so an
 #: unclassified condition is loud rather than quietly grey.
-Readiness = Literal["ready", "not_ready", "diagnostic"]
+Readiness = Literal["ready", "not_ready", "diagnostic", "none"]
 
 #: The closed set.  ⚠ ADDING A BRANCH TO ``classify`` MEANS ADDING A CAUSE
 #: HERE — `test_cache_readiness` asserts every emitted cause is in this table
@@ -38,10 +38,13 @@ READINESS: Final[dict[str, Readiness]] = {
     # provider will hit; only that nothing local contradicts the receipt.
     "receipt_valid": "ready",
     "receipt_valid_codex_estimate": "ready",
+    # NONE — no cache exists yet. A cache flag is a statement about an existing
+    # cache; when there has been no completed turn there is no cache at all, so
+    # neither "ready" nor "not ready" is true. The UI renders NO flag at all.
+    "no_completed_fingerprint": "none",
     # RED — "not compatibility-ready / not established".  Note the phrasing:
     # with the single exception of an elapsed entry, none of these is proof of
     # an actual provider miss, and the copy must not pretend otherwise.
-    "no_completed_fingerprint": "not_ready",
     "history_unobserved": "not_ready",
     "no_positive_receipt": "not_ready",
     "receipt_prefix_unobserved": "not_ready",
@@ -143,6 +146,8 @@ def readiness_fields(cause: str, *, evidence: str = "") -> dict[str, str]:
     to the branch that produced it. That is what makes "no catch-all
     fallthrough" enforceable rather than aspirational.
     """
+    if cause == "no_completed_turn":
+        cause = "no_completed_fingerprint"
     readiness = READINESS.get(cause)
     if readiness is None:
         unknown = f"Unclassified readiness cause {cause!r}."
@@ -165,6 +170,7 @@ _LEGACY_CAUSE: Final[dict[tuple[str, str], str]] = {
     ("expired_known_entry", "codex_subscription_fixed_estimate"):
         "receipt_expired",
     ("uncertain", "no_completed_fingerprint"): "no_completed_fingerprint",
+    ("uncertain", "no_completed_turn"): "no_completed_fingerprint",
     ("uncertain", "history_unobserved"): "history_unobserved",
     ("uncertain", "no_positive_receipt"): "no_positive_receipt",
     ("uncertain", "receipt_prefix_unobserved"): "receipt_prefix_unobserved",
@@ -481,13 +487,10 @@ def classify(current: dict[str, Any], continuity: dict[str, Any] | None,
             "lane": str(current.get("lane") or "unobserved"),
             "ttl_seconds": None, "expires_at": None,
             "confidence": "unobserved",
-            "expected_input_tokens": expected,
-            # ⚠ THIS IS THE D-214 OVERRIDE (user ruling 2026-09-02). This case
-            # used to render GREEN on a supported lane, on the reasoning that
-            # no completed turn exists to conflict with the next one. Green now
-            # requires affirmative evidence of compatibility, and the absence
-            # of any evidence is not that. It is red, and worded as "not
-            # established" rather than as a predicted miss.
+            # A cache flag is a statement about an existing cache. When there
+            # has been no completed turn there is no cache at all, so neither
+            # "ready" nor "not ready" is true. Readiness is "none" and no cache
+            # flag renders.
             **readiness_fields("no_completed_fingerprint"),
         }
 

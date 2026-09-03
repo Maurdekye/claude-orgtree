@@ -116,6 +116,16 @@ test('a receipt that is already stale renders cold, never a stale countdown',
 
 test('no confident countdown without an authoritative expiry', async () => {
   freeze()
+  // With no completed turn there is no cache at all; renders no flag (and no timer).
+  const noTurnView = await mountView(<CacheForecastMark forecast={green({
+    state: 'uncertain', source: 'no_completed_fingerprint',
+    readiness: 'none', readiness_cause: 'no_completed_fingerprint',
+    expires_at: null,
+  })} />, (el) => el)
+  try {
+    assert.equal(badge(noTurnView.el), null, 'no completed turn renders no flag')
+  } finally { await noTurnView.unmount() }
+
   // Each of these is a reason the countdown cannot be trusted. None may show
   // a timer; each keeps the presentation it had before this feature existed.
   const cases: Array<[string, CacheForecast, string, string]> = [
@@ -126,15 +136,6 @@ test('no confident countdown without an authoritative expiry', async () => {
       green({ ttl_seconds: 0 }), 'compatible', 'cache ✓'],
     ['an unparseable stamp',
       green({ expires_at: 'not-a-timestamp' }), 'compatible', 'cache ✓'],
-    // ⚠ D-226 REVERSES D-214 HERE. This case used to be GREEN, on the
-    // argument that with no completed turn there is nothing to conflict with.
-    // The user ruled that green requires AFFIRMATIVE evidence of
-    // compatibility, and the absence of all evidence is not that. It is red.
-    ['no completed fingerprint is RED, not green', green({
-      state: 'uncertain', source: 'no_completed_fingerprint',
-      readiness: 'not_ready', readiness_cause: 'no_completed_fingerprint',
-      expires_at: null,
-    }), 'cold', 'cache ×'],
     ['no positive receipt is red, not grey', green({
       state: 'uncertain', source: 'no_positive_receipt',
       readiness: 'not_ready', readiness_cause: 'no_positive_receipt',
