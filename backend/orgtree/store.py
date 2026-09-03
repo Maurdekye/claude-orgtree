@@ -47,6 +47,28 @@ plain dict, so the whole storage change lives behind `load_org` / `save_org`:
     path loses history, a slow correct path is merely today's performance.
   * Nothing outside this module changed for it. `Org.d` still behaves as a dict
     (see `LazyDoc` for the four `dict`-subclass hazards and how they are met).
+
+MIGRATION IS AN OPERATOR ACTION, NEVER AN INFERENCE (2026-09-03). Converting a
+root's `<slug>.json` files to `<slug>.db` rewrites the data root, so no process
+does it on its own authority. Under `ORGTREE_STORE=sqlite`:
+
+  * `claim_data_root()` (the backend's first act) looks for unmigrated JSON
+    BEFORE it touches anything. Found some and `ORGTREE_MIGRATE=1` is not in
+    the environment → `MigrationRefused`, the process does not start, and the
+    message says exactly why and what to set. Nothing is written — not even
+    the `.owner` claim. This is the loudest thing in the file, deliberately:
+    a quiet fallback here would look exactly like an empty org.
+  * With `ORGTREE_MIGRATE=1` the migration runs after the claim and before the
+    API binds (§6.2's ordering is kept; only the trigger changed).
+  * A `.json` that appears LATER under a backend that already owns the root
+    (a hand restore from a `.premigration` copy) is still migrated on demand —
+    that process passed the gate at startup. A process that never claimed the
+    root (a script, a test) gets the same refusal from `load_org`.
+
+Why: the evening the default flipped, a test runner that strips `ORGTREE_*`
+from its children ran a sqlite build against `~/orgtree` — the live root — and
+`claim_data_root()` migrated production as a side effect. The verifier and the
+`.premigration` files made it a five-minute rollback; the trigger was the bug.
 """
 
 from __future__ import annotations
@@ -79,6 +101,33 @@ DATA_ROOT: str = os.environ.get("ORGTREE_DATA", os.path.expanduser("~/orgtree"))
 STORE_BACKEND: str = os.environ.get("ORGTREE_STORE", "json").strip().lower() or "json"
 if STORE_BACKEND not in ("json", "sqlite"):
     raise ValueError(f"ORGTREE_STORE must be 'json' or 'sqlite', not {STORE_BACKEND!r}")
+
+# The operator's opt-in for JSON→SQLite migration of THIS process's data root.
+# Read at call time, not import time, on purpose: the value is checked at the
+# moments a migration could start, and a test can set it for one call. Exactly
+# "1" — the refusal message names that value, and "true"/"yes" being silently
+# ignored is worse than being asked to type the one string that works.
+MIGRATE_ENV = "ORGTREE_MIGRATE"
+
+# Set once `claim_data_root()` has claimed DATA_ROOT under the sqlite backend.
+# From then on this process OWNS the root and a `.json` that appears under it
+# later (a hand restore) may be migrated on demand without the opt-in — see
+# `_migration_allowed`.
+_gate_passed: bool = False
+
+
+def migration_authorised() -> bool:
+    """`ORGTREE_MIGRATE=1` in this process's environment right now."""
+    return os.environ.get(MIGRATE_ENV, "").strip() == "1"
+
+
+def _migration_allowed() -> bool:
+    """May THIS process convert a `.json` it finds? Yes if the operator opted
+    in, or if it is the backend that claimed this root at startup (so the
+    file is a later arrival under a root it legitimately owns). A process
+    that merely happens to be pointed at a root — a script, a test — is
+    neither."""
+    return migration_authorised() or _gate_passed
 
 # Coarse per-process guard around load-modify-save cycles: API ops and the
 # supervisor's notice drain both rewrite org docs; without this a stale copy
@@ -233,16 +282,32 @@ def claim_data_root(root: str | None = None) -> None:
     within a process. Released by the OS when the process exits, however it
     exits — there is no cleanup to forget and no stale file to reason about.
 
-    SQLite backend: once the root is ours — and only then, because a migration
-    needs exactly the exclusivity this claim provides — every `<slug>.json`
-    that has no `<slug>.db` yet is migrated (§6.2) BEFORE the API binds. A
-    migration whose verifier fails raises `MigrationError` out of here, which
-    refuses startup. Never silently.
+    SQLite backend, on DATA_ROOT: unmigrated JSON is looked for FIRST. If any
+    is found and `ORGTREE_MIGRATE=1` is not set this raises `MigrationRefused`
+    before anything — the claim included — is written: migration is an
+    operator action, never a side effect of where a process is pointed. With
+    the opt-in, once the root is ours (and only then, because a migration
+    needs exactly the exclusivity this claim provides) every `<slug>.json`
+    with no `<slug>.db` is migrated (§6.2) BEFORE the API binds. A migration
+    whose verifier fails raises `MigrationError` out of here, which refuses
+    startup. Never silently, in either direction.
+
+    A `root` other than DATA_ROOT is claimed only — never migrated, never
+    refused for JSON (drills claim throwaway roots).
     """
-    global _owner_fd
+    global _owner_fd, _gate_passed
     if _owner_fd is not None:
         return
     base = root or DATA_ROOT
+    on_data_root = os.path.abspath(base) == os.path.abspath(DATA_ROOT)
+    if STORE_BACKEND == "sqlite" and on_data_root:
+        # ⚠ before the claim, before the makedirs: a refused start leaves
+        # the root byte-for-byte as it found it. The same check runs again
+        # inside `migrate_pending` under DOC_LOCK, so a `.json` that lands in
+        # the gap between here and there is refused too, not migrated.
+        pending = pending_migrations(base)
+        if pending and not migration_authorised():
+            raise MigrationRefused(_refusal_text(base, pending))
     os.makedirs(base, exist_ok=True)
     fd = os.open(owner_file(base), os.O_RDWR | os.O_CREAT, 0o644)
     if not _try_lock(fd):
@@ -271,8 +336,15 @@ def claim_data_root(root: str | None = None) -> None:
     except OSError:
         pass
     _owner_fd = fd              # held for the process lifetime, deliberately
-    if STORE_BACKEND == "sqlite" and os.path.abspath(base) == os.path.abspath(DATA_ROOT):
-        migrate_pending()
+    if STORE_BACKEND == "sqlite" and on_data_root:
+        try:
+            migrate_pending()
+        except MigrationError:
+            # a refused or failed start must not leave the claim behind for
+            # the rest of THIS process (a test, a drill) to mistake for its own
+            release_data_root()
+            raise
+        _gate_passed = True
 
 
 def release_data_root() -> None:
@@ -470,6 +542,60 @@ class MigrationError(RuntimeError):
     """The JSON→SQLite migration of one org did not verify. The `.json` is
     untouched, the candidate database was deleted, and the backend must not
     start on this data root (§6.2)."""
+
+
+class MigrationRefused(MigrationError):
+    """Unmigrated JSON was found under the SQLite backend and nobody opted in
+    (`ORGTREE_MIGRATE=1`). Nothing was written. A subclass of `MigrationError`
+    so every place that already refuses on a failed migration refuses on a
+    withheld one the same way — never a fallback to reading nothing."""
+
+
+def pending_migrations(root: str | None = None) -> list[str]:
+    """Slugs with an `orgs/<slug>.json` and no `orgs/<slug>.db` under `root`
+    (DATA_ROOT by default). A pure read: one `listdir`, no directory made,
+    nothing opened. Sorted."""
+    d = os.path.join(root or DATA_ROOT, "orgs")
+    try:
+        names = set(os.listdir(d))
+    except OSError:
+        return []
+    out: list[str] = []
+    for f in sorted(names):
+        if not f.endswith(".json"):
+            continue
+        slug = f[:-5]
+        try:
+            _safe_slug(slug)
+        except LedgerError:
+            continue
+        if f"{slug}.db" not in names:
+            out.append(slug)
+    return out
+
+
+def _refusal_text(root: str, pending: list[str]) -> str:
+    bar = "!" * 74
+    return (
+        f"\n{bar}\n"
+        f"  MIGRATION REFUSED — {len(pending)} unmigrated JSON org(s) under a SQLite backend\n"
+        f"\n"
+        f"  data root : {root}\n"
+        f"  pending   : {', '.join(pending)}\n"
+        f"\n"
+        f"  This process runs ORGTREE_STORE=sqlite, but orgs/ still holds .json\n"
+        f"  documents with no .db beside them. Converting them REWRITES the data\n"
+        f"  root (<slug>.json becomes <slug>.json.premigration + <slug>.db), so it\n"
+        f"  is an OPERATOR action — never something a process infers from where it\n"
+        f"  happens to be pointed. On 2026-09-03 a test runner did exactly that to\n"
+        f"  the live root.\n"
+        f"\n"
+        f"  To migrate THIS root now:  set {MIGRATE_ENV}=1 and start again.\n"
+        f"  To keep it as JSON:        set ORGTREE_STORE=json.\n"
+        f"  Wrong root?                set ORGTREE_DATA to the one you meant.\n"
+        f"\n"
+        f"  NOTHING HAS BEEN WRITTEN.\n"
+        f"{bar}")
 
 
 def _dumps(v: Any) -> str:
@@ -1555,28 +1681,29 @@ def _finish_interrupted_migration(slug: str) -> bool:
 
 def migrate_pending() -> list[str]:
     """Every `orgs/<slug>.json` with no `orgs/<slug>.db`, migrated (§6.1 step
-    5). Raises `MigrationError` on the first org that does not verify; the
-    ones before it are done, the ones after it are not, and none of them has
-    lost anything. Returns the slugs migrated."""
+    5) — IF this process may (`_migration_allowed`): otherwise, when there is
+    anything to migrate, `MigrationRefused` with nothing written. Raises
+    `MigrationError` on the first org that does not verify; the ones before
+    it are done, the ones after it are not, and none of them has lost
+    anything. Returns the slugs migrated.
+
+    An interrupted migration (a verified `.db.migrating` beside its
+    `.premigration`, no `.json`, no `.db`) is finished regardless of the
+    gate: the operator authorised THAT migration when it started, and the
+    only alternative is an org that exists on disk and is invisible —
+    precisely the silent state the gate exists to prevent."""
     if STORE_BACKEND != "sqlite":
         return []
     done: list[str] = []
     with DOC_LOCK:
-        names = sorted(os.listdir(_orgs_dir()))
-        for f in names:
+        for f in sorted(os.listdir(_orgs_dir())):
             if f.endswith(".db.migrating"):
                 with contextlib.suppress(LedgerError):
                     _finish_interrupted_migration(f[:-len(".db.migrating")])
-        for f in names:
-            if not f.endswith(".json"):
-                continue
-            slug = f[:-5]
-            try:
-                _safe_slug(slug)
-            except LedgerError:
-                continue
-            if os.path.exists(_db_path(slug)):
-                continue
+        pending = pending_migrations()
+        if pending and not _migration_allowed():
+            raise MigrationRefused(_refusal_text(DATA_ROOT, pending))
+        for slug in pending:
             migrate_org(slug)
             done.append(slug)
     return done
@@ -1585,9 +1712,13 @@ def migrate_pending() -> list[str]:
 def _ensure_migrated(slug: str) -> None:
     """SQLite backend, on demand: a `<slug>.json` with no `<slug>.db` (an org
     restored from a pre-migration trash copy, a file dropped in by hand) is
-    migrated before it is used. Startup does this for everything (§6.1 step
-    5, via `claim_data_root`); this is the same operation for a file that
-    appears later."""
+    migrated before it is used — by a process that may (`_migration_allowed`:
+    the backend that owns this root, or anyone under `ORGTREE_MIGRATE=1`).
+    Any other process raises `MigrationRefused` here rather than migrate a
+    root it was merely pointed at, and rather than answer "no such org" for
+    a file that is plainly there. Startup does this for everything (§6.1
+    step 5, via `claim_data_root`); this is the same operation, same gate,
+    for a file that appears later."""
     if STORE_BACKEND != "sqlite":
         return
     db = _db_path(slug)
@@ -1599,6 +1730,8 @@ def _ensure_migrated(slug: str) -> None:
         if _finish_interrupted_migration(slug):
             return
         if os.path.exists(_json_path(slug)):
+            if not _migration_allowed():
+                raise MigrationRefused(_refusal_text(DATA_ROOT, [slug]))
             migrate_org(slug)
 
 

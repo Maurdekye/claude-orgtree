@@ -7128,6 +7128,12 @@ def main() -> None:
               f"  at a different ORGTREE_DATA.\n"
               f"{bar}\n", flush=True)
         raise SystemExit(1)
+    except store.MigrationError as e:
+        # the JSON→SQLite migration was withheld (no ORGTREE_MIGRATE=1) or
+        # did not verify: the message is already the wall, and a refusal is
+        # not a crash — no traceback, exit 1, say why
+        print(f"\n{e}\n", file=sys.stderr, flush=True)
+        raise SystemExit(1)
 
     host: str | None = None
     try:

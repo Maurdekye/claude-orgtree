@@ -65,6 +65,10 @@ if hasattr(sys.stdout, "reconfigure"):
 _TMP = tempfile.mkdtemp(prefix="orgtree-sqlite-")
 os.environ["ORGTREE_DATA"] = os.path.join(_TMP, "data")
 os.environ["ORGTREE_STORE"] = "sqlite"
+# this suite pins the migration MECHANICS, so it holds the operator's opt-in
+# for its own throwaway root; the gate itself (what may START a migration,
+# and that nothing is written when it is withheld) is test_migration_gate.py
+os.environ["ORGTREE_MIGRATE"] = "1"
 os.makedirs(os.environ["ORGTREE_DATA"], exist_ok=True)
 # a throwaway ORGTREE_DATA does NOT isolate the MAIL HUB (see
 # test_persistence.py) — point it at the discard port like every other rig
