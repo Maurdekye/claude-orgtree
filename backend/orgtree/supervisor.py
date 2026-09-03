@@ -10209,9 +10209,13 @@ def _run_one_turn(slug: str, nid: str,
                             # event is process/turn cumulative and cannot prove
                             # which prefix was read.
                             last_cache_usage = dict(u)
-                        t = (u.get("input_tokens", 0)
-                             + u.get("cache_read_input_tokens", 0)
-                             + u.get("cache_creation_input_tokens", 0))
+                        # ⚠ `_prompt_tokens`, not three `u.get(k, 0)` adds:
+                        # a default does not fire on a key that is PRESENT and
+                        # null, and this line died on exactly that when the
+                        # first OpenRouter-tier agent was driven (see the
+                        # helper). Nothing else in this stream loop is exposed
+                        # — `turn_out` below already carries its own `or 0`.
+                        t = _prompt_tokens(u)
                         if t and not sub:         # zero-usage synthetics don't count
                             # HIGH-WATER mark, not last-write (redteam 1a,
                             # 2026-08-06): a turn that climbs past compact_at
@@ -18559,6 +18563,55 @@ def _finite(x: Any) -> bool:
         return False
 
 
+#: the prompt-side fields of one Claude-shaped `usage` object, in the order
+#: they are summed. Named once because two call sites ask the same question.
+_PROMPT_TOKEN_FIELDS: Final = ("input_tokens", "cache_read_input_tokens",
+                               "cache_creation_input_tokens")
+
+
+def _prompt_tokens(usage: Any) -> int:
+    """How many tokens one assistant message's PROMPT carried — fresh input
+    plus cache reads plus cache writes. This is context OCCUPANCY, not spend.
+
+    ⚠ THIS EXISTS BECAUSE `usage.get(k, 0)` IS NOT A GUARD, and the version
+    that used it killed a live turn (2026-09-03). A `default` applies only
+    when the key is ABSENT; a key PRESENT whose value is `null` returns
+    `None`, and `int + None` raises `TypeError: unsupported operand type(s)
+    for +: 'int' and 'NoneType'` — which is exactly what the first two agents
+    ever driven on an OpenRouter tier hit, twice, while every Claude, Codex
+    and Antigravity turn in the same log was fine. Anthropic's own endpoint
+    OMITS a counter it has nothing to say about; OpenRouter's
+    Anthropic-compatible shim emits the full usage shape and NULLS the fields
+    the served model has no accounting for, so a model without prompt caching
+    (grok-4.6) reports `cache_*_input_tokens: null`.
+
+    A missing or unreadable counter contributes 0 — and that is the honest
+    reading here rather than a coercion, because the question this function
+    answers is "how big was the prompt". A provider that declines to report
+    cache reads did not hide some tokens; there were none to add. What must
+    NOT be inferred is the other direction: if EVERY counter is missing the
+    answer is 0, and the callers treat 0 as "nothing measured" and leave the
+    recorded occupancy alone rather than claiming the context is empty. That
+    is why this returns a plain int and does not distinguish 0 from unknown —
+    the distinction lives in the caller's `if`.
+
+    Non-finite and non-numeric values are dropped by the same rule (`_finite`
+    above: a transcript really can carry `Infinity`, and `int(inf)` raises an
+    OverflowError nobody has in their except tuple).
+    """
+    if not isinstance(usage, Mapping):
+        return 0
+    total = 0
+    for key in _PROMPT_TOKEN_FIELDS:
+        v = cast("Mapping[str, Any]", usage).get(key)
+        if isinstance(v, bool) or not isinstance(v, (int, float)):
+            continue                      # None, "", a dict — all "not reported"
+        if not _finite(v):
+            continue
+        total += int(v)
+    return total
+
+
 class _OccTracker:
     """A session's context fill, tracked ACROSS its compactions.
 
@@ -18694,14 +18747,16 @@ def _occ_record(fill: _OccTracker, rec: dict[str, Any]) -> None:
     u = m.get("usage")
     if not isinstance(u, dict):
         return
+    # the SAME question the stream loop asks, so the same implementation
+    # (this site already had the `or 0` the stream loop was missing; the
+    # helper is now the one place the rule is written down).
     try:
-        fill.assistant(int(u.get("input_tokens", 0) or 0)
-                       + int(u.get("cache_read_input_tokens", 0) or 0)
-                       + int(u.get("cache_creation_input_tokens", 0) or 0))
+        fill.assistant(_prompt_tokens(u))
     except (TypeError, ValueError, OverflowError):
-        # …OverflowError because `int(float('inf'))` is neither of the other
-        # two, and a transcript can carry one — see `_finite`
-        pass                              # a malformed usage block reads as none
+        # kept even though `_prompt_tokens` is total: `fill.assistant` is not
+        # this function's code, and a malformed usage block must read as none
+        # rather than as a raise out of a transcript read
+        pass
 
 
 def occupancy_of(tpath: str | None,

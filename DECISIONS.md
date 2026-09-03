@@ -8926,6 +8926,41 @@ test_app_settings.py` (the fourth admission switch), and `frontend/tests/
 openrouter.test.tsx` (the key row and the picker's select/deselect against
 a scripted payload).
 
+### D-238 · a provider's usage counter may be PRESENT and null, and `.get(k, 0)` does not guard that
+Ruling (credit-precision, 2026-09-03, from a live crash): every read of a
+provider-supplied token counter must treat "declared and null" the same as
+"absent" — `usage.get(k) or 0`, never `usage.get(k, 0)`. A `default` fires
+only when the key is MISSING; a key present with a null value returns `None`,
+and the next `+` raises `TypeError: unsupported operand type(s) for +: 'int'
+and 'NoneType'`. The prompt-side sum now has one implementation,
+`supervisor._prompt_tokens`, and a source guard refuses the old idiom
+anywhere in the module.
+Why: the shapes differ by provider and the difference is invisible until
+someone hires the lane. Anthropic's endpoint OMITS a counter it has nothing
+to say about, so five weeks of Claude, Codex and Antigravity turns never met
+this. OpenRouter's Anthropic-compatible shim emits the full usage object and
+NULLS the fields the served model has no accounting for — grok-4.6 has no
+prompt cache, so `cache_read_input_tokens` and
+`cache_creation_input_tokens` arrive as null. Of the agents ever driven on an
+`or-` tier, every one died on this, and they are the only unexpected
+TypeErrors in the whole backend log. The defect dates to the initial commit
+(2026-07-29, reshaped 2026-08-21) and is unrelated to fractional credits or
+to D-236's repricing; it was simply unreachable until D-232 added a lane that
+serves non-Anthropic models.
+Bounds: `or 0` is the honest answer HERE because the quantity is prompt
+OCCUPANCY — a counter the provider declines to report added no tokens to the
+prompt. It is NOT a general licence to zero a missing number: a null PRICE or
+a null spend means unknown, and zeroing one of those is the silent-mispricing
+class D-236 and D-237 exist to prevent. The distinction between "0" and
+"unknown" is kept where it belongs — the caller's `if t and not sub:` leaves
+the recorded occupancy untouched when nothing was measured, rather than
+claiming the context is empty.
+Load-bearing: `backend/tests/test_prompt_tokens_null_usage.py`, whose §1
+re-creates the ORIGINAL expression and proves it still raises on the real
+payload — the fix is pinned against a reproduction of the defect, not a
+description of it — and whose §3 regexes the module so a future
+`.get(<counter>, 0)` cannot come back.
+
 ### D-233 · the Antigravity standing is observed from the wire, not fetched — and a wall names its own reset
 Measured 2026-09-03 02:36 local (agy 1.1.24, a Google AI Pro login): the
 account's first usage wall arrived as a lone ERROR result after `init` —
