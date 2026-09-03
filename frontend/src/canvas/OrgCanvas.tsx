@@ -39,11 +39,6 @@ export interface OrgCanvasProps {
   /** D-199: open the accounts panel — the route out of the no-harness state,
    *  which the canvas can reach but cannot render itself (it lives in App). */
   onAccounts?: () => void
-  /** the gallery (App-level modal) hands off a row click to the reader this
-   *  canvas already owns. Optional + falls back to internal state so the
-   *  ~20 existing `<OrgCanvas>` test instantiations are unaffected. */
-  docView?: string | null
-  onDocView?: (id: string | null) => void
 }
 
 /** has this spring arrived? Both the spring loop (which snaps to the target on
@@ -62,15 +57,11 @@ const atRest = (s: Spring, tgt: Pt): boolean =>
   && Math.abs(s.vx) <= 2 && Math.abs(s.vy) <= 2
 
 export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
-  onAccounts, docView: docViewProp, onDocView }: OrgCanvasProps) {
+  onAccounts }: OrgCanvasProps) {
   const [draft, setDraft] = useState<DraftState | null>(null)
   const [configId, setConfigId] = useState<string | null>(null)
   const [lineageId, setLineageId] = useState<string | null>(null)
-  // FR-03 reader — controlled by the App-level gallery when it hands one in
-  // (docViewProp/onDocView both set), otherwise this canvas's own state
-  const [docViewState, setDocViewState] = useState<string | null>(null)
-  const docView = docViewProp !== undefined ? docViewProp : docViewState
-  const setDocView = onDocView ?? setDocViewState
+  const [docView, setDocView] = useState<string | null>(null)   // FR-03 reader
   const [userCfg, setUserCfg] = useState(false)
   const [trayOpen, setTrayOpen] = useState(false)   // the flat agent tray
   const trayWrapRef = useRef<HTMLDivElement | null>(null)

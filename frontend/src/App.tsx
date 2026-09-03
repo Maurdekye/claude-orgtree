@@ -17,7 +17,7 @@ import { AudienceFold, ConfirmModal, MailFolders, MailList, OrgCanvas, OrgRecord
 import { DiskBrowser, DiskFullAlert } from './DiskBrowser'
 import {
   AutorenewIcon, BlockIcon, CheckIcon, ChevronRightIcon, CloseIcon, CopyIcon, EyeIcon, LanIcon,
-  DataUsageIcon, DeleteIcon, ExpandMoreIcon, GalleryIcon, GitHubIcon, HearingIcon, HomeIcon, LockIcon,
+  DataUsageIcon, DeleteIcon, DocIcon, ExpandMoreIcon, GitHubIcon, HearingIcon, HomeIcon, LockIcon,
   LockOpenIcon, MailIcon, MenuIcon, PlayIcon, PublicIcon, SettingsIcon,
   SparkIcon, StopIcon, StorageIcon, WarnIcon,
 } from './icons'
@@ -206,11 +206,10 @@ export default function App() {
   const [showAccounts, setShowAccounts] = useState(false)   // D-144 account registry
   const [showUsage, setShowUsage] = useState(false)         // host subscription usage bars
   // the documents gallery (user request 2026-09-03): every presented card,
-  // org-wide, one place. `docView` is lifted here (not left inside
-  // OrgCanvas) so a gallery row click can hand off to the SAME DocReader the
-  // canvas's own doc chips already open.
+  // org-wide, one place. It reads in its OWN right-hand pane (the mail
+  // idiom the user asked for), so nothing about the canvas's reader is
+  // lifted up here — that panel owns its selection.
   const [showGallery, setShowGallery] = useState(false)
-  const [docView, setDocView] = useState<string | null>(null)
   const [killArmed, setKillArmed] = useState(false)  // the killswitch latch
   // the usage button GLOWS once a lane nears its wall (user feature
   // 2026-08-19), so a freeze stops being the first notice. It rides
@@ -829,6 +828,15 @@ export default function App() {
                     </button>
                   )
                 })()}
+                {/* the presented-document gallery sits BESIDE the inbox (user
+                    ruling 2026-09-03: "place it next to the mail icon"). They
+                    are the same kind of thing — a standing pile of what agents
+                    sent you, read in the same list-plus-pane panel — so they
+                    read as one pair of mailbox controls rather than two
+                    unrelated buttons. */}
+                <button className="iconbtn" title="presented documents — every card, org-wide"
+                  onClick={() => setShowGallery(true)}>
+                  <DocIcon fontSize="inherit" /></button>
                 <button className="iconbtn barmore mob-only" title="more"
                   onClick={() => setBarMore((v) => !v)}>⋯</button>
                 {/* host subscription usage (the Claude Code /usage bars) —
@@ -840,9 +848,6 @@ export default function App() {
                     title={usageAlert?.title ?? usageTitle(provPresence)}
                     onClick={() => setShowUsage(true)}>
                     <DataUsageIcon fontSize="inherit" /></button>}
-                <button className="iconbtn" title="documents — every presented card, org-wide"
-                  onClick={() => setShowGallery(true)}>
-                  <GalleryIcon fontSize="inherit" /></button>
                 {!tree.public &&
                   <button onClick={() => setShowSettings(true)}><SettingsIcon fontSize="inherit" /> settings</button>}
                 <a className="gh-link" href="https://github.com/Maurdekye/claude-orgtree"
@@ -852,7 +857,6 @@ export default function App() {
               <OrgCanvas tree={tree} op={op} slug={slug} toast={toast}
                 mailEvt={mailEvt}
                 onAccounts={BASE ? undefined : () => setShowAccounts(true)}
-                docView={docView} onDocView={setDocView}
                 onInbox={(jump: unknown) => {
                   setInboxJump(typeof jump === 'string' ? jump : null)
                   setShowInbox(true)
@@ -899,8 +903,8 @@ export default function App() {
         <UsageModal close={() => setShowUsage(false)} />
       )}
       {showGallery && slug && (
-        <DocGalleryModal slug={slug} close={() => setShowGallery(false)}
-          onOpen={setDocView} />
+        <DocGalleryModal slug={slug} toast={toast}
+          close={() => setShowGallery(false)} />
       )}
       {showAccounts && (
         <AccountsPanel toast={toast} close={() => setShowAccounts(false)} />

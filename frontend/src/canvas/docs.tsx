@@ -13,6 +13,50 @@ import { CloseIcon, DocIcon } from '../icons'
 
 export interface DocMeta { id: string; title: string; at: string }
 
+export interface LoadedDoc { title: string; node: string; at: string; body: string }
+
+/** fetch one document's body by id — the tree payload and the gallery list
+ *  both carry metadata only, so every reading surface starts here.
+ *
+ *  Shared by the overlay reader (the canvas doc chips) and the gallery's
+ *  reading pane so the fetch, the cancel-on-swap latch and the error state
+ *  exist ONCE. The two surfaces render different chrome (overlay vs the
+ *  mail-idiom right pane) — that is presentation; this is not.
+ *
+ *  An EMPTY `docId` fetches nothing: the gallery lists evicted cards, whose
+ *  body is gone for good, and a request for one would only buy back the 404
+ *  the caller already knows about. A hook cannot be called conditionally,
+ *  so the condition lives here. */
+export function useDoc(slug: string, docId: string): {
+  doc: LoadedDoc | null
+  err: string | null
+} {
+  const [doc, setDoc] = useState<LoadedDoc | null>(null)
+  const [err, setErr] = useState<string | null>(null)
+  useEffect(() => {
+    let live = true
+    setDoc(null)
+    setErr(null)
+    if (!docId) return
+    getDocument(slug, docId)
+      .then((d) => { if (live) setDoc(d) })
+      .catch((e: Error) => { if (live) setErr(e.message) })
+    return () => { live = false }
+  }, [slug, docId])
+  return { doc, err }
+}
+
+/** the one dismiss path (user request 2026-09-03 put a second one in the
+ *  gallery's viewer). DELETE runs through `req`, which bumps the livebus, so
+ *  every polled surface — the gallery list included — drops the row without
+ *  anyone wiring a refresh. `after` is for chrome that must also close. */
+export function dismissDoc(slug: string, docId: string, title: string,
+  toast: ToastFn, after?: () => void): void {
+  dismissDocument(slug, docId)
+    .then(() => { toast([`dismissed “${title}”`]); after?.() })
+    .catch((e: Error) => toast([`error: ${e.message}`]))
+}
+
 /** the outboard chips on the node square — one per presented document.
  *  Square ICONS only (user report 2026-08-05: the titled chips were wide
  *  enough to overlap the adjacent card) — the title lives in the tooltip;
@@ -42,18 +86,7 @@ export function DocReader({ slug, docId, toast, close }: {
   toast: ToastFn
   close: () => void
 }) {
-  const [doc, setDoc] = useState<{ title: string; node: string; at: string
-    body: string } | null>(null)
-  const [err, setErr] = useState<string | null>(null)
-  useEffect(() => {
-    let live = true
-    setDoc(null)
-    setErr(null)
-    getDocument(slug, docId)
-      .then((d) => { if (live) setDoc(d) })
-      .catch((e: Error) => { if (live) setErr(e.message) })
-    return () => { live = false }
-  }, [slug, docId])
+  const { doc, err } = useDoc(slug, docId)
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') close() }
     window.addEventListener('keydown', onKey)
@@ -70,11 +103,8 @@ export function DocReader({ slug, docId, toast, close }: {
           <span className="spacer" />
           {doc && (
             <button className="dim" title="remove the card (the document is gone)"
-              onClick={() => {
-                dismissDocument(slug, docId)
-                  .then(() => { toast([`dismissed “${doc.title}”`]); close() })
-                  .catch((e: Error) => toast([`error: ${e.message}`]))
-              }}>dismiss</button>
+              onClick={() => dismissDoc(slug, docId, doc.title, toast, close)}>
+              dismiss</button>
           )}
           <button className="chip-x" title="close the reader" onClick={close}>
             <CloseIcon fontSize="inherit" />
