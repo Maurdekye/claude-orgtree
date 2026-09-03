@@ -447,6 +447,73 @@ export const tierShown = (
   pres: ProviderPresence, tier: string, keep?: string | null,
 ): boolean => tier === keep || pres[providerOf(tier)]
 
+export interface AutopsyModelOption {
+  tier: string
+  label: string
+  seat?: number
+}
+
+export interface AutopsyModelGroup {
+  label: string
+  models: AutopsyModelOption[]
+}
+
+/** Available configured provider models for the auto-autopsy selector.
+ *  Sourced from /api/providers payload, explicitly excluding 'fable'.
+ *  Only providers with hire_enabled === true are offered.
+ */
+export function availableAutopsyModels(
+  payload: { providers: ProviderInfo[] } | null | undefined,
+  currentValue?: string | null,
+): AutopsyModelGroup[] {
+  const normCurrent = currentValue && currentValue !== 'fable' ? currentValue : null
+  if (!payload?.providers) {
+    const defaultModels: AutopsyModelOption[] = ['opus', 'sonnet', 'haiku'].map((t) => ({
+      tier: t,
+      label: tierLabel(t),
+      seat: anyTierSeat(t),
+    }))
+    return [{ label: 'Claude', models: defaultModels }]
+  }
+
+  const groups: AutopsyModelGroup[] = []
+  let foundCurrent = false
+
+  for (const p of payload.providers) {
+    if (!p.hire_enabled) continue
+    const models: AutopsyModelOption[] = []
+    for (const t of p.tiers || []) {
+      if (t.tier === 'fable') continue // ⚠ FABLE NOT SELECTABLE (ruling 2026-09-03)
+      if (t.tier === 'gpt-reserve' && p.reserve_hire_enabled === false) continue
+      if (t.tier === normCurrent) foundCurrent = true
+      models.push({
+        tier: t.tier,
+        label: t.label ?? tierLabel(t.tier),
+        seat: t.seat ?? anyTierSeat(t.tier),
+      })
+    }
+    if (models.length > 0) {
+      groups.push({
+        label: p.label || PROVIDER_LABEL[p.id] || p.id,
+        models,
+      })
+    }
+  }
+
+  if (normCurrent && !foundCurrent) {
+    groups.unshift({
+      label: 'Configured (unavailable)',
+      models: [{
+        tier: normCurrent,
+        label: `${tierLabel(normCurrent)} (unavailable)`,
+        seat: anyTierSeat(normCurrent),
+      }],
+    })
+  }
+
+  return groups
+}
+
 // ---------------------------------------------------------------- view types
 // The canvas overlays the payload's TreeNode with synthetic cards — the eye
 // root, the draft card, live lineage bearers — plus flatten()'s plumbing.
@@ -962,6 +1029,15 @@ export function withDraftTree(tree: TreePayload, draft: DraftState | null): Canv
  *  makes an expiring window drop the red without an event. */
 export const fallbackActive = (tree: TreePayload): boolean =>
   !!tree.api_fallback && (tree.api_fallback_until ?? 0) * 1000 > Date.now()
+
+/** Print a credit quantity. Seats are FRACTIONAL below $1/M (user ruling
+ *  2026-09-03 — a $0.20 model seats at 0.2, a `:free` one at the 0.1 floor),
+ *  so a holding can be 5.2 and a sum of two of them can be
+ *  5.300000000000001 in float64. The server quantises to the same 0.01 grid
+ *  (`ledger._q`); this is the display half — two decimals at most, trailing
+ *  zeros dropped, so a whole number still reads `5` and never `5.00`. */
+export const fmtCredits = (n: number): string =>
+  String(Math.round(n * 100) / 100)
 
 /** the org's px-per-credit scale — ONE formula for the canvas bars and the
  *  credit-ask card (user ruling 2026-08-05: the ask bar must look identical

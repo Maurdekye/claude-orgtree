@@ -236,3 +236,53 @@ test('⑤  the kiosk ceiling calls its MCP field ADDITIONAL, and says the '
     assert.match(panel.textContent ?? '', /always available to every agent/)
   } finally { await view.unmount(); delete g.fetch }
 })
+
+test('⑥  content-filter policy: auto-autopsy reveals model selector without fable and saves chosen model', async () => {
+  const seen: { method: string; path: string; body: unknown }[] = []
+  stubFetch(seen)
+  const { view, closed } = await mountOrg()
+  try {
+    await open(view.el, 'Policies')
+    const policySelect = view.el.querySelector<HTMLSelectElement>(
+      'select[aria-label="fable content-filter policy"]')
+    assert.ok(policySelect, 'policy select not found')
+
+    const options = [...policySelect.options].map((o) => o.value)
+    assert.ok(options.includes('auto-autopsy'), 'auto-autopsy not in policy options')
+
+    // While policy is halt, autopsy model select is not rendered
+    assert.equal(view.el.querySelector('select[aria-label="autopsy model"]'), null)
+
+    // Switch policy to auto-autopsy
+    await setField(policySelect, 'auto-autopsy')
+
+    // Now autopsy model select is revealed
+    const modelSelect = view.el.querySelector<HTMLSelectElement>(
+      'select[aria-label="autopsy model"]')
+    assert.ok(modelSelect, 'autopsy model select not revealed')
+
+    // Fable must NOT be among the choices
+    const modelOptions = [...modelSelect.options].map((o) => o.value)
+    assert.equal(modelOptions.includes('fable'), false, 'fable must not be selectable as autopsy model')
+    assert.ok(modelOptions.includes('opus'), 'opus should be offered')
+    assert.ok(modelOptions.includes('sonnet'), 'sonnet should be offered')
+
+    // Select sonnet
+    await setField(modelSelect, 'sonnet')
+
+    // Click save
+    seen.length = 0
+    const save = [...view.el.querySelectorAll<HTMLButtonElement>('button')]
+      .find((b) => b.textContent?.trim() === 'save')!
+    await inAct(async () => { save.click(); await flush(12) })
+
+    const settings = seen.find((r) => r.method === 'POST'
+      && r.path === '/api/orgs/acme/settings')
+    assert.ok(settings, 'save did not POST settings')
+    const body = settings!.body as Record<string, unknown>
+    assert.equal(body.fable_filter_policy, 'auto-autopsy')
+    assert.equal(body.fable_filter_model, 'sonnet')
+    assert.equal(closed.length, 1)
+  } finally { await view.unmount(); delete g.fetch }
+})
+

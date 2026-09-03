@@ -52,10 +52,38 @@ from .schema import (AudienceGrant, DirGrant, MailEntry, NodeDoc, NoticeEntry,
 # below IF they still carry the old shipped default; a customised table
 # keeps its own number. Tier names are ONE flat vocabulary — a tier implies
 # its provider (providers.py owns that axis).
-TIERS: Final[dict[str, int]] = {"fable": 10, "opus": 5, "sonnet": 2, "haiku": 1,
-                                "sol": 5, "terra": 2, "gpt-reserve": 1,
-                                "luna": 1,
-                                "flash": 1, "pro": 2}
+#
+# ☞ SEATS MAY BE FRACTIONAL BELOW $1/M (user ruling 2026-09-03). The rule is
+# `openrouter.seat_for`: floor(p) at or above $1, max(0.10, round(p, 2))
+# below it. NOTHING IN THIS TABLE MOVES — at or above $1 the old floor still
+# governs, so flash stays 1 (not 1.5), pro 2, sol 5, opus 5, fable 10, and no
+# saved org gets a TIGHTER seat than it was loaded with. Only newly-priced
+# sub-$1 models (OpenRouter favorites, and any future cheap tier) carry a
+# fraction, which is exactly the ranking information the old floor-to-1
+# destroyed. The static table stays whole and is typed `float` only so the
+# dynamic half can join it. See `_q` below for why floats are safe here.
+TIERS: Final[dict[str, float]] = {"fable": 10, "opus": 5, "sonnet": 2, "haiku": 1,
+                                  "sol": 5, "terra": 2, "gpt-reserve": 1,
+                                  "luna": 1,
+                                  "flash": 1, "pro": 2}
+
+# The credit grid. Every seat is quantised to 0.01 and every credit quantity
+# is re-quantised after each mutation, which is what makes float arithmetic
+# EXACT here rather than merely close: the largest reachable holding is
+# MAX_CHILDREN (1024) × (fable 10 + max_top_grant 1000) ≈ 1.03e6, i.e. ~1.03e8
+# in hundredths — far inside float64's exactly-representable integer range
+# (2**53). So every value the ledger can reach sits on the grid with no
+# residue, and the `free() >= 0` invariant (see `audit`) cannot false-positive
+# on an epsilon. This is the property that made fractional seats the cheap
+# option instead of an integer-millicredit rescale: no stored number changes.
+CREDIT_PLACES: Final = 2
+SEAT_FLOOR: Final = 0.10          # mirrored in openrouter.SEAT_FLOOR
+
+
+def _q(x: float) -> float:
+    """Snap a credit quantity back onto the 0.01 grid. Applied to every
+    computed total and every mutated grant — see CREDIT_PLACES."""
+    return round(x, CREDIT_PLACES)
 
 # №34 runaway insurance, and NOTHING else (user ruling 2026-08-04): "no need to
 # have any practical limit other than to prevent infinite recursion from a bug
@@ -412,8 +440,10 @@ class Org:
             # is not converted into a TTL because only an authoritative
             # provider/auth receipt may start the new expiry clock.
             _org_acc.pop("idle_s", None)
-        if self.d.get("fable_filter_policy") not in ("halt", "opus"):
+        if self.d.get("fable_filter_policy") not in ("halt", "opus", "auto-autopsy"):
             self.d["fable_filter_policy"] = "halt"  # content-filter flags (user spec)
+        if "fable_filter_model" not in self.d or self.d.get("fable_filter_model") == "fable":
+            self.d["fable_filter_model"] = "opus"
         # add-only migration (D-084 style): existing orgs reach the new toggle
         # off, same as a brand-new one — never silently on for an old org
         self.d.setdefault("fable_api_fallback", False)
@@ -728,7 +758,8 @@ class Org:
             "credit_requests": [],                # §: top-level asks to the user
             "compact_at": 0.80,                   # compaction ratio (≤ 0.95 hard cap)
             "fable_limit_policy": "halt",         # halt | opus | dissolve (user ruling)
-            "fable_filter_policy": "halt",        # halt | opus — filter flags (user spec)
+            "fable_filter_policy": "halt",        # halt | opus | auto-autopsy — filter flags (user spec)
+            "fable_filter_model": "opus",         # model tier when policy == auto-autopsy
             "fable_api_fallback": False,          # user feature 2026-08-23 (needs
                                                   # api_fallback + api_key too)
             "nodes": {},
@@ -753,7 +784,7 @@ class Org:
         except KeyError:
             raise LedgerError(f"no such node: {nid!r}")
 
-    def seat_cost(self, nid: str) -> int:
+    def seat_cost(self, nid: str) -> float:
         return self.d["tiers"][self.node(nid)["model"]]
 
     def children(self, nid: str | None, live_only: bool = True) -> list[str]:
@@ -764,13 +795,17 @@ class Org:
         kids.sort(key=lambda k: (self.nodes[k].get("ui_order", 0), self.nodes[k]["created"]))
         return kids
 
-    def committed(self, nid: str) -> int:
-        return sum(self.seat_cost(c) + self.nodes[c]["grant"] for c in self.children(nid))
+    def committed(self, nid: str) -> float:
+        # _q: the two totals below are the ONLY places credit quantities are
+        # summed, so quantising here is what keeps every reachable value on
+        # the 0.01 grid (CREDIT_PLACES) and the `free() >= 0` invariant exact
+        return _q(sum(self.seat_cost(c) + self.nodes[c]["grant"]
+                      for c in self.children(nid)))
 
     def free(self, nid: str) -> float:
         if nid == USER:
             return math.inf
-        return self.node(nid)["grant"] - self.committed(nid)
+        return _q(self.node(nid)["grant"] - self.committed(nid))
 
     def parent(self, nid: str) -> str:
         """Parent id, with USER standing in for None (top level)."""
@@ -1300,12 +1335,12 @@ class Org:
             n = self.nodes[c]
             if n["state"] != "archived":
                 continue
-            cost = self.seat_cost(c) + n["grant"]  # rehire defaults to previous grant
+            cost = _q(self.seat_cost(c) + n["grant"])  # rehire defaults to previous grant
             if free_after < cost <= free_before:
                 kind = "predecessor" if n.get("bearer_state") else "report"
                 warns.append(
                     f"{payer} can no longer afford to rehire archived {kind} "
-                    f"{c} (needs {cost}, free now {free_after:g}) — stranded (§4.4)")
+                    f"{c} (needs {cost:g}, free now {free_after:g}) — stranded (§4.4)")
         return warns
 
     # ------------------------------------------------------------------ mail
@@ -2442,7 +2477,7 @@ class Org:
         # unsluggable name therefore left the credits behind: measured
         # top_level_holds 105 → 915 on a user-pool cascade, with no node.
         slugify(name)
-        need = self.d["tiers"][tier] + int(grant)
+        need = _q(self.d["tiers"][tier] + int(grant))
 
         if parent is None:
             if actor != USER:
@@ -2658,10 +2693,14 @@ class Org:
         # a contribution from chain[i] inflates every grant BELOW it, so the
         # credits are actually spendable at the payer
         for i, k, c in contrib:
+            # c is a credit quantity (a slice of `need`, itself seat + grant),
+            # so it may be fractional once a sub-$1 seat is on the chain — _q
+            # keeps the inflated grant on the 0.01 grid. ⚠ ONE LINE, on
+            # purpose: test_ledger_authority §2 audits grant writes by regex
+            # and a wrapped one registers as the meaningless fragment `_q(`.
             for j in range(i):
-                # runtime int: frees/need are int-valued here (grants and seats
-                # are ints; USER is never on the chain) — float only via free()
-                self.nodes[chain[j]]["grant"] += cast(int, c)
+                hop_n = self.nodes[chain[j]]
+                hop_n["grant"] = _q(hop_n["grant"] + c)
             warnings += self._stranding_warnings(k, frees[i], frees[i] - c)
             if i > 0:
                 warnings.append(
@@ -2669,7 +2708,7 @@ class Org:
                     f"were inflated to carry them down — reclaim with reallocate")
         if remaining > 0:             # user actor: the infinite pool absorbs it
             for k in chain:
-                self.nodes[k]["grant"] += cast(int, remaining)  # runtime int, as above
+                self.nodes[k]["grant"] = _q(self.nodes[k]["grant"] + remaining)
             warnings.append(
                 f"§4.6: {remaining:g} credit(s) drawn from your pool — the "
                 f"chain's grants inflated to carry them down; reclaim with "
@@ -2762,7 +2801,7 @@ class Org:
                 f"(the whole subtree is archived)")
             return r
         n = self.node(nid)
-        freed = self.seat_cost(nid) + n["grant"]
+        freed = _q(self.seat_cost(nid) + n["grant"])
         n["state"] = "archived"
         n["archived_at"] = now()
         self._moot_asks(nid, "the asking agent was retired before an answer "
@@ -2773,7 +2812,7 @@ class Org:
         who = ("the user" if actor == USER
                else "itself (self-retirement)" if actor == nid else f'"{actor}"')
         self._notify([p for p in [n["parent"]] if p != actor],
-                     f'Your report "{nid}" was retired by {who} (freed {freed} credits).')
+                     f'Your report "{nid}" was retired by {who} (freed {freed:g} credits).')
         self._notify([p for p in self._peers_of(n["parent"], nid) if p != actor],
                      f'Your peer "{nid}" was retired by {who}.')
         self._log("retire", actor, {"node": nid, "freed": freed}, [])
@@ -2817,7 +2856,7 @@ class Org:
             return {"freed": 0, "clawed": 0,
                     "warnings": [f"{nid} was already rescinded — nothing to do"]}
         parent = n["parent"]
-        stake = self.seat_cost(nid) + n["grant"]
+        stake = _q(self.seat_cost(nid) + n["grant"])
         warnings: list[str] = []
         if n["state"] == "archived":
             # design motto: rescinding an already-retired seat is the same
@@ -2838,18 +2877,20 @@ class Org:
                 f"back; the rescind is the archive alone")
         else:
             p = self.node(parent)
-            # free() is float-typed for USER's math.inf; a real parent's free
-            # is whole-credit arithmetic, so int() truncates nothing
-            clawed = int(min(stake, self.free(parent)))
-            p["grant"] -= clawed
+            # a parent's free is no longer whole-credit arithmetic (a sub-$1
+            # seat anywhere under it makes it fractional), so the old int()
+            # here would silently claw back LESS than the stake and leave the
+            # remainder stranded on the parent — quantise, never truncate
+            clawed = _q(min(stake, self.free(parent)))
+            p["grant"] = _q(p["grant"] - clawed)
             if clawed < stake:
                 warnings.append(
-                    f"only {clawed} of the {stake}-credit stake could be "
+                    f"only {clawed:g} of the {stake:g}-credit stake could be "
                     f"reclaimed from {parent} — the freed headroom was "
                     f"already moved or spent since the archive")
             self._notify([parent],
                          f'Your report "{nid}" was RESCINDED by the user: it '
-                         f'is archived and your grant was reduced by {clawed} '
+                         f'is archived and your grant was reduced by {clawed:g} '
                          f'— rehiring it (or replacing the seat) needs new '
                          f'capacity from above, not the freed headroom.')
         self._log("rescind", actor,
@@ -3033,7 +3074,7 @@ class Org:
                 "warnings": []}
 
     # ---------------------------------------------------------------- rehire
-    def rehire(self, actor: str, nid: str, grant: int | None = None,
+    def rehire(self, actor: str, nid: str, grant: float | None = None,
                tier: str | None = None, raise_ceiling: bool = False) -> dict[str, Any]:
         """§4.2. Parent pays seat + grant; may strand the parent's OTHER archived kids.
         `tier` override (№16, spike-verified): a knowledge bearer answers from context
@@ -3179,10 +3220,13 @@ class Org:
                 f'{nid} joins as YOUR subordinate (you woke your own '
                 f'predecessor) — you command it and pay its seat')
         parent = n["parent"]
+        # DEFAULTS to the archived grant, which switch_model's melt may have
+        # left fractional — so the default keeps its fraction, while an
+        # explicit ask is still coerced to a whole number (nobody asks for 0.3)
         grant = n["grant"] if grant is None else int(grant)
         if parent is None and grant > n["grant"]:
             self._check_top_grant(grant, "this rehire")   # D-014
-        need = self.seat_cost(nid) + grant
+        need = _q(self.seat_cost(nid) + grant)
         if parent is not None:
             # §4.6 generalized: the parent pays; shortfall bubbles up to the actor
             self._chain_acquire(actor, parent, need, warnings,
@@ -3300,11 +3344,11 @@ class Org:
                 "cannot dissolve while background tasks are open on: "
                 + ", ".join(open_nodes)
                 + " — wait for terminal notification/provider-loss recovery")
-        freed = 0
+        freed = 0.0
         for k in order:
             n = self.nodes[k]
             if n["state"] in ("live", "unrecoverable"):
-                freed += self.seat_cost(k) + n["grant"]
+                freed = _q(freed + self.seat_cost(k) + n["grant"])
                 n["state"] = "archived"
                 n["archived_at"] = now()
                 self._moot_asks(k, "the asking agent was dissolved with its "
@@ -3313,7 +3357,7 @@ class Org:
         who = "the user" if actor == USER else f'"{actor}"'
         self._notify([p for p in [parent] if p != actor],
                      f'{who.capitalize()} dissolved your report "{nid}" and its whole '
-                     f'suborganization ({len(order)} node(s), freed {freed} credits).')
+                     f'suborganization ({len(order)} node(s), freed {freed:g} credits).')
         self._notify([p for p in self._peers_of(parent, nid) if p != actor],
                      f'Your peer "{nid}" and its suborganization were dissolved '
                      f'by {who}.')
@@ -3437,7 +3481,13 @@ class Org:
         self._check_tier_ceiling(tier)
         if tier == "fable" and self.d.get("fable_lock") and actor == USER:
             self.clear_fable_lock()      # a user fable-switch is the decree
-        delta = self.d["tiers"][tier] - self.d["tiers"][old]
+        # ☞ THE ONE PATH THAT MAKES A *GRANT* FRACTIONAL. Everywhere else a
+        # grant is a whole number the user or an agent asked for; here a seat
+        # DIFFERENCE lands in it (melt on a downgrade, absorb on an upgrade),
+        # so switching between a fractional seat and a whole one leaves the
+        # node holding e.g. 5.8. That is correct — the node's total holding
+        # must not move — and it is why every write below goes through _q.
+        delta = _q(self.d["tiers"][tier] - self.d["tiers"][old])
         warnings: list[str] = []
         if delta <= 0:
             # seat shrinks; the difference becomes the node's own free
@@ -3448,10 +3498,10 @@ class Org:
                 # grant past the cap — reallocate the excess down first
                 self._check_top_grant(n["grant"] - delta, "this downgrade")
             n["model"] = tier
-            n["grant"] += -delta
+            n["grant"] = _q(n["grant"] - delta)
         else:
-            own = min(self.free(nid), delta)   # the node's own free absorbs first
-            shortfall = delta - own
+            own = _q(min(self.free(nid), delta))  # the node's own free absorbs first
+            shortfall = _q(delta - own)
             if shortfall > 0:
                 if n["parent"] is None and actor != USER:
                     raise LedgerError("only the user funds a top-level upgrade")
@@ -3459,8 +3509,7 @@ class Org:
                     self._chain_acquire(actor, n["parent"], shortfall, warnings,
                                         cascade=bool(self.d.get("cascade_alloc", True)))
             n["model"] = tier
-            # runtime int: own = min(free, delta), both int-valued for a real node
-            n["grant"] -= cast(int, own)   # holding grows by exactly the shortfall
+            n["grant"] = _q(n["grant"] - own)  # holding grows by exactly the shortfall
         # D-196: a switch that CROSSES PROVIDERS cannot keep the session, and
         # must not pretend to. `session_id` holds a provider-owned handle — a
         # codex threadId, an antigravity conversation id, a Claude session uuid — and
@@ -3479,8 +3528,6 @@ class Org:
         # between them), so promising continuity would be D-180's failure in
         # another field. A failure the user sees when they act is worth far
         # more than one that surfaces on their next message.
-        # (Reworked 2026-09-03: the reset is a LINEAGE SPLIT, not an in-place
-        # mint — the block below says why. The announcement stands.)
         from . import providers        # noqa: PLC0415 — avoids a cycle: providers reads TIERS from this module
         crossed = providers.provider_of(old) != providers.provider_of(tier)
         pred_id: str | None = None
@@ -3548,7 +3595,7 @@ class Org:
         who = "the user" if actor == USER else f'"{actor}"'
         self._notify([x for x in [nid] if x != actor],
                      f'{who.capitalize()} switched your model {old}→{tier} '
-                     f'(seat {self.d["tiers"][old]}→{self.d["tiers"][tier]}). '
+                     f'(seat {self.d["tiers"][old]:g}→{self.d["tiers"][tier]:g}). '
                      + ('Your context is intact — carry on.' if not crossed else
                         f'That is a different PROVIDER '
                         f'({providers.provider_of(old)}→'
@@ -3578,12 +3625,18 @@ class Org:
         return {"model": tier, "seat": self.d["tiers"][tier],
                 "freed": max(0, -delta), "warnings": warnings, **split}
 
-    def reallocate(self, actor: str, nid: str, delta: int) -> dict[str, Any]:
+    def reallocate(self, actor: str, nid: str, delta: float) -> dict[str, Any]:
         """±Δ between a node and its parent (§4.2). -Δ is the classic stranding op."""
         self._require_authority(actor, nid)
         self._require_live(nid)
         n = self.node(nid)
-        delta = int(delta)
+        # QUANTISE, don't truncate. Agent and UI callers still pass whole
+        # credits (mcptool's schema says `"type": "integer"`, and the credit
+        # bar drags in whole steps) — but `credit_request_action` computes its
+        # delta as `give − grant`, and a grant left fractional by a
+        # switch_model melt makes that a fraction. The old int() silently
+        # dropped it, so approving "give this node 10" landed 9.8.
+        delta = _q(delta)
         warnings: list[str] = []
         if delta > 0:
             if n["parent"] is None:
@@ -3598,14 +3651,17 @@ class Org:
                     f"{nid} has only {self.free(nid):g} unused; the rest is committed")
             warnings += self._stranding_warnings(
                 nid, self.free(nid), self.free(nid) + delta)
-        n["grant"] += delta
+        # delta stays WHOLE (int() above): nobody asks for 0.3 of a credit —
+        # only seats are fractional. The grant it lands on may not be, though
+        # (switch_model's melt), so the write is quantised like every other.
+        n["grant"] = _q(n["grant"] + delta)
         if delta != 0:
             who = "the user" if actor == USER else f'"{actor}"'
             self._notify([x for x in [nid] if x != actor],
-                         f"{who.capitalize()} adjusted your grant by {delta:+d} "
-                         f"(now {n['grant']}, free {self.free(nid):g}).")
+                         f"{who.capitalize()} adjusted your grant by {delta:+g} "
+                         f"(now {n['grant']:g}, free {self.free(nid):g}).")
             self._notify([x for x in [n["parent"]] if x != actor],
-                         f'{who.capitalize()} adjusted "{nid}"\'s grant by {delta:+d}.')
+                         f'{who.capitalize()} adjusted "{nid}"\'s grant by {delta:+g}.')
         self._log("reallocate", actor, {"node": nid, "delta": delta}, warnings)
         return {"grant": n["grant"], "warnings": warnings}
 
@@ -4180,18 +4236,18 @@ class Org:
                     f"insertion would strand a live agent under it")
         seat_n, seat_t = self.seat_cost(nid), self.seat_cost(target)
         g_n, g_t = n_new["grant"], n_t["grant"]
-        stake_n = seat_n + g_n
+        stake_n = _q(seat_n + g_n)
         if g_t - stake_n < 0:
             # unreachable while free() >= 0 (target funded nid's stake out of
             # that grant); refuse rather than write a negative grant, the same
             # call _move makes on the release leg
             raise LedgerError(
                 f"cannot insert {nid} above {target}: {target} holds a grant "
-                f"of {g_t}, less than the {stake_n} its own report commits — "
+                f"of {g_t:g}, less than the {stake_n:g} its own report commits — "
                 f"the chain's accounting is inconsistent (§4.5)")
         if p is None:
             # D-014: the top-level GRANT VALUE changes (the holding does not)
-            self._check_top_grant(seat_t + g_t - seat_n,
+            self._check_top_grant(_q(seat_t + g_t - seat_n),
                                   f"inserting {nid} above {target}")
 
         # ---- mutation: nothing below raises (§2b — a refusal above has left
@@ -4202,8 +4258,8 @@ class Org:
             self.nodes[k]["parent"] = p
         for k in self.lineage_stack(target):
             self.nodes[k]["parent"] = nid
-        n_t["grant"] = g_t - stake_n
-        n_new["grant"] = seat_t + n_t["grant"] + g_n
+        n_t["grant"] = _q(g_t - stake_n)
+        n_new["grant"] = _q(seat_t + n_t["grant"] + g_n)
         n_new["ui_order"] = n_t["ui_order"]      # it holds target's old slot
         sc_t, sc_n = n_t["scope"], n_new["scope"]
         # ⚠ SAY WHAT THE SEAT JUST HANDED OVER (redteam 2026-09-02). Taking
@@ -4352,12 +4408,12 @@ class Org:
             raise LedgerError(
                 f"{nid} has live lineage bearer(s) {live_bearers} under consultation — "
                 f"retire them first, then move (the stack moves with the node)")
-        c = 0 if n["state"] != "live" else self.seat_cost(nid) + n["grant"]
+        c = 0.0 if n["state"] != "live" else _q(self.seat_cost(nid) + n["grant"])
         warnings: list[str] = []
         if n["state"] != "live":
             warnings.append(
                 f"{nid} is archived: moving it is free, but its rehire cost "
-                f"({self.seat_cost(nid) + n['grant']}) now falls on {new_parent or USER} (§4.5)")
+                f"({self.seat_cost(nid) + n['grant']:g}) now falls on {new_parent or USER} (§4.5)")
 
         lca = self._lca(p_old, new_parent)
         down = (self._path_down(lca if lca is not None else USER, new_parent)
@@ -4392,13 +4448,13 @@ class Org:
                 if self.nodes[hop]["grant"] < c:
                     raise LedgerError(
                         f"cannot move {nid}: {hop} holds a grant of "
-                        f"{self.nodes[hop]['grant']}, less than the {c} this "
+                        f"{self.nodes[hop]['grant']:g}, less than the {c:g} this "
                         f"move must release through it — the chain's accounting "
                         f"is inconsistent (§4.5)")
             for hop in self._chain_up(p_old, lca):     # release: grants shrink
-                self.nodes[hop]["grant"] -= c
+                self.nodes[hop]["grant"] = _q(self.nodes[hop]["grant"] - c)
             for hop in down:                           # acquire: grants swell
-                self.nodes[hop]["grant"] += c
+                self.nodes[hop]["grant"] = _q(self.nodes[hop]["grant"] + c)
 
         prior_peers = self._peers_of(p_old, nid)
         n["parent"] = new_parent
@@ -6078,14 +6134,19 @@ class Org:
         cap = int(self.d.get("max_top_grant") or 0)
         kc = (self.d.get("kiosk") or {}).get("credits")
         pool: int | None = None
+        # ⚠ FLOOR/CEIL, NOT int(). Headroom is answered in WHOLE credits (a
+        # request is for a whole number) but its inputs may now be fractional,
+        # and int() truncates toward zero — which rounds a holding DOWN and so
+        # reports more room than exists. Every rounding here goes the
+        # conservative way, matching the docstring's "provably-zero only".
         if kc is not None:
-            holds = sum(self.seat_cost(k) + self.nodes[k]["grant"]
-                        for k in self.children(None))
-            pool = int(kc) - int(holds)
+            holds = _q(sum(self.seat_cost(k) + self.nodes[k]["grant"]
+                           for k in self.children(None)))
+            pool = int(kc) - math.ceil(holds)
         if n["parent"] is None:
             rooms: list[tuple[int, str]] = []
             if cap:
-                rooms.append((cap - int(n["grant"]),
+                rooms.append((cap - math.ceil(n["grant"]),
                               f"your grant {n['grant']:g} is at the org's "
                               f"top-level cap of {cap}"))
             if pool is not None:
@@ -6094,7 +6155,7 @@ class Org:
                 return None, ""
             return min(rooms, key=lambda r: r[0])
         if not bool(self.d.get("cascade_alloc", True)):
-            room = int(self.free(n["parent"]))
+            room = math.floor(self.free(n["parent"]))
             return room, (f'your superior "{n["parent"]}" has no free credits '
                           f"(allocation bubbling is off)")
         chain: list[str] = []
@@ -6102,8 +6163,8 @@ class Org:
         while cur is not None:
             chain.append(cur)
             cur = self.node(cur)["parent"]
-        free_sum = sum(int(self.free(a) or 0) for a in chain)
-        slack = [s for s in ((cap - int(self.node(chain[-1])["grant"])) if cap else None,
+        free_sum = sum(math.floor(self.free(a) or 0) for a in chain)
+        slack = [s for s in ((cap - math.ceil(self.node(chain[-1])["grant"])) if cap else None,
                              pool) if s is not None]
         if not slack:
             return None, ""
@@ -6887,6 +6948,11 @@ class Org:
               superior + the user are told and decide.
           opus — the node converts fable→opus (seat 10→5, one-way, same
               conversion as the limit policy) and the flagged turn retries.
+          auto-autopsy — an autopsy agent is hired/inserted using the configured
+              `fable_filter_model` (defaulting to opus, fable excluded), a
+              replacement fable is hired under it, the failed agent is retired,
+              and a diagnostic kickoff is sent to the autopsy agent.
+              If the autopsy model is unavailable, falls back to halt.
         Returns the policy actually applied."""
         policy = self.d.get("fable_filter_policy", "halt")
         n = self.node(nid)
@@ -6899,6 +6965,46 @@ class Org:
             self._notify(self._peers_of(n["parent"], nid),
                          f'Your peer "{nid}" switched fable→opus (content filter, '
                          f'org policy).')
+        elif policy == "auto-autopsy" and n["model"] == "fable":
+            autopsy_model = self.d.get("fable_filter_model", "opus")
+            from . import providers
+            avail, reason = providers.tier_availability(autopsy_model)
+            if not avail:
+                self._notify([n["parent"]],
+                             f'Your report "{nid}" had a message FLAGGED by Fable\'s '
+                             f'content filters — auto-autopsy model "{autopsy_model}" '
+                             f'is unavailable ({reason}); its turn HALTED (org policy).')
+                self.to_user_inbox({
+                    "id": uuid.uuid4().hex[:8], "from": SYSTEM, "kind": "decision",
+                    "at": now(),
+                    "body": (f'A Fable content filter flagged a message from "{nid}" '
+                             f'(auto-autopsy configured with model "{autopsy_model}", '
+                             f'but that model is currently unavailable: {reason}; '
+                             f'turn halted). Detail: {detail[:200]}')})
+                self._log("fable_filter", SYSTEM,
+                          {"node": nid, "policy": "halt",
+                           "reason": f"model {autopsy_model} unavailable: {reason}"}, [])
+                return "halt"
+
+            applied_info = self._execute_auto_autopsy(nid, detail, autopsy_model)
+            self._notify([n["parent"]],
+                         f'Your report "{nid}" had a message FLAGGED by Fable\'s '
+                         f'content filters. Auto-autopsy invoked: hired "{applied_info["autopsy_id"]}" '
+                         f'({autopsy_model}), replacement "{applied_info["rep_id"]}" (fable), '
+                         f'and retired "{nid}".')
+            self.to_user_inbox({
+                "id": uuid.uuid4().hex[:8], "from": SYSTEM, "kind": "decision",
+                "at": now(),
+                "body": (f'A Fable content filter flagged a message from "{nid}" '
+                         f'(org policy applied: auto-autopsy — hired {applied_info["autopsy_id"]} '
+                         f'[{autopsy_model}], replacement {applied_info["rep_id"]}). '
+                         f'Detail: {detail[:200]}')})
+            self._log("fable_filter", SYSTEM,
+                      {"node": nid, "policy": "auto-autopsy",
+                       "autopsy_model": autopsy_model,
+                       "autopsy_node": applied_info["autopsy_id"],
+                       "replacement_node": applied_info["rep_id"]}, [])
+            return "auto-autopsy"
         else:
             policy = "halt"
             self._notify([n["parent"]],
@@ -6915,6 +7021,71 @@ class Org:
                      f'Detail: {detail[:200]}')})
         self._log("fable_filter", SYSTEM, {"node": nid, "policy": policy}, [])
         return policy
+
+    def _execute_auto_autopsy(self, nid: str, detail: str,
+                              autopsy_model: str) -> dict[str, str]:
+        """Execute the D-174 auto-autopsy recovery pattern for a failed fable:
+        - Identify base name (<base>-autopsy for the autopsy agent, <base>-N for replacement)
+        - If <base>-autopsy already exists and is live:
+            keep it as the superior
+        - If <base>-autopsy does not exist:
+            hire it under nid's parent with tier=autopsy_model,
+            move nid under <base>-autopsy
+        - Hire next replacement <base>-N under <base>-autopsy with tier="fable"
+        - Retire the failed agent nid
+        - Send diagnostic kickoff message to <base>-autopsy
+        Returns {"autopsy_id": str, "rep_id": str}.
+        """
+        n = self.node(nid)
+        m = re.match(r"^(.*?)(?:-(\d+))?$", nid)
+        base = m.group(1) if m else nid
+        curr_idx = int(m.group(2)) if (m and m.group(2)) else 1
+
+        autopsy_id = f"{base}-autopsy"
+        parent = n["parent"]
+
+        if autopsy_id in self.nodes and self.nodes[autopsy_id]["state"] == "live":
+            autopsy_node = autopsy_id
+        else:
+            hdirs = [dict(d) for d in n["scope"]["add_dirs"]]
+            htools = {**n["scope"]["tools"],
+                      "mcp": list(n["scope"]["tools"].get("mcp") or [])}
+            hvis = n["scope"].get("org_visibility", "full")
+            charter = (
+                f"Autopsy agent for {base}. Read the failed agent's transcript, "
+                f"diagnose why the content filter tripped, and brief the replacement fable."
+            )
+            self.hire(USER, parent, autopsy_model, 0, autopsy_id,
+                      add_dirs=hdirs, tools=htools, org_visibility=hvis,
+                      charter=charter)
+            self.reorder(USER, autopsy_id, before=nid)
+            self.move(USER, nid, autopsy_id)
+            autopsy_node = autopsy_id
+
+        next_idx = curr_idx + 1
+        while f"{base}-{next_idx}" in self.nodes:
+            next_idx += 1
+        rep_id = f"{base}-{next_idx}"
+
+        rdirs = [dict(d) for d in n["scope"]["add_dirs"]]
+        rtools = {**n["scope"]["tools"],
+                  "mcp": list(n["scope"]["tools"].get("mcp") or [])}
+        rvis = n["scope"].get("org_visibility", "full")
+        self.hire(USER, autopsy_node, "fable", 0, rep_id,
+                  add_dirs=rdirs, tools=rtools, org_visibility=rvis,
+                  charter=n.get("charter", ""))
+
+        self.retire(USER, nid)
+
+        kickoff = (
+            f'Agent "{nid}" had its message flagged by a content filter. '
+            f'Run an autopsy: read "{nid}"\'s transcript with orgtree_read_transcript, '
+            f'diagnose what instruction triggered the filter, and brief the replacement '
+            f'agent "{rep_id}" with rewritten instructions to avoid tripping the filter.'
+        )
+        self.post_mail(USER, autopsy_node, kickoff, kind="request")
+        return {"autopsy_id": autopsy_node, "rep_id": rep_id}
+
 
     def fable_limit_hit(self, detecting_node: str | None, detail: str,
                         until_ts: float | None = None) -> dict[str, Any]:
@@ -7546,8 +7717,8 @@ class Org:
         problems = [f"{k} free={self.free(k):g}" for k in live if self.free(k) < 0]
         return {
             "live_nodes": len(live),
-            "top_level_holds": sum(self.seat_cost(k) + self.nodes[k]["grant"]
-                                   for k in self.children(None)),
+            "top_level_holds": _q(sum(self.seat_cost(k) + self.nodes[k]["grant"]
+                                      for k in self.children(None))),
             "no_overdraft": not problems,
             "problems": problems,
         }
@@ -7791,6 +7962,7 @@ class Org:
                if not self._tomb_expired(t)],
             "fable_limit_policy": self.d.get("fable_limit_policy", "halt"),
             "fable_filter_policy": self.d.get("fable_filter_policy", "halt"),
+            "fable_filter_model": self.d.get("fable_filter_model", "opus"),
             "fable_api_fallback": bool(self.d.get("fable_api_fallback")),
             "cascade_hire": bool(self.d.get("cascade_hire", True)),
             "cascade_alloc": bool(self.d.get("cascade_alloc", True)),

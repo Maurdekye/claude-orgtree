@@ -584,6 +584,62 @@ def main():
         (lambda p: None if p == "opus" and orgF.nodes["seer"]["model"] == "opus"
          else (_ for _ in ()).throw(AssertionError(p))
          )(orgF.fable_filter_hit("seer", "flagged by content filter")))[-1])
+
+    # auto-autopsy (FR content-filter automatic action, user spec 2026-09-03)
+    orgA = Org.create("autopsy-test")
+    orgA.hire(USER, None, "fable", 5, "poem")
+    orgA.d["fable_filter_policy"] = "auto-autopsy"
+    orgA.d["fable_filter_model"] = "opus"
+    check("filter auto-autopsy: creates autopsy supervisor and replacement fable", lambda: (
+        lambda p: None if (
+            p == "auto-autopsy"
+            and "poem-autopsy" in orgA.nodes
+            and orgA.nodes["poem-autopsy"]["model"] == "opus"
+            and orgA.nodes["poem-autopsy"]["state"] == "live"
+            and "poem-2" in orgA.nodes
+            and orgA.nodes["poem-2"]["model"] == "fable"
+            and orgA.nodes["poem-2"]["parent"] == "poem-autopsy"
+            and orgA.nodes["poem-2"]["state"] == "live"
+            and orgA.nodes["poem"]["state"] == "archived"
+            and any("poem-2" in m["body"] for m in orgA.d.get("mail", {}).get("poem-autopsy", []))
+            and any("auto-autopsy" in m["body"] for m in orgA.user_mailbox())
+        ) else (_ for _ in ()).throw(AssertionError((p, orgA.nodes)))
+    )(orgA.fable_filter_hit("poem", "flagged by content filter")))
+
+    check("filter auto-autopsy: subsequent failure reuses autopsy supervisor and increments index", lambda: (
+        lambda p: None if (
+            p == "auto-autopsy"
+            and "poem-3" in orgA.nodes
+            and orgA.nodes["poem-3"]["model"] == "fable"
+            and orgA.nodes["poem-3"]["parent"] == "poem-autopsy"
+            and orgA.nodes["poem-3"]["state"] == "live"
+            and orgA.nodes["poem-2"]["state"] == "archived"
+            and "poem-autopsy-2" not in orgA.nodes
+        ) else (_ for _ in ()).throw(AssertionError((p, orgA.nodes)))
+    )(orgA.fable_filter_hit("poem-2", "second failure")))
+
+    orgA.hire(USER, None, "fable", 5, "solo")
+    orgA.d["fable_filter_model"] = "unknown-model-xyz"
+    check("filter auto-autopsy: unavailable model falls back to halt", lambda: (
+        lambda p: None if (
+            p == "halt"
+            and orgA.nodes["solo"]["model"] == "fable"
+            and orgA.nodes["solo"]["state"] == "live"
+            and any("currently unavailable" in m["body"] for m in orgA.user_mailbox())
+        ) else (_ for _ in ()).throw(AssertionError(p))
+    )(orgA.fable_filter_hit("solo", "flagged with bad model")))
+
+    orgA.hire(USER, None, "fable", 5, "nofable")
+    orgA.d["fable_filter_model"] = "fable"
+    check("filter auto-autopsy: fable cannot be autopsy model and halts", lambda: (
+        lambda p: None if (
+            p == "halt"
+            and orgA.nodes["nofable"]["model"] == "fable"
+            and orgA.nodes["nofable"]["state"] == "live"
+            and any("fable cannot be used" in m["body"] for m in orgA.user_mailbox())
+        ) else (_ for _ in ()).throw(AssertionError(p))
+    )(orgA.fable_filter_hit("nofable", "flagged with fable model")))
+
     orgE = Org.create("external")
     orgE.hire(USER, None, "haiku", 0, "a")
     orgE.hire(USER, None, "haiku", 0, "b")
@@ -1870,7 +1926,145 @@ def main():
                                                   "f9.log"), "watchdogs")
     )[-1])
 
+    fractional_seats()
+
     print(f"\nALL {PASS} CHECKS PASS")
+
+
+def fractional_seats():
+    """Fractional seat costs below $1/M (user ruling 2026-09-03).
+
+    The rule lives in `openrouter.seat_for`; what is exercised HERE is the
+    ledger's own arithmetic once such a seat is in an org's `tiers` table —
+    that `committed()`/`free()` stay exactly on the 0.01 grid, that the
+    invariant cannot be tripped by float residue, and that the two paths
+    which move a seat DIFFERENCE into a grant (switch_model's melt and
+    absorb) leave the node's total holding untouched."""
+    print("fractional seats (§3.1 extended below $1/M, ruling 2026-09-03):")
+
+    def fresh():
+        """An org that prices three cheap tiers: $0.20, $0.75 and a `:free`
+        model at the 0.10 floor. Seats are set directly in the doc, which is
+        exactly how the load hook merges an OpenRouter favorite in."""
+        o = Org.create("cheap", dirs=["E:/work"])
+        o.d["tiers"].update({"or-cheap": 0.2, "or-mid": 0.75, "or-free": 0.1})
+        o.d["models"].update({"or-cheap": "v/cheap", "or-mid": "v/mid",
+                              "or-free": "v/free:free"})
+        return o
+
+    def _grid_exact():
+        # ten 0.1 seats under one parent. Summed naively in float64 this is
+        # 0.9999999999999999, so `free` would read -1e-16 and `audit` would
+        # report an overdraft on a tree that is exactly balanced.
+        o = fresh()
+        o.hire(USER, None, "haiku", 1, "boss")
+        for i in range(10):
+            o.hire("boss", "boss", "or-free", 0, f"k{i}", **spec())
+        assert o.committed("boss") == 1.0, o.committed("boss")
+        assert o.free("boss") == 0.0, o.free("boss")
+        assert o.audit()["no_overdraft"], o.audit()["problems"]
+        # …and the eleventh is genuinely unaffordable, not float-unaffordable
+        expect_error(lambda: o.hire("boss", "boss", "or-free", 0, "k10", **spec()),
+                     "not enough free credits")
+    check("ten 0.10 seats sum to exactly 1 — no float residue, no false overdraft",
+          _grid_exact)
+
+    def _fractions_rank():
+        o = fresh()
+        o.hire(USER, None, "opus", 10, "boss")
+        o.hire("boss", "boss", "or-cheap", 0, "a", **spec())
+        o.hire("boss", "boss", "or-mid", 0, "b", **spec())
+        # the whole point of the change: two sub-$1 models no longer cost the
+        # same, so the cheaper one really does buy more concurrency
+        assert o.seat_cost("a") == 0.2, o.seat_cost("a")
+        assert o.seat_cost("b") == 0.75, o.seat_cost("b")
+        assert o.committed("boss") == 0.95, o.committed("boss")
+        assert o.free("boss") == 9.05, o.free("boss")
+    check("sub-$1 seats rank distinctly and sum on the grid (0.2 + 0.75 = 0.95)",
+          _fractions_rank)
+
+    def _whole_tiers_unmoved():
+        # the migration-free guarantee: nothing at or above $1/M moved, so an
+        # org with no cheap tier in it behaves byte-identically to before
+        o = fresh()
+        assert o.d["tiers"]["flash"] == 1, "flash must NOT become 1.5"
+        assert [o.d["tiers"][t] for t in ("haiku", "sonnet", "opus", "fable")] \
+            == [1, 2, 5, 10]
+        o.hire(USER, None, "opus", 4, "boss")
+        o.hire("boss", "boss", "sonnet", 0, "kid", **spec())
+        # …and an all-whole org still yields whole numbers: round(int, 2) is
+        # an int, so nothing that was `5` starts rendering as `5.0`
+        assert o.free("boss") == 2 and isinstance(o.free("boss"), int)
+        assert isinstance(o.committed("boss"), int)
+    check("no tier at or above $1/M moved — whole-credit orgs are unchanged",
+          _whole_tiers_unmoved)
+
+    def _melt_holding_conserved():
+        # switch_model is the ONE path that lands a seat DIFFERENCE in a
+        # grant. Downgrading opus (5) → or-cheap (0.2) must melt 4.8 into the
+        # node's own grant: its TOTAL holding, and its parent's committed,
+        # may not move by a hair.
+        o = fresh()
+        o.hire(USER, None, "fable", 10, "boss")
+        o.hire("boss", "boss", "opus", 2, "kid", **spec())
+        before = o.committed("boss")
+        o.switch_model("boss", "kid", "or-cheap")
+        assert o.node("kid")["grant"] == 6.8, o.node("kid")["grant"]
+        assert o.seat_cost("kid") + o.node("kid")["grant"] == 7.0
+        assert o.committed("boss") == before, (o.committed("boss"), before)
+        # …and back up again returns the node to exactly where it started
+        o.switch_model("boss", "kid", "opus")
+        assert o.node("kid")["grant"] == 2, o.node("kid")["grant"]
+        assert o.committed("boss") == before
+    check("switch_model melt/absorb across a fractional seat conserves the "
+          "holding exactly (opus 5 ↔ 0.2)", _melt_holding_conserved)
+
+    def _approve_lands_whole():
+        # a grant left fractional by a melt used to defeat credit approval:
+        # reallocate's old int(delta) truncated `give − grant`, so approving
+        # "make it 10" landed 9.8. The delta is quantised now, not truncated.
+        o = fresh()
+        o.hire(USER, None, "opus", 20, "top")
+        o.switch_model(USER, "top", "or-cheap")      # grant melts to 24.8
+        assert o.node("top")["grant"] == 24.8, o.node("top")["grant"]
+        o.reallocate(USER, "top", 30 - o.node("top")["grant"])
+        assert o.node("top")["grant"] == 30, o.node("top")["grant"]
+    check("a fractional grant can still be set to an exact whole total "
+          "(reallocate quantises, never truncates)", _approve_lands_whole)
+
+    def _retire_returns_all():
+        # retire/rehire round-trip: the freed credits must come back whole,
+        # or a fraction leaks out of the org on every cycle
+        o = fresh()
+        o.hire(USER, None, "opus", 5, "boss")
+        o.hire("boss", "boss", "or-mid", 1, "kid", **spec())
+        free0 = o.free("boss")
+        o.retire("boss", "kid")
+        assert o.free("boss") == free0 + 1.75, o.free("boss")
+        o.rehire("boss", "kid")
+        assert o.free("boss") == free0, o.free("boss")
+        assert o.audit()["no_overdraft"], o.audit()["problems"]
+    check("retire → rehire round-trips a 0.75 seat with no leak",
+          _retire_returns_all)
+
+    def _saved_doc_survives():
+        # the migration-free claim, end to end: save an org holding a
+        # fractional seat, load it back, and the numbers are identical —
+        # JSON carries them, nothing coerces them to int on either leg
+        from orgtree import store as _store                     # noqa: PLC0415
+        o = fresh()
+        o.hire(USER, None, "opus", 6, "boss")
+        o.hire("boss", "boss", "or-cheap", 0, "kid", **spec())
+        o.switch_model("boss", "kid", "or-free")
+        _store.save_org(o)
+        back = _store.load_org(o.d["slug"])
+        assert back.seat_cost("kid") == 0.1, back.seat_cost("kid")
+        assert back.node("kid")["grant"] == o.node("kid")["grant"] == 0.1
+        assert back.free("boss") == o.free("boss")
+        assert back.audit()["no_overdraft"]
+        _store.delete_org(o.d["slug"])
+    check("a doc holding fractional seats saves and loads unchanged (no migration)",
+          _saved_doc_survives)
 
 
 if __name__ == "__main__":

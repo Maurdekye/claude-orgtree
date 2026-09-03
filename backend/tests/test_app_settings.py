@@ -258,6 +258,81 @@ def runtime_round_trip_uses_warm_flag() -> None:
 check("GET/PUT round-trip both runtime choices in their durable stores",
       runtime_round_trip_uses_warm_flag)
 
+
+print("\n§6  defaults and org settings auto-autopsy validation")
+
+
+def defaults_auto_autopsy_validation() -> None:
+    client = TestClient(api.app)
+
+    # fable cannot be used as auto-autopsy model
+    bad_fable = client.post("/api/defaults", json={
+        "fable_filter_policy": "auto-autopsy",
+        "fable_filter_model": "fable",
+    })
+    assert bad_fable.status_code == 422, bad_fable.text
+    assert "fable cannot be used" in bad_fable.text
+
+    # unknown model tier rejected
+    bad_tier = client.post("/api/defaults", json={
+        "fable_filter_policy": "auto-autopsy",
+        "fable_filter_model": "bogus-tier-999",
+    })
+    assert bad_tier.status_code == 422, bad_tier.text
+    assert "unknown model tier" in bad_tier.text
+
+    # valid auto-autopsy settings saved
+    good = client.post("/api/defaults", json={
+        "fable_filter_policy": "auto-autopsy",
+        "fable_filter_model": "sonnet",
+    })
+    assert good.status_code == 200, good.text
+    assert good.json()["fable_filter_policy"] == "auto-autopsy"
+    assert good.json()["fable_filter_model"] == "sonnet"
+
+    # round-trip check
+    fetched = client.get("/api/defaults")
+    assert fetched.status_code == 200, fetched.text
+    assert fetched.json()["fable_filter_policy"] == "auto-autopsy"
+    assert fetched.json()["fable_filter_model"] == "sonnet"
+
+
+check("POST /api/defaults validates auto-autopsy and rejects fable model",
+      defaults_auto_autopsy_validation)
+
+
+def org_settings_auto_autopsy_validation() -> None:
+    client = TestClient(api.app)
+    # create test org
+    org = store.create_org("auto-test-org", [], "default")
+    slug = org.d["slug"]
+
+    # fable as autopsy model rejected with 422
+    bad = client.post(f"/api/orgs/{slug}/settings", json={
+        "fable_filter_policy": "auto-autopsy",
+        "fable_filter_model": "fable",
+    })
+    assert bad.status_code == 422, bad.text
+    assert "fable cannot be used" in bad.text
+
+    # valid auto-autopsy with opus saved
+    good = client.post(f"/api/orgs/{slug}/settings", json={
+        "fable_filter_policy": "auto-autopsy",
+        "fable_filter_model": "opus",
+    })
+    assert good.status_code == 200, good.text
+
+    # tree payload exposes policy and model
+    tree_res = client.get(f"/api/orgs/{slug}")
+    assert tree_res.status_code == 200, tree_res.text
+    assert tree_res.json()["fable_filter_policy"] == "auto-autopsy"
+    assert tree_res.json()["fable_filter_model"] == "opus"
+
+
+check("POST /api/orgs/{slug}/settings validates auto-autopsy and rejects fable model",
+      org_settings_auto_autopsy_validation)
+
+
 print(f"\n{PASSED}/{PASSED + len(FAILED)} checks passed")
 if FAILED:
     print("\n".join(FAILED))

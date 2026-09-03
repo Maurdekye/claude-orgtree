@@ -310,6 +310,18 @@ def main():
           lambda: eq((claude["hire_enabled"], claude["status"]["installed"]),
                      (True, True), "claude entry"))
 
+    print("§5 auto-autopsy model tier availability and fable exclusion")
+    check("fable tier is rejected for auto-autopsy",
+          lambda: eq(providers.tier_availability("fable")[0], False, "fable must not be available"))
+    check("fable rejection reason is explicit",
+          lambda: eq("fable cannot be used" in (providers.tier_availability("fable")[1] or ""), True, "rejection message"))
+    check("unknown tier is not a known tier",
+          lambda: eq(providers.is_known_tier("bogus-tier-xyz"), False, "unknown tier is unknown"))
+    check("unknown tier availability returns False with unknown reason",
+          lambda: eq(providers.tier_availability("bogus-tier-xyz")[0], False, "unknown tier unavailable"))
+    check("claude and codex tiers are recognised",
+          lambda: eq((providers.is_known_tier("opus"), providers.is_known_tier("sol")), (True, True), "known tiers recognised"))
+
     print(f"\n{PASS} checks passed")
 
 

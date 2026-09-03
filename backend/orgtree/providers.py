@@ -933,3 +933,75 @@ def providers_payload(claude_status: dict[str, Any]) -> dict[str, Any]:
                 else str(orr.get("reason") or install_hint(openrouter.PROVIDER_ID))),
         },
     ]}
+
+
+def is_known_tier(tier: str) -> bool:
+    """Is this a recognised model tier across any configured or static provider?"""
+    return (tier in CLAUDE_TIERS or tier in _CODEX_TIER_NAMES
+            or tier in _ANTIGRAVITY_TIER_NAMES or openrouter.is_tier(tier))
+
+
+def tier_availability(tier: str) -> tuple[bool, str | None]:
+    """Is this model tier configured and available to run on this machine?
+
+    Returns (True, None) if available, or (False, reason) if unavailable.
+    Fable is explicitly excluded for auto-autopsy.
+    """
+    if tier == "fable":
+        return False, "fable cannot be used as an autopsy model"
+
+    choices = appsettings.provider_choices()
+    claude_on = choices.get("claude", True)
+    codex_on = choices.get("openai", True)
+    antigravity_on = choices.get("google", True)
+    orr_on = choices.get(openrouter.PROVIDER_ID, True)
+
+    if tier in CLAUDE_TIERS:
+        if not claude_on:
+            return False, "Claude is turned off in App settings → Providers"
+        from . import accounts, supervisor
+        inst = supervisor.claude_install_state()
+        if not inst.get("installed"):
+            return False, f"Claude Code CLI is not installed — {install_hint('claude')}"
+        if not accounts.live_identity().get("uuid"):
+            return False, "Claude is not signed in — complete login on this machine"
+        return True, None
+
+    if tier in _CODEX_TIER_NAMES:
+        if not codex_on:
+            return False, "Codex is turned off in App settings → Providers"
+        st = codex_status()
+        if not st.get("installed"):
+            return False, f"Codex CLI is not installed — {install_hint('openai')}"
+        if not st.get("connected"):
+            return False, "Codex CLI is not signed in — run `codex login`"
+        if tier == RESERVE_TIER:
+            reserve = reserve_availability(st)
+            if not reserve.get("enabled"):
+                return False, f"tier '{RESERVE_TIER}' is not available: {reserve.get('reason')}"
+        return True, None
+
+    if tier in _ANTIGRAVITY_TIER_NAMES:
+        if not antigravity_on:
+            return False, "Antigravity is turned off in App settings → Providers"
+        ast = antigravity_status()
+        if not ast.get("installed"):
+            return False, f"Antigravity CLI is not installed — {install_hint('google')}"
+        if not ast.get("connected"):
+            return False, "Antigravity CLI is not signed in — run `agy` and sign in"
+        return True, None
+
+    if openrouter.is_tier(tier):
+        if not orr_on:
+            return False, "OpenRouter is turned off in App settings → Providers"
+        ost = openrouter.status()
+        if not ost.get("key_set"):
+            return False, f"no OpenRouter API key set — {install_hint(openrouter.PROVIDER_ID)}"
+        if not ost.get("connected"):
+            return False, f"openrouter.ai did not accept key — {ost.get('reason')}"
+        if openrouter.favorite_for_tier(tier) is None:
+            return False, f"tier '{tier}' is not among OpenRouter favorites"
+        return True, None
+
+    return False, f"unknown model tier '{tier}'"
+
