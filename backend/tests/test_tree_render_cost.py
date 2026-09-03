@@ -522,17 +522,41 @@ def local_net_slugs_does_not_re_read_the_document_it_was_given() -> None:
     # is a flake waiting for a busy machine.
     target = os.path.basename(store.org_path("zz-net-a"))
     opened: list[str] = []
-    real = builtins.open
 
-    def spy(f: Any, *args: Any, **kw: Any) -> Any:
-        opened.append(os.path.basename(str(f)))
-        return real(f, *args, **kw)
+    if store.STORE_BACKEND == "sqlite":
+        # SQLite EQUIVALENT (SQLITE-SPEC 10.2). Nothing `open()`s a document
+        # on this backend, so a `builtins.open` spy sees an empty list and the
+        # check below reads it as "the skip is too wide" — a true statement
+        # about the probe, not about the code. The document is reached through
+        # `_POOL.acquire(slug)` instead, so count THAT: it is the same
+        # question ("was this org's document read?") asked of the mechanism
+        # this backend actually uses.
+        import contextlib as _ctx
+        real_acq = store._POOL.acquire
 
-    builtins.open = spy
-    try:
-        store.local_net_slugs(a.d)
-    finally:
-        builtins.open = real
+        @_ctx.contextmanager
+        def spy_acq(slug: str, **kw: Any) -> Any:
+            opened.append(os.path.basename(store.org_path(slug)))
+            with real_acq(slug, **kw) as conn:
+                yield conn
+
+        store._POOL.acquire = spy_acq            # type: ignore[assignment]
+        try:
+            store.local_net_slugs(a.d)
+        finally:
+            store._POOL.acquire = real_acq       # type: ignore[assignment]
+    else:
+        real = builtins.open
+
+        def spy(f: Any, *args: Any, **kw: Any) -> Any:
+            opened.append(os.path.basename(str(f)))
+            return real(f, *args, **kw)
+
+        builtins.open = spy
+        try:
+            store.local_net_slugs(a.d)
+        finally:
+            builtins.open = real
     assert target not in opened, (
         f"{target} was re-read although its parsed document was handed in — "
         f"opened: {opened}")

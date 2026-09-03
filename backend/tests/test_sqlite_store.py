@@ -202,7 +202,17 @@ def synthetic_doc(slug: str) -> dict:
                           for i in (3, 1, 2)],
         "user_outbox": [{"at": "t", "to": "n0"}],
         "mail": {"n0": [{"id": "queued"}]}, "notices": {"n0": []},
-        "_actors_typed": {"n0": True}, "_migrations": ["a", "b"],
+        "_actors_typed": {"n0": True},
+        # ⚠ `_migrations` carries a LIST here originally, to prove the store
+        # is shape-agnostic. It cannot any more: `46dc81e` gave the key
+        # meaning, and `Org.__init__` now does `migs[marker] = …` on it, so a
+        # non-dict makes the org UNLOADABLE (`TypeError`) — on BOTH backends,
+        # which I verified against the JSON one before changing this. The
+        # store property is real; the vehicle was wrong. It moves to a key
+        # nothing interprets, and this one keeps a plausible marker.
+        "_migrations": {"pm_plan_stamp_heal": {"at": "2026-08-01T00:00:00.000Z",
+                                               "healed": []}},
+        "_shape_zoo": ["a", "b", {"c": 1}, None, 42, [1, [2, [3]]], ""],
         "kiosk": None, "floats": [0.1, 1e-7, 12345678901234567890, -0.0, 3.0],
     }
 
