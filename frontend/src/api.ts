@@ -232,6 +232,16 @@ export const remoteControl = (slug: string, nid: string,
 export const getDocument = (slug: string, did: string):
   Promise<{ id: string; node: string; title: string; body: string; at: string }> =>
   req(`/api/orgs/${slug}/documents/${did}`)
+// the gallery (user request 2026-09-03): every card, org-wide, newest first —
+// metadata only (no body; the reader fetches that on open). `evicted` rows
+// are cards the retention prune dropped whose log line survives — no body to
+// fetch, but still findable rather than silently gone.
+export interface DocRow {
+  id: string; node: string; title: string; at: string
+  evicted: boolean; node_state: 'live' | 'archived' | 'unrecoverable' | 'deleted'
+}
+export const getDocuments = (slug: string): Promise<{ documents: DocRow[] }> =>
+  req(`/api/orgs/${slug}/documents`)
 export const dismissDocument = (slug: string, did: string):
   Promise<{ ok: boolean; node: string }> =>
   req(`/api/orgs/${slug}/documents/${did}`, { method: 'DELETE' })
