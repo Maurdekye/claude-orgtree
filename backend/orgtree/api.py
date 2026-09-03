@@ -821,20 +821,21 @@ class OrgCreate(Body):
 
 @app.get("/api/orgs")
 def orgs_list(request: Request) -> list[dict[str, Any]]:
-    orgs = store.list_orgs()
     pub = _public_slug(request)
     if pub:
-        # public visitors see exactly their token's org — nothing to discover
-        return [{**o, "kiosk": True} for o in orgs if o["slug"] == pub]
+        # public visitors see exactly their token's org — nothing to discover,
+        # and no document body needed, so this branch keeps the cheap listing
+        return [{**o, "kiosk": True} for o in store.list_orgs()
+                if o["slug"] == pub]
     # admin: attach the kiosk dashboard summary (incl. the secret token —
-    # this listener is loopback-only)
+    # this listener is loopback-only).
+    #
+    # ONE parse per org, not two. This used to call `store.list_orgs()` (which
+    # reads and parses every org document) and then `store.load_org()` per org
+    # (which parses every one of them again) — 168 ms per request against this
+    # machine's 18.53 MB data root, on a route the desk polls every 3 s.
     out: list[dict[str, Any]] = []
-    for o in orgs:
-        try:
-            org = store.load_org(o["slug"])
-        except LedgerError:
-            out.append(o)
-            continue
+    for o, org in store.list_orgs_with_docs():
         row = {**o, "cost_usd_total": org.cost_total(),
                # F-09: agents with a running turn. Deliberately absent from the
                # public/kiosk branch above — visitors don't see how busy an org is.

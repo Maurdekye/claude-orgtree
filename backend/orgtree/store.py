@@ -33,12 +33,13 @@ import os
 import tempfile
 import threading
 import time
-from collections.abc import Callable, Generator
+from collections.abc import Callable, Generator, Iterator
 from typing import Any, cast
 
 from datetime import datetime, timezone
 from .ledger import LedgerError, Org, slugify
 from .ledger import now as _ledger_now
+from .schema import OrgDoc
 
 DATA_ROOT: str = os.environ.get("ORGTREE_DATA", os.path.expanduser("~/orgtree"))
 
@@ -333,8 +334,12 @@ def _read_bytes(p: str) -> bytes:
     raise OSError(f"could not read {p!r}")   # unreachable
 
 
-def list_orgs() -> list[dict[str, Any]]:
-    out: list[dict[str, Any]] = []
+def _scan_orgs() -> Iterator[tuple[str, dict[str, Any]]]:
+    """(filename, parsed doc) for every org, ONE read+parse each.
+
+    Split out of `list_orgs` so that a caller which needs the whole document
+    as well as the summary row can have both from the same parse — see
+    `list_orgs_with_docs`."""
     _sweep_tmp()
     for f in sorted(os.listdir(_orgs_dir())):
         if not f.endswith(".json"):
@@ -348,16 +353,54 @@ def list_orgs() -> list[dict[str, Any]]:
                              .decode("utf-8"))
         except (json.JSONDecodeError, UnicodeDecodeError, OSError):
             continue
-        live = sum(1 for n in doc.get("nodes", {}).values() if n.get("state") == "live")
-        out.append({"slug": doc.get("slug", f[:-5]), "name": doc.get("name", f[:-5]),
-                    "nodes": len(doc.get("nodes", {})), "live": live,
-                    "kiosk": doc.get("kiosk") is not None,
-                    # the PUBLIC half of the org's hub identity (never the
-                    # secret) — lets listings mark a local org as also
-                    # hub-reachable (transport sets, user spec 2026-08-05)
-                    "net_slug": cast("dict[str, Any]",
-                                     doc.get("net_identity") or {}).get("slug"),
-                    "created": doc.get("created")})
+        yield f, doc
+
+
+def _summary_row(f: str, doc: dict[str, Any]) -> dict[str, Any]:
+    """The listing row. Reads only keys `Org.__init__` does not rewrite, so it
+    is the same whether the doc has been through `Org()` or not."""
+    live = sum(1 for n in doc.get("nodes", {}).values() if n.get("state") == "live")
+    return {"slug": doc.get("slug", f[:-5]), "name": doc.get("name", f[:-5]),
+            "nodes": len(doc.get("nodes", {})), "live": live,
+            "kiosk": doc.get("kiosk") is not None,
+            # the PUBLIC half of the org's hub identity (never the
+            # secret) — lets listings mark a local org as also
+            # hub-reachable (transport sets, user spec 2026-08-05)
+            "net_slug": cast("dict[str, Any]",
+                             doc.get("net_identity") or {}).get("slug"),
+            "created": doc.get("created")}
+
+
+def list_orgs() -> list[dict[str, Any]]:
+    return [_summary_row(f, doc) for f, doc in _scan_orgs()]
+
+
+def list_orgs_with_docs() -> list[tuple[dict[str, Any], Org]]:
+    """`list_orgs()`, plus each org's `Org` — from the SAME parse.
+
+    `GET /api/orgs` needs both halves, and building them separately meant
+    `list_orgs()` parsed every org document and then `load_org()` parsed every
+    one of them AGAIN. Measured 2026-09-03 on this machine's data root (18.53
+    MB across three orgs): 84 ms per pass, so 168 ms per request — on a route
+    the desk polls every 3 s, i.e. ~56 ms of every second spent parsing JSON
+    that was already in memory, from an idle browser tab.
+
+    ⚠ ORDER MATTERS: the row is built BEFORE `Org()`, which migrates the doc
+    in place. `_summary_row` deliberately reads only fields that migration
+    leaves alone, so the two orders agree — but building it first means that
+    stays true without anyone having to re-check it.
+
+    Unlike the two-pass version this cannot observe an org that disappears
+    between the listing and the load, so there is no half-populated row: the
+    document is already in hand. (The `LedgerError` branch that handled that
+    window in `orgs_list` is gone with it.)"""
+    out: list[tuple[dict[str, Any], Org]] = []
+    for f, doc in _scan_orgs():
+        row = _summary_row(f, doc)
+        # same cast `load_org` gets for free from `json.loads` returning Any:
+        # nothing validates the doc's shape at either entry point (see the
+        # module docstring — the store loads whatever JSON is on disk)
+        out.append((row, Org(cast("OrgDoc", doc))))
     return out
 
 
