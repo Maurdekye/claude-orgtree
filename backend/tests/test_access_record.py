@@ -23,6 +23,7 @@ the four ways an instrument like this quietly stops being one.
     §5  a request that FAILS is still recorded
     §6  `inflight` really counts concurrency
     §7  every line it prints can actually reach the log
+    §8  …and the stream it reaches accepts what the rest of the codebase prints
 
 ⚠ §2 IS A SECURITY CHECK, NOT A TIDINESS ONE, and it is why the record logs a
 route TEMPLATE rather than a path. This middleware sits on `app`, and the
@@ -331,6 +332,78 @@ def every_emitted_line_encodes_to_the_log_stream() -> None:
         assert ln.isascii(), f"non-ASCII in an emitted line: {ln!r}"
 
 
+# ── §8 · the log stream itself accepts what the codebase prints ─────────────
+def the_backend_reconfigures_its_streams_for_the_log() -> None:
+    """§7 keeps ONE line printable. This keeps the other twenty-four alive.
+
+    `api.py` reconfigures stdout and stderr to UTF-8 at import, before any
+    orgtree module can print. Without it, on Windows a redirected stream is
+    cp1252 and every `print()` carrying `—`, `⚠` or `…` raises
+    `UnicodeEncodeError`. FOUR such calls exist (api.py, sandbox.py,
+    warmpool.py use `⚠`; supervisor.py uses `№`), none of them wrapped, and
+    all four sit on failure-reporting paths — `reconcile`'s unreadable
+    transcript store, the Docker disk-cap warning, an unlisted warmpool kill
+    reason, and the slow-tree tripwire. A crash there lands exactly when
+    something else has already gone wrong.
+
+    ⚠ THE FAILURE IS PROVED, NOT ASSUMED. A cp1252 stream is constructed here
+    and the real message text pushed through it, both ways round: it must
+    raise before the fix and survive after. Asserting on `sys.stdout.encoding`
+    alone would pass on any machine whose console already happens to be UTF-8
+    — which is every machine except the one that has the bug.
+
+    ⚠ AND THIS IS WHY A `StringIO` CAPTURE CANNOT BE THE TEST. `StringIO` is
+    unicode-native: it accepts every glyph and reproduces the fault for
+    nobody. That is exactly how the alarm in §7 shipped broken with a green
+    suite.
+    """
+    import io as _io
+
+    # A real message from the codebase — `warmpool._classify_kill`'s unlisted
+    # kill reason. ⚠ THE GLYPH MATTERS AND AN EM-DASH WILL NOT DO: cp1252
+    # DOES encode `—` (0x97) and `…` (0x85), so a sample using those proves
+    # nothing. Of the 25 `print()` calls in this backend carrying non-ASCII,
+    # only FOUR use a character cp1252 lacks — `⚠` (U+26A0) in api.py,
+    # sandbox.py and warmpool.py, and `№` (U+2116) in supervisor.py. Those
+    # four are the whole population, and every one of them sits on a
+    # FAILURE-REPORTING path, which is the worst possible place for a latent
+    # raise: it fires exactly when something is already wrong.
+    msg = "[orgtree] warmpool ⚠ UNLISTED KILL REASON for a seat"
+
+    # ① the fault is real: the same text, through the stream the launcher
+    #    actually gives this process on Windows
+    raw = _io.BytesIO()
+    cp = _io.TextIOWrapper(raw, encoding="cp1252")           # errors defaults to strict
+    try:
+        cp.write(msg)
+        cp.flush()
+        raised = False
+    except UnicodeEncodeError:
+        raised = True
+    assert raised, ("cp1252 accepted a non-ASCII message, so this check "
+                    "cannot demonstrate the fault it exists for")
+
+    # ② and the fix removes it: the SAME codec, with the reconfigure's policy
+    raw2 = _io.BytesIO()
+    ok = _io.TextIOWrapper(raw2, encoding="utf-8", errors="replace")
+    ok.write(msg)
+    ok.flush()
+    assert msg.encode("utf-8") in raw2.getvalue(), raw2.getvalue()
+
+    # ③ the entry point really applies it — not merely that it could
+    src = open(os.path.join(BACKEND, "orgtree", "api.py"), encoding="utf-8").read()
+    assert 'reconfigure(encoding="utf-8", errors="replace")' in src, (
+        "api.py no longer reconfigures its streams; every non-ASCII print in "
+        "the backend is silently dropped or raising again")
+    assert 'errors="ignore"' not in src, (
+        "errors='ignore' drops the character silently — the whole point is "
+        "that a mangled glyph is debuggable and a missing line is not")
+    # …and before any orgtree module, or something can print ahead of it
+    assert src.index("reconfigure(encoding=") < src.index("\nfrom . import"), (
+        "the reconfigure runs AFTER the package imports, so anything printing "
+        "at import time still hits the raw stream")
+
+
 try:
     print("access record")
     check("§1 every request is recorded with the fields a diagnosis needs",
@@ -347,6 +420,8 @@ try:
           inflight_counts_overlapping_requests)
     check("§7 every emitted line encodes to the log stream",
           every_emitted_line_encodes_to_the_log_stream)
+    check("§8 the backend reconfigures its streams for the log",
+          the_backend_reconfigures_its_streams_for_the_log)
     print(f"\n{PASS} passed, {FAIL} FAILED")
 finally:
     shutil.rmtree(RIG, ignore_errors=True)

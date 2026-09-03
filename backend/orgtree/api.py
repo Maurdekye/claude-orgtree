@@ -33,6 +33,37 @@ import uuid
 # stay under TYPE_CHECKING so the runtime import graph is unchanged.
 from typing import TYPE_CHECKING, Any, cast
 
+# ⚠ BEFORE ANY orgtree MODULE IS IMPORTED, so nothing can print ahead of it.
+#
+# The launcher redirects this process's stdout to `backend.log`, and on
+# Windows a REDIRECTED stream is cp1252 — `print` of any character outside it
+# raises `UnicodeEncodeError`. MEASURED 2026-09-03: 25 `print()` calls across
+# five modules carry `—`, `⚠` or `…` (supervisor 15, this file 5, sandbox 3,
+# externtool 1, warmpool 1), and the live `backend.log` contained ZERO
+# non-ASCII bytes — none of them had ever reached it.
+#
+# ⚠ THAT IS A LATENT CRASH, NOT JUST A LOST MESSAGE. Most of those sites are
+# not wrapped, so the raise PROPAGATES — including supervisor's "CLAUDE CLI
+# PROBLEM" banner, a line whose entire job is to tell the operator something
+# is badly wrong and which would instead take the process down on the way.
+# The one site that WAS wrapped was worse in its own way: this file's
+# slow-request alarm sat behind `except Exception: pass`, so it printed
+# nothing at all through 32 requests that crossed its threshold and left no
+# trace of failing.
+#
+# ⚠ `errors="replace"`, never `ignore`: a mangled glyph is debuggable, a
+# silently dropped line is the failure being fixed. And this is the whole fix
+# — the 24 other call sites are deliberately NOT edited, because a future
+# author typing an em-dash must not have to know any of this.
+#
+# `mcptool.py` has done exactly this for its own stdio since it was written;
+# this is the same idiom, applied to the entry point that was missing it.
+# `hasattr`-guarded because a captured or replaced stream (tests, a harness)
+# is not a TextIOWrapper.
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]  # TextIO stub lacks reconfigure; runtime TextIOWrapper has it (hasattr-guarded)
+
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, Response, StreamingResponse
