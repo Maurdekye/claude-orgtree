@@ -1062,8 +1062,11 @@ def sec_second_wave() -> None:
         store.delete_org(a)
         trash = os.path.join(store.DATA_ROOT, "deleted")
         f = [x for x in os.listdir(trash) if a in x][0]
-        shutil.move(os.path.join(trash, f),
-                    os.path.join(store.DATA_ROOT, "orgs", a + ".json"))
+        # `org_path` is the restore target under EITHER backend ("putting the
+        # file back IS the restore"). The trash copy of a sqlite org is a
+        # `<slug>.db`, and moving it to a `.json` name made the store try to
+        # MIGRATE a database as though it were a document.
+        shutil.move(os.path.join(trash, f), store.org_path(a))
         back = store.load_org(a).d["net_identity"]
         assert back == ident, (
             "a deleted-then-restored org came back with a different network "

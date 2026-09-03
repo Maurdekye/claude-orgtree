@@ -1497,7 +1497,18 @@ if section("§3  the bridge — the one door out"):
                         hits.append(os.path.relpath(p, DATA))
                 except OSError:
                     pass
-        assert hits == [os.path.join("orgs", SB1 + ".json")], hits
+        assert hits, "the secret was found NOWHERE — the probe stopped working"
+        if store.STORE_BACKEND == "sqlite":
+            # SQLite EQUIVALENT: the org document is `orgs/<slug>.db` plus its
+            # `-wal`/`-shm` sidecars, which are part of that same database (a
+            # secret written but not yet checkpointed lives in the WAL). Any
+            # OTHER file holding it is the leak this check exists to catch and
+            # is still a failure.
+            allowed = {os.path.join("orgs", SB1 + ".db") + x
+                       for x in ("", "-wal", "-shm")}
+            assert set(hits) <= allowed, hits
+        else:
+            assert hits == [os.path.join("orgs", SB1 + ".json")], hits
 
 
 # ================================================================== §4

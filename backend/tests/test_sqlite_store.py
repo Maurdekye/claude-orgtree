@@ -41,6 +41,7 @@ Exit code 1 on any failure; each ✗ line names the check.
 from __future__ import annotations
 
 import copy
+import pickle
 import json
 import os
 import shutil
@@ -51,6 +52,13 @@ import tempfile
 import traceback
 
 QUICK = "--quick" in sys.argv
+
+# the ✓/✗ below are UnicodeEncodeError on a cp1252 console. `run_tests.py`
+# sets PYTHONIOENCODING=utf-8 for its children, so only the documented
+# by-hand invocation ever hit it -- and it hit it in the summary printer,
+# after the results, replacing every failure detail with a codec traceback.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 # isolated data root BEFORE any orgtree import — store resolves ORGTREE_DATA
 # and ORGTREE_STORE at import time
@@ -66,7 +74,7 @@ with open(os.path.join(os.environ["ORGTREE_DATA"], "defaults.json"), "w",
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 from orgtree import store                                  # noqa: E402
-from orgtree.ledger import USER, LedgerError, Org          # noqa: E402
+from orgtree.ledger import TOOL_KEYS, USER, LedgerError, Org   # noqa: E402
 
 PASS: list[str] = []
 FAIL: list[tuple[str, str]] = []
@@ -99,6 +107,9 @@ def orgs_dir() -> str:
 
 
 def wipe(slug: str) -> None:
+    # `store._orgs_dir()` makes the directory; this helper reads DATA_ROOT
+    # directly, so on the very first call there is nothing to list yet
+    os.makedirs(orgs_dir(), exist_ok=True)
     for f in os.listdir(orgs_dir()):
         if f == f"{slug}.db" or f.startswith(f"{slug}.db") or f.startswith(f"{slug}.json"):
             store._POOL.close_all(slug)
@@ -128,8 +139,12 @@ def total_changes_probe(slug: str):
 
 
 def spec(**over):
-    s = dict(add_dirs=[], tools={"bash": True, "mcp": ["*"]}, org_visibility="team",
-             charter="sqlite test hire")
+    # ⚠ `tools` must name EVERY key in ledger.TOOL_KEYS plus mcp — hires have
+    # no defaults, and a short dict raises "agent hires have no defaults".
+    # Built from the constant so this cannot drift out of date again.
+    s = dict(add_dirs=[],
+             tools={**{k: True for k in TOOL_KEYS}, "mcp": ["*"]},
+             org_visibility="team", charter="sqlite test hire")
     s.update(over)
     return s
 
@@ -502,6 +517,11 @@ def s3_save() -> None:
 
     def log_append_full_rewrite() -> None:
         o = store.load_org(slug)
+        # ⚠ plant the section rather than inherit it: `node_add_remove_order`
+        # above hires, and `hire` appends an event of its own
+        o.d["events"] = [{"at": f"t{i}", "i": i} for i in range(20)]
+        store.save_org(o)
+        o = store.load_org(slug)
         o.d["events"].append({"at": "t99", "i": 99})
         assert o.d["events"].full_rewrite is True, "AppendLog journal flag not set"
         store.save_org(o)
@@ -564,6 +584,10 @@ def s3_save() -> None:
     check("user_mail_log sort-then-cap idiom (§3.4 #2) round-trips through the full rewrite", user_mail_log_sort_cap)
 
     def head_truncate() -> None:
+        o = store.load_org(slug)
+        # same reason as above: a hire earlier in this section wrote notices
+        o.d["notice_log"] = [{"at": f"t{i}"} for i in range(5)]
+        store.save_org(o)
         o = store.load_org(slug)
         nl = o.d["notice_log"]
         nl.append({"at": "t5"})
@@ -640,6 +664,13 @@ def s3_save() -> None:
     def rollback_on_failure() -> None:
         o = store.load_org(slug)
         o.d["nodes"]["n0"]["k"] = 2
+        # ⚠ ASSERT THE MECHANISM RAN. `_write_doc` writes the small sections in
+        # insertion order, so a key added BEFORE the unserialisable one really
+        # is upserted inside the transaction that then dies. Without it the
+        # check was vacuous: `bad` raised before anything had been written, so
+        # the transaction was empty and COMMIT-instead-of-ROLLBACK passed
+        # (measured — mutating ROLLBACK to COMMIT left this check green).
+        o.d["written_before_the_failure"] = "must be rolled back"
         o.d["bad"] = {1, 2}                              # not JSON-serialisable
         try:
             store.save_org(o)
@@ -647,8 +678,11 @@ def s3_save() -> None:
         except TypeError:
             pass
         eq(store.load_org(slug).d["nodes"]["n0"]["k"], 1, "partial save leaked: ")
+        eq(rows(slug, "SELECT val FROM doc WHERE key='written_before_the_failure'"), [],
+           "a row written before the failure was committed anyway: ")
         assert "bad" not in store.load_org(slug).d
         o.d.pop("bad")
+        o.d.pop("written_before_the_failure")
         store.save_org(o)                                # the connection is still usable
         eq(store.load_org(slug).d["nodes"]["n0"]["k"], 2)
     check("a save that raises mid-transaction rolls back completely; the next save works", rollback_on_failure)
@@ -699,17 +733,23 @@ def s4_migration_mechanics() -> None:
                 raise AssertionError("migration succeeded with a failing verifier")
             except store.MigrationError as e:
                 assert "injected" in str(e)
+            eq(open(store._json_path("refuse"), "rb").read(), raw,
+               "the .json must be untouched: ")
+            assert not os.path.exists(store._db_path("refuse"))
+            assert not os.path.exists(store._db_path("refuse") + ".migrating")
+            assert not os.path.exists(store._premigration_path("refuse"))
+            # ⚠ INSIDE the injection. With the real verifier restored the org
+            # is migratable again and loading it is correct — so asserting
+            # this after the `finally` asserted nothing at all.
+            try:
+                store.load_org("refuse")
+                raise AssertionError("an unmigratable org loaded")
+            except store.MigrationError:
+                pass
         finally:
             store.verify_migration = real
-        eq(open(store._json_path("refuse"), "rb").read(), raw, "the .json must be untouched: ")
-        assert not os.path.exists(store._db_path("refuse"))
-        assert not os.path.exists(store._db_path("refuse") + ".migrating")
-        assert not os.path.exists(store._premigration_path("refuse"))
-        try:
-            store.load_org("refuse")
-            raise AssertionError("an unmigratable org loaded")
-        except store.MigrationError:
-            pass
+        # and once the verifier works again it migrates and loads normally
+        eq(store.load_org("refuse").d["slug"], "refuse", "after the fault clears: ")
     check("a verifier failure leaves the .json untouched, no .db, no candidate — and load_org refuses loudly",
           verifier_failure_refuses)
 
@@ -915,9 +955,364 @@ def s8_export() -> None:
 
 
 # ===========================================================================
+def s9_review() -> None:
+    """Written by `sqlite-review`, 2026-09-03, closing the gaps MUTATION
+    TESTING found in sections 1-8 (probes/p4_mutants.py: 11 of 15 planted
+    defects were caught; these are the four that were not, plus a regression
+    test for every defect the review fixed).
+
+    Every check below was watched to FAIL against the defect it names before
+    it was kept. A check that has never failed is not yet a check."""
+    if not section("9. review: mutation gaps and regressions"):
+        return
+
+    # ---- the four mutants sections 1-8 did not catch --------------------
+    def sectionmap_setdefault_identity() -> None:
+        """MUTANT M12, uncaught. `SectionMap.setdefault` must NOT swap the
+        caller's list for an `AppendLog` — `lst = []; box.setdefault(n, lst);
+        lst.append(x)` has to land. §1 asserts this for `LazyDoc.setdefault`
+        and §3 only ever appends to what setdefault RETURNS, so a version
+        that stored a copy passed both."""
+        slug = "sd-identity"
+        o = fresh(slug)
+        o.d["mail_log"] = {"a": [{"id": "0"}]}
+        store.save_org(o)
+        o = store.load_org(slug)
+        box = o.d["mail_log"]
+        assert isinstance(box, store.SectionMap), type(box)
+        mine: list = []
+        got = box.setdefault("mine", mine)
+        eq(got is mine, True, "setdefault returned a different object: ")
+        eq(box["mine"] is mine, True, "the caller's list was not the one stored: ")
+        mine.append({"id": "through-my-own-reference"})     # never touches box
+        # an existing owner must come back BY IDENTITY too, or the same
+        # append-through-my-reference idiom breaks on the second call
+        eq(box.setdefault("mine", []) is mine, True, "second setdefault: ")
+        store.save_org(o)
+        eq(store.load_org(slug).d["mail_log"]["mine"],
+           [{"id": "through-my-own-reference"}], "reload: ")
+    check("SectionMap.setdefault keeps the CALLER's list, and an append through "
+          "the caller's own reference persists", sectionmap_setdefault_identity)
+
+    def second_save_small_keys() -> None:
+        """MUTANT M9, uncaught. §3's double-save check touches only `events`
+        and `nodes`, so dropping `lazy._snap_doc = new_doc` (the doc-row half
+        of the post-commit snapshot) survived it. A key ADDED by save 1 is
+        absent from a stale `_snap_doc`, so save 2's delete sweep cannot see
+        it — and a key DELETED by save 2 therefore stays on disk."""
+        slug = "twosave-doc"
+        o = fresh(slug)
+        store.save_org(o)
+        o = store.load_org(slug)
+        o.d["added_in_save_1"] = {"v": 1}
+        o.d["also_added"] = 2
+        store.save_org(o)
+        o.d.pop("added_in_save_1")
+        o.d["also_added"] = 3
+        o.d["added_in_save_2"] = "x"
+        store.save_org(o)
+        eq(rows(slug, "SELECT val FROM doc WHERE key='added_in_save_1'"), [],
+           "a key added by save 1 and popped by save 2 still has a row: ")
+        eq(rows(slug, "SELECT val FROM doc WHERE key='also_added'"), [("3",)])
+        d = store.load_org(slug).d
+        assert "added_in_save_1" not in d, sorted(dict.keys(d))
+        eq(d["added_in_save_2"], "x")
+        eq(d["also_added"], 3)
+    check("a SECOND save adds, updates and deletes small doc keys correctly "
+          "(the doc half of the post-commit snapshot)", second_save_small_keys)
+
+    def delete_with_a_connection_still_open() -> None:
+        """MUTANT M10, uncaught. §5's WAL check closes every connection
+        first, and closing the LAST connection to a WAL database checkpoints
+        it automatically — so `PRAGMA wal_checkpoint(TRUNCATE)` was dead code
+        as far as that check could tell. It is not dead when a №22 reader is
+        still holding one: without the checkpoint the last committed frames
+        sit in a `-wal` the renamed file no longer owns."""
+        slug = "wal-open"
+        o = fresh(slug)
+        o.d["committed_last"] = "must survive the delete"
+        store.save_org(o)
+        assert os.path.exists(store._db_path(slug) + "-wal"), "expected a WAL"
+        trash = os.path.join(store.DATA_ROOT, "deleted")
+        # ⚠ MEASURED: on Windows the rename CANNOT proceed while any handle
+        # on the database is open, so `delete_org` exhausts its retry budget
+        # and RAISES. That is the safe outcome and the one worth pinning —
+        # the org must be left whole, with no half-made trash copy. (It also
+        # means `PRAGMA wal_checkpoint(TRUNCATE)` is belt-and-braces here:
+        # the rename only ever runs once every connection is closed, and
+        # closing the last connection to a WAL database checkpoints it
+        # anyway. Mutant M10 survives for that reason, not for want of a
+        # test — see probes/p4_mutants.py.)
+        cm = store._POOL.acquire(slug)
+        conn = cm.__enter__()
+        conn.execute("SELECT 1").fetchone()
+        try:
+            store.delete_org(slug)
+            raise AssertionError("delete_org renamed a database still open")
+        except PermissionError:
+            pass
+        finally:
+            cm.__exit__(None, None, None)
+        assert os.path.exists(store._db_path(slug)), "the org was left neither here nor there"
+        eq([f for f in os.listdir(trash) if f.startswith(slug + "-")], [],
+           "a half-made trash copy: ")
+        eq(store.load_org(slug).d["committed_last"], "must survive the delete",
+           "the org did not survive the refused delete: ")
+        # and once the connection is gone the delete completes and restores
+        store.delete_org(slug)
+        cands = sorted(f for f in os.listdir(trash)
+                       if f.startswith(slug + "-") and f.endswith(".db"))
+        eq(len(cands), 1, "trash copies: ")
+        os.replace(os.path.join(trash, cands[0]), store.org_path(slug))
+        eq(store.load_org(slug).d["committed_last"], "must survive the delete",
+           "the last commit did not travel with the renamed database: ")
+    check("delete_org refuses rather than half-completing while a connection is "
+          "open, and still carries the last commit once it can run",
+          delete_with_a_connection_still_open)
+
+    def durability_pragmas() -> None:
+        """MUTANT M11, uncaught, and it cannot be caught by observing
+        behaviour in-process: `synchronous=NORMAL` only loses data on a power
+        cut. This is the SQLite counterpart of test_persistence's
+        "save_org fsyncs the temp file before the replace", and like it, it
+        pins the mechanism rather than the consequence."""
+        slug = "pragmas"
+        fresh(slug)
+        with store._POOL.acquire(slug) as c:
+            eq(c.execute("PRAGMA synchronous").fetchone()[0], 2, "synchronous (2=FULL): ")
+            eq(c.execute("PRAGMA journal_mode").fetchone()[0], "wal", "journal_mode: ")
+            assert c.execute("PRAGMA busy_timeout").fetchone()[0] > 0
+    check("every connection carries synchronous=FULL and journal_mode=wal",
+          durability_pragmas)
+
+    # ---- regressions for what the review fixed --------------------------
+    def missing_db_is_never_created() -> None:
+        """REVIEW FINDING 1 (data loss). `sqlite3.connect(path)` CREATES a
+        missing database, and `delete_org` renames the file out from under
+        readers by design (№22 reads outside DOC_LOCK). Measured before the
+        fix: materialising a still-lazy section after the delete returned an
+        EMPTY SectionMap, re-created `orgs/<slug>.db` + `-wal` + `-shm`, and
+        `save_org` then wrote that mutilated document — every log section
+        gone, no error anywhere — after which `create_org` refused the slug
+        as "already exists"."""
+        slug = "vanish"
+        o = fresh(slug)
+        o.d["steered_log"] = {"a": [{"at": "1"}], "b": [{"at": "2"}]}
+        store.save_org(o)
+        o = store.load_org(slug)
+        assert "steered_log" in o.d._unmaterialized(), sorted(o.d._unmaterialized())
+        store.delete_org(slug)
+        try:
+            got = o.d["steered_log"]
+            raise AssertionError(
+                f"a lazy section materialised out of a deleted database as {got!r}")
+        except sqlite3.OperationalError:
+            pass
+        assert not os.path.exists(store._db_path(slug)), "the database was re-created"
+        for side in ("-wal", "-shm"):
+            assert not os.path.exists(store._db_path(slug) + side), side
+        assert slug not in [r["slug"] for r in store.list_orgs()]
+        store.create_org(slug)                      # must not refuse
+        store.delete_org(slug)
+    check("a read path never creates a missing database (no empty section, no "
+          "resurrected .db after delete_org)", missing_db_is_never_created)
+
+    def load_org_reports_a_vanished_org_as_such() -> None:
+        """Same window, the other half: `Org.__init__` walks `mail_log` to
+        backfill ids (ledger.py:568), which is a SECOND trip to the database
+        AFTER `load_org`'s `with` block has closed. Constructing the `Org`
+        outside the try let that trip escape as a raw sqlite3 error — and,
+        before the fix above, as a bare `KeyError('nodes')` off an empty
+        document. A vanished org is a `LedgerError`, as it is under JSON."""
+        slug = "vanish2"
+        o = fresh(slug)
+        o.d["mail_log"] = {"a": [{"id": "1"}]}
+        store.save_org(o)
+        store._POOL.close_all(slug)
+        os.replace(store._db_path(slug), store._db_path(slug) + ".moved")
+        for side in ("-wal", "-shm"):
+            if os.path.exists(store._db_path(slug) + side):
+                os.remove(store._db_path(slug) + side)
+        try:
+            store.load_org(slug)
+            raise AssertionError("a vanished org loaded")
+        except LedgerError as e:
+            assert "no such org" in str(e).lower(), e
+        os.remove(store._db_path(slug) + ".moved")
+    check("load_org reports a database that vanished mid-load as a LedgerError, "
+          "not a raw sqlite3 error", load_org_reports_a_vanished_org_as_such)
+
+    def corrupt_db_fails_loudly() -> None:
+        """REVIEW FINDING 2 (silent wrong answer). JSON gets this for free —
+        a truncated or zero-length doc raises `JSONDecodeError` and
+        `_scan_orgs` skips it. SQLite does not: a ZERO-LENGTH file is a
+        perfectly valid EMPTY database and a file truncated past page 1 often
+        reads as one, so before the `schema_version` check `load_org` handed
+        back a document with no nodes and no history and `list_orgs` rendered
+        the org as REAL AND EMPTY."""
+        for label, damage in (
+                ("zero-length", lambda p: open(p, "wb").close()),
+                ("truncated", lambda p: open(p, "r+b").truncate(
+                    max(4096, os.path.getsize(p) // 2))),
+                ("not a database", lambda p: open(p, "wb").write(b"nope" * 3000))):
+            slug = "corrupt-" + label.split()[0]
+            o = fresh(slug)
+            o.d["nodes"]["should-not-vanish"] = {"id": "should-not-vanish",
+                                                 "state": "archived"}
+            store.save_org(o)
+            store._POOL.close_all(slug)
+            damage(store._db_path(slug))
+            store._POOL.close_all(slug)
+            try:
+                got = store.load_org(slug)
+                raise AssertionError(
+                    f"a {label} database loaded, as an org with "
+                    f"{len(got.d.get('nodes') or {})} nodes")
+            except (LedgerError, sqlite3.DatabaseError):
+                pass
+            names = [r["slug"] for r in store.list_orgs()]
+            assert slug not in names, f"{label}: still listed as an org: {names}"
+    check("a zero-length, truncated or non-database .db fails loudly and is not "
+          "listed as an empty org", corrupt_db_fails_loudly)
+
+    def clear_drops_a_blobbed_section() -> None:
+        """REVIEW FINDING 3. `LazyDoc.clear()` marked only `_present` (the
+        ROW-backed lazy sections) as dropped. A section whose value had the
+        wrong shape lives in `doc` as a blob and is not in `_present`, and
+        `_write_doc`'s doc-row delete sweep deliberately skips LAZY_SECTIONS —
+        so the blob survived the clear and came back on the next load."""
+        slug = "clearblob"
+        o = fresh(slug)
+        o.d["org_inbox"] = None                     # wrong shape -> a doc blob
+        o.d["events"] = [{"at": "t"}]               # rows
+        store.save_org(o)
+        eq(rows(slug, "SELECT val FROM doc WHERE key='org_inbox'"), [("null",)])
+        o = store.load_org(slug)
+        o.d.clear()
+        # `nodes` back, or `Org.__init__` refuses the reload for its own reasons
+        o.d.update({"slug": slug, "name": "cleared", "nodes": {}})
+        store.save_org(o)
+        eq(rows(slug, "SELECT val FROM doc WHERE key='org_inbox'"), [],
+           "a blobbed lazy section survived clear(): ")
+        eq(rows(slug, "SELECT COUNT(*) FROM log_l WHERE sect='events'"), [(0,)])
+        d = store.load_org(slug).d
+        assert "org_inbox" not in d, sorted(dict.keys(d))
+        assert "events" not in d, sorted(dict.keys(d))
+    check("clear() drops a BLOBBED lazy section's row, not only the row-backed ones",
+          clear_drops_a_blobbed_section)
+
+    def premigration_is_never_overwritten() -> None:
+        """REVIEW FINDING 4. §6.1 step 6 says code never removes a
+        `.premigration` file, and `migrate_org` removed one anyway: the final
+        `os.replace(jp, premigration)` overwrites. Reachable exactly on the
+        path `_ensure_migrated` exists for — delete the org (its `.db` goes to
+        the trash), restore an old `.json` by hand, and the second migration
+        lands on top of the only pre-migration copy of that org's history."""
+        slug = "premig"
+        with open(store._json_path(slug), "w", encoding="utf-8") as f:
+            json.dump(synthetic_doc(slug), f)
+        store.migrate_org(slug)
+        first = store._premigration_path(slug)
+        assert os.path.exists(first)
+        marker = open(first, "rb").read()
+        # the delete-then-restore-a-.json path
+        store.delete_org(slug)
+        with open(store._json_path(slug), "w", encoding="utf-8") as f:
+            json.dump({"slug": slug, "name": "restored by hand"}, f)
+        store._ensure_migrated(slug)
+        eq(open(first, "rb").read(), marker,
+           "the FIRST .premigration was overwritten by the second migration: ")
+        extra = [f for f in os.listdir(orgs_dir())
+                 if f.startswith(os.path.basename(first)) and f != os.path.basename(first)]
+        eq(len(extra), 1, "the second migration's source was not kept: ")
+    check("migrate_org never overwrites an existing .json.premigration",
+          premigration_is_never_overwritten)
+
+    def premigration_identical_is_not_duplicated() -> None:
+        """The other half of REVIEW FINDING 4, found by the migration-kill
+        drill (probes/p7_migfail.py) attacking the FIX rather than the
+        original defect: never-overwrite, applied naively, means a REPEAT of
+        the same migration mints a whole extra copy of the document. The
+        drill's restore-and-re-migrate loop left 90 of them. Identical bytes
+        are not new history — keep the one copy."""
+        slug = "premig-same"
+        doc = synthetic_doc(slug)
+        for _ in range(4):
+            with open(store._json_path(slug), "w", encoding="utf-8") as f:
+                json.dump(doc, f)
+            store._POOL.close_all(slug)
+            for x in ("", "-wal", "-shm"):
+                if os.path.exists(store._db_path(slug) + x):
+                    os.remove(store._db_path(slug) + x)
+            store.migrate_org(slug)
+        prem = os.path.basename(store._premigration_path(slug))
+        copies = sorted(f for f in os.listdir(orgs_dir()) if f.startswith(prem))
+        eq(copies, [prem], "four identical migrations left more than one copy: ")
+        eq(json.load(open(store._premigration_path(slug), encoding="utf-8")), doc,
+           "the surviving copy is not the source: ")
+        eq(store.load_org(slug).d["slug"], slug, "the org still loads: ")
+    check("re-migrating identical bytes does not mint a second .premigration",
+          premigration_identical_is_not_duplicated)
+
+    def candidate_journal_is_reclaimed() -> None:
+        """A killed migration candidate (probes/p7_migfail.py leaves them)
+        must not strand files that the next migration inherits.
+
+        ⚠ HONEST NOTE ON WHAT THIS DOES AND DOES NOT PIN. `_remove_db_files`
+        was extended to take `-journal` as well as the WAL pair, because
+        `journal_mode=WAL` is set AFTER the connection opens and a SIGKILL in
+        those first moments leaves a `<slug>.db.migrating-journal`. Removing
+        that extension does NOT make this check fail, and the reason is worth
+        recording rather than papering over: SQLITE RECLAIMS A STALE JOURNAL
+        ITSELF when the database is opened (measured — a hand-planted
+        `-journal`, `-wal` and `-shm` are all gone after one open/close). So
+        the explicit removal is belt-and-braces, not a defect fix, and the
+        mutant that reverts it is EQUIVALENT, like the `wal_checkpoint` one.
+        What this check does pin is the property that matters: no candidate
+        file survives into the next migration, by whatever means."""
+        slug = "candjournal"
+        wipe(slug)
+        with open(store._json_path(slug), "w", encoding="utf-8") as f:
+            json.dump(synthetic_doc(slug), f)
+        tmpdb = store._db_path(slug) + ".migrating"
+        for side in ("-journal", "-wal", "-shm"):
+            with open(tmpdb + side, "wb") as f:      # as a killed attempt left them
+                f.write(b"stale")
+        store.migrate_org(slug)
+        left = sorted(f for f in os.listdir(orgs_dir())
+                      if f.startswith(os.path.basename(tmpdb)))
+        eq(left, [], "a killed candidate's files survived the next migration: ")
+        eq(store.load_org(slug).d["slug"], slug, "the org still migrated: ")
+    check("a killed migration candidate's -journal/-wal/-shm are all reclaimed",
+          candidate_journal_is_reclaimed)
+
+    def lazydoc_dunders() -> None:
+        """REVIEW FINDINGS 5 and 6, both from the §4.2 hazard sweep.
+        `__ne__` did `not self.__eq__(other)`, and `dict.__eq__` returns
+        NotImplemented against a non-dict — `not NotImplemented` is False
+        with a DeprecationWarning, so `doc != 5` answered False. And every
+        piece of `LazyDoc` instance state was created only in `__init__`, so
+        a reconstruction that fills items BEFORE state — which is exactly
+        what `pickle` does, and the opposite of `copy._reconstruct` — died
+        with `AttributeError: _dropped`."""
+        d = store.load_org("synth").d if os.path.exists(store._db_path("synth")) \
+            else store.load_org(fresh("dunders").d["slug"]).d
+        eq(d != 5, True, "doc != a non-dict: ")
+        eq(d == 5, False)
+        eq(d != dict(dict.items(d)) | {k: d[k] for k in store.LAZY_SECTIONS if k in d},
+           False, "doc != an equal plain dict: ")
+        back = pickle.loads(pickle.dumps(d))
+        eq(store.canon(dict(back)), store.canon(dict(d)), "pickle round-trip: ")
+        assert isinstance(back, store.LazyDoc)
+    check("__ne__ against a non-dict, and a pickle round-trip, both behave",
+          lazydoc_dunders)
+
+
+# ===========================================================================
 if __name__ == "__main__":
     for fn in (s1_lazydoc, s2_roundtrip, s3_save, s4_migration_mechanics,
-               s5_delete_restore, s6_revision_hooks, s7_rollback, s8_export):
+               s5_delete_restore, s6_revision_hooks, s7_rollback, s8_export,
+               s9_review):
         try:
             fn()
         except BaseException:                              # noqa: BLE001

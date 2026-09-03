@@ -1141,6 +1141,24 @@ def main() -> None:
         global CONFIGS
         CONFIGS += 1
         w = World("perm")
+        if store.STORE_BACKEND == "sqlite":
+            # SQLite EQUIVALENT. There is no `open(<slug>.json)` to make flaky,
+            # because WAL REMOVES the collision this retry exists for rather
+            # than surviving it. So assert that directly, and without a stub:
+            # a reader must complete while another connection holds an open
+            # write transaction on the same database. If that ever blocks or
+            # raises, the HTTP 500s this check was written for are back.
+            try:
+                with store._POOL.acquire(w.slug, create=True) as writer:
+                    writer.execute("BEGIN IMMEDIATE")
+                    writer.execute(store._UPSERT_DOC, ("_probe", '"1"'))
+                    for _ in range(5):
+                        org = store.load_org(w.slug)
+                        assert org.d["slug"] == w.slug
+                    writer.execute("ROLLBACK")
+            finally:
+                w.destroy()
+            return
         try:
             import builtins
             real_open = builtins.open

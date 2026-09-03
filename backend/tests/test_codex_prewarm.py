@@ -341,7 +341,8 @@ def dying_handshake_reaped():
         assert rows and rows[-1]["reason"] in ("prewarm-failed", "crash"),             rows[-1:]
         assert rows[-1]["reason_class"] in ("prewarm-abort",
                                             "observed-death"), rows[-1:]
-        assert journal_rows("proc", slug, nid, "prewarm-failed"),             "the finisher must still journal its own failure row"
+        wait_for(lambda: bool(journal_rows("proc", slug, nid, "prewarm-failed")),
+                 why="the finisher's own prewarm-failed attribution row")
         eq(bool(st_of(slug, nid).get("proc_warm")), False, "proc_warm")
         bench_done(slug, nid)
     finally:

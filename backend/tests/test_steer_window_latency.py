@@ -65,6 +65,7 @@ import json
 import os
 import shutil
 import socket
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -216,12 +217,40 @@ def hire(slug: str, name: str, parent) -> str:
 
 
 def doc(slug: str) -> dict:
-    p = os.path.join(DATA, "orgs", f"{slug}.json")
+    """The org document, read off disk in whichever format this rig's backend
+    wrote it.
+
+    SQLite EQUIVALENT (SQLITE-SPEC 10.2). This suite is deliberately BLACK
+    BOX — it never imports orgtree, it only drives a backend subprocess — so
+    the sqlite branch reads the database the same way the json branch reads
+    the file: directly, assembling the sections the checks below look at
+    (`notices` and `mail` are small `doc` blobs, `steered_log` is rows in
+    `log_d`). Schema: SQLITE-SPEC 3.1. Opened `mode=ro` so this reader can
+    never create or alter the backend's database."""
+    jp = os.path.join(DATA, "orgs", f"{slug}.json")
+    db = os.path.join(DATA, "orgs", f"{slug}.db")
     for _ in range(20):
         try:
-            with open(p, encoding="utf-8") as f:
-                return json.load(f)
-        except (OSError, ValueError):
+            if os.path.exists(jp):
+                with open(jp, encoding="utf-8") as f:
+                    return json.load(f)
+            c = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=5.0)
+            try:
+                out = {k: json.loads(v) for k, v in
+                       c.execute("SELECT key, val FROM doc")}
+                out["nodes"] = {i: json.loads(v) for i, v in
+                                c.execute("SELECT id, val FROM nodes ORDER BY ord")}
+                for sect, owner, val in c.execute(
+                        "SELECT sect, owner, val FROM log_d ORDER BY seq"):
+                    out.setdefault(sect, {}).setdefault(owner, []).append(
+                        json.loads(val))
+                for sect, val in c.execute(
+                        "SELECT sect, val FROM log_l ORDER BY seq"):
+                    out.setdefault(sect, []).append(json.loads(val))
+                return out
+            finally:
+                c.close()
+        except (OSError, ValueError, sqlite3.Error):
             time.sleep(0.05)
     raise AssertionError("org doc unreadable")
 

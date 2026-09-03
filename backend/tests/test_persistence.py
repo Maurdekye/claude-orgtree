@@ -47,6 +47,7 @@ import json
 import os
 import random
 import shutil
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -107,6 +108,14 @@ SOAK = float(_ARGS[_ARGS.index("--soak") + 1]) if "--soak" in _ARGS else (
     0.8 if QUICK else 2.5)
 
 ALL_TOOLS = {"bash": True, "web": True, "edit": True, "subagents": True, "mcp": []}
+
+# SQLITE-SPEC §10.2: where a check below asserts a JSON FILE-FORMAT detail —
+# `.tmp` orphans, the tmp sweep, a truncated document, the fsync before the
+# replace, the trash copy's contents — it must be given a SQLite-EQUIVALENT
+# assertion under `ORGTREE_STORE=sqlite`, not deleted. A deleted durability
+# test is a finding, not a pass. Each such check branches on this flag and
+# says, in its own words, what the equivalent property is.
+SQLITE = store.STORE_BACKEND == "sqlite"
 _SECTION = [""]
 
 
@@ -668,6 +677,18 @@ def s3_crash() -> None:
         # and this check then failed with nothing to reclaim). "Nothing was
         # orphaned" is a pass, not a failure; plant one so the sweep is still
         # exercised on every run rather than only on the lucky ones.
+        if SQLITE:
+            # SQLite EQUIVALENT. There is no mkstemp→os.replace window to
+            # orphan a file in, so the property becomes: those same SIGKILLs
+            # left NOTHING in orgs/ that is not a live database, its two
+            # legitimate sidecars or a premigration source — and in
+            # particular no abandoned `.db.migrating` candidate, which is
+            # this backend's only equivalent of a stray.
+            allowed = (".db", ".db-wal", ".db-shm", ".json", ".json.premigration")
+            eq([f for f in os.listdir(orgs_dir()) if not f.endswith(allowed)], [],
+               "files left in orgs/ by the kills: ")
+            eq(store.load_org("victim").d["slug"], "victim", "the org: ")
+            return
         if not res["strays"]:
             planted = os.path.join(orgs_dir(), "planted-orphan.tmp")
             with open(planted, "w", encoding="utf-8") as f:
@@ -693,6 +714,27 @@ def s3_crash() -> None:
         `finally` can reach. They used to accumulate forever (12 kills left 9
         orphans holding 11.9 MB beside a 1.8 MB doc). `_sweep_tmp` reclaims
         them, age-gated so it can never touch a save in flight."""
+        if SQLITE:
+            # SQLite EQUIVALENT. `_sweep_tmp` is not on this backend's path,
+            # and MUST NOT BE: `-wal` and `-shm` beside a live database look
+            # exactly like the orphans it hunts, and reclaiming one would
+            # destroy committed frames. Age them past the grace window, list,
+            # sweep directly — and the org must still be there and intact.
+            o = fresh("sweepsafe")
+            o.d["k"] = "v"
+            store.save_org(o)
+            db = store._db_path("sweepsafe")
+            assert os.path.exists(db + "-wal"), "expected a WAL sidecar"
+            past = time.time() - store._TMP_GRACE - 600
+            for x in (db, db + "-wal", db + "-shm"):
+                if os.path.exists(x):
+                    os.utime(x, (past, past))
+            store.list_orgs()
+            store._sweep_tmp()                     # even called directly
+            assert os.path.exists(db), "the sweep took the database"
+            eq(store.load_org("sweepsafe").d["k"], "v",
+               "an aged database did not survive a listing + sweep: ")
+            return
         # a fresh orphan (as a live save's tmp would look) must SURVIVE
         fd, young = tempfile.mkstemp(dir=orgs_dir(), suffix=".tmp")
         os.write(fd, b"in flight")
@@ -734,6 +776,42 @@ def s3_crash() -> None:
         """And when the replace itself gives up (another PROCESS holding the
         doc open — the case no in-process latch can see), the temp file must
         still be cleaned up. Simulated by pinning os.replace to failure."""
+        if SQLITE:
+            # SQLite EQUIVALENT. There is no replace; the analogue of "the
+            # write never lands" is a transaction that dies part-way. It must
+            # roll back WHOLE, raise, add no file, and leave no poisoned
+            # connection in the pool for the next caller to inherit.
+            o = fresh("replacefail")
+            o.d["v"] = "good"
+            store.save_org(o)
+            before = set(os.listdir(orgs_dir()))
+            real_write = store._write_doc
+
+            def half(conn, d, lazy):                       # noqa: ANN001
+                conn.execute("DELETE FROM nodes")
+                conn.execute(store._UPSERT_DOC, ("v", chr(34) + "WRECKED" + chr(34)))
+                raise OSError("disk full, half way through")
+
+            try:
+                store._write_doc = half                    # type: ignore[assignment]
+                try:
+                    store.save_org(o)
+                    raise AssertionError("save_org swallowed a failed transaction")
+                except OSError:
+                    pass
+            finally:
+                store._write_doc = real_write              # type: ignore[assignment]
+            eq(set(os.listdir(orgs_dir())) - before, set(), "files added: ")
+            back = store.load_org("replacefail")
+            eq(back.d["v"], "good", "the failed transaction was not rolled back: ")
+            eq(store._POOL._busy.get("replacefail", 0), 0, "leaked checkout: ")
+            for c in store._POOL._idle.get("replacefail", []):
+                assert not c.in_transaction, "a poisoned connection was pooled"
+            o = store.load_org("replacefail")               # and recovery
+            o.d["v"] = "after"
+            store.save_org(o)
+            eq(store.load_org("replacefail").d["v"], "after", "recovery: ")
+            return
         o = fresh("replacefail")
         before = set(os.listdir(orgs_dir()))
         real = os.replace
@@ -763,13 +841,25 @@ def s3_crash() -> None:
         """If a doc DID get truncated (a pre-fsync power loss, a bad restore),
         load_org must fail loudly rather than hand back a half-org — and
         list_orgs must skip it rather than crash the whole org list."""
-        o = fresh("truncated")
+        o = fresh("truncated", nodes=2)
+        store.save_org(o)
+        if SQLITE:
+            store._POOL.close_all("truncated")
         raw = open(store.org_path("truncated"), "rb").read()
         open(store.org_path("truncated"), "wb").write(raw[:len(raw) // 2])
+        if SQLITE:
+            store._POOL.close_all("truncated")
         try:
-            store.load_org("truncated")
-            raise AssertionError("a truncated doc loaded")
-        except json.JSONDecodeError:
+            got = store.load_org("truncated")
+            raise AssertionError("a truncated doc loaded, as an org with "
+                                 f"{len(got.nodes)} nodes")
+        except (json.JSONDecodeError, LedgerError, sqlite3.DatabaseError):
+            # SQLite EQUIVALENT, and it took a code change to hold: SQLite is
+            # far more forgiving than json.loads — a file truncated past page
+            # 1 often reads as a VALID EMPTY DATABASE, so `load_org` used to
+            # hand back an org with no nodes and no history while `list_orgs`
+            # rendered it as real and empty. `_load_lazy` now refuses a
+            # database with no `schema_version` meta row.
             pass
         names = [x["slug"] for x in store.list_orgs()]
         assert "truncated" not in names, names
@@ -780,13 +870,23 @@ def s3_crash() -> None:
 
     def zero_length_doc() -> None:
         """The classic post-power-loss shape: right name, zero bytes."""
-        fresh("emptied")
+        fresh("emptied", nodes=2)
+        if SQLITE:
+            store._POOL.close_all("emptied")
         open(store.org_path("emptied"), "wb").close()
+        if SQLITE:
+            store._POOL.close_all("emptied")
         try:
-            store.load_org("emptied")
-            raise AssertionError("an empty doc loaded")
-        except json.JSONDecodeError:
+            got = store.load_org("emptied")
+            raise AssertionError("an empty doc loaded, as an org with "
+                                 f"{len(got.nodes)} nodes")
+        except (json.JSONDecodeError, LedgerError, sqlite3.DatabaseError):
+            # SQLite EQUIVALENT: a ZERO-LENGTH file is a perfectly valid EMPTY
+            # sqlite database — the most dangerous shape there is, because
+            # nothing raises. See the truncated case above.
             pass
+        assert "emptied" not in [x["slug"] for x in store.list_orgs()], (
+            "a zero-length document was listed as an org")
 
     check("a zero-length doc fails loudly", zero_length_doc)
 
@@ -796,6 +896,22 @@ def s3_crash() -> None:
         this recipe can leave a correctly-named doc full of zeros after a
         power loss. Measured cost of the fsync: 2.9 ms vs 0.9 ms on a 1.8 MB
         doc."""
+        if SQLITE:
+            # SQLite EQUIVALENT: the guarantee moves from an explicit fsync to
+            # `PRAGMA synchronous=FULL`, which makes SQLite fsync the WAL
+            # before a commit returns. `synchronous=NORMAL` is the shape this
+            # check exists to prevent, and it only loses data on a power cut —
+            # so no in-process behaviour can catch it and the pragma itself is
+            # what must be pinned. (Confirmed by mutation: FULL→NORMAL changed
+            # no observable behaviour anywhere in the suite.)
+            o = fresh("fsynced")
+            store.save_org(o)
+            with store._POOL.acquire("fsynced") as c:
+                eq(c.execute("PRAGMA synchronous").fetchone()[0], 2,
+                   "synchronous (2 = FULL): ")
+                eq(c.execute("PRAGMA journal_mode").fetchone()[0], "wal",
+                   "journal_mode: ")
+            return
         seen: list[int] = []
         real = os.fsync
 
@@ -848,9 +964,23 @@ def s4_delete_restore() -> None:
         o.d["sig"] = "unique-marker-9137"
         store.save_org(o)
         store.delete_org("nodestroy")
+        # SQLite EQUIVALENT: the trash copy is a DATABASE, so read it as one.
+        # (Reading it as utf-8 text is what failed — the point of the check,
+        # "the document still exists somewhere", is unchanged.)
+        def carries_marker(path: str) -> bool:
+            if SQLITE:
+                c = sqlite3.connect(path)
+                try:
+                    return any("unique-marker-9137" in str(r[0]) for r in
+                               c.execute("SELECT val FROM doc"))
+                except sqlite3.DatabaseError:
+                    return False
+                finally:
+                    c.close()
+            return "unique-marker-9137" in open(path, encoding="utf-8").read()
+
         found = [f for f in os.listdir(trash)
-                 if "unique-marker-9137" in open(os.path.join(trash, f),
-                                                 encoding="utf-8").read()]
+                 if carries_marker(os.path.join(trash, f))]
         eq(len(found), 1, "trash copies carrying the marker: ")
 
     check("delete never destroys — the doc is intact in deleted/",
@@ -868,8 +998,19 @@ def s4_delete_restore() -> None:
             store.delete_org("samesecond")
         cands = [f for f in os.listdir(trash) if f.startswith("samesecond-")]
         eq(len(cands), 6, "trash copies after 6 rapid deletes: ")
-        gens = sorted(json.load(open(os.path.join(trash, f), encoding="utf-8"))["gen"]
-                      for f in cands)
+        # SQLite EQUIVALENT: same property, read from the database rather
+        # than from JSON text. `gen` is a small doc key, so it is one row.
+        def gen_of(path: str):
+            if not SQLITE:
+                return json.load(open(path, encoding="utf-8"))["gen"]
+            c = sqlite3.connect(path)
+            try:
+                return json.loads(c.execute(
+                    "SELECT val FROM doc WHERE key=?", ("gen",)).fetchone()[0])
+            finally:
+                c.close()
+
+        gens = sorted(gen_of(os.path.join(trash, f)) for f in cands)
         eq(gens, [0, 1, 2, 3, 4, 5], "generations preserved: ")
 
     check("six deletes of the same slug inside one second keep six copies "
@@ -1282,6 +1423,26 @@ def s5_caps() -> None:
                             f"{nbytes/1048576:6.2f} MB  save {s:7.1f} ms  "
                             f"load {l:7.1f} ms   ({spm:5.1f} ms/MB save, "
                             f"{lpm:5.1f} ms/MB load)"))
+        if SQLITE:
+            # SQLite EQUIVALENT, and the assertion has to INVERT, because the
+            # premise of the JSON one ("the doc is rewritten in full on every
+            # op") is exactly what this backend falsifies. The saves timed
+            # above change nothing, so under compare-on-save they write
+            # nothing and ms/MB is noise divided by size — which is why the
+            # linearity ratio trips here on a correct implementation.
+            # The property that IS worth pinning is the one the change is
+            # for: an UNCHANGED save must not scale with the document, and a
+            # one-node save must not either.
+            noop = [r[2] for r in rows]
+            assert max(noop) < 5000, f"a no-op save took {max(noop):.0f} ms"
+            ratio = max(noop) / max(1e-9, min(noop))
+            biggest = rows[-1][1] / rows[0][1]
+            assert ratio < biggest, (
+                f"an unchanged save scaled {ratio:.1f}× across a {biggest:.1f}× "
+                f"range of document sizes — compare-on-save is not skipping "
+                f"the work: {[(r[0], round(r[2], 1)) for r in rows]}")
+            assert rows[-1][3] < 20000, f"the largest load took {rows[-1][3]:.0f} ms"
+            return
         # the shape assertion: ms/MB must not run away with size
         worst = max(r[4] for r in rows) / max(1e-9, min(r[4] for r in rows))
         assert worst < 3.0, (

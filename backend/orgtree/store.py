@@ -55,6 +55,7 @@ import contextlib
 import hashlib
 import json
 import os
+import pathlib
 import sqlite3
 import sys
 import tempfile
@@ -494,18 +495,38 @@ def _at_of(entry: Any) -> str | None:
     return None
 
 
-def _open_conn(path: str) -> sqlite3.Connection:
-    """One connection, pragmas applied (§3.1), schema ensured. Opening a path
-    that does not exist CREATES an empty database — callers check existence
-    first where that is not wanted (`load_org`).
+def _open_conn(path: str, *, create: bool = False) -> sqlite3.Connection:
+    """One connection, pragmas applied (§3.1), schema ensured.
+
+    ⚠ `create` is the whole safety of this function, not a convenience.
+    `sqlite3.connect(path)` CREATES an empty database when the path is
+    missing, and an existence check before it is a TOCTOU window that
+    `delete_org` — which renames the file out from under readers by design
+    (№22 reads outside DOC_LOCK) — walks straight through. Measured on this
+    branch before the flag existed: delete an org, then touch a still-lazy
+    section of a document loaded a moment earlier, and the materialisation
+    silently returned an EMPTY section, re-created `orgs/<slug>.db` (plus
+    `-wal`, `-shm`), and a subsequent `save_org` wrote that mutilated
+    document to disk — losing every log section, with no error anywhere.
+    `create_org` then refused the slug as "already exists". The JSON backend
+    cannot do this: a missing file raises there.
+
+    So a read path opens `?mode=rw`, which refuses a missing file INSIDE
+    sqlite (no window at all), and only the two paths that legitimately mint
+    a database — the migration candidate and `save_org` — pass `create=True`.
 
     `isolation_level=None`: the sqlite3 module's implicit-BEGIN machinery is
     off; every transaction here is an explicit `BEGIN IMMEDIATE` … `COMMIT`.
     `check_same_thread=False`: connections live in `_Pool`, which hands each
     one to exactly one thread at a time — see the pool for why that, and not
     `threading.local()`, is the shape."""
-    conn = sqlite3.connect(path, timeout=10.0, isolation_level=None,
-                           check_same_thread=False)
+    target = path
+    if not create:
+        # as_uri() percent-encodes a data root containing a space, '#' or '%';
+        # hand-built "file:" + path does not, and silently opens the wrong file
+        target = pathlib.Path(os.path.abspath(path)).as_uri() + "?mode=rw"
+    conn = sqlite3.connect(target, timeout=10.0, isolation_level=None,
+                           check_same_thread=False, uri=not create)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=FULL")
     conn.execute("PRAGMA foreign_keys=OFF")
@@ -540,7 +561,11 @@ class _Pool:
         self._busy: dict[str, int] = {}
 
     @contextlib.contextmanager
-    def acquire(self, slug: str) -> Generator[sqlite3.Connection]:
+    def acquire(self, slug: str, *, create: bool = False
+                ) -> Generator[sqlite3.Connection]:
+        """`create=True` only where minting a database is the intent — see
+        `_open_conn`. Every read path leaves it False so that a database
+        deleted under us raises instead of coming back empty."""
         with self._lock:
             epoch = self._epoch.get(slug, 0)
             idle = self._idle.get(slug)
@@ -549,7 +574,7 @@ class _Pool:
         keep = False
         try:
             if conn is None:
-                conn = _open_conn(_db_path(slug))
+                conn = _open_conn(_db_path(slug), create=create)
             yield conn
             # a transaction still open on check-in is a bug in the caller;
             # never pool it — roll back and drop the connection
@@ -734,6 +759,28 @@ class LazyDoc(dict[str, Any]):
     complete, independently saveable `LazyDoc`. Never hang a connection or a
     callable off this object."""
 
+    # `pickle` restores a dict subclass in the order NEWOBJ → dictitems →
+    # BUILD, i.e. it calls `__setitem__` BEFORE `__dict__` exists (the
+    # opposite of `copy._reconstruct`, which applies state first — which is
+    # why deepcopy works and pickle raised `AttributeError: _dropped`).
+    # Rather than special-case pickle, every piece of instance state has a
+    # lazily-minted per-instance default, so no method can meet a
+    # half-built LazyDoc. Class-level MUTABLE defaults would be shared
+    # across instances and are exactly the bug this avoids.
+    _STATE_DEFAULTS: dict[str, Callable[[], Any]] = {
+        "_slug": str, "_snap_doc": dict, "_snap_nodes": dict,
+        "_snap_logs": dict, "_key_order": list, "_present": set,
+        "_dropped": set,
+    }
+
+    def __getattr__(self, name: str) -> Any:
+        factory = LazyDoc._STATE_DEFAULTS.get(name)
+        if factory is None:
+            raise AttributeError(name)
+        v = factory()
+        object.__setattr__(self, name, v)
+        return v
+
     def __init__(self, slug: str) -> None:
         super().__init__()
         self._slug: str = slug
@@ -818,8 +865,14 @@ class LazyDoc(dict[str, Any]):
         return self
 
     def clear(self) -> None:
-        for k in self._present:
-            self._dropped.add(k)
+        # ⚠ every lazy section the DATABASE holds has to be marked dropped,
+        # not just the ones stored as rows. A section whose value had the
+        # wrong shape lives in `doc` as a blob (`_write_lazy`) and is NOT in
+        # `_present`, and `_write_doc`'s doc-row delete sweep deliberately
+        # skips LAZY_SECTIONS — so before this line a blobbed section
+        # survived `clear()` and came back on the next load. Measured.
+        self._dropped |= self._present
+        self._dropped |= {k for k in LAZY_SECTIONS if dict.__contains__(self, k)}
         dict.clear(self)
 
     def keys(self):   # pyright: ignore[reportIncompatibleMethodOverride]
@@ -846,8 +899,13 @@ class LazyDoc(dict[str, Any]):
         self.materialize_all()
         return dict.__eq__(self, other)
 
-    def __ne__(self, other: object) -> bool:
-        return not self.__eq__(other)
+    def __ne__(self, other: object) -> Any:
+        # `dict.__eq__` returns NotImplemented against a non-dict, and
+        # `not NotImplemented` is False with a DeprecationWarning — so the
+        # obvious spelling made `doc != 5` answer False. Hand NotImplemented
+        # back and let Python decide (which gives True), as dict does.
+        r = self.__eq__(other)
+        return r if r is NotImplemented else not r
 
     __hash__ = None  # type: ignore[assignment]  # dicts are unhashable; keep it so
 
@@ -948,6 +1006,26 @@ def _load_lazy(conn: sqlite3.Connection, slug: str) -> LazyDoc:
                 present.add(sect)
     finally:
         conn.execute("COMMIT")
+    if _meta_get(conn, "schema_version") is None:
+        # ⚠ THE DURABILITY CHECK THE JSON BACKEND GOT FOR FREE. A JSON doc
+        # that is zero-length or truncated raises `JSONDecodeError`, and
+        # `_scan_orgs` skips it; SQLite is far more forgiving — a ZERO-LENGTH
+        # file is a perfectly valid EMPTY database, and a file truncated past
+        # page 1 often reads as one too. Measured on this branch before this
+        # check existed: `open(db,"wb").close()` made `load_org` hand back a
+        # document with no nodes and no history (it died later, incidentally,
+        # on `KeyError('nodes')` inside `Org.__init__`) and made `list_orgs`
+        # render the org as REAL AND EMPTY — 182 archived seats presented as
+        # "this org has nothing in it" rather than as an error.
+        # Every database this module writes carries `schema_version` from its
+        # first committed transaction (`migrate_org`, and `_write_doc` for a
+        # `create_org`), so its absence means the file is not one of ours or
+        # is no longer intact. Fail LOUDLY, exactly as the JSON path does.
+        raise LedgerError(
+            f"{_db_path(slug) if slug else 'database'!r} is not an intact "
+            "orgtree database (no schema_version row) — it may be truncated "
+            "or zero-length; restore it from deleted/ or from its "
+            ".json.premigration")
     # a key in the recorded order that is a lazy section counts as present
     # even with zero rows — that is what `key_order` is for
     for k in key_order:
@@ -1211,7 +1289,8 @@ def _save_sqlite(org: Org) -> None:
     d = cast("dict[str, Any]", org.d)
     lazy = d if isinstance(d, LazyDoc) and d._slug == slug else None
     _ensure_migrated(slug)
-    with _POOL.acquire(slug) as conn:
+    # the one write path that may legitimately mint a database (`create_org`)
+    with _POOL.acquire(slug, create=True) as conn:
         conn.execute("BEGIN IMMEDIATE")
         try:
             new_doc, new_nodes, new_logs, order = _write_doc(conn, d, lazy)
@@ -1250,7 +1329,15 @@ def _sidecars(db: str) -> tuple[str, str]:
 
 
 def _remove_db_files(db: str) -> None:
-    for p in (db, *_sidecars(db)):
+    # `-journal` as well as the WAL pair: `journal_mode=WAL` is set AFTER the
+    # connection opens, so the first moments of a candidate database use the
+    # default rollback journal, and a SIGKILL landing there leaves a
+    # `<slug>.db.migrating-journal` behind (seen in probes/p7_migfail.py).
+    # ⚠ BELT AND BRACES, NOT A FIX: SQLite reclaims a stale journal itself on
+    # the next open — measured, so do not read this line as load-bearing. It
+    # is here so the candidate's cleanup owns every file the candidate can
+    # create, rather than relying on a side effect of opening it again.
+    for p in (db, *_sidecars(db), db + "-journal"):
         with contextlib.suppress(OSError):
             os.remove(p)
 
@@ -1376,7 +1463,7 @@ def migrate_org(slug: str) -> dict[str, Any]:
     t0 = time.perf_counter()
     conn: sqlite3.Connection | None = None
     try:
-        conn = _open_conn(tmpdb)
+        conn = _open_conn(tmpdb, create=True)
         conn.execute("BEGIN IMMEDIATE")
         try:
             _write_doc(conn, doc, None)
@@ -1404,14 +1491,47 @@ def migrate_org(slug: str) -> dict[str, Any]:
             raise
         raise MigrationError(f"migration of {slug!r} failed: "
                              f"{type(e).__name__}: {e}") from e
-    os.replace(jp, _premigration_path(slug))
+    prem = _premigration_path(slug)
+    if os.path.exists(prem):
+        # ⚠ NEVER overwrite one. It is the only pre-migration copy of that
+        # org's history, §6.1 step 6 says code does not remove it, and an
+        # unconditional `os.replace` removed it anyway on the one path that
+        # reaches here twice: delete the org (its `.db` goes to the trash),
+        # restore an old `.json` by hand — the case `_ensure_migrated` exists
+        # for — and the second migration lands on top of the first copy.
+        # Same rule as the delete trash: find a free name, then rename. The
+        # canonical name stays with the FIRST migration, which is the one the
+        # §6.1 rollback renames back.
+        # ...but a REPEAT of the same migration is not new history. If the
+        # existing copy already holds these exact bytes there is nothing to
+        # preserve, and minting a stamped duplicate would grow `orgs/` by a
+        # whole document every time — measured: a loop that restored the
+        # `.json` and re-migrated left 90 copies of it. Identical content is
+        # the common case here (restore the same file, migrate it again), so
+        # keep the one copy and let the redundant source go.
+        if hashlib.sha256(open(prem, "rb").read()).hexdigest() == sha:
+            os.remove(jp)
+            os.replace(tmpdb, db)
+            report["ms"] = round((time.perf_counter() - t0) * 1000, 1)
+            report["bytes"] = len(raw)
+            _log(f"re-migrated {slug!r}: {len(raw)} bytes → "
+                 f"{os.path.basename(db)}; the existing "
+                 f"{os.path.basename(prem)} already holds these exact bytes")
+            return report
+        stamp = time.strftime("%Y%m%dT%H%M%S")
+        alt, k = f"{prem}.{stamp}", 0
+        while os.path.exists(alt):
+            k += 1
+            alt = f"{prem}.{stamp}-{k}"
+        prem = alt
+    os.replace(jp, prem)
     os.replace(tmpdb, db)
     report["ms"] = round((time.perf_counter() - t0) * 1000, 1)
     report["bytes"] = len(raw)
     _log(f"migrated {slug!r}: {len(raw)} bytes → {os.path.basename(db)} in "
          f"{report['ms']} ms; nodes={report.get('nodes')} archived={report.get('archived')} "
          f"counts={report.get('counts')}; source kept as "
-         f"{os.path.basename(_premigration_path(slug))}")
+         f"{os.path.basename(prem)}")
     return report
 
 
@@ -1717,13 +1837,20 @@ def load_org(slug: str) -> Org:
         try:
             with _POOL.acquire(slug) as conn:
                 doc = _load_lazy(conn, slug)
+            # ⚠ INSIDE the try: `Org.__init__` walks `mail_log` to backfill
+            # message ids (ledger.py:568), which MATERIALISES that section —
+            # a second trip to the database, in the same window, after the
+            # `with` block has already closed. Constructing outside the try
+            # let that trip raise a raw sqlite3 error (and, before
+            # `_open_conn(create=False)`, a bare `KeyError('nodes')` off an
+            # empty document) out of a plain read.
+            return Org(cast("OrgDoc", doc))
         except sqlite3.OperationalError as e:
             # deleted between the exists() check and the open — delete_org
             # renames the database out from under readers by design
             if not os.path.exists(db):
                 raise LedgerError(f"no such org: {slug!r}") from None
             raise LedgerError(f"cannot open org {slug!r}: {e}") from e
-        return Org(cast("OrgDoc", doc))
     p = _json_path(slug)
     if not os.path.exists(p):
         raise LedgerError(f"no such org: {slug!r}")
