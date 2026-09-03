@@ -720,6 +720,18 @@ def _iso(epoch: Any) -> str | None:
             .isoformat().replace("+00:00", "Z"))
 
 
+def could_be_a_key_row(account: str) -> bool:
+    """Could this identifier POSSIBLY name a key row? Answerable without the
+    registry, which is the only reason it is a function of its own.
+
+    Split out of `fallback_ordinal` so that `serving_label` can decline the
+    registry read without restating the test — the repo's standing objection
+    to two expressions of one rule applies here exactly: a second copy is a
+    second thing to disagree, and this one would disagree by silently
+    reintroducing a per-node file read."""
+    return bool(account) and account != PRIMARY
+
+
 def fallback_ordinal(doc: dict[str, Any], account: str) -> int | None:
     """This row's 1-based position among the key rows, or None if `account`
     is not a key row (the primary login, `api-key`, `key:unattributed`, an
@@ -727,7 +739,7 @@ def fallback_ordinal(doc: dict[str, Any], account: str) -> int | None:
     per-row usage modal and the serving label — three surfaces that would
     otherwise each count for themselves and disagree the moment a row is
     deleted."""
-    if not account or account == PRIMARY:
+    if not could_be_a_key_row(account):
         return None
     for i, k in enumerate(doc["keys"]):
         if k["id"] == account:
@@ -749,7 +761,23 @@ def serving_label(account: str, *, with_uuid: bool = True) -> str | None:
 
     Degrades to the bare ordinal when identity has not resolved yet: "fallback
     2" is still true, and a row whose profile lookup failed must not vanish
-    from the readout that explains a running turn."""
+    from the readout that explains a running turn.
+
+    ⚠ THE REGISTRY READ IS GATED, because this is called once PER NODE by the
+    tree render's `annotate` — and `annotate` runs for every node in the
+    document, on a 6 s heartbeat and on every `save_org`. Unconditionally
+    loading here opened and JSON-parsed `accounts.json` once per seat:
+    MEASURED 2026-09-03, 41 `open()` calls for a 41-node org, one per node,
+    scaling 1:1 with the org (8 opens at 5 nodes, 130 at 125). That is the
+    per-node filesystem work D-239 forbids, in a second place, found by the
+    syscall-scaling guard that ruling asked for.
+    `could_be_a_key_row` is the SAME test `fallback_ordinal` applies first, so
+    every account this declines to look up would have returned None anyway —
+    the answer is unchanged for every input, only the read is skipped. Almost
+    every seat is such an account: `ran_as` is empty unless a turn is in
+    flight on a key row."""
+    if not could_be_a_key_row(account):
+        return None
     doc = load()
     n = fallback_ordinal(doc, account)
     if n is None:
