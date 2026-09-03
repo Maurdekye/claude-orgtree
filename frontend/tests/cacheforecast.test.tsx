@@ -420,6 +420,21 @@ test('the mid-turn warning needs all three conditions, and overrides the origina
     ['a ready forecast never warns',
       <CacheForecastWarning forecast={forecast('compatible_observed')} midTurn
         composerFocused cheapCompactOn {...gateOpen} />, 'none'],
+    // User ruling 2026-09-03: mid-turn, "confirmed invalid" is prefix_changed
+    // and ONLY prefix_changed. Every other red cause compares against an entry
+    // the running turn is about to write or refresh, so a message that misses
+    // the window lands WARM and the warning was a false alarm.
+    ['an expired entry mid-turn → silence: the running turn refreshes it',
+      <CacheForecastWarning forecast={forecast('expired_known_entry', 'miss_expected')}
+        midTurn composerFocused cheapCompactOn {...gateOpen} />, 'none'],
+    ['no positive receipt mid-turn → silence: the running turn produces one',
+      <CacheForecastWarning midTurn composerFocused cheapCompactOn {...gateOpen}
+        forecast={forecast('uncertain', 'not_applicable',
+          { readiness: 'not_ready', readiness_cause: 'no_positive_receipt' })} />, 'none'],
+    ['the in-flight projection (readiness none) mid-turn → silence',
+      <CacheForecastWarning midTurn composerFocused cheapCompactOn {...gateOpen}
+        forecast={forecast('uncertain', 'not_applicable',
+          { readiness: 'none', readiness_cause: 'turn_in_flight' })} />, 'none'],
   ]
   for (const [label, el, want] of cases) {
     const view = await mountView(el, (v) => v)
@@ -510,15 +525,14 @@ test('manual compaction warning uses forecast evidence, never generic idle age',
   assert.doesNotMatch(modal, /Date\.parse|60\s*\*\s*60e3|lastAt/)
 })
 
-test('mid-turn, the badge keeps only the claims the running turn cannot change', async () => {
+test('mid-turn, the badge is red for a miss known for a fact, and otherwise absent', async () => {
   // User ruling 2026-09-03. Hiding the whole card while a turn runs threw
   // away the one claim that is settled mid-turn: a changed prefix is a
   // comparison the running turn's outcome cannot undo, and it is what tells
   // the user to let a queued message steer NOW rather than pay a cold open
-  // after the turn ends. A diagnostic is a fact about the lane or the data,
-  // not about any turn. Everything else compares against an entry the
-  // running turn is about to replace or refresh, so it renders nothing — not
-  // a placeholder in the slot.
+  // after the turn ends. Everything else — green, the other reds, AND grey —
+  // is a prediction about how the running turn ends, which the UI must not
+  // make, so it renders nothing: red or no card, never a placeholder.
   const at = (ms: number) => new Date(Date.now() + ms).toISOString()
   const rows: Array<[string, CacheForecast, boolean]> = [
     ['ready + countdown', forecast('compatible_observed', 'not_applicable', {
@@ -534,12 +548,13 @@ test('mid-turn, the badge keeps only the claims the running turn cannot change',
       source: 'no_positive_receipt', readiness: 'not_ready',
       readiness_cause: 'no_positive_receipt', last_receipt_at: null,
       ttl_seconds: null, expires_at: null }), false],
+    // grey says "cannot tell", which mid-turn is the default, not a card
     ['diagnostic/unsupported_capability', forecast('uncertain', 'not_applicable', {
       source: 'capability_unsupported', lane: 'provider_unsupported',
-      readiness: 'diagnostic', readiness_cause: 'unsupported_capability' }), true],
+      readiness: 'diagnostic', readiness_cause: 'unsupported_capability' }), false],
     ['diagnostic/clock_anomaly', forecast('uncertain', 'not_applicable', {
       source: 'clock_skew', readiness: 'diagnostic',
-      readiness_cause: 'clock_anomaly' }), true],
+      readiness_cause: 'clock_anomaly' }), false],
   ]
   for (const [label, f, shown] of rows) {
     const idle = await mountView(<CacheForecastMark forecast={f} />, (v) => v)

@@ -447,43 +447,35 @@ const cacheForecastTitle = (forecast: CacheForecast, midTurn = false): string =>
   ].filter(Boolean).join('\n')
 }
 
-/** The claims that survive on the badge while a turn is running.
+/** The one claim that survives on the badge while a turn is running.
  *
- * User ruling 2026-09-03, refining the earlier "hide the card while a turn
- * runs": a flag is a claim about something assumed to exist, and mid-turn the
- * question is which claims the running turn can still change.
+ * User ruling 2026-09-03 (10:31Z and 10:34Z): the card answers "will the next
+ * full turn cause a cache miss or an auto-compact?". Idle, the card always
+ * shows, because the answer takes effect the instant a turn starts. Mid-turn
+ * the answer can be given in advance ONLY when a miss is known for a fact;
+ * anything else is predicting how the running turn ends, which the UI must
+ * not try to do, so it shows no card at all — red or nothing.
  *
- *   · `not_ready` / `prefix_changed` CANNOT be changed by it. The claim
- *     compares the prefix that would be sent now against the one already
- *     sent; whatever entry the running turn leaves behind belongs to the old
- *     prefix, so the turn after it is cold regardless. That is settled the
- *     moment it happens and it is the one thing a user wants mid-turn: it
- *     says "let a queued message steer into this turn now, or pay a cold
- *     open after it ends".
- *   · a `diagnostic` is a fact about the lane, the data or the classifier
- *     (no published statistic, an unreadable stamp, a clock disagreeing with
- *     itself, an unclassified row), not about any turn, so it does not blink
- *     off and on around one.
- *   · everything else DEPENDS on how the running turn ends. `ready` and its
- *     countdown compare against the previous receipt, whose entry the running
- *     turn's own calls are refreshing — the countdown would reach zero and go
- *     red on an entry that is not dead. `receipt_expired`,
+ *   · `not_ready` / `prefix_changed` is the fact. It compares the prefix that
+ *     would be sent now against the one already sent (the backend takes it
+ *     against the request in flight, D-234); whatever entry the running turn
+ *     leaves behind belongs to the old prefix, so a message that misses the
+ *     steer window lands cold regardless. It is the same fact the process
+ *     mark's yellow relaunch icon shows from the lifecycle side.
+ *   · `ready` and its countdown compare against the previous receipt, whose
+ *     entry the running turn's own calls are refreshing — the countdown would
+ *     reach zero and go red on an entry that is not dead. `receipt_expired`,
  *     `no_positive_receipt` and the unobserved causes describe the launch of
- *     the turn in flight, and its receipt is what settles them. Each is a
- *     claim the backend cannot yet know to be true, so it renders nothing —
- *     not a placeholder in the slot.
+ *     the turn in flight, and its receipt settles them. A `diagnostic` says
+ *     "cannot tell", which mid-turn is the default, not a card. None renders,
+ *     and none leaves a placeholder in the slot.
  *
- * ⚠ KNOWN LIMIT, NOT A LICENCE TO HIDE THE FACT. The backend's poll-time
- * preview compares against the last COMPLETED turn, not the request in
- * flight, so a turn that was itself the cold one stays red for its own
- * duration even though nothing changed since it was sent. The fix is on the
- * backend (persist the in-flight request's prefix and compare against that);
- * until it lands the mid-turn red is right whenever the running turn launched
- * warm, and one turn late otherwise. */
+ * A backend that already projects mid-turn rows (`turn_in_flight`, readiness
+ * `none`) makes this gate redundant; it stays for a backend older than the
+ * UI, which still sends the idle verdict while a turn runs. */
 const midTurnRenderable = (forecast: CacheForecast): boolean => {
   const { readiness, cause } = readinessVerdict(forecast)
-  return readiness === 'diagnostic'
-    || (readiness === 'not_ready' && cause === 'prefix_changed')
+  return readiness === 'not_ready' && cause === 'prefix_changed'
 }
 
 /** Epoch ms of an authoritative expiry, or null when there is not one.
@@ -575,8 +567,8 @@ function useCountdown(expiresAt: number | null): number | null {
  * to show green until the next poll would be the one lie this badge exists to
  * prevent.
  *
- * While a turn is running (`busy`) only the claims in `midTurnRenderable`
- * survive; the rest render nothing, and the countdown does not even subscribe
+ * While a turn is running (`busy`) only the claim in `midTurnRenderable`
+ * survives; the rest render nothing, and the countdown does not even subscribe
  * to the clock, because it is never shown mid-turn. */
 export function CacheForecastMark({ forecast, busy }: {
   forecast?: CacheForecast | null
@@ -647,11 +639,20 @@ export function CacheForecastMark({ forecast, busy }: {
  * minimum). Unmeasured or estimated context never passes: neither policy
  * warns on a number it does not have. See `steerWarningGateOpen`.
  *
- * It is NOT gated on `precompact_action`, even though that carries the same
- * policy: the backend computes that field only for proven-cold forecast
- * states, and this banner also fires on the `uncertain/*` not_ready causes —
- * riding it would silently withhold the warning in exactly those.
- * `cheapCompactOn` likewise reads the compactor's own `enabled` flag.
+ * ⚠ "CONFIRMED INVALID" MID-TURN IS `prefix_changed` AND ONLY `prefix_changed`
+ * (user ruling 2026-09-03, narrowing 2dc8cbb, which fired on every `not_ready`
+ * cause). The banner's claim is that a message missing the steer window lands
+ * COLD. That is settled only when the prefix has MOVED since the running turn
+ * was sent — nothing the running turn does can undo it. Every other red cause
+ * compares against an entry the running turn is about to write or refresh:
+ * `receipt_expired` (the turn's own calls refresh it), `no_positive_receipt`
+ * (the turn's receipt is what establishes it), and the unobserved causes. For
+ * those a message that misses the window lands WARM, so warning about it was
+ * a false alarm. `midTurnRenderable` applies the same rule to the badge.
+ *
+ * It is NOT gated on `precompact_action`: that field describes a send that
+ * STARTS a turn, and the backend reports it `not_applicable` mid-turn.
+ * `cheapCompactOn` reads the compactor's own `enabled` flag.
  *
  * ⚠ `cheapCompactOn` IS TRI-STATE. `true`/`false` are the backend's verdict on
  * this node's compactor; `undefined` means the backend did not report one (a
@@ -700,10 +701,13 @@ export function CacheForecastWarning({ forecast, midTurn, composerFocused,
   /** measured context / window, or null when unmeasured or estimated */
   contextRatio: number | null
 }) {
-  // "Readiness confirmed invalid" is `not_ready` and ONLY `not_ready`. A grey
-  // diagnostic is the absence of a verdict, not a negative one (D-226), and
-  // warning on it would be asserting something the backend declined to say.
-  const invalid = Boolean(forecast) && readinessOf(forecast!) === 'not_ready'
+  // Mid-turn, "confirmed invalid" is `not_ready` WITH cause `prefix_changed` —
+  // see the header comment. A grey diagnostic is the absence of a verdict, not
+  // a negative one (D-226), and warning on it would be asserting something the
+  // backend declined to say.
+  const verdict = forecast ? readinessVerdict(forecast) : null
+  const invalid = verdict?.readiness === 'not_ready'
+    && verdict.cause === 'prefix_changed'
   if (forecast && midTurn && invalid && composerFocused
       && steerWarningGateOpen(contextRatio, cheapCompactOn, cheapCompactOcc)) {
     const title = cacheForecastTitle(forecast)

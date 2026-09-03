@@ -88,6 +88,15 @@ test('desk header has bounded controls and a separate wrapping metadata row', as
   for (const sel of [
     '.mcp-tool-count', '.cache-forecast', '.badge',
   ]) assert.ok(meta.querySelector(sel), `metadata row omitted ${sel}`)
+  // User ruling 2026-09-03: mid-turn the red cache card and the process mark's
+  // yellow relaunch icon are ONE fact — the sent prefix has moved — seen by two
+  // owners (the cache projection and the process lifecycle). This fixture is
+  // busy with a changed prefix and a pending relaunch; both must render, and
+  // the card must be red: mid-turn it is red or nothing.
+  assert.ok(meta.querySelector('.cache-forecast.cold'),
+    'mid-turn card on a changed prefix is not red')
+  assert.ok(top.querySelector('.proc-state .proc-relaunch'),
+    'relaunch icon missing while the mid-turn red card shows')
   assert.equal(meta.querySelector('.statuschip.working'), null,
     'durable working summary duplicated the live Working banner')
   assert.match(top.querySelector('.turn-status-banner')?.getAttribute('title') ?? '',
