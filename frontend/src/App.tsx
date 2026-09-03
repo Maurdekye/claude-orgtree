@@ -545,13 +545,36 @@ export default function App() {
       {/* active org: full foreground; the list hides in a drawer */}
       {slug && (
         <main className="solo">
-          {error && <div className="error">{error}</div>}
+          {/* the tree hasn't loaded at all yet — no header, no canvas, nothing
+              to shift, so the plain pre-header banner is harmless here. Once
+              `tree` exists the SAME `error` string moves into the orgbar
+              itself (below) instead, because that's where a connectivity
+              blip after load would otherwise push the canvas down. */}
+          {!tree && error && <div className="error">{error}</div>}
           {tree ? (
             <>
               <header className="orgbar">
                 {!tree.public &&
                   <button className="iconbtn" onClick={() => setDrawer(true)}><MenuIcon fontSize="inherit" /></button>}
-                <h2>{tree.name}</h2>
+                <span className="orgname-wrap">
+                  <h2>{tree.name}</h2>
+                  {/* connectivity/save-error banner, relocated into the header
+                      (user report 2026-09-03): it used to be a block above the
+                      header and pushed the whole canvas down whenever it
+                      appeared or cleared. It's `position: absolute` here on
+                      purpose — anchored off the org-name's own box rather
+                      than sitting as a normal flex item, so its presence,
+                      absence, or message length can NEVER change the height
+                      the orgbar computes (that's the actual bug: a transient
+                      message must not move whatever the user is doing under
+                      the canvas). A long message truncates with an ellipsis;
+                      the full text is always available via `title`. */}
+                  <span className={'chip bad conn-chip' + (error ? ' show' : '')}
+                    title={error ?? undefined}>
+                    <WarnIcon fontSize="inherit" />
+                    <span className="conn-chip-text">{error}</span>
+                  </span>
+                </span>
                 {/* MOBILE-ONLY merged status chip (D-125 orgbar ruling): live
                     count · working · frozen in one glance; tapping it opens
                     the same ⋯ panel. display:none on desktop (.mob-only). */}

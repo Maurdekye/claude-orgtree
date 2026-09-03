@@ -2518,7 +2518,24 @@ button.danger.solid:hover { background: rgba(241, 76, 76, .24); }
   display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
   margin-bottom: 16px; padding-bottom: 12px; border-bottom: 1px solid var(--line-soft);
 }
-.orgbar h2 { margin: 0 6px 0 0; font-size: 15px; font-weight: 600; color: var(--ink-strong); }
+.orgbar h2 { margin: 0; font-size: 15px; font-weight: 600; color: var(--ink-strong); }
+
+/* the org-name + connectivity-error pair: `position: relative` here (not on
+   the whole orgbar) so the absolute chip anchors off the name's own box —
+   see the JSX comment at `.conn-chip`'s call site for why absolute at all. */
+.orgname-wrap {
+  position: relative; display: inline-flex; align-items: center;
+  margin: 0 6px 0 0; min-width: 0; max-width: 100%;
+}
+.conn-chip {
+  position: absolute; left: 100%; top: 50%; transform: translateY(-50%);
+  margin-left: 8px; display: none; align-items: center; gap: 5px;
+  max-width: min(46vw, 360px); white-space: nowrap; overflow: hidden;
+  z-index: 5;
+}
+.conn-chip.show { display: inline-flex; }
+.conn-chip-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+html.mobile .conn-chip { max-width: 46vw; }
 
 .chip {
   font-size: 11px; padding: 2px 9px; border-radius: 10px;
