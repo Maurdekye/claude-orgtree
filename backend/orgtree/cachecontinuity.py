@@ -303,7 +303,38 @@ Dynamic turn-envelope facts (org state, mail/notices, usage/status/checkup data,
 
 _COMPONENT_ORDER: Final = (
     "provider", "account", "lane", "model", "session", "system", "tools",
-    "argv", "env", "startup", "lineage", "history",
+    "argv", "env", "startup", "lineage", "mcp_surface", "history",
+)
+
+#: Prefix components that are compared ONLY WHEN BOTH SIDES CARRY A VALUE.
+#:
+#: ⚠ THIS IS THE "UNOBSERVED IS NOT CHANGED" RULE, not a softening of the
+#: comparison. The ordinary components are computed from local configuration
+#: and always exist, so a missing one really is a difference. `mcp_surface` is
+#: an OBSERVATION of what the provider process reported, and an observation can
+#: legitimately be absent: before a node's first turn, for a cold node whose
+#: process is gone, and — the case that matters most — in every row persisted
+#: before this component existed. Treating absence as a change there would
+#: report every agent cold on the first poll after deploy, and that false cold
+#: is one `_cache_precompact_decision` can ACT on rather than merely display.
+#: The same reasoning the history relation already follows, and the same trap
+#: `legacy_readiness` and the `_namespace_changed` account carve-out avoid.
+_OBSERVED_COMPONENTS: Final = frozenset({"mcp_surface"})
+
+
+def _component_changed(cur_parts: dict[str, Any], old_parts: dict[str, Any],
+                       key: str) -> bool:
+    """Did a prefix component MOVE — as opposed to not being observed?"""
+    cur = str(cur_parts.get(key) or "")
+    old = str(old_parts.get(key) or "")
+    if key in _OBSERVED_COMPONENTS and not (cur and old):
+        return False
+    return cur != old
+
+
+#: Every prefix component compared by `classify`, in a fixed order.
+_PREFIX_COMPONENTS: Final = (
+    "system", "tools", "argv", "env", "startup", "lineage", "mcp_surface",
 )
 
 
@@ -521,8 +552,8 @@ def classify(current: dict[str, Any], continuity: dict[str, Any] | None,
     cur_parts = cast(dict[str, Any], cur_parts) if isinstance(cur_parts, dict) else {}
     old_parts = last.get("components")
     old_parts = cast(dict[str, Any], old_parts) if isinstance(old_parts, dict) else {}
-    for key in ("system", "tools", "argv", "env", "startup", "lineage"):
-        if str(cur_parts.get(key) or "") != str(old_parts.get(key) or ""):
+    for key in _PREFIX_COMPONENTS:
+        if _component_changed(cur_parts, old_parts, key):
             changed.append(_reason(key, f"{key} prefix component changed", at))
     relation = str(current.get("last_turn_history_relation") or "unobserved")
     if relation == "changed":
@@ -541,8 +572,8 @@ def classify(current: dict[str, Any], continuity: dict[str, Any] | None,
         receipt_parts = receipt.get("components")
         receipt_parts = (cast(dict[str, Any], receipt_parts)
                          if isinstance(receipt_parts, dict) else {})
-        for key in ("system", "tools", "argv", "env", "startup", "lineage"):
-            if str(cur_parts.get(key) or "") != str(receipt_parts.get(key) or ""):
+        for key in _PREFIX_COMPONENTS:
+            if _component_changed(cur_parts, receipt_parts, key):
                 receipt_changes.append(_reason(
                     key, f"{key} cache-observed prefix component changed", at))
         if receipt_relation == "changed":

@@ -5937,6 +5937,73 @@ def _cache_cmd_projection(cmd: list[str]) -> dict[str, Any]:
     return out
 
 
+def _orgtree_tool_catalogue() -> list[dict[str, Any]]:
+    """Orgtree's own MCP tool definitions, as the provider will be shown them.
+
+    The Codex branch of `_cache_semantic_inputs` hashes this directly: on that
+    lane orgtree's tools are injected by us, so the catalogue IS the local
+    truth about them. The Claude lane covers the same ground differently —
+    orgtree runs there as an ordinary MCP server, so its tools arrive in the
+    surface the CLI reports and are picked up by `mcp_surface`
+    (`_cache_tool_surface_digest`), which additionally covers third-party
+    servers the catalogue knows nothing about. Named and shared so the two
+    lanes' treatment of the same question stays findable from either side
+    (`orgtree_interrupt`, added 2026-09-03, is the case that found the gap).
+    """
+    from . import mcptool                                    # noqa: PLC0415
+    return mcptool.available_tools()
+
+
+def _observed_tool_surface(org: Org, nid: str) -> list[str] | None:
+    """Sorted names of the MCP tools the CLI actually reported, or None.
+
+    ⚠ `None` MEANS UNOBSERVED, AND UNOBSERVED IS NOT CHANGED. The provider
+    process publishes its inventory at init, so before a node has ever run —
+    and for a cold node whose process is gone — there is simply no observation.
+    Returning an empty list there would be a claim that the node has no tools,
+    which would compare as a real change against a node that has some; the
+    caller therefore OMITS the component entirely on `None` rather than
+    digesting a placeholder. Same rule the history relation follows.
+
+    The live set is owner-scoped; the durable `mcp_tool_final_surface` copy
+    survives the process it describes, which is what makes this readable from
+    a poll that happens after the turn ended.
+    """
+    st = state(str(org.d.get("slug") or ""), nid)
+    with _state_lock:
+        names = st.get("mcp_tool_names")
+        if not isinstance(names, set):
+            final = st.get("mcp_tool_final_surface")
+            names = (final.get("names") if isinstance(final, dict) else None)
+        if not isinstance(names, set):
+            return None
+        return sorted(str(name) for name in names)
+
+
+def _cache_tool_surface_digest(org: Org, nid: str) -> str | None:
+    """The `mcp_surface` prefix component, or None when it was never observed.
+
+    Tool NAMES, never a count: a count collides — one tool added and one
+    removed is the same number and a genuinely different prefix.
+
+    ⚠ THE OBSERVED SURFACE AND NOTHING ELSE. An earlier draft also folded in
+    orgtree's own catalogue (`_orgtree_tool_catalogue`) to avoid the one-turn
+    observation lag. That was wrong twice over, and the probe caught it: the
+    catalogue is always computable, so the component became always-present,
+    and a node whose process had since gone — observed surface now absent,
+    prior row carrying one — compared as CHANGED. That is precisely the
+    "unobserved is not changed" rule this component exists to respect. It was
+    also redundant: the CLI reports every MCP tool it was given, orgtree's
+    server included, so `mcp__orgtree__*` names are already in here. The lag
+    is real and accepted — the surface is published at process init, so a tool
+    added by a deploy is visible from the next admission, not the same instant.
+    """
+    observed = _observed_tool_surface(org, nid)
+    if observed is None:
+        return None
+    return cachecontinuity.digest({"observed": observed})
+
+
 def _cache_semantic_inputs(org: Org, nid: str, provider: str) -> tuple[str, str]:
     """Digests of normalized provider-visible tool and argv surfaces."""
     n = org.node(nid)
@@ -5955,11 +6022,12 @@ def _cache_semantic_inputs(org: Org, nid: str, provider: str) -> tuple[str, str]
         }
         return cachecontinuity.digest(tools), cachecontinuity.digest(projection)
     if provider == "openai":
-        from . import mcptool                              # noqa: PLC0415
         spec = _codex_process_spec(org, nid, write_ident=False)
         tools = {
             "grant": scope.get("tools") or {},
-            "dynamic_tools": mcptool.available_tools(),
+            # unchanged input, now reached through the helper the Claude lane
+            # also uses (`_orgtree_tool_catalogue`) so the two cannot drift
+            "dynamic_tools": _orgtree_tool_catalogue(),
             "mcp": spec.get("config_overrides") or [],
         }
         argv = {"head": spec.get("argv_head") or [],
@@ -6182,6 +6250,18 @@ def _cache_snapshot(org: Org, nid: str, *, now: float | None = None,
     components = {"system": system, "tools": tools_digest,
                   "argv": argv_digest, "env": env_digest,
                   "startup": startup, "lineage": lineage}
+    # ⚠ OMITTED WHEN UNKNOWN, NEVER SET TO A PLACEHOLDER. `tools` above hashes
+    # the MCP LAUNCH CONFIG — how to start each server — which does not move
+    # when a server's own tool list does. `mcp_surface` is the tool surface
+    # itself, and `classify` compares it ONLY when both sides carry one, so an
+    # absent value is unobserved rather than changed. Writing a placeholder
+    # here would defeat that: it would compare unequal against every row
+    # persisted before this existed and report every Claude agent cold on the
+    # first poll after deploy — a false cold `_cache_precompact_decision` can
+    # ACT on, which is the migration trap `legacy_readiness` exists to avoid.
+    surface = _cache_tool_surface_digest(org, nid)
+    if surface is not None:
+        components["mcp_surface"] = surface
     namespace = {
         "provider": provider, "account": account or "unobserved",
         # THE MODEL THAT ACTUALLY GOES OUT, not the one the org asked for.

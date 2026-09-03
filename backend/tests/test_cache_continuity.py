@@ -75,8 +75,13 @@ def snapshot(**changes: Any) -> dict[str, Any]:
         "provider": "claude", "account": "primary", "lane": "subscription",
         "model": "claude-sonnet-5", "session": "session-a",
         "node_generation": 3, "captured_at": C.iso(NOW),
+        # `mcp_surface` included so the shared fixture models the FULL prefix.
+        # It is an observed-only component (compared only when both sides carry
+        # one), so a prior without it would silently drop out of every
+        # comparison and the order guard below would under-report.
         "components": {k: f"{k}-same" for k in
-                       ("system", "tools", "argv", "env", "startup", "lineage")},
+                       ("system", "tools", "argv", "env", "startup", "lineage",
+                        "mcp_surface")},
         "history": {"bytes": 4, "sha256": "abcd"},
         "fingerprint": "launch-fingerprint", "expected_input_tokens": 120000,
         "last_turn_history_relation": "same_or_appended",
@@ -255,7 +260,8 @@ def every_changed_input() -> None:
     cur = snapshot(provider="openai", account="other", lane="api_key",
                    model="other-model", session="session-b")
     cur["components"] = {k: f"{k}-changed" for k in
-                         ("system", "tools", "argv", "env", "startup", "lineage")}
+                         ("system", "tools", "argv", "env", "startup", "lineage",
+                          "mcp_surface")}
     cur["last_turn_history_relation"] = "changed"
     row = C.classify(cur, book(receipt_at=NOW - 10), NOW)
     eq(row["state"], "known_incompatible")
