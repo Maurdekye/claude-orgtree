@@ -23,11 +23,13 @@ WHAT IS MEASURED AND WHAT IS NOT — read this before trusting a green run:
     `usage_limit` scenario replays the real ending: the exhausted bucket, the
     second empty bucket after it, and a `turn/completed` whose status is
     "failed", with nothing on stderr.
-  · the ANTIGRAVITY half is BY CONSTRUCTION. No antigravity usage wall has
-    been observed on this machine. §5 proves the shared seam freezes an
-    antigravity-lane failure whose text names a limit; it does NOT prove that
-    a real antigravity limit arrives wearing that text. That gap is deliberate
-    and stated, not closed by inventing a recording.
+  · the ANTIGRAVITY half is MEASURED since 2026-09-03 02:36 local (agy
+    1.1.24, the account's weekly wall): a lone ERROR result reading
+    "Individual quota reached. Please upgrade your subscription to increase
+    your limits. Resets in 165h21m54s." — `fakeantigravity`'s `usage_limit`
+    scenario replays that wording. §5 proves the shared seam freezes it on
+    the CLI's OWN reset (parsed by `antigravity_limits`, source "provider"),
+    no longer on the blind probe floor.
 
 Anti-vacuity: `tests/_mutate_provider_limit.py` breaks the shipped code six
 ways and requires a NAMED check here to go red for each. A suite that would
@@ -354,8 +356,8 @@ def main() -> int:
           "floor when no reset was offered", t_turn_failed)
 
     # ───────────────────────────────────────────────────────────────────────
-    print("§5 the antigravity lane — the SEAM, not the wire (unmeasured, see "
-          "the module docstring)")
+    print("§5 the antigravity lane — the measured wall through the SAME seam, "
+          "timed by the reset the CLI named")
     os.environ["FAKEANTIGRAVITY_SCENARIO"] = "usage_limit"
     slug6, nid6 = mkorg("agywall", tier="pro")
 
@@ -368,14 +370,17 @@ def main() -> int:
         fz = n.get("frozen")
         assert isinstance(fz, dict), f"no freeze record: {fz!r}"
         eq(fz.get("limit"), True, "a limit freeze")
-        # antigravity offers no machine reset on this lane at all
-        eq(fz.get("reset_src"), "probe", "no reset time exists here")
+        # the CLI names its reset as a duration ("Resets in 165h21m54s");
+        # the leg parses it into the machine reset the freeze thaws on
+        eq(fz.get("reset_src"), "provider", "the CLI's own reset, parsed")
+        want = time.time() + 165 * 3600 + 21 * 60 + 54
+        assert abs(float(fz.get("until_ts") or 0) - want) < 60,             f"until_ts {fz.get('until_ts')} vs ~{want} (probe floor = +300)"
         replay = fz.get("resume_texts") or []
         eq(len(replay), 1, "one replay text")
         assert replay[0].endswith("antigravity thing"), replay
         assert supervisor.resumable(n), "▶ must resume it"
-    check("§5 an antigravity failure whose text names a quota freezes through "
-          "the SAME seam (wire wording unverified)", t_antigravity)
+    check("§5 the measured antigravity wall freezes through the SAME seam, "
+          "on its own reset", t_antigravity)
 
     # ───────────────────────────────────────────────────────────────────────
     print("§6 the horizon guard, on the shared constant")

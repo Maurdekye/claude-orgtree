@@ -3,6 +3,7 @@ import type { ReactNode } from 'react'
 import {
   audienceAction, BASE, clearInbox, createOrg, deleteOrg,
   fileBase, fileUrl, getAudiences, getDefaults, getEvents, getHost, getInbox, getOrgMd,
+  getAntigravityUsage, getAntigravityUsagePeek,
   getCodexUsage, getCodexUsagePeek, getOrgNet, getProviders, getSweepPreview, getTree,
   getUsageAll, getUsagePeek, killAll, listOrgs,
   markRead, openWs,
@@ -212,8 +213,12 @@ export default function App() {
   // interval is only the floor.
   const usagePeek = usePolled(BASE ? noUsagePeek : getUsagePeek, [], 60000)
   const codexUsagePeek = usePolled(BASE ? noUsagePeek : getCodexUsagePeek, [], 60000)
+  // the Antigravity standing is observed from turns (a wall + its reset),
+  // never fetched — the same cache-only contract, so it may ride the glow
+  const agyUsagePeek = usePolled(BASE ? noUsagePeek : getAntigravityUsagePeek, [], 60000)
   const usageAlert = useMemo(
-    () => usagePeak(usagePeek, codexUsagePeek), [usagePeek, codexUsagePeek])
+    () => usagePeak(usagePeek, codexUsagePeek, agyUsagePeek),
+    [usagePeek, codexUsagePeek, agyUsagePeek])
   // D-202: which providers this machine actually has, for the usage button's
   // label. Polled rather than fetched once so installing a CLI mid-session is
   // picked up; unresolved is ALL_PRESENT, i.e. exactly today's wording.
@@ -1024,6 +1029,10 @@ export function UsageModal({ close }: { close: () => void }) {
   // and the panel's per-row buttons cannot drift apart.
   const all = usePolled(getUsageAll, [], 60000)
   const codex = usePolled(getCodexUsage, [], 60000)
+  // Antigravity: the last wall a turn hit and its parsed reset (the CLI
+  // publishes no readout — see antigravity_limits); with no wall on record
+  // the section carries the settled `unsupported` note, not an error
+  const agy = usePolled(getAntigravityUsage, [], 60000)
   // D-202. ⚠ `codex` IS TRUTHY ON A MACHINE WITH NO CODEX — measured, not
   // assumed: codex_limits.fetch returns {available:false, error:"Codex CLI is
   // not installed"} rather than nothing, so the bare `codex &&` gate below
@@ -1038,7 +1047,8 @@ export function UsageModal({ close }: { close: () => void }) {
         {/* the codex half only counts toward "still loading" while it is a
             half this machine has — otherwise a Codex-less box would skip the
             spinner and show a blank modal until the Claude bars land */}
-        {!all && !(shown.openai && codex) ? <div className="dim">loading…</div>
+        {!all && !(shown.openai && codex) && !(shown.google && agy)
+          ? <div className="dim">loading…</div>
           : <>
           {(all?.accounts ?? []).map((a) => (
             <div className="usage-acct" key={a.account}>
@@ -1056,6 +1066,13 @@ export function UsageModal({ close }: { close: () => void }) {
               <span className="dim"> · {codex.label}</span>
             </div>
             <UsageBars u={codex} />
+          </div>}
+          {shown.google && agy && <div className="usage-acct" key={agy.account}>
+            <div className="usage-acct-head">
+              <span className="acct-label">{agy.provider ?? 'Antigravity'}</span>
+              <span className="dim"> · {agy.label}</span>
+            </div>
+            <UsageBars u={agy} />
           </div>}
           </>}
         {all && !(all.accounts ?? []).length &&

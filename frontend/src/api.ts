@@ -337,6 +337,13 @@ export const getUsagePeek = (): Promise<UsagePeek> => req('/api/usage/peek')
 export const getCodexUsage = (): Promise<AccountUsage> => req('/api/codex/usage')
 // cache-only, like the Claude peek above
 export const getCodexUsagePeek = (): Promise<UsagePeek> => req('/api/codex/usage/peek')
+// the Antigravity standing is OBSERVED from turns (the CLI has no readout),
+// so both doors are cache-only; the modal one still owns the install/sign-in
+// wording and the always-on glow polls the bare peek
+export const getAntigravityUsage = (): Promise<AccountUsage> =>
+  req('/api/antigravity/usage')
+export const getAntigravityUsagePeek = (): Promise<UsagePeek> =>
+  req('/api/antigravity/usage/peek')
 // ---- machine-local account routing (user redesign 2026-08-25) ----------
 // The primary row is the machine's own login; `keys` are pasted
 // `claude setup-token` fallbacks. NO token material in any response — a key

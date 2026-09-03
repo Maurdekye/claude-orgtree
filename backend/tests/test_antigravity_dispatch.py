@@ -411,6 +411,76 @@ def main():
     check("gate: connected passes; signed-out, kiosk and headless refuse "
           "naming the remedy (no keyed login exists on this provider)", t8)
 
+    print("§9 the MEASURED usage wall through the real leg: frozen on the "
+          "CLI's own reset, and the account standing follows (D-209)")
+    from orgtree import antigravity_limits, turnusage       # noqa: PLC0415
+    antigravity_limits.invalidate()
+    WALL_SECS = 165 * 3600 + 21 * 60 + 54                    # "165h21m54s"
+    s9, n9 = mkorg("wall")
+    os.environ["FAKEANTIGRAVITY_SCENARIO"] = "usage_limit"
+    os.environ.pop("FAKEANTIGRAVITY_RESET_IN", None)
+
+    def t9():
+        t0 = time.time()
+        run_turn(s9, n9, "hit the wall")
+        fz = node_doc(s9, n9).get("frozen") or {}
+        eq(fz.get("limit"), True, "frozen as a usage limit")
+        eq(fz.get("reset_src"), "provider",
+           "timed by the reset the CLI itself named — not the probe floor")
+        until = float(fz.get("until_ts") or 0)
+        assert abs(until - (t0 + WALL_SECS)) < 30, \
+            f"until_ts {until} vs {t0 + WALL_SECS} (a probe floor would be +300)"
+        assert "probing" not in str(fz.get("until")), fz.get("until")
+        assert "Individual quota reached" in str(fz.get("error")), fz
+        # the replay is the CONSUMED prompt — the whole turn envelope (org
+        # state + usage board + the text), which is what the CLI was handed
+        assert str((fz.get("resume_texts") or [""])[-1]).endswith("hit the wall"),             "the consumed prompt replays on thaw"
+        err = supervisor.state(s9, n9).get("last_error") or ""
+        assert "Individual quota reached" in err, err
+        snap = antigravity_limits.snapshot()
+        eq((snap["available"], snap["limits"][0]["percent"],
+            snap["limits"][0]["label"]),
+           (True, 100.0, "individual quota"), "the standing holds the wall")
+        assert abs(float(supervisor.time.time()) - t0) < 60   # sanity
+        block = turnusage.render(store.load_org(s9), n9,
+                                 selected_provider="google")
+        line = [l for l in block.splitlines()
+                if l.startswith("antigravity/account*")][0]
+        assert "provider_window | 100% |" in line and line.endswith("| frozen"), \
+            line
+    check("a wall freezes the node on its own reset (~6d21h, source "
+          "'provider'), records the standing, and the board row reads it", t9)
+
+    def t9b():
+        os.environ["FAKEANTIGRAVITY_SCENARIO"] = "text"
+        sb, nb = mkorg("thaw")
+        run_turn(sb, nb, "hello again")
+        eq(node_doc(sb, nb).get("frozen"), None, "a plain turn is not frozen")
+        eq(antigravity_limits.snapshot()["available"], False,
+           "a completed turn clears the wall from the standing")
+    check("a completed turn on the same account clears the wall", t9b)
+
+    def t9c():
+        os.environ["FAKEANTIGRAVITY_SCENARIO"] = "usage_limit"
+        os.environ["FAKEANTIGRAVITY_RESET_IN"] = ""       # no reset named
+        sc, nc = mkorg("noreset")
+        t0 = time.time()
+        try:
+            run_turn(sc, nc, "a wall that names no reset")
+        finally:
+            os.environ.pop("FAKEANTIGRAVITY_RESET_IN", None)
+            os.environ["FAKEANTIGRAVITY_SCENARIO"] = "text"
+        fz = node_doc(sc, nc).get("frozen") or {}
+        eq((fz.get("limit"), fz.get("reset_src")), (True, "probe"),
+           "no reset named → the honest probe floor, as before")
+        assert abs(float(fz["until_ts"]) - (t0 + supervisor.PROBE_FLOOR)) < 30
+        snap = antigravity_limits.snapshot()
+        eq((snap["available"], snap["limits"][0]["resets_at"]),
+           (True, None), "the standing records the wall, undated")
+        antigravity_limits.invalidate()
+    check("a wall that names no reset still freezes — on the probe floor — "
+          "and stands undated", t9c)
+
     print()
     if FAIL:
         print(f"{PASS} passed, {len(FAIL)} FAILED")

@@ -8645,6 +8645,7 @@ def _antigravity_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
     boundary-delivery semantics mail already has.
     """
     from . import antigravityrun        # noqa: PLC0415 — antigravity lane only
+    from . import antigravity_limits    # noqa: PLC0415 — antigravity lane only
 
     n = org.node(nid)
     tier = str(n.get("model") or "")
@@ -8968,24 +8969,42 @@ def _antigravity_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
             raise RuntimeError(f"turn killed: exceeded the {TURN_TIMEOUT}s "
                                "per-message ceiling")
         tail = " | ".join(turn.stderr_tail[-3:])[:300]
-        detail = str(res_raw.get("stop_reason") or "")[:200]
+        reason = str(res_raw.get("stop_reason") or "")
+        detail = reason[:200]
         # D-209: the same seam the codex leg raises through. The CLI already
         # SURFACED its reason — a limit here stops the agent loudly rather
         # than silently — but without this it would never be FROZEN either,
         # so it got no reset time and never auto-resumed. Raising the shared
         # type is the whole change on this lane; the freeze policy lives in
         # one place.
-        # ⚠ UNMEASURED, and stated as such: no usage wall of this provider
-        # has been observed here. `stop_reason` carries whatever the CLI put
-        # in its ERROR result, and no limit-shaped sample of it exists — so
-        # it may or may not be prose `_looks_like_usage_limit` recognises.
-        # There is no reset time on this lane at all; a limit that IS
-        # recognised parks on the 5-minute probe floor.
+        # MEASURED 2026-09-03 02:36 local, the account's first wall: the
+        # ERROR result's `error` reads "Individual quota reached. Please
+        # upgrade your subscription to increase your limits. Resets in
+        # 165h21m54s." `_looks_like_usage_limit` recognises it (limit +
+        # quota/reached/resets) and the reset is the DURATION the sentence
+        # ends on. `antigravity_limits` parses that into the machine reset
+        # the freeze thaws on (source "provider", exactly like codex's
+        # resetsAt — no more 5-minute probe floor for a wall that names its
+        # reset) and records the wall as the account's standing for the
+        # usage board, the header modal and the glow, since the CLI has no
+        # readout to fetch one from. Parsed from the UNTRUNCATED reason: the
+        # duration is the last thing said, and the 200-character operator
+        # cut could lose it on a longer wording.
+        blob = detail or tail
+        reset_ts: float | None = None
+        if _looks_like_usage_limit(blob):
+            reset_ts = antigravity_limits.observe_wall(
+                reason or tail, tier=tier, now=time.time())
         raise _ProviderTurnFailed(
             "turn failed: the Antigravity CLI reported an error"
             + (f" — {detail}" if detail else "")
             + (f" — {tail}" if tail else ""),
-            blob=detail or tail)
+            blob=blob, reset_ts=reset_ts)
+    if status == antigravityrun.STATUS_COMPLETED:
+        # D-209's standing fold, this lane's shape: the wire carries no
+        # window telemetry, so a completed turn IS the observation — the
+        # account is not walled, and any wall on record is down
+        antigravity_limits.observe_clear()
     tu = res_raw.get("token_usage")
     final_recs: list[dict[str, Any]] = []
     if res_raw.get("agent_text"):

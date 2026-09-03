@@ -43,7 +43,8 @@ from . import crashreports
 from . import deployment
 from . import frozen_install
 from . import ledger as ledger_mod
-from . import (accounts, appsettings, bridgeauth, codex_limits, limits, net,
+from . import (accounts, antigravity_limits, appsettings, bridgeauth,
+               codex_limits, limits, net,
                providers, sandbox, store, subproxy, supervisor, warmpool)
 from .ledger import LedgerError, Org, USER, VIS_LEVELS, norm_dirs, norm_tools
 
@@ -2268,6 +2269,21 @@ async def codex_usage() -> dict[str, Any]:
 def codex_usage_peek() -> dict[str, Any]:
     """Cache-only Codex usage standing for the header warning glow."""
     return codex_limits.peek()
+
+
+@app.get("/api/antigravity/usage")
+def antigravity_usage() -> dict[str, Any]:
+    """The Antigravity account's standing for the header modal — OBSERVED,
+    never fetched. The CLI exposes no usage readout in print mode (measured;
+    see `antigravity_limits`), so this reads the last wall a turn hit and
+    the reset parsed from it. Synchronous: no process, no network."""
+    return antigravity_limits.fetch()
+
+
+@app.get("/api/antigravity/usage/peek")
+def antigravity_usage_peek() -> dict[str, Any]:
+    """Cache-only Antigravity standing for the header warning glow."""
+    return antigravity_limits.peek()
 
 
 # ------------------------------------------ machine-local account routing

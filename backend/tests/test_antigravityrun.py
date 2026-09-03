@@ -177,8 +177,9 @@ def main():
 
     def limit():
         _, r, _ = _run("usage_limit")
-        eq((r["status"], "Quota exceeded" in str(r["stop_reason"])),
-           ("failed", True), "limit")
+        eq((r["status"], "Individual quota reached" in str(r["stop_reason"]),
+            "Resets in 165h21m54s" in str(r["stop_reason"])),
+           ("failed", True, True), "limit")
     check("an ERROR result after init is a FAILED turn carrying the error "
           "text (the D-209 classifier's input)", limit)
 

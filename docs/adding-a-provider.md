@@ -84,6 +84,12 @@ What it looked like for codex, and what to reproduce per provider:
    "graceful interrupt" may legitimately be a KILL: the conversation store
    is written as the turn runs, so the next resume continues from the kill
    and the per-request usage the steps already reported is billed.]
+   [antigravity, D-233: usage+limit telemetry may be ABSENT from the wire
+   too — then the WALL is the telemetry: parse the reset out of the CLI's
+   own error ("Resets in 165h21m54s"), hand it to the freeze as a
+   provider reset, and record the account standing from the turn. Do not
+   open a "read-only" slash-command door on a panel's poll until you have
+   measured that it spends no turn — agy's print-mode `/quota` did.]
 5. **Price table**: web-verify input/cached/output per M for every tier,
    twice, with sources and dates in the code comment. [antigravity: key the
    table by the BASE model id the CLI is handed, with a non-zero fallback

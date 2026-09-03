@@ -24,9 +24,10 @@ FAKEANTIGRAVITY_SCENARIO:
                  denial message, and the run continues to SUCCESS
     canceled     the measured headless auto-deny outcome: result CANCELED,
                  empty response, the "no output produced" stderr line
-    usage_limit  a result ERROR naming a quota. ⚠ the SHAPE is measured
-                 (ERROR results carry `error`), the WORDING is invented: no
-                 antigravity usage wall has been captured here (D-209)
+    usage_limit  the MEASURED wall (2026-09-03, agy 1.1.24): a lone result
+                 ERROR after init, "Individual quota reached … Resets in
+                 165h21m54s." — FAKEANTIGRAVITY_RESET_IN overrides the
+                 duration text; empty means no reset named (D-209)
 
 `--conversation <id>` is honoured as a RESUME: the init echoes that id and
 the first delta is "RESUMED:<id> " so a suite can tell resume from fresh.
@@ -194,13 +195,18 @@ def main_turn():
                   "view_file"]}})
     _step(cid, 0, "DONE", "user_input")
     if SCENARIO == "usage_limit":
-        # ⚠ UNMEASURED WORDING (D-209): the shape is the measured ERROR
-        # result; no antigravity usage wall has been observed here.
+        # MEASURED 2026-09-03 02:36 local (agy 1.1.24, the account's weekly
+        # wall): a lone ERROR result after init, `usage` all zeros, rc=1,
+        # and the reset stated as a DURATION at the end of the sentence.
+        # FAKEANTIGRAVITY_RESET_IN overrides the duration text (a suite
+        # pins the parse, and "no reset named" is a scenario too).
+        reset_in = os.environ.get("FAKEANTIGRAVITY_RESET_IN", "165h21m54s")
         emit({"event": "result", "result": {
             "conversation_id": cid, "status": "ERROR", "response": "",
-            "error": ("Quota exceeded for quota metric 'Generate requests' "
-                      "and limit 'Generate requests per day'"),
-            "duration_seconds": 0.5, "num_turns": 1,
+            "error": ("Individual quota reached. Please upgrade your "
+                      "subscription to increase your limits."
+                      + (f" Resets in {reset_in}." if reset_in else "")),
+            "duration_seconds": 3.08, "num_turns": 1,
             "usage": _usage(0, 0, 0, 0)}})
         sys.exit(1)
     if SCENARIO == "canceled":

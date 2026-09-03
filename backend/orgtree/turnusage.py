@@ -14,7 +14,7 @@ import math
 import time
 from typing import Any, Final, cast
 
-from . import accounts, codex_limits, limits
+from . import accounts, antigravity_limits, codex_limits, limits
 from .ledger import Org
 
 OPEN: Final = "[PROVIDER USAGE"
@@ -461,10 +461,30 @@ def board(org: Org, nid: str, *, selected_provider: str = "",
                                "unavailable(telemetry-error)", "-", "-", "-",
                                "unavailable", selected=selected_provider == "openai")))
 
-        rows.append(((2, "account", 99, "", 0),
-                     _line("antigravity", "account", "usage",
-                           "unavailable(unsupported)", "-", "-", "-",
-                           "unsupported", selected=selected_provider == "google")))
+        # The Antigravity lane has no readout to cache: its evidence is the
+        # last wall a turn hit — 100%, reset parsed from the CLI's own
+        # message — standing until that reset passes or a turn succeeds.
+        # With nothing observed the explicit unsupported row stands, byte-
+        # identical to before, so a machine that never hit a wall sees no
+        # D-223 re-send.
+        try:
+            agy = antigravity_limits.snapshot(now)
+            if agy.get("available") and not agy.get("unsupported"):
+                rows += _cached_rows(
+                    agy, "antigravity", "account", now,
+                    selected_provider == "google", frozen, freeze_reset)
+            else:
+                rows.append(((2, "account", 99, "", 0),
+                             _line("antigravity", "account", "usage",
+                                   "unavailable(unsupported)", "-", "-", "-",
+                                   "unsupported",
+                                   selected=selected_provider == "google")))
+        except Exception:  # noqa: BLE001
+            rows.append(((2, "account", 99, "", 0),
+                         _line("antigravity", "account", "usage",
+                               "unavailable(telemetry-error)", "-", "-", "-",
+                               "unavailable",
+                               selected=selected_provider == "google")))
 
         rows.sort(key=_row_order)
         lines = [line for _key, line in rows]

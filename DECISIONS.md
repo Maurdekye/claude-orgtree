@@ -8716,3 +8716,50 @@ test_providers.py` (four providers, openrouter last), `backend/tests/
 test_app_settings.py` (the fourth admission switch), and `frontend/tests/
 openrouter.test.tsx` (the key row and the picker's select/deselect against
 a scripted payload).
+
+### D-233 · the Antigravity standing is observed from the wire, not fetched — and a wall names its own reset
+Measured 2026-09-03 02:36 local (agy 1.1.24, a Google AI Pro login): the
+account's first usage wall arrived as a lone ERROR result after `init` —
+`"Individual quota reached. Please upgrade your subscription to increase your
+limits. Resets in 165h21m54s."` — `usage` all zeros, rc=1; the CLI's own log
+carries the same text as `RESOURCE_EXHAUSTED (code 429)` after two automatic
+retries. The lane had shipped (D-209, re-walked in D-231) with the wall
+UNMEASURED: the freeze fired on the broad predicate but parked on the
+5-minute probe floor, and the turn envelope's board carried
+`antigravity/account | usage | unavailable(unsupported)` because print mode
+exposes no window telemetry. Two facts settle what the lane can honestly
+know. ① THE WALL NAMES ITS RESET, as a duration at the end of the sentence.
+`antigravity_limits.reset_in_seconds` reads the compact `165h21m54s` run (and
+the worded forms); the leg parses it from the UNTRUNCATED `stop_reason` and
+hands it to `_ProviderTurnFailed.reset_ts`, so `freeze_provider_limit` times
+the thaw as source `provider` — banded on `limits.MAX_HORIZON` exactly like
+codex's `resetsAt`. A wall that names no reset still falls to the probe
+floor. ② THERE IS NOTHING TO FETCH. The changelog's print-mode `/quota`,
+`/usage` and `/credits` are documented as answering "without spending
+quota", but measured on the walled account each went to the model and
+answered with the wall (`num_turns: 1`); their structured payload therefore
+stays unmeasured until the quota resets, and no door that could spend a turn
+is opened by a panel's poll. So the standing is OBSERVED: the last wall a
+turn hit IS the account's standing — one `provider_window` at 100%,
+critical, active, `resets_at` the parsed instant, labelled by the metric the
+message names (`individual quota`) — until that instant passes or a completed
+turn on the lane clears it. It persists in `<data>/antigravity/standing.json`
+because, unlike the other lanes, nothing can re-read it after a restart.
+Surfaces: the turn envelope's board renders the row (`limit-active`, or
+`frozen` on the selected node) and keeps the byte-identical unsupported row
+when nothing was ever observed — no D-223 re-send on a machine that never
+hit a wall; `/api/antigravity/usage` and `/peek` feed the header usage
+modal's Antigravity section (the settled `unsupported` note when quiet, the
+bar when walled) and the near-the-wall glow. Bounds: the window KIND is
+`provider_window`, deliberately — the CLI states remaining time, never the
+window's length, and a 165-hour reset is not proof of a weekly lane; the
+word `unsupported` stays on the empty board row because it remains true that
+the lane publishes no percentages; the `/quota` JSON shape is a probe for
+after the reset, not a guess. Load-bearing: `backend/tests/
+test_antigravity_limits.py` (the parse, the lifecycle, the board row, the
+provider-timed freeze, persistence, the API doors), `test_antigravity_
+dispatch.py` §9 (the wall through the REAL leg: `reset_src == "provider"`,
+`until_ts` ≈ +165h21m54s, the standing and the board row; a reset-less wall
+→ probe), `test_provider_limit_freeze.py` §5 (measured now, no longer "by
+construction"), `test_antigravityrun.py` §3 and `frontend/tests/
+antigravityusage.test.tsx` (the section, the quiet note, the glow).
