@@ -581,18 +581,48 @@ class Org:
                              "changed today; review and tighten it in the kiosk "
                              "panel. Retooling within the ceiling is now open to "
                              "visitors (the /scope freeze is lifted).")})
+        # MAIL IDS. Ids arrived after the first mail did, so pre-id entries
+        # really do need repairing — they render with no retraction ✕ and 404
+        # the DELETE with a false excuse. What changed on 2026-09-03 is WHERE
+        # the repair happens, and it is split by what the section COSTS.
+        #
+        # `user_inbox` (8,614 B) and `mail` (69,311 B) are small and hot, so
+        # they keep the original per-load guarantee — `test_ledger.py`'s
+        # "legacy node mail gets ids on load" pins exactly that, deliberately,
+        # and it is cheap enough to honour unconditionally.
+        #
+        # `mail_log` is not: 4,792,199 B, 44.4% of the live 10.8 MB document,
+        # 2,256 entries (MEASURED). Walking it forced the whole archive into
+        # memory on EVERY construction. MEASURED on the JSON backend, the walk
+        # ISOLATED from the parse (median of 25, live document): 3.04 ms over
+        # 2,310 entries, against 0.07 ms over the 50 that remain. ⚠ That ~3 ms
+        # is INVISIBLE end to end there — `json.loads` alone is 37.7 ms and
+        # jitters by more than the saving, so an end-to-end `load_org`
+        # comparison on JSON shows nothing and would talk you out of this. The
+        # SQLite store loads
+        # sections lazily and never touches `mail_log` on a plain read, and
+        # there the same walk was 35.3 ms on a 12 ms load, single-handedly
+        # cancelling the laziness (`sqlite-review`, both backends
+        # interleaved). ⚠ MEASURE A CHANGE HERE ON BOTH BACKENDS: the same
+        # edit is worth ~9% on one and ~4x on the other, and the JSON number
+        # alone would talk you out of it.
+        #
+        # It was a WRITE cost too, which is the half nobody sees: `setdefault`
+        # evaluates `uuid4()` eagerly, so an id-less entry got a DIFFERENT id
+        # every construction — under compare-on-save the section then differs
+        # from its snapshot every time, and every load+save rewrote the whole
+        # 4.4 MB archive with no application change at all.
         for m in self.d.get("user_inbox", []):       # per-mail read tracking needs ids
             m.setdefault("id", uuid.uuid4().hex[:8])
-        # node mail needs ids too (retraction keys on them); pre-id entries
-        # otherwise render with no ✕ and 404 the DELETE with a false excuse
-        for box in ("mail", "mail_log"):
-            # non-literal key → cast; both boxes hold {node: [entry, ...]}
-            for ms in cast("dict[str, list[Any]]", self.d.get(box) or {}).values():
-                for m in ms:
-                    if isinstance(m, dict):
-                        # cast: isinstance narrows Any to dict[Unknown, Unknown]
-                        cast("dict[str, Any]", m).setdefault(
-                            "id", uuid.uuid4().hex[:12])
+        # non-literal key → cast; the box holds {node: [entry, ...]}
+        for ms in cast("dict[str, list[Any]]", self.d.get("mail") or {}).values():
+            for m in ms:
+                if isinstance(m, dict):
+                    # cast: isinstance narrows Any to dict[Unknown, Unknown]
+                    cast("dict[str, Any]", m).setdefault(
+                        "id", uuid.uuid4().hex[:12])
+        self._backfill_mail_log_ids()
+
         # ☞ NEW TIERS REACH EXISTING ORGS. `Org.create` COPIES the module
         # tables into the doc (`"tiers": dict(TIERS)`), so every org carries
         # its own frozen set and adding a tier to the constant does nothing for
@@ -1528,6 +1558,46 @@ class Org:
                     + ". Address the full form to pick one.")
         return to
 
+    #: bumped only if a future shape needs re-repairing; the marker is what
+    #: makes this run once rather than once per load
+    MAIL_LOG_ID_MIGRATION = "mail_log_ids"
+
+    def _backfill_mail_log_ids(self) -> None:
+        """Give pre-id `mail_log` entries an id, ONCE per document.
+
+        The archive is 44.4% of the live document, so unlike `mail` and
+        `user_inbox` above it cannot be re-walked on every construction — see
+        the note at the call site for both backends' numbers.
+
+        ⚠ MARKER-KEYED, on the convention this file already uses for
+        `pm_plan_stamp_heal`: it runs once, records what it repaired, and a
+        document that has been through it is untouched thereafter. "Cheap
+        enough to redo each time" is exactly the property that made the old
+        walk invisible for a month.
+
+        ⚠ ONCE THE MARKER IS SET, an id-less archive entry would stay that
+        way. That is safe because nothing can create one: every `mail_log`
+        writer copies an entry minted by `post_mail`/`post_external_mail`
+        (which assign `uuid4().hex[:12]`), and `to_user_inbox` now mints at
+        its own door. It is a deliberate trade — defending against an entry
+        that cannot exist is not worth touching 4.4 MB on every load — and
+        `test_mail_id_backfill.py` §4 pins it so it is a decision on the
+        record rather than an accident.
+        """
+        migs = self.d.setdefault("_migrations", {})
+        if self.MAIL_LOG_ID_MIGRATION in migs:
+            return
+        fixed = 0
+        for ms in cast("dict[str, list[Any]]",
+                       self.d.get("mail_log") or {}).values():
+            for m in ms:
+                if isinstance(m, dict):
+                    e = cast("dict[str, Any]", m)
+                    if not e.get("id"):
+                        e["id"] = uuid.uuid4().hex[:12]
+                        fixed += 1
+        migs[self.MAIL_LOG_ID_MIGRATION] = {"at": now(), "repaired": fixed}
+
     def to_user_inbox(self, entry: UserMailEntry) -> UserMailEntry:
         """Put one entry in the user's mailbox, on the right side of the read
         line. THE ONLY WAY anything should reach that mailbox.
@@ -1558,7 +1628,23 @@ class Org:
         the mail a user must not have silently pre-read. Getting this
         predicate wrong HIDES REAL MAIL, which is far worse than the bug it
         fixes, so it stays narrow.
+
+        ⚠ THE ID IS MINTED HERE, at the one door into this mailbox, and that
+        is what lets `_backfill_mail_ids` be a one-time migration instead of a
+        treadmill. AUDITED 2026-09-03: of fourteen call sites, FOUR passed an
+        entry with no id — the two Fable-limit notices, the forwarded audience
+        request, and the weekly-limit decision — so the id could not simply be
+        assumed present, and the old per-load walk was genuinely still doing
+        work rather than being vestigial.
+        Fixing the four call sites would have left the fifth to whoever writes
+        it next; fixing the door cannot be forgotten. Per-mail read tracking
+        and retraction both key on this id, and under the SQLite store's
+        compare-on-save an id-less entry is worse than cosmetic: `setdefault`
+        mints a FRESH uuid on every construction, so the section differs from
+        its snapshot every time and every load+save rewrites the whole 4.4 MB
+        archive for nothing.
         """
+        cast("dict[str, Any]", entry).setdefault("id", uuid.uuid4().hex[:8])
         if entry.get("kind") == "notice":
             log = self.d.setdefault("user_mail_log", [])
             log.append(entry)
