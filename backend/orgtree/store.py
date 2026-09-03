@@ -2197,6 +2197,31 @@ def delete_org(slug: str) -> None:
             if os.path.exists(side):
                 with contextlib.suppress(OSError):
                     os.replace(side, dside)
+        # ⚠ …and the JSON-shaped artefacts of the same org. They are not
+        # sidecars of the database, but they ARE part of the org, and leaving
+        # them costs twice — both measured, `probes/p11_delete_resurrect.py`:
+        #
+        #  * `<slug>.json.premigration` exists for EVERY migrated org, so
+        #    after the cutover this is every delete: the deleted org's whole
+        #    document stays sitting in `orgs/`, readable, while the trash copy
+        #    holds only the database. Delete has to mean the document went
+        #    somewhere, not that half of it stayed where it was.
+        #  * a bare `<slug>.json` — an operator part-way through the
+        #    documented rollback, a backup tool, a hand-dropped file — becomes
+        #    "a .json with NO .db" the instant the database leaves, which is
+        #    exactly `pending_migrations`' definition of an unmigrated org.
+        #    The next start then REFUSES, naming a slug that no longer exists,
+        #    and the remedy its own wall prints (`ORGTREE_MIGRATE=1`) converts
+        #    that file into a live database: THE DELETED ORG COMES BACK.
+        #
+        # They travel under the same stem the database took, so the trash
+        # entry is still one org and putting it back is still the restore.
+        # Moved, never removed — №16's motto is that a delete is a rename.
+        stem, jp = dest[:-len(ext)], _json_path(slug)
+        for src, suffix in ((jp, ".json"), (jp + ".premigration", ".json.premigration")):
+            if os.path.exists(src):
+                with contextlib.suppress(OSError):
+                    os.replace(src, stem + suffix)
 
 
 # ---------------------------------------------------- external peer sightings

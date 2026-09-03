@@ -409,6 +409,19 @@ def s2_roundtrip() -> None:
         # Org.__init__ normalises nodes (scope defaults etc.) — compare
         # against the same normalisation applied to the source
         norm = Org(copy.deepcopy(doc)).d
+        # ⚠ …and `Org.__init__` also STAMPS. Since 46dc81e the `mail_log_ids`
+        # migration writes `_migrations.mail_log_ids.at = now()`, so two
+        # constructions disagree whenever they straddle a millisecond — and
+        # they do: this check failed in 3 runs out of 5 for that reason alone
+        # (sqlite-review, 2026-09-04; the flake is older than this branch —
+        # it needs only 46dc81e and this check, and I had two clean runs
+        # earlier tonight and believed them). The property here is that the
+        # STORE round-trips the document, not that two clocks agree. Normalise
+        # the stamps and nothing else: every other byte still has to match.
+        for x in (d, norm):
+            for m in (x.get("_migrations") or {}).values():
+                if isinstance(m, dict) and "at" in m:
+                    m["at"] = "<stamp>"
         eq(store.canon(d), store.canon(norm), "LazyDoc == Org(source).d: ")
     check("load_org's LazyDoc equals Org(source).d canonically", loaded_equals)
 
@@ -1219,9 +1232,17 @@ def s9_review() -> None:
         """REVIEW FINDING 4. §6.1 step 6 says code never removes a
         `.premigration` file, and `migrate_org` removed one anyway: the final
         `os.replace(jp, premigration)` overwrites. Reachable exactly on the
-        path `_ensure_migrated` exists for — delete the org (its `.db` goes to
-        the trash), restore an old `.json` by hand, and the second migration
-        lands on top of the only pre-migration copy of that org's history."""
+        path `_ensure_migrated` exists for — the database goes away, an old
+        `.json` is restored by hand, and the second migration lands on top of
+        the only pre-migration copy of that org's history.
+
+        ⚠ The precondition used to be built with `store.delete_org(slug)`,
+        which left the `.premigration` sitting in `orgs/` — and that was
+        REVIEW FINDING 9 (`probes/p11_delete_resurrect.py`): a delete that
+        takes the database and leaves the org's document behind. Now that
+        delete takes both, the state this check needs has to be built
+        explicitly. **The property under test is unchanged** — only the way
+        the precondition is reached, which was always incidental to it."""
         slug = "premig"
         with open(store._json_path(slug), "w", encoding="utf-8") as f:
             json.dump(synthetic_doc(slug), f)
@@ -1229,8 +1250,13 @@ def s9_review() -> None:
         first = store._premigration_path(slug)
         assert os.path.exists(first)
         marker = open(first, "rb").read()
-        # the delete-then-restore-a-.json path
-        store.delete_org(slug)
+        # the database goes, the .premigration stays: an operator removing a
+        # database by hand, or restoring an old .json over a root whose
+        # history was already converted once
+        store._POOL.close_all(slug)
+        for x in ("", "-wal", "-shm"):
+            if os.path.exists(store._db_path(slug) + x):
+                os.remove(store._db_path(slug) + x)
         with open(store._json_path(slug), "w", encoding="utf-8") as f:
             json.dump({"slug": slug, "name": "restored by hand"}, f)
         store._ensure_migrated(slug)
@@ -1241,6 +1267,49 @@ def s9_review() -> None:
         eq(len(extra), 1, "the second migration's source was not kept: ")
     check("migrate_org never overwrites an existing .json.premigration",
           premigration_is_never_overwritten)
+
+    def delete_takes_the_whole_org() -> None:
+        """REVIEW FINDING 9 (`probes/p11_delete_resurrect.py`), found by
+        diffing check-level parity in `test_turn_lifecycle`: the live backend
+        refused to restart naming two orgs the suite had just DELETED.
+
+        `delete_org` renamed `<slug>.db` and its `-wal`/`-shm` and left every
+        JSON-shaped artefact of the same org sitting in `orgs/`. Two costs:
+
+        * `<slug>.json.premigration` exists for EVERY migrated org, so after
+          the cutover this was every delete — the deleted org's whole document
+          stayed readable in `orgs/` while the trash held only the database.
+        * a bare `<slug>.json` (an operator part-way through the documented
+          rollback) became "a .json with NO .db" the instant the database
+          left, which is exactly `pending_migrations`' definition of an
+          unmigrated org. The next start REFUSED, naming a slug that no longer
+          existed, and the remedy its own wall printed (`ORGTREE_MIGRATE=1`)
+          converted that file into a live database: the deleted org came back.
+        """
+        trash = os.path.join(store.DATA_ROOT, "deleted")
+        slug = "delwhole"
+        with open(store._json_path(slug), "w", encoding="utf-8") as f:
+            json.dump(synthetic_doc(slug), f)
+        store.migrate_org(slug)                  # → .db + .json.premigration
+        with open(store._json_path(slug), "w", encoding="utf-8") as f:
+            json.dump({"slug": slug, "name": "half-done rollback"}, f)
+        before = sorted(f for f in os.listdir(orgs_dir()) if f.startswith(slug))
+        eq(before, [f"{slug}.db", f"{slug}.json", f"{slug}.json.premigration"],
+           "fixture: ")
+        store.delete_org(slug)
+        left = sorted(f for f in os.listdir(orgs_dir()) if f.startswith(slug))
+        eq(left, [], "delete left part of the org behind in orgs/: ")
+        assert slug not in store.pending_migrations(), \
+            "a DELETED org is reported as pending migration — the next start refuses"
+        gone = sorted(f for f in os.listdir(trash) if f.startswith(slug + "-"))
+        for suffix in (".db", ".json", ".json.premigration"):
+            assert any(f.endswith(suffix) for f in gone), (suffix, gone)
+        # one stem, so the trash entry is still ONE org and putting it back is
+        # still the restore
+        eq(len({f.split(".")[0] for f in gone}), 1, f"stems in {gone}: ")
+    check("delete_org takes the WHOLE org — the .json and the .premigration "
+          "travel with the database, so a deleted org is never 'pending' and "
+          "never comes back", delete_takes_the_whole_org)
 
     def premigration_identical_is_not_duplicated() -> None:
         """The other half of REVIEW FINDING 4, found by the migration-kill
