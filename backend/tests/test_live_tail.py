@@ -193,6 +193,20 @@ class World:
         with supervisor._state_lock:
             st["live"] = [r for r in (st.get("live") or []) if r.get("sticky")]
 
+    # --- mid-turn mail: real to the org, invisible to the CLI's transcript
+    def steer(self, text: str, at: str) -> None:
+        """Deliver mail INTO the running turn.
+
+        It rides PostToolUse hook context, which the CLI never writes to its
+        transcript — so the org's `steered_log` is the durable copy and
+        `read_chat` synthesizes the row from it, interleaved by timestamp.
+        `at` is that stamp, and it is the whole point: a steer lands in the
+        MIDDLE of a turn, after rows the agent has already produced."""
+        org = store.load_org(self.slug)
+        org.d.setdefault("steered_log", {}).setdefault(self.nid, []).append(
+            {"at": at, "text": text})
+        store.save_org(org)
+
     def destroy(self) -> None:
         try:
             store.delete_org(self.slug)
@@ -694,7 +708,106 @@ def main() -> int:
     check("an identical text in an EARLIER turn is not a twin",
           _history_never_supplies_a_twin)
 
-    # ------------------------------------------------------------ ⑥ epilogue
+    # ------------------------------------------- ⑥ a steer is not a boundary
+    print()
+    print("mid-turn mail — the row the CLI never wrote (user report 2026-09-03)")
+
+    # WHY. "Double messages for in-progress message events that haven't
+    # finished streaming, but are present in the transcript." A text row is
+    # matched inside THIS TURN, and the turn was found by scanning back for
+    # `role == "user"` — but `read_chat` synthesizes a user row for every
+    # mid-turn mail out of `steered_log`, because the CLI transcripts none of
+    # it. A steer arriving just after a reply therefore cut the turn to the
+    # rows after itself (usually none), the reply's durable twin fell outside
+    # the match window, and the live row stayed on screen beside it.
+    #
+    # The chronology backstop could not cover for it: it retires rows older
+    # than the newest durable stamp minus 2 s, and the newest stamp IS the
+    # steer — so the one message the steer interrupted sits inside the guard.
+    # Measured over the live org: 16 real stranding events, median 10.2 s on
+    # screen, p90 54.6 s, max 123 s. Long enough to read twice.
+
+    def _steer_does_not_strand_the_reply_it_interrupted():
+        w = World("steer")
+        try:
+            w.write_user("go")
+            w.emit_text("on it — reading the file now")   # shown live
+            w.write_text("on it — reading the file now")  # …and now durable
+            # mail lands mid-turn, stamped after everything the CLI wrote
+            w.steer("[MAIL] FROM coordinator …", "2026-08-04T06:00:00.000Z")
+            c = w.poll()
+            assert durable_steps(c) == ["text:on it — reading the file now"],                 durable_steps(c)
+            assert c["live"] == [], (
+                "the reply the steer interrupted rendered TWICE — its twin is "
+                "in the transcript and the live row survived: "
+                + repr(live_steps(c)))
+        finally:
+            w.destroy()
+    check("mid-turn mail does not strand the reply it interrupted",
+          _steer_does_not_strand_the_reply_it_interrupted)
+
+    def _every_reply_before_the_steer_retires():
+        # the strand is not limited to the last row: everything the agent said
+        # this turn fell outside the cut window at once
+        w = World("steer-many")
+        try:
+            w.write_user("go")
+            for i in range(4):
+                w.emit_text(f"step {i}")
+                w.write_text(f"step {i}")
+            w.steer("[MAIL] …", "2026-08-04T06:00:00.000Z")
+            c = w.poll()
+            assert c["live"] == [], (
+                f"4 replies, all with twins, {len(c['live'])} stranded: "
+                + repr(live_steps(c)))
+        finally:
+            w.destroy()
+    check("a steer strands none of the turn's earlier replies either",
+          _every_reply_before_the_steer_retires)
+
+    def _the_steer_itself_still_renders():
+        # the fix must not cost the steer its own bubble — it is the only
+        # durable copy of a message the CLI never transcripted
+        w = World("steer-shown")
+        try:
+            w.write_user("go")
+            w.write_text("hello")
+            w.steer("[MAIL] FROM coordinator · a request",
+                    "2026-08-04T06:00:00.000Z")
+            c = w.poll()
+            steers = [m for m in c["messages"] if m.get("steered")]
+            assert len(steers) == 1, [m.get("role") for m in c["messages"]]
+            assert steers[0]["role"] == "user"
+            assert "FROM coordinator" in steers[0]["text"]
+        finally:
+            w.destroy()
+    check("the steered row is still rendered as its own user message",
+          _the_steer_itself_still_renders)
+
+    def _a_real_user_row_is_still_a_boundary():
+        # …and the widening stops at the first row the CLI ACTUALLY wrote.
+        # Skipping synthesized rows must not walk the window back into
+        # history, where an old phrase would false-retire a live row (D-50).
+        w = World("steer-bound")
+        try:
+            w.write_user("go")
+            w.write_text("done.")            # LAST turn said it, and it landed
+            w.write_user("again")            # a real boundary — the CLI wrote it
+            w.emit_text("done.")             # this turn says it; no twin yet
+            w.steer("[MAIL] …", "2026-08-04T06:00:00.000Z")
+            c = w.poll()
+            assert live_steps(c) == ["text:done."], (
+                "skipping the steer widened the window past a REAL user row, "
+                "so last turn's phrase retired this turn's live row: "
+                + repr(live_steps(c)))
+            w.write_text("done.")            # its own twin lands
+            assert w.poll()["live"] == []
+        finally:
+            w.destroy()
+    check("a steer is skipped; a real user row still bounds the turn",
+          _a_real_user_row_is_still_a_boundary)
+
+    # ------------------------------------------------------------ ⑦ epilogue
     print()
     print("─" * 72)
     if FAIL:

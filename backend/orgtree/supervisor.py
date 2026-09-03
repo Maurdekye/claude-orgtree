@@ -18924,7 +18924,31 @@ def _sweep_live(slug: str, nid: str, msgs: list[dict[str, Any]]) -> list[dict[st
     D-50 holds throughout: every retirement still names the evidence."""
     turn = msgs
     for i in range(len(msgs) - 1, -1, -1):
-        if msgs[i].get("role") == "user":
+        # ⚠ A STEER IS NOT A TURN BOUNDARY (user report 2026-09-03: "double
+        # messages for in-progress message events ... but are present in the
+        # transcript"). Mid-turn mail rides PostToolUse hook context the CLI
+        # never transcripts, so read_chat SYNTHESIZES a `role:"user"` row for
+        # it from `steered_log` and interleaves it by timestamp. That row is
+        # an injection INTO a running turn, not the start of one — but this
+        # scan took it for a boundary, so a steer landing just after an
+        # assistant message cut `turn` down to the rows after the steer,
+        # usually none. `durable_texts` then counted 0 copies of a reply whose
+        # durable twin was sitting right there, `covered` said no, and the
+        # live row rendered a SECOND time beside its own transcript row.
+        #
+        # The chronology backstop could not cover for it either: it retires
+        # rows older than the newest durable stamp minus 2 s, and the newest
+        # stamp IS the steer — so precisely the message the steer interrupted
+        # falls inside the 2 s guard. The strand therefore outlived the match
+        # entirely and only ended when some LATER durable row moved the
+        # cutoff past it. Measured over the live org (2026-09-03): 16 real
+        # stranding events, the duplicate on screen for a median of 10.2 s,
+        # p90 54.6 s, max 123 s.
+        #
+        # Only rows the CLI really wrote bound a turn. `steered` marks the
+        # ones read_chat invented (the `fold` receipts are `role:"system"`
+        # and never reached here).
+        if msgs[i].get("role") == "user" and not msgs[i].get("steered"):
             turn = msgs[i + 1:]
             break
 
