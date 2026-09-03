@@ -43,7 +43,8 @@ from . import (accounts, appsettings, cachecontinuity, clipin, codex_limits,
                deployment, envelope, imgblock,
                limits, net, openrouter, providers, sandbox as sbx, store,
                tokens, turnusage, warmpool)
-from .ledger import EXTERN, SYSTEM, USER, LedgerError, Org, expand_mcp, now as now_iso
+from .ledger import (EXTERN, SYSTEM, USER, LedgerError, Org, expand_mcp,
+                     freeze_describes_provider, now as now_iso)
 from .schema import (Denial, FrozenInfo, InflightInfo, KioskCfg, MailEntry,
                      NodeDoc, NoticeEntry, TurnStat)
 
@@ -15053,8 +15054,10 @@ def _resumable(n: NodeDoc) -> FrozenInfo | None:
     # True flag here without exempting it makes ▶ skip the node FOREVER: this
     # is the pre-№41 spend-freeze trap in a new form, and `untrusted` fell
     # straight into it on the day it was added (2026-08-18).
-    if any(k not in ("limit", "connection", "on_fallback", "untrusted")
-           and v is True for k, v in fz.items()):
+    # (`freeze_describes_provider` is the one implementation of this
+    # exemption list — `switch_model` asks it the same question when a
+    # crossing invalidates a freeze, D-182.)
+    if not freeze_describes_provider(fz):
         return None
     return fz
 

@@ -35,8 +35,9 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Final, Literal, cast
 
 from . import clipin, deployment
-from .schema import (AudienceGrant, DirGrant, MailEntry, NodeDoc, NoticeEntry,
-                     OrgDoc, OrgInboxEntry, ToolGrant, UserMailEntry)
+from .schema import (AudienceGrant, DirGrant, FrozenInfo, MailEntry, NodeDoc,
+                     NoticeEntry, OrgDoc, OrgInboxEntry, ToolGrant,
+                     UserMailEntry)
 
 # §3.1 — derived from published API pricing: a seat is the API $ per M INPUT
 # tokens at the STANDING price. Promos never set seats — the sonnet-intro
@@ -299,6 +300,28 @@ def now() -> str:
     # AFTER new "…:00.123Z" ones — harmless across the format transition.)
     d = datetime.now(timezone.utc)
     return d.strftime("%Y-%m-%dT%H:%M:%S.") + f"{d.microsecond // 1000:03d}Z"
+
+
+# kind flags that are QUALIFIERS on a provider-scoped freeze (a usage limit,
+# a network drop) rather than kinds of their own — mirrors
+# supervisor._resumable's own exemption list exactly.
+_PROVIDER_SCOPED_FREEZE_FLAGS: Final = ("limit", "connection", "on_fallback",
+                                        "untrusted")
+
+
+def freeze_describes_provider(fz: FrozenInfo) -> bool:
+    """Is this freeze ABOUT the node's provider/session — a usage limit, a
+    network drop, or an auth rejection (`cause` is a string, never a flag, so
+    it never trips this test) — rather than a GLOBAL/org-owned kind (kiosk
+    `spend`) that has nothing to do with which provider the node runs on?
+
+    Shared between `switch_model` (a crossing invalidates a freeze this says
+    Yes to — the provider it described is gone) and
+    `supervisor._resumable` (▶ resume acts on exactly the same freezes) so
+    the two questions can never drift apart — D-182's standing warning about
+    two copies of one rule."""
+    return not any(k not in _PROVIDER_SCOPED_FREEZE_FLAGS and v is True
+                   for k, v in fz.items())
 
 
 # One quoted span (a node id, a user gist, a model name) or a number is what
@@ -3666,7 +3689,41 @@ class Org:
         # more than one that surfaces on their next message.
         pred_id: str | None = None
         old_sid: str | None = None
+        # ⚠ a NEW key, not the generic `drive` other ops return: `drive`'s
+        # callers (both API doors) hard-code an "you were ARCHIVED and
+        # waited" message that would be a lie here — this node was live the
+        # whole time, just frozen. Named so its own caller can send its own
+        # accurate wording.
+        resume_stale_freeze: list[str] = []
         if crossed:
+            # freeze-clear (2026-09-03): a `frozen` marker is a claim about
+            # OLD's provider — out of capacity, a network drop, a rejected
+            # credential — and a crossing means the node is no longer on
+            # that provider, so the claim describes nothing anymore. Popped
+            # here, not merely masked, exactly like `_archive_session_in_
+            # place` already zeroes `frozen` on the BEARER copy below; this
+            # is the same reset applied to the LIVE successor, which that
+            # call never touches. `freeze_describes_provider` keeps a
+            # GLOBAL/org-owned kind (kiosk `spend`) untouched — that claim
+            # has nothing to do with which provider this node runs on. A
+            # freeze this pops is not silently forgotten:
+            # `resume_stale_freeze` wakes the node once the switch lands, so
+            # if TIER is *also* out of capacity the very next turn
+            # re-freezes it for that reason instead of sitting "live" while
+            # unable to do anything.
+            old_freeze = n.get("frozen")
+            if isinstance(old_freeze, dict) and freeze_describes_provider(
+                    cast(FrozenInfo, old_freeze)):
+                n.pop("frozen", None)
+                resume_stale_freeze.append(nid)
+                warnings.append(
+                    f"{nid} was frozen on {providers.provider_of(old)} — "
+                    f"that described a usage limit/connection/auth problem "
+                    f"on the provider it just left, so it no longer "
+                    f"describes anything and was cleared. If "
+                    f"{providers.provider_of(tier)} is ALSO out of "
+                    f"capacity, {nid} will simply re-freeze for that "
+                    f"provider's own reason on its next turn.")
             # ⚠ NOT an in-place mint. That was this fix's first shape
             # (0b50a42) and it is how the desk went blank: `session_id` was
             # overwritten under a session that was REAL — hours of transcript
@@ -3766,7 +3823,8 @@ class Org:
                   warnings)
         return {"model": tier, "seat": self.d["tiers"][tier],
                 "freed": max(0, -delta), "queued": False,
-                "warnings": warnings, **split, **queued}
+                "warnings": warnings, "resume_stale_freeze": resume_stale_freeze,
+                **split, **queued}
 
     def apply_pending_switch(self, nid: str) -> dict[str, Any] | None:
         """D-234: the turn the queue waited for is over — apply it, or say

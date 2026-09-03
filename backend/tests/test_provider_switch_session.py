@@ -677,6 +677,84 @@ def main() -> int:
         assert store.load_org(slug).node(nid)["model"] == "opus"
     check("the API doors' live busy answer queues too", t7i)
 
+    print("\n§8 freeze-clear: a crossing invalidates a STALE provider freeze")
+
+    def freeze(slug, nid, fz):
+        with store.DOC_LOCK:
+            o = store.load_org(slug)
+            o.node(nid)["frozen"] = dict(fz)
+            store.save_org(o)
+
+    def t8a():
+        # the reported bug: antigravity (flash) hit its provider window, the
+        # node was moved to claude (sonnet) — the freeze described flash's
+        # provider, which the node no longer runs on, so it must be gone.
+        slug, nid = mkagent("crossunfreeze", "flash")
+        ran_a_turn(slug, nid, "antigravity-conv-1", "antigravity_conversation")
+        freeze(slug, nid, {"at": "2026-09-03T11:25:34.000Z", "limit": True,
+                           "until_ts": 1788444444.0, "until": "5:07pm",
+                           "reset_src": "provider",
+                           "error": "Individual quota reached."})
+        with store.DOC_LOCK:
+            o = store.load_org(slug)
+            r = o.switch_model(USER, nid, "sonnet")
+            store.save_org(o)
+        assert store.load_org(slug).node(nid).get("frozen") is None, \
+            "the antigravity freeze survived a switch OFF antigravity"
+        assert r.get("resume_stale_freeze") == [nid], r
+    check("cross-provider switch clears a stale usage-limit freeze", t8a)
+
+    def t8b():
+        # same provider (claude fable → claude sonnet, both CLAUDE_TIERS):
+        # NOT crossed, so a legitimately still-active freeze must survive
+        slug, nid = mkagent("samefreeze", "fable")
+        ran_a_turn(slug, nid, "claude-uuid-samef", None)
+        freeze(slug, nid, {"at": "2026-09-03T11:25:34.000Z", "limit": True,
+                           "until_ts": 4200000000.0, "until": "later",
+                           "reset_src": "usage:weekly_scoped"})
+        with store.DOC_LOCK:
+            o = store.load_org(slug)
+            r = o.switch_model(USER, nid, "sonnet")
+            store.save_org(o)
+        assert store.load_org(slug).node(nid).get("frozen") is not None, \
+            "a same-provider switch cleared a freeze it has no business touching"
+        assert r.get("resume_stale_freeze") == [], r
+    check("same-provider switch leaves a legitimate freeze untouched", t8b)
+
+    def t8c():
+        # a GLOBAL kind (kiosk spend) rides in the same `frozen` record but
+        # describes nothing about which provider the node runs on — a
+        # crossing must not silently discard the org's spend freeze
+        slug, nid = mkagent("spendfreeze", "flash")
+        ran_a_turn(slug, nid, "antigravity-conv-2", "antigravity_conversation")
+        freeze(slug, nid, {"at": "2026-09-03T11:25:34.000Z", "spend": True,
+                           "spend_error": "kiosk spend limit reached"})
+        with store.DOC_LOCK:
+            o = store.load_org(slug)
+            r = o.switch_model(USER, nid, "sonnet")
+            store.save_org(o)
+        assert store.load_org(slug).node(nid).get("frozen", {}).get("spend"), \
+            "a cross-provider switch cleared a GLOBAL spend freeze — wrong scope"
+        assert r.get("resume_stale_freeze") == [], r
+    check("cross-provider switch leaves a global spend freeze untouched", t8c)
+
+    def t8d():
+        # `cause` is a STRING ("auth"), never a bool flag — an auth freeze is
+        # still about the OLD provider's rejected credential and must clear
+        slug, nid = mkagent("authfreeze", "flash")
+        ran_a_turn(slug, nid, "antigravity-conv-3", "antigravity_conversation")
+        freeze(slug, nid, {"at": "2026-09-03T11:25:34.000Z", "limit": True,
+                           "until_ts": 4200000000.0, "until": "later",
+                           "cause": "auth"})
+        with store.DOC_LOCK:
+            o = store.load_org(slug)
+            r = o.switch_model(USER, nid, "sonnet")
+            store.save_org(o)
+        assert store.load_org(slug).node(nid).get("frozen") is None, \
+            "an auth freeze on the OLD provider survived the switch off it"
+        assert r.get("resume_stale_freeze") == [nid], r
+    check("cross-provider switch clears a stale auth-cause freeze too", t8d)
+
     print(f"\n{PASS} checks passed, {len(FAIL)} failed")
     for label, tb in FAIL:
         print(f"\n--- {label} ---\n{tb}")

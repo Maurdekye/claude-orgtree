@@ -4365,6 +4365,7 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
         except LedgerError as e:
             raise HTTPException(422, str(e))
     drive: list[str] = []      # nodes whose turn should run after we release the lock
+    stale_freeze_resumed: list[str] = []  # switch_model cleared their freeze
     org_send: tuple[str, str] | None = None   # (dst-slug, body) outbound to another org's inbox
     net_send = False                          # @net: — staged to the spool; kick after the lock
     notice_to: str | None = None              # send_notice recipient — nudged wake=False after the lock
@@ -5076,6 +5077,12 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
                     supervisor.export_predecessor_transcript(
                         org, str(a.get("node") or ""),
                         old_sid=cast(str, result.get("old_session")))
+                # a crossing that cleared a stale provider freeze (see
+                # switch_model) leaves the node LIVE but idle — wake it. Not
+                # `drive`: that list's consumer below sends a generic "mail
+                # above" ping, and an unfrozen node needs the accurate one.
+                stale_freeze_resumed.extend(
+                    result.pop("resume_stale_freeze", []))
             elif body.tool == "orgtree_status":
                 status = a.get("status", "working")
                 summary = a.get("summary", "")
@@ -5211,6 +5218,19 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
             body.org, target,
             "(orgtree) You have new mail above — handle it as appropriate, and use "
             "orgtree_status when your own task state changes.", mail_ping=True)
+    for target in stale_freeze_resumed:
+        # a provider crossing cleared this node's freeze (it described the
+        # provider it just left) — wake it now, rather than leaving it
+        # "live" but idle until something else happens to message it. If
+        # the new provider is ALSO out of capacity, this turn simply
+        # re-freezes it for that provider's own reason.
+        supervisor.send_message(
+            body.org, target,
+            "(orgtree) You were frozen by a usage limit, connection problem, "
+            "or rejected credential on your PREVIOUS provider — a model "
+            "switch has moved you to a different provider, so that freeze "
+            "no longer describes anything and has been cleared. Handle any "
+            "mail above and continue.", mail_ping=True)
     if notice_to is not None:
         # wake=False: steer a running recipient so the notice arrives
         # mid-task like any mail would, but an idle one stays idle — the
@@ -6419,6 +6439,19 @@ def org_op(slug: str, body: Op, request: Request) -> dict[str, Any]:
             "(orgtree) Mail above arrived while you were archived and waited "
             "for you — you are live again; handle it as appropriate.",
             mail_ping=True)
+    # a crossing switch_model cleared a stale provider freeze (see
+    # switch_model) — this node was never archived, so it must not get the
+    # message above. Wake it with the accurate one instead.
+    stale_freeze_resumed: list[str] = (
+        result.pop("resume_stale_freeze", []) if isinstance(result, dict) else [])
+    for t in stale_freeze_resumed:
+        supervisor.send_message(
+            slug, t,
+            "(orgtree) You were frozen by a usage limit, connection problem, "
+            "or rejected credential on your PREVIOUS provider — a model "
+            "switch has moved you to a different provider, so that freeze "
+            "no longer describes anything and has been cleared. Handle any "
+            "mail above and continue.", mail_ping=True)
     return result
 
 
