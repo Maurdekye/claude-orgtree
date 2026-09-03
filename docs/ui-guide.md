@@ -604,7 +604,10 @@ toast repeats that warning. Refused while the agent is mid-turn.
   or Antigravity keeps the session and its context; the next turn runs the new
   model. A cross-provider switch asks for confirmation because the
   conversation cannot move between providers: confirming starts a fresh
-  session. Scratch files, `breadcrumbs.md`, and mail survive the reset.
+  session from the agent's next turn, and the pre-switch self is archived in
+  place as a knowledge bearer (`<node>@<gen>`, in the lineage panel — read it
+  there, or rehire it on its own provider to consult it). Scratch files,
+  `breadcrumbs.md`, and mail survive the reset.
   Switching cheaper melts the seat difference into the agent's own free
   allocation; switching pricier spends the agent's free first and bubbles any
   shortfall up the chain to you (refused in kiosks when the cap has no room).

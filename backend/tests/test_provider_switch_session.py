@@ -25,6 +25,15 @@ error, it silently answers "yes, resumable" about a session from another
 provider. §1 pins the blinding itself, so a future reader can see WHY the guard
 is needed and not delete it as redundant.
 
+§6 (2026-09-03) pins the SECOND shape of this fix. The first shape minted
+the fresh id IN PLACE, and that is how the desk went blank ("no conversation
+yet") on two live agents whose sessions were real — hours of transcript on
+disk, a turn still running on it — while the old session dropped out of the
+ledger for good: no node held its id, so no desk, no orgtree_read_transcript
+and no rehire could reach it. A crossing is now a LINEAGE SPLIT, the same
+in-place archive cheap_compact performs: the pre-switch self becomes
+`<node>@<gen>` on its OLD tier, and the successor starts fresh.
+
 Anti-vacuity: §5 is the load-bearing counterweight. A fix that simply reset the
 session on EVERY switch would pass §1-§4 and quietly destroy the feature the
 ledger exists to provide — switching a model mid-life while KEEPING the
@@ -304,6 +313,164 @@ def main() -> int:
         assert "cold open" not in body,             "a same-lane switch must NOT claim a cold open — it keeps its session"
         assert not any("cache" in w.lower() for w in (r.get("warnings") or [])),             "a same-lane switch must not warn the actor about a lost cache"
     check("☠ a SAME-LANE switch claims no cost and keeps saying 'intact'", t5c)
+
+    print("\n§6 ☠ THE SESSION IS KEPT, NOT DROPPED: a crossing is a lineage split")
+
+    def t6():
+        # the 2026-09-03 specimens: a REAL session (a journal on disk, a turn
+        # possibly still running on it) crossed providers and its id was
+        # overwritten in place — every reader keyed on session_id answered
+        # "no conversation yet", and the session left the ledger for good
+        slug, nid = mkagent("keep", "opus")
+        ran_a_turn(slug, nid, "claude-uuid-6666", None)
+        with store.DOC_LOCK:
+            o = store.load_org(slug)
+            r = o.switch_model(USER, nid, "sol")
+            store.save_org(o)
+        o = store.load_org(slug)
+        holders = [k for k, x in o.nodes.items()
+                   if x.get("session_id") == "claude-uuid-6666"]
+        assert holders == [f"{nid}@0"], (
+            f"☠ REPRODUCED: the pre-switch session is held by "
+            f"{holders or 'NO node'} — it dropped out of the ledger, so no "
+            f"desk and no orgtree_read_transcript can reach it")
+        b = o.node(f"{nid}@0")
+        assert b["state"] == "archived", b["state"]
+        assert b.get("bearer_state") == "knowledge", b.get("bearer_state")
+        assert b.get("successor") == nid and b["grant"] == 0
+        n = o.node(nid)
+        assert n.get("predecessor") == f"{nid}@0", n.get("predecessor")
+        assert n.get("generation") == 1, n.get("generation")
+        assert n.get("session_unrun") and n["session_id"] != "claude-uuid-6666"
+        assert r.get("bearer") == f"{nid}@0", r
+        assert r.get("old_session") == "claude-uuid-6666", r
+    check("☠ the pre-switch session is archived in place as <node>@<gen>", t6)
+
+    def t6b():
+        # THE DESK. The bearer's desk still renders the conversation and the
+        # successor's is honestly empty — the two readers the specimens broke
+        slug, nid = mkagent("desk", "opus")
+        ran_a_turn(slug, nid, "claude-uuid-7777", None)
+        with store.DOC_LOCK:
+            o = store.load_org(slug)
+            o.switch_model(USER, nid, "sol")
+            store.save_org(o)
+        o = store.load_org(slug)
+        old = supervisor.read_chat(o, f"{nid}@0")["messages"]
+        assert any("hello" in (m.get("text") or "") for m in old), \
+            f"the bearer's desk does not show the pre-switch conversation: {old}"
+        assert supervisor.read_chat(o, nid)["messages"] == [], \
+            "the successor's desk must be empty — its session has not run"
+    check("☠ the bearer's desk renders the conversation; the successor's is empty", t6b)
+
+    def t6c():
+        # the bearer is recorded on the OLD provider's tier, so D-197 offers
+        # it the right family: consult on claude, refuse codex
+        slug, nid = mkagent("family", "opus")
+        ran_a_turn(slug, nid, "claude-uuid-8888", None)
+        with store.DOC_LOCK:
+            o = store.load_org(slug)
+            o.switch_model(USER, nid, "sol")
+            store.save_org(o)
+        o = store.load_org(slug)
+        assert o.node(f"{nid}@0")["model"] == "opus", \
+            f"the bearer wears the successor's tier: {o.node(f'{nid}@0')['model']}"
+        assert o.node(nid)["model"] == "sol"
+        try:
+            o.rehire(USER, f"{nid}@0", tier="terra")
+        except Exception as e:                                   # noqa: BLE001
+            assert "provider" in str(e).lower(), e
+        else:
+            raise AssertionError("a claude bearer was rehired onto codex")
+        o.rehire(USER, f"{nid}@0", tier="haiku")     # its own provider: fine
+        assert o.node(f"{nid}@0")["state"] == "live"
+    check("the bearer keeps the OLD tier — rehireable on its own provider only", t6c)
+
+    def t6d():
+        # the lane marker travels with the bearer, not the successor, and
+        # the lineage lists the bearer where the desk's panel reads it
+        slug, nid = mkagent("marker", "sol")
+        ran_a_turn(slug, nid, CODEX_TID, "codex_thread")
+        with store.DOC_LOCK:
+            o = store.load_org(slug)
+            o.switch_model(USER, nid, "opus")
+            store.save_org(o)
+        o = store.load_org(slug)
+        assert o.node(f"{nid}@0").get("codex_thread") == CODEX_TID
+        assert o.node(f"{nid}@0")["session_id"] == CODEX_TID
+        assert not o.node(nid).get("codex_thread")
+        assert o.lineage_stack(nid) == [f"{nid}@0"], o.lineage_stack(nid)
+    check("the codex thread stays with its bearer; the lineage lists it", t6d)
+
+    def t6e():
+        # the agent, the actor and the event log all say WHERE it went
+        slug, nid = mkagent("named", "sol")
+        ran_a_turn(slug, nid, CODEX_TID, "codex_thread")
+        with store.DOC_LOCK:
+            o = store.load_org(slug)
+            r = o.switch_model(USER, nid, "opus")
+            store.save_org(o)
+        notices = store.load_org(slug).d.get("notices", {}).get(nid, [])
+        body = " ".join(str(x.get("text") or "") for x in notices)
+        assert f'"{nid}@0"' in body, "the agent is not told its predecessor's id"
+        assert "transcript.jsonl" in body, "…nor where the transcript copy is"
+        warn = " ".join(r.get("warnings") or [])
+        assert f'"{nid}@0"' in warn and "NOT lost" in warn, warn
+        ev = [e for e in store.load_org(slug).d["events"]
+              if e["op"] == "switch_model"][-1]["detail"]
+        assert ev.get("bearer") == f"{nid}@0", ev
+        assert ev.get("old_session") == CODEX_TID, ev
+    check("the agent, the actor and the event log all name the bearer", t6e)
+
+    def t6f():
+        # the switch's transcript copy lands where cheap_compact's does
+        slug, nid = mkagent("export", "sol")
+        ran_a_turn(slug, nid, CODEX_TID, "codex_thread")
+        with store.DOC_LOCK:
+            o = store.load_org(slug)
+            r = o.switch_model(USER, nid, "opus")
+            store.save_org(o)
+        dst = supervisor.export_predecessor_transcript(
+            store.load_org(slug), nid, old_sid=r["old_session"])
+        assert dst and os.path.isfile(dst), "no transcript.jsonl was exported"
+        assert "hello" in open(dst, encoding="utf-8").read()
+    check("the pre-switch transcript is exported beside the breadcrumbs", t6f)
+
+    def t6g():
+        # ANTI-VACUITY: a same-lane switch splits NOTHING — no bearer, no
+        # generation bump, the session untouched (§5's counterpart)
+        slug, nid = mkagent("nosplit", "opus")
+        ran_a_turn(slug, nid, "claude-uuid-9999", None)
+        with store.DOC_LOCK:
+            o = store.load_org(slug)
+            r = o.switch_model(USER, nid, "sonnet")
+            store.save_org(o)
+        o = store.load_org(slug)
+        assert f"{nid}@0" not in o.nodes, "a same-lane switch minted a bearer"
+        assert o.node(nid).get("generation", 0) == 0
+        assert "bearer" not in r and o.node(nid)["session_id"] == "claude-uuid-9999"
+    check("☠ a same-lane switch archives nothing", t6g)
+
+    def t6h():
+        # a second crossing archives the second session too: @0 claude, @1 codex
+        slug, nid = mkagent("twice", "opus")
+        ran_a_turn(slug, nid, "claude-uuid-aaaa", None)
+        with store.DOC_LOCK:
+            o = store.load_org(slug)
+            o.switch_model(USER, nid, "sol")
+            store.save_org(o)
+        ran_a_turn(slug, nid, CODEX_TID, "codex_thread")
+        with store.DOC_LOCK:
+            o = store.load_org(slug)
+            o.switch_model(USER, nid, "opus")
+            store.save_org(o)
+        o = store.load_org(slug)
+        assert o.lineage_stack(nid) == [f"{nid}@1", f"{nid}@0"], o.lineage_stack(nid)
+        assert o.node(f"{nid}@0")["model"] == "opus"
+        assert o.node(f"{nid}@1")["model"] == "sol"
+        assert o.node(f"{nid}@1")["session_id"] == CODEX_TID
+        assert o.node(nid).get("generation") == 2
+    check("every crossing leaves its own generation", t6h)
 
     print(f"\n{PASS} checks passed, {len(FAIL)} failed")
     for label, tb in FAIL:

@@ -1173,8 +1173,13 @@ TOOLS: list[dict[str, Any]] = [
         "name": "orgtree_switch_model",
         "description": (
             "Switch the model of an agent in your SUBTREE on the fly (never your "
-            "own — your superior can). Its session and context survive; the next "
-            "turn runs the new model. Cheaper tier: the seat difference becomes "
+            "own — your superior can). Within one provider its session and "
+            "context survive; the next turn runs the new model. ACROSS providers "
+            "the conversation cannot move: the agent's pre-switch self is "
+            "archived in place as a knowledge bearer (<node>@<gen> — readable "
+            "with orgtree_read_transcript, rehireable on its own provider) and "
+            "the agent starts a fresh session from its next turn. Cheaper tier: "
+            "the seat difference becomes "
             "the agent's own free allocation. Pricier: paid from its free first, "
             "any shortfall bubbles up the chain to YOU — refused only if the "
             "whole chain lacks it. Tiers: haiku 1 · sonnet 2 · opus 5 · "

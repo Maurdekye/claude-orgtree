@@ -1106,7 +1106,7 @@ export function NodeConfig({ node, map, tree, slug, op, toast, codexProvider,
           // names what is SPENT and what SURVIVES. Only naming the loss reads
           // as more destructive than it is, and someone would avoid a switch
           // they should make.
-          body={`${node.id} is running on ${PROVIDER_LABEL[providerOf(node.tier ?? '')]} and ${model} runs on ${PROVIDER_LABEL[providerOf(model)]}. Its conversation CANNOT move between providers, so it will be reset and it will not remember this conversation. Its scratch files, breadcrumbs.md and mail all survive, and it is told to read them to pick up where it left off.`}
+          body={`${node.id} is running on ${PROVIDER_LABEL[providerOf(node.tier ?? '')]} and ${model} runs on ${PROVIDER_LABEL[providerOf(model)]}. Its conversation CANNOT move between providers, so it will be reset from its next turn and it will not remember this conversation. The conversation is not lost: its current self is archived in place as the knowledge bearer ${node.id}@${node.generation ?? 0} — readable from the lineage panel, and rehireable there on ${PROVIDER_LABEL[providerOf(node.tier ?? '')]} to consult it. Its scratch files, breadcrumbs.md and mail all survive, and it is told to read them to pick up where it left off.`}
           confirmLabel={`switch to ${model} and reset the conversation`}
           onConfirm={doSave}
           close={() => setAsking(null)} />

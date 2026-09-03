@@ -2804,15 +2804,45 @@ retired pile optional, changing the >8 threshold, or hiding active agents by
 any other mechanism — a future feature that folds working agents away by
 default is the thing this entry exists to refuse.
 
-### D-196 · a model switch that crosses PROVIDERS resets the session, and says so
-Ruling (coordinator, 2026-08-29): `switch_model` compares
-`providers.provider_of(old)` with `providers.provider_of(new)`. Same provider →
-the session survives unchanged (№16). **Different provider → the session is
-replaced**: a freshly minted `session_id`, `session_unrun` re-armed, and the
-dead lane markers (`codex_thread`, `antigravity_conversation`) dropped. The agent is told
-its conversation could not carry over, and the ACTOR gets a warning at switch
-time. `providers.provider_of` is the one implementation of the tier→provider
+### D-196 · a model switch that crosses PROVIDERS splits the lineage, and says so
+Ruling (coordinator, 2026-08-29; reworked by nocon-bug, 2026-09-03):
+`switch_model` compares `providers.provider_of(old)` with
+`providers.provider_of(new)`. Same provider → the session survives unchanged
+(№16). **Different provider → the session is replaced BY A LINEAGE SPLIT**, the
+in-place archive `cheap_compact` performs and now shares with it
+(`Org._archive_session_in_place`, the one implementation): the pre-switch self
+is archived as the knowledge bearer `<node>@<gen>` ON ITS OLD TIER (so D-197
+offers it its own provider), its session id and lane marker stay with it, and
+the successor gets a freshly minted `session_id`, `session_unrun` re-armed, the
+dead lane markers (`codex_thread`, `antigravity_conversation`) dropped, its open
+ask mooted and its notice backlog folded — exactly as after a cheap compact.
+The agent is told its conversation could not carry over and WHERE it went, the
+ACTOR gets the same at switch time, and both API doors export the bearer's
+transcript into the seat's scratch as `transcript.jsonl`, as cheap compact's
+do. `providers.provider_of` is the one implementation of the tier→provider
 axis; callers must not re-ask it inline.
+Why (the rework — the "no conversation yet" bug; user report 2026-09-03, "tried
+to fix several times before"): the first shape of this ruling minted the fresh
+id IN PLACE. That was right about the future — the next turn cannot resume a
+foreign handle — and wrong about the present: the old session was REAL. On the
+two live specimens (`openrouter-scope`, fable→pro→flash at 09:04Z;
+`openrouter-usage`, sonnet→flash at 09:04Z) it held hours of transcript and a
+turn STILL RUNNING on it, which kept writing to the old file until 09:09Z and
+09:19Z. Every reader is keyed on `session_id` — the desk's `/chat` (`read_chat`
+→ `transcript_path`), `orgtree_read_transcript`, the live-row sweep, the
+never-run pardon — so from the instant of the switch they all looked up an id no
+file would ever carry and answered an empty transcript: "no conversation yet"
+under a desk whose live rows were still streaming (the user's *"temporary
+messages appear, but the transcript is empty"*). And the old id was written
+NOWHERE — not a bearer, not in the lineage — so the conversation was unreachable
+from the UI for good while intact on disk; the fleet switch to Codex of
+2026-09-02 left nine such multi-megabyte Claude transcripts referenced by no
+node. The earlier attempts fixed the other half: resume safety (this ruling's
+first shape) and rehire refusal (D-197) both answered the CRASH they saw; the
+failure the user sees is an empty desk, and it came from the same line. The
+split is what the codebase already does everywhere else a session is replaced
+under a living seat (`compact_split`, `cheap_compact`, `reseed` all archive a
+generation); the switch was the one replacement that did not.
 Why: `session_id` holds a PROVIDER-OWNED handle — a codex threadId, an
 antigravity conversation id, a Claude session uuid — and no provider can resume
 another's. The old
@@ -2866,12 +2896,20 @@ separately by D-197, which refuses rather than confirms — including the
 `bearer_state == "preserving"` consult path, which resumes unconditionally and
 so has no safe cross-provider path at all.
 Load-bearing: `provider_of` answers `"claude"` for an UNKNOWN tier on purpose.
-It decides whether a change crosses lanes, and a wrong "crossed" would reset a
-session that did not need it — destroying a conversation — while a wrong "not
-crossed" merely leaves prior behaviour. The acceptance suite pins BOTH
-directions: a same-lane switch must still preserve and resume its session, so
-"just reset on every switch" — the lazy fix that passes every cross-provider
-check — cannot pass it.
+It decides whether a change crosses lanes, and a wrong "crossed" would split a
+session that did not need it — an idle generation and a cold successor — while
+a wrong "not crossed" merely leaves prior behaviour. The acceptance suite
+(`backend/tests/test_provider_switch_session.py`) pins BOTH directions: a
+same-lane switch must still preserve and resume its session AND archive
+nothing, so "just split on every switch" — the lazy fix that passes every
+cross-provider check — cannot pass it; and §6 pins that after a crossing the
+old session is held by exactly one node, the bearer's desk still renders it,
+and the successor's desk is empty rather than broken.
+Was. (2026-08-29 → 2026-09-03) "Different provider → the session is REPLACED:
+a freshly minted `session_id`, `session_unrun` re-armed, and the dead lane
+markers dropped" — replaced in place, no bearer. The reset was announced
+correctly and the transcript stayed on disk, but nothing in the ledger pointed
+at it any more, and every desk reader followed the ledger.
 
 ### D-197 · a knowledge bearer may be rehired at any tier of its OWN provider, and no other
 Ruling (coordinator, 2026-08-29, from a user report: *"cant select non-claude

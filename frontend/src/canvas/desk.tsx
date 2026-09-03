@@ -1654,6 +1654,23 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
           {!chat && <div className="dim pad">loading…</div>}
           {chat && !chat.messages.length && !live_feed.length &&
             <div className="dim pad">no conversation yet</div>}
+          {/* a FRESH session under a seat that has history (cheap compact,
+              cross-provider switch): say where the earlier conversation
+              went. A bare "no conversation yet" over an agent with hours of
+              history reads as a broken desk (user report 2026-09-03 — and
+              it WAS broken, for a reason fixed in the ledger; the honest
+              empty state names the bearer either way). Same lineage the
+              panel below reads; newest consultable generation first. */}
+          {chat && !chat.messages.length && !live_feed.length && (() => {
+            const prior = [...(node.lineage ?? [])]
+              .filter((b) => b.state === 'archived' && b.bearer_state !== 'lost')
+              .sort((a, b) => (b.generation ?? 0) - (a.generation ?? 0))[0]
+            return prior ? (
+              <div className="dim pad">
+                this session is fresh — the earlier conversation is archived as{' '}
+                <b className="mono">{prior.id}</b> (read it from the lineage panel)
+              </div>) : null
+          })()}
           {chat?.messages.map((m, i) => {
             // №15: one dim divider per idle gap — never per-message timestamps
             const prev = chat.messages[i - 1]

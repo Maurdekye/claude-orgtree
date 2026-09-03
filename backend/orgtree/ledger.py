@@ -2861,45 +2861,35 @@ class Org:
         return out
 
     # --------------------------------------------------------- cheap compact
-    def cheap_compact(self, actor: str, nid: str) -> dict[str, Any]:
-        """FR-24 (user request 2026-08-10, ruled OPT-IN 2026-08-11; REWORKED
-        2026-08-12 to compact_split's in-place shape): replace a cold, heavy
-        SESSION, never the seat.
+    def _archive_session_in_place(self, nid: str, *,
+                                  model: str | None = None) -> tuple[str, str]:
+        """Replace a LIVE seat's SESSION in place, archiving the old one as a
+        knowledge bearer `nid@gen` — the ONE implementation of that split,
+        shared by `cheap_compact` and a cross-provider `switch_model` (D-182:
+        a second copy of "fresh session under the same name" would agree the
+        day it was written and drift afterwards, and drift is exactly how
+        the switch lost sessions — see switch_model).
 
-        Why it exists: /compact resumes the prior CLI session, reloading the
-        full transcript as input — idle past the cache TTL that reload pays
-        near-full input price. This resets the session instead: the seat
-        keeps its id, parent, scope, charter, grant and TEAM; only
-        `session_id` is replaced (fresh id ⇒ the next turn starts empty), so
-        the successor pays only for the history it actively chooses to read
-        (docs/cache-economics.md has the arithmetic).
+        Everything about the SEAT survives — id, parent, scope, charter,
+        grant, team, mailbox. Only the session is replaced: a fresh
+        `session_id` (⇒ the next turn starts empty, `session_unrun`
+        re-armed), and the lineage gains one generation — the pre-split self
+        archived at 0 credits, tools stripped, successor backlink, rehireable
+        as the node's own subordinate: compact_split's exact shape, minus
+        the fork. The bearer is what keeps the old conversation REACHABLE:
+        its desk and orgtree_read_transcript read its session, and a turn
+        still running on that session keeps writing into it.
 
-        The pre-compact session archives IN PLACE as a knowledge bearer
-        `nid@gen` — compact_split's exact lineage shape (0 credits, tools
-        stripped, successor backlink, rehireable as the node's own
-        subordinate). The one difference from a CLI compaction: the
-        successor starts EMPTY rather than with a summary, and its notice
-        says so.
+        `model` pins the BEARER's tier when the caller has already moved the
+        successor's: a switch bearer holds a transcript of the OLD provider
+        and must be recorded on it, or D-197's own-provider rehire rule
+        would offer it the wrong family.
 
-        Was. (shipped 2ca1a14, reworked before ever deployed to a live org):
-        retire + fresh hire under a suffixed name (`nid-2`) — which broke
-        addressing (every peer mailing the old name deferred into an
-        archived mailbox) and orphaned teams (a live-reports refusal). The
-        in-place shape has neither problem, so BOTH are gone: reports keep
-        their superior, correspondents keep their address.
-
-        The seat's open request batch is MOOTED: the successor session never
-        asked, and an answer arriving to it would read as someone else's
-        mail (same reasoning as retire's mooting)."""
-        self._require_authority(actor, nid)
+        Returns `(pred_id, old_session_id)`. Notices, ask-mooting, notice
+        folding and the event log stay with the caller — they say WHY the
+        session was replaced, which is the one thing the callers do not
+        share."""
         n = self.node(nid)
-        if n["state"] != "live":
-            raise LedgerError(f"{nid} is {n['state']} — cheap-compact "
-                              f"replaces a LIVE agent's session")
-        if n.get("bg_open"):
-            raise LedgerError(
-                f"{nid} still owns open background tasks — cheap compaction "
-                "would replace the only session observing their outcome")
         gen = n.get("generation", 0)
         pred_id = f"{nid}@{gen}"
         old_sid = n["session_id"]
@@ -2920,6 +2910,10 @@ class Org:
                       "tools": {"bash": False, "web": False, "edit": False,
                                 "subagents": False, "mcp": []}},
         })
+        if model is not None:
+            # the bearer is recorded on the tier whose provider owns
+            # its transcript (a switch has already moved the successor)
+            pred["model"] = model
         pred.pop("cheap_compacted", None)   # the bearer is the OLD session
         # (`session_unrun` is deliberately NOT popped off the bearer: cheap-
         # compacting twice with no turn between them archives a session
@@ -2960,6 +2954,48 @@ class Org:
         # breadcrumbs.md into its system prompt until a normal compaction
         # (which carries its own summary) clears the marker
         n["cheap_compacted"] = True
+        return pred_id, old_sid
+
+    def cheap_compact(self, actor: str, nid: str) -> dict[str, Any]:
+        """FR-24 (user request 2026-08-10, ruled OPT-IN 2026-08-11; REWORKED
+        2026-08-12 to compact_split's in-place shape): replace a cold, heavy
+        SESSION, never the seat.
+
+        Why it exists: /compact resumes the prior CLI session, reloading the
+        full transcript as input — idle past the cache TTL that reload pays
+        near-full input price. This resets the session instead: the seat
+        keeps its id, parent, scope, charter, grant and TEAM; only
+        `session_id` is replaced (fresh id ⇒ the next turn starts empty), so
+        the successor pays only for the history it actively chooses to read
+        (docs/cache-economics.md has the arithmetic).
+
+        The pre-compact session archives IN PLACE as a knowledge bearer
+        `nid@gen` — compact_split's exact lineage shape (0 credits, tools
+        stripped, successor backlink, rehireable as the node's own
+        subordinate). The one difference from a CLI compaction: the
+        successor starts EMPTY rather than with a summary, and its notice
+        says so.
+
+        Was. (shipped 2ca1a14, reworked before ever deployed to a live org):
+        retire + fresh hire under a suffixed name (`nid-2`) — which broke
+        addressing (every peer mailing the old name deferred into an
+        archived mailbox) and orphaned teams (a live-reports refusal). The
+        in-place shape has neither problem, so BOTH are gone: reports keep
+        their superior, correspondents keep their address.
+
+        The seat's open request batch is MOOTED: the successor session never
+        asked, and an answer arriving to it would read as someone else's
+        mail (same reasoning as retire's mooting)."""
+        self._require_authority(actor, nid)
+        n = self.node(nid)
+        if n["state"] != "live":
+            raise LedgerError(f"{nid} is {n['state']} — cheap-compact "
+                              f"replaces a LIVE agent's session")
+        if n.get("bg_open"):
+            raise LedgerError(
+                f"{nid} still owns open background tasks — cheap compaction "
+                "would replace the only session observing their outcome")
+        pred_id, old_sid = self._archive_session_in_place(nid)
         self._moot_asks(nid, "the asking session was cheap-compacted — the "
                              "successor starts fresh and never posed it")
         # …and the same reasoning one door down: the predecessor's unread
@@ -3443,15 +3479,48 @@ class Org:
         # between them), so promising continuity would be D-180's failure in
         # another field. A failure the user sees when they act is worth far
         # more than one that surfaces on their next message.
+        # (Reworked 2026-09-03: the reset is a LINEAGE SPLIT, not an in-place
+        # mint — the block below says why. The announcement stands.)
         from . import providers        # noqa: PLC0415 — avoids a cycle: providers reads TIERS from this module
         crossed = providers.provider_of(old) != providers.provider_of(tier)
+        pred_id: str | None = None
+        old_sid: str | None = None
         if crossed:
-            # a MINTED id no lane will resume: the claude lane starts it with
-            # --session-id, and codex/antigravity both fail their marker equality
-            n["session_id"] = str(uuid.uuid4())
-            n["session_unrun"] = True          # the never-run pardon, re-armed
-            n.pop("codex_thread", None)        # lane markers die with the lane
+            # ⚠ NOT an in-place mint. That was this fix's first shape
+            # (0b50a42) and it is how the desk went blank: `session_id` was
+            # overwritten under a session that was REAL — hours of transcript
+            # on disk, and on both live specimens of 2026-09-03
+            # (openrouter-scope, openrouter-usage) a turn still RUNNING on it
+            # — so every reader keyed on the field (the desk's /chat,
+            # orgtree_read_transcript, the live-row sweep, the pardon spend)
+            # looked up an id no file would ever carry, answered "no
+            # conversation yet" for as long as the node lived, and the old
+            # session dropped out of the ledger for good: not archived, not
+            # in the lineage, unreachable from the UI while intact on disk
+            # (the fleet switch to Codex of 2026-09-02 left nine such files).
+            #
+            # A cross-provider switch IS a cheap compact with a model change:
+            # the seat keeps everything, the session is replaced, and the
+            # pre-switch self is archived IN PLACE as a knowledge bearer on
+            # its OWN tier (D-197: consultable or rehireable on the provider
+            # that owns its transcript, never another). The bearer's desk
+            # keeps rendering the conversation — a turn still running on it
+            # included — and the successor starts empty on the new lane,
+            # announced, from its next turn.
+            pred_id, old_sid = self._archive_session_in_place(nid, model=old)
+            # the successor is a MINTED id no lane will resume: the claude
+            # lane starts it with --session-id, and codex/antigravity both
+            # fail their marker equality. The lane markers die with the lane
+            # (the bearer keeps its own copy — its session IS that thread).
+            n.pop("codex_thread", None)
             n.pop("antigravity_conversation", None)
+            # the successor session never posed the seat's open ask, and has
+            # no baseline for the predecessor's notice backlog — the same two
+            # doors cheap_compact closes, for the same reasons
+            self._moot_asks(nid, "the asking session was replaced by a "
+                                 "cross-provider model switch — the "
+                                 "successor starts fresh and never posed it")
+            self._fold_notices(nid)
             # the ACTOR is told at switch time, not left to discover it on the
             # next message — that is the whole point of moving this failure
             # forward. Whether the UI should REFUSE such a switch rather than
@@ -3468,10 +3537,14 @@ class Org:
             warnings.append(
                 f"{nid} moves from {providers.provider_of(old)} to "
                 f"{providers.provider_of(tier)} — a different provider, so its "
-                f"conversation CANNOT carry over and it starts a fresh session. "
-                f"Its warm process and prompt cache go too, so its next turn is "
-                f"a full cold open — the most expensive turn it can have. "
-                f"Its scratch folder, breadcrumbs and mail are untouched.")
+                f"conversation CANNOT carry over and it starts a fresh session "
+                f"from its next turn. The conversation so far is NOT lost: it "
+                f"is archived in place as \"{pred_id}\" — read it from the "
+                f"lineage panel, or rehire it on {providers.provider_of(old)} "
+                f"to consult it. Its warm process and prompt cache go too, so "
+                f"its next turn is a full cold open — the most expensive turn "
+                f"it can have. Its scratch folder, breadcrumbs and mail are "
+                f"untouched.")
         who = "the user" if actor == USER else f'"{actor}"'
         self._notify([x for x in [nid] if x != actor],
                      f'{who.capitalize()} switched your model {old}→{tier} '
@@ -3480,20 +3553,30 @@ class Org:
                         f'That is a different PROVIDER '
                         f'({providers.provider_of(old)}→'
                         f'{providers.provider_of(tier)}), so your conversation '
-                        f'could NOT be carried over and you are starting a '
-                        f'fresh session. Your warm process and prompt cache are '
+                        f'could NOT be carried over: this session is FRESH and '
+                        f'you have no memory of your predecessor\'s work. Your '
+                        f'predecessor is archived as "{pred_id}" — its full '
+                        f'transcript is at transcript.jsonl beside your '
+                        f'breadcrumbs.md (Grep/Read the parts you need instead '
+                        f'of reading it whole), and you may orgtree_rehire '
+                        f'"{pred_id}" as your own subordinate to interrogate '
+                        f'it directly. Your warm process and prompt cache are '
                         f'gone with it, so this turn is a cold open and costs '
                         f'far more than a normal one — expect it, and do not '
-                        f'switch back and forth. Your memory starts fresh — '
-                        f'check your scratch CLAUDE.md, and your breadcrumbs and '
-                        f'mail are untouched; read them to pick up where you '
-                        f'left off.'))
+                        f'switch back and forth. Check your scratch CLAUDE.md, '
+                        f'and your breadcrumbs and mail are untouched; read '
+                        f'them to pick up where you left off.'))
         self._notify([x for x in [n["parent"]] if x not in (actor, None)],
                      f'{who.capitalize()} switched "{nid}" {old}→{tier}.')
+        # the split is on the record where cheap_compact's is: the bearer id
+        # and the session it holds, so the switch's own log row names where
+        # the conversation went
+        split = ({"bearer": pred_id, "old_session": old_sid}
+                 if crossed else {})
         self._log("switch_model", actor,
-                  {"node": nid, "from": old, "to": tier}, warnings)
+                  {"node": nid, "from": old, "to": tier, **split}, warnings)
         return {"model": tier, "seat": self.d["tiers"][tier],
-                "freed": max(0, -delta), "warnings": warnings}
+                "freed": max(0, -delta), "warnings": warnings, **split}
 
     def reallocate(self, actor: str, nid: str, delta: int) -> dict[str, Any]:
         """±Δ between a node and its parent (§4.2). -Δ is the classic stranding op."""

@@ -5017,6 +5017,14 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
                 provider_hire_gate(org, a.get("tier"))
                 result = org.switch_model(body.node, a.get("node", ""),
                                           a.get("tier", ""))
+                if result.get("old_session"):
+                    # a crossing archived the old session as a bearer — the
+                    # transcript copy into the seat's scratch rides the same
+                    # locked save window, exactly as for cheap_compact (it
+                    # is the same split)
+                    supervisor.export_predecessor_transcript(
+                        org, str(a.get("node") or ""),
+                        old_sid=cast(str, result.get("old_session")))
             elif body.tool == "orgtree_status":
                 status = a.get("status", "working")
                 summary = a.get("summary", "")
@@ -6454,6 +6462,13 @@ def _org_op_locked(slug: str, body: Op, allow_raise: bool = False) -> dict[str, 
                 raise LedgerError("switch_model needs tier")
             provider_hire_gate(org, body.tier)
             result = org.switch_model(body.actor, body.node, body.tier)  # type: ignore[arg-type]
+            if result.get("old_session"):
+                # a crossing archived the old session as a bearer — the
+                # transcript copy rides the same save window as for
+                # cheap_compact (the same split)
+                supervisor.export_predecessor_transcript(
+                    org, cast(str, body.node),
+                    old_sid=cast(str, result.get("old_session")))
         elif body.op == "promote":
             result = org.promote(body.actor, body.node, body.new_parent)  # type: ignore[arg-type]
         elif body.op == "demote":
