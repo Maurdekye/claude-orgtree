@@ -737,19 +737,36 @@ def reserve_availability(
     `usage_limit_exceeded` on the first message.  Reserve is a pool OpenAI
     hands out and takes back, and DETECTION HAS TO ASK SOMETHING THAT MOVES.
 
-    Three questions, cheapest and most durable first:
+    ⚠ THE MODEL REGISTRY IS NOT THAT SIGNAL, and the second bug in this saga
+    was believing it was.  An earlier pass read `visibility` out of the CLI's
+    `models_cache.json` and refused on `"hide"`.  The user then got the grant
+    back and the token STAYED hidden.  Measured 2026-09-03T00:03:43Z, from a
+    registry file written seconds earlier: `gpt-reserve` was `visibility:
+    "hide"` while the very same account held a live 8%-used reserve window and
+    could use the model from the CLI.  `hide` means "not offered in the model
+    PICKER" — `codex-auto-review` carries it too, permanently — and gpt-reserve
+    is a routed pool, never picked, so it is ALWAYS hidden.  That check could
+    only ever hide the tier forever.  It was inferred from a single observation
+    of the withdrawn state, never compared against a granted one.
 
-      1. is the login one that can EVER hold reserve capacity (d7b98c7),
-      2. is the Codex CLI itself still offering the model (`codex_models` —
-         when the grant lapsed, `gpt-reserve` went `visibility: "hide"` and
-         left the app-server's `model/list` while its siblings stayed), and
-      3. — there is no third question. A spent usage window deliberately does
-         NOT refuse a hire (see the ruling above `RESERVE_TIER`); reserve is
-         prepared like any other tier and the TURN answers for capacity.
+    Two questions:
+
+      1. is the login one that can EVER hold reserve capacity (d7b98c7), and
+      2. does the account hold a gpt-reserve RATE-LIMIT WINDOW right now
+         (`codex_limits.grants`) — a granted pool gets a bucket of its own on
+         the app-server's board, named after the model, and a withdrawn one
+         simply has none.  That is the thing that actually moved across the
+         user's outage, in both directions.
+
+    There is no third question.  A spent usage window deliberately does NOT
+    refuse a hire (see the ruling above `RESERVE_TIER`), so (2) asks whether
+    the window EXISTS, never how full it is; reserve is prepared like any
+    other tier and the TURN answers for capacity.
 
     Each may answer "unknown" (no CLI evidence, a stale board), and unknown
     NEVER refuses: the tier stays offered and the CLI fails the turn loudly,
-    which is strictly better than a detection bug hiding a tier the user has.
+    which is strictly better than a detection bug hiding a tier the user has —
+    which is precisely the failure the registry check shipped.
 
     Assumes the family-level facts are already settled — Codex installed,
     signed in, the provider not turned off in App settings.  Both callers
@@ -760,10 +777,10 @@ def reserve_availability(
     where `reason` is written to be read by the user as a tooltip and as a
     refusal message, and `evidence` names which of the three answered.
     """
-    # imported HERE, not at module scope: `codex_models` imports this module
+    # imported HERE, not at module scope: `codex_limits` imports this module
     # for the CLI path and the signed-in status, so a top-level import either
     # way is a cycle.
-    from . import codex_models
+    from . import codex_limits
 
     st = status if status is not None else codex_status()
     if st.get("kind") != "chatgpt":
@@ -771,12 +788,12 @@ def reserve_availability(
                 "signed in with an API key — reserve capacity is a ChatGPT "
                 "subscription grant (run `codex login` with a ChatGPT "
                 "account to get it)"}
-    if codex_models.offers(RESERVE_TIER) is False:
-        return {"enabled": False, "evidence": "model-registry", "reason":
-                "the Codex CLI is not currently offering the gpt-reserve "
-                "model on this account — OpenAI grants reserve capacity in "
-                "bursts and withdraws it again, so this comes back on its "
-                "own (the other Codex tiers are unaffected)"}
+    if codex_limits.grants(RESERVE_TIER) is False:
+        return {"enabled": False, "evidence": "no-reserve-window", "reason":
+                "this account has no gpt-reserve capacity right now — OpenAI "
+                "grants reserve capacity in bursts and withdraws it again, so "
+                "this comes back on its own (the other Codex tiers are "
+                "unaffected)"}
     return {"enabled": True, "evidence": "granted", "reason": None}
 
 
@@ -786,8 +803,8 @@ def providers_payload(claude_status: dict[str, Any]) -> dict[str, Any]:
     module never reaches into those, so it stays importable from anywhere."""
     codex = codex_status()
     # asked once, before the document is built: the reserve rule reads the
-    # CLI's model registry, and asking it again inside a dict literal would
-    # double that work for one answer.
+    # usage board (a process spawn when its 30s cache is cold), and asking it
+    # again inside a dict literal would double that work for one answer.
     reserve = (reserve_availability(codex) if codex.get("connected")
                else {"enabled": False, "reason": None, "evidence": "offline"})
     antigravity = antigravity_status()

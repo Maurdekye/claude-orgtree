@@ -5,6 +5,11 @@ Codex owns the signed-in account and its refreshed credentials.  Orgtree asks
 the CLI's documented app-server protocol (`account/rateLimits/read`) and never
 reads or copies auth material.  The normalized output deliberately matches the
 Claude usage-bar shape so the frontend has one renderer and one severity rule.
+
+The same board answers a second question — `grants()` below — because a model
+whose pool is granted to this account gets a rate-limit window of its own here,
+and a model whose pool has been withdrawn simply has none.  That is the only
+local signal that MOVES with an OpenAI grant; see the note above `grants`.
 """
 
 from __future__ import annotations
@@ -265,6 +270,49 @@ def snapshot(now: float | None = None) -> dict[str, Any]:
     data.update(provider="Codex", observed_at=_iso(observed), age=age,
                 stale=bool(age is not None and age > MAX_EVIDENCE_AGE))
     return data
+
+
+#: The reserve pool's window is named after the MODEL, not after a limit id.
+#: Measured 2026-09-03T00:03Z on the reporting machine, while the account's
+#: own plan window sat spent at 100%:
+#:
+#:     rateLimitsByLimitId["base_model_inference"] = {
+#:         "limitName": "gpt-reserve",
+#:         "primary": {"usedPercent": 8, "windowDurationMins": 10080,
+#:                     "resetsAt": 1788960413},          # 2026-09-09T13:26:53Z
+#:         "rateLimitReachedType": None}
+#:
+#: `base_model_inference` is an internal id and not something to hard-code;
+#: `limitName` is the model, and `_normalize` already carries it through as
+#: each window's `model`.  So the question below is asked by model name.
+
+
+def grants(model: str) -> bool | None:
+    """Does this account currently hold a rate-limit window of its OWN for
+    `model` — i.e. is the pool granted to it right now?
+
+    THIS IS A PRESENCE QUESTION, NOT A FULLNESS ONE.  A granted-but-spent
+    reserve window still answers True, because a spent window prepares an
+    agent rather than refusing one (the ruling above `providers.RESERVE_TIER`).
+    What moves is whether the bucket EXISTS at all: measured on the reporting
+    machine, reserve turns at 16:06-16:38Z billed to this window as it went
+    2% -> 8%, and by 19:15Z — grant withdrawn — the CLI reported `limit_id
+    "premium"` with no windows at all and failed `usage_limit_exceeded`.
+
+    `None` is "no fresh evidence either way" and is NEVER a refusal: a board
+    that could not be read, or one older than `MAX_EVIDENCE_AGE`, leaves the
+    tier alone and lets the CLI refuse the turn loudly on its own.
+
+    `fetch` is asked first so a cold cache is filled, then `snapshot` for the
+    age the fetch does not report; both are cheap once the 30s cache is warm,
+    and the usage panel keeps it warm anyway.
+    """
+    fetch()
+    board = snapshot()
+    if not board.get("available") or board.get("stale"):
+        return None
+    return any(str(window.get("model") or "") == model
+               for window in board.get("limits") or [])
 
 
 def invalidate() -> None:
