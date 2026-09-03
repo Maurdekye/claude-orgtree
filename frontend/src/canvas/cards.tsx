@@ -81,7 +81,6 @@ export function UserNode({ pos, isDrop, stats, pip, seats, codexHire, claudeHire
   onMailLink,
   focused, eyeW, onFocus, posX, onJump, map, op, slug, toast,
   compactAt, maxTop, onOpenDoc, onNodeLineage, onNodeConfig }: UserNodeProps) {
-  const downRef = useRef<Pt | null>(null)
   // const extraction: the kiosk-credits narrowing must survive the commit
   // closure below (a property check alone would not)
   const kioskCredits = kiosk?.credits
@@ -108,17 +107,27 @@ export function UserNode({ pos, isDrop, stats, pip, seats, codexHire, claudeHire
         marginLeft: focused ? -(eyeW - USER_W) / 2 : 0,
         zIndex: focused ? 5 : undefined,
       }}
-      onPointerDown={(e) => {
-        if ((e.target as Element).closest('button, input, textarea, select, .desk-over')) return
-        e.stopPropagation()
-        downRef.current = { x: e.clientX, y: e.clientY }
-      }}
-      onPointerUp={(e) => {
-        const d = downRef.current
-        downRef.current = null
-        if (d && Math.hypot(e.clientX - d.x, e.clientY - d.y) < 5 && !focused)
-          onFocus?.()
-      }}>
+      // ROOT CAUSE (user bug 2026-09-03: "I can drag for a fraction of a
+      // second, but my mouse lets go after only a few pixels of movement").
+      // Unlike NodeSquare, the eye has no drag of its own to claim the
+      // gesture for (it cannot be reparented), so this used to just track a
+      // click-vs-drag threshold locally and call `onFocus` on release — and
+      // stopped propagation getting there, unconditionally, for no reason
+      // that behaviour needed. The eye sits centrally in the layout, a
+      // natural place to grab to pan, and that stopPropagation killed the
+      // pointerdown before it could ever reach the viewport's
+      // background-pan handler: the camera never engaged, any apparent
+      // motion was the settle/follow spring finishing on an unrelated
+      // frame, and it flatlined the instant that settled — well before the
+      // pointer stopped moving. Letting the gesture bubble is the fix, but
+      // the viewport's onPointerDown also calls setPointerCapture on
+      // itself, and once that capture is live this element's OWN
+      // onPointerUp — a descendant of the capturing element — can never
+      // fire again for this pointer. So the click-to-focus arbitration
+      // moved to the viewport's onPointerUp (OrgCanvas.tsx), the same place
+      // that already arbitrates a mobile tap; `onFocus` here now serves only
+      // EyeDesk's "click empty desk space to recenter" below.
+    >
       {/* the user's pool is infinite, so their bar fades out into the top
           instead of ending; hovering it reports the org's circulation
           (the tip is a sibling — the fade mask would swallow a child).

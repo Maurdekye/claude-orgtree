@@ -427,6 +427,13 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
   const pinchRef = useRef<{ d0: number; z0: number } | null>(null)
   const tapRef = useRef<{ x: number; y: number; t: number; target: Element | null } | null>(null)
   const hiddenRef = useRef(hidden); hiddenRef.current = hidden
+  // desktop click-to-focus on the eye (see onPointerDown/onPointerUp): the
+  // eye card no longer stops propagation on a bare press — see cards.tsx —
+  // so a gesture that starts there now reaches here too. Recorded at
+  // pointerDOWN time off the bubbled event's own target, not looked up by
+  // world position at release: a stationary press either started on the eye
+  // or it didn't, and that fact needs no camera geometry to state.
+  const eyePressRef = useRef(false)
 
   const posOf = (id: string): Pt | undefined =>
     springs.current.get(id) ?? targetRef.current.get(id)
@@ -1189,6 +1196,7 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
       tapRef.current = { x: e.clientX, y: e.clientY, t: performance.now(),
         target: e.target as Element }
     }
+    eyePressRef.current = !isMobile && !!(e.target as Element).closest('.sq.user')
     panRef.current = { sx: e.clientX, sy: e.clientY, lx: e.clientX, ly: e.clientY,
       ox: viewRef.current.x, oy: viewRef.current.y, moved: false }
     e.currentTarget.setPointerCapture(e.pointerId)
@@ -1265,6 +1273,28 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
           else centerOn(hit)
         }
       }
+    } else if (e && !isMobile && eyePressRef.current && !panRef.current?.moved
+        && e.type !== 'pointercancel' && focusId !== USER) {
+      // desktop click-to-focus on the eye. UserNode's own onPointerDown no
+      // longer unconditionally stops propagation — a plain press there must
+      // still be able to become a background pan (user bug 2026-09-03: "I
+      // can drag for a fraction of a second, but my mouse lets go after only
+      // a few pixels" — the eye sits centrally in the layout, a natural
+      // place to grab to pan, and its old stopPropagation killed that
+      // gesture before it ever reached this handler). But every pointerdown
+      // here also calls setPointerCapture on the viewport, and once that
+      // capture is live, UserNode's OWN onPointerUp — a descendant of the
+      // now-capturing element — never fires again for this pointer: bubble
+      // dispatch only walks up from the capturing element, not through it.
+      // So a stationary click that lands on the eye has to be recognised
+      // here instead, the same way mobile's tap arbitration above already
+      // recognises one landing on any card — off `eyePressRef` (where the
+      // gesture STARTED), not a world-position hit-test at release: this
+      // path runs on every plain pointerup, including ones nowhere near the
+      // eye, and geometry would also misfire the instant the eye's own
+      // layout slot is reused by a pan that lands another node under the
+      // release point.
+      centerOn(USER)
     }
     panRef.current = null
   }
