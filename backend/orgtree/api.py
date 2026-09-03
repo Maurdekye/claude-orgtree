@@ -1318,8 +1318,35 @@ def org_tree(slug: str, request: Request) -> dict[str, Any]:
         node["mcp_readiness_reason"] = (
             str(st.get("mcp_readiness_reason"))
             if st.get("mcp_readiness_reason") else None)
-        node["cache_forecast"] = supervisor.cache_forecast_public(
-            org, node["id"])
+        # ⚠ ARCHIVED SEATS DO NOT PAY FOR THIS. A forecast is a claim about
+        # what the NEXT turn's provider cache will do; an archived agent has
+        # no next turn until it is rehired, and rehiring re-derives the whole
+        # book anyway. So the answer was never rendered — `CacheForecastMark`
+        # and `CacheForecastWarning` both return null on a null forecast —
+        # while the computation ran in full.
+        #
+        # MEASURED 2026-09-03, this org (6 live seats, 179 archived): the call
+        # cost 1.8-4.0 s per tree render, ~92% of it on archived seats, and
+        # `GET /api/orgs/{slug}` took 11-38 s (113 s with two in flight)
+        # against a 45 s client deadline — the "signal timed out" banner. The
+        # cost is `_cache_semantic_inputs` → `_build_cmd` → `transcript_path`,
+        # a glob whose wildcard component is the project directory, so every
+        # node re-listed the user's entire ~/.claude/projects (349 dirs,
+        # 14 ms a call). Live seats still pay it; there are six of them.
+        #
+        # The test is STATE, not liveness: a live-but-parked seat holding no
+        # warm process is exactly who the forecast is for (its next turn is
+        # the one at risk), so gating on a process check would delete the
+        # feature's whole value. Only `archived` is skipped.
+        #
+        # ⚠ EXPLICIT None, never a missing key: `Org.tree()` has already put
+        # the node's PERSISTED `cache_continuity.public` row here, and that
+        # row is a durable record of some past turn that never went through
+        # `cachecontinuity.public` classification. Leaving it would render a
+        # stale verdict on an archived card — worse than none.
+        node["cache_forecast"] = (
+            None if node["state"] == "archived"
+            else supervisor.cache_forecast_public(org, node["id"]))
         # The composer's mid-turn steer-window warning has to say which of two
         # things a missed window costs, and that depends on whether the
         # compactor is on FOR THIS NODE. Resolved here rather than threaded
