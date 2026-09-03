@@ -3820,6 +3820,7 @@ class Org:
         # dropped it, so approving "give this node 10" landed 9.8.
         delta = _q(delta)
         warnings: list[str] = []
+        strand: list[str] = []
         if delta > 0:
             if n["parent"] is None:
                 self._check_top_grant(n["grant"] + delta, "this allocation")  # D-014
@@ -3831,7 +3832,11 @@ class Org:
             if self.free(nid) < -delta:
                 raise LedgerError(
                     f"{nid} has only {self.free(nid):g} unused; the rest is committed")
-            warnings += self._stranding_warnings(
+            # user ruling 2026-09-03: a reduction's stranding list no longer
+            # interrupts the actor with a popup — it's a consequence, not a
+            # refusal (the free-credit check above is the actual refusal).
+            # Still recorded to the event log (below) for anyone auditing.
+            strand = self._stranding_warnings(
                 nid, self.free(nid), self.free(nid) + delta)
         # delta stays WHOLE (int() above): nobody asks for 0.3 of a credit —
         # only seats are fractional. The grant it lands on may not be, though
@@ -3844,7 +3849,7 @@ class Org:
                          f"(now {n['grant']:g}, free {self.free(nid):g}).")
             self._notify([x for x in [n["parent"]] if x != actor],
                          f'{who.capitalize()} adjusted "{nid}"\'s grant by {delta:+g}.')
-        self._log("reallocate", actor, {"node": nid, "delta": delta}, warnings)
+        self._log("reallocate", actor, {"node": nid, "delta": delta}, warnings + strand)
         return {"grant": n["grant"], "warnings": warnings}
 
     # --------------------------------------------------------- promote/demote
@@ -6423,8 +6428,10 @@ class Org:
 
     def credit_preview(self, rid: str, granted: int) -> dict[str, Any]:
         """F-05 dry run: the warnings a `granted` amount WOULD raise, before
-        the user commits — a reduction's stranding list is exactly what
-        someone dragging the bar downward needs to see first."""
+        the user commits. Refusals (not enough free, past the top-level cap)
+        still surface here; the archived-rehire stranding notice does not —
+        user ruling 2026-09-03, it's a consequence of the reduction, not a
+        reason to block or interrupt it."""
         req = next((r for r in self.d.get("credit_requests", [])
                     if r["id"] == rid), None)
         if req is None or req["status"] != "pending":
@@ -6447,8 +6454,6 @@ class Org:
                 return {"ok": False,
                         "warnings": [f"{nid} has only {self.free(nid):g} "
                                      f"unused; the rest is committed"]}
-            warnings = self._stranding_warnings(
-                nid, self.free(nid), self.free(nid) + delta)
         return {"ok": True, "warnings": warnings}
 
     # ---------------------------------------------------- F-04: asking the user

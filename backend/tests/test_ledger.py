@@ -118,8 +118,12 @@ def main():
     org2.hire(USER, None, "opus", 20, "mgr")
     org2.hire("mgr", "mgr", "opus", 0, "w1", **spec())
     org2.retire("mgr", "w1")                      # archived, rehire cost 5, mgr free 20
-    check("reallocate -Δ warns naming the stranded node", lambda: (
-        lambda r: None if any("w1" in w and "strand" in w for w in r["warnings"])
+    check("reallocate -Δ no longer pops up the stranded-rehire warning "
+          "(user ruling 2026-09-03), but still records it quietly in the "
+          "event log", lambda: (
+        lambda r: None if not any("strand" in w for w in r["warnings"])
+        and any("w1" in w and "strand" in w
+                for w in org2.d["events"][-1]["warnings"])
         else (_ for _ in ()).throw(AssertionError(r))
     )(org2.reallocate(USER, "mgr", -16)))         # free 20→4 < 5
     check("hire consuming free warns about archived sibling", lambda: (
