@@ -9,8 +9,8 @@ import { useEffect, useRef, useState } from 'react'
 import type { KeyboardEvent, ReactNode } from 'react'
 import type { InboxPayload, OrgEvent, OrgInboxEntry, ToastFn, TreePayload } from '../types'
 import {
-  audienceAction, fileBase, fileUrl, getNodeInbox, orgInboxRead, orgInboxSend,
-  orgInboxUpload,
+  audienceAction, fileBase, fileUrl, getNodeInbox, getOrgInbox, orgInboxRead,
+  orgInboxSend, orgInboxUpload,
 } from '../api'
 import { AttachThumb, isImg } from './img'
 import {
@@ -670,7 +670,33 @@ export function OrgInboxModal({ inbox, net, map, slug, toast, close, jumpTo }: O
     jumpTo && (inbox?.entries ?? []).some((e) => e.id === jumpTo
       && e.dir === 'out') ? 'sent' : 'inbox')
   const holders = inbox?.holders ?? []
-  const entries = inbox?.entries ?? []
+  // ⚠ THE TREE'S `entries` IS A PREVIEW — the newest few, for the canvas's
+  // one-line summary. The real log is fetched HERE, when the panel opens,
+  // because it was 105,310 B of an 844 KB tree payload on every 6 s poll for
+  // a panel that is usually closed (MEASURED 2026-09-03).
+  //
+  // ⚠ THE PREVIEW IS THE INITIAL PAINT, NOT A BLANK. `full ?? preview` means
+  // opening the panel shows the newest mail immediately and then fills in;
+  // it must never show an empty mailbox that has mail in it.
+  const [full, setFull] = useState<{ rows: OrgInboxEntry[]; total: number } | null>(null)
+  const [loadErr, setLoadErr] = useState<string | null>(null)
+  const [reload, setReload] = useState(0)
+  useEffect(() => {
+    let dead = false          // a close mid-flight must not set state
+    setLoadErr(null)
+    getOrgInbox(slug)
+      .then((r) => { if (!dead) setFull({ rows: r.entries, total: r.total }) })
+      .catch((e: Error) => { if (!dead) setLoadErr(e.message || 'failed') })
+    return () => { dead = true }
+  }, [slug, reload])
+  const entries = full?.rows ?? inbox?.entries ?? []
+  // ⚠ LOG LENGTH, never `entries.length`. `entries` is a TAIL of the log
+  // whose length now CHANGES mid-session — the preview first, the fetched
+  // rows a moment later — so every count and every boundary below is kept in
+  // log coordinates and converted at the point of use. Deriving any of them
+  // from the rendered slice would silently move the unread line when the
+  // fetch landed.
+  const logLen = full?.total ?? inbox?.total ?? entries.length
   const hubsVisible = (net?.hubs ?? []).some((h) => !h.hidden)
   // the org inbox tracks read state as ONE high-water mark over the log — the
   // tail beyond it renders as unread; any read action clears the whole mark
@@ -685,8 +711,20 @@ export function OrgInboxModal({ inbox, net, map, slug, toast, close, jumpTo }: O
   // when the POST RESOLVES (D-089: never arm state on a failed write), and
   // monotone: max() with the server's own mark, so it can only ever agree
   // sooner, never disagree.
+  //
+  // ⚠ `ackLen` IS A LOG LENGTH, NOT A ROW COUNT, since 2026-09-03. It used to
+  // be `entries.length` at the moment of the read, which was the same thing
+  // only because `entries` was always the whole (capped) log. Now the panel
+  // opens on a 3-row preview and fills in, so a read acked during that window
+  // would have stored 3 and then re-marked ninety-odd rows unread the instant
+  // the fetch landed — the exact bug this mechanism exists to prevent.
   const [ackLen, setAckLen] = useState(0)
-  const readFrom = Math.max(entries.length - (inbox?.unread ?? 0), ackLen)
+  // the first UNREAD position, in log coordinates
+  const unreadFrom = Math.max(logLen - (inbox?.unread ?? 0), ackLen)
+  // …converted to an index into the rendered tail. Equivalent to the old
+  // expression whenever `entries` is the whole log, and correct when it is
+  // not — row `i` sits at log index `logLen - entries.length + i`.
+  const readFrom = unreadFrom - logLen + entries.length
   const rows: MailRow[] = entries.map((e, i) => ({
     id: e.id, at: e.at, body: e.body, from: e.peer, to: e.peer, _by: e.by,
     kind: e.dir === 'in' ? 'message' : 'reply', _wait0: i >= readFrom,
@@ -699,7 +737,7 @@ export function OrgInboxModal({ inbox, net, map, slug, toast, close, jumpTo }: O
   const out = rows.filter((r) => r.kind === 'reply')
   const markRead = () => {
     if (!inbox?.unread) return
-    const len = entries.length          // captured BEFORE the round trip
+    const len = logLen                  // captured BEFORE the round trip
     orgInboxRead(slug).then(() => setAckLen((n) => Math.max(n, len)))
       .catch(() => {})                  // a failed write arms nothing (D-089)
   }
@@ -777,6 +815,26 @@ export function OrgInboxModal({ inbox, net, map, slug, toast, close, jumpTo }: O
           <div className="mailwrap">
             <MailFolders folder={folder} setFolder={setFolder}
               unread={inn.filter((r) => r._wait0).length} />
+            {/* ⚠ THE MAILBOX IS NEVER SILENTLY SHORT. The list below shows
+                the tree's preview until the full log arrives, so a slow
+                fetch reads as "the newest few, still loading" rather than
+                as a mailbox that lost its history. A FAILED fetch says so
+                and offers a retry — the one outcome that must never look
+                like an empty inbox. */}
+            {loadErr !== null && (
+              <div className="mailload err" role="alert">
+                showing the newest {entries.length} only — the rest of the
+                mailbox could not be loaded ({loadErr}){' '}
+                <button className="linkish"
+                  onClick={() => setReload((n) => n + 1)}>retry</button>
+              </div>
+            )}
+            {loadErr === null && full === null && logLen > entries.length && (
+              <div className="mailload" role="status">
+                loading {logLen - entries.length} older message
+                {logLen - entries.length === 1 ? '' : 's'}…
+              </div>
+            )}
             <div className="mailpane">
               {folder === 'inbox'
                 ? <MailList pending={inn.filter((r) => r._wait0)}

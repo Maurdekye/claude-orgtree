@@ -9,7 +9,8 @@ import type {
   InboxPayload, KioskCfgRequest, KioskSaveResult, KioskSpecRequest,
   McpServersPayload, OpenRouterDoc, OpenRouterModelsPage,
   OpRequest, OpResult, OrgListEntry, OrgMdPayload,
-  OrgNetReveal, ProvidersPayload, ReorderRequest, RuntimeSettingsPayload,
+  OrgInboxEntry, OrgNetReveal, ProvidersPayload, ReorderRequest,
+  RuntimeSettingsPayload,
   ScopeRequest, ScratchPayload,
   SendMessageResult,
   SettingsRequest, SettingsResult, SweepPreview, SweepResult, TreePayload,
@@ -403,6 +404,11 @@ export const saveDefaults = (body: SettingsRequest): Promise<DefaultsPayload> =>
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   })
+// F-06: the org mailbox itself, fetched when the panel OPENS. The tree
+// payload carries only a preview (see TreePayload['org_inbox']).
+export const getOrgInbox = (slug: string): Promise<{
+  entries: OrgInboxEntry[]; total: number; unread: number
+}> => req(`/api/orgs/${slug}/org_inbox`)
 export const orgInboxRead = (slug: string): Promise<{ ok: boolean }> =>
   req(`/api/orgs/${slug}/org_inbox/read`, { method: 'POST' })
 // F-06: the user composes extern mail from the mailbox UI (admin only)

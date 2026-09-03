@@ -3704,6 +3704,29 @@ async def extern_wait(peer: str, org: str | None = None,
         await asyncio.sleep(1.0)
 
 
+@app.get("/api/orgs/{slug}/org_inbox")
+def org_inbox_entries(slug: str) -> dict[str, Any]:
+    """The org mailbox itself — fetched when the modal OPENS, not on every poll.
+
+    The tree payload carries only `ORG_INBOX_PREVIEW` rows (the canvas renders
+    exactly one, the newest) plus `total`. The full log was 105,310 B of an
+    844 KB tree refetched every 6 s and on every save, for a panel that is
+    usually closed. MEASURED 2026-09-03.
+
+    ⚠ `total` IS RETURNED HERE TOO, and it must be the length of the log, not
+    of the slice. The desk's unread boundary is `total - unread`, so a `total`
+    that meant "rows in this response" would silently move that line every
+    time the cap changed.
+    """
+    try:
+        org = store.load_org(slug)
+    except LedgerError as e:
+        raise HTTPException(404, str(e))
+    log = cast("list[dict[str, Any]]", org.d.get("org_inbox") or [])
+    return {"entries": log[-100:], "total": len(log),
+            "unread": max(0, len(log) - int(org.d.get("org_inbox_read", 0)))}
+
+
 @app.post("/api/orgs/{slug}/org_inbox/read")
 async def org_inbox_read(slug: str) -> dict[str, Any]:
     """The user opened the org-inbox panel: clear its unread count."""

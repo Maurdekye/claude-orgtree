@@ -703,7 +703,14 @@ export interface TreePayload {
   sandboxed: boolean
   audience_requests: AudienceRequest[]
   org_inbox: {
+    /** ⚠ A PREVIEW — the newest few only (ledger.ORG_INBOX_PREVIEW). The
+     *  canvas renders exactly one of these. The modal fetches the real list
+     *  from `getOrgInbox`; the full log was 12% of the tree payload on every
+     *  6 s poll for a panel that is usually closed. NEVER derive a count or
+     *  an unread boundary from `entries.length` — that is what `total` is. */
     entries: OrgInboxEntry[]
+    /** rows in the LOG, not in `entries` — the unread boundary counts on it */
+    total?: number
     unread: number
     holders: string[]          // ledger.py extern_holders() -> list[str]
     visible: boolean

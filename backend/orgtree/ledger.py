@@ -118,6 +118,10 @@ OPEN_ASK_STATUS: Final = frozenset({"open", "pending"})
 #: ⚠ Open asks are NOT capped by this — see `tree`.
 ASK_HISTORY_KEEP: Final = 12
 
+#: How many org-inbox rows ride the tree payload. The canvas renders only the
+#: newest; the modal fetches the rest. See `tree`.
+ORG_INBOX_PREVIEW: Final = 3
+
 # §5 — full model ids only; aliases drift (spike: 'sonnet' resolved to sonnet-4-5).
 MODELS: Final[dict[str, str]] = {
     # Fable 5.1 (2026-09-02). The tier default moves with the CLI's own — in
@@ -8382,7 +8386,26 @@ class Org:
             # the org inbox panel (user spec): hidden until the org receives
             # its first outside mail OR an inbox audience is granted
             "org_inbox": {
-                "entries": self.d.get("org_inbox", [])[-50:],
+                # ⚠ A PREVIEW, NOT THE MAILBOX. The canvas renders exactly one
+                # of these — `entries[entries.length - 1]`, the newest — while
+                # the full log rode every 6 s poll at 105,310 B, 12% of an
+                # 844 KB payload (MEASURED 2026-09-03). The modal fetches the
+                # real list from `GET /api/orgs/{slug}/org_inbox` when it
+                # opens. `[-3:]` rather than `[-1:]` so the canvas keeps a
+                # little headroom without another backend change.
+                "entries": self.d.get("org_inbox", [])[-ORG_INBOX_PREVIEW:],
+                # ⚠ AND THE TRUE LENGTH OF THE LOG, which is load-bearing.
+                # The unread boundary itself survives truncation on its own —
+                # it is tail-relative, so `entries.length - unread` is right
+                # for any suffix — but the desk's READ ACK is a high-water
+                # LENGTH, captured before the read POST round-trips. With the
+                # panel now opening on a preview and filling in a moment
+                # later, an ack taken against the preview's length would store
+                # 3 and re-mark ninety-odd rows unread the instant the fetch
+                # landed. So the desk keeps its boundary in LOG coordinates
+                # and this is the number it counts against; nothing may derive
+                # a count or a boundary from the preview's own length.
+                "total": len(self.d.get("org_inbox", [])),
                 "unread": max(0, len(self.d.get("org_inbox", []))
                               - int(self.d.get("org_inbox_read", 0))),
                 "holders": self.extern_holders(),

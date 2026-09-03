@@ -641,6 +641,48 @@ def the_ask_cap_cannot_drift_below_what_the_desk_slices() -> None:
         f"history would silently be short. Raise ASK_HISTORY_KEEP.")
 
 
+# ── §10 · the org inbox rides as a preview, and the log is fetched ──────────
+def the_org_inbox_ships_a_preview_and_the_log_is_fetched() -> None:
+    """105,310 B of an 844 KB payload, every 6 s, for a panel usually closed.
+
+    The canvas renders exactly one org-inbox row — the newest — while the full
+    log rode every poll. It now ships `ORG_INBOX_PREVIEW` rows and the modal
+    fetches the rest from `GET /api/orgs/{slug}/org_inbox`.
+    """
+    from orgtree.ledger import ORG_INBOX_PREVIEW
+    org = store.create_org("zz-inbox")
+    n = ORG_INBOX_PREVIEW * 10
+    log = [{"id": f"m{i:03d}", "at": f"2026-01-01T00:{i:02d}:00Z", "dir": "in",
+            "peer": "@ext:someone", "body": f"message {i}"} for i in range(n)]
+    org.d["org_inbox"] = log                      # pyright: ignore[reportGeneralTypeIssues]
+    org.d["org_inbox_read"] = 0                   # pyright: ignore[reportGeneralTypeIssues]
+    store.save_org(org)
+
+    box = org.tree()["org_inbox"]
+    # ① a preview, not the log
+    assert len(box["entries"]) == ORG_INBOX_PREVIEW, len(box["entries"])
+    # ② …and it is the NEWEST end, because the canvas renders
+    #    `entries[entries.length - 1]` and would otherwise show ancient mail
+    assert [e["id"] for e in box["entries"]] == \
+        [f"m{i:03d}" for i in range(n - ORG_INBOX_PREVIEW, n)], box["entries"]
+    # ③ `total` is the LOG's length, never the slice's. The desk's read ack is
+    #    a high-water LENGTH; if this meant "rows in this payload" the ack
+    #    would be captured against 3 and re-mark the rest unread.
+    assert box["total"] == n, (box["total"], n)
+    assert box["unread"] == n, box["unread"]
+
+    # ④ the endpoint serves the log, with the same rule for `total`
+    got = api.org_inbox_entries("zz-inbox")
+    assert len(got["entries"]) == n, len(got["entries"])
+    assert got["total"] == n, got["total"]
+    assert [e["id"] for e in got["entries"]] == [e["id"] for e in log]
+
+    # ⑤ the payload really got smaller — the reason any of this exists
+    import json as _json
+    assert len(_json.dumps(box)) < len(_json.dumps(log)) / 5, (
+        "the preview is not meaningfully smaller than the log")
+
+
 try:
     print("tree render cost")
     check("§1 an archived seat carries an explicit null forecast",
@@ -663,6 +705,8 @@ try:
           the_ask_history_is_capped_without_changing_what_the_desk_sees)
     check("§9b the ask cap cannot drift below the desk's slice",
           the_ask_cap_cannot_drift_below_what_the_desk_slices)
+    check("§10 the org inbox ships a preview and the log is fetched",
+          the_org_inbox_ships_a_preview_and_the_log_is_fetched)
     print(f"\n{PASS} passed, {FAIL} FAILED")
 finally:
     shutil.rmtree(RIG, ignore_errors=True)
