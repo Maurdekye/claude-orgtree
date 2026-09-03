@@ -1775,6 +1775,66 @@ stays, which the customisation-survives pin in the authority suite already
 proves. The effect on a live org is strictly loosening: committed drops by 1
 per live sonnet seat, free rises, no invariant tightens.
 
+### D-236 · sub-$1 tiers are priced fractionally, and a re-price is not an add
+Ruling (user, 2026-09-03): now that seats may be fractional, the tiers that
+cost under $1/M input are re-priced to their real price — `gpt-reserve` and
+luna, both $0.20/M, drop 1 → 0.2. They are the only static tiers that
+qualify; everything else keeps the ≥$1 branch's floor, `haiku` included,
+because exactly $1.00 is not below $1. **`flash` stays 1** (user, directly:
+"keep flash on 1 for now"): its $0.75 is launch pricing through 2026-12-31,
+its standing band is $1.50, and a promo never sets a seat — the sonnet-intro
+precedent, re-affirmed for sol by the user's 2026-08-28 ask card and for
+flash by the user on 2026-09-02. Pricing a promo would also force the seat back UP
+in January, and up is the one direction that can strand a saved org.
+Why: the old rule floored every price to 1, so four Codex bands read
+1·1·2·5 and luna's tenfold advantage over terra was not expressible. Credits
+are occupancy (D-007), and occupancy weighted by tier is meaningless if every
+cheap tier weighs the same.
+Bounds: a re-price is NOT an add, and the add-only merge cannot carry it —
+this needs its own load-hook migration on D-116's precedent, migrating only
+the old shipped default of 1. Measured 2026-09-03: all three live org docs
+carried `gpt-reserve: 1, luna: 1`, so without that block the ruling would
+have shipped to nobody while the constant plainly read 0.2. No credit
+quantity is rewritten by it: a node records `model` and `grant`, never a
+seat, and `seat_cost` reads the doc's tier table on every call (D-008's
+derived-never-stored rule is what makes this a dict edit rather than a data
+migration). Repricing is not undone by reverting the code, exactly as D-116
+was not.
+Load-bearing: a seat DROP loosens the budget everywhere except one place.
+`_check_tier_ceiling` compares seats as an ORDERING, not a budget, so tiers
+that tied at 1 stop tying: a `max_tier="luna"` ceiling used to admit haiku at
+five times luna's price because `1 > 1` is false, and now refuses it. That is
+the tie-collapse this ruling exists to undo, so the new behaviour is the
+correct one — but it is a change to a saved ceiling and is pinned by test.
+No live org had a kiosk ceiling set at all (measured), so nothing real moved.
+
+### D-237 · a DESELECTED OpenRouter favorite's seat is frozen, and nothing can repair it in place
+Ruling (credit-precision, 2026-09-03, recording a trap rather than changing
+behaviour): an `or-` tier row left in an org doc by a favorite that was since
+deselected keeps whatever seat it was snapshotted with, permanently. Leave it
+that way. Live docs today carry four such rows — `or-z-ai-glm-5-3-flash: 1`,
+`or-deepseek-deepseek-v4-flash-latest: 1`, `or-moonshotai-kimi-k3: 3`,
+`or-x-ai-grok-4-6: 2` — and the first two are almost certainly sub-$1 models
+frozen at the old floor of 1, i.e. precisely the mispricing D-236 removed for
+the static tiers.
+Why: three mechanisms compose into a dead end, and each is individually
+right. `add_favorite` SNAPSHOTS `seat_for(prompt)` so a catalog price move
+cannot silently re-price a running agent; `favorites()` therefore never
+recomputes a seat (it does recompute letter and colour, which are canonical
+functions of the id — the seat is not); and `remove_favorite` deliberately
+leaves the org-doc row in place so a node hired on that tier keeps running at
+the price it was hired at. The consequence nobody had stated: the row is
+unreachable from the registry, so **even re-adding the model as a favorite
+does not repair it** — the load merge is `setdefault`, finds the key present,
+and leaves the stale number. Repricing it would require a live catalog lookup
+inside a load hook, which is a network call on every org load, and inventing
+a price is worse than quoting a stale one.
+Bounds: measured 2026-09-03 — no node, live or archived, in any org runs on
+an `or-` tier, so there are no current victims. If one ever matters, the
+honest repair is an explicit operator action against a named price, not an
+automatic one. Nothing here weakens D-236; it records where D-236's rule
+cannot reach.
+
 ### D-115 · agents write their own compaction log, in realtime
 Ruling (user, 2026-08-12, completing D-114): every agent that can write
 maintains `breadcrumbs.md` in its working folder — important events,
