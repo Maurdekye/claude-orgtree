@@ -251,6 +251,61 @@ None of the three announced itself. Each produced something that read as a
 normal, finished, believable result. That is the thing to be suspicious of in
 this repo — not the loud failures, which take care of themselves.
 
+## ⚠ THE RUNNER STRIPS `ORGTREE_DATA`, SO A SUITE'S DEFAULT ROOT IS PRODUCTION
+
+*(sqlite-review, 2026-09-03. This one is not a measurement hazard. It reaches
+the live install, and it did.)*
+
+`tools/run_tests.py` strips **every** `ORGTREE_*` variable from its children,
+deliberately, so no suite can inherit a pointer at the operator's real
+deployment. The consequence is the part to internalise:
+
+> **A child that does not mint its own `ORGTREE_DATA` before importing
+> `store` gets the DEFAULT — `~/orgtree` — which is production.**
+
+Under the JSON backend that is mostly harmless: the suite reads the live
+documents and moves on. **Under `ORGTREE_STORE=sqlite` it is not**, because
+`claim_data_root()` migrates every unmigrated `<slug>.json` it finds. So a
+worktree with the `STORE_BACKEND` default flipped to `sqlite` — the documented
+way to exercise that backend through this runner — **migrates the live org
+documents the first time a suite forgets.**
+
+That is not hypothetical. On 2026-09-03 it happened: `orgs/orgtree.json` became
+`orgtree.json.premigration` + `orgtree.db`, for all three orgs, and the
+deployed JSON build then answered every request `no such org: 'orgtree'` until
+the files were put back. Nothing was lost — the premigration copies are
+byte-exact, verified by sha256 against what the databases recorded — but the
+org was down, and the trigger was a test run.
+
+**The rule: flip BOTH literals, or neither.**
+
+```python
+_RIG_DEFAULT = os.path.join(os.path.expanduser("~"), "orgtree", "scratch", …)
+DATA_ROOT:     str = os.environ.get("ORGTREE_DATA",  _RIG_DEFAULT)   # ← and this
+STORE_BACKEND: str = os.environ.get("ORGTREE_STORE", "sqlite")       # ← not just this
+```
+
+**And assert it in the CHILD, not in the launcher.** "The runner probably won't
+strip it" is not a check; a guard at module import is, because it runs in every
+process that imports `store`, however it was spawned, and no caller can forget
+it:
+
+```python
+if os.path.abspath(DATA_ROOT) == os.path.abspath(os.path.expanduser("~/orgtree")):
+    raise RuntimeError("RIG WORKTREE refuses to run against the LIVE data root …")
+```
+
+Verify the guard by *running* it three ways before you trust it — env stripped
+(must land on the scratch root), env pointed at `~/orgtree` (must **refuse**,
+non-zero), env pointed at the scratch root (must work). A guard nobody has
+watched fire is not yet a guard.
+
+**Generalisation, and the reason this sits in this file:** an env var the
+runner removes for your safety is also an env var your defaults have to survive
+without. Any suite or tool whose behaviour depends on `ORGTREE_*` is, inside
+this runner, running on its defaults — so **the default has to be the safe
+answer, not the convenient one.**
+
 ## Reading the result
 
 ⚠ First, **solo-re-run every failing suite** and check its log size — see the
