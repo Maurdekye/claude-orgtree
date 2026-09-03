@@ -8912,3 +8912,122 @@ dispatch.py` §9 (the wall through the REAL leg: `reset_src == "provider"`,
 → probe), `test_provider_limit_freeze.py` §5 (measured now, no longer "by
 construction"), `test_antigravityrun.py` §3 and `frontend/tests/
 antigravityusage.test.tsx` (the section, the quiet note, the glow).
+
+### D-235 · mid-turn, the cache card answers only what is known for a fact, and compares against the request in flight
+
+Ruling (user, 2026-09-03, six messages between 10:05 and 10:39Z, escalated to
+a fable seat because "this isn't such a simple consideration"; implemented by
+`cache-card`). The card is the answer to ONE question: **will the next full
+turn cause a cache miss or an auto-compact?** Idle, the card always shows,
+because the answer takes effect the instant a turn starts. Mid-turn an answer
+can be given in advance ONLY when a miss is known for a fact; anything else is
+predicting how the running turn ends, which the UI must not do, so it shows no
+card at all — never a placeholder in the slot.
+
+THE AXIS (cache-card's, adopted by coordinator over its own "verdict versus
+fact" split). Every field on the card is a comparison between the prefix that
+would be sent next and SOME cache entry. Idle there is one candidate entry: the
+one the last positive receipt describes. Mid-turn there are two: that one, and
+the entry the running turn is writing or refreshing right now, which exists at
+the provider but is unobserved here until the turn's receipt lands. So the
+question to ask of each claim is: **does it depend on an entry that has not
+been observed yet?**
+  - Depends, so premature mid-turn: green and its countdown (the running turn's
+    own calls refresh the entry, so the countdown would reach zero and go red
+    on an entry that is not dead); `receipt_expired`, `no_positive_receipt`
+    and the unobserved causes (they describe the launch of the turn in flight;
+    its receipt settles them); grey diagnostics (they answer "cannot tell",
+    which mid-turn is the default, not a card — user, 10:34Z).
+  - Independent, so settled: `prefix_changed` — the prefix that would be sent
+    now versus the one already sent. Whatever entry the running turn leaves
+    belongs to the sent prefix, so a message that misses the steer window
+    lands cold regardless. It IS a verdict; it is the one whose truth the
+    running turn cannot change. It is the same fact the process mark's yellow
+    relaunch icon shows from the lifecycle side (verified:
+    `ProcessLifecycleMark` renders `.proc-relaunch` while busy). Computed by
+    two owners and deliberately not gated on each other: Codex and Antigravity
+    seats carry no relaunch flag, and a gate would hide a certain miss there.
+  - `precompact_action` is vacuous mid-turn (a send steers; it starts nothing)
+    and the backend reports it `not_applicable` with that reason.
+
+THE BASELINE BUG — the substantive find, fixed on the backend in this entry's
+commit. `cache_forecast_public`'s poll preview compared the prefix-now against
+`book['last_turn']`, the turn BEFORE the running one, while the request
+actually in flight (`cache_attempt`) was a local in the run loop at three
+sites (admission, the post-compaction re-forecast, the boundary feed) that
+nothing persisted. A turn that was itself the cold one — a retool while idle,
+then a send — stayed red for its whole duration although nothing had moved
+since launch, and the turn after it would find the entry it was writing: the
+card lied about the present. Now the attempt rides the `inflight` marker
+(`InflightInfo.cache_attempt`: secret-free digests, the same shape as
+`last_turn`), which `_run_one_turn`'s `finally` and the startup `reconcile`
+already pop on every exit — normal result, interrupt, watchdog kill, CLI
+death, filter halt, unexpected exception, backend death — so it cannot outlive
+its turn (coordinator's constraint: a stale attempt would be worse than the
+wrong baseline, and a second durable field with its own clearing sites would
+be a second lifecycle to keep in step). `_cache_inflight_attempt` also refuses
+a record from another generation or session, mirroring
+`_cache_boundary_attempt`, and honours the Codex/Antigravity first-turn
+session mint the way `_cache_finish_turn` does. Mid-turn the preview
+classifies against `{"last_turn": attempt}`: a PREVIEW-proven
+`known_incompatible` is `prefix_changed` with its components (the persisted
+`known_incompatible` is the running turn's own launch verdict and is
+deliberately ignored); anything else is `turn_in_flight`, a new cause in the
+closed table mapped to readiness `none`, minted at poll time by
+`cachecontinuity.in_flight_row`, stamped at launch so its generation is
+stable, never persisted (hence no legacy mapping), and exempted from the
+classify-reachability sweep the way `internal_error` is. The projection is
+also streamed after the admission save and after a boundary feed, superseding
+the pre-flight verdict the badge used to repeat. Pinned by
+`backend/tests/test_cache_readiness.py` §6.
+
+THE YELLOW CARD (user, 10:34:58Z and 10:36:04Z). Red and green are GUARANTEES
+about the next message sent: it will miss, or it will hit (modulo the
+provider). The mid-turn "prefix moved" state is a WARNING: the next message
+COULD miss, but there is no promise, because a message that steers into the
+running turn is unaffected and only one that misses the steer window pays. So
+it earns a third colour — yellow, with a `!` icon — in the register of the
+yellow banner over the composer (`.cache-send-warning.midturn`), which says
+the same thing. Red never shows mid-turn. The backend row is already exactly
+right for it (`prefix_changed` against the request in flight, else `none`);
+the frontend wears it as the `steer` class on `CacheForecastMark`
+(`var(--warn)`, glyph `!`, a title saying a message that steers into this
+turn is unaffected and one that misses the window lands cold, naming the
+components). Built by cache-card on the user's 10:39Z instruction to finish
+the implementation and "leave all verification and testing to another agent",
+so its commit is UNVERIFIED by instruction; `scratch/orgtree/cache-card/
+breadcrumbs.md` records whether it reached main. `docs/cache-continuity.md`
+still needs a mid-turn section and a `none` row in its readiness table.
+
+THE COMPOSER. Mid-turn the steer-window banner fires only on `prefix_changed`,
+not on every `not_ready` cause (2dc8cbb fired on all of them); the others are
+false alarms mid-turn, because a message that misses the window lands warm.
+
+THE RED TEST, for the record. `headerlayout.test.tsx` "mid-turn cache warning
+is not attached above the composer" had been red since 8126a2b (2026-09-02,
+the context gate), not since 3b75a43: `FakeServer.occupancy` defaults to
+1,000 and the desk reads the chat payload's occupancy ahead of the node's, so
+the fixture's 85% context became 1% and the gate stayed shut. 3b75a43 (hide
+the card mid-turn) only moved the failing line. Fixed in the fixture
+(`ef32c5a`); the product gate is right, and 3b75a43 was narrowed rather than
+kept or reverted, because its premise held for every claim except the one
+the user had just identified.
+
+INV-002 — PROPOSED AMENDMENT, PENDING THE USER'S RATIFICATION, NOT APPLIED
+(an invariant outranks a decision). Readiness `none` means "nothing to claim"
+and now covers two cases: no completed turn (`no_completed_fingerprint`, the
+user's ruling earlier on 2026-09-03) and a turn in flight with an unmoved
+prefix (`turn_in_flight`, this entry). The Statement's "MUST render exactly
+one of ready or not_ready … in normal operation" should read "… while no
+turn is running", with mid-turn rendering defined as: yellow `!` for a prefix
+that has moved since the request in flight was sent, otherwise no card. Also
+flagged and untouched: the idle red today covers "no receipt observed yet",
+which is "not established" rather than a predicted miss; under a strict
+yes-or-no card that is a question for later.
+
+Landed on main: `ef32c5a` (badge narrowed mid-turn, fixture fixed), the
+frontend commit after it (composer narrowed to `prefix_changed`, badge
+red-or-nothing mid-turn, the header pin that the mid-turn card and
+`.proc-relaunch` render together; verified 461/461), and this entry's commit
+(the backend baseline and `turn_in_flight`). The operational handoff is
+`scratch/orgtree/cache-card/breadcrumbs.md`.

@@ -32,6 +32,7 @@ the mapping is total in both directions.
 from __future__ import annotations
 
 import atexit
+import copy
 import os
 import shutil
 import sys
@@ -376,11 +377,18 @@ def every_reachable_cause_is_exercised() -> None:
     #   `legacy_forecast_unmigrated` — only reachable through `legacy_readiness`
     #                                 for rows persisted before the classifier
     #                                 existed (`legacy_rows_migrate...`).
+    #   `turn_in_flight`             — minted at poll time by
+    #                                 `cache_forecast_public` for a node whose
+    #                                 turn is running with an unmoved prefix
+    #                                 (`in_flight_row`, D-235); never persisted
+    #                                 and never a `classify` output, proved by
+    #                                 `mid_turn_projection_compares...` below.
     # ⚠ THIS EXEMPTION LIST IS THE ONLY ONE. Anything else added to READINESS
     # must be reachable from a real `classify` call or this check fails, which
     # is exactly the "a new branch forgot its verdict" defect it exists to
     # catch — it already caught `legacy_forecast_unmigrated` itself.
-    off_classifier = {"internal_error", "legacy_forecast_unmigrated"}
+    off_classifier = {"internal_error", "legacy_forecast_unmigrated",
+                      "turn_in_flight"}
     eq(seen, set(C.READINESS) - off_classifier)
     for cause in off_classifier:
         assert cause in C.READINESS_DETAIL, cause
@@ -544,6 +552,118 @@ check("the public projection fails closed, never open",
       public_projection_cannot_fail_open)
 check("green is impossible without a positive receipt",
       green_requires_a_positive_receipt_every_time)
+
+
+# ── §6 mid-turn: the baseline is the request in flight ────────────────────
+
+def mid_turn_projection_compares_against_the_request_in_flight() -> None:
+    """Mid-turn the projection compares against the request IN FLIGHT.
+
+    ⚠ REGRESSION GUARD FOR A REAL DEFECT (cache-card, 2026-09-03, D-235). The
+    poll preview compared the prefix-now against `book['last_turn']` — the
+    turn BEFORE the running one — while the request actually running was a
+    local in the run loop that nothing persisted. A turn that was itself the
+    cold one (the user retooled while idle, then sent) therefore stayed red
+    (`prefix_changed`) for its whole duration although nothing had moved since
+    it launched, and the turn after it would find the entry it was writing.
+    The card lied about the present. The request in flight now rides the
+    `inflight` marker, which every turn exit already clears, and the mid-turn
+    projection is taken against it.
+    """
+    org = store.create_org("zz-cache-readiness-inflight")
+    org.hire(USER, None, "haiku", 4, "agent")
+    nid = "agent"
+    n = org.node(nid)
+    ident = {"session": str(n.get("session_id") or ""),
+             "node_generation": int(n.get("generation") or 0)}
+    # The last COMPLETED turn ran with the OLD system prompt; live receipt.
+    prior = book(receipt_at=NOW - 60, **ident)
+    for row in (prior["last_turn"], prior["receipt"]):
+        row["components"] = {**row["components"], "system": "old-system"}
+    # The RUNNING turn was launched with the new prompt: cold against that
+    # baseline — its admission forecast said so, and the doc still says so.
+    launched = snapshot(**ident)
+    admission = classify(launched, prior)
+    eq(admission["readiness_cause"], "prefix_changed")
+    attempt = {k: v for k, v in launched.items()
+               if not k.endswith("_history_relation")}
+    prior.update({"version": 1, "seq": 1, "forecast": admission,
+                  "public": C.public(admission, generation="g0",
+                                     precompact_action="not_applicable",
+                                     precompact_reason="")})
+    n["cache_continuity"] = prior
+    rendered = copy.deepcopy(attempt)            # what a poll renders NOW
+    old_snapshot = S._cache_snapshot
+    S._cache_snapshot = lambda *a, **k: copy.deepcopy(rendered)
+    try:
+        def poll(now: float = NOW) -> dict[str, Any]:
+            row = S.cache_forecast_public(org, nid, now=now)
+            assert isinstance(row, dict)
+            return row
+
+        # IDLE — no marker: the durable answer stands. The NEXT request really
+        # is cold against the last completed turn.
+        eq(poll()["readiness_cause"], "prefix_changed")
+
+        # MID-TURN, prefix unmoved since launch: nothing to claim. This is the
+        # defect — it used to stay red for the whole turn.
+        n["inflight"] = {"at": C.iso(NOW), "text": "go",
+                         "cache_attempt": copy.deepcopy(attempt)}
+        mid = poll()
+        eq(mid["readiness"], "none")
+        eq(mid["readiness_cause"], "turn_in_flight")
+        eq(mid["changed_inputs"], [])
+        # A send mid-turn steers; no pre-turn policy applies.
+        eq(mid["precompact_action"], "not_applicable")
+        assert "steers" in mid["precompact_reason"], mid["precompact_reason"]
+        # ...and the row is stamped at launch, not per poll: no generation churn.
+        eq(poll(NOW + 30)["generation"], mid["generation"])
+
+        # The prefix MOVES mid-turn (a retool): red, naming the component —
+        # settled whatever the running turn does — and a send still steers.
+        rendered["components"] = {**rendered["components"], "tools": "retooled"}
+        moved = poll()
+        eq(moved["readiness_cause"], "prefix_changed")
+        eq(moved["changed_inputs"], ["tools"])
+        eq(moved["precompact_action"], "not_applicable")
+        rendered["components"] = dict(attempt["components"])
+
+        # A marker minted by another generation or session is NOT a baseline:
+        # the projection falls back to the durable (idle) answer.
+        n["inflight"]["cache_attempt"]["node_generation"] = ident["node_generation"] + 1
+        eq(poll()["readiness_cause"], "prefix_changed")
+        n["inflight"]["cache_attempt"]["node_generation"] = ident["node_generation"]
+        n["inflight"]["cache_attempt"]["session"] = "somebody-else"
+        eq(poll()["readiness_cause"], "prefix_changed")
+        n["inflight"]["cache_attempt"]["session"] = ident["session"]
+
+        # A persisted diagnostic is not a card mid-turn either (user, 10:34Z):
+        # "cannot tell" is the mid-turn default. It returns once the turn ends.
+        skewed_book = book(receipt_at=NOW + 300, **ident)
+        skewed = classify(launched, skewed_book)
+        eq(skewed["readiness_cause"], "clock_anomaly")
+        n["cache_continuity"] = {
+            **skewed_book, "version": 1, "seq": 1, "forecast": skewed,
+            "public": C.public(skewed, generation="g1",
+                               precompact_action="not_applicable",
+                               precompact_reason="")}
+        eq(poll()["readiness_cause"], "turn_in_flight")
+        n.pop("inflight")
+        eq(poll()["readiness_cause"], "clock_anomaly")
+
+        # Every turn exit pops the marker; with it gone the projection is idle.
+        n["cache_continuity"] = prior
+        n["inflight"] = {"at": C.iso(NOW), "text": "go",
+                         "cache_attempt": copy.deepcopy(attempt)}
+        eq(poll()["readiness_cause"], "turn_in_flight")
+        n.pop("inflight")
+        eq(poll()["readiness_cause"], "prefix_changed")
+    finally:
+        S._cache_snapshot = old_snapshot
+
+
+check("mid-turn the projection compares against the request in flight, not the last turn",
+      mid_turn_projection_compares_against_the_request_in_flight)
 
 
 print()

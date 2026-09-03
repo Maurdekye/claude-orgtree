@@ -42,6 +42,12 @@ READINESS: Final[dict[str, Readiness]] = {
     # cache; when there has been no completed turn there is no cache at all, so
     # neither "ready" nor "not ready" is true. The UI renders NO flag at all.
     "no_completed_fingerprint": "none",
+    # NONE — a turn is running and the prefix has not moved since it was sent.
+    # The entry that turn leaves behind is unobserved until its receipt lands,
+    # and every verdict except `prefix_changed` depends on that entry, so there
+    # is nothing to claim yet (user ruling 2026-09-03, D-235). Minted at poll
+    # time only (`in_flight_row`), never persisted — hence no legacy mapping.
+    "turn_in_flight": "none",
     # RED — "not compatibility-ready / not established".  Note the phrasing:
     # with the single exception of an elapsed entry, none of these is proof of
     # an actual provider miss, and the copy must not pretend otherwise.
@@ -76,6 +82,12 @@ READINESS_DETAIL: Final[dict[str, str]] = {
         "No completed turn has been observed for this agent yet, so there is "
         "nothing to establish cache readiness from. This is not a miss — it "
         "is the absence of evidence either way.",
+    "turn_in_flight":
+        "A turn is running and the prefix has not changed since it was sent. "
+        "The cache entry that turn leaves behind is not observed until it "
+        "ends, so there is nothing to claim yet: this is not a miss and not a "
+        "hit, it is the absence of a verdict while the evidence is being "
+        "produced.",
     "history_unobserved":
         "Local history continuity could not be observed, so a matching prefix "
         "cannot be established.",
@@ -763,6 +775,42 @@ def heal_quantized_skew(forecast: Any, now: float) -> dict[str, Any] | None:
         expired=max(now, observed) >= expires, codex_estimate=codex_estimate,
         at=at, last_receipt_at=receipt_at, lane=lane, ttl=ttl,
         expires=expires, expected=expected)
+
+
+def in_flight_row(*, at: str, lane: str, last_receipt_at: Any,
+                  expected: int) -> dict[str, Any]:
+    """The projection for a node mid-turn whose prefix has not moved since launch.
+
+    ⚠ NOT A `classify` BRANCH, AND NEVER PERSISTED. `classify` answers "what
+    will the next request find" from the last completed turn and the last
+    positive receipt. Mid-turn that question has a third participant: the
+    entry the running turn is writing or refreshing right now, which exists at
+    the provider but is unobserved here until the turn's receipt lands. Every
+    readiness verdict except `prefix_changed` depends on that entry — green
+    and its countdown compare against a receipt the running turn's own calls
+    are refreshing; `receipt_expired`, `no_positive_receipt` and the
+    unobserved causes describe the launch of the turn in flight — so the
+    honest projection while it is in flight is "nothing to claim yet":
+    readiness `none`, the same absence-of-a-claim the fresh-node case uses,
+    never a red that describes a launch that has already happened and never a
+    green counting down to a receipt that is being superseded. The supervisor
+    builds this row at poll time (`cache_forecast_public`, against the request
+    in flight) and it never enters the durable book, which is why the legacy
+    tables carry no mapping for it. Stamped at launch (`at`), not per poll, so
+    the row — and its generation — stay stable for the turn's duration.
+    """
+    return {
+        "state": "uncertain", "source": "turn_in_flight",
+        "reason": ("A turn is running; the prefix has not changed since it was "
+                   "sent, and the entry it leaves behind is not observed until "
+                   "it ends."),
+        "reasons": [_reason("history", "turn in flight, prefix unchanged since launch",
+                            at, "unobserved")],
+        "observed_at": at, "last_receipt_at": last_receipt_at,
+        "lane": lane, "ttl_seconds": None, "expires_at": None,
+        "confidence": "unobserved", "expected_input_tokens": expected,
+        **readiness_fields("turn_in_flight"),
+    }
 
 
 def public(forecast: dict[str, Any], *, generation: str,

@@ -204,6 +204,12 @@ class InflightInfo(TypedDict):
     # deliberately absent; raw replay text remains untouched above.
     view: NotRequired[str]
     cmd: NotRequired[bool]
+    # The secret-free prefix/namespace record of the request this turn was
+    # launched with (`supervisor._cache_persistable`, the same shape as the
+    # continuity book's `last_turn`). It rides THIS marker so it lives exactly
+    # as long as the turn: every turn exit and the startup reconcile pop the
+    # marker, and the mid-turn cache projection compares against it (D-235).
+    cache_attempt: NotRequired[dict[str, Any]]
 
 
 class NodeDoc(TypedDict):

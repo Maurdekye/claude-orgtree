@@ -6510,6 +6510,47 @@ def _cache_refresh_receipt(org: Org, nid: str,
     return safe
 
 
+def _cache_inflight_attempt(org: Org, nid: str) -> dict[str, Any] | None:
+    """The prefix record of the request in flight, or None outside a turn.
+
+    ⚠ IT RIDES THE `inflight` MARKER ON PURPOSE. That marker is written at
+    every admission and every boundary feed and popped at every turn exit —
+    the normal result, an interrupt, a watchdog kill, CLI death, a filter halt
+    and an unexpected exception all pass through `_run_one_turn`'s `finally`,
+    and backend death is healed by `reconcile` at startup — so the attempt
+    cannot outlive the turn it describes unless the marker itself does, and a
+    lingering marker is already a lifecycle bug with an owner. A stale record
+    would be worse than the old wrong baseline; a separate durable field with
+    its own clearing sites would be a second copy of that lifecycle to keep in
+    step. A marker minted by another generation or session (a stale process,
+    a replaced session) is refused exactly as `_cache_boundary_attempt`
+    refuses to mint evidence for one; a first Codex/Antigravity turn mints its
+    session id mid-turn, the same transition `_cache_finish_turn` honours.
+    """
+    n = org.node(nid)
+    inf = n.get("inflight")
+    if not isinstance(inf, dict):
+        return None
+    attempt = inf.get("cache_attempt")
+    if not isinstance(attempt, dict):
+        return None
+    if int(n.get("generation") or 0) != int(attempt.get("node_generation") or 0):
+        return None
+    transition = bool(attempt.get("session_was_unrun")
+                      and attempt.get("provider") in ("openai", "google"))
+    if (not transition and str(n.get("session_id") or "")
+            != str(attempt.get("session") or "")):
+        return None
+    return attempt
+
+
+#: The one policy answer a send can have while a turn is running.
+_IN_FLIGHT_PRECOMPACT: Final = (
+    "not_applicable",
+    "A turn is running; a message sent now steers into it and starts no turn, "
+    "so no pre-turn compaction or expected miss applies.")
+
+
 def cache_forecast_public(org: Org, nid: str,
                           now: float | None = None) -> dict[str, Any] | None:
     """Tree projection with a cheap semantic preview and authoritative TTL.
@@ -6522,6 +6563,23 @@ def cache_forecast_public(org: Org, nid: str,
     showing the last completed turn's stale green result.  History-only
     changes remain conservative until admission; no UI request is allowed to
     manufacture that proof by repeatedly hashing a large transcript.
+
+    ⚠ MID-TURN THE BASELINE IS THE REQUEST IN FLIGHT, NOT THE LAST COMPLETED
+    TURN (user ruling 2026-09-03, D-235). While a turn runs, the durable book
+    still describes the turn BEFORE it: `last_turn` is the previous request
+    and `forecast` is the running turn's own pre-flight verdict. Comparing the
+    prefix-now against those answered the wrong question — a turn that was
+    itself the cold one (a retool while idle, then a send) stayed red for its
+    whole duration although nothing had moved since launch, and the turn
+    after it would find the entry it was writing. So mid-turn the preview is
+    taken against the record the turn was launched with
+    (`_cache_inflight_attempt`): a moved prefix is `prefix_changed`, settled
+    whatever the running turn does — the one answer that can be given in
+    advance; anything else, a persisted diagnostic included, is
+    `turn_in_flight` (readiness `none`): nothing to claim until the receipt
+    lands, and the UI shows no card rather than predict the turn's end. The
+    row is a projection: the durable book is admission's and turn-end's to
+    write, never this reader's.
     """
     # Resolved BEFORE the legacy early return below, which needs a clock to
     # decide whether a persisted `compatible_observed` has since expired.
@@ -6579,14 +6637,30 @@ def cache_forecast_public(org: Org, nid: str,
     # static mismatch is independently sufficient to prove incompatibility.
     # If rendering fails (missing CLI/config race), retain the durable answer
     # rather than turning a display read into an admission dependency.
+    attempt = _cache_inflight_attempt(org, nid)
+    # Only a PREVIEW-proven incompatibility counts mid-turn. The persisted
+    # `known_incompatible` is the running turn's own launch verdict — the very
+    # thing the in-flight baseline exists to stop the badge repeating.
+    preview_cold = False
     try:
         preview_current = _cache_snapshot(
             org, nid, now=now, include_history=False)
         preview_current["last_turn_history_relation"] = "same_or_appended"
         preview_current["receipt_history_relation"] = "same_or_appended"
-        preview = cachecontinuity.classify(preview_current, book, now)
+        if attempt is None:
+            preview = cachecontinuity.classify(preview_current, book, now)
+        else:
+            baseline = dict(attempt)
+            if (baseline.get("session_was_unrun")
+                    and baseline.get("provider") in ("openai", "google")):
+                # The lane mints its session id during this first turn; that
+                # is continuity, not a lineage change (`_cache_finish_turn`).
+                baseline["session"] = preview_current.get("session")
+            preview = cachecontinuity.classify(
+                preview_current, {"last_turn": baseline}, now)
         if preview.get("state") == "known_incompatible":
             internal = preview
+            preview_cold = True
     except Exception:                                           # noqa: BLE001
         pass
 
@@ -6615,7 +6689,25 @@ def cache_forecast_public(org: Org, nid: str,
                 # "same fact, two colours" split the badge exists to prevent.
                 **cachecontinuity.readiness_fields("receipt_expired"),
             })
-    action, action_reason = _cache_precompact_decision(org, nid, internal)
+    if attempt is not None and not preview_cold:
+        # Mid-turn with an unmoved prefix: nothing to claim yet. This replaces
+        # the launch verdict, the expiry flip above (the previous entry's
+        # boundary is moot while the running turn refreshes or rewrites it)
+        # and a persisted diagnostic ("cannot tell" is the mid-turn default,
+        # not a card — user, 2026-09-03 10:34Z).
+        receipt_row = book.get("receipt")
+        internal = cachecontinuity.in_flight_row(
+            at=str(attempt.get("captured_at") or cachecontinuity.iso(now)),
+            lane=str(attempt.get("lane") or "unobserved"),
+            last_receipt_at=(receipt_row.get("observed_at")
+                             if isinstance(receipt_row, dict) else None),
+            expected=int(n.get("occupancy") or 0))
+    if attempt is not None:
+        # A send mid-turn steers into the running turn; the "what will sending
+        # do first" policy line describes a send that starts one.
+        action, action_reason = _IN_FLIGHT_PRECOMPACT
+    else:
+        action, action_reason = _cache_precompact_decision(org, nid, internal)
     candidate = cachecontinuity.public(
         internal, generation=str(old.get("generation") or ""),
         precompact_action=action, precompact_reason=action_reason)
@@ -9330,6 +9422,11 @@ def _run_one_turn(slug: str, nid: str,
                     inf["view"] = turn_view[-8000:]
                     if is_cmd:
                         inf["cmd"] = True
+                    if cache_attempt is not None:
+                        # The request in flight rides the marker, so the
+                        # mid-turn projection compares against what was
+                        # actually sent (`_cache_inflight_attempt`).
+                        inf["cache_attempt"] = cache_attempt
                     o2.node(nid)["inflight"] = inf
                     # new work begins: a lingering done/blocked chip would lie —
                     # but the history is kept, not erased (gap audit №13)
@@ -9362,6 +9459,20 @@ def _run_one_turn(slug: str, nid: str,
                         # sit underneath DOC_LOCK, and this block is advisory:
                         # a telemetry stall or error cannot gate the turn.
                         usage_org = o2
+            if cache_forecast_event is not None and not is_cmd:
+                # The pre-flight verdict streamed above is superseded the
+                # instant the turn starts: the projection now compares against
+                # the request in flight (`cache_forecast_public`), so stream
+                # that as well — the badge blanks, or stays red only for a
+                # prefix that has already moved, instead of repeating a verdict
+                # about a launch that has already happened.
+                try:
+                    inflight_event = cache_forecast_public(o2, nid)
+                except Exception:                                # noqa: BLE001
+                    inflight_event = None
+                if inflight_event is not None:
+                    stream(slug, nid, {"kind": "cache_forecast",
+                                       "forecast": inflight_event})
             # ⚠ `is_cmd` gets NO block, matching the drain above, which already
             # skips notices AND mail for a slash command: the "/" has to be the
             # first character the CLI sees. Command turns are informationally
@@ -10511,6 +10622,7 @@ def _run_one_turn(slug: str, nid: str,
                                     continue
                             break
                         if nxt is not None:
+                            bnd_inflight_event: dict[str, Any] | None = None
                             try:
                                 with store.DOC_LOCK:
                                     o2 = store.load_org(slug)
@@ -10520,10 +10632,14 @@ def _run_one_turn(slug: str, nid: str,
                                         ninf["view"] = nview[-8000:]
                                         if ncmd:
                                             ninf["cmd"] = True
-                                        o2.node(nid)["inflight"] = ninf
                                         if not ncmd:
                                             cache_attempt = \
                                                 _cache_boundary_attempt(o2, nid)
+                                            # The request in flight rides the
+                                            # marker (`_cache_inflight_attempt`).
+                                            if cache_attempt is not None:
+                                                ninf["cache_attempt"] = cache_attempt
+                                        o2.node(nid)["inflight"] = ninf
                                         store.save_org(o2)
                                         if not ncmd:
                                             # Do not persist a changing usage
@@ -10531,8 +10647,20 @@ def _run_one_turn(slug: str, nid: str,
                                             # A resumed carrier gets a fresh
                                             # board when it re-enters.
                                             nusage_org = o2
+                                            # The mid-turn projection for THIS
+                                            # message, superseding the idle
+                                            # verdict streamed at the boundary
+                                            # a moment ago.
+                                            try:
+                                                bnd_inflight_event = \
+                                                    cache_forecast_public(o2, nid)
+                                            except Exception:    # noqa: BLE001
+                                                bnd_inflight_event = None
                             except Exception:                # noqa: BLE001
                                 pass
+                            if bnd_inflight_event is not None:
+                                stream(slug, nid, {"kind": "cache_forecast",
+                                                   "forecast": bnd_inflight_event})
                             try:
                                 if not ncmd and nusage_org is not None:
                                     nxt = (turn_usage_block(
