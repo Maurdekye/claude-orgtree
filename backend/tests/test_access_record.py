@@ -22,6 +22,7 @@ the four ways an instrument like this quietly stops being one.
         threshold and `_tree_slow_warned`
     §5  a request that FAILS is still recorded
     §6  `inflight` really counts concurrency
+    §7  every line it prints can actually reach the log
 
 ⚠ §2 IS A SECURITY CHECK, NOT A TIDINESS ONE, and it is why the record logs a
 route TEMPLATE rather than a path. This middleware sits on `app`, and the
@@ -183,7 +184,8 @@ def a_slow_request_raises_the_alarm() -> None:
     api._slow_held.pop("/slow", None)
     assert not _slow_lines(api._SLOW_MS - 1), "alarmed below the threshold"
     got = _slow_lines(api._SLOW_MS + 1000)
-    assert len(got) == 1 and "⚠" in got[0], got
+    # ASCII marker, not a glyph — see §7; a `⚠` here could not reach the log
+    assert len(got) == 1 and " SLOW " in got[0], got
     assert "in flight" in got[0], got[0]
 
 
@@ -287,6 +289,48 @@ def inflight_counts_overlapping_requests() -> None:
         f"the counter leaked: {api._access_inflight} still in flight")
 
 
+# ── §7 · the record must survive the stream it is actually written to ───────
+def every_emitted_line_encodes_to_the_log_stream() -> None:
+    """The instrument was invisible in production and its own safety net hid it.
+
+    The backend's stdout is redirected to `backend.log`, and on Windows a
+    redirected stream is **cp1252** — printing a non-ASCII character raises
+    `UnicodeEncodeError`. `AccessRecord` wraps the emit in `except Exception:
+    pass` so a log line can never fail a request, so such a failure produces
+    no output, no error and no trace.
+
+    MEASURED on the first deploy carrying this middleware: the access line
+    (ASCII) appeared 236 times, while the slow-request alarm — identical
+    except for a `⚠` glyph — appeared **ZERO** times across **32** requests
+    that exceeded the threshold. A green test suite and a working-looking log
+    said nothing, because the suite captures stdout into a `StringIO`, which
+    is unicode-native and cannot reproduce the fault.
+
+    So this encodes the real lines to the real codec instead of eyeballing
+    them. It is deliberately not a regex over the source: the failure is a
+    property of the BYTES, and a future author adding an em-dash to a message
+    would pass any spelling check while silencing the alarm again.
+    """
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        # a route of its own: §3/§4 leave `/slow` inside its repeat window,
+        # and a suppressed alarm would make this pass for the wrong reason
+        api._access_emit(
+            {"method": "GET", "route": type("R", (), {"path": "/enc"})()},
+            200, api._SLOW_MS + 1000, api._SLOW_MS + 1100, 4242, 3)
+    lines = [ln for ln in buf.getvalue().splitlines() if ln.startswith("[orgtree.")]
+    assert len(lines) == 2, ("expected an access line AND a slow line; the "
+                             f"alarm is not firing at all: {lines}")
+    for ln in lines:
+        try:
+            ln.encode("cp1252")
+        except UnicodeEncodeError as exc:
+            raise AssertionError(
+                f"this line cannot be written to backend.log and will be "
+                f"SILENTLY DROPPED in production ({exc}): {ln!r}") from None
+        assert ln.isascii(), f"non-ASCII in an emitted line: {ln!r}"
+
+
 try:
     print("access record")
     check("§1 every request is recorded with the fields a diagnosis needs",
@@ -301,6 +345,8 @@ try:
           a_handler_that_raises_is_still_recorded)
     check("§6 inflight counts overlapping requests",
           inflight_counts_overlapping_requests)
+    check("§7 every emitted line encodes to the log stream",
+          every_emitted_line_encodes_to_the_log_stream)
     print(f"\n{PASS} passed, {FAIL} FAILED")
 finally:
     shutil.rmtree(RIG, ignore_errors=True)

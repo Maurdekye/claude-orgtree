@@ -263,6 +263,23 @@ def _route_label(scope: ASGIScope) -> str:
 
 def _access_emit(scope: ASGIScope, status: int, handler_ms: float,
                  total_ms: float, nbytes: int, depth: int) -> None:
+    """⚠ EVERY BYTE THIS PRINTS MUST BE ASCII, and that is not a style rule.
+
+    The backend's stdout is redirected to `backend.log` by the launcher, and
+    on Windows a redirected stream is cp1252 — `print` of a non-ASCII
+    character raises `UnicodeEncodeError`. The caller wraps this in a bare
+    `except Exception: pass` so a log line can never fail a request, which
+    means such a failure is COMPLETELY SILENT.
+
+    Found in production on the first deploy that carried this middleware: the
+    access line (ASCII) appeared 236 times while the slow-request alarm, whose
+    only difference was a `⚠` glyph, appeared ZERO times across 32 requests
+    that qualified for it. The instrument built to make slow requests visible
+    was itself invisible, hidden by its own safety net.
+
+    `test_access_record.py` §7 pins it by encoding the emitted lines as
+    cp1252, which is the actual failure and cannot be satisfied by inspection.
+    """
     route = _route_label(scope)
     method = str(scope.get("method") or "?")
     stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -285,7 +302,8 @@ def _access_emit(scope: ASGIScope, status: int, handler_ms: float,
         return
     held = _slow_held.pop(route, 0)
     _slow_last[route] = now
-    print(f"[orgtree.slow] ⚠ {method} {route} took {handler_ms:.0f}ms "
+    # ⚠ ASCII ONLY ON THIS LINE — see the note on `_access_emit`.
+    print(f"[orgtree.slow] SLOW {method} {route} took {handler_ms:.0f}ms "
           f"(>{_SLOW_MS:.0f}ms), {nbytes} bytes, {depth} in flight"
           + (f" — and {held} more like it in the last "
              f"{_SLOW_REPEAT_S:.0f}s" if held else ""), flush=True)
