@@ -242,6 +242,31 @@ def run() -> None:
     check("claim_data_root refuses with MigrationRefused naming the flag, the root and every org — and the tree is byte-identical (not even .owner)",
           refuses_at_claim)
 
+    def wall_enumerates_every_slug() -> None:
+        # coordinator decision 2026-09-04: ORGTREE_MIGRATE=1 authorises EVERY
+        # pending org in the root (whole-root grant), on the condition that
+        # the wall ENUMERATES them first — the operator sees the full scope
+        # and then consents to it. A wall that summarised ("3 orgs pending")
+        # would turn informed consent into hidden consent; this pins the
+        # enumeration, with enough orgs that a summary would be tempting.
+        root = fresh_root()
+        od = os.path.join(root, "orgs")
+        extra = [f"org{i:02d}" for i in range(8)]
+        for s in extra:
+            shutil.copy(os.path.join(od, "alpha.json"), os.path.join(od, f"{s}.json"))
+        expected = sorted(["alpha", "beta", *extra])
+        before = tree(root)
+        r = child("store.claim_data_root()", root)
+        assert_refused(r, *expected)
+        line = [ln for ln in r["err"].splitlines() if ln.strip().startswith("pending")]
+        eq(len(line), 1, f"exactly one pending line: {line}")
+        listed = [x.strip() for x in line[0].split(":", 1)[1].split(",")]
+        eq(listed, expected, "the pending line must list every slug, sorted: ")
+        assert f"{len(expected)} unmigrated" in r["err"], r["err"]
+        unchanged(root, before)
+    check("the wall ENUMERATES every pending slug (10 orgs), never summarises — the whole-root grant is informed consent",
+          wall_enumerates_every_slug)
+
     def refuses_runner_shaped() -> None:
         # the incident's exact shape: the operator's shell HAS the opt-in;
         # the runner strips ORGTREE_* from the child; the child must see no

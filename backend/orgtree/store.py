@@ -1590,7 +1590,14 @@ def migrate_org(slug: str) -> dict[str, Any]:
     then does the `.json` become `.json.premigration` and the candidate take
     the final name. On ANY failure the candidate is deleted, the `.json` is
     untouched, and `MigrationError` is raised — never a silent fallback. The
-    `.premigration` file is never removed by code (§6.1 step 6)."""
+    `.premigration` file is never removed by code (§6.1 step 6).
+
+    Deliberately UNGATED: this is the mechanism, and it migrates on the
+    CALLER's authority — naming a slug and calling this is the explicit act
+    the gate exists to require. The gate (`ORGTREE_MIGRATE=1`) lives at
+    `claim_data_root` / `migrate_pending` / `_ensure_migrated`, the places
+    that would otherwise INFER a migration from where a process is pointed.
+    Not an oversight; do not add a flag here (coordinator decision 2026-09-04)."""
     slug = _safe_slug(slug)
     jp, db = _json_path(slug), _db_path(slug)
     tmpdb = db + ".migrating"
