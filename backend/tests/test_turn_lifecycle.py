@@ -60,6 +60,7 @@ import os
 import re
 import time as _time
 import shutil
+import sqlite3
 import socket
 import subprocess
 import sys
@@ -2513,12 +2514,40 @@ def send(slug: str, nid: str, text: str) -> dict:
 
 
 def doc(slug: str) -> dict:
-    p = os.path.join(DATA, "orgs", slug + ".json")
+    """The LIVE BACKEND's document for `slug` — read from ITS root (`DATA`),
+    which is NOT this process's (`HDATA`), and read while another process is
+    writing it, hence the retry.
+
+    ⚠ Backend-aware since 2026-09-04 (sqlite-review). Under JSON this opened
+    `DATA/orgs/<slug>.json`; under SQLite there is no such file, so every
+    caller died with `could not read …` and took whole sections with it — 39
+    checks, all of them this one helper. Same class as the two checks that
+    use `raw_doc` below and the nine in `test_persistence.py`: a test reaching
+    past the store to the format.
+
+    The sqlite arm deliberately does NOT go through `store._POOL`. The pool
+    keys on SLUG and resolves paths through `store.DATA_ROOT`, which in this
+    process points at the HERMETIC root — so a pooled connection could answer
+    from the wrong database entirely. An explicit `_open_conn` on `DATA`'s
+    path plus `reconstruct_full` (the same reconstruction `export_json` uses)
+    is the whole document, from the root we meant, with nothing cached.
+    `create=False` is the default and matters: a database that has not been
+    written yet raises instead of being created empty, which is exactly what
+    the retry loop is for.
+    """
+    sq = store.STORE_BACKEND == "sqlite"
+    p = os.path.join(DATA, "orgs", slug + (".db" if sq else ".json"))
     for _ in range(30):
         try:
+            if sq:
+                conn = store._open_conn(p)
+                try:
+                    return store.reconstruct_full(conn)
+                finally:
+                    conn.close()
             with open(p, encoding="utf-8") as f:
                 return json.load(f)
-        except (OSError, ValueError):
+        except (OSError, ValueError, sqlite3.Error):
             time.sleep(0.05)
     raise RuntimeError(f"could not read {p}")
 
