@@ -1,5 +1,7 @@
 # pyright: strict
-"""Multi-org persistence (№36). One JSON file per org under the DATA root.
+"""Multi-org persistence (№36). One document per org under the DATA root — a JSON
+file (`ORGTREE_STORE=json`, the historical format) or a SQLite database
+(`ORGTREE_STORE=sqlite`, SQLITE-SPEC Phase 1, 2026-09-03).
 
 Data root is ~/orgtree (NOT ~/.claude — spike finding 4, and node scratch dirs live
 beside the ledger data).
@@ -19,21 +21,46 @@ is plumbed over the file tools to fake it).
 Layout:
 
     ~/orgtree/
-      orgs/<slug>.json          the ledger documents
-      scratch/<slug>/<node>/    node working dirs (flat per §7.6; made by the supervisor)
+      orgs/<slug>.json                the ledger documents      (ORGTREE_STORE=json)
+      orgs/<slug>.db                  the ledger databases      (ORGTREE_STORE=sqlite)
+      orgs/<slug>.json.premigration   the JSON doc as it was the moment it was
+                                      migrated — NEVER deleted by code (§6.1/§6.4)
+      scratch/<slug>/<node>/          node working dirs (flat per §7.6; made by the
+                                      supervisor)
 
-Writes are atomic (tmp + os.replace).
+JSON writes are atomic (tmp + os.replace). SQLite writes are one transaction per
+`save_org` (`BEGIN IMMEDIATE` … `COMMIT`, WAL, `synchronous=FULL`).
+
+THE SEAM (SQLITE-SPEC §4). `ledger.Org` is 8,000+ lines operating on `Org.d` as a
+plain dict, so the whole storage change lives behind `load_org` / `save_org`:
+
+  * `load_org` returns an `Org` whose `.d` is a `LazyDoc` — a real `dict` holding
+    every small section and `nodes` eagerly; the heavy append-only logs
+    (`mail_log`, `steered_log`, `turn_error_log`, `events`, `org_inbox`,
+    `notice_log`, `user_mail_log`, `user_outbox`) are ABSENT until first touched
+    and then materialise from their row tables. 75 % of reads never touch one.
+  * `save_org` is compare-on-save: every small section and every node is
+    re-serialised and written only if it differs from what was loaded; a
+    materialised log section is rewritten (all rows of that section / owner)
+    only if its content differs. Phase 1 has NO append fast path — a changed log
+    section is always fully rewritten. That is deliberate (§4.4): a wrong fast
+    path loses history, a slow correct path is merely today's performance.
+  * Nothing outside this module changed for it. `Org.d` still behaves as a dict
+    (see `LazyDoc` for the four `dict`-subclass hazards and how they are met).
 """
 
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import os
+import sqlite3
+import sys
 import tempfile
 import threading
 import time
-from collections.abc import Callable, Generator, Iterator
+from collections.abc import Callable, Generator, Iterable, Iterator
 from typing import Any, cast
 
 from datetime import datetime, timezone
@@ -43,6 +70,15 @@ from .schema import OrgDoc
 
 DATA_ROOT: str = os.environ.get("ORGTREE_DATA", os.path.expanduser("~/orgtree"))
 
+# Which on-disk format this process reads and writes. `json` is the historical
+# one-file-per-org document; `sqlite` is SQLITE-SPEC §3. Resolved ONCE at import
+# like DATA_ROOT (tests set the environment before importing). The default stays
+# `json` until the migration has been verified against a copy of the live data
+# root (§6.1 steps 4–5) — flipping it is this one literal.
+STORE_BACKEND: str = os.environ.get("ORGTREE_STORE", "json").strip().lower() or "json"
+if STORE_BACKEND not in ("json", "sqlite"):
+    raise ValueError(f"ORGTREE_STORE must be 'json' or 'sqlite', not {STORE_BACKEND!r}")
+
 # Coarse per-process guard around load-modify-save cycles: API ops and the
 # supervisor's notice drain both rewrite org docs; without this a stale copy
 # could resurrect just-delivered notices (double delivery).
@@ -50,6 +86,11 @@ DOC_LOCK = threading.RLock()
 
 
 # ---------------------------------------------------------------- the latch
+# (JSON backend only. SQLite/WAL makes readers and the writer non-blocking by
+# construction, so none of this machinery is on that path — §4.6. It stays in
+# the module because the JSON backend must remain live and green for at least
+# one release as the rollback target, §6.4.)
+#
 # Windows: `os.replace` over the live doc fails with WinError 5 while ANY
 # handle on the destination is open — and MoveFileEx opens the target
 # EXCLUSIVELY itself, so no share-mode trick on the reader's side helps
@@ -148,6 +189,10 @@ _IO = _IOLatch()
 # tested end to end in real subprocesses by `test_compaction.py` (section
 # "xproc · the owner claim"). ⚠ Tests and drills that spawn their own backend
 # must use an isolated ORGTREE_DATA — they already do, and now it is enforced.
+#
+# SQLITE-SPEC §5.1: the claim STAYS with the SQLite backend. The save became
+# atomic; the load→mutate→save cycle did not, and `.owner` also guards
+# `accounts.json`, `extern-peers.json`, `journals/` and the process table.
 _owner_fd: int | None = None
 
 
@@ -186,6 +231,12 @@ def claim_data_root(root: str | None = None) -> None:
     Raises `DataRootBusy` if a live process already holds it. Idempotent
     within a process. Released by the OS when the process exits, however it
     exits — there is no cleanup to forget and no stale file to reason about.
+
+    SQLite backend: once the root is ours — and only then, because a migration
+    needs exactly the exclusivity this claim provides — every `<slug>.json`
+    that has no `<slug>.db` yet is migrated (§6.2) BEFORE the API binds. A
+    migration whose verifier fails raises `MigrationError` out of here, which
+    refuses startup. Never silently.
     """
     global _owner_fd
     if _owner_fd is not None:
@@ -219,6 +270,8 @@ def claim_data_root(root: str | None = None) -> None:
     except OSError:
         pass
     _owner_fd = fd              # held for the process lifetime, deliberately
+    if STORE_BACKEND == "sqlite" and os.path.abspath(base) == os.path.abspath(DATA_ROOT):
+        migrate_pending()
 
 
 def release_data_root() -> None:
@@ -284,8 +337,22 @@ def _safe_slug(slug: str) -> str:
     return slug
 
 
-def org_path(slug: str) -> str:
+def _json_path(slug: str) -> str:
     return os.path.join(_orgs_dir(), _safe_slug(slug) + ".json")
+
+
+def _db_path(slug: str) -> str:
+    return os.path.join(_orgs_dir(), _safe_slug(slug) + ".db")
+
+
+def _premigration_path(slug: str) -> str:
+    return _json_path(slug) + ".premigration"
+
+
+def org_path(slug: str) -> str:
+    """The org's document on disk under the ACTIVE backend — `<slug>.json` or
+    `<slug>.db`. Putting a file at this path IS the restore (delete_org)."""
+    return _db_path(slug) if STORE_BACKEND == "sqlite" else _json_path(slug)
 
 
 def scratch_root(slug: str) -> str:
@@ -296,12 +363,12 @@ _TMP_GRACE = 300.0     # seconds; a live save's tmp lives for milliseconds
 
 
 def _sweep_tmp() -> None:
-    """A save that dies between mkstemp and os.replace — the process killed,
-    a non-serialisable value, the replace retry giving up — leaves its temp
-    file behind forever. Measured: 12 kills mid-save left 9 orphans holding
-    11.9 MB beside a 1.8 MB live doc. `save_org` now cleans up its own
-    failures; this catches the ones no `finally` can (SIGKILL, power loss).
-    Age-gated so it can never touch a save in flight."""
+    """(JSON backend.) A save that dies between mkstemp and os.replace — the
+    process killed, a non-serialisable value, the replace retry giving up —
+    leaves its temp file behind forever. Measured: 12 kills mid-save left 9
+    orphans holding 11.9 MB beside a 1.8 MB live doc. `save_org` now cleans up
+    its own failures; this catches the ones no `finally` can (SIGKILL, power
+    loss). Age-gated so it can never touch a save in flight."""
     cutoff = time.time() - _TMP_GRACE
     try:
         names = os.listdir(_orgs_dir())
@@ -319,9 +386,10 @@ def _sweep_tmp() -> None:
 
 
 def _read_bytes(p: str) -> bytes:
-    """The ONE read path. Under the shared latch (so a concurrent os.replace
-    is not starved), slurped in one go (so the handle is not held across the
-    parse), with the retry left as the residual cross-process defence."""
+    """The ONE JSON read path. Under the shared latch (so a concurrent
+    os.replace is not starved), slurped in one go (so the handle is not held
+    across the parse), with the retry left as the residual cross-process
+    defence."""
     for i in range(20):
         try:
             with _IO.shared():
@@ -334,8 +402,1123 @@ def _read_bytes(p: str) -> bytes:
     raise OSError(f"could not read {p!r}")   # unreachable
 
 
+# =========================================================================
+#                          SQLite backend (SQLITE-SPEC §3–§6)
+# =========================================================================
+
+# §3.2 — section classification. EXACT; do not re-derive. `turn_error_log`
+# is a dict-of-lists like `mail_log` (the design's own first pass misfiled it
+# as a flat list and the round-trip verifier caught it). `notices`, `mail`,
+# `delivering`, `net_spool` are dict-of-list shaped too but are MUTABLE
+# QUEUES, not append-only logs: they stay `doc` blobs.
+ROWED: tuple[str, ...] = ("nodes",)
+DICT_LOGS: tuple[str, ...] = ("mail_log", "steered_log", "turn_error_log")
+LIST_LOGS: tuple[str, ...] = ("events", "org_inbox", "notice_log",
+                              "user_mail_log", "user_outbox")
+LAZY_SECTIONS: frozenset[str] = frozenset(DICT_LOGS) | frozenset(LIST_LOGS)
+
+_SCHEMA_VERSION = "1"
+
+# §3.1 — the DDL. Nothing inside a NodeDoc or an entry is a column (§3.3): a
+# field earns a column by appearing in a WHERE or an ORDER BY, nothing else.
+_DDL = """
+CREATE TABLE IF NOT EXISTS doc (
+  key  TEXT PRIMARY KEY,
+  val  TEXT NOT NULL
+) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS nodes (
+  id   TEXT PRIMARY KEY,
+  ord  INTEGER NOT NULL,
+  val  TEXT NOT NULL
+) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS log_d (
+  seq   INTEGER PRIMARY KEY AUTOINCREMENT,
+  sect  TEXT NOT NULL,
+  owner TEXT NOT NULL,
+  at    TEXT,
+  val   TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_log_d ON log_d(sect, owner, seq);
+CREATE TABLE IF NOT EXISTS log_l (
+  seq   INTEGER PRIMARY KEY AUTOINCREMENT,
+  sect  TEXT NOT NULL,
+  at    TEXT,
+  val   TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_log_l ON log_l(sect, seq);
+CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, val TEXT NOT NULL);
+"""
+
+# `meta` rows beyond the spec's four bookkeeping ones (schema_version,
+# migrated_at, source_json_sha256, source_json_bytes) — both exist so the
+# reconstruction is FAITHFUL rather than merely equal-under-sort_keys:
+#   key_order      JSON list of the document's top-level keys in insertion
+#                  order. This is also what records that an EMPTY lazy
+#                  section (`"turn_error_log": {}`) exists at all — zero rows
+#                  cannot say so, and the verifier's canonical compare would
+#                  fail on the missing key.
+#   owners:<sect>  JSON list of a dict-log's owners in insertion order, for
+#                  the same two reasons one level down: an owner whose list
+#                  is empty (`setdefault(nid, [])` on a read path leaves one)
+#                  has no rows, and owner order is otherwise lost.
+_META_KEY_ORDER = "key_order"
+_META_OWNERS = "owners:"
+
+
+class MigrationError(RuntimeError):
+    """The JSON→SQLite migration of one org did not verify. The `.json` is
+    untouched, the candidate database was deleted, and the backend must not
+    start on this data root (§6.2)."""
+
+
+def _dumps(v: Any) -> str:
+    """The ONE serialisation for every stored value. Compact separators, and
+    NOTHING else varies — compare-on-save compares these strings."""
+    return json.dumps(v, separators=(",", ":"))
+
+
+def canon(x: Any) -> str:
+    """§6.3 — canonical JSON: `sort_keys` normalises dict order (which JSON
+    does not preserve semantically), compact separators normalise whitespace.
+    Everything else — every value, list order, nesting, float — must match."""
+    return json.dumps(x, sort_keys=True, separators=(",", ":"))
+
+
+def _at_of(entry: Any) -> str | None:
+    """`entry["at"]` for the index column when it is a string; NULL otherwise.
+    Only ever used for range filters — `val` holds the truth."""
+    if isinstance(entry, dict):
+        at = cast("dict[str, Any]", entry).get("at")
+        if isinstance(at, str):
+            return at
+    return None
+
+
+def _open_conn(path: str) -> sqlite3.Connection:
+    """One connection, pragmas applied (§3.1), schema ensured. Opening a path
+    that does not exist CREATES an empty database — callers check existence
+    first where that is not wanted (`load_org`).
+
+    `isolation_level=None`: the sqlite3 module's implicit-BEGIN machinery is
+    off; every transaction here is an explicit `BEGIN IMMEDIATE` … `COMMIT`.
+    `check_same_thread=False`: connections live in `_Pool`, which hands each
+    one to exactly one thread at a time — see the pool for why that, and not
+    `threading.local()`, is the shape."""
+    conn = sqlite3.connect(path, timeout=10.0, isolation_level=None,
+                           check_same_thread=False)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=FULL")
+    conn.execute("PRAGMA foreign_keys=OFF")
+    conn.execute("PRAGMA busy_timeout=10000")
+    conn.executescript(_DDL)
+    return conn
+
+
+class _Pool:
+    """Connections per slug, each used by ONE thread at a time.
+
+    `sqlite3.threadsafety == 1` on this build: connections must not be used
+    by two threads at once. §5.2 suggests `threading.local()`; a pool gives
+    the same guarantee (a connection is checked out, used, checked in — never
+    shared) and fixes the one thing a thread-local cache cannot do: `delete_org`
+    has to CLOSE every connection to a database before it can rename the file
+    (Windows refuses `os.replace` on an open file; a `-wal` with frames the
+    renamed file would lose), and a connection cached in another thread's
+    local storage is unreachable. Here the idle ones are closed on the spot
+    and the checked-out ones are closed on check-in instead of returned
+    (`_epoch`), and the rename retries until the last reader has let go.
+
+    Cap: `_CAP` idle connections per slug; beyond it a checked-in connection
+    is closed. Pool size tracks peak concurrency, not thread count."""
+
+    _CAP = 8
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._idle: dict[str, list[sqlite3.Connection]] = {}
+        self._epoch: dict[str, int] = {}
+        self._busy: dict[str, int] = {}
+
+    @contextlib.contextmanager
+    def acquire(self, slug: str) -> Generator[sqlite3.Connection]:
+        with self._lock:
+            epoch = self._epoch.get(slug, 0)
+            idle = self._idle.get(slug)
+            conn = idle.pop() if idle else None
+            self._busy[slug] = self._busy.get(slug, 0) + 1
+        keep = False
+        try:
+            if conn is None:
+                conn = _open_conn(_db_path(slug))
+            yield conn
+            # a transaction still open on check-in is a bug in the caller;
+            # never pool it — roll back and drop the connection
+            keep = not conn.in_transaction
+        finally:
+            with self._lock:
+                self._busy[slug] = self._busy.get(slug, 1) - 1
+                if conn is not None and keep and self._epoch.get(slug, 0) == epoch:
+                    lst = self._idle.setdefault(slug, [])
+                    if len(lst) < self._CAP:
+                        lst.append(conn)
+                        conn = None
+            if conn is not None:
+                with contextlib.suppress(Exception):
+                    if conn.in_transaction:
+                        conn.execute("ROLLBACK")
+                with contextlib.suppress(Exception):
+                    conn.close()
+
+    def close_all(self, slug: str) -> int:
+        """Close every idle connection to `slug` and mark the checked-out ones
+        to be closed on check-in. Returns how many are still checked out."""
+        with self._lock:
+            self._epoch[slug] = self._epoch.get(slug, 0) + 1
+            conns = self._idle.pop(slug, [])
+            busy = self._busy.get(slug, 0)
+        for c in conns:
+            with contextlib.suppress(Exception):
+                c.close()
+        return busy
+
+
+_POOL = _Pool()
+
+
+# ------------------------------------------------------------ the proxies
+class AppendLog(list[Any]):
+    """A materialised flat log (`events`, `notice_log`, …) or one owner's list
+    inside a dict log. A `list` in every respect; additionally it REMEMBERS
+    that it was mutated through a list method (`full_rewrite`).
+
+    Phase 1 (§4.4, "full_rewrite forced on"): the flag is recorded and never
+    consulted for correctness — `save_org` decides whether to rewrite a
+    section by comparing its content against what was loaded, which also
+    catches the one mutation no list method can see: an entry edited in place
+    (`entry["read"] = True`). Phase 2's append fast path is what will read
+    this journal, and the reviewer's job (§10.2) is to find a mutation it does
+    not express."""
+
+    full_rewrite: bool = False      # class default so a `__new__`-only copy has it
+
+    def _touch(self) -> None:
+        self.full_rewrite = True
+
+    def append(self, x: Any) -> None:
+        self._touch()
+        super().append(x)
+
+    def extend(self, xs: Iterable[Any]) -> None:
+        self._touch()
+        super().extend(xs)
+
+    def insert(self, i: Any, x: Any) -> None:
+        self._touch()
+        super().insert(i, x)
+
+    def pop(self, *a: Any) -> Any:
+        self._touch()
+        return super().pop(*a)
+
+    def remove(self, x: Any) -> None:
+        self._touch()
+        super().remove(x)
+
+    def clear(self) -> None:
+        self._touch()
+        super().clear()
+
+    def sort(self, *a: Any, **kw: Any) -> None:
+        self._touch()
+        super().sort(*a, **kw)
+
+    def reverse(self) -> None:
+        self._touch()
+        super().reverse()
+
+    def __setitem__(self, i: Any, v: Any) -> None:
+        self._touch()
+        super().__setitem__(i, v)
+
+    def __delitem__(self, i: Any) -> None:
+        self._touch()
+        super().__delitem__(i)
+
+    def __iadd__(self, xs: Any) -> Any:
+        self._touch()
+        return super().__iadd__(xs)
+
+    def __imul__(self, n: Any) -> Any:
+        self._touch()
+        return super().__imul__(n)
+
+
+class SectionMap(dict[str, Any]):
+    """A materialised dict log (`mail_log`, `steered_log`, `turn_error_log`):
+    `{owner: [entry…]}` with the loaded lists as `AppendLog`s. A `dict` in
+    every respect; additionally remembers structural mutation (`pop(owner)`,
+    `box[new] = box.pop(old)`, `setdefault(owner, [])`) in `full_rewrite`.
+
+    ⚠ A caller's own object is NEVER swapped for an `AppendLog`: after
+    `lst = []; box.setdefault(nid, lst); lst.append(x)` the append must land,
+    and it would not if `setdefault` had stored a copy. Identity beats
+    journaling here; the compare-on-save in `save_org` does not care which
+    type the value is. (Phase 2 has to solve this before its fast path can
+    trust the journal — recorded in the handover.)"""
+
+    full_rewrite: bool = False
+
+    def _touch(self) -> None:
+        self.full_rewrite = True
+
+    def __setitem__(self, k: str, v: Any) -> None:
+        self._touch()
+        super().__setitem__(k, v)
+
+    def __delitem__(self, k: str) -> None:
+        self._touch()
+        super().__delitem__(k)
+
+    def pop(self, k: str, *default: Any) -> Any:   # pyright: ignore[reportIncompatibleMethodOverride]
+        self._touch()
+        return super().pop(k, *default)
+
+    def popitem(self) -> tuple[str, Any]:
+        self._touch()
+        return super().popitem()
+
+    def clear(self) -> None:
+        self._touch()
+        super().clear()
+
+    def setdefault(self, k: str, default: Any = None) -> Any:   # pyright: ignore[reportIncompatibleMethodOverride]
+        if k not in self:
+            self._touch()
+        return super().setdefault(k, default)
+
+    def update(self, *a: Any, **kw: Any) -> None:   # pyright: ignore[reportIncompatibleMethodOverride]
+        self._touch()
+        super().update(*a, **kw)
+
+
+class LazyDoc(dict[str, Any]):
+    """The org document as `save_org`/`load_org` hand it to `ledger.Org` under
+    the SQLite backend (§4.2). A real `dict` — `ledger.py` never learns the
+    difference — holding every small section and `nodes` eagerly; the heavy
+    log sections are ABSENT from the underlying storage until first touched
+    and then load from their row tables (`__missing__`).
+
+    Everything `dict` will not route through `__missing__` is overridden:
+
+      get          `.get()` never calls `__missing__` — the #1 way to read
+                   None for a 4 MB section
+      __contains__ `"mail_log" in d` is True before materialisation (iff the
+                   section exists in the database — a fresh org has none,
+                   exactly as its JSON would not)
+      setdefault   the dominant ledger idiom
+      pop / del    `d.pop("account_token_uuid", None)`; a popped lazy section
+                   is remembered (`_dropped`) so the save deletes its rows
+      keys/items/values/__iter__/__len__/__eq__/__repr__/copy
+                   whole-doc walks materialise everything first
+      update / |=  `dict.update` writes straight into storage, bypassing
+                   `__setitem__` — routed through it instead
+
+    Verified hazards (§4.2): `json.dumps(d)` and `copy.deepcopy(d)` both go
+    through `items()` and are safe. `{**d}` and `dict(d)` DO NOT — they read
+    the storage directly and silently drop every unmaterialised section. The
+    pre-flight grep for those over `backend/orgtree/` returned zero hits at
+    `ec74e2f`; `materialize_all()` exists for any site that ever needs it.
+
+    Instance state is plain data only (strings, lists, sets) so that
+    `copy.deepcopy(org.d)` (ledger batch_move's rollback snapshot) produces a
+    complete, independently saveable `LazyDoc`. Never hang a connection or a
+    callable off this object."""
+
+    def __init__(self, slug: str) -> None:
+        super().__init__()
+        self._slug: str = slug
+        # what the database held when this doc was loaded — the other half of
+        # compare-on-save. Strings are `_dumps()` output.
+        self._snap_doc: dict[str, str] = {}            # small key → val
+        self._snap_nodes: dict[str, str] = {}          # node id → val
+        self._snap_logs: dict[str, Any] = {}           # sect → list[str] | dict[owner, list[str]]
+        self._key_order: list[str] = []                # top-level keys as loaded
+        self._present: set[str] = set()                # lazy sections that exist in the db
+        self._dropped: set[str] = set()                # lazy sections popped since load
+
+    # -- materialisation --------------------------------------------------
+    def __missing__(self, k: str) -> Any:
+        if k in LAZY_SECTIONS and k in self._present and k not in self._dropped:
+            v = _load_section(self._slug, k, self._snap_logs)
+            dict.__setitem__(self, k, v)
+            return v
+        raise KeyError(k)
+
+    def materialize_all(self) -> None:
+        for k in LAZY_SECTIONS:
+            if not dict.__contains__(self, k):
+                with contextlib.suppress(KeyError):
+                    self[k]
+
+    def _unmaterialized(self) -> set[str]:
+        return {k for k in self._present
+                if not dict.__contains__(self, k) and k not in self._dropped}
+
+    # -- the overrides ----------------------------------------------------
+    def __contains__(self, k: object) -> bool:
+        return (dict.__contains__(self, k)
+                or (isinstance(k, str) and k in LAZY_SECTIONS
+                    and k in self._present and k not in self._dropped))
+
+    def get(self, k: str, default: Any = None) -> Any:   # pyright: ignore[reportIncompatibleMethodOverride]
+        try:
+            return self[k]
+        except KeyError:
+            return default
+
+    def setdefault(self, k: str, default: Any = None) -> Any:   # pyright: ignore[reportIncompatibleMethodOverride]
+        if k in self:
+            return self[k]
+        self[k] = default
+        return default
+
+    def __setitem__(self, k: str, v: Any) -> None:
+        self._dropped.discard(k)
+        dict.__setitem__(self, k, v)
+
+    def __delitem__(self, k: str) -> None:
+        if k in self and not dict.__contains__(self, k):
+            self[k]                         # materialise so the semantics match a dict
+        dict.__delitem__(self, k)
+        if k in LAZY_SECTIONS:
+            self._dropped.add(k)
+
+    def pop(self, k: str, *default: Any) -> Any:   # pyright: ignore[reportIncompatibleMethodOverride]
+        if k in self:
+            v = self[k]
+            del self[k]
+            return v
+        if default:
+            return default[0]
+        raise KeyError(k)
+
+    def popitem(self) -> tuple[str, Any]:
+        self.materialize_all()
+        k, v = dict.popitem(self)
+        if k in LAZY_SECTIONS:
+            self._dropped.add(k)
+        return k, v
+
+    def update(self, *a: Any, **kw: Any) -> None:   # pyright: ignore[reportIncompatibleMethodOverride]
+        for k, v in dict(*a, **kw).items():
+            self[k] = v
+
+    def __ior__(self, other: Any) -> Any:   # pyright: ignore[reportIncompatibleMethodOverride]
+        self.update(other)
+        return self
+
+    def clear(self) -> None:
+        for k in self._present:
+            self._dropped.add(k)
+        dict.clear(self)
+
+    def keys(self):   # pyright: ignore[reportIncompatibleMethodOverride]
+        self.materialize_all()
+        return dict.keys(self)
+
+    def items(self):   # pyright: ignore[reportIncompatibleMethodOverride]
+        self.materialize_all()
+        return dict.items(self)
+
+    def values(self):   # pyright: ignore[reportIncompatibleMethodOverride]
+        self.materialize_all()
+        return dict.values(self)
+
+    def __iter__(self) -> Iterator[str]:
+        self.materialize_all()
+        return dict.__iter__(self)
+
+    def __len__(self) -> int:
+        self.materialize_all()
+        return dict.__len__(self)
+
+    def __eq__(self, other: object) -> bool:
+        self.materialize_all()
+        return dict.__eq__(self, other)
+
+    def __ne__(self, other: object) -> bool:
+        return not self.__eq__(other)
+
+    __hash__ = None  # type: ignore[assignment]  # dicts are unhashable; keep it so
+
+    def __repr__(self) -> str:
+        self.materialize_all()
+        return dict.__repr__(self)
+
+    def copy(self) -> dict[str, Any]:   # pyright: ignore[reportIncompatibleMethodOverride]
+        self.materialize_all()
+        return dict(dict.items(self))
+
+
+# -------------------------------------------------------------- readers
+def _meta_get(conn: sqlite3.Connection, key: str) -> str | None:
+    row = conn.execute("SELECT val FROM meta WHERE key=?", (key,)).fetchone()
+    return None if row is None else cast(str, row[0])
+
+
+def _meta_set(conn: sqlite3.Connection, key: str, val: str) -> None:
+    conn.execute("INSERT INTO meta(key,val) VALUES(?,?) "
+                 "ON CONFLICT(key) DO UPDATE SET val=excluded.val", (key, val))
+
+
+def _owners_of(conn: sqlite3.Connection, sect: str) -> list[str]:
+    """Owner order for a dict log: the recorded list, then any owner that has
+    rows but is (somehow) not in it, in first-row order."""
+    raw = _meta_get(conn, _META_OWNERS + sect)
+    owners: list[str] = cast("list[str]", json.loads(raw)) if raw else []
+    seen = set(owners)
+    for (o,) in conn.execute(
+            "SELECT owner FROM log_d WHERE sect=? GROUP BY owner ORDER BY MIN(seq)",
+            (sect,)):
+        if o not in seen:
+            owners.append(cast(str, o))
+            seen.add(o)
+    return owners
+
+
+def _read_dict_log(conn: sqlite3.Connection, sect: str
+                   ) -> tuple[dict[str, list[str]], SectionMap]:
+    """(per-owner row strings, the parsed SectionMap) for one dict log."""
+    strs: dict[str, list[str]] = {o: [] for o in _owners_of(conn, sect)}
+    for owner, val in conn.execute(
+            "SELECT owner, val FROM log_d WHERE sect=? ORDER BY seq", (sect,)):
+        strs.setdefault(cast(str, owner), []).append(cast(str, val))
+    out = SectionMap()
+    for o, lst in strs.items():
+        dict.__setitem__(out, o, AppendLog(json.loads(s) for s in lst))
+    return strs, out
+
+
+def _read_list_log(conn: sqlite3.Connection, sect: str
+                   ) -> tuple[list[str], AppendLog]:
+    strs = [cast(str, v) for (v,) in conn.execute(
+        "SELECT val FROM log_l WHERE sect=? ORDER BY seq", (sect,))]
+    return strs, AppendLog(json.loads(s) for s in strs)
+
+
+def _load_section(slug: str, sect: str, snap_logs: dict[str, Any]) -> Any:
+    """`LazyDoc.__missing__`: one lazy section from its rows, recording the
+    row strings in the doc's snapshot for compare-on-save. A section stored as
+    a `doc` blob (a value of the wrong shape — see `_write_lazy`) comes back
+    from there instead."""
+    with _POOL.acquire(slug) as conn:
+        row = conn.execute("SELECT val FROM doc WHERE key=?", (sect,)).fetchone()
+        if row is not None:
+            snap_logs[sect] = cast(str, row[0])
+            return json.loads(cast(str, row[0]))
+        if sect in DICT_LOGS:
+            strs_d, sm = _read_dict_log(conn, sect)
+            snap_logs[sect] = strs_d
+            return sm
+        strs_l, al = _read_list_log(conn, sect)
+        snap_logs[sect] = strs_l
+        return al
+
+
+def _load_lazy(conn: sqlite3.Connection, slug: str) -> LazyDoc:
+    """The eager half of a load: every `doc` row and every node, inside ONE
+    read transaction so the two cannot straddle a commit. `nodes` is eager
+    because `Org.__init__` walks every node on every construction (§4.3)."""
+    d = LazyDoc(slug)
+    conn.execute("BEGIN")
+    try:
+        raw_order = _meta_get(conn, _META_KEY_ORDER)
+        key_order: list[str] = cast("list[str]", json.loads(raw_order)) if raw_order else []
+        doc_rows: dict[str, str] = {cast(str, k): cast(str, v) for k, v in
+                                    conn.execute("SELECT key, val FROM doc")}
+        node_rows = [(cast(str, i), cast(str, v)) for i, v in
+                     conn.execute("SELECT id, val FROM nodes ORDER BY ord")]
+        present: set[str] = set()
+        for sect in DICT_LOGS:
+            if conn.execute("SELECT 1 FROM log_d WHERE sect=? LIMIT 1", (sect,)).fetchone() \
+                    or _meta_get(conn, _META_OWNERS + sect) is not None:
+                present.add(sect)
+        for sect in LIST_LOGS:
+            if conn.execute("SELECT 1 FROM log_l WHERE sect=? LIMIT 1", (sect,)).fetchone():
+                present.add(sect)
+    finally:
+        conn.execute("COMMIT")
+    # a key in the recorded order that is a lazy section counts as present
+    # even with zero rows — that is what `key_order` is for
+    for k in key_order:
+        if k in LAZY_SECTIONS and k not in doc_rows:
+            present.add(k)
+    # anything on disk but missing from the recorded order goes at the end
+    order = list(key_order)
+    known = set(order)
+    for k in doc_rows:
+        if k not in known:
+            order.append(k)
+            known.add(k)
+    if node_rows and "nodes" not in known:
+        order.append("nodes")
+        known.add("nodes")
+    for k in sorted(present):
+        if k not in known:
+            order.append(k)
+            known.add(k)
+    for k in order:
+        if k == "nodes" and "nodes" not in doc_rows:
+            nodes: dict[str, Any] = {}
+            for nid, v in node_rows:
+                nodes[nid] = json.loads(v)
+                d._snap_nodes[nid] = v
+            dict.__setitem__(d, "nodes", nodes)
+        elif k in doc_rows:
+            # includes a lazy-named key (or `nodes`) stored as a blob because
+            # its value had the wrong shape
+            d._snap_doc[k] = doc_rows[k]
+            dict.__setitem__(d, k, json.loads(doc_rows[k]))
+        elif k in LAZY_SECTIONS:
+            pass                                    # stays lazy
+        # else: a key recorded in the order with nothing behind it — dropped
+    d._key_order = [k for k in order if k in doc_rows
+                    or (k == "nodes" and node_rows)
+                    or (k in LAZY_SECTIONS and k in present)]
+    d._present = {k for k in present if k not in doc_rows}
+    return d
+
+
+def reconstruct_full(conn: sqlite3.Connection) -> dict[str, Any]:
+    """The WHOLE document from rows, as a plain dict, in recorded key order.
+    Used by the migration verifier and `export_json` — never on a hot path
+    (§2.1)."""
+    d = _load_lazy(conn, "")
+    out: dict[str, Any] = {}
+    for k in d._key_order:
+        if dict.__contains__(d, k):
+            out[k] = dict.__getitem__(d, k)
+        elif k in DICT_LOGS:
+            sm = _read_dict_log(conn, k)[1]
+            out[k] = {o: list(cast("list[Any]", lst)) for o, lst in dict.items(sm)}
+        elif k in LIST_LOGS:
+            out[k] = list(_read_list_log(conn, k)[1])
+    return out
+
+
+# -------------------------------------------------------------- writers
+_UPSERT_DOC = ("INSERT INTO doc(key,val) VALUES(?,?) "
+               "ON CONFLICT(key) DO UPDATE SET val=excluded.val")
+
+
+def _write_dict_log(conn: sqlite3.Connection, sect: str, cur: dict[str, Any],
+                    snap: dict[str, list[str]] | None) -> dict[str, list[str]]:
+    """Reconcile one dict log. `snap is None` means "assume nothing about the
+    rows" (a plain-dict save, or the migration): every owner is rewritten.
+    Otherwise an owner is rewritten iff its row strings differ. Returns the
+    new snapshot."""
+    new_snap: dict[str, list[str]] = {}
+    if snap is None:
+        conn.execute("DELETE FROM log_d WHERE sect=?", (sect,))
+    for owner, lst in cur.items():
+        if not isinstance(lst, list):
+            raise LedgerError(f"{sect}[{owner!r}] must be a list, not {type(lst).__name__}")
+        entries = cast("list[Any]", lst)
+        strs = [_dumps(e) for e in entries]
+        new_snap[owner] = strs
+        if snap is not None and snap.get(owner) == strs:
+            continue
+        if snap is not None:
+            conn.execute("DELETE FROM log_d WHERE sect=? AND owner=?", (sect, owner))
+        conn.executemany("INSERT INTO log_d(sect, owner, at, val) VALUES(?,?,?,?)",
+                         [(sect, owner, _at_of(e), s) for e, s in zip(entries, strs)])
+    if snap is not None:
+        for owner in snap:
+            if owner not in cur:
+                conn.execute("DELETE FROM log_d WHERE sect=? AND owner=?", (sect, owner))
+    owners = _dumps(list(cur.keys()))
+    if snap is None or _dumps(list(snap.keys())) != owners:
+        _meta_set(conn, _META_OWNERS + sect, owners)
+    return new_snap
+
+
+def _write_list_log(conn: sqlite3.Connection, sect: str, cur: list[Any],
+                    snap: list[str] | None) -> list[str]:
+    strs = [_dumps(e) for e in cur]
+    if snap is not None and snap == strs:
+        return strs
+    conn.execute("DELETE FROM log_l WHERE sect=?", (sect,))
+    conn.executemany("INSERT INTO log_l(sect, at, val) VALUES(?,?,?)",
+                     [(sect, _at_of(e), s) for e, s in zip(cur, strs)])
+    return strs
+
+
+def _drop_lazy_rows(conn: sqlite3.Connection, sect: str) -> None:
+    if sect in DICT_LOGS:
+        conn.execute("DELETE FROM log_d WHERE sect=?", (sect,))
+        conn.execute("DELETE FROM meta WHERE key=?", (_META_OWNERS + sect,))
+    else:
+        conn.execute("DELETE FROM log_l WHERE sect=?", (sect,))
+
+
+def _write_lazy(conn: sqlite3.Connection, sect: str, value: Any,
+                snap: Any, snap_doc: dict[str, str] | None,
+                new_snap_doc: dict[str, str]) -> Any:
+    """One lazy section: rows when it has the expected shape; a `doc` blob
+    when it does not (a `None`, a string — anything JSON can hold and rows
+    cannot). The format stores ANY document; the verifier decides whether it
+    stored it right. Returns the new log snapshot (None when blobbed)."""
+    expect_dict = sect in DICT_LOGS
+    if (expect_dict and isinstance(value, dict)) or (not expect_dict and isinstance(value, list)):
+        if snap_doc is None or sect in snap_doc:
+            conn.execute("DELETE FROM doc WHERE key=?", (sect,))
+        if isinstance(snap, str):
+            snap = None
+        if expect_dict:
+            return _write_dict_log(conn, sect, cast("dict[str, Any]", value),
+                                   cast("dict[str, list[str]] | None", snap))
+        return _write_list_log(conn, sect, cast("list[Any]", value),
+                               cast("list[str] | None", snap))
+    # wrong shape → blob; make sure no rows linger
+    _drop_lazy_rows(conn, sect)
+    s = _dumps(value)
+    new_snap_doc[sect] = s
+    if snap_doc is None or snap_doc.get(sect) != s:
+        conn.execute(_UPSERT_DOC, (sect, s))
+    return None
+
+
+def _write_doc(conn: sqlite3.Connection, d: dict[str, Any], lazy: LazyDoc | None
+               ) -> tuple[dict[str, str], dict[str, str], dict[str, Any], list[str]]:
+    """The body of a save transaction (§4.5), for both shapes of `Org.d`:
+
+      lazy is a LazyDoc  compare-on-save against its snapshots; unmaterialised
+                         sections are not touched at all
+      lazy is None       `d` is a plain dict (Org.create, a test fixture, a
+                         `json.loads` copy): reconcile everything against what
+                         is in the database — every key upserted, every node
+                         written, every log section rewritten, and whatever
+                         the database holds that `d` does not is deleted
+
+    Returns (snap_doc, snap_nodes, snap_logs, key_order) describing the
+    database as it is after the commit, for the LazyDoc to adopt."""
+    snap_doc = lazy._snap_doc if lazy is not None else None
+    snap_nodes = lazy._snap_nodes if lazy is not None else None
+    # storage view: for a LazyDoc, the raw dict contents (no materialisation —
+    # that is the whole point); for a plain dict, the dict
+    items = list(dict.items(d))
+    new_doc: dict[str, str] = {}
+    new_nodes: dict[str, str] = {}
+    new_logs: dict[str, Any] = {}
+
+    # -- small sections (`doc`) ------------------------------------------
+    db_doc_keys: set[str] = set()
+    if snap_doc is None:
+        db_doc_keys = {cast(str, k) for (k,) in conn.execute("SELECT key FROM doc")}
+    for k, v in items:
+        if k in ROWED or k in LAZY_SECTIONS:
+            continue
+        s = _dumps(v)
+        new_doc[k] = s
+        if snap_doc is None or snap_doc.get(k) != s:
+            conn.execute(_UPSERT_DOC, (k, s))
+    known_doc = set(snap_doc) if snap_doc is not None else db_doc_keys
+    for k in known_doc - set(new_doc) - LAZY_SECTIONS - set(ROWED):
+        conn.execute("DELETE FROM doc WHERE key=?", (k,))
+
+    # -- nodes (rows) ----------------------------------------------------
+    has_nodes_key = dict.__contains__(d, "nodes")
+    nodes_v = dict.get(d, "nodes")
+    if has_nodes_key and not isinstance(nodes_v, dict):
+        # `"nodes": null` (or anything else that is not a dict) — storable
+        # only as a blob; the rows are emptied so nothing lingers
+        conn.execute("DELETE FROM nodes")
+        s = _dumps(nodes_v)
+        new_doc["nodes"] = s
+        if snap_doc is None or snap_doc.get("nodes") != s:
+            conn.execute(_UPSERT_DOC, ("nodes", s))
+    else:
+        if "nodes" in known_doc:
+            conn.execute("DELETE FROM doc WHERE key=?", ("nodes",))
+        nodes: dict[str, Any] = cast("dict[str, Any]", nodes_v) if has_nodes_key else {}
+        db_ids: set[str] | None = None
+        if snap_nodes is None or "nodes" in known_doc:
+            db_ids = {cast(str, i) for (i,) in conn.execute("SELECT id FROM nodes")}
+        known_ids = db_ids if db_ids is not None else set(cast("dict[str, str]", snap_nodes))
+        row = conn.execute("SELECT COALESCE(MAX(ord), -1) FROM nodes").fetchone()
+        next_ord = cast(int, row[0]) + 1 if row is not None else 0
+        for nid, nv in nodes.items():
+            s = _dumps(nv)
+            new_nodes[nid] = s
+            if nid in known_ids:
+                if snap_nodes is None or db_ids is not None or snap_nodes.get(nid) != s:
+                    conn.execute("UPDATE nodes SET val=? WHERE id=?", (s, nid))
+            else:
+                conn.execute("INSERT INTO nodes(id, ord, val) VALUES(?,?,?)",
+                             (nid, next_ord, s))
+                next_ord += 1
+        for nid in known_ids - set(new_nodes):
+            conn.execute("DELETE FROM nodes WHERE id=?", (nid,))
+        if not has_nodes_key:
+            new_nodes = {}
+
+    # -- lazy sections ---------------------------------------------------
+    if lazy is not None:
+        for sect in LAZY_SECTIONS:
+            if dict.__contains__(d, sect):
+                new_logs[sect] = _write_lazy(conn, sect, dict.__getitem__(d, sect),
+                                             lazy._snap_logs.get(sect), snap_doc, new_doc)
+            elif sect in lazy._dropped:
+                _drop_lazy_rows(conn, sect)
+                if snap_doc is not None and sect in snap_doc:
+                    conn.execute("DELETE FROM doc WHERE key=?", (sect,))
+    else:
+        for sect in LAZY_SECTIONS:
+            if sect in d:
+                new_logs[sect] = _write_lazy(conn, sect, d[sect], None, None, new_doc)
+            else:
+                _drop_lazy_rows(conn, sect)
+                if sect in db_doc_keys:
+                    conn.execute("DELETE FROM doc WHERE key=?", (sect,))
+
+    # -- key order -------------------------------------------------------
+    if lazy is not None:
+        cur_keys = [k for k, _ in items]
+        cur_set = set(cur_keys) | lazy._unmaterialized()
+        order = [k for k in lazy._key_order if k in cur_set]
+        seen = set(order)
+        for k in cur_keys:
+            if k not in seen:
+                order.append(k)
+                seen.add(k)
+        # a lazy section present in the db but absent from the recorded order
+        for k in sorted(lazy._unmaterialized()):
+            if k not in seen:
+                order.append(k)
+                seen.add(k)
+        if order != lazy._key_order:
+            _meta_set(conn, _META_KEY_ORDER, _dumps(order))
+    else:
+        order = [k for k, _ in items]
+        _meta_set(conn, _META_KEY_ORDER, _dumps(order))
+    if _meta_get(conn, "schema_version") is None:
+        _meta_set(conn, "schema_version", _SCHEMA_VERSION)
+    return new_doc, new_nodes, new_logs, order
+
+
+def _save_sqlite(org: Org) -> None:
+    slug = _safe_slug(org.d["slug"])
+    d = cast("dict[str, Any]", org.d)
+    lazy = d if isinstance(d, LazyDoc) and d._slug == slug else None
+    _ensure_migrated(slug)
+    with _POOL.acquire(slug) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            new_doc, new_nodes, new_logs, order = _write_doc(conn, d, lazy)
+            conn.execute("COMMIT")
+        except BaseException:
+            with contextlib.suppress(Exception):
+                conn.execute("ROLLBACK")
+            raise
+    if lazy is not None:
+        # the database now IS this document: adopt the new snapshot so a
+        # second save of the same object compares against the right thing
+        unmat = lazy._unmaterialized()
+        for k in unmat:
+            if k in lazy._snap_logs:
+                new_logs[k] = lazy._snap_logs[k]
+        lazy._snap_doc = new_doc
+        lazy._snap_nodes = new_nodes
+        lazy._snap_logs = {k: v for k, v in new_logs.items() if v is not None}
+        lazy._key_order = order
+        lazy._present = ({k for k in LAZY_SECTIONS
+                          if dict.__contains__(d, k) and k not in new_doc} | unmat)
+        lazy._dropped = set()
+        for k in LAZY_SECTIONS:
+            v = dict.get(d, k)
+            if isinstance(v, (AppendLog, SectionMap)):
+                v.full_rewrite = False
+                if isinstance(v, SectionMap):
+                    for lst in dict.values(v):
+                        if isinstance(lst, AppendLog):
+                            lst.full_rewrite = False
+
+
+# ------------------------------------------------------------ migration
+def _sidecars(db: str) -> tuple[str, str]:
+    return db + "-wal", db + "-shm"
+
+
+def _remove_db_files(db: str) -> None:
+    for p in (db, *_sidecars(db)):
+        with contextlib.suppress(OSError):
+            os.remove(p)
+
+
+def _log(msg: str) -> None:
+    print(f"[store] {msg}", file=sys.stderr, flush=True)
+
+
+def verify_migration(conn: sqlite3.Connection, original: dict[str, Any]) -> dict[str, Any]:
+    """§6.3 — 'not one byte of history lost'. Canonical-JSON equality of the
+    full reconstruction against the source, PLUS the four assertions that a
+    compensating error could otherwise hide behind. Raises `MigrationError`
+    with the first failure; returns a small report on success."""
+    rec = reconstruct_full(conn)
+    report: dict[str, Any] = {}
+    # 1. the general check — load-bearing, not ceremonial
+    if canon(rec) != canon(original):
+        diff = [k for k in sorted(set(original) | set(rec))
+                if canon(original.get(k)) != canon(rec.get(k))]
+        raise MigrationError(f"round-trip mismatch in sections: {diff}")
+    # 2. nodes order (ui_order for pre-field nodes IS dict position, §3.4)
+    on = cast("dict[str, Any]", original.get("nodes") or {})
+    rn = cast("dict[str, Any]", rec.get("nodes") or {})
+    if list(on.keys()) != list(rn.keys()):
+        raise MigrationError("nodes order changed")
+    # 3. every archived seat, individually (and every live one — cheaper to
+    #    check all than to explain why not)
+    archived = 0
+    for nid, nv in on.items():
+        if canon(nv) != canon(rn.get(nid)):
+            raise MigrationError(f"node {nid!r} does not round-trip")
+        if isinstance(nv, dict) and cast("dict[str, Any]", nv).get("state") == "archived":
+            archived += 1
+    report["nodes"] = len(on)
+    report["archived"] = archived
+    # 4. log cardinality, per section and per owner, from the DATABASE side
+    counts: dict[str, int] = {}
+    for sect in DICT_LOGS:
+        src = original.get(sect)
+        if not isinstance(src, dict):
+            continue
+        src_d = cast("dict[str, list[Any]]", src)
+        got = {cast(str, o): cast(int, n) for o, n in conn.execute(
+            "SELECT owner, COUNT(*) FROM log_d WHERE sect=? GROUP BY owner", (sect,))}
+        for owner, lst in src_d.items():
+            if got.get(owner, 0) != len(lst):
+                raise MigrationError(f"{sect}[{owner!r}]: {got.get(owner, 0)} rows, "
+                                     f"source has {len(lst)}")
+        if set(got) - set(src_d):
+            raise MigrationError(f"{sect}: rows for owners not in source: "
+                                 f"{sorted(set(got) - set(src_d))}")
+        counts[sect] = sum(got.values())
+        counts[sect + ".owners"] = len(src_d)
+    for sect in LIST_LOGS:
+        src = original.get(sect)
+        if not isinstance(src, list):
+            continue
+        src_l = cast("list[Any]", src)
+        (n,) = conn.execute("SELECT COUNT(*) FROM log_l WHERE sect=?", (sect,)).fetchone()
+        if cast(int, n) != len(src_l):
+            raise MigrationError(f"{sect}: {n} rows, source has {len(src_l)}")
+        counts[sect] = cast(int, n)
+    report["counts"] = counts
+    # 5. the largest single entry survives byte-identically (the value most
+    #    likely to hit a limit nobody knew about — 1,080 KB in the live org)
+    best: tuple[int, str, str | None, int] | None = None
+    for sect in DICT_LOGS:
+        src = original.get(sect)
+        if isinstance(src, dict):
+            for owner, lst in cast("dict[str, list[Any]]", src).items():
+                for i, e in enumerate(lst):
+                    n = len(_dumps(e))
+                    if best is None or n > best[0]:
+                        best = (n, sect, owner, i)
+    for sect in LIST_LOGS:
+        src = original.get(sect)
+        if isinstance(src, list):
+            for i, e in enumerate(cast("list[Any]", src)):
+                n = len(_dumps(e))
+                if best is None or n > best[0]:
+                    best = (n, sect, None, i)
+    if best is not None:
+        n, sect, owner, i = best
+        if owner is not None:
+            src_e = cast("dict[str, list[Any]]", original[sect])[owner][i]
+            row = conn.execute("SELECT val FROM log_d WHERE sect=? AND owner=? "
+                               "ORDER BY seq LIMIT 1 OFFSET ?", (sect, owner, i)).fetchone()
+        else:
+            src_e = cast("list[Any]", original[sect])[i]
+            row = conn.execute("SELECT val FROM log_l WHERE sect=? "
+                               "ORDER BY seq LIMIT 1 OFFSET ?", (sect, i)).fetchone()
+        if row is None or cast(str, row[0]) != _dumps(src_e):
+            where = f"{sect}[{owner!r}][{i}]" if owner is not None else f"{sect}[{i}]"
+            raise MigrationError(f"largest entry ({n} bytes, {where}) did not "
+                                 "round-trip byte-identically")
+        report["largest_entry_bytes"] = n
+    return report
+
+
+def migrate_org(slug: str) -> dict[str, Any]:
+    """§6.2 — `orgs/<slug>.json` → `orgs/<slug>.db`, verified, or nothing.
+
+    The candidate is built as `<slug>.db.migrating`, verified (§6.3), and only
+    then does the `.json` become `.json.premigration` and the candidate take
+    the final name. On ANY failure the candidate is deleted, the `.json` is
+    untouched, and `MigrationError` is raised — never a silent fallback. The
+    `.premigration` file is never removed by code (§6.1 step 6)."""
+    slug = _safe_slug(slug)
+    jp, db = _json_path(slug), _db_path(slug)
+    tmpdb = db + ".migrating"
+    if os.path.exists(db):
+        raise MigrationError(f"{db!r} already exists; refusing to migrate over it")
+    raw = _read_bytes(jp)
+    sha = hashlib.sha256(raw).hexdigest()
+    try:
+        parsed: Any = json.loads(raw.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError) as e:
+        raise MigrationError(f"{jp!r} is not valid JSON: {e}") from e
+    if not isinstance(parsed, dict):
+        raise MigrationError(f"{jp!r} is not a JSON object")
+    doc = cast("dict[str, Any]", parsed)
+    _remove_db_files(tmpdb)
+    t0 = time.perf_counter()
+    conn: sqlite3.Connection | None = None
+    try:
+        conn = _open_conn(tmpdb)
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            _write_doc(conn, doc, None)
+            _meta_set(conn, "schema_version", _SCHEMA_VERSION)
+            _meta_set(conn, "migrated_at", _ledger_now())
+            _meta_set(conn, "source_json_sha256", sha)
+            _meta_set(conn, "source_json_bytes", str(len(raw)))
+            conn.execute("COMMIT")
+        except BaseException:
+            with contextlib.suppress(Exception):
+                conn.execute("ROLLBACK")
+            raise
+        report = verify_migration(conn, doc)
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        conn.close()
+        conn = None
+    except BaseException as e:
+        if conn is not None:
+            with contextlib.suppress(Exception):
+                conn.close()
+        _remove_db_files(tmpdb)
+        if isinstance(e, MigrationError):
+            _log(f"MIGRATION FAILED for {slug!r}: {e} — {jp!r} untouched, "
+                 f"candidate database deleted")
+            raise
+        raise MigrationError(f"migration of {slug!r} failed: "
+                             f"{type(e).__name__}: {e}") from e
+    os.replace(jp, _premigration_path(slug))
+    os.replace(tmpdb, db)
+    report["ms"] = round((time.perf_counter() - t0) * 1000, 1)
+    report["bytes"] = len(raw)
+    _log(f"migrated {slug!r}: {len(raw)} bytes → {os.path.basename(db)} in "
+         f"{report['ms']} ms; nodes={report.get('nodes')} archived={report.get('archived')} "
+         f"counts={report.get('counts')}; source kept as "
+         f"{os.path.basename(_premigration_path(slug))}")
+    return report
+
+
+def _finish_interrupted_migration(slug: str) -> bool:
+    """A crash between the two renames at the end of `migrate_org` leaves a
+    VERIFIED `<slug>.db.migrating` beside a `.json.premigration`, with neither
+    `.json` nor `.db` — the org would be invisible. That exact constellation
+    cannot arise any other way (an unverified candidate is deleted before the
+    first rename; a crash before it leaves the `.json` in place and the
+    candidate is rebuilt), so finishing the rename is the correct recovery."""
+    db = _db_path(slug)
+    tmpdb = db + ".migrating"
+    if (os.path.exists(tmpdb) and os.path.exists(_premigration_path(slug))
+            and not os.path.exists(db) and not os.path.exists(_json_path(slug))):
+        os.replace(tmpdb, db)
+        _log(f"completed an interrupted migration for {slug!r} "
+             f"(verified candidate renamed into place)")
+        return True
+    return False
+
+
+def migrate_pending() -> list[str]:
+    """Every `orgs/<slug>.json` with no `orgs/<slug>.db`, migrated (§6.1 step
+    5). Raises `MigrationError` on the first org that does not verify; the
+    ones before it are done, the ones after it are not, and none of them has
+    lost anything. Returns the slugs migrated."""
+    if STORE_BACKEND != "sqlite":
+        return []
+    done: list[str] = []
+    with DOC_LOCK:
+        names = sorted(os.listdir(_orgs_dir()))
+        for f in names:
+            if f.endswith(".db.migrating"):
+                with contextlib.suppress(LedgerError):
+                    _finish_interrupted_migration(f[:-len(".db.migrating")])
+        for f in names:
+            if not f.endswith(".json"):
+                continue
+            slug = f[:-5]
+            try:
+                _safe_slug(slug)
+            except LedgerError:
+                continue
+            if os.path.exists(_db_path(slug)):
+                continue
+            migrate_org(slug)
+            done.append(slug)
+    return done
+
+
+def _ensure_migrated(slug: str) -> None:
+    """SQLite backend, on demand: a `<slug>.json` with no `<slug>.db` (an org
+    restored from a pre-migration trash copy, a file dropped in by hand) is
+    migrated before it is used. Startup does this for everything (§6.1 step
+    5, via `claim_data_root`); this is the same operation for a file that
+    appears later."""
+    if STORE_BACKEND != "sqlite":
+        return
+    db = _db_path(slug)
+    if os.path.exists(db):
+        return
+    with DOC_LOCK:
+        if os.path.exists(db):
+            return
+        if _finish_interrupted_migration(slug):
+            return
+        if os.path.exists(_json_path(slug)):
+            migrate_org(slug)
+
+
+def export_json(slug: str, dest: str | None = None) -> str:
+    """§6.4 — the full document reconstructed from rows, written in the old
+    JSON format (indent=2). Default destination `<data>/exports/<slug>-<stamp>
+    .json` — deliberately NOT under `orgs/`, where the JSON backend would list
+    it as an org. Returns the path written."""
+    slug = _safe_slug(slug)
+    _ensure_migrated(slug)
+    if not os.path.exists(_db_path(slug)):
+        raise LedgerError(f"no such org: {slug!r}")
+    with _POOL.acquire(slug) as conn:
+        doc = reconstruct_full(conn)
+    if dest is None:
+        d = os.path.join(DATA_ROOT, "exports")
+        os.makedirs(d, exist_ok=True)
+        dest = os.path.join(d, f"{slug}-{time.strftime('%Y%m%dT%H%M%S')}.json")
+    blob = json.dumps(doc, indent=2).encode("utf-8")
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(dest) or ".", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(blob)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, dest)
+        tmp = ""
+    finally:
+        if tmp:
+            with contextlib.suppress(OSError):
+                os.remove(tmp)
+    return dest
+
+
+# =========================================================================
+#                              the public seam
+# =========================================================================
+
 def _scan_orgs(skip: str = "") -> Iterator[tuple[str, dict[str, Any]]]:
-    """(filename, parsed doc) for every org, ONE read+parse each.
+    """(slug, doc) for every org, ONE read+parse each.
 
     `skip` is a slug the caller ALREADY holds parsed — its file is not
     read at all. The filter has to be here rather than at the caller
@@ -344,7 +1527,42 @@ def _scan_orgs(skip: str = "") -> Iterator[tuple[str, dict[str, Any]]]:
 
     Split out of `list_orgs` so that a caller which needs the whole document
     as well as the summary row can have both from the same parse — see
-    `list_orgs_with_docs`."""
+    `list_orgs_with_docs`. Under SQLite the doc is a `LazyDoc`: the heavy
+    logs are not read for a listing."""
+    if STORE_BACKEND == "sqlite":
+        for f in sorted(os.listdir(_orgs_dir())):
+            # an org that arrived as JSON (restored from a pre-migration
+            # trash copy, say) is migrated before it is listed
+            if f.endswith(".json"):
+                slug = f[:-5]
+                try:
+                    _safe_slug(slug)
+                    if not os.path.exists(_db_path(slug)):
+                        _ensure_migrated(slug)
+                except LedgerError:
+                    continue
+                except MigrationError as e:
+                    _log(f"{slug!r} not listed: {e}")
+                    continue
+        for f in sorted(os.listdir(_orgs_dir())):
+            if not f.endswith(".db"):
+                continue
+            slug = f[:-3]
+            if skip and slug == skip:
+                # ⚠ the sqlite arm honours `skip` for the same reason the JSON
+                # arm does, even though its parse is cheaper: `_load_lazy`
+                # still reads every `doc` row AND every node row, which is the
+                # bulk of a listing's cost here. A caller that already holds
+                # the document must not pay for it twice on either backend.
+                continue
+            try:
+                _safe_slug(slug)
+                with _POOL.acquire(slug) as conn:
+                    doc = _load_lazy(conn, slug)
+            except (LedgerError, sqlite3.Error, ValueError, OSError):
+                continue
+            yield slug, doc
+        return
     _sweep_tmp()
     for f in sorted(os.listdir(_orgs_dir())):
         if not f.endswith(".json") or (skip and f[:-5] == skip):
@@ -358,14 +1576,15 @@ def _scan_orgs(skip: str = "") -> Iterator[tuple[str, dict[str, Any]]]:
                              .decode("utf-8"))
         except (json.JSONDecodeError, UnicodeDecodeError, OSError):
             continue
-        yield f, doc
+        yield f[:-5], doc
 
 
-def _summary_row(f: str, doc: dict[str, Any]) -> dict[str, Any]:
+def _summary_row(stem: str, doc: dict[str, Any]) -> dict[str, Any]:
     """The listing row. Reads only keys `Org.__init__` does not rewrite, so it
-    is the same whether the doc has been through `Org()` or not."""
+    is the same whether the doc has been through `Org()` or not. Reads no
+    lazy section."""
     live = sum(1 for n in doc.get("nodes", {}).values() if n.get("state") == "live")
-    return {"slug": doc.get("slug", f[:-5]), "name": doc.get("name", f[:-5]),
+    return {"slug": doc.get("slug", stem), "name": doc.get("name", stem),
             "nodes": len(doc.get("nodes", {})), "live": live,
             "kiosk": doc.get("kiosk") is not None,
             # the PUBLIC half of the org's hub identity (never the
@@ -405,6 +1624,11 @@ def local_net_slugs(loaded: dict[str, Any] | None = None) -> set[str]:
     small function rather than reshaping `_scan_orgs`'s contract, because under
     the SQLite backend this becomes a `doc`-row read per org with no node load
     at all — cheaper again, and a local change there rather than a merge.
+
+    That note is now cashed in: the sqlite branch below reads ONE `doc` row
+    per database and loads no nodes and no logs, where `_scan_orgs` would
+    read every node row of every org to build a row this function throws all
+    but two fields of away.
     """
     out: set[str] = set()
 
@@ -413,10 +1637,42 @@ def local_net_slugs(loaded: dict[str, Any] | None = None) -> set[str]:
         if row["net_slug"] and not row["kiosk"]:
             out.add(str(row["net_slug"]))
 
+    if STORE_BACKEND == "sqlite":
+        skip_slug = str((loaded or {}).get("slug") or "")
+        if loaded is not None:
+            take(skip_slug, loaded)
+        for f in sorted(os.listdir(_orgs_dir())):
+            if not f.endswith(".db"):
+                continue
+            slug = f[:-3]
+            if slug == skip_slug:
+                continue
+            try:
+                _safe_slug(slug)
+                with _POOL.acquire(slug) as conn:
+                    rows = {cast(str, k): cast(str, v) for k, v in conn.execute(
+                        "SELECT key, val FROM doc WHERE key IN "
+                        "('slug','net_identity','kiosk')")}
+            except (LedgerError, sqlite3.Error, OSError):
+                continue
+            # ⚠ still ONE definition of the row: hand `_summary_row` the three
+            # keys it reads rather than re-deriving "non-kiosk with a net_slug"
+            # here. `nodes` is deliberately absent — the row's node counts are
+            # not read by `take`, and loading them is the cost this exists to
+            # avoid.
+            take(slug, {k: json.loads(v) for k, v in rows.items()})
+        return out
+
     skip = ""
     if loaded is not None:
         skip = str(loaded.get("slug") or "")
-        take(skip + ".json", loaded)
+        # ⚠ a SLUG, not `slug + ".json"`. `_scan_orgs` yields slugs on this
+        # branch (a sqlite org has no filename to yield) and `_summary_row`
+        # takes the stem, so passing a filename here would make the
+        # already-parsed org's fallback read "orgtree.json" while every
+        # scanned org's read "orgtree" — one definition of the row, expressed
+        # two ways, which is exactly what that function's docstring forbids.
+        take(skip, loaded)
     for f, doc in _scan_orgs(skip=skip):
         take(f, doc)
     return out
@@ -452,7 +1708,23 @@ def list_orgs_with_docs() -> list[tuple[dict[str, Any], Org]]:
 
 
 def load_org(slug: str) -> Org:
-    p = org_path(slug)
+    if STORE_BACKEND == "sqlite":
+        slug = _safe_slug(slug)
+        _ensure_migrated(slug)
+        db = _db_path(slug)
+        if not os.path.exists(db):
+            raise LedgerError(f"no such org: {slug!r}")
+        try:
+            with _POOL.acquire(slug) as conn:
+                doc = _load_lazy(conn, slug)
+        except sqlite3.OperationalError as e:
+            # deleted between the exists() check and the open — delete_org
+            # renames the database out from under readers by design
+            if not os.path.exists(db):
+                raise LedgerError(f"no such org: {slug!r}") from None
+            raise LedgerError(f"cannot open org {slug!r}: {e}") from e
+        return Org(cast("OrgDoc", doc))
+    p = _json_path(slug)
     if not os.path.exists(p):
         raise LedgerError(f"no such org: {slug!r}")
     # The read side of the same collision. Read-only endpoints deliberately
@@ -502,9 +1774,8 @@ on_save: Callable[[str], None] = lambda slug: None   # no-op until wired
 save_hooks: list[Callable[[str], None]] = []
 
 
-def save_org(org: Org) -> None:
-    global REVISION
-    p = org_path(org.d["slug"])
+def _save_json(org: Org) -> None:
+    p = _json_path(org.d["slug"])
     # serialise BEFORE creating the temp file: a doc carrying a
     # non-serialisable value used to raise halfway through json.dump and
     # strand a half-written .tmp in orgs/ for good.
@@ -539,6 +1810,18 @@ def save_org(org: Org) -> None:
                 os.remove(tmp)
             except OSError:
                 pass
+
+
+def save_org(org: Org) -> None:
+    """Persist the org. JSON: atomic whole-document rewrite. SQLite: one
+    `BEGIN IMMEDIATE` transaction writing only what changed (§4.5). Either
+    way the save IS the change: `REVISION`, `on_save` and `save_hooks` fire
+    exactly as they always have."""
+    global REVISION
+    if STORE_BACKEND == "sqlite":
+        _save_sqlite(org)
+    else:
+        _save_json(org)
     REVISION += 1  # pyright: ignore[reportConstantRedefinition]  # uppercase mutable counter is the public API; renaming is forbidden this wave
     # never let a fanout failure fail the write — the doc is already on disk
     try:
@@ -562,6 +1845,7 @@ def create_org(name: str, extra_dirs: list[str] | None = None,
     directories are an ADVANCED grant (`extra_dirs`) — appended after the workspace
     in the org's default capability set."""
     slug = slugify(name)
+    _ensure_migrated(slug)
     if os.path.exists(org_path(slug)):
         raise LedgerError(f"org {slug!r} already exists")
     ws = os.path.normpath(workspace_dir(slug))
@@ -576,14 +1860,21 @@ def delete_org(slug: str) -> None:
     """Gap audit №16: one confirmed hover-click used to `os.remove` the whole
     org — structure, charters, mailboxes, event history. The motto reserves
     hard stops for protecting the user's data, so delete is now a RENAME into
-    <data>/deleted/; putting the file back in orgs/ IS the restore."""
+    <data>/deleted/; putting the file back in orgs/ IS the restore.
+
+    SQLite (§5.3): the WAL is checkpointed and truncated and every pooled
+    connection closed BEFORE the rename, so no committed frame is left behind
+    in a `-wal` the renamed file no longer owns; any sidecar that still exists
+    afterwards travels with the database under the same trash stem."""
     p = org_path(slug)                      # validates the slug (see _safe_slug)
     trash = os.path.join(DATA_ROOT, "deleted")
+    ext = ".db" if STORE_BACKEND == "sqlite" else ".json"
     # Under DOC_LOCK like every other write: without it a load-modify-save
     # cycle already in flight re-creates the doc AFTER the rename and the org
     # comes back from the dead, half-populated and with no trash copy of the
     # final state.
     with DOC_LOCK:
+        _ensure_migrated(slug)
         if not os.path.exists(p):
             raise LedgerError(f"no such org: {slug!r}")
         os.makedirs(trash, exist_ok=True)
@@ -593,12 +1884,32 @@ def delete_org(slug: str) -> None:
         # moved one step along. Never overwrite anything in the trash: find a
         # free name, and only then rename.
         stamp = time.strftime("%Y%m%dT%H%M%S")
-        dest = os.path.join(trash, f"{slug}-{stamp}.json")
+        dest = os.path.join(trash, f"{slug}-{stamp}{ext}")
         n = 0
         while os.path.exists(dest):
             n += 1
-            dest = os.path.join(trash, f"{slug}-{stamp}-{n}.json")
-        os.replace(p, dest)
+            dest = os.path.join(trash, f"{slug}-{stamp}-{n}{ext}")
+        if STORE_BACKEND != "sqlite":
+            os.replace(p, dest)
+            return
+        with _POOL.acquire(slug) as conn:
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        _POOL.close_all(slug)
+        # a reader outside DOC_LOCK (№22) may still hold a connection for a
+        # few milliseconds; on Windows the rename fails until it lets go
+        for i in range(40):
+            try:
+                os.replace(p, dest)
+                break
+            except PermissionError:
+                if i == 39:
+                    raise
+                _POOL.close_all(slug)
+                time.sleep(0.01 * (i + 1))
+        for side, dside in zip(_sidecars(p), _sidecars(dest)):
+            if os.path.exists(side):
+                with contextlib.suppress(OSError):
+                    os.replace(side, dside)
 
 
 # ---------------------------------------------------- external peer sightings
