@@ -517,7 +517,22 @@ out["files_same"] = sorted(os.listdir(od)) == before
             with open(os.path.join(od, f"{bad}.json"), "w") as f:
                 f.write("{}")
         eq(store.pending_migrations(other), ["alpha", "beta"])
-    check("pending_migrations(root=other) ignores malformed slugs without consulting DATA_ROOT",
+        # ...and it really is a pure read of `other`. The verdicts alone
+        # cannot show that: a slug that passes the SHAPE half never contains
+        # a separator, so the containment half agrees for every root. What
+        # the old form did was call `_orgs_dir()` — which MAKEDIRS — making
+        # this function's "no directory made" false. Point DATA_ROOT at a
+        # path that does not exist and ask about `other` again. (Mutant
+        # M2 in sqlite-review's run: the old form survived the case above
+        # 15/15; this is the assertion that kills it.)
+        gone = os.path.join(_TMP, "never-created")
+        real, store.DATA_ROOT = store.DATA_ROOT, gone
+        try:
+            eq(store.pending_migrations(other), ["alpha", "beta"])
+            eq(os.path.exists(gone), False, "it created DATA_ROOT: ")
+        finally:
+            store.DATA_ROOT = real
+    check("pending_migrations(root=other) ignores malformed slugs and creates nothing under DATA_ROOT",
           pending_other_root_bad_slugs)
 
     def interrupted_finished() -> None:
