@@ -8997,7 +8997,10 @@ components). Built by cache-card on the user's 10:39Z instruction to finish
 the implementation and "leave all verification and testing to another agent",
 so its commit is UNVERIFIED by instruction; `scratch/orgtree/cache-card/
 breadcrumbs.md` records whether it reached main. `docs/cache-continuity.md`
-still needs a mid-turn section and a `none` row in its readiness table.
+was brought up to date by `cache-verify` (2026-09-03): a Mid-turn section, the
+`none` row in the readiness table, the two composer cases, and the three
+successive rulings on `no_completed_fingerprint` (D-214 green → D-226 red →
+`none`), which had left two paragraphs contradicting each other.
 
 THE COMPOSER. Mid-turn the steer-window banner fires only on `prefix_changed`,
 not on every `not_ready` cause (2dc8cbb fired on all of them); the others are
@@ -9013,21 +9016,82 @@ the card mid-turn) only moved the failing line. Fixed in the fixture
 kept or reverted, because its premise held for every claim except the one
 the user had just identified.
 
-INV-002 — PROPOSED AMENDMENT, PENDING THE USER'S RATIFICATION, NOT APPLIED
-(an invariant outranks a decision). Readiness `none` means "nothing to claim"
-and now covers two cases: no completed turn (`no_completed_fingerprint`, the
-user's ruling earlier on 2026-09-03) and a turn in flight with an unmoved
-prefix (`turn_in_flight`, this entry). The Statement's "MUST render exactly
-one of ready or not_ready … in normal operation" should read "… while no
-turn is running", with mid-turn rendering defined as: yellow `!` for a prefix
-that has moved since the request in flight was sent, otherwise no card. Also
-flagged and untouched: the idle red today covers "no receipt observed yet",
-which is "not established" rather than a predicted miss; under a strict
-yes-or-no card that is a question for later.
+INV-002 — RATIFIED AND APPLIED (user, 2026-09-03, his own wording; the
+register carries his formulation, not an agent's paraphrase):
 
-Landed on main: `ef32c5a` (badge narrowed mid-turn, fixture fixed), the
-frontend commit after it (composer narrowed to `prefix_changed`, badge
-red-or-nothing mid-turn, the header pin that the mid-turn card and
-`.proc-relaunch` render together; verified 461/461), and this entry's commit
-(the backend baseline and `turn_in_flight`). The operational handoff is
-`scratch/orgtree/cache-card/breadcrumbs.md`.
+> "if a turn is running, it can only either show yellow or not show at all.
+> if no turn is running, it can only show either green or red. that is the
+> new invariant."
+
+It is keyed on WHETHER A TURN IS RUNNING rather than on which verdict is
+available, which is cleaner than the proposal this paragraph used to carry (a
+list of permitted renderings with exceptions). Applied to `docs/INVARIANTS.md`
+by `cache-verify`. The two pre-existing carve-outs are retained, not revoked,
+because neither is a colour on the green/red axis and both are the same user's
+earlier rulings: grey for an enumerated fault, and no card for readiness
+`none`. Still flagged and untouched: the idle red today covers "no receipt
+observed yet", which is "not established" rather than a predicted miss; under
+a strict yes-or-no card that is a question for later.
+
+WHAT YELLOW MEANS — the user's own statement of intent, which defines the
+state better than any description of when it renders (2026-09-03):
+
+> "a yellow card moving to turn end should *always* transition to red. that is
+> the point of the yellow card: to indicate that the next turn will be red,
+> ie. a cache miss."
+
+So yellow is a PREDICTION that must come true, and the transition is part of
+its meaning — not merely a weaker claim that happens to be shown mid-turn.
+
+THE DEFECT THAT RULING EXPOSED, found and fixed by `cache-verify` while
+proving the transition. On a node with NO COMPLETED TURN the card went yellow
+and could then show NOTHING: its first turn moved its prefix mid-turn (yellow,
+correctly by the old rule), and if that turn ended without reconciling the
+attempt, the projection fell back to `no_completed_fingerprint` (readiness
+`none`) and the card vanished — a warning made and then silently withdrawn.
+The fix is that the yellow is never shown there, NOT that a red is
+manufactured: a flag is a claim about something assumed to exist, and on a
+fresh node the cache does not, so there is no entry a missed steer window
+could fail to reuse. `cache_forecast_public` now requires a `last_turn` in the
+book before a preview-proven incompatibility may render mid-turn. This makes
+yellow STRICTLY HONEST — **it renders only when there IS a prior cache whose
+entry a missed steer window would fail to reuse**, which is a better
+definition of the state than either ruling alone.
+
+REACHABILITY, worth writing down because it is not obvious from the call site:
+`_cache_finish_turn` sits under `if cost or occ or cw or denials or res:`
+(supervisor.py), NOT under `mcp_success`, so an ordinary INTERRUPT does
+reconcile the attempt — which is why the interrupt transitions all come back
+red. The skip is for a turn that produced nothing at all, and for backend
+death healed by `reconcile` at startup. This install restarts its backend
+routinely, so that path is not exotic.
+
+PINNED: `test_cache_readiness` §7 (the transition across both exit paths, and
+the fresh-node regression) and three `cacheforecast.test.tsx` cases (mid-turn
+never red/green/grey, idle never yellow, and no stale yellow surviving the
+turn→idle boundary). All three frontend cases were confirmed to FAIL when
+`steer` is forced, and §7's fresh-node check fails without the fix — a
+tripwire that cannot fire protects nothing. The transitions were found by
+EXECUTION, not by reading: `scratch/orgtree/cache-verify/probe_transition.py`
+walks eight mid-turn→turn-end paths and prints both verdicts; it is kept
+deliberately, because reading the control flow suggested the property held
+and only running it found the case where it did not.
+
+Landed on main, in order: `ef32c5a` (badge narrowed mid-turn, fixture fixed);
+`58e872f` (composer narrowed to `prefix_changed`, badge red-or-nothing
+mid-turn, the header pin that the mid-turn card and `.proc-relaunch` render
+together; verified 461/461); `d0d5fcd`, this entry's commit (the backend
+baseline and `turn_in_flight`); `6761c20` (the yellow steer card replacing the
+interim red — the `.cache-forecast.steer` class, the `!` glyph and the
+mid-turn title). The last two were UNVERIFIED on landing, by the user's
+10:39Z instruction to finish the implementation and leave testing to another
+agent. `cache-verify` then verified all four (2026-09-03): frontend 465/465,
+typecheck clean, `test_cache_readiness` 21/21 (§6 included, which is the only
+execution the "blank a persisted diagnostic mid-turn" tweak ever got),
+`test_cache_continuity` 32/32, `test_decisions_index` 14/14. Every backend
+failure in that run was reproduced at the pre-cache base `2eeec72` and is
+pre-existing or live-API noise; **no functional defect was found in any of the
+four commits.** It landed one follow-up, `78e4ddb`, which retires comments and
+a test name still calling the mid-turn card red — prose only, no assertion
+touched. The operational handoff is `scratch/orgtree/cache-card/breadcrumbs.md`
+and the verification record is `scratch/orgtree/cache-verify/breadcrumbs.md`.

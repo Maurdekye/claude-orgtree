@@ -601,3 +601,109 @@ test('mid-turn, the badge is the yellow steer warning for a moved prefix, and ot
   } finally { await coldView.unmount() }
 })
 
+
+// ── INV-002 (ratified 2026-09-03) ────────────────────────────────────────
+// The user's wording is the invariant: "if a turn is running, it can only
+// either show yellow or not show at all. if no turn is running, it can only
+// show either green or red." The two tests below are the impossibility half —
+// they assert the states the invariant FORBIDS cannot be produced, rather
+// than that the states it permits happen to appear today.
+//
+// Every cause in the backend's closed table (`cachecontinuity.READINESS`).
+// Listed rather than derived because the point is to notice when the two
+// drift: a cause added there and not here leaves a rendering unproven.
+const EVERY_CAUSE: Array<[string, CacheForecast]> = [
+  ['receipt_valid', forecast('compatible_observed', 'not_applicable', {
+    readiness: 'ready', readiness_cause: 'receipt_valid' })],
+  ['receipt_valid_codex_estimate', forecast('compatible_observed', 'not_applicable', {
+    readiness: 'ready', readiness_cause: 'receipt_valid_codex_estimate' })],
+  ['no_completed_fingerprint', forecast('uncertain', 'not_applicable', {
+    readiness: 'none', readiness_cause: 'no_completed_fingerprint' })],
+  ['turn_in_flight', forecast('uncertain', 'not_applicable', {
+    readiness: 'none', readiness_cause: 'turn_in_flight' })],
+  ['history_unobserved', forecast('uncertain', 'not_applicable', {
+    readiness: 'not_ready', readiness_cause: 'history_unobserved' })],
+  ['no_positive_receipt', forecast('uncertain', 'not_applicable', {
+    readiness: 'not_ready', readiness_cause: 'no_positive_receipt',
+    last_receipt_at: null, ttl_seconds: null, expires_at: null })],
+  ['receipt_prefix_unobserved', forecast('uncertain', 'not_applicable', {
+    readiness: 'not_ready', readiness_cause: 'receipt_prefix_unobserved' })],
+  ['prefix_changed', forecast('known_incompatible', 'miss_expected', {
+    readiness: 'not_ready', readiness_cause: 'prefix_changed' })],
+  ['receipt_expired', forecast('expired_known_entry', 'miss_expected', {
+    readiness: 'not_ready', readiness_cause: 'receipt_expired',
+    expires_at: new Date(Date.now() - 60_000).toISOString() })],
+  ['lane_unobserved', forecast('uncertain', 'not_applicable', {
+    readiness: 'not_ready', readiness_cause: 'lane_unobserved' })],
+  ['legacy_forecast_unmigrated', forecast('uncertain', 'not_applicable', {
+    readiness: 'not_ready', readiness_cause: 'legacy_forecast_unmigrated' })],
+  ['unsupported_capability', forecast('uncertain', 'not_applicable', {
+    readiness: 'diagnostic', readiness_cause: 'unsupported_capability' })],
+  ['receipt_timestamp_unreadable', forecast('uncertain', 'not_applicable', {
+    readiness: 'diagnostic', readiness_cause: 'receipt_timestamp_unreadable' })],
+  ['clock_anomaly', forecast('uncertain', 'not_applicable', {
+    readiness: 'diagnostic', readiness_cause: 'clock_anomaly' })],
+  ['internal_error', forecast('uncertain', 'not_applicable', {
+    readiness: 'diagnostic', readiness_cause: 'internal_error' })],
+]
+
+test('INV-002 · mid-turn the card is yellow or nothing — never red, green or grey', async () => {
+  // Red and green are GUARANTEES about the next message, and mid-turn the turn
+  // that decides it is still running. Grey mid-turn is "cannot tell", which is
+  // the default there and not a card. So for EVERY cause the only permitted
+  // renderings are the yellow steer warning and no card at all.
+  for (const [cause, f] of EVERY_CAUSE) {
+    const view = await mountView(<CacheForecastMark forecast={f} busy />, (v) => v)
+    try {
+      const mark = view.el.querySelector<HTMLElement>('.cache-forecast')
+      if (mark) {
+        assert.equal(mark.className, 'cache-forecast steer',
+          `${cause}: mid-turn rendered a card that is not the yellow steer warning`)
+        assert.equal(mark.textContent?.trim(), 'cache !', `${cause}: wrong glyph`)
+      }
+      for (const forbidden of ['cold', 'compatible', 'uncertain']) {
+        assert.equal(view.el.querySelector(`.cache-forecast.${forbidden}`), null,
+          `${cause}: mid-turn wore .${forbidden} — a claim the running turn can still change`)
+      }
+    } finally { await view.unmount() }
+  }
+})
+
+test('INV-002 · idle the card is never the yellow steer warning', async () => {
+  // Yellow asserts a steer window that could be missed. With no turn running
+  // there is no window, so the conditional it states cannot arise — idle must
+  // resolve to the green/red (or the accounted grey / no-card) verdict.
+  for (const [cause, f] of EVERY_CAUSE) {
+    const view = await mountView(<CacheForecastMark forecast={f} />, (v) => v)
+    try {
+      assert.equal(view.el.querySelector('.cache-forecast.steer'), null,
+        `${cause}: idle rendered the yellow steer warning`)
+      const mark = view.el.querySelector<HTMLElement>('.cache-forecast')
+      assert.doesNotMatch(mark?.textContent ?? '', /cache !/,
+        `${cause}: idle wore the steer glyph`)
+    } finally { await view.unmount() }
+  }
+})
+
+test('INV-002 · the turn ending leaves no stale yellow behind', async () => {
+  // The window an invariant violation would live in: a card showing yellow
+  // when the turn ends. `steer` is derived from `busy` on every render with no
+  // memo or state behind it, so the flip must be immediate — this pins that,
+  // because a future refactor that caches the class would reintroduce exactly
+  // the idle-yellow the invariant forbids and nothing else would catch it.
+  const moved = forecast('known_incompatible', 'miss_expected', {
+    readiness: 'not_ready', readiness_cause: 'prefix_changed' })
+  const view = await mountView(<CacheForecastMark forecast={moved} busy />, (v) => v)
+  try {
+    assert.ok(view.el.querySelector('.cache-forecast.steer'), 'did not start yellow')
+    // the turn ends: same component, same forecast, `busy` goes false
+    await view.render(<CacheForecastMark forecast={moved} />)
+    assert.equal(view.el.querySelector('.cache-forecast.steer'), null,
+      'the yellow survived the turn ending — a steer warning with no steer window')
+    // and it lands on RED, which is the whole point of the yellow: it predicted
+    // a miss, and the prediction has to come true (user, 2026-09-03).
+    const mark = view.el.querySelector<HTMLElement>('.cache-forecast.cold')
+    assert.ok(mark, 'a yellow card did not become red when the turn ended')
+    assert.equal(mark.textContent?.trim(), 'cache ×')
+  } finally { await view.unmount() }
+})

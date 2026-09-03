@@ -6641,6 +6641,20 @@ def cache_forecast_public(org: Org, nid: str,
     # Only a PREVIEW-proven incompatibility counts mid-turn. The persisted
     # `known_incompatible` is the running turn's own launch verdict — the very
     # thing the in-flight baseline exists to stop the badge repeating.
+    #
+    # ⚠ AND THE MID-TURN WARNING NEEDS A CACHE TO WARN ABOUT. On a node with no
+    # completed turn there is no entry a missed steer window could fail to
+    # reuse, so a moved prefix has nothing to claim — the same reason the idle
+    # card renders nothing there (`no_completed_fingerprint`, readiness
+    # `none`). Without this gate a FIRST turn that moved its prefix and then
+    # ended WITHOUT `_cache_finish_turn` — backend death healed by
+    # `reconcile`, which pops the marker and records no attempt — showed
+    # yellow and then no card at all, breaking "a yellow card always becomes
+    # red" (INV-002 as ratified 2026-09-03). Yellow now renders only where a
+    # red can follow it. Idle is untouched: `attempt is None` keeps the
+    # original path, and a fresh node cannot preview `known_incompatible`
+    # against an empty book anyway.
+    has_completed_turn = isinstance(book.get("last_turn"), dict)
     preview_cold = False
     try:
         preview_current = _cache_snapshot(
@@ -6658,7 +6672,8 @@ def cache_forecast_public(org: Org, nid: str,
                 baseline["session"] = preview_current.get("session")
             preview = cachecontinuity.classify(
                 preview_current, {"last_turn": baseline}, now)
-        if preview.get("state") == "known_incompatible":
+        if (preview.get("state") == "known_incompatible"
+                and (attempt is None or has_completed_turn)):
             internal = preview
             preview_cold = True
     except Exception:                                           # noqa: BLE001

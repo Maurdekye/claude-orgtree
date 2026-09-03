@@ -666,6 +666,147 @@ check("mid-turn the projection compares against the request in flight, not the l
       mid_turn_projection_compares_against_the_request_in_flight)
 
 
+# ── §7 the yellow card is a PREDICTION, and it has to come true ───────────
+
+def _turn(org: Any, nid: str, *, prior: dict[str, Any] | None,
+          launch: dict[str, Any], now_components: dict[str, str],
+          finish: bool) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Run one mid-turn → turn-end transition; return (mid_row, after_row).
+
+    `prior` is the durable book (None = a node with no completed turn).
+    `launch` is what the running turn was actually sent with; `now_components`
+    is what a poll renders while it runs. `finish` chooses the exit path:
+    a normal completion that reconciles the attempt, or one that does not.
+    """
+    n = org.node(nid)
+    admission = classify(launch, prior or {})
+    attempt = {k: v for k, v in launch.items()
+               if not k.endswith("_history_relation")}
+    n["cache_continuity"] = {
+        **(prior or {}), "version": 1, "seq": 1, "forecast": admission,
+        "public": C.public(admission, generation="g0",
+                           precompact_action="not_applicable",
+                           precompact_reason="")}
+    rendered = snapshot(**{k: v for k, v in launch.items()
+                           if k in ("session",)})
+    rendered["node_generation"] = launch.get("node_generation")
+    rendered["components"] = {**rendered["components"], **now_components}
+    old_snapshot = S._cache_snapshot
+    S._cache_snapshot = lambda *a, **k: copy.deepcopy(rendered)
+    try:
+        n["inflight"] = {"at": C.iso(NOW), "text": "go",
+                         "cache_attempt": copy.deepcopy(attempt)}
+        mid = S.cache_forecast_public(org, nid, now=NOW)
+        if finish:
+            S._cache_finish_turn(org, nid, copy.deepcopy(attempt), {},
+                                 now=NOW + 1)
+        n.pop("inflight", None)
+        after = S.cache_forecast_public(org, nid, now=NOW + 2)
+    finally:
+        S._cache_snapshot = old_snapshot
+    assert isinstance(mid, dict) and isinstance(after, dict)
+    return mid, after
+
+
+def a_yellow_card_always_becomes_red() -> None:
+    """INV-002 / D-235 (user, 2026-09-03): "a yellow card moving to turn end
+    should *always* transition to red. that is the point of the yellow card:
+    to indicate that the next turn will be red, ie. a cache miss."
+
+    Yellow mid-turn is `not_ready`/`prefix_changed` and nothing else, so the
+    property is: whenever a poll would render yellow, the poll after the turn
+    ends renders RED — never green (the warning would have been a lie) and
+    never nothing (the warning would have been silently withdrawn).
+
+    ⚠ BOTH EXIT PATHS, because they reach red by DIFFERENT mechanisms and only
+    one of them is obvious. A turn that completes reconciles the attempt into
+    `last_turn`, so the prefix that moved is still moved against it. A turn
+    that does NOT reconcile leaves the durable book alone, and the projection
+    falls back to the persisted launch verdict — which was itself cold,
+    because a prefix that has moved away from the request in flight while
+    matching the last completed turn can only mean the launch was the cold
+    one. Worth knowing which is load-bearing: `_cache_finish_turn` sits under
+    `if cost or occ or cw or denials or res:` (not under `mcp_success`), so an
+    ordinary INTERRUPT does reconcile; the skip is for a turn that produced
+    nothing at all, and for backend death healed by `reconcile` at startup.
+    This install restarts its backend routinely, so that is not an exotic path.
+
+    Found by execution, not by reading: `scratch/orgtree/cache-verify/
+    probe_transition.py` walks these transitions and prints both verdicts.
+    """
+    org = store.create_org("zz-cache-readiness-yellow-red")
+    org.hire(USER, None, "haiku", 4, "agent")
+    nid = "agent"
+    ident = {"session": str(org.node(nid).get("session_id") or ""),
+             "node_generation": int(org.node(nid).get("generation") or 0)}
+
+    def launched_with(**components: str) -> dict[str, Any]:
+        row = snapshot(**ident)
+        if components:
+            row["components"] = {**row["components"], **components}
+        return row
+
+    cases = (
+        # (label, launch components, what a poll renders mid-turn)
+        ("warm launch, retooled mid-turn", {}, {"tools": "retooled"}),
+        ("cold launch, retooled again", {"tools": "b"}, {"tools": "c"}),
+        # The adversarial one: the mid-turn change is REVERTED, so the prefix
+        # matches the last completed turn again but NOT the request in flight.
+        ("cold launch, reverted mid-turn", {"tools": "b"}, {}),
+    )
+    for label, launch_components, now_components in cases:
+        for finish in (True, False):
+            prior = book(receipt_at=NOW - 60, **ident)
+            mid, after = _turn(
+                org, nid, prior=prior, launch=launched_with(**launch_components),
+                now_components=now_components, finish=finish)
+            eq((label, finish, mid["readiness"], mid["readiness_cause"]),
+               (label, finish, "not_ready", "prefix_changed"))
+            # THE PROPERTY. Not "is not green" — RED, specifically.
+            eq((label, finish, after["readiness"]), (label, finish, "not_ready"))
+            assert after["readiness_cause"] != "no_completed_fingerprint", \
+                f"{label} (finish={finish}): a shown warning was withdrawn"
+
+
+def no_completed_turn_never_shows_the_yellow_warning() -> None:
+    """REGRESSION (cache-verify, 2026-09-03). A node with no completed turn has
+    no cache entry for a missed steer window to fail to reuse, so a moved
+    prefix has NOTHING to warn about — the same reason the idle card renders
+    nothing there. It used to render yellow anyway, and then, if the first turn
+    ended without reconciling (backend death healed by `reconcile`), fall back
+    to `no_completed_fingerprint` and show NO CARD: a warning made and then
+    silently withdrawn, which is exactly what "a yellow card always becomes
+    red" forbids.
+
+    A flag is a claim about something assumed to exist (user, 2026-09-03), and
+    on a fresh node the cache does not. So the fix is that the yellow is never
+    shown, not that a red is manufactured against a cache that is not there —
+    which keeps yellow strictly honest: it renders only where a red can follow.
+    """
+    org = store.create_org("zz-cache-readiness-fresh-node")
+    org.hire(USER, None, "haiku", 4, "agent")
+    nid = "agent"
+    ident = {"session": str(org.node(nid).get("session_id") or ""),
+             "node_generation": int(org.node(nid).get("generation") or 0)}
+    for finish in (True, False):
+        mid, after = _turn(org, nid, prior=None, launch=snapshot(**ident),
+                           now_components={"tools": "retooled"}, finish=finish)
+        # Mid-turn: nothing to claim, so no card — NEVER the yellow warning.
+        eq((finish, mid["readiness"]), (finish, "none"))
+        eq((finish, mid["readiness_cause"]), (finish, "turn_in_flight"))
+        # And with no yellow ever shown, there is no promise left unkept: a
+        # turn that reconciled has a `last_turn` to be cold against; one that
+        # did not still has no completed turn, and still shows no card.
+        eq((finish, after["readiness"]),
+           (finish, "not_ready" if finish else "none"))
+
+
+check("a yellow card always becomes red when the turn ends",
+      a_yellow_card_always_becomes_red)
+check("a node with no completed turn never shows the yellow warning",
+      no_completed_turn_never_shows_the_yellow_warning)
+
+
 print()
 if FAIL:
     print(f"{FAIL} FAILED, {PASS} PASSED")

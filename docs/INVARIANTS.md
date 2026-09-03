@@ -193,11 +193,44 @@ confirms the landing work is committed and tested.
 
 ## B · Provider, cache, and session identity
 
-### INV-002 · cache compatibility readiness is binary, not a spectrum, and grey is always accounted for
+### INV-002 · the cache card is keyed on whether a turn is running: yellow-or-nothing mid-turn, green-or-red idle
 
-- **Statement:** the cache-compatibility badge MUST render exactly one of
-  `ready` (green) or `not_ready` (red) for any supported provider/lane in
-  normal operation. Grey (`diagnostic`) MUST NOT be used as a third opinion
+- **Statement (amended 2026-09-03; the governing rule is the user's own
+  wording, ratified verbatim):**
+
+  > "if a turn is running, it can only either show yellow or not show at all.
+  > if no turn is running, it can only show either green or red. that is the
+  > new invariant."
+
+  The axis is **whether a turn is running**, not which verdict is available.
+  It replaces the previous "exactly one of `ready` or `not_ready` in normal
+  operation", which had no mid-turn half at all and which a running turn
+  therefore violated on its face.
+
+  **Mid-turn — yellow or nothing.** Yellow (`.cache-forecast.steer`, glyph
+  `!`) is permitted for exactly one claim: `not_ready`/`prefix_changed`, the
+  prefix has moved since the request in flight was sent. That claim is
+  settled — whatever entry the running turn leaves belongs to the sent prefix
+  — and it is a WARNING, not a guarantee, because a message that steers into
+  the running turn pays nothing and only one that misses the steer window
+  lands cold. Every other verdict depends on the entry the running turn is
+  still writing, which is unobserved until its receipt lands, so it renders
+  **no card at all** — never a placeholder in the slot.
+
+  **Idle — green or red.** Green and red are GUARANTEES about the next
+  message: it will hit, it will miss. Yellow MUST NOT appear while no turn is
+  running; there is no steer window to miss, so the conditional it asserts
+  cannot arise.
+
+  Two carve-outs predate this amendment and are **retained**, not revoked —
+  both are the same user's earlier rulings and neither is a colour on the
+  green/red axis: grey (`diagnostic`) for an enumerated fault, and **no card**
+  for readiness `none`, where there is nothing to make a claim about
+  (`no_completed_fingerprint`, and mid-turn `turn_in_flight`). A flag is a
+  claim about something assumed to exist (user, 2026-09-03), so the absence of
+  a claim is the absence of a flag.
+
+  Grey (`diagnostic`) MUST NOT be used as a third opinion
   about the cache; it is reserved for an enumerated, named fault that
   prevented an opinion from forming at all, and every grey MUST carry a
   machine-readable cause plus a human-actionable detail sentence. An
@@ -218,8 +251,13 @@ confirms the landing work is committed and tested.
   (grey) — grey is only for where *no* opinion can be formed at all.
 - **Scope:** the per-node cache forecast surfaced to agents (`cache_forecast`
   API/WebSocket field) and rendered on the desk badge.
-- **Prohibited states:** green with no affirmative evidence of compatibility
-  (the prior D-214 `no_completed_fingerprint` → green reading is
+- **Prohibited states:** **mid-turn red or mid-turn green** — a guarantee about
+  the next message while the turn that decides it is still running; **idle
+  yellow** — a steer-window warning with no steer window to miss, including
+  any stale-`steer` residue surviving the turn→idle boundary; a mid-turn card
+  for any cause other than `prefix_changed`; a placeholder occupying the slot
+  where no card should render; green with no affirmative evidence of
+  compatibility (the prior D-214 `no_completed_fingerprint` → green reading is
   overridden by this invariant, not merely superseded); a live countdown
   while readiness is not `ready`, or with no authoritative `expires_at`; a
   grey badge with no cause or no detail sentence; an unclassified cause
