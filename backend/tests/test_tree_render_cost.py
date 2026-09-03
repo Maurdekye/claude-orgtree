@@ -486,6 +486,60 @@ def the_children_index_agrees_with_the_scan_everywhere() -> None:
         f"{len(org.nodes)} nodes — the partition drops seats")
 
 
+# ── §8 · the org the handler already holds is not read a second time ────────
+def local_net_slugs_does_not_re_read_the_document_it_was_given() -> None:
+    """`org_tree` needed one small string per org and was parsing every
+    document on disk to get them — including the one it had parsed itself
+    twenty lines earlier.
+
+    MEASURED 2026-09-03 on the live install: `list_orgs()` cost 80.3 ms and
+    read 18.7 MB, against a 233 ms floor for the whole endpoint; handing the
+    already-parsed document back in took it to 58.6 ms (-53%).
+
+    Two properties, and the first is the one that keeps it honest: the ANSWER
+    must not change. A faster function that returns a different set would
+    silently mislabel which hub peers are local, and nothing on the desk would
+    look broken.
+    """
+    a = store.create_org("zz-net-a")
+    b = store.create_org("zz-net-b")
+    for org, tag in ((a, "aaa"), (b, "bbb")):
+        org.d["net_identity"] = {"slug": f"zz-{tag}", "secret": "never-read"}
+        store.save_org(org)
+
+    # ① identical to the expression it replaces, whichever org is "loaded"
+    want = {str(o.get("net_slug")) for o in store.list_orgs()
+            if o.get("net_slug") and not o.get("kiosk")}
+    assert {"zz-aaa", "zz-bbb"} <= want, want
+    for org in (a, b):
+        assert store.local_net_slugs(org.d) == want, (
+            f"the set changed when {org.d['slug']!r} was the loaded org")
+    assert store.local_net_slugs() == want, "the no-argument form disagrees"
+
+    # ② the loaded document's FILE is not opened again — the whole point.
+    # Counted rather than timed, because a timing assertion on a 7 MB parse
+    # is a flake waiting for a busy machine.
+    target = os.path.basename(store.org_path("zz-net-a"))
+    opened: list[str] = []
+    real = builtins.open
+
+    def spy(f: Any, *args: Any, **kw: Any) -> Any:
+        opened.append(os.path.basename(str(f)))
+        return real(f, *args, **kw)
+
+    builtins.open = spy
+    try:
+        store.local_net_slugs(a.d)
+    finally:
+        builtins.open = real
+    assert target not in opened, (
+        f"{target} was re-read although its parsed document was handed in — "
+        f"opened: {opened}")
+    assert os.path.basename(store.org_path("zz-net-b")) in opened, (
+        "the OTHER orgs were not read at all; the skip is too wide and the "
+        f"answer would be short — opened: {opened}")
+
+
 try:
     print("tree render cost")
     check("§1 an archived seat carries an explicit null forecast",
@@ -502,6 +556,8 @@ try:
           filesystem_work_must_not_scale_with_node_count)
     check("§7 the children index agrees with the scan everywhere",
           the_children_index_agrees_with_the_scan_everywhere)
+    check("§8 local_net_slugs does not re-read the document it was given",
+          local_net_slugs_does_not_re_read_the_document_it_was_given)
     print(f"\n{PASS} passed, {FAIL} FAILED")
 finally:
     shutil.rmtree(RIG, ignore_errors=True)

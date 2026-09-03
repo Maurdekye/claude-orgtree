@@ -334,15 +334,20 @@ def _read_bytes(p: str) -> bytes:
     raise OSError(f"could not read {p!r}")   # unreachable
 
 
-def _scan_orgs() -> Iterator[tuple[str, dict[str, Any]]]:
+def _scan_orgs(skip: str = "") -> Iterator[tuple[str, dict[str, Any]]]:
     """(filename, parsed doc) for every org, ONE read+parse each.
+
+    `skip` is a slug the caller ALREADY holds parsed — its file is not
+    read at all. The filter has to be here rather than at the caller
+    because the expensive step is the parse this generator performs, so
+    a caller that discards the row afterwards has already paid for it.
 
     Split out of `list_orgs` so that a caller which needs the whole document
     as well as the summary row can have both from the same parse — see
     `list_orgs_with_docs`."""
     _sweep_tmp()
     for f in sorted(os.listdir(_orgs_dir())):
-        if not f.endswith(".json"):
+        if not f.endswith(".json") or (skip and f[:-5] == skip):
             continue
         try:
             # ⚠ the `except: continue` below means a TRANSIENT read failure
@@ -373,6 +378,48 @@ def _summary_row(f: str, doc: dict[str, Any]) -> dict[str, Any]:
 
 def list_orgs() -> list[dict[str, Any]]:
     return [_summary_row(f, doc) for f, doc in _scan_orgs()]
+
+
+def local_net_slugs(loaded: dict[str, Any] | None = None) -> set[str]:
+    """Every non-kiosk org's `net_slug` on this instance.
+
+    ⚠ WHY THIS IS NOT `list_orgs()`. `org_tree` needs this set to mark which
+    hub-roster peers are also local orgs, and it used to get it by calling
+    `list_orgs()` — which full-parses EVERY org document to read at most a few
+    short strings. MEASURED 2026-09-03 on the live install: 80.3 ms per call,
+    reading 18.7 MB (`orgtree.json` 11.2 MB + `resonite.json` 7.4 MB +
+    `unity.json`), against a 233 ms floor for the whole endpoint. One of those
+    parses was a straight duplicate: the handler had already parsed the org it
+    was rendering, twenty lines earlier.
+
+    So `loaded` is that document, passed back in. Its file is not re-read, and
+    `_scan_orgs` skips it before the parse rather than after — filtering the
+    row afterwards would already have paid for it.
+
+    ⚠ ONE DEFINITION OF THE ROW. Both branches go through `_summary_row`, so
+    the already-parsed org is filtered by exactly the rule the scanned ones
+    are. Reading `net_identity` and `kiosk` directly here would be a second
+    expression of it, and it would drift the moment either key moves.
+
+    Portability note (agreed with `sqlite-review`, 2026-09-03): kept as its own
+    small function rather than reshaping `_scan_orgs`'s contract, because under
+    the SQLite backend this becomes a `doc`-row read per org with no node load
+    at all — cheaper again, and a local change there rather than a merge.
+    """
+    out: set[str] = set()
+
+    def take(f: str, doc: dict[str, Any]) -> None:
+        row = _summary_row(f, doc)
+        if row["net_slug"] and not row["kiosk"]:
+            out.add(str(row["net_slug"]))
+
+    skip = ""
+    if loaded is not None:
+        skip = str(loaded.get("slug") or "")
+        take(skip + ".json", loaded)
+    for f, doc in _scan_orgs(skip=skip):
+        take(f, doc)
+    return out
 
 
 def list_orgs_with_docs() -> list[tuple[dict[str, Any], Org]]:

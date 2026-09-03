@@ -1602,8 +1602,12 @@ def org_tree(slug: str, request: Request) -> dict[str, Any]:
         # which transports resolve it — a hub peer that is ALSO a local org
         # on this instance reads {org, net}; everyone else {net}. Derived
         # from the same data the bare-name resolver consults.
-        local_net = {str(o.get("net_slug")) for o in store.list_orgs()
-                     if o.get("net_slug") and not o.get("kiosk")}
+        # ⚠ `org.d` IS PASSED IN, and that is the point: this used to call
+        # `store.list_orgs()`, which full-parses every org document on disk to
+        # read a handful of short strings — 80.3 ms for 18.7 MB, MEASURED
+        # 2026-09-03, against a 233 ms floor for this whole endpoint. One of
+        # those parses re-did the `load_org` at the top of this handler.
+        local_net = store.local_net_slugs(cast("dict[str, Any]", org.d))
         for h in cast("list[dict[str, Any]]", tree["net"].get("hubs") or []):
             for r in cast("list[dict[str, Any]]", h.get("roster") or []):
                 r["transports"] = (["org", "net"]
