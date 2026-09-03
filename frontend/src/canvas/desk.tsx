@@ -28,7 +28,8 @@ import {
 import { ago, ALL_PRESENT, ALL_TIERS, anyTierSeat, CODEX_TIERS, CopyIcon, EXTERN, fmtCredits, freezeKind, FREEZE_LABEL, ANTIGRAVITY_TIERS, isOpenRouterTier, md, openrouterTierIds, PROVIDER_LABEL, providerOf, queuedSwitchTitle, TIER_LETTER, tierLabel, tierShown, USER, useEsc, usePolled } from './shared'
 import type { ProviderPresence } from './shared'
 import {
-  addPending, CHAT_WINDOW, dropPending, loadOlder as storeLoadOlder, markBusy,
+  addPending, CHAT_WINDOW, dismissPending, dropPending,
+  loadOlder as storeLoadOlder, markBusy, markGhostCommand,
   MAX_WINDOW, refreshConvo, useConvo,
 } from '../convo'
 import type {
@@ -1289,6 +1290,12 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
         //                message, and until then the dimmed bubble is the
         //                truth (this is queued).
         if (r.immediate || r.compacting) dropPending(slug, node.id, t)
+        // …and the third shape, which used to have no exit at all (user bug
+        // 2026-09-03). An ordinary command's ghost is still KEPT — a row is
+        // coming if the command was real — but the store now knows it is a
+        // command, so when the turn ends without writing anything it can say
+        // so instead of waiting forever. See convo.ts CMD_GRACE.
+        else if (r.command) markGhostCommand(slug, node.id, t)
         return refresh(true)
       })
       .catch((e: Error) => {
@@ -1856,9 +1863,41 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
               bottom. The one being delivered INTO the running turn was hoisted
               above the live tail — see pendNow. */}
           {pendLater.map(pendBubble)}
+          {/* №17 for GHOSTS (user bug 2026-09-03: "i sent an invalid command
+              and it got stuck as a permanently undelivered message that i
+              cant cancel"). The durable pending bubbles above have carried a
+              retract ✕ since №17; these — the optimistic ones — carried
+              nothing, so the one bubble the user could not get rid of was the
+              one with no server record behind it.
+              ⚠ The ✕ is DISMISS, not retract: there is nothing on the server
+              to take back (a ghost has no id because nothing was filed), so
+              it says so rather than implying a retraction it cannot perform.
+              A failed one also offers ↩ to put the text back in the composer,
+              and only when the composer is empty — the user's typing is not
+              ours to overwrite. */}
           {pending.map((p) => (
-            <div key={'q' + p.id} className="msg user pending md"
-              dangerouslySetInnerHTML={md(p.text, fileBase(slug, node.id))} />
+            <div key={'q' + p.id}
+              className={'msg user pending pendghost md' + (p.failed ? ' failed' : '')}>
+              <div className="pendbody"
+                dangerouslySetInnerHTML={md(p.text, fileBase(slug, node.id))} />
+              {p.failed && (
+                <div className="ghost-why">
+                  <WarnIcon fontSize="inherit" /> not delivered — the turn
+                  ended without running it. If that was a slash command,
+                  nothing here or in the CLI answers to that name.
+                </div>)}
+              <div className="ghost-acts">
+                {p.failed && !text.trim() && (
+                  <button className="chip-x" title="put this text back in the composer"
+                    onClick={() => { setText(p.text); dismissPending(slug, node.id, p.id) }}>
+                    ↩</button>)}
+                <button className="chip-x"
+                  title={p.failed ? 'dismiss' : 'dismiss (removes it from your '
+                    + 'screen — nothing was filed on the server to retract)'}
+                  onClick={() => dismissPending(slug, node.id, p.id)}>
+                  <CloseIcon fontSize="inherit" /></button>
+              </div>
+            </div>
           ))}
           {/* the turn's own failure is the LAST thing that happened, so it
               reads at the end of the stream. It used to render above the whole

@@ -24,8 +24,9 @@ import type { TestContext } from 'node:test'
 import assert from 'node:assert/strict'
 import { useEffect } from 'react'
 import {
-  addPending, CHAT_WINDOW, dropPending, ingestPulse, ingestStream, loadOlder,
-  MAX_WINDOW, markBusy, refreshConvo, resetConvos, STALL_MS, useConvo,
+  addPending, CHAT_WINDOW, CMD_GRACE, dismissPending, dropPending, ingestPulse,
+  ingestStream, loadOlder, MAX_WINDOW, markBusy, markGhostCommand,
+  refreshConvo, resetConvos, STALL_MS, useConvo,
 } from '../src/convo'
 import type { Convo } from '../src/convo'
 import type { StreamEvent } from '../src/canvas/shared'
@@ -856,4 +857,159 @@ convoTest('§7.1 a fetch that never answers does not stop the desk from ever '
     await advance(10_000)      // > one idle poll interval
     assert.equal(d.now().pending.length, 0,
       'the ghost survived a payload that carries its own message')
+  })
+
+// ═══════════════════════════════════════════════════════════════════════ §8
+// AN UNKNOWN COMMAND'S GHOST — the one shape that can never graduate
+// ═══════════════════════════════════════════════════════════════════════ §8
+//
+// User bug 2026-09-03: "i sent an invalid command and it got stuck as a
+// permanently undelivered message that i cant cancel."
+//
+// §6 proved the two command shapes the desk knew about. This is the third,
+// and it falls between them. `api.node_message` treats any COMMAND-SHAPED
+// first token as a session command (`/[A-Za-z?][\w-]*`), and orgtree only
+// recognises four words of its own — `/compact` and IMMEDIATE_CMDS
+// {context, cost, todos}. Everything else is handed to the CLI verbatim on
+// the theory that the CLI might know it. When it doesn't:
+//
+//   · no `pending_mail` row — the command path files no durable copy
+//     (api.py: "the command path persists no copy anywhere"), so the first
+//     of the two graduation routes in refreshConvo never opens;
+//   · no transcript row — nothing ran, so the second never opens either;
+//   · no retract ✕ — that button needs `m.id`, and a ghost has no id
+//     because it was never durable.
+//
+// So the bubble sits dimmed forever and the user cannot dismiss it. §6.2
+// already stated the mechanism in as many words ("without an explicit drop
+// this ghost is immortal — the store cannot retire what the server never
+// shows"); what it did not say is that desk.tsx's drop covers `immediate ||
+// compacting` and NOTHING ELSE, so the immortal case is reachable in one
+// keystroke by anyone who mistypes a command.
+//
+// The fix is NOT a validator: the CLI's command vocabulary — including the
+// user's own project skills — is not ours and changes under us, so a list
+// here would rot into a guard that stops catching things. Instead: the ghost
+// resolves on EVIDENCE, the same rule the rest of this file runs on. A turn
+// that has ended is the server saying nothing is coming.
+
+convoTest('§8.1 an unknown command RESOLVES when the turn ends without '
+  + 'writing anything', async ({ SL, ND, s, desk }) => {
+    s.assistantMsg('idle')
+    const d = await desk()
+    await advance(100)
+    // the user types /orgtree-ensure. It is command-SHAPED, so it takes the
+    // command path; it is not one of orgtree's four, so it goes to the CLI,
+    // which has no such command. desk.tsx keeps the ghost — `immediate` and
+    // `compacting` are both false — on the reasoning that "a row IS coming".
+    await inAct(() => {
+      addPending(SL, ND, '/orgtree-ensure')
+      markGhostCommand(SL, ND, '/orgtree-ensure')
+      markBusy(SL, ND)
+    })
+    assert.equal(d.now().pending.length, 1, 'the ghost is on screen, as intended')
+    // …the turn runs and ends. NOTHING was written: no user row, no mail row.
+    s.busy = false
+    await advance(CMD_GRACE + 1000)
+    await poll(SL, ND)
+    // the premise. NOT `copies`, which counts the ghost itself among the
+    // places a user message is rendered — the claim here is narrower and is
+    // about the SERVER: neither a transcript row nor a mailbox row exists.
+    const srv = d.now()
+    assert.equal(
+      (srv.chat?.messages ?? []).filter((m) => m.role === 'user'
+        && (m.text || '').includes('/orgtree-ensure')).length
+      + (srv.chat?.pending_mail ?? []).filter((m) =>
+        (m.body || '').includes('/orgtree-ensure')).length, 0,
+      'the premise: the server never showed this text in EITHER place a ghost '
+      + 'can graduate against')
+    const g = d.now().pending
+    assert.equal(g.length, 1,
+      'it must NOT vanish — a message that disappears is worse than one that '
+      + 'hangs, because the user cannot tell whether it went')
+    assert.equal(g[0]?.failed, true,
+      'the node is idle and the row is never coming: say so, rather than '
+      + 'leaving a bubble indistinguishable from one genuinely still queued')
+    assert.equal(g[0]?.text, '/orgtree-ensure',
+      'the text the user typed is still recoverable from the ghost')
+  })
+
+convoTest('§8.2 …and a command that DOES run still graduates on its row, '
+  + 'never failing first (anti-vacuity for §8.1)',
+  async ({ SL, ND, s, desk }) => {
+    s.assistantMsg('idle')
+    const d = await desk()
+    await advance(100)
+    await inAct(() => {
+      addPending(SL, ND, '/context')
+      markGhostCommand(SL, ND, '/context')
+      markBusy(SL, ND)
+    })
+    // the CLI knows this one: it runs, and the command lands verbatim as its
+    // own user row — the ordinary graduation, well inside the grace window
+    s.userMsg('/context')
+    await poll(SL, ND)
+    await advance(100)
+    assert.equal(d.now().pending.length, 0,
+      'a real command graduates on its row exactly as before — §8.1 must not '
+      + 'be reachable by simply outliving a grace timer')
+  })
+
+convoTest('§8.3 the grace window protects a slow CLI boot: idle alone does '
+  + 'NOT condemn a command', async ({ SL, ND, s, desk }) => {
+    s.assistantMsg('idle')
+    const d = await desk()
+    await advance(100)
+    await inAct(() => {
+      addPending(SL, ND, '/context')
+      markGhostCommand(SL, ND, '/context')
+      markBusy(SL, ND)
+    })
+    // the optimistic markBusy is corrected by a payload from the gap before
+    // the CLI has started: the server says "no turn running" about a command
+    // that is about to run perfectly well.
+    s.busy = false
+    await advance(2000)
+    await poll(SL, ND)
+    assert.equal(d.now().pending[0]?.failed, undefined,
+      'condemning a command on `busy:false` alone turns a slow boot into a '
+      + 'phantom failure — the same defect wearing the other face')
+    // …and it then runs, inside the window
+    s.userMsg('/context')
+    await poll(SL, ND)
+    await advance(100)
+    assert.equal(d.now().pending.length, 0, 'it graduated normally')
+  })
+
+convoTest('§8.4 a PLAIN message ghost is never condemned by the idle rule',
+  async ({ SL, ND, s, desk }) => {
+    s.assistantMsg('idle')
+    const d = await desk()
+    await advance(100)
+    // no markGhostCommand: this is correspondence, and correspondence has a
+    // durable copy waiting for it in pending_mail. Only commands file nothing.
+    await inAct(() => { addPending(SL, ND, 'please look at the log') })
+    s.busy = false
+    await advance(CMD_GRACE + 5000)
+    await poll(SL, ND)
+    assert.equal(d.now().pending[0]?.failed, undefined,
+      'the idle rule is scoped to commands — a message ghost retires against '
+      + 'its own mailbox row, and failing it here would fire on every send to '
+      + 'an idle node')
+    assert.equal(d.now().pending.length, 1, 'still waiting, as it should be')
+  })
+
+convoTest('§8.5 every ghost can be dismissed — the thing the user asked for',
+  async ({ SL, ND, s, desk }) => {
+    s.assistantMsg('idle')
+    const d = await desk()
+    await advance(100)
+    await inAct(() => { addPending(SL, ND, 'one'); addPending(SL, ND, 'two') })
+    const first = d.now().pending[0]!
+    await inAct(() => { dismissPending(SL, ND, first.id) })
+    const left = d.now().pending
+    assert.equal(left.length, 1, 'the dismissed ghost is gone')
+    assert.equal(left[0]?.text, 'two',
+      'and it took only its own bubble with it — dismissing by id, not by '
+      + 'text, so two sends of the same words do not collapse into one')
   })

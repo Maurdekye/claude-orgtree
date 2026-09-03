@@ -64,7 +64,34 @@ export interface PendingGhost {
    *  It is what makes the ghost's retirement REACHABLE: see `scrolledPast`.
    *  UNKNOWN_SEQ when no payload had loaded yet — see addPending. */
   seq0: number
+  /** when this ghost was made (Date.now). The floor under the idle rule —
+   *  see CMD_GRACE. */
+  at: number
+  /** the server answered `command: true` for this send, and it was neither
+   *  `immediate` nor `compacting` (desk.tsx marks it — see markGhostCommand).
+   *  A command files NO durable copy, so `pending_mail` never covers it and
+   *  its only graduation is the transcript row it becomes. That makes it the
+   *  one ghost that can outlive its own turn. */
+  cmd?: boolean
+  /** the turn ended and nothing was ever written: this ghost is not waiting,
+   *  it FAILED. Rendered as a visible failure the user can dismiss, never
+   *  silently dropped — a message that disappears is worse than one that
+   *  hangs, because the user cannot tell whether it went. */
+  failed?: boolean
 }
+
+/** How long a command ghost is given before an idle server counts as proof
+ *  that nothing is coming (user bug 2026-09-03).
+ *
+ *  ⚠ This is a FLOOR, not the rule. The rule is evidence — `busy: false` from
+ *  a fetch issued after the send — and this exists only to survive the gap
+ *  where the optimistic `markBusy` has been corrected by a payload the turn
+ *  has not started filling yet: the CLI can take seconds to boot, and during
+ *  that window the server truthfully says "no turn is running" about a
+ *  command that is about to run perfectly well. Killing a ghost there would
+ *  turn a working command into a phantom failure, which is the same defect
+ *  wearing the other face. */
+export const CMD_GRACE = 20000
 
 /** A ghost made before the first payload loaded has no seq baseline. It used
  *  to get `-1` ("my message will be row 0") — but the composer is enabled
@@ -311,8 +338,42 @@ export function refreshConvo(slug: string, nid: string,
     // a ghost graduates when the server shows MORE copies of its text than it
     // did when the ghost was made — never merely "a copy exists", which an
     // earlier identical message already satisfies
+    // AND A COMMAND GHOST RESOLVES ON THE TURN'S END (user bug 2026-09-03:
+    // "i sent an invalid command and it got stuck as a permanently
+    // undelivered message that i cant cancel").
+    //
+    // Both graduation routes above are things the SERVER shows. A command
+    // shows up in neither unless it ran: it files no `pending_mail` (the
+    // command path persists no copy) and it writes no transcript row unless
+    // the CLI actually knew the word. orgtree recognises four of its own —
+    // /compact and IMMEDIATE_CMDS {context, cost, todos} — and forwards
+    // everything else verbatim on the chance that the CLI or the user's own
+    // project skills know it. When nothing does, the ghost had no exit at
+    // all, and desk.tsx was keeping it deliberately, reasoning "a row IS
+    // coming". For a mistyped command no row is ever coming.
+    //
+    // The third route is the turn ENDING. `busy: false` on a fetch issued
+    // after the send is the server saying no turn is running — so whatever
+    // that command was going to write, it has already not written. Note this
+    // marks rather than drops: a ghost that vanishes is worse than one that
+    // hangs, because the user cannot tell whether it went.
+    //
+    // Deliberately NOT a validator against a list of known commands: the
+    // vocabulary belongs to the CLI and to the user's own skills, both of
+    // which change without us, so a list here would rot into a guard that
+    // silently stops catching things.
+    // this payload says no turn is running. Ordering against the send is
+    // carried by CMD_GRACE, which is longer than any round trip — so this
+    // needs no `startedAt` comparison of its own.
+    const idleNow = !c.busy
+    const cmdDead = (g: PendingGhost): boolean =>
+      !!g.cmd && !g.failed && idleNow && Date.now() - g.at >= CMD_GRACE
     const pending = e.s.pending
-      .filter((g) => serverCopies(c, g.text) <= g.seen && !scrolledPast(c, g))
+      .map((g) => (cmdDead(g) ? { ...g, failed: true } : g))
+      // a FAILED ghost is no longer waiting for evidence — it survives every
+      // filter below and leaves only when the user dismisses it
+      .filter((g) => g.failed
+        || (serverCopies(c, g.text) <= g.seen && !scrolledPast(c, g)))
       // a ghost made before the first payload has no seq baseline (see
       // addPending). This survivor's message is NOT in this payload — its
       // eventual row must come after everything the payload shows — so the
@@ -398,8 +459,33 @@ export function addPending(slug: string, nid: string, text: string): void {
       // the first load the length is unknowable — see UNKNOWN_SEQ.
       seq0: !e.s.loaded ? UNKNOWN_SEQ
         : msgs.length ? (msgs[msgs.length - 1]?.seq ?? -1) : -1,
+      at: Date.now(),
     }],
   })
+}
+
+/** Mark the ghost for THIS send as a command (desk.tsx, on the response).
+ *
+ *  It cannot be known at `addPending` time — the ghost is painted before the
+ *  POST answers, which is the entire point of it — so the shape arrives one
+ *  round trip later and lands on the oldest ghost with this text, exactly as
+ *  `dropPending` retires the oldest. */
+export function markGhostCommand(slug: string, nid: string, text: string): void {
+  const k = key(slug, nid)
+  const list = entry(k).s.pending
+  const i = list.findIndex((g) => g.text === text && !g.cmd)
+  if (i < 0) return
+  patch(k, { pending: list.map((g, j) => (j === i ? { ...g, cmd: true } : g)) })
+}
+
+/** Dismiss ONE ghost the user has given up on (the ✕ on a pending bubble).
+ *
+ *  This is screen-only and says so in the UI: a ghost has no durable copy to
+ *  retract — `retractMail` is for rows the server owns. What it ends is the
+ *  bubble, which for a failed command is the only thing left of it. */
+export function dismissPending(slug: string, nid: string, id: number): void {
+  const k = key(slug, nid)
+  patch(k, { pending: dropOne(entry(k).s.pending, (g) => g.id === id) })
 }
 
 /** Retire ONE ghost — the oldest with this text.
