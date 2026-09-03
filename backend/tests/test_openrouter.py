@@ -200,15 +200,18 @@ def main():
                       [], "no refetch while fresh")))
 
     print("§3 canonical letters and colors")
-    check("letter = first letter of the last meaningful token",
-          lambda: (eq(orr.letter_for("anthropic/claude-sonnet-5"), "S", "sonnet"),
-                   eq(orr.letter_for("openai/gpt-5.6-sol"), "S", "sol"),
-                   eq(orr.letter_for("google/gemini-3.5-flash"), "F", "flash"),
+    check("letter = first letter of the FIRST word of the label (user ask 2026-09-03)",
+          lambda: (eq(orr.letter_for("anthropic/claude-sonnet-5"), "C", "claude-sonnet → C"),
+                   eq(orr.letter_for("anthropic/claude-opus-5"), "C", "claude-opus → C too"),
+                   eq(orr.letter_for("openai/gpt-5.6-sol"), "G", "gpt → G"),
+                   eq(orr.letter_for("google/gemini-3.5-flash"), "G", "gemini → G"),
+                   eq(orr.letter_for("x-ai/grok-4.6"), "G", "grok → G"),
                    eq(orr.letter_for("deepseek/deepseek-v4"), "D", "deepseek"),
                    eq(orr.letter_for("moonshotai/kimi-k3"), "K", "kimi"),
-                   eq(orr.letter_for("meta-llama/llama-4-maverick:free"), "M", "maverick"),
-                   eq(orr.letter_for("google/gemini-3.1-pro-preview-customtools"),
-                      "G", "gemini pro → G (pro/preview/customtools are qualifiers)")))
+                   eq(orr.letter_for("meta-llama/llama-4-maverick:free"), "L", "llama"),
+                   eq(orr.letter_for("z-ai/glm-5.2:free"), "G", "variant suffix ignored"),
+                   eq(orr.letter_for("bare"), "B", "no namespace"),
+                   eq(orr.letter_for("vendor/"), "?", "nothing to read → ?")))
     c1 = orr.color_for("anthropic/claude-sonnet-5", 2.0)
     c2 = orr.color_for("anthropic/claude-sonnet-5", 2.0)
     c3 = orr.color_for("anthropic/claude-opus-5", 5.0)
@@ -241,7 +244,7 @@ def main():
     fav = orr.add_favorite("anthropic/claude-sonnet-5")
     check("add_favorite snapshots seat, prices, letter, color, tier",
           lambda: (eq(fav["tier"], "or-anthropic-claude-sonnet-5", "tier"),
-                   eq(fav["seat"], 2, "seat"), eq(fav["letter"], "S", "letter"),
+                   eq(fav["seat"], 2, "seat"), eq(fav["letter"], "C", "letter"),
                    eq(fav["color"], c1, "color"), eq(fav["prompt"], 2.0, "prompt")))
     check("a favorite carries its label; search pages and tier_label answer the same",
           lambda: (eq(fav["label"], "claude-sonnet-5", "label"),
@@ -251,6 +254,16 @@ def main():
                       "model:free", "deselected → the org doc's own table"),
                    eq(orr.tier_label("or-gone-model"), "gone-model", "unknown → bare slug"),
                    eq(orr.tier_label("sonnet"), "sonnet", "static passthrough")))
+    def old_rule_record():
+        # a favorite written under the LAST-word rule carries letter "S";
+        # the read path recomputes from the id, so it reads "C" untouched
+        doc = orr._load_state()
+        doc["favorites"][0]["letter"] = "S"
+        doc["favorites"][0]["name"] = "Anthropic: Claude Sonnet 5"
+        orr._save_state(doc)
+        eq(orr.favorites()[0]["letter"], "C", "recomputed on read")
+        eq(orr.favorites()[0]["name"], "Claude Sonnet 5", "prefix stripped on read")
+    check("a favorite stored under an older rule reads under the current one", old_rule_record)
     orr.add_favorite("deepseek/deepseek-v4")
     orr.add_favorite("anthropic/claude-sonnet-5")          # idempotent
     check("favorites de-duplicate; tiers()/models() are the dynamic tables",
@@ -393,7 +406,7 @@ def main():
     check("PUT /api/openrouter/favorites selects a model → a tier row with letter+color",
           lambda: (eq([t["tier"] for t in r2["tiers"]], [TIER], "tiers"),
                    eq(r2["tiers"][0]["seat"], 2, "seat"),
-                   eq(r2["tiers"][0]["letter"], "S", "letter"),
+                   eq(r2["tiers"][0]["letter"], "C", "letter"),
                    eq(r2["tiers"][0]["color"].startswith("#"), True, "color")))
     check("…an unknown model is refused with 422",
           lambda: eq(client.put("/api/openrouter/favorites",

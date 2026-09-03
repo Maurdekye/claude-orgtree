@@ -17,14 +17,15 @@ type Seen = { method: string; path: string; body: unknown }
 const g = globalThis as unknown as Record<string, unknown>
 
 // what the backend serves since 2026-09-03: `name` without its `Vendor: `
-// prefix, `label` = the id without its vendor namespace
+// prefix, `label` = the id without its vendor namespace, `letter` = the
+// first letter of the label's first word (claude-* → C, gpt-* → G)
 const CATALOG: OpenRouterModel[] = [
   { id: 'anthropic/claude-sonnet-5', name: 'Claude Sonnet 5', label: 'claude-sonnet-5',
     vendor: 'anthropic', prompt: 2, completion: 10, cache_read: 0.2,
-    context: 1000000, tools: true, free: false, letter: 'S', color: '#f9907f' },
+    context: 1000000, tools: true, free: false, letter: 'C', color: '#f9907f' },
   { id: 'openai/gpt-5.6-luna', name: 'GPT-5.6 Luna', label: 'gpt-5.6-luna', vendor: 'openai',
     prompt: 0.2, completion: 1.2, cache_read: 0.02, context: 1050000,
-    tools: true, free: false, letter: 'L', color: '#9fe3d1' },
+    tools: true, free: false, letter: 'G', color: '#9fe3d1' },
   { id: 'moonshotai/kimi-k3', name: 'Kimi K3', label: 'kimi-k3', vendor: 'moonshotai',
     prompt: 3, completion: 15, cache_read: 0.3, context: 1048576,
     tools: true, free: false, letter: 'K', color: '#8fc9e8' },
@@ -190,7 +191,7 @@ test('§2 the favorites row opens the picker; search, select and deselect '
     assert.equal(first.textContent?.includes('anthropic/claude'), false, 'no namespace on the id')
     assert.ok(first.textContent?.includes('$2 in'), 'price in per 1M')
     assert.ok(first.textContent?.includes('$10 out'), 'price out per 1M')
-    assert.ok(first.querySelector('.orr-card')?.textContent === 'S', 'monogram card letter')
+    assert.ok(first.querySelector('.orr-card')?.textContent === 'C', 'monogram card letter')
     // search narrows
     const search = view.el.querySelector<HTMLInputElement>(
       'input[aria-label="search OpenRouter models"]')!
@@ -213,12 +214,12 @@ test('§2 the favorites row opens the picker; search, select and deselect '
     assert.deepEqual(put?.body, { id: 'openai/gpt-5.6-luna', selected: true })
     const cards = view.el.querySelectorAll('.orr-favs .orr-card')
     assert.equal(cards.length, 1, 'the favorites row grew a card')
-    assert.equal(cards[0]!.textContent, 'L')
+    assert.equal(cards[0]!.textContent, 'G')
     assert.match(cards[0]!.getAttribute('title') ?? '', /^gpt-5\.6-luna · GPT-5\.6 Luna — openai · /,
       'the card tooltip leads with the label, then the name, then the vendor once')
     // …and the shared registry learned the runtime tier + letter + name
     assert.deepEqual(openrouterTierIds(), ['or-openai-gpt-5-6-luna'])
-    assert.equal(TIER_LETTER['or-openai-gpt-5-6-luna'], 'L')
+    assert.equal(TIER_LETTER['or-openai-gpt-5-6-luna'], 'G')
     assert.equal(tierLabel('or-openai-gpt-5-6-luna'), 'gpt-5.6-luna')
     assert.ok(document.getElementById('orgtree-openrouter-tiers')?.textContent
       ?.includes('.tier.t-or-openai-gpt-5-6-luna{color:#9fe3d1'),

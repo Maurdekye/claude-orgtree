@@ -43,11 +43,11 @@ const PAYLOAD: AccountsPayload = {
 // first because the providers payload carries them too
 const ORR_TIERS: ProviderTier[] = [
   { tier: 'or-anthropic-claude-sonnet-5', provider: 'openrouter', seat: 2,
-    model: 'anthropic/claude-sonnet-5', letter: 'S', color: '#f9907f',
+    model: 'anthropic/claude-sonnet-5', letter: 'C', color: '#f9907f',
     name: 'Claude Sonnet 5', label: 'claude-sonnet-5', vendor: 'anthropic',
     prompt: 2, completion: 10, context: 1000000 },
   { tier: 'or-openai-gpt-5-6-luna', provider: 'openrouter', seat: 1,
-    model: 'openai/gpt-5.6-luna', letter: 'L', color: '#9fe3d1',
+    model: 'openai/gpt-5.6-luna', letter: 'G', color: '#9fe3d1',
     name: 'GPT-5.6 Luna', label: 'gpt-5.6-luna', vendor: 'openai',
     prompt: 0.2, completion: 1.2, context: 1050000 },
 ]

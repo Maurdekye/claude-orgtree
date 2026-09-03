@@ -333,32 +333,22 @@ def seat_for(prompt_per_m: float) -> int:
     return max(1, int(math.floor(prompt_per_m + 1e-9)))
 
 
-_VERSION_TOKEN: Final = re.compile(r"^(v?\d+([.-]\d+)*[a-z]?|k\d+|r\d+|\d+[bkm])$")
-_GENERIC_TOKENS: Final = frozenset({
-    "preview", "latest", "chat", "instruct", "free", "beta", "exp", "it",
-    "thinking", "reasoning", "fast", "turbo", "online", "extended", "batch",
-    "customtools", "vision", "base", "hf", "flagship", "large", "small",
-    "medium", "mini", "nano", "pro", "max", "plus", "lite", "ultra",
-})
-
-
 def letter_for(model_id: str) -> str:
-    """The chip glyph: the first letter of the LAST meaningful token of the
-    model id. Meaningful = not the vendor, not a version/size (`5`, `v4`,
-    `3.5`, `k3`, `70b`), not a generic qualifier (`preview`, `instruct`,
-    `pro`…). claude-sonnet-5 → S · gpt-5.6-sol → S · gemini-3.5-flash → F ·
-    deepseek-v4 → D · kimi-k3 → K · llama-4-maverick → M. Collisions are the
-    same accepted collision as sol/sonnet's S: the color carries identity,
-    the letter is the redundant glyph."""
-    vendor = vendor_of(model_id)
-    tail = model_id.split("/", 1)[1] if "/" in model_id else model_id
-    tail = tail.split(":", 1)[0]
-    toks = [t for t in re.split(r"[-_./ ]+", tail.lower()) if t]
-    keep = [t for t in toks
-            if t != vendor and not _VERSION_TOKEN.match(t)
-            and t not in _GENERIC_TOKENS]
-    pick = keep[-1] if keep else (toks[0] if toks else "?")
-    return pick[:1].upper() or "?"
+    """The chip glyph: the first letter of the FIRST word of the model's
+    display label (user ask 2026-09-03, verbatim: "base the model card icon
+    letter off the first word (ignoring the or and provider name that we are
+    dropping) not the last word"). claude-sonnet-5 → C · gpt-5.6-sol → G ·
+    gemini-3.5-flash → G · grok-4.6 → G · deepseek-v4 → D · kimi-k3 → K ·
+    llama-4-maverick → L · glm-5.2:free → G.
+
+    ⚠ THE LETTER IS A FAMILY GLYPH NOW, NOT A DISCRIMINATOR. The first cut
+    keyed off the last meaningful token, so sonnet/opus/haiku read S/O/H;
+    this rule reads every claude-* as C and gpt-*, grok-*, gemini-* and glm-*
+    all as G. The COLOR — the vendor hue, or the xAI black — is what tells
+    such cards apart; no tie-breaker is applied, by instruction."""
+    label = model_label(model_id).split(":", 1)[0]
+    toks = [t for t in re.split(r"[-_./ ]+", label.lower()) if t]
+    return (toks[0][:1].upper() if toks else "") or "?"
 
 
 #: canonical hue per vendor (degrees, OKLCH). Chosen to sit near the desk
@@ -614,9 +604,13 @@ def favorites() -> list[Favorite]:
                 "context": int(f.get("context") or 0),
                 "tools": bool(f.get("tools", True)),
                 "free": bool(f.get("free", False)),
-                "letter": str(f.get("letter") or letter_for(str(f["id"]))),
-                "color": str(f.get("color") or color_for(
-                    str(f["id"]), float(f.get("prompt") or 0.0))),
+                # letter and color are CANONICAL — a pure function of the id
+                # and the snapshot price — so they are recomputed on every
+                # read: a rule change (the first-word letter, 2026-09-03)
+                # reaches favorites added under the old rule without a
+                # migration. The record's own copies are for older readers.
+                "letter": letter_for(mid),
+                "color": color_for(mid, float(f.get("prompt") or 0.0)),
                 "seat": int(f.get("seat") or 1),
                 "added_at": str(f.get("added_at") or ""),
             })
