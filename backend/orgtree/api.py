@@ -145,10 +145,159 @@ class FrozenAdminBoundary:
         await send({"type": "http.response.body", "body": body})
 
 
+# ── the access record (D-239) ────────────────────────────────────────────────
+#
+# WHY THIS EXISTS. Until 2026-09-03 nothing in this system knew how long
+# anything took. The log carried uvicorn's stock line —
+# `INFO: 127.0.0.1:61975 - "GET /api/orgs/orgtree HTTP/1.1" 200 OK` — with no
+# duration, no response size and no timestamp. Two days of 11-38 second
+# requests sat in `backend.log` looking exactly like 12 ms ones: of 12,055
+# lines, ONE carried anything duration-shaped. The regression was found by
+# attaching py-spy to the live process, which is not a thing anyone should
+# have to do to answer "which endpoint is slow".
+#
+# ⚠ INSTRUMENT THE BOUNDARY, NOT THE SPAN YOU SUSPECT. There already WAS a
+# latency tripwire — `org_tree`'s "tree() took >1s" warning, written against a
+# redteam's O(n²) `Org.children` finding. It never fired, for three reasons
+# worth keeping: its timer stopped three lines short of `annotate`, which
+# owned 91% of the request; it guarded a hypothesis rather than a surface, and
+# the real cost arrived from a direction nobody had connected to it; and its
+# `_tree_slow_warned` set only ever grew, so even a hit would have said so once
+# and then gone quiet forever. A threshold that latches once per process tells
+# you nothing about a trend. Hence: every request, at the outermost boundary,
+# and a repeat window that RESETS.
+#
+# ⚠ THE ROUTE TEMPLATE, NEVER THE CONCRETE PATH, AND NEVER THE QUERY STRING.
+# Not only because `/api/orgs/{slug}/nodes/{nid}/chat` aggregates and
+# `/api/orgs/orgtree/nodes/perf-latency/chat?last=120` does not — but because
+# this middleware sits on `app`, and the BRIDGE listener wraps that same
+# object. Its uvicorn access log is deliberately suppressed in frozen mode
+# (see `bridge_log` in `main`) because THE ORG CREDENTIAL RIDES IN THE URL:
+# the frozen CLI cannot attach a private header. Logging concrete paths here
+# would have quietly re-opened exactly that hole from a different file. A
+# template carries no parameter values, so this is safe by construction on
+# every listener rather than by a policy check someone can forget.
+#
+# This ADDS a line rather than replacing uvicorn's. Suppressing uvicorn's
+# access log per listener is a security-reviewed decision in `main` (the
+# bridge case above) and not worth reopening for log volume.
+
+_ACCESS_INFLIGHT = 0          # HTTP requests currently inside the app
+_SLOW_MS = 500.0              # a handler this slow is worth a line of its own
+_SLOW_REPEAT_S = 60.0         # …and at most one such line per route per minute
+_slow_last: dict[str, float] = {}        # route -> when it last warned
+_slow_held: dict[str, int] = {}          # route -> slow requests since then
+
+
+class AccessRecord:
+    """One line per HTTP request: duration, bytes, route template, in-flight.
+
+    Pure ASGI for the reason `InstanceStamp` gives (BaseHTTPMiddleware re-wraps
+    the body, and this sits in front of multi-GB disk downloads); the only work
+    per body chunk is one integer add.
+
+    ⚠ TWO DURATIONS, AND THE THRESHOLD USES THE FIRST. `handler` is time to
+    `http.response.start` — the part this codebase can fix. `total` includes
+    shipping the body, which for a virtual-disk download is physics, not a
+    defect. Warning on `total` would fill the log with alarms about large
+    files working correctly, and that is how a threshold gets ignored.
+
+    ⚠ `inflight` IS NOT DECORATION — it is the field that would have caught
+    the 2026-09-03 outage's most confusing symptom. "Agent chats no longer
+    load" pointed at the chat handler, which measured 2.3-2.7 s throughout and
+    was blameless: HTTP/1.1 caps a browser at ~6 sockets per origin, the tree
+    poll had no in-flight guard, and the chat request was never SENT. No
+    per-request duration can show that. A depth of 5 on one route can.
+    """
+
+    def __init__(self, inner: ASGIApp) -> None:
+        self.inner = inner
+
+    async def __call__(self, scope: ASGIScope, receive: Receive,
+                       send: Send) -> None:
+        if scope["type"] != "http":
+            return await self.inner(scope, receive, send)
+        # Plain int, no lock: every ASGI callable runs in the one uvicorn event
+        # loop (`main` gathers its servers onto a single `asyncio.run`), and
+        # there is no `await` between the read and the write. The handlers
+        # themselves are `def` and run in the threadpool, but they are not
+        # here. A wrong count would cost a misleading log field, never
+        # correctness.
+        global _ACCESS_INFLIGHT
+        _ACCESS_INFLIGHT += 1
+        depth = _ACCESS_INFLIGHT
+        t0 = time.perf_counter()
+        handler_ms = -1.0
+        status = 0
+        nbytes = 0
+
+        async def _send(msg: Any) -> None:
+            nonlocal handler_ms, status, nbytes
+            if msg["type"] == "http.response.start":
+                handler_ms = (time.perf_counter() - t0) * 1000.0
+                status = int(msg.get("status") or 0)
+            elif msg["type"] == "http.response.body":
+                nbytes += len(msg.get("body") or b"")
+            await send(msg)
+
+        try:
+            await self.inner(scope, receive, _send)
+        finally:
+            # `finally`, so a handler that raises is still recorded — an
+            # endpoint that fails slowly is exactly as interesting as one that
+            # succeeds slowly, and it is the one uvicorn's line describes worst.
+            _ACCESS_INFLIGHT -= 1
+            total_ms = (time.perf_counter() - t0) * 1000.0
+            try:
+                _access_emit(scope, status, handler_ms, total_ms, nbytes, depth)
+            except Exception:                                   # noqa: BLE001
+                pass      # a log line may never be the reason a request fails
+
+
+def _route_label(scope: ASGIScope) -> str:
+    """The matched route's TEMPLATE. `<unmatched>` when nothing matched, which
+    is a real answer (404s and gateway rejections) and never a path."""
+    path = getattr(scope.get("route"), "path", None)
+    return str(path) if path else "<unmatched>"
+
+
+def _access_emit(scope: ASGIScope, status: int, handler_ms: float,
+                 total_ms: float, nbytes: int, depth: int) -> None:
+    route = _route_label(scope)
+    method = str(scope.get("method") or "?")
+    stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    print(f"[orgtree.access] {stamp} {method} {route} {status} "
+          f"handler={handler_ms:.0f}ms total={total_ms:.0f}ms "
+          f"bytes={nbytes} inflight={depth}", flush=True)
+    if handler_ms < _SLOW_MS:
+        return
+    # The alarm. Rate-limited per route by a TIME WINDOW rather than by a set
+    # of routes already seen — that distinction is the whole lesson of
+    # `_tree_slow_warned`, which could only ever fire once per process and so
+    # could not describe a problem getting worse. The window resets on its own
+    # and the held count carries what happened inside it, so a route that is
+    # slow every time reports "+N more" and a route that was slow once says so
+    # and goes quiet.
+    now = time.time()
+    last = _slow_last.get(route)
+    if last is not None and now - last < _SLOW_REPEAT_S:
+        _slow_held[route] = _slow_held.get(route, 0) + 1
+        return
+    held = _slow_held.pop(route, 0)
+    _slow_last[route] = now
+    print(f"[orgtree.slow] ⚠ {method} {route} took {handler_ms:.0f}ms "
+          f"(>{_SLOW_MS:.0f}ms), {nbytes} bytes, {depth} in flight"
+          + (f" — and {held} more like it in the last "
+             f"{_SLOW_REPEAT_S:.0f}s" if held else ""), flush=True)
+
+
 # on the APP, so all three listeners (admin, kiosk, bridge) inherit it — they
 # are gateways wrapped around this same object
 app.add_middleware(InstanceStamp)
 app.add_middleware(FrozenAdminBoundary)
+# LAST, therefore OUTERMOST: it must time the whole stack, including
+# `FrozenAdminBoundary`'s own rejections, or it is measuring a subset again.
+app.add_middleware(AccessRecord)
 
 
 @app.exception_handler(RequestValidationError)
