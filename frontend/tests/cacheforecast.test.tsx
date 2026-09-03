@@ -510,35 +510,72 @@ test('manual compaction warning uses forecast evidence, never generic idle age',
   assert.doesNotMatch(modal, /Date\.parse|60\s*\*\s*60e3|lastAt/)
 })
 
-test('CacheForecastMark renders nothing while a turn is running (busy)', async () => {
-  // While a turn is running, the next turn does not exist yet and its cache
-  // state will be dictated by the running turn's outcome. The UI shows no card.
-  const ready = forecast('compatible_observed', 'not_applicable', {
-    source: 'authoritative_receipt', lane: 'subscription',
-    readiness: 'ready', readiness_cause: 'receipt_valid',
-    ttl_seconds: 3600, expires_at: new Date(Date.now() + 1800_000).toISOString(),
-  })
-  const cold = forecast('known_incompatible', 'not_applicable', {
-    source: 'fingerprint_and_receipt_mismatch', lane: 'subscription',
-    readiness: 'not_ready', readiness_cause: 'prefix_changed',
-  })
-  const diag = forecast('uncertain', 'not_applicable', {
-    source: 'capability_unsupported', lane: 'provider_unsupported',
-    readiness: 'diagnostic', readiness_cause: 'unsupported_capability',
-  })
-
-  for (const [label, f] of [['ready', ready], ['not_ready', cold], ['diagnostic', diag]] as const) {
-    const idleView = await mountView(<CacheForecastMark forecast={f} />, (v) => v)
+test('mid-turn, the badge keeps only the claims the running turn cannot change', async () => {
+  // User ruling 2026-09-03. Hiding the whole card while a turn runs threw
+  // away the one claim that is settled mid-turn: a changed prefix is a
+  // comparison the running turn's outcome cannot undo, and it is what tells
+  // the user to let a queued message steer NOW rather than pay a cold open
+  // after the turn ends. A diagnostic is a fact about the lane or the data,
+  // not about any turn. Everything else compares against an entry the
+  // running turn is about to replace or refresh, so it renders nothing — not
+  // a placeholder in the slot.
+  const at = (ms: number) => new Date(Date.now() + ms).toISOString()
+  const rows: Array<[string, CacheForecast, boolean]> = [
+    ['ready + countdown', forecast('compatible_observed', 'not_applicable', {
+      source: 'authoritative_receipt', readiness: 'ready',
+      readiness_cause: 'receipt_valid', expires_at: at(1800_000) }), false],
+    ['not_ready/prefix_changed', forecast('known_incompatible', 'miss_expected', {
+      source: 'fingerprint_and_receipt_mismatch', readiness: 'not_ready',
+      readiness_cause: 'prefix_changed' }), true],
+    ['not_ready/receipt_expired', forecast('expired_known_entry', 'miss_expected', {
+      source: 'authoritative_receipt', readiness: 'not_ready',
+      readiness_cause: 'receipt_expired', expires_at: at(-60_000) }), false],
+    ['not_ready/no_positive_receipt', forecast('uncertain', 'not_applicable', {
+      source: 'no_positive_receipt', readiness: 'not_ready',
+      readiness_cause: 'no_positive_receipt', last_receipt_at: null,
+      ttl_seconds: null, expires_at: null }), false],
+    ['diagnostic/unsupported_capability', forecast('uncertain', 'not_applicable', {
+      source: 'capability_unsupported', lane: 'provider_unsupported',
+      readiness: 'diagnostic', readiness_cause: 'unsupported_capability' }), true],
+    ['diagnostic/clock_anomaly', forecast('uncertain', 'not_applicable', {
+      source: 'clock_skew', readiness: 'diagnostic',
+      readiness_cause: 'clock_anomaly' }), true],
+  ]
+  for (const [label, f, shown] of rows) {
+    const idle = await mountView(<CacheForecastMark forecast={f} />, (v) => v)
     try {
-      const mark = idleView.el.querySelector('.cache-forecast')
-      assert.ok(mark, `${label} idle rendered no mark`)
-    } finally { await idleView.unmount() }
-
-    const busyView = await mountView(<CacheForecastMark forecast={f} busy={true} />, (v) => v)
+      assert.ok(idle.el.querySelector('.cache-forecast'),
+        `${label}: idle rendered no mark`)
+    } finally { await idle.unmount() }
+    const busy = await mountView(<CacheForecastMark forecast={f} busy />, (v) => v)
     try {
-      const mark = busyView.el.querySelector('.cache-forecast')
-      assert.equal(mark, null, `${label} mid-turn rendered a mark`)
-    } finally { await busyView.unmount() }
+      const mark = busy.el.querySelector<HTMLElement>('.cache-forecast')
+      if (!shown) {
+        assert.equal(mark, null, `${label}: mid-turn rendered a mark`)
+      } else {
+        assert.ok(mark, `${label}: mid-turn dropped a settled claim`)
+        const title = mark.getAttribute('title') ?? ''
+        assert.match(title, /a turn is running/,
+          `${label}: the mid-turn tooltip does not say a turn is running`)
+        // A send mid-turn steers; the "pre-turn compaction" policy line
+        // describes a send that STARTS a turn and is vacuous here.
+        assert.doesNotMatch(title, /pre-turn compaction/,
+          `${label}: vacuous send-policy line rendered mid-turn`)
+      }
+    } finally { await busy.unmount() }
   }
+  // The red mark mid-turn is the same red mark — same class, same glyph — and
+  // it still names every changed component: that list is the actionable part.
+  const cold = rows[1][1]
+  const coldView = await mountView(<CacheForecastMark forecast={cold} busy />, (v) => v)
+  try {
+    const mark = coldView.el.querySelector<HTMLElement>('.cache-forecast.cold')
+    assert.ok(mark, 'mid-turn prefix_changed lost its red class')
+    assert.equal(mark.textContent?.trim(), 'cache ×')
+    for (const item of cold.changed_inputs ?? []) {
+      assert.match(mark.getAttribute('aria-label') ?? '', new RegExp(item),
+        `mid-turn tooltip dropped changed component ${item}`)
+    }
+  } finally { await coldView.unmount() }
 })
 

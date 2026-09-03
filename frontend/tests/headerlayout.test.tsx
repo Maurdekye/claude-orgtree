@@ -14,7 +14,15 @@ const noop = () => {}
 const op = () => Promise.resolve({} as OpResult)
 
 test('desk header has bounded controls and a separate wrapping metadata row', async (t) => {
-  installFetch(new FakeServer())
+  const server = new FakeServer()
+  // The mid-turn banner this test ends on is gated on MEASURED context
+  // (8126a2b), and the desk reads the chat payload's occupancy ahead of the
+  // node's. The fake server's 1,000-token default therefore overrode the
+  // 85%-full fixture below and held the gate shut — this test was red from
+  // that commit on, not from any change to the banner. The server has to
+  // agree with the node.
+  server.occupancy = 85000
+  installFetch(server)
   const id = 'an-agent-name-long-enough-to-wrap-at-high-zoom'
   const n: CanvasNode = {
     id, state: 'live', tier: 'haiku', model_id: 'haiku', children: [], parent: 'superior',

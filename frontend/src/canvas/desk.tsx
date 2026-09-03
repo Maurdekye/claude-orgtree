@@ -403,7 +403,7 @@ const readinessOf = (forecast: CacheForecast): Readiness =>
 const readinessCause = (forecast: CacheForecast): string =>
   readinessVerdict(forecast).cause
 
-const cacheForecastTitle = (forecast: CacheForecast): string => {
+const cacheForecastTitle = (forecast: CacheForecast, midTurn = false): string => {
   const ttl = typeof forecast.ttl_seconds === 'number'
     ? forecast.ttl_seconds === 3600 ? '60 minutes (subscription authentication)'
       : forecast.ttl_seconds === 1800 ? '30 minutes (Codex subscription estimate)'
@@ -422,6 +422,10 @@ const cacheForecastTitle = (forecast: CacheForecast): string => {
     ? `changed components:\n${forecast.changed_inputs.map((v) => `• ${v}`).join('\n')}`
     : 'changed components: none reported'
   return [
+    // Mid-turn the badge survives only for a claim the running turn cannot
+    // change (see CacheForecastMark); say so, so the reader knows why this
+    // one is still here while the countdown and the rest are not.
+    midTurn ? 'a turn is running — this is shown because its outcome cannot change it' : '',
     `next-turn cache compatibility: ${compatibility}`,
     // D-226: a grey badge must ALWAYS be able to say why it is grey, and the
     // cause is machine-readable so a screenshot is still triage-able.
@@ -435,9 +439,51 @@ const cacheForecastTitle = (forecast: CacheForecast): string => {
     `last authoritative inference receipt: ${forecast.last_receipt_at || 'none'}`,
     `derived expiry: ${ttl}`,
     `expires at: ${forecast.expires_at || 'not authoritatively known'}`,
-    forecast.precompact_reason
+    // The policy line describes a send that STARTS a turn. Mid-turn a send
+    // steers into the turn already running, so the line is vacuous there and
+    // is dropped rather than left to imply a cost that cannot occur.
+    forecast.precompact_reason && !midTurn
       ? `pre-turn compaction: ${forecast.precompact_reason}` : '',
   ].filter(Boolean).join('\n')
+}
+
+/** The claims that survive on the badge while a turn is running.
+ *
+ * User ruling 2026-09-03, refining the earlier "hide the card while a turn
+ * runs": a flag is a claim about something assumed to exist, and mid-turn the
+ * question is which claims the running turn can still change.
+ *
+ *   · `not_ready` / `prefix_changed` CANNOT be changed by it. The claim
+ *     compares the prefix that would be sent now against the one already
+ *     sent; whatever entry the running turn leaves behind belongs to the old
+ *     prefix, so the turn after it is cold regardless. That is settled the
+ *     moment it happens and it is the one thing a user wants mid-turn: it
+ *     says "let a queued message steer into this turn now, or pay a cold
+ *     open after it ends".
+ *   · a `diagnostic` is a fact about the lane, the data or the classifier
+ *     (no published statistic, an unreadable stamp, a clock disagreeing with
+ *     itself, an unclassified row), not about any turn, so it does not blink
+ *     off and on around one.
+ *   · everything else DEPENDS on how the running turn ends. `ready` and its
+ *     countdown compare against the previous receipt, whose entry the running
+ *     turn's own calls are refreshing — the countdown would reach zero and go
+ *     red on an entry that is not dead. `receipt_expired`,
+ *     `no_positive_receipt` and the unobserved causes describe the launch of
+ *     the turn in flight, and its receipt is what settles them. Each is a
+ *     claim the backend cannot yet know to be true, so it renders nothing —
+ *     not a placeholder in the slot.
+ *
+ * ⚠ KNOWN LIMIT, NOT A LICENCE TO HIDE THE FACT. The backend's poll-time
+ * preview compares against the last COMPLETED turn, not the request in
+ * flight, so a turn that was itself the cold one stays red for its own
+ * duration even though nothing changed since it was sent. The fix is on the
+ * backend (persist the in-flight request's prefix and compare against that);
+ * until it lands the mid-turn red is right whenever the running turn launched
+ * warm, and one turn late otherwise. */
+const midTurnRenderable = (forecast: CacheForecast): boolean => {
+  const { readiness, cause } = readinessVerdict(forecast)
+  return readiness === 'diagnostic'
+    || (readiness === 'not_ready' && cause === 'prefix_changed')
 }
 
 /** Epoch ms of an authoritative expiry, or null when there is not one.
@@ -527,17 +573,20 @@ function useCountdown(expiresAt: number | null): number | null {
  * the card stops being green on its own, without waiting for the backend to
  * re-forecast: the entry it was counting down to has expired, and continuing
  * to show green until the next poll would be the one lie this badge exists to
- * prevent. */
+ * prevent.
+ *
+ * While a turn is running (`busy`) only the claims in `midTurnRenderable`
+ * survive; the rest render nothing, and the countdown does not even subscribe
+ * to the clock, because it is never shown mid-turn. */
 export function CacheForecastMark({ forecast, busy }: {
   forecast?: CacheForecast | null
   busy?: boolean
 }) {
-  const expiresAt = forecast ? cacheExpiryAt(forecast) : null
+  const expiresAt = forecast && !busy ? cacheExpiryAt(forecast) : null
   const left = useCountdown(expiresAt)
-  // When a turn is running (`busy`), readiness is moot: the running turn has
-  // not completed, will produce a new fingerprint and receipt upon finishing,
-  // and no next turn can launch until this one finishes. The UI renders nothing.
-  if (!forecast || busy) return null
+  // Hooks run before every early return on purpose — a null forecast must not
+  // change the hook order.
+  if (!forecast) return null
   const readiness = readinessOf(forecast)
   if (readiness === 'none'
       || forecast.readiness_cause === 'no_completed_fingerprint'
@@ -546,8 +595,7 @@ export function CacheForecastMark({ forecast, busy }: {
       || forecast.source === 'no_completed_turn') {
     return null
   }
-  // Hooks run before this branch on purpose — a null forecast must not change
-  // the hook order.
+  if (busy && !midTurnRenderable(forecast)) return null
   const live = left !== null && left > 0
   // ⚠ AN ELAPSED COUNTDOWN IS `expired_known_entry`, AND RENDERS AS ONE.
   // The backend already has a name and a colour for "a known entry passed the
@@ -569,7 +617,7 @@ export function CacheForecastMark({ forecast, busy }: {
     : expired
       ? `${cacheForecastTitle(forecast)}\nthe observed cache entry has passed `
         + 'its derived expiry'
-      : cacheForecastTitle(forecast)
+      : cacheForecastTitle(forecast, Boolean(busy))
   return <span className={`cache-forecast ${cls}`} title={title} aria-label={title}>
     <span aria-hidden="true">cache {body}</span>
   </span>
