@@ -173,6 +173,48 @@ check("GET .../documents · no extra 100-row gallery cap hiding evicted "
       "log lines", no_extra_gallery_cap_hides_evicted)
 
 
+def rows_carry_the_presenting_agents_tier() -> None:
+    """The row's model chip (user request 2026-09-03: "for each agent entry,
+    show its model icon card"). It has to be served, not looked up client
+    side: the gallery's whole point is listing cards from agents the tree
+    walk does not carry."""
+    org, slug = fresh_org()
+    org.hire(USER, None, "opus", 5, "thinker")
+    org.present_document("thinker", "a deep plan", "body")
+    org.present_document("boss", "a quick note", "body")
+    store.save_org(org)
+    rows = client.get(f"/api/orgs/{slug}/documents").json()["documents"]
+    by_title = {r["title"]: r for r in rows}
+    assert by_title["a deep plan"]["tier"] == "opus", by_title["a deep plan"]
+    assert by_title["a quick note"]["tier"] == "haiku", by_title["a quick note"]
+
+    # …and it SURVIVES the presenter's retirement, which is exactly when the
+    # gallery is the only way to find the card
+    org2 = store.load_org(slug)
+    org2.retire(USER, "thinker")
+    store.save_org(org2)
+    rows2 = client.get(f"/api/orgs/{slug}/documents").json()["documents"]
+    retired = next(r for r in rows2 if r["title"] == "a deep plan")
+    assert retired["node_state"] == "archived"
+    assert retired["tier"] == "opus", (
+        "a retired agent's row still names its model — the chip must not "
+        "blank out the moment the agent stops running")
+
+    # …but a permanently deleted node has no tier to give, and the row says
+    # so with None rather than inventing one
+    org3 = store.load_org(slug)
+    org3.delete(USER, "thinker")
+    store.save_org(org3)
+    rows3 = client.get(f"/api/orgs/{slug}/documents").json()["documents"]
+    gone = next(r for r in rows3 if r["title"] == "a deep plan")
+    assert gone["node_state"] == "deleted"
+    assert gone["tier"] is None, gone
+
+
+check("GET .../documents · every row names its presenting agent's model, and "
+      "keeps naming it after retirement", rows_carry_the_presenting_agents_tier)
+
+
 print(f"\n{PASSED} passed, {len(FAILED)} failed")
 for f in FAILED:
     print(f"\nFAIL  {f}")

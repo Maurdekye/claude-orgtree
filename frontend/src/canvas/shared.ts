@@ -1442,6 +1442,45 @@ export const attentionPip = (t: {
     : null
 }
 
+/** the gallery button's corner count (user request 2026-09-03): documents
+ *  presented by agents that are CURRENTLY HIRED — the same set the gallery
+ *  lists with "show retired agents" unticked, and the same badge idiom as
+ *  the unread-mail count beside it.
+ *
+ *  Counted off the TREE, not a second poll: the tree payload already carries
+ *  each node's own `documents` metadata, and a LIVE node is never one of the
+ *  ones `org_children` hides — that hiding only ever affects an archived
+ *  node with a successor, which by definition is not currently hired. So the
+ *  walk is authoritative for exactly this question, and the button costs
+ *  nothing that was not already being fetched.
+ *
+ *  WHAT IT DOES NOT COUNT, both deliberate:
+ *  · dismissed cards — the server drops those from `documents` outright, so
+ *    they are gone here for free. The user removed them; counting them would
+ *    make the badge un-clearable.
+ *  · EVICTED cards — the gallery still LISTS those (a tombstone: the title
+ *    survives, the body does not), so the badge can read one lower than the
+ *    rows on screen. That is the intended reading: this badge counts
+ *    documents there is something to go and read, the way the mail count
+ *    counts mail you can open. A tombstone is a record, not an errand. */
+export interface DocCountNode {
+  state?: string | null
+  documents?: { id: string }[] | null
+  children?: DocCountNode[] | null
+}
+
+export const activeDocCount = (roots: DocCountNode[] | null | undefined): number => {
+  let n = 0
+  const walk = (list: DocCountNode[] | null | undefined): void => {
+    for (const node of list ?? []) {
+      if (node.state === 'live') n += (node.documents ?? []).length
+      walk(node.children)
+    }
+  }
+  walk(roots)
+  return n
+}
+
 // chat markdown: gfm + hard line breaks, sanitized (agents echo web content).
 // №21: cached by text identity — every streamed token used to re-parse the
 // ENTIRE visible transcript (~8 Hz × every message × every open panel)

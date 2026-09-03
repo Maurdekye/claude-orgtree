@@ -239,6 +239,10 @@ export const getDocument = (slug: string, did: string):
 export interface DocRow {
   id: string; node: string; title: string; at: string
   evicted: boolean; node_state: 'live' | 'archived' | 'unrecoverable' | 'deleted'
+  /** the presenting agent's model, for the row's tier chip. Served from the
+   *  ledger rather than looked up client-side: the gallery lists cards from
+   *  agents the tree walk does not carry. Null once the node is gone. */
+  tier?: string | null
 }
 export const getDocuments = (slug: string): Promise<{ documents: DocRow[] }> =>
   req(`/api/orgs/${slug}/documents`)

@@ -6893,6 +6893,21 @@ class Org:
             st = n.get("state")
             return str(st) if st else "deleted"
 
+        def _tier(nid: str) -> str | None:
+            """the presenting agent's model, for the row's tier chip (user
+            request 2026-09-03: "for each agent entry, show its model icon
+            card"). Read from `nodes` for the same reason `node_state` is —
+            the gallery lists cards from agents the tree walk does not carry
+            (a rehired predecessor, a deleted node), so the client cannot
+            look this up. None where there is no node left to ask.
+
+            ⚠ the node's own key is `model`; `tier` is what the tree payload
+            renames it to on the way out (see the node build below), and the
+            frontend reads `tier` everywhere. Same rename here, so one chip
+            component serves both payloads."""
+            n = self.nodes.get(nid)
+            return str(n["model"]) if n and n.get("model") else None
+
         for i, x in enumerate(docs):
             did = str(x.get("id") or "")
             if not did or did in seen:
@@ -6902,7 +6917,7 @@ class Org:
             rows.append({
                 "id": did, "node": nid, "title": x.get("title") or "",
                 "at": x.get("at") or "", "evicted": False,
-                "node_state": _state(nid), "_seq": i,
+                "node_state": _state(nid), "tier": _tier(nid), "_seq": i,
             })
         for i, e in enumerate(self.d.get("events") or []):
             if e.get("op") != "present_evicted":
@@ -6917,7 +6932,7 @@ class Org:
                 "id": did, "node": nid,
                 "title": str(detail.get("title") or ""),
                 "at": e.get("at") or "", "evicted": True,
-                "node_state": _state(nid), "_seq": i,
+                "node_state": _state(nid), "tier": _tier(nid), "_seq": i,
             })
         # both source lists are append-only (oldest→newest); `at` is ms ISO
         # so two presents in the same loop tick still need `_seq` as the

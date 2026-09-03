@@ -20,6 +20,8 @@ import test from 'node:test'
 import type { TestContext } from 'node:test'
 import assert from 'node:assert/strict'
 import { DocGalleryModal } from '../src/canvas/gallery'
+import { activeDocCount } from '../src/canvas/shared'
+import type { DocCountNode } from '../src/canvas/shared'
 import type { DocRow } from '../src/api'
 
 interface Call { method: string; url: string }
@@ -76,9 +78,8 @@ function uiTest(name: string, body: (mount: (v: React.ReactElement)
 const noop = () => {}
 const rows = (el: HTMLElement) => [...el.querySelectorAll('.mailrow')]
 const pane = (el: HTMLElement) => el.querySelector('.mailer-read')
-const folder = (el: HTMLElement, label: string) =>
-  [...el.querySelectorAll('.mail-folders button')]
-    .find((b) => (b.textContent ?? '').includes(label)) as HTMLElement | undefined
+const showRetired = (el: HTMLElement) =>
+  el.querySelector('.gallery-showretired input') as HTMLInputElement
 
 const gallery = (extra?: Partial<{ close: () => void }>) => (
   <DocGalleryModal slug="org1" toast={noop} close={extra?.close ?? noop} />
@@ -121,22 +122,74 @@ uiTest('§3 THE DEFAULT IS CURRENTLY-HIRED ONLY — a retired agent\'s card is n
   assert.match(el.textContent ?? '', /2 from retired ones/)
 })
 
-uiTest('§4 …and the toggle reveals exactly those cards', async (mount) => {
+uiTest('§4 the checkbox adds retired cards to the SAME list, sorted below the '
+  + 'active ones — one list, not a second view', async (mount) => {
+  // the retired card is NEWER, so a plain newest-first sort would put it on
+  // top: this fixture only passes if the grouping actually happens
   mockDocs([
-    row({ id: 'dlive', title: 'from a live agent' }),
-    row({ id: 'dret', title: 'from a retired agent', node: 'oldie', node_state: 'archived' }),
+    row({ id: 'dret', title: 'from a retired agent', node: 'oldie',
+      node_state: 'archived', at: '2026-09-03T09:00:00.000Z' }),
+    row({ id: 'dlive', title: 'from a live agent',
+      at: '2026-09-03T08:00:00.000Z' }),
   ])
   const { el } = await mount(gallery())
   await flush()
   assert.equal(rows(el).length, 1, 'default shows only the live agent\'s card')
-  await inAct(() => folder(el, 'all agents')!.click())
+  await inAct(() => showRetired(el).click())
   await flush()
-  assert.equal(rows(el).length, 2, 'the toggle brings the retired agent\'s card back')
-  assert.match(el.textContent ?? '', /retired/, 'and it is badged as retired')
-  // the way back, so the toggle is not a one-way door
-  await inAct(() => folder(el, 'currently hired')!.click())
+  const shown = rows(el)
+  assert.equal(shown.length, 2, 'the checkbox brings the retired card into the list')
+  assert.match(shown[0]!.textContent ?? '', /from a live agent/,
+    'the ACTIVE agent\'s card sorts first even though it is older')
+  assert.match(shown[1]!.textContent ?? '', /from a retired agent/,
+    'and the retired one sits below it')
+  // the way back, so the checkbox is not a one-way door
+  await inAct(() => showRetired(el).click())
   await flush()
   assert.equal(rows(el).length, 1)
+})
+
+uiTest('§4b active and retired rows are told apart by CLASS, not by a badge '
+  + '(the user asked for the "retired" card to go)', async (mount) => {
+  // ⚠ neither title nor agent id may contain "retired", or the
+  // doesNotMatch below would pass/fail on the fixture's own words
+  mockDocs([
+    row({ id: 'dlive', title: 'a current plan' }),
+    row({ id: 'dret', title: 'an older plan', node: 'oldie',
+      node_state: 'archived' }),
+  ])
+  const { el } = await mount(gallery())
+  await flush()
+  await inAct(() => showRetired(el).click())
+  await flush()
+  const [live, past] = rows(el)
+  assert.ok(live!.classList.contains('active'),
+    'an active agent\'s row carries the unread-mail accent class')
+  assert.ok(past!.classList.contains('past'), 'a retired one is marked secondary')
+  assert.equal(past!.querySelector('.badge'), null,
+    'NO "retired" badge in the row — greying is the whole signal')
+  assert.doesNotMatch(past!.textContent ?? '', /retired/i,
+    'and the word does not appear in the row either')
+  // …but it stays reachable on hover, so grey is never the only explanation
+  assert.match(past!.getAttribute('title') ?? '', /retired/)
+})
+
+uiTest('§4c each entry shows its agent\'s model chip', async (mount) => {
+  mockDocs([
+    row({ id: 'dlive', title: 'live one', tier: 'opus' }),
+    row({ id: 'dgone', title: 'no node left', node: 'ghost',
+      node_state: 'deleted', tier: null }),
+  ])
+  const { el } = await mount(gallery())
+  await flush()
+  await inAct(() => showRetired(el).click())
+  await flush()
+  const chip = rows(el)[0]!.querySelector('.tier')
+  assert.ok(chip, 'the row carries the model chip')
+  assert.ok(chip.classList.contains('t-opus'), 'coloured by tier, like everywhere else')
+  assert.equal(chip.textContent, 'O', 'and wearing the shared tier letter')
+  assert.equal(rows(el)[1]!.querySelector('.tier'), null,
+    'a deleted node has no tier to show — no empty chip')
 })
 
 uiTest('§5 the viewer is a PANE, not a takeover: selecting a row renders the body '
@@ -201,4 +254,35 @@ uiTest('§8 CONTROL: the same fixture with the presenter still hired DOES list �
   await flush()
   assert.equal(rows(el).length, 1,
     'flipping only node_state to live makes the row appear — §3 saw the filter')
+})
+
+// ── the toolbar button's corner count ────────────────────────────────────
+// Counted off the TREE rather than the gallery's own fetch, so the button
+// costs no extra poll. That makes its agreement with the list a real claim
+// worth pinning: two sources, one number.
+
+test('§9 the badge counts documents from CURRENTLY HIRED agents only', () => {
+  const node = (o: Partial<DocCountNode> & { state: string }): DocCountNode => ({
+    documents: null, children: [], ...o,
+  })
+  assert.equal(activeDocCount(null), 0, 'no tree yet reads zero, not NaN')
+  assert.equal(activeDocCount([]), 0)
+  assert.equal(activeDocCount([
+    node({ state: 'live', documents: [{ id: 'a' }, { id: 'b' }] }),
+  ]), 2)
+  // …a retired agent's cards are NOT in the badge, matching the default list
+  assert.equal(activeDocCount([
+    node({ state: 'archived', documents: [{ id: 'a' }, { id: 'b' }] }),
+  ]), 0, 'a retired agent contributes nothing — the badge matches the list')
+  assert.equal(activeDocCount([
+    node({ state: 'unrecoverable', documents: [{ id: 'a' }] }),
+  ]), 0)
+  // …and it counts the WHOLE tree, not just the roots
+  assert.equal(activeDocCount([
+    node({ state: 'live', documents: [{ id: 'a' }],
+      children: [
+        node({ state: 'live', documents: [{ id: 'b' }, { id: 'c' }] }),
+        node({ state: 'archived', documents: [{ id: 'd' }] }),
+      ] }),
+  ]), 3, 'a deep live report is counted; a deep retired one is not')
 })

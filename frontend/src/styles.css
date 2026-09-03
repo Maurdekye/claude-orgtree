@@ -1603,8 +1603,13 @@ button.cc-name:hover {
 .cbar-ibar.down { border-color: #e58c3c; }
 .n-down { color: #e58c3c; }
 /* the header ask icon: the ONE bell — glows only while an ask is un-nulled */
-.ask-bell { position: relative; }
-.ask-bell .eye-count { position: absolute; top: -4px; right: -6px; }
+/* …and the gallery button beside it carries its count the same way (user
+   request 2026-09-03: "a number in the corner of the button ... similar to
+   unread mail"). One rule for both, so the pair cannot drift apart. */
+.ask-bell, .doc-bell { position: relative; }
+.ask-bell .eye-count, .doc-bell .eye-count {
+  position: absolute; top: -4px; right: -6px;
+}
 .ask-bell.glow {
   color: var(--accent);
   border-color: color-mix(in srgb, var(--accent) 70%, var(--line));
@@ -2489,7 +2494,35 @@ main.solo { width: 100%; }
   font-family: var(--sans); color: var(--ink-strong); font-weight: 600;
 }
 .gallery-modal .mailer-head b { font-family: var(--sans); font-size: 13px; }
-.doc-gallery-row.evicted .l1 .mfrom { color: var(--dim); font-weight: 400; }
+
+/* ACTIVE agents' rows wear UNREAD MAIL'S OWN TREATMENT (user: "color-code the
+   active agent cards with an orange flare similar to how unread mails are
+   color coded"). These are the same two declarations `.mailrow.unread` above
+   applies — accent headline, brightened detail line — restated only because
+   the gallery's `.mfrom` override sits later in the file and would otherwise
+   win on order. If unread's colour changes, change these with it. */
+.gallery-modal .mailrow.active .l1 .mfrom { color: var(--accent); font-weight: 700; }
+.gallery-modal .mailrow.active .l2 { color: var(--ink); }
+
+/* …and a RETIRED agent's row is only SLIGHTLY secondary (user: "just grey
+   them out slightly to visually distinguish them"). Deliberately not
+   `opacity` and not the disabled grey: the row stays fully readable and
+   fully clickable — it is old, not unavailable. The two states differ by one
+   step of emphasis on the same axis rather than by two visual languages. */
+.gallery-modal .mailrow.past .l1 .mfrom { color: var(--ink); font-weight: 500; }
+.gallery-modal .mailrow.past .l2 { color: var(--dim); }
+.gallery-modal .mailrow.past .tier { opacity: .75; }
+
+/* the checkbox that reveals them — a settings-style line, not a folder tab */
+.gallery-showretired { font-size: 12.5px; color: var(--dim); cursor: pointer; }
+.gallery-showretired input { cursor: pointer; }
+
+/* an EVICTED card never flares, whoever presented it: there is no document
+   to go and read, so it must not compete with the rows that have one. Placed
+   after — and matched to — the .active rule so it wins on order, not by
+   accident of specificity. */
+.gallery-modal .mailrow.evicted .l1 .mfrom { color: var(--dim); font-weight: 400; }
+.gallery-modal .mailrow.evicted .l2 { color: var(--dim); }
 .doc-gallery-row .l2 {
   display: flex; align-items: center; gap: 6px; font-family: var(--mono);
 }

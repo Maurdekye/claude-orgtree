@@ -26,18 +26,37 @@ import { fileBase, getDocuments } from '../api'
 import type { ToastFn } from '../types'
 import { DocIcon } from '../icons'
 import { dismissDoc, useDoc } from './docs'
-import { ago, md, useEsc, usePolled } from './shared'
+import { ago, md, TIER_LETTER, tierLabel, useEsc, usePolled } from './shared'
 
-const STATE_BADGE: Record<DocRow['node_state'], string | null> = {
-  live: null, archived: 'retired', unrecoverable: 'unrecoverable',
-  deleted: 'deleted agent',
+/** the presenting agent's model, as the letter chip every other surface uses
+ *  for a tier (user request 2026-09-03: "for each agent entry, show its model
+ *  icon card"). Same markup and same `t-<tier>` colour class as the mail
+ *  sender chip and the node card, so a model reads the same everywhere.
+ *  Nothing renders once the node is gone and the ledger has no tier to give. */
+function TierChip({ tier }: { tier?: string | null }) {
+  if (!tier) return null
+  return (
+    <span className={'tier t-' + tier} title={tierLabel(tier)}>
+      {TIER_LETTER[tier] ?? tier.slice(0, 1).toUpperCase()}
+    </span>
+  )
+}
+
+/** why a row is secondary, for the tooltip. NOT a badge any more (user,
+ *  2026-09-03: "dont put a big 'retired' card in their row; just grey them
+ *  out slightly") — the state is carried by the row's own dimming, and the
+ *  words stay available on hover for the case where grey is ambiguous. */
+const STATE_WHY: Record<DocRow['node_state'], string | null> = {
+  live: null,
+  archived: 'this agent has been retired',
+  unrecoverable: 'this agent is unrecoverable',
+  deleted: 'this agent has been deleted',
 }
 
 /** the user's rule (2026-09-03): the default list is cards from agents that
  *  are CURRENTLY HIRED. Asked directly whether that should hide the rest —
  *  every card in the live org today is from a retired agent, so the strict
- *  filter opens empty — they chose "default hired + 'show retired'": strict
- *  by default, one control to reveal the archive. */
+ *  filter opens empty — they chose "default hired + 'show retired'". */
 const isHired = (r: DocRow) => r.node_state === 'live'
 
 export function DocGalleryModal({ slug, toast, close }: {
@@ -49,11 +68,20 @@ export function DocGalleryModal({ slug, toast, close }: {
   const data = usePolled(() => getDocuments(slug), [slug])
   const all = data?.documents
   const [showRetired, setShowRetired] = useState(false)
-  // dismissed cards never arrive here — the server drops them from
+  // ONE list, grouped — not two views (user, 2026-09-03: "one tab with a
+  // checkbox to show retired agents, which appear in the same list, sorted
+  // below the active agents"). The server already returns newest-first, and
+  // a stable partition keeps that order WITHIN each group while lifting the
+  // hired ones above the retired: two filters, not a comparator, because a
+  // sort would have to re-establish the recency order the server just set.
+  //
+  // Dismissed cards never arrive here at all — the server drops them from
   // `documents`, and the DELETE bumps the livebus so `usePolled` above
-  // refetches without this panel wiring a refresh of its own
-  const rows = all && (showRetired ? all : all.filter(isHired))
-  const retiredCt = (all ?? []).length - (all ?? []).filter(isHired).length
+  // refetches without this panel wiring a refresh of its own.
+  const hired = (all ?? []).filter(isHired)
+  const retired = (all ?? []).filter((r) => !isHired(r))
+  const rows = all && (showRetired ? [...hired, ...retired] : hired)
+  const retiredCt = retired.length
   // selection is BY ID, not index — the list repolls, and the filter above
   // narrows it, so an index would silently address a different document
   const [selId, setSelId] = useState<string | null>(null)
@@ -63,29 +91,26 @@ export function DocGalleryModal({ slug, toast, close }: {
       onPointerDown={(e) => e.stopPropagation()}>
       <div className="settings wide gallery-modal" onClick={(e) => e.stopPropagation()}>
         <h3><DocIcon fontSize="inherit" /> presented documents</h3>
-        {/* mail's own folder switcher, in mail's place above the pane: the
-            strict list the user asked for, and the way back to the archive
-            they would otherwise not know was there */}
-        <div className="mail-folders">
-          <button className={showRetired ? '' : 'on'}
-            onClick={() => setShowRetired(false)}>currently hired</button>
-          <button className={showRetired ? 'on' : ''}
-            title="cards presented by agents that have since been retired or deleted"
-            onClick={() => setShowRetired(true)}>
-            all agents{retiredCt > 0 && <span className="dim"> {retiredCt}</span>}
-          </button>
-        </div>
+        {/* one control, not two views: the retired cards JOIN the list below
+            the active ones rather than replacing them. The count rides the
+            label so the archive is discoverable even while it is hidden —
+            which is doing real work here, because the default list is empty
+            whenever no currently-hired agent has presented anything. */}
+        <label className="checkline gallery-showretired">
+          <input type="checkbox" checked={showRetired}
+            onChange={(e) => setShowRetired(e.target.checked)} />
+          show retired agents
+          {retiredCt > 0 && <span className="dim"> · {retiredCt}</span>}
+        </label>
         <div className="mailpane">
           {all == null
             ? <div className="dim pad">loading…</div>
             : rows!.length === 0
               ? <div className="dim pad">
-                  {showRetired
-                    ? 'no cards have been presented yet'
-                    : retiredCt > 0
-                      ? `no cards from currently-hired agents — ${retiredCt} from `
-                        + 'retired ones, under “all agents”'
-                      : 'no cards have been presented yet'}
+                  {!showRetired && retiredCt > 0
+                    ? `no cards from currently-hired agents — ${retiredCt} from `
+                      + 'retired ones, behind the checkbox above'
+                    : 'no cards have been presented yet'}
                 </div>
               : (
                 <div className="mailer">
@@ -93,22 +118,29 @@ export function DocGalleryModal({ slug, toast, close }: {
                     {rows!.map((r) => (
                       <div key={r.id}
                         className={'mailrow doc-gallery-row'
+                          // the accent treatment unread mail wears (user:
+                          // "color-code the active agent cards with an orange
+                          // flare similar to how unread mails are color
+                          // coded") vs the slight grey for a retired one
+                          + (isHired(r) ? ' active' : ' past')
                           + (r.id === selId ? ' on' : '')
                           + (r.evicted ? ' evicted' : '')}
-                        title={r.evicted
-                          ? 'content evicted — later presentations pushed this '
-                            + 'card off the list'
-                          : `read “${r.title}”`}
+                        title={[
+                          r.evicted
+                            ? 'content evicted — later presentations pushed '
+                              + 'this card off the list'
+                            : `read “${r.title}”`,
+                          STATE_WHY[r.node_state],
+                        ].filter(Boolean).join(' · ')}
                         onClick={() => setSelId(r.id === selId ? null : r.id)}>
                         <div className="l1">
                           <span className="mfrom">{r.title || '(untitled)'}</span>
                           <span className="mtime">{ago(r.at)}</span>
                         </div>
                         <div className="l2">
+                          <TierChip tier={r.tier} />
                           {r.node || '?'}
-                          {STATE_BADGE[r.node_state] &&
-                            <span className="badge"> {STATE_BADGE[r.node_state]}</span>}
-                          {r.evicted && <span className="badge evicted"> content evicted</span>}
+                          {r.evicted && <span className="badge evicted">content evicted</span>}
                         </div>
                       </div>
                     ))}
@@ -146,9 +178,14 @@ function DocPane({ slug, row, toast, onDismissed }: {
     <>
       <div className="mailer-head">
         <b>{row.title || '(untitled)'}</b>
+        <TierChip tier={row.tier} />
         <span className="dim">{row.node || '?'}</span>
-        {STATE_BADGE[row.node_state] &&
-          <span className="badge">{STATE_BADGE[row.node_state]}</span>}
+        {/* the OPEN document names the agent's state in words. The row only
+            greys (user ruling — no badge in the row), but here there is room,
+            and "why can I not dismiss this / who wrote it" is exactly the
+            question the reading pane exists to answer. */}
+        {STATE_WHY[row.node_state] &&
+          <span className="dim">{STATE_WHY[row.node_state]}</span>}
         <span className="dim">{row.at}</span>
         <span className="spacer" />
         {!row.evicted && (

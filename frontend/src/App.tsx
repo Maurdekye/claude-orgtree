@@ -23,7 +23,7 @@ import {
 } from './icons'
 import { DirList } from './forms'
 import { FolderPickerHost } from './picker'
-import { ALL_TIERS, attentionPip, availableAutopsyModels, deskDpi, fallbackActive, freezeKind, isOpenRouterTier, orgPxc, presenceOfPayload, primedRestartChip, setDeskDpi, TIER_LETTER, tierLabel, usePolled } from './canvas/shared'
+import { activeDocCount, ALL_TIERS, attentionPip, availableAutopsyModels, deskDpi, fallbackActive, freezeKind, isOpenRouterTier, orgPxc, presenceOfPayload, primedRestartChip, setDeskDpi, TIER_LETTER, tierLabel, usePolled } from './canvas/shared'
 import { AskCard } from './canvas/asks'
 import { AccountsPanel, UsageBars } from './canvas/accounts'
 import { DocGalleryModal } from './canvas/gallery'
@@ -834,9 +834,26 @@ export default function App() {
                     sent you, read in the same list-plus-pane panel — so they
                     read as one pair of mailbox controls rather than two
                     unrelated buttons. */}
-                <button className="iconbtn" title="presented documents — every card, org-wide"
-                  onClick={() => setShowGallery(true)}>
-                  <DocIcon fontSize="inherit" /></button>
+                {(() => {
+                  // the corner count is the mail bell's own badge (.eye-count
+                  // in a position:relative button), carrying the number of
+                  // documents presented by CURRENTLY HIRED agents — the set
+                  // the panel shows with "show retired agents" unticked. It
+                  // never wears the `.asks` pulse: nothing here is waiting on
+                  // an answer, and the 2026-08-04 ruling leaves the bell the
+                  // only glowing thing in the chrome.
+                  const docs = activeDocCount(tree.roots)
+                  return (
+                    <button className="iconbtn doc-bell"
+                      title={docs > 0
+                        ? `presented documents — ${docs} from currently-hired agents`
+                        : 'presented documents'}
+                      onClick={() => setShowGallery(true)}>
+                      <DocIcon fontSize="inherit" />
+                      {docs > 0 && <b className="eye-count">{docs}</b>}
+                    </button>
+                  )
+                })()}
                 <button className="iconbtn barmore mob-only" title="more"
                   onClick={() => setBarMore((v) => !v)}>⋯</button>
                 {/* host subscription usage (the Claude Code /usage bars) —

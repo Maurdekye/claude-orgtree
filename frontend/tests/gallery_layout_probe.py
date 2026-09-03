@@ -29,31 +29,38 @@ MUTANT = """
 .settings .mailpane { height: auto !important; }
 """
 
+TIERS = ["opus", "sonnet", "haiku", "fable", "opus", "sonnet"]
+
+# three ACTIVE agents' rows (accent flare) above three RETIRED ones (slightly
+# greyed) — the exact adjacency the coordinator asked to eyeball: two
+# emphasis steps on one axis, or two visual languages stacked?
 ROWS = "".join(f"""
-  <div class="mailrow doc-gallery-row{' on' if i == 1 else ''}">
+  <div class="mailrow doc-gallery-row {'active' if i < 3 else 'past'}{' on' if i == 1 else ''}">
     <div class="l1">
       <span class="mfrom">a presented document with a fairly long title {i}</span>
       <span class="mtime">{i + 1}h</span>
     </div>
-    <div class="l2">some-agent-{i}<span class="badge"> retired</span></div>
+    <div class="l2">
+      <span class="tier t-{TIERS[i]}">{TIERS[i][0].upper()}</span>some-agent-{i}
+    </div>
   </div>""" for i in range(6))
 
 HTML = f"""
 <div class="overlay">
   <div class="settings wide gallery-modal">
     <h3>presented documents</h3>
-    <div class="mail-folders">
-      <button class="on">currently hired</button>
-      <button>all agents<span class="dim"> 15</span></button>
-    </div>
+    <label class="checkline gallery-showretired">
+      <input type="checkbox" checked /> show retired agents<span class="dim"> · 12</span>
+    </label>
     <div class="mailpane">
       <div class="mailer">
         <div class="mailer-list" id="list">{ROWS}</div>
         <div class="mailer-read" id="read">
           <div class="mailer-head" id="head">
             <b>a presented document with a fairly long title 1</b>
+            <span class="tier t-sonnet">S</span>
             <span class="dim">some-agent-1</span>
-            <span class="badge">retired</span>
+            <span class="dim">this agent has been retired</span>
             <span class="dim">2026-09-03T09:12:44.001Z</span>
             <span class="spacer"></span>
             <button class="dim" id="dismiss">dismiss</button>
@@ -120,6 +127,54 @@ def failures(page, width: int) -> list[str]:
           bad.push('a long title is clipped without an ellipsis');
         if (row.getBoundingClientRect().right > lr.right + 0.5)
           bad.push('a row spills out of the entry list');
+      }
+
+      // 4b. ACTIVE vs RETIRED read as two steps of ONE ladder, not two
+      //     languages. Active wears unread mail's accent; retired is only
+      //     slightly quieter and must stay READABLE (this is the check the
+      //     "grey them out slightly" instruction can silently overshoot).
+      const lum = (c) => {
+        const [r, g, b] = c.match(/[\\d.]+/g).slice(0, 3).map(Number);
+        const f = (v) => { v /= 255; return v <= .03928 ? v / 12.92
+          : Math.pow((v + .055) / 1.055, 2.4); };
+        return .2126 * f(r) + .7152 * f(g) + .0722 * f(b);
+      };
+      const ratio = (a, b) => {
+        const [x, y] = [lum(a), lum(b)].sort((m, n) => n - m);
+        return (x + .05) / (y + .05);
+      };
+      const bg = getComputedStyle(document.querySelector('.mailer')).backgroundColor;
+      const activeTitle = document.querySelector('.mailrow.active .mfrom');
+      const pastTitle = document.querySelector('.mailrow.past .mfrom');
+      const aCol = getComputedStyle(activeTitle).color;
+      const pCol = getComputedStyle(pastTitle).color;
+      if (aCol === pCol)
+        bad.push('active and retired titles are the same colour — no distinction at all');
+      const pastRatio = ratio(pCol, bg);
+      if (pastRatio < 4.5)
+        bad.push(`retired title contrast ${pastRatio.toFixed(2)}:1 is below 4.5:1 — `
+          + 'greyed past readable, not "slightly"');
+      // the active flare must be the ACCENT the unread rule uses, not some
+      // other orange picked by hand
+      const probe = document.createElement('span');
+      probe.style.color = 'var(--accent)';
+      document.body.appendChild(probe);
+      const accent = getComputedStyle(probe).color;
+      probe.remove();
+      if (aCol !== accent)
+        bad.push(`active title is ${aCol}, not the shared --accent ${accent}`);
+      // and retired must not be so faint it reads as disabled
+      if (getComputedStyle(document.querySelector('.mailrow.past')).opacity !== '1')
+        bad.push('retired row uses opacity — it should be a colour step, not a fade');
+
+      // 4c. every row carries its model chip, on the agent line
+      for (const r2 of document.querySelectorAll('.mailrow')) {
+        const chip = r2.querySelector('.tier');
+        if (!chip) { bad.push('row missing its model chip'); continue; }
+        const cr = chip.getBoundingClientRect();
+        if (cr.width < 6 || cr.height < 6) bad.push('model chip collapsed');
+        if (cr.right > r2.getBoundingClientRect().right + .5)
+          bad.push('model chip spills out of its row');
       }
 
       // 5. the dismiss control the user asked for is IN the viewer, reachable
