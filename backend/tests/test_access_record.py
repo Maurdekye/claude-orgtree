@@ -100,7 +100,15 @@ def hit(path: str, query: bytes = b"") -> list[str]:
     scope: dict[str, Any] = {
         "type": "http", "method": "GET", "path": path,
         "raw_path": path.encode(), "query_string": query, "headers": [],
-        "client": ("127.0.0.1", 1), "server": ("127.0.0.1", 7360),
+        # ⚠ THE PORT HERE IS DELIBERATELY NOT THE LIVE DEPLOYMENT'S.
+        # Nothing in this suite opens a socket — `server` is scope
+        # metadata for a hand-built ASGI call — but `tools/run_tests.py`
+        # SKIPS any suite whose SOURCE mentions that port, and it cannot
+        # tell a binding from a dict literal. Both of these suites were
+        # silently skipped in the full run until that was noticed, so
+        # keep the number off this file entirely: a guard that never
+        # runs guards nothing.
+        "client": ("127.0.0.1", 1), "server": ("127.0.0.1", 7999),
         "scheme": "http", "state": {}, "app": api.app,
     }
 
@@ -275,8 +283,8 @@ def inflight_counts_overlapping_requests() -> None:
     assert depths == [1, 2, 3, 4], (
         f"four overlapping requests reported depths {depths}; `inflight` is "
         "not counting concurrency, so queueing stays invisible")
-    assert api._ACCESS_INFLIGHT == 0, (
-        f"the counter leaked: {api._ACCESS_INFLIGHT} still in flight")
+    assert api._access_inflight == 0, (
+        f"the counter leaked: {api._access_inflight} still in flight")
 
 
 try:

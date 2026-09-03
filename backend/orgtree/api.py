@@ -182,7 +182,7 @@ class FrozenAdminBoundary:
 # access log per listener is a security-reviewed decision in `main` (the
 # bridge case above) and not worth reopening for log volume.
 
-_ACCESS_INFLIGHT = 0          # HTTP requests currently inside the app
+_access_inflight = 0          # HTTP requests currently inside the app
 _SLOW_MS = 500.0              # a handler this slow is worth a line of its own
 _SLOW_REPEAT_S = 60.0         # …and at most one such line per route per minute
 _slow_last: dict[str, float] = {}        # route -> when it last warned
@@ -223,9 +223,9 @@ class AccessRecord:
         # themselves are `def` and run in the threadpool, but they are not
         # here. A wrong count would cost a misleading log field, never
         # correctness.
-        global _ACCESS_INFLIGHT
-        _ACCESS_INFLIGHT += 1
-        depth = _ACCESS_INFLIGHT
+        global _access_inflight
+        _access_inflight += 1
+        depth = _access_inflight
         t0 = time.perf_counter()
         handler_ms = -1.0
         status = 0
@@ -246,7 +246,7 @@ class AccessRecord:
             # `finally`, so a handler that raises is still recorded — an
             # endpoint that fails slowly is exactly as interesting as one that
             # succeeds slowly, and it is the one uvicorn's line describes worst.
-            _ACCESS_INFLIGHT -= 1
+            _access_inflight -= 1
             total_ms = (time.perf_counter() - t0) * 1000.0
             try:
                 _access_emit(scope, status, handler_ms, total_ms, nbytes, depth)

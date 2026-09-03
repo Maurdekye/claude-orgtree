@@ -118,7 +118,15 @@ def request(scope_state: dict[str, object] | None = None) -> Request:
     return Request({
         "type": "http", "method": "GET", "path": "/api/test",
         "raw_path": b"/api/test", "query_string": b"", "headers": [],
-        "client": ("127.0.0.1", 1), "server": ("127.0.0.1", 7360),
+        # ⚠ THE PORT HERE IS DELIBERATELY NOT THE LIVE DEPLOYMENT'S.
+        # Nothing in this suite opens a socket — `server` is scope
+        # metadata for a hand-built ASGI call — but `tools/run_tests.py`
+        # SKIPS any suite whose SOURCE mentions that port, and it cannot
+        # tell a binding from a dict literal. Both of these suites were
+        # silently skipped in the full run until that was noticed, so
+        # keep the number off this file entirely: a guard that never
+        # runs guards nothing.
+        "client": ("127.0.0.1", 1), "server": ("127.0.0.1", 7999),
         "scheme": "http", "state": scope_state or {},
     })
 
