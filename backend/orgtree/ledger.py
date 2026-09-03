@@ -3485,7 +3485,7 @@ class Org:
             if not self.is_ancestor(actor, nid):
                 raise LedgerError("model switches cover your own subtree only")
         old = n["model"]
-        pend = cast("dict[str, Any] | None", n.get("pending_switch"))
+        pend = n.get("pending_switch")
         if tier == old:
             if pend and _queued is None:
                 # D-234: asking for the tier it ALREADY runs while a switch is
@@ -3737,7 +3737,7 @@ class Org:
         n = self.nodes.get(nid)
         if n is None:
             return None
-        pend = cast("dict[str, Any] | None", n.pop("pending_switch", None))
+        pend = n.pop("pending_switch", None)
         if not pend:
             return None
         by, tier = str(pend.get("by") or USER), str(pend.get("tier") or "")
