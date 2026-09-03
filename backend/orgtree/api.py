@@ -655,6 +655,10 @@ async def _wire_notify() -> None:  # type: ignore[unused-function]  # registered
     # children, which is also their restart-recovery (the doc is the registry)
     supervisor.start_watchdog_engine()
     supervisor.start_extern_sweeper()          # D-166
+    # D-236: a mid-turn message whose recipient is inside a long tool call has
+    # no injection point until that call ends — this is what tells the SENDER,
+    # which is the half no answer available at send time could give.
+    supervisor.start_steer_late_watchdog()
     # FR-27: the primed-restart engine. Same shape and same reason as the
     # watchdog scanner above — the durable record is the registry and this is
     # only its runtime attachment, which is exactly what makes an armed prime
@@ -2871,6 +2875,12 @@ def node_message(slug: str, nid: str, body: Message) -> dict[str, Any]:
         slug, nid,
         "(orgtree) The mail above includes a message from the user, addressed "
         "to you — act on it now.", mail_ping=True)
+    # D-236: the same honest sentence the agent-side send now gets. NO
+    # `sender` is passed: the late-steer alarm mails an AGENT, and the user's
+    # own desk already renders the pending "delivering mid-task…" bubble live
+    # for exactly this wait — a notice they cannot be sent would be the wrong
+    # instrument for a reader who is already watching it happen.
+    sent = {**sent, "delivery": supervisor.delivery_note(slug, nid, sent)}
     if warn:
         sent = {**sent, "warnings": warn + list(sent.get("warnings") or [])}
     return sent
@@ -2888,6 +2898,12 @@ def node_steer(slug: str, nid: str) -> dict[str, Any]:
     # storage-bypass audit: every tool call gives the storage limit a chance
     # to land MID-TURN (throttled + backgrounded inside)
     supervisor.maybe_storage_check(slug)
+    # D-236: this door is hit after EVERY tool call whether or not there is
+    # mail, which makes it the one free measurement of "when did this agent
+    # last have an injection point". Recorded BEFORE the pop, so a message
+    # arriving during this very call is timed against the boundary it missed
+    # rather than the one it caught.
+    supervisor.note_steer_poll(slug, nid)
     # ⚠ the `steered` frame is NOT emitted here any more. It used to be, and
     # that was the whole reason the codex and antigravity legs had none: they call
     # `pop_steer` in-process and never pass this door, so their mid-turn mail
@@ -2897,6 +2913,18 @@ def node_steer(slug: str, nid: str) -> dict[str, Any]:
     # every lane reaches. Same frame, same cap, same declared truncation.
     msgs = supervisor.pop_steer(slug, nid)
     return {"messages": msgs}
+
+
+@app.get("/api/orgs/{slug}/nodes/{nid}/steer-state")
+def node_steer_state(slug: str, nid: str) -> dict[str, Any]:
+    """The mid-turn delivery window, as a readable fact (D-236).
+
+    `wait` is how long this node has gone without a tool-call boundary — the
+    length of the tool call it is inside — or null when it is not responding
+    and the question does not apply. `pending` is how many carriers are
+    sitting in the steer store right now, i.e. accepted mail that the agent
+    has NOT been shown yet. Read-only; it pops nothing."""
+    return supervisor.steer_view(slug, nid)
 
 
 @app.post("/api/orgs/{slug}/nodes/{nid}/interrupt")
@@ -4365,6 +4393,9 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
     org_send: tuple[str, str] | None = None   # (dst-slug, body) outbound to another org's inbox
     net_send = False                          # @net: — staged to the spool; kick after the lock
     notice_to: str | None = None              # send_notice recipient — nudged wake=False after the lock
+    # D-236: the orgtree_message recipient, so the drive below can report what
+    # actually happened to the send instead of throwing that answer away
+    mail_to: str | None = None
     # (owner, kind, target, pattern, shell) of a watchdog just armed — its
     # target is run ONCE, outside the lock, and the result rides back on the
     # create
@@ -4588,6 +4619,7 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
                     # the mail is driven when the node is rehired
                     if delivered != "user_inbox" and not result.get("deferred"):
                         drive.append(delivered)
+                        mail_to = delivered
             elif body.tool == "orgtree_send_notice":
                 # a NOTICE is mail minus the wake (user spec 2026-08-19):
                 # same §7.2 addressing and mailbox, delivered by the next
@@ -5250,10 +5282,21 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
         # running remote-control server either
         supervisor.remote_reap(body.org)
     for target in drive:
-        supervisor.send_message(
+        r = supervisor.send_message(
             body.org, target,
             "(orgtree) You have new mail above — handle it as appropriate, and use "
-            "orgtree_status when your own task state changes.", mail_ping=True)
+            "orgtree_status when your own task state changes.", mail_ping=True,
+            sender=body.node)
+        # ⭐ D-236: SAY WHICH CARRIER THE MESSAGE IS ON. This loop used to
+        # discard `r` entirely, so `orgtree_message` answered
+        # {"delivered": …, "deferred": false} whether the recipient read it in
+        # 200 ms or would not read it for five minutes — and `deferred` only
+        # ever meant "the recipient is archived", so nothing in that answer
+        # was a receipt. The `orgtree_send_notice` branch below has reported
+        # its carrier since it was written; a message is the send that ACTS on
+        # the answer, and it was the one flying blind.
+        if target == mail_to and isinstance(result, dict):
+            result["delivery"] = supervisor.delivery_note(body.org, target, r)
     for target in stale_freeze_resumed:
         # a provider crossing cleared this node's freeze (it described the
         # provider it just left) — wake it now, rather than leaving it
@@ -5275,14 +5318,14 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
             body.org, notice_to,
             "(orgtree) A notice arrived in your mail above — informational, "
             "no reply expected. Note it and continue your current task.",
-            wake=False, mail_ping=True)
+            wake=False, mail_ping=True, sender=body.node)
         if isinstance(result, dict):
-            result["delivery"] = (
-                "steered into the recipient's running turn"
-                if r.get("steering")
-                else "queued at the recipient's next pause (it is mid-turn)"
-                if r.get("queued")
-                else "parked in the recipient's mailbox until its next turn")
+            # D-236: one wording for every send. This branch has always named
+            # its carrier; what it could not say was that "steered into the
+            # recipient's running turn" is an ACCEPTANCE, not a read — and how
+            # long the recipient has been without an injection point.
+            result["delivery"] = supervisor.delivery_note(
+                body.org, notice_to, r)
     if org_send is not None:
         err = supervisor.interorg_send(body.org, org_send[0], org_send[1])
         if err:

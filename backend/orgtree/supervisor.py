@@ -4880,6 +4880,15 @@ def _fold_steer(st: dict[str, Any]) -> list[Any]:
     inside the same lock take."""
     leftover = st.get("steer") or []
     st["steer"] = []
+    # …and the boundary book with it (D-236). `boundary_at` answers "how long
+    # has this agent been inside its CURRENT tool call", which is meaningless
+    # once the turn is over — and reading a previous turn's stamp would report
+    # a freshly-woken agent as minutes deep in a call it is not in. This is
+    # the one site guaranteed to run at every `responding = False`
+    # (test_midturn_mail_ingress §8 pins that structurally), which is exactly
+    # the guarantee the reset needs.
+    st.pop("boundary_at", None)
+    st.pop("boundary_polls", None)
     if leftover:
         st["queue"].extend(leftover)
     return leftover
@@ -7750,6 +7759,20 @@ def spend_unrun_pardon(slug: str, nid: str, sid: str | None) -> bool:
 #: same store, same envelope, same delivery semantics.
 CODEX_STEER_POLL = 2.0
 
+#: How long a mid-turn message may sit unread in the steer store before its
+#: SENDER is told (D-236). Mid-turn delivery is a PostToolUse hook, so an
+#: agent inside one long tool call — a test suite, a build, a browser probe —
+#: has no injection point until that call returns, and `orgtree_message` had
+#: no way to say so: measured on the live org 2026-09-03, a PAUSE order took
+#: 4m47s to reach `doc-gallery` (one `python tools/run_tests.py` call) while
+#: the same order reached `pan-hunt` in 35s, and both sends answered
+#: identically. 45s is chosen as "longer than any ordinary tool call, shorter
+#: than a coordinator would sit on a wrong belief".
+STEER_LATE_AFTER = float(os.environ.get("ORGTREE_STEER_LATE") or 45.0)
+#: how often the late-steer sweep looks. Cheap: an in-memory scan of the
+#: nodes that are RESPONDING with a non-empty steer store, nothing else.
+STEER_LATE_POLL = float(os.environ.get("ORGTREE_STEER_LATE_POLL") or 5.0)
+
 
 class _CodexTurnDone(Exception):
     """Control flow only — never an error. The codex leg finished a turn and
@@ -8589,6 +8612,11 @@ def _codex_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
         with _state_lock:
             st["codex_turn"] = turn   # the ⏸ escape hatch (interrupt_turn)
             st["responding"] = True   # mail now steers instead of queueing
+            # D-236: the turn is the baseline for "how long has this
+            # agent gone without an injection point". Seeded here so a
+            # first tool call that never returns is measurable too.
+            st["boundary_at"] = time.time()
+            st["boundary_polls"] = 0
         warmpool._set_proc_lifecycle(slug, nid, live=True, owner=turn,
                                      adopt=True)
 
@@ -9105,6 +9133,11 @@ def _antigravity_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
         with _state_lock:
             st["antigravity_turn"] = turn   # the ⏸ escape hatch (interrupt_turn)
             st["responding"] = True         # mail now steers instead of queueing
+            # D-236: the turn is the baseline for "how long has this
+            # agent gone without an injection point". Seeded here so a
+            # first tool call that never returns is measurable too.
+            st["boundary_at"] = time.time()
+            st["boundary_polls"] = 0
         warmpool._set_proc_lifecycle(slug, nid, live=True, owner=turn,
                                      adopt=True)
 
@@ -9939,6 +9972,8 @@ def _run_one_turn(slug: str, nid: str,
             with _state_lock:
                 st["proc"] = proc         # for the user-interrupt escape hatch
                 st["responding"] = True
+                st["boundary_at"] = time.time()   # D-236
+                st["boundary_polls"] = 0
             warmpool._set_proc_lifecycle(slug, nid, live=True,
                                          owner=wp_turn or proc, adopt=True)
             try:
@@ -10666,6 +10701,8 @@ def _run_one_turn(slug: str, nid: str,
                                     break
                                 nxt = st["queue"].pop(0)
                                 st["responding"] = True
+                                st["boundary_at"] = time.time()  # D-236
+                                st["boundary_polls"] = 0
                             nping = _carrier_is_ping(nxt)
                             ntoks, nimgs, ncmd, nusage_org = [], [], False, None
                             nview = ""
@@ -14291,7 +14328,8 @@ def send_message(slug: str, nid: str, text: str,
                  command: bool = False, wake: bool = True,
                  mail_ping: bool = False,
                  idle_only: bool = False,
-                 view: str | None = None) -> dict[str, Any]:
+                 view: str | None = None,
+                 sender: str = "") -> dict[str, Any]:
     """Drive a node with a nudge; returns immediately. EVERY substantive message
     — user and agent alike — is MAIL (user ruling: the direct-message channel
     was folded into the mail system): it already sits persisted in the node's
@@ -14328,6 +14366,12 @@ def send_message(slug: str, nid: str, text: str,
     this ordinary turn path but refuses, rather than queues or steers, if any
     active/waiting/queued work already owns the node. That is what makes a
     periodic observer unable to manufacture a second turn behind real work.
+
+    `sender` names WHO to tell if a steered carrier goes unread (D-236): a
+    node id, or "" for the machine's own nudges (a restart notice, a mail
+    pointer) which have nobody to report back to. It is stamped on the
+    carrier, never inferred later — `start_steer_late_watchdog` mails this
+    agent, and a guess would mail the wrong one.
     """
     st = state(slug, nid)
     # a FROZEN node runs nothing: mail stays safe in its mailbox (not drained)
@@ -14420,10 +14464,24 @@ def send_message(slug: str, nid: str, text: str,
                    if tok or eview else etext)
         if mail_ping:
             carrier = _mark_ping(carrier)
+        if sender and isinstance(carrier, dict):
+            # D-236 provenance. Only a DICT carrier is stamped: the bare-string
+            # shape (empty mailbox, no view) reaches the queue fold as authored
+            # text precisely because it has no `view` key, and wrapping it to
+            # carry provenance would flip it to machine-only there. It is also
+            # the shape a real mail send never takes — `tok` is None only when
+            # the box was already drained.
+            carrier["from"] = sender
+            carrier["at"] = time.time()
         with _state_lock:
             if st.get("responding"):
                 st.setdefault("steer", []).append(carrier)
-                return {"accepted": True, "queued": 0, "steering": True}
+                # ⚠ inlined, NOT `steer_wait()` — that takes `_state_lock`,
+                # which is a plain Lock and is already held here
+                _b = st.get("boundary_at")
+                return {"accepted": True, "queued": 0, "steering": True,
+                        "wait": (max(0.0, time.time() - float(_b))
+                                 if isinstance(_b, (int, float)) else None)}
             # raced past the boundary — fall through with the drained text
             # (the carrier may be a journaled dict; _run_turn accepts both)
             text = carrier   # pyright: ignore[reportAssignmentType]
@@ -16591,6 +16649,241 @@ def pop_steer(slug: str, nid: str, *, return_carriers: bool = False,
         return [{"text": str(raw), "view": view}
                 for raw, view in zip(out, views)]
     return out
+
+
+def note_steer_poll(slug: str, nid: str) -> None:
+    """A TOOL-CALL BOUNDARY just happened for this node (D-236).
+
+    The claude lane's steering hook POSTs `/steer` after EVERY tool call
+    whether or not there is mail — so the fetch that delivers mid-turn mail is
+    also, for free, a heartbeat that says "this agent has an injection point
+    right now". Nothing recorded it, and the absence is exactly why an agent
+    that had been inside one `python tools/run_tests.py` call for four minutes
+    was indistinguishable from one between two 200 ms `Edit`s.
+
+    Called at the HTTP door (`api.node_steer`) rather than inside `pop_steer`
+    on purpose: the codex/antigravity pumps also call `pop_steer`, on a 2 s
+    timer, and a timer is not a boundary — counting their polls would report
+    every codex agent as permanently one poll away from delivery."""
+    st = state(slug, nid)
+    with _state_lock:
+        st["boundary_at"] = time.time()
+        st["boundary_polls"] = int(st.get("boundary_polls") or 0) + 1
+
+
+def steer_wait(slug: str, nid: str) -> float | None:
+    """Seconds this node has gone WITHOUT an injection point, or None.
+
+    None means the question does not apply: the node is not responding, so
+    nothing is waiting on a tool boundary. A number is the age of the last
+    boundary — which, for a node that is mid-turn, is the length of the tool
+    call currently in flight (seeded at turn start, so a first tool call that
+    never returns still reads as a growing wait)."""
+    st = state(slug, nid)
+    with _state_lock:
+        if not st.get("responding"):
+            return None
+        at = st.get("boundary_at")
+    if not isinstance(at, (int, float)):
+        return None
+    return max(0.0, time.time() - float(at))
+
+
+def steer_view(slug: str, nid: str) -> dict[str, Any]:
+    """The boundary book, for a reader (the desk, a test, a diagnostic)."""
+    st = state(slug, nid)
+    with _state_lock:
+        out: dict[str, Any] = {
+            "responding": bool(st.get("responding")),
+            "busy": bool(st.get("busy")),
+            "polls": int(st.get("boundary_polls") or 0),
+            "pending": len(st.get("steer") or []),
+        }
+    out["wait"] = steer_wait(slug, nid)
+    out["late_after"] = STEER_LATE_AFTER
+    return out
+
+
+def _dur(secs: float) -> str:
+    """`4m47s` / `35s` / `0.4s` — the sender reads this, so seconds alone stop
+    being legible exactly where the number starts to matter."""
+    if secs < 10:
+        return f"{secs:.1f}s"
+    if secs < 60:
+        return f"{secs:.0f}s"
+    return f"{int(secs // 60)}m{int(secs % 60):02d}s"
+
+
+def delivery_note(slug: str, nid: str, r: Mapping[str, Any]) -> str:
+    """WHAT ACTUALLY HAPPENED TO A SEND — one sentence, for the sender (D-236).
+
+    `send_message` has always returned the carrier it chose (`steering`,
+    `queued`, `parked`, `frozen`, …) and `orgtree_message` has always thrown
+    that answer away, so an agent messaging a busy peer got
+    `{"delivered": …, "deferred": false}` — the same words for a message read
+    in 200 ms and one that will not be read for five minutes. `deferred` only
+    ever meant "the recipient is archived"; nothing in that result was a
+    delivery receipt, and it read like one.
+
+    The rule this text follows: NEVER SAY DELIVERED FOR SOMETHING THAT IS
+    MERELY ACCEPTED. A steered carrier is handed to the recipient's running
+    turn and injected at its next PostToolUse boundary — soonest possible
+    without interrupting (D-044/D-045), which is right, but it is a WAIT and
+    the sender is the one who has to decide whether it can afford it. When
+    the recipient has been inside a single tool call past `STEER_LATE_AFTER`
+    the note also names ⏸ `orgtree_interrupt`, because that is the one thing
+    that DOES land immediately and the sender will otherwise not think of it.
+    """
+    if r.get("frozen"):
+        return (f"NOT delivered: {nid} is frozen (usage limit or connection "
+                f"backoff). The mail is safe in its mailbox and is read when "
+                f"the org is resumed — nothing will read it before then.")
+    if r.get("limit_locked"):
+        return (f"NOT delivered: {nid} is held by a usage lock. The mail waits "
+                f"in its mailbox until the lock clears.")
+    if r.get("remote"):
+        return (f"NOT delivered: {nid} is under remote control (the user is "
+                f"driving that session). The mail waits in its mailbox.")
+    if r.get("deferred"):
+        return (f"NOT delivered: {nid} is {r['deferred']}. The mail waits in "
+                f"its inbox and nothing reads it until somebody rehires it.")
+    if r.get("already_delivered"):
+        return f"already delivered — {nid}'s mailbox had been drained already."
+    if r.get("steering"):
+        wait = r.get("wait")
+        wait = wait if isinstance(wait, (int, float)) else steer_wait(slug, nid)
+        # ONE sentence, whichever branch (coordinator ruling 2026-09-03): this
+        # is copy an agent reads on EVERY send to a busy peer, and a paragraph
+        # on the ordinary path is what trains a reader to skip the line that
+        # matters. The ⏸ pointer appears only in the branch where it is the
+        # right advice — §2's anti-vacuity check pins that it is absent from a
+        # send whose recipient is between two short calls.
+        head = f"handed to {nid}'s RUNNING turn — NOT read yet"
+        if isinstance(wait, (int, float)) and wait >= STEER_LATE_AFTER:
+            return (f"{head}, and ⚠ {nid} has been inside ONE tool call for "
+                    f"{_dur(wait)} — a long build, test run or probe has no "
+                    f"injection point until it ends, so if this cannot wait, "
+                    f"orgtree_interrupt (⏸) on {nid} lands immediately and the "
+                    f"mail is delivered at the boundary that creates.")
+        if isinstance(wait, (int, float)):
+            return (f"{head}; mid-turn mail is injected when the recipient's "
+                    f"current tool call returns, and {nid}'s last boundary was "
+                    f"{_dur(wait)} ago.")
+        return (f"{head}; mid-turn mail is injected when the recipient's "
+                f"current tool call returns, so it arrives at that boundary, "
+                f"not now.")
+    if r.get("queued"):
+        return (f"queued behind {nid}'s running turn — NOT read yet; it is fed "
+                f"to the same live process at its next result boundary.")
+    if r.get("parked"):
+        # ⚠ "next turn" is load-bearing wording — test_mcptool pins that the
+        # parked answer says WHEN it will be read, and this branch is the one
+        # where the answer is "not until something else starts a turn"
+        return (f"parked in {nid}'s mailbox — it is idle and a notice never "
+                f"starts a turn, so this is read at its next turn, whenever "
+                f"that is.")
+    if r.get("accepted"):
+        return f"delivered — a turn started for {nid} to read it."
+    return f"not accepted: {r.get('error') or 'unknown'}"
+
+
+_steer_late_started = False
+
+
+def start_steer_late_watchdog() -> None:
+    """TELL THE SENDER WHEN ITS MID-TURN MESSAGE IS STILL UNREAD (D-236).
+
+    `delivery_note` answers at SEND time, which is the honest answer to "will
+    this land now" — but at 12:57:04Z on the live org the honest answer was
+    "its last tool boundary was 0.5s ago", and the tool call it entered five
+    seconds later ran for 4m43s. No answer available at send time could have
+    said that. So this is the other half: a carrier that outstays
+    `STEER_LATE_AFTER` in the steer store sends ONE notice back to whoever
+    sent it, naming the recipient and how long it has waited.
+
+    PASSIVE by construction (D-047's shape): it goes in as an org notice plus
+    a `wake=False` nudge, so it steers into a sender that is mid-turn, queues
+    on a busy one, and waits in the notice box for an idle one. Waking an
+    agent to tell it about a delay would be an interruption to report a
+    non-event, and the send-time note already covers the case where the
+    sender needs to know before it does anything else.
+
+    ONE notice per carrier, never a repeat — `late_told` is stamped on the
+    carrier under the same lock take that decides to alarm, so a sweep that
+    overlaps the next cannot double-report, and a carrier delivered between
+    two sweeps is simply gone from the store.
+
+    Carriers with no recorded sender (the rare `send_message` shape with an
+    empty mailbox and no view, which is a bare string) are skipped rather
+    than guessed at: this must never mail the wrong agent."""
+    global _steer_late_started
+    if _steer_late_started:
+        return
+    _steer_late_started = True
+
+    def run() -> None:
+        while True:
+            time.sleep(STEER_LATE_POLL)
+            try:
+                _steer_late_sweep()
+            except Exception:                                    # noqa: BLE001
+                pass                     # a diagnostic must never kill a turn
+    threading.Thread(target=run, daemon=True, name="steer-late").start()
+
+
+def _steer_late_sweep(now: float | None = None) -> list[tuple[str, str, str, float]]:
+    """One pass. Returns the (slug, sender, recipient, waited) it alarmed —
+    the return value is the test seam; the caller normally ignores it."""
+    now = time.time() if now is None else now
+    due: list[tuple[str, str, str, float]] = []
+    with _state_lock:
+        for (slug, nid), st in list(_state.items()):
+            if not st.get("responding"):
+                continue
+            for c in st.get("steer") or []:
+                if not isinstance(c, dict) or c.get("late_told"):
+                    continue
+                frm, at = c.get("from"), c.get("at")
+                if not frm or not isinstance(at, (int, float)):
+                    continue
+                waited = now - float(at)
+                if waited < STEER_LATE_AFTER:
+                    continue
+                c["late_told"] = True
+                due.append((slug, str(frm), nid, waited))
+    for slug, frm, nid, waited in due:
+        boundary = steer_wait(slug, nid)
+        text = (
+            f'Your mid-turn message to "{nid}" has NOT been read yet — it has '
+            f'been waiting {_dur(waited)} in its steer store. Mid-turn mail is '
+            f'injected when the recipient\'s current tool call returns'
+            + (f", and {nid} has been inside one call for {_dur(boundary)}"
+               if isinstance(boundary, (int, float)) else "")
+            + f'. Nothing is lost — it is delivered at that boundary, or at '
+              f'{nid}\'s next turn if the turn ends first. If it cannot wait '
+              f'that long, orgtree_interrupt (⏸) on {nid} creates a boundary '
+              f'immediately without ending its session.')
+        try:
+            with store.DOC_LOCK:
+                org = store.load_org(slug)
+                if frm not in org.nodes or nid not in org.nodes:
+                    continue
+                org._notify([frm], text)
+                store.save_org(org)
+        except Exception:                                        # noqa: BLE001
+            continue
+        # …and try to put it in front of the sender NOW if it is itself
+        # mid-turn. wake=False: this never starts a turn (it is news about a
+        # delay, not work), and an idle sender reads it from the notice box
+        # at whatever turn comes next.
+        try:
+            send_message(slug, frm,
+                         "(orgtree) A delivery notice about mail you sent is "
+                         "above — read it and continue.",
+                         wake=False, mail_ping=True)
+        except Exception:                                        # noqa: BLE001
+            pass
+    return due
 
 
 _cred_watch_started = False
