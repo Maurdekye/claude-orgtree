@@ -218,14 +218,30 @@ uiTest('§6 dismiss lives in the viewer and actually deletes that document',
       'no dismiss control before a document is open')
     await inAct(() => { (rows(el)[0] as HTMLElement).click() })
     await flush()
-    const btn = [...el.querySelectorAll('.mailer-head button')]
-      .find((b) => (b.textContent ?? '').includes('dismiss')) as HTMLElement
+    const btn = el.querySelector('.mailer-head button.chip-x') as HTMLElement
     assert.ok(btn, 'the viewer carries the dismiss control (user request)')
+    assert.match(btn.getAttribute('title') ?? '', /dismiss/, 'button title indicates dismiss')
     await inAct(() => btn.click())
     await flush()
     const del = calls.filter((c) => c.method === 'DELETE')
     assert.equal(del.length, 1, 'exactly one delete')
     assert.match(del[0]!.url, /\/documents\/d1$/, 'and it names the open document')
+  })
+
+uiTest('§6b title sits on its own line above metadata, and dismiss is right-aligned in title row',
+  async (mount) => {
+    mockDocs([row({ id: 'd1', title: 'the plan' })], { d1: 'body' })
+    const { el } = await mount(gallery())
+    await flush()
+    await inAct(() => { (rows(el)[0] as HTMLElement).click() })
+    await flush()
+    const titleRow = el.querySelector('.mailer-head .doc-pane-title-row')
+    const metaRow = el.querySelector('.mailer-head .doc-pane-meta-row')
+    assert.ok(titleRow, 'title row exists')
+    assert.ok(metaRow, 'meta row exists')
+    assert.equal(titleRow.querySelector('b')?.textContent, 'the plan')
+    assert.ok(titleRow.querySelector('button.chip-x'), 'dismiss button sits on title row')
+    assert.equal(metaRow.querySelector('b'), null, 'metadata row has no title')
   })
 
 uiTest('§7 an evicted card is listed and explained, fetches nothing, and offers '
@@ -242,9 +258,8 @@ uiTest('§7 an evicted card is listed and explained, fetches nothing, and offers
     'the pane explains the empty body instead of showing a raw 404')
   assert.equal(calls.filter((c) => /\/documents\/dgone$/.test(c.url)).length, 0,
     'no body request for a card whose body is known to be gone')
-  assert.equal([...el.querySelectorAll('.mailer-head button')]
-    .filter((b) => (b.textContent ?? '').includes('dismiss')).length, 0,
-  'nothing to dismiss — the card is already gone')
+  assert.equal(el.querySelectorAll('.mailer-head button').length, 0,
+    'nothing to dismiss — the card is already gone')
 })
 
 uiTest('§8 CONTROL: the same fixture with the presenter still hired DOES list — '

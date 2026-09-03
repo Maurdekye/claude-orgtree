@@ -56,14 +56,18 @@ HTML = f"""
       <div class="mailer">
         <div class="mailer-list" id="list">{ROWS}</div>
         <div class="mailer-read" id="read">
-          <div class="mailer-head" id="head">
-            <b>a presented document with a fairly long title 1</b>
-            <span class="tier t-sonnet">S</span>
-            <span class="dim">some-agent-1</span>
-            <span class="dim">this agent has been retired</span>
-            <span class="dim">2026-09-03T09:12:44.001Z</span>
-            <span class="spacer"></span>
-            <button class="dim" id="dismiss">dismiss</button>
+          <div class="mailer-head doc-pane-head" id="head">
+            <div class="doc-pane-title-row">
+              <b>a presented document with a fairly long title 1</b>
+              <span class="spacer"></span>
+              <button class="chip-x" id="dismiss" title="dismiss">✕</button>
+            </div>
+            <div class="doc-pane-meta-row">
+              <span class="tier t-sonnet">S</span>
+              <span class="dim">some-agent-1</span>
+              <span class="dim">this agent has been retired</span>
+              <span class="dim">2026-09-03T09:12:44.001Z</span>
+            </div>
           </div>
           <div class="mailer-body md" id="body">
             <h1>A plan</h1>
@@ -187,6 +191,21 @@ def failures(page, width: int) -> list[str]:
       // minimum it may not be pushed off the panel entirely
       if (head.getBoundingClientRect().bottom > dr.bottom + 0.5)
         bad.push('viewer header is pushed off the bottom of the panel');
+
+      // 6. the title is on its own row, above the metadata row
+      const titleRow = document.querySelector('.doc-pane-title-row');
+      const metaRow = document.querySelector('.doc-pane-meta-row');
+      if (!titleRow || !metaRow) {
+        bad.push('viewer missing doc-pane-title-row or doc-pane-meta-row');
+      } else {
+        const tr = titleRow.getBoundingClientRect();
+        const mr2 = metaRow.getBoundingClientRect();
+        if (tr.bottom > mr2.top + 0.5)
+          bad.push('title row is not above metadata row (not on separate lines)');
+        // 7. dismiss button is right-aligned in the viewer pane
+        if (btn.right < rr.right - 25)
+          bad.push(`dismiss button is not right-aligned (btn right ${btn.right}, read right ${rr.right})`);
+      }
       return bad.map((v) => `${width}px: ${v}`);
     }""", width)
 

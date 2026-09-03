@@ -2532,7 +2532,19 @@ main.solo { width: 100%; }
 .gallery-modal .mailrow .l1 .mfrom {
   font-family: var(--sans); color: var(--ink-strong); font-weight: 600;
 }
-.gallery-modal .mailer-head b { font-family: var(--sans); font-size: 13px; }
+.gallery-modal .doc-pane-head {
+  display: flex; flex-direction: column; gap: 4px; align-items: stretch;
+}
+.gallery-modal .doc-pane-title-row {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+}
+.gallery-modal .doc-pane-title-row b {
+  font-family: var(--sans); font-size: 13px; font-weight: 600; color: var(--ink-strong);
+}
+.gallery-modal .doc-pane-meta-row {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+  font-family: var(--mono); font-size: 11px;
+}
 
 /* ACTIVE agents' rows wear UNREAD MAIL'S OWN TREATMENT (user: "color-code the
    active agent cards with an orange flare similar to how unread mails are

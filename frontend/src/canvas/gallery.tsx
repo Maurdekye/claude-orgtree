@@ -24,7 +24,7 @@ import { useState } from 'react'
 import type { DocRow } from '../api'
 import { fileBase, getDocuments } from '../api'
 import type { ToastFn } from '../types'
-import { DocIcon } from '../icons'
+import { CloseIcon, DocIcon } from '../icons'
 import { dismissDoc, useDoc } from './docs'
 import { ago, md, TIER_LETTER, tierLabel, useEsc, usePolled } from './shared'
 
@@ -164,7 +164,9 @@ export function DocGalleryModal({ slug, toast, close }: {
  *  reader runs (docs.tsx), in the mail reading pane's chrome. Dismiss lives
  *  HERE rather than on each row (user request 2026-09-03: "allow the
  *  dismissal of them from the viewer directly") — one control, on the thing
- *  you are actually looking at. */
+ *  you are actually looking at. Title sits on its own separate line; the
+ *  dismiss button mirrors the desk view document card (right-aligned chip-x
+ *  with CloseIcon). */
 function DocPane({ slug, row, toast, onDismissed }: {
   slug: string
   row: DocRow
@@ -176,23 +178,28 @@ function DocPane({ slug, row, toast, onDismissed }: {
   const { doc, err } = useDoc(slug, row.evicted ? '' : row.id)
   return (
     <>
-      <div className="mailer-head">
-        <b>{row.title || '(untitled)'}</b>
-        <TierChip tier={row.tier} />
-        <span className="dim">{row.node || '?'}</span>
-        {/* the OPEN document names the agent's state in words. The row only
-            greys (user ruling — no badge in the row), but here there is room,
-            and "why can I not dismiss this / who wrote it" is exactly the
-            question the reading pane exists to answer. */}
-        {STATE_WHY[row.node_state] &&
-          <span className="dim">{STATE_WHY[row.node_state]}</span>}
-        <span className="dim">{row.at}</span>
-        <span className="spacer" />
-        {!row.evicted && (
-          <button className="dim" title="remove the card (the document is gone)"
-            onClick={() => dismissDoc(slug, row.id, row.title, toast, onDismissed)}>
-            dismiss</button>
-        )}
+      <div className="mailer-head doc-pane-head">
+        <div className="doc-pane-title-row">
+          <b>{row.title || '(untitled)'}</b>
+          <span className="spacer" />
+          {!row.evicted && (
+            <button className="chip-x" title="dismiss"
+              onClick={() => dismissDoc(slug, row.id, row.title, toast, onDismissed)}>
+              <CloseIcon fontSize="inherit" />
+            </button>
+          )}
+        </div>
+        <div className="doc-pane-meta-row">
+          <TierChip tier={row.tier} />
+          <span className="dim">{row.node || '?'}</span>
+          {/* the OPEN document names the agent's state in words. The row only
+              greys (user ruling — no badge in the row), but here there is room,
+              and "why can I not dismiss this / who wrote it" is exactly the
+              question the reading pane exists to answer. */}
+          {STATE_WHY[row.node_state] &&
+            <span className="dim">{STATE_WHY[row.node_state]}</span>}
+          <span className="dim">{row.at}</span>
+        </div>
       </div>
       {row.evicted
         ? <div className="dim pad">
