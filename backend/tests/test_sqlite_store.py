@@ -1391,11 +1391,146 @@ def s9_review() -> None:
           lazydoc_dunders)
 
 
+def s10_empty_is_not_absent() -> None:
+    """An EMPTY collection must round-trip as EMPTY, never as ABSENT.
+
+    Found by `phase1-audit` (cross-model, 2026-09-04): a valid org with
+    `nodes: {}` — one created and not yet hired into — could not migrate.
+    `_load_lazy` gated BOTH of its `nodes` conditions on `node_rows`, so an
+    org with zero node rows lost `nodes` from `_key_order`, and
+    `reconstruct_full` walks the key order. The section came back missing
+    rather than empty.
+
+    Two consequences, and only the first is fail-safe:
+
+      * `migrate_org` failed its own verifier — "round-trip mismatch in
+        sections: ['nodes']" — leaving the org pending, so `claim_data_root`
+        refused to start. Loud, and nothing lost.
+      * `export_json`, which IS the documented rollback path, wrote a
+        document with NO `nodes` key. `Org.__init__` does `self.d["nodes"]`,
+        so that export could not be read back at all. Silent until used.
+
+    The other eight row-backed sections were already safe — `key_order`
+    carries their presence when they have no rows — and the checks below say
+    so by measurement rather than by assumption. The converse matters as
+    much as the fix: a document that genuinely has no `nodes` key must still
+    come back without one, or the repair invents a section."""
+    if not section("10. empty is not absent (row-backed sections)"):
+        return
+
+    def rt(d: dict) -> dict:
+        """`d` through the store and back, with nothing cached."""
+        wipe("rt")
+        conn = store._open_conn(store._db_path("rt"), create=True)
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            store._write_doc(conn, d, None)
+            conn.execute("COMMIT")
+            return store.reconstruct_full(conn)
+        finally:
+            conn.close()
+
+    base = Org.create("Empty", [], "acceptEdits", workspace=None).d
+
+    def empty_nodes_survives() -> None:
+        d = json.loads(json.dumps(base))
+        d["slug"] = "rt"
+        eq(d["nodes"], {}, "fixture: a fresh org has no nodes: ")
+        got = rt(d)
+        eq("nodes" in got, True, "nodes present after the round-trip: ")
+        eq(got["nodes"], {}, "and still empty: ")
+        eq(store.canon(got), store.canon(d), "whole document: ")
+    check("an org with `nodes: {}` round-trips with `nodes: {}`",
+          empty_nodes_survives)
+
+    def every_row_backed_section() -> None:
+        """The class, not the instance: every section stored as ROWS, empty.
+        A plain `doc` key holding `{}` is one JSON blob and cannot vanish;
+        only these can."""
+        for sect in ("nodes",) + store.DICT_LOGS + store.LIST_LOGS:
+            d = json.loads(json.dumps(base))
+            d["slug"] = "rt"
+            # isolate: without a real node every case fails on `nodes` and
+            # says nothing about the section it names
+            if sect != "nodes":
+                d["nodes"] = {"n0": {"id": "n0", "state": "idle"}}
+            d[sect] = {} if sect in store.DICT_LOGS or sect == "nodes" else []
+            got = rt(d)
+            eq(sect in got, True, f"{sect} present: ")
+            eq(store.canon(got), store.canon(d), f"{sect} document: ")
+    check("...and so does every other row-backed section, empty", 
+          every_row_backed_section)
+
+    def absent_stays_absent() -> None:
+        """The converse. `nodes` is kept unconditionally now, so prove the
+        keeping is driven by the recorded key order and not by the name."""
+        d = json.loads(json.dumps(base))
+        d["slug"] = "rt"
+        d.pop("nodes", None)
+        got = rt(d)
+        eq("nodes" in got, False, "a document with no nodes key gains none: ")
+        eq(store.canon(got), store.canon(d), "whole document: ")
+        conn = store._open_conn(store._db_path("rt"))
+        try:
+            lazy = store._load_lazy(conn, "rt")
+        finally:
+            conn.close()
+        eq(dict.__contains__(lazy, "nodes"), False, "nor does the lazy load: ")
+        eq("nodes" in lazy._key_order, False, "nor the key order: ")
+    check("a document with NO `nodes` key still comes back without one",
+          absent_stays_absent)
+
+    def null_nodes_is_a_blob() -> None:
+        d = json.loads(json.dumps(base))
+        d["slug"] = "rt"
+        d["nodes"] = None
+        got = rt(d)
+        eq(got.get("nodes", "<<ABSENT>>"), None, "nodes: null survives: ")
+        eq(store.canon(got), store.canon(d), "whole document: ")
+    check("`nodes: null` is still stored and returned as a blob",
+          null_nodes_is_a_blob)
+
+    def export_of_an_empty_org_reimports() -> None:
+        """The consequence that is NOT fail-safe. `export_json` is the
+        rollback path; an export that `Org.__init__` cannot read is a
+        rollback that does not exist."""
+        wipe("emptyorg")
+        org = store.create_org("emptyorg")
+        store.save_org(org)
+        back = store.load_org("emptyorg")
+        eq(dict.get(back.d, "nodes", "<<ABSENT>>"), {}, "the live load: ")
+        p = store.export_json("emptyorg")
+        exported = json.load(open(p, encoding="utf-8"))
+        eq("nodes" in exported, True, "the export keeps nodes: ")
+        Org(exported)                       # raises KeyError('nodes') if not
+    check("a never-hired org exports a document that can be re-imported",
+          export_of_an_empty_org_reimports)
+
+    def empty_org_migrates() -> None:
+        """End to end, through the real opt-in migration and its verifier."""
+        wipe("memptyorg")
+        d = json.loads(json.dumps(base))
+        d["slug"] = "memptyorg"
+        with open(store._json_path("memptyorg"), "w", encoding="utf-8") as f:
+            json.dump(d, f)
+        store.migrate_org("memptyorg")      # raises MigrationError if not
+        eq(os.path.exists(store._db_path("memptyorg")), True, "db written: ")
+        eq("memptyorg" in store.pending_migrations(), False, "still pending: ")
+        conn = store._open_conn(store._db_path("memptyorg"))
+        try:
+            eq(store.canon(store.reconstruct_full(conn)), store.canon(d),
+               "migrated document: ")
+        finally:
+            conn.close()
+    check("a never-hired org migrates, and its verifier agrees",
+          empty_org_migrates)
+
+
 # ===========================================================================
 if __name__ == "__main__":
     for fn in (s1_lazydoc, s2_roundtrip, s3_save, s4_migration_mechanics,
                s5_delete_restore, s6_revision_hooks, s7_rollback, s8_export,
-               s9_review):
+               s9_review, s10_empty_is_not_absent):
         try:
             fn()
         except BaseException:                              # noqa: BLE001

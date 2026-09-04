@@ -1206,8 +1206,23 @@ def _load_lazy(conn: sqlite3.Connection, slug: str) -> LazyDoc:
         elif k in LAZY_SECTIONS:
             pass                                    # stays lazy
         # else: a key recorded in the order with nothing behind it — dropped
+    # ⚠ `nodes` is kept UNCONDITIONALLY, not `and node_rows`. An org with no
+    # hires yet has `nodes: {}` — a real, empty section, not a missing one —
+    # and zero rows cannot tell the two apart on their own. `order` already
+    # does: it contains "nodes" only when the recorded key order had it (i.e.
+    # the document HAD the key when it was written) or when there are rows,
+    # and the loop above materialises `{}` for every such key. Gating this
+    # filter on `node_rows` as well dropped `nodes` from the key order of
+    # every empty org, and `reconstruct_full` walks the key order — so the
+    # section came back ABSENT rather than EMPTY. Two consequences, both
+    # measured (probes/p13): `migrate_org` failed its own verifier with
+    # "round-trip mismatch in sections: ['nodes']", leaving the org pending
+    # and the backend refusing to start; and `export_json` — the documented
+    # rollback path — wrote a document with no `nodes` key at all, which
+    # `Org.__init__` cannot read back (`KeyError: 'nodes'`). The first is
+    # fail-safe. The second is not. (phase1-audit, 2026-09-04.)
     d._key_order = [k for k in order if k in doc_rows
-                    or (k == "nodes" and node_rows)
+                    or k == "nodes"
                     or (k in LAZY_SECTIONS and k in present)]
     d._present = {k for k in present if k not in doc_rows}
     return d
