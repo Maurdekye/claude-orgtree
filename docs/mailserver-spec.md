@@ -849,3 +849,62 @@ none of which add work to a single-hub build:
 
 Everything else — the UI, the settings block, the status pill — can stay singular until there is a
 second hub to show.
+
+---
+
+## 13. Roster lifetime — who may say an org is gone (2026-09-04)
+
+**THE RULE, and every rejected alternative fails it the same way: only the
+holder of an identity's secret can prove an org is gone, and it now says so at
+delete time. For everything else the only sound rule is the hub's own —
+silence for N days — because silence is a fact the hub measures itself rather
+than an inference about someone else's machine.**
+
+What was wrong: `POST /api/unregister` existed from 2026-08-06 with **no
+caller in the orgtree backend**. `hubtool.unregister_identity` gave a chat
+identity the verb; an org had none. So a deleted org kept its roster row until
+the hub's own prune, and the compose picker offered it as a recipient that can
+never receive anything. Measured on the live hub 2026-09-04: 135 rows, 132
+with no local org of that base slug, 3 online.
+
+Three mechanisms now cover it, and they are deliberately different in kind:
+
+1. **`DELETE /api/orgs/{slug}` takes the polite exit** (`net.unregister_org`),
+   snapshotting the doc first because the identity secret is needed before
+   `delete_org` renames it away. It can never fail a delete; a 401 is success;
+   the local identity survives, so a restore returns with the same address.
+2. **The hub prunes rows silent for `ORG_RETENTION_DAYS`** (default 45,
+   `HUB_ORG_RETENTION_DAYS`), skipping any row that still holds queued mail.
+   Measured 2026-09-04: it had never fired — 101 rows seen within 7 days, 34
+   within 7–30, none older than 30. The roster was never permanent; it was
+   45-day *lagged*, and the lag existed because deletion never said goodbye.
+3. **The compose picker folds peers silent for 7 days** behind a disclosure
+   and states every offline peer's age. It deletes nothing, so the user stops
+   *seeing* dead recipients within a week regardless of when rows actually die.
+
+Retention is policy and the honest lever if 45 days ever feels long; do not go
+below ~14 days — a laptop on holiday would drop out of everyone's picker, a
+cost borne by a machine that did nothing wrong. It re-registers automatically
+on the next 401, so the cost is a lag, not a loss.
+
+### Rejected rules, and why each one is the same mistake
+
+| candidate | why not |
+|---|---|
+| "no local org with this base slug" | a fact about the OBSERVER. A row whose org lives on another install pointed at the same hub is not dead, it is remote |
+| "the name looks like a probe (`zz *`)" | a naming convention is not a fact, and it dies the day someone names a real org that way |
+| "never seen online" | `online` is a 90-second presence window; almost everything is offline at any instant |
+| repeated base slug, fresh fingerprint | the only candidate with real signal — 24 rows of one probe org — and still rejected: a re-mint is indistinguishable from a rebuilt data volume, and "I cannot tell which" is the correct place to stop. Removing the SOURCE (delete now unregisters) is the better fix |
+
+### The one thing still missing — a proposal, not a task
+
+**A hub-side, operator-authenticated "forget this row" in the hub's own web
+UI is the only place a human can safely make the call for a row whose secret
+is gone.** Once an org is deleted its secret goes with it, so no orgtree
+install can ever unregister that row again; the hub operator is the only party
+with standing to decide, and the hub is the only process that can authenticate
+them. Deliberately NOT built (coordinator ruling 2026-09-04): the three
+mechanisms above already stop the population growing, expire what is left, and
+hide it from the user within a week, so a fourth mechanism would be bought to
+accelerate a set that is already shrinking. Build it only if a row ever needs
+to die faster than the sweep for a reason none of the three cover.

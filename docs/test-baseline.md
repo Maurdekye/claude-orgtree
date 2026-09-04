@@ -407,6 +407,57 @@ that visibly fails:
    above will NOT save you here: 232 bytes is not 132, so this one has to be
    caught by the exit code.
 
+## `docker logs orgtree-mailhub` — the only instrument that watches from outside
+
+Every other check in this repo asks the code what it thinks it does. The mail
+hub runs in its own container and logs **every request it receives** as one
+JSON line with the caller's slugs, so it is the one place you can see what
+this fleet ACTUALLY did rather than what it should have.
+
+    docker logs --tail 400 orgtree-mailhub | grep -i "unregister\|register\|sweep"
+
+Worked example, and it is why this is written down. On 2026-09-04, in the
+middle of a normal test run, this went past:
+
+    {"path": "/api/unregister", "slugs": ["same-name.ncola_k8bx.005a42"],
+     "status": 401, "ms": 1}
+
+A **test rig reaching the operator's real hub.** Nothing was polluted — the
+request 401'd because registration needs the net client and no rig starts one
+— but a 401 is not a defence, it is a coincidence of what that rig happened
+not to run. The path was open.
+
+The cause was `orgs_create` holding a SECOND implementation of "which hub does
+a new org point at" (`dflt.pop("net_hub_address") or net.DEFAULT_HUB_ADDRESS`)
+that never consulted `net._default_address()` — so the temp-root floor landed
+an hour earlier covered the helper and **not the caller**. No unit test saw
+it; the hub's own log did.
+
+Reach for this whenever you change anything that talks to a hub, and after
+landing it. `{"sweep": N, "orgs_pruned": [...]}` lines are the retention sweep
+doing its hourly pass.
+
+## `group: callers` — a floor nothing stands on is not a floor
+
+**Team standard (coordinator ruling 2026-09-04), from the defect above.** Any
+floor, guard, clamp or default you land is UNTESTED until something proves the
+real callers go through it. Testing the helper is the easy half and it is the
+half that passes while production takes the other road.
+
+Give the suite a group whose checks drive the actual entry point — the API
+handler, the spawn path, the endpoint a user hits — and assert the property
+there, not on the function you just wrote. The falsifier is cheap: revert your
+own change and confirm that group and only that group turns red.
+
+This sits beside two related standards already in force:
+
+* **declare INERT rather than passing quietly** when an environment-coupled
+  check cannot detect its fault on this machine (e.g. the two spellings of
+  `%TEMP%` coinciding, which would make the short-name check meaningless);
+* **pin against the thing that decides**, so a future change makes a check
+  stop being TRUE rather than stop being NOTICED — assert against
+  `CODEX_TIERS`/`ANTIGRAVITY_TIERS` themselves rather than a copied list.
+
 ## The tree you measured in may not be real
 
 The tells above say when a *result* is not real. This one says when the
