@@ -12,8 +12,13 @@ Anyone may edit it — it is only worth what its last measurement is worth.
 identical at `6f354b4` and `9e15f3c` either side of it, and **independently
 re-confirmed by `sqlite-review` at `f071dc7`** in a fresh worktree with no
 `node_modules` — its raw run showed 9, which resolved on solo re-runs to
-exactly these 8 plus `warmpool`. Two agents, different tips, different
-branches, same names.
+exactly the names in the table plus `warmpool`. Two agents, different
+tips, different branches, same names.
+
+⚠ THAT PARAGRAPH QUOTES A COUNT AND THE TABLE HAS GROWN SINCE. Counts in
+prose are how this file came to tell two stories at once on 2026-09-04, when
+two agents quoted "eight" from it in the same hour reading different parts.
+Trust the table, and the per-row `last confirmed` tips in it.
 
 That is the strongest this list has been. It is still one tip behind main and
 will be again by the time you read it — which is the normal condition of this
@@ -21,7 +26,7 @@ document rather than a defect in it. Re-measure at your own tip; do not quote
 these names at anyone as current.
 
 > ⚠ **RE-MEASURE THIS LIST WHENEVER MAIN MOVES. Do not trust the names below
-> because they are written down.** Three of the eight (`harvest`, `headless`,
+> because they are written down.** Three of them (`harvest`, `headless`,
 > `turn-lifecycle`) are not really tests — they are drift detectors that grep
 > `supervisor.py` **by line number or by literal source text**. Anything that
 > shifts that file changes what they say, in either direction: a landing can
@@ -65,18 +70,32 @@ HOME and the port itself. The live backend can stay up; it does not collide.
   * Per-suite logs land in the `orgtree-tests-*` dir named in the output; the
     ✗ line gives you the exact path.
 
-## The known-failing 8 (at `f2d42f5`: 130 suites, 122 passed, 8 failed)
+## Known-failing suites on main
 
-| suite | why it fails, and why it is not yours |
-|---|---|
-| `account-pool-state` | hits the REAL API and gets a live `429 rate_limit_error`. Fails or passes with the account's usage, not with the code. |
-| `crash-reports` | needs `frontend/node_modules/.bin/esbuild.cmd` to build a real minified bundle; `FileNotFoundError [WinError 2]` in any worktree without `node_modules`. **THE METHOD DETERMINES THE NUMBER: every worktree run sees 8, and only a run inside `E:\` itself sees 7.** This is not two agents disagreeing — it is one suite that cannot pass where we are all required to work. Confirmed independently by `storage-design`, 2026-09-03. Compare a worktree run only against a worktree baseline; comparing one against a number quoted from `E:\` shows a phantom `crash-reports` regression and sends you bisecting. Do NOT `npm install` to make it go away — `E:\frontend\node_modules` is off-limits. |
-| `extern-handle-attach` | `norm_extern_handles([H2,H1,H2]) == [H2,H1]` — a real dedupe/order assertion, failing on main. |
-| `external-mail` | rig hygiene: those rigs mint their own ORGTREE_DATA but never redirect `net_hub_address`, so they register against the operator's REAL hub. |
-| `harvest` | structural fixture: "BEHAVIOUR CHANGED — ORDER: widened text assembled at line 11615, classifier still runs at 11739". Greps `supervisor.py` BY LINE NUMBER. |
-| `headless` | structural fixture: `body.index('org.d.get("api_key")')` → `ValueError: substring not found`. Greps source text. |
-| `run-completion` | the runner testing itself under a kill; "the killed run printed NO RUN COMPLETE line". |
-| `turn-lifecycle` | structural fixture greps for `st["queue"][0:0] = leftover`, which someone rewrote to `st["queue"].extend(leftover)` (`supervisor.py:4884`). Zero matches on main → the fixture trips before it asserts anything. |
+**THE TABLE IS THE SOURCE, and it carries its own tips.** This heading used to
+read "The known-failing 8 (at `f2d42f5`)" while a ninth sat in an addendum
+below it, and on 2026-09-04 two agents quoted "eight" from this file in the
+same hour because they stopped reading at different points. A count in a
+heading goes stale silently every time the table grows — which is the exact
+defect this document exists to prevent, one level up. So there is no number
+here: if you need one, count the rows.
+
+`last confirmed` is the tip a row was actually observed at, per row, because
+they were not all measured at once. `f2d42f5` was the last FULL sweep (130
+suites, 122 passed); rows touched since carry their own commit. Re-measure at
+YOUR tip before quoting any of it — see "The method".
+
+| suite | last confirmed | why it fails, and why it is not yours |
+|---|---|---|
+| `account-pool-state` | `f2d42f5` | hits the REAL API and gets a live `429 rate_limit_error`. Fails or passes with the account's usage, not with the code. |
+| `compaction` | `02615b9` | `urllib.error.HTTPError: HTTP 422` out of its own rig. Verified pre-existing in a detached worktree at `9fbe898` with the changes absent. |
+| `crash-reports` | `f2d42f5` | needs `frontend/node_modules/.bin/esbuild.cmd` to build a real minified bundle; `FileNotFoundError [WinError 2]` in any worktree without `node_modules`. **THE METHOD DETERMINES THE NUMBER: every worktree run sees it fail, and only a run inside `E:\` itself sees it pass.** This is not two agents disagreeing — it is one suite that cannot pass where we are all required to work. Confirmed independently by `storage-design`, 2026-09-03. Compare a worktree run only against a worktree baseline; comparing one against a count quoted from `E:\` shows a phantom `crash-reports` regression and sends you bisecting. Do NOT `npm install` to make it go away — `E:\frontend\node_modules` is off-limits. |
+| `extern-handle-attach` | `f2d42f5` | `norm_extern_handles([H2,H1,H2]) == [H2,H1]` — a real dedupe/order assertion, failing on main. |
+| `external-mail` | `19dd472` | ⚠ **THE REASON CHANGED — the old red was hiding this one.** It used to fail on rig hygiene (rigs minting their own `ORGTREE_DATA` without redirecting `net_hub_address`); that assertion was re-pointed in `02d1c18` once `net._under_os_temp` floored temp roots. With §1 passing the suite reaches point 7 and fails there instead: `a kiosk whose doc will not load is listed WITHOUT kiosk_cfg`. `store.load_org` no longer raises on a slug/file-name disagreement, so the reproduction's precondition has stopped holding — likely SQLite-store fallout, not a listing defect. |
+| `harvest` | `02615b9` | structural fixture: "BEHAVIOUR CHANGED — ORDER: widened text assembled at line X, classifier still runs at line Y". Greps `supervisor.py` BY LINE NUMBER. **The integers move with any insertion; the RELATION is the assertion.** A changed pair is not evidence you caused it. |
+| `headless` | `02615b9` | structural fixture: `body.index('org.d.get("api_key")')` → `ValueError: substring not found`. Greps source text. |
+| `run-completion` | `f2d42f5` | the runner testing itself under a kill; "the killed run printed NO RUN COMPLETE line". |
+| `turn-lifecycle` | `02615b9` | structural fixture greps for `st["queue"][0:0] = leftover`, which someone rewrote to `st["queue"].extend(leftover)`. Zero matches on main → the fixture trips before it asserts anything. ⚠ At `02615b9` it produced NO OUTPUT and did not finish within 200 s in a worktree — a hang, not the fixture trip. Not chased; its grep is for a LITERAL string, so a `supervisor.py` insertion cannot move it either way. |
 
 **Three of these (`harvest`, `headless`, `turn-lifecycle`) grep `supervisor.py`
 by line number or literal text.** They are drift detectors, and anything that
@@ -84,65 +103,64 @@ shifts that file's lines can change what they say. If you touch
 `supervisor.py`, re-measure the baseline at YOUR tip rather than trusting a
 list someone measured two commits ago.
 
-### Re-measured 2026-09-04 at `02615b9` by `cache-invalidation-audit`
+### How rows got here — the method that settles "was it already red"
 
-Same names, one addition, and one row that turned out to be more interesting
-than "a known red".
+`git worktree add --detach <scratch>/<name> <the-tip-before-your-branch>`, run
+the suite there, compare. It costs one checkout and it is the difference
+between "this was already red" and "I broke it and then read a document that
+told me I had not". Every `last confirmed` above was set that way.
 
-**`compaction` — ADD IT TO THE LIST.** `urllib.error.HTTPError: HTTP 422` out
-of its own rig. Verified pre-existing the only way that settles it: a detached
-worktree at `9fbe898` with my changes ABSENT failed identically. Method for
-any of these — `git worktree add --detach <scratch>/mainchk <tip-before-your-
-branch>` and run the suite there. It costs one checkout and it is the
-difference between "this was already red" and "I broke it and then read a
-document that told me I had not".
+⚠ **Fixing a long-standing red can make a suite REDDER, and that is the fix
+working.** A suite that aborts on its first assertion reports one failure and
+conceals every later one. `external-mail`'s hygiene assertion had been
+stopping the run in §1 for weeks; with §1 passing it reached point 7 and found
+a real, unrelated failure that nobody had seen. Expect that, and do not read
+it as a regression you caused.
 
-**`headless` unchanged**, same `body.index('org.d.get("api_key")')` →
-`ValueError: substring not found`.
+### Detail behind the 2026-09-04 rows (`cache-invalidation-audit`)
 
-**`harvest` unchanged in KIND, and this is the part worth reading if you have
-just edited `supervisor.py`.** It still fails on the ORDER fixture, but the
-line numbers it prints have moved — `11615/11739` in the row above,
-`12008/12132` here. That is the fixture doing its job: it asserts a RELATION
-between two positions, so a uniform shift (my change inserted ~110 lines well
-above both) leaves the relation intact and the failure identical. **A changed
-pair of numbers in that message is not evidence you caused it.** Read the
-relation, not the integers.
+Everything a table cell could not hold. The rows themselves are above; this is
+the working, kept because the reasoning is what stops the next person
+re-deriving it.
 
-**`turn-lifecycle` produced NO OUTPUT and did not finish within 200 s** in a
-worktree at this tip — a hang, not the documented fixture trip. Not chased.
-Its fixture greps for a LITERAL string (`st["queue"][0:0] = leftover`), not a
-line number, so a `supervisor.py` insertion cannot move it either way. Worth
-someone's time separately; do not read a `supervisor.py` change into it.
+**`harvest` — read this if you have just edited `supervisor.py`.** It still
+fails on the ORDER fixture, but the line numbers it prints move: `11615/11739`
+at `f2d42f5`, `12008/12132` at `02615b9`. That is the fixture doing its job.
+It asserts a RELATION between two positions, so a uniform shift (an insertion
+of ~110 lines well above both) leaves the relation intact and the failure
+identical. **A changed pair of numbers in that message is not evidence you
+caused it.** Read the relation, not the integers.
 
-**`external-mail` — the assertion is CORRECT ABOUT THE HAZARD AND WRONG ABOUT
-THESE NINE RIGS, and the difference matters before anyone "fixes" it.**
-
-It flags every rig that mints its own `ORGTREE_DATA` without also writing
-`net_hub_address`. That is a proxy for "could register fixture orgs against
+**`external-mail` — the hygiene assertion was correct about the hazard and
+wrong about the nine rigs it named, and the difference mattered before anyone
+"fixed" it.** It flagged every rig minting its own `ORGTREE_DATA` without
+writing `net_hub_address` — a proxy for "could register fixture orgs against
 the operator's real hub". Measured, not reasoned:
 
-* Registration happens **only** through `net.start_net_client()`, which is
-  called from the backend's startup path (`api.py`). `store.create_org` in a
-  throwaway data root writes a doc and contacts nothing.
+* Registration happens **only** through `net.start_net_client()`, called from
+  the backend's startup path. `store.create_org` in a throwaway data root
+  writes a doc and contacts nothing.
 * **None of the nine flagged rigs starts a backend.** Grepped each for
   `start_net_client` / `uvicorn` / `TestClient` / lifespan; the two apparent
   hits were the word "startup" in prose.
-* **None of their fixture orgs is on the real hub.** Fetched the live roster
-  (`GET /ui/data` on `127.0.0.1:7370`, 135 rows) and matched every name those
-  rigs create — `sendmail rig`, `sendmail rig claude`, `sendfile rig`,
-  `sendfile rig claude`, `Old Host Org`, `Boxed Org`, `zz-or-cost-test`,
-  `zz turn activity`. **Zero hits.** The 2026-08-10 pollution names the
+* **None of their fixture orgs was on the real hub.** Live roster fetched
+  (`GET /ui/data` on `127.0.0.1:7370`, 135 rows) and matched against every
+  name those rigs create. **Zero hits.** The 2026-08-10 pollution names the
   suite's own comment cites (`arch`, `capnode`, `lonedead`, `norescue`,
-  `order2`) are gone too — that was this suite, and this suite was fixed.
+  `order2`) were gone too — that was this suite, and this suite was fixed.
 
-So the pollution the assertion exists to prevent is real, has happened once,
-and is not happening now. What the roster DOES hold is 132 rows whose base
-slug is no longer a local org at all — UI-probe orgs (`zz crowdtoggle a/b`,
-`zz keyloss probe`) and historical real ones (`orgtree-*`, `cc-*`). That is a
-different defect: **deleting an org locally does not unregister it from the
-hub.** Do not fold the two together.
+So the assertion was re-pointed (`02d1c18`) at what is still dangerous after
+`net._under_os_temp` floors temp roots: a rig whose data root is OUTSIDE the
+OS temp directory with no hub address named. ⚠ It is only sufficient BECAUSE
+that floor exists — if the floor is removed or narrowed, `mkdtemp` stops being
+an adequate answer and the check silently becomes worthless while still
+passing. ⚠ "Every rig already uses `mkdtemp`" is a fact about today, not the
+check's reason for existing.
 
+What the roster survey also turned up, deliberately kept separate: 132 of 135
+rows had a base slug that was no longer a local org — **deleting an org did
+not unregister it from the hub**. Fixed in `7d8c652`; the rule for who may
+say an org is gone is `docs/mailserver-spec.md` §13.
 
 ### `external-mail`, 2026-09-04: the red was hiding a second, unrelated red
 
@@ -188,16 +206,29 @@ condition it was written for — the same drift-detector shape as `harvest` and
 `turn-lifecycle`.
 
 
-### ⚠ The count also depends on YOUR CHECKOUT: a symlinked node_modules
+### ⚠ The result also depends on YOUR CHECKOUT: a junctioned node_modules
 
 A frontend change is untestable without `frontend/node_modules`, and the team
-pattern (started by `card-gallery/wt`, used by `mail-delivery/wt-ghost`) is a
-**symlink to `E:\...\frontend\node_modules`** — never an install:
+pattern is to point at the shared checkout's copy rather than install a second
+one.
 
-    ln -s /e/Libraries/Desktop/claude-orgtree/frontend/node_modules node_modules
+⚠ **DO NOT USE `ln -s` FROM GIT BASH FOR THIS.** Without the native-symlink
+privilege MSYS silently falls back to COPYING, so the command that looks like
+a link duplicates the entire `node_modules` tree into your worktree. Measured
+2026-09-04: it produced a real directory (`Attributes: Directory`, no
+`ReparsePoint`) that had to be removed with `rmdir /s`. The earlier version of
+this note recommended exactly that command.
 
-That makes esbuild resolve, so **`crash-reports` PASSES and your baseline
-reads 7**, like a run inside `E:\`. Same suite, third number, and this one is
+Use a junction from PowerShell, which is a real reparse point:
+
+    New-Item -ItemType Junction -Path frontend\node_modules `
+      -Target E:\Libraries\Desktop\claude-orgtree\frontend\node_modules
+
+Check what you got before trusting it — `(Get-Item <path> -Force).Attributes`
+must say `ReparsePoint`, and `.Target` must name the shared copy.
+
+That makes esbuild resolve, so **`crash-reports` PASSES for you**, like a run
+inside `E:\`. Same suite, opposite result, and this one is
 a property of your own worktree rather than of where you ran it. Record which
 you did next to any count you quote. The runner also writes a temp directory
 (`node_modules/.orgtree-tests/`) *through* the link, into E:'s tree — harmless,
