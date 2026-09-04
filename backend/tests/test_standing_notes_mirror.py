@@ -364,12 +364,35 @@ def t_oversize_notes_are_head_cut_and_say_so() -> None:
     no trace that anything is missing."""
     clear_notes()
     body = "A" * (S.STANDING_NOTES_MAX + 5000)
-    write_notes("codexseat", "FRONT-" + MARK + body + "-TAIL-" + MARK)
+    text = "FRONT-" + MARK + body + "-TAIL-" + MARK
+    write_notes("codexseat", text)
     try:
         p = prompt("codexseat")
         assert "TRUNCATED" in p, "oversize notes were cut silently"
         assert "FRONT-" + MARK in p, "the head of the notes was dropped"
         assert "-TAIL-" + MARK not in p, "the notes were not actually cut"
+        # ...and the SCALE of the cut, not merely that one happened. The bound
+        # alone says a cut occurred; how much is gone is what tells the agent
+        # whether to go open the file or carry on. Two live scratch files were
+        # measured over this bound on 2026-09-04, so this fires in practice.
+        assert str(len(text)) in p, \
+            f"the notice does not state the file's TRUE length ({len(text)})"
+        assert str(len(text) - S.STANDING_NOTES_MAX) in p, \
+            ("the notice does not say how much is missing "
+             f"({len(text) - S.STANDING_NOTES_MAX} chars)")
+    finally:
+        clear_notes()
+
+
+def t_notes_that_fit_carry_no_truncation_notice() -> None:
+    """POSITIVE CONTROL for the check above: without this, a notice that fired
+    unconditionally would satisfy every assertion there and mean nothing."""
+    clear_notes()
+    write_notes("codexseat", "FRONT-" + MARK + ("B" * 200) + "-TAIL-" + MARK)
+    try:
+        p = prompt("codexseat")
+        assert "TRUNCATED" not in p, "short notes claimed to be truncated"
+        assert "-TAIL-" + MARK in p, "short notes lost their tail anyway"
     finally:
         clear_notes()
 
@@ -416,8 +439,10 @@ def main() -> int:
     check("absent and empty notes render nothing",
           t_absent_and_empty_notes_are_silent)
     print("group truncation")
-    check("oversize notes are head-cut and the cut is declared",
+    check("oversize notes are head-cut, and the cut declares its SCALE",
           t_oversize_notes_are_head_cut_and_say_so)
+    check("POSITIVE CONTROL: notes that fit carry no truncation notice",
+          t_notes_that_fit_carry_no_truncation_notice)
     print("group promise: the sentence that started this")
     check("the false every-turn promise is gone on every lane",
           t_the_prompt_no_longer_promises_what_it_cannot_keep)

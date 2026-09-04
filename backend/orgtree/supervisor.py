@@ -3853,6 +3853,21 @@ def _claudemd_block(org: Org, nid: str) -> str:
             # theirs. Measured 2026-09-04: a real granted folder on this
             # machine holds a 58,574-char CLAUDE.md, so agents were being
             # handed 10% of it and told nothing at all.
+            #
+            # ⚠ WHY AN INLINE NOTICE IS ENOUGH HERE, WHEN IT WAS NOT FOR
+            # org.md — this is the rule that decides the next instance of
+            # this, and it is not derivable from either fix alone:
+            #
+            #     TELLING THE READER IS TELLING SOMEONE WHO CAN ACT — WHEN THE
+            #     READER HOLDS THE FILE. org.md needed the editor because its
+            #     cut was announced to an agent who could do nothing about it;
+            #     the folder-grant notice can be inline because the recipient
+            #     holds the folder and can open the file.
+            #
+            # The distinction is NOT "who wrote the file", which is the
+            # natural guess and is wrong — it is WHO CAN REACH IT. So the
+            # notice below names the path: that is what makes it actionable
+            # rather than merely honest.
             note = ""
             if len(raw) > CLAUDEMD_MAX:
                 note = (f"  [TRUNCATED - this file is {len(raw)} chars and "
@@ -4057,7 +4072,8 @@ def _standing_notes_block(org: Org, nid: str) -> str:
                 "on remembering anything, and check the file.]\n")
     if not txt:
         return ""
-    cut = len(txt) > STANDING_NOTES_MAX
+    full = len(txt)
+    cut = full > STANDING_NOTES_MAX
     if cut:
         # head-taken: notes are a curated document, not an append log like
         # breadcrumbs.md, so the top is the part that was meant to be read
@@ -4069,7 +4085,13 @@ def _standing_notes_block(org: Org, nid: str) -> str:
             "revise. Editing the file changes this prompt, which restarts "
             "your process - so the next turn is a cold one carrying the new "
             "notes, and this is why the file is worth keeping short."
-            + (" TRUNCATED to the first %d chars." % STANDING_NOTES_MAX
+            # the SCALE of the cut, not just its existence: knowing the bound
+            # says a cut happened, knowing how much is gone is what decides
+            # whether to go open the file or carry on. Matches the wording of
+            # the other truncation notices in this file.
+            + (" TRUNCATED - the file is %d chars and you have the first %d; "
+               "the remaining %d are NOT here, so open it if you need them."
+               % (full, STANDING_NOTES_MAX, full - STANDING_NOTES_MAX)
                if cut else "")
             + "]\n" + txt + "\n[END YOUR STANDING NOTES]\n")
 
