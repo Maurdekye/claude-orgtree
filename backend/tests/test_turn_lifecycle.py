@@ -2552,6 +2552,59 @@ def doc(slug: str) -> dict:
     raise RuntimeError(f"could not read {p}")
 
 
+def write_doc(slug: str, d: dict) -> None:
+    """Persist a hand-edited `d` back into the LIVE BACKEND's store — the
+    write counterpart of `doc()`, and it inherits every one of its reasons.
+
+    Six checks below plant a state the running system cannot be talked into
+    (a reset time already past, a charter changed behind a saved fingerprint,
+    an unconfirmed delivery batch, an inflight command) by stopping the
+    backend, editing its document, and starting it again. Under JSON that was
+    a `json.dump` over `DATA/orgs/<slug>.json`. Under SQLite there is no such
+    file, and writing one is worse than useless: it leaves a stray `.json`
+    beside the `.db`, which the migration wall counts as an unmigrated org
+    and REFUSES TO START on — naming orgs the suite had already deleted.
+
+    `store._write_doc(conn, d, None)` is the plain-dict arm of the save
+    transaction: every key upserted, every node written, every log section
+    rewritten, and whatever the database holds that `d` does not is deleted.
+    That is exactly the semantics of replacing the whole JSON file, which is
+    what these sites mean.
+
+    Three disciplines, all of them `doc()`'s:
+      · an explicit path under `DATA`, never `store._POOL` — the pool keys on
+        SLUG and resolves through `store.DATA_ROOT`, which in this process is
+        the HERMETIC root, so a pooled connection could write the wrong
+        database entirely;
+      · `create=False` (the default), so planting a document for a database
+        that was never written RAISES instead of minting an empty one — a
+        silent empty org is the failure mode this whole flag exists for;
+      · one explicit `BEGIN IMMEDIATE` … `COMMIT`, the same transaction
+        `_save_sqlite` wraps `_write_doc` in, so a half-written plant rolls
+        back rather than starting the backend on a torn document.
+    (sqlite-review, 2026-09-04.)
+    """
+    if store.STORE_BACKEND != "sqlite":
+        with open(os.path.join(DATA, "orgs", slug + ".json"), "w",
+                  encoding="utf-8") as f:
+            json.dump(d, f, indent=2)
+        return
+    conn = store._open_conn(os.path.join(DATA, "orgs", slug + ".db"))
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            store._write_doc(conn, d, None)
+            conn.execute("COMMIT")
+        except BaseException:
+            try:
+                conn.execute("ROLLBACK")
+            except sqlite3.Error:
+                pass
+            raise
+    finally:
+        conn.close()
+
+
 def transcript_text() -> str:
     """Everything every fake CLI has ever written, in this rig's HOME."""
     out = []
@@ -4249,9 +4302,7 @@ def live_auto_resume() -> None:
     d = doc(slug)
     d["auto_resume"] = True
     d["nodes"][nid]["frozen"]["until_ts"] = time.time() - 600
-    with open(os.path.join(DATA, "orgs", slug + ".json"), "w",
-              encoding="utf-8") as f:
-        json.dump(d, f, indent=2)
+    write_doc(slug, d)
     set_cfg(FAST)
     start_backend()
     check("autoresume · the timer un-freezes the node on its own", lambda: (
@@ -4272,9 +4323,7 @@ def live_auto_resume() -> None:
     d = doc(slug2)
     d["auto_resume"] = True
     d["nodes"][nid2]["frozen"]["until_ts"] = time.time() + 3600
-    with open(os.path.join(DATA, "orgs", slug2 + ".json"), "w",
-              encoding="utf-8") as f:
-        json.dump(d, f, indent=2)
+    write_doc(slug2, d)
     set_cfg(FAST)
     start_backend()
     time.sleep(40)
@@ -4309,9 +4358,7 @@ def live_auto_cheap_compact() -> None:
     n["charter"] = "changed after the recorded warm turn"
     n["occupancy"] = 150_000
     n["context_window"] = 200_000
-    with open(os.path.join(DATA, "orgs", slug + ".json"), "w",
-              encoding="utf-8") as f:
-        json.dump(d, f, indent=2)
+    write_doc(slug, d)
     set_cfg(FAST)
     start_backend()
     tok = token()
@@ -4350,9 +4397,7 @@ def live_auto_cheap_compact() -> None:
     d3["nodes"][nid]["charter"] = "changed again while policy is off"
     d3["nodes"][nid]["occupancy"] = 150_000
     d3["nodes"][nid]["context_window"] = 200_000
-    with open(os.path.join(DATA, "orgs", slug + ".json"), "w",
-              encoding="utf-8") as f:
-        json.dump(d3, f, indent=2)
+    write_doc(slug, d3)
     set_cfg(FAST)
     start_backend()
     send(slug, nid, f"wake again {token()}")
@@ -4658,9 +4703,7 @@ def live_reconcile() -> None:
                   "body": f"journaled only {tokj}",
                   "at": "2026-08-04T00:00:00.000Z"}],
         "notices": [], "via": "turn"}]
-    with open(os.path.join(DATA, "orgs", slug4 + ".json"), "w",
-              encoding="utf-8") as f:
-        json.dump(d, f, indent=2)
+    write_doc(slug4, d)
     check("reconcile · an unconfirmed batch folds back and is delivered",
           lambda: (
               start_backend(),
@@ -4675,9 +4718,7 @@ def live_reconcile() -> None:
     d = doc(slug5)
     d["nodes"][nid5]["inflight"] = {"at": "2026-08-04T00:00:00.000Z",
                                     "text": "/context", "cmd": True}
-    with open(os.path.join(DATA, "orgs", slug5 + ".json"), "w",
-              encoding="utf-8") as f:
-        json.dump(d, f, indent=2)
+    write_doc(slug5, d)
     start_backend()
     time.sleep(2.0)
     check("reconcile · an inflight COMMAND is dropped, never replayed as prose",
