@@ -879,6 +879,36 @@ export function OrgInboxModal({ inbox, net, map, slug, toast, close, jumpTo }: O
 // until the hub is reachable). The user bypasses the audience gate
 // (they outrank it); attachments stage first and are refused for the
 // text-only transports (@ext:/@mcp:) by the server with a clear message.
+/** How long a hub roster row may be silent before the compose picker
+ *  stops presenting it as an ordinary recipient. Well inside the hub's
+ *  own ORG_RETENTION_DAYS (45): the point is not to predict the prune,
+ *  it is that a week of silence is enough to stop implying reachability.
+ *  Nothing is deleted and nothing is hidden permanently - the fold opens. */
+export const QUIET_PEER_DAYS = 7
+
+/** Days since an ISO timestamp, or null when there is none to measure.
+ *  A peer with NO last_seen is never called quiet: absence of a reading
+ *  is not evidence of silence, and guessing the other way would fold
+ *  away a perfectly good recipient. */
+export function peerQuietDays(lastSeen?: string | null,
+  now: number = Date.now()): number | null {
+  if (!lastSeen) return null
+  const t = Date.parse(lastSeen)
+  if (!Number.isFinite(t)) return null
+  return Math.max(0, Math.floor((now - t) / 86400000))
+}
+
+/** "5d" / "3h" / "now" - short enough to sit on a chip. */
+export function peerAgeLabel(lastSeen?: string | null,
+  now: number = Date.now()): string {
+  if (!lastSeen) return ''
+  const ms = now - Date.parse(lastSeen)
+  if (!Number.isFinite(ms)) return ''
+  if (ms < 3600000) return 'now'
+  if (ms < 86400000) return `${Math.floor(ms / 3600000)}h`
+  return `${Math.floor(ms / 86400000)}d`
+}
+
 function ComposeModal({ slug, net, entries, toast, close }: {
   slug: string
   net?: TreePayload['net']
@@ -895,6 +925,21 @@ function ComposeModal({ slug, net, entries, toast, close }: {
   // a live roster; @net:<slug> needs only the slug string, and the spool
   // holds the mail until the hub is back
   const [freeTo, setFreeTo] = useState('')
+  // A ROSTER ROW IS NOT A PROMISE OF REACHABILITY. The hub keeps a
+  // row until ORG_RETENTION_DAYS of silence, so a deleted org sat in
+  // this picker for weeks as a recipient that can never receive
+  // anything - measured on the live hub 2026-09-04: 135 rows, 132
+  // with no local org of that base slug, 3 online. Deleting an org
+  // now takes the polite exit, but that only covers orgs deleted from
+  // THIS install; rows left by an older build, a crashed install or a
+  // machine that never returns still age out on the hub's own clock.
+  //
+  // So the picker STATES the age and FOLDS the long-silent away. It
+  // deletes nothing and hides nothing permanently, deliberately: a
+  // row whose org lives on another install is not dead, it is remote,
+  // and 'I cannot see it' is a fact about this observer. Free-typed
+  // addressing (FR-07) is untouched either way.
+  const [showQuiet, setShowQuiet] = useState(false)
   const [text, setText] = useState('')
   const [staged, setStaged] = useState<{ id: string; name: string }[]>([])
   const [busy, setBusy] = useState(false)
@@ -903,12 +948,12 @@ function ComposeModal({ slug, net, entries, toast, close }: {
   // peers under their slug's username segment — the same "domain (account)"
   // headers the mailservers tab and the hub's own web UI use — and the
   // log-only correspondents under their transport's namespace
-  const groups = (() => {
+  const allGroups = (() => {
     const seen = new Set<string>()
     const gs = new Map<string, { addr: string; name: string; kind: string
-      online?: boolean; via?: string[] }[]>()
+      online?: boolean; via?: string[]; lastSeen?: string | null }[]>()
     const put = (g: string, o: { addr: string; name: string; kind: string
-      online?: boolean; via?: string[] }) => {
+      online?: boolean; via?: string[]; lastSeen?: string | null }) => {
       if (seen.has(o.addr)) return
       seen.add(o.addr)
       gs.set(g, [...(gs.get(g) ?? []), o])
@@ -919,7 +964,7 @@ function ComposeModal({ slug, net, entries, toast, close }: {
         put(r.slug.split('.')[1] ?? h.name ?? '?',
           { addr: `@net:${r.slug}`, name: r.org_name || r.slug.split('.')[0]!,
             kind: r.kind === 'chat' ? 'chat' : 'org', online: !!r.online,
-            via: r.transports ?? ['net'] })
+            via: r.transports ?? ['net'], lastSeen: r.last_seen })
       }
     }
     for (const e of entries) {
@@ -936,6 +981,25 @@ function ComposeModal({ slug, net, entries, toast, close }: {
     }
     return [...gs.entries()].sort(([a], [b]) => (a < b ? -1 : 1))
   })()
+  // ONLINE always wins: a peer answering right now is reachable
+  // whatever its last_seen says. And a peer with NO reading is never
+  // called quiet - absence of a measurement is not evidence of
+  // silence, and folding one away would remove a good recipient on
+  // the strength of a missing field. That is the same failure
+  // direction as treating 'no local org' as 'dead'.
+  const isQuiet = (o: { online?: boolean; lastSeen?: string | null }) => {
+    if (o.online) return false
+    const d = peerQuietDays(o.lastSeen)
+    return d != null && d >= QUIET_PEER_DAYS
+  }
+  const quiet = allGroups.reduce(
+    (n, [, os]) => n + os.filter(isQuiet).length, 0)
+  const groups: [string, typeof allGroups[number][1]][] = showQuiet
+    ? allGroups
+    : allGroups.map(([g, os]) =>
+        [g, os.filter((o) => !isQuiet(o))] as
+          [string, typeof allGroups[number][1]])
+        .filter(([, os]) => os.length > 0)
   const toggle = (addr: string) => setSel((s) =>
     s.includes(addr) ? s.filter((a) => a !== addr) : [...s, addr])
   const dests = [
@@ -981,6 +1045,16 @@ function ComposeModal({ slug, net, entries, toast, close }: {
         <div className="field-label">to
           <span className="dim"> — click to add, click again to remove; the
             mail goes to every selected recipient</span></div>
+        {quiet > 0 && (
+          <div className="cmp-quiet-toggle">
+            <button type="button" className="linkish"
+              onClick={() => setShowQuiet((v) => !v)}>
+              {showQuiet ? 'hide' : 'show'} {quiet} not seen in over
+              {' '}{QUIET_PEER_DAYS} days</button>
+            <span className="dim"> — still addressable; a hub row
+              outlives its org until the hub prunes it</span>
+          </div>
+        )}
         {groups.map(([g, os]) => (
           <div key={g}>
             <div className="oi-origin">{g} · {os.length}</div>
@@ -989,10 +1063,20 @@ function ComposeModal({ slug, net, entries, toast, close }: {
                 <button key={o.addr} type="button" disabled={busy}
                   className={'cmp-chip' + (sel.includes(o.addr) ? ' on' : '')}
                   title={o.addr + ' — reachable via: '
-                    + (o.via ?? [o.kind]).join(', ')}
+                    + (o.via ?? [o.kind]).join(', ')
+                    + (o.online ? ' — online now'
+                      : o.lastSeen
+                        ? ` — last seen ${o.lastSeen.slice(0, 16)
+                            .replace('T', ' ')} UTC`
+                        : '')}
                   onClick={() => toggle(o.addr)}>
                   <span className={'oi-dot' + (o.online ? ' ok' : '')} />
                   {o.name}
+                  {/* the age, said out loud: a dull dot alone did
+                      not distinguish 'idle' from 'gone weeks ago' */}
+                  {!o.online && o.lastSeen && (
+                    <span className="dim">{peerAgeLabel(o.lastSeen)}</span>
+                  )}
                   {o.kind === 'chat' && <span className="dim">chat</span>}
                   <span className="dim">{(o.via ?? [o.kind]).join('·')}</span>
                 </button>
