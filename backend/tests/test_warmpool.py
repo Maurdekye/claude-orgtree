@@ -103,6 +103,32 @@ def check(label, fn):
         traceback.print_exc(limit=4)
 
 
+def record_turn_popens(fn):
+    """Run one real _run_turn and return its effective Popen kwargs."""
+    calls = []
+    real_popen = S.subprocess.Popen
+
+    def recording_popen(*args, **kwargs):
+        calls.append(dict(kwargs))
+        return real_popen(*args, **kwargs)
+
+    S.subprocess.Popen = recording_popen
+    try:
+        fn()
+    finally:
+        S.subprocess.Popen = real_popen
+    return calls
+
+
+def assert_turn_popens_hidden(calls, path):
+    assert len(calls) == 1, f"{path}: expected one cold Popen, got {calls}"
+    expected = (S.subprocess.CREATE_NO_WINDOW
+                if os.name == "nt" else 0)
+    assert calls[0].get("creationflags") == expected, (
+        f"{path}: effective creationflags were "
+        f"{calls[0].get('creationflags')!r}, expected {expected!r}")
+
+
 # ── A. WarmProc delivery gate ──────────────────────────────────────────────
 class FakeProc:
     """Just enough Popen face for WarmProc: pumpable stdout/stderr, poll()."""
@@ -359,7 +385,8 @@ def d_killed_parked_process_degrades_to_cold():
     wp.proc.kill()
     wait_for(lambda: wp.dead.is_set(), why="kill lands")
     n_before = len(admit_lines())
-    S._run_turn(SLUG, NID, "hello three")     # must complete anyway
+    popens = record_turn_popens(
+        lambda: S._run_turn(SLUG, NID, "hello three"))
     adm = admit_lines()
     assert len(adm) == n_before + 1 and adm[-1]["served"] == "cold", \
         f"dead pool entry did not degrade to cold: {adm[-1:]}"
@@ -368,6 +395,7 @@ def d_killed_parked_process_degrades_to_cold():
     assert st["last_error"] is None, f"fallback turn failed: {st['last_error']}"
     W.keeper_pass_now()                  # and the seat re-warms after
     wait_for(lambda: W.is_warm(SLUG, NID), why="re-warm after crash")
+    assert_turn_popens_hidden(popens, "ordinary cold turn spawn")
 
 
 def d_idle_identity_change_respawns_immediately():
@@ -766,9 +794,10 @@ def f_death_between_claim_and_write_falls_back_cold():
     n_before = len(admit_lines())
     n_rows0 = len(exit_rows(NID))
     try:
-        S._run_turn(SLUG, NID, marker)
+        popens = record_turn_popens(lambda: S._run_turn(SLUG, NID, marker))
     finally:
         W.claim = real_claim
+    assert_turn_popens_hidden(popens, "claim-death cold retry")
     st = S.state(SLUG, NID)
     assert st["last_error"] is None, (
         f"a dead warm process must be indistinguishable from never having "

@@ -9822,7 +9822,9 @@ def _run_one_turn(slug: str, nid: str,
                     spawn_argv(org, nid, _build_cmd(org, nid)),
                     cwd=scratch_dir(slug, nid), env=env,
                     stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                    text=True, encoding="utf-8", errors="replace")
+                    text=True, encoding="utf-8", errors="replace",
+                    creationflags=(subprocess.CREATE_NO_WINDOW  # type: ignore[attr-defined]
+                                   if os.name == "nt" else 0))
                 _leash(proc)              # dies with the backend (№29)
                 warmpool.journal_admit(
                     slug, nid, sid, "cold", _adm_reason, turn_hash or "",
@@ -10081,7 +10083,9 @@ def _run_one_turn(slug: str, nid: str,
                         cwd=scratch_dir(slug, nid),
                         env=env, stdin=subprocess.PIPE,
                         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                        text=True, encoding="utf-8", errors="replace")
+                        text=True, encoding="utf-8", errors="replace",
+                        creationflags=(subprocess.CREATE_NO_WINDOW  # type: ignore[attr-defined]
+                                       if os.name == "nt" else 0))
                     _leash(proc)
                     with _state_lock:
                         st["proc"] = proc
