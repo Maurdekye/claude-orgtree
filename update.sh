@@ -514,8 +514,45 @@ if [ "$DO_CUTOVER" = 1 ]; then
     # ruling keeps that gate: it runs before the new build takes its first
     # write, which is now, because nothing has been started yet.
     EXP_RC=0
+    NO_ROLLBACK="$DATA_ROOT/NO-ROLLBACK-ROUTE.txt"
     "$PY" "$CUT" export-verify "$DATA_ROOT" || EXP_RC=$?
     if [ "$EXP_RC" != 0 ]; then
+      # ⚠ THE INSTALL COMES UP ANYWAY, AND THAT IS THE POINT OF THIS FILE.
+      # A failed export means there is no validated export to roll back to
+      # WHATEVER this script does, so refusing to start would be an outage
+      # with nothing bought by it (coordinator ruling 2026-09-04, and the
+      # Windows ladder does the same). But it leaves the install in a state
+      # nobody chose and nobody was told about, and the moment that state
+      # matters is the moment somebody needs to roll back -- the worst
+      # possible moment to find out. So it is said three times: in the log,
+      # on the console, and in the DATA ROOT, which is the only one of the
+      # three still there next week.
+      cat > "$NO_ROLLBACK" <<MARKER
+orgtree: THIS INSTALL HAS NO ROLLBACK ROUTE.
+
+Written $(date -u '+%Y-%m-%d %H:%M:%S UTC') by update.sh.
+
+WHAT HAPPENED
+  Your data root was migrated to SQLite successfully, but the step AFTER
+  it -- export-verify -- exited $EXP_RC. At least one org did not survive a
+  round trip out of SQLite, so no validated export was written.
+
+WHAT THAT MEANS
+  Your data is here and the install is running normally. What is missing is
+  the way BACK. tools/cutover.py rollback rebuilds the JSON documents from
+  exports/, and there is no complete set of those. The <slug>.json.premigration
+  files beside your databases are NOT a rollback: they predate every write
+  since the migration.
+
+HOW TO FIX IT -- worth doing now, not later
+  Stop the backend, then re-run the export:
+      $PY $CUT export-verify "$DATA_ROOT"
+  If it succeeds, exports/ holds your route back and this file is removed
+  automatically by the next deploy. If it fails again, read what it names --
+  it says which org and why.
+
+Deleting this file changes nothing except your ability to find out.
+MARKER
       printf '%s\n' "$RED"
       echo "!! EXPORT-VERIFY FAILED (exit $EXP_RC) AFTER THE MIGRATION SUCCEEDED."
       echo "   Your data root is MIGRATED: orgs/ holds databases and the old"
@@ -527,9 +564,20 @@ if [ "$DO_CUTOVER" = 1 ]; then
       echo "   install is worse than an unproven export -- but READ THE OUTPUT"
       echo "   ABOVE, and if this install is not healthy afterwards the way back is:"
       echo "       $PY $CUT rollback $DATA_ROOT"
+      echo "   Recorded in $NO_ROLLBACK"
       printf '%s\n' "$OFF"
       UPGRADE_FAILED=1
     else
+      # ⚠ AND IT IS CLEARED ON SUCCESS. A marker that can only ever be written
+      # stops meaning anything the first time it goes stale: an operator who
+      # retried successfully would still find a file telling them they have no
+      # way back, and would learn to ignore it. A warning nobody believes is
+      # worse than no warning.
+      if [ -f "$NO_ROLLBACK" ]; then
+        rm -f "$NO_ROLLBACK"
+        good "removed the NO-ROLLBACK-ROUTE marker an earlier run left: the"
+        good "  export verified this time, so there IS a route back again"
+      fi
       good "UPGRADED: this root is now SQLite. The old documents are kept as"
       good "  $DATA_ROOT/orgs/<slug>.json.premigration (a record, not a way back)"
       good "  and the validated export -- which IS the way back -- is in"

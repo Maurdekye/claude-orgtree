@@ -166,6 +166,17 @@ and `.json` in `orgs/` — starts nothing and stops the deploy. "Seamless" does
 not extend to guessing about half-migrated data. And a failed migration leaves
 the install **running on its old build**, not down.
 
+**If you find `NO-ROLLBACK-ROUTE.txt` in your data root**, the migration
+succeeded but `export-verify` did not, and your install is running **without a
+way back**. It was started anyway on purpose: a failed export means there is no
+validated export to roll back to whatever the deploy does, so refusing to start
+would be an outage with nothing bought by it (coordinator ruling, 2026-09-04).
+Your data is fine; the safety net is what is missing. Fix it when you read the
+file, not when you need it — stop the backend and re-run
+`python tools/cutover.py export-verify <root>`. A successful export removes the
+file automatically. ⚠ The `<slug>.json.premigration` files sitting beside your
+databases are **not** a rollback: they predate every write since the migration.
+
 **Opting out.** `ORGTREE_NO_AUTOCUTOVER=1` skips the automatic upgrade; you
 then also need `ORGTREE_STORE=json` or the backend refuses the root it is
 pointed at. This is also how `tools/cutover_deploy.ps1` stops the `update.ps1`

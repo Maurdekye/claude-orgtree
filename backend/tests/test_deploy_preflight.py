@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -412,6 +413,99 @@ def the_deployed_backend_still_never_receives_the_migrate_flag() -> None:
         "cutover_deploy.ps1's one-shot .cmd file")
 
 
+# ------------------------- §5b  "no way back" is said, not left to be found --
+# An install whose export-verify failed still COMES UP -- there is no validated
+# export to roll back to whatever we do, so refusing to start would be an
+# outage with nothing bought by it (coordinator ruling, 2026-09-04).  What must
+# not happen is that it comes up looking normal.  The state is recorded three
+# times; the file in the data root is the only one still there next week, so it
+# is the one pinned here.
+
+MARKER = "NO-ROLLBACK-ROUTE.txt"
+
+
+def both_implementations_record_a_missing_rollback_route() -> None:
+    for path, name in ((CUTOVER_PS1, "cutover_deploy.ps1"), (UPDATE_SH, "update.sh")):
+        t = code(path)
+        assert MARKER in t, (
+            "%s no longer writes the no-rollback marker, so an install that "
+            "came up after a failed export-verify looks entirely normal" % name)
+
+
+def the_marker_is_written_where_the_fact_becomes_true() -> None:
+    """Written at the export-verify failure, not in the recovery arm that
+    happens to bring the install back up: the fact has to survive the recovery
+    going wrong, this script dying, or the backend never coming back."""
+    t = code(CUTOVER_PS1)
+    exp = at(t, 'Say "EXPORT-VERIFY FAILED')
+    write = at(t, "Set-NoRollbackMarker ")
+    recov = at(t, 'Recover "cutover.py export-verify failed')
+    assert exp >= 0 and write >= 0 and recov >= 0, (exp, write, recov)
+    assert exp < write < recov, (
+        "the marker is no longer written between the failure and the "
+        "recovery: %s" % ((exp, write, recov),))
+
+
+def the_marker_is_cleared_when_an_export_does_verify() -> None:
+    """⚠ A marker that can only ever be written stops meaning anything the
+    first time it goes stale.  An operator who retried the cutover
+    successfully would still find a file telling them they have no way back,
+    and would learn to ignore it -- and then it is worth nothing to the
+    install that really has none."""
+    ps = code(CUTOVER_PS1)
+    ok = at(ps, "every org exported and re-read")
+    # the LAST call site, because the function's own definition comes first
+    call = ps.rfind("Clear-NoRollbackMarker")
+    assert ok >= 0 and call >= 0, (ok, call)
+    assert ok < call, (
+        "cutover_deploy.ps1 clears the marker somewhere other than the "
+        "export-verify SUCCESS path, so a stale warning outlives the run "
+        "that disproved it")
+    sh = code(UPDATE_SH)
+    assert 'rm -f "$NO_ROLLBACK"' in sh, "update.sh never clears the marker"
+
+
+def a_recovered_install_with_no_route_back_is_not_reported_as_plain_recovered() -> None:
+    """The green 'RECOVERED: orgtree is UP on SQLite' banner is the only way an
+    install comes back after a failed export-verify.  It must not swallow the
+    fact that a whole safety net is missing."""
+    t = code(CUTOVER_PS1)
+    banner = at(t, "RECOVERED: orgtree is UP on SQLite, carrying its orgs.")
+    guard = at(t, "if ($script:noRollbackRoute) {")
+    assert banner >= 0 and guard >= 0, (banner, guard)
+    assert banner < guard, (
+        "the no-rollback warning no longer follows the recovered banner")
+    assert "$script:rc = 24" in t, (
+        "'recovered' and 'recovered with no way back' report the same exit "
+        "code, so a caller and a log cannot tell them apart")
+
+
+def neither_implementation_claims_premigration_is_a_rollback() -> None:
+    """The `.json.premigration` files sit right beside the databases and look
+    exactly like a backup.  They predate every write since the migration.  An
+    operator reading a no-rollback warning is precisely the person about to
+    reach for them."""
+    for path in (CUTOVER_PS1, UPDATE_SH):
+        t = code(path)
+        i = t.find(MARKER)
+        assert i >= 0
+        # ⚠ QUOTES AND COMMAS ARE STRIPPED TOO, NOT JUST WHITESPACE, and that
+        # is not cosmetic.  This check first searched for the literal "NOT a
+        # rollback" and failed against cutover_deploy.ps1, where the message is
+        # a PowerShell string ARRAY and the sentence wraps mid-phrase across two
+        # elements: `are NOT a",` / `"  rollback: they predate`.  Collapsing
+        # whitespace alone still leaves `a", "rollback` between the words.  The
+        # code was right both times and the needle was wrong -- a needle
+        # sensitive to how a message happens to be line-wrapped fails for the
+        # wrong reason today and passes for the wrong reason tomorrow.
+        near = re.sub(r'[",]+', " ",
+                      t[max(0, i - 4000):i + 4000])
+        near = " ".join(near.split())
+        assert "premigration" in near and "NOT a rollback" in near, (
+            "%s writes the marker without warning off the premigration files"
+            % path)
+
+
 # ------------------------------------------------------------- §6 controls --
 
 def the_files_under_test_exist_and_are_not_trivial() -> None:
@@ -513,6 +607,18 @@ check("the watchdog's only disclosure is a file",
       the_watchdogs_only_disclosure_is_a_file)
 check("the deployed backend still never receives ORGTREE_MIGRATE",
       the_deployed_backend_still_never_receives_the_migrate_flag)
+
+print("\n== §5b  a missing rollback route is said, not left to be found ==")
+check("both implementations record it",
+      both_implementations_record_a_missing_rollback_route)
+check("it is written where the fact becomes true",
+      the_marker_is_written_where_the_fact_becomes_true)
+check("it is cleared when an export does verify",
+      the_marker_is_cleared_when_an_export_does_verify)
+check("a recovered install with no way back says so",
+      a_recovered_install_with_no_route_back_is_not_reported_as_plain_recovered)
+check("neither claims .premigration is a rollback",
+      neither_implementation_claims_premigration_is_a_rollback)
 
 print("\n== §6  controls ==")
 check("the files under test exist", the_files_under_test_exist_and_are_not_trivial)

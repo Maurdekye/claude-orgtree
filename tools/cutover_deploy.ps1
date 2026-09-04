@@ -96,6 +96,11 @@ function Banner([string]$m, [string]$c = 'Cyan') {
 # a directory that now holds databases -- which refuses.  The root has THREE
 # states, so the recovery reads three.
 $script:migrated = $false
+# Set when export-verify FAILS.  An install can still come up on SQLite after
+# that -- see Recover-PostMigration, and the coordinator's ruling of
+# 2026-09-04 that keeps that ladder -- but it comes up WITH NO ROLLBACK ROUTE,
+# and that is the one thing an operator must never have to infer.
+$script:noRollbackRoute = $false
 $script:mutex = $null
 $script:mutexHeld = $false
 $script:port = '7360'
@@ -380,6 +385,76 @@ function Clear-JsonPin {
     $env:ORGTREE_STORE = $null
 }
 
+# ---- "this install has no way back", written where it will be found --------
+# WHY THIS EXISTS.  export-verify failing does NOT stop the install coming up:
+# if the export failed there is no validated export, so a rollback is not
+# available whatever we do, and the real choice is "run on SQLite with no
+# rollback route" against "start nothing" -- an outage with no compensating
+# safety.  The ladder therefore starts the backend, and that is correct
+# (coordinator ruling, 2026-09-04).
+#
+# But it leaves the install in a state nobody chose and nobody was told about,
+# and the moment that state matters is the moment somebody needs to roll back
+# -- which is the worst possible moment to discover it.  So it is said three
+# times: in the log (this script's Write-Host IS the log), on the console, and
+# in a file in the DATA ROOT, which is the only one of the three that is still
+# there next week.
+#
+# ⚠ AND IT IS CLEARED ON SUCCESS.  A marker that can only ever be written
+# stops meaning anything the first time it goes stale: an operator who retried
+# the cutover successfully would still find a file telling them they have no
+# way back, and would learn to ignore it.  A warning nobody believes is worse
+# than no warning.
+$script:noRollbackMarker = 'NO-ROLLBACK-ROUTE.txt'
+
+function Set-NoRollbackMarker([string]$why) {
+    $script:noRollbackRoute = $true
+    $p = Join-Path $Root $script:noRollbackMarker
+    try {
+        # ASCII, and short lines: this is read on a console under pressure.
+        Set-Content -Path $p -Encoding ascii -Value @(
+            "orgtree: THIS INSTALL HAS NO ROLLBACK ROUTE.",
+            "",
+            "Written $((Get-Date).ToUniversalTime().ToString('u')) by tools\cutover_deploy.ps1.",
+            "",
+            "WHAT HAPPENED",
+            "  Your data root was migrated to SQLite successfully, but the step",
+            "  AFTER it -- export-verify -- did not: $why",
+            "  At least one org did not survive a round trip out of SQLite, so no",
+            "  validated export was written.",
+            "",
+            "WHAT THAT MEANS",
+            "  Your data is here and the install is running normally. What is",
+            "  missing is the way BACK. tools\cutover.py rollback rebuilds the JSON",
+            "  documents from exports\, and there is no complete set of those.",
+            "  The <slug>.json.premigration files beside your databases are NOT a",
+            "  rollback: they predate every write since the migration.",
+            "",
+            "HOW TO FIX IT -- this is worth doing now, not later",
+            "  Stop the backend, then re-run the export:",
+            "      python tools\cutover.py export-verify `"$Root`"",
+            "  If it succeeds, exports\ holds your route back and this file is",
+            "  removed automatically by the next cutover run. If it fails again,",
+            "  read what it names -- it says which org and why.",
+            "",
+            "Deleting this file changes nothing except your ability to find out.")
+        Say "WROTE $p -- this install is running WITHOUT a rollback route" Red
+    } catch {
+        Say "could not write the no-rollback marker to $p : $_" Red
+        Say "SAY IT HERE INSTEAD: this install has NO ROLLBACK ROUTE. export-verify" Red
+        Say "failed, so exports\ is incomplete. Re-run it with the backend stopped." Red
+    }
+}
+
+function Clear-NoRollbackMarker {
+    $p = Join-Path $Root $script:noRollbackMarker
+    if (Test-Path $p) {
+        Remove-Item -Force $p -ErrorAction SilentlyContinue
+        Say "removed the NO-ROLLBACK-ROUTE marker an earlier run left: the export" Green
+        Say "  verified this time, so there IS a route back again" Green
+    }
+}
+
 function Release-Mutex {
     if ($script:mutexHeld -and $null -ne $script:mutex) {
         try { $script:mutex.ReleaseMutex() } catch { }
@@ -458,6 +533,30 @@ function Recover-PostMigration([string]$why) {
         Banner "RECOVERED: orgtree is UP on SQLite, carrying its orgs." Green
         Say "THE CUTOVER STANDS. What failed was the deploy step, not the store." Green
         Say "Read the update.ps1 output above for the actual cause." Green
+        # ⚠ AND THE ONE THING A GREEN BANNER MUST NOT SWALLOW.  This arm is the
+        # only way an install comes back up after a failed export-verify, so it
+        # is the only place the "recovered" verdict could be read as "all is
+        # well" when a whole safety net is missing.
+        if ($script:noRollbackRoute) {
+            Say "" Red
+            Say ('!' * 70) Red
+            Say "  BUT THIS INSTALL HAS NO ROLLBACK ROUTE." Red
+            Say "  export-verify failed earlier in this run, so exports\ does not hold" Red
+            Say "  a validated copy of every org. The install is UP and your data is" Red
+            Say "  intact -- what is missing is the way BACK." Red
+            Say "  The <slug>.json.premigration files are NOT a rollback: they predate" Red
+            Say "  every write since the migration." Red
+            Say "" Red
+            Say "  Fix it now rather than when you need it. Stop the backend, then:" Red
+            Say "      $($script:py) $(Join-Path $Repo 'tools\cutover.py') export-verify $Root" Red
+            Say "" Red
+            Say "  Recorded in $(Join-Path $Root $script:noRollbackMarker)" Red
+            Say ('!' * 70) Red
+            # A distinct exit code, because "recovered" and "recovered but with
+            # no way back" are different things to a caller and to a log.
+            $script:rc = 24
+            return
+        }
         $script:rc = 20
         return
     }
@@ -717,13 +816,30 @@ try {
             ((Q $cutover) + " export-verify " + (Q $Root))
     }
     if ($script:rc -ne 0) {
-        Say "EXPORT-VERIFY FAILED. Per the runbook the flip build DOES NOT START." Red
+        Say "EXPORT-VERIFY FAILED (exit $($script:rc))." Red
+        Say "" Red
+        Say "The root IS migrated and the install can still be brought up -- and the" Red
+        Say "recovery below will try to, because a failed export means there is no" Red
+        Say "validated export to roll back to WHATEVER we do here, so refusing to" Red
+        Say "start would be an outage with nothing bought by it." Red
+        Say "" Red
+        Say "BUT IT COMES UP WITH NO ROLLBACK ROUTE, and that is not something an" Red
+        Say "operator should have to work out for themselves at the moment they need" Red
+        Say "one. Recording it in the data root now, before anything else is tried:" Red
+        # ⚠ WRITTEN HERE, NOT IN THE RECOVERY.  The marker has to survive the
+        # recovery going wrong -- including this script dying -- so it is put on
+        # disk at the moment the fact becomes TRUE, not at the moment the
+        # install happens to come back up.
+        Set-NoRollbackMarker "cutover.py export-verify exited $($script:rc)"
         Recover "cutover.py export-verify failed (exit $($script:rc)) -- an org did not survive a round trip out of SQLite"
         $exitCode = $script:rc
         Release-Mutex
         exit $exitCode
     }
     Say "every org exported and re-read. The exports are in $Root\exports\." Green
+    # The mirror of the marker: this run PROVED a route back exists, so a stale
+    # warning from an earlier attempt must not outlive it.
+    Clear-NoRollbackMarker
 
     if ($DrillNoDeploy) {
         Banner "DRILL: stopping before the deploy, as asked" Yellow
