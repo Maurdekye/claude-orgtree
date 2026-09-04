@@ -999,8 +999,13 @@ def s6_revision_hooks() -> None:
 
 # ===========================================================================
 def s7_rollback() -> None:
-    if not section("7. Rollback — ORGTREE_STORE=json + the .premigration file"):
+    if not section("7. Rollback — the supported shape, and the refused one"):
         return
+    # ⚠ THE CHILD CLAIMS THE ROOT. The previous version did not, and that
+    # omission is what let the old fixture "prove" a rollback shape the store
+    # now refuses: `claim_data_root` is where the one-active-format-per-root
+    # wall lives, so a child that skips it is not testing a rollback, it is
+    # testing what happens when you walk around the safety check.
     child = r'''
 import os, sys, json
 os.environ["ORGTREE_DATA"] = sys.argv[1]
@@ -1008,23 +1013,90 @@ os.environ["ORGTREE_STORE"] = "json"
 sys.path.insert(0, sys.argv[2])
 from orgtree import store
 assert store.STORE_BACKEND == "json"
+try:
+    store.claim_data_root()
+except store.BackendMismatch as e:
+    print(json.dumps({"refused": "BackendMismatch", "msg": str(e)}))
+    raise SystemExit(0)
 names = sorted(r["slug"] for r in store.list_orgs())
 org = store.load_org("synth")
-print(json.dumps({"names": names, "nodes": list(org.d["nodes"]), "type": type(org.d).__name__,
-                  "path": store.org_path("synth")}))
+print(json.dumps({"refused": None, "names": names, "nodes": list(org.d["nodes"]),
+                  "type": type(org.d).__name__, "path": store.org_path("synth")}))
 '''
 
-    def json_mode_reads_premigration() -> None:
-        # the operator's rollback: rename the premigration file back
-        src = store._premigration_path("synth")
-        assert os.path.exists(src)
-        shutil.copy(src, store._json_path("synth"))
+    def _run_child() -> dict:
+        out = subprocess.run(
+            [sys.executable, "-c", child, store.DATA_ROOT,
+             os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")],
+            capture_output=True, text=True, timeout=120)
+        assert out.returncode == 0, out.stderr[-2000:]
+        return json.loads(out.stdout.strip().splitlines()[-1])
+
+    def premigration_beside_a_live_db_is_REFUSED() -> None:
+        """The shape this suite used to call "the operator's rollback".
+
+        Copy `.json.premigration` back beside the live `.db` and start JSON:
+        that is now refused, and it must be. The `.premigration` is the
+        document as it stood BEFORE the migration and holds none of the
+        writes SQLite has accepted since, so choosing it silently would be a
+        discard dressed as a recovery. The old fixture passed only because
+        its child never claimed the root."""
+        shutil.copy(store._premigration_path("synth"), store._json_path("synth"))
         try:
-            out = subprocess.run([sys.executable, "-c", child, store.DATA_ROOT,
-                                  os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")],
-                                 capture_output=True, text=True, timeout=120)
-            assert out.returncode == 0, out.stderr[-2000:]
-            res = json.loads(out.stdout.strip().splitlines()[-1])
+            res = _run_child()
+            eq(res["refused"], "BackendMismatch",
+               "a .json beside a live .db must REFUSE, not be read: ")
+            assert "STALE" in res["msg"], \
+                "the refusal has to say the .json is stale, or an operator " \
+                "looking at a good-looking file will route around it"
+        finally:
+            os.remove(store._json_path("synth"))
+    check("a .premigration restored beside a live .db is REFUSED — it is a "
+          "backup, never a rollback", premigration_beside_a_live_db_is_REFUSED)
+
+    def the_supported_rollback_works() -> None:
+        """Export, validate, PARK the database, install the export, then start.
+
+        This is the order docs/sqlite-cutover.md prescribes, and the reason
+        it is that order: the export is taken from the live database, so it
+        carries every post-migration write, and nothing authoritative moves
+        until the replacement has been proved readable."""
+        p = store.export_json("synth")
+        doc = json.load(open(p, encoding="utf-8"))
+        Org(doc)                                  # validate BEFORE moving
+        parked = os.path.join(store.DATA_ROOT, "parked")
+        os.makedirs(parked, exist_ok=True)
+        # the pool still holds a connection from export_json; Windows will not
+        # move a file anything holds (measured — it dies PART-WAY through)
+        _closed: set[str] = set()
+        # ⚠ EVERY database in the root, not just this org's. Parking one and
+        # leaving the rest is refused — and correctly so: the invariant is one
+        # active format per ROOT, so a rollback is all-or-nothing across it.
+        # The first version of this test parked `synth` alone, and the wall
+        # fired with "11 SQLite org(s) under a JSON backend". That refusal was
+        # right and the test was wrong, which is the same rule the runbook
+        # states for steps 4-5.
+        moved = []
+        for f in sorted(os.listdir(os.path.join(store.DATA_ROOT, "orgs"))):
+            if not (f.endswith(".db") or f.endswith(".db-wal")
+                    or f.endswith(".db-shm")):
+                continue
+            slug = f.split(".db")[0]
+            if slug not in _closed:
+                with store._POOL.acquire(slug) as conn:
+                    conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                store._POOL.close_all(slug)
+                _closed.add(slug)
+            src = os.path.join(store.DATA_ROOT, "orgs", f)
+            dst = os.path.join(parked, f)
+            if os.path.exists(src):
+                shutil.move(src, dst)
+                moved.append((dst, src))
+        shutil.copy(p, store._json_path("synth"))
+        try:
+            res = _run_child()
+            eq(res["refused"], None, f"JSON must start after a real rollback: "
+                                     f"{res.get('msg', '')[:200]}")
             assert "synth" in res["names"], res
             for n in res["names"]:
                 assert not n.endswith(".premigration"), res
@@ -1033,8 +1105,11 @@ print(json.dumps({"names": names, "nodes": list(org.d["nodes"]), "type": type(or
             assert res["path"].endswith("synth.json")
         finally:
             os.remove(store._json_path("synth"))
-    check("a fresh interpreter under ORGTREE_STORE=json reads the restored .json, ignores the .db",
-          json_mode_reads_premigration)
+            for dst, src in moved:                # put the database back
+                shutil.move(dst, src)
+    check("the SUPPORTED rollback — export, validate, park the database, "
+          "install the export — starts under JSON and reads it",
+          the_supported_rollback_works)
 
     def bad_backend_value() -> None:
         out = subprocess.run([sys.executable, "-c",

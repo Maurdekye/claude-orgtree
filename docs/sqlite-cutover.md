@@ -19,14 +19,30 @@ all of it.
 Measured on that real document, two roots built from the same bytes, backend
 the only variable, interleaved and order-reversed, N=30:
 
-| operation | JSON | SQLite | |
+⚠ **PRELIMINARY.** These came from a fixture that copied the live root twice,
+once per arm — and the live root is written continuously, so the two arms held
+documents a few seconds apart rather than the same bytes. The mechanism does
+not depend on that and the ratios are very unlikely to move, but the claim
+"the backend selector is the only variable" was not true as measured. The
+harness now takes one validated snapshot, clones it into both arms, and
+records the source sha256 in the result file. This table is replaced on the
+re-run.
+
+Medians, with p90 and worst sample, because a median that hides a tail is how
+a cutover feels worse than it measures:
+
+| operation | JSON med / p90 / max | SQLite med / p90 / max | |
 |---|---|---|---|
-| **a turn's storage cost** (4 saves) | **385 ms** | **188 ms** | **2.0× faster** |
-| one `save_org`, one field changed | 96 ms | 8.9 ms | 10.8× faster |
-| one `save_org`, one mail entry appended | 95 ms | 25 ms | 3.8× faster |
-| `load_org`, cold process | 55 ms | 34 ms | 1.6× faster |
-| read a lazy section end to end (`mail_log`) | 0.8 ms | 30 ms | **40× slower** |
-| produce a portable copy of an org | 17 ms | 177 ms | **10.5× slower** |
+| **a turn's storage cost** (4 saves) | **385 / 404 / 483 ms** | **188 / 201 / 211 ms** | **2.0× faster** |
+| one `save_org`, one field changed | 96 / 104 / **196** ms | 8.9 / 10.6 / 15.7 ms | 10.8× faster |
+| one `save_org`, one mail entry appended | 95 / 101 / 114 ms | 25 / 28 / 38 ms | 3.8× faster |
+| `load_org`, cold process | 55 / 60 / 64 ms | 34 / 37 / 39 ms | 1.6× faster |
+| read a lazy section end to end (`mail_log`) | 0.8 / 1.7 / 2.5 ms | 30 / 32 / 40 ms | **40× slower** |
+| produce a portable copy of an org | 17 / 34 / **102** ms | 177 / 228 / **280** ms | **10.5× slower** |
+
+SQLite's tails are consistently *narrower* than JSON's — note JSON's 196 ms
+worst small-save against a 96 ms median, and its 102 ms worst copy against a
+17 ms median.
 
 **The two regressions are real and are listed on purpose.**
 
@@ -65,25 +81,52 @@ a flag "immediately afterwards" is a step someone eventually skips.
 
 2. **Migrate, with the flag in that one command's environment only.**
 
+   **Windows** (this install — PowerShell or cmd):
+
    ```
-   ORGTREE_MIGRATE=1 ORGTREE_STORE=sqlite ORGTREE_DATA=<root> \
-       python -c "from orgtree import store; store.claim_data_root()"
+   cmd /c "set ORGTREE_MIGRATE=1&& python tools\cutover.py migrate <root>"
    ```
 
-   `claim_data_root` performs the migration; there is no separate step. Never
-   export the flag to a surviving shell, a user or machine environment
-   variable, a service definition, a scheduled task, a wrapper or a `.env`. It
-   must die with the process that used it.
+   **POSIX:**
 
-   **Measured downtime: 738 ms** for this install's three orgs, 20.6 MB.
+   ```
+   ORGTREE_MIGRATE=1 python tools/cutover.py migrate <root>
+   ```
+
+   Both forms put the variable in the **child's** environment, where it dies
+   with the process. ⚠ Do **not** use `$env:ORGTREE_MIGRATE = "1"` in a shell
+   you keep using and then clean it up afterwards — a variable that must be
+   removed later is a step someone eventually skips, which is the whole reason
+   the deployed backend never receives this flag at all.
+
+   `tools/cutover.py migrate` deliberately does **not** set the flag for you.
+   Converting a data root rewrites it, so the authorisation has to come from
+   outside the tool; a tool that authorises itself makes the gate decoration.
+   Run without the flag and it refuses, exit 2, printing the two forms above.
+
+   `claim_data_root` performs the migration — it is the boot path, not a
+   separate step. **Measured downtime: 738 ms** for this install's three orgs,
+   20.6 MB.
 
    Each `<slug>.json` becomes `<slug>.json.premigration` (byte-identical to the
    source — verified by sha256) plus `<slug>.db`. The migration verifies itself:
    a document that does not round-trip aborts, leaves the `.json` untouched and
    deletes the candidate database.
 
-3. **Verify, still offline.** `pending_migrations()` must be empty and every
-   org must load.
+3. **Export and validate every org, still offline, BEFORE the first boot.**
+
+   ```
+   python tools/cutover.py export-verify <root>
+   ```
+
+   This exports every database and proves every export loads as an `Org`. It
+   is not a formality and it is not optional: **it is the step that makes a
+   rollback possible at all.** From the moment the flip build accepts its
+   first write, `<slug>.json.premigration` is no longer a way back — only a
+   current, validated export is. Non-zero exit means do not start the flip
+   build.
+
+   Keep the files it writes under `exports/`.
 
 4. **Start the backend.** It finds an already-migrated root, so there is no
    migration to perform and nothing to authorise.
@@ -113,15 +156,35 @@ found sitting in the live root **15.1 hours stale** — it has been renamed
 
 The rollback is: **take a current export, then park the database.**
 
-1. **Stop the backend.** The rollback process must hold the owner claim.
-2. **Export every org** from SQLite: `store.export_json(slug)` for each.
-3. **Validate every export before moving anything** — each one must load as an
-   `Org`. All of them, before step 4 touches a single authoritative file.
-4. **Park the databases**: move `<slug>.db`, `-wal` and `-shm` out of `orgs/`.
-   **Move, never delete.** Trash and exports live outside `orgs/`, which is why
-   parking is the way out of a `BackendMismatch` refusal.
-5. **Install the exports** as `<slug>.json`.
-6. **Then** start the JSON build.
+```
+python tools/cutover.py rollback <root>
+```
+
+with the backend stopped. That does, in this order and refusing to continue if
+any step fails:
+
+1. **Claim the root** — which is what makes this process the only writer
+   rather than one racing another.
+2. **Export every org and validate every export** — all of them, before a
+   single authoritative file moves.
+3. **Park the databases**: checkpoint, close the pooled connections, then move
+   `<slug>.db`, `-wal` and `-shm` out of `orgs/` into `parked-<stamp>/`.
+   **Moved, never deleted.** Trash and exports live outside `orgs/`, which is
+   why parking is the way out of a `BackendMismatch` refusal.
+4. **Install the exports** as `<slug>.json`.
+
+Then start the JSON build.
+
+⚠ **Steps 3 and 4 are all-or-nothing across the whole root.** A JSON process
+started part-way through silently omits every org whose database has been
+parked but whose export is not yet installed — and it will *look* fine. This
+is also why the invariant refuses a root holding *any* database rather than
+only ones lacking a `.json`: you cannot roll back one org and leave the rest.
+
+⚠ The pooled connection from the export step still holds each database open,
+and Windows will not move a file anything holds. `cutover.py` checkpoints and
+closes before moving; hand-rolling this is how you get a half-parked root.
+Measured — the first version of the tool died exactly there.
 
 ⚠ **Do not start JSON part-way through.** A mid-install start silently omits
 every org whose database has been parked but whose export is not yet installed.
