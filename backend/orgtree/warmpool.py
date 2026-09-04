@@ -1124,6 +1124,18 @@ def eligible(org: Any, nid: str, *, ignore_exclusion: bool = False,
     n = org.nodes.get(nid)
     if not n or n.get("state") != "live":
         return False, "not-live"
+    # A terminally failed process with NO transcript is evidence that this
+    # exact launch shape died before delivery.  Do not eagerly reproduce it in
+    # the background: the parked copy would be claimed by the next real
+    # message and could fail the same way before its folded-back mail reaches
+    # the model.  The recovery turn takes the ordinary cold-spawn fallback;
+    # `_after_turn` clears `hard_fail_run` only after that turn completes.
+    # Deliberately keep warming when the transcript exists: delivery already
+    # has durable evidence, and the post-echo crash path stays unchanged.
+    sid = str(n.get("session_id") or "")
+    if (n.get("hard_fail_run")
+            and sup.transcript_path(sid, sup._transcript_root(org)) is None):
+        return False, "terminal-failure-before-transcript"
     if not ignore_exclusion and node_excluded(org.d["slug"], nid):
         return False, "excluded-by-flag"
     if sup.sbx.is_sandboxed(org):

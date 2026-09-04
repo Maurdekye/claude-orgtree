@@ -3901,14 +3901,40 @@ def live_cli_death() -> None:
         # and it must actually reach the agent on the next nudge
         set_cfg(FAST)
         if c["mailbox"]:
+            before = count_in_transcript(tok)
             tok2 = token()
             send(slug, nid, f"followup {tok2}")
 
-            def _redelivered(tok=tok, nid=nid, slug=slug) -> None:
-                if not wait_delivered(tok, 30):
+            def _redelivered(tok=tok, nid=nid, slug=slug,
+                             before=before) -> None:
+                if not wait_for(lambda: count_in_transcript(tok) > before,
+                                30):
                     raise AssertionError(
                         f"folded-back mail never reached the agent: "
                         f"{carriers(slug, nid, tok)}")
+                wait_idle(slug, nid, 20)
+                after = count_in_transcript(tok)
+                if after != before + 1:
+                    raise AssertionError(
+                        f"folded-back mail reached the agent {after - before} "
+                        f"times on one recovery turn (before={before}, "
+                        f"after={after})")
+                with open(os.path.join(DATA, "journals", "warm.jsonl"),
+                          encoding="utf-8") as f:
+                    admits = [r for line in f
+                              if (r := json.loads(line)).get("kind") == "admit"
+                              and r.get("slug") == slug
+                              and r.get("nid") == nid]
+                if not admits:
+                    raise AssertionError("recovery turn wrote no admission "
+                                         "record")
+                expected = (("cold", "terminal-failure-before-transcript")
+                            if before == 0 else ("warm", "warm-hit"))
+                got = (admits[-1].get("served"), admits[-1].get("reason"))
+                if got != expected:
+                    raise AssertionError(
+                        f"recovery changed the wrong crash path: expected "
+                        f"{expected}, got {got}")
             check(f"clicrash · {label} → the next turn delivers it",
                   _redelivered)
         wait_idle(slug, nid, 20)
