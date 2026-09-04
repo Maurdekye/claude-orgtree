@@ -19,6 +19,7 @@ import {
 } from '../api'
 import { AttachThumb, fmtBytes, ImgCardCaption, isImg, parseAttachedFiles } from './img'
 import { openLightbox } from './lightbox'
+import PushPinIcon from '@mui/icons-material/PushPinOutlined'
 import {
   ArrowDownIcon, ArrowUpIcon, AutorenewIcon, CloseIcon, DocIcon, DotIcon,
   DownloadIcon, EditIcon, EyeIcon, FileIcon, FolderIcon, FrozenIcon,
@@ -867,6 +868,10 @@ interface DeskChatProps {
   onMailLink?: MailLinkFn
   /** FR-03: open a presented document in the in-page reader */
   onOpenDoc?: (id: string) => void
+  /** FR-3: pin this desk to screenspace as a window (pins.tsx). Only the
+   *  CANVAS desk passes it; absent hides the button — a switchboard panel,
+   *  the mobile sheet and a pinned window itself have no pin to offer. */
+  onPin?: () => void
 }
 
 /** F-01: one small clickable card pointing at a related agent — superior at
@@ -903,7 +908,7 @@ const SENDMODE_MS = 6000
 
 function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
   onRecenter, onJump, maxTop, pxc, pub, bare = false, compact = false,
-  compactAt, onMailLink, onOpenDoc }: DeskChatProps) {
+  compactAt, onMailLink, onOpenDoc, onPin }: DeskChatProps) {
   // THE CONVERSATION IS NOT THIS COMPONENT'S. It lives in one per-node store
   // (convo.ts) that every view of this node subscribes to, because a node can
   // be on screen twice — its card and its switchboard panel — and two private
@@ -1488,6 +1493,13 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
               </button>
             ))}
           </span>
+          {/* FR-3: pin this desk to screenspace as a draggable window */}
+          {onPin &&
+            <button className="cc-icon cc-pin" aria-label={`pin ${node.id}'s desk as a window`}
+              title="pin as a window — it stays put while the canvas moves"
+              onClick={onPin}>
+              <PushPinIcon fontSize="inherit" />
+            </button>}
           <button className="cc-icon" aria-label={`settings for ${node.id}`}
             title={`settings for ${node.id}`} onClick={onConfig}>
             <SettingsIcon fontSize="inherit" />

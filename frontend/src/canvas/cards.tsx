@@ -27,6 +27,7 @@ import {
 } from './desk'
 import { DocChips } from './docs'
 import { isMobile } from '../mobile'
+import { PinnedPlaceholder } from './pins'
 import { ConfirmModal, DraftScopeModal } from './modals'
 
 // ------------------------------------------------------------- the overseer
@@ -1139,13 +1140,30 @@ interface NodeSquareProps {
   /** D-200: compact maps still need to expose that part of the count is a
    * finite one-shot dog, even though the individual satellites are hidden. */
   oneShotDogs?: number
+  /** FR-3: this desk is open as a pinned screen-space window (pins.tsx).
+   *  The card wears a marker at every zoom. */
+  pinned?: boolean
+  /** FR-3: the camera would have focused this card, but its desk is pinned —
+   *  render the placeholder in the desk's place, NEVER a second desk (user
+   *  ruling 2026-09-04, "pinned means pinned"). Mutually exclusive with
+   *  `focused`: OrgCanvas derives both from one nearest-card search. */
+  pinnedFocus?: boolean
+  /** FR-3: the desk header's pin button — absent hides it (mobile, and
+   *  every desk that is not the canvas desk: switchboard panels, the sheet) */
+  onPin?: () => void
+  /** FR-3: the placeholder's click — raise, un-strand and flash the window */
+  onShowPin?: () => void
 }
 
-export function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, codexHire, antigravityHire, claudeHire, openrouterHire, onNoHarness, map, op, slug,
+export function NodeSquare({ node, pos, lod, focused: deskOpen, dragging, isDrop, seats, codexHire, antigravityHire, claudeHire, openrouterHire, onNoHarness, map, op, slug,
   toast, pxc, zoom, onSpawn, onSpawnSide, onSpawnTop, onConfig, onInbox, onLineage, onOpenDoc,
   onRecenter, onJump, pub, kioskRemaining, cascadeAlloc, maxTop, pile, compactAt, maxTier,
   onMailLink, onDragStart, onDragMove, onDragEnd, onDragCancel,
-  mapMode, dogs, oneShotDogs }: NodeSquareProps) {
+  mapMode, dogs, oneShotDogs, pinned, pinnedFocus, onPin, onShowPin }: NodeSquareProps) {
+  // `focused` below is the card's LAYOUT state — desk-sized, head hidden, no
+  // drag — which a pinned placeholder shares with an open desk. Only the
+  // DeskChat mount itself keys on `deskOpen`.
+  const focused = deskOpen || !!pinnedFocus
   // pile fronts zoom on a plain CENTER click (user spec) — track the
   // pointer-down point so a drag's trailing click doesn't re-zoom
   const downAt = useRef<Pt | null>(null)
@@ -1207,6 +1225,7 @@ export function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, c
     cls.push('asking')
   }
   if (node.audiences_held?.length) cls.push('aud')
+  if (pinned) cls.push('pinned')
   const stackN = (node.lineage ?? []).length
   if (!focused && stackN) cls.push('stack' + Math.min(stackN, 3))
   const toggleCompactHire = (which: 'b' | 'l' | 'r' | 't') =>
@@ -1367,6 +1386,9 @@ export function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, c
               first. */}
           {node.state !== 'live' &&
             <span className="badge dim">{node.state}</span>}
+          {/* FR-3: its desk is open as a pinned window — say so at every
+              zoom, so the card is not mistaken for one that will open */}
+          {pinned && <span className="badge pinbadge" title="this desk is pinned as a window">pinned</span>}
           {node.bearer_state &&
             <span className="badge bearermark"
               title={`${node.bearer_state} bearer — where this agent's context `
@@ -1425,12 +1447,20 @@ export function NodeSquare({ node, pos, lod, focused, dragging, isDrop, seats, c
               onClick={(e) => { e.stopPropagation(); onLineage() }}><LayersIcon fontSize="inherit" /> {stackN}</button>}
         </div>
       )}
-      {focused && (
+      {deskOpen && (
         <DeskChat node={node} map={map} op={op} slug={slug}
           toast={toast}
           onLineage={onLineage} onConfig={onConfig} compactAt={compactAt}
           onRecenter={onRecenter} onJump={onJump} maxTop={maxTop} pxc={pxc}
-          pub={pub} onMailLink={onMailLink} onOpenDoc={onOpenDoc} />
+          pub={pub} onMailLink={onMailLink} onOpenDoc={onOpenDoc}
+          onPin={onPin} />
+      )}
+      {/* FR-3: the desk is a pinned window — the desk's place holds a
+          placeholder, and there is no second DeskChat anywhere in this card */}
+      {pinnedFocus && !deskOpen && onShowPin && (
+        <div className="pin-holder">
+          <PinnedPlaceholder id={node.id} onShow={onShowPin} />
+        </div>
       )}
       {/* user ruling: chips are NEVER disabled by the node's own free credits —
           a user hire §4.6-cascades, granting the chain whatever it lacks.

@@ -26,6 +26,8 @@ import { DocReader } from './docs'
 import { NodeInboxModal, OrgInboxModal } from './mail'
 import { NodeConfig, PilePicker, UserConfig, WatchdogPanel } from './modals'
 import { DraftNode, NodeSquare, UserNode } from './cards'
+import { addPin, clampRect, PinLayer, prunePins, showPin, usePins } from './pins'
+import type { PinRect } from './pins'
 import { isCompact, isMobile, MaybePortal, sheetGate } from '../mobile'
 
 export interface OrgCanvasProps {
@@ -391,6 +393,11 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
   })
   const [, setFrame] = useState(0)
   const [dropId, setDropId] = useState<string | null>(null)
+  // FR-3: desks pinned to screenspace (pins.tsx). Desktop only — the mobile
+  // sheet is the phone's window, and startNodeDrag bails on isMobile for
+  // reasons (no hover, no cheap escape under a finger) that apply here too.
+  const pins = usePins(slug)
+  const pinnedIds = useMemo(() => new Set(isMobile ? [] : pins.map((p) => p.id)), [pins])
 
   const viewportRef = useRef<HTMLDivElement | null>(null)
   const viewRef = useRef(view); viewRef.current = view
@@ -705,7 +712,13 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
         }
       }
     } catch { /* private mode, or a hand-edited value — never fatal */ }
-  }, [map, slug, tree.slug])
+    // `orgtree-pins-<slug>` (FR-3): a pinned window whose agent was DISSOLVED
+    // (gone from the tree — a retired agent stays in `map` and keeps its
+    // window). Same two guards above; a window vanishing deserves a word.
+    for (const id of prunePins(slug, (id) => map.has(id))) {
+      toast([`${id} is gone from the org — its pinned window closed`])
+    }
+  }, [map, slug, tree.slug, toast])
 
   // ------------------------------------------------------- the spring engine
   useEffect(() => {
@@ -1169,6 +1182,10 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
       // preventDefaults every wheel over it and the canvas zooms instead of
       // the list scrolling
       if ((e.target as Element | null)?.closest?.('.tray')) return
+      // a PINNED desk window (pins.tsx) renders `bare`, i.e. WITHOUT
+      // .desk-over — so it needs its own carve-out here or scrolling its
+      // chat zooms the canvas underneath it
+      if ((e.target as Element | null)?.closest?.('.pinwin')) return
       e.preventDefault()
       cancelAnimationFrame(animRef.current!)
       animBusyRef.current = false
@@ -1507,7 +1524,18 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
   }
 
   // ------------------------------------------------------- focus (the desk)
-  const focusId = useMemo(() => {
+  // `nearestId` is the card the camera is on; `focusId` is the desk that
+  // OPENS. They differ in exactly one case — FR-3, user ruling 2026-09-04,
+  // "PINNED MEANS PINNED": a pinned node's desk lives in its screen-space
+  // window and NOWHERE ELSE, so the camera landing on its card opens nothing
+  // (the card shows a placeholder — see `pinnedFocusId` below). Two mounted
+  // desks for one node would share one `orgtree-draft-<slug>-<nid>` composer
+  // key and silently fight over it.
+  //   Deliberately NOT "skip pinned ids in the nearest search" (as the plan
+  // first sketched): at desk zoom the focus radius is 1.6 cards, so skipping
+  // would hand focus to the pinned card's NEIGHBOUR while the camera sits
+  // squarely on the pinned card — zooming into A would open B's desk.
+  const nearestId = useMemo(() => {
     if (view.z < Z_DESK) return null
     const vp = viewportRef.current?.getBoundingClientRect()
     const cw = vp ? vp.width / 2 : 500, ch = vp ? vp.height / 2 : 350
@@ -1531,7 +1559,35 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
     return bestD < NODE_W * 1.6 * view.z ? best : null
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view, target, hidden])
+  const pinnedFocusId = nearestId && pinnedIds.has(nearestId) ? nearestId : null
+  const focusId = pinnedFocusId ? null : nearestId
   focusRef.current = focusId
+
+  // FR-3 — world → VIEWPORT px for one node's card, read NOW (the position is
+  // derived from the tree and moves under a pin at any time; pins.tsx never
+  // stores it). Null when the node has no position: gone from the tree.
+  const cardRectOf = useCallback((id: string): PinRect | null => {
+    if (!mapRef.current.has(id)) return null
+    const p = posOf(id)
+    if (!p) return null
+    const v = viewRef.current
+    const { w, h } = sizeOf(id)
+    return { x: p.x * v.z + v.x, y: p.y * v.z + v.y, w: w * v.z, h: h * v.z }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+  const vpSizeNow = () => {
+    const r = viewportRef.current?.getBoundingClientRect()
+    return r && r.width > 0 && r.height > 0 ? { w: r.width, h: r.height } : null
+  }
+  /** the desk header's pin button: detach this desk into a window placed
+   *  exactly over the card it came from — the camera does not move, and the
+   *  card underneath turns into the placeholder on the same frame */
+  const pinDesk = (id: string) => {
+    const at = cardRectOf(id)
+    if (!at) return
+    const r = addPin(slug, id, clampRect(at, vpSizeNow()))
+    if (!r.ok) toast([r.reason])
+  }
 
   // edge JUMP CARDS (user spec 2026-08-17): at desk zoom the focused agent's
   // coworkers (live siblings) are usually off-screen — one small card per
@@ -1981,6 +2037,12 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
           const pileHere = pileByFront.get(n.id)
           const square = (
             <NodeSquare key={n.id} node={n} pos={p} lod={lod} focused={n.id === focusId}
+              /* FR-3: the camera is on this card but its desk is a pinned
+                 window — placeholder instead of a (second) desk */
+              pinnedFocus={n.id === pinnedFocusId}
+              pinned={pinnedIds.has(n.id)}
+              onPin={!isMobile ? () => pinDesk(n.id) : undefined}
+              onShowPin={() => showPin(slug, n.id, vpSizeNow())}
               dragging={nodeDrag.current?.id === n.id && nodeDrag.current!.moved}
               isDrop={dropId === n.id}
               seats={seats} codexHire={codexHire} antigravityHire={antigravityHire}
@@ -2115,6 +2177,18 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
       </div>
       {/* stop pointerdown: the viewport's pan pointer-capture retargets clicks
           and silently kills these buttons */}
+      {/* FR-3: desks PINNED TO SCREENSPACE — a screen-space sibling of
+          .space, like the HUD below, so pan and zoom cannot touch it by
+          construction. Rendered only once `tree` and `slug` agree: in the
+          org-switch props window the pins are the new org's and `map` is
+          still the old org's. Desktop only (see `pinnedIds`). */}
+      {!isMobile && tree.slug === slug && (
+        <PinLayer slug={slug} map={map} viewportRef={viewportRef}
+          targetOf={cardRectOf} op={op} toast={toast} pub={!!tree.public}
+          compactAt={tree.compact_at} maxTop={tree.max_top_grant ?? 1000}
+          pxc={pxPerCredit} onMailLink={openMail} onOpenDoc={setDocView}
+          onLineage={setLineageId} onConfig={setConfigId} onJump={centerOn} />
+      )}
       {/* nav cluster (user spec): bottom-LEFT beside the agents tray, so
           every zoom target lives in one stack — ordered top to bottom:
           switchboard · full view · zoom in · zoom out */}

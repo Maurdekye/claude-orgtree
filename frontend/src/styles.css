@@ -233,7 +233,8 @@ main {
    text selection to lose. */
 .viewport input, .viewport textarea, .viewport [contenteditable],
 .viewport .msgs, .viewport .mailrow, .viewport .overlay,
-.viewport .tray-wrap, .viewport .eff-pop {
+.viewport .tray-wrap, .viewport .eff-pop,
+.viewport .pinwin /* FR-3 pinned desk window — its root stops pointerdown, pins.tsx */ {
   user-select: text; -webkit-user-select: text;
 }
 .viewport:active { cursor: grabbing; }
@@ -4546,4 +4547,112 @@ label.set-row { cursor: pointer; }
 .mailload .linkish {
   background: none; border: none; padding: 0; font: inherit;
   color: var(--accent); text-decoration: underline; cursor: pointer;
+}
+
+/* ---- FR-3: desks PINNED TO SCREENSPACE (canvas/pins.tsx) ----
+   A pinned window is a screen-space SIBLING of .space — position:absolute in
+   .viewport px — so pan and zoom cannot move it by construction. It hosts
+   DeskChat `bare` (the unscaled 1:1 desk body the mobile sheet also uses),
+   so none of the 900px-virtual counter-scale regime applies. Its root is in
+   the user-select re-enable list above AND stops pointerdown in pins.tsx:
+   KEEP THE TWO IN STEP. z-index band 10–16 (zIndexOf): above the HUD and
+   edge-jump cards, below the drawer and every modal. */
+.pinwin {
+  position: absolute; display: flex; flex-direction: column;
+  min-width: 320px; min-height: 240px;
+  background: var(--panel); border: 1px solid var(--accent);
+  border-top-width: 2px; border-radius: 3px; overflow: hidden;
+  box-shadow: 0 8px 40px rgba(0, 0, 0, .55),
+    0 0 0 1px color-mix(in srgb, var(--accent) 25%, transparent);
+  cursor: default; font-size: 13px;
+}
+.pinwin.moving { will-change: left, top, width, height; }
+/* the card placeholder's "show window" pulse */
+.pinwin.flash { animation: pinflash .65s ease-out; }
+@keyframes pinflash {
+  0%, 60% { box-shadow: 0 0 0 3px var(--accent), 0 8px 40px rgba(0, 0, 0, .55); }
+  100% { box-shadow: 0 8px 40px rgba(0, 0, 0, .55),
+    0 0 0 1px color-mix(in srgb, var(--accent) 25%, transparent); }
+}
+/* the agent retired/archived while pinned: the window stays readable, and
+   its chrome says so instead of looking live */
+.pinwin.pin-archived .pinwin-title, .pinwin.pin-retired .pinwin-title {
+  border-bottom-style: dashed; color: var(--dim);
+}
+.pinwin-title {
+  display: flex; align-items: center; gap: 6px; height: 28px; flex: none;
+  padding: 0 4px 0 8px; border-bottom: 1px solid var(--line);
+  background: var(--panel-2, var(--panel)); cursor: grab;
+  user-select: none; -webkit-user-select: none;   /* a drag handle, not text */
+  touch-action: none;
+}
+.pinwin-title:active { cursor: grabbing; }
+.pinwin-title .spacer { flex: 1; }
+.pinwin-title .tier { width: 15px; height: 15px; font-size: 9px; }
+.pinwin-glyph { font-size: 14px; color: var(--accent); }
+.pinwin-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.pinwin-state {
+  font-size: 10px; color: var(--dim); border: 1px solid var(--line);
+  border-radius: 3px; padding: 0 5px;
+}
+.pinwin-unpin {
+  background: none; border: none; padding: 2px; display: inline-flex;
+  color: var(--dim); font-size: 15px; cursor: pointer; border-radius: 3px;
+}
+.pinwin-unpin:hover { color: var(--ink-strong); background: var(--panel); }
+.pinwin-body {
+  flex: 1; min-height: 0; display: flex; flex-direction: column;
+  padding: 6px 8px 8px;
+}
+.pinwin-body > .desk-body {
+  flex: 1; min-height: 0; display: flex; flex-direction: column; height: 100%;
+}
+/* resize handles: 8 invisible strips/corners on the edges */
+.pinwin-rs { position: absolute; z-index: 1; touch-action: none; }
+.pinwin-rs.n, .pinwin-rs.s { left: 8px; right: 8px; height: 6px; cursor: ns-resize; }
+.pinwin-rs.e, .pinwin-rs.w { top: 8px; bottom: 8px; width: 6px; cursor: ew-resize; }
+.pinwin-rs.n { top: -2px; }  .pinwin-rs.s { bottom: -2px; }
+.pinwin-rs.e { right: -2px; } .pinwin-rs.w { left: -2px; }
+.pinwin-rs.ne, .pinwin-rs.nw, .pinwin-rs.se, .pinwin-rs.sw { width: 12px; height: 12px; }
+.pinwin-rs.ne { top: -2px; right: -2px; cursor: nesw-resize; }
+.pinwin-rs.sw { bottom: -2px; left: -2px; cursor: nesw-resize; }
+.pinwin-rs.nw { top: -2px; left: -2px; cursor: nwse-resize; }
+.pinwin-rs.se { bottom: -2px; right: -2px; cursor: nwse-resize; }
+/* the unpin MINIMISE ghost: chrome only, flies from the window to the card
+   (viewport px both ends) and is clipped by .viewport's overflow when the
+   card is off-screen — on purpose; see pins.tsx */
+.pinwin-ghost {
+  position: absolute; z-index: 17; pointer-events: none;
+  border: 1px solid var(--accent); border-radius: 3px;
+  background: color-mix(in srgb, var(--panel) 70%, transparent);
+  transition-property: left, top, width, height, opacity;
+  transition-timing-function: ease-in;
+}
+.pinwin-ghost.fade { transition-property: opacity; }
+/* the CARD of a pinned agent: a marker at every zoom, and — when the camera
+   would have opened its desk — a placeholder in the desk's place. Same box
+   as .desk-over (inset 2px) so the card's geometry does not change. */
+.badge.pinbadge {
+  color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--line));
+  background: none;
+}
+.pin-holder {
+  position: absolute; inset: 2px; z-index: 2; overflow: hidden;
+  background: var(--panel); border-radius: 1.5px;
+  animation: deskfade .28s ease-out;
+}
+.pin-placeholder {
+  position: absolute; inset: 0; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 4px; cursor: pointer;
+  color: var(--dim); text-align: center;
+  /* world-scaled like the desk: 900px virtual → 120px card interior */
+  width: 900px; height: 900px; transform: scale(0.13333); transform-origin: 0 0;
+  font-size: 40px;
+}
+.pin-placeholder:hover { color: var(--ink-strong); background: var(--panel-2, var(--panel)); }
+.pin-placeholder-glyph { font-size: 120px; color: var(--accent); }
+.pin-placeholder b { font-size: 56px; color: var(--ink-strong); }
+.pin-placeholder-btn {
+  margin-top: 24px; padding: 12px 36px; border-radius: 12px; font-size: 40px;
+  border: 3px solid var(--accent); color: var(--accent);
 }
