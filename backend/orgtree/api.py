@@ -3349,12 +3349,19 @@ async def org_dissolve_all(slug: str) -> dict[str, Any]:
 
 @app.post("/api/orgs/{slug}/killswitch")
 async def org_killswitch(slug: str) -> dict[str, Any]:
-    """⏹ STOP ALL: interrupt every active agent and clear pending queues."""
+    """⏹ STOP ALL: interrupt every active agent, clear pending queues, and
+    PAUSE EVERY WATCHDOG so nothing wakes an agent back up.
+
+    ⚠ `pause_watchdogs=True` belongs HERE and only here. `interrupt_all`'s
+    other caller is the kiosk spend-limit freeze, which recovers by itself;
+    this route is the emergency stop the user asked to be blunt. Nothing
+    un-pauses the dogs automatically — resume is per-watchdog and manual,
+    either the operator visiting one or an agent resuming its own."""
     try:
         store.load_org(slug)
     except LedgerError as e:
         raise HTTPException(404, str(e))
-    result = supervisor.interrupt_all(slug)
+    result = supervisor.interrupt_all(slug, pause_watchdogs=True)
     await hub.changed(slug)
     return result
 

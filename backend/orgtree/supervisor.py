@@ -15732,13 +15732,52 @@ def start_storage_watchdog() -> None:
     threading.Thread(target=run, daemon=True).start()
 
 
-def interrupt_all(slug: str) -> dict[str, Any]:
+def interrupt_all(slug: str, *,
+                  pause_watchdogs: bool = False) -> dict[str, Any]:
     """The killswitch: instantly interrupt every active agent at once (user
     ruling — an unlatch-then-press control). Clears in-memory queues and steer
     lists too, so nothing chains a new turn; undelivered mail stays safe in
-    the org doc for whenever the user drives agents again."""
+    the org doc for whenever the user drives agents again.
+
+    `pause_watchdogs` ALSO PAUSES EVERY WATCHDOG, and that is not an extra —
+    it is what makes the name true for the ⏹ button. Interrupting the agents
+    stops the org for exactly as long as it takes the next dog to fire,
+    because a fire mails its owner and WAKES it. An operator who hit STOP ALL
+    and watched an agent start talking again two minutes later has not been
+    given a killswitch. (User request 2026-09-04: "it should also pause all
+    watchdogs immediately to prevent any agents from waking".)
+
+    NOTHING UN-PAUSES THEM. Not this function, not a restart, not the next
+    arm, not a timer — USER RULING 2026-09-04, and the bluntness is the point:
+    "it's an emergency killswitch. it should be expected that the effects
+    could be a little destructive." The only exits are resuming one dog by
+    hand or telling its owner to. Do not add an automatic one.
+
+    ⚠ WHY IT DEFAULTS TO FALSE, which looks timid and is not. This function
+    has a SECOND caller: `hard_freeze`, the kiosk spend-limit breach. That one
+    has a designed recovery — the admin raises the limit and ▶ replays the
+    interrupted turns — so attaching a pause that only a human can undo would
+    silently convert an existing self-recovering feature into one that needs
+    an operator to visit every dog, and would do it to people who never asked
+    for a killswitch at all. The user's ruling is about THE BUTTON. Keep it
+    there: pass it explicitly from the killswitch route and nowhere else.
+
+    ORDER IS LOAD-BEARING: the pause commits BEFORE any agent is interrupted.
+    `watchdog_fire` refuses a dog that is not `armed` and it re-reads that
+    state under DOC_LOCK, so once this save lands no NEW fire can put mail and
+    a wake into flight behind us. A fire that had ALREADY committed before the
+    save is the one case this ordering cannot reach — `_wd_stop_epoch` catches
+    that one, on the other side.
+    """
+    paused: list[dict[str, str]] = []
+    if pause_watchdogs:
+        _wd_bump_stop_epoch(slug)
     with store.DOC_LOCK:
         org = store.load_org(slug)
+        if pause_watchdogs:
+            paused = org.watchdogs_pause_all(org.WATCHDOG_KILLSWITCH_PAUSE)
+            if paused:
+                store.save_org(org)
         nids = [k for k, v in org.nodes.items() if v["state"] == "live"]
     stopped = []
     for nid in nids:
@@ -15748,7 +15787,7 @@ def interrupt_all(slug: str) -> dict[str, Any]:
             st["steer"] = []
         if interrupt_turn(slug, nid).get("interrupted"):
             stopped.append(nid)
-    return {"interrupted": stopped}
+    return {"interrupted": stopped, "watchdogs_paused": paused}
 
 
 # how long an archiving op waits for an interrupted node's turn boundary
@@ -18307,6 +18346,23 @@ def wd_file_contained(org: Org, owner: str, target: str) -> bool:
     return False
 
 
+#: slug → how many times ⏹ STOP ALL has run for it. In memory ON PURPOSE: it
+#: guards a fire that is IN FLIGHT right now, and an in-flight fire cannot
+#: survive a restart, so there is nothing here for a restart to lose. The
+#: DURABLE half of the stop is the paused state in the org doc.
+_wd_stop_epoch: dict[str, int] = {}
+
+
+def _wd_bump_stop_epoch(slug: str) -> None:
+    with _wd_lock:
+        _wd_stop_epoch[slug] = _wd_stop_epoch.get(slug, 0) + 1
+
+
+def _wd_stop_epoch_of(slug: str) -> int:
+    with _wd_lock:
+        return _wd_stop_epoch.get(slug, 0)
+
+
 def _wd_pause(slug: str, wid: str, why: str) -> None:
     """Persist an engine-side pause with its reason, so `resume` is an
     informed choice rather than a guess (the reason clears on resume)."""
@@ -18334,6 +18390,16 @@ def _wd_fire(slug: str, wid: str, name: str, lines: list[str],
     notice = False
     one_shot = False
     kind = ""
+    # ⚠ SAMPLED BEFORE THE FIRE, compared after. This is the one window
+    # `interrupt_all`'s pause-then-interrupt ordering cannot close: a fire that
+    # already passed `watchdog_fire`'s armed check has its mail committed and
+    # is on its way to `send_message(wake=True)` a few lines below, OUTSIDE the
+    # lock. STOP ALL landing in that gap would pause every dog, interrupt every
+    # agent — and then this call would wake one back up, which is precisely the
+    # thing the user asked to prevent. Re-reading the dog's own state here is
+    # NOT enough: a one-shot dog deletes itself as part of firing, so it has no
+    # state left to read and would sail through. The epoch has no such hole.
+    epoch0 = _wd_stop_epoch_of(slug)
     try:
         with store.DOC_LOCK:
             org = store.load_org(slug)
@@ -18373,6 +18439,29 @@ def _wd_fire(slug: str, wid: str, name: str, lines: list[str],
         # the spark is the mailbox animation, not a wake — a notice dog still
         # lights the panel, exactly as orgtree_send_notice does
         mail_spark(slug, "dog:" + wid, owner)
+        if _wd_stop_epoch_of(slug) != epoch0:
+            # ⏹ STOP ALL landed while this fire was committing. The mail IS in
+            # the owner's box and STAYS there — the event really happened, and
+            # losing it would be the worse bug; it is read whenever the org is
+            # driven again. The spark above still lights the mailbox, so the
+            # operator can see something arrived. What must not happen is the
+            # WAKE, and returning before `send_message` is what skips it.
+            #
+            # ⚠ THE CHECK SITS HERE, NOT EARLIER, AND THAT IS THE WHOLE POINT.
+            # It was first written above the spark, where it read correctly and
+            # closed nothing: the stop could still land in the lines between
+            # the check and the wake, which is most of the remaining window.
+            # A test that injected the stop at exactly that point caught it.
+            # Keep this immediately before `send_message` — every statement
+            # moved between the two re-opens the gap by that much.
+            #
+            # HONEST RESIDUAL: a stop landing between this check and
+            # `send_message` returning still wakes the owner. That window is
+            # two adjacent statements rather than the whole fire, and closing
+            # it completely would mean holding a lock across the wake or
+            # teaching the drive path itself about the stop — neither of which
+            # this change is. The durable pause means it cannot happen twice.
+            return
         # wake=False is the notice bargain: a RUNNING owner is still steered
         # (the event reaches it mid-task like any mail), an IDLE one is left
         # idle and reads it on whatever turn comes next. The mail is already

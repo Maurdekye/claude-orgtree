@@ -6114,6 +6114,44 @@ class Org:
     # for a reason the rehire does not answer (a revoked folder or bash). So
     # an archive-pause says so, and ONLY this reason auto-resumes.
     WATCHDOG_ARCHIVE_PAUSE: Final = "its owner was archived"
+    #: ⏹ STOP ALL paused this dog. USER RULING 2026-09-04: "nothing unpauses
+    #: them automatically; it's an emergency killswitch… the only thing that
+    #: can unpause the paused dogs is either manually visiting each one and
+    #: resuming it, or telling the agents to unpause all their paused dogs."
+    #:
+    #: ⚠ THIS STRING IS LOAD-BEARING, not a label. `rehire` re-arms paused
+    #: dogs — but ONLY those whose reason is WATCHDOG_ARCHIVE_PAUSE. Giving
+    #: the killswitch its own reason is what stops a later rehire from
+    #: silently re-arming a dog the operator stopped in an emergency. If these
+    #: two strings are ever made equal, the killswitch acquires an automatic
+    #: resume that nobody asked for and nobody would see.
+    WATCHDOG_KILLSWITCH_PAUSE: Final = (
+        "⏹ STOP ALL paused every watchdog. Nothing un-pauses it "
+        "automatically — resume this dog deliberately when you want it back.")
+
+    def watchdogs_pause_all(self, why: str) -> list[dict[str, str]]:
+        """Pause every ARMED dog in this org. Returns what was actually paused.
+
+        Only `armed` dogs are touched, so a dog already paused keeps the reason
+        it was paused FOR — an archive-pause overwritten with the killswitch
+        reason would become a dog a later rehire no longer re-arms, i.e. the
+        stop would silently make an unrelated pause permanent.
+
+        Caller holds DOC_LOCK and saves; this is pure document surgery so it
+        composes into the killswitch's single atomic save.
+        """
+        hit = []
+        for w in cast("list[dict[str, Any]]", self.d.get("watchdogs") or []):
+            if w.get("state") != "armed":
+                continue
+            w["state"] = "paused"
+            w["paused_why"] = why
+            hit.append({"id": str(w["id"]), "name": str(w["name"]),
+                        "owner": str(w["owner"])})
+        if hit:
+            self._log("watchdogs_pause_all", USER,
+                      {"n": len(hit), "why": why}, [])
+        return hit
 
     def _watchdog(self, wid: str) -> dict[str, Any]:
         d = next((w for w in self.d.get("watchdogs") or []
