@@ -884,6 +884,88 @@ def s5_delete_restore() -> None:
         assert not os.path.exists(store._db_path("busy"))
     check("pool: a connection checked in after close_all is closed, not recycled", reader_during_delete)
 
+    # ---- a delete either moves the WHOLE org, or leaves the org WHOLE ----
+    # Both defects below were proved by `phase1-audit` on b30a361 and both
+    # came in with the Finding 9 fix that made the artefacts travel together:
+    # the surrounding machinery still reasoned about the `.db` alone.
+    # Exercised end to end in probes/p14_delete_atomic.py; these are the two
+    # that belong in the suite because they are invariants, not scenarios.
+
+    def locked_artefact_aborts() -> None:
+        """A locked `<slug>.json` must abort the delete, not be swallowed.
+
+        It used to move LAST inside `suppress(OSError)`, after the database
+        was already in the trash. On Windows an ordinary open read handle
+        makes `os.replace` raise; that raise was swallowed; `delete_org`
+        returned SUCCESS leaving a bare `<slug>.json` — `pending_migrations`'
+        definition of an unmigrated org. The next start REFUSED, naming a
+        slug that no longer existed, and the wall's own `ORGTREE_MIGRATE=1`
+        remedy rebuilt the org from that stale file.
+
+        Dropping the suppression is not the fix; the destructive half has
+        already happened by then. The ORDER is: the artefacts that can block
+        a boot move while the database is still in `orgs/`, where a bare
+        `.json` beside a `.db` is inert."""
+        o = fresh("lockdel", nodes=1)
+        store.save_org(o)
+        with open(store._json_path("lockdel"), "w", encoding="utf-8") as f:
+            f.write('{"marker": "an operator part-way through a rollback"}')
+        h = open(store._json_path("lockdel"), "rb")     # noqa: SIM115
+        try:
+            try:
+                store.delete_org("lockdel")
+                raise AssertionError(
+                    "delete_org reported SUCCESS with a locked .json")
+            except PermissionError:
+                pass
+        finally:
+            h.close()
+        eq(os.path.exists(store._db_path("lockdel")), True,
+           "the database stayed in orgs/: ")
+        eq(os.path.exists(store._json_path("lockdel")), True,
+           "so did the document: ")
+        eq(store.pending_migrations(), [], "nothing became pending: ")
+        store.delete_org("lockdel")                     # and it works unlocked
+        eq(os.path.exists(store._json_path("lockdel")), False, "after: ")
+    check("a locked artefact aborts the delete and leaves the org whole "
+          "— never a half-delete that reports success", locked_artefact_aborts)
+
+    def stem_free_for_every_artefact() -> None:
+        """The free-stem search must clear every suffix under the stem.
+
+        It tested `<stem>.db` alone. Restore the `.db` out of the trash (the
+        documented restore), leave its premigration there, delete again in
+        the same second: the `.db` slot is free, the stem is reused, and
+        `os.replace` overwrote a premigration holding a whole pre-migration
+        history — against the never-overwrite invariant three lines above it."""
+        o = fresh("stemdel", nodes=1)
+        store.save_org(o)
+        with open(store._json_path("stemdel") + ".premigration", "w",
+                  encoding="utf-8") as f:
+            f.write('{"marker": "FIRST"}')
+        store.delete_org("stemdel")
+        first = [f for f in os.listdir(trash) if f.startswith("stemdel-")]
+        eq(len([f for f in first if f.endswith(".json.premigration")]), 1,
+           "the first premigration is in the trash: ")
+        # the restore is putting the .db back; its stem-mates stay behind
+        for f in first:
+            if f.endswith(".db"):
+                os.replace(os.path.join(trash, f), store._db_path("stemdel"))
+        with open(store._json_path("stemdel") + ".premigration", "w",
+                  encoding="utf-8") as f:
+            f.write('{"marker": "SECOND"}')
+        store.delete_org("stemdel")
+        bodies = sorted(
+            open(os.path.join(trash, f), encoding="utf-8").read()
+            for f in os.listdir(trash)
+            if f.startswith("stemdel-") and f.endswith(".json.premigration"))
+        eq(len(bodies), 2, "both premigrations survive: ")
+        eq(bodies[0] != bodies[1], True, "and they are not the same bytes: ")
+        eq(sum('"FIRST"' in b for b in bodies), 1, "the FIRST one survived: ")
+    check("a reused trash stem never overwrites an artefact already there "
+          "— free means free for every suffix, not just .db",
+          stem_free_for_every_artefact)
+
 
 # ===========================================================================
 def s6_revision_hooks() -> None:
@@ -1396,10 +1478,18 @@ def s10_empty_is_not_absent() -> None:
 
     Found by `phase1-audit` (cross-model, 2026-09-04): a valid org with
     `nodes: {}` — one created and not yet hired into — could not migrate.
-    `_load_lazy` gated BOTH of its `nodes` conditions on `node_rows`, so an
-    org with zero node rows lost `nodes` from `_key_order`, and
-    `reconstruct_full` walks the key order. The section came back missing
-    rather than empty.
+    ONE condition was wrong: `_load_lazy`'s `_key_order` RETENTION FILTER
+    kept `nodes` only `and node_rows`, so an org with zero node rows lost
+    `nodes` from its key order — and `reconstruct_full` walks the key order.
+    The section came back missing rather than empty.
+
+    ⚠ The materialisation loop above that filter is NOT gated on `node_rows`
+    and never was: it sets `nodes = {}` for any `"nodes"` in the recorded
+    order. So `load_org` was always correct and the live path never broke.
+    Said plainly because the first report of this defect described both
+    conditions as gated, and a reader who believes that will look for a
+    second bug in `_load_lazy` that does not exist — or, worse, "fix" the
+    materialisation and invent one.
 
     Two consequences, and only the first is fail-safe:
 

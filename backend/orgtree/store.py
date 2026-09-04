@@ -1485,6 +1485,39 @@ def _save_sqlite(org: Org) -> None:
 
 
 # ------------------------------------------------------------ migration
+#: every suffix an org can occupy under one trash stem. The free-stem search
+#: must clear ALL of them: the artefacts travel together, so a stem is only
+#: free when nothing of a previous org is sitting under any of it.
+_TRASH_SUFFIXES: tuple[str, ...] = (".db", ".db-wal", ".db-shm",
+                                    ".json", ".json.premigration")
+
+
+def _rename_retry(src: str, dst: str, *, on_retry: Any = None,
+                  tries: int = 40) -> None:
+    """`os.replace`, retried while Windows says the source is still open.
+
+    POSIX renames a file out from under an open handle without complaint.
+    Windows raises `PermissionError` until the last handle closes, and the
+    holder may be this process (a reader outside DOC_LOCK, №22) or something
+    else entirely (a backup tool, a sync client, an editor). Retry with an
+    escalating pause — and then let it RAISE. A rename that cannot happen is
+    the caller's decision to make, never something to swallow: swallowing one
+    is what turned a delete into an unbootable data root.
+
+    Only `PermissionError` is retried. Any other `OSError` — a missing
+    directory, a cross-device link — will not improve with waiting."""
+    for i in range(tries):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            if i == tries - 1:
+                raise
+            if on_retry is not None:
+                on_retry()
+            time.sleep(0.01 * (i + 1))
+
+
 def _sidecars(db: str) -> tuple[str, str]:
     return db + "-wal", db + "-shm"
 
@@ -2185,58 +2218,112 @@ def delete_org(slug: str) -> None:
         # backup — the exact loss №16 made delete-as-rename to prevent, just
         # moved one step along. Never overwrite anything in the trash: find a
         # free name, and only then rename.
+        #
+        # ⚠⚠ FREE MEANS FREE FOR EVERY ARTEFACT UNDER THE STEM, not just the
+        # database. This search used to test `<stem>.db` alone — from when the
+        # database WAS the org. It is not: `<stem>.json` and
+        # `<stem>.json.premigration` travel under the same stem now. Restore
+        # the `.db` out of the trash (which this module's own docstrings call
+        # the restore), leave its premigration behind, and delete again in
+        # the same second: the `.db` slot is free, the stem is reused, and
+        # `os.replace` overwrites a premigration holding the whole
+        # pre-migration history of the earlier org. Measured by phase1-audit
+        # on 2026-09-04 — `old_history_survived=false`.
         stamp = time.strftime("%Y%m%dT%H%M%S")
-        dest = os.path.join(trash, f"{slug}-{stamp}{ext}")
+
+        def _stem(k: int) -> str:
+            return os.path.join(trash, f"{slug}-{stamp}" + (f"-{k}" if k else ""))
+
         n = 0
-        while os.path.exists(dest):
+        while any(os.path.exists(_stem(n) + suf) for suf in _TRASH_SUFFIXES):
             n += 1
-            dest = os.path.join(trash, f"{slug}-{stamp}-{n}{ext}")
+        stem = _stem(n)
+        dest = stem + ext
+        # every artefact of this org that is NOT the document itself. Under
+        # JSON the document IS `<slug>.json`, so only the premigration is an
+        # extra; under SQLite the database is the document and both JSON
+        # shapes are extras.
+        jp = _json_path(slug)
+        extras = [(jp + ".premigration", ".json.premigration")]
+        if STORE_BACKEND == "sqlite":
+            extras.insert(0, (jp, ".json"))
+
+        # ⚠⚠ THE EXTRAS MOVE FIRST, AND A FAILURE HERE ABORTS THE DELETE.
+        #
+        # They used to move LAST, each wrapped in `suppress(OSError)`, after
+        # the database was already in the trash. On Windows an ordinary open
+        # read handle — a backup tool, a sync client, an operator's editor —
+        # makes `os.replace` raise, and that raise was swallowed. Measured:
+        # `delete_org` returned SUCCESS having moved the database out and
+        # left a bare `<slug>.json` in `orgs/`, which is precisely
+        # `pending_migrations`' definition of an unmigrated org. The next
+        # start REFUSED, naming a slug that no longer existed, and following
+        # the wall's own `ORGTREE_MIGRATE=1` remedy rebuilt the database from
+        # that stale file — the deleted org back, with its history. That is
+        # Finding 9 again, reached through the failure path instead of the
+        # intended one. (phase1-audit, 2026-09-04.)
+        #
+        # Dropping the suppression alone would not fix it: the destructive
+        # half has already happened by then. THE ORDER IS THE FIX. While the
+        # database is still in `orgs/`, a bare `<slug>.json` beside it is
+        # INERT — `_ensure_migrated` short-circuits on the `.db`, and
+        # `pending_migrations` requires a `.json` with NO `.db` — so the
+        # dangerous window only opens once the database leaves. Move the
+        # artefacts that can block a boot while that window is still shut and
+        # a locked file costs a failed delete instead of an unbootable root.
+        #
+        # Either the whole org moves, or the org is left whole.
+        moved: list[tuple[str, str]] = []
+
+        def _put_back() -> None:
+            for src, dst in reversed(moved):
+                with contextlib.suppress(OSError):
+                    os.replace(dst, src)
+
+        try:
+            for src, suffix in extras:
+                if os.path.exists(src):
+                    # a shorter budget than the database gets, deliberately:
+                    # DOC_LOCK is held throughout, the holder of a `.json` is
+                    # by definition NOT this process (nothing here opens one
+                    # under SQLite), and the point is to fail EARLY and
+                    # cleanly — a delete that refuses is safe to retry from
+                    # the UI, a delete that wedges the lock for half a minute
+                    # is not.
+                    _rename_retry(src, stem + suffix, tries=20)
+                    moved.append((src, stem + suffix))
+        except OSError:
+            _put_back()
+            raise
         if STORE_BACKEND != "sqlite":
-            os.replace(p, dest)
+            try:
+                _rename_retry(p, dest)
+            except OSError:
+                _put_back()
+                raise
             return
         with _POOL.acquire(slug) as conn:
             conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         _POOL.close_all(slug)
         # a reader outside DOC_LOCK (№22) may still hold a connection for a
         # few milliseconds; on Windows the rename fails until it lets go
-        for i in range(40):
-            try:
-                os.replace(p, dest)
-                break
-            except PermissionError:
-                if i == 39:
-                    raise
-                _POOL.close_all(slug)
-                time.sleep(0.01 * (i + 1))
+        try:
+            _rename_retry(p, dest, on_retry=lambda: _POOL.close_all(slug))
+        except OSError:
+            _put_back()        # the extras go home; the org is left whole
+            raise
+        # The sidecars are the one thing still moved best-effort, and that is
+        # a decision rather than an oversight. `wal_checkpoint(TRUNCATE)` and
+        # `close_all` above left them EMPTY, so they carry no committed
+        # frame; and unlike a `.json` a stray `-wal`/`-shm` cannot make an org
+        # pending, cannot be resurrected by the migration wall, and is
+        # rejected by SQLite as invalid if a later database of the same name
+        # ever meets it. Nothing here can lose data, so nothing here should
+        # abort a delete that has otherwise done its job.
         for side, dside in zip(_sidecars(p), _sidecars(dest)):
             if os.path.exists(side):
                 with contextlib.suppress(OSError):
                     os.replace(side, dside)
-        # ⚠ …and the JSON-shaped artefacts of the same org. They are not
-        # sidecars of the database, but they ARE part of the org, and leaving
-        # them costs twice — both measured, `probes/p11_delete_resurrect.py`:
-        #
-        #  * `<slug>.json.premigration` exists for EVERY migrated org, so
-        #    after the cutover this is every delete: the deleted org's whole
-        #    document stays sitting in `orgs/`, readable, while the trash copy
-        #    holds only the database. Delete has to mean the document went
-        #    somewhere, not that half of it stayed where it was.
-        #  * a bare `<slug>.json` — an operator part-way through the
-        #    documented rollback, a backup tool, a hand-dropped file — becomes
-        #    "a .json with NO .db" the instant the database leaves, which is
-        #    exactly `pending_migrations`' definition of an unmigrated org.
-        #    The next start then REFUSES, naming a slug that no longer exists,
-        #    and the remedy its own wall prints (`ORGTREE_MIGRATE=1`) converts
-        #    that file into a live database: THE DELETED ORG COMES BACK.
-        #
-        # They travel under the same stem the database took, so the trash
-        # entry is still one org and putting it back is still the restore.
-        # Moved, never removed — №16's motto is that a delete is a rename.
-        stem, jp = dest[:-len(ext)], _json_path(slug)
-        for src, suffix in ((jp, ".json"), (jp + ".premigration", ".json.premigration")):
-            if os.path.exists(src):
-                with contextlib.suppress(OSError):
-                    os.replace(src, stem + suffix)
 
 
 # ---------------------------------------------------- external peer sightings
