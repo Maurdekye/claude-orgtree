@@ -240,6 +240,25 @@ def ensure_up_does_not_pull() -> None:
         "paths would deploy")
 
 
+def ensure_up_refuses_an_unready_python_environment() -> None:
+    """The relaunch-only path cannot run pip, so it must stop before launch
+    when the managed interpreter is absent or cannot import its dependencies.
+    Assert against executable code (comments are stripped) so deleting the
+    guard while leaving its explanation behind cannot leave this check green."""
+    body = code(UPDATE)
+    missing = body.index("} elseif ($EnsureUp) {")
+    create = body.index("python -m venv $venvDir")
+    assert missing < create, (
+        "the -EnsureUp missing-venv refusal no longer precedes venv creation")
+    assert "REFUSING to ensure-up: the repo-local Python environment is missing" in body[missing:create]
+    probe = body.index("$pythonProbe = @'")
+    ensure_probe = body.index("if ($EnsureUp) {", probe)
+    pip = body.index("& $py -m pip install", ensure_probe)
+    assert ensure_probe < pip, "the dependency probe is not in the EnsureUp path"
+    assert "cannot import the backend's required dependencies" in body[ensure_probe:pip]
+    assert "Run a full deploy first" in body[ensure_probe:pip]
+
+
 def the_mutex_is_the_same_one_update_ps1_takes() -> None:
     """Holding it is what stops the 5-minute `orgtree-ensure` task relaunching
     a backend into the middle of the migration.  A different name would read
@@ -415,6 +434,8 @@ check("ORGTREE_DATA is pinned for every child",
 check("the bound port and the checked port are the same port",
       the_port_the_backend_binds_matches_the_port_that_is_checked)
 check("-EnsureUp does not pull", ensure_up_does_not_pull)
+check("-EnsureUp refuses an unready Python environment",
+      ensure_up_refuses_an_unready_python_environment)
 check("the mutex is the one update.ps1 takes",
       the_mutex_is_the_same_one_update_ps1_takes)
 

@@ -241,6 +241,14 @@ if ($env:ORGTREE_PYTHON) {
     $py = 'python'
 } elseif (Test-Path $venvPy) {
     $py = $venvPy
+} elseif ($EnsureUp) {
+    # -EnsureUp is relaunch-only: it deliberately skips pip below. Creating a
+    # new venv here would therefore produce an interpreter that cannot import
+    # the backend, then launch it as if the install were healthy.
+    Write-Host "REFUSING to ensure-up: the repo-local Python environment is missing at $venvPy." -ForegroundColor Red
+    Write-Host "Run a full deploy first (without -EnsureUp) so it can create .venv and install requirements.txt." -ForegroundColor Red
+    Write-Host "Nothing was stopped or started." -ForegroundColor Red
+    exit 1
 } else {
     Write-Host "creating the virtualenv at .venv (first run) ..." -ForegroundColor Yellow
     python -m venv $venvDir
@@ -251,6 +259,27 @@ if ($env:ORGTREE_PYTHON) {
         Write-Host "(set ORGTREE_NO_VENV=1 to silence this)" -ForegroundColor Yellow
         if (Test-Path $venvDir) { Remove-Item -Recurse -Force $venvDir -ErrorAction SilentlyContinue }
         $py = 'python'
+    }
+}
+$pythonProbe = @'
+import fastapi, uvicorn, websockets, pydantic, starlette, typing_extensions, httpx, PIL, psutil
+'@
+if ($EnsureUp) {
+    # The relaunch path cannot repair a venv. Probe every direct runtime
+    # dependency so a partially populated environment refuses before the
+    # backend is launched. Keep stderr non-terminating: the import traceback
+    # is useful evidence, while the explicit refusal below is the diagnosis.
+    $was = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    $global:LASTEXITCODE = $null
+    try { & $py -c $pythonProbe 2>&1 | Out-Host } catch { }
+    $probeRc = if ($null -eq $LASTEXITCODE) { 127 } else { $LASTEXITCODE }
+    $ErrorActionPreference = $was
+    if ($probeRc -ne 0) {
+        Write-Host "REFUSING to ensure-up: Python at $py cannot import the backend's required dependencies (exit $probeRc)." -ForegroundColor Red
+        Write-Host "Run a full deploy first (without -EnsureUp) to install requirements.txt into this environment." -ForegroundColor Red
+        Write-Host "Nothing was stopped or started." -ForegroundColor Red
+        exit 1
     }
 }
 $pyKind = if ($py -eq $venvPy) { ' [.venv]' } else { ' [system -- deps shared with every other project]' }
