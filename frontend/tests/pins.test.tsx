@@ -570,7 +570,10 @@ uiTest('§B8 unpin minimises to the card, and the card can take focus again', as
   assert.ok(!ghost!.querySelector('.desk-body'), 'the ghost carries no live desk')
   assert.deepEqual(winRect(ghost!), from, 'it starts where the window was')
   await advance(32, 16)
-  assert.deepEqual(winRect(el.querySelector('.pinwin-ghost') as HTMLElement), home,
+  const flying = el.querySelector('.pinwin-ghost') as HTMLElement | null
+  assert.ok(flying, 'the ghost is still in flight one frame later')
+  const ghostRect = winRect(flying!)
+  assert.deepEqual(ghostRect, home,
     'it flies to the card\'s CURRENT screen rect (read at unpin time, never stored)')
   await advance(600)
   assert.equal(el.querySelector('.pinwin-ghost'), null, 'the ghost is gone after the flight')
