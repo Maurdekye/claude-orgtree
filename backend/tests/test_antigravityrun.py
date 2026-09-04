@@ -244,7 +244,8 @@ def main():
         "ANTHROPIC_API_KEY,OPENAI_API_KEY,CLAUDECODE,CLAUDE_CODE_ENTRYPOINT,"
         "GOOGLE_CLOUD_PROJECT,ORGTREE_ORG,AGY_CLI_DISABLE_AUTO_UPDATE")
     os.environ["FAKEANTIGRAVITY_ENVPROBE_PATH"] = probe_env
-    _run("text", env_extra={"ORGTREE_ORG": "proof"})
+    _run("text", env_extra={"ORGTREE_ORG": "proof",
+                             "AGY_CLI_DISABLE_AUTO_UPDATE": "1"})
     with open(probe_env, encoding="utf-8") as f:
         seen_env = json.load(f)
     check("the other providers' material is STRIPPED at spawn "

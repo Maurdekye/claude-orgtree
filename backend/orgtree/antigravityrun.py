@@ -440,8 +440,11 @@ class AntigravityTurn:
         """Spawn, put the prompt on stdin, wait for `init`. Returns the
         durable conversation id (the provider's own — the one the node
         records and the next turn resumes)."""
-        env = providers.antigravity_env()
+        env = dict(os.environ)
         env.update(self._env_extra)
+        # Normalize last: caller extras may add org identity, but may not
+        # re-enable agy's updater or reintroduce another provider's secret.
+        env = providers.antigravity_env(env)
         self.proc = subprocess.Popen(
             self.argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.PIPE, env=env, cwd=self.cwd,

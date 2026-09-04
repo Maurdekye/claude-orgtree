@@ -733,6 +733,10 @@ def antigravity_env(base: dict[str, str] | None = None) -> dict[str, str]:
         if k.startswith(("ANTHROPIC_", "CLAUDE_CODE_")) or k in (
                 "CLAUDECODE", "OPENAI_API_KEY"):
             env.pop(k, None)
+    # ⚠ Exact vendor contract, not a boolean parse: agy tests
+    # len(value) == 4 && memcmp(value, "true", 4).  "1", "true ", "True",
+    # and every other spelling silently disable nothing.  This exact bug
+    # previously shipped here as "1", leaving the updater popup alive.
     env["AGY_CLI_DISABLE_AUTO_UPDATE"] = "true"
     return env
 
