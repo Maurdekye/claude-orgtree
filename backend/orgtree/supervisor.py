@@ -2959,11 +2959,21 @@ def _looks_like_usage_limit(blob: str) -> bool:
     # second set — the freeze machinery never fired for exactly that case
     # 2026-09-04: Anthropic's live 429 says "would exceed your account's rate
     # limit"; the too-long "exceeded" stem silently returned False here.
+    # 2026-09-04 (same day, follow-up): the bare "exceed" stem added for that
+    # 429 ALSO matched "input length and max_tokens exceed context limit:
+    # 205000 > 200000" — a context overflow, not a wall. That froze the agent
+    # to wait out a reset that never comes, and swallowed the real error; a
+    # wrong freeze is worse than the missed 429, which at least failed loudly.
+    # So "exceed" now needs an account-scope word beside it. Both "account"
+    # and "rate limit" appear in the observed 429 and in no overflow message.
+    # "exceeded" still stands alone, exactly as it did before either change.
     b = blob.lower()
-    return ("limit" in b and any(w in b for w in
-                                 ("usage", "weekly", "reached", "exceeded",
-                                  "exceed", "quota", "hit your", "resets",
-                                  "session")))
+    if "limit" not in b:
+        return False
+    if any(w in b for w in ("usage", "weekly", "reached", "exceeded",
+                            "quota", "hit your", "resets", "session")):
+        return True
+    return "exceed" in b and any(w in b for w in ("account", "rate limit"))
 
 
 def _looks_like_auth_failure(res: dict[str, Any]) -> bool:

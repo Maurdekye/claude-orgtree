@@ -305,6 +305,14 @@ def hermetic() -> None:
         "usage limit exceeded",
         "You have reached your limit for Opus. Try again at 11:30pm.",
         "Error: rate limit exceeded, resets in 42 minutes",
+        # The live primary 429. It says "exceed", never "exceeded", so it
+        # rides the adjacency branch rather than the bare word list. Pinned
+        # HERE as well as in account-pool-state 1.7a because the tempting way
+        # to fix the context-overflow false positive below is to narrow until
+        # this stops matching too — which silently restores the bug the
+        # "exceed" stem was added to fix.
+        "Error in API request: 429 rate_limit_error: This request would "
+        "exceed your account's rate limit. Please try again later.",
     ]
     LIMIT_NO = [
         "API Error: 500 Internal Server Error",
