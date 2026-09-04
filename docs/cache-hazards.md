@@ -81,6 +81,41 @@ injection, so a workspace-holder receives the text once rather than twice.
 `native_startup_context_digest` still fingerprints the file through the grant;
 nothing about invalidation changed with that exclusion.
 
+## An agent's own standing notes now respawn it on every lane
+
+The prompt tells every agent to keep a `CLAUDE.md` in its scratch folder. On
+the claude lane the CLI loads that file at session start and D-206 has
+fingerprinted it since; editing it has always cost a respawn. On codex and
+antigravity it was loaded by nothing at all — those CLIs read `AGENTS.md` and
+never `CLAUDE.md` — so agents there kept a compaction-survival file that no
+model ever saw.
+
+`supervisor._standing_notes_block` mirrors it into `identity_prompt` for
+exactly the lanes whose CLI does not read it, which puts it in the `prompt`
+identity component. So on those lanes too, editing your notes moves your hash
+and your next turn is cold with the new ones. That respawn IS the delivery
+mechanism, not a side effect.
+
+⚠ **`providers.provider_of` is not the predicate.** It answers "which
+provider", and the question here is "does this CLI read `CLAUDE.md`". They
+differ for OpenRouter: those tiers are not a separate lane, they run the same
+claude CLI with an `ANTHROPIC_BASE_URL` override, so the file IS loaded
+natively. A predicate written `provider_of(tier) != "claude"` passes a
+codex/claude test pair and hands every OpenRouter agent the text twice.
+`_NATIVE_CLAUDEMD_PROVIDERS` names the property instead.
+
+An UNKNOWN tier counts as native, and that is what the process does rather
+than a fallback: the turn dispatcher takes its codex and antigravity legs on
+tier membership and lets everything else through to the claude machinery, so
+an unrecognised tier really does run the claude CLI.
+
+Why this rather than appending the notes to `AGENTS.md` at the spawn site,
+which was the original plan: that lands in the same file, but the notes would
+then need `codex_startup_context_digest` taught to hash `<cwd>/CLAUDE.md` as
+well, or a parked process would keep serving yesterday's notes while the file
+said otherwise. Riding the prompt makes the invalidation the same fix instead
+of a second one that could be forgotten.
+
 ## MCP object-key order is not process identity
 
 `~/.claude.json` preserves JSON insertion order, while MCP object-key order is

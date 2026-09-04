@@ -3916,6 +3916,97 @@ def _org_charter_block(org: Org) -> str:
             + "]\n" + txt + "\n[END ORG CHARTER]\n")
 
 
+STANDING_NOTES_MAX = 12_000   # chars of scratch CLAUDE.md carried on a lane
+                              # whose CLI does not read the file itself
+
+#: Providers whose CLI loads `<cwd>/CLAUDE.md` by itself at session start, so
+#: `_standing_notes_block` must NOT render it a second time.
+#:
+#: `claude` is the measured case (D-206 fingerprints the file precisely because
+#: the CLI holds it in the process). `openrouter` is here for a reason that is
+#: easy to get wrong: those tiers are NOT a separate lane at all - they run the
+#: SAME claude CLI with an ANTHROPIC_BASE_URL override, so the file is loaded
+#: natively there too. `providers.provider_of` answers "which provider", which
+#: is a different question from "does its CLI read CLAUDE.md", and using it
+#: directly (`!= "claude"`) would hand every OpenRouter agent the text twice.
+#:
+#: An UNKNOWN tier resolves to `claude` here, and that is CORRECT rather than a
+#: fallback: the turn dispatcher takes its codex and antigravity legs on tier
+#: membership and lets everything else through to the claude machinery, so an
+#: unrecognised tier really does run the claude CLI and really does load the
+#: file natively. Treating it as native is what the process actually does.
+_NATIVE_CLAUDEMD_PROVIDERS = frozenset({"claude", openrouter.PROVIDER_ID})
+
+
+def _standing_notes_block(org: Org, nid: str) -> str:
+    """The agent's OWN standing notes, mirrored onto lanes that cannot read
+    them - so the charter's promise is true everywhere instead of on one lane.
+
+    THE DEFECT. Every agent's prompt ends with "keep a CLAUDE.md there as
+    standing notes"; the text used to promise it was "loaded automatically
+    every turn". That is a claim about a CLI, and it was only ever true of the
+    claude one. Codex reads AGENTS.md and never CLAUDE.md (measured 2026-09-04
+    with `codex debug prompt-input`); antigravity reads its own AGENTS.md the
+    same way. So a codex or antigravity agent kept a compaction-survival file
+    that NOTHING READ, and found out when a compaction destroyed the context
+    the file existed to protect. Verified on two live seats before the fix.
+
+    It is the same shape as org.md reaching zero agents: a mechanism everybody
+    believes in that does nothing, and the belief is what stops anyone looking.
+
+    WHY THIS AND NOT A FILE MIRROR. The parked plan was to append the notes to
+    `<cwd>/AGENTS.md` at the spawn site. That lands in the same place - on both
+    those lanes the managed AGENTS.md IS this prompt - but it would need
+    `codex_startup_context_digest` taught to hash `<cwd>/CLAUDE.md` as well,
+    or a parked process would keep serving yesterday's notes while the file on
+    disk said otherwise. Rendering here instead makes the notes part of the
+    `prompt` identity component, which is already hashed on every lane, so the
+    invalidation is not a second fix that could be forgotten - it is the same
+    fix. Editing your notes moves your identity hash and your next turn is
+    cold with the new ones. That respawn is the cost, it is the same one the
+    claude lane has paid since D-206, and it is stated in the block itself.
+
+    OBSERVABLE FAILURE, as everywhere else today: notes that are PRESENT BUT
+    UNREADABLE say so. An absent file is silent, because having written no
+    notes is a real answer and a permanent nag is not.
+    """
+    tier = str(org.node(nid).get("model") or "")
+    if providers.provider_of(tier) in _NATIVE_CLAUDEMD_PROVIDERS:
+        return ""
+    try:
+        path = os.path.join(scratch_dir(org.d["slug"], nid), "CLAUDE.md")
+    except Exception:                                          # noqa: BLE001
+        return ""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            txt = f.read().strip()
+    except FileNotFoundError:
+        return ""                    # no notes yet is a real answer
+    except OSError as e:
+        return ("\n\n[YOUR STANDING NOTES - PRESENT BUT UNREADABLE. There is "
+                "a CLAUDE.md in your working folder and this turn could not "
+                "read it (" + type(e).__name__ + "), so you are running "
+                "WITHOUT the notes you left yourself. Say so before relying "
+                "on remembering anything, and check the file.]\n")
+    if not txt:
+        return ""
+    cut = len(txt) > STANDING_NOTES_MAX
+    if cut:
+        # head-taken: notes are a curated document, not an append log like
+        # breadcrumbs.md, so the top is the part that was meant to be read
+        # first. The cut is declared rather than silent.
+        txt = txt[:STANDING_NOTES_MAX]
+    return ("\n\n[YOUR STANDING NOTES - CLAUDE.md from your own working "
+            "folder, mirrored into this prompt because the CLI you run does "
+            "not read that file itself. You wrote these; they are yours to "
+            "revise. Editing the file changes this prompt, which restarts "
+            "your process - so the next turn is a cold one carrying the new "
+            "notes, and this is why the file is worth keeping short."
+            + (" TRUNCATED to the first %d chars." % STANDING_NOTES_MAX
+               if cut else "")
+            + "]\n" + txt + "\n[END YOUR STANDING NOTES]\n")
+
+
 BREADCRUMBS_TAIL = 12_000     # chars of breadcrumbs.md spliced into the prompt
 
 
@@ -4864,8 +4955,20 @@ def identity_prompt(org: Org, nid: str, include_archived: bool = False) -> str:
            "orgtree_message to 'user' (one message — do not duplicate it). "
            if n["parent"] is None else
            " — that is how your superior learns of it. ")
-        + f"Your scratch folder is your own: keep a CLAUDE.md there as standing notes — "
-        f"it is loaded automatically every turn and survives compaction. "
+        + "Your scratch folder is your own: keep a CLAUDE.md there as "
+          "standing notes. It is delivered to you at the start of "
+          "every session and survives compaction; editing it "
+          "restarts your process, so the notes you add apply from "
+          "your next turn. "
+        # THE SAME PROMISE, MADE TRUE ON THE LANES THAT CANNOT KEEP
+        # IT BY THEMSELVES. The sentence above used to say "loaded
+        # automatically every turn", which is a claim about a CLI and
+        # was only ever true of the claude one - codex and antigravity
+        # read AGENTS.md and never CLAUDE.md, so their agents kept a
+        # compaction-survival file nothing read. This block mirrors it
+        # for them; see _standing_notes_block for why it rides the
+        # prompt rather than being appended to AGENTS.md at spawn.
+        + _standing_notes_block(org, nid)
         + (("\n\n[STANDING INSTRUCTIONS from your granted folders]\n" + cmd_block)
            if (cmd_block := _claudemd_block(org, nid)) else "")
         + _breadcrumbs_block(org, nid)
