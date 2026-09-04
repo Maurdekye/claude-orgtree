@@ -166,8 +166,39 @@ sees the file.
 have caught the Antigravity double-message bug (`3019505`) even fully working —
 a suite that covers one of three lanes while claiming a provider-neutral
 contract is a FALSE assurance, which is worse than a known gap. Scoping a
-second lane is with the coordinator; until then, read its green with that limit
-in mind.
+second lane is with the coordinator (ruled 2026-09-04: **after the cutover**);
+until then, read its green with that limit in mind.
+
+#### If you are the one adding a second lane, read this first
+
+**Do not port the scenarios. Port the INVARIANT.** The estimate is ~3-4 days
+and that is not the interesting part; this is:
+
+The rig's central sweep is the D-55 **drain to echo** race, and that race is
+about *the CLI's own transcript lagging its stdout*. For Antigravity there is
+no CLI transcript to lag — the durable copy is orgtree's **own journal**,
+written by the supervisor in `_antigravity_leg`. So most of the window sweep
+has no meaning on that lane, and a day spent transposing it is a day lost
+discovering that.
+
+What DOES carry across is the contract: *a message is on screen continuously
+and never appears twice.* Keep that, and choose the windows that lane actually
+has. For Antigravity the two worth driving are the **journal-write to
+`turn_done` gap** and the **draft handover** — the second being exactly the
+hole that produced the double-message bug (`3019505`), so it is a window with a
+proven defect in it rather than a hypothetical one.
+
+Two practical notes, verified rather than assumed:
+
+* **The hire path is the easy part.** `ORGTREE_ANTIGRAVITY=<fake exe>` plus
+  leaving `FAKEANTIGRAVITY_SIGNED_OUT` unset satisfies the Antigravity hire
+  gate entirely by env (`test_antigravity_dispatch.py:44,50-59`). It needs no
+  equivalent of the `.claude.json` stanza the Claude lane required.
+* **The dial is the hard part.** `fakecli.js` is config-file programmable and
+  re-read on every launch — that is what makes the Claude sweep a *dial*.
+  `fakeantigravity.py` is scenario-selected (`FAKEANTIGRAVITY_SCENARIO`) with
+  essentially no timing surface: one `time.sleep(8.0)`. Giving it an equivalent
+  config is the bulk of the work.
 
 ⚠ **IT EXHAUSTS EPHEMERAL PORTS, AND THAT LOOKS LIKE A SUBJECT FAILURE.**
 Measured 2026-09-04: one `--quick` run drove machine-wide `TIME_WAIT` from
