@@ -157,8 +157,13 @@ SLOW = {
                "and its timing assertions want an unloaded machine",
     },
     "test_turn_lifecycle.py": {
-        # it advertises --hermetic (0.4 s, 49 checks) which the generic rule
-        # already picks; this entry only records why --quick is not the choice.
+        # it advertises --hermetic which the generic rule already picks; this
+        # entry only records why --quick is not the choice.
+        # RE-MEASURED 2026-09-05: --hermetic is now 110 checks (was 0.4 s /
+        # 49 when this was written). Still about a second, still no live
+        # backend. ⚠ THAT IS THE POINT WORTH CARRYING: the fast tier runs
+        # NONE of this suite's live sections, so a fast-tier pass is not
+        # evidence about them. A direct run is ~173 checks and ~11 minutes.
         "fast": ["--hermetic"],
         "why": "--quick spawns the real backend and takes 119 s (measured); "
                "--hermetic is the in-process half",

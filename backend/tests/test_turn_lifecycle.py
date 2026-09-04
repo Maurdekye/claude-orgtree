@@ -80,7 +80,56 @@ QUICK = "--quick" in sys.argv
 ONLY = sys.argv[sys.argv.index("--only") + 1] if "--only" in sys.argv else ""
 HERMETIC_ONLY = "--hermetic" in sys.argv
 KEEP = "--keep" in sys.argv
-PORT = int(sys.argv[sys.argv.index("--port") + 1]) if "--port" in sys.argv else 7401
+
+
+def _ephemeral_port() -> int:
+    """A port the OS says nobody is using, allocated PER RUN.
+
+    ⚠ THIS DEFAULT USED TO BE A FIXED NUMBER, and that was a fleet hazard
+    rather than a style point. Several agents share this machine, and two runs
+    of THIS suite at once both bound the same number. The loser did NOT fail
+    cleanly: it got through the hermetic half and then failed inside the live
+    section with shaped, plausible mail-redelivery errors — "carried by
+    [mailbox]" passing while "the next turn delivers it" failed — which reads
+    exactly like a product defect and cascades into a dozen "section aborted"
+    entries behind it.
+
+    MEASURED 2026-09-05: rig dirs `lkeioy4v` at 23:54:38 and `hzue0m86` at
+    23:54:40, two seconds apart, with more at 23:58 and 23:59. The resulting
+    158-pass/15-fail run was read as a regression and nearly bought a revert
+    of an unrelated commit.
+
+    ⚠ ORPHANS ARE NOT WHY THE FIXED NUMBER WAS HERE, so nothing is lost by
+    dropping it: `_leash` (D-170) already ties the rig backend's lifetime to
+    this process with a KILL_ON_JOB_CLOSE job object, which is what actually
+    stopped killed runs leaving listeners behind. The fixed port's remaining
+    effect was to make concurrent runs of this suite collide.
+
+    Binding port 0 and closing leaves a window before the rig binds it, so the
+    precondition below still VERIFIES the port rather than trusting this — see
+    `port_free`, which keeps its inert declaration for both cases.
+    """
+    s = socket.socket()
+    try:
+        s.bind(("127.0.0.1", 0))
+        return int(s.getsockname()[1])
+    finally:
+        s.close()
+
+
+#: an explicit --port is still honoured, for a run that wants a known number
+#: (attaching a debugger, or reproducing one exact rig). It is also the only
+#: way to get a collision back, which is why the two cases say different
+#: things when the port turns out to be held.
+PORT_EXPLICIT = "--port" in sys.argv
+PORT = (int(sys.argv[sys.argv.index("--port") + 1]) if PORT_EXPLICIT
+        else _ephemeral_port())
+# REPORT THE PORT. A per-run port that nothing names is a rig you cannot
+# attach to, cannot find in `netstat`, and cannot tell apart from a peer's —
+# and it is what makes the allocation observable to a test at all, which is
+# how the concurrency property below is checked without two 11-minute runs.
+print(f"rig port: {PORT} "
+      f"({'explicit --port' if PORT_EXPLICIT else 'ephemeral, per run'})")
 
 PASS = 0
 FAIL: list[tuple[str, str]] = []
@@ -2748,8 +2797,22 @@ def port_free(p: int, tries: int = 100) -> None:
         f"    ⚠ the LIVE deployment also runs as `python -m orgtree.api`, so "
         f"do NOT kill by command-line match. This rig is the one on port {p}; "
         f"the deployment uses the operator ports 7360-7362.\n"
-        f"    usual cause: an earlier run of this suite was KILLED rather than "
-        f"exiting, orphaning its backend here.")
+        # ⚠ THE CAUSE LINE IS BRANCHED, and it used to name only one cause —
+        # "an earlier run was KILLED, orphaning its backend". That stopped
+        # being the usual cause when `_leash` (D-170) tied the rig to this
+        # process, and on 2026-09-05 the REAL cause was a concurrent run of
+        # this same suite on the same fixed port. A guard that names the wrong
+        # cause sends the reader to the wrong place just as surely as no guard
+        # at all — three readers took the last one for 23 broken behaviours.
+        + (f"    usual cause: ANOTHER RUN OF THIS SUITE is live on the same "
+           f"explicit --port. The default is now a per-run ephemeral port so "
+           f"concurrent runs cannot collide; --port opts back into that risk."
+           if PORT_EXPLICIT else
+           f"    the default port is allocated PER RUN from the OS, so this is "
+           f"NOT a collision with another run of this suite — something took "
+           f"it in the window between allocation and bind. Re-running gets a "
+           f"different port; if it keeps happening, something on this machine "
+           f"is claiming ports broadly."))
 
 
 #: the pre-fix queue drain, restored at runtime by monkeypatch so the suite can

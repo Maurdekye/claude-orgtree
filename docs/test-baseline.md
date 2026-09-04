@@ -34,6 +34,41 @@ these names at anyone as current.
 > measured two commits ago is evidence about two commits ago. Re-run the
 > baseline at YOUR tip. It costs six minutes and it is the whole point.
 
+> ⚠ **ONE SUITE NAME, THREE DIFFERENT TEST SETS. Never quote a
+> `turn-lifecycle` number without the invocation attached.** Measured
+> 2026-09-05:
+>
+> | invocation | what actually runs |
+> |---|---|
+> | `--hermetic` — **what the fast tier uses** (`run_tests.py`'s `SLOW` table) | 110 in-process checks, about a second, **no live backend at all** |
+> | `--quick` | the middle set (~96) — spawns the real backend |
+> | direct, no flags | ~173 checks, ~11 minutes, **including the live `clicrash` section** |
+>
+> So "turn-lifecycle passed in the fast tier" says NOTHING about the live
+> sections — they were never executed. On 2026-09-05 a direct run's
+> 158-pass/15-fail was compared against a fast-tier pass, read as a regression,
+> and very nearly bought a revert of an unrelated commit. The numbers this org
+> produced in one evening — 49, 96, 98, 110, 158/15 — are five different
+> SELECTIONS, not five measurements of one thing.
+
+> ⚠ **A SUITE THAT BINDS A FIXED PORT CANNOT BE RUN TWICE AT ONCE, AND SEVERAL
+> AGENTS SHARE THIS MACHINE.** `turn-lifecycle` did, until its port became
+> per-run (ephemeral, and it now PRINTS `rig port: N` so you can tell runs
+> apart). Two simultaneous runs both took the same number and the loser did not
+> fail cleanly: it passed the hermetic half, then failed inside the live
+> section with *shaped, plausible* mail-redelivery errors — `carried by
+> [mailbox]` green while `the next turn delivers it` red — plus a dozen
+> cascading `section aborted` entries. That reads exactly like a real defect.
+> Measured: rig dirs two seconds apart, 23:54:38 and 23:54:40.
+>
+> **Still fixed, and still a hazard if you run them concurrently:**
+> `compaction` (`--port`, default 7409 — same one-line shape but it has NO
+> `_leash`, so its fixed port is currently doubling as orphan detection and
+> must not be changed without porting the leash), `mcptool` (a flat `PORT =`
+> constant, no override), and inline literals in `api-surface`,
+> `external-mail`, `sandbox` and `frozen-policy-enforcement`. Different suites
+> use different numbers, so the collision is only ever a suite against ITSELF.
+
 `main` is NOT green and has not been for a while. "Expect green" is the wrong
 bar; the right bar is **parity against a measured baseline** — you broke
 nothing if your tree fails the same suites, BY NAME, as a clean tree at the
@@ -114,7 +149,7 @@ case (`stopped_early`, `1798963`).
 | `headless` | runner | `1798963` | complete, 35 | structural fixture: `body.index('org.d.get("api_key")')` → `ValueError: substring not found`. Greps source text. |
 | `mcp-lifecycle-finalize` | runner | `c896a00` | ⚑ DRIFT | `AssertionError: 0 is not None : vacuous: child died before EOF` across three lifecycle tests. Verified on clean `c896a00`; it had never been in this list either. |
 | `run-completion` | runner | `1798963` | **⚐ ABORTED — stopped at 13** | the runner testing itself under a kill. It prints an intermediate "13 checks passed, 4 failed" and then DIES on `a killed run left a COMPLETE marker — the marker lies`, so everything after that point is unmeasured. Identical on `c896a00`. |
-| `turn-lifecycle` | runner | `1798963` | complete, 96 | structural fixture greps for `st["queue"][0:0] = leftover`, rewritten to `st["queue"].extend(leftover)`. Zero matches → the fixture trips before it asserts anything. ⚠ On a DIRECT run at `02615b9` it produced no output and did not finish within 200 s — a hang, not the fixture trip. Not chased; its grep is for a LITERAL string, so a `supervisor.py` insertion cannot move it either way. |
+| `turn-lifecycle` | runner | `1798963` | complete, 96 | structural fixture greps for `st["queue"][0:0] = leftover`, rewritten to `st["queue"].extend(leftover)`. Zero matches → the fixture trips before it asserts anything. ⚠ On a DIRECT run at `02615b9` it produced no output and did not finish within 200 s — a hang, not the fixture trip. Not chased; its grep is for a LITERAL string, so a `supervisor.py` insertion cannot move it either way. **⚠ 2026-09-05: this row's "96" is the `--quick` selection. A direct run is ~173 checks and ~11 min — see the invocation table above before comparing this number to anything.** |
 
 **Removed 2026-09-04 — these now pass, and the reason each one was red is
 worth more than the row was:**
