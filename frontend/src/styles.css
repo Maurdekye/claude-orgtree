@@ -4297,6 +4297,14 @@ html.mobile .md table { display: block; overflow-x: auto; max-width: 100%; }
 .acct-prov-note { font-size: 12.5px; line-height: 1.5;
   margin-left: var(--acct-rail); }
 .acct-prov-note code { font-size: 11px; }
+/* CLI version drift: a real "act on this" note, not a dim aside — a stale
+   Codex CLI silently hides hireable tiers, and dimming it would file it with
+   the passive status text it sits beside. Warn colour, not error: nothing is
+   broken, something is out of date. */
+.acct-cli-drift { color: var(--warn, #e5c07b);
+  border-left: 2px solid color-mix(in srgb, var(--warn, #e5c07b) 55%, var(--line));
+  padding-left: 8px; margin-top: 4px; }
+.acct-cli-drift code { color: var(--fg); }
 .acct-prov-tiers { display: flex; flex-wrap: wrap; gap: 6px 14px;
   font-size: 12.5px; margin-left: var(--acct-rail); }
 .acct-prov-tier { display: inline-flex; align-items: center; gap: 6px; }

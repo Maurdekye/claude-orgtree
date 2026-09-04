@@ -36,8 +36,17 @@ _SAFE_MODELS: Final = {
 
 
 def _iso(epoch: float) -> str:
+    # ROUND, don't truncate. `timespec="seconds"` floors, so an upstream
+    # deadline of …08:59:59.98 printed as `08:59:59Z` — a second early, and on
+    # the next poll the same fixed boundary printed `09:00:00Z`. The Anthropic
+    # usage endpoint recomputes `resets_at` per response with microsecond
+    # jitter around the boundary (measured 2026-09-04: two windows carrying
+    # fractions 20µs apart), so a FIXED weekly reset appeared to move by a
+    # second — which is what made a genuine early reset look like a bug and
+    # cost an investigation. Rounding puts both sides of the jitter on the
+    # boundary they actually mean.
     try:
-        return (_dt.datetime.fromtimestamp(epoch, _dt.timezone.utc)
+        return (_dt.datetime.fromtimestamp(round(epoch), _dt.timezone.utc)
                 .isoformat(timespec="seconds").replace("+00:00", "Z"))
     except (OverflowError, OSError, ValueError):
         return "-"

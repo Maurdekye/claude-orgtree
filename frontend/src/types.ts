@@ -1159,6 +1159,28 @@ export interface ProviderInfo {
    *  old backend. */
   reserve_hire_enabled?: boolean
   reserve_reason?: string | null
+  /** "openai" only: how far the resolved Codex CLI has drifted from what is
+   *  available. Nothing in this repo ever refreshes the pin, and OpenAI gates
+   *  rollout models on the CLI version — a stale pin HIDES a live tier and
+   *  the old refusal message blamed the account for it. OMITTED on an old
+   *  backend and on every other provider. */
+  cli_version?: CodexCliVersion
+}
+/** ⚠ `update_available` is a TRISTATE: `null` means "cannot tell" (no CLI, no
+ *  update check, an unparsable version, or a check too old to be evidence) and
+ *  must NOT be rendered as "up to date". `path`/`source` matter because
+ *  `codex_path()` resolves env > `<ORGTREE_DATA>/codex` pin > PATH and the pin
+ *  lives under the data root — a differently-rooted process runs a different
+ *  binary, so a version with no provenance misleads. */
+export interface CodexCliVersion {
+  path: string | null
+  source: string
+  version: string | null
+  latest: string | null
+  checked_at: string | null
+  check_age: number | null
+  update_available: boolean | null
+  evidence: string
 }
 export interface ProvidersPayload { providers: ProviderInfo[] }
 

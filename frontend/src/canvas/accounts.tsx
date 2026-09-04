@@ -742,6 +742,31 @@ export function AccountsPanel({ toast, close }: {
                     </span>
                   ))}
                 </div>
+                {/* ⚠ DRIFT SITS BESIDE THE TIERS IT SUPPRESSES. Nothing in
+                    this repo refreshes the pin — `update.ps1`, `update.sh`
+                    and `install-autostart.ps1` have no codex step — and
+                    OpenAI gates rollout models on the reporting CLI version,
+                    so a stale CLI SHORTENS the list above with no other
+                    symptom. Measured 2026-09-04: pinned 0.150.1 listed 9
+                    models, 0.153.0 listed the same 9 plus `gpt-6-astra`, same
+                    account. Rendered ONLY on a `true` verdict:
+                    `update_available` is a tristate and `null` means we
+                    cannot tell, which must never be dressed as either answer.
+                    The path is shown because the pin lives under the DATA
+                    ROOT, so this names the build actually measured rather
+                    than "the" CLI. */}
+                {codex.cli_version?.update_available === true && (
+                  <div className="acct-prov-note acct-cli-drift">
+                    Codex CLI <b>{codex.cli_version.version}</b> is installed;{' '}
+                    <b>{codex.cli_version.latest}</b> is available. OpenAI only
+                    offers rollout models to a recent enough CLI, so newer
+                    tiers can be missing from the list above until this is
+                    upgraded: <code>npm install --prefix ~/orgtree/codex
+                    @openai/codex</code>
+                    {codex.cli_version.path && <div className="dim">
+                      measured build: {codex.cli_version.path}</div>}
+                  </div>
+                )}
                 {codex.reason && codex.user_enabled !== false
                   && <div className="dim acct-prov-note">{codex.reason}</div>}
               </>

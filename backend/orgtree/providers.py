@@ -33,6 +33,7 @@ argv would not, so the resolver learns the safe habit now.
 
 from __future__ import annotations
 
+import datetime as _dt
 import glob
 import json
 import os
@@ -42,7 +43,7 @@ import subprocess
 import sys
 import threading
 import time
-from typing import Any, Final, TypedDict
+from typing import Any, Final, TypedDict, cast
 
 from . import appsettings, openrouter
 from .ledger import MODELS as _LEDGER_MODELS
@@ -543,6 +544,159 @@ def codex_status(force: bool = False) -> dict[str, Any]:
     return st
 
 
+# ── codex CLI version drift ────────────────────────────────────────────────
+# ⚠ NOTHING IN THIS REPO EVER REFRESHES THE PIN. `update.ps1`, `update.sh` and
+# `tools/install-autostart.ps1` contain no `codex` step — the pin is a manual
+# `npm install --prefix <data>/codex @openai/codex` from the setup guide, so it
+# is frozen at whenever someone last ran that by hand.
+#
+# That drift is not cosmetic. OpenAI's `model/list` gates rollout models on the
+# REPORTING CLIENT VERSION, measured on this host 2026-09-04: the pinned CLI
+# 0.150.1 (installed Aug 28) returned 9 model ids and the newer 0.153.0 on PATH
+# returned the same 9 PLUS `gpt-6-astra` — same account, same auth, same code.
+# So a stale pin makes a live tier invisible, and the failure presents as "your
+# account does not have it", which is a lie about the wrong subsystem.
+#
+# This does NOT auto-upgrade. Swapping the CLI underneath running agents is its
+# own hazard; the job here is to make the drift VISIBLE and let a person act.
+
+#: How old the CLI's own update check may be before it stops being evidence.
+#: The CLI rewrites `version.json` during ordinary use (observed minutes old on
+#: this host), so a week means "this CLI has not run in a week" — at which
+#: point "no update available" is not a finding, it is silence. Generous on
+#: purpose: a check a normally-used install can trip is worse than no check.
+CODEX_VERSION_CHECK_MAX_AGE: Final = 7 * 86400.0
+
+
+def _version_tuple(text: str) -> tuple[int, ...] | None:
+    """Leading dotted-numeric part of a version string, or None.
+
+    Prefix match, not full match: `_codex_version` reads the pin's package.json
+    and the PLATFORM package answers `0.150.1-win32-x64`, which must compare
+    equal in ordering terms to a bare `0.150.1` from `--version`.
+    """
+    m = re.match(r"\d+(?:\.\d+)*", text.strip())
+    return tuple(int(p) for p in m.group(0).split(".")) if m else None
+
+
+def _codex_update_check(codex_home: str) -> tuple[str | None, float | None]:
+    """`(latest_version, checked_at_epoch)` from the CLI's OWN update check at
+    `<CODEX_HOME>/version.json`. A local file read — deliberately no network,
+    because a status panel must never become an upstream request.
+
+    ⚠ The CLI writes NANOSECOND precision (`2026-09-04T19:43:25.288470200Z`)
+    and `datetime.fromisoformat` accepts only 3 or 6 fractional digits before
+    3.11, so parsing it naively raises on EVERY real file and the drift check
+    then reports "no evidence" forever while looking perfectly healthy. Clamp
+    the fraction to 6 digits first.
+    """
+    try:
+        doc: Any = json.load(open(os.path.join(codex_home, "version.json"),
+                                  encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None, None
+    if not isinstance(doc, dict):
+        return None, None
+    latest_any = cast("dict[str, Any]", doc).get("latest_version")
+    latest = latest_any if isinstance(latest_any, str) and latest_any else None
+    when_any = cast("dict[str, Any]", doc).get("last_checked_at")
+    when: float | None = None
+    if isinstance(when_any, str) and when_any:
+        text = when_any.strip()
+        if text.endswith(("Z", "z")):
+            text = text[:-1] + "+00:00"
+        text = re.sub(r"\.(\d{6})\d+", r".\1", text)     # ns → µs
+        try:
+            parsed = _dt.datetime.fromisoformat(text)
+        except ValueError:
+            parsed = None
+        if parsed is not None:
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=_dt.timezone.utc)
+            when = parsed.timestamp()
+    return latest, when
+
+
+def codex_cli_version_status(status: dict[str, Any] | None = None,
+                             now: float | None = None) -> dict[str, Any]:
+    """Which codex build THIS PROCESS would run, and whether it has drifted.
+
+    ⚠ `path`/`source` are not decoration. `codex_path()` resolves
+    env > `<ORGTREE_DATA>/codex` pin > PATH, and the pin lives UNDER THE DATA
+    ROOT — so two processes on one machine with different `ORGTREE_DATA` run
+    DIFFERENT codex binaries. Measured 2026-09-04: with a throwaway data root
+    (what every test and most tooling uses) the pin is absent and PATH wins;
+    the backend, on the live root, gets the pin. A version reported without
+    saying WHICH build it measured therefore misleads exactly as the old
+    "your account does not offer it" message did. cwd is NOT the variable —
+    measured across two cwds with the data root held fixed, the answer did not
+    move; `ORGTREE_DATA` is the variable.
+
+    `update_available` is a TRISTATE and `None` means "cannot tell", never
+    "up to date": no CLI, no `version.json`, an unparsable version on either
+    side, or an update check too old to be evidence all report `None` with the
+    reason in `evidence`. A drift check that quietly says "fine" when it is
+    actually blind is the failure mode this whole function exists to avoid.
+    """
+    now = time.time() if now is None else now
+    st = status if status is not None else codex_status()
+    exe = st.get("path")
+    version = st.get("version")
+    out: dict[str, Any] = {
+        "path": exe, "source": st.get("source") or "",
+        "version": version, "latest": None, "checked_at": None,
+        "check_age": None, "update_available": None, "evidence": "no-cli"}
+    if not st.get("installed") or not exe:
+        return out
+    latest, when = _codex_update_check(str(st.get("codex_home") or ""))
+    out["latest"] = latest
+    if when is not None:
+        out["check_age"] = max(0.0, now - when)
+        try:
+            out["checked_at"] = (_dt.datetime
+                                 .fromtimestamp(when, _dt.timezone.utc)
+                                 .isoformat().replace("+00:00", "Z"))
+        except (OSError, OverflowError, ValueError):
+            pass
+    if latest is None:
+        out["evidence"] = "no-update-check"
+        return out
+    mine = _version_tuple(str(version or ""))
+    theirs = _version_tuple(latest)
+    if mine is None or theirs is None:
+        out["evidence"] = "unparsable-version"
+        return out
+    if when is None:
+        out["evidence"] = "update-check-undated"
+        return out
+    if out["check_age"] is not None and \
+            float(cast(float, out["check_age"])) > CODEX_VERSION_CHECK_MAX_AGE:
+        out["evidence"] = "update-check-stale"
+        return out
+    out["update_available"] = mine < theirs
+    out["evidence"] = "outdated" if mine < theirs else "current"
+    return out
+
+
+def codex_cli_version_note(status: dict[str, Any] | None = None,
+                           now: float | None = None) -> str:
+    """One clause naming the build that was consulted, for appending to a
+    message about something that build reported. Always says WHICH binary and
+    where it came from; adds the newer version only when there is real evidence
+    of one. Returns "" only when no CLI resolved at all."""
+    v = codex_cli_version_status(status, now)
+    if v["evidence"] == "no-cli":
+        return ""
+    where = {"env": "ORGTREE_CODEX override", "pin": "pinned under the data root",
+             "path": "found on PATH"}.get(str(v["source"]), str(v["source"]))
+    note = f"codex CLI {v['version'] or 'unknown'} ({where}: {v['path']})"
+    if v["update_available"]:
+        note += (f" — version {v['latest']} is available, and OpenAI gates "
+                 f"rollout models on the CLI version, so upgrading the CLI "
+                 f"may be what is actually missing")
+    return note
+
+
 # A provider inventory is network-backed even though it rides the local CLI.
 # Keep the accounts/canvas poll cheap, but never let old evidence authorize a
 # rollout tier. The hire gate passes force=True and performs its own query.
@@ -647,18 +801,31 @@ def codex_model_inventory(
 def conditional_codex_availability(
         tier: str, *, force: bool = False,
         status: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Availability of one conditional Codex tier from exact live membership."""
+    """Availability of one conditional Codex tier from exact live membership.
+
+    ⚠ THE `model-missing` MESSAGE USED TO BLAME THE ACCOUNT: "the signed-in
+    Codex account does not offer model 'gpt-6-astra'". On 2026-09-04 that was
+    FALSE — the account offered astra in both Codex and ChatGPT; the PINNED CLI
+    was 0.150.1 and OpenAI does not list a rollout model to a client that old.
+    The sentence read as a settled fact about the wrong subsystem and sent
+    three separate investigations after the account, the model id and the
+    inventory fetch, all of which were fine. It now names the build it actually
+    consulted, because that build is the variable.
+    """
     if tier not in CONDITIONAL_CODEX_TIERS:
         return {"enabled": True, "reason": None, "evidence": "not-conditional"}
-    inventory = codex_model_inventory(force=force, status=status)
+    st = status if status is not None else codex_status()
+    inventory = codex_model_inventory(force=force, status=st)
     if not inventory.get("available"):
         return {"enabled": False, "evidence": "inventory-unavailable",
                 "reason": str(inventory.get("error") or
                               "Codex model inventory is unavailable")}
     model_id = CODEX_MODELS[tier]
     if model_id not in set(inventory.get("models") or []):
+        note = codex_cli_version_note(st)
         return {"enabled": False, "evidence": "model-missing", "reason":
-                f"the signed-in Codex account does not offer model '{model_id}'"}
+                (f"model '{model_id}' was not in the model list returned to "
+                 + (note or "this host's codex CLI"))}
     return {"enabled": True, "evidence": "model-present", "reason": None}
 
 
@@ -1027,6 +1194,13 @@ def providers_payload(claude_status: dict[str, Any]) -> dict[str, Any]:
             # convenience only — provider_hire_gate re-queries before mutate.
             "tiers": codex_tiers(codex_models),
             "status": codex,
+            # ⚠ the pin never self-refreshes (see codex_cli_version_status) and
+            # a stale CLI silently HIDES rollout tiers, so the drift belongs on
+            # the panel beside the tiers it suppresses — not only in the
+            # refusal message of whoever trips over it later. Carries `path`
+            # and `source`: the backend's build is not necessarily the build a
+            # differently-rooted process would run.
+            "cli_version": codex_cli_version_status(codex),
             # the vision, live (M1–M8 standing): a CONNECTED CLI is a
             # hireable provider — same predicate the api hire gate enforces.
             # A SPENT USAGE WINDOW IS NOT PART OF THIS, by the user's ruling
