@@ -38,6 +38,7 @@ from __future__ import annotations
 import getpass
 import hashlib
 import os
+import tempfile
 import threading
 import time
 import uuid
@@ -508,6 +509,52 @@ def _participants() -> dict[str, dict[str, Any]]:
     return out
 
 
+# A dead address, not the real hub: the discard port refuses instantly, so
+# registration fails harmlessly into the existing backoff rather than hanging.
+UNROUTABLE_HUB_ADDRESS = "http://127.0.0.1:9"
+
+
+def _under_os_temp(path: str) -> bool:
+    """Is `path` inside the OS temp directory?
+
+    THE FLOOR UNDER THE TEST-RIG HUB HAZARD. A rig mints a throwaway
+    ORGTREE_DATA with `tempfile.mkdtemp`, creates fixture orgs in it, and if
+    that rig also boots a backend, `_participants` registers every one of them
+    against whatever `_default_address` returns. A fresh data root has no
+    `defaults.json`, so that used to be DEFAULT_HUB_ADDRESS - the OPERATOR'S
+    REAL HUB - and the fixtures landed in the live roster as selectable
+    recipients that can never receive anything. It happened: ~45 fixture orgs
+    on 2026-08-06, and again on 2026-08-10 after a fix that covered three
+    suites and missed a fourth which grew a live backend later.
+
+    Every repair before this one asked the RIG to remember something. This one
+    does not, which is the whole point: a rig author who knows nothing about
+    the hub cannot forget it.
+
+    ⚠ COMPARE RESOLVED PATHS, NEVER NAMES. On Windows %TEMP% commonly arrives
+    in 8.3 SHORT FORM (the user folder as NCOLA~1 rather than spelled out)
+    while the data root arrives long, and either side can be a symlink or a
+    substituted drive. A string compare says "not temp" for the same
+    directory spelled two ways, which fails OPEN - straight back to the real
+    hub. os.path.realpath resolves both forms; normcase handles the
+    case-insensitive filesystem.
+    ⚠ AND IT FAILS IN THE SAFE DIRECTION ON PURPOSE. A genuine install whose
+    data root really does sit under the OS temp directory gets the dead
+    address and its hub registration visibly does not work. That is correct:
+    such an install is already misconfigured (temp is periodically cleared, so
+    its orgs are one cleanup away from gone), and a loud "the hub never
+    connects" is a better outcome than a quiet one that pollutes a shared
+    roster. Set `net_hub_address` in defaults.json to override - the explicit
+    value always wins, and this branch is only ever reached when there is none.
+    """
+    try:
+        root = os.path.normcase(os.path.realpath(path))
+        temp = os.path.normcase(os.path.realpath(tempfile.gettempdir()))
+    except (OSError, ValueError):
+        return False
+    return root == temp or root.startswith(temp + os.sep)
+
+
 def _default_address() -> str:
     # defaults.json is api-owned; read it directly to avoid an import cycle
     import json
@@ -516,11 +563,19 @@ def _default_address() -> str:
         d = json.load(open(os.path.join(store.DATA_ROOT, "defaults.json"),
                            encoding="utf-8"))
         if isinstance(d, dict):
-            return str(cast("dict[str, Any]", d)
-                       .get("net_hub_address") or "") or DEFAULT_HUB_ADDRESS
+            explicit = str(cast("dict[str, Any]", d)
+                           .get("net_hub_address") or "")
+            if explicit:
+                return explicit
     except (OSError, ValueError):
         pass
-    return DEFAULT_HUB_ADDRESS
+    # No explicit address. The default is the operator's real hub
+    # UNLESS this data root is a throwaway one under the OS temp
+    # directory - see _under_os_temp for why that is the floor and
+    # why it fails in this direction.
+    return (UNROUTABLE_HUB_ADDRESS
+            if _under_os_temp(store.DATA_ROOT)
+            else DEFAULT_HUB_ADDRESS)
 
 
 def _client() -> Any:
