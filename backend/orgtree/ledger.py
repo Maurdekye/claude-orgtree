@@ -74,6 +74,19 @@ from .schema import (AudienceGrant, DirGrant, FrozenInfo, MailEntry, NodeDoc,
 # seats as an ORDERING, so tiers that used to TIE at 1 no longer do — see the
 # ⚠ in `_check_tier_ceiling`. A future RAISE would be the dangerous
 # direction: it can overdraw a saved org, and nothing here handles that.
+#
+# ☞ THE SAME RULE REACHED THE DYNAMIC (OpenRouter) HALF ONLY ON 2026-09-04,
+# a day late, and the delay is the lesson. The 2026-09-03 repricing block
+# below names `gpt-reserve` and `luna` and so moved only them; every `or-*`
+# favorite adopted before that day kept the old `max(1, floor(p))` snapshot,
+# which is a FLAT 1 for every model under $1/M. The correction is general
+# rather than a longer list of names — `openrouter.stale_seats` re-derives
+# each `or-*` row from the price the document itself records — because the
+# hard-coding is what caused the miss, not the particular names in it.
+# ⚠ THE STALENESS WAS UPSTREAM OF THE DOCUMENT TOO: the seat is snapshotted
+# into the favorites file by `add_favorite`, so a BRAND NEW org was being
+# handed the stale 1 as well. That half is fixed at the source, in
+# `openrouter.favorites`; this table's migration is only the document half.
 TIERS: Final[dict[str, float]] = {"fable": 10, "opus": 5, "sonnet": 2, "haiku": 1,
                                   "sol": 5, "terra": 2, "gpt-reserve": 0.2,
                                   "luna": 0.2, "astra": 10,
@@ -693,6 +706,34 @@ class Org:
         for _cheap in ("gpt-reserve", "luna"):
             if _t.get(_cheap) == 1:
                 _t[_cheap] = TIERS[_cheap]
+        # ☞ …and the SAME REPRICING FOR THE DYNAMIC HALF (user ask 2026-09-04,
+        # verbatim: "i was suggesting they be changed to accommodate the new
+        # sub-1 credit cost scheme that luna (and reserve) abide by"). An
+        # `or-*` favorite adopted before the ruling snapshotted `max(1,
+        # floor(p))`, so every OpenRouter model under $1/M was frozen at 1 —
+        # measured 2026-09-04 across all three live documents: deepseek-v4-
+        # flash-latest ($0.05/M) and glm-5.3-flash ($0.075/M) both sat at 1,
+        # while grok-4.6 ($2/M) at 2 and kimi-k3 ($3/M) at 3 were already
+        # right. That is the same silent no-op yet again, now in its
+        # OpenRouter costume.
+        #
+        # ⚠ THIS BLOCK IS GENERAL AND THE ONE ABOVE IS NOT, deliberately. The
+        # hard-coded `("gpt-reserve", "luna")` pair is exactly why the `or-*`
+        # rows were missed: a repricing rule that must be edited every time a
+        # tier is added is a rule that will be forgotten every time a tier is
+        # added. `stale_seats` is handed this document's OWN tier and model
+        # tables and re-derives each row from its model's price, so a favorite
+        # minted tomorrow needs no new code here. It cannot be written that
+        # way for the static half — those tiers have no price in the document
+        # to re-derive from, only a name.
+        #
+        # It stays a DROP, so the budget half is safe for the same reason the
+        # block above is (committed falls, free rises). The ORDERING half is
+        # not automatic — see the ⚠ in `_check_tier_ceiling`: an `or-*` tier
+        # leaving 1 stops tying with haiku and flash. Verified 2026-09-04, as
+        # on 2026-09-03: no live org has a kiosk ceiling set at all.
+        _t.update(_orr.stale_seats(_t, cast("dict[str, str]",
+                                            _doc.get("models") or {})))
         # ☞ …and a MODEL-ID change needs one for exactly the same reason: the
         # add-only rule above means `MODELS["fable"] = claude-fable-5-1` reaches
         # NO org that already exists — `setdefault` finds the key present and

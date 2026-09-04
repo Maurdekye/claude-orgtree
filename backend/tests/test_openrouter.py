@@ -488,6 +488,131 @@ def main():
         eq(orr.favorites()[0]["label"], "claude-sonnet-5", "short again once alone")
     check("two favorites that would read the same keep their full ids", collide)
 
+    print("§4b the sub-$1 rule reaches favorites adopted BEFORE it")
+    # ⚠ THE SEAT IS SNAPSHOTTED AT ADD TIME (`add_favorite`), so the 2026-09-03
+    # fractional ruling reached NO favorite already on disk — every OpenRouter
+    # model under $1/M stayed frozen at the old `max(1, floor(p))` value of 1.
+    # Measured on the live machine 2026-09-04: the one favorite there read
+    # `prompt: 0.05, seat: 1` — the record carried the right PRICE and the
+    # wrong SEAT side by side. This is the source-of-truth half of the fix;
+    # the org-document half is in test_ledger_authority §4.
+    check("legacy_seat_for is the OLD rule, kept executable to identify defaults",
+          lambda: (eq(orr.legacy_seat_for(0.05), 1, "$0.05 floored to 1"),
+                   eq(orr.legacy_seat_for(0.0), 1, "even a free model"),
+                   eq(orr.legacy_seat_for(2.0), 2, "$2 — same as today"),
+                   eq(orr.legacy_seat_for(1.5), 1, "$1.50 — same as today")))
+    # the two rules agree EVERYWHERE at or above $1/M, which is what makes
+    # "value == 1 and priced under $1" a complete and safe staleness test
+    check("old and new rules differ ONLY below $1/M, and there old is always 1",
+          lambda: [eq(orr.legacy_seat_for(p) == orr.seat_for(p), p >= 1.0,
+                      f"agreement at ${p}")
+                   for p in (0.0, 0.05, 0.2, 0.75, 0.99, 1.0, 1.5, 2.0, 9.9)]
+          and eq({orr.legacy_seat_for(p) for p in (0.0, 0.05, 0.5, 0.99)}, {1.0},
+                 "old rule collapses every cheap model to one value"))
+
+    orr.add_favorite("deepseek/deepseek-v4")            # $0.14/M — a cheap one
+
+    def stale_record():
+        # write the live machine's exact shape: right price, old-rule seat
+        doc = orr._load_state()
+        for f in doc["favorites"]:
+            f["seat"] = orr.legacy_seat_for(float(f["prompt"]))
+        orr._save_state(doc)
+        got = {f["id"]: f["seat"] for f in orr.favorites()}
+        eq(got["deepseek/deepseek-v4"], 0.14, "$0.14 re-derived from the record")
+        eq(got["anthropic/claude-sonnet-5"], 2, "$2 was never stale")
+        # ⚠ POSITIVE CONTROL. The assertion above is only worth something if
+        # the stale value could have survived to be seen, so prove the fixture
+        # really did write a 1 and that the raw record still says so — the
+        # correction is on the READ path, not a rewrite of state.json.
+        raw = {f["id"]: f["seat"] for f in orr._load_state()["favorites"]}
+        eq(raw["deepseek/deepseek-v4"], 1, "the stored record is still the old 1")
+        ne(raw["deepseek/deepseek-v4"], got["deepseek/deepseek-v4"],
+           "so the read path is what corrected it")
+    check("a favorite stored under the OLD floor rule reads at its fractional "
+          "seat — re-derived from the record's own snapshot price", stale_record)
+
+    def not_a_customisation():
+        doc = orr._load_state()
+        for f in doc["favorites"]:
+            if f["id"] == "deepseek/deepseek-v4":
+                f["seat"] = 0.5              # neither the old rule nor the new
+        orr._save_state(doc)
+        eq({f["id"]: f["seat"] for f in orr.favorites()}["deepseek/deepseek-v4"],
+           0.5, "a hand-set seat is left exactly alone")
+    check("…but a seat the old rule would NOT have produced is a customisation "
+          "and stays", not_a_customisation)
+
+    def drift_proof():
+        # the seat is re-derived from the RECORD's price, never the catalog's,
+        # so a list-price move cannot silently re-price a committed seat — the
+        # property add_favorite snapshots for, and the reason this is a rule
+        # migration rather than a live lookup
+        doc = orr._load_state()
+        for f in doc["favorites"]:
+            if f["id"] == "deepseek/deepseek-v4":
+                f["seat"], f["prompt"] = 1, 0.14
+        orr._save_state(doc)
+        was = CATALOG["data"][3]["pricing"]["prompt"]
+        CATALOG["data"][3]["pricing"]["prompt"] = "0.000009"   # $9/M overnight
+        orr.refresh_catalog()
+        try:
+            eq({f["id"]: f["seat"] for f in orr.favorites()}["deepseek/deepseek-v4"],
+               0.14, "still the snapshot price, not the new $9")
+        finally:
+            CATALOG["data"][3]["pricing"]["prompt"] = was
+            orr.refresh_catalog()
+    check("the correction reads the SNAPSHOT price, so catalog drift cannot "
+          "re-price a committed seat", drift_proof)
+
+    def migration_map():
+        # `stale_seats` is what ledger.Org drives on load. It is handed a
+        # document's OWN tables, so it is general: no tier is named here or
+        # in the ledger, and a favorite minted tomorrow needs no new code.
+        tiers = {"haiku": 1, "sonnet": 2,                  # static — never touched
+                 "or-deepseek-deepseek-v4": 1,             # $0.14 — STALE
+                 "or-anthropic-claude-sonnet-5": 2,        # $2 — already right
+                 "or-openai-gpt-5-6-sol": 1,               # $5 at 1 — HAND-SET
+                 "or-deepseek-deepseek-v4-cust": 0.5,      # operator's own
+                 "or-unknown-model": 1}                    # no price anywhere
+        models = {"or-deepseek-deepseek-v4": "deepseek/deepseek-v4",
+                  "or-anthropic-claude-sonnet-5": "anthropic/claude-sonnet-5",
+                  "or-openai-gpt-5-6-sol": "openai/gpt-5.6-sol",
+                  "or-deepseek-deepseek-v4-cust": "deepseek/deepseek-v4",
+                  "or-unknown-model": "nobody/nothing"}
+        eq(orr.stale_seats(tiers, models), {"or-deepseek-deepseek-v4": 0.14},
+           "exactly one row moves")
+        # anti-vacuity: the same call over an already-migrated table is empty,
+        # which is both idempotence and the zero-I/O steady state
+        eq(orr.stale_seats({**tiers, "or-deepseek-deepseek-v4": 0.14}, models), {},
+           "a migrated table has no candidates left")
+    check("stale_seats moves the stale row and NOTHING else — not the static "
+          "tiers, not a correct one, not a custom one, not an unpriced one",
+          migration_map)
+    # ⚠ the case above that nearly shipped wrong: `or-openai-gpt-5-6-sol` sits
+    # at 1 while its model costs $5/M. The OLD rule floored $5 to 5, so that 1
+    # was never a shipped default — it is a hand-set price and must survive.
+    # A prefilter of "value == 1" alone would have dragged it to 5, RAISING a
+    # seat, which is the one direction that can overdraw a saved org.
+    check("a row at 1 whose model prices ABOVE $1/M is a hand-set price, not "
+          "a stale default — it is never raised",
+          lambda: eq(orr.stale_seats({"or-openai-gpt-5-6-sol": 1},
+                                     {"or-openai-gpt-5-6-sol": "openai/gpt-5.6-sol"}),
+                     {}, "left alone"))
+
+    def deselected_still_priced():
+        # a DESELECTED tier keeps its org row (a node hired on it still runs)
+        # but has no favorite record, so its price can only come from the
+        # catalog file ON DISK — never a fetch, which has no business inside a
+        # document load. `gpt-5.6-sol` above proves the disk lookup runs; this
+        # proves it can actually MOVE a row, not merely decline to.
+        tier = "or-someone-llama-4-maverick-free"
+        eq(orr.favorite_for_tier(tier), None, "not a favorite")
+        eq(orr.stale_seats({tier: 1}, {tier: "someone/llama-4-maverick:free"}),
+           {tier: 0.10}, "a $0 :free model lands on the FLOOR, never zero")
+    check("a DESELECTED tier is repriced too, from the on-disk catalog",
+          deselected_still_priced)
+
     print("§5 cost fold and tier infos")
     check("cost() prices non-cached input, cached reads and output separately",
           lambda: eq(orr.cost("anthropic/claude-sonnet-5", 1_000_000, 1_000_000, 100_000),

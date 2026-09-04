@@ -54,6 +54,7 @@ with open(os.path.join(os.environ["ORGTREE_DATA"], "defaults.json"), "w",
     _f.write('{"net_hub_address": "http://127.0.0.1:9"}')
 
 
+from orgtree import openrouter as orr                       # noqa: E402
 from orgtree.ledger import (CREDIT_PLACES, EXTERN, MODELS,  # noqa: E402
                             PM_LEVELS, SYSTEM, TIERS, TOOL_KEYS, USER,
                             VIS_LEVELS, LedgerError, Org, slugify)
@@ -1755,6 +1756,125 @@ def section_edges():
     check("…and still admits luna itself",
           lambda: eq((ceil.hire(USER, None, "luna", 1, "l"),
                       ceil.node("l")["model"])[1], "luna"))
+
+    # ☞ …AND THE SAME THING AGAIN FOR THE DYNAMIC (OpenRouter) HALF, which the
+    # block above MISSED because it names `gpt-reserve` and `luna` (user ask
+    # 2026-09-04: put the `or-*` tiers on "the new sub-1 credit cost scheme
+    # that luna (and reserve) abide by"). Measured on the live machine that
+    # day, read-only: all three org documents carried
+    # `or-deepseek-deepseek-v4-flash-latest: 1` against a catalog price of
+    # $0.05/M, and two of them `or-z-ai-glm-5-3-flash: 1` against $0.075/M —
+    # while grok-4.6 at 2 and kimi-k3 at 3 were already right. The rig below
+    # reproduces that document shape exactly.
+    orr.set_key("sk-or-v1-" + "0" * 24)
+    orr._http_get = lambda url, headers: (
+        200, json.dumps({"data": [
+            {"id": "~deepseek/deepseek-v4-flash-latest",
+             "name": "DeepSeek: V4 Flash Latest", "context_length": 163840,
+             "pricing": {"prompt": "0.00000005", "completion": "0.00000016"},
+             "supported_parameters": ["tools"]},
+            {"id": "z-ai/glm-5.3-flash", "name": "Z.AI: GLM 5.3 Flash",
+             "context_length": 200000,
+             "pricing": {"prompt": "0.000000075", "completion": "0.00000025"},
+             "supported_parameters": ["tools"]},
+            {"id": "x-ai/grok-4.6", "name": "xAI: Grok 4.6",
+             "context_length": 256000,
+             "pricing": {"prompt": "0.000002", "completion": "0.000006"},
+             "supported_parameters": ["tools"]},
+        ]}).encode("utf-8"))
+    orr.catalog(force=True)
+    orr.add_favorite("~deepseek/deepseek-v4-flash-latest")
+    # …and glm is DESELECTED, as it is live: its org row survives (a node hired
+    # on it still runs) with no favorite record to price it from
+    T_DS, T_GLM, T_GROK = ("or-deepseek-deepseek-v4-flash-latest",
+                           "or-z-ai-glm-5-3-flash", "or-x-ai-grok-4-6")
+
+    def live_shaped_doc():
+        o = Org.create("or-reprice")
+        o.d["tiers"].update({T_DS: 1, T_GLM: 1, T_GROK: 2})
+        o.d["models"].update({T_DS: "~deepseek/deepseek-v4-flash-latest",
+                              T_GLM: "z-ai/glm-5.3-flash",
+                              T_GROK: "x-ai/grok-4.6"})
+        return o
+
+    # ⚠ POSITIVE CONTROL FIRST. A migration test that only ever asserts the
+    # AFTER state cannot tell "it migrated" from "it was never stale". Prove
+    # the fixture really is stale before the load path touches it — this is
+    # the check that would go green on a broken fixture, so it is the one
+    # that has to be seen failing-shaped first.
+    check("[control] the fixture document really does carry the stale prices "
+          "before any load — otherwise the checks below prove nothing",
+          lambda: eq({k: live_shaped_doc().d["tiers"][k]
+                      for k in (T_DS, T_GLM, T_GROK)},
+                     {T_DS: 1, T_GLM: 1, T_GROK: 2}, "as measured live"))
+    orb = Org(json.loads(json.dumps(live_shaped_doc().d)))   # what load_org does
+    check("an OpenRouter RE-PRICE reaches an org that predates it — the "
+          "document half of the fix, which a constant edit cannot do",
+          lambda: eq(orb.d["tiers"][T_DS], 0.1, "$0.05/M → the 0.10 floor"))
+    check("…including a DESELECTED tier, priced from the catalog because it "
+          "has no favorite record left",
+          lambda: eq(orb.d["tiers"][T_GLM], 0.1, "$0.075/M → the 0.10 floor"))
+    check("…while a tier at or above $1/M is NOT touched: the old and new "
+          "rules agree there, so nothing can be stale",
+          lambda: eq(orb.d["tiers"][T_GROK], 2, "$2/M stays 2"))
+    check("…and the static half still migrates alongside it, unchanged",
+          lambda: eq((orb.d["tiers"]["luna"], orb.d["tiers"]["sonnet"]),
+                     (0.2, 2), "luna/sonnet"))
+    check("…the migration is idempotent — a second load changes nothing",
+          lambda: eq(Org(json.loads(json.dumps(orb.d))).d["tiers"][T_DS], 0.1))
+
+    def or_custom():
+        o = live_shaped_doc()
+        o.d["tiers"][T_DS] = 0.5                  # neither old rule nor new
+        o.d["tiers"][T_GROK] = 1                  # $2/M hand-set BELOW its rule
+        r = Org(json.loads(json.dumps(o.d)))
+        eq(r.d["tiers"][T_DS], 0.5, "a hand-set fractional price stays")
+        # ⚠ the dangerous direction. grok at 1 is not a stale default — the
+        # OLD rule floored $2 to 2, not 1 — so it is an operator's own price.
+        # Dragging it to 2 would RAISE a seat, the one move that can overdraw
+        # a saved org. Nothing here may raise anything.
+        eq(r.d["tiers"][T_GROK], 1, "a hand-set price is never RAISED to the rule")
+    check("…and an operator's OWN or-* price is left alone in both directions",
+          or_custom)
+
+    # the budget half, proved against a document frozen at the old price
+    # rather than asserted: a node stores its MODEL and never its seat, so
+    # `committed`/`free` re-derive the moment the table moves.
+    orb2 = live_shaped_doc()
+    orb2.hire(USER, None, "opus", 40, "boss2")
+    orb2.hire(USER, "boss2", T_DS, 3, "cheap2")
+    b4 = (orb2.committed("boss2"), orb2.free("boss2"))
+    af = Org(json.loads(json.dumps(orb2.d)))
+    check("re-pricing a live or-* agent's tier DOWN frees exactly the "
+          "difference, and its seat follows the table",
+          lambda: eq((af.committed("boss2"), af.free("boss2"), af.seat_cost("cheap2")),
+                     (round(b4[0] - 0.9, 2), round(b4[1] + 0.9, 2), 0.1),
+                     "committed/free move by 1 − 0.1"))
+    check("…so no invariant tightens: the audit reports no overdraft, no "
+          "problems",
+          lambda: eq((af.audit()["no_overdraft"], af.audit()["problems"]),
+                     (True, [])))
+
+    # ⚠ THE ORDERING WARNING DOES NOT REACH THIS CHANGE, and that is worth
+    # pinning rather than assuming. `_check_tier_ceiling` compares the MODULE
+    # `TIERS` constant, which never contains an `or-*` tier — those live only
+    # in the per-org table. So an or-* tier is invisible to the kiosk ceiling
+    # both before and after this repricing, and no tie can break. (That
+    # invisibility is a separate pre-existing gap in the ceiling, not
+    # something this change introduces or is entitled to fix.)
+    orc = live_shaped_doc()
+    orc.d["kiosk"] = {"enabled": True}
+    orc.set_kiosk_ceiling({"max_tier": "luna"})
+    check("an or-* tier is not in the module TIERS, so the kiosk ordering "
+          "this repricing might have disturbed never consults it",
+          lambda: (eq(T_DS in TIERS, False, "not a module tier"),
+                   eq(Org(json.loads(json.dumps(orc.d)))
+                      .hire(USER, None, T_DS, 1, "or1")["node"], "or1",
+                      "admitted at 0.1 exactly as it was at 1")))
+    # put the rig back: a favorite is GLOBAL to this data root, so leaving it
+    # selected would add an or-* row to every org built after this point — and
+    # the static-vocabulary check just below counts the tier table exactly.
+    orr.remove_favorite("~deepseek/deepseek-v4-flash-latest")
 
     # model VERSIONS are a subcategory of a tier, never a tier (user ruling
     # 2026-08-04): a fixed set of tiers, one chip each; the version lives in

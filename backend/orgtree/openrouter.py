@@ -336,6 +336,10 @@ def is_tier(tier: str) -> bool:
 SEAT_FLOOR: Final = 0.10
 SEAT_QUANTUM: Final = 2          # decimal places — the 0.01 grid
 
+#: the floor the rule carried BEFORE 2026-09-03 (`max(1, floor(p))`), and so
+#: the only value a stale row can hold — `legacy_seat_for` proves it.
+LEGACY_FLOOR: Final = 1.0
+
 
 def seat_for(prompt_per_m: float) -> float:
     """The standing seat rule (ledger.py §3.1), extended below $1 (user
@@ -362,6 +366,50 @@ def seat_for(prompt_per_m: float) -> float:
     if prompt_per_m >= 1.0:
         return float(math.floor(prompt_per_m + 1e-9))
     return max(SEAT_FLOOR, round(prompt_per_m, SEAT_QUANTUM))
+
+
+def legacy_seat_for(prompt_per_m: float) -> float:
+    """The seat rule AS IT SHIPPED BEFORE 2026-09-03: `max(1, floor(p))`.
+
+    Kept as executable history because it is the only way to tell an old
+    SHIPPED DEFAULT from an operator's own price, which is the one thing a
+    repricing migration is not allowed to get wrong (ledger.py's sonnet-3→2
+    precedent: "Only the OLD SHIPPED DEFAULT migrates").
+
+    ☞ THE TWO RULES DIFFER IN EXACTLY ONE PLACE, and that is what makes a
+    general migration possible without a list of tier names. At or above $1
+    both are `floor(p)` — identical, so no tier priced ≥$1/M can be stale.
+    Below $1 the old rule collapses EVERY price to 1 and the new one spreads
+    them over [0.10, 0.99]. So a stale row is exactly: value == 1 AND the
+    model prices under $1/M. Nothing else can be stale, and a row at any
+    other value was set by hand."""
+    return max(1.0, float(math.floor(prompt_per_m + 1e-9)))
+
+
+def _seat_of(rec: Mapping[str, Any]) -> float:
+    """A favorite record's seat, with the pre-2026-09-03 floor migrated away.
+
+    The seat is recomputed from the record's OWN SNAPSHOT price, never from
+    the live catalog, so this cannot re-price a committed seat when a model's
+    list price moves later — the property `add_favorite` snapshots for. It is
+    the RULE that changed, not the price, and re-deriving it here is the same
+    move the `letter`/`color` fields already make just below: a rule change
+    reaches favorites added under the old rule without a migration file.
+
+    An operator who hand-edited a seat in state.json keeps it: only a value
+    the OLD rule would itself have produced for this very price is replaced.
+    (`add_favorite` is the only writer of `seat` in this module, so today
+    that guard protects a case that does not yet arise — it is here so the
+    add-only discipline survives the first time one does.)"""
+    p = float(rec.get("prompt") or 0.0)
+    raw = rec.get("seat")
+    if raw is None:
+        return seat_for(p)
+    try:
+        seat = float(raw)
+    except (TypeError, ValueError):
+        return seat_for(p)
+    return seat_for(p) if seat == legacy_seat_for(p) else seat
 
 
 def letter_for(model_id: str) -> str:
@@ -755,9 +803,15 @@ def favorites() -> list[Favorite]:
                 "letter": letter_for(mid),
                 "color": color_for(mid, float(f.get("prompt") or 0.0)),
                 "accent": accent_for(mid),
-                # a favorite snapshotted before 2026-09-03 carries an INT
-                # seat and keeps it — the record is the price, never recomputed
-                "seat": float(f.get("seat") or 1),
+                # a favorite snapshotted before 2026-09-03 carries the OLD
+                # rule's floored seat — every model under $1/M recorded as 1.
+                # `_seat_of` re-derives it from the record's own snapshot
+                # price, so the fractional ruling reaches favorites added
+                # before it (user ruling 2026-09-03, extended to OpenRouter
+                # 2026-09-04). ⚠ THIS IS THE SOURCE OF TRUTH: `tiers()` is a
+                # projection of it, so without this line even a BRAND NEW org
+                # would still be handed the stale 1.
+                "seat": _seat_of(f),
                 "added_at": str(f.get("added_at") or ""),
             })
         except (KeyError, TypeError, ValueError):
@@ -815,6 +869,69 @@ def remove_favorite(model_id: str) -> bool:
 def tiers() -> dict[str, float]:
     """tier id → seat, for every favorite (the dynamic half of ledger.TIERS)."""
     return {f["tier"]: f["seat"] for f in favorites()}
+
+
+def stale_seats(doc_tiers: Mapping[str, float],
+                doc_models: Mapping[str, str]) -> dict[str, float]:
+    """{tier: corrected seat} for every OpenRouter row in an ORG DOCUMENT that
+    still carries the pre-2026-09-03 shipped default. `ledger.Org` drives this
+    on load; see the migration there for why a constant edit alone reaches no
+    existing org.
+
+    GENERAL BY CONSTRUCTION, NOT BY LIST. It takes the document's own tier and
+    model tables and re-derives each row from its model's price, so a tier
+    minted tomorrow is covered by the same code — the hard-coded
+    `("gpt-reserve", "luna")` pair in ledger.py is precisely why the `or-*`
+    rows were left behind, and repeating that shape would leave the next tier
+    behind too.
+
+    A row is a candidate ONLY at exactly 1 — see `legacy_seat_for` for the
+    proof that the old and new rules cannot disagree anywhere else. That also
+    bounds the cost: once a document has migrated there are no candidates, so
+    the steady state below is a dict comprehension over the tier table and no
+    I/O at all.
+
+    ⚠ NEVER TOUCHES THE NETWORK. This runs inside a document load, so it
+    reads the favorites snapshot (already TTL-cached) and, only if some
+    candidate is not a current favorite — a DESELECTED tier keeps its row —
+    the catalog file ON DISK. `catalog()` is deliberately not called: it
+    falls through to an HTTP fetch, which has no business in a load hook.
+    If neither source knows a model's price the row is LEFT ALONE and
+    migrates on a later load once the catalog is on disk; a wrong guess is
+    worse than a late one, because a model priced $1.00–$1.99/M is correctly
+    at 1 already and must not move."""
+    cands = [t for t, v in doc_tiers.items()
+             if is_tier(t) and _as_float(v) == LEGACY_FLOOR]
+    if not cands:
+        return {}
+    prices: dict[str, float] = {f["id"]: f["prompt"] for f in favorites()}
+    if any(doc_models.get(t, "") not in prices for t in cands):
+        on_disk = _read_catalog_file()
+        for row in (on_disk[0] if on_disk else []):
+            mid = str(row.get("id") or "")
+            pricing = row.get("pricing")
+            if mid and mid not in prices and isinstance(pricing, dict):
+                prices[mid] = _per_m(cast("dict[str, Any]", pricing).get("prompt"))
+    out: dict[str, float] = {}
+    for t in cands:
+        p = prices.get(doc_models.get(t, ""))
+        if p is None:
+            continue                     # unpriced here — try again next load
+        # ⚠ THE PREFILTER IS NOT THE TEST. A row at 1 is only the old SHIPPED
+        # DEFAULT if the old rule would have produced 1 for THIS model's
+        # price; a $5/M model sitting at 1 was floored to 5 by the old rule
+        # too, so its 1 is an operator's own price and must stay. Caught by
+        # test_openrouter §4b, which asserted the wrong thing first.
+        if legacy_seat_for(p) == LEGACY_FLOOR and seat_for(p) != LEGACY_FLOOR:
+            out[t] = seat_for(p)
+    return out
+
+
+def _as_float(v: object) -> float:
+    try:
+        return float(cast("Any", v))
+    except (TypeError, ValueError):
+        return float("nan")
 
 
 def models() -> dict[str, str]:
