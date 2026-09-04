@@ -5,7 +5,8 @@
 //   · once a key is registered, a separate ROW of model-card icons (the
 //     favorites) appears below it — the row highlights as one control, and
 //     clicking it opens the MODEL SELECTION modal;
-//   · the modal searches the catalog, shows 5–10 results at a time, each with
+//   · the modal searches the catalog, shows a page of results at a time (the
+//     original spec said 5–10; superseded 2026-09-04 — see `PAGE`), each with
 //     its icon card, full name, provider (vendor) and cost per 1M tokens in
 //     and out; selecting/deselecting adds/removes the model from the row;
 //   · the favorites are the models whose TOKENS (chips) can be hired.
@@ -46,7 +47,15 @@ import { isDarkTierColor, modelLabel, setOpenRouterTiers } from './shared'
 
 type ToastFn = (lines: string[]) => void
 
-const PAGE = 8
+/** rows per page (user ask 2026-09-04: "increase the results per page, and
+ *  compress their height so more can be fit onto the same page at once").
+ *  Was 8, which was the old "5–10 at a time" spec; that spec is retired.
+ *  25 is ~3x the old page, and at the compressed 39.9px row (measured) the
+ *  list's 60vh box shows ~12 at once, so a page is about two screenfuls of
+ *  scrolling — enough that most searches are a single page, while the
+ *  unfiltered 426 still pages (18 of them) instead of arriving all at once.
+ *  The backend clamps to `PAGE_MIN..PAGE_MAX`; this is the opinion. */
+const PAGE = 25
 
 const money = (v: number | null | undefined, digits = 2): string =>
   v == null || Number.isNaN(v) ? '—' : `$${v.toFixed(digits)}`
@@ -298,7 +307,7 @@ export function OpenRouterSection({ provider, headRight, toast, pickerOpen,
   )
 }
 
-/** the model-selection modal (user spec): search → 5–10 results with card,
+/** the model-selection modal (user spec): search → a page of results with card,
  *  full name, vendor, $/1M in and out → select/deselect — and (user ask
  *  2026-09-03) the SELECTED list on the modal itself: every favorite at a
  *  glance, each with a ✕ that deselects it without searching for it first. */
@@ -455,7 +464,10 @@ export function ModelPicker({ doc, busy, onToggle, onClose }: {
                 className={'orr-row' + (on ? ' on' : '')}
                 aria-pressed={on} disabled={busy}
                 onClick={() => onToggle(m, !on)}>
-                <ModelCard letter={m.letter} color={m.color} accent={m.accent} large />
+                {/* the card drops to the 26px size the favorites row uses:
+                    at the compressed height a 34px card was the tallest
+                    thing in the row and set the floor for every other one */}
+                <ModelCard letter={m.letter} color={m.color} accent={m.accent} />
                 <span className="orr-name">
                   {/* the display forms (user ask 2026-09-03): the name without
                       its `Vendor: ` prefix, the id without its namespace; the
@@ -471,9 +483,15 @@ export function ModelPicker({ doc, busy, onToggle, onClose }: {
                     {!m.tools ? ' · no tool use' : ''}
                   </span>
                 </span>
-                <span className="orr-price">
-                  {m.free ? 'free' : <>{perM(m.prompt)} in<br />{perM(m.completion)} out</>}
-                  {!m.free && <><br /><span>per 1M</span></>}
+                {/* ONE line, was three. The price cell was the tallest thing
+                    in the row — "$2 in / $10 out / per 1M" stacked — so it is
+                    what had to give for the density the user asked for. The
+                    "per 1M" line is the only thing dropped; it is the same
+                    for every row, so it moved to the cell's tooltip rather
+                    than being repeated 25 times down the page. */}
+                <span className="orr-price" title="$ per 1M tokens">
+                  {m.free ? 'free'
+                    : <>{perM(m.prompt)} in · {perM(m.completion)} out</>}
                 </span>
                 <span className="orr-check">{on ? '✓ selected' : 'select'}</span>
               </button>

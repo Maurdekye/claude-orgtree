@@ -753,6 +753,22 @@ def catalog(force: bool = False) -> list[ModelCard]:
 SORTS: Final = ("relevance", "input", "output", "recency")
 ORDERS: Final = ("asc", "desc")
 
+#: rows per page. The original 5–10 clamp ENCODED A SPEC — "5–10 results at a
+#: time", user spec 2026-09-02 — and it is gone: the user asked for more per
+#: page on 2026-09-04 ("increase the results per page, and compress their
+#: height so more can be fit onto the same page at once"), so the numbers
+#: below are no longer a rule about what the picker should show.
+#:
+#: What remains is a PAYLOAD BOUND, which is a different thing and is why the
+#: shape is kept at all: `PAGE_MAX` stops one request dragging the whole
+#: 426-model catalog over the wire, and `PAGE_MIN` keeps a caller from asking
+#: for 0 or 1 and turning the pager into 426 pages. Between them the caller
+#: decides. Do not read these as a design opinion about page length — the
+#: frontend's `PAGE` is that opinion, and it can move without touching this.
+PAGE_DEFAULT: Final = 25
+PAGE_MIN: Final = 5
+PAGE_MAX: Final = 100
+
 
 def _sort_key(sort: str, c: ModelCard) -> float:
     if sort == "input":
@@ -762,12 +778,13 @@ def _sort_key(sort: str, c: ModelCard) -> float:
     return float(c["created"])          # recency
 
 
-def search(q: str, offset: int = 0, limit: int = 8,
+def search(q: str, offset: int = 0, limit: int = PAGE_DEFAULT,
            sort: str = "relevance", order: str = "",
            group_by_vendor: bool = False) -> dict[str, Any]:
     """The picker's page: every catalog card whose id or name contains EVERY
     whitespace-separated term of `q` (case-insensitive), ordered by `sort` and
-    paged. `limit` is clamped to the user's 5–10 spec.
+    paged. `limit` is clamped to PAGE_MIN..PAGE_MAX — a payload bound, not a
+    page-length rule; see the note on those constants.
 
     SORTS (user spec 2026-09-04). `relevance` — the original ranking: id
     matches before name matches, then the catalog's own order. `input` /
@@ -803,7 +820,7 @@ def search(q: str, offset: int = 0, limit: int = 8,
     is NOT enough: the list is re-sorted per request, so a tie broken by
     arrival order is only stable while the catalog is."""
     terms = [t for t in q.lower().split() if t]
-    limit = max(5, min(10, int(limit or 8)))
+    limit = max(PAGE_MIN, min(PAGE_MAX, int(limit or PAGE_DEFAULT)))
     offset = max(0, int(offset or 0))
     sort = sort if sort in SORTS else "relevance"
     if sort == "relevance":

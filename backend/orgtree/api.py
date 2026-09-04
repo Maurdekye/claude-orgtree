@@ -2834,10 +2834,12 @@ async def openrouter_clear_key() -> dict[str, Any]:
 
 
 @app.get("/api/openrouter/models")
-async def openrouter_models(q: str = "", offset: int = 0, limit: int = 8,
+async def openrouter_models(q: str = "", offset: int = 0, limit: int = 0,
                             sort: str = "relevance", order: str = "",
                             group_by_vendor: bool = False) -> dict[str, Any]:
-    """The picker's page over the catalog (5–10 rows, user spec). A cold
+    """The picker's page over the catalog (`openrouter.PAGE_*` bounds it; 0
+    here means "whatever the module's default is", so the page length lives
+    in one place rather than being restated on the wire). A cold
     catalog costs one GET to openrouter.ai, which is why this is
     threadpooled; a dead network with a stale disk copy still answers.
 

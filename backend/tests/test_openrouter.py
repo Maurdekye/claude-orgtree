@@ -459,8 +459,11 @@ def main():
                    eq(orr.search("claude")["items"][0]["selected"], True, "sonnet selected"),
                    eq(orr.search("claude fable")["items"][0]["id"],
                       "anthropic/claude-fable-5.1", "all terms"),
-                   eq(orr.search("", limit=99)["limit"], 10, "clamp hi"),
-                   eq(orr.search("", limit=1)["limit"], 5, "clamp lo"),
+                   # the clamp is a PAYLOAD bound now, not the retired "5–10
+                   # at a time" spec (user ask 2026-09-04, page size raised)
+                   eq(orr.search("", limit=9999)["limit"], orr.PAGE_MAX, "clamp hi"),
+                   eq(orr.search("", limit=1)["limit"], orr.PAGE_MIN, "clamp lo"),
+                   eq(orr.search("")["limit"], orr.PAGE_DEFAULT, "default"),
                    eq(len(orr.search("", offset=5)["items"]), 3, "offset")))
     check("remove_favorite drops the hire offer (True), twice is False",
           lambda: (eq(orr.remove_favorite("deepseek/deepseek-v4"), True, "first"),
@@ -775,6 +778,122 @@ def main():
                    ne(orr.search("", offset=5, limit=5,
                                  group_by_vendor=True)["prev_vendor"], None,
                       "a later page names the row above it")))
+
+    print("§4d paging at the raised page size, and group headings across it")
+    # user ask 2026-09-04: "increase the results per page, and compress their
+    # height so more can be fit onto the same page at once". The height is
+    # visual and untestable here; the ARITHMETIC is not, and a page-size
+    # change is exactly where an off-by-one hides.
+    #
+    # ⚠ THE FIXTURE IS TOO SMALL TO CATCH ONE ON ITS OWN. Eight catalog models
+    # under a 25-row page means every page is the only page, so every boundary
+    # check below would pass vacuously. This section GROWS the catalog past a
+    # full page first — that is the whole reason it exists separately.
+    def paging_boundaries():
+        base = len(orr.catalog())
+        # 60 models over 3 vendors, 20 each, so vendor edges and page edges
+        # fall at different places and cannot mask one another
+        for v in range(3):
+            for i in range(20):
+                CATALOG["data"].append({
+                    "id": f"bulk{v}/model-{i:02d}", "name": f"Bulk{v}: model {i:02d}",
+                    "created": 1700000000 + v * 1000 + i,
+                    "context_length": 1000,
+                    "pricing": {"prompt": f"0.0000{v+1}{i:02d}",
+                                "completion": "0.00001"},
+                    "supported_parameters": ["tools"]})
+        try:
+            orr.refresh_catalog()
+            total = base + 60
+            p0 = orr.search("", offset=0)
+            eq(p0["total"], total, "every model counted")
+            eq(p0["limit"], orr.PAGE_DEFAULT, "the raised page size is in force")
+            eq(len(p0["items"]), orr.PAGE_DEFAULT, "a full page is actually full")
+            # walk EVERY page and demand the union is the whole list, in order,
+            # with no row seen twice and none skipped at a boundary
+            walked, off = [], 0
+            while off < total:
+                page = orr.search("", offset=off, sort="input")
+                eq(len(page["items"]) > 0, True, f"page at {off} is not empty")
+                walked += [i["id"] for i in page["items"]]
+                off += orr.PAGE_DEFAULT
+            whole = [i["id"] for i in
+                     orr.search("", offset=0, limit=orr.PAGE_MAX, sort="input")["items"]]
+            eq(len(walked), total, "paging visited every row exactly once")
+            eq(len(set(walked)), total, "…and none of them twice")
+            eq(walked, whole, "…in the same order a single big page gives")
+            # the last page is the remainder, not a padded full page
+            last = (total // orr.PAGE_DEFAULT) * orr.PAGE_DEFAULT
+            eq(len(orr.search("", offset=last)["items"]),
+               total - last, "the last page holds the remainder")
+            eq(orr.search("", offset=total)["items"], [], "past the end is empty")
+        finally:
+            del CATALOG["data"][-60:]
+            orr.refresh_catalog()
+    check("paging at the raised page size visits every row exactly once — no "
+          "row dropped or repeated at a boundary", paging_boundaries)
+
+    def continued_marker():
+        # `prev_vendor` is what lets a split group heading say "continued", and
+        # it is read from `hits[offset - 1]` — an index one off the page, which
+        # is the classic place to be off by one.
+        for i in range(30):
+            CATALOG["data"].append({
+                "id": f"solo{i:02d}/only", "name": f"Solo{i:02d}: only",
+                "created": 1700000000 + i, "context_length": 1000,
+                "pricing": {"prompt": "0.000002", "completion": "0.00001"},
+                "supported_parameters": ["tools"]})
+        try:
+            orr.refresh_catalog()
+            g = lambda off: orr.search("", offset=off, group_by_vendor=True)
+            eq(g(0)["prev_vendor"], None, "the first page has nothing above it")
+            second = g(orr.PAGE_DEFAULT)
+            eq(second["prev_vendor"] is not None, True,
+               "a later page names the row above it")
+            # and it really is the row above: the last row of the page before
+            first_page = g(0)["items"]
+            eq(second["prev_vendor"], first_page[-1]["vendor"],
+               "prev_vendor is exactly the previous page's last vendor")
+            # every `solo*` vendor holds ONE model, so a boundary between two
+            # of them is a group edge, NOT a continuation — the marker must be
+            # able to say "no" as well as "yes"
+            eq(second["prev_vendor"] != second["items"][0]["vendor"], True,
+               "a boundary that falls between groups is not a continuation")
+            eq(orr.search("", offset=9999, group_by_vendor=True)["prev_vendor"],
+               None, "far past the end reports nothing rather than indexing")
+        finally:
+            del CATALOG["data"][-30:]
+            orr.refresh_catalog()
+    check("the 'continued' marker reads the row above the page, and says NO "
+          "when the boundary falls between two groups", continued_marker)
+
+    def continuation_really_happens():
+        # ⚠ POSITIVE CONTROL for the check above. Single-model vendors can only
+        # ever prove the NEGATIVE case; if no group is longer than a page, a
+        # broken continuation marker would never be exercised. One vendor with
+        # more models than a page guarantees a genuine split.
+        for i in range(orr.PAGE_DEFAULT + 5):
+            CATALOG["data"].append({
+                "id": f"huge/model-{i:02d}", "name": f"Huge: model {i:02d}",
+                "created": 1690000000 + i, "context_length": 1000,
+                "pricing": {"prompt": "0.0000001", "completion": "0.0000001"},
+                "supported_parameters": ["tools"]})
+        try:
+            orr.refresh_catalog()
+            # cheapest input puts the whole `huge` block first, so it certainly
+            # straddles the first page boundary
+            p1 = orr.search("", offset=orr.PAGE_DEFAULT, sort="input",
+                            group_by_vendor=True)
+            eq(p1["prev_vendor"], "huge", "the page before ended inside huge")
+            eq(p1["items"][0]["vendor"], "huge", "and this page starts inside it")
+            eq(p1["prev_vendor"] == p1["items"][0]["vendor"], True,
+               "so the heading is drawn as a CONTINUATION, not a fresh group")
+        finally:
+            del CATALOG["data"][-(orr.PAGE_DEFAULT + 5):]
+            orr.refresh_catalog()
+    check("…and a group longer than one page really does continue across the "
+          "boundary — the positive case, not just the negative one",
+          continuation_really_happens)
 
     print("§5 cost fold and tier infos")
     check("cost() prices non-cached input, cached reads and output separately",
