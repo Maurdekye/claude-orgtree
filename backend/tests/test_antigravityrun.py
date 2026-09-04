@@ -238,6 +238,7 @@ def main():
     os.environ["CLAUDECODE"] = "1"
     os.environ["CLAUDE_CODE_ENTRYPOINT"] = "planted"
     os.environ["GOOGLE_CLOUD_PROJECT"] = "keep-me"
+    os.environ["AGY_CLI_DISABLE_AUTO_UPDATE"] = "1"
     probe_env = os.path.join(tmp, "env.json")
     os.environ["FAKEANTIGRAVITY_ENVPROBE"] = (
         "ANTHROPIC_API_KEY,OPENAI_API_KEY,CLAUDECODE,CLAUDE_CODE_ENTRYPOINT,"
@@ -255,9 +256,10 @@ def main():
           "and the CLI's self-update is switched off for the child",
           lambda: eq((seen_env["GOOGLE_CLOUD_PROJECT"], seen_env["ORGTREE_ORG"],
                       seen_env["AGY_CLI_DISABLE_AUTO_UPDATE"]),
-                     ("keep-me", "proof", "1"), "kept"))
+                     ("keep-me", "proof", "true"), "kept"))
     for k in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "CLAUDECODE",
               "CLAUDE_CODE_ENTRYPOINT", "GOOGLE_CLOUD_PROJECT",
+              "AGY_CLI_DISABLE_AUTO_UPDATE",
               "FAKEANTIGRAVITY_ENVPROBE", "FAKEANTIGRAVITY_ENVPROBE_PATH"):
         os.environ.pop(k, None)
 

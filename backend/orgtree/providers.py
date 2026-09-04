@@ -724,15 +724,16 @@ def antigravity_env(base: dict[str, str] | None = None) -> dict[str, str]:
     (measured: ANTHROPIC_API_KEY / OPENAI_API_KEY / CLAUDECODE set on the
     parent reached the orgtree MCP server), so the OTHER providers' material
     is stripped here, at the one place every spawn passes through. The
-    CLI's own self-update is switched off for the child as well: the binary
-    orgtree tested is the binary it runs, never one that swapped itself
-    out mid-day."""
+    CLI's own self-update is switched off for the child as well.  This is a
+    per-spawn environment: the user's interactive `agy` keeps its normal
+    update behaviour.  The lowercase string is the vendor's literal
+    contract — `1` and `True` do not disable the updater."""
     env = dict(os.environ if base is None else base)
     for k in list(env):
         if k.startswith(("ANTHROPIC_", "CLAUDE_CODE_")) or k in (
                 "CLAUDECODE", "OPENAI_API_KEY"):
             env.pop(k, None)
-    env.setdefault("AGY_CLI_DISABLE_AUTO_UPDATE", "1")
+    env["AGY_CLI_DISABLE_AUTO_UPDATE"] = "true"
     return env
 
 

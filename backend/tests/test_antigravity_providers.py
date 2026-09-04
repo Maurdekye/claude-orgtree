@@ -211,14 +211,19 @@ def main():
                      else ("antigravity.google/cli/install.sh"
                            in providers.install_hint("google")),
                      True, "hint"))
-    env = providers.antigravity_env({"ANTHROPIC_API_KEY": "a",
-                                     "OPENAI_API_KEY": "o", "CLAUDECODE": "1",
-                                     "CLAUDE_CODE_ENTRYPOINT": "x",
-                                     "GOOGLE_CLOUD_PROJECT": "keep"})
+    parent_env = {"ANTHROPIC_API_KEY": "a", "OPENAI_API_KEY": "o",
+                  "CLAUDECODE": "1", "CLAUDE_CODE_ENTRYPOINT": "x",
+                  "GOOGLE_CLOUD_PROJECT": "keep",
+                  "AGY_CLI_DISABLE_AUTO_UPDATE": "1"}
+    env = providers.antigravity_env(parent_env)
     check("the spawn env strips the other providers' material, keeps this "
-          "one's, and switches the CLI's self-update off",
+          "one's, and forces the CLI's exact lowercase update gate",
           lambda: eq(env, {"GOOGLE_CLOUD_PROJECT": "keep",
-                           "AGY_CLI_DISABLE_AUTO_UPDATE": "1"}, "env"))
+                           "AGY_CLI_DISABLE_AUTO_UPDATE": "true"}, "env"))
+    check("the update gate is per-spawn: the caller's environment is not "
+          "mutated",
+          lambda: eq(parent_env["AGY_CLI_DISABLE_AUTO_UPDATE"], "1",
+                     "parent env"))
 
     print("§6 the payload the panel renders")
     providers.antigravity_status(force=True)
