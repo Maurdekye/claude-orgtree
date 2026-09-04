@@ -19,30 +19,49 @@ all of it.
 Measured on that real document, two roots built from the same bytes, backend
 the only variable, interleaved and order-reversed, N=30:
 
-⚠ **PRELIMINARY.** These came from a fixture that copied the live root twice,
-once per arm — and the live root is written continuously, so the two arms held
-documents a few seconds apart rather than the same bytes. The mechanism does
-not depend on that and the ratios are very unlikely to move, but the claim
-"the backend selector is the only variable" was not true as measured. The
-harness now takes one validated snapshot, clones it into both arms, and
-records the source sha256 in the result file. This table is replaced on the
-re-run.
+Measured 2026-09-04, N=30, on a machine checked quiet at both ends (433
+processes against a 444 quiet baseline). **One validated snapshot of the live
+root, cloned into both arms, with each org's sha256 asserted equal before any
+measurement** — the source hashes and the machine conditions are both in
+`logs/c3-perf.json`, so the fixture is checkable from the artifact rather than
+from this sentence.
 
-Medians, with p90 and worst sample, because a median that hides a tail is how
-a cutover feels worse than it measures:
+Medians **with p90 and worst sample**, because a median that hides a tail is
+how a cutover feels worse than it measures:
 
 | operation | JSON med / p90 / max | SQLite med / p90 / max | |
 |---|---|---|---|
-| **a turn's storage cost** (4 saves) | **385 / 404 / 483 ms** | **188 / 201 / 211 ms** | **2.0× faster** |
-| one `save_org`, one field changed | 96 / 104 / **196** ms | 8.9 / 10.6 / 15.7 ms | 10.8× faster |
-| one `save_org`, one mail entry appended | 95 / 101 / 114 ms | 25 / 28 / 38 ms | 3.8× faster |
-| `load_org`, cold process | 55 / 60 / 64 ms | 34 / 37 / 39 ms | 1.6× faster |
-| read a lazy section end to end (`mail_log`) | 0.8 / 1.7 / 2.5 ms | 30 / 32 / 40 ms | **40× slower** |
-| produce a portable copy of an org | 17 / 34 / **102** ms | 177 / 228 / **280** ms | **10.5× slower** |
+| **a turn's storage cost** (4 saves) | **436 / 468 / 1085 ms** | **219 / 248 / 293 ms** | **2.0× faster** |
+| one `save_org`, one field changed | 108 / 127 / 196 ms | 10.3 / 12.7 / 19.7 ms | **10.5× faster** |
+| one `save_org`, one mail entry appended | 107 / 129 / 232 ms | 28.2 / 33.0 / 45.2 ms | 3.8× faster |
+| `load_org`, cold process | 62.4 / 67.1 / 67.7 ms | 40.8 / 45.8 / 68.3 ms | 1.5× faster |
+| read a lazy section end to end (`mail_log`) | 0.86 / 2.2 / 2.5 ms | 34.2 / 38.3 / 47.7 ms | **39.7× slower** |
+| produce a portable copy of an org | 19.9 / **330** / 391 ms | 208 / 267 / 475 ms | **10.5× slower** |
 
-SQLite's tails are consistently *narrower* than JSON's — note JSON's 196 ms
-worst small-save against a 96 ms median, and its 102 ms worst copy against a
-17 ms median.
+### ⚠ Read the tails, because two of these rows are misleading at the median
+
+**JSON's `export` distribution is BIMODAL.** Its median is 19.9 ms and its p90
+is **330 ms** — roughly three samples in thirty come back an order of
+magnitude slow, a file copy plus `fsync` hitting a slow path. So "JSON is
+10.5× cheaper at producing a copy" is true about the middle and misleading
+about the experience. SQLite is genuinely slower here; JSON is not reliably
+fast here.
+
+**SQLite does not have JSON's per-turn tail, and that matters more than the
+median for anything a user waits on.** JSON's worst `turn_shape` sample was
+**1085 ms against a 436 ms median — 2.5×**. SQLite's worst was 293 against
+219 — **1.3×**. The same pattern holds on small saves: JSON 196 ms worst
+against a 108 ms median, SQLite 19.7 against 10.3.
+
+⚠ An earlier version of this table was measured on a fixture that copied the
+live root **twice**, once per arm, so the two arms held documents taken
+seconds apart. That was a real methodology defect and the claim "the backend
+selector is the only variable" was not true as measured. It was corrected and
+re-run: **every ratio came back within a rounding of the preliminary numbers.**
+The absolutes rose about 10% **on both arms** because the live document grew
+from 12.7 MB to 13.3 MB during the day — which is the useful part of that
+observation, because it is evidence the mechanism is **not fixture-dependent**
+and will save the next person re-measuring this when the document is 20 MB.
 
 **The two regressions are real and are listed on purpose.**
 
