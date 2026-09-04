@@ -8639,6 +8639,48 @@ def _codex_process_spec(org: Org, nid: str, *,
     }
 
 
+def _codex_may_write(sc: Mapping[str, Any]) -> bool:
+    """May this node's Codex turns change files at all?
+
+    ONE predicate, deliberately, because it has to answer for TWO gates that
+    would otherwise be free to disagree: the OS sandbox mode below, and the
+    `item/fileChange/requestApproval` decision in `_codex_leg._approve`. When
+    two independent gates guard one permission, the loose one is decoration
+    and the strict one is the whole enforcement — and which is which is not
+    obvious from either site. Derive both from here.
+
+    Two things close the door:
+
+    · the `edit` tool switch off — the historical meaning, unchanged.
+    · `permission_mode == "plan"` — the read-only planning seat. `PM_LEVELS`
+      ranks `plan` as the MOST restrictive mode of the four, and until
+      2026-09-04 the Codex lane honoured that with nothing whatsoever: a
+      plan-mode Codex agent got `workspace-write` and an accepted fileChange,
+      i.e. exactly the powers of an acceptEdits one. An operator setting the
+      most restrictive mode bought nothing, which is worse than not offering
+      it.
+
+      MEASURED before tightening, because parity is only an argument if the
+      other lane actually enforces something (claude-code 2.1.241, real turn,
+      same insistent prompt both ways): at `acceptEdits` the Write tool call
+      succeeded and the file appeared; at `plan` the identical call came back
+      `is_error: true`, "Cannot write to … while in plan mode." The CLI
+      denies the tool — this is not the model choosing to cooperate.
+
+    ⚠ SHELL COMMANDS ARE NOT COVERED HERE and that is on purpose. `_approve`
+    still answers `commandExecution` from the `bash` switch alone, exactly as
+    before; a plan-mode agent with a terminal can still have a command
+    APPROVED, and what actually stops it writing is the `read-only` OS
+    sandbox this predicate selects. Widening the approval side to match was
+    not measured and was not asked for. If you extend it, measure what the
+    Claude lane does with Bash in plan mode first — do not reason from the
+    file result above.
+    """
+    if not sc.get("tools", {}).get("edit", True):
+        return False
+    return sc.get("permission_mode") != "plan"
+
+
 def _codex_sandbox(sc: Mapping[str, Any]) -> str:
     """The OS sandbox mode one Codex turn runs under, from the node's scope.
 
@@ -8679,6 +8721,10 @@ def _codex_sandbox(sc: Mapping[str, Any]) -> str:
     red-side-up in test_codex_sandbox_mode.py; do not "simplify" this into
     checking permission_mode first.
 
+    The write gate itself lives in `_codex_may_write`, NOT here, because
+    `_codex_leg._approve` has to answer from the same predicate — see there
+    for why `plan` closes the door and for the shell-command carve-out.
+
     ⚠ THIS MUST REACH THE WIRE ON EVERY TURN, NOT ONLY THE FIRST. A codex
     thread does NOT carry its sandbox forward from birth: resumed, it comes
     back at the app-server's own default. Measured against codex-cli 0.153.3
@@ -8693,7 +8739,7 @@ def _codex_sandbox(sc: Mapping[str, Any]) -> str:
     correctly in the UI, and stops applying — test_codex_sandbox_mode.py §6
     is what goes red.
     """
-    if not sc.get("tools", {}).get("edit", True):
+    if not _codex_may_write(sc):
         return "read-only"
     if sc.get("permission_mode") == "bypassPermissions":
         return "danger-full-access"
@@ -8785,7 +8831,16 @@ def _codex_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
         # --disallowed-tools decide here, and every decline is recorded so
         # `_after_turn` books it like a CLI-reported denial
         is_file = "fileChange" in method
-        if tools_sc.get("edit" if is_file else "bash", True):
+        # ⚠ THE FILE BRANCH ASKS `_codex_may_write`, NOT `tools_sc["edit"]`.
+        # This read the edit switch alone, so a `plan` node — the read-only
+        # planning seat, the MOST restrictive mode in PM_LEVELS — had its file
+        # changes approved like any other. The OS sandbox and this callback
+        # are two gates on one permission; when they disagree the loose one is
+        # decoration, so both now answer from the same predicate and cannot
+        # drift apart. `commandExecution` still comes from the `bash` switch —
+        # see `_codex_may_write` for why that carve-out is deliberate.
+        if (_codex_may_write(n["scope"]) if is_file
+                else tools_sc.get("bash", True)):
             return "accept"
         kind = "fileChange" if is_file else "commandExecution"
         denials.append({"tool_name": kind,

@@ -734,6 +734,9 @@ class CodexTurn:
         self.error: dict[str, Any] | None = None
         self.status: str | None = None
         self._done = threading.Event()
+        # whether THIS turn constructed the app-server, and may therefore end
+        # it — see `close`. A borrowed one belongs to the warm pool.
+        self._owns_client = client is None
         self.client = client or AppServerClient(
             argv_head, codex_home=codex_home, cwd=cwd,
             env_extra=env_extra, config_overrides=config_overrides)
@@ -893,6 +896,32 @@ class CodexTurn:
                         else str(turn.get("turnId") or "") or None)
         assert self.thread_id is not None
         return self.thread_id
+
+    def close(self) -> None:
+        """End the app-server THIS turn created.
+
+        It did not exist until 2026-09-04, and its absence was a quiet
+        footgun: `try: turn.close() except Exception: pass` reads as teardown,
+        raised `AttributeError`, got swallowed, and left the whole app-server
+        tree alive holding the thread's `~/.codex` write lock — so the NEXT
+        `thread/resume` died with "already has an active writer", a failure
+        that points nowhere near the missing teardown. Measured while probing
+        the resume path.
+
+        ⚠ ONLY a client this turn constructed. When the supervisor hands a
+        pre-warmed process in (`client=`), its lifetime belongs to `warmpool`
+        and the correct end is `park_back`/`discard`, not this — closing it
+        here would silently turn a park into a kill. That case RAISES rather
+        than no-opping: a no-op is the inert kind of safety that reads as
+        working teardown and is not.
+        """
+        if not self._owns_client:
+            raise RuntimeError(
+                "CodexTurn.close() on a BORROWED app-server client: this "
+                "turn did not create it and must not end it. A pooled "
+                "process is returned with warmpool.park_back() or ended with "
+                "warmpool.discard(); see supervisor._codex_leg's finally.")
+        self.client.close()
 
     def steer(self, text: str) -> bool:
         """Mid-turn input (C.2). False = the guard refused (turn already

@@ -47,6 +47,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 import traceback
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -111,7 +112,29 @@ def eq(got, want, what):
 
 # ── fixtures ────────────────────────────────────────────────────────────────
 
-def mkorg(label: str, *, edit: bool, pm: str) -> tuple[str, str]:
+#: THE PIN. Every (permission_mode, edit) combination the ledger can store,
+#: and the OS sandbox mode it must produce. §7 asserts this whole table at
+#: BOTH call sites, so changing any cell of the product's behaviour requires
+#: moving a line here deliberately — §2 only asserts membership in the two
+#: historical answers, which a `plan` change would have slipped past.
+EXPECTED_SANDBOX = {
+    # plan is the read-only planning seat and the MOST restrictive mode in
+    # PM_LEVELS; before 2026-09-04 it produced workspace-write, i.e. bought
+    # the operator nothing at all
+    ("plan", True): "read-only",
+    ("plan", False): "read-only",
+    ("default", True): "workspace-write",
+    ("default", False): "read-only",
+    ("acceptEdits", True): "workspace-write",
+    ("acceptEdits", False): "read-only",
+    ("bypassPermissions", True): "danger-full-access",
+    # the edit switch wins over bypass — turning a switch OFF must never make
+    # an agent MORE powerful
+    ("bypassPermissions", False): "read-only",
+}
+
+
+def mkorg(label: str, *, edit: bool, pm: str, bash: bool = True) -> tuple[str, str]:
     """One org, one codex-tier node carrying the scope under test.
 
     `permission_mode` is set through the real `set_scope` door (which clamps
@@ -120,7 +143,7 @@ def mkorg(label: str, *, edit: bool, pm: str) -> tuple[str, str]:
     """
     org = store.create_org(f"zz codexsbx {label}")
     nid = org.hire(USER, None, "sol", 0, "cx", add_dirs=[],
-                   tools={"bash": True, "web": False, "edit": edit,
+                   tools={"bash": bash, "web": False, "edit": edit,
                           "subagents": False, "mcp": []},
                    org_visibility="team",
                    charter="a codex sandbox-mode test agent")["node"]
@@ -206,6 +229,37 @@ def wire_sandbox(slug: str, nid: str, turns: int = 2) -> list[dict]:
         return []
     with open(probe, encoding="utf-8") as f:
         return [json.loads(ln) for ln in f if ln.strip()]
+
+
+def approval_decisions(slug: str, nid: str) -> dict[str, object]:
+    """Run one real turn in which the app-server ASKS for both approvals, and
+    return what `_codex_leg._approve` answered.
+
+    This is the ⚙-rights seam and nothing exercised it before. It matters
+    because it is a SECOND gate on the same permission as the OS sandbox: if
+    it approves a write the sandbox forbids, the approval is decoration; if it
+    declines one the sandbox allows, the agent is quietly crippled. §8 asserts
+    the two agree rather than checking either alone.
+    """
+    probe = os.path.join(tempfile.mkdtemp(prefix="codexsbx-appr-"), "a.json")
+    os.environ["FAKECODEX_SCENARIO"] = "approval"
+    os.environ["FAKECODEX_APPROVALPROBE"] = probe
+    try:
+        st = supervisor.state(slug, nid)
+        with supervisor._state_lock:
+            st["busy"] = True
+        supervisor._run_one_turn(
+            slug, nid, {"text": "approval probe", "view": "approval probe"})
+    finally:
+        os.environ["FAKECODEX_SCENARIO"] = "stall"
+        os.environ.pop("FAKECODEX_APPROVALPROBE", None)
+    if not os.path.exists(probe):
+        raise AssertionError(
+            "the app-server double never recorded an approval round trip — "
+            "the seam under test did not run, so any verdict here is vacuous")
+    with open(probe, encoding="utf-8") as f:
+        rows = json.load(f)
+    return {str(r["method"]).split("/")[1]: r["decision"] for r in rows}
 
 
 def fork_sandbox(slug: str, nid: str) -> str:
@@ -367,6 +421,96 @@ def main() -> int:
           lambda: eq([r["sandbox"] for r in o_rows],
                      ["workspace-write", "workspace-write"],
                      "sandbox on the wire, turn 1 then turn 2"))
+
+    print("§7 THE PIN: the whole (mode × edit) table, at both sites")
+    wrong: list[str] = []
+    for (pm, edit), want in sorted(EXPECTED_SANDBOX.items()):
+        s, i = mkorg(f"pin {pm} {int(edit)}", edit=edit, pm=pm)
+        got_turn, got_wire = turn_sandbox(s, i)
+        got_fork = fork_sandbox(s, i)
+        for where, got in (("turn", got_turn), ("wire", got_wire),
+                           ("fork", got_fork)):
+            if got != want:
+                wrong.append(f"{pm}/edit={edit} {where}: {got} != {want}")
+    check(f"all {len(EXPECTED_SANDBOX)} scopes × 3 sites match the pinned "
+          f"table", lambda: eq(wrong, [], "cells that disagree with the pin"))
+
+    print("§8 the APPROVAL seam agrees with the sandbox, cell by cell")
+    # Two gates on one permission. Asserted against the sandbox mode OBSERVED
+    # in the same fixture, not against a rule this file restates — so the two
+    # cannot be made to agree by editing the test.
+    mismatched: list[str] = []
+    file_answers: set[object] = set()
+    for (pm, edit), want in sorted(EXPECTED_SANDBOX.items()):
+        s, i = mkorg(f"appr {pm} {int(edit)}", edit=edit, pm=pm)
+        got_turn, _ = turn_sandbox(s, i)
+        d = approval_decisions(s, i)
+        file_answers.add(d.get("fileChange"))
+        expect_file = "decline" if got_turn == "read-only" else "accept"
+        if d.get("fileChange") != expect_file:
+            mismatched.append(
+                f"{pm}/edit={edit}: sandbox {got_turn} but fileChange "
+                f"{d.get('fileChange')!r} (wanted {expect_file})")
+        # bash is on in every fixture above, so the command branch must be
+        # unaffected by permission_mode — the deliberate carve-out
+        if d.get("commandExecution") != "accept":
+            mismatched.append(
+                f"{pm}/edit={edit}: commandExecution "
+                f"{d.get('commandExecution')!r} with bash ON")
+    check("the fileChange decision matches the sandbox in every scope",
+          lambda: eq(mismatched, [], "gates that disagree"))
+    # ANTI-VACUITY: if `_approve` answered "accept" everywhere, the loop above
+    # would still pass for the accept-side cells and quietly compare a
+    # constant. Both answers must actually occur.
+    check("the approval seam produced BOTH accept and decline",
+          lambda: eq(sorted(str(a) for a in file_answers),
+                     ["accept", "decline"], "distinct fileChange answers"))
+    # …and the command branch must be able to say no at all, or "accept
+    # everywhere" above proves nothing about it either
+    nb_slug, nb_nid = mkorg("appr nobash", edit=True, pm="acceptEdits",
+                            bash=False)
+    nb = approval_decisions(nb_slug, nb_nid)
+    check("bash OFF still declines commandExecution (control)",
+          lambda: eq((nb.get("commandExecution"), nb.get("fileChange")),
+                     ("decline", "accept"),
+                     "command/file decisions with bash off, edit on"))
+
+    print("§9 CodexTurn.close(): real teardown, and loud when it must not act")
+    # Lives here rather than in test_codexrun.py because it is the same
+    # process-boundary work: the missing close() is what made the resume
+    # probe for §6 fail with "already has an active writer" — a swallowed
+    # AttributeError that read as teardown and leaked the whole app-server
+    # tree, still holding the thread's ~/.codex write lock.
+    argv = providers.codex_argv(FAKECODEX)
+    own_cwd = tempfile.mkdtemp(prefix="codexsbx-close-")
+    owned = codexrun.CodexTurn(argv, cwd=own_cwd, model=None, effort=None,
+                               thread_id=None)
+    own_proc = owned.client.proc
+    check("an app-server the turn created is running before close",
+          lambda: eq(own_proc.poll(), None, "exit code while alive"))
+    owned.close()
+    deadline = time.time() + 10
+    while own_proc.poll() is None and time.time() < deadline:
+        time.sleep(0.05)
+    check("close() on an OWNED client actually ends the process",
+          lambda: eq(own_proc.poll() is not None, True,
+                     "process exited after close()"))
+
+    lent = codexrun.AppServerClient(argv, cwd=own_cwd)
+    borrower = codexrun.CodexTurn(argv, cwd=own_cwd, model=None, effort=None,
+                                  thread_id=None, client=lent)
+    raised = ""
+    try:
+        borrower.close()
+    except RuntimeError as e:
+        raised = str(e)
+    check("close() on a BORROWED client raises instead of killing it",
+          lambda: eq(bool(raised) and "BORROWED" in raised, True,
+                     f"RuntimeError mentioning the borrow (got {raised!r})"))
+    # …and the refusal must be a refusal, not a kill with a complaint
+    check("the borrowed app-server is still alive after the refusal",
+          lambda: eq(lent.proc.poll(), None, "exit code of the pooled client"))
+    lent.close()
 
     print()
     if FAIL:

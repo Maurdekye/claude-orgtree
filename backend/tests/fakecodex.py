@@ -7,6 +7,11 @@ scenarios selected by FAKECODEX_SCENARIO:
     tool       (default) the model "calls" the first registered dynamic tool
                (server-request item/tool/call) and echoes the client's answer
                into its agent text — proves the round trip codexrun relies on
+    approval   the turn asks for BOTH approvals the ⚙-rights seam decides —
+               item/fileChange/requestApproval and
+               item/commandExecution/requestApproval — and records what the
+               client answered to FAKECODEX_APPROVALPROBE. The two come from
+               different rules in `_approve`, so both are asked in one turn
     steer      the turn stalls until a turn/steer arrives (≤8s), then emits
                STEERED[<text>] BEFORE acknowledging the request and completes
                — notifications and responses use the real independent paths
@@ -244,6 +249,34 @@ def run_turn(thread_id, turn_id, dyn_tools):
         item_event("completed", {**tool_item, "status": "completed",
                                   "success": True, "contentItems": items})
         agent_message("msg-tool", f"tool said: {text}")
+    elif SCENARIO == "approval":
+        # The ⚙-RIGHTS SEAM. The app-server ASKS before a file change or a
+        # shell command and orgtree's `_codex_leg._approve` answers. Nothing
+        # in this repo exercised that callback before 2026-09-04, so a
+        # permission that lived only there was enforced by an untested line —
+        # which is how `plan` came to be approved like acceptEdits.
+        #
+        # Both kinds are asked in one turn on purpose: the file answer and the
+        # command answer come from different rules, and a scenario that asked
+        # only one could not show them diverging.
+        decisions = []
+        for meth, extra in (
+                ("item/fileChange/requestApproval",
+                 {"callId": "a-file", "fileChange": {"path": "probe.txt"}}),
+                ("item/commandExecution/requestApproval",
+                 {"callId": "a-cmd", "command": "echo probe"})):
+            ans = server_request(meth, {"threadId": thread_id,
+                                        "turnId": turn_id, **extra})
+            decisions.append({
+                "method": meth,
+                # None, not "decline": a client that never answered and one
+                # that answered "decline" are different failures
+                "decision": ((ans or {}).get("result") or {}).get("decision")})
+        probe = os.environ.get("FAKECODEX_APPROVALPROBE")
+        if probe:
+            with open(probe, "w", encoding="utf-8") as f:
+                json.dump(decisions, f)
+        agent_message("msg-approval", json.dumps(decisions))
     elif SCENARIO == "steer":
         st = wait_request("turn/steer")
         if st:
