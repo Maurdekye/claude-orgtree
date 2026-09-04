@@ -2098,15 +2098,21 @@ def _():
     assert MID.alive() and BOSS.alive()
 
 
-@gap("a 400-digit grant 500s inside _chain_acquire (int too large for float)")
+@t("a 400-digit grant refuses cleanly — PIN FLIPPED 2026-09-04")
 def _():
-    # ⚑ DEFECT (ledger.py:1567). `_arg_int` accepts "999…" (400 digits) as a
-    # perfectly good int, and the credit arithmetic then formats it as a float.
+    # ⚑ WAS A DEFECT: `_arg_int` accepted "999…" (400 digits) as a perfectly
+    # good Python int — they are arbitrary-precision — and the credit
+    # arithmetic then formatted it as a float and 500ed inside
+    # `_chain_acquire`. Credit arguments now come through `_arg_num`, which
+    # parses to a FLOAT: 400 digits overflow to inf and the finite check
+    # refuses them the way every other bad argument is refused. Fixed as a
+    # side effect of stopping `_arg_int` truncating a fractional delta.
     txt, err = MID.call("orgtree_hire", {
         "name": "junkkid", "tier": "haiku", "grant": "9" * 400, "charter": "c",
         "add_dirs": [], "org_visibility": "self", "tools": _HTOOLS})
-    assert err and txt == "Internal Server Error", \
-        f"a 400-digit grant no longer 500s — flip this pin ({txt[:120]})"
+    assert err and txt != "Internal Server Error", \
+        f"expected a clean refusal, got {txt[:160]!r}"
+    assert "finite" in txt or "number" in txt, f"refused, but not about the grant: {txt[:160]}"
     assert "junkkid" not in store.load_org(A).nodes
     assert MID.alive()
 

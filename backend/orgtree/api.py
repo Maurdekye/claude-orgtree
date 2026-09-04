@@ -17,6 +17,7 @@ import asyncio
 import importlib.util
 import ipaddress
 import json
+import math
 import os
 import posixpath
 import re
@@ -4503,6 +4504,39 @@ def _arg_int(a: dict[str, Any], key: str, default: int) -> int:
             raise LedgerError(f"{key} must be a number (got {v!r})")
 
 
+def _arg_num(a: dict[str, Any], key: str, default: float) -> float:
+    """`_arg_int` for a CREDIT QUANTITY: identical coercion and identical
+    refusals, but it does not truncate.
+
+    ⚠ THE DIFFERENCE IS NOT THE LOST FRACTION, IT IS THE SILENT SUCCESS.
+    `_arg_int` truncates toward zero, so an agent calling
+    `orgtree_reallocate {"delta": 0.5}` had its ask rounded to 0 BEFORE the
+    ledger saw it: `reallocate` was handed a no-op, wrote nothing, and
+    answered 200. The caller was told its credits had moved. Measured
+    2026-09-04. The same line shaved `{"grant": 5.7}` to 5 on hire and rehire,
+    where it also stepped in front of `hire`'s own "grant must be a
+    non-negative integer" refusal — the guard could never fire because the
+    argument was always whole by the time it arrived.
+
+    So credit arguments come through here intact and the LEDGER decides:
+    `reallocate` snaps the target up to a whole credit, `hire` refuses a
+    fractional grant outright, `rehire` rounds up. Round up or refuse — never
+    truncate down, and never report success for work that did not happen.
+    Counts (`last`) still use `_arg_int`; they are not money."""
+    v = a.get(key)
+    if v is None or v == "":
+        return default
+    try:
+        f = float(v)
+    except (TypeError, ValueError, OverflowError):
+        raise LedgerError(f"{key} must be a number (got {v!r})")
+    # the same OverflowError class `_arg_int` documents: "Infinity" and
+    # "1e400" parse as floats and would poison every credit total downstream
+    if not math.isfinite(f):
+        raise LedgerError(f"{key} must be a finite number (got {v!r})")
+    return f
+
+
 def _arg_flag(a: dict[str, Any], key: str) -> bool:
     """A boolean off the same free-form wire (D-178). The schema says boolean
     and the CLI usually honours it, but an LLM writes `"true"` often enough
@@ -5334,7 +5368,7 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
                                        "mcp": list(_tsc["tools"].get("mcp") or [])},
                              org_visibility=_tsc.get("org_visibility", "full"))
                 result = org.hire(body.node, _dest,
-                                  a.get("tier"), _arg_int(a, "grant", 0),  # type: ignore[arg-type]  # ledger 422s a missing tier
+                                  a.get("tier"), _arg_num(a, "grant", 0),  # type: ignore[arg-type]  # ledger 422s a missing tier; _arg_num so hire's own whole-grant refusal can still fire
                                   a.get("name") or "", add_dirs=hdirs,
                                   tools=a.get("tools"),
                                   org_visibility=a.get("org_visibility"),
@@ -5459,7 +5493,7 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
                                 f"insertion if it should hold less)")
                 result = org.rehire(body.node, a.get("node"),  # type: ignore[arg-type]  # node() 422s on None
                                     None if _g is None or _g == ""
-                                    else _arg_int(a, "grant", 0))
+                                    else _arg_num(a, "grant", 0))
                 drive.extend(result.pop("drive", []))
                 # D-160: the other four calls. The rename already happened
                 # above (it cannot share this lock); the scope, the audiences
@@ -5584,7 +5618,7 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
                 if _archive_warnings:
                     result.setdefault("warnings", []).extend(_archive_warnings)
             elif body.tool == "orgtree_reallocate":
-                result = org.reallocate(body.node, a.get("node"), _arg_int(a, "delta", 0))  # type: ignore[arg-type]  # node() 422s on None
+                result = org.reallocate(body.node, a.get("node"), _arg_num(a, "delta", 0))  # type: ignore[arg-type]  # node() 422s on None; _arg_num: an int here turned {"delta": 0.5} into a silent no-op
             elif body.tool == "orgtree_switch_model":
                 provider_hire_gate(org, a.get("tier"))
                 # D-234: the supervisor's live answer rides in — the ledger

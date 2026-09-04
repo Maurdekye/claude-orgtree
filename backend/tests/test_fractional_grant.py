@@ -448,4 +448,169 @@ def _():
     eq(o.free(c), 0.8, "and the books balance exactly as before")
 
 
+print("\n§7  no credit quantity is SWALLOWED — round up or refuse, never no-op")
+
+# ⚠ THE SHAPE THIS SECTION IS ABOUT is not the lost fraction. It is an
+# operation that reports SUCCESS and does something other than what was asked:
+# an agent asking to move 0.5 credits and being told "ok" while the ledger did
+# nothing at all. Losing 0.5 of a credit is small; a success message for work
+# that never happened is what makes a caller stop checking.
+#
+# Every check here therefore asserts one of two outcomes and never a third:
+# the asked-for amount landed (rounded UP, so nothing is lost), or the call
+# REFUSED and said why. "Returned 200 and changed nothing" fails.
+
+
+def agent_tool(o, node, tool, args):
+    """Call the MCP door the way an agent does, over /api/agent."""
+    return client.post("/api/agent", json={"org": o.d["slug"], "node": node,
+                                           "tool": tool, "args": args})
+
+
+@t("MCP reallocate: a fractional delta moves credits or refuses — never a silent no-op")
+def _():
+    o, c, s = saturating_org()
+    o.hire(USER, c, "opus", 4, "kid", **spec())
+    store.save_org(o)
+    before = store.load_org(o.d["slug"]).node("kid")["grant"]
+    r = agent_tool(o, c, "orgtree_reallocate", {"node": "kid", "delta": 0.5})
+    after = store.load_org(o.d["slug"]).node("kid")["grant"]
+    if r.status_code == 200:
+        true(after != before,
+             f"reported success and moved nothing: {before!r} -> {after!r} "
+             f"(the caller asked for +0.5 and was told ok)")
+        true(after > before, f"asked to ADD and the grant fell: {before} -> {after}")
+    else:
+        eq(after, before, "a refusal must leave the grant alone")
+
+
+@t("…and with headroom it lands on the next whole credit, never truncating")
+def _():
+    _n[0] += 1
+    o = Org.create(f"frac{_n[0]}")
+    o.hire(USER, None, "opus", 40, "boss", **spec())    # room for the round-up
+    o.hire("boss", "boss", "opus", 4, "kid", **spec())
+    store.save_org(o)
+    r = agent_tool(o, "boss", "orgtree_reallocate", {"node": "kid", "delta": 0.5})
+    eq(r.status_code, 200, r.text[:200])
+    eq(store.load_org(o.d["slug"]).node("kid")["grant"], 5, "4 + 0.5, rounded UP")
+
+
+@t("…and WITHOUT headroom it refuses and names the shortfall, rather than half-doing it")
+def _():
+    o, c, s = saturating_org()                          # coordinator free = 0.8
+    o.hire(USER, c, "opus", 4, "kid", **spec())
+    store.save_org(o)
+    r = agent_tool(o, c, "orgtree_reallocate", {"node": "kid", "delta": 0.5})
+    eq(r.status_code, 422, f"expected a refusal, got {r.status_code}")
+    true("free" in r.text, f"refused without naming the shortfall: {r.text[:200]}")
+    eq(store.load_org(o.d["slug"]).node("kid")["grant"], 4,
+       "and the refusal left the grant exactly where it was")
+
+
+@t("MCP hire: a fractional grant is refused, not quietly shaved to a whole one")
+def _():
+    _n[0] += 1
+    o = Org.create(f"frac{_n[0]}")
+    o.hire(USER, None, "opus", 60, "boss", **spec())   # plenty of headroom, so
+    c = "boss"                                         # a refusal is ABOUT the grant
+    store.save_org(o)
+    r = agent_tool(o, c, "orgtree_hire",
+                   {"tier": "opus", "grant": 5.7, "name": "shaved",
+                    "charter": "x", "org_visibility": "team",
+                    "add_dirs": [], "tools": dict(ALL_TOOLS)})
+    back = store.load_org(o.d["slug"])
+    hired = [k for k in back.nodes if k.startswith("shaved")]
+    if r.status_code == 200:
+        true(hired, "reported success and hired nobody")
+        g = back.node(hired[0])["grant"]
+        true(g >= 5.7, f"asked for 5.7 and silently got {g!r}")
+    else:
+        eq(hired, [], "a refusal must not leave a node behind")
+        true("integer" in r.text or "number" in r.text,
+             f"refused, but not about the grant: {r.text[:200]}")
+
+
+@t("rehire with an explicit fractional grant rounds UP, never down")
+def _():
+    _n[0] += 1
+    o = Org.create(f"frac{_n[0]}")
+    o.hire(USER, None, "opus", 40, "boss", **spec())
+    o.hire("boss", "boss", "opus", 3, "kid", **spec())
+    o.retire("boss", "kid")
+    o.rehire("boss", "kid", 5.7)
+    g = o.node("kid")["grant"]
+    true(g >= 5.7, f"asked for 5.7 and got {g!r} — 0.7 of a credit swallowed")
+    eq(g, 6, "rounded up to the next whole credit")
+
+
+@t("rehire with NO grant still keeps the archived value exactly (melt round-trip)")
+def _():
+    # the other half of the same line: the DEFAULT must not be rounded, or a
+    # melt-fractional archived grant would grow every time it is rehired.
+    _n[0] += 1
+    o = Org.create(f"frac{_n[0]}")
+    o.hire(USER, None, "opus", 40, "boss", **spec())
+    o.hire("boss", "boss", "gpt-reserve", 0, "kid", **spec())
+    o.node("kid")["grant"] = 0.1                # stand in for a melt residue
+    o.retire("boss", "kid")
+    o.rehire("boss", "kid")
+    eq(o.node("kid")["grant"], 0.1, "the default keeps its fraction untouched")
+
+
+@t("request_credits records the amount asked for, rounded UP")
+def _():
+    _n[0] += 1
+    o = Org.create(f"frac{_n[0]}")
+    o.hire(USER, None, "opus", 10, "boss", **spec())
+    o.request_credits("boss", 20.5, "need a bit more")
+    req = o.d["credit_requests"][-1]
+    true(req["new"] >= 20.5,
+         f"asked for 20.5, the request card says {req['new']!r}")
+    eq(req["new"], 21, "rounded up to the next whole credit")
+
+
+@t("approving a fractional amount grants at least it, never less")
+def _():
+    _n[0] += 1
+    o = Org.create(f"frac{_n[0]}")
+    o.hire(USER, None, "opus", 10, "boss", **spec())
+    o.request_credits("boss", 30, "more")
+    rid = o.d["credit_requests"][-1]["id"]
+    o.credit_request_action(rid, "approve", granted=20.5)
+    g = o.node("boss")["grant"]
+    true(g >= 20.5, f"approved 20.5 and the node holds {g!r}")
+    eq(g, 21, "rounded up")
+
+
+@t("the preview agrees with what approving would actually do")
+def _():
+    _n[0] += 1
+    o = Org.create(f"frac{_n[0]}")
+    o.d["max_top_grant"] = 21
+    o.hire(USER, None, "opus", 10, "boss", **spec())
+    o.request_credits("boss", 30, "more")
+    rid = o.d["credit_requests"][-1]["id"]
+    prev = o.credit_preview(rid, 20.5)
+    o.credit_request_action(rid, "approve", granted=20.5)
+    landed = o.node("boss")["grant"]
+    eq(prev["ok"], True, f"preview said no, approve said {landed}")
+    eq(landed, 21, "and the cap of 21 admits exactly it")
+
+
+@t("…and the preview refuses when the ROUNDED figure crosses the cap")
+def _():
+    # the preview must judge the number that will actually be written. A
+    # preview that checked the un-rounded 20.5 against a cap of 20 would say
+    # "ok" and then the approval would write 21.
+    _n[0] += 1
+    o = Org.create(f"frac{_n[0]}")
+    o.d["max_top_grant"] = 20
+    o.hire(USER, None, "opus", 10, "boss", **spec())
+    o.request_credits("boss", 30, "more")
+    rid = o.d["credit_requests"][-1]["id"]
+    eq(o.credit_preview(rid, 20.5)["ok"], False,
+       "20.5 rounds to 21, which is past a cap of 20")
+
+
 print(f"\n{PASS} checks passed")

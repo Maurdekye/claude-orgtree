@@ -3704,9 +3704,26 @@ class Org:
                 f'predecessor) — you command it and pay its seat')
         parent = n["parent"]
         # DEFAULTS to the archived grant, which switch_model's melt may have
-        # left fractional — so the default keeps its fraction, while an
-        # explicit ask is still coerced to a whole number (nobody asks for 0.3)
-        grant = n["grant"] if grant is None else int(grant)
+        # left fractional — so the default keeps its fraction. That half of
+        # the old comment is still true and is why this is not one expression:
+        # rounding the DEFAULT would grow a melted node's holding a little
+        # every time it was rehired.
+        #
+        # The other half — "an explicit ask is still coerced to a whole number
+        # (nobody asks for 0.3)" — was true about the INTENT and wrong about
+        # the CODE. `int()` does not coerce, it truncates toward zero: an
+        # explicit 5.7 became 5 and nobody was told. And the premise had
+        # stopped holding anyway — the MCP door coerced its `grant` argument
+        # to an int before this line ever saw it, so "nobody asks for 0.3" was
+        # a description of the door, not of callers. With that door now
+        # passing the number through (`_arg_num`), asks like 5.7 arrive here.
+        #
+        # Grants are whole (user ruling 2026-09-04), so an explicit ask is
+        # still made whole — UPWARD. The rehire may then be refused for
+        # affordability by `_chain_acquire` below, which is the honest
+        # outcome: a refusal that names the shortfall beats quietly rehiring
+        # the node smaller than it was asked to be.
+        grant = n["grant"] if grant is None else math.ceil(_q(grant))
         if parent is None and grant > n["grant"]:
             self._check_top_grant(grant, "this rehire")   # D-014
         need = _q(self.seat_cost(nid) + grant)
@@ -5895,10 +5912,17 @@ class Org:
             raise LedgerError("only top-level agents (or holders of a user "
                               "audience) may ask the user for credits directly "
                               "— ask your superior to reallocate instead")
+        # ⚠ CEIL, NOT int(). `int()` truncates toward zero, so an agent asking
+        # for a total of 20.5 had a request card written for 20 and was never
+        # told the ask had been reduced — the request it saw approved was not
+        # the request it made. Grants are whole (user ruling 2026-09-04), so
+        # the ask is still made whole, UPWARD: rounding an ASK up costs
+        # nothing (the user still approves or refuses it) while rounding it
+        # down quietly answers a question nobody asked.
         try:
-            new_limit = int(new_limit)
-        except (TypeError, ValueError):
-            raise LedgerError("new_limit must be an integer (the requested TOTAL grant)")
+            new_limit = math.ceil(_q(float(new_limit)))
+        except (TypeError, ValueError, OverflowError):
+            raise LedgerError("new_limit must be a number (the requested TOTAL grant)")
         old = n["grant"]
         reqs = self.d.setdefault("credit_requests", [])
         pending = next((r for r in reqs
@@ -6917,7 +6941,11 @@ class Org:
                 req["note"] = f"{nid} is no longer live — dropped as moot"
                 self._log("credit_moot", USER, {"node": nid}, [])
                 return req
-            give = int(granted if granted is not None else req["new"])
+            # CEIL, not int() — the same swallow as `request_credits`: a
+            # counter-offer of 20.5 granted 20 and the card then reported
+            # "granted 20" as though that were the answer given.
+            give = math.ceil(_q(float(
+                granted if granted is not None else req["new"])))
             delta = give - self.node(nid)["grant"]
             warnings: list[str] = []
             if delta != 0:
@@ -6973,7 +7001,11 @@ class Org:
         if nid not in self.nodes or self.node(nid)["state"] != "live":
             return {"ok": False, "warnings": [f"{nid} is no longer live"]}
         n = self.node(nid)
-        give = int(granted)
+        # CEIL, matching `credit_request_action` exactly — a preview that
+        # judged a different number from the one approval writes is worse than
+        # no preview: it would answer "ok" for 20.5 against a cap of 20 and
+        # then the approval would write 21.
+        give = math.ceil(_q(float(granted)))
         delta = give - n["grant"]
         warnings: list[str] = []
         if delta > 0 and n["parent"] is None:
