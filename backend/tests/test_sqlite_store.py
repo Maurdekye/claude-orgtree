@@ -1701,11 +1701,95 @@ def s10_empty_is_not_absent() -> None:
           empty_org_migrates)
 
 
+def s11_desync_guard() -> None:
+    section("§11 data root desynchronization guard")
+
+    def desync_predicate_passes_when_env_unset() -> None:
+        """When ORGTREE_DATA is unset in environment, the default ~/orgtree root
+        is legitimate (the running backend case)."""
+        old_env = os.environ.pop("ORGTREE_DATA", None)
+        try:
+            store._assert_synced_data_root()
+        finally:
+            if old_env is not None:
+                os.environ["ORGTREE_DATA"] = old_env
+    check("desync check passes when ORGTREE_DATA is unset (backend default)",
+          desync_predicate_passes_when_env_unset)
+
+    def desync_predicate_passes_when_env_matches() -> None:
+        """When ORGTREE_DATA matches store.DATA_ROOT, it passes."""
+        old_env = os.environ.get("ORGTREE_DATA")
+        os.environ["ORGTREE_DATA"] = store.DATA_ROOT
+        try:
+            store._assert_synced_data_root()
+        finally:
+            if old_env is not None:
+                os.environ["ORGTREE_DATA"] = old_env
+            else:
+                os.environ.pop("ORGTREE_DATA", None)
+    check("desync check passes when ORGTREE_DATA matches store.DATA_ROOT",
+          desync_predicate_passes_when_env_matches)
+
+    def desync_predicate_raises_when_env_disagrees() -> None:
+        """When ORGTREE_DATA is set to a different path than store.DATA_ROOT, it raises."""
+        old_env = os.environ.get("ORGTREE_DATA")
+        fake_root = os.path.join(tempfile.gettempdir(), "orgtree-desync-fake")
+        os.environ["ORGTREE_DATA"] = fake_root
+        try:
+            raised = False
+            try:
+                store._assert_synced_data_root()
+            except store.DataRootDesync as e:
+                raised = True
+                assert "is desynchronized from os.environ['ORGTREE_DATA']" in str(e)
+            assert raised, "expected DataRootDesync was not raised!"
+        finally:
+            if old_env is not None:
+                os.environ["ORGTREE_DATA"] = old_env
+            else:
+                os.environ.pop("ORGTREE_DATA", None)
+    check("desync check raises DataRootDesync when ORGTREE_DATA disagrees",
+          desync_predicate_raises_when_env_disagrees)
+
+    def import_order_inversion_positive_control() -> None:
+        """Exact reproduction of the incident: an interactive probe or script
+        imports an orgtree module BEFORE setting ORGTREE_DATA. The write must
+        crash loudly with DataRootDesync and create NOTHING in the un-isolated root."""
+        backend_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
+        child = (
+            "import os, sys, tempfile\n"
+            "sys.path.insert(0, sys.argv[1])\n"
+            "early_root = tempfile.mkdtemp(prefix='orgtree-desync-early-')\n"
+            "os.environ['ORGTREE_DATA'] = early_root\n"
+            "from orgtree import store\n"
+            "late_root = tempfile.mkdtemp(prefix='orgtree-desync-late-')\n"
+            "os.environ['ORGTREE_DATA'] = late_root\n"
+            "try:\n"
+            "    store.create_org('zz-desync-blocked')\n"
+            "    sys.exit(0)\n"
+            "except store.DataRootDesync:\n"
+            "    if os.path.exists(os.path.join(early_root, 'orgs', 'zz-desync-blocked.db')):\n"
+            "        sys.exit(43)\n"
+            "    sys.exit(42)\n"
+            "except Exception as e:\n"
+            "    sys.exit(1)\n"
+        )
+        env = {k: v for k, v in os.environ.items() if not k.startswith("ORGTREE_")}
+        env["PYTHONIOENCODING"] = "utf-8"
+        r = subprocess.run(
+            [sys.executable, "-c", child, backend_dir],
+            capture_output=True, text=True, env=env, timeout=15
+        )
+        eq(r.returncode, 42, f"import-order inversion should exit 42 via DataRootDesync, got rc={r.returncode}\n{r.stderr}")
+    check("positive control: import-order inversion crashes loudly with DataRootDesync",
+          import_order_inversion_positive_control)
+
+
 # ===========================================================================
 if __name__ == "__main__":
     for fn in (s1_lazydoc, s2_roundtrip, s3_save, s4_migration_mechanics,
                s5_delete_restore, s6_revision_hooks, s7_rollback, s8_export,
-               s9_review, s10_empty_is_not_absent):
+               s9_review, s10_empty_is_not_absent, s11_desync_guard):
         try:
             fn()
         except BaseException:                              # noqa: BLE001

@@ -260,6 +260,37 @@ class DataRootBusy(RuntimeError):
     """Another live process already owns this ORGTREE_DATA."""
 
 
+class DataRootDesync(RuntimeError):
+    """Raised when `os.environ['ORGTREE_DATA']` disagrees with `store.DATA_ROOT`.
+
+    `store.DATA_ROOT` binds once at module import. If `ORGTREE_DATA` is set
+    afterwards to a different path (e.g. from an import-order inversion in tests),
+    operations fail immediately rather than silently reading or writing against
+    the wrong root (often production).
+    """
+
+
+def _assert_synced_data_root() -> None:
+    """Refuse operations when os.environ['ORGTREE_DATA'] disagrees with DATA_ROOT.
+
+    DATA_ROOT binds once at module import time. If ORGTREE_DATA is set in the
+    environment after store was imported (common in tests or scripts with import-
+    order inversions), the environment promises isolation while store writes to
+    whatever root was bound at import (often the production root).
+
+    If ORGTREE_DATA is unset or empty in the environment, this passes (the standard
+    production case defaulting to ~/orgtree).
+    """
+    env = os.environ.get("ORGTREE_DATA")
+    if env and env.strip():
+        if os.path.normcase(os.path.realpath(env.strip())) != os.path.normcase(os.path.realpath(DATA_ROOT)):
+            raise DataRootDesync(
+                f"store.DATA_ROOT ({DATA_ROOT!r}) is desynchronized from "
+                f"os.environ['ORGTREE_DATA'] ({env!r})! store was imported before "
+                f"ORGTREE_DATA was set in the environment."
+            )
+
+
 def owner_file(root: str | None = None) -> str:
     return os.path.join(root or DATA_ROOT, ".owner")
 
@@ -310,6 +341,8 @@ def claim_data_root(root: str | None = None) -> None:
         return
     base = root or DATA_ROOT
     on_data_root = os.path.abspath(base) == os.path.abspath(DATA_ROOT)
+    if on_data_root:
+        _assert_synced_data_root()
     # ⚠⚠ ONE ACTIVE FORMAT PER ROOT, stated once per direction. Both arms
     # run BEFORE the claim and BEFORE the makedirs, so a refused start leaves
     # the root byte-for-byte as it found it.
@@ -401,6 +434,7 @@ def release_data_root() -> None:
 
 
 def _orgs_dir() -> str:
+    _assert_synced_data_root()
     d = os.path.join(DATA_ROOT, "orgs")
     os.makedirs(d, exist_ok=True)
     return d
@@ -471,6 +505,7 @@ def org_path(slug: str) -> str:
 
 
 def scratch_root(slug: str) -> str:
+    _assert_synced_data_root()
     return os.path.join(DATA_ROOT, "scratch", slug)
 
 
@@ -1971,6 +2006,7 @@ def export_json(slug: str, dest: str | None = None) -> str:
     JSON format (indent=2). Default destination `<data>/exports/<slug>-<stamp>
     .json` — deliberately NOT under `orgs/`, where the JSON backend would list
     it as an org. Returns the path written."""
+    _assert_synced_data_root()
     slug = _safe_slug(slug)
     _ensure_migrated(slug)
     if not os.path.exists(_db_path(slug)):
@@ -2321,6 +2357,7 @@ def save_org(org: Org) -> None:
     `BEGIN IMMEDIATE` transaction writing only what changed (§4.5). Either
     way the save IS the change: `REVISION`, `on_save` and `save_hooks` fire
     exactly as they always have."""
+    _assert_synced_data_root()
     global REVISION
     if STORE_BACKEND == "sqlite":
         _save_sqlite(org)
@@ -2340,6 +2377,7 @@ def save_org(org: Org) -> None:
 
 
 def workspace_dir(slug: str) -> str:
+    _assert_synced_data_root()
     return os.path.join(DATA_ROOT, "workspaces", slug)
 
 
@@ -2348,6 +2386,7 @@ def create_org(name: str, extra_dirs: list[str] | None = None,
     """Every org gets its own fresh workspace dir, minted here. Pre-existing
     directories are an ADVANCED grant (`extra_dirs`) — appended after the workspace
     in the org's default capability set."""
+    _assert_synced_data_root()
     slug = slugify(name)
     _ensure_migrated(slug)
     if os.path.exists(org_path(slug)):
@@ -2361,6 +2400,7 @@ def create_org(name: str, extra_dirs: list[str] | None = None,
 
 
 def delete_org(slug: str) -> None:
+    _assert_synced_data_root()
     """Gap audit №16: one confirmed hover-click used to `os.remove` the whole
     org — structure, charters, mailboxes, event history. The motto reserves
     hard stops for protecting the user's data, so delete is now a RENAME into
@@ -2537,6 +2577,7 @@ def _peers_read() -> dict[str, dict[str, Any]]:
 
 
 def _peers_write(d: dict[str, dict[str, Any]]) -> None:
+    _assert_synced_data_root()
     p = _peers_path()
     cut = time.time() - _PEER_FORGET_S
     keep = {k: v for k, v in d.items()

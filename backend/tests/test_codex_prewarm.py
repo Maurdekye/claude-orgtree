@@ -48,8 +48,15 @@ os.environ["CODEX_HOME"] = CODEX_HOME
 with open(os.path.join(CODEX_HOME, "auth.json"), "w", encoding="utf-8") as _f:
     _f.write('{"tokens": {}}')
 
+import _no_deploy                                                # noqa: E402
 from orgtree import appsettings, store, supervisor, warmpool        # noqa: E402
 from orgtree.ledger import USER                                     # noqa: E402
+
+_no_deploy.assert_isolated_data_root()
+assert store.DATA_ROOT == DATA, (
+    f"store.DATA_ROOT ({store.DATA_ROOT}) does not match test DATA ({DATA}). "
+    f"store was imported before ORGTREE_DATA was set!"
+)
 
 PASS = 0
 FAIL: list[tuple[str, str]] = []
