@@ -748,7 +748,12 @@ def _():
     leaf = supervisor.identity_prompt(org, "worker")
     assert "orgtree_read_transcript" in leaf, \
         "a leaf would gain report-reading guidance at its first hire"
-    assert "RETIRE IT" in leaf, \
+    # the imperative was reworded 2026-09-04 ("WHEN A REPORT IS FINISHED,
+    # RETIRE IT" -> the conditional form below, because the old one was
+    # false whenever the manager was not short of credits). Pinned in
+    # full rather than on the bare words RETIRE IT, which any nearby
+    # prose could satisfy by accident.
+    assert "RETIRE A FINISHED REPORT TO FREE IT" in leaf, \
         "a leaf would gain report-retirement guidance at its first hire"
     # …and it must reach EVERY agent, not just the audience holders: any of
     # them can be asked for a file by their superior's relay or the user

@@ -113,12 +113,26 @@ def assert_prompt_change(before: dict, after: dict) -> None:
 def t_real_ledger_cycle_is_stable() -> None:
     org, boss = fixture("report identity cycle")
     baseline = capture(org, boss)
+    # ⚠ WHAT THESE PINS DO AND DO NOT COVER. They assert that each imperative
+    # is PRESENT in an agent's identity prompt before it has hired anyone —
+    # that is all. Nothing here checks a single word of the reasoning around
+    # them, and the rest of this suite compares the prompt TO ITSELF across a
+    # hire/retire cycle. You can rewrite every justification in that block and
+    # this suite stays green. Do not read a passing run as "the guidance text
+    # is tested"; it is not, and saying so has been the standing caveat on
+    # every change to it.
+    # Two markers changed 2026-09-04 with the guidance rewrite:
+    #   "WHEN A REPORT'S ANSWER DOES NOT ADD UP" -> "LOOK AT YOUR REPORTS, …"
+    #   "WHEN A REPORT IS FINISHED, RETIRE IT"   -> "RETIRE A FINISHED REPORT …"
+    # and two are new (the rehire trade-off, and background work at turn end).
     for marker in (
         TEAM_A,
-        "WHEN A REPORT'S ANSWER DOES NOT ADD UP",
-        "WHEN A REPORT IS FINISHED, RETIRE IT",
+        "LOOK AT YOUR REPORTS, DO NOT INTERROGATE THEM",
+        "RETIRE A FINISHED REPORT TO FREE IT",
         "WHEN A LONG-CONTEXT REPORT HAS SAT IDLE FOR HOURS",
         "RETIRED AGENTS ARE NOT GONE",
+        "A rehire RESUMES A FULL TRANSCRIPT",
+        "NEVER END A TURN WITH BACKGROUND WORK STILL RUNNING",
     ):
         assert marker in baseline["prompt"], (
             f"guidance {marker!r} is absent before the first hire")
@@ -170,7 +184,7 @@ def t_value_replacement_mutants_are_detected() -> None:
     detections: list[tuple[str, bool]] = []
 
     # M1: restore the old live-child gate for report-management guidance.
-    report_text = "WHEN A REPORT'S ANSWER DOES NOT ADD UP"
+    report_text = "LOOK AT YOUR REPORTS, DO NOT INTERROGATE THEM"
     base_m1 = base_real.replace(report_text, "")
     one_m1 = one_real
     detections.append(("live-report conditional", base_m1 != one_m1))

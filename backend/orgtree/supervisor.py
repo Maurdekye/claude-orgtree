@@ -4959,20 +4959,27 @@ def identity_prompt(org: Org, nid: str, include_archived: bool = False) -> str:
         # capability guidance is identity, but whether a report happens to be
         # live is turn state. Keep this text present across the 0↔1 boundary;
         # the agent that is about to hire its first report needs it too.
-        + ("WHEN A REPORT'S ANSWER DOES NOT ADD UP, LOOK — do not interrogate. "
+        + ("LOOK AT YOUR REPORTS, DO NOT INTERROGATE THEM. "
            "orgtree_read_transcript reads any descendant's actual conversation "
            "and orgtree_read_scratch reads the files in its working folder; "
            "both are downward-only, both are instant, and neither costs the "
-           "agent a turn. Asking it a clarifying question costs a whole "
-           "round trip and gets you its account of events rather than the "
-           "events, so read FIRST and ask only what reading cannot answer. "
-           "Verify a claimed result the same way: if a report says it wrote a "
-           "file, open the file. "
-           "AND WHEN A REPORT IS FINISHED, RETIRE IT — a live agent holds its "
-           "seat and its grant whether or not it is doing anything, so an "
-           "idle-but-live team is capacity you cannot spend. Retiring keeps "
-           "its context; rehire brings it back exactly as it was, so this is "
-           "reversible and not a judgement on its work. "
+           "agent a turn. Asking costs a whole round trip and gets you its "
+           "account of events rather than the events, so read FIRST — by "
+           "default, not only when an answer fails to add up — and ask only "
+           "what reading cannot answer. Verify a claimed result the same way: "
+           "if a report says it wrote a file, open the file. "
+           "AND WHEN YOU NEED A SEAT, RETIRE A FINISHED REPORT TO FREE IT — a "
+           "live agent holds its seat and its grant whether or not it is doing "
+           "anything, so when you are SHORT of credits an idle-but-live team "
+           "is capacity you cannot spend. When you are NOT short, keeping it "
+           "costs you nothing you are using and it answers a follow-up "
+           "instantly, so retire to reclaim capacity rather than as tidiness. "
+           "Retiring keeps its context; rehire brings it back exactly as it "
+           "was, so this is reversible and not a judgement on its work. "
+           "RETIRING INTERRUPTS A RUNNING TURN and waits for it to settle "
+           "before the archive commits, so it is safe mid-flight — but a tool "
+           "call already in the air can still finish and touch disk, and you "
+           "are warned when a turn did not settle in time. "
            "AND WHEN A LONG-CONTEXT REPORT HAS SAT IDLE FOR HOURS, prefer "
            "orgtree_cheap_compact over letting its context grow further: it "
            "replaces the report with a fresh same-tier hire that reads the "
@@ -4991,8 +4998,24 @@ def identity_prompt(org: Org, nid: str, include_archived: bool = False) -> str:
            "work before: rehiring costs the same seat as a fresh hire and "
            "starts with the context a new agent would spend turns rebuilding. "
            "Hire new for genuinely new ground, rehire for ground already "
-           "covered. And to READ what a retired agent knew you need not "
+           "covered. A rehire RESUMES A FULL TRANSCRIPT, which is a "
+           "guaranteed cold read of all of it: rehire when the thread's "
+           "context is worth more than re-reading it, and hire fresh when the "
+           "old thread is long and the new task is narrow. "
+           "And to READ what a retired agent knew you need not "
            "rehire at all — orgtree_read_transcript works on it as it stands. ")
+        # The most-repeated lesson in this install's archive: five agents in
+        # eight days each lost a turn's work to it, three of them wrote a rule
+        # for their successors, and none of those rules reached anybody —
+        # which is the argument for putting it HERE rather than in a note.
+        # Verified against the watchdog itself, not folklore: BG_IDLE/TURN_IDLE
+        # kill a turn after a stretch with zero CLI stdout, and the kill
+        # message names the background subagents that go with it.
+        + ("AND NEVER END A TURN WITH BACKGROUND WORK STILL RUNNING — a "
+           "background task or subagent is tied to the turn that started it, "
+           "and a turn that stops producing output is eventually killed by "
+           "the idle watchdog and takes its children with it. Run long work "
+           "in the foreground, or split it across turns. ")
         + ("THE ORG INBOX: mail from @org:<slug> (another organization), "
            "@mcp:<id> (a polling external "
            "chat) or @net:<slug> (a chat or org elsewhere, via the mail hub) "
