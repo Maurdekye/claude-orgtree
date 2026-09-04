@@ -305,6 +305,29 @@ listeners() {
   fi
 }
 
+# -- 4a - what this backend must be carrying when it comes back -------------
+# The Windows half of this lives in update.ps1 section 4a and does the same
+# thing through the same script, deliberately: the two deploy scripts must not
+# drift on what "healthy" means (backend/tests/test_deploy_health.py pins that
+# they both call it).
+#
+# Taken BEFORE the stop: the expectation comes from the data root's own
+# contents, and this is the last moment the OUTGOING process can be asked what
+# it was serving -- the difference between "this deploy lost them" and "it was
+# already like that". It NEVER blocks the restart; if it cannot run, the check
+# after the restart has no expectation and FAILS on that rather than passing.
+HEALTH_CHECK="$ROOT/tools/deploy_health.py"
+HEALTH_STATE="${TMPDIR:-/tmp}/orgtree-deploy-health-$$.json"
+printf '\n== what this install should be carrying ==\n'
+SNAP_RC=0
+"$PY" "$HEALTH_CHECK" snapshot --data "$DATA_ROOT" --port "$PORT" \
+      --out "$HEALTH_STATE" || SNAP_RC=$?
+# 3 is "I could not read the data root", and it has already said so in its own
+# words. Anything else non-zero means the script did not run at all.
+if [ "$SNAP_RC" != 0 ] && [ "$SNAP_RC" != 3 ]; then
+  note "deploy-health: the pre-restart snapshot could not run (exit $SNAP_RC) -- the check after the restart will FAIL rather than pass on an expectation it does not have."
+fi
+
 printf '\n== restarting the backend (port %s) ==\n' "$PORT"
 PIDS=$(listeners)
 OLD_PIDS=$PIDS
@@ -493,21 +516,22 @@ fi
 ( cd "$ROOT/backend" && nohup "$PY" "${API_ARGS[@]}" >"$OUT" 2>"$ERRLOG" </dev/null & ) >/dev/null 2>&1
 
 # -- 5 - health check -------------------------------------------------------
-probe() {
-  if command -v curl >/dev/null 2>&1; then
-    curl -fsS -m 2 -o /dev/null "http://127.0.0.1:$PORT/api/orgs" 2>/dev/null
-  else
-    "$PY" - "$PORT" <<'EOF' 2>/dev/null
-import sys, urllib.request
-urllib.request.urlopen(f"http://127.0.0.1:{sys.argv[1]}/api/orgs", timeout=2).read()
-EOF
-  fi
-}
+# This used to be twenty tries at /api/orgs looking for any 2xx, and AN EMPTY
+# LIST IS A PERFECTLY GOOD 200. So a backend that came up carrying none of this
+# install's orgs deployed green. The assertion is now that it came up carrying
+# the state the data root says it should have. Verdicts:
+#   0 up and carrying its orgs        3 could not determine what to expect --
+#   1 up and presenting WRONG state     which is a FAILURE, never a pass
+#   2 nothing ever answered
+# tools/deploy_health.py carries the reasoning and the bounded budgets; it is
+# proved to go red in backend/tests/test_deploy_health.py.
+HEALTH_RC=0
+"$PY" "$HEALTH_CHECK" verify --port "$PORT" --state "$HEALTH_STATE" || HEALTH_RC=$?
+rm -f "$HEALTH_STATE"
+# 0 and 1 are the two verdicts that mean SOMETHING answered on the port, which
+# is what the stale-pid comparison below needs to be meaningful.
 OK=0
-for _ in $(seq 20); do
-  sleep 0.5
-  if probe; then OK=1; break; fi
-done
+case "$HEALTH_RC" in 0|1) OK=1 ;; esac
 # "something answers on the port" is NOT proof the restart happened: if the old
 # process was never killed the health check passes against the very code we were
 # trying to replace, and the script reports success. So compare pids.
@@ -524,10 +548,10 @@ if [ "$OK" = 1 ] && [ "$STALE" = 1 ]; then
 '
   die "the OLD backend is still serving (pid $NEW_PIDS) -- the restart did not take. Stop it and re-run."
 fi
-if [ "$OK" = 1 ]; then
-  printf '\n'
-  good "== up: http://localhost:$PORT ($AFTER) =="
-else
-  printf '\n'
-  die "backend did not come up -- check $ERRLOG"
-fi
+printf '\n'
+case "$HEALTH_RC" in
+  0) good "== up: http://localhost:$PORT ($AFTER) ==" ;;
+  2) die "backend did not come up -- check $ERRLOG" ;;
+  1) die "the backend is UP but is not carrying this install's orgs (see above). The org documents are still on disk; this is a serving fault. Backend log: $OUT" ;;
+  *) die "the deploy health check could not establish that this backend came up carrying its orgs (see above). That is reported as a FAILURE on purpose: 'I could not tell' is not 'healthy'. Backend log: $OUT" ;;
+esac

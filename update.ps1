@@ -352,6 +352,25 @@ $port = '7360'
 $portFile = Join-Path $dataRoot '.port'
 if (Test-Path $portFile) { $port = (Get-Content $portFile -Raw).Trim() }
 
+# -- 4a - what this backend must be carrying when it comes back -------------
+# Taken BEFORE the stop, deliberately. The expectation is read from the data
+# root's own contents (see tools/deploy_health.py, which explains why it is a
+# filesystem scan and not `store.list_orgs()`), and this is also the last
+# moment the OUTGOING process can be asked what it was serving -- which is the
+# difference between "this deploy lost them" and "it was already like that".
+#
+# It NEVER blocks the restart. If it cannot run, the check after the restart
+# has no expectation and FAILS on that; it does not pass by default, and a
+# broken snapshot must not be the thing that stops a backend coming back up.
+$healthCheck = Join-Path $root 'tools\deploy_health.py'
+$healthState = Join-Path ([IO.Path]::GetTempPath()) "orgtree-deploy-health-$PID.json"
+Write-Host "`n== what this install should be carrying =="
+try {
+    & $py $healthCheck snapshot --data $dataRoot --port $port --out $healthState
+} catch {
+    Write-Host "deploy-health: the pre-restart snapshot could not run ($_) -- the check after the restart will FAIL rather than pass on an expectation it does not have." -ForegroundColor Yellow
+}
+
 Write-Host "`n== restarting the backend (port $port) =="
 $conn = Get-NetTCPConnection -LocalPort ([int]$port) -State Listen -ErrorAction SilentlyContinue
 $oldPids = @($conn | Select-Object -ExpandProperty OwningProcess -Unique)
@@ -544,14 +563,34 @@ Start-Process -FilePath $py -ArgumentList $apiArgs `
     -RedirectStandardOutput $out -RedirectStandardError $errLog
 
 # -- 5 - health check -------------------------------------------------------
-$ok = $false
-foreach ($i in 1..20) {
-    Start-Sleep -Milliseconds 500
-    try {
-        $r = Invoke-WebRequest -UseBasicParsing -TimeoutSec 2 "http://127.0.0.1:$port/api/orgs"
-        if ($r.StatusCode -eq 200) { $ok = $true; break }
-    } catch {}
+# This used to be twenty tries at `/api/orgs` looking for an HTTP 200, and an
+# EMPTY LIST IS A PERFECTLY GOOD 200. So a backend that came up carrying none
+# of this install's orgs deployed green: the SQLite cutover ships, the code is
+# rolled back without the data, the JSON build finds no `<slug>.json` (only
+# `<slug>.db` + `<slug>.json.premigration`), honestly presents zero orgs, and
+# this script blessed it. The whole install appeared to have vanished while
+# every automated signal said healthy.
+#
+# So the assertion is now that the backend came up carrying the state the data
+# root says it should have, not merely that it answers. The verdicts are
+# distinct because the operator does different things about them:
+#   0 up and carrying its orgs        3 could not determine what to expect --
+#   1 up and presenting WRONG state     which is a FAILURE, never a pass
+#   2 nothing ever answered
+# tools/deploy_health.py carries the reasoning and the bounded budgets; it is
+# proved to go red in backend/tests/test_deploy_health.py.
+$healthRc = 3
+try {
+    & $py $healthCheck verify --port $port --state $healthState
+    $healthRc = $LASTEXITCODE
+} catch {
+    Write-Host "deploy-health: the health check itself could not run ($_)." -ForegroundColor Red
+    $healthRc = 3
 }
+Remove-Item -Force $healthState -ErrorAction SilentlyContinue
+# 0 and 1 are the two verdicts that mean SOMETHING answered on the port, which
+# is what the stale-pid comparison below needs to be meaningful.
+$ok = ($healthRc -eq 0 -or $healthRc -eq 1)
 # "something answers on the port" is NOT proof the restart happened: if the old
 # process was never killed the health check passes against the very code we were
 # trying to replace, and the script reports success. So compare pids.
@@ -563,10 +602,20 @@ if ($stale) {
     Write-Host "`nthe OLD backend is still serving (pid $($newPids -join ',')) -- the restart did not take." -ForegroundColor Red
     exit 1
 }
-if ($ok) {
+if ($healthRc -eq 0) {
     Write-Host "`n== up: http://localhost:$port ($after) ==" -ForegroundColor Green
-} else {
+} elseif ($healthRc -eq 2) {
     Write-Host "`nbackend did not come up -- check $errLog" -ForegroundColor Red
+    exit 1
+} elseif ($healthRc -eq 1) {
+    Write-Host "`nthe backend is UP but is not carrying this install's orgs (see above)." -ForegroundColor Red
+    Write-Host "the org documents are still on disk; this is a serving fault." -ForegroundColor Red
+    Write-Host "backend log: $out" -ForegroundColor Red
+    exit 1
+} else {
+    Write-Host "`nthe deploy health check could not establish that this backend came up" -ForegroundColor Red
+    Write-Host "carrying its orgs (see above). That is reported as a FAILURE on purpose:" -ForegroundColor Red
+    Write-Host "'I could not tell' is not 'healthy'. Backend log: $out" -ForegroundColor Red
     exit 1
 }
 
