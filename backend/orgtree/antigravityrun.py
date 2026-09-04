@@ -444,7 +444,9 @@ class AntigravityTurn:
         env.update(self._env_extra)
         self.proc = subprocess.Popen(
             self.argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE, env=env, cwd=self.cwd)
+            stderr=subprocess.PIPE, env=env, cwd=self.cwd,
+            creationflags=(subprocess.CREATE_NO_WINDOW  # type: ignore[attr-defined]
+                           if os.name == "nt" else 0))
         self._reader = threading.Thread(target=self._pump, daemon=True)
         self._reader.start()
         threading.Thread(target=self._pump_err, daemon=True).start()

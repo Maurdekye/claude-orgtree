@@ -304,7 +304,9 @@ class AppServerClient:
         self.proc = subprocess.Popen(
             argv_head + list(config_overrides or []) + ["app-server"],
             stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, cwd=cwd)
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, cwd=cwd,
+            creationflags=(subprocess.CREATE_NO_WINDOW  # type: ignore[attr-defined]
+                           if os.name == "nt" else 0))
         self.on_event = on_event
         self.on_exit: Callable[[], None] | None = None
         self.tool_dispatch = tool_dispatch
