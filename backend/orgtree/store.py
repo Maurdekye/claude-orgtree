@@ -95,10 +95,20 @@ DATA_ROOT: str = os.environ.get("ORGTREE_DATA", os.path.expanduser("~/orgtree"))
 
 # Which on-disk format this process reads and writes. `json` is the historical
 # one-file-per-org document; `sqlite` is SQLITE-SPEC §3. Resolved ONCE at import
-# like DATA_ROOT (tests set the environment before importing). The default stays
-# `json` until the migration has been verified against a copy of the live data
-# root (§6.1 steps 4–5) — flipping it is this one literal.
-STORE_BACKEND: str = os.environ.get("ORGTREE_STORE", "json").strip().lower() or "json"
+# like DATA_ROOT (tests set the environment before importing).
+#
+# The default was `json` until the migration had been verified against a copy of
+# the live data root (§6.1 steps 4–5). It has been: every org on a copy of the
+# real root migrated, exported and re-imported, with each `.json.premigration`
+# byte-identical to its source by sha256 — including the 12.7 MB, 205-node
+# document this install actually runs on. See docs/sqlite-cutover.md for the
+# numbers, the operator procedure, and the rollback.
+#
+# ⚠ FLIPPING THIS LITERAL DOES NOT MIGRATE ANYTHING. A root still holding
+# `.json` documents will REFUSE to start (`MigrationRefused`) until an operator
+# migrates it offline, and a JSON build pointed at a migrated root will refuse
+# too (`BackendMismatch`). One active format per root, enforced both ways.
+STORE_BACKEND: str = os.environ.get("ORGTREE_STORE", "sqlite").strip().lower() or "sqlite"
 if STORE_BACKEND not in ("json", "sqlite"):
     raise ValueError(f"ORGTREE_STORE must be 'json' or 'sqlite', not {STORE_BACKEND!r}")
 
