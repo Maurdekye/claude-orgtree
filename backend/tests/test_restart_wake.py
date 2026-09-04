@@ -387,6 +387,41 @@ check("toggle: mode='standing' is refused (one-shot only per coordinator decisio
       _standing_mode_is_refused)
 
 
+def _fired_toggle_is_always_cleared_even_legacy_standing():
+    reset_registry()
+    o, slug = make_org("zz legacy standing", sub=False)
+    try:
+        # Pre-populate disk record with legacy mode="standing"
+        p = restart_wake._wakes_path()
+        with open(p, "w", encoding="utf-8") as f:
+            json.dump({
+                "wakes": {
+                    f"{slug}:boss": {
+                        "org": slug, "node": "boss", "mode": "standing",
+                        "armed_at": restart_wake.now_iso(), "armed_by": "boss"
+                    }
+                }
+            }, f)
+
+        sent = []
+        orig_send = supervisor.send_message
+        supervisor.send_message = lambda s, n, txt, **kw: sent.append((s, n, txt, kw))
+        try:
+            restart_wake.on_backend_startup(dry_run=True)
+            assert len(sent) == 1, sent
+            # MUST be cleared from registry on startup despite mode="standing"
+            st = restart_wake.status_restart_wake(slug, "boss")
+            assert st["armed"] is False, "legacy standing record was not cleared"
+        finally:
+            supervisor.send_message = orig_send
+    finally:
+        store.delete_org(slug)
+
+
+check("toggle: a fired toggle is ALWAYS cleared (even if record had legacy mode='standing')",
+      _fired_toggle_is_always_cleared_even_legacy_standing)
+
+
 def _compacted_agent_survives_and_receives_wake():
     reset_registry()
     o, slug = make_org("zz compact wake", sub=False)
@@ -627,6 +662,26 @@ def _mutants():
             results.append(("toggle fires with wake=True turn", wake_has_flag))
         finally:
             supervisor.send_message = orig_send
+    finally:
+        store.delete_org(slug)
+
+    # Mutant 8: Legacy standing record survives startup drain (not always cleared)
+    reset_registry()
+    o, slug = make_org("zz mut8", sub=False)
+    try:
+        p = restart_wake._wakes_path()
+        with open(p, "w", encoding="utf-8") as f:
+            json.dump({
+                "wakes": {
+                    f"{slug}:boss": {
+                        "org": slug, "node": "boss", "mode": "standing",
+                        "armed_at": restart_wake.now_iso(), "armed_by": "boss"
+                    }
+                }
+            }, f)
+        restart_wake.on_backend_startup(dry_run=True)
+        st = restart_wake.status_restart_wake(slug, "boss")
+        results.append(("fired toggle is always cleared at drain", st["armed"] is False))
     finally:
         store.delete_org(slug)
 
