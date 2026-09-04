@@ -84,7 +84,8 @@ test('desk header has bounded controls and a separate wrapping metadata row', as
     'cc-actions', 'cc-tabs', 'cc-icon',
   ], 'right action group changed order')
   assert.equal(right.querySelectorAll('.cc-actions button').length, 1)
-  assert.equal(top.querySelectorAll('.cc-tabs button').length, 4)
+  // chat · history · files · inbox · progress (FR-2, 2026-09-04)
+  assert.equal(top.querySelectorAll('.cc-tabs button').length, 5)
   for (const sel of [
     '.mcp-tool-count', '.cache-forecast', '.badge',
   ]) assert.ok(meta.querySelector(sel), `metadata row omitted ${sel}`)
