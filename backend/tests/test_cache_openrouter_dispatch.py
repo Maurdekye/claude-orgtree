@@ -423,6 +423,15 @@ def antigravity_control_reaches_the_antigravity_branch() -> None:
         eq(ns.calls, 1, "antigravity namespace helper")
         assert grant.calls >= 1, "antigravity MCP grant"
         assert status.calls >= 1, "antigravity status probe"
+        # ⚠ THE TOOLS/ARGV LEG ON ITS OWN. `identity_prompt` ALSO calls the
+        # grant helper on an Antigravity tier, so the whole-snapshot count
+        # above cannot tell whether `_cache_semantic_inputs` reached it — a
+        # mutant that dropped the grant from the tools digest passed this
+        # control until the leg was counted in isolation (evidence CTL-7c).
+        grant_before, status_before = grant.calls, status.calls
+        S._cache_semantic_inputs(org, nid, "google")
+        eq(grant.calls - grant_before, 1, "grant calls from the tools leg")
+        eq(status.calls - status_before, 1, "status calls from the argv leg")
     eq(snap["provider"], "google", "provider")
     eq(snap["account"], "antigravity-oauth:WRONG-ACCOUNT",
        "the sentinel's value is what the Antigravity branch reports")
