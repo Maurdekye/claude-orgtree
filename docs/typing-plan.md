@@ -17,7 +17,7 @@ scope; check items off as they land.
 ## Phase 1 — Python annotations (backend)
 
 - [x] `backend/orgtree/schema.py`: `TypedDict` definitions for the org document
-      — the JSON persisted per org (`~/orgtree/orgs/<slug>.json`) whose shapes
+      — persisted per org (`~/orgtree/orgs/<slug>.db`, or historically `.json`) whose shapes
       previously lived only in people's heads (see the misleading-reads history).
       Single source of truth; extend it rather than re-deriving dict shapes.
 - [x] `pyrightconfig.json` (basic mode, py3.10). Run with `npx pyright` from the

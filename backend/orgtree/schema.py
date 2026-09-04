@@ -1,9 +1,11 @@
 """The org document's shape, in one place (typing wave, docs/typing-plan.md).
 
-One org = one JSON file (store.py). Every dict that file contains is declared
-here as a TypedDict, so pyright can catch key typos and shape drift — the class
-of bug the misleading-reads history is made of. Nothing here exists at runtime
-beyond the type objects: importing this module changes no behavior.
+One org = one storage document (stored as a SQLite database under
+`orgs/<slug>.db`, or historically as a JSON file under `orgs/<slug>.json`;
+store.py). Every dict that document contains is declared here as a TypedDict, so
+pyright can catch key typos and shape drift — the class of bug the
+misleading-reads history is made of. Nothing here exists at runtime beyond the
+type objects: importing this module changes no behavior.
 
 Ground rules:
 - These types describe what the CODE writes today (Build sources: ledger.py,
@@ -14,7 +16,7 @@ Ground rules:
   shape is genuinely open (freeform op payloads), say `dict[str, Any]` at the
   use site — never guess a narrower type than the code proves.
 - Runtime-inert: `TypedDict` instances are plain dicts; there is no validation
-  and none is wanted (store.py loads whatever JSON is on disk).
+  and none is wanted (store.py loads whatever document is on disk).
 """
 
 from __future__ import annotations

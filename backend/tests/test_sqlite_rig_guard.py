@@ -15,7 +15,7 @@ test itself cannot touch anything real. Four cases:
     §1  sqlite-defaulting store.py, ORGTREE_DATA unset  -> REFUSES  (rc=2)
     §2  sqlite-defaulting store.py, ORGTREE_DATA set     -> proceeds past the
         guard (reaches suite discovery, not the refusal text)
-    §3  json-defaulting store.py (today's actual main), ORGTREE_DATA unset
+    §3  json-defaulting store.py (legacy / fallback), ORGTREE_DATA unset
         -> proceeds past the guard (the guard is a no-op on a checkout with
         no sqlite backend at all)
     §4  sqlite-defaulting store.py, ORGTREE_DATA unset, --list  -> --list is
@@ -165,7 +165,7 @@ def main() -> int:
           "discovering any suite", sqlite_no_data_refuses)
     check("sqlite-defaulting store.py + explicit ORGTREE_DATA -> proceeds "
           "past the guard", sqlite_with_data_proceeds)
-    check("json-defaulting store.py (today's real main) -> guard is a no-op",
+    check("json-defaulting store.py (legacy fallback) -> guard is a no-op",
           json_default_never_refuses)
     check("no STORE_BACKEND literal at all -> fails safe, guard is a no-op",
           no_store_backend_line_never_refuses)

@@ -25,6 +25,9 @@ Markdown file in this repository as current operating guidance.
 - [`autostart.md`](autostart.md) covers Windows service startup; the
   [mail-server specification](mailserver-spec.md) and
   [hub README](../hub/README.md) cover cross-organization mail.
+- [`sqlite-cutover.md`](sqlite-cutover.md) is the operator runbook and
+  performance reference for the canonical SQLite storage format and the
+  migration off deprecated JSON.
 
 ## Developer references
 

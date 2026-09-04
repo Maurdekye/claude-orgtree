@@ -37,6 +37,8 @@ Set before the backend starts. Not visible in the UI, not per-org. A change requ
 |---|---|---|
 | `ORGTREE_DEPLOYMENT_PROFILE` | `standard` | install-wide security policy: blank/unset/`standard` preserves ordinary behavior; `frozen` selects the [frozen deployment profile](frozen-deployment.md); surrounding whitespace and case are ignored; any other value raises `DeploymentConfigError` (`deployment.py:current_policy`) |
 | `ORGTREE_DATA` | `~/orgtree` | the data root: org docs, workspaces, scratch, sandboxes (`store.py:26`) |
+| `ORGTREE_STORE` | `sqlite` | storage backend: `sqlite` (canonical default) or `json` (deprecated historical format; retained as migration on-ramp and rollback route) (`store.py:111`) |
+| `ORGTREE_MIGRATE` | unset | set to `1` to authorise offline migration of JSON orgs in `ORGTREE_DATA` to SQLite (`store.py:120`) |
 | `ORGTREE_PORT` | `7360` | admin API + UI, bound to loopback unless exposed below (`api.py:368`) |
 | `ORGTREE_PUBLIC_PORT` | `0` (off) | the PublicGateway listener for kiosk `/k/<token>` URLs (`api.py:369`) |
 | `ORGTREE_PUBLIC_ORIGIN` | — | external origin advertised in kiosk links (`api.py:370`) |

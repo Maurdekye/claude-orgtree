@@ -52,14 +52,19 @@ Make a second worktree pinned at the commit you branched from, run the suite
 in BOTH, and diff the failure lists by name:
 
     git -C <your-wt> worktree add ../baseline <main-sha> --detach
-    cd baseline && python tools/run_tests.py 2>&1 | grep -E "^✗|RUN COMPLETE"
-    cd ../wt   && python tools/run_tests.py 2>&1 | grep -E "^✗|RUN COMPLETE"
+    cd baseline && ORGTREE_DATA=<scratch-path> python tools/run_tests.py 2>&1 | grep -E "^✗|RUN COMPLETE"
+    cd ../wt   && ORGTREE_DATA=<scratch-path> python tools/run_tests.py 2>&1 | grep -E "^✗|RUN COMPLETE"
 
 Re-point the baseline when main moves: `git -C baseline checkout --detach <new-sha>`.
 
-No flags, no subset, no env vars, no isolated ORGTREE_DATA — the runner mints
-its own rig per suite (`$TEMP/orgtree-tests-*`) and redirects ORGTREE_DATA,
-HOME and the port itself. The live backend can stay up; it does not collide.
+⚠ **Supply an explicit `ORGTREE_DATA` in your launcher environment** (e.g.
+`$env:ORGTREE_DATA = "<scratch-path>"` or `ORGTREE_DATA=<scratch-path> python tools/run_tests.py`).
+Because `main` defaults to SQLite, `tools/run_tests.py` explicitly refuses to
+run (exit 2) if invoked without `ORGTREE_DATA` to protect the operator's live
+`~/orgtree` root from accidental migration by any suite that forgets to mint its
+own root. Once past that launcher guard, the runner mints its own isolated rig
+per suite (`$TEMP/orgtree-tests-*`) and redirects `ORGTREE_DATA`, `HOME` and the
+port itself. The live backend can stay up; it does not collide.
 
   * **~6 minutes** wall (346-447s observed). Budget a 600s tool timeout.
   * The runner exits **rc=1** whenever anything fails, which on main is always.
@@ -633,12 +638,14 @@ deployment. The consequence is the part to internalise:
 > **A child that does not mint its own `ORGTREE_DATA` before importing
 > `store` gets the DEFAULT — `~/orgtree` — which is production.**
 
-Under the JSON backend that is mostly harmless: the suite reads the live
-documents and moves on. **Under `ORGTREE_STORE=sqlite` it is not**, because
-`claim_data_root()` migrates every unmigrated `<slug>.json` it finds. So a
-worktree with the `STORE_BACKEND` default flipped to `sqlite` — the documented
-way to exercise that backend through this runner — **migrates the live org
-documents the first time a suite forgets.**
+Under the JSON backend that was mostly harmless: the suite read the live
+documents and moved on. **Under `ORGTREE_STORE=sqlite` (now the default on
+`main`) it is not**, because `claim_data_root()` migrates every unmigrated
+`<slug>.json` it finds. Without an explicit guard, a checkout defaulting
+`STORE_BACKEND` to `sqlite` **would migrate the live org documents the first
+time a suite forgets to mint its own root**. (This is why `tools/run_tests.py`
+now carries an explicit launcher guard refusing to run if `ORGTREE_DATA` is not
+set in the invoking environment.)
 
 That is not hypothetical. On 2026-09-03 it happened: `orgs/orgtree.json` became
 `orgtree.json.premigration` + `orgtree.db`, for all three orgs, and the
