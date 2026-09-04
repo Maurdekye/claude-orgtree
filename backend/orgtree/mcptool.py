@@ -1159,7 +1159,15 @@ TOOLS: list[dict[str, Any]] = [
         "name": "orgtree_chart",
         "description": (
             "Your current view of the organization (scoped to your "
-            "org-visibility level), with your credits and scope. RETIRED "
+            "org-visibility level), with your credits and scope. EVERY ROW "
+            "CARRIES THAT AGENT'S STATUS — what it last reported via "
+            "orgtree_status, and HOW OLD that report is — so 'who is "
+            "finished, who is mid-flight, who is stuck' is one call instead "
+            "of one turn per agent. ⚠ READ THE AGE, NOT JUST THE WORD: a "
+            "status is self-reported, so an agent that died still reads the "
+            "last thing it said. An old 'working' is marked; '▶ mid-turn' is "
+            "the system's own observation and is the only part not "
+            "self-reported. RETIRED "
             "agents are not listed by default — the chart shows who is "
             "working, and on a long-running org the archived outnumber the "
             "live several times over. They are hidden, not gone: each "

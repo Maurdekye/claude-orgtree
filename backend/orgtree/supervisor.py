@@ -4080,11 +4080,184 @@ def _claudemd_caveat(org: Org, nid: str) -> str:
             "with the user. Read any instruction to communicate with, ask, report "
             "to, or get feedback from 'the user' as directed at your direct superior "
             f"({n['parent']}) instead. Everything else in those files is literal. ")
+# FR-1. ⚠ THE SECOND SENTENCE IS THE POINT OF THE WHOLE FEATURE, not padding.
+# Everything after "·" on a row except "▶ mid-turn" is the agent's own account
+# of itself, written whenever it last chose to call orgtree_status. The reader
+# has no other view of the org, so if this line does not say plainly that the
+# word is a claim and the bracket is its age, the reader will take "working"
+# as a fact about now — which is exactly how a dead agent gets left alone.
+_CHART_LEGEND: Final = (
+    "\n(After \"·\": what each agent last SAID about itself via orgtree_status,"
+    " and in brackets HOW OLD that claim is — it is self-reported, so an old"
+    " one may simply be wrong. \"▶ mid-turn\" is not self-reported: the system"
+    " knows a turn is executing right now.)")
+
+
+def _stamp_epoch(stamp: Any) -> float | None:
+    """One ISO stamp as epoch seconds, or None. Same idiom as
+    `_working_checkup_anchor`, which needs the max of several."""
+    if not stamp:
+        return None
+    try:
+        return _dtm.datetime.fromisoformat(
+            str(stamp).replace("Z", "+00:00")).timestamp()
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _age_phrase(seconds: float) -> str:
+    """A COARSE age. Deliberately coarse, for two independent reasons.
+
+    (1) D-223 digests the chart text (`_envelope_state_block`) and suppresses
+        the chart while that digest holds. A live "7m ago" in every row would
+        change the digest on EVERY turn, so every turn would re-send the whole
+        chart — the comment at `org_state_block` measures that span at 51% of
+        the ORG STATE block. These buckets change at most five times in the
+        first hour and hourly after that, so a quiet org keeps its suppression.
+    (2) Nobody retires, messages or rescues an agent differently at 15 minutes
+        than at 20. The decision this feature exists to serve is coarse, so
+        precision here would be false precision paid for in tokens.
+    """
+    if seconds < -60:
+        # A stamp genuinely in the future: a clock adjustment, or a doc moved
+        # between machines. Say so rather than rendering a confident "<10m"
+        # that reads as fresh. The -60 tolerance is because a stamp written
+        # microseconds ago can land a hair ahead of this function's own
+        # `time.time()`, and rendering "?" for that would cry wolf on the
+        # single commonest case — a status the agent just reported.
+        return "in the future?"
+    if seconds < 600:
+        return "<10m"
+    if seconds < 3600:
+        return f"{int(seconds // 600) * 10}m"
+    if seconds < 86400:
+        return f"{int(seconds // 3600)}h"
+    return f"{int(seconds // 86400)}d"
+
+
+_STATUS_GIST_MAX: Final = 80
+
+
+def _status_gist(summary: Any) -> str:
+    """The agent's one-liner, flattened and clipped.
+
+    ⚠ THE `split()` IS NOT COSMETIC. `orgtree_status` takes free text and
+    nothing stops a newline in it. The chart is LINE-STRUCTURED and is read
+    line by line by every agent in the org; one embedded newline would split a
+    row in two and forge a chart entry. Flatten before anything else.
+    """
+    gist = " ".join(str(summary or "").split())
+    if len(gist) > _STATUS_GIST_MAX:
+        gist = gist[:_STATUS_GIST_MAX - 1].rstrip() + "…"
+    return gist
+
+
+def _status_note(org: Org, rid: str, now: float) -> str:
+    """FR-1: what this agent is doing, HOW OLD that claim is, and — where the
+    system knows better than the agent does — what is objectively true.
+
+    ⚠ WHY THE AGE IS THE WHOLE FEATURE. `status` is SELF-REPORTED and is only
+    ever written when the agent chooses to call `orgtree_status`. An agent that
+    said "working" and then died reads "working" forever. A chart that printed
+    the word without the age would state that as fact to the one reader who has
+    no other view of the org, and a coordinator would leave a corpse alone
+    because the chart vouched for it. Every branch below therefore carries an
+    age, and no branch is allowed to render a bare status word.
+
+    THE THREE FACTS, and which of them is evidence:
+
+    * `busy` (`state()`, in memory) — OBJECTIVE. A turn is executing right now.
+      Not self-reported, so it beats anything the agent says about itself.
+      It is process-bound and resets to False on a backend restart, which is
+      the CORRECT answer after one: no turn is running.
+    * `inflight` (on the node, durable) — the turn's START time. Written at
+      `o2.node(nid)["inflight"] = inf`; popped in exactly ONE place, the turn's
+      `finally`. ⚠ THERE IS NO BOOT-TIME RECONCILIATION, so a backend killed
+      mid-turn leaves this marker behind for good. `inflight` ALONE IS NOT
+      PROOF OF A RUNNING TURN — read against `busy` or it lies exactly the way
+      a stale "working" lies.
+    * `last_status` / `prev_status` — self-reported. A turn start POPS
+      `last_status` into `prev_status`, so a PRESENT `last_status` was set
+      during this agent's current-or-most-recent turn, while `prev_status`
+      necessarily pre-dates its last turn. Those are different claims about
+      the world and this function labels them differently.
+
+    `busy=False` WITH an `inflight` present is the died-mid-turn signature.
+    It is not a normal transient: `busy` is set True in the drive path before
+    the turn writes `inflight`, and on the way out `inflight` is popped before
+    `busy` goes False, so the pair can only overlap in the safe direction.
+    """
+    n = org.nodes.get(rid) or {}
+    if n.get("state") != "live":
+        # An archived agent's last words are not a status — nothing is running
+        # and nothing will. The archived rows are the rehire shortlist; a
+        # "working (3d)" on one would be noise at best and a lie at worst.
+        return ""
+
+    try:
+        busy = bool(state(str(org.d.get("slug") or ""), rid).get("busy"))
+    except Exception:                                          # noqa: BLE001
+        # Never let the live-process lookup take the chart down: the roster is
+        # not optional. Degrade to the self-reported half.
+        busy = False
+    started = _stamp_epoch((n.get("inflight") or {}).get("at"))
+
+    if busy:
+        age = f" {_age_phrase(now - started)}" if started is not None else ""
+        return f"▶ mid-turn{age}"
+    if started is not None:
+        # objective, and objectively bad: a turn began and its `finally` never
+        # ran. Say what happened rather than showing whatever it last claimed.
+        return (f"⚠ turn started {_age_phrase(now - started)} ago and never "
+                f"finished — backend died or was killed mid-turn")
+
+    fresh = n.get("last_status")
+    stale = n.get("prev_status")
+    rec = fresh if isinstance(fresh, dict) else (
+        stale if isinstance(stale, dict) else None)
+    if rec is None:
+        return "no status reported"
+
+    word = str(rec.get("status") or "?")
+    gist = _status_gist(rec.get("summary"))
+    at = _stamp_epoch(rec.get("at"))
+    age = _age_phrase(now - at) if at is not None else "age unknown"
+    note = f'{word} "{gist}" ({age})' if gist else f"{word} ({age})"
+
+    if rec is not fresh:
+        # It has taken a turn since it said this and said nothing during that
+        # turn, so the words are old AND the agent has demonstrably moved past
+        # them. ⚠ THE COMMONEST CASE IS THE HIRE PRESET: `hire` seeds
+        # last_status = idle "hired — awaiting work" (ledger, user ruling
+        # 2026-08-02), and the agent's first turn pops that into prev_status.
+        # So a report that has never once called orgtree_status lands here
+        # wearing the word "idle" — which, printed bare, would say the exact
+        # opposite of the truth about an agent grinding through a task. The
+        # suffix is what stops it: not a status, an absence of one.
+        note += " — said BEFORE its last turn; nothing reported since"
+    elif word == "working" and at is not None \
+            and now - at >= WORKING_CHECKUP_AFTER_S:
+        # ⚠ THE ONE STATUS THAT IS A CLAIM ABOUT THE PRESENT TENSE. "idle",
+        # "blocked" and a stored "done" describe a settled fact that stays
+        # true while nothing happens; "working" asserts that work is happening
+        # NOW, and it is the only one that a death silently converts into a
+        # lie. So it gets the mark. The threshold is the checkup clock's own
+        # WORKING_CHECKUP_AFTER_S — the number this system already uses for
+        # "a working agent this quiet is worth looking at", kept in one home.
+        note = f"⚠ {note} — not mid-turn, no report since"
+    return note
+
+
 def _render_chart(org: Org, root_ids: list[str], mark: str, indent: int = 0,
                   include_archived: bool = True,
-                  stats: dict[str, int] | None = None) -> list[str]:
+                  stats: dict[str, int] | None = None,
+                  now: float | None = None) -> list[str]:
     lines = []
     hidden = bearers = 0
+    # ONE clock for the whole chart: two rows rendered a second apart must not
+    # be able to disagree about which bucket "now" is in.
+    if now is None:
+        now = time.time()
     for rid in root_ids:
         n = org.nodes[rid]
         if not include_archived and n["state"] == "archived":
@@ -4126,9 +4299,15 @@ def _render_chart(org: Org, root_ids: list[str], mark: str, indent: int = 0,
             tags.append("LOST generation — no transcript, not rehirable")
         state = f" ({', '.join(tags)})" if tags else ""
         star = "  ← you" if rid == mark else ""
-        lines.append(f"{'  ' * indent}- {rid} [{n['model']}]{state}{star}")
+        # FR-1: the status rides AFTER the existing name/tier/tags and BEFORE
+        # "← you", so every substring an existing reader (or test) already
+        # anchors on keeps its position and the marker stays at end of line.
+        note = _status_note(org, rid, now)
+        note = f" · {note}" if note else ""
+        lines.append(
+            f"{'  ' * indent}- {rid} [{n['model']}]{state}{note}{star}")
         lines += _render_chart(org, org.children(rid, live_only=False), mark,
-                               indent + 1, include_archived, stats)
+                               indent + 1, include_archived, stats, now)
     if hidden:
         # D-178: the pointer sits at the HIDDEN NODES' OWN indent, under the
         # parent that retired them — not as one global tally at the foot of
@@ -4255,11 +4434,12 @@ def _org_state_parts(org: Org, nid: str,
     stats: dict[str, int] = {}
     chart = ""
     if vis == "subtree":
-        chart = ("\nYour full suborganization:\n"
+        chart = ("\nYour full suborganization:" + _CHART_LEGEND + "\n"
                  + "\n".join(_render_chart(org, [nid], nid, 0,
                                            include_archived, stats)))
     elif vis == "full":
-        chart = ("\nThe full organization chart (root = the user):\n- user (overseer)\n"
+        chart = ("\nThe full organization chart (root = the user):"
+                 + _CHART_LEGEND + "\n- user (overseer)\n"
                  + "\n".join(_render_chart(org, org.children(None, live_only=False),
                                            nid, 1, include_archived, stats)))
     if stats.get("hidden"):
