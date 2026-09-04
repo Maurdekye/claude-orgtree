@@ -17,8 +17,8 @@ from playwright.sync_api import sync_playwright
 
 CSS = pathlib.Path(__file__).resolve().parents[1] / "src" / "styles.css"
 EXPECTED = {
-    "gpt-reserve": "rgb(185, 196, 214)",
-    "luna": "rgb(185, 196, 214)",
+    "gpt-reserve": "rgb(155, 183, 220)",
+    "luna": "rgb(155, 183, 220)",
     "terra": "rgb(127, 174, 95)",
     "sol": "rgb(255, 138, 61)",
     "flash": "rgb(174, 226, 249)",

@@ -1374,10 +1374,10 @@ button.cc-name:hover {
      distinctive shades; just the desk view theme itself takes on the
      tealish color scheme"). Provider identity lives in the DESK theme
      (--prov-openai below), NOT in the chip hues — tiers separate by hue
-     like claude's four do: reserve/luna pale silver, terra olive, sol solar
+     like claude's four do: reserve/luna blue-grey, terra olive, sol solar
      orange. CVD ΔE pass still pending; R/L/T/S letters stay the redundant
      glyph. */
-  --tier-luna: #b9c4d6;
+  --tier-luna: #9bb7dc;
   --tier-terra: #7fae5f;
   --tier-sol: #ff8a3d;
   /* astra (D-2xx, user spec 2026-09-04): "nearly-white, shining, starry" —
