@@ -9337,6 +9337,31 @@ def _antigravity_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
                         "cache_read_input_tokens": tu_cached,
                         "output_tokens": tu_out}}})
     _journal_records(final_recs)
+    # THE DRAFT'S REPLACEMENT IS NOW IN HAND, SO SAY SO (user report
+    # 2026-09-04: "i see double messages in antigravity agents, same issue we
+    # were seeing in claude earlier").
+    #
+    # `{kind:"text"}` is the seam's handover signal: it is the ONE thing that
+    # marks a streamed draft superseded mid-turn (convo.ts ingestStream sets
+    # `staleDraft`, and the fetch it nudges clears the draft in the SAME patch
+    # that installs the durable row — atomic, so there is neither a gap nor a
+    # frame showing both). The claude and codex legs both emit it. This leg
+    # emitted `delta`, `tool` and `journal` and never `text`, so its draft had
+    # exactly one retirement: `turn_done`. Between the record above being
+    # written and the turn ending, the reply was on screen TWICE — once as the
+    # grey draft, once as its own transcript row — and a single dropped
+    # `turn_done` left the double up until the node went idle, which is the
+    # "nothing on screen may depend on having caught an event" rule broken in
+    # the one lane that had no second chance at it.
+    #
+    # Retiring the draft here is a REPLACEMENT, not a gap: `agent_text` is
+    # `"".join(...)` over the very `text_delta`s the draft accumulated
+    # (antigravityrun.py:416,552), so the row carries every character the
+    # draft is showing. D-50 holds — the evidence is named and already on
+    # disk, because the journal write above happens FIRST.
+    if res_raw.get("agent_text"):
+        stream(slug, nid, {"kind": "text",
+                           "text": str(res_raw["agent_text"])[:2000]})
     res: dict[str, Any] = {
         "status": status,
         "total_cost_usd": providers.antigravity_cost(tu),

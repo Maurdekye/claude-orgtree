@@ -169,6 +169,41 @@ def main():
            "chat reads the final request, not the multi-request turn total")
     check("the journal holds user, text and usage records", t1b)
 
+    def t1c():
+        # THE DRAFT'S HANDOVER (user report 2026-09-04: "i see double messages
+        # in antigravity agents"). The desk renders the streamed deltas as a
+        # grey draft, and `{kind:"text"}` is the ONE signal that retires it
+        # mid-turn: convo.ts marks the draft superseded and the fetch it nudges
+        # clears it in the same patch that installs the durable row. The claude
+        # and codex legs both emit it; this leg emitted only delta/tool/journal,
+        # so its draft had no retirement but `turn_done` and the reply sat on
+        # screen twice — once grey, once as its own transcript row — for the
+        # rest of the turn.
+        texts = [p for p in STREAMED if p.get("kind") == "text"]
+        assert texts, (
+            "the antigravity leg streamed no `text` frame: kinds seen = "
+            + repr(sorted({str(p.get("kind")) for p in STREAMED}))
+            + ". The desk's draft then has no mid-turn retirement and the "
+              "reply renders twice beside its own transcript row.")
+        # …and it must be a REPLACEMENT, not a gap: the frame carries exactly
+        # what the deltas put on screen, so nothing is retired that the
+        # transcript does not already hold (D-50).
+        deltas = "".join(p.get("text", "") for p in STREAMED
+                         if p.get("kind") == "delta")
+        eq(texts[-1].get("text"), deltas,
+           "the text frame carries exactly what the deltas streamed")
+        # and the durable twin is already on disk when it goes out
+        recs = journal_lines(s1, "fake-agy-conv-0001")
+        durable = [r for r in recs
+                   if r.get("type") == "assistant"
+                   and isinstance((r.get("message") or {}).get("content"), list)
+                   and any(b.get("type") == "text"
+                           and b.get("text") == deltas
+                           for b in r["message"]["content"])]
+        assert durable, "the text frame's replacement row is not in the journal"
+    check("the streamed draft is handed over to a durable row, not left up",
+          t1c)
+
     print("§2 tool events fold into the transcript vocabulary")
     s2, n2 = mkorg("tools")
     os.environ["FAKEANTIGRAVITY_SCENARIO"] = "toolevents"

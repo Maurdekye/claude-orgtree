@@ -326,6 +326,52 @@ convoTest('§1.6 a dropped turn_done does not double-render the reply',
     assert.equal(shown, 1, `the reply is on screen ${shown} times`)
   })
 
+convoTest('§1.8 the `text` handover retires a draft while the turn is STILL BUSY',
+  async ({ SL, ND, s, desk }) => {
+    // WHY THIS IS SEPARATE FROM §1.6. That one ends the turn, so `busy` goes
+    // false and the payload's own idleness retires the draft. It therefore
+    // says nothing about the window this test owns: the durable row landing
+    // MID-TURN, with the turn still running.
+    //
+    // `{kind:"text"}` is the only signal that closes that window, and a
+    // provider leg that omits it renders the reply twice — once as the grey
+    // draft, once as its own transcript row — until `turn_done`. The
+    // antigravity leg did exactly that (user report 2026-09-04: "i see double
+    // messages in antigravity agents"); it now emits the frame the claude and
+    // codex legs always have, and the backend half is pinned by
+    // test_antigravity_dispatch's "the streamed draft is handed over".
+    // This is the client half: the frame must retire the draft even while the
+    // payload still says busy.
+    //
+    // ⚠ RESIDUAL, stated rather than hidden: this retirement is still driven
+    // by an EVENT. A dropped `text` frame leaves the draft up until the turn
+    // ends, for every provider — convo.ts says so where `staleDraft` is set,
+    // and closing it needs a server-carried fact the payload does not yet
+    // have. What this test pins is that the frame, when it arrives, works
+    // mid-turn.
+    const d = await desk()
+    await advance(3000)
+    s.drain()
+    await inAct(() => {
+      ingestStream(SL, { node: ND, kind: 'delta', text: 'the whole reply', t: Date.now() })
+    })
+    await advance(500)
+    assert.equal(d.now().draft, 'the whole reply', 'the draft is on screen')
+    // the durable row lands and the seam hands over — but the turn KEEPS
+    // RUNNING: `s.busy` stays true, so nothing here can be credited to idleness
+    s.assistantMsg('the whole reply')
+    await inAct(() => {
+      ingestStream(SL, { node: ND, kind: 'text', text: 'the whole reply', t: Date.now() })
+    })
+    await advance(30000)
+    const c = d.now()
+    assert.equal(c.chat?.busy, true, 'the turn must still be busy for this to mean anything')
+    assert.equal(c.draft, '', 'the superseded draft outlived its replacement')
+    const shown = [...(c.chat?.messages ?? []).map((m) => m.text), c.draft]
+      .filter((t) => (t || '').includes('the whole reply')).length
+    assert.equal(shown, 1, `the reply is on screen ${shown} times`)
+  })
+
 convoTest('§1.7 a fetch already in flight may not blank a live draft',
   async ({ SL, ND, s, desk }) => {
     // the mirror image of §1.5, and the trap D-50 fell into: a request issued
