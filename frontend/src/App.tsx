@@ -2313,7 +2313,8 @@ export function SettingsPanel({ tree, toast, close }: {
               reaches every unset agent's next turn, no rehire */}
           <SetRow label="default thinking effort"
             hint={'agents without their own setting inherit this, live — '
-              + 'no rehire needed'}>
+              + 'no rehire needed. Changing it restarts every agent that '
+              + 'inherits it.'}>
             <select value={defEffort} aria-label="default thinking effort"
               onChange={(e) => setDefEffort(e.target.value)}>
               <option value="">CLI default (no flag)</option>
@@ -2373,7 +2374,9 @@ export function SettingsPanel({ tree, toast, close }: {
           </SetGroup>
         )}
         <SetGroup title="Org charter" note="org.md">
-          <SetBlock hint="loaded into every agent's context each turn">
+          <SetBlock hint={"loaded once at session start by every agent "
+            + "that holds the workspace — which is every agent by "
+            + "default. Saving restarts all of them."}>
             <textarea className="orgmd-editor" value={orgMd ?? ''}
               aria-label="org.md" disabled={orgMd == null}
               onChange={(e) => setOrgMd(e.target.value)} />
@@ -2487,7 +2490,8 @@ export function SettingsPanel({ tree, toast, close }: {
             </SetGroup>
             {ms && ceil && (
               <SetGroup title="Kiosk permission ceiling"
-                note="the maximum grantable to any agent">
+                note={"the maximum grantable to any agent — a change "
+                  + "restarts every agent in the org"}>
                 <SetBlock label="tools"
                   hint={'visitors and agents retool freely WITHIN the '
                     + "ceiling (clamped, never refused); lowering it sweeps "

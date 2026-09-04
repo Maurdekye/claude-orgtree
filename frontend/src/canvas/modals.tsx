@@ -887,6 +887,14 @@ export function NodeConfig({ node, map, tree, slug, op, toast, codexProvider,
           </div>
         )}
 
+        {/* Cache disclosure (user request 2026-09-04). ONE note for the
+            common case plus a per-field line only where the blast radius
+            DIFFERS — a wider scope, a different mechanism, or no cost at
+            all. Eight identical subtitles would train the reader to skip
+            them, and the org-wide ones are the expensive ones to miss. */}
+        <div className="dim hub-hint">Changing a setting here restarts this
+          agent's process and re-sends its prompt: it pays one cold turn.
+          Fields whose reach is wider — or free — say so themselves.</div>
         <div className="field-label">folder access</div>
         <div className="dirlist">
           {dirs.map((d, i) => (
@@ -950,6 +958,9 @@ export function NodeConfig({ node, map, tree, slug, op, toast, codexProvider,
         ))}
 
         <div className="field-label">MCP servers (from your global registry)</div>
+        <div className="dim hub-hint">Restarts this agent's process.
+          Editing the global registry itself (outside orgtree) restarts every
+          agent granted "*", in every org on this machine.</div>
         {servers.length === 0 && <div className="hint">none registered</div>}
         {!!tree.sandboxed && !sandboxMcp && servers.length > 0 && (
           <div className="hint">
@@ -983,6 +994,9 @@ export function NodeConfig({ node, map, tree, slug, op, toast, codexProvider,
         <div className="field-label">model (switchable on the fly — context
           survives; cheaper frees the seat difference to the agent, pricier
           bubbles any shortfall up the chain)</div>
+        <div className="dim hub-hint">Restarts this agent's process. A
+          switch to a different provider also starts a new cache namespace,
+          so nothing cached carries over.</div>
         {/* D-202: a family this machine does not have is not listed at all —
             not as a disabled row, not as an empty group. `shownTiers` keeps
             this node's OWN tier whatever happens to its provider, so the
@@ -1004,6 +1018,9 @@ export function NodeConfig({ node, map, tree, slug, op, toast, codexProvider,
         </select>
 
         <div className="field-label">org-structure visibility</div>
+        <div className="dim hub-hint">Moving to or from "self" restarts this
+          agent. Between team, subtree and full it costs nothing — the roster
+          arrives each turn, not in the cached prompt.</div>
         <select value={vis} onChange={(e) => setVis(e.target.value)}>
           {VIS_OPTIONS.map(([v, label]) => <option key={v} value={v}>{label}</option>)}
         </select>
@@ -1067,9 +1084,13 @@ export function NodeConfig({ node, map, tree, slug, op, toast, codexProvider,
         </div>}
 
         <div className="field-label">charter</div>
+        <div className="dim hub-hint">Restarts this agent's process and re-sends its prompt.</div>
         <textarea rows={10} className="charterbox" value={charter}
           onChange={(e) => setCharter(e.target.value)} />
         <div className="field-label">team charter</div>
+        <div className="dim hub-hint">Restarts this agent AND every agent in
+          its subtree — the cascade puts this text into each of their
+          prompts, so every one of them re-sends.</div>
         <textarea rows={10} className="charterbox" value={teamCharter}
           onChange={(e) => setTeamCharter(e.target.value)} />
         {initInfo && (
@@ -1109,7 +1130,7 @@ export function NodeConfig({ node, map, tree, slug, op, toast, codexProvider,
             ⚠ this also raises {cascade.length === 1 ? 'the agent' : 'the agents'}
             {' '}between you and {node.id}:{' '}
             <b>{cascade.map((c) => c.id).join(', ')}</b>
-            {' — hover for exactly what each one gains'}
+            {' — hover for exactly what each one gains. Each also restarts.'}
           </div>
         )}
         <div className="row">
