@@ -1,4 +1,4 @@
-﻿"""org.md (the workspace CLAUDE.md) participates in the warm identity.
+"""org.md (the workspace CLAUDE.md) participates in the warm identity.
 
 The org-charter editor writes `<workspace>/CLAUDE.md` and the API docstring
 promises it is "injected into every node that holds the workspace". It was
