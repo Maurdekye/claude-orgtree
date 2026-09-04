@@ -134,6 +134,58 @@ EXPECTED_SANDBOX = {
 }
 
 
+def mkorg_dirs(label: str, dirs: list[str]) -> tuple[str, str]:
+    """One codex-tier node holding `dirs` as rw grants (org first, then node —
+    the ledger clamps a node's grant against the org's)."""
+    grants = [{"path": p, "mode": "rw"} for p in dirs]
+    # create_org takes plain path STRINGS; the node grant takes {path, mode}
+    org = store.create_org(f"zz codexsbx {label}", list(dirs))
+    nid = org.hire(USER, None, "sol", 0, "cx", add_dirs=grants,
+                   tools={"bash": True, "web": False, "edit": True,
+                          "subagents": False, "mcp": []},
+                   org_visibility="team", charter="a git-trust test agent")["node"]
+    store.save_org(org)
+    held = [d["path"] for d in
+            store.load_org(org.d["slug"]).node(nid)["scope"]["add_dirs"]]
+    eq(sorted(held), sorted(dirs), f"{label}: dirs actually granted")
+    return org.d["slug"], nid
+
+
+def git_trust(slug: str, nid: str) -> dict[str, str]:
+    """The GIT_CONFIG_* entries in the env a real codex spawn would receive.
+
+    Read off `_codex_process_spec`'s `env_extra` — the exact dict handed to
+    `codexrun.AppServerClient` — not off the helper that builds them.
+    """
+    org = store.load_org(slug)
+    spec = supervisor._codex_process_spec(org, nid, write_ident=False)
+    return {k: v for k, v in spec["env_extra"].items()
+            if k.startswith("GIT_CONFIG_")}
+
+
+def child_env(slug: str, nid: str, keys: list[str]) -> dict:
+    """What the codex PROCESS actually sees. fakecodex writes the named env
+    keys to a file at turn start, so this proves the variables survive the
+    spawn rather than merely being computed."""
+    probe = os.path.join(tempfile.mkdtemp(prefix="codexsbx-env-"), "e.json")
+    os.environ["FAKECODEX_ENVPROBE"] = ",".join(keys)
+    os.environ["FAKECODEX_ENVPROBE_PATH"] = probe
+    try:
+        st = supervisor.state(slug, nid)
+        with supervisor._state_lock:
+            st["busy"] = True
+        supervisor._run_one_turn(
+            slug, nid, {"text": "env probe", "view": "env probe"})
+    finally:
+        os.environ.pop("FAKECODEX_ENVPROBE", None)
+        os.environ.pop("FAKECODEX_ENVPROBE_PATH", None)
+    if not os.path.exists(probe):
+        raise AssertionError("fakecodex never wrote the env probe — the turn "
+                             "did not reach the child, so this is vacuous")
+    with open(probe, encoding="utf-8") as f:
+        return json.load(f)
+
+
 def mkorg(label: str, *, edit: bool, pm: str, bash: bool = True) -> tuple[str, str]:
     """One org, one codex-tier node carrying the scope under test.
 
@@ -511,6 +563,91 @@ def main() -> int:
     check("the borrowed app-server is still alive after the refusal",
           lambda: eq(lent.proc.poll(), None, "exit code of the pooled client"))
     lent.close()
+
+    print("§10 git ownership trust, scoped to the dirs already granted")
+    # A codex turn's shell runs as Pendragon\CodexSandboxOffline, not the
+    # operator, so git refuses an operator-owned repo outright: "detected
+    # dubious ownership". That refusal is independent of the sandbox and no
+    # sandbox mode fixes it. safe.directory rides the PROCESS ENV so nothing
+    # is written to any config file.
+    d1 = tempfile.mkdtemp(prefix="codexsbx-g1-")
+    d2 = tempfile.mkdtemp(prefix="codexsbx-g2-")
+    g_slug, g_nid = mkorg_dirs("granted", [d1, d2])
+    trust = git_trust(g_slug, g_nid)
+    want_paths = sorted(p.replace("\\", "/") for p in (d1, d2))
+    got_paths = sorted(v for k, v in trust.items()
+                       if k.startswith("GIT_CONFIG_VALUE_"))
+    check("both granted dirs become safe.directory values",
+          lambda: eq(got_paths, want_paths, "safe.directory values"))
+    check("every key entry is safe.directory and the count matches",
+          lambda: eq(([v for k, v in sorted(trust.items())
+                       if k.startswith("GIT_CONFIG_KEY_")],
+                      trust.get("GIT_CONFIG_COUNT")),
+                     (["safe.directory", "safe.directory"], "2"),
+                     "keys and count"))
+
+    # THE NEGATIVE THAT MATTERS: no grant must mean no trust, and nothing
+    # anywhere may be a blanket wildcard
+    n_slug, n_nid = mkorg_dirs("nogrant", [])
+    check("a node with NO granted dirs gets no GIT_CONFIG_* at all",
+          lambda: eq(git_trust(n_slug, n_nid), {}, "git trust env"))
+    check("no entry is ever the blanket safe.directory=*",
+          lambda: eq([v for v in trust.values() if v == "*"], [],
+                     "wildcard trust entries"))
+
+    # …and it must actually reach the child process, not merely be computed
+    seen = child_env(g_slug, g_nid,
+                     ["GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0",
+                      "GIT_CONFIG_VALUE_0"])
+    check("the codex PROCESS really receives the trust env",
+          lambda: eq((seen.get("GIT_CONFIG_COUNT"),
+                      seen.get("GIT_CONFIG_KEY_0"),
+                      seen.get("GIT_CONFIG_VALUE_0") in want_paths),
+                     ("2", "safe.directory", True),
+                     "env as fakecodex saw it"))
+
+    # an operator who set their own GIT_CONFIG_* must not have it silently
+    # dropped — the node's entries append above the inherited count
+    os.environ["GIT_CONFIG_COUNT"] = "1"
+    try:
+        offset = git_trust(g_slug, g_nid)
+    finally:
+        os.environ.pop("GIT_CONFIG_COUNT", None)
+    check("inherited GIT_CONFIG_* is preserved, ours appends above it",
+          lambda: eq((offset.get("GIT_CONFIG_COUNT"),
+                      "GIT_CONFIG_KEY_0" in offset,
+                      offset.get("GIT_CONFIG_KEY_1")),
+                     ("3", False, "safe.directory"),
+                     "count / index 0 untouched / first appended key"))
+
+    print("§11 the codex lane is TOLD that a sandbox denial can be retried")
+    # A reserve agent hit the .git denial, correctly refused to force it, and
+    # reported itself blocked when it was one approved retry away. The text
+    # must also say the opposite case out loud, or it reads as licence.
+    guide = supervisor.identity_prompt(store.load_org(g_slug), g_nid)
+    check("the codex identity prompt explains the entitled-write retry",
+          lambda: eq(("ask to retry the command with elevated permission"
+                      in guide,
+                      "the denial is real and stands" in guide),
+                     (True, True), "both halves of the guidance"))
+    check("…and it names the .git case that actually bit us",
+          lambda: eq("repository's `.git` folder is blocked" in guide, True,
+                     "the concrete cause is named"))
+    # a CLAUDE-tier node must not be told any of this: its lane has no codex
+    # ⚠ `opus`, NOT `luna` — luna is a CODEX tier here (CODEX_TIERS is astra,
+    # gpt-reserve, luna, sol, terra). The first draft of this check used luna
+    # and went red for the right reason against correct production code.
+    # sandbox and no approval retry, so the text would be a lie there
+    c_org = store.create_org("zz codexsbx claudelane")
+    c_nid = c_org.hire(USER, None, "opus", 0, "cl", add_dirs=[],
+                       tools={"bash": True, "web": False, "edit": True,
+                              "subagents": False, "mcp": []},
+                       org_visibility="team", charter="claude lane")["node"]
+    store.save_org(c_org)
+    c_guide = supervisor.identity_prompt(store.load_org(c_org.d["slug"]), c_nid)
+    check("a claude-tier node is NOT given the codex sandbox text",
+          lambda: eq("elevated permission" in c_guide, False,
+                     "codex-only guidance leaking to the claude lane"))
 
     print()
     if FAIL:

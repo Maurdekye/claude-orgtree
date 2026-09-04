@@ -4938,6 +4938,35 @@ def identity_prompt(org: Org, nid: str, include_archived: bool = False) -> str:
         # process outright). Promise EXACTLY what that lane delivers — the same
         # discipline as the sandbox branch above, and for the same reason: an
         # assertion in this text reads to the agent as the capability itself.
+        # THE DENIAL THAT IS NOT A REFUSAL (2026-09-04). Measured: at turn
+        # setup the codex sandbox writes an explicit DENY on every `.git`
+        # that ALREADY EXISTS under a writable root — including the turn's
+        # own working directory — so an ordinary `git add` in a clone the
+        # agent had before this turn fails with "Unable to create
+        # '.git/index.lock': Permission denied". (A repo CREATED mid-turn
+        # escapes it: `astras-entrance-exam` git-init'd and committed inside
+        # a running turn with no escalation. So this is a turn-setup sweep of
+        # existing repos, not a rule about the name `.git`.) The agent is
+        # entitled to that write; the
+        # sandbox simply asks first, and a blocked command can be retried
+        # with approval. An agent that does not know this reads a permission
+        # error as a hard wall: a reserve agent hit exactly this trying to
+        # land its own branch, correctly refused to force it, and reported
+        # itself blocked when it was one retry away. Deliberately NOT written
+        # as encouragement to escalate — the second sentence is the load
+        # -bearing one, because the failure to prevent is "I am blocked when
+        # I am not", not "I learned to push past my scope".
+        tool_line += (
+            "Sandbox: your shell runs in an OS sandbox, and a write it "
+            "blocks is reported to you as a plain 'Permission denied' — "
+            "including writes inside your OWN working directory: an existing "
+            "repository's `.git` folder is blocked, so `git add`, "
+            "`git commit`, `git update-ref` and `git merge` all hit it. If "
+            "the write is one your grants ENTITLE you to make, that is not "
+            "a refusal: ask to retry the command with elevated permission "
+            "and it will be approved. If it is a path you were never "
+            "granted, the denial is real and stands — do not go looking for "
+            "another way around it, raise it instead. ")
         codex_ok, codex_undeliverable = codex_mcp_grant(org, nid)
         mcp_names = sorted(codex_ok)
         if codex_undeliverable:
@@ -8716,10 +8745,62 @@ def _codex_process_spec(org: Org, nid: str, *,
         "identity": ident,
         "config_overrides": codexrun.mcp_config_overrides(mcp_chosen),
         "env_extra": {"ORGTREE_ORG": slug, "ORGTREE_NODE": nid,
-                      "ORGTREE_PORT": port},
+                      "ORGTREE_PORT": port,
+                      **_codex_git_trust_env(org.node(nid)["scope"])},
         "port": port,
         "exe": exe,
     }
+
+
+def _codex_git_trust_env(sc: Mapping[str, Any]) -> dict[str, str]:
+    """`safe.directory` for the dirs this node was ALREADY granted, as
+    process env rather than any config file.
+
+    THE PROBLEM. A Codex turn's shell does not run as the operator — measured
+    2026-09-04: `whoami` in a `workspace-write` turn is
+    `Pendragon\\CodexSandboxOffline`, and a file such a turn writes comes out
+    owned by that user. Git treats a repository owned by a different user as
+    untrusted and REFUSES before doing anything: "detected dubious ownership
+    in repository at …". So a Codex agent could not even `git status` the
+    shared checkout it had been granted, let alone land in it. The refusal is
+    entirely independent of the OS sandbox and no sandbox mode fixes it.
+
+    WHY THIS SHAPE. `GIT_CONFIG_COUNT` + `GIT_CONFIG_KEY_n`/`VALUE_n` applies
+    config to THIS PROCESS ONLY. Nothing is written to `~/.gitconfig`, no
+    other user or turn is affected, and the grant disappears with the process.
+
+    ⚠ SCOPED, NEVER BLANKET. One entry per path already in the node's
+    `add_dirs`, and never `safe.directory=*`. This confers NO new access: it
+    tells git "this repo is not a stranger", nothing more. A node gains trust
+    only for paths it already holds, so this cannot widen a grant — the ledger
+    remains the only thing that decides what a node may reach.
+
+    Read-only grants are included deliberately: ownership trust is required to
+    READ a repo, not only to write one, and an `ro` grant is supposed to mean
+    "you may read this".
+
+    Existing `GIT_CONFIG_*` in the operator's environment is PRESERVED — the
+    node's entries are appended above the inherited count rather than
+    overwriting index 0, which would silently drop whatever the operator had
+    set for themselves.
+    """
+    paths = [str(d.get("path") or "") for d in (sc.get("add_dirs") or [])]
+    paths = [p for p in paths if p]
+    if not paths:
+        return {}
+    try:
+        base = int(os.environ.get("GIT_CONFIG_COUNT", "0"))
+    except ValueError:
+        base = 0
+    if base < 0:
+        base = 0
+    env = {"GIT_CONFIG_COUNT": str(base + len(paths))}
+    for i, p in enumerate(paths):
+        env[f"GIT_CONFIG_KEY_{base + i}"] = "safe.directory"
+        # forward slashes: what git itself prints in its own "To add an
+        # exception" hint on Windows, and what was measured to work
+        env[f"GIT_CONFIG_VALUE_{base + i}"] = p.replace("\\", "/")
+    return env
 
 
 def _codex_may_write(sc: Mapping[str, Any]) -> bool:
@@ -8750,14 +8831,29 @@ def _codex_may_write(sc: Mapping[str, Any]) -> bool:
       `is_error: true`, "Cannot write to … while in plan mode." The CLI
       denies the tool — this is not the model choosing to cooperate.
 
-    ⚠ SHELL COMMANDS ARE NOT COVERED HERE and that is on purpose. `_approve`
-    still answers `commandExecution` from the `bash` switch alone, exactly as
-    before; a plan-mode agent with a terminal can still have a command
-    APPROVED, and what actually stops it writing is the `read-only` OS
-    sandbox this predicate selects. Widening the approval side to match was
-    not measured and was not asked for. If you extend it, measure what the
-    Claude lane does with Bash in plan mode first — do not reason from the
-    file result above.
+    ⚠ SHELL COMMANDS ARE NOT COVERED HERE, AND THE SANDBOX DOES NOT COVER
+    THEM EITHER. This said the OS sandbox backstopped it — that "a plan-mode
+    agent with a terminal can still have a command approved, and what
+    actually stops it writing is the `read-only` sandbox this predicate
+    selects". THAT WAS WRONG, and I wrote it. Measured 2026-09-04, control
+    pair, `sandbox="read-only"` both times: with the escalation approved the
+    file WAS written; with it declined the file was NOT. When the sandbox
+    blocks a command, codex asks `item/commandExecution/requestApproval` to
+    re-run it OUTSIDE the sandbox, and `_codex_leg._approve` accepts every
+    such request while the `bash` switch is on.
+
+    So on this lane the sandbox mode is not the enforcement for shell writes;
+    the approval decision is. `plan` and `edit=off` are therefore only HALF
+    enforced against an agent with a terminal: its file TOOLS are declined
+    here, its shell writes escalate through. Do not read this function as a
+    guarantee that a read-only node cannot write.
+
+    Left standing deliberately, not overlooked: closing it would also close
+    the path Codex agents legitimately use to write their own `.git` (the
+    sandbox denies that too), so it is a policy call with a real cost on the
+    other side and the coordinator is taking it to the user. If you come to
+    fix it, that trade is the thing to solve — and measure what the Claude
+    lane does with Bash in plan mode first.
     """
     if not sc.get("tools", {}).get("edit", True):
         return False
