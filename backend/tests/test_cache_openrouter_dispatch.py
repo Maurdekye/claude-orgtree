@@ -339,6 +339,21 @@ def missing_key_is_unobserved_not_someone_else() -> None:
     assert not snap["account"].startswith(S.accounts.PRIMARY), snap["account"]
     assert not snap["account"].startswith("antigravity"), snap["account"]
     assert "openrouter" in snap["account"], snap["account"]
+    # and the classifier reads that as RED and self-resolving ("we have not
+    # looked"), not as a grey capability claim ("this lane cannot report") —
+    # the gateway CAN report once a key is set
+    row = C.classify(dict(snap, last_turn_history_relation="same_or_appended",
+                          receipt_history_relation="same_or_appended"),
+                     {}, NOW)
+    eq(row["readiness_cause"], "no_completed_fingerprint", "keyless, no turn")
+    prior = {"last_turn": S._cache_persistable(snap),
+             "receipt": dict(S._cache_persistable(snap),
+                             observed_at=C.iso_us(NOW - 60))}
+    row = C.classify(dict(snap, last_turn_history_relation="same_or_appended",
+                          receipt_history_relation="same_or_appended"),
+                     prior, NOW)
+    eq(row["readiness"], "not_ready", "keyless readiness")
+    eq(row["readiness_cause"], "lane_unobserved", "keyless cause")
     # the spawn seam itself still refuses, loudly — the snapshot did not
     # paper over the missing key
     try:

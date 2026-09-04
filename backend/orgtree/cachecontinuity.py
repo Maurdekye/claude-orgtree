@@ -494,10 +494,19 @@ def classify(current: dict[str, Any], continuity: dict[str, Any] | None,
     # Only a POSITIVE determination counts as a gap. An empty or unobserved
     # provider/lane is not a capability claim — we simply have not looked yet —
     # so it falls through to `lane_unobserved`, which is red and self-resolving.
+    #
+    # ⚠ "UNOBSERVED" IS A NON-EMPTY STRING, and the supervisor never writes an
+    # empty lane — `_cache_snapshot` writes `lane or "unobserved"`. Until
+    # 2026-09-04 (astras-entrance-exam) this predicate tested emptiness only,
+    # so every real unobserved lane on a known provider — a Claude token no
+    # stored row explains, a Codex auth record naming no account, an
+    # OpenRouter tier with no key — was reported as the provider being unable
+    # to report, which is the slander the comment above forbids. The sentinel
+    # is excluded by name, matching `legacy_readiness`'s own reading of it.
     provider_id = str(current.get("provider") or "")
     lane_id = str(current.get("lane") or "")
     capability_gap = lane_id == "provider_unsupported" or bool(
-        provider_id and lane_id
+        provider_id and lane_id and lane_id != "unobserved"
         and (provider_id, lane_id) not in SUPPORTED_LANES)
 
     def capability_row() -> dict[str, Any]:

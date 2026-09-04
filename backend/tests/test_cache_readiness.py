@@ -283,6 +283,48 @@ def an_unobserved_lane_is_red_not_a_capability_claim() -> None:
     eq(row["readiness"], "not_ready")
     eq(row["readiness_cause"], "lane_unobserved")
     assert "resolve on its own" in row["readiness_detail"]
+    # ⚠ THE SHAPE THE SUPERVISOR ACTUALLY EMITS. `_cache_snapshot` never
+    # writes an empty lane: it writes `lane or "unobserved"`, on a KNOWN
+    # provider — a Claude token no stored row explains, a Codex auth.json
+    # that names no account, an OpenRouter tier with no key. The blank case
+    # above passed while every one of these was a grey capability claim
+    # (astras-entrance-exam, 2026-09-04): the predicate read the non-empty
+    # string "unobserved" as a positive "this lane cannot report".
+    for provider, account in (("claude", "key:unattributed"),
+                              ("openai", "codex-account-unobserved"),
+                              ("openrouter", "openrouter-key-unobserved")):
+        ident = {"provider": provider, "lane": "unobserved",
+                 "account": account, "model": "m"}
+        label = f"{provider}/unobserved"
+        # with a receipt: the honest red, self-resolving
+        row = classify(snapshot(**ident), book(receipt_at=NOW - 60, **ident))
+        eq((label, row["readiness"]), (label, "not_ready"))
+        eq((label, row["readiness_cause"]), (label, "lane_unobserved"))
+        # without a receipt: still the ordinary "no positive receipt" red —
+        # an unobserved lane does not relax the positive-receipt requirement
+        row = classify(snapshot(**ident), book(**ident))
+        eq((label, row["readiness_cause"]), (label, "no_positive_receipt"))
+        # with nothing at all: no fingerprint, not a capability claim
+        row = classify(snapshot(**ident), {})
+        eq((label, row["readiness_cause"]), (label, "no_completed_fingerprint"))
+        # and a known mismatch on the way INTO the unobserved lane is still
+        # the known cold it always was
+        row = classify(snapshot(**ident),
+                       book(receipt_at=NOW - 60, provider=provider,
+                            lane="api_key", account="other", model="m"))
+        eq((label, row["state"]), (label, "known_incompatible"))
+        eq((label, row["readiness_cause"]), (label, "prefix_changed"))
+    # …while a POSITIVELY unsupported lane on those same providers is still
+    # the accounted grey: the fix must not have widened "unobserved" into
+    # "anything not in the table"
+    for provider, lane in (("openai", "api_key"),
+                           ("google", "provider_unsupported"),
+                           ("openrouter", "subscription")):
+        ident = {"provider": provider, "lane": lane, "account": "a",
+                 "model": "m"}
+        row = classify(snapshot(**ident), book(receipt_at=NOW - 60, **ident))
+        eq((f"{provider}/{lane}", row["readiness_cause"]),
+           (f"{provider}/{lane}", "unsupported_capability"))
 
 
 check("Antigravity and Codex API-key lanes are accounted capability diagnostics",
