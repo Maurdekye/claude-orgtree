@@ -106,8 +106,6 @@ export function ModelCard({ letter, color, accent, title, large }: {
 const tierTitle = (t: ProviderTier): string =>
   `${t.label ?? modelLabel(t.model)} · ${t.name ?? ''} — ${t.vendor ?? ''} · `
   + `${perM(t.prompt ?? 0)} in / ${perM(t.completion ?? 0)} out per 1M · seat ${t.seat}`
-  + (t.vendor && t.vendor !== 'anthropic'
-    ? ' · runs on Claude Code best-effort (non-Anthropic model)' : '')
 
 /** the whole section: head (label, switch), key row, favorites row, picker */
 export function OpenRouterSection({ provider, headRight, toast, pickerOpen,
@@ -382,7 +380,6 @@ export function ModelPicker({ doc, busy, onToggle, onClose }: {
                   <span className="dim">{m.vendor} · {m.label ?? modelLabel(m.id)}
                     {m.context ? ` · ${ctxK(m.context)} ctx` : ''}
                     {!m.tools ? ' · no tool use' : ''}
-                    {m.vendor !== 'anthropic' ? ' · best-effort on Claude Code' : ''}
                   </span>
                 </span>
                 <span className="orr-price">

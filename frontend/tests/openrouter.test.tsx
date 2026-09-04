@@ -211,8 +211,10 @@ test('§2 the favorites row opens the picker; search, select and deselect '
     })
     const narrowed = view.el.querySelectorAll<HTMLButtonElement>('.orr-row')
     assert.equal(narrowed.length, 1, 'search narrows the page')
-    assert.ok(narrowed[0]!.textContent?.includes('best-effort'),
-      'a non-Anthropic model is marked best-effort')
+    assert.ok(narrowed[0]!.textContent?.includes('openai · gpt-5.6-luna'),
+      'a non-Anthropic model displays vendor and label cleanly')
+    assert.ok(!narrowed[0]!.textContent?.includes('best-effort'),
+      'redundant best-effort qualifier is not displayed')
     // select it
     await inAct(async () => { narrowed[0]!.click(); await flush(10) })
     const put = seen.find((r) => r.method === 'PUT' && r.path === '/api/openrouter/favorites')

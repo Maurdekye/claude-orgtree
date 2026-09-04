@@ -108,7 +108,7 @@ flushSync(() => root.render(
           <ModelCard letter={GROK.letter} color={GROK.color ?? '#9aa0a6'} large />
           <span className="orr-name">
             <b>{GROK.name}</b>
-            <span className="dim">{GROK.vendor} · {GROK.label} · 2M ctx · best-effort on Claude Code</span>
+            <span className="dim">{GROK.vendor} · {GROK.label} · 2M ctx</span>
           </span>
           <span className="orr-price">$2 in<br />$6 out<br /><span>per 1M</span></span>
           <span className="orr-check">✓ selected</span>
