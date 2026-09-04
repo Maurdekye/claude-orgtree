@@ -1192,15 +1192,18 @@ def hermetic() -> None:
     def _the_steer_fold_back_leaves_a_record():
         src = open(os.path.join(_REPO, "backend", "orgtree", "supervisor.py"),
                    encoding="utf-8").read()
+        # D-229 unified the fold into `_fold_steer(st)` appending to the back of the queue
         folds = [m.start() for m in re.finditer(
-            r'st\["queue"\]\[0:0\] = leftover', src)]
+            r'leftover = _fold_steer\(st\)', src)]
         fixture(len(folds) >= 1,
                 f"the steer fold-back site moved (found {len(folds)}) — "
                 f"re-read this check before trusting it")
+        fixture('st["queue"].extend(leftover)' in src,
+                "the steer fold helper does not drain into queue")
         for i in folds:
             seg = "\n".join(ln for ln in src[max(0, i - 700):i + 400].splitlines()
                             if not ln.lstrip().startswith("#"))
-            assert re.search(r"steered_log|_log\(|node_event|_emit", seg), (
+            assert re.search(r"_steer_fold_log|steered_log|_log\(|node_event|_emit", seg), (
                 "a message parked for steering is folded back into the queue "
                 "with no record: the API answered {\"steering\": true}, no "
                 "hook ever collected it, and it will now arrive at the NEXT "
