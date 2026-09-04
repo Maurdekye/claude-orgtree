@@ -229,16 +229,19 @@ def _passive_broadcast_notifies_live_agents_without_waking():
             m = box[0]
             assert m["kind"] == "notice", m["kind"]
             assert m["from"] == "orgtree"
+            assert "[ORGTREE RESTART NOTICE]" in m["body"]
+            assert "The backend was restarted" in m["body"]
+            assert "What you can do with this" in m["body"]
             assert "1fecd8b48f0e9112233445566778899aabbccdde" in m["body"]
             assert "12345 (was: 9999)" in m["body"]
             assert "git merge-base --is-ancestor" in m["body"]
-            # Crucial: waking_mail must be False!
-            assert org.waking_mail("boss") is False, "notice must NOT wake agent"
+            # Mechanism guarantee (ledger.py:2515): waking_mail must be False for notice!
+            assert org.waking_mail("boss") is False, "notice must NOT wake agent (ledger.py:2515)"
     finally:
         store.delete_org(slug)
 
 
-check("passive: live nodes get notice with full commit, pid + was_pid; waking_mail is False",
+check("passive: live nodes get legible notice with full commit, pid + was_pid; waking_mail is False",
       _passive_broadcast_notifies_live_agents_without_waking)
 
 
@@ -356,7 +359,7 @@ def _armed_toggle_wakes_agent_and_clears_one_shot():
             assert "[ORGTREE RESTART WAKE]" in txt
             assert "4444444444444444444444444444444444444444" in txt
             assert "verify popup fix" in txt
-            assert "reverted to passive notice" in txt
+            assert "re-arm with orgtree_restart_wake" in txt
 
             # One-shot toggle must be CLEARED from registry
             st = restart_wake.status_restart_wake(slug, "boss")
@@ -371,29 +374,17 @@ check("toggle: armed agent is woken with full turn; one-shot is cleared",
       _armed_toggle_wakes_agent_and_clears_one_shot)
 
 
-def _standing_toggle_persists_across_restart():
+def _standing_mode_is_refused():
     reset_registry()
-    o, slug = make_org("zz standing", sub=False)
     try:
-        restart_wake.arm_restart_wake(slug, "boss", "boss", mode="standing", reason="always wake")
-
-        sent = []
-        orig_send = supervisor.send_message
-        supervisor.send_message = lambda s, n, txt, **kw: sent.append((s, n, txt, kw))
-        try:
-            restart_wake.on_backend_startup(dry_run=True)
-            assert len(sent) == 1
-            # Standing toggle MUST remain armed!
-            st = restart_wake.status_restart_wake(slug, "boss")
-            assert st["armed"] is True and st["wake"]["mode"] == "standing"
-        finally:
-            supervisor.send_message = orig_send
-    finally:
-        store.delete_org(slug)
+        restart_wake.arm_restart_wake("orgA", "boss", "boss", mode="standing")
+        raise AssertionError("should have refused mode='standing'")
+    except ValueError as e:
+        assert "only one-shot" in str(e), str(e)
 
 
-check("toggle: mode='standing' remains armed after firing",
-      _standing_toggle_persists_across_restart)
+check("toggle: mode='standing' is refused (one-shot only per coordinator decision)",
+      _standing_mode_is_refused)
 
 
 def _compacted_agent_survives_and_receives_wake():
@@ -466,11 +457,11 @@ def _tool_card_exists_in_catalogue():
     assert card is not None, "orgtree_restart_wake not in mcptool.TOOLS"
     props = card["inputSchema"]["properties"]
     assert set(props["action"]["enum"]) == {"arm", "cancel", "status"}
-    assert set(props["mode"]["enum"]) == {"one_shot", "standing"}
+    assert "mode" not in props, "mode must be removed from schema (one-shot only)"
     assert not card["inputSchema"].get("required"), "arming should need no args"
 
 
-check("surface: tool card exists with action/mode/reason/target properties",
+check("surface: tool card exists with action/reason/target properties (one-shot only)",
       _tool_card_exists_in_catalogue)
 
 
@@ -510,6 +501,10 @@ def _api_agent_round_trip():
         # Cancel
         can = call("boss", {"action": "cancel"}).json()
         assert can["cancelled"] is True
+
+        # Invalid mode -> 422 (standing rejected, one-shot only)
+        bad_mode = call("boss", {"mode": "standing"})
+        assert bad_mode.status_code == 422
 
         # Invalid action -> 422
         inv = call("boss", {"action": "invalid"})
@@ -605,7 +600,7 @@ def _mutants():
     finally:
         store.delete_org(slug)
 
-    # Mutant 6: Invalid mode accepted
+    # Mutant 6: Toggle mode="standing" accepted (must refuse with 422)
     reset_registry()
     o, slug = make_org("zz mut6", sub=False)
     try:
@@ -613,8 +608,25 @@ def _mutants():
         bad_mode = c.post("/api/agent", json={
             "org": slug, "node": "boss",
             "tool": "orgtree_restart_wake",
-            "args": {"mode": "eternal"}})
-        results.append(("invalid mode rejected with 422", bad_mode.status_code == 422))
+            "args": {"mode": "standing"}})
+        results.append(("standing mode rejected with 422", bad_mode.status_code == 422))
+    finally:
+        store.delete_org(slug)
+
+    # Mutant 7: Toggle waking turn missing wake=True flag
+    reset_registry()
+    o, slug = make_org("zz mut7", sub=False)
+    try:
+        restart_wake.arm_restart_wake(slug, "boss", "boss")
+        sent = []
+        orig_send = supervisor.send_message
+        supervisor.send_message = lambda s, n, txt, **kw: sent.append((s, n, txt, kw))
+        try:
+            restart_wake.on_backend_startup(dry_run=True)
+            wake_has_flag = len(sent) == 1 and sent[0][3].get("wake") is True
+            results.append(("toggle fires with wake=True turn", wake_has_flag))
+        finally:
+            supervisor.send_message = orig_send
     finally:
         store.delete_org(slug)
 

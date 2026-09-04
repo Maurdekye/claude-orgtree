@@ -388,18 +388,14 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "orgtree_restart_wake",
         "description": (
-            "TOGGLE WAKE-ON-RESTART for your node (or a subordinate report) — "
-            "upgrade the passive restart notification into a full waking turn "
-            "on the next backend restart. By default, every orgtree restart "
-            "sends a PASSIVE notice to all live agents (carrying the deployed "
-            "commit SHA and backend PID without waking or starting a turn). "
-            "Call this tool to be WOKEN WITH A TURN as soon as orgtree next "
-            "restarts, so you can immediately verify deployed fixes. "
-            "action: 'arm' (default) · 'cancel' (revert to passive notice) · 'status'. "
-            "mode: 'one_shot' (default — fires once then reverts to passive "
-            "notice) or 'standing' (wake on every restart). "
-            "reason: why you need to be woken (e.g. 'verifying fix commit "
-            "abc'); carried forward into the wake turn and survives compaction. "
+            "ARM A WAKING TURN ON NEXT RESTART for your node (or a subordinate report) — "
+            "upgrade the passive restart notice into a full waking turn when orgtree "
+            "next starts back up, telling you the deployed version so you can verify fixes. "
+            "Always one-shot: fires once on the next restart, then reverts to passive notices. "
+            "Survives compaction. If you need to wake on every restart, re-arm after waking. "
+            "action: 'arm' (default) · 'cancel' (disarm and revert to passive notice) · 'status'. "
+            "reason: why you need to be woken (e.g. 'verify commit abc'); carried "
+            "forward into the wake turn and survives compaction. "
             "target: optional report node id if arming on behalf of a subordinate."
         ),
         "inputSchema": {
@@ -409,11 +405,6 @@ TOOLS: list[dict[str, Any]] = [
                     "type": "string",
                     "enum": ["arm", "cancel", "status"],
                     "description": "arm (default), cancel, or status",
-                },
-                "mode": {
-                    "type": "string",
-                    "enum": ["one_shot", "standing"],
-                    "description": "one_shot (default — fires once) or standing",
                 },
                 "reason": {
                     "type": "string",

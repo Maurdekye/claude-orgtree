@@ -5058,14 +5058,15 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
                 elif act == "cancel":
                     result = restart_wake.cancel_restart_wake(body.org, target)
                 else:
-                    mode = str(a.get("mode") or "one_shot")
-                    if mode not in ("one_shot", "standing"):
-                        raise HTTPException(422, "mode must be one_shot|standing")
+                    if a.get("mode") and a.get("mode") != "one_shot":
+                        raise HTTPException(
+                            422,
+                            "only one-shot restart wakes are supported (re-arm after waking if needed)")
                     reason = a.get("reason")
                     if reason is not None:
                         reason = str(reason)[:200]
                     result = restart_wake.arm_restart_wake(
-                        body.org, target, body.node, mode=mode, reason=reason)
+                        body.org, target, body.node, reason=reason)
             elif body.tool == "orgtree_present":
                 # FR-03: a reading card beside the node — non-blocking
                 result = org.present_document(body.node,

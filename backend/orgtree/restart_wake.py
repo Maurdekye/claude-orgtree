@@ -1,4 +1,4 @@
-﻿# pyright: strict
+# pyright: strict
 """Restart-wake and passive restart notifications (FR-xx).
 
 Every backend restart sends a PASSIVE NOTICE to every live agent carrying the
@@ -9,8 +9,8 @@ restarts happen before an agent wakes, the newest notice supersedes earlier ones
 so only one current notice is ever waiting.
 
 Agents may also TOGGLE their next restart notification into a full waking turn
-(orgtree_restart_wake). Armed toggles are one-shot by default (fire once on the
-next restart, then revert to passive notices), survive compaction, and are
+(orgtree_restart_wake). Armed toggles are ONE-SHOT ONLY: they fire once on the
+next restart, then revert to passive notices. They survive compaction, and are
 dropped if the agent is retired or deleted before the restart lands.
 """
 
@@ -136,10 +136,11 @@ def arm_restart_wake(slug: str, nid: str, actor: str, *,
                      reason: str | None = None) -> dict[str, Any]:
     """Arm the wake toggle for an agent node.
 
-    Idempotent: arming when already armed updates the reason/mode without duplicating.
+    Always one-shot: fires once on the next restart, then reverts to passive notices.
+    Idempotent: arming when already armed updates the reason without duplicating.
     """
-    if mode not in ("one_shot", "standing"):
-        raise ValueError(f"unknown mode {mode!r}; expected 'one_shot' or 'standing'")
+    if mode != "one_shot":
+        raise ValueError("only one-shot restart wakes are supported; re-arm after waking if needed")
     key = f"{slug}:{nid}"
     with _wakes_lock:
         d = _wakes_read()
@@ -150,7 +151,7 @@ def arm_restart_wake(slug: str, nid: str, actor: str, *,
         rec: dict[str, Any] = {
             "org": slug,
             "node": nid,
-            "mode": mode,
+            "mode": "one_shot",
             "armed_at": now_iso(),
             "armed_by": actor,
             "armed_by_pid": boot["backend_pid"],
@@ -169,8 +170,8 @@ def arm_restart_wake(slug: str, nid: str, actor: str, *,
         "already_armed": already_armed,
         "wake": rec,
         "status": (
-            f"wake toggle ARMED ({mode}). When orgtree next restarts, you will be "
-            f"woken with a full turn carrying the running commit SHA and backend PID."
+            "wake toggle ARMED (one-shot). When orgtree next restarts, you will be "
+            "woken with a full turn carrying the running commit SHA and backend PID."
             + (f" Reason: {rec['reason']}" if rec.get("reason") else "")
             + (" (Re-armed: existing toggle was updated.)" if already_armed else "")
             + " Cancel with action='cancel'."
@@ -198,9 +199,8 @@ def cancel_restart_wake(slug: str, nid: str) -> dict[str, Any]:
         "cancelled": True,
         "was": cur,
         "status": (
-            f"wake toggle disarmed (had been armed for {cur.get('mode', 'one_shot')}). "
-            f"When orgtree next restarts, you will receive a passive notice "
-            f"without starting a turn."
+            "wake toggle disarmed. When orgtree next restarts, you will receive "
+            "a passive notice without starting a turn."
         ),
     }
 
@@ -220,8 +220,7 @@ def status_restart_wake(slug: str, nid: str) -> dict[str, Any]:
             "wake": dict(cur),
             "running_build": boot,
             "status": (
-                f"wake toggle is ARMED ({cur.get('mode', 'one_shot')}) — "
-                f"will wake with a turn on next restart."
+                "wake toggle is ARMED (one-shot) — will wake with a turn on next restart."
                 + (f" Reason: {cur['reason']}" if cur.get("reason") else "")
             ),
         }
@@ -290,34 +289,40 @@ def on_backend_startup(*, dry_run: bool = False) -> dict[str, Any]:
                             continue
 
                         wake_rec = wakes.get(key)
-                        if wake_rec:
+                        if wake_rec and isinstance(wake_rec, dict):
                             # WAKE TOGGLE PATH: full waking turn
                             reason = wake_rec.get("reason")
                             armed_was_pid = wake_rec.get("armed_by_pid") or previous_pid
                             wake_pid_text = f"{current_pid}" + (f" (was: {armed_was_pid})" if armed_was_pid and armed_was_pid != current_pid else "")
                             reason_line = f"\nReason armed: {reason}" if reason else ""
                             wake_text = (
-                                f"[ORGTREE RESTART WAKE] orgtree has restarted and your wake toggle has fired.\n\n"
+                                f"[ORGTREE RESTART WAKE] orgtree has restarted and your one-shot wake toggle has fired.\n\n"
                                 f"Running build:\n"
                                 f"- Commit: {current_commit} (short: {current_short}){dirty_info}\n"
                                 f"- Backend PID: {wake_pid_text}\n"
                                 f"- Started at: {started_at}{branch_info}{reason_line}\n\n"
                                 f"Ancestry check: git merge-base --is-ancestor <your-commit> {current_commit}\n"
-                                f"(Your wake toggle was one-shot and has reverted to passive notice for future restarts.)"
+                                f"(Your wake toggle was one-shot and has cleared. To wake on a subsequent restart, re-arm with orgtree_restart_wake.)"
                             )
                             supervisor.send_message(slug, nid, wake_text, wake=True)
-                            woken.append({"org": slug, "node": nid, "reason": reason, "mode": wake_rec.get("mode")})
-                            if wake_rec.get("mode", "one_shot") != "standing":
-                                wakes.pop(key, None)
+                            woken.append({"org": slug, "node": nid, "reason": reason, "mode": "one_shot"})
+                            wakes.pop(key, None)
                         else:
                             # PASSIVE NOTICE PATH: live agent without toggle
                             box = org.d.setdefault("mail", {}).setdefault(nid, [])
                             notice_text = (
-                                f"[ORGTREE RESTART] Backend restarted. Running build:\n"
+                                f"[ORGTREE RESTART NOTICE] The backend was restarted. This is an informational "
+                                f"notice delivered to live agents so you know what code version went live.\n\n"
+                                f"Running build:\n"
                                 f"- Commit: {current_commit} (short: {current_short}){dirty_info}\n"
                                 f"- Backend PID: {pid_info}\n"
                                 f"- Started at: {started_at}{branch_info}\n\n"
-                                f"Ancestry check: git merge-base --is-ancestor <your-commit> {current_commit}"
+                                f"What you can do with this:\n"
+                                f"- If you were waiting on or verifying a deployed fix, check whether the running "
+                                f"commit contains your changes with:\n"
+                                f"  git merge-base --is-ancestor <your-commit> {current_commit}\n"
+                                f"- If you need to be woken immediately with a turn on the NEXT restart, call orgtree_restart_wake.\n"
+                                f"- Otherwise, no action is needed; this notice is for your awareness."
                             )
                             entry = {
                                 "id": uuid.uuid4().hex[:12],
@@ -334,7 +339,7 @@ def on_backend_startup(*, dry_run: bool = False) -> dict[str, Any]:
                                 if m.get("restart_notice") or (
                                     m.get("from") == "orgtree"
                                     and m.get("kind") == "notice"
-                                    and "[ORGTREE RESTART]" in m.get("body", "")
+                                    and "[ORGTREE RESTART" in m.get("body", "")
                                 ):
                                     existing_idx = idx
                                     break
