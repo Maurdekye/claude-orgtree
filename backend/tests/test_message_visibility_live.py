@@ -96,10 +96,22 @@ def fragile(label: str, why_unreachable: str, fn) -> None:
         return
     try:
         fn()
-    except Exception as e:                                       # noqa: BLE001
+    except AssertionError as e:
+        # the configuration was REACHED and the invariant bent — which is what
+        # `why_unreachable` is a statement about
         FRAGILE.append((label, why_unreachable,
-                        str(e).splitlines()[0][:200]))
+                        str(e).splitlines()[0][:200] if str(e) else "assertion"))
         print(f"  ⚠ FRAGILE {label}")
+        return
+    except Exception:                                            # noqa: BLE001
+        # ⚠ …but anything else means the rig never got as far as the
+        # behaviour. On 2026-09-03 three of these were filed as known
+        # fragilities reading "breaks as: HTTP Error 422" — an infrastructure
+        # failure wearing the label of an expected quirk, in the one category
+        # nobody re-reads. A tolerated bucket must only ever hold the thing it
+        # is named for.
+        FAIL.append((label, traceback.format_exc()))
+        print(f"  FAIL     {label}  (not a fragility: the rig failed to reach it)")
         return
     PASS += 1
     print(f"  ok {PASS:3d}  {label}")
@@ -130,6 +142,36 @@ DEAD_HUB = "http://127.0.0.1:9"     # discard port: refuses instantly
 os.makedirs(DATA, exist_ok=True)
 with io.open(os.path.join(DATA, "defaults.json"), "w", encoding="utf-8") as _f:
     json.dump({"net_hub_address": DEAD_HUB}, _f)
+
+# ⚠ A FAKE CLI NEEDS A FAKE IDENTITY, or this whole suite is dark.
+#
+# Measured 2026-09-03, on pristine main and going back an unknown distance:
+# 0 checks passed, 40 failed, ZERO payload samples scored. Every failure was
+# the same `HTTP Error 422` on the FIRST call of `make_org` — so no agent was
+# ever hired, no turn ever ran, and the suite whose contract is "a message is
+# on screen continuously and NEVER appears twice" was asserting nothing at
+# all. A real duplicate-render bug shipped to the user underneath it
+# (`ebc8f9e`), which is what a dark net costs.
+#
+# The cause is drift, not a bug in either side. `provider_hire_gate` refuses a
+# Claude tier unless `accounts.live_identity()` reports a signed-in account,
+# and that reads `~/.claude.json`. This rig points HOME at its own throwaway
+# directory — deliberately, so transcripts land there and nothing the user
+# owns is touched — so `~/.claude.json` does not exist and the gate answers,
+# correctly, "Claude is not signed in".
+#
+# So satisfy the gate rather than relax it. The gate asks whether the machine
+# this backend runs on is signed in; for the rig's own synthetic machine the
+# honest answer is yes, and it already substitutes the CLI itself
+# (ORGTREE_CLAUDE_CLI=fakecli.js) — this is the same substitution one layer
+# down. `live_identity` reads CLI CONFIG METADATA and is documented never to
+# touch the credentials store, so an `oauthAccount` stanza is the whole of
+# what it wants; no real secret is read, copied or written anywhere. The
+# `--real-cli` path restores the user's real HOME and never sees this file.
+with io.open(os.path.join(HOME, ".claude.json"), "w", encoding="utf-8") as _f:
+    json.dump({"oauthAccount": {
+        "accountUuid": "00000000-0000-4000-8000-00000fa4ec11",
+        "emailAddress": "fakecli@orgtree.invalid"}}, _f)
 
 
 
@@ -447,6 +489,25 @@ def one_send(label: str, *, echo_ms: int, first_ms: int | None = None,
     return p
 
 
+#: The rig is an instrument, and an instrument that reads nothing is broken
+#: rather than clean. A sample is scored every time the 20 Hz poller looks at
+#: a payload, so SAMPLES == 0 means no desk was ever observed, whatever else
+#: the run says. It went dark exactly that way (see the fake-identity note
+#: above): 40 red lines that read like ordinary red, and underneath them a
+#: suite asserting nothing for an unknown number of weeks, while the very
+#: bug it exists to catch shipped to the user. Silence gets its own named
+#: failure so it can never again be mistaken for a shade of the known red.
+def _sampling_verdict() -> str:
+    if SAMPLES:
+        return ""
+    return ("THE RIG SCORED NOTHING - 0 payload samples over "
+            f"{RUNS} turn(s). No desk was ever observed, so NOTHING in this "
+            "file was asserted, whatever the counts above say. That is a "
+            "broken rig, not a failing subject: read the FIRST failure's "
+            "traceback, not the last. The known cause is every `make_org` "
+            f"hire being refused (backend log: {LOG}).")
+
+
 def main() -> None:
     print(f"live rig: port {PORT}, data {DATA}")
     set_cfg(default={})
@@ -758,6 +819,13 @@ def main() -> None:
     print(f"{PASS} checks passed, {len(FAIL)} failed, "
           f"{len(FRAGILE)} known-fragile, {len(EXCEPTIONS)} measured "
           f"exceptions ({RUNS} live turns, {SAMPLES} payload samples scored)")
+    dark = _sampling_verdict()
+    if dark:
+        print("")
+        print("!" * 72)
+        print(dark)
+        print("!" * 72)
+        sys.exit(1)
     if FAIL:
         print(f"\n{len(FAIL)} CHECKS FAILED  (backend log: {LOG})")
         sys.exit(1)
