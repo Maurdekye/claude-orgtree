@@ -423,7 +423,7 @@ def main():
         probe = os.environ.get("FAKECODEX_WIREPROBE")
         if probe:
             with open(probe, "a", encoding="utf-8") as f:
-                f.write(json.dumps({"method": method}) + "\n")
+                f.write(json.dumps({"method": method, "pid": os.getpid()}) + "\n")
         if method == "initialize":
             # plantable prewarm faults: a server that never answers its
             # handshake, and one that dies on it

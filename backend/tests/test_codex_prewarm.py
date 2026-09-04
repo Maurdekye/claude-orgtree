@@ -96,16 +96,23 @@ def mkorg(label: str, probe: str | None) -> tuple[str, str]:
     return org.d["slug"], nid
 
 
-def probe_methods(probe: str) -> list[str]:
+def probe_rows(probe: str) -> list[dict]:
     if not os.path.exists(probe):
         return []
     out = []
     for ln in open(probe, encoding="utf-8"):
         try:
-            out.append(str(json.loads(ln).get("method")))
+            out.append(json.loads(ln))
         except ValueError:
             pass
     return out
+
+
+def probe_methods(probe: str, pid: int | None = None) -> list[str]:
+    rows = probe_rows(probe)
+    if pid is not None:
+        rows = [r for r in rows if r.get("pid") == pid]
+    return [str(r.get("method")) for r in rows if "method" in r]
 
 
 def journal_rows(kind: str, slug: str, nid: str,
@@ -170,7 +177,7 @@ def prewarm_full_readiness_before_any_prompt():
     wait_for(lambda: bool(st_of(SLUG, NID).get("proc_warm")),
              why="prewarm finisher to mark warm")
     eq(wp.warm_state, "ready", "pool-side warm state")
-    methods = probe_methods(PROBE1)
+    methods = probe_methods(PROBE1, wp.proc.pid)
     assert "initialize" in methods and "initialized" in methods, methods
     assert "mcpServerStatus/list" in methods, methods
     for banned in ("thread/start", "thread/resume", "turn/start",
@@ -205,7 +212,7 @@ def first_prompt_retains_pid_single_initialize():
     eq(after.proc.pid, pid0, "PID across the first prompt")
     assert after is wp, "the very same process object parks back"
     eq(after.warm_state, "ready", "warm state survives the turn")
-    methods = probe_methods(PROBE1)
+    methods = probe_methods(PROBE1, pid0)
     eq(methods.count("initialize"), 1, "initialize stays once per process")
     first_list = methods.index("mcpServerStatus/list")
     assert methods.index("thread/start") > first_list, \
@@ -218,6 +225,39 @@ def first_prompt_retains_pid_single_initialize():
 
 check("first prompt claims the exact prewarmed PID; initialize never repeats",
       first_prompt_retains_pid_single_initialize)
+
+
+def model_inventory_handshake_isolated_from_lane_process():
+    # Pin the regression discovered on 2026-09-04:
+    # Available tools assembly queries Codex model inventory (providers.codex_model_inventory).
+    # On a cold cache, this spawns an ephemeral app-server helper that writes its own
+    # handshake (initialize + initialized + model/list) to the wire probe.
+    # That helper handshake must be attributed to a distinct PID and must NOT count
+    # against the lane process's single-initialize invariant.
+    rows = probe_rows(PROBE1)
+    pids = {r.get("pid") for r in rows if r.get("pid") is not None}
+    assert len(pids) >= 2, f"expected at least 2 distinct PIDs in probe, got {pids}"
+    wp = pooled(SLUG, NID)
+    pid0 = wp.proc.pid
+    assert pid0 in pids, f"lane PID {pid0} not found in probe PIDs {pids}"
+
+    helper_pids = pids - {pid0}
+    assert helper_pids, "expected distinct helper PID for model inventory query"
+    helper_pid = next(iter(helper_pids))
+    helper_methods = [str(r.get("method")) for r in rows if r.get("pid") == helper_pid]
+    lane_methods = [str(r.get("method")) for r in rows if r.get("pid") == pid0]
+
+    assert "initialize" in helper_methods, helper_methods
+    assert "model/list" in helper_methods, helper_methods
+    for banned in ("thread/start", "thread/resume", "turn/start"):
+        assert banned not in helper_methods, f"helper process sent {banned}"
+
+    eq(lane_methods.count("initialize"), 1, "lane process initialize count")
+    eq(helper_methods.count("initialize"), 1, "helper process initialize count")
+
+
+check("helper inventory process handshake is isolated and does not count against lane process",
+      model_inventory_handshake_isolated_from_lane_process)
 
 
 def ws_lifecycle_ready_transition():
