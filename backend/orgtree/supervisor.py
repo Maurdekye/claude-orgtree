@@ -6640,7 +6640,10 @@ def _cache_semantic_inputs(org: Org, nid: str, provider: str) -> tuple[str, str]
     """Digests of normalized provider-visible tool and argv surfaces."""
     n = org.node(nid)
     scope = n.get("scope") or {}
-    if provider == "claude":
+    if provider in _NATIVE_CLAUDEMD_PROVIDERS:
+        # `claude` AND `openrouter`: the same Claude CLI, the same argv — an
+        # OpenRouter tier only re-points its endpoint (audit C1, 2026-09-04:
+        # `== "claude"` here sent OpenRouter down the Antigravity leg below)
         cmd = _build_cmd(org, nid, write_ident=False)
         projection = _cache_cmd_projection(cmd)
         projection["cli_version"] = cli_version()
@@ -6742,19 +6745,59 @@ def _cache_claude_namespace(org: Org, tier: str,
         return ("api-key:" + cachecontinuity.digest(
                     {"credential": api_key}, 16), "api_key")
     if openrouter_env(resolved_env):
-        # the OpenRouter lane: its own namespace (another endpoint, another
-        # key — INV-003), keyed by a digest of the token so a key rotation is
-        # a namespace change without the credential ever being persisted;
-        # the lane is `api_key`, whose 5-minute window was MEASURED on the
-        # gateway (cachecontinuity.SUPPORTED_LANES).
-        return ("openrouter-key:" + cachecontinuity.digest(
-                    {"credential": resolved_env["ANTHROPIC_AUTH_TOKEN"]}, 16),
-                "api_key")
+        # a Claude tier whose resolved env is nonetheless the gateway's —
+        # attribute it to the gateway's namespace, never the main login
+        return _cache_openrouter_namespace(resolved_env)
     account = identity_in_env(resolved_env)
     if account == accounts.PRIMARY:
         account = _cache_primary_namespace()
     return (account,
             "unobserved" if account == UNATTRIBUTED else "subscription")
+
+
+#: the OpenRouter account namespace when the resolved spawn env carries no
+#: gateway credential — a keyless tier, which the spawn seam refuses loudly
+#: (`spawn_env`) but which the readiness poll still snapshots. Named for the
+#: gateway so it can never read as the main login or another provider's
+#: account; the lane is `unobserved`, which classifies as "cannot tell".
+OPENROUTER_ACCOUNT_UNOBSERVED: Final = "openrouter-key-unobserved"
+
+
+def _cache_openrouter_namespace(resolved_env: dict[str, str]
+                                ) -> tuple[str, str]:
+    """Private OpenRouter account identity plus its TTL lane.
+
+    The OpenRouter lane is the Claude CLI pointed at openrouter.ai with the
+    gateway key as its bearer token (`spawn_env`): its own namespace (another
+    endpoint, another key — INV-003), keyed by a digest of the token so a key
+    rotation is a namespace change without the credential ever being
+    persisted. The lane is `api_key`, whose 5-minute window was MEASURED on
+    the gateway (cachecontinuity.SUPPORTED_LANES) — not the Claude
+    subscription's hour, and not an unsupported lane.
+
+    ⚠ READS THE RESOLVED ENV, NOT `openrouter._key()`. The env is what the
+    spawn will actually carry (the `identity_in_env` rule); re-reading the
+    key store would answer "which key WOULD a spawn get now".
+    """
+    if openrouter_env(resolved_env):
+        return ("openrouter-key:" + cachecontinuity.digest(
+                    {"credential": resolved_env["ANTHROPIC_AUTH_TOKEN"]}, 16),
+                "api_key")
+    return OPENROUTER_ACCOUNT_UNOBSERVED, "unobserved"
+
+
+def _cache_openrouter_spawn_env(org: Org, tier: str, nid: str
+                                ) -> dict[str, str]:
+    """The OpenRouter tier's resolved spawn env, or an EMPTY env when there is
+    no gateway key to resolve. `spawn_env` raises for a keyless OpenRouter
+    tier — correct at the spawn seam, where a turn must fail loudly rather
+    than fall through to the subscription — but a snapshot is an observation
+    the readiness poll takes without a turn, and crashing it would hide the
+    node's state instead of reporting it as unobserved."""
+    try:
+        return spawn_env(org, tier=tier, nid=nid)
+    except RuntimeError:
+        return {}
 
 
 def _cache_codex_account_namespace() -> tuple[str, str]:
@@ -6826,6 +6869,11 @@ def _cache_claude_env_projection(resolved_env: dict[str, str]
     baseline = clean_env()
     excluded = {
         "ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN",
+        # the OpenRouter lane's bearer token — credential, so namespace, not
+        # env: a key rotation must move `account` and NOTHING else, and the
+        # raw token must not be hashed into a second, unlabelled component.
+        # ANTHROPIC_BASE_URL and the model pins STAY: they are the route.
+        "ANTHROPIC_AUTH_TOKEN",
         "CLAUDE_CODE_DEBUG_LOG_LEVEL",
     }
     return {key: str(value) for key, value in sorted(resolved_env.items())
@@ -6849,10 +6897,27 @@ def _cache_snapshot(org: Org, nid: str, *, now: float | None = None,
     account = account_override
     lane = lane_override
     resolved_env: dict[str, str] = {}
+    # ⚠ FOUR PROVIDERS, FOUR LEGS — NO "EVERYTHING ELSE". Audit C1
+    # (astras-entrance-exam, 2026-09-04): this used to be claude / openai /
+    # else, and "else" was the Antigravity leg, so an OpenRouter node reported
+    # `provider=openrouter` beside an ANTIGRAVITY account, `provider_unsupported`
+    # and Antigravity tool digests — quietly, with nothing crashing. The
+    # OpenRouter helper and its TTL entry both existed and were never reached.
+    # `provider_of` answers only these four; an unknown tier is `claude`.
     if provider == "claude":
         resolved_env = env or spawn_env(org, tier=tier, nid=nid)
         resolved_account, resolved_lane = _cache_claude_namespace(
             org, tier, resolved_env, now)
+        account = account or resolved_account
+        lane = lane or resolved_lane
+    elif provider == openrouter.PROVIDER_ID:
+        # the Claude CLI pointed at openrouter.ai: the ROUTE INPUTS are the
+        # Claude harness's (argv, startup files, env pins — the shared
+        # `_NATIVE_CLAUDEMD_PROVIDERS` legs below), the NAMESPACE is the
+        # gateway key's, and the lane is the gateway's measured 5-minute one
+        resolved_env = env or _cache_openrouter_spawn_env(org, tier, nid)
+        resolved_account, resolved_lane = _cache_openrouter_namespace(
+            resolved_env)
         account = account or resolved_account
         lane = lane or resolved_lane
     elif provider == "openai":
@@ -6860,16 +6925,19 @@ def _cache_snapshot(org: Org, nid: str, *, now: float | None = None,
         account = account or resolved_account
         lane = lane or resolved_lane
     else:
+        # `google` — Antigravity, the only remaining answer `provider_of`
+        # gives. It publishes no cache statistic (SUPPORTED_LANES).
         account = account or _cache_antigravity_account_namespace()
         lane = lane or "provider_unsupported"
+    claude_harness = provider in _NATIVE_CLAUDEMD_PROVIDERS
     system = cachecontinuity.digest(identity_prompt(org, nid))
     tools_digest, argv_digest = _cache_semantic_inputs(org, nid, provider)
     startup = (warmpool.native_startup_context_digest(org, nid)
-               if provider == "claude"
+               if claude_harness
                else cachecontinuity.digest({"managed_identity": system,
                                             "provider": provider}))
     env_digest = cachecontinuity.digest(
-        _cache_claude_env_projection(resolved_env) if provider == "claude" else
+        _cache_claude_env_projection(resolved_env) if claude_harness else
         {"provider": provider,
          "codex_home": os.environ.get("CODEX_HOME", "") if provider == "openai"
          else ""})
