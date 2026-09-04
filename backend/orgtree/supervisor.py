@@ -383,7 +383,9 @@ def cli_version() -> str:
     ver = "unknown"
     try:
         r = subprocess.run(_claude_argv() + ["--version"],
-                           capture_output=True, text=True, timeout=30)
+                           capture_output=True, text=True, timeout=30,
+                           creationflags=(subprocess.CREATE_NO_WINDOW  # type: ignore[attr-defined]
+                                          if os.name == "nt" else 0))
         m = re.search(r"\d+\.\d+\.\d+", r.stdout or "")
         if m:
             ver = m.group(0)
@@ -410,7 +412,9 @@ def build_info() -> dict[str, Any]:
         try:
             r = subprocess.run(["git", "rev-parse", "--short", "HEAD"],
                                 cwd=sbx.REPO_ROOT, capture_output=True,
-                                text=True, timeout=10)
+                                text=True, timeout=10,
+                                creationflags=(subprocess.CREATE_NO_WINDOW  # type: ignore[attr-defined]
+                                               if os.name == "nt" else 0))
             if r.returncode == 0:
                 commit = r.stdout.strip() or "unknown"
             # the BRANCH too (FR-15 preview deploys): a branch deploy was
@@ -420,7 +424,9 @@ def build_info() -> dict[str, Any]:
             # says something the SHA does not.
             b = subprocess.run(["git", "rev-parse", "--abbrev-ref", "HEAD"],
                                cwd=sbx.REPO_ROOT, capture_output=True,
-                               text=True, timeout=10)
+                               text=True, timeout=10,
+                               creationflags=(subprocess.CREATE_NO_WINDOW  # type: ignore[attr-defined]
+                                              if os.name == "nt" else 0))
             if b.returncode == 0:
                 name = b.stdout.strip()
                 if name and name not in ("HEAD", "main"):
