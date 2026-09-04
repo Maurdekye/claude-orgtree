@@ -403,7 +403,8 @@ def _():
     # +orgtree_prime_restart (FR-27, 2026-08-27);
     # +orgtree_swap +orgtree_self_subjugate (D-224, 2026-09-02)
     # +orgtree_interrupt (⏸ in isolation, 2026-09-03)
-    assert len(tools) == 30, [x["name"] for x in tools]
+    # +orgtree_restart_wake (2026-09-04)
+    assert len(tools) == 31, [x["name"] for x in tools]
     for c in tools:
         assert c["name"].startswith("orgtree_"), c
         assert len(c["description"]) > 20, c
@@ -571,7 +572,8 @@ def _():
     # +orgtree_prime_restart (FR-27, the deferred restart, 2026-08-27);
     # +orgtree_swap +orgtree_self_subjugate (D-224, seat exchange, 2026-09-02)
     # +orgtree_interrupt (⏸ in isolation, 2026-09-03)
-    assert len(CARDS) == 30, len(CARDS)
+    # +orgtree_restart_wake (2026-09-04)
+    assert len(CARDS) == 31, len(CARDS)
 
 
 @t("☠ the deprecated self_update alias is dispatchable but NOT advertised")
@@ -734,6 +736,7 @@ def _():
     # prompt, so `orgtree_swap` really is absent rather than accidentally
     # satisfied.)
     assert absent == ["orgtree_list_orgs", "orgtree_move", "orgtree_rename",
+                      "orgtree_restart_wake",
                       "orgtree_self_subjugate", "orgtree_swap",
                       "orgtree_switch_model"], \
         f"the recital gap changed — update or retire this pin: {absent}"

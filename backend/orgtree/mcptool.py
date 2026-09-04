@@ -386,6 +386,48 @@ TOOLS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "orgtree_restart_wake",
+        "description": (
+            "TOGGLE WAKE-ON-RESTART for your node (or a subordinate report) — "
+            "upgrade the passive restart notification into a full waking turn "
+            "on the next backend restart. By default, every orgtree restart "
+            "sends a PASSIVE notice to all live agents (carrying the deployed "
+            "commit SHA and backend PID without waking or starting a turn). "
+            "Call this tool to be WOKEN WITH A TURN as soon as orgtree next "
+            "restarts, so you can immediately verify deployed fixes. "
+            "action: 'arm' (default) · 'cancel' (revert to passive notice) · 'status'. "
+            "mode: 'one_shot' (default — fires once then reverts to passive "
+            "notice) or 'standing' (wake on every restart). "
+            "reason: why you need to be woken (e.g. 'verifying fix commit "
+            "abc'); carried forward into the wake turn and survives compaction. "
+            "target: optional report node id if arming on behalf of a subordinate."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["arm", "cancel", "status"],
+                    "description": "arm (default), cancel, or status",
+                },
+                "mode": {
+                    "type": "string",
+                    "enum": ["one_shot", "standing"],
+                    "description": "one_shot (default — fires once) or standing",
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "why — carried forward to the waking turn and survives compaction",
+                },
+                "target": {
+                    "type": "string",
+                    "description": "subordinate node id (default: yourself)",
+                },
+            },
+            "required": [],
+        },
+    },
+    {
         "name": "orgtree_present",
         "description": (
             "Present a DOCUMENT to the user for in-page reading — a plan, a "

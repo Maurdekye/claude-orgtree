@@ -76,7 +76,7 @@ from . import frozen_install
 from . import ledger as ledger_mod
 from . import (accounts, antigravity_limits, appsettings, bridgeauth,
                codex_limits, limits, net,
-               providers, sandbox, store, subproxy, supervisor, warmpool)
+               providers, restart_wake, sandbox, store, subproxy, supervisor, warmpool)
 from .ledger import LedgerError, Org, USER, VIS_LEVELS, norm_dirs, norm_tools
 
 if TYPE_CHECKING:
@@ -906,6 +906,7 @@ async def _wire_notify() -> None:  # type: ignore[unused-function]  # registered
     # only after reconciliation classifies missing sessions and re-drives
     # interrupted work, so maintenance cannot race startup repair.
     supervisor.start_working_cache_keeper()
+    restart_wake.on_backend_startup()
 
 PORT = int(os.environ.get("ORGTREE_PORT", "7360"))
 PUBLIC_PORT = int(os.environ.get("ORGTREE_PUBLIC_PORT", "0") or 0)
@@ -5039,6 +5040,32 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
                         body.org, body.node,
                         str(a.get("target") or "org"),
                         a.get("reason"))
+            elif body.tool == "orgtree_restart_wake":
+                act = str(a.get("action") or "arm")
+                if act not in ("arm", "cancel", "status"):
+                    raise HTTPException(422, "action must be arm|cancel|status")
+                target = str(a.get("target") or body.node)
+                org._require_live(body.node)
+                if target != body.node:
+                    if not org.is_ancestor(body.node, target):
+                        raise HTTPException(
+                            403,
+                            f"you can only manage restart wake for yourself or "
+                            f"your subordinates ({target!r} is not your subordinate)")
+                    org._require_live(target)
+                if act == "status":
+                    result = restart_wake.status_restart_wake(body.org, target)
+                elif act == "cancel":
+                    result = restart_wake.cancel_restart_wake(body.org, target)
+                else:
+                    mode = str(a.get("mode") or "one_shot")
+                    if mode not in ("one_shot", "standing"):
+                        raise HTTPException(422, "mode must be one_shot|standing")
+                    reason = a.get("reason")
+                    if reason is not None:
+                        reason = str(reason)[:200]
+                    result = restart_wake.arm_restart_wake(
+                        body.org, target, body.node, mode=mode, reason=reason)
             elif body.tool == "orgtree_present":
                 # FR-03: a reading card beside the node — non-blocking
                 result = org.present_document(body.node,
