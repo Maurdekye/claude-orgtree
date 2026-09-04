@@ -7268,7 +7268,9 @@ def _working_cache_read(slug: str, nid: str,
                 proc = subprocess.Popen(
                     cmd, cwd=cwd, env=env, stdin=subprocess.PIPE,
                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                    encoding="utf-8", errors="replace")
+                    encoding="utf-8", errors="replace",
+                    creationflags=(subprocess.CREATE_NO_WINDOW  # type: ignore[attr-defined]
+                                   if os.name == "nt" else 0))
                 if lease is not None:
                     lease["proc"] = proc
             _leash(proc)

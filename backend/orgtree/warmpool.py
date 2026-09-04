@@ -1845,7 +1845,9 @@ def _spawn_for(org: Any, nid: str, why: str) -> WarmProcess | None:
             cwd=sup.scratch_dir(slug, nid), env=env,
             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.PIPE, text=True, encoding="utf-8",
-            errors="replace")
+            errors="replace",
+            creationflags=(subprocess.CREATE_NO_WINDOW  # type: ignore[attr-defined]
+                           if os.name == "nt" else 0))
         try:
             sup._leash(proc)
             sup._mcp_tool_count_begin(
