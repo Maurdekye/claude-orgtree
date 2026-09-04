@@ -14864,10 +14864,12 @@ def _org_write_acl(org: Org, blocked: bool) -> None:
             if blocked:
                 subprocess.run(["icacls", t, "/deny",
                                 f"{user}:(OI)(CI)(WD,AD)"],
-                               capture_output=True, timeout=15)
+                               capture_output=True, timeout=15,
+                               creationflags=subprocess.CREATE_NO_WINDOW)  # type: ignore[attr-defined]
             else:
                 subprocess.run(["icacls", t, "/remove:d", user],
-                               capture_output=True, timeout=15)
+                               capture_output=True, timeout=15,
+                               creationflags=subprocess.CREATE_NO_WINDOW)  # type: ignore[attr-defined]
         except OSError:
             pass
 
@@ -18680,7 +18682,8 @@ def reconcile(slug: str) -> list[str]:
                         if os.name == "nt":
                             subprocess.run(
                                 ["taskkill", "/PID", str(pid), "/T", "/F"],
-                                capture_output=True, timeout=15)
+                                capture_output=True, timeout=15,
+                                creationflags=subprocess.CREATE_NO_WINDOW)  # type: ignore[attr-defined]
                         else:
                             os.kill(int(pid), 15)
                     except (OSError, subprocess.TimeoutExpired, ValueError):

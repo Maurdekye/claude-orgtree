@@ -299,7 +299,8 @@ def kill_tree(proc: subprocess.Popen[bytes] | None) -> None:
     try:
         if os.name == "nt":
             subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)],
-                           capture_output=True, timeout=15)
+                           capture_output=True, timeout=15,
+                           creationflags=subprocess.CREATE_NO_WINDOW)  # type: ignore[attr-defined]
         proc.kill()
     except (OSError, subprocess.TimeoutExpired):
         pass
