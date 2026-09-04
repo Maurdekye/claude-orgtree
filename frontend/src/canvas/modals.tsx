@@ -18,7 +18,7 @@ import { pickFolder } from '../picker'
 import {
   CloseIcon, DeleteIcon, FolderIcon, LayersIcon, SettingsIcon,
 } from '../icons'
-import { ago, ALL_PRESENT, anyTierSeat, CODEX_TIERS, ANTIGRAVITY_TIERS, fmtCredits, hireOf, isOpenRouterTier, MODEL_VERSIONS, openrouterTierIds, pileOrder, PROVIDER_LABEL, providerOf, reserveOffer, TIER_LETTER, tierLabel, TIERS, tierShown, USER, useEsc } from './shared'
+import { ago, ALL_PRESENT, anyTierSeat, codexTierOffer, CODEX_TIERS, ANTIGRAVITY_TIERS, fmtCredits, hireOf, isOpenRouterTier, MODEL_VERSIONS, openrouterTierIds, pileOrder, PROVIDER_LABEL, providerOf, reserveOffer, TIER_LETTER, tierLabel, TIERS, tierShown, USER, useEsc } from './shared'
 import type { ProviderPresence } from './shared'
 import type { CanvasNode, DraftScope, DraftState, OpFn, Pile } from './shared'
 import { ProcessLifecycleMark } from './desk'
@@ -786,9 +786,12 @@ export function NodeConfig({ node, map, tree, slug, op, toast, codexProvider,
   // the truthful selected no-op, or the select would silently read as some
   // other model.
   const reserveHidden = reserveOffer(hireOf(codexProvider)) === 'hide'
+  const codexHire = hireOf(codexProvider)
   const shownTiers = (fam: readonly string[]) =>
     fam.filter((t) => tierShown(presence, t, node.tier)
-      && !(reserveHidden && t === 'gpt-reserve' && t !== node.tier))
+      && !(reserveHidden && t === 'gpt-reserve' && t !== node.tier)
+      && !(CODEX_TIERS.includes(t) && codexTierOffer(codexHire, t) === 'hide'
+        && t !== node.tier))
   const modelOption = (t: string) => {
     const why = unavailable(t)
     return (

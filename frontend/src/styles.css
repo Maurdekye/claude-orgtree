@@ -429,6 +429,7 @@ button.badge.audience-fold.alert {
 .chip.agents b.t-gpt-reserve { color: var(--tier-luna); }
 .chip.agents b.t-terra { color: var(--tier-terra); }
 .chip.agents b.t-sol { color: var(--tier-sol); }
+.chip.agents b.t-astra { color: var(--tier-astra); }
 .chip.agents b.t-flash { color: var(--tier-flash); }
 .chip.agents b.t-pro { color: var(--tier-pro); }
 /* credit requests (inbox panel): old → new (+Δ), reason, one-click verdict */
@@ -490,12 +491,14 @@ button.badge.audience-fold.alert {
 .sq.tier-gpt-reserve { border-top-color: color-mix(in srgb, var(--tier-luna) 55%, var(--line)); }
 .sq.tier-terra { border-top-color: color-mix(in srgb, var(--tier-terra) 55%, var(--line)); }
 .sq.tier-sol { border-top-color: color-mix(in srgb, var(--tier-sol) 55%, var(--line)); }
+.sq.tier-astra { border-top-color: color-mix(in srgb, var(--tier-astra) 55%, var(--line)); }
 .sq.tier-flash { border-top-color: color-mix(in srgb, var(--tier-flash) 55%, var(--line)); }
 .sq.tier-pro { border-top-color: color-mix(in srgb, var(--tier-pro) 55%, var(--line)); }
 .sq.mini.tier-luna { --mini-tier: var(--tier-luna); }
 .sq.mini.tier-gpt-reserve { --mini-tier: var(--tier-luna); }
 .sq.mini.tier-terra { --mini-tier: var(--tier-terra); }
 .sq.mini.tier-sol { --mini-tier: var(--tier-sol); }
+.sq.mini.tier-astra { --mini-tier: var(--tier-astra); }
 .sq.mini.tier-flash { --mini-tier: var(--tier-flash); }
 .sq.mini.tier-pro { --mini-tier: var(--tier-pro); }
 /* At map zoom the old provider signal collapsed to a sub-pixel busy border,
@@ -549,6 +552,7 @@ button.badge.audience-fold.alert {
 .sq.prov-openai.desk.tier-gpt-reserve { border-top-color: var(--tier-luna); }
 .sq.prov-openai.desk.tier-terra { border-top-color: var(--tier-terra); }
 .sq.prov-openai.desk.tier-sol { border-top-color: var(--tier-sol); }
+.sq.prov-openai.desk.tier-astra { border-top-color: var(--tier-astra); }
 /* the antigravity family's card dressing (D-189) — the same inherited-chrome
    contract as the codex block above, bluish-violet where codex is blue. */
 .sq.prov-google.busy {
@@ -1345,6 +1349,7 @@ button.cc-name:hover {
   --tier-luna: #b9c4d6;
   --tier-terra: #7fae5f;
   --tier-sol: #ff8a3d;
+  --tier-astra: #59d6ff;
   /* the antigravity family (D-189), to the user's spec (2026-08-29): flash a
      very light icy blue, pro a DEEP bluish-violet that leans violet — while
      the provider accent below leans BLUE. One blue-violet family (icy ~198° →
@@ -1403,6 +1408,7 @@ button.cc-name:hover {
 .tier.t-gpt-reserve { color: var(--tier-luna); border-color: color-mix(in srgb, var(--tier-luna) 45%, var(--line)); }
 .tier.t-terra { color: var(--tier-terra); border-color: color-mix(in srgb, var(--tier-terra) 45%, var(--line)); }
 .tier.t-sol { color: var(--tier-sol); border-color: color-mix(in srgb, var(--tier-sol) 45%, var(--line)); }
+.tier.t-astra { color: var(--tier-astra); border-color: color-mix(in srgb, var(--tier-astra) 45%, var(--line)); }
 .tier.t-flash { color: var(--tier-flash); border-color: color-mix(in srgb, var(--tier-flash) 45%, var(--line)); }
 .tier.t-pro { color: var(--tier-pro); border-color: color-mix(in srgb, var(--tier-pro) 45%, var(--line)); }
 /* lifecycle fills: archived fades (existing); knowledge bearers wash grey.
@@ -2296,6 +2302,7 @@ button.cc-name:hover {
 .hsof button.t-gpt-reserve { color: var(--tier-luna); border-color: color-mix(in srgb, var(--tier-luna) 45%, var(--line)); }
 .hsof button.t-terra { color: var(--tier-terra); border-color: color-mix(in srgb, var(--tier-terra) 45%, var(--line)); }
 .hsof button.t-sol { color: var(--tier-sol); border-color: color-mix(in srgb, var(--tier-sol) 45%, var(--line)); }
+.hsof button.t-astra { color: var(--tier-astra); border-color: color-mix(in srgb, var(--tier-astra) 45%, var(--line)); }
 .hsof button.t-flash { color: var(--tier-flash); border-color: color-mix(in srgb, var(--tier-flash) 45%, var(--line)); }
 .hsof button.t-pro { color: var(--tier-pro); border-color: color-mix(in srgb, var(--tier-pro) 45%, var(--line)); }
 .hsof button.codex-preview:disabled { opacity: .45; border-style: dashed; }

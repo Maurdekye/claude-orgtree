@@ -14,7 +14,7 @@ import {
   LockIcon, MailIcon, RetireIcon, SettingsIcon,
 } from '../icons'
 import {
-  anyTierSeat, CODEX_TIER_LETTER, CODEX_TIER_SEAT, CODEX_TIERS, DESK_SCALE, deskDpi, DRAFT, familyOffer, fmtCredits, freezeKind, FREEZE_LABEL_SHORT, ANTIGRAVITY_TIER_LETTER, ANTIGRAVITY_TIER_SEAT, ANTIGRAVITY_TIERS, isOpenRouterTier, NODE_H, NODE_W, openrouterTierIds, providerOf, queuedSwitchTitle, reserveOffer, TIER_LETTER, TIER_SEAT, tierLabel, TIERS, USER,
+  anyTierSeat, codexTierOffer, CODEX_TIER_LETTER, CODEX_TIER_SEAT, CODEX_TIERS, DESK_SCALE, deskDpi, DRAFT, familyOffer, fmtCredits, freezeKind, FREEZE_LABEL_SHORT, ANTIGRAVITY_TIER_LETTER, ANTIGRAVITY_TIER_SEAT, ANTIGRAVITY_TIERS, isOpenRouterTier, NODE_H, NODE_W, openrouterTierIds, providerOf, queuedSwitchTitle, TIER_LETTER, TIER_SEAT, tierLabel, TIERS, USER,
   USER_H, USER_W,
 } from './shared'
 import type {
@@ -602,7 +602,7 @@ function SpawnChips({ onSpawn, free, seats, maxTier, side, soleHire,
     // token. remove it entirely" — so that verdict is 'hide', and a hidden
     // tier leaves the row completely rather than sitting in it disabled.
     const offerOf = (t: string) =>
-      (t === 'gpt-reserve' ? reserveOffer(hire) : offer)
+      (key === 'codex' ? codexTierOffer(hire, t) : offer)
     // ⚠ FILTERED BEFORE `tiers` IS STORED, because the inward-first sort below
     // orders families by "number of available model tiers" — a hidden chip
     // that still counted would push Codex inward for a row it does not render.

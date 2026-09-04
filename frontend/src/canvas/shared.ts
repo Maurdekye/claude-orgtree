@@ -23,7 +23,7 @@ import type {
 // `?` even though the hire sheet had a separate Codex-only map.
 export const TIER_LETTER: Record<string, string> = {
   haiku: 'H', sonnet: 'S', opus: 'O', fable: 'F',
-  'gpt-reserve': 'R', luna: 'L', terra: 'T', sol: 'S',
+  'gpt-reserve': 'R', luna: 'L', terra: 'T', sol: 'S', astra: 'A',
   // flash shares F with fable by the same accepted collision as sol/sonnet's
   // S — the chip class carries the family
   flash: 'F', pro: 'P',
@@ -54,11 +54,16 @@ export const MODEL_VERSIONS: Record<string, string[]> =
  *  2026-09-03, so a `Record<string, number>` here genuinely holds a
  *  fraction. The hire surfaces use this family list when the Codex CLI is
  *  available. */
-export const CODEX_TIERS = ['gpt-reserve', 'luna', 'terra', 'sol']
+export const CODEX_ALWAYS_TIERS = ['gpt-reserve', 'luna', 'terra', 'sol']
+/** All KNOWN Codex tiers, including rollout tiers whose metadata is installed
+ *  before their account access exists. A rollout tier is never offered merely
+ *  because it is in this list; `codexTierOffer` requires it in the backend's
+ *  live account-scoped tier rows. */
+export const CODEX_TIERS = [...CODEX_ALWAYS_TIERS, 'astra']
 export const CODEX_TIER_LETTER: Record<string, string> = {
-  'gpt-reserve': 'R', luna: 'L', terra: 'T', sol: 'S' }
+  'gpt-reserve': 'R', luna: 'L', terra: 'T', sol: 'S', astra: 'A' }
 export const CODEX_TIER_SEAT: Record<string, number> = {
-  'gpt-reserve': 0.2, luna: 0.2, terra: 2, sol: 5 }
+  'gpt-reserve': 0.2, luna: 0.2, terra: 2, sol: 5, astra: 10 }
 /** The antigravity family (D-189, re-walked for the Antigravity CLI
  *  2026-09-02) — Google tiers served by `agy`: flash (3.8-flash, with 3.7 and
  *  3.6 in the version menu) and pro (3.1-pro). Same separate-list rule as the
@@ -280,6 +285,10 @@ export interface HireState {
    *  this field keeps today's behaviour rather than bricking the chip. */
   reserveEnabled?: boolean
   reserveReason?: string | null
+  /** Tier ids this provider actually offered in its latest payload. Used only
+   *  to tighten known conditional rollout tiers; stable tiers retain the
+   *  family-level compatibility behavior when talking to an older backend. */
+  offeredTiers?: string[]
 }
 
 /** What a hire surface should DO with one provider's tier family (D-199).
@@ -342,7 +351,8 @@ export const familyOffer = (h: HireState | null | undefined): FamilyOffer =>
 export const hireOf = (p: ProviderInfo | null | undefined): HireState | null =>
   (p ? { enabled: !!p.hire_enabled, installed: !!p.status?.installed,
          reason: p.reason, userEnabled: p.user_enabled,
-         reserveEnabled: p.reserve_hire_enabled, reserveReason: p.reserve_reason } : null)
+         reserveEnabled: p.reserve_hire_enabled, reserveReason: p.reserve_reason,
+         offeredTiers: (p.tiers ?? []).map((t) => t.tier) } : null)
 
 /** gpt-reserve's own offer verdict — the family's, narrowed by its own gate.
  *  Never loosens what `familyOffer` already decided (a hidden/disabled family
@@ -371,6 +381,20 @@ export const hireOf = (p: ProviderInfo | null | undefined): HireState | null =>
 export const reserveOffer = (h: HireState | null | undefined): FamilyOffer => {
   const base = familyOffer(h)
   return base === 'offer' && h?.reserveEnabled === false ? 'hide' : base
+}
+
+/** Offer verdict for one Codex tier. Stable tiers preserve the established
+ *  family behavior. Any known tier outside that stable set is a conditional
+ *  rollout and fails closed unless the backend's fresh account inventory put
+ *  it in the provider's tier rows. Missing payload is therefore NOT enough
+ *  to light Astra, even though it remains optimistic for the stable family. */
+export const codexTierOffer = (
+  h: HireState | null | undefined, tier: string,
+): FamilyOffer => {
+  if (tier === 'gpt-reserve') return reserveOffer(h)
+  const base = familyOffer(h)
+  return !CODEX_ALWAYS_TIERS.includes(tier)
+    && !h?.offeredTiers?.includes(tier) ? 'hide' : base
 }
 
 /** D-202: is this provider part of the product on this machine AT ALL?

@@ -18,7 +18,7 @@ import { installFetch, FakeServer, mountView } from './harness'
 import test from 'node:test'
 import type { TestContext } from 'node:test'
 import assert from 'node:assert/strict'
-import { familyOffer, reserveOffer } from '../src/canvas/shared'
+import { codexTierOffer, familyOffer, reserveOffer } from '../src/canvas/shared'
 import type { HireState } from '../src/canvas/shared'
 
 const noop = () => {}
@@ -101,6 +101,19 @@ test('reserveOffer: never LOOSENS what familyOffer already decided', () => {
 
 // --------------------------------------------------------- §2 the surfaces
 
+test('conditional Codex tiers fail closed while stable tiers keep compatibility', () => {
+  assert.equal(codexTierOffer(null, 'astra'), 'hide',
+    'an unresolved provider payload must never light a rollout tier')
+  assert.equal(codexTierOffer(null, 'sol'), 'offer',
+    'the established family keeps its older-backend compatibility behavior')
+  assert.equal(codexTierOffer(
+    { enabled: true, installed: true, reason: null, offeredTiers: ['sol'] },
+    'astra'), 'hide')
+  assert.equal(codexTierOffer(
+    { enabled: true, installed: true, reason: null, offeredTiers: ['astra'] },
+    'astra'), 'offer')
+})
+
 const state = (o: Partial<HireState>): HireState =>
   ({ enabled: false, installed: false, reason: null, ...o })
 
@@ -110,13 +123,14 @@ const ABSENT = state({ reason: 'not installed — npm i -g y' })
 
 const CLAUDE = ['haiku', 'sonnet', 'opus', 'fable']
 const CODEX = ['gpt-reserve', 'luna', 'terra', 'sol']
+const ASTRA = 'astra'
 const ANTIGRAVITY = ['flash', 'pro']
 
 /** every hire token rendered, keyed by tier, with its disabled state */
 function tokens(el: HTMLElement, sel: string): Record<string, boolean> {
   const out: Record<string, boolean> = {}
   for (const b of el.querySelectorAll<HTMLButtonElement>(`${sel} button`)) {
-    const t = [...CLAUDE, ...CODEX, ...ANTIGRAVITY]
+    const t = [...CLAUDE, ...CODEX, ASTRA, ...ANTIGRAVITY]
       .find((x) => b.className.split(/\s+/).includes('t-' + x))
     if (t) out[t] = b.disabled
   }
@@ -148,7 +162,8 @@ function surfaceTest(name: string,
         <NodeSquare node={node} pos={{ x: 0, y: 0 }} lod="norm" focused={false}
           dragging={false} isDrop={false}
           seats={{ haiku: 1, sonnet: 2, opus: 5, fable: 10,
-                   'gpt-reserve': 0.2, luna: 0.2, terra: 2, sol: 5, flash: 1, pro: 2 }}
+                   'gpt-reserve': 0.2, luna: 0.2, terra: 2, sol: 5, astra: 10,
+                   flash: 1, pro: 2 }}
           map={new Map()} op={() => Promise.resolve({} as never)} slug="org"
           toast={noop} pxc={1} zoom={1}
           onSpawn={noop} onSpawnSide={noop} onSpawnTop={noop}
@@ -180,6 +195,25 @@ surfaceTest('THE REPORT: codex set up, claude not — only codex tokens appear',
     for (const t of CODEX) {
       assert.equal(got[t], false, `${t} is set up and must be offered`)
     }
+  })
+
+surfaceTest('Astra token stays absent until the provider payload offers it',
+  async (mount) => {
+    const dark = await mount({ claudeHire: ABSENT,
+      codexHire: state({ enabled: true, installed: true,
+        offeredTiers: [...CODEX] }), antigravityHire: ABSENT })
+    assert.equal(tokens(dark, '.hsof')[ASTRA], undefined)
+
+    const lit = await mount({ claudeHire: ABSENT,
+      codexHire: state({ enabled: true, installed: true,
+        offeredTiers: [...CODEX, ASTRA] }), antigravityHire: ABSENT })
+    // Five Codex tiers legitimately trigger the far-zoom compact tray; open
+    // it before checking the actual token rather than mistaking the tray for
+    // a missing offer.
+    const { act } = await import('react')
+    await act(async () => lit.querySelector<HTMLButtonElement>(
+      '.hsof:not(.side) .hire-expand')!.click())
+    assert.equal(tokens(lit, '.hsof:not(.side)')[ASTRA], false)
   })
 
 surfaceTest('gpt-reserve is REMOVED, not greyed, when its grant is gone — '
