@@ -358,6 +358,48 @@ None of the three announced itself. Each produced something that read as a
 normal, finished, believable result. That is the thing to be suspicious of in
 this repo — not the loud failures, which take care of themselves.
 
+### The same defect inside your INSTRUMENTS, which is worse
+
+By the end of 2026-09-04 the count was five, and the last two were not in the
+code under test — they were in the things being used to judge it. Those are
+worse, because a broken instrument is *internally consistent*: it produces a
+clean, confident result every time you run it.
+
+**① AN INSTRUMENT READING `None` IS NOT EVIDENCE OF ABSENCE.** Verifying that
+the antigravity lane now emits its `{kind:"text"}` handover, `msg-dupes` read
+websocket frames as `m["payload"]["kind"]` and got `None` for every frame. The
+node was right, frames were arriving, the field simply looked absent. But
+`api.py` spreads the payload at the TOP level (`{"type": "node_stream", "org":
+…, "node": …, **payload}`), so the correct read is `m["kind"]`. Had that pass
+been trusted it would have reported *"no `text` frame observed on a real
+turn"* — and sent someone hunting a fix that was already working, or worse,
+"fixing" correct code.
+
+What caught it was that the reading **disagreed with a backend test that
+already existed**. A second source of truth is the only thing that catches
+this class, precisely because the broken instrument never contradicts itself.
+If a new measurement says something surprising, reconcile it against something
+you already trust *before* you believe it.
+
+**② A TEST MAY ASSERT A REQUIREMENT YOU INVENTED.** Adding `draft_epoch`,
+`msg-dupes` was asked to prove a per-node counter "cannot go backwards or
+repeat across a restart". The test written for it asserted that a restart
+**retires the draft immediately** — which nobody had asked for and which is not
+true: a restart kills the turn, so the ordinary idle path clears the draft
+anyway. The test failed, and the first instinct was to change the CODE to
+satisfy it.
+
+That is the trap. A test asserting an invented requirement is worse than no
+test, because it is a confident-looking failure that drags working code toward
+a wrong shape — and it survives review, because it is green afterwards. The
+fix was to restate the assertion as the property actually required (*the desk
+cannot end up permanently ahead of a restarted server*), which the existing
+code satisfied.
+
+**When a test fails, decide which is wrong before you decide how to fix it.**
+Write down the property in words first; if the assertion does not read back as
+that property, the assertion is the bug.
+
 ## ⚠ THE RUNNER STRIPS `ORGTREE_DATA`, SO A SUITE'S DEFAULT ROOT IS PRODUCTION
 
 *(sqlite-review, 2026-09-03. This one is not a measurement hazard. It reaches
