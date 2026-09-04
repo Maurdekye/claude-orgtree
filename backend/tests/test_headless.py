@@ -486,43 +486,70 @@ def sec_selectors() -> None:
 
     def _sandbox_precedence():
         # org.d.api_key > kiosk.api_key > ORGTREE_SANDBOX_API_KEY > proxied
+        # 1. Behavioral verification of the full precedence ladder:
+        # org.d.api_key > kiosk.api_key > ORGTREE_SANDBOX_API_KEY > proxied,
+        # and api_fallback skips org.d.api_key.
+        from unittest.mock import patch
+        from orgtree import sandbox
+
+        class _MockOrg:
+            def __init__(self, d):
+                self.d = d
+
+        with patch.dict("os.environ", {"ORGTREE_SANDBOX_API_KEY": "env-k"}):
+            # 1. org key wins over kiosk and env
+            assert sandbox.container_auth(_MockOrg({"slug": "s", "api_key": "org-k"}),
+                                          {"api_key": "kiosk-k"}) == "org-k"
+            # 2. kiosk key wins over env when org key absent
+            assert sandbox.container_auth(_MockOrg({"slug": "s"}),
+                                          {"api_key": "kiosk-k"}) == "kiosk-k"
+            # 3. env key wins when org and kiosk absent
+            assert sandbox.container_auth(_MockOrg({"slug": "s"}), {}) == "env-k"
+            # 4. api_fallback skips org key -> falls through to kiosk key
+            assert sandbox.container_auth(_MockOrg({"slug": "s", "api_key": "org-k",
+                                                    "api_fallback": True}),
+                                          {"api_key": "kiosk-k"}) == "kiosk-k"
+
+        with patch.dict("os.environ", {}, clear=True):
+            import os as _os
+            _os.environ.pop("ORGTREE_SANDBOX_API_KEY", None)
+            # 5. proxied fallback when none configured
+            assert sandbox.container_auth(_MockOrg({"slug": "s"}), {}) == "proxied"
+
+        # 2. Structural invariants in sandbox.py:
         src = open(os.path.join(_HERE, "..", "orgtree", "sandbox.py"),
                    encoding="utf-8").read()
-        # mirror updated 2026-08-17 (api_fallback): a fallback org skips its
-        # own key here so the bridge proxy can flip auth per request — the
-        # precedence order itself is unchanged. 2026-08-18: the expression
-        # moved OUT of `ensure_container` into `container_auth`, because
-        # `supervisor.bills_the_key` needs the same answer (a limit error off
-        # a kiosk-level key must not be timed against the host subscription's
-        # lanes) and a hand-mirrored second copy would drift. Anchored on the
-        # function, with comments stripped FIRST so commentary above the
-        # expression cannot slide it out of the window.
         code = "\n".join(ln for ln in src.splitlines()
                          if not ln.lstrip().startswith("#"))
-        i = code.index("def container_auth(")
+        # Precedence expression is encapsulated in _configured_container_auth
+        # (factored out of container_auth so deployment policy validation can
+        # wrap the resolved key without duplication).
+        fn_header = ("def _configured_container_auth("
+                     if "def _configured_container_auth(" in code
+                     else "def container_auth(")
+        i = code.index(fn_header)
         j = code.index(chr(10) + "def ", i + 1)
-        # the function BODY: its docstring names the same three sources in
-        # prose (that is the point of the docstring) and would satisfy any
-        # ordering test on its own
         body = code[i:j].split('"""')[-1]
         assert body.index("org.d.get(\"api_key\")") \
             < body.index("k.get(\"api_key\")") \
             < body.index("ORGTREE_SANDBOX_API_KEY"), body
         assert "proxied" in body, "the proxied fallback is gone"
-        # ONE resolver: `supervisor.bills_the_key` reads the same function to
-        # decide whether a limit error came off the org's own key, and a
-        # second copy here would let the two disagree
-        # Exactly TWO readers of the escape hatch may exist: this resolver,
-        # and `uses_subscription_auth`, which asks a different question (is
-        # this sandbox on copied host credentials?) and deliberately ignores
-        # the org key — a security check, left alone. A third is how the
-        # sandbox and the billing lane come to disagree about who paid.
-        assert code.count('os.environ.get("ORGTREE_SANDBOX_API_KEY")') == 2, (
-            "the key precedence gained another copy — one resolver "
-            "(container_auth) plus the subscription-auth security check")
+
+        # container_auth uses the shared resolver
+        assert "_configured_container_auth(" in code[code.index("def container_auth("):], (
+            "container_auth does not resolve its auth through _configured_container_auth")
+        # ensure_container delegates to container_auth
         assert "container_auth(" in code[code.index("def ensure_container("):], (
             "ensure_container no longer resolves its auth through the shared "
             "helper")
+
+        # Exactly THREE readers of the escape hatch exist in sandbox.py:
+        # the precedence resolver (_configured_container_auth), plus the two
+        # security checks (uses_subscription_auth and _legacy_selector_present).
+        # Any further reader is how the sandbox and billing lane come to disagree.
+        assert code.count('os.environ.get("ORGTREE_SANDBOX_API_KEY")') == 3, (
+            "the key precedence gained another copy — one resolver "
+            "plus the subscription-auth and legacy-selector security checks")
     check("the sandbox key precedence is org → kiosk → env → proxied",
           _sandbox_precedence)
 
