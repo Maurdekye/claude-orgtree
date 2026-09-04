@@ -3794,9 +3794,23 @@ def antigravity_mcp_grant(org: Org, nid: str) -> tuple[dict[str, Any], list[str]
 def _claudemd_block(org: Org, nid: str) -> str:
     """Granted-folder CLAUDE.md files, injected explicitly (spike-verified: headless
     sessions do NOT surface them natively; the scratch cwd's own CLAUDE.md DOES load
-    natively, so it is deliberately not duplicated here)."""
+    natively, so it is deliberately not duplicated here).
+
+    ⚠ THE ORG WORKSPACE IS SKIPPED HERE. <workspace>/CLAUDE.md IS org.md,
+    and it now rides its own labelled ORG CHARTER block (`_org_charter_block`)
+    for every agent on every lane. Rendering it here as well would hand a
+    workspace-holder the same text twice under two different headings, one
+    calling it a standing operator directive and one calling it a folder
+    note — and duplicated instructions are their own defect. Holders still
+    see it, once, from the charter block; the file is unchanged and
+    `native_startup_context_digest` still fingerprints it through the grant,
+    so nothing about invalidation moves with this exclusion."""
+    ws_raw = org.d.get("workspace")
+    ws = os.path.normcase(os.path.normpath(ws_raw)) if ws_raw else None
     parts = []
     for d in org.node(nid)["scope"]["add_dirs"]:
+        if ws and os.path.normcase(os.path.normpath(d["path"])) == ws:
+            continue
         p = os.path.join(d["path"], "CLAUDE.md")
         if os.path.isfile(p):
             try:
@@ -3805,6 +3819,101 @@ def _claudemd_block(org: Org, nid: str) -> str:
                 continue
             parts.append(f"--- CLAUDE.md ({d['path']}) ---\n{content.strip()}")
     return "\n\n".join(parts)
+
+
+ORG_CHARTER_MAX = 12_000      # chars of org.md carried in the system prompt
+
+
+def _org_charter_block(org: Org) -> str:
+    """org.md - the ORG CHARTER - delivered through the managed system prompt.
+
+    User ruling 2026-09-04, verbatim: "org.md needs to automatically reach
+    every single agent from every provider via the system prompt. if thats not
+    currently what happens, that needs to be changed to do so." It did not.
+    The org-charter editor writes <workspace>/CLAUDE.md and relied entirely on
+    some provider's own project-doc loader picking that file up, which made its
+    reach an accident of three unrelated things:
+
+      * whether the agent happened to hold the workspace as a folder grant -
+        MOST SEATS HOLD NO GRANTS AT ALL, and those got the charter zero times;
+      * which CLI it runs, because codex reads AGENTS.md and never CLAUDE.md,
+        so the file was not an input on that lane by any route at all;
+      * whether the org is sandboxed, where the host workspace path does not
+        exist inside the container.
+
+    `identity_prompt` is the one channel orgtree fully controls and delivers
+    itself on all three lanes - `--append-system-prompt-file` for claude, the
+    managed AGENTS.md for codex, the plugin workspace for antigravity - so the
+    charter rides it now and reaches every agent on every provider.
+
+    WARNING - THIS IS NOT LOADER-PROOF, and the honest argument is the weaker
+    one. On codex and antigravity the "system prompt" IS a file written into
+    the agent's folder and read back by that provider's own loader, so an
+    AGENTS.override.md suppresses the org charter exactly as it suppresses the
+    agent's identity: same file, same failure. What IS true is that the org
+    charter now gets exactly the same delivery reliability as an agent's own
+    charter - if that breaks, the agent has already lost its identity and its
+    scope, and a missing org charter is not the problem you would have. It
+    adds no new way to fail; it inherits one that already exists.
+
+    OBSERVABLE FAILURE (coordinator ruling 2026-09-04, after a day of defects
+    that all looked correct while doing nothing): a charter that is PRESENT BUT
+    UNREADABLE renders a notice rather than nothing. Silent absence is
+    indistinguishable from an org that never wrote a charter, and that is
+    exactly the state in which nobody looks. A genuinely absent file stays
+    silent, because that absence is a real answer.
+
+    COST, measured: the live org.md is 1,487 characters, about 370 tokens. It
+    sits in the cached prefix, so it is paid once per cold start rather than
+    once per turn - but it is now paid by every agent on every lane, and an
+    edit to it restarts all of them. Growth is the thing to watch here, not
+    the size it is at today.
+    """
+    ws = org.d.get("workspace")
+    if not ws:
+        return ""
+    try:
+        with open(os.path.join(ws, "CLAUDE.md"),
+                  encoding="utf-8", errors="replace") as f:
+            txt = f.read().strip()
+    except FileNotFoundError:
+        return ""                    # no charter is a real answer; stay quiet
+    except OSError as e:
+        # Present-and-unreadable is NOT the same as absent. Name it in the
+        # prompt itself: the agent is the one party that can say out loud that
+        # the operator's directive did not arrive. No path in the text - host
+        # paths are the operator's, not the org's (see _public_slug in api.py).
+        return ("\n\n[ORG CHARTER - PRESENT BUT UNREADABLE. This organization "
+                "has standing instructions its operator wrote for every "
+                "agent, "
+                "and this turn could not read them ("
+                + type(e).__name__ + ". "
+                "You are running WITHOUT them. Say so rather than working as "
+                "if the org had no charter - an operator whose directive "
+                "silently failed to arrive has no way to tell that from your "
+                "work.]\n")
+    if not txt:
+        return ""
+    cut = len(txt) > ORG_CHARTER_MAX
+    if cut:
+        # HEAD-taken, unlike the breadcrumbs TAIL: a charter's authority is
+        # front-loaded, and its file convention is not newest-last.
+        txt = txt[:ORG_CHARTER_MAX]
+    return ("\n\n[ORG CHARTER - standing instructions from this "
+            "organization's "
+            "operator to EVERY agent in it, on every provider. ACT ON THESE: "
+            "they are directives, not reference material, and they bind you "
+            "the way your own charter does. They reach you here, in your "
+            "managed system prompt, rather than through whatever instruction "
+            "files your CLI happens to load, so they arrive identically on "
+            "every lane. Where one conflicts with an instruction from "
+            "your own "
+            "chain, raise the conflict with your superior instead "
+            "of resolving "
+            "it silently."
+            + (" TRUNCATED to the first %d chars - the rest is in the org "
+               "workspace's CLAUDE.md." % ORG_CHARTER_MAX if cut else "")
+            + "]\n" + txt + "\n[END ORG CHARTER]\n")
 
 
 BREADCRUMBS_TAIL = 12_000     # chars of breadcrumbs.md spliced into the prompt
@@ -4504,10 +4613,17 @@ def identity_prompt(org: Org, nid: str, include_archived: bool = False) -> str:
     return (
         f'You are "{nid}", an agent in the organization "{org.d["name"]}" (orgtree). '
         f"{purpose_line}{position}\n{charter_line}"
+        # THE ORG CHARTER, beside the charters that bind this agent and
+        # above everything operational: it is an acting directive from the
+        # operator to the whole org, not a footnote. It reaches every lane
+        # because it rides THIS string - see _org_charter_block for why
+        # that is the only channel that does, and for the one failure mode
+        # it still inherits from the file-shaped lanes.
+        + _org_charter_block(org)
         # Stable doctrine, never telemetry: deployment intentionally changes
         # every existing managed system prompt once, then these bytes stay
         # fixed across turns and across provider lanes.
-        f"\n{cachecontinuity.CACHE_CONTINUITY_BLOCK}\n"
+        + f"\n{cachecontinuity.CACHE_CONTINUITY_BLOCK}\n"
         # D-181: `Credits:`, the fable note and the open-ask line used to sit
         # here. They are live org state and now ride `org_state_block`.
         f"{dir_line}{skills_line}{tool_line}{handles_line}"
