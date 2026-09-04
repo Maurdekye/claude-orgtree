@@ -209,11 +209,23 @@ Windows will not move a file anything holds. `cutover.py` checkpoints and
 closes first; hand-rolling this is how you get a half-parked root. Measured —
 an early version of the tool died exactly there.
 
-⚠ **Do not start JSON part-way through.** A mid-install start silently omits
-every org whose database has been parked but whose export is not yet installed.
-Steps 4 and 5 are all-or-nothing across every org in the root. This is why
-step 3 validates everything up front: the moment you begin moving files, you
-want no reason to stop.
+⚠ **This document used to promise that the move was all-or-nothing. It was
+not, and the promise was the dangerous part.** A tool cannot make a sequence
+of file moves atomic by asserting that it is: an external lock, an I/O error
+or the process dying part-way through defeats it, and the earlier
+park-then-install order then left orgs that **SQLite started on cleanly while
+they were simply gone.** A correct-sounding guarantee in a runbook is how
+somebody re-runs this at 3am with confidence they have not earned.
+
+What is true is weaker and more useful: **the safety does not come from the
+tool completing, it comes from the two walls.** Interrupt this procedure
+anywhere and the root refuses to start under one backend or both — see the
+table above. You do not need the rollback to be atomic; you need it to be
+unable to leave a root that looks fine and is missing an org. That is what is
+enforced, and it is enforced by the store rather than by this document.
+
+If a rollback fails part-way: **fix whatever blocked it and re-run the same
+command.** The exports are already installed and re-reading them is harmless.
 
 ---
 
