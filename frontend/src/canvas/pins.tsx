@@ -69,11 +69,11 @@ export interface Pin {
  *  honour the same floor or it tiles unusable slivers */
 export const PIN_MIN_W = 320
 export const PIN_MIN_H = 240
-/** the title bar's height (CSS `.pinwin-title`); clamping keeps at least this
- *  much of the window reachable */
+/** the title bar's height (CSS `.pinwin-title`). Kept as a geometry constant
+ *  for the window layout and tests. */
 export const PIN_TITLE_H = 28
-/** how much of the title bar must stay inside the viewport after any gesture
- *  or viewport resize, so a window can always be grabbed back */
+/** legacy grab margin retained in the public geometry API. Windows now stay
+ *  fully inside the viewport, so this is no longer the clamp margin. */
 export const PIN_GRAB_PX = 64
 /** ⚠ PLACEHOLDER, not a measurement (plan OQ-4). Every pinned window is a live
  *  chat poller (useConvo, 2.5s while busy) against a backend whose tree fetch
@@ -209,16 +209,20 @@ export const resolveSnap = (r: PinRect): PinRect => r
 export const sizeFloor = (r: PinRect): PinRect =>
   ({ ...r, w: Math.max(PIN_MIN_W, r.w), h: Math.max(PIN_MIN_H, r.h) })
 
-/** keep at least PIN_GRAB_PX of the title bar inside a `vp`-sized viewport.
- *  `vp` null = the viewport is unmeasured (jsdom, or before first layout):
- *  clamping against 0×0 would pile every window at the origin, so it is
- *  skipped and the rect passes through unchanged. */
+/** Keep the whole window inside a measured viewport. This is deliberately a
+ *  single geometry boundary used by initial placement, render-time recovery,
+ *  drag frames, resize frames, and the persisted commit. If a viewport is
+ *  narrower/shorter than the minimum desk, the desk is reduced to fit rather
+ *  than allowing either edge to escape. `vp` null means layout is not known
+ *  yet (jsdom or before first paint), so only the size floor is applied. */
 export const clampRect = (r: PinRect, vp: { w: number; h: number } | null): PinRect => {
   const s = sizeFloor(r)
   if (!vp || vp.w <= 0 || vp.h <= 0) return s
-  const x = Math.min(Math.max(s.x, PIN_GRAB_PX - s.w), vp.w - PIN_GRAB_PX)
-  const y = Math.min(Math.max(s.y, 0), Math.max(0, vp.h - PIN_TITLE_H))
-  return { ...s, x, y }
+  const w = Math.min(s.w, vp.w)
+  const h = Math.min(s.h, vp.h)
+  const x = Math.min(Math.max(s.x, 0), vp.w - w)
+  const y = Math.min(Math.max(s.y, 0), vp.h - h)
+  return { ...s, x, y, w, h }
 }
 
 /** THE ONE COMMIT POINT for window geometry (drag end, resize end, raise-and-
@@ -430,7 +434,7 @@ function PinWindow({ pin, node, vp, onUnpin, slug, op, toast, pub,
     // space. That is the entire point of the feature.
     const dx = e.clientX - g.sx, dy = e.clientY - g.sy
     if (g.kind === 'move') {
-      setLive({ ...g.o, x: g.o.x + dx, y: g.o.y + dy })
+      setLive(clampRect({ ...g.o, x: g.o.x + dx, y: g.o.y + dy }, vp))
       return
     }
     let { x, y, w, h } = g.o
@@ -442,7 +446,7 @@ function PinWindow({ pin, node, vp, onUnpin, slug, op, toast, pub,
     // west/north must not walk the window across the screen
     if (w < PIN_MIN_W) { if (g.edge.includes('w')) x = g.o.x + g.o.w - PIN_MIN_W; w = PIN_MIN_W }
     if (h < PIN_MIN_H) { if (g.edge.includes('n')) y = g.o.y + g.o.h - PIN_MIN_H; h = PIN_MIN_H }
-    setLive({ x, y, w, h })
+    setLive(clampRect({ x, y, w, h }, vp))
   }
   const end = (e: ReactPointerEvent<HTMLElement>) => {
     const g = gesture.current

@@ -4566,6 +4566,13 @@ label.set-row { cursor: pointer; }
     0 0 0 1px color-mix(in srgb, var(--accent) 25%, transparent);
   cursor: default; font-size: 13px;
 }
+/* The pin window sits outside the card's provider-theme subtree, so scope
+   the provider accent on its own root. This also recolours the title glyph,
+   focus pulse, and shadow ring through the existing --accent references. */
+.pinwin.prov-claude { --accent: var(--prov-claude); --accent-soft: color-mix(in srgb, var(--prov-claude) 16%, transparent); }
+.pinwin.prov-openai { --accent: var(--prov-openai); --accent-soft: color-mix(in srgb, var(--prov-openai) 16%, transparent); }
+.pinwin.prov-google { --accent: var(--prov-google); --accent-soft: color-mix(in srgb, var(--prov-google) 16%, transparent); }
+.pinwin.prov-openrouter { --accent: var(--prov-openrouter); --accent-soft: color-mix(in srgb, var(--prov-openrouter) 16%, transparent); }
 .pinwin.moving { will-change: left, top, width, height; }
 /* the card placeholder's "show window" pulse */
 .pinwin.flash { animation: pinflash .65s ease-out; }

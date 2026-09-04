@@ -34,8 +34,8 @@ import assert from 'node:assert/strict'
 import { useState } from 'react'
 import { NODE_H, NODE_W, Z_DESK, Z_MINI } from '../src/canvas/shared'
 import {
-  addPin, clampRect, forgetPins, PIN_GRAB_PX, PIN_MAX, PIN_MIN_H, PIN_MIN_W,
-  PIN_TITLE_H, PIN_Z_BASE, PIN_Z_TOP, pinsKey, planUnpin, prunePins, raisePin,
+  addPin, clampRect, forgetPins, PIN_MAX, PIN_MIN_H, PIN_MIN_W,
+  PIN_Z_BASE, PIN_Z_TOP, pinsKey, planUnpin, prunePins, raisePin,
   readPins, removePin, zIndexOf,
 } from '../src/canvas/pins'
 import type { PinRect } from '../src/canvas/pins'
@@ -264,21 +264,25 @@ async function pinFromDesk(el: HTMLElement, viewport: HTMLElement, id: string) {
 }
 
 // =================================================================== §A pure
-test('§A1 clampRect keeps a grab-handle of title bar inside a measured viewport', () => {
+test('§A1 clampRect keeps the whole window inside a measured viewport', () => {
   const vp = { w: 1200, h: 800 }
   const r = { x: 100, y: 100, w: 400, h: 300 }
   assert.deepEqual(clampRect(r, vp), r, 'an in-view rect passes through')
-  // dragged off the right edge: only PIN_GRAB_PX of it may leave
-  assert.equal(clampRect({ ...r, x: 5000 }, vp).x, 1200 - PIN_GRAB_PX)
-  // off the left: the grab handle stays reachable at the right end of the bar
-  assert.equal(clampRect({ ...r, x: -5000 }, vp).x, PIN_GRAB_PX - 400)
-  // above the top: never — the title bar is the handle
+  // Every edge stays inside the viewport, not just the title-bar grab area.
+  const right = clampRect({ ...r, x: 5000 }, vp)
+  assert.equal(right.x, 1200 - r.w); assert.equal(right.x + right.w, 1200)
+  const left = clampRect({ ...r, x: -5000 }, vp)
+  assert.equal(left.x, 0); assert.equal(left.x + left.w, r.w)
   assert.equal(clampRect({ ...r, y: -50 }, vp).y, 0)
-  // below the bottom: the title bar stays visible
-  assert.equal(clampRect({ ...r, y: 5000 }, vp).y, 800 - PIN_TITLE_H)
+  const bottom = clampRect({ ...r, y: 5000 }, vp)
+  assert.equal(bottom.y, 800 - r.h); assert.equal(bottom.y + bottom.h, 800)
   // the size floor is part of the clamp
   const small = clampRect({ x: 0, y: 0, w: 10, h: 10 }, vp)
   assert.equal(small.w, PIN_MIN_W); assert.equal(small.h, PIN_MIN_H)
+  // A small viewport is still a positive control: dimensions are reduced so
+  // the full window, including its resize edges, remains inside it.
+  const tiny = clampRect({ x: -50, y: -50, w: 500, h: 500 }, { w: 200, h: 100 })
+  assert.deepEqual(tiny, { x: 0, y: 0, w: 200, h: 100 })
   // an UNMEASURED viewport (jsdom, pre-layout) must not pile windows at the
   // origin: the rect passes through untouched (floor aside)
   assert.deepEqual(clampRect({ ...r, x: 5000 }, null), { ...r, x: 5000 })
@@ -511,6 +515,37 @@ uiTest('§B5 drag and resize are 1:1 with the pointer in viewport px, and commit
   assert.equal(r4.x, r3.x + r3.w - PIN_MIN_W, 'the east edge stayed put')
   assert.deepEqual(stored()[0]!.rect, r4)
   assert.deepEqual(cam(el), c0, 'none of it panned the canvas')
+})
+
+uiTest('§B5b drag and resize clamp every edge to the measured viewport', async ({ mount }) => {
+  const { el, viewport } = await mountCanvas(mount, ['ceo', 'cto'])
+  await settle(2500)
+  await focusDesk(el, viewport, 'cto')
+  // jsdom has no layout, so provide a positive measured viewport control. The
+  // same dimensions are what PinLayer reads in a real browser.
+  Object.defineProperty(viewport, 'getBoundingClientRect', {
+    configurable: true,
+    value: () => ({ x: 0, y: 0, top: 0, left: 0, right: 700, bottom: 500,
+      width: 700, height: 500, toJSON: () => ({}) }),
+  })
+  await inAct(() => {
+    const btn = el.querySelector('.desk-over .cc-pin') as HTMLElement
+    assert.ok(btn, 'the focused desk still exposes pin')
+    btn.click()
+  })
+  await flush()
+  const w = pinWin(el, 'cto')!
+  const title = w.querySelector('.pinwin-title') as HTMLElement
+  await drag(title, { x: 100, y: 100 }, { x: 5000, y: 5000 })
+  let r = winRect(pinWin(el, 'cto')!)
+  assert.ok(r.x >= 0 && r.y >= 0 && r.x + r.w <= 700 && r.y + r.h <= 500,
+    `drag stayed inside viewport: ${JSON.stringify(r)}`)
+
+  const se = w.querySelector('.pinwin-rs.se') as HTMLElement
+  await drag(se, { x: 100, y: 100 }, { x: 5000, y: 5000 })
+  r = winRect(pinWin(el, 'cto')!)
+  assert.ok(r.x >= 0 && r.y >= 0 && r.x + r.w <= 700 && r.y + r.h <= 500,
+    `resize stayed inside viewport: ${JSON.stringify(r)}`)
 })
 
 uiTest('§B6 the wheel over a pinned window scrolls it — it must not zoom the canvas', async ({ mount }) => {
