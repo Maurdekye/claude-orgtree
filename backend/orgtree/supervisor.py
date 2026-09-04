@@ -3803,6 +3803,23 @@ def antigravity_mcp_grant(org: Org, nid: str) -> tuple[dict[str, Any], list[str]
     return antigravityrun.deliverable_mcp(granted_mcp_servers(org, nid))
 
 
+#: Chars of a GRANTED FOLDER's CLAUDE.md carried into the prompt. DELIVERY
+#: only — nothing here writes, so no byte is ever at risk on disk.
+#:
+#: ⚠ THE BOUND STAYS AT 6000, and deliberately does NOT rise to match its
+#: 12_000 siblings. Measured 2026-09-04: the two real granted-folder
+#: CLAUDE.md files on this machine are 58,574 and 7,987 chars. Raising to
+#: 12_000 would fully deliver the smaller one and still cut the larger by 79%,
+#: so it buys almost nothing — while this text is re-sent to EVERY holder of
+#: that grant on EVERY turn, and 58k chars is ~14.6k tokens per turn per
+#: agent. The fix for a file that big is to shorten it or accept the cut
+#: knowingly, which is what the notice now makes possible.
+#:
+#: The defect was never the number. It was that this block alone, of the three
+#: prompt blocks here, cut in SILENCE.
+CLAUDEMD_MAX = 6000
+
+
 # ------------------------------------------------------------------ identity
 def _claudemd_block(org: Org, nid: str) -> str:
     """Granted-folder CLAUDE.md files, injected explicitly (spike-verified: headless
@@ -3827,10 +3844,26 @@ def _claudemd_block(org: Org, nid: str) -> str:
         p = os.path.join(d["path"], "CLAUDE.md")
         if os.path.isfile(p):
             try:
-                content = open(p, encoding="utf-8", errors="replace").read()[:6000]
+                raw = open(p, encoding="utf-8", errors="replace").read()
             except OSError:
                 continue
-            parts.append(f"--- CLAUDE.md ({d['path']}) ---\n{content.strip()}")
+            # ⚠ DECLARE THE CUT. This was a bare `.read()[:6000]` and it was
+            # the ONE block of the three siblings here that said nothing —
+            # `_org_charter_block` and `_standing_notes_block` both announce
+            # theirs. Measured 2026-09-04: a real granted folder on this
+            # machine holds a 58,574-char CLAUDE.md, so agents were being
+            # handed 10% of it and told nothing at all.
+            note = ""
+            if len(raw) > CLAUDEMD_MAX:
+                note = (f"  [TRUNCATED - this file is {len(raw)} chars and "
+                        f"you have only the first {CLAUDEMD_MAX} here. The "
+                        f"remaining {len(raw) - CLAUDEMD_MAX} are NOT in this "
+                        f"prompt. You hold this folder, so open the file "
+                        f"yourself if you need the rest - do not assume what "
+                        f"you can see is all of it.]")
+            parts.append(
+                f"--- CLAUDE.md ({d['path']}){note} ---\n"
+                f"{raw[:CLAUDEMD_MAX].strip()}")
     return "\n\n".join(parts)
 
 
