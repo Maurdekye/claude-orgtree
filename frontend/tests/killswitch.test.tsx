@@ -4,7 +4,7 @@ import test from 'node:test'
 import { KillSwitch } from '../src/KillSwitch'
 import { advance, flush, inAct, mountView, realClock, useFakeClock } from './harness'
 
-test('ง1 KillSwitch collapsed by default and not clickable', async () => {
+test('ยง1 KillSwitch collapsed by default and not clickable', async () => {
   useFakeClock()
   try {
     let killed = false
@@ -41,7 +41,7 @@ test('ง1 KillSwitch collapsed by default and not clickable', async () => {
   }
 })
 
-test('ง2 Unlatching expands button in disabled state; click during 500ms window does nothing', async () => {
+test('ยง2 Unlatching expands button in disabled state; click during 500ms window does nothing', async () => {
   useFakeClock()
   try {
     let killed = false
@@ -83,7 +83,7 @@ test('ง2 Unlatching expands button in disabled state; click during 500ms window 
   }
 })
 
-test('ง3 Button enables after 500ms and executes kill on click', async () => {
+test('ยง3 Button enables after 500ms and executes kill on click', async () => {
   useFakeClock()
   try {
     let killed = false
@@ -131,7 +131,7 @@ test('ง3 Button enables after 500ms and executes kill on click', async () => {
   }
 })
 
-test('ง4 Re-latching collapses button and cancels pending enable timer (no stale enablement)', async () => {
+test('ยง4 Re-latching collapses button and cancels pending enable timer (no stale enablement)', async () => {
   useFakeClock()
   try {
     let killed = false
@@ -199,7 +199,7 @@ test('ง4 Re-latching collapses button and cancels pending enable timer (no stale
   }
 })
 
-test('ง5 Auto-relatch collapses after 6s of inactivity', async () => {
+test('ยง5 Auto-relatch collapses after 6s of inactivity', async () => {
   useFakeClock()
   try {
     const view = await mountView(
@@ -230,7 +230,7 @@ test('ง5 Auto-relatch collapses after 6s of inactivity', async () => {
   }
 })
 
-test('ง6 Mobile onKilled callback is fired', async () => {
+test('ยง6 Mobile onKilled callback is fired', async () => {
   useFakeClock()
   try {
     let killedFired = false
@@ -257,3 +257,37 @@ test('ง6 Mobile onKilled callback is fired', async () => {
     realClock()
   }
 })
+
+test('ยง7 watchdogs_paused is formatted in toast when present', async () => {
+  useFakeClock()
+  try {
+    const toasts: string[][] = []
+    const view = await mountView(
+      <KillSwitch
+        slug="test-org"
+        toast={(t) => { if (t) toasts.push(t) }}
+        killFn={async () => ({
+          interrupted: ['agent-1', 'agent-2', 'agent-3'],
+          watchdogs_paused: [
+            { id: 'w1', name: 'dog0', owner: 'boss' },
+            { id: 'w2', name: 'dog1', owner: 'lead' },
+          ],
+        })}
+      />,
+      (el) => el,
+    )
+    const btn = view.el.querySelector<HTMLButtonElement>('.kill-btn')!
+    const latch = view.el.querySelector<HTMLButtonElement>('.kill-latch')!
+
+    await inAct(() => { latch.click() })
+    await advance(500)
+    await inAct(() => { btn.click() })
+    await flush()
+
+    assert.deepEqual(toasts, [['interrupted 3 agent(s); queues cleared ยท paused 2 watchdogs']])
+    await view.unmount()
+  } finally {
+    realClock()
+  }
+})
+

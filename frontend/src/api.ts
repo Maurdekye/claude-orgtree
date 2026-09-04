@@ -146,7 +146,10 @@ export const getNodeInbox = (slug: string, nid: string): Promise<InboxPayload> =
   req(`/api/orgs/${slug}/nodes/${nid}/inbox`)
 export const resumeFrozen = (slug: string): Promise<{ resumed: string[] }> =>
   req(`/api/orgs/${slug}/resume`, { method: 'POST' })
-export const killAll = (slug: string): Promise<{ interrupted: string[] }> =>
+export const killAll = (slug: string): Promise<{
+  interrupted: string[]
+  watchdogs_paused?: Array<{ id: string; name: string; owner: string }>
+}> =>
   req(`/api/orgs/${slug}/killswitch`, { method: 'POST' })
 export const dissolveAll = (slug: string): Promise<{ freed: number; nodes: number }> =>
   req(`/api/orgs/${slug}/dissolve-all`, { method: 'POST' })

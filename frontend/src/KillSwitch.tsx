@@ -9,7 +9,10 @@ export interface KillSwitchProps {
   refreshTree?: (slug: string) => unknown
   onKilled?: () => void
   className?: string
-  killFn?: (slug: string) => Promise<{ interrupted: string[] }>
+  killFn?: (slug: string) => Promise<{
+    interrupted: string[]
+    watchdogs_paused?: Array<{ id: string; name: string; owner: string }>
+  }>
   enableDelayMs?: number
   autoRelatchMs?: number
 }
@@ -79,7 +82,9 @@ export function KillSwitch({
     setBusy(true)
     killFn(slug)
       .then((r) => {
-        toast([`interrupted ${r.interrupted.length} agent(s); queues cleared`])
+        const dogs = r.watchdogs_paused?.length
+        const dogMsg = dogs ? ` · paused ${dogs} watchdog${dogs > 1 ? 's' : ''}` : ''
+        toast([`interrupted ${r.interrupted.length} agent(s); queues cleared${dogMsg}`])
         if (refreshTree) refreshTree(slug)
         if (onKilled) onKilled()
       })
