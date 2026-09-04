@@ -3352,6 +3352,103 @@ def live_subagents() -> None:
     set_cfg(FAST)
 
 
+def live_todos() -> None:
+    """FR-2 (task-progress overlay, 2026-09-04): the desk's progress panel
+    LEADS with the agent's TodoWrite checklist, and before this the live
+    wire carried the tool's existence and none of its contents — `_tool_arg`
+    scans string values only, so `{"todos": [...]}` rendered as the bare word
+    "TodoWrite" until the transcript caught up, i.e. when the turn ended.
+    Precisely backwards from "what is it doing right now".
+
+    Two halves, both measured against the real chat endpoint, because a test
+    of only the live half goes green while the post-sweep render regresses
+    to nothing (the plan's own named trap):
+      · LIVE — while the transcript record is held back, the live row carries
+        the structured items.
+      · DURABLE — once the record lands the live row is swept and the chip's
+        rendered `☑ ◐ ☐` block carries the same list, in order."""
+    print("\ntodo checklist on the live wire (FR-2, 2026-09-04):")
+    start_backend()
+    todos = [{"content": "read the plan", "status": "completed"},
+             {"content": "write the panel", "status": "in_progress"},
+             {"content": "land it", "status": "pending"}]
+    # the record is held back 6 s: a 250 ms poll cannot miss a 6 s window,
+    # and the turn's own boundary (resultMs) comes after the record lands
+    set_cfg({**FAST, "todos": todos, "todoRecordMs": 6000, "resultMs": 200})
+    slug, (nid,) = make_org("todos")
+    tok = token()
+    send(slug, nid, f"plan the work {tok}")
+
+    seen: dict[str, object] = {"live": None, "chip": None, "live_after": None}
+
+    def _live() -> None:
+        """Poll WHILE the record is held back. `todos` on the live row is
+        the claim; the row's presence at all is the positive control — a
+        stand-in that never emitted the call satisfies "no row lacks todos"
+        for free."""
+        for _ in range(60):
+            c = api("GET", f"/api/orgs/{slug}/nodes/{nid}/chat?last=20")
+            rows = [r for r in (c.get("live") or [])
+                    if str(r.get("text") or "").startswith("TodoWrite")]
+            if rows:
+                seen["live"] = rows[-1]
+                break
+            time.sleep(0.25)
+        fixture(seen["live"] is not None,
+                "no live TodoWrite row was ever observed — the stand-in did "
+                "not emit the call, or the record landed before a poll could "
+                "see the row alone; this run proves nothing")
+        row = seen["live"]
+        assert isinstance(row, dict)
+        got = row.get("todos")
+        assert isinstance(got, list), (
+            f"the live TodoWrite row carries no `todos` — the desk sees the "
+            f"tool's existence and none of its contents until the turn ends. "
+            f"Row: {row}")
+        assert [(t.get("content"), t.get("status")) for t in got] == \
+            [(t["content"], t["status"]) for t in todos], (
+            f"items or order differ from what the CLI sent: {got}")
+    check("todos · the live row carries the checklist structurally", _live)
+
+    def _durable() -> None:
+        """After the record lands: the live row is gone (swept on its
+        tool_use_id) and the chip renders the SAME list as glyphs."""
+        def _chip():
+            c = api("GET", f"/api/orgs/{slug}/nodes/{nid}/chat?last=20")
+            for m in reversed(c.get("messages") or []):
+                for t in (m.get("tools") or []):
+                    if t.get("name") == "TodoWrite":
+                        return c, t
+            return c, None
+        c, chip = None, None
+        for _ in range(80):
+            c, chip = _chip()
+            if chip is not None:
+                break
+            time.sleep(0.25)
+        assert chip is not None, "no durable TodoWrite chip within 20 s"
+        assert isinstance(c, dict)
+        seen["chip"] = chip
+        assert chip.get("result", "").splitlines() == [
+            "☑ read the plan", "◐ write the panel", "☐ land it"], (
+            f"the durable chip's rendered checklist is wrong: {chip}")
+        assert chip.get("result_lines") == 3, chip
+        # …and the live copy has been retired by its twin: two copies of one
+        # list on screen is the pile-up the sweep exists to prevent
+        for _ in range(20):
+            c = api("GET", f"/api/orgs/{slug}/nodes/{nid}/chat?last=20")
+            stale = [r for r in (c.get("live") or [])
+                     if str(r.get("text") or "").startswith("TodoWrite")]
+            if not stale:
+                break
+            time.sleep(0.25)
+        assert not stale, f"live TodoWrite row survived its durable twin: {stale}"
+    check("todos · the durable chip renders the same list and the live row retires",
+          _durable)
+    wait_idle(slug, nid, 30)
+    set_cfg(FAST)
+
+
 def live_bg_subagents() -> None:
     """USER BUG 2026-08-20: background subagents "die on their own" and the
     agent that launched one waits forever for a completion that never comes.
@@ -5222,6 +5319,7 @@ def main() -> None:
         # BOTH the section that runs and the checks that report
         sections = [
             ("subag", live_subagents),
+            ("todos", live_todos),
             ("bg", live_bg_subagents),
             ("kill", live_kill_sweep),
             ("leash", live_leash),

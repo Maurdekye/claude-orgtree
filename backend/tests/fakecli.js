@@ -67,6 +67,12 @@
  *                       a working child, killed by the idle watchdog)
  *   bgQuit              never finish them and let the process exit 0 with a
  *                       child still live (the other teardown that orphans)
+ *   todos               [{content, status}, …] — make ONE TodoWrite call with
+ *                       this checklist before the ordinary tool loop (FR-2,
+ *                       the desk's task-progress panel)
+ *   todoRecordMs        wait THIS long after the TodoWrite stdout event before
+ *                       writing its transcript record — the window in which
+ *                       the live row is the only copy the desk has
  *
  * BACKGROUND SUBAGENTS (user bug 2026-08-20)
  * ------------------------------------------
@@ -116,6 +122,7 @@ const CFG_DEFAULT = {
   // stopped and said so." Default stays 'completed' so every existing bgMs
   // scenario is unchanged.
   bgStatus: 'completed', bgSummary: '', bgOnce: false,
+  todos: null, todoRecordMs: 0,
 }
 function loadCfg() {
   const p = process.env.FAKECLI_CONFIG
@@ -322,6 +329,23 @@ async function serve(text) {
                           usage: { input_tokens: 900000 } } })
     }
     await sleep(cfg.toolMs)
+  }
+  // FR-2: one TodoWrite call, its transcript record deliberately LATE — the
+  // real CLI writes the record within the second, so the live row and its
+  // durable twin are only ever briefly apart; `todoRecordMs` holds them
+  // apart long enough for a poll to see the live row standing alone.
+  if (Array.isArray(cfg.todos)) {
+    const id = 'toolu_todo' + Math.random().toString(16).slice(2, 8)
+    const block = { type: 'tool_use', id, name: 'TodoWrite',
+                    input: { todos: cfg.todos } }
+    const ev = { role: 'assistant', model: 'fake', content: [block],
+                 usage: { input_tokens: 1000 } }
+    say({ type: 'assistant', message: ev })
+    await sleep(cfg.todoRecordMs | 0)
+    record({ type: 'assistant', message: ev })
+    record({ type: 'user', message: { role: 'user',
+             content: [{ type: 'tool_result', tool_use_id: id,
+                         content: 'Todos have been modified successfully.' }] } })
   }
   for (let i = 0; i < (cfg.tools | 0); i += 1) {
     const id = 'toolu_' + Math.random().toString(16).slice(2, 10)

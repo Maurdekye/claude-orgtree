@@ -11177,7 +11177,13 @@ def _run_one_turn(slug: str, nid: str,
                                     # instead of comparing rendered strings
                                     "id": b.get("id"),
                                     "text": (b.get("name", "tool")
-                                             + (f" · {arg}" if arg else ""))})
+                                             + (f" · {arg}" if arg else "")),
+                                    # FR-2: a TodoWrite row carries its
+                                    # checklist structurally, so the desk's
+                                    # progress panel is live rather than
+                                    # one turn behind. No-op for every
+                                    # other tool.
+                                    **_todo_live_extra(slug, nid, b)})
                     elif ev.get("type") == "user" and not ev.get("parent_tool_use_id"):
                         # a running subagent resolves when its tool_result
                         # comes home (only ids WE opened — a subagent's own
@@ -19905,6 +19911,64 @@ def _tool_arg(name: str, inp: Any) -> str:
     return ""
 
 
+#: FR-2 (task-progress overlay): a TodoWrite call carries the agent's own
+#: checklist, and it is the ONE thing the desk's progress panel leads with.
+#: Cap per row — `read_chat` already truncates the rendered list at 40, and a
+#: live row is retained up to `_LIVE_KEEP` times over.
+_TODO_CAP = 40
+
+
+def _todo_items(inp: Any) -> list[dict[str, str]] | None:
+    """The structured checklist behind a TodoWrite `input`, or None when the
+    input carries no `todos` LIST at all.
+
+    ⚠ None and [] are different answers and both are kept: [] is a call that
+    CLEARED the list (the desk says "cleared", not nothing); None is "this
+    was not a todo payload", so nothing is attached. `_tool_arg` cannot do
+    this — it scans STRING values only, so a `{"todos": [...]}` input renders
+    as the bare word "TodoWrite" — and it must not be widened to try: it is a
+    90-char display string shared by every tool on every lane, and a
+    checklist needs items with statuses, not prose."""
+    todos = inp.get("todos") if isinstance(inp, dict) else None
+    if not isinstance(todos, list):
+        return None
+    return [{"content": str(td.get("content", ""))[:300],
+             "status": str(td.get("status") or "pending")}
+            for td in todos[:_TODO_CAP] if isinstance(td, dict)]
+
+
+def _todo_glyphs(items: list[dict[str, str]]) -> str:
+    """The `☑ ◐ ☐` block the transcript chip renders — ONE function, because
+    the desk's progress panel parses it back (progress.tsx parseTodoResult)
+    when a durable chip is the freshest list it has. Change a glyph here and
+    the panel degrades silently; the frontend test pins these three."""
+    return "\n".join(
+        ("☑ " if td.get("status") == "completed" else
+         "◐ " if td.get("status") == "in_progress" else "☐ ")
+        + td.get("content", "") for td in items)
+
+
+def _todo_live_extra(slug: str, nid: str, block: dict[str, Any]) -> dict[str, Any]:
+    """What a TodoWrite tool_use adds to its LIVE row: the structured items.
+
+    Without this the live wire carried the tool's EXISTENCE and none of its
+    contents — the checklist only appeared once the transcript caught up,
+    i.e. when the turn ended, which is precisely backwards from "what is it
+    doing right now". Only the NEWEST TodoWrite row keeps its items: an
+    earlier one's list is superseded the moment this one exists, and
+    `_LIVE_KEEP` rows × `_TODO_CAP` items is real weight on a polled path."""
+    if block.get("name") != "TodoWrite":
+        return {}
+    items = _todo_items(block.get("input"))
+    if items is None:
+        return {}
+    st = state(slug, nid)
+    with _state_lock:
+        for r in cast("list[dict[str, Any]]", st.get("live") or []):
+            r.pop("todos", None)
+    return {"todos": items}
+
+
 def _result_text(content: Any) -> str:
     """Flatten a tool_result's content to text."""
     if isinstance(content, str):
@@ -20747,13 +20811,11 @@ def read_chat(org: Org, nid: str, last: int | None = None, *,
                                               block.get("input")),
                              "id": block.get("id")}
                     if block.get("name") == "TodoWrite":
-                        todos = (block.get("input") or {}).get("todos") or []
-                        entry["result"] = "\n".join(
-                            ("☑ " if td.get("status") == "completed" else
-                             "◐ " if td.get("status") == "in_progress" else "☐ ")
-                            + str(td.get("content", ""))
-                            for td in todos[:40])
-                        entry["result_lines"] = len(todos)
+                        todos = _todo_items(block.get("input")) or []
+                        entry["result"] = _todo_glyphs(todos)
+                        _raw = (block.get("input") or {}).get("todos")
+                        entry["result_lines"] = (len(_raw) if isinstance(_raw, list)
+                                                 else len(todos))
                     tools.append(entry)
                     if block.get("id"):
                         by_tool_id[block["id"]] = entry
