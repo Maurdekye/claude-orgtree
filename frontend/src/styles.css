@@ -1379,7 +1379,17 @@ button.cc-name:hover {
   --tier-luna: #b9c4d6;
   --tier-terra: #7fae5f;
   --tier-sol: #ff8a3d;
-  --tier-astra: #59d6ff;
+  /* astra (D-2xx, user spec 2026-09-04): "nearly-white, shining, starry" —
+     not a flat white. Separates from luna/gpt-reserve and flash on BOTH
+     axes at once, not just hue: astra sits ~97% lightness (near-white)
+     against luna's ~78% and flash's ~83%, and its hue leans VIOLET (254°)
+     rather than blue/cyan, borrowing from opus's family instead of
+     luna/flash's blue-grey-cyan cluster. ΔE 16.8 from luna, 19.7 from
+     flash — clear of this file's stated normal-vision floor (§ haiku/
+     sonnet/opus/fable block above, ΔE 18.4). Contrast against the tier
+     badge's dark fill (--input #313131) is 11.4:1, so legibility as TEXT
+     is not the risk here — collapsing into a neighbouring pale tier is. */
+  --tier-astra: #f2eeff;
   /* the antigravity family (D-189), to the user's spec (2026-08-29): flash a
      very light icy blue, pro a DEEP bluish-violet that leans violet — while
      the provider accent below leans BLUE. One blue-violet family (icy ~198° →
