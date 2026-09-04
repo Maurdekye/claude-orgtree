@@ -4698,6 +4698,7 @@ label.set-row { cursor: pointer; }
   content: 'previous list'; display: block; font-size: 10px; color: var(--dim);
   text-transform: uppercase; letter-spacing: .06em; margin-bottom: 2px;
 }
+.progress-todo .todo-items.historical::before { content: 'last known list'; }
 @keyframes progress-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
 .progress-reported-row { display: flex; gap: 6px; align-items: baseline; margin-bottom: 2px; flex-wrap: wrap; }
 .progress-summary { font-size: 12.5px; color: var(--ink); overflow-wrap: anywhere; }

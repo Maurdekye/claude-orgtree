@@ -341,7 +341,7 @@ function TodoSection({ v, historical }: { v: TodoVerdict; historical: boolean })
       <h4>todo list <span className="dim">· {v.supply === 'live' ? 'live' : v.supply === 'durable' ? 'transcript' : v.supply}</span></h4>
       <div className="progress-note">{v.note}</div>
       {v.items && v.items.length > 0 && (
-        <ul className={'todo-items' + (dimmed ? ' previous' : '')}>
+        <ul className={'todo-items' + (dimmed ? ' previous' : '') + (historical ? ' historical' : '')}>
           {v.items.map((t, i) => (
             <li key={i} className={'todo-item ' + t.status}>
               <span className="todo-glyph" aria-hidden="true">{GLYPH[t.status]}</span>
