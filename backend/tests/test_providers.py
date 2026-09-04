@@ -76,7 +76,8 @@ def main():
     # seat price exists in exactly one place.
     check("codex tiers are IN ledger.TIERS with the ruled seats (M4)",
           lambda: eq({t: TIERS.get(t) for t in providers.CODEX_TIERS},
-                     {"gpt-reserve": 0.2, "luna": 0.2, "terra": 2, "sol": 5},
+                     {"gpt-reserve": 0.2, "luna": 0.2, "terra": 2, "sol": 5,
+                      "astra": 10},
                      "codex rows"))
     check("…and providers' views are DERIVED, not copied",
           lambda: eq((providers.CODEX_TIERS,
@@ -93,7 +94,7 @@ def main():
                       if t not in providers.CODEX_TIERS
                       and t not in providers.ANTIGRAVITY_TIERS],
                      "claude family"))
-    check("codex family is gpt-reserve 0.2 · luna 0.2 · terra 2 · sol 5",
+    check("codex offer family omits conditional Astra without live evidence",
           lambda: eq([(t["tier"], t["seat"], t["model"])
                       for t in providers.codex_tiers()],
                      [("gpt-reserve", 0.2, "gpt-reserve"),
@@ -125,7 +126,8 @@ def main():
                      # sol is priced from its documented standing band, not
                      # from the promotional CODEX_PRICES row
                      {"gpt-reserve": _expect(0.20), "luna": _expect(0.20),
-                      "terra": _expect(2.00), "sol": _expect(5.00)},
+                      "terra": _expect(2.00), "sol": _expect(5.00),
+                      "astra": _expect(10.00)},
                      "codex seats vs prices"))
     check("…so luna is 10× cheaper than terra in SEATS, as it is in dollars",
           lambda: eq(round(TIERS["terra"] / TIERS["luna"], 6),

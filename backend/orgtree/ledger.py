@@ -76,7 +76,7 @@ from .schema import (AudienceGrant, DirGrant, FrozenInfo, MailEntry, NodeDoc,
 # direction: it can overdraw a saved org, and nothing here handles that.
 TIERS: Final[dict[str, float]] = {"fable": 10, "opus": 5, "sonnet": 2, "haiku": 1,
                                   "sol": 5, "terra": 2, "gpt-reserve": 0.2,
-                                  "luna": 0.2,
+                                  "luna": 0.2, "astra": 10,
                                   "flash": 1, "pro": 2}
 
 # The credit grid. Every seat is quantised to 0.01 and every credit quantity
@@ -141,6 +141,11 @@ MODELS: Final[dict[str, str]] = {
     "terra": "gpt-5.6-terra",
     "gpt-reserve": "gpt-reserve",
     "luna": "gpt-5.6-luna",
+    # Official model id (OpenAI, 2026-09-04). This is DATA, not proof that
+    # the signed-in account may use it: provider admission requires exact
+    # live `model/list(includeHidden=true)` membership before offering or
+    # hiring this tier. If OpenAI changes the id, this is the one correction.
+    "astra": "gpt-6-astra",
     # the antigravity family — BASE ids exactly as `agy models` reports them
     # (measured, Antigravity CLI 1.1.24, 2026-09-02), the effort suffix the
     # registry shows (`gemini-3.8-flash-high`) stripped: the CLI takes the

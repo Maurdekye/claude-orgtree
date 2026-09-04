@@ -1279,17 +1279,72 @@ _AGENT_RESTART_TOOLS = frozenset({
 _TIER_CARDS = frozenset({"orgtree_hire", "orgtree_switch_model"})
 
 
+def _provider_dynamic_tiers() -> list[str]:
+    """Currently offered provider tiers not baked into the static cards.
+
+    Rollout tiers are metadata in the backend ledger but must stay absent from
+    an agent's schema until the provider's account-scoped inventory confirms
+    them. `/api/providers` has already applied that fail-closed rule. If the
+    endpoint is missing, malformed, or unreachable, returning no additions is
+    the safe answer — the API admission gate independently re-queries before
+    any mutation.
+    """
+    # `available_tools()` is also called from supervisor.py inside the API
+    # process. Looping back through HTTP there can wait on the very worker
+    # currently building this catalogue. Read the same short-lived provider
+    # cache directly in that one process; standalone MCP servers keep using
+    # the API document so they share the backend's account-scoped evidence.
+    if "orgtree.supervisor" in sys.modules:
+        try:
+            from . import providers                  # noqa: PLC0415 — cycle seam
+            st = providers.codex_status()
+            inventory = (providers.codex_model_inventory(status=st)
+                         if st.get("connected") else None)
+            models = (set(inventory.get("models") or [])
+                      if inventory and inventory.get("available") else None)
+            return [row["tier"] for row in providers.codex_tiers(models)]
+        except Exception:                            # noqa: BLE001 — fail closed
+            return []
+
+    try:
+        req = urllib.request.Request(f"{BASE}/api/providers", method="GET")
+        with urllib.request.urlopen(req, timeout=5) as response:
+            doc: dict[str, Any] = json.loads(
+                response.read().decode("utf-8", "replace"))
+        out: list[str] = []
+        rows = doc.get("providers")
+        if not isinstance(rows, list):
+            return out
+        for provider in rows:
+            if not isinstance(provider, dict):
+                return []
+            if provider.get("id") != "openai":
+                continue
+            tiers = provider.get("tiers")
+            if not isinstance(tiers, list):
+                return []
+            for row in tiers:
+                if not isinstance(row, dict):
+                    return []
+                tier = row.get("tier")
+                if isinstance(tier, str) and tier:
+                    out.append(tier)
+        return out
+    except Exception:                                      # noqa: BLE001
+        return []
+
+
 def _with_dynamic_tiers(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Grow the hire/switch `tier` enums with the OpenRouter favorites
-    (2026-09-02) AT SERVE TIME. The cards stay dependency-free and
-    hand-written for the static vocabulary (their test pins that enum to
-    ledger.TIERS), but a favorite is a tier the user minted a minute ago, so
-    the only honest enum is the one computed when `tools/list` is answered —
-    a static list would refuse every `or-…` tier as a schema violation before
-    the server ever saw the call. Deep-copied: the module constant must never
-    grow entries that outlive a deselected favorite."""
+    """Grow hire/switch enums with tiers that are offerable AT SERVE TIME.
+
+    OpenRouter favorites are runtime tiers. Conditional Codex rollout tiers
+    are static ledger metadata but runtime OFFERS, admitted only after the
+    provider endpoint confirms exact live model-list membership. Both are
+    additions here; failures add nothing. Deep-copied so a transient offer
+    never mutates the module constant or outlives its evidence.
+    """
     from . import openrouter                   # noqa: PLC0415 — one lane
-    extra = sorted(openrouter.tiers())
+    extra = sorted(set(openrouter.tiers()) | set(_provider_dynamic_tiers()))
     if not extra:
         return tools
     out: list[dict[str, Any]] = []
@@ -1303,9 +1358,9 @@ def _with_dynamic_tiers(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
         enum = cast("list[str]", tier.get("enum") or [])
         tier["enum"] = enum + [t for t in extra if t not in enum]
         tier["description"] = (
-            "static tiers, plus the OpenRouter favorites this machine offers "
-            "(`or-…`, seat = their $/M input — whole at or above $1, "
-            "fractional below it): " + ", ".join(extra))
+            "static tiers, plus runtime tiers this machine currently offers "
+            "(OpenRouter favorites and provider-confirmed rollout tiers): "
+            + ", ".join(extra))
         out.append(tool)
     return out
 

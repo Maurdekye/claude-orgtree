@@ -63,6 +63,13 @@ DEFECTS = []          # (id, one-line description) — printed in the tail
 
 ALL_TOOLS = {"bash": True, "web": True, "edit": True, "subagents": True, "mcp": []}
 LEDGER_SRC = os.path.join(os.path.dirname(__file__), "..", "orgtree", "ledger.py")
+# Keep this structural property walk stable when conditional rollout metadata
+# is staged in TIERS. Its random operation sequence is seed-regression data;
+# changing the choice cardinality consumes a different number of random bits
+# and silently turns every historical seed into a new test. Conditional tier
+# admission is covered at the provider gate, and its ordinary ledger seat is
+# covered deterministically in test_codex_model_inventory.py.
+PROPERTY_TIERS = [tier for tier in TIERS if tier != "astra"]
 
 
 def spec(**over):
@@ -401,7 +408,7 @@ def build_random(rnd, cap):
     org.d["cascade_alloc"] = rnd.random() < 0.7
     hi = min(cap, 200) if cap else 200
     for i in range(rnd.randint(1, 3)):
-        org.hire(USER, None, rnd.choice(list(TIERS)), rnd.randint(0, hi),
+        org.hire(USER, None, rnd.choice(PROPERTY_TIERS), rnd.randint(0, hi),
                  f"root{i}")
     return org
 
@@ -436,7 +443,7 @@ def random_op(rnd, org):
             parent = rnd.choice(live + [None]) if live else None
             actor = USER if parent is None else rnd.choice([USER, parent])
             kw = {} if actor == USER else spec()
-            org.hire(actor, parent, rnd.choice(list(TIERS)), rnd.randint(0, 30),
+            org.hire(actor, parent, rnd.choice(PROPERTY_TIERS), rnd.randint(0, 30),
                      f"n{rnd.randrange(10 ** 6)}", **kw)
         elif op == "retire" and live:
             org.retire(USER, rnd.choice(live))
@@ -447,7 +454,7 @@ def random_op(rnd, org):
         elif op == "realloc" and live:
             org.reallocate(USER, rnd.choice(live), rnd.randint(-20, 20))
         elif op == "switch" and live:
-            org.switch_model(USER, rnd.choice(live), rnd.choice(list(TIERS)))
+            org.switch_model(USER, rnd.choice(live), rnd.choice(PROPERTY_TIERS))
         elif op == "move" and len(live) >= 2:
             n = rnd.choice(live)
             tgt = rnd.choice(live + [None])
@@ -1751,14 +1758,15 @@ def section_edges():
 
     # model VERSIONS are a subcategory of a tier, never a tier (user ruling
     # 2026-08-04): a fixed set of tiers, one chip each; the version lives in
-    # the gear. Ten since D-188: the four Claude bands, the codex family
-    # (gpt-reserve/luna/terra/sol — user seat ruling 2026-08-28), and the antigravity family
+    # the gear. Eleven with the provider-gated Astra metadata row: the four
+    # Claude bands, five Codex bands (including dark-until-offered Astra), and
+    # the antigravity family
     # (flash/pro — user greenlight 2026-08-29, re-walked for the Antigravity
     # CLI 2026-09-02).
     mv = deep_org()
-    check("the tier table is exactly the ten price bands",
+    check("the tier table is exactly the eleven price bands",
           lambda: eq(sorted(mv.d["tiers"]),
-                     ["fable", "flash", "gpt-reserve", "haiku", "luna",
+                     ["astra", "fable", "flash", "gpt-reserve", "haiku", "luna",
                       "opus", "pro", "sol", "sonnet", "terra"]))
     check("model_for defaults to the tier's own model",
           lambda: eq(mv.model_for("top"), MODELS["opus"]))

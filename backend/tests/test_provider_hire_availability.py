@@ -449,7 +449,7 @@ def every_codex_tier_still_hires_while_spent() -> None:
     spent_board()
     try:
         with Codex():
-            for t in providers.CODEX_TIERS:
+            for t in ("gpt-reserve", "luna", "terra", "sol"):
                 api.provider_hire_gate(org(), t)
     finally:
         codex_limits.invalidate()

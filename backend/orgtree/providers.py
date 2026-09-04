@@ -40,6 +40,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from typing import Any, Final, TypedDict
 
@@ -69,7 +70,8 @@ class TierInfo(TypedDict):
 # collision of English; the chip class (t-sol) carries the family, and no
 # canvas node can wear both families until codex hire is enabled.
 _CODEX_LETTER: Final[dict[str, str]] = {
-    "gpt-reserve": "R", "luna": "L", "terra": "T", "sol": "S"}
+    "gpt-reserve": "R", "luna": "L", "terra": "T", "sol": "S",
+    "astra": "A"}
 
 #: which tier names belong to the codex provider — the AXIS, nothing more.
 #: Seats and model ids live in ledger.TIERS / ledger.MODELS (the
@@ -80,7 +82,14 @@ _CODEX_LETTER: Final[dict[str, str]] = {
 #: $2, and gpt-reserve/luna $0.20 → 0.2 each since the sub-$1 repricing
 #: (user ruling 2026-09-03); they used to floor to 1, which made the four
 #: bands read 1·1·2·5 and lost luna's 10× advantage over terra.
-_CODEX_TIER_NAMES: Final = ("gpt-reserve", "luna", "terra", "sol")
+_CODEX_ALWAYS_TIER_NAMES: Final = ("gpt-reserve", "luna", "terra", "sol")
+_CODEX_TIER_NAMES: Final = _CODEX_ALWAYS_TIER_NAMES + ("astra",)
+#: Known Codex tiers whose metadata may exist in the ledger while their offer
+#: is controlled by the signed-in account's live model inventory. New rollout
+#: tiers belong here; stable tiers do not. The model id itself lives only in
+#: ledger.MODELS, so an upstream rename is a one-line data correction.
+CONDITIONAL_CODEX_TIERS: Final = frozenset(
+    set(_CODEX_TIER_NAMES) - set(_CODEX_ALWAYS_TIER_NAMES))
 #: float, not int: this is THE table the codex fractions live in.
 CODEX_TIERS: Final[dict[str, float]] = {
     t: _LEDGER_TIERS[t] for t in _CODEX_TIER_NAMES}
@@ -102,6 +111,7 @@ CODEX_CONTEXT: Final[int] = 1_050_000
 #: (2×-checked 2026-08-29): aipricing.guru/openai-pricing,
 #: cloudzero.com/blog/gpt-5-6-pricing, layer3labs.io/guides/gpt-5-6-pricing.
 CODEX_PRICES: Final[dict[str, tuple[float, float, float]]] = {
+    "astra": (10.00, 1.00, 50.00),
     "sol": (4.00, 0.40, 20.00),
     "terra": (2.00, 0.20, 12.00),
     "gpt-reserve": (0.20, 0.02, 1.20),
@@ -382,11 +392,24 @@ def claude_tiers() -> list[TierInfo]:
     ]
 
 
-def codex_tiers() -> list[TierInfo]:
+def codex_tiers(available_models: set[str] | frozenset[str] | None = None
+                ) -> list[TierInfo]:
+    """Codex tier rows safe to OFFER for one account-inventory snapshot.
+
+    Stable tiers are part of the established lane. Conditional rollout tiers
+    appear only when their exact pinned model id is in a successfully fetched
+    full inventory. ``None`` therefore means no evidence and fails closed for
+    those rows; it is never an optimistic default.
+    """
+    offered = set(_CODEX_ALWAYS_TIER_NAMES)
+    if available_models is not None:
+        offered.update(t for t in CONDITIONAL_CODEX_TIERS
+                       if CODEX_MODELS[t] in available_models)
     return [
         {"tier": t, "provider": "openai", "seat": seat,
          "model": CODEX_MODELS[t], "letter": _CODEX_LETTER[t]}
         for t, seat in sorted(CODEX_TIERS.items(), key=lambda kv: kv[1])
+        if t in offered
     ]
 
 
@@ -518,6 +541,125 @@ def codex_status(force: bool = False) -> dict[str, Any]:
     st.update(_codex_account())
     _status_cache = (now, st)
     return st
+
+
+# A provider inventory is network-backed even though it rides the local CLI.
+# Keep the accounts/canvas poll cheap, but never let old evidence authorize a
+# rollout tier. The hire gate passes force=True and performs its own query.
+CODEX_MODEL_INVENTORY_TTL: Final = 30.0
+CODEX_MODEL_INVENTORY_TIMEOUT: Final = 20.0
+_codex_model_inventory_cache: tuple[float, dict[str, Any]] | None = None
+_codex_model_inventory_lock = threading.Lock()
+
+
+def _inventory_failure(message: str) -> dict[str, Any]:
+    return {"available": False, "models": [], "error": message,
+            "fetched_at": time.time()}
+
+
+def codex_model_inventory(
+        force: bool = False, status: dict[str, Any] | None = None,
+        ) -> dict[str, Any]:
+    """Exact model ids offered to the signed-in Codex account, fail-closed.
+
+    OpenAI's app-server contract says clients should call ``model/list``
+    before rendering a picker. We request ``includeHidden=true`` because a
+    hidden row is not an unusable row: this account's live full inventory
+    includes both ``gpt-reserve`` (usable when its separate grant is live)
+    and ``codex-auto-review``. Treating ``hidden`` as unavailable previously
+    hid a working reserve tier. Only exact ``id`` membership authorizes a
+    conditional tier.
+
+    Missing/malformed/error/stale evidence never reuses the last good list.
+    The short cache is a UI optimization only; admission calls with
+    ``force=True`` re-query immediately before a ledger mutation.
+    """
+    global _codex_model_inventory_cache
+    now = time.time()
+    cached = _codex_model_inventory_cache
+    if (not force and cached is not None
+            and now - cached[0] <= CODEX_MODEL_INVENTORY_TTL):
+        return dict(cached[1])
+
+    st = status if status is not None else codex_status()
+    if not st.get("installed"):
+        result = _inventory_failure("Codex CLI is not installed")
+    elif not st.get("connected"):
+        result = _inventory_failure("Codex CLI is not signed in")
+    else:
+        with _codex_model_inventory_lock:
+            # A second poll may have filled the cache while this caller waited.
+            now = time.time()
+            cached = _codex_model_inventory_cache
+            if (not force and cached is not None
+                    and now - cached[0] <= CODEX_MODEL_INVENTORY_TTL):
+                return dict(cached[1])
+            exe, _source = codex_path()
+            if not exe:
+                result = _inventory_failure("Codex CLI is not installed")
+            else:
+                from . import codexrun             # noqa: PLC0415 — cycle seam
+                client: codexrun.AppServerClient | None = None
+                try:
+                    client = codexrun.AppServerClient(
+                        codex_argv(exe),
+                        codex_home=str(st.get("codex_home") or "") or None)
+                    client.initialize(timeout=CODEX_MODEL_INVENTORY_TIMEOUT)
+                    ids: set[str] = set()
+                    cursor: str | None = None
+                    seen: set[str] = set()
+                    while True:
+                        params: dict[str, Any] = {
+                            "limit": 100, "includeHidden": True}
+                        if cursor:
+                            params["cursor"] = cursor
+                        page = client.request(
+                            "model/list", params, CODEX_MODEL_INVENTORY_TIMEOUT)
+                        rows = page.get("data")
+                        if not isinstance(rows, list):
+                            raise ValueError("model/list returned no data list")
+                        for row in rows:
+                            if not isinstance(row, dict):
+                                raise ValueError("model/list returned a malformed row")
+                            model_id = row.get("id")
+                            if not isinstance(model_id, str) or not model_id:
+                                raise ValueError("model/list row has no model id")
+                            ids.add(model_id)
+                        nxt = page.get("nextCursor")
+                        cursor = str(nxt) if nxt else None
+                        if not cursor:
+                            break
+                        if cursor in seen:
+                            raise ValueError("model/list repeated a pagination cursor")
+                        seen.add(cursor)
+                    result = {"available": True, "models": sorted(ids),
+                              "error": None, "fetched_at": time.time()}
+                except Exception as e:  # noqa: BLE001 — fail closed at boundary
+                    result = _inventory_failure(
+                        f"Codex model inventory refresh failed: {e}")
+                finally:
+                    if client is not None:
+                        client.close()
+    _codex_model_inventory_cache = (time.time(), result)
+    return dict(result)
+
+
+def conditional_codex_availability(
+        tier: str, *, force: bool = False,
+        status: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Availability of one conditional Codex tier from exact live membership."""
+    if tier not in CONDITIONAL_CODEX_TIERS:
+        return {"enabled": True, "reason": None, "evidence": "not-conditional"}
+    inventory = codex_model_inventory(force=force, status=status)
+    if not inventory.get("available"):
+        return {"enabled": False, "evidence": "inventory-unavailable",
+                "reason": str(inventory.get("error") or
+                              "Codex model inventory is unavailable")}
+    model_id = CODEX_MODELS[tier]
+    if model_id not in set(inventory.get("models") or []):
+        return {"enabled": False, "evidence": "model-missing", "reason":
+                f"the signed-in Codex account does not offer model '{model_id}'"}
+    return {"enabled": True, "evidence": "model-present", "reason": None}
 
 
 def antigravity_tiers() -> list[TierInfo]:
@@ -823,6 +965,10 @@ def providers_payload(claude_status: dict[str, Any]) -> dict[str, Any]:
     # again inside a dict literal would double that work for one answer.
     reserve = (reserve_availability(codex) if codex.get("connected")
                else {"enabled": False, "reason": None, "evidence": "offline"})
+    inventory = (codex_model_inventory(status=codex)
+                 if codex.get("connected") else _inventory_failure("offline"))
+    codex_models = (set(inventory.get("models") or [])
+                    if inventory.get("available") else set())
     antigravity = antigravity_status()
     orr = openrouter.status()
     choices = appsettings.provider_choices()
@@ -871,7 +1017,10 @@ def providers_payload(claude_status: dict[str, Any]) -> dict[str, Any]:
             # name; tier words luna/terra/sol carry everywhere else.
             "label": PROVIDER_LABEL["openai"],
             "cli": "Codex CLI",
-            "tiers": codex_tiers(),
+            # Stable rows are always described; rollout rows require exact
+            # membership in the full account-scoped model list. The picker is
+            # convenience only — provider_hire_gate re-queries before mutate.
+            "tiers": codex_tiers(codex_models),
             "status": codex,
             # the vision, live (M1–M8 standing): a CONNECTED CLI is a
             # hireable provider — same predicate the api hire gate enforces.
@@ -995,6 +1144,12 @@ def tier_availability(tier: str) -> tuple[bool, str | None]:
             reserve = reserve_availability(st)
             if not reserve.get("enabled"):
                 return False, f"tier '{RESERVE_TIER}' is not available: {reserve.get('reason')}"
+        if tier in CONDITIONAL_CODEX_TIERS:
+            availability = conditional_codex_availability(
+                tier, force=True, status=st)
+            if not availability.get("enabled"):
+                return False, (f"tier '{tier}' is not available: "
+                               f"{availability.get('reason')}")
         return True, None
 
     if tier in _ANTIGRAVITY_TIER_NAMES:

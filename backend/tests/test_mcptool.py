@@ -618,14 +618,18 @@ def _():
         assert set(c) == {"name", "description", "inputSchema"}, c["name"]
 
 
-@t("the tier enums in the cards match ledger.TIERS exactly")
+@t("static tier enums match non-conditional ledger tiers exactly")
 def _():
     from orgtree.ledger import TIERS
+    from orgtree.providers import CONDITIONAL_CODEX_TIERS
+    expected = set(TIERS) - set(CONDITIONAL_CODEX_TIERS)
     for name, key in (("orgtree_hire", "tier"), ("orgtree_switch_model", "tier")):
-        assert sorted(SCHEMA[name]["properties"][key]["enum"]) == sorted(TIERS), \
+        assert sorted(SCHEMA[name]["properties"][key]["enum"]) == sorted(expected), \
             (name, SCHEMA[name]["properties"][key]["enum"])
     # and the seat costs the cards RECITE match the same table
     for tier, cost in TIERS.items():
+        if tier in CONDITIONAL_CODEX_TIERS:
+            continue
         for name in ("orgtree_hire", "orgtree_switch_model"):
             assert f"{tier} {cost}" in DESC[name].replace("·", "").replace(
                 "  ", " ") or f"{tier} {cost}" in DESC[name], \

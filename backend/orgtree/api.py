@@ -6694,6 +6694,20 @@ def provider_hire_gate(
     # one. Hiring prepares an agent; the TURN is what needs capacity, and the
     # Codex CLI already refuses that loudly. See the note above
     # `providers.RESERVE_TIER` for the reasoning and the tests that pin it.
+    if tier in providers.CONDITIONAL_CODEX_TIERS:
+        # A rollout token is admitted only on fresh, account-scoped provider
+        # evidence. The UI's short cache avoids picker churn, but it is not an
+        # authority: re-query HERE, immediately before the caller mutates the
+        # ledger. Missing, malformed, failed, or stale evidence all refuse.
+        # This is intentionally stricter than gpt-reserve below. Reserve's
+        # unreadable-evidence fail-open behavior is an older explicit ruling;
+        # do not "harmonize" these two gates.
+        availability = providers.conditional_codex_availability(
+            tier, force=True, status=st)
+        if not availability["enabled"]:
+            raise LedgerError(
+                f"tier '{tier}' is a conditional Codex tier and is not "
+                f"available to this account right now: {availability['reason']}")
     if tier == providers.RESERVE_TIER:
         # gpt-reserve rides the family's connected-CLI gate above and then one
         # more of its own. Reserve capacity is a pool OpenAI grants and
