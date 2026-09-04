@@ -40,6 +40,11 @@ written the failure down. A limit that reached `err_blob` would have left both.
     §6  WHERE a freeze's reset timestamp comes from, and what it is allowed to
         cost — the bands, the provenance gates and the api_fallback window
         (D-133, and ten rounds of adversarial review behind it).
+    §10 …and WHO IS TOLD. The freeze was always written and never announced:
+        `notify(…, "frozen")` paints a badge, and a manager not looking at the
+        canvas cannot tell a walled agent from a thinking one (user report
+        2026-09-04, D-240). The anti-spam bound is the design, so it is
+        measured hardest.
 
 Hermetic-ish: throwaway ORGTREE_DATA + HOME, no port, no Docker, no real CLI,
 no network. §2 spawns `node` (the stand-in) — skipped with a note if absent.
@@ -4037,6 +4042,323 @@ def sec_abandoned() -> None:
           _success_announces_nothing)
 
 
+# ══════════════════════════════════════════════════════════════════════════ §10
+
+def _pending_mail(slug: str, nid: str, needle: str = "") -> list[dict]:
+    """The UNDRAINED mailbox — what `_envelope` will hand the agent at its next
+    turn. `_sys_mail` above reads `mail_log`, the permanent record; a message
+    can sit in the log having already been read. For "will this actually reach
+    them", the pending box is the honest field."""
+    box = store.load_org(slug).d.get("mail", {}).get(nid, [])
+    return [m for m in box if m.get("from") == "@system"
+            and (not needle or needle in m.get("body", ""))]
+
+
+LIMITED = "REPORT LIMITED"
+
+
+def _unfreeze(slug: str, nid: str) -> None:
+    """What a ▶ / auto-resume wake leaves behind, and nothing else.
+
+    ⚠ THIS IS THE ONLY WAY A SECOND WALL CAN HAPPEN, and it took a red test to
+    see it: a FROZEN node refuses further turns outright, so re-driving one
+    four times does not produce four walls — it produces one wall and three
+    refusals. The repeat this alert has to survive is therefore the RESUME
+    LOOP: the timer wakes the node when its reset is due, the turn goes
+    straight back into the wall, and it re-freezes. With an unparseable reset
+    that cycle runs on the ~5-minute probe floor, i.e. ~288 walls a day.
+
+    `resume_frozen` itself is not used here because it also REPLAYS and DRIVES
+    the turn asynchronously, which would make the count racy and is not the
+    property under test. What it does to the RECORD is `n.pop("frozen")` — and
+    it deliberately leaves `limit_run` standing (supervisor.py, `resume_frozen`),
+    which is precisely what carries the suppression across the loop."""
+    with store.DOC_LOCK:
+        org = store.load_org(slug)
+        org.node(nid).pop("frozen", None)
+        store.save_org(org)
+
+
+def sec_limit_alert() -> None:
+    """§10 — A USAGE LIMIT REACHES THE MANAGER.
+
+    User report 2026-09-04: an agent hit its provider's usage limit mid-task
+    and stopped; its manager had no idea until the user said so. *"usage limit
+    hits should alert the parent; you had no idea it happened."*
+
+    §9 made the TERMINAL bucket loud and §7 the RETRIED one. The usage limit
+    was the third class and the only one still silent: the freeze block writes
+    a `frozen` record and fires `notify(…, "frozen")` — an SSE event that
+    paints a badge — and puts NOTHING in any mailbox. A manager who is not
+    looking at the canvas cannot tell a walled agent from a thinking one,
+    which is the whole harm.
+
+    The interesting half is the BOUND, so it is measured hardest: a limited
+    lane rejects turn after turn, and one message per attempt would train the
+    manager to ignore the channel — worse than the silence being fixed."""
+    print("\n§10 the usage limit — does the MANAGER ever find out?")
+
+    if not shutil.which("node"):
+        note("node is not on PATH — §10 skipped (it needs the CLI stand-in)")
+        return
+
+    # ── THE HEADLINE: not "a function was called" but "the CLI was handed it"
+    def _reaches_the_superior() -> None:
+        """DELIVERY, END TO END. Asserting the mail is in a dict proves only
+        that something wrote a dict. The claim is that the manager READS it,
+        so this drives the manager's own real turn and looks at the text its
+        CLI was actually handed — through the mailbox, the envelope and the
+        pipe, exactly as a person would receive it."""
+        slug, boss, (kid,) = _team(1, "limit-reaches")
+        set_mode("iserror", limit_text=REAL)
+        run_turn(slug, kid, "do the thing")
+        fixture(bool(node(slug, kid).get("frozen", {}).get("limit")),
+                "the kid did not freeze on a limit — the rig, not the alert")
+        assert _pending_mail(slug, boss, LIMITED), (
+            "an agent was walled by its provider and its manager's mailbox is "
+            "EMPTY — from one level up a limited agent is indistinguishable "
+            "from a thinking one, which is the reported bug")
+        # …and now prove it is actually DELIVERED, not merely stored.
+        set_mode("plain")                      # also clears the served log
+        run_turn(slug, boss, "your turn")
+        handed = "\n".join(json.dumps(s) for s in served())
+        assert LIMITED in handed, (
+            "the notice sat in the mailbox but never reached the manager's "
+            "CLI — a mailbox that is not drained is the same silence with "
+            f"extra steps. Served: {handed[:400]!r}")
+    check("alert · a provider refusal reaches the manager's CLI — mailbox, "
+          "envelope and pipe, end to end", _reaches_the_superior)
+
+    def _names_agent_lane_and_reset() -> None:
+        """A manager cannot route around a wall it cannot identify: WHICH
+        agent, WHICH lane, and WHEN it lifts."""
+        slug, boss, (kid,) = _team(1, "limit-names")
+        set_mode("iserror", limit_text=REAL)
+        run_turn(slug, kid, "go")
+        told = _pending_mail(slug, boss, LIMITED)
+        fixture(bool(told), "no alert to inspect")
+        body = told[0]["body"]
+        assert kid in body, f"the alert does not say WHICH agent: {body[:200]!r}"
+        assert "kid0" in body, f"the alert omits the agent's name: {body[:200]!r}"
+        assert "Claude" in body, (
+            f"the alert does not name the PROVIDER that refused: {body[:300]!r}")
+        assert "haiku" in body, (
+            f"the alert does not name the TIER/lane that is walled — a "
+            f"manager with reports on several lanes cannot tell which one is "
+            f"gone: {body[:300]!r}")
+        # the reset the freeze record actually parsed, not a re-derivation
+        fz = node(slug, kid).get("frozen", {})
+        fixture(bool(fz.get("until")), "the freeze parsed no reset label")
+        assert str(fz["until"]) in body, (
+            f"the alert does not say when the limit lifts (record says "
+            f"{fz['until']!r}): {body[:300]!r}")
+    check("alert · …and it names the agent, the provider, the lane and the "
+          "reset time", _names_agent_lane_and_reset)
+
+    # ── THE BOUND — the design, per the coordinator's framing ───────────────
+    def _once_per_episode() -> None:
+        """THE ANTI-SPAM PROPERTY. A walled lane refuses every attempt; the
+        auto-resume timer keeps re-driving the node into it. One message per
+        attempt is worse than none — it teaches the manager to skip the
+        channel."""
+        slug, boss, (kid,) = _team(1, "limit-once")
+        set_mode("iserror", limit_text=REAL)
+        for i in range(4):
+            _unfreeze(slug, kid)          # the timer's wake — see _unfreeze
+            run_turn(slug, kid, f"attempt {i}")
+            fixture(bool(node(slug, kid).get("frozen", {}).get("limit")),
+                    f"wall {i} did not re-freeze the node — the rig")
+        told = _pending_mail(slug, boss, LIMITED)
+        assert len(told) == 1, (
+            f"four consecutive limited turns produced {len(told)} alerts — a "
+            f"manager with three walled reports would get a dozen messages "
+            f"for one account wall and stop reading the channel")
+        assert (node(slug, kid).get("limit_run") or 0) == 4, (
+            "the run counter did not advance with the freezes: "
+            f"{node(slug, kid).get('limit_run')!r} — so the suppression is "
+            "resting on something other than the thing it claims")
+    check("bound · N consecutive limited turns alert exactly ONCE",
+          _once_per_episode)
+
+    def _rearmed_by_a_completed_turn() -> None:
+        """…and the counter must CLEAR on a turn that WORKS, or an agent that
+        comes back and is walled again next week is swallowed as 'already told
+        them'. This is also what makes the alert safe against an EARLY reset
+        (measured tonight: the weekly window lifted twelve hours early) — the
+        episode ends when the agent runs, never at a predicted time."""
+        slug, boss, (kid,) = _team(1, "limit-rearm")
+        set_mode("iserror", limit_text=REAL)
+        run_turn(slug, kid, "walled")
+        fixture(bool(node(slug, kid).get("frozen", {}).get("limit")),
+                "the first wall did not freeze the node — the rig")
+        _unfreeze(slug, kid)              # the window lifted; the timer wakes it
+        set_mode("plain")
+        _turns = len(node(slug, kid).get("turns") or [])
+        run_turn(slug, kid, "the limit lifted")
+        # ⚠ the recovery turn must actually have COMPLETED, or this check is
+        # measuring the wrong thing. On a loaded machine the idle watchdog can
+        # kill it, and a killed turn legitimately leaves the counter standing —
+        # which would read as "the re-arm is broken" and send the next reader
+        # after a bug that is not there.
+        fixture(len(node(slug, kid).get("turns") or []) > _turns
+                and not node(slug, kid).get("frozen"),
+                "the recovery turn did not complete (loaded machine?) — "
+                "nothing could have cleared the counter")
+        assert not node(slug, kid).get("limit_run"), (
+            "a completed turn did not clear the run counter: "
+            f"{node(slug, kid).get('limit_run')!r}")
+        set_mode("iserror", limit_text=REAL)
+        run_turn(slug, kid, "walled again")
+        told = _pending_mail(slug, boss, LIMITED)
+        assert len(told) == 2, (
+            f"a NEW limit episode after a working turn was not announced "
+            f"({len(told)} total) — the agent was walled twice and the second "
+            f"time went unreported")
+    check("bound · …and a completed turn re-arms it, so a second episode is "
+          "alerted again", _rearmed_by_a_completed_turn)
+
+    def _the_manager_is_not_woken() -> None:
+        """PASSIVE, deliberately. Measured in §9: deposited mail COALESCES
+        into one envelope while drives do NOT. A whole team behind one account
+        wall must therefore cost the manager ZERO turns — the notices ride
+        along with whatever wakes it next."""
+        slug, boss, kids = _team(3, "limit-passive")
+        set_mode("iserror", limit_text=REAL)
+        woke: list[str] = []
+        real_send = supervisor.send_message
+
+        def _spy(s: str, n: str, *a, **k):
+            if n == boss:
+                woke.append(n)
+            return real_send(s, n, *a, **k)
+        supervisor.send_message = _spy            # type: ignore[assignment]
+        try:
+            for k in kids:
+                run_turn(slug, k, "die on the wall")
+            time.sleep(1.0)
+        finally:
+            supervisor.send_message = real_send   # type: ignore[assignment]
+        # ⚠ every kid must actually have HIT the wall. A turn the watchdog
+        # killed on a loaded machine never freezes and so never alerts — a
+        # real thing, and not the "being passive costs a notice" failure this
+        # check is named for. Separate them, or a busy box reports a bug.
+        fixture(all(node(slug, k).get("frozen", {}).get("limit") for k in kids),
+                "not every kid froze on the wall (loaded machine?) — the rig, "
+                "not the notice count")
+        told = _pending_mail(slug, boss, LIMITED)
+        assert len(told) == len(kids), (
+            f"only {len(told)} of {len(kids)} walled reports were mailed — "
+            f"being passive must never cost a NOTICE")
+        assert not woke, (
+            f"the manager was DRIVEN {len(woke)} time(s) by a usage limit — "
+            f"an account wall breaks every report at once, so this is a turn "
+            f"per walled report for a fact that could have waited")
+        # positive control on the same claim: it never ran
+        assert not store.load_org(slug).d.get("turn_error_log", {}).get(boss), (
+            "the manager ran a turn it was never supposed to be woken for")
+    check("bound · the alert is PASSIVE — three walled reports mail the "
+          "manager three times and wake it zero", _the_manager_is_not_woken)
+
+    # ── THE NEGATIVE CASES ─────────────────────────────────────────────────
+    def _an_ordinary_error_does_not_alert() -> None:
+        """A false limit alert sends a manager chasing a provider problem that
+        does not exist. A disk that filled up is not a wall."""
+        slug, boss, (kid,) = _team(1, "limit-neg-enospc")
+        set_mode("died-with-stderr")
+        for i in range(3):
+            run_turn(slug, kid, f"try {i}")
+        time.sleep(0.5)
+        assert not _pending_mail(slug, boss, LIMITED), (
+            "an ENOSPC mid-flight death was reported to the manager as a "
+            "USAGE LIMIT — it would go looking at the provider's status page "
+            "for a full disk")
+        assert not node(slug, kid).get("limit_run"), (
+            "a non-limit failure advanced the limit run counter, so a later "
+            "REAL limit would be suppressed as a repeat")
+    check("negative · a turn that dies on a real error (ENOSPC) produces NO "
+          "limit alert", _an_ordinary_error_does_not_alert)
+
+    def _a_launch_failure_does_not_alert() -> None:
+        """The terminal bucket is §9's, and it must stay §9's."""
+        slug, boss, (kid,) = _team(1, "limit-neg-doa")
+        set_mode("dead-on-arrival")
+        run_turn(slug, kid, "go")
+        time.sleep(0.8)
+        assert not _pending_mail(slug, boss, LIMITED), (
+            "a CLI that never started was reported as a provider usage limit")
+        fixture(bool(_sys_mail(slug, boss, "REPORT STALLED")),
+                "…and §9's own announcement stopped firing — the rig is wrong")
+    check("negative · a CLI that dies before the model speaks is announced as "
+          "a STALL, never as a limit", _a_launch_failure_does_not_alert)
+
+    def _a_context_overflow_does_not_alert() -> None:
+        """⚠ THE REGRESSION THAT ALREADY HAPPENED, ON THIS PREDICATE, TONIGHT.
+        `18a502e` added the bare stem "exceed" to catch the live 429 ("would
+        exceed your account's rate limit"); it also matched a CONTEXT
+        OVERFLOW, which froze the agent to wait out a reset that never comes
+        and swallowed the real error. `c939475` fixed it by requiring an
+        account-scope word. The alert is built directly on that predicate, so
+        a re-widening would now also mail the manager a wall that does not
+        exist — this pins the behaviour from the alert's side."""
+        slug, boss, (kid,) = _team(1, "limit-neg-ctx")
+        set_mode("iserror", limit_text=(
+            "input length and max_tokens exceed context limit: "
+            "205000 > 200000"))
+        run_turn(slug, kid, "overflow me")
+        time.sleep(0.5)
+        assert not node(slug, kid).get("frozen", {}).get("limit"), (
+            "a CONTEXT OVERFLOW was classified as a usage limit and froze the "
+            "agent — it will wait for a reset that never comes")
+        assert not _pending_mail(slug, boss, LIMITED), (
+            "…and its manager was told the provider had walled the agent, so "
+            "it will go and look at a quota that is fine")
+    check("negative · a context overflow ('exceed context limit') is not a "
+          "wall and alerts nobody", _a_context_overflow_does_not_alert)
+
+    def _success_alerts_nobody() -> None:
+        """THE CONTROL. Must survive every tightening above."""
+        slug, boss, (kid,) = _team(1, "limit-neg-ok")
+        set_mode("plain")
+        run_turn(slug, kid, "a perfectly ordinary turn")
+        time.sleep(0.3)
+        assert not _pending_mail(slug, boss), (
+            "a SUCCESSFUL turn alerted the manager — every working agent on "
+            "the machine would be reported as walled")
+    check("control · a turn that SUCCEEDS alerts nobody",
+          _success_alerts_nobody)
+
+    # ── THE TOP OF THE TREE ────────────────────────────────────────────────
+    def _top_level_goes_to_the_user() -> None:
+        """⚠ Every announcement terminates upward at a node with no superior,
+        and the agent the user actually watches IS that node. Dropping the
+        alert there would rebuild the reported bug exactly one level up — the
+        coordinator would be walled and nobody at all would know. Same answer
+        as §9: the user's inbox, which is the one they actually read."""
+        org = store.create_org("zz limit-toplevel")
+        tl = {"bash": False, "web": False, "edit": False, "subagents": False,
+              "mcp": []}
+        solo = org.hire(USER, None, "haiku", 20, "solo", add_dirs=[], tools=tl,
+                        org_visibility="team", charter="s")["node"]
+        store.save_org(org)
+        slug = org.d["slug"]
+        set_mode("iserror", limit_text=REAL)
+        run_turn(slug, solo, "go")
+        fixture(bool(node(slug, solo).get("frozen", {}).get("limit")),
+                "the solo node did not freeze on a limit — the rig")
+        inbox = store.load_org(slug).user_mailbox()
+        hits = [m for m in inbox if solo in (m.get("body") or "")]
+        assert hits, (
+            f"a TOP-LEVEL agent was walled by its provider and the user's "
+            f"inbox got nothing ({len(inbox)} entries) — the chain goes "
+            f"silent exactly where there is nobody left to notice, which is "
+            f"the reported bug rebuilt one level up")
+        assert "Claude" in hits[0]["body"], (
+            f"the user is told it stopped but not by WHOM: "
+            f"{hits[0]['body'][:200]!r}")
+    check("top level · a node with NO superior alerts the USER's inbox "
+          "instead of dropping it", _top_level_goes_to_the_user)
+
+
 _once: list = [None]
 
 
@@ -4059,6 +4381,7 @@ def main() -> None:
     sec_died_in_flight()      # its predicate half needs no rig
     sec_deploy_window()       # D-142/a — most of it needs no rig either
     sec_abandoned()           # the terminal bucket, made loud
+    sec_limit_alert()         # …and the usage limit, made loud to the MANAGER
 
     print(f"\n{'═' * 70}\n{PASS} checks passed, {len(FAIL)} failed, "
           f"{len(GAPS)} gaps")

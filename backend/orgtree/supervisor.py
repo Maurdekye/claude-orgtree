@@ -12357,6 +12357,21 @@ def _run_one_turn(slug: str, nid: str,
                                              _stamped_ts, _stamped_win,
                                              _sub_lane, _trusted_blob)
                     notify(slug, nid, "frozen")
+                    # ⚠ …and `notify` is an SSE EVENT, not a message. It paints
+                    # a badge on a canvas nobody is necessarily looking at,
+                    # which is why a walled agent could stop mid-task and its
+                    # manager find out only from the user (report 2026-09-04).
+                    # PLACED AFTER `_spawn_reset_refresh` deliberately: the
+                    # announcement quotes the reset time, and that pass may
+                    # have just corrected it — announcing earlier would mail a
+                    # horizon the badge no longer shows.
+                    _limit_announce(
+                        slug, nid,
+                        limit_lane_label(
+                            str(org.node(nid).get("model") or "")
+                            if nid in org.nodes else "",
+                            str(st.get("ran_as") or "")),
+                        trusted=_trusted_blob)
                     handled = True      # frozen — ▶ / auto-resume owns it now
                     if org.node(nid)["model"] == "fable" and _trusted_blob \
                             and _looks_like_fable_tier_limit(err_blob):
@@ -13072,6 +13087,178 @@ def _retry_exhausted(slug: str, nid: str, run: int, err: str,
         pass
 
 
+def limit_lane_label(tier: str, account: str = "") -> str:
+    """The lane a limit applies to, in the words a person uses: provider,
+    tier, and — only when it adds something — which account served the turn.
+
+    A manager reading an alert has to decide whether to WAIT or to ROUTE
+    AROUND, and that decision is per-lane: "Claude · haiku" being walled says
+    nothing about a codex report, and an org whose reports sit on three
+    providers cannot act on "an agent hit its limit". The account is appended
+    only when a NON-primary row served the turn, because "account 'primary'"
+    on every alert is noise that teaches the reader to skip the line."""
+    lane = f"{providers.provider_label(tier)} · {tier}" if tier else \
+        providers.provider_label(tier)
+    if account and account != accounts.PRIMARY:
+        lane += f" · account {account!r}"
+    return lane
+
+
+def _limit_announce(slug: str, nid: str, lane: str,
+                    trusted: bool = True) -> bool:
+    """An agent was refused by its provider on a usage limit and is now
+    frozen: tell its MANAGER, once, passively.
+
+    User report 2026-09-04 — an agent hit its provider's limit mid-task and
+    stopped, and its manager only learned of it when the user said so:
+    *"usage limit hits should alert the parent; you had no idea it happened."*
+
+    The third sibling of `_turn_abandoned` (the terminal bucket) and
+    `_retry_exhausted` (the retried one). The usage limit was the class left
+    silent: the freeze block writes a rich `frozen` record and fires
+    `notify(…, "frozen")` — an SSE event that paints a badge on a canvas
+    nobody is necessarily looking at — and puts NOTHING in any mailbox. A
+    manager cannot route around a wall it cannot see, and a blocked-but-silent
+    agent is indistinguishable from a thinking one.
+
+    ⚠ PASSIVE — MAIL, NEVER A DRIVE, and that is not a small difference. §9
+    measured the asymmetry both ways: deposited mail COALESCES (three deposits
+    then one drive gave ONE envelope carrying all three) while drives do NOT
+    (three drives gave three envelopes). One account wall breaks every report
+    on that lane AT ONCE, so driving would cost a manager one turn per walled
+    report for a fact that can wait — and unlike an abandonment there is
+    nothing for it to do urgently: the node is frozen with a reset time, not
+    broken. So this deposits and stops. The notices ride along with whatever
+    wakes the manager next.
+
+    ⚠ ONCE PER EPISODE, bounded by `limit_run` — the same shape, for the same
+    reason, as `hard_fail_run` and `net_fail_run`, and cleared in exactly the
+    same place (`_after_turn`, on a turn that COMPLETES). A walled lane
+    refuses attempt after attempt and the auto-resume timer keeps re-driving
+    the node into it; one message per attempt would train the manager to skip
+    the channel, which is worse than the silence being fixed here.
+
+    ⚠ WHY THE COUNTER AND NOT THE RESET TIME. "Once per limit window" is the
+    obvious shape and it is wrong twice over. A limit whose reset nothing
+    could parse is stamped `now + PROBE_FLOOR` — a NEW window every five
+    minutes — so a window-keyed rule mails forever at exactly the rate that
+    destroys the channel. And a window is a PREDICTION: measured this evening,
+    the Claude weekly window lifted twelve hours early, confirmed against
+    Anthropic's own site. An episode that ends when the agent ACTUALLY RUNS
+    AGAIN needs no prediction to be right, and an early reset simply ends it
+    early — which is the correct outcome and not an error.
+
+    ⚠ READS THE FREEZE RECORD RATHER THAN TAKING ITS FIELDS AS ARGUMENTS. The
+    caller has just written that record and `_spawn_reset_refresh` may have
+    CORRECTED it off-lock a moment later; a copy passed in here could disagree
+    with what the badge shows. One source of truth, the same rule
+    `subscription_lane` was extracted to enforce.
+
+    Refuses in three cases, all of them "this is not a provider wall":
+      · `cause == "auth"` — a rejected credential (401). D-156's whole point
+        is that this is a broken thing to be fixed, not capacity; telling a
+        manager the provider walled its report would send it to look at a
+        quota that is fine.
+      · `untrusted` — the agent's own prose promoted by the clean-result gate.
+        The provider did not refuse anything; an agent could otherwise mail
+        its manager a fabricated outage by ending a turn with the right
+        sentence.
+      · no limit-kind freeze on the record at all.
+
+    A top-level node has no manager, so the USER's inbox is the audience —
+    the same answer, and for the same reason, as `_turn_abandoned`: every
+    announcement terminates upward at a node with no superior, and dropping
+    it there rebuilds the reported bug exactly one level up on the one agent
+    the user actually watches.
+
+    Returns True if anyone was told. Never raises: this runs on a turn that
+    is already failing, and a bookkeeping error here must not replace it."""
+    if not trusted:
+        return False
+    try:
+        told = False
+        sup = ""
+        with store.DOC_LOCK:
+            org = store.load_org(slug)
+            if nid not in org.nodes or org.node(nid)["state"] != "live":
+                return False
+            n = org.node(nid)
+            fz = cast("dict[str, Any]", n.get("frozen") or {})
+            if not fz.get("limit") or fz.get("untrusted") \
+                    or fz.get("cause") == "auth":
+                return False
+            run = int(n.get("limit_run") or 0) + 1
+            n["limit_run"] = run
+            name = str(n.get("name") or nid)
+            until = str(fz.get("until") or "") or "not known"
+            err = str(fz.get("error") or "")[:300]
+            # ⚠ the count is advanced on EVERY freeze, the message only on the
+            # transition to 1. Bumping and announcing together would make the
+            # counter mean "alerts sent" rather than "consecutive walls", and
+            # the re-arm in `_after_turn` would then be clearing the wrong
+            # fact. Save the bump either way — a run that is not persisted
+            # suppresses nothing.
+            if run != 1:
+                store.save_org(org)
+                print(f"[orgtree] {slug}/{nid}: usage limit on {lane} "
+                      f"(wall {run} of this episode) — already announced, "
+                      f"staying quiet")
+                return False
+            sup = str(n.get("parent") or "")
+            body = (
+                f"[REPORT LIMITED — {name} ({nid}) is out of provider "
+                f"capacity]\n"
+                f"Its provider refused the turn on a usage limit, so it "
+                f"stopped mid-task and is now FROZEN.\n"
+                f"Lane: {lane}\n"
+                f"Limit lifts: {until}\n"
+                f"Provider said: {err or 'no detail'}\n\n"
+                "It is blocked, not broken — the work it was doing is held "
+                "and will be replayed when it runs again. Whether it wakes by "
+                "itself when the window lifts depends on this org's "
+                "auto-resume setting; ▶ resume works either way.\n\n"
+                "You have NOT been woken for this, and you will not hear "
+                "about this wall again: it is one notice per episode, and the "
+                "next one comes only after it has run a turn and been walled "
+                "afresh. If the work cannot wait for the reset, move it to "
+                "another agent or another lane."
+            )[:8000]
+            if sup and sup in org.nodes and org.nodes[sup]["state"] == "live":
+                entry: MailEntry = {
+                    "id": uuid_hex8(), "from": "@system", "kind": "message",
+                    "body": body, "at": now_iso(),
+                    "relationship": "the orgtree engine"}
+                box = org.d.setdefault("mail", {})
+                box.setdefault(sup, []).append(cast(MailEntry, dict(entry)))
+                log = org.d.setdefault("mail_log", {}).setdefault(sup, [])
+                log.append(cast(MailEntry, dict(entry)))
+                del log[:-100]
+                told = True
+            else:
+                sup = ""
+                org.to_user_inbox({
+                    "id": uuid_hex8(), "from": SYSTEM, "kind": "notice",
+                    "at": now_iso(),
+                    "body": (f"{name} ({nid}) is out of provider capacity: "
+                             f"its provider refused the turn on a usage limit "
+                             f"and it is frozen. It has no superior to tell.\n"
+                             f"Lane: {lane}\nLimit lifts: {until}\n"
+                             f"Provider said: {err or 'no detail'}")[:2000]})
+                told = True
+            store.save_org(org)
+        if sup:
+            mail_spark(slug, "@system", sup)
+            print(f"[orgtree] {slug}/{nid}: usage limit on {lane} — mailed "
+                  f"its superior ({sup}); not driving, a frozen report is not "
+                  f"urgent and the notice rides with its next turn")
+        else:
+            print(f"[orgtree] {slug}/{nid}: usage limit on {lane} — no "
+                  f"superior to tell; left a notice in the user's inbox")
+        return told
+    except Exception:                                            # noqa: BLE001
+        return False
+
+
 def _bg_task_output(sid: str | None, task_id: str) -> str:
     """Where the CLI parked a background subagent's output, if it is there.
 
@@ -13490,6 +13677,14 @@ def _after_turn(slug: str, nid: str, org: Org, res: dict[str, Any],
             # likewise any run of self-reported limits
             n.pop("net_fail_run", None)
             n.pop("untrusted_limit_run", None)
+            # …and any run of PROVIDER WALLS. This is what re-arms the limit
+            # alert (`_limit_announce`): one turn that actually works means
+            # the lane let the agent through, so the next wall is a NEW
+            # episode and gets said out loud again rather than being
+            # swallowed as "already told them". It is also why the alert
+            # needs no reset time to be right — an episode ends when the
+            # agent RUNS, however early or late the window really lifted.
+            n.pop("limit_run", None)
             # …and any run of TERMINAL failures. This is what re-arms the
             # abandonment announcement: one turn that actually works means the
             # next terminal failure is a NEW episode and gets said out loud
@@ -15500,11 +15695,13 @@ def freeze_provider_limit(slug: str, nid: str, blob: str,
     freeze, after which ▶ skips the node for good. `limit = True` and a label
     derived from the timestamp are what keep the record out of it."""
     ts, src = _provider_limit_until(blob, reset_ts)
+    tier = ""
     try:
         with store.DOC_LOCK:
             o2 = store.load_org(slug)
             if nid not in o2.nodes:
                 return False
+            tier = str(o2.node(nid).get("model") or "")
             fz = _ensure_frozen(o2.node(nid))
             fz["limit"] = True
             # the CLI reported this itself — it is not the agent's own prose
@@ -15534,6 +15731,15 @@ def freeze_provider_limit(slug: str, nid: str, blob: str,
         print(f"[orgtree] {slug}/{nid}: provider limit freeze failed: {e!r}")
         return False
     notify(slug, nid, "frozen")
+    # …and TELL THE MANAGER, exactly as the claude lane does. The alert lives
+    # in the same place as the freeze on both lanes, so "which provider walled
+    # my report" is answerable for a codex or antigravity agent too — a
+    # manager whose reports sit on three providers is the case it exists for.
+    # `trusted` is unconditionally True here by construction: this function is
+    # only reached from a typed `_ProviderTurnFailed`, i.e. the PROVIDER's own
+    # words, never an agent's prose promoted by the clean-result gate (see
+    # this function's own note on `untrusted`).
+    _limit_announce(slug, nid, limit_lane_label(tier))
     return True
 
 

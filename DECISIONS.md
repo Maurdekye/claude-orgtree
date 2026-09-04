@@ -9256,3 +9256,52 @@ four commits.** It landed one follow-up, `78e4ddb`, which retires comments and
 a test name still calling the mid-turn card red — prose only, no assertion
 touched. The operational handoff is `scratch/orgtree/cache-card/breadcrumbs.md`
 and the verification record is `scratch/orgtree/cache-verify/breadcrumbs.md`.
+
+### D-240 · a usage limit is told to the MANAGER, once per episode, passively
+
+Report (user, 2026-09-04). An agent (`prewarm-bug`) hit its provider's usage
+limit mid-task and stopped. Its manager — the coordinator — had no idea, and
+learned of it only when the user said so: *"usage limit hits should alert the
+parent; you had no idea it happened."*
+
+The freeze machinery was never the gap. A walled turn already wrote a rich
+`frozen` record — kind, reset time, provenance, replay text — and already fired
+`notify(…, "frozen")`. But `notify` is an SSE event: it paints a badge on a
+canvas nobody is necessarily watching. NOTHING went into any mailbox, so from
+one level up a blocked agent and a thinking agent look identical, and a manager
+cannot route around a problem it cannot see. This is the same shape as the
+2026-08-21 incident that produced `_turn_abandoned` and `_retry_exhausted`;
+the usage limit was simply the third class, and the one still silent.
+
+`_limit_announce` is their sibling and deliberately reuses their structure.
+Three rulings distinguish it:
+
+**PASSIVE — mail, never a drive.** §9 measured the asymmetry both ways:
+deposited mail COALESCES (three deposits then one drive gave ONE envelope
+carrying all three) while drives do NOT (three drives gave three envelopes).
+One account wall breaks every report on that lane AT ONCE, so driving would
+cost a manager one turn per walled report. Unlike an abandonment there is also
+nothing urgent to do: the node is frozen with a reset time, not broken.
+
+**ONCE PER EPISODE, counted by `limit_run`** — the same shape and the same
+clearing site (`_after_turn`) as `hard_fail_run` and `net_fail_run`. "Once per
+limit WINDOW" is the obvious rule and it is wrong twice: a limit whose reset
+nothing could parse is stamped `now + PROBE_FLOOR`, a NEW window every five
+minutes, so a window-keyed rule mails forever at exactly the rate that destroys
+the channel; and a window is a PREDICTION — measured 2026-09-04, the Claude
+weekly window lifted twelve hours early, confirmed against Anthropic's own
+site. An episode that ends when the agent ACTUALLY RUNS AGAIN needs no
+prediction to be right, and an early reset simply ends it early.
+
+**Silent on what is not a wall.** A 401 (`cause == "auth"`) is a broken
+credential, not capacity (D-156); an `untrusted` freeze is the agent's own prose
+promoted by the clean-result gate, and announcing it would let an agent mail its
+manager a fabricated outage by ending a turn with the right sentence. A false
+limit alert sends a manager to look at a quota that is fine, which is worse than
+the silence being fixed. A top-level node has no manager, so the USER's inbox is
+the audience — dropping it there would rebuild the reported bug one level up, on
+the one agent the user actually watches.
+
+Both freeze sites call it, so the alert is not claude-only: the inline claude
+block and `freeze_provider_limit` (codex/antigravity). Measured in
+`test_limit_freeze` §10, ten checks, each proven able to fail against a mutant.
