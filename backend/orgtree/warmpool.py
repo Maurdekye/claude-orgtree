@@ -879,6 +879,95 @@ def native_startup_context_digest(org: Any, nid: str) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+# Codex's project-doc discovery, MEASURED against the pinned codex 0.150.1
+# with `codex debug prompt-input` (renders the model-visible prompt, no API
+# call). Do NOT copy the Claude list across — the loaders differ, and hashing
+# a file codex ignores would respawn agents for edits that change nothing.
+#
+# What the probe established, planting distinctive markers and reading back
+# which ones reached the prompt:
+#   * <cwd>/AGENTS.md            LOADED
+#   * <cwd>/AGENTS.override.md   LOADED, and it SUPPRESSES AGENTS.md in the
+#                                same directory (the managed identity vanished
+#                                from the prompt when an override was planted)
+#   * <cwd>/CLAUDE.md            NOT loaded. `project_doc_fallback_filenames`
+#                                defaults to `[]` in the binary's own embedded
+#                                defaults; codex's CLAUDE.md strings belong to
+#                                its Claude-session IMPORT feature, not to
+#                                project-doc loading.
+#   * ancestors' AGENTS.md       loaded ONLY up to a `.git` project root
+#                                (`project_root_markers = [".git"]`). With no
+#                                marker anywhere the walk collapses to cwd —
+#                                which is every orgtree seat today, since
+#                                nothing above the scratch root is a repo.
+#   * $CODEX_HOME/AGENTS.md      LOADED (verified with an isolated CODEX_HOME;
+#                                the real one was never written to).
+#
+# ⚠ KNOWN BOUNDARY: a non-default `project_doc_fallback_filenames` in codex
+# config would add filenames this digest does not know about. Not covered,
+# deliberately — the proven default set is what gets hashed, and inventing
+# coverage for unmeasured config is the failure this comment exists to stop.
+_CODEX_DOC_NAMES = ("AGENTS.override.md", "AGENTS.md")
+
+
+def codex_startup_context_digest(org: Any, nid: str) -> str:
+    """Digest the instruction files a Codex app-server reads at session start.
+
+    The Claude lane's counterpart is `native_startup_context_digest`; this is
+    deliberately a SEPARATE function rather than a shared one, because the two
+    CLIs read different file sets and a single list would be wrong for both.
+
+    The managed `<cwd>/AGENTS.md` is included even though it is written from
+    `identity_prompt`, which the `prompt` component already hashes. That is
+    not double counting: derived content moves exactly when the prompt moves,
+    so it adds no churn — and it buys real tamper detection, because an agent
+    that hand-edits its own AGENTS.md (or plants an AGENTS.override.md, which
+    SUPPRESSES the managed identity entirely) would otherwise keep serving
+    from a parked process with instructions orgtree never wrote.
+    """
+    from . import supervisor as sup                 # noqa: PLC0415
+
+    cwd = os.path.abspath(sup.scratch_dir(org.d["slug"], nid))
+    codex_home = os.path.abspath(
+        os.environ.get("CODEX_HOME") or os.path.expanduser("~/.codex"))
+    manifest: dict[str, str] = {}
+
+    def add(path: str) -> None:
+        try:
+            with open(path, "rb") as f:
+                data = f.read()
+        except (OSError, ValueError):
+            return
+        manifest[os.path.normcase(path)] = hashlib.sha256(data).hexdigest()
+
+    add(os.path.join(codex_home, "AGENTS.md"))
+
+    # Walk up for a `.git` root. Absent one, codex reads the cwd alone — so an
+    # unfound marker must NOT degrade into "hash every ancestor", which would
+    # hash files codex never opens.
+    chain: list[str] = []
+    at = cwd
+    while True:
+        chain.append(at)
+        if os.path.exists(os.path.join(at, ".git")):
+            break
+        parent = os.path.dirname(at)
+        if parent == at:
+            chain = [cwd]
+            break
+        at = parent
+    for directory in reversed(chain):
+        for name in _CODEX_DOC_NAMES:
+            path = os.path.join(directory, name)
+            if os.path.isfile(path):
+                add(path)
+                break            # an override replaces AGENTS.md in its dir
+
+    encoded = json.dumps(manifest, sort_keys=True, separators=(",", ":"),
+                         ensure_ascii=False).encode("utf-8", "replace")
+    return hashlib.sha256(encoded).hexdigest()
+
+
 def _part(b: bytes) -> str:
     return hashlib.sha256(b).hexdigest()[:12]
 
@@ -913,8 +1002,14 @@ def identity_snapshot(org: Any, nid: str, *,
             org, nid, write_ident=False)
         argv = (list(spec["argv_head"])
                 + list(spec["config_overrides"]) + ["app-server"])
+        # Codex reads instruction files at session start exactly as Claude
+        # does — a different SET of files, but the same staleness hazard, so
+        # the same treatment: fold their digest into the prompt component
+        # rather than inventing a fifth identity class.
+        native = codex_startup_context_digest(org, nid)
         raw = {
-            "prompt": prompt.encode("utf-8", "replace"),
+            "prompt": (prompt.encode("utf-8", "replace")
+                       + b"\x00codex-startup\x00" + native.encode("ascii")),
             # The tier is a process replacement boundary by contract even
             # though app-server also accepts a model per turn.
             "argv": json.dumps([*argv, "<tier>", model],
