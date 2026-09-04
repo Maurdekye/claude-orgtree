@@ -193,7 +193,7 @@ Also on the org doc but not in that panel: `max_depth` and `max_children`, both 
 
 | what | where | effect |
 |---|---|---|
-| **org.md** | `PUT /api/orgs/{slug}/orgmd` | the workspace `CLAUDE.md` — injected into every agent holding the workspace (`api.py:1748`) |
+| **org.md** | `PUT /api/orgs/{slug}/orgmd` | the ORG CHARTER. Stored as the workspace `CLAUDE.md`; delivered in the managed system prompt of **every** agent, on **every** provider, by `supervisor._org_charter_block`. A save restarts the whole org |
 | **charter presets** | `docs/charters/*.md` | each file is a selectable preset at hire time (`api.py:1141`) |
 
 ---

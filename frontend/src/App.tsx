@@ -2374,11 +2374,12 @@ export function SettingsPanel({ tree, toast, close }: {
           </SetGroup>
         )}
         <SetGroup title="Org charter" note="org.md">
-          <SetBlock hint={"loaded once at session start by every CLAUDE "
-            + "agent that holds the workspace — which is every Claude agent "
-            + "by default — so saving restarts them. Codex agents never see "
-            + "this file: their CLI reads AGENTS.md, which orgtree writes "
-            + "from each agent's own charter."}>
+          <SetBlock hint={"carried in the managed system prompt of EVERY "
+            + "agent in this org, on every provider — Claude, Codex and "
+            + "Antigravity alike — and read as a standing directive from "
+            + "you. It is delivered at session start, so saving restarts "
+            + "every agent here. Keep it short: it sits in each agent's "
+            + "cached prefix on every lane."}>
             <textarea className="orgmd-editor" value={orgMd ?? ''}
               aria-label="org.md" disabled={orgMd == null}
               onChange={(e) => setOrgMd(e.target.value)} />

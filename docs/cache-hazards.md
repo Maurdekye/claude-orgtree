@@ -48,6 +48,39 @@ Two deliberate exclusions matter:
 * Path-scoped rules load lazily when a matching file is read, not at startup.
   Hashing them would turn a harmless edit into a cold opening.
 
+## The ORG CHARTER restarts the whole org, on every provider
+
+`org.md` is stored as `<workspace>/CLAUDE.md`, but since 2026-09-04 it is not
+delivered by any project-doc loader. `supervisor._org_charter_block` renders it
+into `identity_prompt`, which orgtree writes itself on all three lanes
+(`--append-system-prompt-file` for claude, the managed `AGENTS.md` for codex,
+the plugin workspace for antigravity). So **one org-charter save moves every
+agent's prompt hash and respawns every parked process in the org** — by design,
+and disclosed in the editor's hint.
+
+Why the old route was worse than it looked: it reached only agents holding the
+workspace as a folder grant, on the claude lane. Most seats hold no grants at
+all and codex reads `AGENTS.md`, never `CLAUDE.md` — so for most of the fleet
+the field wrote a file nothing read, which from the outside is a setting that
+does nothing.
+
+Two properties worth keeping:
+
+* The block is not loader-proof and does not claim to be. On codex and
+  antigravity the managed prompt IS a file read back by that provider's own
+  loader, so an `AGENTS.override.md` suppresses the org charter exactly as it
+  suppresses the agent's identity. What is true is that the charter now has
+  the same delivery reliability as the agent's own charter: if that breaks,
+  the agent has already lost its identity and scope.
+* A charter that is present but UNREADABLE renders a notice in the prompt
+  rather than nothing. Silent absence is indistinguishable from an org that
+  never wrote one, and that is the state in which nobody looks.
+
+The workspace is deliberately excluded from `_claudemd_block`'s granted-folder
+injection, so a workspace-holder receives the text once rather than twice.
+`native_startup_context_digest` still fingerprints the file through the grant;
+nothing about invalidation changed with that exclusion.
+
 ## MCP object-key order is not process identity
 
 `~/.claude.json` preserves JSON insertion order, while MCP object-key order is

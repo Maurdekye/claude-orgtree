@@ -4134,8 +4134,19 @@ class OrgMd(Body):
 
 @app.put("/api/orgs/{slug}/orgmd")
 async def orgmd_put(slug: str, body: OrgMd) -> dict[str, Any]:
-    """org.md v1: the workspace CLAUDE.md — injected into every node that holds the
-    workspace, which is every node by default."""
+    """org.md — THE ORG CHARTER. Stored as the workspace `CLAUDE.md`, but
+    delivered through `supervisor._org_charter_block` into the MANAGED SYSTEM
+    PROMPT of every agent in the org, on every provider (user ruling
+    2026-09-04). It used to be delivered only by whichever project-doc loader
+    happened to pick the file up, which reached workspace-GRANT HOLDERS on the
+    claude lane and nobody else — most seats hold no grants, and codex reads
+    AGENTS.md, never CLAUDE.md.
+
+    A save therefore RESTARTS EVERY AGENT IN THE ORG, on every lane: the text
+    is part of their startup identity. That cost is disclosed in the editor's
+    hint and was accepted by the user; it is the price of the field applying
+    at all. The file is still written and still readable/editable by hand —
+    it is the storage and the operator's editing surface."""
     try:
         org = store.load_org(slug)
     except LedgerError as e:
