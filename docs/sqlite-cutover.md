@@ -18,9 +18,8 @@ megabyte a day, of which **74% is append-only log sections** — `mail_log`
 all of it.
 
 Measured on that real document, two roots built from the same bytes, backend
-the only variable, interleaved and order-reversed, N=30:
-
-Measured 2026-09-04, N=30, on a machine checked quiet at both ends (433
+the only variable, interleaved and order-reversed — 2026-09-04, N=30, on a
+machine checked quiet at both ends (433
 processes against a 444 quiet baseline). **One validated snapshot of the live
 root, cloned into both arms, with each org's sha256 asserted equal before any
 measurement** — the source hashes and the machine conditions are both in
