@@ -745,6 +745,12 @@ def native_startup_context_digest(org: Any, nid: str) -> str:
     global skills: the pinned CLI watches skill directories live, so hashing
     them would manufacture respawns rather than prevent stale instructions.
 
+    Instruction files arrive from TWO directions and both are covered: the
+    cwd parent chain (an agent's own scratch notes) and the roots of its
+    GRANTED directories, because the CLI reads a CLAUDE.md from every working
+    directory it is given. Missing the second half is what let the org-charter
+    field write a file nothing ever re-read.
+
     The manifest contains paths and content hashes, never raw instruction
     text. CLAUDE.md imports are followed to the CLI's documented five-hop
     ceiling; auto memory is hashed only through the prefix the CLI loads.
@@ -810,6 +816,44 @@ def native_startup_context_digest(org: Any, nid: str) -> str:
         add(os.path.join(directory, "CLAUDE.md"))
         add(os.path.join(directory, "CLAUDE.local.md"))
     add(os.path.join(cwd, ".claude", "CLAUDE.md"))
+
+    # GRANTED DIRECTORIES (2026-09-04). Every `--add-dir` root contributes its
+    # own CLAUDE.md: the CLI loads instruction files from each working
+    # directory it is handed, not only from the cwd chain above. MEASURED, not
+    # assumed — an agent with NO CLAUDE.md anywhere in its cwd chain and none
+    # at ~/.claude/CLAUDE.md still had the granted workspace file's text in
+    # its context.
+    #
+    # THIS IS WHAT MAKES `org.md` APPLY. The org-charter editor writes
+    # <workspace>/CLAUDE.md, and the workspace is a SIBLING of scratch, never
+    # an ancestor, so the walk above cannot reach it. Without this block an
+    # org.md edit moved no hash and killed no process: it silently did not
+    # apply to any parked agent until some unrelated respawn happened to pick
+    # it up. That is precisely the defect D-206 closed for the scratch
+    # CLAUDE.md, one grant surface over, and it read as "the setting does
+    # nothing" from the outside.
+    #
+    # Deliberate exclusions, none of them oversights:
+    #  * GLOBAL_SKILLS, the standing skills --add-dir — the module's existing
+    #    skills exclusion holds; the pinned CLI watches that tree live.
+    #  * the fixed scratch-root --add-dir (D-201/S2a) — already hashed, it IS
+    #    an ancestor of cwd and the chain walk covers it.
+    #  * the cheap-compact predecessor read-down — a transient splice artifact
+    #    whose own seat rehashes when the splice retires.
+    #
+    # ⚠ getattr, not `org.nodes` — this function takes `org: Any` and is
+    # reached from rigs that pass a MINIMAL org fake (test_d206_env builds a
+    # SimpleNamespace with only `.d`). A real Org always has `.nodes`, so this
+    # degrades only for a shape that has no grants to read anyway; it does NOT
+    # paper over a real org whose lookup failed.
+    nodes = getattr(org, "nodes", None)
+    node = (nodes.get(nid) or {}) if isinstance(nodes, dict) else {}
+    for grant in (node.get("scope") or {}).get("add_dirs") or []:
+        root = str((grant or {}).get("path") or "")
+        if not root:
+            continue
+        add(os.path.join(root, "CLAUDE.md"))
+        add(os.path.join(root, "CLAUDE.local.md"))
 
     # Unscoped rules load at session start; path-scoped rules load lazily when
     # a matching file is read and therefore must not dirty an idle process.
