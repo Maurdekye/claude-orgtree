@@ -712,6 +712,78 @@ def _register_pending(parts: dict[str, dict[str, Any]]) -> None:
                 _set_status(slug, hid, False, type(e).__name__)
 
 
+def unregister_org(doc: dict[str, Any], *, timeout: float = 4.0,
+                   ) -> dict[str, Any]:
+    """The polite exit, made reachable from orgtree. Removes THIS org's row
+    from every hub on its list.
+
+    THE DEFECT THIS CLOSES. `POST /api/unregister` has existed on the hub
+    since 2026-08-06 — "the polite exit", written in the same wave that added
+    the roster prune — and nothing in this backend ever called it.
+    `hubtool.unregister_identity` has the verb for a chat identity; an ORG
+    had none. So deleting an org left its row behind, and the compose picker
+    kept offering it as a recipient that can never receive anything. The
+    route was built and the caller never was, which is the same shape as the
+    org charter that reached nobody and the standing notes nothing read.
+
+    ⚠ THE HUB IS NOT THE AUTHORITY ON WHETHER AN ORG STILL EXISTS, and this
+    is why the fix is a polite exit rather than a sweep. A roster row whose
+    org is absent from THIS machine may be an org living on ANOTHER install
+    pointed at the same hub — "I cannot see it" is a fact about the observer.
+    Only the holder of an identity's secret can say it is gone, which is
+    exactly who calls this, and it is why the hub authenticates the request
+    and deletes only the caller's own slugs.
+
+    ⚠ IT MUST NOT BE ABLE TO FAIL A DELETE. Every error is caught and
+    reported in the return value: a hub that is down, slow or gone is a
+    completely normal condition, and an org that cannot be deleted because
+    some unrelated machine is unreachable would be a far worse defect than
+    the stale row. The row is not lost either way — the hub prunes rows
+    unseen for ORG_RETENTION_DAYS, so an unregister that fails degrades to
+    the timeout that was the only behaviour before this existed.
+
+    ⚠ SAFE ACROSS A RESTORE, which matters because deletion here is a
+    REVERSIBLE RENAME into <data>/deleted/. The local doc keeps its identity
+    (this only drops the remote row, exactly as `hubtool` does), so a
+    restored org re-registers on the next 401 with the SAME secret and the
+    hub re-mints the IDENTICAL address — see `_clear_registration`. Nothing
+    about the org's network identity is destroyed here.
+
+    Takes a doc SNAPSHOT rather than a slug, because the caller must read it
+    before the document is renamed away.
+    """
+    ident = doc.get("net_identity")
+    if not isinstance(ident, dict) or not ident.get("secret"):
+        return {"unregistered": [], "why": "no network identity"}
+    net_slug, secret = str(ident.get("slug") or ""), str(ident["secret"])
+    if not net_slug:
+        return {"unregistered": [], "why": "identity has no slug"}
+    hubs = [h for h in cast("list[dict[str, Any]]", doc.get("net_hubs") or [])
+            if h.get("enabled") and h.get("address")]
+    done: list[str] = []
+    errors: dict[str, str] = {}
+    for h in hubs:
+        addr = str(h["address"])
+        try:
+            import httpx
+            with httpx.Client(timeout=httpx.Timeout(timeout,
+                                                    connect=timeout)) as c:
+                r = c.post(f"{addr}/api/unregister", json={},
+                           headers=_auth_header([(net_slug, secret)]))
+            if r.status_code == 200:
+                done.append(addr)
+            elif r.status_code == 401:
+                # the hub already does not know us: a prune, a rebuilt
+                # volume, or a second delete. The goal state is reached, so
+                # this is a success and not an error to report at the user.
+                done.append(addr)
+            else:
+                errors[addr] = f"HTTP {r.status_code}"
+        except Exception as e:                                   # noqa: BLE001
+            errors[addr] = type(e).__name__
+    return {"unregistered": done, **({"errors": errors} if errors else {})}
+
+
 def _drain_spools(parts: dict[str, dict[str, Any]]) -> None:
     """Ship queued outbound. At-least-once: the hub send is idempotent on the
     entry id, so a crash after send / before the doc update just re-sends."""

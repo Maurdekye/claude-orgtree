@@ -1190,7 +1190,21 @@ def orgs_create(body: OrgCreate) -> dict[str, Any]:
                 # unwind: without this, the org survived its own failed
                 # creation as a non-kiosk org (registered + saved above)
                 # while the 422 told the caller nothing was made
+                # ⚠ A NARROW RACE, closed for the same reason the
+                # delete endpoint takes the polite exit: this org was
+                # saved as a NON-kiosk one, and the net poller mints an
+                # identity and registers any non-kiosk org it finds. If
+                # a pass landed in that window the unwind would leave a
+                # roster row for an org that never finished being made.
+                # Snapshot before the rename; never let it fail the
+                # unwind, which is already an error path.
+                try:
+                    _doc = dict(store.load_org(org.d["slug"]).d)
+                except LedgerError:
+                    _doc = {}
                 store.delete_org(org.d["slug"])
+                if _doc:
+                    net.unregister_org(_doc)
                 raise HTTPException(422, str(e))
             # a capped org never inherits the 50-credit hire pre-fill (user
             # report: the first hire swallowed the whole pool) — grants in a
@@ -1228,17 +1242,41 @@ def orgs_create(body: OrgCreate) -> dict[str, Any]:
 
 @app.delete("/api/orgs/{slug}")
 def orgs_delete(slug: str) -> dict[str, Any]:
+    # THE POLITE EXIT, taken BEFORE the document is renamed away (2026-09-04).
+    # An org's roster row on a mail hub outlived the org by up to
+    # ORG_RETENTION_DAYS, and the compose picker went on offering it as a
+    # recipient that can never receive anything — the user's own 2026-08-06
+    # complaint arriving by a second road. The hub's /api/unregister has
+    # existed since that same wave; nothing here ever called it.
+    #
+    # The snapshot is read first because unregistering needs the identity
+    # SECRET, and delete_org renames the document out from under us. Only the
+    # holder of that secret can prove the org is gone — which is why this is a
+    # polite exit by the owner rather than a sweep by an observer.
+    try:
+        doc = dict(store.load_org(slug).d)
+    except LedgerError:
+        doc = {}                       # unloadable: delete_org still decides
     try:
         store.delete_org(slug)
     except LedgerError as e:
         raise HTTPException(404, str(e))
+    # ⚠ AFTER the delete has succeeded, and it can NEVER fail one. A hub that
+    # is down, slow or gone is an ordinary condition; an org that could not be
+    # deleted because some unrelated machine was unreachable would be a worse
+    # defect than a stale row, and the row still ages out on the hub's own
+    # retention. Errors are reported in the response, not raised.
+    net_exit = net.unregister_org(doc) if doc else {"unregistered": []}
     # state-only purge: delete is a reversible rename, so scratch dirs stay
     # (a restore brings the files back) but runtime state must die with the
-    # org or a restore resurrects phantom busy/queued agents
+    # org or a restore resurrects phantom busy/queued agents.
+    # ⚠ The org's own net_identity is NOT touched, deliberately: a RESTORE
+    # re-registers on the next 401 with the same secret and the hub re-mints
+    # the identical address (net._clear_registration).
     supervisor.forget_state(slug)
     supervisor.remote_reap(slug)     # FR-01: no server outlives its org
     sandbox.remove(slug)            # container down; files stay (like scratch)
-    return {"ok": True}
+    return {"ok": True, "net": net_exit}
 
 
 @app.get("/api/net/probe")
