@@ -34,10 +34,8 @@ ROOT = Path(__file__).resolve().parents[2]
 SUP = ROOT / "backend" / "orgtree" / "supervisor.py"
 SUITE = ROOT / "backend" / "tests" / "test_harvest.py"
 
-_RAISE = ('                raise RuntimeError(\n'
-          '                    f"turn failed: "\n'
-          '                    f"{_for_the_record(err_blob, res)[:400] '
-          'or \'no output\'}")')
+_RAISE = ('                _rec = _for_the_record(err_blob, res, stream_api_err)[:400]\n'
+          '                raise RuntimeError(f"turn failed: {_rec or \'no output\'}")')
 
 # (name, file, find, replace, must-kill-this-check-or-None-for-survive)
 MUTANTS = [
@@ -121,7 +119,7 @@ MUTANTS = [
 
     ("the RETRY door quietly reverts to the placeholder (the other door)",
      SUP,
-     "                            f\"{_for_the_record(err_blob, res)[:300]}\")",
+     "                            f\"{_for_the_record(err_blob, res, stream_api_err)[:300]}\")",
      "                            f\"{err_blob[:300]}\")",
      "POSITIVE CONTROL: both operator-facing doors are wired"),
 
@@ -130,6 +128,20 @@ MUTANTS = [
      "            err_blob = _name_the_cause(err_blob)",
      "            err_blob = _name_the_cause(err_blob)\n"
      "            _for_the_record(err_blob, res)",
+     "ORDER · the widened text is assembled after the last predicate"),
+
+    ("LEAK: a classifier runs in an except handler AFTER assembly",
+     SUP,
+     "            # dead-credential shape this project has twice believed it had\n"
+     "            # ruled out.\n"
+     "            st[\"account_switches\"] = 0",
+     "            # dead-credential shape this project has twice believed it had\n"
+     "            # ruled out.\n"
+     "            try:\n"
+     "                pass\n"
+     "            except Exception:\n"
+     "                _looks_like_usage_limit(err_blob)\n"
+     "            st[\"account_switches\"] = 0",
      "ORDER · the widened text is assembled after the last predicate"),
 
     ("the TERMINAL door reverts to the placeholder",

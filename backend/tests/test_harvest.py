@@ -316,13 +316,22 @@ def s2_separation() -> None:
     # text must come AFTER the last predicate call, or "assembled after every
     # classifier" is just a claim.
     def _ordering():
-        pred_lines = [c.lineno for p in
+        # Handlers on _run_one_turn's outermost try block run only after the
+        # turn body raises, so classifiers there cannot precede assembly.
+        run_fn = next(n for n in _SUP_AST.body
+                      if isinstance(n, ast.FunctionDef) and n.name == "_run_one_turn")
+        outer_try = next(n for n in run_fn.body if isinstance(n, ast.Try))
+        post_turn_calls = {c for h in outer_try.handlers for c in ast.walk(h)}
+
+        pred_calls = [c for p in
                       ("_looks_like_usage_limit", "_looks_like_filtered",
                        "_looks_like_connection_failure",
                        "_looks_like_fable_tier_limit", "_died_in_flight")
                       for c in _calls_named(_SUP_AST, p)]
-        # predicate calls inside the predicates' own definitions don't count
-        pred_lines = [ln for ln in pred_lines if ln > 2000]
+        # predicate calls inside the predicates' own definitions or post-turn
+        # exception handlers don't count
+        pred_lines = [c.lineno for c in pred_calls
+                      if c.lineno > 2000 and c not in post_turn_calls]
         # ⚠ MIN, not max. With max() this check asks only "is the LAST use
         # late", and an added EARLY use — the actual leak — slides straight
         # past it. The property is that EVERY use is after every predicate.
