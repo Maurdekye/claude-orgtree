@@ -9305,3 +9305,47 @@ the one agent the user actually watches.
 Both freeze sites call it, so the alert is not claude-only: the inline claude
 block and `freeze_provider_limit` (codex/antigravity). Measured in
 `test_limit_freeze` §10, ten checks, each proven able to fail against a mutant.
+
+### D-241 · the freezes that never wake are announced too — and neither may claim an outage
+
+Ruling (coordinator, 2026-09-04, on `limit-alert`'s own findings from D-240).
+D-240 reports a provider WALL and deliberately refuses two cases, because
+calling either a wall would be false: a rejected credential (D-156) and an
+untrusted self-reported limit that ran up to `UNTRUSTED_LIMIT_RUNS`. Both
+refusals were correct. Both left exactly the silence D-240 exists to delete,
+and left it WORSE: a walled node at least wakes itself when the window lifts,
+while these two carry `until_ts = None` — no timer, no re-drive, stopped until
+a person happens to look at the canvas. That is the reported bug in its purest
+form, so `_parked_announce` closes it.
+
+**THE WORDING IS THE RULING, NOT THE PLUMBING.** Neither message may assert
+that the provider refused anything, and they would be lies in OPPOSITE
+directions. A 401 is the provider answering us and rejecting the credential —
+capacity was never the question, and a manager told "usage limit" waits for a
+reset that never comes while declining the one action that fixes it. An
+untrusted cap is orgtree declining to believe the AGENT, with the provider
+never consulted at all — and reporting that as an outage is forgeable by any
+agent that ends three turns with the right sentence. Hence `_PARKED_KINDS`, a
+table of two hand-written bodies rather than one string with a substitution:
+the difference between them is the whole point.
+
+**THE GATE IS `until_ts`, A BEHAVIOUR AND NOT A NAME.** The claim made to a
+manager is "nothing will wake it", so the function asks the one field that
+decides that rather than trusting which branch called it. Give auth freezes a
+retry horizon later and this stops firing by itself instead of going on
+promising a permanence that quietly stopped being true.
+
+**ONE COUNTER (`parked_run`) FOR BOTH KINDS**, cleared by a completed turn.
+`hard_fail_run`'s rule for `hard_fail_run`'s reason: a node whose credential
+is rejected and which then parks on a self-reported limit is ONE stuck
+episode, and must not buy a second announcement by changing how it is stuck.
+Re-arming on a completed turn is what makes a credential replacement that did
+NOT work reportable instead of silent.
+
+The three announcers are exhaustive and mutually exclusive over a limit-kinded
+freeze: `_limit_announce` refuses an auth cause and an untrusted record, which
+are precisely the two kinds `_parked_announce` takes. `test_limit_freeze` §11,
+eleven checks; the eight positive ones red before the change, and the three
+that pass either way each shown red against a mutant — including a two-stage
+one that proves the `until_ts` gate, not luck, is what keeps a self-healing
+freeze quiet.

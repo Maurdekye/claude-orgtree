@@ -12096,6 +12096,11 @@ def _run_one_turn(slug: str, nid: str,
                     # not be able to disagree again — see `subscription_lane`.
                     _sub_lane = False
                     _frozen_at: str | None = None
+                    # WHY this freeze can never wake itself, if it cannot —
+                    # set under the lock by whichever branch strips the reset
+                    # time, announced OFF it (see below). `None` = it has a
+                    # horizon and something will wake it.
+                    _parked: str | None = None
                     # a limit the CLI REPORTED — stderr, a result event flagged
                     # is_error, or its own `<synthetic>` limit record — versus
                     # one promoted out of the agent's own final answer by the
@@ -12224,6 +12229,14 @@ def _run_one_turn(slug: str, nid: str,
                                 o2.node(nid)["untrusted_limit_run"] = _ur
                                 fz["untrusted"] = True
                                 if _ur >= UNTRUSTED_LIMIT_RUNS:
+                                    # …and SAY SO. Past the cap the node has
+                                    # no reset to wait for and no timer to
+                                    # wake it: it is stopped until a person
+                                    # looks, which is the silent stall this
+                                    # whole piece exists to delete. The
+                                    # message must not call it a wall — see
+                                    # `_PARKED_KINDS`.
+                                    _parked = "untrusted"
                                     # stop auto-waking it: nothing here is
                                     # evidence of a wall, and the loop is the
                                     # agent's own answer coming back round.
@@ -12260,6 +12273,15 @@ def _run_one_turn(slug: str, nid: str,
                                                "it, then resume")
                                 fz["reset_src"] = "auth"
                                 _stamped_ts = None
+                                # …and TELL SOMEBODY. The label above is read
+                                # by opening the node; nothing about a dead
+                                # credential ever puts it in front of the one
+                                # person who can replace it. LAST, so it wins
+                                # over an untrusted cap set above: when both
+                                # apply, the 401 is the fact that names the
+                                # remedy, and a manager needs one instruction
+                                # rather than two competing ones.
+                                _parked = "auth"
                             fz["error"] = err_blob[:300]
                             # replay only what the CLI actually consumed: an
                             # unconsumed batch folds back as MAIL (C1) and
@@ -12433,13 +12455,28 @@ def _run_one_turn(slug: str, nid: str,
                     # announcement quotes the reset time, and that pass may
                     # have just corrected it — announcing earlier would mail a
                     # horizon the badge no longer shows.
+                    _tier_now = (str(org.node(nid).get("model") or "")
+                                 if nid in org.nodes else "")
+                    _acct_now = str(st.get("ran_as") or "")
                     _limit_announce(
-                        slug, nid,
-                        limit_lane_label(
-                            str(org.node(nid).get("model") or "")
-                            if nid in org.nodes else "",
-                            str(st.get("ran_as") or "")),
+                        slug, nid, limit_lane_label(_tier_now, _acct_now),
                         trusted=_trusted_blob)
+                    # ⚠ THE OTHER TWO OUTCOMES, and between them the three are
+                    # exhaustive and mutually exclusive: `_limit_announce`
+                    # refuses an auth cause and an untrusted record, which are
+                    # exactly the two kinds this handles, so a freeze produces
+                    # AT MOST ONE message and never none. Both are announced
+                    # OFF THE DOCUMENT LOCK — announcing under it deadlocks,
+                    # measured while proving these checks can fail.
+                    # ⚠ the account is named even when it is `primary`: for a
+                    # rejected credential, WHICH credential is the whole
+                    # remedy, and a lane label that hides the usual answer
+                    # hides it in the one case that needs it.
+                    if _parked:
+                        _parked_announce(
+                            slug, nid, _parked,
+                            limit_lane_label(_tier_now, _acct_now,
+                                             always_account=True))
                     handled = True      # frozen — ▶ / auto-resume owns it now
                     if org.node(nid)["model"] == "fable" and _trusted_blob \
                             and _looks_like_fable_tier_limit(err_blob):
@@ -13155,7 +13192,8 @@ def _retry_exhausted(slug: str, nid: str, run: int, err: str,
         pass
 
 
-def limit_lane_label(tier: str, account: str = "") -> str:
+def limit_lane_label(tier: str, account: str = "",
+                     always_account: bool = False) -> str:
     """The lane a limit applies to, in the words a person uses: provider,
     tier, and — only when it adds something — which account served the turn.
 
@@ -13167,9 +13205,158 @@ def limit_lane_label(tier: str, account: str = "") -> str:
     on every alert is noise that teaches the reader to skip the line."""
     lane = f"{providers.provider_label(tier)} · {tier}" if tier else \
         providers.provider_label(tier)
-    if account and account != accounts.PRIMARY:
+    if account and (always_account or account != accounts.PRIMARY):
         lane += f" · account {account!r}"
     return lane
+
+
+#: WHY a freeze can never wake itself, and the sentence a manager gets for it.
+#: Keyed by the value `_parked_announce` is called with; adding a case here is
+#: the whole of adding a new parked kind.
+#:
+#: ⚠ NEITHER SENTENCE MAY CLAIM THE PROVIDER REFUSED ANYTHING (coordinator
+#: ruling 2026-09-04, and the reason this is a table rather than one string
+#: with a substitution). `_limit_announce` says "your provider walled this
+#: agent" and is only ever reached on evidence the CLI itself produced. These
+#: two are the cases where that sentence would be a LIE, and they are lies in
+#: opposite directions: a 401 is the provider answering us and rejecting the
+#: credential — capacity was never the question — while an untrusted cap is
+#: orgtree declining to believe the AGENT, with the provider never consulted
+#: at all. A manager sent after a quota that is fine wastes the trip; a
+#: manager told "outage" when its agent is merely repeating a sentence learns
+#: to distrust every future alert.
+_PARKED_KINDS: Final[dict[str, tuple[str, str]]] = {
+    "auth": (
+        "had its credential REJECTED",
+        "Its provider answered the turn with a 401: the credential it ran on "
+        "was rejected.\n\n"
+        "⚠ THIS IS NOT A USAGE LIMIT. There is no capacity to wait for and no "
+        "reset time, so nothing will wake it — a timer cannot fix a credential "
+        "and orgtree will not pretend otherwise by scheduling one. It stays "
+        "stopped until the credential is replaced and someone resumes it.\n\n"
+        "The remedy is the operator's: replace the credential, then ▶ resume "
+        "it. Resuming it first only spends another turn on the same refusal. "
+        "If you are not the one who holds that credential, pass this up."),
+    "untrusted": (
+        "is parked after repeated SELF-REPORTED limits",
+        "Several turns in a row, this agent's OWN final answer looked like a "
+        "usage-limit message.\n\n"
+        "⚠ ORGTREE NEVER SAW A PROVIDER REFUSE ANYTHING. The evidence came "
+        "from the agent's own output, not from the CLI, and a real wall is "
+        "always reported BY the CLI. After enough of them in a row orgtree "
+        "stopped treating the sentence as evidence and parked the node, "
+        "rather than waking it back into the same loop indefinitely — one "
+        "burnt turn per cycle, forever.\n\n"
+        "So do NOT read this as an outage. It may be a real limit orgtree "
+        "could not see another way, or the agent may simply be repeating a "
+        "sentence it cannot get past. There is no reset time and nothing will "
+        "wake it: read what it actually said below, and resume it yourself if "
+        "the work should continue."),
+}
+
+
+def _parked_announce(slug: str, nid: str, kind: str, lane: str) -> bool:
+    """An agent is frozen with NO reset time — nothing will ever wake it — and
+    the reason is not a provider wall. Tell its manager, once.
+
+    The hole `_limit_announce` deliberately left, closed on coordinator ruling
+    2026-09-04. That function reports a wall and refuses two cases on purpose,
+    because calling either one a wall would be false: a rejected credential
+    (D-156) and an untrusted self-reported limit that ran up to its cap. Both
+    refusals were correct and both left the SAME silence the whole piece
+    exists to delete — worse, in fact, than the case it fixed, because a
+    walled node at least wakes itself when the window lifts, while these two
+    sit frozen until a person happens to look. That is the reported bug in its
+    purest form: an agent stopped forever with nobody told.
+
+    ⚠ THE GATE IS `until_ts`, WHICH IS A BEHAVIOUR AND NOT A NAME. The claim
+    this function makes to a manager is "nothing will wake it", so it asks the
+    one field that decides that, rather than trusting the caller's word for
+    which branch it came from. If a future change gives auth freezes a retry
+    horizon, this stops firing by itself instead of going on promising a
+    permanence that has quietly stopped being true — which is exactly the
+    present-plausible-and-inert guard this codebase keeps finding.
+
+    ⚠ ONE COUNTER FOR BOTH KINDS (`parked_run`), and the sharing is the point,
+    not an economy. It is `hard_fail_run`'s rule — one counter across every
+    door — for `hard_fail_run`'s reason: a node that has its credential
+    rejected and then parks on a self-reported limit is ONE stuck episode, and
+    must not buy a second announcement by changing how it is stuck. Cleared
+    only by a turn that COMPLETES (`_after_turn`), so an operator who replaces
+    the credential, resumes, and watches it get stuck again is told again.
+
+    PASSIVE, like `_limit_announce`: mail, never a drive. One broken
+    credential parks every node on that account at once, so a drive would cost
+    a manager a turn per node for a fact only the operator can act on.
+
+    No superior ⇒ the user's inbox, for the third time and the same reason.
+
+    Never raises — it runs on a turn that is already failing."""
+    if kind not in _PARKED_KINDS:
+        return False
+    headline, detail = _PARKED_KINDS[kind]
+    try:
+        sup = ""
+        with store.DOC_LOCK:
+            org = store.load_org(slug)
+            if nid not in org.nodes or org.node(nid)["state"] != "live":
+                return False
+            n = org.node(nid)
+            fz = cast("dict[str, Any]", n.get("frozen") or {})
+            # the behaviour this message asserts, asked directly
+            if not fz or fz.get("until_ts"):
+                return False
+            run = int(n.get("parked_run") or 0) + 1
+            n["parked_run"] = run
+            name = str(n.get("name") or nid)
+            err = str(fz.get("error") or "")[:300]
+            if run != 1:
+                store.save_org(org)
+                print(f"[orgtree] {slug}/{nid}: parked ({kind}) on {lane} "
+                      f"— already announced this episode, staying quiet")
+                return False
+            sup = str(n.get("parent") or "")
+            body = (
+                f"[REPORT STOPPED — {name} ({nid}) {headline}]\n"
+                f"{detail}\n\n"
+                f"Lane: {lane}\n"
+                f"What it said: {err or 'no detail'}\n\n"
+                "It is not frozen on a timer and orgtree will not re-drive it, "
+                "so nothing changes until someone acts. It may also be holding "
+                "unfinished work from the turn that stopped.\n\n"
+                "You have NOT been woken for this, and you will not hear about "
+                "it again until it has completed a turn and got stuck afresh."
+            )[:8000]
+            if sup and sup in org.nodes and org.nodes[sup]["state"] == "live":
+                entry: MailEntry = {
+                    "id": uuid_hex8(), "from": "@system", "kind": "message",
+                    "body": body, "at": now_iso(),
+                    "relationship": "the orgtree engine"}
+                box = org.d.setdefault("mail", {})
+                box.setdefault(sup, []).append(cast(MailEntry, dict(entry)))
+                log = org.d.setdefault("mail_log", {}).setdefault(sup, [])
+                log.append(cast(MailEntry, dict(entry)))
+                del log[:-100]
+            else:
+                sup = ""
+                org.to_user_inbox({
+                    "id": uuid_hex8(), "from": SYSTEM, "kind": "notice",
+                    "at": now_iso(),
+                    "body": (f"{name} ({nid}) {headline} and is stopped with "
+                             f"no reset time — nothing will wake it, and it "
+                             f"has no superior to tell.\nLane: {lane}\n"
+                             f"What it said: {err or 'no detail'}")[:2000]})
+            store.save_org(org)
+        if sup:
+            mail_spark(slug, "@system", sup)
+            print(f"[orgtree] {slug}/{nid}: parked ({kind}) on {lane} — "
+                  f"mailed its superior ({sup}); not driving")
+        else:
+            print(f"[orgtree] {slug}/{nid}: parked ({kind}) on {lane} — no "
+                  f"superior to tell; left a notice in the user's inbox")
+        return True
+    except Exception:                                            # noqa: BLE001
+        return False
 
 
 def _limit_announce(slug: str, nid: str, lane: str,
@@ -13753,6 +13940,11 @@ def _after_turn(slug: str, nid: str, org: Org, res: dict[str, Any],
             # needs no reset time to be right — an episode ends when the
             # agent RUNS, however early or late the window really lifted.
             n.pop("limit_run", None)
+            # …and any run of PARKED-INDEFINITELY freezes (`_parked_announce`).
+            # An operator who replaces a rejected credential, resumes, and
+            # watches the node get stuck again must be told again — otherwise
+            # the fix that did not work is itself silent.
+            n.pop("parked_run", None)
             # …and any run of TERMINAL failures. This is what re-arms the
             # abandonment announcement: one turn that actually works means the
             # next terminal failure is a NEW episode and gets said out loud

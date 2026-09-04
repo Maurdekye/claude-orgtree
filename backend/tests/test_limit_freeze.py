@@ -4359,6 +4359,311 @@ def sec_limit_alert() -> None:
           "instead of dropping it", _top_level_goes_to_the_user)
 
 
+# ══════════════════════════════════════════════════════════════════════════ §11
+
+STOPPED = "REPORT STOPPED"
+
+
+def _park_untrusted(slug: str, nid: str) -> None:
+    """Drive the node to the untrusted CAP — the state where nothing can ever
+    wake it again.
+
+    The self-reported route: a CLEAN result whose text names a limit AND
+    carries a machine-parseable reset marker. `agent_authored` is True, so the
+    blob is untrusted, the freeze is tagged `untrusted` and `until_ts` is a
+    5-minute probe — until the run reaches `UNTRUSTED_LIMIT_RUNS`, at which
+    point the number is dropped and the node waits for a person. Unfreezing
+    between turns is the auto-resume wake that carries the run upward."""
+    set_mode("plain", reply="Usage limit reached. Try again in 1 minute.")
+    for _ in range(supervisor.UNTRUSTED_LIMIT_RUNS):
+        _unfreeze(slug, nid)
+        run_turn(slug, nid, "go")
+
+
+def sec_parked_alert() -> None:
+    """§11 — THE TWO FREEZES THAT NEVER WAKE, AND NOBODY WAS TOLD.
+
+    §10 reports a provider WALL and refuses two cases on purpose, because
+    calling either one a wall would be false: a rejected credential (D-156)
+    and an untrusted self-reported limit that ran up to its cap. Both refusals
+    are right and both left the same silence §10 exists to delete — worse, in
+    fact, than the case it fixed: a walled node at least wakes itself when the
+    window lifts, while these two sit frozen with `until_ts = None` until a
+    person happens to look at the canvas.
+
+    ⚠ THE HARD PART IS THE WORDING, NOT THE PLUMBING (coordinator ruling
+    2026-09-04). Neither message may claim the provider refused anything, and
+    they are lies in opposite directions: a 401 is the provider answering and
+    rejecting the credential — capacity was never the question — while an
+    untrusted cap is orgtree declining to believe the AGENT, with the provider
+    never consulted at all. So the checks below assert what the messages must
+    NOT say as hard as what they must."""
+    print("\n§11 the freezes that never wake — is anyone told, and told WHAT?")
+
+    if not shutil.which("node"):
+        note("node is not on PATH — §11 skipped (it needs the CLI stand-in)")
+        return
+
+    # ── the rejected credential ────────────────────────────────────────────
+    def _auth_reaches_the_superior() -> None:
+        slug, boss, (kid,) = _team(1, "park-auth")
+        set_mode("iserror", limit_text=REAL, api_error_status=401)
+        run_turn(slug, kid, "go")
+        fz = node(slug, kid).get("frozen", {})
+        fixture(fz.get("cause") == "auth" and fz.get("until_ts") is None,
+                f"the 401 did not park the node — the rig: {fz!r}")
+        told = _pending_mail(slug, boss, STOPPED)
+        assert told, (
+            "an agent's credential was rejected and it is frozen with NO reset "
+            "time — nothing will ever wake it — and its manager's mailbox is "
+            "EMPTY. That is the reported bug in its purest form: stopped "
+            "forever, nobody told")
+        # …and DELIVERED, the same end-to-end proof §10 uses
+        set_mode("plain")
+        run_turn(slug, boss, "your turn")
+        handed = "\n".join(json.dumps(s) for s in served())
+        assert STOPPED in handed, (
+            f"the notice never reached the manager's CLI: {handed[:400]!r}")
+    check("auth · a rejected credential reaches the manager's CLI",
+          _auth_reaches_the_superior)
+
+    def _auth_does_not_claim_a_wall() -> None:
+        """⚠ THE RULING. A 401 says the credential is broken, not that the
+        account is out of capacity. Told it is a usage limit, a manager waits
+        for a reset that never comes — and the one action that fixes it,
+        replacing the credential, is the one it will not take."""
+        slug, boss, (kid,) = _team(1, "park-auth-words")
+        set_mode("iserror", limit_text=REAL, api_error_status=401)
+        run_turn(slug, kid, "go")
+        told = _pending_mail(slug, boss, STOPPED)
+        fixture(bool(told), "no notice to inspect")
+        body = told[0]["body"]
+        low = body.lower()
+        assert "credential" in low, (
+            f"the notice does not name the CREDENTIAL as the cause, so the "
+            f"remedy is not derivable from it: {body[:300]!r}")
+        assert "401" in body, f"the notice omits the status code: {body[:300]!r}"
+        assert "not a usage limit" in low, (
+            f"the notice does not RULE OUT a usage limit. The freeze is "
+            f"limit-kinded internally and the badge says 'limit', so a "
+            f"manager will assume capacity unless told otherwise: {body[:400]!r}")
+        assert "nothing will wake it" in low, (
+            f"the manager is not told the node is stopped INDEFINITELY, so it "
+            f"may reasonably wait: {body[:400]!r}")
+        # and it must not be alerted as a wall by the OTHER announcer
+        assert not _pending_mail(slug, boss, LIMITED), (
+            "a rejected credential also produced a REPORT LIMITED wall alert "
+            "— the manager gets two contradictory stories about one failure")
+        assert kid in body and accounts.PRIMARY in body, (
+            f"the notice does not say WHICH agent on WHICH account — for a "
+            f"dead credential the account IS the remedy: {body[:300]!r}")
+    check("auth · …and it says the credential, not capacity — never 'usage "
+          "limit', and it names the account to fix", _auth_does_not_claim_a_wall)
+
+    # ── the untrusted cap ──────────────────────────────────────────────────
+    def _untrusted_cap_reaches_the_superior() -> None:
+        slug, boss, (kid,) = _team(1, "park-untrusted")
+        _park_untrusted(slug, kid)
+        fz = node(slug, kid).get("frozen", {})
+        fixture(fz.get("untrusted") and fz.get("until_ts") is None,
+                f"the node did not reach the untrusted cap — the rig: {fz!r}")
+        assert _pending_mail(slug, boss, STOPPED), (
+            "an agent parked itself past the untrusted cap — frozen with no "
+            "reset, no timer and nothing to wake it — and its manager was "
+            "told nothing at all")
+    check("untrusted · a node parked past the cap reaches the manager",
+          _untrusted_cap_reaches_the_superior)
+
+    def _untrusted_does_not_claim_an_outage() -> None:
+        """⚠ THE RULING, the other way round. Nothing here is evidence that a
+        provider refused anything: the sentence came out of the AGENT. Telling
+        a manager its provider is down, on the strength of an agent repeating
+        itself, is precisely the false alert that teaches people to ignore the
+        channel — and it is forgeable by any agent that ends three turns with
+        the right words."""
+        slug, boss, (kid,) = _team(1, "park-untrusted-words")
+        _park_untrusted(slug, kid)
+        told = _pending_mail(slug, boss, STOPPED)
+        fixture(bool(told), "no notice to inspect")
+        body = told[0]["body"]
+        low = body.lower()
+        assert "own" in low and "self-reported" in low, (
+            f"the notice does not say the evidence was the AGENT'S OWN "
+            f"output: {body[:400]!r}")
+        assert "never saw a provider refuse" in low, (
+            f"the notice does not state plainly that orgtree never observed a "
+            f"refusal, so it reads as an outage report: {body[:400]!r}")
+        assert "not read this as an outage" in low, (
+            f"the notice does not warn the manager off the outage reading: "
+            f"{body[:400]!r}")
+        assert not _pending_mail(slug, boss, LIMITED), (
+            "an agent that merely REPEATED a limit sentence got its manager a "
+            "REPORT LIMITED wall alert — an agent can fabricate an outage for "
+            "its own manager by ending turns with the right words")
+    check("untrusted · …and it blames nobody's provider — the evidence was "
+          "the agent's own words, and says so", _untrusted_does_not_claim_an_outage)
+
+    def _below_the_cap_says_nothing() -> None:
+        """THE PRECISION CASE. Below the cap the freeze carries a 5-minute
+        probe and wakes itself — it is self-healing, nothing is stuck, and a
+        message would be the noise that trains the reader to skip the
+        channel."""
+        slug, boss, (kid,) = _team(1, "park-below-cap")
+        set_mode("plain", reply="Usage limit reached. Try again in 1 minute.")
+        run_turn(slug, kid, "go")
+        fz = node(slug, kid).get("frozen", {})
+        fixture(bool(fz.get("untrusted")) and bool(fz.get("until_ts")),
+                f"the rig did not make a self-healing untrusted freeze: {fz!r}")
+        assert not _pending_mail(slug, boss), (
+            "a SELF-HEALING untrusted freeze — one probe away from waking "
+            "itself — was announced to the manager. Every agent that says "
+            "'usage limit' once would mail its manager")
+    check("bound · below the cap the freeze wakes itself, so nobody is told",
+          _below_the_cap_says_nothing)
+
+    # ── the bounds ─────────────────────────────────────────────────────────
+    def _once_per_episode_across_kinds() -> None:
+        """⚠ ONE COUNTER FOR BOTH KINDS. A node whose credential is rejected
+        and which then parks on a self-reported limit is ONE stuck episode,
+        and must not buy a second announcement by changing HOW it is stuck.
+        Same rule, same reason, as `hard_fail_run` across §9's doors."""
+        slug, boss, (kid,) = _team(1, "park-shared")
+        set_mode("iserror", limit_text=REAL, api_error_status=401)
+        run_turn(slug, kid, "go")
+        fixture(bool(_pending_mail(slug, boss, STOPPED)),
+                "the first park did not announce — the rig")
+        _unfreeze(slug, kid)
+        run_turn(slug, kid, "again")          # same kind, still stuck
+        _unfreeze(slug, kid)
+        _park_untrusted(slug, kid)            # a DIFFERENT kind, same episode
+        told = _pending_mail(slug, boss, STOPPED)
+        assert len(told) == 1, (
+            f"a node that flapped between a dead credential and a self-"
+            f"reported cap announced {len(told)} times — the counter is "
+            f"per-kind, so a node stuck in varied ways mails its manager over "
+            f"and over")
+        assert (node(slug, kid).get("parked_run") or 0) > 1, (
+            "the shared run counter did not advance across the kinds: "
+            f"{node(slug, kid).get('parked_run')!r} — the suppression is "
+            "resting on something other than the thing it claims")
+    check("bound · a node stuck two different ways is ONE episode and "
+          "announces once", _once_per_episode_across_kinds)
+
+    def _rearmed_by_a_completed_turn() -> None:
+        """…or the credential replacement that DIDN'T work is itself silent."""
+        slug, boss, (kid,) = _team(1, "park-rearm")
+        set_mode("iserror", limit_text=REAL, api_error_status=401)
+        run_turn(slug, kid, "go")
+        _unfreeze(slug, kid)
+        set_mode("plain")                     # the operator replaced the key
+        _turns = len(node(slug, kid).get("turns") or [])
+        run_turn(slug, kid, "works now")
+        fixture(len(node(slug, kid).get("turns") or []) > _turns
+                and not node(slug, kid).get("frozen"),
+                "the recovery turn did not complete (loaded machine?)")
+        assert not node(slug, kid).get("parked_run"), (
+            "a completed turn did not clear the parked run counter: "
+            f"{node(slug, kid).get('parked_run')!r}")
+        set_mode("iserror", limit_text=REAL, api_error_status=401)
+        run_turn(slug, kid, "stuck again")
+        assert len(_pending_mail(slug, boss, STOPPED)) == 2, (
+            "the node got stuck again after a working turn and the second "
+            "episode went unreported — so a replacement credential that did "
+            "not fix it fails silently, which is the original bug")
+    check("bound · …and a completed turn re-arms it, so a fix that did NOT "
+          "work is still reported", _rearmed_by_a_completed_turn)
+
+    def _the_manager_is_not_woken() -> None:
+        """One broken credential parks every node on that account at once."""
+        slug, boss, kids = _team(3, "park-passive")
+        set_mode("iserror", limit_text=REAL, api_error_status=401)
+        woke: list[str] = []
+        real_send = supervisor.send_message
+
+        def _spy(s: str, n: str, *a, **k):
+            if n == boss:
+                woke.append(n)
+            return real_send(s, n, *a, **k)
+        supervisor.send_message = _spy            # type: ignore[assignment]
+        try:
+            for k in kids:
+                run_turn(slug, k, "go")
+            time.sleep(1.0)
+        finally:
+            supervisor.send_message = real_send   # type: ignore[assignment]
+        fixture(all(node(slug, k).get("frozen", {}).get("cause") == "auth"
+                    for k in kids),
+                "not every kid parked on the 401 (loaded machine?)")
+        assert len(_pending_mail(slug, boss, STOPPED)) == len(kids), (
+            "being passive cost a NOTICE — every parked report must be mailed")
+        assert not woke, (
+            f"the manager was DRIVEN {len(woke)} time(s) — one dead "
+            f"credential parks every node on the account, so this is a turn "
+            f"per node for something only the operator can fix")
+    check("bound · the notice is PASSIVE — three parked reports mail the "
+          "manager three times and wake it zero", _the_manager_is_not_woken)
+
+    # ── negatives and the top of the tree ──────────────────────────────────
+    def _a_real_wall_is_not_reported_as_parked() -> None:
+        """THE MUTUAL EXCLUSION, from the other side. A genuine provider wall
+        HAS a reset time and wakes itself; reporting it as 'nothing will wake
+        it' would send a manager to re-staff work that was about to resume."""
+        slug, boss, (kid,) = _team(1, "park-neg-wall")
+        set_mode("iserror", limit_text=REAL)
+        run_turn(slug, kid, "go")
+        fixture(bool(node(slug, kid).get("frozen", {}).get("until_ts")),
+                "the wall carried no reset — the rig")
+        assert not _pending_mail(slug, boss, STOPPED), (
+            "a genuine usage limit — which wakes itself when the window lifts "
+            "— was reported as PARKED INDEFINITELY")
+        assert _pending_mail(slug, boss, LIMITED), (
+            "…and it lost its wall alert too, so §10 regressed")
+    check("negative · a genuine wall keeps its reset and is NOT reported as "
+          "parked", _a_real_wall_is_not_reported_as_parked)
+
+    def _ordinary_failures_park_nobody() -> None:
+        slug, boss, (kid,) = _team(1, "park-neg-doa")
+        set_mode("dead-on-arrival")
+        run_turn(slug, kid, "go")
+        time.sleep(0.8)
+        assert not _pending_mail(slug, boss, STOPPED), (
+            "a CLI that never started was reported as a parked credential")
+        slug2, boss2, (kid2,) = _team(1, "park-neg-ok")
+        set_mode("plain")
+        run_turn(slug2, kid2, "fine")
+        time.sleep(0.3)
+        assert not _pending_mail(slug2, boss2), (
+            "a SUCCESSFUL turn announced that the agent was stopped")
+    check("control · a launch failure and a successful turn park nobody",
+          _ordinary_failures_park_nobody)
+
+    def _top_level_goes_to_the_user() -> None:
+        org = store.create_org("zz park-toplevel")
+        tl = {"bash": False, "web": False, "edit": False, "subagents": False,
+              "mcp": []}
+        solo = org.hire(USER, None, "haiku", 20, "solo", add_dirs=[], tools=tl,
+                        org_visibility="team", charter="s")["node"]
+        store.save_org(org)
+        slug = org.d["slug"]
+        set_mode("iserror", limit_text=REAL, api_error_status=401)
+        run_turn(slug, solo, "go")
+        fixture(node(slug, solo).get("frozen", {}).get("cause") == "auth",
+                "the solo node did not park on the 401 — the rig")
+        inbox = store.load_org(slug).user_mailbox()
+        hits = [m for m in inbox if solo in (m.get("body") or "")]
+        assert hits, (
+            f"a TOP-LEVEL agent is stopped forever on a dead credential and "
+            f"the user's inbox got nothing ({len(inbox)} entries) — the one "
+            f"agent the user actually watches is the one that cannot report "
+            f"its own death, which is this bug one level up")
+        assert "credential" in hits[0]["body"].lower(), (
+            f"the user is told it stopped but not that a credential is the "
+            f"cause — they are the only one who can replace it: "
+            f"{hits[0]['body'][:250]!r}")
+    check("top level · a parked node with NO superior alerts the USER",
+          _top_level_goes_to_the_user)
+
+
 _once: list = [None]
 
 
@@ -4382,6 +4687,7 @@ def main() -> None:
     sec_deploy_window()       # D-142/a — most of it needs no rig either
     sec_abandoned()           # the terminal bucket, made loud
     sec_limit_alert()         # …and the usage limit, made loud to the MANAGER
+    sec_parked_alert()        # …and the two freezes that never wake at all
 
     print(f"\n{'═' * 70}\n{PASS} checks passed, {len(FAIL)} failed, "
           f"{len(GAPS)} gaps")
