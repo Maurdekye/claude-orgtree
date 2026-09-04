@@ -274,52 +274,45 @@ TOOL_KEYS: Final = ("bash", "web", "edit", "subagents")   # the built-in tool sw
 # existing three keep their order and nothing stored re-ranks.
 PM_LEVELS: Final = ("plan", "default", "acceptEdits", "bypassPermissions")
 
-#: Longest charter / team_charter a set_scope EDIT may write, in characters.
-#: This used to be a silent `[:4000]` slice: over-long text was cut mid-word
-#: and nothing anywhere said so. This org's own shipped team charter had been
-#: ending mid-sentence for an unknown period and no agent ever read its last
-#: rule (user ruling 2026-09-04: "warn or refuse instead of cutting").
-CHARTER_MAX: Final = 4000
+#: ⚠ CHARTERS ARE NOT LENGTH-LIMITED. User ruling 2026-09-04, verbatim:
+#: "uncap it." There is no maximum, no refusal and no truncation — a charter
+#: is stored exactly as written, however long.
+#:
+#: This value is an ADVISORY THRESHOLD ONLY. Above it, `note_charter_length`
+#: says how long the text is. It never blocks anything, and code that treats
+#: it as a limit is reintroducing the bug this whole area exists to kill:
+#: `set_scope` used to store `charter.strip()[:4000]`, cutting mid-word with
+#: nothing said anywhere. This org's own team charter had been ending
+#: mid-sentence for an unknown period and no agent ever read its last rule.
+#:
+#: ⚠ WHY THE ADVISORY IS WORTH HAVING AT ALL — WRITE THIS DOWN SOMEWHERE THE
+#: NEXT PERSON FINDS IT: a charter is concatenated into that agent's system
+#: prompt on EVERY turn it ever takes. A long charter is therefore not a
+#: one-off cost, it is a per-turn cost for the life of the agent, and since
+#: the cap is gone nothing stops one growing without bound. That trade was
+#: made deliberately (text silently lost is worse than tokens knowingly
+#: spent), but the person writing a very long charter should be able to SEE
+#: that they are writing one.
+CHARTER_LONG: Final = 4000
 
 
-def check_charter(field: str, value: str, current: str | None,
-                  warnings: list[str]) -> str:
-    """Vet one charter field for `set_scope`. Returns the text to STORE.
+def note_charter_length(field: str, value: str,
+                        warnings: list[str]) -> str:
+    """Strip a charter field and REPORT its length when it is unusually long.
 
-    Never truncates. Over-long text either REFUSES (a genuine edit) or passes
-    through whole with a loud warning (an unchanged resend).
-
-    ⚠ THE UNCHANGED-RESEND CARVE-OUT IS LOAD-BEARING, NOT A COURTESY.
-    `hire()` does NOT limit charter length, so charters longer than
-    CHARTER_MAX already exist in live orgs — a shipped preset,
-    docs/charters/coordinator.md, is itself over 4000 chars. The ⚙ panel sends
-    EVERY field on every save (`modals.tsx` doSave), so a plain folder or
-    effort edit on such a node carries that over-long charter back unchanged.
-    Refusing THAT would turn a silent bug into a hard lockout: the node could
-    never be retooled again, for anything. So an unchanged value is kept as-is
-    and merely reported. It cannot smuggle NEW over-long text in — it only
-    ever matches what is already stored.
+    Returns the text to store — always the whole thing. This function cannot
+    refuse and cannot truncate; if you are adding either, re-read the ruling
+    above first.
     """
     v = value.strip()
-    if len(v) <= CHARTER_MAX:
-        return v
-    over = len(v) - CHARTER_MAX
-    nbytes = len(v.encode("utf-8"))
-    if v == (current or "").strip():
-        # unchanged: keep it WHOLE (cutting is the thing we are here to stop)
-        # and say so on every save, so it never goes quiet again.
+    if len(v) > CHARTER_LONG:
         warnings.append(
-            f"{field} is {len(v)} chars ({nbytes} bytes) — {over} over the "
-            f"{CHARTER_MAX}-char limit. It was left UNCHANGED and whole, "
-            f"because it was already this long and refusing would lock this "
-            f"agent out of every other setting. Shorten it below "
-            f"{CHARTER_MAX} to edit it.")
-        return v
-    raise LedgerError(
-        f"{field} is too long: {len(v)} chars ({nbytes} bytes), {over} over "
-        f"the {CHARTER_MAX}-char limit. NOTHING WAS SAVED — shorten it by at "
-        f"least {over} characters and save again. (The text is not truncated: "
-        f"this code used to cut it here silently and lose the tail.)")
+            f"{field} is {len(v)} chars ({len(v.encode('utf-8'))} bytes). "
+            f"Stored WHOLE — charters are not capped. Worth knowing: a "
+            f"charter is re-sent in this agent's system prompt on every turn "
+            f"it takes, so text past roughly {CHARTER_LONG} chars is a "
+            f"recurring per-turn cost, not a one-off one.")
+    return v
 
 
 def norm_tools(t: Mapping[str, Any] | None) -> ToolGrant:
@@ -5470,21 +5463,19 @@ class Org:
         want_handles: list[str] | None = None
         if external_handles is not None:
             want_handles = norm_extern_handles(external_handles, where="retool")
-        # Charter LENGTH, vetted here with everything else and BEFORE the first
-        # mutation below, so an over-long charter leaves the node
-        # byte-identical (the atomicity contract above) instead of writing the
-        # dirs and tools and then blowing up. `check_charter` never truncates:
-        # it refuses a too-long EDIT and passes an unchanged one through with a
-        # warning. Both outcomes reach a human — `modals.tsx` doSave toasts
-        # `warnings`, and toasts the raised message on the error path.
+        # Charter length is MEASURED here, never enforced — charters are
+        # uncapped (user ruling 2026-09-04, see CHARTER_LONG). The text is
+        # stored exactly as written; a long one only earns a note in
+        # `warnings`, which `modals.tsx` doSave toasts. Done with the other
+        # up-front work so the length is reported even when a LATER field in
+        # this call refuses and nothing is written at all.
         new_charter: str | None = None
         new_team_charter: str | None = None
         if charter is not None:
-            new_charter = check_charter(
-                "charter", charter, n.get("charter"), warnings)
+            new_charter = note_charter_length("charter", charter, warnings)
         if team_charter is not None:
-            new_team_charter = check_charter(
-                "team_charter", team_charter, n.get("team_charter"), warnings)
+            new_team_charter = note_charter_length(
+                "team_charter", team_charter, warnings)
 
         if want_dirs is not None:
             _t, kept, _v, _p, b = self._apply_ceiling(

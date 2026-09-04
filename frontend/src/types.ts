@@ -991,16 +991,18 @@ export interface FsPayload {
 // GET /api/charters
 // `chars` is the body's TRUE length before `content` was capped at
 // `preset_max`; `truncated` says the cap actually bit. Both exist so the hire
-// form can SAY a preset was cut — it used to be cut silently. `charter_max` is
-// the length above which a charter can no longer be edited (ledger
-// CHARTER_MAX); a preset can be under preset_max and still over that.
+// form can SAY a preset was cut — it used to be cut silently.
+// `charter_long` is NOT a limit: charters are uncapped (user ruling
+// 2026-09-04). It is the length above which the form mentions that a charter
+// rides in the agent's system prompt on every turn, so it costs tokens for
+// the life of the agent. Do not reintroduce a cap from it.
 export interface ChartersPayload {
   charters: {
     name: string; content: string; path: string
     chars?: number; truncated?: boolean
   }[]
   preset_max?: number
-  charter_max?: number
+  charter_long?: number
 }
 
 // GET /api/mcp-servers

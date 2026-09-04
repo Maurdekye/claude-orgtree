@@ -128,7 +128,13 @@ write("nosep.md", (BODY + "\n\nno separator anywhere in this file.\n")
       .replace("\n", "\r\n"))
 write("late.md", ("header line\n\n---\n\n" + BODY + "\n\n---\n\nstill body.\n")
       .replace("\n", "\r\n"))
-write("big.md", ("x\n\n---\n\n" + "y" * 7000 + "\n").replace("\n", "\r\n"))
+# ⚠ SIZED FROM api.PRESET_MAX, never a literal. When the bound was raised from
+# 6000 to 100_000 a hardcoded 7000-char fixture stopped being truncated at all,
+# and the truncation check below would have passed while testing NOTHING - the
+# textbook vacuous pass. Derived, this fixture is over the bound by
+# construction whatever the bound becomes.
+BIG_CHARS = api.PRESET_MAX + 500
+write("big.md", ("x\n\n---\n\n" + "y" * BIG_CHARS + "\n").replace("\n", "\r\n"))
 # the positive control for §2's BOM check - a BOM at the head of the BODY,
 # which is exactly what a595353 shipped
 write("bom.md", ("x\n\n---\n\n" + BOM + BODY + "\n").replace("\n", "\r\n"))
@@ -176,23 +182,23 @@ def _late():
     assert "---" in c, "the body's own horizontal rule was eaten"
 
 
-@t("the 6000-char cut still happens - and is now DECLARED, not silent")
+@t("the preset sanity bound still cuts - and is DECLARED, never silent")
 def _trunc():
-    # This check used to read "the 6000-char truncation is unchanged" and
-    # assert only len == 6000. The cut is still here (the endpoint serves
-    # whatever .md files exist, so the cap stays), but a cut that says nothing
-    # is the defect: the hire form offered a card whose text simply stopped.
-    # Now the record must CARRY the true length and admit it was cut.
+    # History: this read "the 6000-char truncation is unchanged" and asserted
+    # only len == 6000. The bound survives because this endpoint serializes
+    # whatever .md files exist into one browser response, but a cut that says
+    # nothing is the defect - the hire form offered a card whose text simply
+    # stopped. The record must CARRY the true length and admit it was cut.
     r = RECS["big"]
     c = r["content"]
     assert len(c) == api.PRESET_MAX, \
-        f"expected the {api.PRESET_MAX} cap, got {len(c)}"
+        f"expected the {api.PRESET_MAX} bound, got {len(c)}"
     assert c.startswith("y"), f"truncated the wrong end: {c[:40]!r}"
     assert r.get("truncated") is True, \
         f"a cut body did not report truncated=True: {r.get('truncated')!r}"
-    assert r.get("chars") == 7000, (
-        "the record must carry the body's TRUE length (7000, the fixture's "
-        f"'y' * 7000) so the UI can say what was lost; got {r.get('chars')!r}")
+    assert r.get("chars") == BIG_CHARS, (
+        f"the record must carry the body's TRUE length ({BIG_CHARS}) so the "
+        f"UI can say what was lost; got {r.get('chars')!r}")
     assert r["chars"] > len(c), "chars must be the pre-cut length, not the cut one"
 
 
@@ -208,17 +214,32 @@ def _not_trunc():
         f"{r.get('chars')} vs {len(r['content'])}")
 
 
-@t("the payload states BOTH limits, so no client has to hardcode them")
+@t("the payload states both numbers, so no client has to hardcode them")
 def _limits():
     p = payload(FIX)
     assert p.get("preset_max") == api.PRESET_MAX, p.get("preset_max")
-    # the charter EDIT limit - a preset can be under preset_max and still be
-    # over this, which is the case the hire form has to warn about
+    # ⚠ charter_long is an ADVISORY THRESHOLD, not a cap. Charters are
+    # uncapped (user ruling 2026-09-04 "uncap it"); this is only the length
+    # above which the hire form mentions the per-turn prompt cost. A client
+    # that treats it as a limit reintroduces the bug.
     from orgtree import ledger as _lg
-    assert p.get("charter_max") == _lg.CHARTER_MAX, p.get("charter_max")
-    assert p["charter_max"] < p["preset_max"], (
-        "charter_max is expected to be the TIGHTER of the two - if that ever "
-        "stops being true, the hire form's warning logic needs revisiting")
+    assert p.get("charter_long") == _lg.CHARTER_LONG, p.get("charter_long")
+    assert "charter_max" not in p, (
+        "charter_max is gone - the cap was removed. A client still reading it "
+        "would silently get `undefined` and stop warning at all")
+
+
+@t("REGRESSION: no charter cap survives anywhere in the served contract")
+def _no_cap():
+    # the endpoint must not hand a client any number it could enforce as a
+    # charter maximum. preset_max bounds the PRESET FILE, not the charter.
+    p = payload(FIX)
+    from orgtree import ledger as _lg
+    assert not hasattr(_lg, "CHARTER_MAX"), \
+        "ledger.CHARTER_MAX is back - charters are supposed to be uncapped"
+    assert p["preset_max"] > _lg.CHARTER_LONG * 10, (
+        "the preset bound should sit far above any real charter, so it never "
+        f"bites in practice: {p['preset_max']} vs advisory {_lg.CHARTER_LONG}")
 
 
 @t("POSITIVE CONTROL: a BOM in a body IS served - so §2's check can fire")
@@ -284,26 +305,26 @@ for _f in FILES:
     check(f"{_f} serves a clean body only", _clean_body(_f))
 
 
-@t("served lengths, recorded - against BOTH limits")
+@t("served lengths, recorded - against the bound and the advisory")
 def _lengths():
     from orgtree import ledger as _lg
     over = []
     for f in FILES:
         c = SERVED[f[:-3].replace("-", " ")]
         raw = os.path.getsize(os.path.join(REAL, f))
-        flag = "  << over charter_max" if len(c) > _lg.CHARTER_MAX else ""
+        flag = "  << long (advisory only)" if len(c) > _lg.CHARTER_LONG else ""
         if flag:
             over.append(f)
         print(f"        {f:16s} file {raw:6d} B   served {len(c):5d} chars"
-              f"   cut headroom {api.PRESET_MAX - len(c):5d}"
-              f"   edit headroom {_lg.CHARTER_MAX - len(c):6d}{flag}")
+              f"   bound headroom {api.PRESET_MAX - len(c):6d}{flag}")
     if over:
-        # NOT a failure: hire() does not enforce CHARTER_MAX, so these are
-        # hireable. They just cannot be EDITED later without shortening, and
-        # the hire form now says so on the card.
-        print(f"\n        note: {over} exceed the {_lg.CHARTER_MAX}-char "
-              "charter EDIT limit. Hiring works; a later charter edit will "
-              "refuse until shortened. The draft card warns about this.")
+        # NOT a failure and NOT a limit: charters are uncapped. These presets
+        # are hireable and editable at any length. The only consequence is
+        # cost - the text rides in the agent's prompt every turn - which the
+        # draft card mentions and this line records.
+        print(f"\n        note: {over} exceed the {_lg.CHARTER_LONG}-char "
+              "advisory threshold. Nothing refuses or truncates them; they "
+              "simply cost tokens on every turn of that agent's life.")
 
 
 if not CRLF_ON_DISK:

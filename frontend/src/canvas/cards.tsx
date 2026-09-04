@@ -922,27 +922,27 @@ export function DraftNode({ pos, draft, map, seats, maxTop, defaultTop, kioskRem
   // them into actual charter text (prepended to any manual entry).
   const [presets, setPresets] = useState<CharterPreset[]>([])
   const [chosen, setChosen] = useState<CharterPreset[]>([])
-  // the two limits, as the SERVER reports them — never hardcoded here, or this
-  // warning would drift out of agreement with the thing it warns about
-  const [charterMax, setCharterMax] = useState<number | null>(null)
+  // the advisory threshold, as the SERVER reports it — never hardcoded here,
+  // or this notice would drift out of agreement with the backend
+  const [charterLong, setCharterLong] = useState<number | null>(null)
   useEffect(() => {
     getCharters().then((r) => {
       setPresets(r.charters ?? [])
-      setCharterMax(r.charter_max ?? null)
+      setCharterLong(r.charter_long ?? null)
     }).catch(() => {})
   }, [])
   const finalCharter = () =>
     [...chosen.map((c) => c.content), charter].filter((t) => t.trim())
       .join('\n\n')
-  // ⚠ the whole point of this card's length warning: charter text used to be
-  // cut without a word — at 6000 on the way out of /api/charters, and at 4000
-  // on the way into a later edit. Both are now SAID, here, while the person is
-  // still looking at the text. `cut` = a preset whose file was longer than the
-  // endpoint will serve. `over` = the composed charter is longer than a charter
-  // may later be EDITED to; hiring still works, so this warns, never blocks.
+  // ⚠ charter text used to be cut without a word — at 6000 on the way out of
+  // /api/charters and at 4000 on the way in. Neither cut exists any more
+  // (charters are uncapped; the preset bound is far above any real file), but
+  // the SAYING is the part worth keeping. `cut` = a preset the endpoint had to
+  // bound anyway. `long` = this charter will ride in the agent's prompt every
+  // turn; purely informational, it never blocks the hire.
   const cut = chosen.filter((c) => c.truncated)
   const composed = finalCharter().length
-  const over = charterMax != null && composed > charterMax
+  const long = charterLong != null && composed > charterLong
   // top-level drafts pre-fill the org's default grant (50 unless configured),
   // clamped only by a kiosk's remaining headroom
   const [grant, setGrant] = useState(() => {
@@ -1053,11 +1053,11 @@ export function DraftNode({ pos, draft, map, seats, maxTop, defaultTop, kioskRem
               the hire gets only the first part. Shorten the preset file.
             </div>
           )}
-          {over && (
-            <div className="df-charter-warn" role="alert">
-              ⚠ this charter is {composed} chars, over the {charterMax}-char
-              edit limit. The hire keeps it whole, but you will not be able to
-              CHANGE it later without first shortening it below {charterMax}.
+          {long && (
+            <div className="df-charter-note">
+              {composed} chars — stored whole, charters are not capped. Note it
+              rides in this agent&rsquo;s prompt on every turn, so it costs
+              tokens for as long as the agent lives.
             </div>
           )}
           <div className="df-foot">

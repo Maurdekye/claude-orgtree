@@ -1,37 +1,37 @@
-"""Charter length - text must never be cut in silence.
+"""Charter length - text must never be lost, and charters are NOT capped.
 
     python backend/tests/test_charter_length.py     (no pytest; plain asserts)
+    python backend/tests/test_charter_length.py --discriminate
 
 WHY THIS SUITE EXISTS
 
 `set_scope` used to store charters as `charter.strip()[:4000]`. Over-long text
 was cut mid-word and NOTHING said so - not the return value, not a warning, not
 the UI. This org's own shipped team charter had been ending mid-sentence for an
-unknown period and no agent ever read its final rule. User ruling 2026-09-04:
-"warn or refuse instead of cutting".
+unknown period and no agent ever read its final rule.
 
-The contract this file pins down:
+⚠ THE CAP IS GONE. User ruling 2026-09-04, verbatim: "uncap it." There is no
+maximum charter length, no refusal, and no truncation. An earlier revision of
+this suite asserted a REFUSAL above 4000; those checks were rewritten, not
+deleted, because the valuable assertion was never "it refuses" - it was
+NOTHING IS SILENTLY LOST, and that survives uncapping intact. What replaced
+them asserts the stronger property: whatever you write is what gets stored,
+byte for byte, at any length.
 
-  * a too-long charter EDIT is REFUSED, with the measured length and the limit
-    in the message, and NOTHING is written (the ledger's atomicity contract);
-  * an UNCHANGED over-long charter is accepted WHOLE, with a loud warning.
+`CHARTER_LONG` remains, as an ADVISORY THRESHOLD only. Above it the ledger
+notes how long the text is, because a charter is re-sent in that agent's system
+prompt on EVERY turn - so a long one is a recurring cost, not a one-off. The
+note never blocks anything. §3 proves it fires, and proves it stays quiet
+otherwise; a notice that fired always would carry no information.
 
-⚠ THAT SECOND RULE IS THE ONE THAT MATTERS MOST, AND IT IS NOT A COURTESY.
-`hire()` does not limit charter length, so over-long charters already exist -
-the shipped preset docs/charters/coordinator.md is itself over the limit. The
-gear panel sends EVERY field on every save (`modals.tsx` doSave), so a folders
-or effort edit on such a node resends its own over-long charter untouched.
-Refusing that would convert a silent bug into a HARD LOCKOUT: the node could
-never be retooled again, for anything at all. §3 is that scenario end to end.
+    §1  stored WHOLE and byte-exact, at every length including absurd ones
+    §2  the old truncation's fingerprint, checked for directly
+    §3  the advisory: fires when long, silent when not
+    §4  the cap is really gone - no length is refused, and 4000 is not special
 
-Every section carries a POSITIVE CONTROL, because most of these assertions are
-about something NOT happening (no cut, no refusal, no lockout) and an assertion
-like that is worthless unless the opposite case is shown to fire.
-
-    §1  the refusal: boundary, message content, and atomicity
-    §2  no truncation, ever - the tail survives on every accepted path
-    §3  the lockout case: a pre-existing over-long charter stays editable
-    §4  the carve-out cannot be abused to write NEW over-long text
+⚠ ON `--discriminate`: three mutations put the old defects back in a TEMP COPY
+of the package and require this file to go red. A suite that has never been
+seen failing is not evidence of anything.
 """
 
 import json
@@ -52,7 +52,7 @@ with open(os.path.join(os.environ["ORGTREE_DATA"], "defaults.json"), "w",
           encoding="utf-8") as _f:
     _f.write('{"net_hub_address": "http://127.0.0.1:9"}')
 
-from orgtree.ledger import CHARTER_MAX, USER, LedgerError, Org   # noqa: E402
+from orgtree.ledger import CHARTER_LONG, USER, LedgerError, Org   # noqa: E402
 
 # establish the process CANNOT resolve to the operator's live root
 _LIVE = os.path.normpath(os.path.expanduser("~/orgtree"))
@@ -89,17 +89,13 @@ def body(n, fill="A"):
     return fill * (n - len(TAIL)) + TAIL
 
 
-def org_with(charter=None, team_charter=None):
-    """A two-node org; `kid` optionally seeded with over-long text via hire(),
-    which is the only path that can create one (hire does not enforce)."""
+def org_with(charter=None):
     o = Org.create("clen")
     o.hire(USER, None, "haiku", 10, "boss", **SPEC)
     spec = dict(SPEC)
     if charter is not None:
         spec["charter"] = charter
     o.hire("boss", "boss", "haiku", 0, "kid", **spec)
-    if team_charter is not None:
-        o.nodes["kid"]["team_charter"] = team_charter   # seed directly
     return o
 
 
@@ -107,117 +103,51 @@ def snap(o):
     return json.dumps(o.d, sort_keys=True, default=str)
 
 
-def refusal(fn):
-    """Run `fn`, require a LedgerError, return its message."""
-    try:
-        fn()
-    except LedgerError as e:
-        return str(e)
-    raise AssertionError("expected a LedgerError, got success")
+def length_notes(res):
+    """Just the charter-length notes out of a set_scope result's warnings."""
+    return [w for w in (res.get("warnings") or [])
+            if "chars" in w and "charter" in w]
 
 
 # ============================================================================ §1
-print("\n§1 the refusal: boundary, message, atomicity")
+print("\n§1 stored WHOLE and byte-exact, at every length")
 
 
-@t(f"a charter of exactly CHARTER_MAX ({CHARTER_MAX}) is ACCEPTED, whole")
-def _at_limit():
-    o = org_with()
-    txt = body(CHARTER_MAX)
-    assert len(txt) == CHARTER_MAX
-    o.set_scope(USER, "kid", charter=txt)
-    got = o.nodes["kid"]["charter"]
-    assert len(got) == CHARTER_MAX, f"stored {len(got)}, wrote {CHARTER_MAX}"
-    assert got.endswith(TAIL), f"the tail was cut: {got[-40:]!r}"
-
-
-@t("one character over the limit is REFUSED - the boundary discriminates")
-def _one_over():
-    # ⚠ this is the check that makes the one above non-vacuous: without it,
-    # a guard that accepted everything would pass §1's first check happily.
-    o = org_with()
-    msg = refusal(lambda: o.set_scope(USER, "kid", charter=body(CHARTER_MAX + 1)))
-    assert str(CHARTER_MAX + 1) in msg, \
-        f"the refusal did not state the measured length: {msg}"
-
-
-@t("the refusal states the MEASURED length, the limit, and the overage")
-def _message():
-    o = org_with()
-    n = CHARTER_MAX + 516
-    msg = refusal(lambda: o.set_scope(USER, "kid", team_charter=body(n)))
-    for want in (str(n), str(CHARTER_MAX), "516", "team_charter"):
-        assert want in msg, f"{want!r} missing from the refusal: {msg}"
-    assert "byte" in msg.lower(), f"no byte count in the refusal: {msg}"
-
-
-@t("a REFUSED charter edit leaves the org byte-identical (atomicity)")
-def _atomic():
-    # the charter is validated BEFORE the first mutation, so a retool that
-    # also moves dirs/tools must write NEITHER when the charter is too long
-    o = org_with()
-    before = snap(o)
-    refusal(lambda: o.set_scope(
-        USER, "kid", charter=body(CHARTER_MAX + 200),
-        add_dirs=[{"path": "E:/w", "mode": "rw"}],
-        org_visibility="full"))
-    assert snap(o) == before, \
-        "a refused retool mutated the org - the charter check runs too late"
-
-
-@t("POSITIVE CONTROL: the same retool WITHOUT the long charter does mutate")
-def _atomic_control():
-    # without this, _atomic would pass against a set_scope that never wrote
-    # anything at all, and would be proving nothing.
-    o = org_with()
-    before = snap(o)
-    o.set_scope(USER, "kid", charter=body(100),
-                add_dirs=[{"path": "E:/w", "mode": "rw"}],
-                org_visibility="full")
-    assert snap(o) != before, "the control retool changed nothing - §1 is inert"
-    assert o.nodes["kid"]["scope"]["org_visibility"] == "full"
-
-
-@t("a multibyte charter is limited by CHARACTERS, and reports BYTES")
-def _multibyte():
-    o = org_with()
-    # 'é' is 1 char / 2 bytes: at the char limit this is legal but ~2x in bytes
-    ok_txt = "é" * CHARTER_MAX
-    o.set_scope(USER, "kid", charter=ok_txt)
-    assert len(o.nodes["kid"]["charter"]) == CHARTER_MAX
-    assert len(o.nodes["kid"]["charter"].encode("utf-8")) == CHARTER_MAX * 2
-    msg = refusal(lambda: o.set_scope(USER, "kid", charter="é" * (CHARTER_MAX + 1)))
-    assert str((CHARTER_MAX + 1) * 2) in msg, \
-        f"the refusal did not report the BYTE count: {msg}"
-
-
-# ============================================================================ §2
-print("\n§2 no truncation, ever")
-
-
-@t("an accepted charter is stored EXACTLY as written - no slicing")
+@t("a charter is stored EXACTLY as written, across four orders of magnitude")
 def _exact():
     o = org_with()
-    for n in (1, 500, CHARTER_MAX - 1, CHARTER_MAX):
-        txt = body(max(n, len(TAIL)))
+    for n in (len(TAIL), 500, CHARTER_LONG - 1, CHARTER_LONG,
+              CHARTER_LONG + 1, 10_000, 250_000):
+        txt = body(n)
         o.set_scope(USER, "kid", charter=txt)
         got = o.nodes["kid"]["charter"]
-        assert got == txt.strip(), \
-            f"len {n}: stored {len(got)} chars, wrote {len(txt)}"
+        # `.strip()` is the contract, not a dodge: set_scope strips SURROUNDING
+        # whitespace (§1's _strip pins that down). It matters only for the
+        # smallest case, where the body IS the tail and the tail opens with a
+        # space; every other length here starts with fill and is unaffected.
+        assert got == txt.strip(), (
+            f"length {n}: stored {len(got)} chars, wrote {len(txt.strip())} - "
+            f"ends {got[-40:]!r}")
 
 
-@t("no accepted path anywhere produces a value of exactly CHARTER_MAX by CUTTING")
-def _no_cut():
-    # the old bug's fingerprint: a stored charter that is exactly the cap AND
-    # has lost its tail. Writing over-long text must now never yield that.
+@t("team_charter is stored whole at the same lengths")
+def _exact_team():
     o = org_with()
-    txt = body(CHARTER_MAX + 900)
-    refusal(lambda: o.set_scope(USER, "kid", charter=txt))
+    for n in (CHARTER_LONG + 1, 50_000):
+        txt = body(n, fill="T")
+        o.set_scope(USER, "kid", team_charter=txt)
+        assert o.nodes["kid"]["team_charter"] == txt, n
+
+
+@t("a very long multibyte charter survives byte for byte")
+def _multibyte():
+    o = org_with()
+    txt = "é" * 20_000 + TAIL
+    o.set_scope(USER, "kid", charter=txt)
     got = o.nodes["kid"]["charter"]
-    assert got == "seed charter", \
-        f"a refused write still altered the charter: {got[:60]!r}"
-    assert not (len(got) == CHARTER_MAX and not got.endswith(TAIL)), \
-        "this is the exact shape of the old silent truncation"
+    assert got == txt, f"stored {len(got)} chars vs {len(txt)}"
+    assert len(got.encode("utf-8")) == len(txt.encode("utf-8")), "byte drift"
+    assert got.endswith(TAIL)
 
 
 @t("clearing a charter with '' still works (empty ⇒ None)")
@@ -227,107 +157,144 @@ def _clear():
     assert o.nodes["kid"]["charter"] is None, o.nodes["kid"]["charter"]
 
 
+@t("surrounding whitespace is stripped, interior text is untouched")
+def _strip():
+    o = org_with()
+    txt = body(9000)
+    o.set_scope(USER, "kid", charter="\n\n  " + txt + "  \n\n")
+    assert o.nodes["kid"]["charter"] == txt
+
+
+# ============================================================================ §2
+print("\n§2 the old truncation's fingerprint")
+
+
+@t("no stored charter ever ends exactly at a round cap with its tail missing")
+def _fingerprint():
+    # the defect's signature: length lands exactly on a cap AND the known tail
+    # is gone. Checked directly rather than inferred, at every historical cap.
+    o = org_with()
+    for cap in (4000, 6000, CHARTER_LONG):
+        txt = body(cap + 1500)
+        o.set_scope(USER, "kid", charter=txt)
+        got = o.nodes["kid"]["charter"]
+        assert len(got) != cap, \
+            f"stored length landed exactly on the old {cap} cap: truncated"
+        assert got.endswith(TAIL), \
+            f"tail lost against cap {cap}: ends {got[-40:]!r}"
+
+
+@t("POSITIVE CONTROL: this file can actually detect a truncation")
+def _fingerprint_control():
+    # prove the assertion above is capable of failing, by checking that a
+    # deliberately cut string DOES trip the same two conditions. Without this,
+    # §2 could be passing because the checks are malformed.
+    cut = body(4000 + 1500)[:4000]
+    assert len(cut) == 4000 and not cut.endswith(TAIL), \
+        "the control string is not actually truncated - §2 proves nothing"
+
+
+@t("a long charter survives a RELOAD (it is persisted, not just in memory)")
+def _reload():
+    o = org_with()
+    txt = body(30_000)
+    o.set_scope(USER, "kid", charter=txt)
+    back = Org(json.loads(json.dumps(o.d)))       # what load_org does
+    assert back.nodes["kid"]["charter"] == txt, \
+        f"reload lost text: {len(back.nodes['kid']['charter'])} vs {len(txt)}"
+
+
 # ============================================================================ §3
-print("\n§3 the lockout case - the thing that would make this fix worthless")
-
-OVER = body(CHARTER_MAX + 1218, fill="B")
+print("\n§3 the advisory - it fires, and it stays quiet")
 
 
-@t(f"setup: hire() stores an over-long charter untouched ({len(OVER)} chars)")
-def _hire_untouched():
-    # if this ever starts truncating or refusing, §3 stops describing reality
-    # and the shipped coordinator.md preset (over the limit) stops being
-    # hireable - so this is a real assertion, not scaffolding.
-    o = org_with(charter=OVER)
-    got = o.nodes["kid"]["charter"]
-    assert len(got) == len(OVER), f"hire() changed the length: {len(got)}"
-    assert got.endswith(TAIL), "hire() cut the tail"
+@t(f"a charter over CHARTER_LONG ({CHARTER_LONG}) is REPORTED, with its length")
+def _notes():
+    o = org_with()
+    n = CHARTER_LONG + 1218
+    r = o.set_scope(USER, "kid", charter=body(n))
+    notes = length_notes(r)
+    assert notes, f"a {n}-char charter was stored SILENTLY: {r.get('warnings')!r}"
+    assert str(n) in " ".join(notes), \
+        f"the note does not state the measured length: {notes}"
 
 
-@t("an UNRELATED retool on that node SUCCEEDS - it is not locked out")
-def _not_locked_out():
-    o = org_with(charter=OVER)
-    r = o.set_scope(USER, "kid", charter=OVER,          # resent, unchanged
-                    add_dirs=[{"path": "E:/w", "mode": "rw"}])
-    assert o.nodes["kid"]["scope"]["add_dirs"], "the unrelated edit did not land"
-    assert isinstance(r, dict)
+@t("the note says the text was KEPT - it must not read like a refusal")
+def _note_wording():
+    o = org_with()
+    joined = " ".join(length_notes(
+        o.set_scope(USER, "kid", charter=body(CHARTER_LONG + 50)))).lower()
+    assert "whole" in joined or "stored" in joined, joined
+    for banned in ("too long", "not saved", "shorten", "refus"):
+        assert banned not in joined, \
+            f"the note still reads like the old refusal ({banned!r}): {joined}"
 
 
-@t("...and the over-long charter is kept WHOLE, not cut back to the limit")
-def _kept_whole():
-    o = org_with(charter=OVER)
-    o.set_scope(USER, "kid", charter=OVER,
-                add_dirs=[{"path": "E:/w", "mode": "rw"}])
-    got = o.nodes["kid"]["charter"]
-    assert len(got) == len(OVER), \
-        f"the resend cut it to {len(got)} - that is the original bug"
-    assert got.endswith(TAIL), f"the tail was lost: {got[-40:]!r}"
+@t("the note explains the PER-TURN cost, which is why it exists at all")
+def _note_cost():
+    o = org_with()
+    joined = " ".join(length_notes(
+        o.set_scope(USER, "kid", charter=body(CHARTER_LONG + 50)))).lower()
+    assert "every turn" in joined or "per-turn" in joined, joined
 
 
-@t("...and it is LOUD: a warning names the length, the limit and the overage")
-def _loud():
-    o = org_with(charter=OVER)
-    r = o.set_scope(USER, "kid", charter=OVER,
-                    add_dirs=[{"path": "E:/w", "mode": "rw"}])
-    ws = [w for w in (r.get("warnings") or []) if "charter" in w]
-    assert ws, f"the over-long resend was SILENT: {r.get('warnings')!r}"
-    joined = " ".join(ws)
-    for want in (str(len(OVER)), str(CHARTER_MAX), "1218"):
-        assert want in joined, f"{want!r} missing from the warning: {joined}"
-
-
-@t("POSITIVE CONTROL: a NORMAL save emits no charter warning at all")
-def _quiet_control():
-    # without this, _loud could pass against code that warns on every save,
-    # and the warning would carry no information.
+@t("POSITIVE CONTROL: a SHORT charter produces no length note at all")
+def _quiet():
+    # without this, the advisory could fire unconditionally and mean nothing.
     o = org_with()
     r = o.set_scope(USER, "kid", charter=body(200),
                     add_dirs=[{"path": "E:/w", "mode": "rw"}])
-    ws = [w for w in (r.get("warnings") or []) if "char" in w and "limit" in w]
-    assert not ws, f"a normal save warned about length: {ws!r}"
+    assert not length_notes(r), f"a short charter was flagged: {r['warnings']!r}"
 
 
-@t("the same carve-out works for team_charter")
-def _team_carveout():
+@t("...and exactly AT the threshold is still quiet (boundary discriminates)")
+def _boundary():
     o = org_with()
-    o.nodes["kid"]["team_charter"] = OVER
-    r = o.set_scope(USER, "kid", team_charter=OVER, org_visibility="full")
-    assert o.nodes["kid"]["team_charter"] == OVER, "team_charter was cut"
-    assert o.nodes["kid"]["scope"]["org_visibility"] == "full"
-    assert any("team_charter" in w for w in (r.get("warnings") or [])), \
-        r.get("warnings")
+    assert not length_notes(o.set_scope(USER, "kid", charter=body(CHARTER_LONG)))
+    assert length_notes(o.set_scope(USER, "kid", charter=body(CHARTER_LONG + 1)))
 
 
 # ============================================================================ §4
-print("\n§4 the carve-out cannot be abused")
+print("\n§4 the cap is really gone")
 
 
-@t("a DIFFERENT over-long value is still refused, even on an over-long node")
-def _no_smuggling():
-    # the carve-out matches only what is ALREADY stored. It must not become a
-    # general "this node may have long charters now" exemption.
-    o = org_with(charter=OVER)
-    other = body(CHARTER_MAX + 1218, fill="C")
-    assert len(other) == len(OVER) and other != OVER
-    msg = refusal(lambda: o.set_scope(USER, "kid", charter=other))
-    assert str(len(other)) in msg, msg
-    assert o.nodes["kid"]["charter"] == OVER, "the refused value was written"
+@t("no charter length is refused - 250k stores without raising")
+def _no_refusal():
+    o = org_with()
+    try:
+        o.set_scope(USER, "kid", charter=body(250_000))
+    except LedgerError as e:
+        raise AssertionError(f"a charter length was refused - the cap is back: {e}")
+    assert len(o.nodes["kid"]["charter"]) == 250_000
 
 
-@t("whitespace-only differences do not count as 'changed' (strip is applied)")
-def _strip_equiv():
-    o = org_with(charter=OVER)
-    o.set_scope(USER, "kid", charter="\n  " + OVER + "  \n")
-    assert o.nodes["kid"]["charter"] == OVER.strip()
+@t("a long charter does not block the OTHER fields in the same retool")
+def _no_lockout():
+    # the lockout scenario from the capped era: the gear panel resends every
+    # field on every save, so a long charter riding along must never stop an
+    # unrelated edit from landing.
+    o = org_with(charter=body(20_000, fill="B"))
+    before = snap(o)
+    o.set_scope(USER, "kid", charter=o.nodes["kid"]["charter"],
+                add_dirs=[{"path": "E:/w", "mode": "rw"}],
+                org_visibility="full")
+    assert o.nodes["kid"]["scope"]["org_visibility"] == "full"
+    assert o.nodes["kid"]["scope"]["add_dirs"]
+    assert len(o.nodes["kid"]["charter"]) == 20_000, "the resend cut it"
+    assert snap(o) != before
 
 
-@t("SHORTENING an over-long charter is always allowed - the way back out")
-def _can_shorten():
-    # if this ever fails, an over-long charter really is unfixable and the
-    # carve-out has become a trap rather than an escape hatch.
-    o = org_with(charter=OVER)
-    o.set_scope(USER, "kid", charter=body(300))
-    assert len(o.nodes["kid"]["charter"]) == 300
+@t("hire() and set_scope AGREE - neither caps, at a length that used to fail")
+def _symmetry():
+    # the asymmetry that caused all of this: hire never enforced, set_scope
+    # enforced 4000. They must now behave identically.
+    txt = body(12_345, fill="S")
+    o = org_with(charter=txt)
+    assert o.nodes["kid"]["charter"] == txt, "hire() altered the charter"
+    o2 = org_with()
+    o2.set_scope(USER, "kid", charter=txt)
+    assert o2.nodes["kid"]["charter"] == txt, "set_scope altered the charter"
+    assert o.nodes["kid"]["charter"] == o2.nodes["kid"]["charter"]
 
 
 print(f"\nALL {PASS} CHECKS PASS")
@@ -335,22 +302,26 @@ print(f"\nALL {PASS} CHECKS PASS")
 
 # ============================================================================
 # --discriminate: put each defect BACK and prove this file goes red.
-# A suite that has never been seen failing is not evidence of anything. The
-# mutations are applied to a TEMP COPY of the package - never the repo - and
-# this file is re-run against that copy in a subprocess.
+# The mutations are applied to a TEMP COPY of the package - never the repo -
+# and this file is re-run against that copy in a subprocess.
 # ============================================================================
 MUTATIONS = {
     "the original silent cut (truncate, say nothing)": (
-        '    v = value.strip()\n'
-        '    if len(v) <= CHARTER_MAX:\n'
-        '        return v\n',
-        '    v = value.strip()\n'
-        '    if True:\n'
-        '        return v[:CHARTER_MAX]\n'),
-    "refuse ALWAYS (no unchanged-resend carve-out ⇒ the lockout)": (
-        '    if v == (current or "").strip():\n',
+        '    v = value.strip()\n',
+        '    v = value.strip()[:CHARTER_LONG]\n'),
+    "a hard cap that REFUSES (the ruling says uncapped)": (
+        '    if len(v) > CHARTER_LONG:\n',
+        '    if len(v) > CHARTER_LONG and _refuse():\n'),
+    "the advisory never fires (a notice that carries no information)": (
+        '    if len(v) > CHARTER_LONG:\n',
         '    if False:\n'),
 }
+# helper the second mutation calls, injected alongside it
+_REFUSE_SRC = (
+    'def _refuse():\n'
+    '    raise LedgerError("charter is too long")\n'
+    '\n'
+    '\n')
 
 
 def _discriminate():
@@ -368,25 +339,26 @@ def _discriminate():
         shutil.copy(me, os.path.join(tmp, "backend", "tests",
                                      os.path.basename(me)))
         lp = os.path.join(tmp, "backend", "orgtree", "ledger.py")
-        # read/write in BINARY with newline="" preserved: this copy must keep
-        # whatever line endings the checkout has, and nothing here may ever
-        # rewrite a file in the repo itself.
         with open(lp, "r", encoding="utf-8", newline="") as fh:
             src = fh.read()
         # ⚠ this checkout is CRLF (.gitattributes wants it that way) and the
         # read above deliberately preserves that. LF-only patterns match
         # NOTHING here - the first version of this harness reported "0
-        # matches" for both mutations and looked like a broken suite. Bend the
+        # matches" for every mutation and looked like a broken suite. Bend the
         # patterns to the file's real endings rather than rewriting the file.
         eol = "\r\n" if "\r\n" in src else "\n"
-        find, repl = find.replace("\n", eol), repl.replace("\n", eol)
-        n = src.count(find)
+        f2, r2 = find.replace("\n", eol), repl.replace("\n", eol)
+        n = src.count(f2)
         if n != 1:
             print(f"  !! MUTATION DID NOT APPLY ({n} matches): {label}")
             bad += 1
             continue
+        out = src.replace(f2, r2)
+        if "_refuse()" in repl:
+            anchor = "def note_charter_length(".replace("\n", eol)
+            out = out.replace(anchor, _REFUSE_SRC.replace("\n", eol) + anchor, 1)
         with open(lp, "w", encoding="utf-8", newline="") as fh:
-            fh.write(src.replace(find, repl))
+            fh.write(out)
         r = subprocess.run(
             [sys.executable, os.path.join(tmp, "backend", "tests",
                                           os.path.basename(me))],

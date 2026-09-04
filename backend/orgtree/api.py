@@ -2492,13 +2492,22 @@ CHARTERS_DIR = os.path.normpath(os.path.join(
     os.path.dirname(__file__), "..", "..", "docs", "charters"))
 
 
-#: A preset body is still capped in the payload, but the cap is now DECLARED.
-#: It used to be a bare `body[:6000]`: a longer preset was cut mid-word and
-#: neither the payload nor the UI said anything, so the hire form offered a
-#: card whose text simply stopped (user ruling 2026-09-04: a limit is fine,
-#: silence is not). Kept as a cut rather than made unbounded because this
-#: endpoint serves whatever .md files sit in the directory.
-PRESET_MAX = 6000
+#: A SANITY BOUND on a served preset body, not a charter limit — charters
+#: themselves are uncapped (ledger.CHARTER_LONG, user ruling 2026-09-04).
+#:
+#: This was `body[:6000]`, a bare slice: a longer preset was cut mid-word and
+#: neither the payload nor the UI said a word, so the hire form offered a card
+#: whose text simply stopped. Two things changed. The cut is DECLARED — see
+#: `chars` and `truncated` below — and the bound was raised far above any real
+#: preset (the largest shipped one is ~4.3k) so that in practice it never
+#: bites at all.
+#:
+#: It is not removed, because unlike a charter the input here is not something
+#: a person typed and can see: the endpoint serializes whatever .md files
+#: happen to sit in the directory into one JSON response for the browser. One
+#: stray large file should not become an unbounded response. If this bound is
+#: ever actually reached, the payload says so rather than going quiet.
+PRESET_MAX = 100_000
 
 
 @app.get("/api/charters")
@@ -2508,9 +2517,9 @@ def charters_list() -> dict[str, Any]:
     header ending at a '---' line — only what follows is the charter body.
 
     Each record carries `chars` (the body's TRUE length, before any cut) and
-    `truncated`. The payload carries `charter_max`, the length above which a
-    charter can no longer be EDITED (ledger.CHARTER_MAX) — a preset can sit
-    under PRESET_MAX and still be over that, which is why the form shows it.
+    `truncated`, so a cut is never silent. The payload carries `charter_long`
+    (ledger.CHARTER_LONG) — NOT a limit, just the length above which the hire
+    form mentions that a charter is re-sent on every turn of that agent's life.
     """
     out: list[dict[str, Any]] = []
     if os.path.isdir(CHARTERS_DIR):
@@ -2532,7 +2541,7 @@ def charters_list() -> dict[str, Any]:
                         # shown on hover of a picked preset card (user spec)
                         "path": os.path.abspath(os.path.join(CHARTERS_DIR, f))})
     return {"charters": out, "preset_max": PRESET_MAX,
-            "charter_max": ledger_mod.CHARTER_MAX}
+            "charter_long": ledger_mod.CHARTER_LONG}
 
 
 @app.get("/api/mcp-servers")
