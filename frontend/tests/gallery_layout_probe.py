@@ -57,16 +57,15 @@ HTML = f"""
         <div class="mailer-list" id="list">{ROWS}</div>
         <div class="mailer-read" id="read">
           <div class="mailer-head doc-pane-head" id="head">
+            <div class="doc-pane-meta-row">
+              <span class="tier t-sonnet">S</span>
+              <button class="cc-name cc-name-jump" id="agent-link" title="focus some-agent-1's desk">some-agent-1</button>
+              <span class="dim">2026-09-03T09:12:44.001Z</span>
+            </div>
             <div class="doc-pane-title-row">
               <b>a presented document with a fairly long title 1</b>
               <span class="spacer"></span>
               <button class="chip-x" id="dismiss" title="dismiss">✕</button>
-            </div>
-            <div class="doc-pane-meta-row">
-              <span class="tier t-sonnet">S</span>
-              <button class="cc-name cc-name-jump" id="agent-link" title="focus some-agent-1's desk">some-agent-1</button>
-              <span class="dim">this agent has been retired</span>
-              <span class="dim">2026-09-03T09:12:44.001Z</span>
             </div>
           </div>
           <div class="mailer-body md" id="body">
@@ -192,7 +191,8 @@ def failures(page, width: int) -> list[str]:
       if (head.getBoundingClientRect().bottom > dr.bottom + 0.5)
         bad.push('viewer header is pushed off the bottom of the panel');
 
-      // 6. the title is on its own row, above the metadata row
+      // 6. the METADATA row is on its own line ABOVE the title row (user,
+      //    2026-09-04: metadata first, title second)
       const titleRow = document.querySelector('.doc-pane-title-row');
       const metaRow = document.querySelector('.doc-pane-meta-row');
       if (!titleRow || !metaRow) {
@@ -200,8 +200,27 @@ def failures(page, width: int) -> list[str]:
       } else {
         const tr = titleRow.getBoundingClientRect();
         const mr2 = metaRow.getBoundingClientRect();
-        if (tr.bottom > mr2.top + 0.5)
-          bad.push('title row is not above metadata row (not on separate lines)');
+        if (mr2.bottom > tr.top + 0.5)
+          bad.push('metadata row is not above the title row (order wrong, or not on separate lines)');
+        // 6b. the metadata items are not airy (user: "too much space between
+        //     items in that row"). Measured on the INK, not the border box:
+        //     the offender was .cc-name's inherited `padding: 7px 15px`, which
+        //     lives INSIDE the button and so is invisible to a rect-gap check.
+        //     The tier chip is a deliberate badge box, so it is measured by its
+        //     box; everything else by the extent of its own text.
+        const ink = (k) => {
+          if (k.classList.contains('tier')) return k.getBoundingClientRect();
+          const rg = document.createRange(); rg.selectNodeContents(k);
+          const r = rg.getBoundingClientRect();
+          return r.width > 0 ? r : k.getBoundingClientRect();
+        };
+        const items = [...metaRow.children].map(ink)
+          .filter((r) => r.width > 0).sort((a, b) => a.left - b.left);
+        for (let i = 1; i < items.length; i++) {
+          const g = items[i].left - items[i - 1].right;
+          if (g > 14)
+            bad.push(`metadata items sit ${g.toFixed(1)}px apart — too airy for a one-line meta strip`);
+        }
         // 7. dismiss button is right-aligned in the viewer pane
         if (btn.right < rr.right - 25)
           bad.push(`dismiss button is not right-aligned (btn right ${btn.right}, read right ${rr.right})`);

@@ -59,6 +59,15 @@ const STATE_WHY: Record<DocRow['node_state'], string | null> = {
  *  are CURRENTLY HIRED. Asked directly whether that should hide the rest —
  *  every card in the live org today is from a retired agent, so the strict
  *  filter opens empty — they chose "default hired + 'show retired'". */
+/** the OPEN document repeats that wording — except for a plain retirement.
+ *  (user, 2026-09-04: "there's no reason to have a redundant 'this agent has
+ *  been retired' in the full view, since that's implied by the entry being
+ *  visually separated from the active agent entries".) DELETED and
+ *  UNRECOVERABLE stay: the layout separates hired from not-hired, so it
+ *  implies retirement, but it does not say which of the three it is. */
+const PANE_STATE_WHY: Record<DocRow['node_state'], string | null> =
+  { ...STATE_WHY, archived: null }
+
 const isHired = (r: DocRow) => r.node_state === 'live'
 
 export function DocGalleryModal({ slug, toast, close, onFocusAgent, onReply }: {
@@ -193,16 +202,8 @@ function DocPane({ slug, row, toast, onDismissed, close, onFocusAgent, onReply }
   return (
     <>
       <div className="mailer-head doc-pane-head">
-        <div className="doc-pane-title-row">
-          <b>{row.title || '(untitled)'}</b>
-          <span className="spacer" />
-          {!row.evicted && (
-            <button className="chip-x" title="dismiss"
-              onClick={() => dismissDoc(slug, row.id, row.title, toast, onDismissed)}>
-              <CloseIcon fontSize="inherit" />
-            </button>
-          )}
-        </div>
+        {/* METADATA FIRST, title second (user, 2026-09-04: "swap that row with
+            the title row, it should be first, the title second"). */}
         <div className="doc-pane-meta-row">
           <TierChip tier={row.tier} />
           {row.node ? (
@@ -213,13 +214,19 @@ function DocPane({ slug, row, toast, onDismissed, close, onFocusAgent, onReply }
           ) : (
             <span className="dim">?</span>
           )}
-          {/* the OPEN document names the agent's state in words. The row only
-              greys (user ruling — no badge in the row), but here there is room,
-              and "why can I not dismiss this / who wrote it" is exactly the
-              question the reading pane exists to answer. */}
-          {STATE_WHY[row.node_state] &&
-            <span className="dim">{STATE_WHY[row.node_state]}</span>}
+          {PANE_STATE_WHY[row.node_state] &&
+            <span className="dim">{PANE_STATE_WHY[row.node_state]}</span>}
           <span className="dim">{row.at}</span>
+        </div>
+        <div className="doc-pane-title-row">
+          <b>{row.title || '(untitled)'}</b>
+          <span className="spacer" />
+          {!row.evicted && (
+            <button className="chip-x" title="dismiss"
+              onClick={() => dismissDoc(slug, row.id, row.title, toast, onDismissed)}>
+              <CloseIcon fontSize="inherit" />
+            </button>
+          )}
         </div>
       </div>
       {row.evicted

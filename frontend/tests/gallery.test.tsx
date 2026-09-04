@@ -233,20 +233,49 @@ uiTest('§6 dismiss lives in the viewer and actually deletes that document',
     assert.match(del[0]!.url, /\/documents\/d1$/, 'and it names the open document')
   })
 
-uiTest('§6b title sits on its own line above metadata, and dismiss is right-aligned in title row',
-  async (mount) => {
+uiTest('§6b the METADATA row comes first and the title second, each on its own '
+  + 'line, with dismiss right-aligned in the title row', async (mount) => {
     mockDocs([row({ id: 'd1', title: 'the plan' })], { d1: 'body' })
     const { el } = await mount(gallery())
     await flush()
     await inAct(() => { (rows(el)[0] as HTMLElement).click() })
     await flush()
-    const titleRow = el.querySelector('.mailer-head .doc-pane-title-row')
-    const metaRow = el.querySelector('.mailer-head .doc-pane-meta-row')
+    const head = el.querySelector('.mailer-head')!
+    const titleRow = head.querySelector('.doc-pane-title-row')
+    const metaRow = head.querySelector('.doc-pane-meta-row')
     assert.ok(titleRow, 'title row exists')
     assert.ok(metaRow, 'meta row exists')
+    // ORDER is the contract (user, 2026-09-04) — assert on document position,
+    // not on which one a querySelector happens to find first
+    assert.ok(metaRow!.compareDocumentPosition(titleRow!) & Node.DOCUMENT_POSITION_FOLLOWING,
+      'the metadata row is FIRST and the title row SECOND')
     assert.equal(titleRow.querySelector('b')?.textContent, 'the plan')
     assert.ok(titleRow.querySelector('button.chip-x'), 'dismiss button sits on title row')
     assert.equal(metaRow.querySelector('b'), null, 'metadata row has no title')
+  })
+
+uiTest('§6c the full view does NOT repeat "this agent has been retired" — the '
+  + 'separation from the active entries already says it — but DELETED, which '
+  + 'that separation does not distinguish, is still named', async (mount) => {
+    mockDocs([
+      row({ id: 'dret', title: 'from a retired one', node: 'oldie', node_state: 'archived' }),
+      row({ id: 'ddel', title: 'from a deleted one', node: 'goner', node_state: 'deleted' }),
+    ], { dret: 'body', ddel: 'body' })
+    const { el } = await mount(gallery())
+    await flush()
+    await inAct(() => { showRetired(el).click() })
+    await flush()
+    const open = async (title: string) => {
+      const r = rows(el).find((x) => x.textContent?.includes(title)) as HTMLElement
+      assert.ok(r, `found the row for ${title}`)
+      await inAct(() => { r.click() })
+      await flush()
+      return el.querySelector('.mailer-head .doc-pane-meta-row')!.textContent ?? ''
+    }
+    assert.doesNotMatch(await open('from a retired one'), /retired/i,
+      'no redundant retirement wording in the open document')
+    assert.match(await open('from a deleted one'), /deleted/i,
+      'a DELETED agent is still named — the layout does not imply which state it is')
   })
 
 uiTest('§7 an evicted card is listed and explained, fetches nothing, and offers '

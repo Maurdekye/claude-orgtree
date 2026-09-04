@@ -2586,11 +2586,18 @@ main.solo { width: 100%; }
   font-family: var(--sans); font-size: 13px; font-weight: 600; color: var(--ink-strong);
 }
 .gallery-modal .doc-pane-meta-row {
-  display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+  display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
   font-family: var(--mono); font-size: 11px;
 }
+/* .cc-name is the SWITCHBOARD's button — it carries `padding: 7px 15px`,
+   which is right for a standalone control and far too airy inside a one-line
+   metadata strip (user, 2026-09-04: "there's too much space between items in
+   that row"). The 15px sat on TOP of the row's own gap, so each neighbour
+   read ~21px away. Zero the padding and let the flex gap alone do the
+   spacing. */
 .gallery-modal .doc-pane-meta-row .cc-name {
   flex: none; min-width: 0; font-size: 11px; font-weight: normal; color: var(--dim);
+  padding: 0;
 }
 .gallery-modal .doc-pane-meta-row button.cc-name:hover {
   color: var(--accent); text-decoration: underline;
