@@ -99,9 +99,20 @@ you did next to any count you quote. The runner also writes a temp directory
 (`node_modules/.orgtree-tests/`) *through* the link, into E:'s tree — harmless,
 but know that it happens before you assume your worktree is inert.
 
-The frontend suite itself is a separate, much cheaper run and is **actually
-green** (491/491 as of `91b7573`), so for a frontend-only change you can have
-a real pass rather than parity:
+The frontend suite itself is a separate, much cheaper run and is **all but
+green — 494/495 as of `3ba27db`**, so for a frontend-only change you can have
+a near-real pass rather than parity. The ONE failure is pre-existing and not
+yours:
+
+> `chiptips.test.tsx` **§8 "the frontend's fallback tier table matches the
+> backend's"** — verified by `msg-dupes` 2026-09-04 to fail identically on a
+> pristine `3ba27db` worktree. Baseline it before reading anything into it.
+
+⚠ The suite needs `frontend/node_modules`, which a fresh git worktree does not
+have. Rather than a second `npm ci`, junction it at the shared checkout's copy
+— `New-Item -ItemType Junction` in PowerShell (`cmd /c mklink` does not work
+through Git Bash). Remove the junction with `rmdir` BEFORE `git worktree
+remove`, or the removal fails with `Invalid argument`.
 
     cd frontend && node tests/run.mjs            # all of it, ~33 s
     cd frontend && node tests/run.mjs convo      # one file by substring
@@ -109,14 +120,79 @@ a real pass rather than parity:
     cd frontend && npx tsc --noEmit -p tests/tsconfig.json   # ⚠ 4 PRE-EXISTING
                                                  # errors in cacheforecast/gallery
 
+### FIXED 2026-09-04 — `test_message_visibility_live`, and how it went dark
+
+**Status: green. 40/40, 3569 payload samples scored** (`b6e639a`). Previously
+0 passed / 40 failed / **0 samples**, on pristine `f2d42f5` — reported here by
+`msg-dupes` 2026-09-03, fixed by the same 2026-09-04. Left in this file because
+the *diagnosis* is worth more than the status line: someone will hit a variant.
+
+**How it went dark.** The rig runs its backend under a THROWAWAY `HOME` —
+deliberately, so transcripts land there and nothing the user owns is touched.
+`provider_hire_gate` refuses a Claude tier unless `accounts.live_identity()`
+reports a signed-in account, and that reads `~/.claude.json`, which under that
+home does not exist. So the gate answered, correctly, *"Claude is not signed
+in"*, every `POST /ops` hire 422'd, no agent was ever created, no turn ever ran,
+and a suite whose stated contract is *"a message ... NEVER appears twice"* was
+asserting nothing at all. A real duplicate-render bug shipped underneath it
+(`ebc8f9e`). **The gate was right and the rig was stale** — this is drift, not
+a fault on either side, and it is the shape to look for when a rig that used to
+work starts refusing: ask what the isolated environment stopped providing.
+
+Fixed by satisfying the gate, never by relaxing it: the rig already substitutes
+the CLI (`ORGTREE_CLAUDE_CLI=fakecli.js`), so it now also writes a fake
+`oauthAccount` into its OWN throwaway home. `live_identity` is documented to
+read CLI config metadata and never the credentials store, so no real secret is
+read, copied or written, and `--real-cli` restores the real `HOME` and never
+sees the file.
+
+**Two guards added so it cannot go dark the same way:**
+
+* **Zero samples is now its own named failure** (`_sampling_verdict`). An
+  instrument that reads nothing is broken, not clean. The run now dies with
+  `THE RIG SCORED NOTHING`, pointing at the FIRST traceback rather than the
+  last. The general rule, which this repo keeps re-learning: **a guard that
+  cannot report its own silence is not a guard.**
+* **`fragile()` catches `AssertionError` only.** It used to catch every
+  exception, so three of the 422s were filed as *known fragilities* reading
+  `breaks as: HTTP Error 422` — an outage wearing the label of an expected CLI
+  quirk, in the one category nobody re-reads. Those same three entries now read
+  `after200: 3 GAP + 0 DUPLICATE samples out of 28`, which is what that bucket
+  is for. **If a tolerated bucket's contents stop matching its name, the bucket
+  is hiding an outage.**
+
+⚠ **IT ONLY EVER EXERCISES CLAUDE.** It hires tier `haiku` against
+`fakecli.js`. There is no Antigravity or Codex coverage in it, so it could not
+have caught the Antigravity double-message bug (`3019505`) even fully working —
+a suite that covers one of three lanes while claiming a provider-neutral
+contract is a FALSE assurance, which is worse than a known gap. Scoping a
+second lane is with the coordinator; until then, read its green with that limit
+in mind.
+
+⚠ **IT EXHAUSTS EPHEMERAL PORTS, AND THAT LOOKS LIKE A SUBJECT FAILURE.**
+Measured 2026-09-04: one `--quick` run drove machine-wide `TIME_WAIT` from
+1 167 to **4 351** against a 16 384-port dynamic range (49152+, `netsh int ipv4
+show dynamicport tcp`), 987 of them to the rig's own port. Every `api()` call
+is a fresh `urlopen` with no keep-alive, and the 20 Hz poller makes thousands.
+Started on an already-loaded machine it fails with:
+
+    OSError: [WinError 10048] Only one usage of each socket address ... is
+    normally permitted
+
+surfacing as an ordinary red check (it hit `text · single-token` once here).
+**That is the rig running out of sockets, not the subject misbehaving** —
+`msg-dupes` first mis-attributed it to a backend bounce from a primed deploy
+that had provably not fired. Re-run alone: 40/40. This is a specific instance of
+the solo-re-run rule below, with a named mechanism and a way to check it
+(`netstat -ano | grep -c TIME_WAIT`).
+
 ### Broken on main but NOT in the default run
 
-`test_message_visibility_live` — fails **40/40 on pristine `f2d42f5`**: the
-rig's hire op 422s, so nothing is ever sampled and every check fails for the
-same reason. Reported by `msg-dupes`, 2026-09-03. It is not in the 8 above
-because the default tier skips it (the runner reports 5-6 `skipped`), so you
-will only meet it if you invoke it directly — and then it looks catastrophic
-and looks like yours. It is neither.
+Nothing currently. Suites here are ones the default tier skips, so you meet
+them only by invoking them directly — and then they look catastrophic and look
+like yours. See also the port-`7360` skip trap further down, which is how
+`test_tree_render_cost` went unrun for its whole life: **a skipped suite still
+leaves the run looking green.**
 
 The general point: **`skipped` in the runner's summary is not `passed`.** If
 you invoke a skipped suite by hand because it covers your change, baseline it
