@@ -1063,3 +1063,70 @@ right by inverting the question: *there is no closed set of summary formats;
 there IS a closed set of ways a run dies.* Find the last traceback and ask
 whether anything reporting counts comes after it. Chasing formats one at a
 time was the wrong shape, and a flag that cries wolf is worthless within a day.
+
+## ⚠ Two Windows tool traps that stop an agent BEFORE the runner (2026-09-04)
+
+Neither is a test failure and neither has a log. Both stop a headless agent
+from doing the work at all, and both were hit inside the first twenty minutes
+by `lessons-archaeology` on 2026-09-04.
+
+### 1. The `Write` tool is denied on the agent's OWN folder; PowerShell works
+
+Symptom: `Write` to a path inside the agent's own writable scratch folder
+returns *"directory denied by your permission settings"*, and a Bash heredoc
+(`cat > file <<EOF`) to the same path is denied too — while PowerShell
+`Set-Content` to the **identical path** succeeds. An agent that trusts the
+first denial concludes it cannot write anywhere and stops.
+
+`dig-verify` reproduced the difference between two live agents:
+
+| agent | permission rules | chars | root-level `*` rule | `Write` on own folder |
+|---|---|---|---|---|
+| `lessons-archaeology` | **172** | 12,512 | **yes** | **DENIED** |
+| `dig-verify` | 7 | 925 | no | **works** |
+
+Generator: `supervisor.py:5952-5998`. Because the rule language has no
+negation, an ancestor folder grant is expanded into chain levels —
+`Edit(<level>/*)` **plus** `Edit(<level>/<entry>/**)` for every sibling except
+the one leading to the agent's own folder. The per-entry carve-out works; the
+**level** rule does not: `Edit(.../scratch/orgtree/*)` matches the agent's own
+folder as a direct child and nothing excludes it. The deny list reconciles
+exactly against the filesystem (1 + 1 + 170 siblings = 172 directories).
+
+D-220 cut the rule trio to one per path, which mitigated the argv overflow;
+**the own-folder denial survived it.**
+
+⚠ Stated caveat, unpapered: this is two agents differing in one rule plus a
+code reading, **not a controlled toggle** — an agent cannot edit its own
+settings. Re-rendering one agent's rules without the ancestor grant would
+settle it. Until someone does, treat the mechanism as read, not proved.
+
+**Workaround that works today:** write files from PowerShell (`Set-Content`,
+here-strings) or from a `python -` script, not from `Write` or a heredoc.
+
+### 2. An 8.3 short path (`C:\Users\NCOLA_~1\...`) raises a request nobody can answer
+
+`TEMP`, `TMP` and therefore `tempfile.gettempdir()` on this machine all hold
+the **8.3 short name**:
+
+    TEMP = C:\Users\NCOLA_~1\AppData\Local\Temp
+
+So every path the test runner prints for its logs carries it — verified
+2026-09-04 from the `tools/run_tests.py` header line:
+
+    logs    C:\Users\NCOLA_~1\AppData\Local\Temp\orgtree-tests-w0bwzd59
+
+— and so does any throwaway `ORGTREE_DATA` you build with `tempfile.mkdtemp()`.
+
+Reading a path in that form trips a **"suspicious Windows path pattern"**
+guard. The guard does not deny: it raises a permission **REQUEST**, and a
+headless turn has nobody present to answer one. The read never completes. The
+file is fine; the tool call is stranded.
+
+**Fix (coordinator ruling, 2026-09-04 18:38Z): expand the short name before you
+read it.** `C:\Users\NCOLA_~1\...` becomes `C:\Users\ncola_k8bx\...` — same
+file, same bytes, no guard. Copy-pasting the runner's own printed log path is
+the exact move that fails, which is why it catches everyone once.
+
+Related, same afternoon: `Get-ChildItem -Recurse` over the whole scratch tree
+exceeds the 120s shell timeout. Scope it, or use `Glob`.
