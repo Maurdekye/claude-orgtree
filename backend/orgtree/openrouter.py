@@ -111,6 +111,9 @@ class ModelCard(TypedDict):
     context: int
     tools: bool
     free: bool
+    #: the catalog's own release timestamp (unix seconds), 0 if absent. The
+    #: ONE honest recency signal the catalog carries — see `sort_key`.
+    created: int
     letter: str
     color: str
     #: the rim of a DARK chip (`accent_for`), None for every light colour
@@ -641,6 +644,10 @@ def card_of(m: dict[str, Any]) -> ModelCard | None:
         ctx = int(m.get("context_length") or 0)
     except (TypeError, ValueError):
         ctx = 0
+    try:
+        created = int(m.get("created") or 0)
+    except (TypeError, ValueError):
+        created = 0
     return {
         "id": mid,
         "name": pretty_name(str(m.get("name") or ""), mid),
@@ -652,6 +659,7 @@ def card_of(m: dict[str, Any]) -> ModelCard | None:
         "cache_write": cache_write,
         "context": ctx,
         "tools": bool(tools),
+        "created": created,
         "free": mid.endswith(":free") or (prompt == 0 and completion == 0),
         "letter": letter_for(mid),
         "color": color_for(mid, prompt),
@@ -738,14 +746,72 @@ def catalog(force: bool = False) -> list[ModelCard]:
         raise
 
 
-def search(q: str, offset: int = 0, limit: int = 8) -> dict[str, Any]:
+#: the picker's sort vocabulary (user spec 2026-09-04: "sorting options
+#: (recency of release, input price, output price)"). `relevance` is the
+#: original ranking and stays the default, so an unsorted call behaves
+#: exactly as it did before this existed.
+SORTS: Final = ("relevance", "input", "output", "recency")
+ORDERS: Final = ("asc", "desc")
+
+
+def _sort_key(sort: str, c: ModelCard) -> float:
+    if sort == "input":
+        return c["prompt"]
+    if sort == "output":
+        return c["completion"]
+    return float(c["created"])          # recency
+
+
+def search(q: str, offset: int = 0, limit: int = 8,
+           sort: str = "relevance", order: str = "",
+           group_by_vendor: bool = False) -> dict[str, Any]:
     """The picker's page: every catalog card whose id or name contains EVERY
-    whitespace-separated term of `q` (case-insensitive), id matches ranked
-    before name matches, then the catalog's own order. `limit` is clamped to
-    the user's 5–10 spec."""
+    whitespace-separated term of `q` (case-insensitive), ordered by `sort` and
+    paged. `limit` is clamped to the user's 5–10 spec.
+
+    SORTS (user spec 2026-09-04). `relevance` — the original ranking: id
+    matches before name matches, then the catalog's own order. `input` /
+    `output` — $ per M prompt / completion tokens. `recency` — the catalog's
+    `created` timestamp.
+
+    ☞ RECENCY IS REAL, NOT INSERTION ORDER IN A COSTUME. That question was
+    asked before this was built and the catalog was MEASURED to answer it:
+    every one of the 426 models carries a `created` unix timestamp, 338
+    distinct, spanning 2023-05-28 to 2026-09-02, none missing or zero. The
+    catalog also ARRIVES in exact created-descending order (measured: zero
+    inversions across all 425 adjacent pairs), so `recency desc` mostly
+    LABELS the order the picker already had — `recency asc` is the new
+    capability. Sorting on the field rather than on arrival order is still
+    the right call: it keeps working the day OpenRouter stops pre-sorting,
+    and nothing here would notice if it silently did.
+
+    `order` defaults per sort — cheapest-first for a price, newest-first for
+    recency — because that is the useful end in each case, and an unset
+    direction should not mean "oldest models and dearest models".
+
+    `group_by_vendor` (user spec: "a simple additional checkbox ... that's
+    perpendicular to that dropdown") makes the VENDOR the primary key and the
+    chosen sort secondary. Perpendicular is exactly right: it re-groups the
+    same ordering rather than replacing it. Vendors are ordered by their own
+    best row under the active sort, so the group order tracks the sort
+    instead of being alphabetical against it.
+
+    ⚠ EVERY ORDERING HERE IS TOTAL. The final key is always the model id, so
+    no two rows can compare equal — 65 models share one context length and
+    88 share a `created` value, and ties under a paged sort are how a row
+    appears on two pages while another appears on none. `sorted` being stable
+    is NOT enough: the list is re-sorted per request, so a tie broken by
+    arrival order is only stable while the catalog is."""
     terms = [t for t in q.lower().split() if t]
     limit = max(5, min(10, int(limit or 8)))
     offset = max(0, int(offset or 0))
+    sort = sort if sort in SORTS else "relevance"
+    if sort == "relevance":
+        order = "asc"          # relevance has no direction: "worst match
+        # first" is not a thing anyone wants, and offering it would be a
+        # control that does nothing useful in one of its two positions
+    elif order not in ORDERS:
+        order = "asc" if sort in ("input", "output") else "desc"
     cards = catalog()
     hits: list[tuple[int, int, ModelCard]] = []
     for i, c in enumerate(cards):
@@ -754,7 +820,18 @@ def search(q: str, offset: int = 0, limit: int = 8) -> dict[str, Any]:
         if all(t in hay_id or t in hay_name for t in terms):
             rank = 0 if all(t in hay_id for t in terms) else 1
             hits.append((rank, i, c))
-    hits.sort(key=lambda h: (h[0], h[1]))
+    flip = -1.0 if order == "desc" else 1.0
+    if sort == "relevance":
+        hits.sort(key=lambda h: (h[0], h[1], h[2]["id"]))
+    else:
+        hits.sort(key=lambda h: (_sort_key(sort, h[2]) * flip, h[2]["id"]))
+    if group_by_vendor:
+        # each vendor takes the rank of its best row under the active sort, so
+        # the groups march in the same direction the rows do
+        best: dict[str, int] = {}
+        for pos, h in enumerate(hits):
+            best.setdefault(h[2]["vendor"], pos)
+        hits.sort(key=lambda h: (best[h[2]["vendor"]], h[2]["vendor"]))
     fav_ids = {f["id"] for f in favorites()}
     # labels are disambiguated across the WHOLE result set, so a model reads
     # the same on every page of one query
@@ -762,7 +839,18 @@ def search(q: str, offset: int = 0, limit: int = 8) -> dict[str, Any]:
     page = [dict(c, selected=c["id"] in fav_ids, label=labels[c["id"]])
             for _, _, c in hits[offset:offset + limit]]
     return {"query": q, "offset": offset, "limit": limit,
-            "total": len(hits), "items": page}
+            "total": len(hits), "items": page,
+            "sort": sort, "order": order, "group_by_vendor": group_by_vendor,
+            # ☞ an explicit sort DISPLACES the id-over-name relevance ranking,
+            # and the picker says so rather than letting the rows quietly stop
+            # answering what was typed. Only true when there is a query to
+            # rank: with an empty box there is no relevance to lose.
+            "relevance_displaced": bool(terms) and sort != "relevance",
+            # the vendor of the row BEFORE this page, so a group heading split
+            # across a page boundary can be drawn as "…continued"
+            "prev_vendor": (hits[offset - 1][2]["vendor"]
+                            if group_by_vendor and offset > 0
+                            and offset - 1 < len(hits) else None)}
 
 
 def find(model_id: str) -> ModelCard | None:
@@ -794,6 +882,9 @@ def favorites() -> list[Favorite]:
                                      or f.get("prompt") or 0.0),
                 "context": int(f.get("context") or 0),
                 "tools": bool(f.get("tools", True)),
+                # 0 for a favorite adopted before the field was snapshotted —
+                # only the CATALOG is ever sorted by recency, never this list
+                "created": int(f.get("created") or 0),
                 "free": bool(f.get("free", False)),
                 # letter and color are CANONICAL — a pure function of the id
                 # and the snapshot price — so they are recomputed on every

@@ -31,7 +31,7 @@
 // user's 2026-09-02 screenshot: "$0.16efreeplacclear"). Icons only; the
 // words go in `title`. `tests/orrkey_probe.py` measures this in a browser.
 
-import { useEffect, useRef, useState } from 'react'
+import { Fragment, useEffect, useRef, useState } from 'react'
 import type { CSSProperties, ReactNode } from 'react'
 import {
   clearOpenRouterKey, getOpenRouter, searchOpenRouterModels, setOpenRouterFavorite,
@@ -39,7 +39,8 @@ import {
 } from '../api'
 import { AutorenewIcon, CheckIcon, CloseIcon, DeleteIcon, EditIcon } from '../icons'
 import type {
-  OpenRouterDoc, OpenRouterModel, OpenRouterModelsPage, ProviderInfo, ProviderTier,
+  OpenRouterDoc, OpenRouterModel, OpenRouterModelsPage, OpenRouterSort,
+  ProviderInfo, ProviderTier,
 } from '../types'
 import { isDarkTierColor, modelLabel, setOpenRouterTiers } from './shared'
 
@@ -55,6 +56,21 @@ const perM = (v: number): string =>
 const ctxK = (n: number): string =>
   n >= 1_000_000 ? `${(n / 1_000_000).toFixed(n % 1_000_000 ? 1 : 0)}M`
     : n >= 1000 ? `${Math.round(n / 1000)}K` : String(n)
+/** "Sep 2026" from the catalog's unix release stamp */
+const released = (secs: number): string =>
+  new Date(secs * 1000).toLocaleDateString(undefined, { year: 'numeric', month: 'short' })
+/** how each sort reads in a sentence, and what each DIRECTION means in it —
+ *  "ascending" is meaningless to read, "cheapest first" is not */
+const SORT_LABEL: Record<OpenRouterSort, string> = {
+  relevance: 'best match', input: 'input price',
+  output: 'output price', recency: 'release date',
+}
+const DIR_LABEL: Record<OpenRouterSort, Record<'asc' | 'desc', string>> = {
+  relevance: { asc: 'best match', desc: 'best match' },
+  input: { asc: 'cheapest first', desc: 'dearest first' },
+  output: { asc: 'cheapest first', desc: 'dearest first' },
+  recency: { asc: 'oldest first', desc: 'newest first' },
+}
 /** "checked 01:20" — when the key was last verified, on the local clock */
 const clock = (iso: string): string => {
   const d = new Date(iso)
@@ -298,6 +314,13 @@ export function ModelPicker({ doc, busy, onToggle, onClose }: {
   const [offset, setOffset] = useState(0)
   const [page, setPage] = useState<OpenRouterModelsPage | null>(null)
   const [err, setErr] = useState<string | null>(null)
+  // the ordering controls (user spec 2026-09-04). They live on the SERVER —
+  // the page is 8 rows of 426, so sorting here would reorder a page, not a
+  // catalog. `grouped` is deliberately perpendicular to `sort`: it re-groups
+  // the same ordering rather than replacing it.
+  const [sort, setSort] = useState<OpenRouterSort>('relevance')
+  const [order, setOrder] = useState<'asc' | 'desc'>('desc')
+  const [grouped, setGrouped] = useState(false)
   const inputRef = useRef<HTMLInputElement | null>(null)
   // request guard: a slow page for an old query must not land over a fast
   // one for the current query
@@ -313,12 +336,12 @@ export function ModelPicker({ doc, busy, onToggle, onClose }: {
   useEffect(() => {
     const id = ++seq.current
     const timer = setTimeout(() => {
-      searchOpenRouterModels(q, offset, PAGE)
+      searchOpenRouterModels(q, offset, PAGE, sort, order, grouped)
         .then((p) => { if (seq.current === id) { setPage(p); setErr(null) } })
         .catch((e: Error) => { if (seq.current === id) setErr(e.message) })
     }, q ? 200 : 0)
     return () => clearTimeout(timer)
-  }, [q, offset])
+  }, [q, offset, sort, order, grouped])
   useEffect(() => { inputRef.current?.focus() }, [])
 
   const total = page?.total ?? 0
@@ -359,14 +382,76 @@ export function ModelPicker({ doc, busy, onToggle, onClose }: {
           placeholder="search the catalog — name, vendor, id…"
           aria-label="search OpenRouter models"
           value={q} onChange={(e) => { setQ(e.target.value); setOffset(0) }} />
+        {/* ordering controls (user spec 2026-09-04): a sort dropdown, and a
+            group-by-provider checkbox PERPENDICULAR to it — grouping makes
+            the vendor the primary key and leaves the chosen sort as the
+            secondary one, so the two compose instead of competing. */}
+        <div className="orr-sortbar">
+          <label>
+            <span className="dim">sort</span>
+            <select value={sort} aria-label="sort the catalog"
+              onChange={(e) => {
+                const s = e.target.value as OpenRouterSort
+                setSort(s); setOffset(0)
+                // each sort has a useful end: cheapest first for a price,
+                // newest first for a date. Carrying the previous direction
+                // across would land the user on "the dearest models".
+                setOrder(s === 'recency' ? 'desc' : 'asc')
+              }}>
+              <option value="relevance">best match</option>
+              <option value="input">input price</option>
+              <option value="output">output price</option>
+              <option value="recency">release date</option>
+            </select>
+          </label>
+          {sort !== 'relevance' && (
+            <button type="button" className="orr-dir"
+              title={`showing ${DIR_LABEL[sort][order]} — click to reverse`}
+              aria-label={`sort direction: ${DIR_LABEL[sort][order]}`}
+              onClick={() => { setOrder(order === 'asc' ? 'desc' : 'asc'); setOffset(0) }}>
+              {order === 'asc' ? '↑' : '↓'} {DIR_LABEL[sort][order]}
+            </button>
+          )}
+          <label className="orr-group" title="show the models under a heading per provider">
+            <input type="checkbox" checked={grouped}
+              onChange={(e) => { setGrouped(e.target.checked); setOffset(0) }} />
+            <span>group by provider</span>
+          </label>
+        </div>
+        {/* ⚠ an explicit sort DISPLACES the id-over-name relevance ranking.
+            Saying so beats letting the rows quietly stop answering what was
+            typed — and the way back is one click, not a puzzle. */}
+        {page?.relevance_displaced && (
+          <div className="orr-note dim">
+            ordered by {SORT_LABEL[page.sort]}, not by how well rows match “{page.query}”
+            {' '}<button type="button" className="linkish"
+              onClick={() => { setSort('relevance'); setOffset(0) }}>
+              sort by best match</button>
+          </div>
+        )}
+        {/* costs nothing to say, and it turns "we added a sort" into "we
+            labelled the order you already had" */}
+        {page && sort === 'recency' && order === 'desc' && !page.relevance_displaced && (
+          <div className="orr-note dim">newest first — the catalog's own order</div>
+        )}
         {err && <div className="ask-warn">could not read the catalog: {err}</div>}
         <div className="orr-list">
           {!page && !err && <div className="dim">reading the catalog…</div>}
           {page && !page.items.length && <div className="dim">no models match</div>}
-          {page?.items.map((m) => {
+          {page?.items.map((m, i) => {
             const on = selected.has(m.id)
+            // a group heading is drawn when the vendor changes. At the TOP of
+            // a page the comparison is against `prev_vendor` — the row before
+            // this page — so a group split across a page boundary says
+            // "continued" instead of pretending to start again there.
+            const before = i === 0 ? page.prev_vendor : page.items[i - 1].vendor
+            const head = page.group_by_vendor && m.vendor !== before
+            const cont = page.group_by_vendor && i === 0 && m.vendor === before
             return (
-              <button type="button" key={m.id}
+              <Fragment key={m.id}>
+              {head && <div className="orr-vendor">{m.vendor}</div>}
+              {cont && <div className="orr-vendor">{m.vendor} <span className="dim">· continued</span></div>}
+              <button type="button"
                 className={'orr-row' + (on ? ' on' : '')}
                 aria-pressed={on} disabled={busy}
                 onClick={() => onToggle(m, !on)}>
@@ -379,6 +464,10 @@ export function ModelPicker({ doc, busy, onToggle, onClose }: {
                   <b>{m.name}</b>
                   <span className="dim">{m.vendor} · {m.label ?? modelLabel(m.id)}
                     {m.context ? ` · ${ctxK(m.context)} ctx` : ''}
+                    {/* the sort key is shown while it is IN FORCE: a recency
+                        sort the user cannot check is a recency sort the user
+                        has to take on faith */}
+                    {sort === 'recency' && m.created ? ` · ${released(m.created)}` : ''}
                     {!m.tools ? ' · no tool use' : ''}
                   </span>
                 </span>
@@ -388,6 +477,7 @@ export function ModelPicker({ doc, busy, onToggle, onClose }: {
                 </span>
                 <span className="orr-check">{on ? '✓ selected' : 'select'}</span>
               </button>
+              </Fragment>
             )
           })}
         </div>

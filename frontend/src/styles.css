@@ -4171,6 +4171,26 @@ html.mobile .md table { display: block; overflow-x: auto; max-width: 100%; }
   background: color-mix(in srgb, var(--prov-openrouter) 18%, transparent); }
 .orr-sel-x:disabled { opacity: .5; cursor: default; }
 .orr-search { width: 100%; box-sizing: border-box; }
+/* the ordering controls: sort dropdown + direction + group-by-provider.
+   One row under the search box, wrapping on a narrow modal. */
+.orr-sortbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  margin-top: 6px; font-size: 12px; }
+.orr-sortbar label { display: flex; align-items: center; gap: 5px; }
+.orr-sortbar select { font: inherit; }
+.orr-dir { font: inherit; cursor: pointer; padding: 2px 8px; border-radius: 6px;
+  border: 1px solid var(--line); background: transparent; color: inherit; }
+.orr-dir:hover, .orr-dir:focus-visible { border-color: var(--prov-openrouter); outline: none; }
+.orr-group { cursor: pointer; }
+.orr-note { font-size: 12px; margin-top: 6px; }
+.orr-note .linkish { background: none; border: 0; padding: 0; font: inherit;
+  color: var(--prov-openrouter); cursor: pointer; text-decoration: underline; }
+/* a group heading. `position: sticky` keeps the provider visible while its
+   rows scroll, which is the other half of why a heading splitting across a
+   page boundary is cosmetic rather than confusing. */
+.orr-vendor { position: sticky; top: 0; z-index: 1; padding: 4px 8px 2px;
+  font-size: 11px; letter-spacing: .04em; text-transform: uppercase;
+  color: var(--prov-openrouter); background: var(--panel, var(--bg));
+  border-bottom: 1px solid var(--line); }
 .orr-list { display: flex; flex-direction: column; gap: 4px; margin: 8px 0;
   min-height: 14em; }
 .orr-row { display: grid; grid-template-columns: auto 1fr auto auto;

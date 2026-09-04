@@ -1083,6 +1083,8 @@ export interface OpenRouterModel {
   context: number
   tools: boolean
   free: boolean
+  /** release date, unix seconds; 0 when the catalog did not carry one */
+  created: number
   letter: string
   color: string
   /** the rim of a dark card (see ProviderTier.accent); null on a light one */
@@ -1090,12 +1092,22 @@ export interface OpenRouterModel {
   /** already a favorite */
   selected?: boolean
 }
+/** the picker's ordering vocabulary; `relevance` is the id-over-name ranking */
+export type OpenRouterSort = 'relevance' | 'input' | 'output' | 'recency'
 export interface OpenRouterModelsPage {
   query: string
   offset: number
   limit: number
   total: number
   items: OpenRouterModel[]
+  sort: OpenRouterSort
+  order: 'asc' | 'desc'
+  group_by_vendor: boolean
+  /** an explicit sort has displaced relevance ranking for a non-empty query */
+  relevance_displaced: boolean
+  /** vendor of the row before this page, so a split group heading can say
+   *  "continued"; null when grouping is off or this is the first page */
+  prev_vendor?: string | null
 }
 export interface ProviderInfo {
   id: string

@@ -64,37 +64,55 @@ def raises(fn, needle, what):
 FAKE_KEY = "sk-or-v1-testkey-0123456789abcdef"
 
 CATALOG = {"data": [
-    {"id": "anthropic/claude-sonnet-5", "name": "Anthropic: Claude Sonnet 5",
+    {"id": "anthropic/claude-sonnet-5", "created": 1750000000, "name": "Anthropic: Claude Sonnet 5",
      "context_length": 1000000,
      "architecture": {"output_modalities": ["text"]},
      "pricing": {"prompt": "0.000002", "completion": "0.00001",
                  "input_cache_read": "0.0000002"},
      "supported_parameters": ["tools", "temperature"]},
-    {"id": "anthropic/claude-sonnet-5:batch", "name": "Anthropic: Claude Sonnet 5 (batch)",
+    {"id": "anthropic/claude-sonnet-5:batch", "created": 1750000000, "name": "Anthropic: Claude Sonnet 5 (batch)",
      "context_length": 1000000, "pricing": {"prompt": "0.000001", "completion": "0.000005"}},
-    {"id": "openai/gpt-5.6-sol", "name": "OpenAI: GPT-5.6 Sol",
+    {"id": "openai/gpt-5.6-sol", "created": 1780000000, "name": "OpenAI: GPT-5.6 Sol",
      "context_length": 1050000,
      "pricing": {"prompt": "0.000005", "completion": "0.00003",
                  "input_cache_read": "0.0000005"},
      "supported_parameters": ["tools"]},
-    {"id": "deepseek/deepseek-v4", "name": "DeepSeek: DeepSeek V4",
+    {"id": "deepseek/deepseek-v4", "created": 1700000000, "name": "DeepSeek: DeepSeek V4",
      "context_length": 163840,
      "pricing": {"prompt": "0.00000014", "completion": "0.00000028",
                  "input_cache_read": "0.00000002"},
      "supported_parameters": ["tools"]},
-    {"id": "moonshotai/kimi-k3", "name": "MoonshotAI: Kimi K3",
+    {"id": "moonshotai/kimi-k3", "created": 1788000000, "name": "MoonshotAI: Kimi K3",
      "context_length": 1048576,
      "pricing": {"prompt": "0.000003", "completion": "0.000015"},
      "supported_parameters": ["tools"]},
-    {"id": "someone/llama-4-maverick:free", "name": "Someone: Llama 4 Maverick (free)",
+    {"id": "someone/llama-4-maverick:free", "created": 1720000000, "name": "Someone: Llama 4 Maverick (free)",
      "context_length": 128000,
      "pricing": {"prompt": "0", "completion": "0"},
      "supported_parameters": []},
-    {"id": "stability/sdxl", "name": "Stability: SDXL (image)",
+    # ⚠ THE TIED PAIR. Every other fixture model has a distinct price, so a
+    # sort with NO tiebreak would still come out deterministic and the
+    # totality check below would be vacuous — measured: it passed against a
+    # mutant with the tiebreak deleted. Two models at $0/$0 are what make a
+    # tie exist to be broken.
+    {"id": "someone/llama-4-scout:free", "created": 1725000000, "name": "Someone: Llama 4 Scout (free)",
+     "context_length": 128000,
+     "pricing": {"prompt": "0", "completion": "0"},
+     "supported_parameters": []},
+    {"id": "stability/sdxl", "created": 1710000000, "name": "Stability: SDXL (image)",
      "architecture": {"output_modalities": ["image"]},
      "pricing": {"prompt": "0.00001", "completion": "0"}},
-    {"id": "nobody/unpriced", "name": "Nobody: unpriced"},
-    {"id": "anthropic/claude-fable-5.1", "name": "Anthropic: Claude Fable 5.1",
+    {"id": "nobody/unpriced", "created": 1710000000, "name": "Nobody: unpriced"},
+    # ⚠ THE ONE MODEL WHOSE INPUT AND OUTPUT RANKS DISAGREE. Every other
+    # fixture model prices output at a fixed multiple of input, so an
+    # input-price sort and an output-price sort would produce the IDENTICAL
+    # order and a test could not tell them apart — it would pass with the two
+    # sorts wired to the same field. Cheap in, dear out breaks that.
+    {"id": "cheapo/verbose-1", "created": 1730000000, "name": "Cheapo: Verbose 1",
+     "context_length": 32768,
+     "pricing": {"prompt": "0.0000005", "completion": "0.00004"},
+     "supported_parameters": ["tools"]},
+    {"id": "anthropic/claude-fable-5.1", "created": 1770000000, "name": "Anthropic: Claude Fable 5.1",
      "context_length": 1000000,
      "pricing": {"prompt": "0.00001", "completion": "0.00005",
                  "input_cache_read": "0.00000025"},
@@ -170,7 +188,7 @@ def main():
           lambda: (eq("anthropic/claude-sonnet-5:batch" in ids, False, "batch"),
                    eq("stability/sdxl" in ids, False, "image"),
                    eq("nobody/unpriced" in ids, False, "unpriced"),
-                   eq(len(cards), 6, "kept")))
+                   eq(len(cards), 8, "kept")))
     sonnet = next(c for c in cards if c["id"] == "anthropic/claude-sonnet-5")
     check("prices are $ per MILLION tokens (catalog publishes per token)",
           lambda: (eq(sonnet["prompt"], 2.0, "prompt"),
@@ -443,7 +461,7 @@ def main():
                       "anthropic/claude-fable-5.1", "all terms"),
                    eq(orr.search("", limit=99)["limit"], 10, "clamp hi"),
                    eq(orr.search("", limit=1)["limit"], 5, "clamp lo"),
-                   eq(len(orr.search("", offset=5)["items"]), 1, "offset")))
+                   eq(len(orr.search("", offset=5)["items"]), 3, "offset")))
     check("remove_favorite drops the hire offer (True), twice is False",
           lambda: (eq(orr.remove_favorite("deepseek/deepseek-v4"), True, "first"),
                    eq(orr.remove_favorite("deepseek/deepseek-v4"), False, "again"),
@@ -613,6 +631,151 @@ def main():
     check("a DESELECTED tier is repriced too, from the on-disk catalog",
           deselected_still_priced)
 
+    print("§4c the picker's sorts and provider grouping")
+    # user spec 2026-09-04: "sorting options (recency of release, input price,
+    # output price), and a simple additional checkbox for 'group by provider'
+    # that's perpendicular to that dropdown". Server-side by necessity: the
+    # page is 8 rows of 426, so a client sort would reorder a page.
+    ids = lambda **kw: [i["id"] for i in orr.search("", limit=10, **kw)["items"]]
+    prices = lambda sort, **kw: [i["prompt" if sort == "input" else "completion"]
+                                 for i in orr.search("", limit=10, sort=sort,
+                                                     **kw)["items"]]
+    check("the default is unchanged — no sort argument means the old ranking",
+          lambda: (eq(orr.search("")["sort"], "relevance", "sort"),
+                   eq(ids(), ids(sort="relevance"), "same rows, same order")))
+    check("sort by INPUT price, cheap first, and reversed",
+          lambda: (eq(ids(sort="input"),
+                      ["someone/llama-4-maverick:free", "someone/llama-4-scout:free",
+                       "deepseek/deepseek-v4", "cheapo/verbose-1",
+                       "anthropic/claude-sonnet-5",
+                       "moonshotai/kimi-k3", "openai/gpt-5.6-sol",
+                       "anthropic/claude-fable-5.1"], "asc"),
+                   eq(prices(sort="input", order="desc"),
+                      sorted(prices(sort="input"), reverse=True), "desc")))
+    # ⚠ `desc` REVERSES THE PRICE, NOT THE WHOLE LIST. The id tiebreak stays
+    # ascending in both directions, so the two $0/$0 models keep their
+    # alphabetical order when the price direction flips — a secondary sort
+    # that inverted with the primary would make the cheap end of the list
+    # reshuffle for no reason the user asked for. Both orders are still
+    # total, which is the property paging actually needs.
+    check("…and reversing the price does NOT reverse the tiebreak",
+          lambda: (eq(ids(sort="input")[:2],
+                      ["someone/llama-4-maverick:free", "someone/llama-4-scout:free"],
+                      "id-ascending at the cheap end"),
+                   eq(ids(sort="input", order="desc")[-2:],
+                      ["someone/llama-4-maverick:free", "someone/llama-4-scout:free"],
+                      "…and still id-ascending when the price flips")))
+    # ⚠ THE CHECK THAT CATCHES BOTH SORTS BEING WIRED TO ONE FIELD. Every
+    # other fixture model prices output at a fixed multiple of input, so these
+    # two orders would be identical but for `cheapo/verbose-1` ($0.50 in,
+    # $40 out) — cheap on input, near the top; dear on output, near the bottom.
+    check("sort by OUTPUT price is a DIFFERENT order, not the input sort again",
+          lambda: (eq(ids(sort="output"),
+                      ["someone/llama-4-maverick:free", "someone/llama-4-scout:free",
+                       "deepseek/deepseek-v4",
+                       "anthropic/claude-sonnet-5", "moonshotai/kimi-k3",
+                       "openai/gpt-5.6-sol", "cheapo/verbose-1",
+                       "anthropic/claude-fable-5.1"], "asc"),
+                   ne(ids(sort="output"), ids(sort="input"),
+                      "the two price sorts genuinely disagree")))
+    check("sort by RECENCY reads the catalog's `created` stamp, newest first "
+          "by default, oldest first reversed",
+          lambda: (eq(ids(sort="recency")[0], "moonshotai/kimi-k3", "newest"),
+                   eq(ids(sort="recency")[-1], "deepseek/deepseek-v4", "oldest"),
+                   eq(ids(sort="recency", order="asc"),
+                      list(reversed(ids(sort="recency"))), "asc mirrors desc")))
+    # …and recency is NOT the catalog's arrival order wearing a costume: the
+    # fixture is deliberately stamped so the two disagree. On the LIVE catalog
+    # they happen to coincide (measured: 0 inversions in 425 pairs), which is
+    # exactly the coincidence that would hide a bug here.
+    check("recency sorts on the DATE, not on catalog arrival order",
+          lambda: ne(ids(sort="recency"), ids(sort="relevance"),
+                     "the fixture's date order differs from its arrival order"))
+    check("each sort picks its own useful direction when none is given",
+          lambda: (eq(orr.search("", sort="input")["order"], "asc", "cheapest"),
+                   eq(orr.search("", sort="output")["order"], "asc", "cheapest"),
+                   eq(orr.search("", sort="recency")["order"], "desc", "newest"),
+                   eq(orr.search("", sort="relevance")["order"], "asc",
+                      "relevance has no direction to offer")))
+    check("an unknown sort or order falls back instead of erroring — an "
+          "ordering preference is not worth failing a catalog read over",
+          lambda: (eq(orr.search("", sort="bogus")["sort"], "relevance", "sort"),
+                   eq(orr.search("", sort="input", order="sideways")["order"],
+                      "asc", "order")))
+    # ⚠ TOTALITY. A tie under a paged sort is how a row appears on two pages
+    # while another appears on none. Both free-ish models below sit at the
+    # same $0 output price; the id tiebreak is what keeps the order total.
+    def total_order():
+        page = orr.search("", limit=10, sort="output")
+        seen = [i["id"] for i in page["items"]]
+        eq(len(seen), len(set(seen)), "no duplicate row")
+        eq(len(seen), page["total"], "every model placed exactly once")
+        # paging the same sort must partition the list, never overlap it
+        a = [i["id"] for i in orr.search("", offset=0, limit=5, sort="output")["items"]]
+        b = [i["id"] for i in orr.search("", offset=5, limit=5, sort="output")["items"]]
+        eq(set(a) & set(b), set(), "pages do not overlap")
+        eq(a + b, seen, "and together they are the whole sorted list")
+    check("a sorted list is TOTALLY ordered — pages partition it, never "
+          "overlap or drop a row", total_order)
+
+    def tie_is_broken():
+        # ⚠ THIS IS THE CHECK THAT COST A MUTANT TO GET RIGHT. The version
+        # above passes with the id tiebreak DELETED, because `sorted` is
+        # stable and one process sees one catalog order — so it proves
+        # nothing about ties. What actually threatens a paged sort is the
+        # catalog ARRIVING in a different order between two page requests
+        # (a refresh, a failover to the disk copy): tied rows then shuffle,
+        # and a row lands on two pages while another lands on none.
+        before = [i["id"] for i in orr.search("", limit=10, sort="output")["items"]]
+        CATALOG["data"].reverse()
+        try:
+            orr.refresh_catalog()
+            after = [i["id"] for i in orr.search("", limit=10, sort="output")["items"]]
+        finally:
+            CATALOG["data"].reverse()
+            orr.refresh_catalog()
+        eq(after, before, "the sorted order does not depend on arrival order")
+        eq(before.index("someone/llama-4-maverick:free")
+           < before.index("someone/llama-4-scout:free"), True,
+           "the $0/$0 pair is ordered by id, the same way every time")
+    check("…and a TIE is broken by id, so the order survives the catalog "
+          "arriving in a different order between two pages", tie_is_broken)
+    check("an explicit sort reports that it DISPLACED relevance ranking, but "
+          "only when there was a query to rank",
+          lambda: (eq(orr.search("claude", sort="input")["relevance_displaced"],
+                      True, "sorted with a query"),
+                   eq(orr.search("claude")["relevance_displaced"], False,
+                      "relevance itself displaces nothing"),
+                   eq(orr.search("", sort="input")["relevance_displaced"], False,
+                      "an empty box has no relevance to lose")))
+
+    def grouping():
+        # perpendicular: vendor becomes the PRIMARY key, the chosen sort stays
+        # the secondary one — it re-groups the same ordering, never replaces it
+        got = ids(sort="input", group_by_vendor=True)
+        vendors = [i.split("/")[0] for i in got]
+        eq(vendors, sorted(vendors, key=vendors.index), "each vendor is contiguous")
+        # anthropic's two models keep the INPUT order inside the group
+        anth = [i for i in got if i.startswith("anthropic/")]
+        eq(anth, ["anthropic/claude-sonnet-5", "anthropic/claude-fable-5.1"],
+           "sonnet $2 before fable $10 — the sort survives inside the group")
+        # groups march in the sort's own direction: the vendor holding the
+        # cheapest model leads, not the alphabetically first one
+        eq(vendors[0], "someone", "cheapest model's vendor leads, not 'anthropic'")
+        eq(ids(sort="input", group_by_vendor=True) != ids(sort="input"), True,
+           "grouping actually changed the order")
+    check("group by provider is PERPENDICULAR to the sort: vendors contiguous, "
+          "chosen sort preserved within each, groups ordered by the sort",
+          grouping)
+    check("grouped paging reports the previous page's vendor so a split "
+          "heading can say 'continued'",
+          lambda: (eq(orr.search("", offset=0, limit=5,
+                                 group_by_vendor=True)["prev_vendor"], None,
+                      "first page has nothing before it"),
+                   ne(orr.search("", offset=5, limit=5,
+                                 group_by_vendor=True)["prev_vendor"], None,
+                      "a later page names the row above it")))
+
     print("§5 cost fold and tier infos")
     check("cost() prices non-cached input, cached reads and output separately",
           lambda: eq(orr.cost("anthropic/claude-sonnet-5", 1_000_000, 1_000_000, 100_000),
@@ -686,6 +849,19 @@ def main():
     check("GET /api/openrouter/models pages the catalog for the picker",
           lambda: (eq(page["total"], 2, "two claudes"), eq(page["limit"], 5, "limit"),
                    eq(page["items"][0]["selected"], False, "unselected")))
+    # ⚠ the ordering controls have to survive the WIRE, not just the function:
+    # a query param that never reaches `search` leaves the picker with a
+    # dropdown that does nothing, and every unit check above would still pass.
+    srt = client.get("/api/openrouter/models",
+                     params={"q": "", "limit": 10, "sort": "input",
+                             "order": "desc", "group_by_vendor": "true"}).json()
+    check("…and the sort / order / group query params reach it over HTTP",
+          lambda: (eq(srt["sort"], "input", "sort"), eq(srt["order"], "desc", "order"),
+                   eq(srt["group_by_vendor"], True, "grouped"),
+                   eq(srt["items"][0]["id"], "anthropic/claude-fable-5.1",
+                      "dearest input first, and its vendor leads the groups"),
+                   eq("created" in srt["items"][0], True,
+                      "the recency field is on the wire for the row to show")))
     r2 = client.put("/api/openrouter/favorites",
                     json={"id": "anthropic/claude-sonnet-5", "selected": True}).json()
     TIER = "or-anthropic-claude-sonnet-5"

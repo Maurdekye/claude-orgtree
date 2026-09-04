@@ -7,7 +7,7 @@ import type {
   DiskDeleteResult, DiskDirPayload, DiskPayload, EventsPayload, FsPayload,
   HireDefaultsRequest, HistoryPayload, HostPayload,
   InboxPayload, KioskCfgRequest, KioskSaveResult, KioskSpecRequest,
-  McpServersPayload, OpenRouterDoc, OpenRouterModelsPage,
+  McpServersPayload, OpenRouterDoc, OpenRouterModelsPage, OpenRouterSort,
   OpRequest, OpResult, OrgListEntry, OrgMdPayload,
   OrgInboxEntry, OrgNetReveal, ProvidersPayload, ReorderRequest,
   RuntimeSettingsPayload,
@@ -309,9 +309,11 @@ export const clearOpenRouterKey = (): Promise<OpenRouterDoc> =>
   req('/api/openrouter/key', { method: 'DELETE' })
 export const searchOpenRouterModels = (
   q: string, offset = 0, limit = 8,
+  sort: OpenRouterSort = 'relevance', order = '', groupByVendor = false,
 ): Promise<OpenRouterModelsPage> =>
   req(`/api/openrouter/models?q=${encodeURIComponent(q)}`
-    + `&offset=${offset}&limit=${limit}`)
+    + `&offset=${offset}&limit=${limit}&sort=${sort}`
+    + `&order=${order}&group_by_vendor=${groupByVendor}`)
 export const setOpenRouterFavorite = (
   id: string, selected: boolean,
 ): Promise<OpenRouterDoc> =>

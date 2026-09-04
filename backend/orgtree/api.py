@@ -2834,15 +2834,23 @@ async def openrouter_clear_key() -> dict[str, Any]:
 
 
 @app.get("/api/openrouter/models")
-async def openrouter_models(q: str = "", offset: int = 0,
-                            limit: int = 8) -> dict[str, Any]:
+async def openrouter_models(q: str = "", offset: int = 0, limit: int = 8,
+                            sort: str = "relevance", order: str = "",
+                            group_by_vendor: bool = False) -> dict[str, Any]:
     """The picker's page over the catalog (5–10 rows, user spec). A cold
     catalog costs one GET to openrouter.ai, which is why this is
-    threadpooled; a dead network with a stale disk copy still answers."""
+    threadpooled; a dead network with a stale disk copy still answers.
+
+    `sort`/`order`/`group_by_vendor` are the picker's ordering controls (user
+    spec 2026-09-04) and are applied SERVER-SIDE because the page is 8 rows
+    out of 426 — a client-side sort would reorder one page and be wrong. An
+    unknown sort falls back to relevance rather than erroring: an ordering
+    preference is not worth failing a catalog read over."""
     from . import openrouter                    # noqa: PLC0415
     from fastapi.concurrency import run_in_threadpool
     try:
-        return await run_in_threadpool(openrouter.search, q, offset, limit)
+        return await run_in_threadpool(openrouter.search, q, offset, limit,
+                                       sort, order, group_by_vendor)
     except openrouter.OpenRouterError as e:
         raise HTTPException(502, str(e)) from e
 
