@@ -14,7 +14,7 @@ import {
   LockIcon, MailIcon, RetireIcon, SettingsIcon,
 } from '../icons'
 import {
-  anyTierSeat, codexTierOffer, CODEX_TIER_LETTER, CODEX_TIER_SEAT, CODEX_TIERS, DESK_SCALE, deskDpi, DRAFT, familyOffer, fmtCredits, freezeKind, FREEZE_LABEL_SHORT, ANTIGRAVITY_TIER_LETTER, ANTIGRAVITY_TIER_SEAT, ANTIGRAVITY_TIERS, isOpenRouterTier, NODE_H, NODE_W, openrouterTierIds, providerOf, queuedSwitchTitle, TIER_LETTER, TIER_SEAT, tierLabel, TIERS, USER,
+  anyTierSeat, codexTierOffer, CODEX_TIER_LETTER, CODEX_TIER_SEAT, CODEX_TIERS, DESK_SCALE, deskDpi, DRAFT, familyOffer, fmtCredits, formatCount, freezeKind, FREEZE_LABEL_SHORT, ANTIGRAVITY_TIER_LETTER, ANTIGRAVITY_TIER_SEAT, ANTIGRAVITY_TIERS, isOpenRouterTier, NODE_H, NODE_W, openrouterTierIds, providerOf, queuedSwitchTitle, TIER_LETTER, TIER_SEAT, tierLabel, TIERS, unicodeLength, USER,
   USER_H, USER_W,
 } from './shared'
 import type {
@@ -950,7 +950,7 @@ export function DraftNode({ pos, draft, map, seats, maxTop, defaultTop, kioskRem
   // bound anyway. `long` = this charter will ride in the agent's prompt every
   // turn; purely informational, it never blocks the hire.
   const cut = chosen.filter((c) => c.truncated)
-  const composed = finalCharter().length
+  const composed = unicodeLength(finalCharter())
   const long = charterLong != null && composed > charterLong
   // top-level drafts pre-fill the org's default grant (50 unless configured),
   // clamped only by a kiosk's remaining headroom
@@ -1057,9 +1057,17 @@ export function DraftNode({ pos, draft, map, seats, maxTop, defaultTop, kioskRem
           </div>
           {cut.length > 0 && (
             <div className="df-charter-warn" role="alert">
-              ⚠ {cut.map((c) => `${c.name} (${c.chars} chars)`).join(', ')}
-              {cut.length > 1 ? ' were' : ' was'} CUT SHORT by the server —
-              the hire gets only the first part. Shorten the preset file.
+              ⚠ {cut.map((c) => {
+                const supplied = unicodeLength(c.content)
+                if (c.chars == null) {
+                  return `${c.name}: using ${formatCount(supplied)} characters supplied; original length unavailable, so omitted amount is unknown`
+                }
+                const original = c.chars
+                const omitted = Math.max(0, original - supplied)
+                const originalUnit = original === 1 ? 'character' : 'characters'
+                const omittedUnit = omitted === 1 ? 'character' : 'characters'
+                return `${c.name}: using ${formatCount(supplied)} of ${formatCount(original)} ${originalUnit}; ${formatCount(omitted)} ${omittedUnit} omitted`
+              }).join(' · ')}. The hire gets only the first part. Shorten the preset file.
             </div>
           )}
           {long && (

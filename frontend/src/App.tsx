@@ -24,7 +24,7 @@ import {
 } from './icons'
 import { DirList } from './forms'
 import { FolderPickerHost } from './picker'
-import { activeDocCount, ALL_TIERS, attentionPip, availableAutopsyModels, deskDpi, fallbackActive, freezeKind, isOpenRouterTier, orgPxc, presenceOfPayload, primedRestartChip, setDeskDpi, TIER_LETTER, tierLabel, usePolled } from './canvas/shared'
+import { activeDocCount, ALL_TIERS, attentionPip, availableAutopsyModels, deskDpi, fallbackActive, formatCount, freezeKind, isOpenRouterTier, orgPxc, presenceOfPayload, primedRestartChip, setDeskDpi, TIER_LETTER, tierLabel, unicodeLength, usePolled } from './canvas/shared'
 import { AskCard } from './canvas/asks'
 import { AccountsPanel, UsageBars } from './canvas/accounts'
 import { DocGalleryModal } from './canvas/gallery'
@@ -1612,7 +1612,7 @@ function AutonomyTab({ tree, toast, keyDraft, setKeyDraft }: {
           it opens no lane of its own, so it only makes sense once the
           fallback itself is on. */}
       {tree.api_fallback && <label className="checkline"
-        title="by default a weekly Fable-tier limit is excluded from the fallback above and goes to the fable weekly-limit policy (general tab) instead; this extends the same key-billing window to cover it too">
+        title="by default a weekly Fable-tier limit is excluded from the fallback above and goes to the fable weekly-limit policy (Policies tab) instead; this extends the same key-billing window to cover it too">
         <input type="checkbox" checked={!!tree.fable_api_fallback}
           onChange={(e) => save({ fable_api_fallback: e.target.checked },
             e.target.checked
@@ -2380,12 +2380,13 @@ export function SettingsPanel({ tree, toast, close }: {
               </div>
             )}
             {orgMd != null && orgMdMeta?.prompt_max != null
-              && orgMd.length > orgMdMeta.prompt_max && (
+              && unicodeLength(orgMd) > orgMdMeta.prompt_max && (
               <div className="orgmd-warn" role="alert">
-                ⚠ {orgMd.length} chars — only the first {orgMdMeta.prompt_max}
-                {' '}reach an agent. The last {orgMd.length - orgMdMeta.prompt_max}
-                {' '}chars are delivered to NO agent on any provider. The file
-                saves whole; the delivery is what is cut.
+                ⚠ {formatCount(unicodeLength(orgMd))} characters — only the first {formatCount(orgMdMeta.prompt_max)}
+                {' '}characters reach an agent. The last {formatCount(unicodeLength(orgMd) - orgMdMeta.prompt_max)}
+                {' '}{unicodeLength(orgMd) - orgMdMeta.prompt_max === 1 ? 'character is' : 'characters are'}
+                {' '}delivered to NO agent on any provider. The file saves whole;
+                {' '}the delivery is what is cut.
               </div>
             )}
           </SetBlock>

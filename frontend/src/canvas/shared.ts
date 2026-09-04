@@ -76,6 +76,12 @@ export const ANTIGRAVITY_TIER_SEAT: Record<string, number> = { flash: 1, pro: 2 
 /** Provider-neutral surfaces (for example the live-agent summary) use this;
  * provider-specific controls keep using their family list. */
 export const ALL_TIERS = [...TIERS, ...CODEX_TIERS, ...ANTIGRAVITY_TIERS]
+
+/** Match the backend's Python len(str) character count for user-facing
+ * notices. JavaScript String.length counts UTF-16 code units, so it reports
+ * two for a non-BMP character while the API reports one. */
+export const unicodeLength = (text: string): number => Array.from(text).length
+export const formatCount = (count: number): string => count.toLocaleString('en-US')
 /** Every STATIC tier's seat in one table — the merge of the three family
  *  tables above, and the frontend's whole answer for "what does a seat cost"
  *  when the payload does not say.
