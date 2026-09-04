@@ -4,7 +4,7 @@
 // checklist, and the retired/crowd pile picker. Extracted verbatim from
 // Canvas.tsx in the phase-3 split.
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import type {
@@ -36,22 +36,96 @@ export interface ConfirmModalProps {
   onAlt?: () => void
 }
 
+// The controls a keyboard can reach inside a dialog box, in document order,
+// as they stand RIGHT NOW — asked at every keypress, never cached, so a button
+// disabled mid-dialog drops out and one a re-render adds joins in. Attribute
+// checks only: the box has no layout-hidden controls, and whether the browser
+// really focuses each one is what `confirmfocus_probe.py` measures.
+function tabbablesIn(root: HTMLElement): HTMLElement[] {
+  return Array.from(root.querySelectorAll<HTMLElement>(
+    'button, [href], input, select, textarea, [tabindex]'))
+    .filter((el) => el.tabIndex >= 0 && !el.hasAttribute('disabled')
+      && !el.closest('[hidden]'))
+}
+
 // in-page confirmation (user ruling: never a native OS dialog)
+//
+// Keyboard access (incremental-UX item 6, 2026-09-04): before this, opening
+// the popup left focus on the button that opened it, the next Tab went to a
+// background control, and nothing announced a dialog. Now the box is a
+// role=dialog named by its title, focus moves INTO it on open, Tab and
+// Shift+Tab cycle inside it, and closing hands focus back to the opener when
+// that still makes sense. Same popup, same buttons, same Escape, same
+// confirmation policy.
+//
+// Initial focus is CANCEL, not confirm: every caller's confirm is
+// destructive (delete, retire, dissolve, rescind, dissolve-all, cross-provider
+// reset, compaction), so Enter must not fire it by accident.
 export function ConfirmModal({ title, body, confirmLabel, onConfirm, close,
   altLabel, onAlt }: ConfirmModalProps) {
   useEsc(close)
+  const boxRef = useRef<HTMLDivElement>(null)
+  const cancelRef = useRef<HTMLButtonElement>(null)
+  const titleId = useId()
+  const bodyId = useId()
+  useEffect(() => {
+    const box = boxRef.current
+    if (!box) return
+    // whoever had focus when we opened is the opener — remembered by
+    // identity, so a re-render that replaces it is a stale opener, not a
+    // focus target
+    const opener = document.activeElement instanceof HTMLElement
+      ? document.activeElement : null
+    ;(cancelRef.current ?? box).focus()
+    if (!box.contains(document.activeElement)) box.focus()
+    // Tab containment lives on the DOCUMENT rather than the box so that a
+    // Tab pressed while focus is on <body> (the opener was removed, or a
+    // control the focus sat on vanished) still lands in the dialog instead
+    // of walking the page behind it. Registered and removed together with the
+    // dialog's own lifetime — the removal below is what keeps a closed dialog
+    // from trapping the page.
+    const onTab = (e: KeyboardEvent) => {
+      if (e.key !== 'Tab' || e.defaultPrevented) return
+      const items = tabbablesIn(box)
+      const i = items.indexOf(document.activeElement as HTMLElement)
+      e.preventDefault()
+      if (!items.length) { box.focus(); return }
+      const step = e.shiftKey ? -1 : 1
+      const next = i < 0
+        ? (e.shiftKey ? items[items.length - 1] : items[0])
+        : items[(i + step + items.length) % items.length]
+      next?.focus()
+    }
+    document.addEventListener('keydown', onTab)
+    return () => {
+      document.removeEventListener('keydown', onTab)
+      // Return focus to the opener only when nothing else claimed it: the
+      // confirmed action may have moved focus itself (a hire walks you to
+      // the new desk's composer), and that choice wins. An opener that is
+      // gone (its card was deleted, its panel closed with us) is not
+      // focused — that would throw focus at a detached node.
+      const active = document.activeElement
+      const focusLeft = active && active !== document.body && !box.contains(active)
+      if (!focusLeft && opener && opener.isConnected
+        && opener !== document.body) opener.focus()
+    }
+  }, [])
   return (
     <div className="overlay" onClick={close} onPointerDown={(e) => e.stopPropagation()}>
-      <div className="settings confirm-box" onClick={(e) => e.stopPropagation()}>
-        <h3>{title}</h3>
-        {body && <div className="confirm-body">{body}</div>}
+      <div className="settings confirm-box" ref={boxRef} tabIndex={-1}
+        role="dialog" aria-modal="true"
+        aria-labelledby={titleId}
+        aria-describedby={body ? bodyId : undefined}
+        onClick={(e) => e.stopPropagation()}>
+        <h3 id={titleId}>{title}</h3>
+        {body && <div className="confirm-body" id={bodyId}>{body}</div>}
         <div className="row">
           <button className="danger solid"
             onClick={() => { close(); onConfirm() }}>{confirmLabel}</button>
           {altLabel && onAlt &&
             <button className="danger"
               onClick={() => { close(); onAlt() }}>{altLabel}</button>}
-          <button onClick={close}>cancel</button>
+          <button ref={cancelRef} onClick={close}>cancel</button>
         </div>
       </div>
     </div>
