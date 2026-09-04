@@ -4480,6 +4480,29 @@ def _norm_args(a: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def _arg_opt_int(a: dict[str, Any], key: str) -> int | None:
+    """An OPTIONAL integer off the same free-form wire: None when the caller
+    did not ask for it at all.
+
+    ⚠ Deliberately not `_arg_int(a, key, 0)`. FR-32's `deadline_minutes` has
+    to distinguish "absent" from every number, because absent is what keeps
+    an armed prime behaving exactly as it did before deadlines existed. A
+    zero default collapses that distinction, and the collapse is silent —
+    every prime would carry a deadline of some sort and the only question
+    would be whether the code downstream happened to treat 0 as falsy. A
+    non-numeric value is REFUSED rather than read as absent: an LLM that
+    wrote "thirty" meant to set a deadline, and quietly arming a prime
+    without one would be the wrong half of its intent."""
+    v = a.get(key)
+    if v is None or (isinstance(v, str) and not v.strip()):
+        return None
+    try:
+        return int(str(v).strip())
+    except (TypeError, ValueError, OverflowError):
+        raise LedgerError(
+            f"{key} must be a whole number of minutes (got {v!r})") from None
+
+
 def _arg_int(a: dict[str, Any], key: str, default: int) -> int:
     """`args` is a free-form dict off the wire — an LLM fills it, so a string
     or a float lands there routinely. A bare `int(a.get(k) or d)` turned
@@ -5279,6 +5302,15 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
                             f"{pr.get('by_node')} (target="
                             f"{pr.get('target')!r}, armed {pr.get('at')}) — "
                             "it fires when this machine goes quiet"
+                            # FR-32: a deadline you cannot SEE is a forced
+                            # deploy nobody knows is scheduled
+                            + (f", and if it has not by {pr.get('deadline')} "
+                               f"({pr.get('deadline_minutes')} min from "
+                               f"arming) it ESCALATES — stopping whoever is "
+                               f"working and deploying anyway"
+                               if pr.get("deadline_ts") else
+                               " — no deadline, so it waits however long "
+                               "that takes")
                             if pr else
                             "no restart is primed on this machine")}
                 elif act == "cancel":
@@ -5286,11 +5318,17 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
                     result = supervisor.cancel_prime_restart(
                         body.org, body.node)
                 else:
-                    org.prime_restart_gate(body.node, "arm")
+                    _tgt = str(a.get("target") or "org")
+                    # FR-32: absent stays absent all the way down — a missing
+                    # deadline must reach `arm_prime_restart` as None, not as
+                    # a 0 that some later `or` turns into a default.
+                    _dl = _arg_opt_int(a, "deadline_minutes")
+                    org.prime_restart_gate(body.node, "arm", target=_tgt,
+                                           reason=a.get("reason"),
+                                           deadline_minutes=_dl)
                     result = supervisor.arm_prime_restart(
-                        body.org, body.node,
-                        str(a.get("target") or "org"),
-                        a.get("reason"))
+                        body.org, body.node, _tgt, a.get("reason"),
+                        deadline_minutes=_dl)
             elif body.tool == "orgtree_restart_wake":
                 act = str(a.get("action") or "arm")
                 if act not in ("arm", "cancel", "status"):

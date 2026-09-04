@@ -17015,9 +17015,20 @@ def _force_hold_settle(token: int | None, *, release: bool,
 
 def force_quiesce_for_restart(
         exclude: tuple[str, str] | None = None,
-        timeout: float = FORCE_QUIESCE_TIMEOUT_S) -> dict[str, Any]:
+        timeout: float = FORCE_QUIESCE_TIMEOUT_S,
+        why: str = "") -> dict[str, Any]:
     """Stop every working agent on this machine and WAIT for their turns to
     settle, so the forced deploy that follows cuts nothing mid-write.
+
+    ⚠ ONE BODY, TWO CALLERS, AND THAT IS DELIBERATE (FR-32 constraint 1). An
+    agent's `force=true` and a primed restart's expired deadline arrive here
+    by different roads and must mean exactly the same thing by the time they
+    deploy. A second implementation of "safe to cut" is two things that agree
+    the day they are written and nothing keeping them agreed afterwards.
+    `why` is how the two roads stay distinguishable in the RECORD without
+    being distinguishable in the BEHAVIOUR: it is the one-line account that
+    reaches the machine-wide log, so a reader a week later can tell a
+    deadline escalation from an agent's deliberate force.
 
     ⚠ MUST be called with `store.DOC_LOCK` NOT held by this thread — the same
     constraint, for the same reason, as `interrupt_before_archive`: the
@@ -17080,7 +17091,8 @@ def force_quiesce_for_restart(
               flush=True)
         return {"ok": True, "hold_token": token, "cut": cut,
                 "interrupted": sorted(interrupted),
-                "not_settled": sorted(not_settled)}
+                "not_settled": sorted(not_settled),
+                **({"why_forced": why[:200]} if why else {})}
     except BaseException:
         # a quiesce that raised owns a hold nobody else will ever release
         _force_hold_settle(token, release=True, why="the quiesce failed")
@@ -17202,9 +17214,10 @@ def launch_self_restart(
             # outlives the process and is what says afterwards who paid.
             cut = cast("list[str]", quiesced.get("cut") or [])
             ns = cast("list[str]", quiesced.get("not_settled") or [])
-            lf.write(f"== FORCED: {len(cut)} agent(s) were mid-turn and were "
-                     f"stopped for this deploy: {', '.join(cut) or 'none'}\n"
-                     .encode())
+            whyf = str(quiesced.get("why_forced") or "no reason recorded")
+            lf.write(f"== FORCED ({whyf}): {len(cut)} agent(s) were mid-turn "
+                     f"and were stopped for this deploy: "
+                     f"{', '.join(cut) or 'none'}\n".encode())
             if ns:
                 lf.write(f"== ⚠ NOT SETTLED within "
                          f"{FORCE_QUIESCE_TIMEOUT_S:g}s (their turns may be "
@@ -17400,6 +17413,54 @@ _prime_started = False
 PRIME_QUIET_S: Final = 20.0
 PRIME_POLL_S: Final = 5.0
 
+# ── FR-32 · THE PRIME DEADLINE ────────────────────────────────────────────
+# Coordinator decision 2026-09-04, on evidence from that day: a primed restart
+# sat unfired for over two hours while ten commits stacked behind it, and
+# before that a merged fix sat undeployed for a full day because the agent
+# holding the intent was compacted before it ever called.
+#
+# ⚠ WHY THIS AND NOT JUST `force`. Force needs a caller who is PRESENT at the
+# moment the wait becomes intolerable, and the whole reason FR-27 exists is
+# that such a caller reliably is not — its author gets compacted, retired, or
+# simply moves on. A deadline is the intent itself made durable: "deploy when
+# quiet, and if it is not quiet in N minutes, force". It survives the arming
+# agent's compaction. Force cannot.
+#
+# ⚠ THE ESCALATION IS NOT A SECOND SAFETY MODEL. It calls exactly the same
+# `force_quiesce_for_restart` an agent's force does — stop everyone, wait for
+# the turn boundaries, report who did not settle. Two paths that can disagree
+# about what "safe to deploy" means is the defect this whole feature spent a
+# shift removing.
+#
+# ⚠ AND IT MUST NEVER FIRE ON A QUIET MACHINE. That guarantee is STRUCTURAL
+# rather than a time comparison: the escalation lives inside `_prime_tick`'s
+# `if busy:` branch, so a machine that is idle has already taken the ordinary
+# path and cannot reach it. A deadline that forced when it did not need to
+# would be a permanent small tax on every prime that has one.
+
+#: the shortest deadline that means anything. Below this the ordinary
+#: quiet-path never gets a fair chance (it needs PRIME_QUIET_S of continuous
+#: idle plus a poll interval to notice), so a 1-minute deadline is not a
+#: deadline — it is `force` wearing a hat, and it would reach a forced deploy
+#: without force's own brakes. Refused at the gate rather than clamped: a
+#: caller who asked for one minute and silently got five has been lied to.
+PRIME_DEADLINE_MIN_MINUTES: Final = 5
+#: and the ceiling — past a day the record stops meaning "this could not
+#: wait", and it catches the caller who passed seconds
+PRIME_DEADLINE_MAX_MINUTES: Final = 1440
+
+
+def iso_from_ts(ts: float) -> str:
+    """A wall-clock stamp in `ledger.now()`'s format, for a future instant.
+
+    The deadline is stored as an absolute epoch (`deadline_ts`) because that
+    is what survives a bounce; this is the human-readable twin that goes
+    beside it, so a status line, a chip and a log entry all say the same
+    thing without anyone re-deriving it from the epoch and getting the
+    timezone wrong."""
+    d = _dtm.datetime.fromtimestamp(ts, _dtm.timezone.utc)
+    return d.strftime("%Y-%m-%dT%H:%M:%S.") + f"{d.microsecond // 1000:03d}Z"
+
 #: monotonic stamp of the first tick that saw the machine idle; 0.0 = the
 #: machine is not currently idle (or we have not looked yet). Reset to 0.0 at
 #: import, so a backend that comes up with a prime still armed serves a fresh
@@ -17469,7 +17530,8 @@ def primed_restart() -> dict[str, Any] | None:
 
 
 def arm_prime_restart(slug: str, nid: str, target: str,
-                      reason: str | None = None) -> dict[str, Any]:
+                      reason: str | None = None,
+                      deadline_minutes: int | None = None) -> dict[str, Any]:
     """Arm the deferred restart. IDEMPOTENT (user ruling 2026-08-27): a second
     arm while one is already armed changes nothing.
 
@@ -17478,7 +17540,18 @@ def arm_prime_restart(slug: str, nid: str, target: str,
     one answer that cannot be distinguished from "I armed it just now" — so
     an already-armed call says so, names who armed it and when, and reports
     the target that is actually going to run (which may not be the one asked
-    for). Idempotent, not mute."""
+    for). Idempotent, not mute. FR-32 extends that: the DEADLINE is reported
+    the same way, because "I armed a deadline" and "someone else's
+    deadline-less prime is still the one that will fire" are exactly the two
+    states a caller must be able to tell apart.
+
+    `deadline_minutes` is ABSENT BY DEFAULT and absent means today's
+    behaviour, unchanged — waits for quiet, forever if that is what it takes.
+    Given one, the deadline is stored ABSOLUTE (`deadline_ts`) rather than as
+    a duration: a backend bounce must not restart the clock, or a machine
+    that reboots every few minutes would hold a deadline that never expires
+    and the feature would silently do nothing on exactly the box that needs
+    it most."""
     if not deployment.current_policy().allow_agent_restart:
         raise RuntimeError(
             "the frozen deployment profile disables agent-triggered primed "
@@ -17505,16 +17578,32 @@ def arm_prime_restart(slug: str, nid: str, target: str,
                     + (f" ({cur.get('reason')})" if cur.get("reason") else "")
                     + ". YOUR CALL CHANGED NOTHING (priming is idempotent) — "
                     "in particular the target is still "
-                    f"{cur.get('target')!r}, not {target!r} if those differ. "
-                    "It fires by itself the moment this machine goes quiet. "
-                    "Cancel it with action='cancel' if it is wrong.")}
-        rec = {"target": target, "by_org": slug, "by_node": nid,
-               "at": now_iso(), "at_ts": time.time(),
-               **({"reason": reason[:200]} if reason else {})}
+                    f"{cur.get('target')!r}, not {target!r} if those differ"
+                    + (f", and the DEADLINE in force is the existing one "
+                       f"({cur.get('deadline_minutes')} min, expires "
+                       f"{cur.get('deadline')})"
+                       if cur.get("deadline_ts") else
+                       ", and the existing prime has NO deadline — it waits "
+                       "for quiet however long that takes"
+                       if deadline_minutes else "")
+                    + ". It fires by itself the moment this machine goes "
+                    "quiet. Cancel it with action='cancel' if it is wrong.")}
+        rec: dict[str, Any] = {
+            "target": target, "by_org": slug, "by_node": nid,
+            "at": now_iso(), "at_ts": time.time(),
+            **({"reason": reason[:200]} if reason else {})}
+        if deadline_minutes:
+            dl = time.time() + deadline_minutes * 60.0
+            rec["deadline_minutes"] = int(deadline_minutes)
+            rec["deadline_ts"] = dl
+            rec["deadline"] = iso_from_ts(dl)
         d["armed"] = rec
         _prime_write(d)
     print(f"[orgtree] restart PRIMED by {slug}/{nid} target={target} — fires "
-          f"when the machine has been idle {PRIME_QUIET_S:.0f}s", flush=True)
+          f"when the machine has been idle {PRIME_QUIET_S:.0f}s"
+          + (f", or is FORCED at {rec['deadline']} "
+             f"({deadline_minutes} min)" if deadline_minutes else ""),
+          flush=True)
     return {"armed": True, "already_armed": False, "primed": rec,
             "status": (
                 f"restart PRIMED (target={target!r}). Nothing happens yet: it "
@@ -17523,7 +17612,14 @@ def arm_prime_restart(slug: str, nid: str, target: str,
                 f"{PRIME_QUIET_S:.0f}s. ⚠ THIS OUTLIVES YOU — your "
                 f"compaction, your retirement and a backend bounce all leave "
                 f"it armed, which is the point. Every org's header now shows "
-                f"a 'restart primed' chip. Cancel with action='cancel'.")}
+                f"a 'restart primed' chip. Cancel with action='cancel'."
+                + (f" ⚠ DEADLINE ARMED: if this machine has not gone quiet by "
+                   f"{rec['deadline']} ({deadline_minutes} min from now), the "
+                   f"restart ESCALATES — it stops whoever is working, waits "
+                   f"for their turns to settle, and deploys anyway. Those "
+                   f"agents are woken again on the new build, one turn each. "
+                   f"Nobody will be present to decide; you are deciding now."
+                   if deadline_minutes else ""))}
 
 
 def cancel_prime_restart(slug: str, nid: str) -> dict[str, Any]:
@@ -17614,15 +17710,126 @@ def _clear_prime_execution(execution_id: str, why: str) -> None:
         _prime_write(data)
 
 
-def _fire_prime(rec: dict[str, Any]) -> dict[str, Any]:
-    """Spend an armed prime: disarm it, then launch."""
+def _deadline_expired(rec: dict[str, Any]) -> bool:
+    """Has this prime's deadline passed? False when it has none — which is
+    the default, and is why a deadline-less prime behaves exactly as it did
+    before FR-32 existed."""
+    ts = rec.get("deadline_ts")
+    try:
+        return bool(ts) and time.time() >= float(cast("float", ts))
+    except (TypeError, ValueError):
+        # a corrupt deadline must not escalate. Reading it as "no deadline"
+        # degrades to the old behaviour, which is the safe direction.
+        return False
+
+
+def _wake_the_cut(cut: list[str], why: str) -> list[str]:
+    """FR-32 constraint 4: arm a one-shot restart wake on every agent the
+    escalation stopped, so the new build wakes them instead of leaving them
+    silently idle.
+
+    ⚠ THIS IS THE ONE THING AN ESCALATION MUST DO THAT A MANUAL FORCE MUST
+    NOT. A manual force has a CALLER — it reads the result, is told in that
+    result that the agents stall, and can go nudge them. An expired deadline
+    has nobody: the arming agent is expected to be compacted or retired by
+    then (surviving its author is the whole point of FR-27). So the deploy
+    that nobody watched has to leave the machine able to pick itself back up.
+
+    ⚠ AND IT WAKES THE AGENT ITSELF, NOT ITS MANAGER, which was the other
+    candidate. Two reasons. The manager was very probably cut too — the
+    quiesce stops EVERYONE — so a manager hop needs the manager's own wake to
+    land first, and nothing orders those. And the cut agent is the one
+    holding the interrupted context, so "should this work continue?" is a
+    judgement it is better placed to make than a manager reading a summary.
+
+    The cost is real and is stated on the tool card: one turn per cut agent
+    on the new build. It is smaller than the work stopping.
+
+    Best-effort per node — a deleted org or a since-retired node must never
+    stop the deploy that is already committed to happening."""
+    from . import restart_wake                                # noqa: PLC0415
+    armed: list[str] = []
+    for entry in cut:
+        slug, _, nid = entry.partition("/")
+        if not slug or not nid:
+            continue
+        try:
+            org = store.load_org(slug)
+            if nid not in org.nodes or org.node(nid)["state"] != "live":
+                continue
+            restart_wake.arm_restart_wake(slug, nid, "orgtree", reason=why)
+            armed.append(entry)
+        except Exception as e:                                # noqa: BLE001
+            print(f"[orgtree] could not arm a restart wake for {entry}: {e!r}",
+                  flush=True)
+    return armed
+
+
+def _fire_prime(rec: dict[str, Any],
+                escalate: bool = False) -> dict[str, Any]:
+    """Spend an armed prime: disarm it, then launch.
+
+    `escalate` is the FR-32 deadline path. It changes exactly one thing —
+    how the machine is claimed. The ordinary path REFUSES a busy machine
+    (`_claim_quiet_machine`); the escalation QUIESCES it, through the same
+    `force_quiesce_for_restart` an agent's `force=true` calls. Everything
+    after that point is identical, deliberately: one launch, one disarm
+    ordering, one record."""
     target = str(rec.get("target") or "org")
     hold = target in ("org", "both")
-    claim = _claim_quiet_machine(hold)
-    if claim is None:
-        return {"fired": False, "why": "a deploy is already in flight"}
-    if claim:
-        return {"fired": False, "why": "busy", "busy": claim}
+    quiesced: dict[str, Any] | None = None
+    woken: list[str] = []
+    mins = rec.get("deadline_minutes")
+    why_forced = (f"primed restart deadline expired ({mins} min) — armed by "
+                  f"{rec.get('by_org')}/{rec.get('by_node')}"
+                  + (f": {rec.get('reason')}" if rec.get("reason") else ""))
+    if escalate:
+        if hold:
+            quiesced = force_quiesce_for_restart(why=why_forced)
+            if not quiesced.get("ok"):
+                # nothing was cut — try again on a later tick
+                return {"fired": False, "why": str(quiesced.get("why") or "")}
+            # ⚠ BEFORE THE SPAWN. update.ps1 Stop-Processes this backend, so
+            # a wake armed after the launch may never be written at all.
+            woken = _wake_the_cut(
+                cast("list[str]", quiesced.get("cut") or []), why_forced)
+        # ⚠ target='mailhub' ESCALATES WITHOUT QUIESCING, and that is not an
+        # oversight. The hub leg rebuilds a container and no agent turn runs
+        # through it, so there is nothing to cut and cutting the machine for
+        # it would be pure damage (D-104 exempts it from the mid-turn
+        # refusal for the same reason). But it still has to escalate: the
+        # ordinary path routes even a mailhub prime through
+        # `_claim_quiet_machine`, which refuses a busy machine regardless of
+        # target — so a mailhub prime on a permanently busy box waits
+        # forever exactly like an org one. Skipping the quiesce but NOT the
+        # escalation is what stops `deadline_minutes` being a switch that
+        # reads fine, arms fine, and silently does nothing on this target.
+    else:
+        claim = _claim_quiet_machine(hold)
+        if claim is None:
+            return {"fired": False, "why": "a deploy is already in flight"}
+        if claim:
+            return {"fired": False, "why": "busy", "busy": claim}
+    # ⚠ THE HOLD HAS TWO OWNERS, AND THE `finally` BELOW IS CORRECT FOR BOTH
+    # — but only for a reason worth writing down, because the obvious "guard"
+    # against it is a variable that cannot ever change the answer.
+    #
+    # Ordinary path: `_claim_quiet_machine` cleared `_deploy_done` and only
+    # that `finally` hands it back. Escalation: the hold belongs to the FORCE
+    # token, and `launch_self_restart`'s own `finally` settles it by token —
+    # releasing it when the launch armed no window, and marking it ADOPTED
+    # when it did.
+    #
+    # So on the escalation the `finally` below can only ever run its `set()`
+    # when `adopted` is false, and `adopted` false means the launch already
+    # released the force hold — `_deploy_done` is set, and setting a set
+    # Event again is a no-op. The one case that WOULD be harmful (setting the
+    # event while a deploy child is live) requires `adopted` true, which
+    # skips it. A `hold and quiesced is None` variable here reads like it is
+    # preventing that; mutation testing 2026-09-05 showed it changes no
+    # observable behaviour on any path. It was removed rather than kept as a
+    # guard that cannot fail. Do not add it back without a check that dies
+    # without it.
     adopted = False
     execution_id = uuid.uuid4().hex
     children: list[Any] = []
@@ -17638,14 +17845,32 @@ def _fire_prime(rec: dict[str, Any]) -> dict[str, Any]:
         # answer is recorded in `last_fired` below and the chip disappears, so
         # "it didn't restart" is checkable. A nuisance you can see beats a
         # loop you cannot.
+        # ⚠ keyed on `escalate`, NOT on `quiesced is not None`. A mailhub
+        # escalation quiesces nobody, and keying on the quiesce would leave
+        # the one deploy that most needs explaining — an unattended one that
+        # fired past its deadline — recorded as an ordinary quiet fire.
+        esc: dict[str, Any] = {} if not escalate else {
+            # ⚠ FR-32 constraint 2, in the machine-wide record: a reader a
+            # week later must be able to tell a quiet deploy from a forced
+            # one WITHOUT inferring it from a cut list that happens to be
+            # non-empty. `escalated` says it in one field, and it rides both
+            # `executing` (so the live UI says so while it happens) and
+            # `last_fired` (so it survives).
+            "escalated": True, "why_forced": why_forced,
+            "cut": (quiesced or {}).get("cut") or [],
+            "not_settled": (quiesced or {}).get("not_settled") or [],
+            "woken": woken,
+        }
         with _prime_lock:
             d = _prime_read()
             d["armed"] = None
             d["executing"] = {
-                **dict(rec), "execution_id": execution_id,
+                **dict(rec), **esc, "execution_id": execution_id,
                 "triggered_at": now_iso(), "triggered_at_ts": time.time(),
             }
             _prime_write(d)
+        if escalate:
+            _log_escalation_to_org(rec, quiesced or {}, woken, why_forced)
         # ⚠ NOT RE-GATED HERE, deliberately. `prime_restart_gate` ran at ARM
         # time, when an authorized agent decided. Re-checking authority now
         # would mean a prime armed by an agent since retired — the single
@@ -17655,12 +17880,13 @@ def _fire_prime(rec: dict[str, Any]) -> dict[str, Any]:
         r = launch_self_restart(
             str(rec.get("by_org") or ""),
             str(rec.get("by_node") or ""), target,
+            force=quiesced is not None, quiesced=quiesced,
             child_started=children.append)
         adopted = bool(r.get("deploy_window"))
         with _prime_lock:
             d = _prime_read()
             d["last_fired"] = {"at": now_iso(), "at_ts": time.time(),
-                               "was": dict(rec),
+                               "was": dict(rec), **esc,
                                "launched": r.get("launched") or [],
                                "log": r.get("log"),
                                "status": str(r.get("status") or "")[:400]}
@@ -17682,11 +17908,20 @@ def _fire_prime(rec: dict[str, Any]) -> dict[str, Any]:
             # the executing indicator would be as false as the old idle gap.
             _clear_prime_execution(execution_id, "nothing launched")
         print(f"[orgtree] primed restart FIRED (target={target}, armed by "
-              f"{rec.get('by_org')}/{rec.get('by_node')}): "
-              f"{r.get('status')}", flush=True)
-        return {"fired": True, "result": r}
+              f"{rec.get('by_org')}/{rec.get('by_node')}"
+              + (f", ESCALATED past its {mins} min deadline — cut "
+                 f"{len(cast('list[str]', quiesced.get('cut') or []))}, "
+                 f"woke {len(woken)}" if quiesced else "")
+              + f"): {r.get('status')}", flush=True)
+        return {"fired": True, "result": r, **esc}
     except Exception:
         _clear_prime_execution(execution_id, "launch raised")
+        # the escalation's hold is settled by `launch_self_restart`'s own
+        # `finally` — but only if we got that far. A raise before it leaves
+        # the machine held with nobody to let go.
+        if quiesced is not None:
+            _force_hold_settle(quiesced.get("hold_token"), release=True,
+                               why="the escalated prime raised")
         raise
     finally:
         # ⚠ UNCONDITIONAL, and in a `finally` for the same reason
@@ -17696,8 +17931,35 @@ def _fire_prime(rec: dict[str, Any]) -> dict[str, Any]:
         # here would readmit turns into a live deploy. If it did NOT — a rate
         # limit, a mailhub-only leg, a raise — the hold is orphaned and every
         # org on this machine is silent until DEPLOY_HOLD_MAX expires.
+        # (Safe on the escalation too — see the ownership note above the
+        # `try`, which is where the reasoning lives.)
         if hold and not adopted:
             _deploy_done.set()
+
+
+def _log_escalation_to_org(rec: dict[str, Any], quiesced: dict[str, Any],
+                           woken: list[str], why: str) -> None:
+    """FR-32 constraint 2, in the ORG's event log — the third of the three
+    places, and the one a person actually browses.
+
+    It goes to the org that ARMED the prime, which is where
+    `prime_restart_arm` already recorded who decided and why. The two
+    together are the whole story: the decision, then the cost. Best-effort —
+    the arming org may have been deleted and the arming node retired since
+    (both are expected: surviving its author is the feature), and neither may
+    stop a deploy that has already stopped the machine."""
+    try:
+        with store.DOC_LOCK:
+            org = store.load_org(str(rec.get("by_org") or ""))
+            org.log_forced_restart(
+                str(rec.get("by_node") or ""),
+                cast("list[str]", quiesced.get("cut") or []),
+                cast("list[str]", quiesced.get("not_settled") or []),
+                why=why, woken=woken)
+            store.save_org(org)
+    except Exception as e:                                    # noqa: BLE001
+        print(f"[orgtree] could not record the prime escalation in "
+              f"{rec.get('by_org')!r}'s event log: {e!r}", flush=True)
 
 
 def _prime_tick() -> None:
@@ -17724,6 +17986,18 @@ def _prime_tick() -> None:
     busy = others_working()
     if busy:
         _prime_idle_since[0] = 0.0
+        # ☠ FR-32 · THE DEADLINE ESCALATION LIVES HERE AND ONLY HERE, and
+        # this placement IS constraint 3 rather than a check of it. "The
+        # escalation must never fire on a quiet machine" is not a comparison
+        # anyone has to get right — an idle machine never enters this branch,
+        # because the ordinary quiet path below is the only other way out. A
+        # deadline that forced when it did not need to would be a permanent
+        # small tax on every prime carrying one, and the way to not have that
+        # bug is to make it unreachable rather than to test for it.
+        # ⚠ DO NOT "simplify" this by hoisting the deadline test above the
+        # busy check. That is the bug, spelled as a refactor.
+        if _deadline_expired(rec):
+            _fire_prime(rec, escalate=True)
         return
     t = time.monotonic()
     if _prime_idle_since[0] == 0.0:

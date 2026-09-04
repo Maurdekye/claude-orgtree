@@ -400,6 +400,23 @@ TOOLS: list[dict[str, Any]] = [
             "deploys NOW by stopping the agents that are working. Reach for "
             "this one first; reach for force only when the machine will not "
             "go quiet and the wait is worse than the interruption. "
+            "⚠ deadline_minutes (OPTIONAL, off by default, needs a `reason`): "
+            "the bounded version — 'deploy when quiet, and if it is not quiet "
+            "in N minutes, force'. WITHOUT it a prime waits forever, which is "
+            "the failure this option exists for: one sat unfired for over two "
+            "hours while ten commits stacked up behind it. When the deadline "
+            "expires the restart ESCALATES — it stops whoever is working, "
+            "waits for their turns to settle, and deploys anyway, exactly as "
+            "force does. Two things to weigh before you set one. (1) NOBODY "
+            "WILL BE PRESENT: the escalation happens unattended, which is the "
+            "point (it survives your compaction, and force cannot) and also "
+            "the risk, so the reason you give here is the only account "
+            "anyone will ever read. (2) The agents it cuts are WOKEN AGAIN on "
+            "the new build, one turn each, so they pick their own work back "
+            "up — that is a real cost of the escalation and it is charged to "
+            "their orgs. A quiet machine NEVER escalates: if it goes quiet "
+            "before the deadline the ordinary path fires and the deadline is "
+            "simply never reached. Minimum 5 minutes, maximum 1440. "
             "Top-level agents and user-audience holders only; kiosks sealed. "
             "⚠ Still a real restart — have a REASON (code committed that "
             "needs to be running, a backend that must be bounced). 'Primed' "
@@ -416,6 +433,18 @@ TOOLS: list[dict[str, Any]] = [
                 "reason": {"type": "string",
                            "description": "why — shown on the chip and in "
                                           "the record; keep it one line"},
+                # ⚠ NO DEFAULT. Absent means "wait for quiet, however long
+                # that takes" — FR-27's behaviour, unchanged. A default here
+                # would put a scheduled forced deploy on every prime ever
+                # armed, which nobody asked for.
+                "deadline_minutes": {
+                    "type": "integer",
+                    "description": "OPTIONAL, off by default. Force the "
+                                   "deploy if the machine has not gone quiet "
+                                   "within this many minutes (5–1440). "
+                                   "Requires `reason`. The escalation stops "
+                                   "whoever is working and wakes them again "
+                                   "on the new build, unattended."},
             },
             "required": [],
         },

@@ -946,6 +946,462 @@ check("surface: arm/status/re-arm/cancel round-trip through /api/agent, gate "
 
 
 # ---------------------------------------------------------------------------
+print("\n§5 · FR-32 · THE DEADLINE — 'deploy when quiet, or force at N min'")
+# Coordinator decision 2026-09-04. A prime with no deadline waits forever, and
+# on this machine one waited over two hours while ten commits stacked behind
+# it. The deadline bounds that wait with an ESCALATION: the same quiesce an
+# agent's `force=true` runs, fired unattended.
+#
+# ⚠ THE CHECKS THAT ARE THE POINT OF THIS SECTION, in the order they matter:
+#   §5c a DEADLINE-LESS prime behaves exactly as before — the default is not
+#       merely correct, it is UNCHANGED (constraint 5).
+#   §5d a deadline that has expired on a QUIET machine takes the ordinary
+#       path and never escalates (constraint 3). Its twin, §5e, proves the
+#       escalation exists at all — without it §5d passes for a feature that
+#       simply does nothing.
+#   §5f the escalation calls the SAME quiesce (constraint 1) and leaves the
+#       record saying it escalated (constraint 2).
+#   §5g the cut agents are woken on the new build (constraint 4) — with the
+#       control that a wake is NOT armed for anyone who was not cut.
+
+
+def _a_deadline_needs_a_reason_and_sane_bounds():
+    """The gate. A deadline is a SCHEDULED force, so it takes force's brake:
+    it cannot be armed without saying why. Without this, `prime_restart` with
+    a five-minute deadline would be a route to a forced deploy that never
+    records a justification — in the one path where nobody is present to be
+    asked afterwards."""
+    o, slug = make_org("zz dl gate")
+    raises(lambda: o.prime_restart_gate("boss", "arm", deadline_minutes=15),
+           "requires a `reason`")
+    raises(lambda: o.prime_restart_gate("boss", "arm", reason="  ",
+                                        deadline_minutes=15),
+           "requires a `reason`")
+    lo = supervisor.PRIME_DEADLINE_MIN_MINUTES
+    hi = supervisor.PRIME_DEADLINE_MAX_MINUTES
+    for bad in (0, 1, lo - 1, hi + 1, -5):
+        raises(lambda b=bad: o.prime_restart_gate(
+            "boss", "arm", reason="r", deadline_minutes=b),
+            "deadline_minutes must be")
+    # ☠ THE CONTROL PAIR. Without these the gate could refuse EVERYTHING and
+    # every assertion above would still pass.
+    o.prime_restart_gate("boss", "arm", reason="r", deadline_minutes=lo)
+    o.prime_restart_gate("boss", "arm", reason="r", deadline_minutes=hi)
+    # …and an ordinary reasonless prime is STILL fine — the brake is on the
+    # deadline, not on priming
+    o.prime_restart_gate("boss", "arm")
+    o.prime_restart_gate("boss", "cancel")
+    store.delete_org(slug)
+
+
+check("deadline: needs a reason and sane bounds; a plain prime is untouched "
+      "(control pair)", _a_deadline_needs_a_reason_and_sane_bounds)
+
+
+def _the_deadline_is_stored_absolute_and_survives_a_bounce():
+    """Stored as an epoch, not a duration. A backend that bounces every few
+    minutes must not restart the clock — that would leave a deadline that can
+    never expire on exactly the box that needs one most."""
+    reset_machine()
+    supervisor.arm_prime_restart("orgA", "boss", "org", "ship it",
+                                 deadline_minutes=30)
+    raw = json.load(open(supervisor._prime_path(), encoding="utf-8"))
+    rec = raw["armed"]
+    assert rec["deadline_minutes"] == 30, rec
+    assert rec["deadline_ts"] > time.time() + 29 * 60, rec
+    assert rec["deadline"].startswith("20"), rec
+    ts = rec["deadline_ts"]
+    # the bounce: process memory gone, the file is all that is left
+    supervisor._prime_idle_since[0] = 0.0
+    again = supervisor.primed_restart()
+    assert again["deadline_ts"] == ts, (again, ts)
+    assert supervisor._deadline_expired(again) is False, again
+    # …and it does expire once the clock passes it (the control — otherwise
+    # "never expired" and "the predicate is broken" are the same green)
+    again["deadline_ts"] = time.time() - 1
+    assert supervisor._deadline_expired(again) is True, again
+    # a corrupt deadline degrades to "no deadline", never to "escalate now"
+    assert supervisor._deadline_expired({"deadline_ts": "soon"}) is False
+    assert supervisor._deadline_expired({}) is False
+    reset_machine()
+
+
+check("deadline: stored ABSOLUTE, survives a bounce, and a corrupt one reads "
+      "as no-deadline (control pair)",
+      _the_deadline_is_stored_absolute_and_survives_a_bounce)
+
+
+def _a_prime_with_no_deadline_is_unchanged():
+    """☠ CONSTRAINT 5. The default is not merely 'still works' — it must be
+    the SAME behaviour: a busy machine ticks forever and nothing escalates,
+    however long it has been armed."""
+    reset_machine()
+    with _SpawnSpy() as spy:
+        supervisor.arm_prime_restart("orgA", "boss", "org", "no deadline")
+        rec = supervisor.primed_restart()
+        assert "deadline_ts" not in rec, rec
+        busy_node("zz-nodl", "n1")
+        # ticks well past any deadline anyone might have set
+        for _ in range(6):
+            supervisor._prime_tick()
+        assert not _deploys(spy.argv), \
+            f"a deadline-LESS prime escalated on a busy machine: {spy.argv}"
+        assert supervisor.primed_restart() is not None, \
+            "the prime was consumed without deploying"
+        assert supervisor._deploy_done.is_set(), \
+            "ticking a deadline-less prime against a busy machine left the " \
+            "machine held"
+        assert supervisor.state("zz-nodl", "n1")["busy"], \
+            "a deadline-less prime interrupted a working agent"
+    reset_machine()
+
+
+check("☠ deadline: a prime WITHOUT one is exactly as before — a busy machine "
+      "is never cut, however long it ticks", _a_prime_with_no_deadline_is_unchanged)
+
+
+def _an_expired_deadline_on_a_QUIET_machine_never_escalates():
+    """☠ CONSTRAINT 3, and the reason it is structural rather than a
+    comparison: the escalation lives inside `_prime_tick`'s `if busy:` branch,
+    so an idle machine cannot reach it — it has already taken the ordinary
+    quiet path. A deadline that forced when it did not need to would be a
+    permanent small tax on every prime carrying one.
+
+    The deadline here is ALREADY IN THE PAST and the machine is idle."""
+    reset_machine()
+    with _SpawnSpy() as spy:
+        supervisor.arm_prime_restart("orgA", "boss", "org", "r",
+                                     deadline_minutes=10)
+        with supervisor._prime_lock:
+            d = supervisor._prime_read()
+            d["armed"]["deadline_ts"] = time.time() - 3600
+            supervisor._prime_write(d)
+        # idle machine, quiet period served
+        supervisor._prime_tick()
+        supervisor._prime_idle_since[0] -= supervisor.PRIME_QUIET_S + 1
+        supervisor._prime_tick()
+        assert _deploys(spy.argv), "it did not fire at all"
+        d = json.load(open(supervisor._prime_path(), encoding="utf-8"))
+        lf = d["last_fired"]
+        assert not lf.get("escalated"), (
+            "an EXPIRED deadline escalated on an IDLE machine — the ordinary "
+            "quiet path was right there and the escalation is now a tax on "
+            f"every prime that carries a deadline: {lf}")
+        assert not lf.get("cut"), lf
+    reset_machine()
+
+
+check("☠ deadline: expired but the machine is QUIET → the ordinary path "
+      "fires and NOTHING escalates",
+      _an_expired_deadline_on_a_QUIET_machine_never_escalates)
+
+
+def _an_expired_deadline_on_a_BUSY_machine_escalates_through_the_same_quiesce():
+    """☠ THE POSITIVE CONTROL for the check above, and constraints 1+2.
+
+    Without this, "never escalates on a quiet machine" is satisfied by an
+    escalation that never happens at all. And it pins the two properties the
+    coordinator asked for: the SAME `force_quiesce_for_restart` (not a second
+    idea of what is safe to cut), and a record that says it escalated without
+    anyone having to infer it from a non-empty cut list."""
+    reset_machine()
+    calls: list[dict] = []
+    real_q = supervisor.force_quiesce_for_restart
+
+    def spy_q(exclude=None, timeout=supervisor.FORCE_QUIESCE_TIMEOUT_S,
+              why=""):
+        calls.append({"exclude": exclude, "why": why})
+        return real_q(exclude=exclude, timeout=0.4, why=why)
+    supervisor.force_quiesce_for_restart = spy_q
+    try:
+        with _SpawnSpy() as spy:
+            supervisor.arm_prime_restart("orgA", "boss", "org",
+                                         "ten commits are stuck",
+                                         deadline_minutes=10)
+            busy_node("zz-esc", "n1")
+            # not yet expired: it must NOT escalate merely because it is busy
+            supervisor._prime_tick()
+            assert not calls, "it escalated before the deadline expired"
+            assert not _deploys(spy.argv), spy.argv
+            with supervisor._prime_lock:
+                d = supervisor._prime_read()
+                d["armed"]["deadline_ts"] = time.time() - 1
+                supervisor._prime_write(d)
+            supervisor._prime_tick()
+            # ① it went through THE SAME quiesce, and excluded nobody — an
+            #    unattended escalation has no caller to exempt
+            assert len(calls) == 1, calls
+            assert calls[0]["exclude"] is None, calls
+            assert "deadline expired" in calls[0]["why"], calls
+            # ② it actually deployed
+            assert _deploys(spy.argv), \
+                f"the deadline expired on a busy machine and nothing "\
+                f"deployed: {spy.argv}"
+            # ③ the agent was stopped, not deployed on top of
+            assert not supervisor.state("zz-esc", "n1")["queue"], \
+                "the quiesce did not clear the cut agent's queue"
+            # ④ ☠ THE RECORD SAYS IT ESCALATED — constraint 2
+            d = json.load(open(supervisor._prime_path(), encoding="utf-8"))
+            lf = d["last_fired"]
+            assert lf.get("escalated") is True, lf
+            assert "zz-esc/n1" in lf.get("cut", []), lf
+            assert "deadline expired" in lf.get("why_forced", ""), lf
+            assert "ten commits are stuck" in lf.get("why_forced", ""), lf
+            # ⑤ and so does the machine-wide deploy log
+            log = open(lf["log"], encoding="utf-8", errors="replace").read()
+            assert "FORCED" in log and "deadline expired" in log, log
+            assert "zz-esc/n1" in log, log
+    finally:
+        supervisor.force_quiesce_for_restart = real_q
+    reset_machine()
+
+
+check("☠ deadline: expired on a BUSY machine → escalates through the SAME "
+      "quiesce, and the record says so",
+      _an_expired_deadline_on_a_BUSY_machine_escalates_through_the_same_quiesce)
+
+
+def _the_escalation_wakes_the_agents_it_cut():
+    """☠ CONSTRAINT 4. An escalated deploy has no caller to be told "go nudge
+    them", so it leaves the machine able to pick itself back up: a one-shot
+    restart wake on every agent it stopped, armed BEFORE the spawn (the
+    deploy Stop-Processes this backend, so a wake armed after it may never be
+    written at all).
+
+    The control is the agent that was NOT cut: if a wake were armed for
+    everyone, "the cut agents are woken" would be true for a feature that
+    simply woke the world."""
+    from orgtree import restart_wake                            # noqa: PLC0415
+    reset_machine()
+    o, slug = make_org("zz wake", sub=True)
+    real_q = supervisor.force_quiesce_for_restart
+
+    def fast_q(exclude=None, timeout=supervisor.FORCE_QUIESCE_TIMEOUT_S,
+               why=""):
+        return real_q(exclude=exclude, timeout=0.4, why=why)
+    supervisor.force_quiesce_for_restart = fast_q
+    try:
+        with _SpawnSpy() as spy:
+            supervisor.arm_prime_restart(slug, "boss", "org", "urgent",
+                                         deadline_minutes=10)
+            busy_node(slug, "worker")           # cut
+            supervisor.state(slug, "boss")      # live, idle — NOT cut
+            with supervisor._prime_lock:
+                d = supervisor._prime_read()
+                d["armed"]["deadline_ts"] = time.time() - 1
+                supervisor._prime_write(d)
+            supervisor._prime_tick()
+            assert _deploys(spy.argv), spy.argv
+            wakes = restart_wake._wakes_read().get("wakes") or {}
+            assert f"{slug}:worker" in wakes, (
+                "the escalation cut this agent and left it idle on the new "
+                f"build with nobody to nudge it: {sorted(wakes)}")
+            assert "deadline expired" in (
+                wakes[f"{slug}:worker"].get("reason") or ""), wakes
+            # ☠ the control: an agent that was NOT working is not woken
+            assert f"{slug}:boss" not in wakes, (
+                "a wake was armed for an agent the escalation never cut — "
+                f"this check would pass for a feature that wakes everyone: "
+                f"{sorted(wakes)}")
+            # and the record names who was woken
+            d = json.load(open(supervisor._prime_path(), encoding="utf-8"))
+            assert d["last_fired"]["woken"] == [f"{slug}/worker"], \
+                d["last_fired"]
+            # …as does the arming org's own event log (the third place)
+            ev = store.load_org(slug).d["events"][-1]
+            assert ev["op"] == "self_restart_forced", ev
+            assert ev["detail"]["escalated"] is True, ev
+            assert ev["detail"]["woken"] == [f"{slug}/worker"], ev
+            assert "deadline expired" in ev["detail"]["why"], ev
+    finally:
+        supervisor.force_quiesce_for_restart = real_q
+        with restart_wake._wakes_lock:
+            w = restart_wake._wakes_read()
+            w["wakes"] = {}
+            restart_wake._wakes_write(w)
+        try:
+            store.delete_org(slug)
+        except Exception:                                    # noqa: BLE001
+            pass
+    reset_machine()
+
+
+check("☠ deadline: the escalation WAKES every agent it cut, and only those "
+      "(control pair)", _the_escalation_wakes_the_agents_it_cut)
+
+
+def _a_manual_force_does_not_wake_anyone():
+    """The other half of constraint 4, and a deliberate asymmetry rather than
+    an oversight: a manual `force=true` has a CALLER. It reads the result,
+    which tells it in as many words that the agents stall and it must go
+    nudge them. Arming wakes there would spend a turn per cut agent on top of
+    a human decision that was already made with the cost in view."""
+    src = open(supervisor.__file__, encoding="utf-8").read()
+    body = src[src.index("def _fire_prime("):]
+    body = body[:body.index("\ndef _log_escalation_to_org(")]
+    assert "_wake_the_cut(" in body, \
+        "the escalation no longer wakes the agents it cut — an unattended " \
+        "deploy would leave every one of them silently idle"
+    from orgtree import api as _apimod                          # noqa: PLC0415
+    api = open(_apimod.__file__, encoding="utf-8").read()
+    fb = api[api.index("def _forced_self_restart("):]
+    fb = fb[:fb.index("\n@app.post")]
+    assert "_wake_the_cut" not in fb, \
+        "the MANUAL force path now arms wakes too — that spends a turn per " \
+        "cut agent on a decision whose caller was already told to nudge them"
+
+
+check("deadline: the wake-up is the ESCALATION's job, not the manual force's "
+      "(the asymmetry is deliberate)", _a_manual_force_does_not_wake_anyone)
+
+
+def _a_mailhub_deadline_escalates_without_cutting_anyone():
+    """☠ THE INERT SWITCH. `deadline_minutes` on a target='mailhub' prime
+    must not be a control that reads fine, arms fine and silently does
+    nothing — the exact shape this tree keeps getting caught by.
+
+    The hub leg rebuilds a container and no agent turn runs through it, so
+    there is nothing to quiesce and quiescing would be pure damage. But the
+    ordinary path still routes a mailhub prime through
+    `_claim_quiet_machine`, which refuses a BUSY machine whatever the
+    target — so without the escalation a mailhub prime on a permanently busy
+    box waits exactly as forever as an org one. Both halves are asserted:
+    it FIRES, and it cuts NOBODY."""
+    reset_machine()
+    with _SpawnSpy() as spy:
+        supervisor.arm_prime_restart("orgA", "boss", "mailhub", "hub fix",
+                                     deadline_minutes=10)
+        st = busy_node("zz-hub", "n1")
+        supervisor._prime_tick()
+        assert not spy.argv, "it fired before the deadline expired"
+        with supervisor._prime_lock:
+            d = supervisor._prime_read()
+            d["armed"]["deadline_ts"] = time.time() - 1
+            supervisor._prime_write(d)
+        supervisor._prime_tick()
+        # ① it fired despite the busy machine
+        assert spy.argv, (
+            "a mailhub prime's deadline expired on a busy machine and "
+            "NOTHING happened — the option is inert on this target")
+        assert any("docker" in " ".join(a).lower() for a in spy.argv), spy.argv
+        # ② …and cut nobody doing it
+        assert st["busy"], \
+            "a mailhub escalation interrupted an agent for a container rebuild"
+        assert supervisor._deploy_done.is_set(), \
+            "a mailhub escalation held every org's turns for a deploy that " \
+            "never touches them"
+        # ③ the record still says it escalated — this is the deploy that most
+        #    needs explaining, and it quiesced nobody to infer it from
+        d = json.load(open(supervisor._prime_path(), encoding="utf-8"))
+        lf = d["last_fired"]
+        assert lf.get("escalated") is True, lf
+        assert lf.get("cut") == [] and lf.get("woken") == [], lf
+    reset_machine()
+
+
+check("☠ deadline: a MAILHUB deadline escalates without cutting anyone — the "
+      "option is not inert on that target",
+      _a_mailhub_deadline_escalates_without_cutting_anyone)
+
+
+def _the_escalation_never_leaves_the_machine_held():
+    """The orphaned hold again, on the new path. The escalation's hold is
+    taken by `force_quiesce_for_restart` and settled by `launch_self_restart`
+    — two different owners from the ordinary path's, and a double release
+    would readmit turns INTO a live deploy while a missing one silences every
+    org for DEPLOY_HOLD_MAX."""
+    reset_machine()
+    real_q = supervisor.force_quiesce_for_restart
+
+    def fast_q(exclude=None, timeout=supervisor.FORCE_QUIESCE_TIMEOUT_S,
+               why=""):
+        return real_q(exclude=exclude, timeout=0.3, why=why)
+    supervisor.force_quiesce_for_restart = fast_q
+    try:
+        # ① the launch REFUSES — its one-at-a-time window is hot, so nothing
+        #    is spawned and nothing will ever release the hold
+        supervisor.arm_prime_restart("orgA", "boss", "org", "r",
+                                     deadline_minutes=10)
+        busy_node("zz-hold", "n1")
+        with supervisor._prime_lock:
+            d = supervisor._prime_read()
+            d["armed"]["deadline_ts"] = time.time() - 1
+            supervisor._prime_write(d)
+        supervisor._self_restart_at[0] = time.time()   # rate limit hot
+        supervisor._prime_tick()
+        assert supervisor._deploy_done.is_set(), \
+            "a rate-limited escalation walked away holding the machine"
+        # …and it cut nobody on the way to that refusal
+        assert supervisor.state("zz-hold", "n1")["busy"], \
+            "a rate-limited escalation still interrupted an agent"
+        assert supervisor.primed_restart() is not None, \
+            "the prime was spent on a refusal"
+
+        # ② the real thing: the launch adopts the hold, and the (already
+        #    exited) interlock child releases it
+        supervisor._self_restart_at[0] = 0.0
+        supervisor._prime_tick()
+        for _ in range(40):
+            if supervisor._deploy_done.is_set():
+                break
+            time.sleep(0.05)
+        assert supervisor._deploy_done.is_set(), \
+            "the escalated deploy's window never released the hold"
+    finally:
+        supervisor.force_quiesce_for_restart = real_q
+    reset_machine()
+
+
+check("☠ deadline: a refused escalation cuts nobody and hands the hold back; "
+      "a real one hands it to the deploy window",
+      _the_escalation_never_leaves_the_machine_held)
+
+
+def _the_deadline_reaches_the_card_the_gate_and_the_status():
+    """The surface. A deadline you cannot see is a forced deploy nobody knows
+    is scheduled."""
+    card = next(t for t in mcptool.TOOLS
+                if t["name"] == "orgtree_prime_restart")
+    props = card["inputSchema"]["properties"]
+    assert props.get("deadline_minutes", {}).get("type") == "integer", props
+    assert "default" not in props["deadline_minutes"], \
+        "the card gives deadline_minutes a default — every prime ever armed " \
+        "would then carry a scheduled forced deploy"
+    assert "deadline_minutes" not in card["inputSchema"].get("required", [])
+    d = card["description"]
+    for needle in ("NOBODY WILL BE PRESENT", "WOKEN AGAIN", "NEVER escalates"):
+        assert needle in d, f"the card does not say {needle!r}"
+    # the ARM event records the deadline, or a reader a week later cannot
+    # tell why the machine was cut
+    o, slug = make_org("zz dl surface")
+    o.prime_restart_gate("boss", "arm", target="org", reason="ship it",
+                         deadline_minutes=20)
+    ev = o.d["events"][-1]
+    assert ev["op"] == "prime_restart_arm", ev
+    assert ev["detail"]["deadline_minutes"] == 20, ev
+    assert ev["detail"]["reason"] == "ship it", ev
+    # …and a deadline-less arm records no deadline field at all
+    o.prime_restart_gate("boss", "arm", target="org")
+    assert "deadline_minutes" not in o.d["events"][-1]["detail"], \
+        o.d["events"][-1]
+    store.delete_org(slug)
+    # and the status answer says it out loud, both ways
+    reset_machine()
+    supervisor.arm_prime_restart("orgA", "boss", "org", "r",
+                                 deadline_minutes=45)
+    pr = supervisor.primed_restart()
+    assert pr["deadline_minutes"] == 45 and pr["deadline_ts"], pr
+    reset_machine()
+    supervisor.arm_prime_restart("orgA", "boss", "org", "r")
+    assert "deadline_ts" not in supervisor.primed_restart()
+    reset_machine()
+
+
+check("deadline: reaches the card, the arm event and the status projection "
+      "(control pair)", _the_deadline_reaches_the_card_the_gate_and_the_status)
+
+
+# ---------------------------------------------------------------------------
 reset_machine()
 assert _no_deploy.installed(), \
     "the deploy interlock was left uninstalled for whatever runs next"

@@ -7639,7 +7639,8 @@ class Org:
                                 else "self-restart")
 
     def log_forced_restart(self, nid: str, cut: list[str],
-                           not_settled: list[str]) -> None:
+                           not_settled: list[str], why: str | None = None,
+                           woken: list[str] | None = None) -> None:
         """Record what a forced restart actually cut, once it is known.
 
         A SECOND event on purpose. `self_restart_gate` records the DECISION
@@ -7648,13 +7649,27 @@ class Org:
         can. Collapsing them into one would mean either a decision recorded
         too late to be the authorization, or a cost recorded before it was
         paid. Nodes that had not settled ride the event's `warnings`, where
-        the org's event view already surfaces them."""
+        the org's event view already surfaces them.
+
+        FR-32: `why` and `woken` are the deadline escalation's half. An
+        escalated deploy has no caller, so `why` is the only thing that says
+        an unattended deadline did this rather than an agent — the
+        coordinator's standard is that a reader a week later can tell the two
+        apart without inferring it. `woken` names the agents the escalation
+        armed a restart wake for; an empty list on an escalation is itself
+        news (nobody will pick the work back up)."""
         self._log("self_restart_forced", nid,
-                  {"cut": list(cut), "cut_count": len(cut)},
+                  {"cut": list(cut), "cut_count": len(cut),
+                   **({"why": why[:200]} if why else {}),
+                   **({"woken": list(woken), "escalated": True}
+                      if woken is not None else {})},
                   [f'"{n}" was still mid-turn when the deploy launched — its '
                    f"turn may have been cut mid-write" for n in not_settled])
 
-    def prime_restart_gate(self, nid: str, action: str) -> None:
+    def prime_restart_gate(self, nid: str, action: str,
+                           target: str | None = None,
+                           reason: str | None = None,
+                           deadline_minutes: int | None = None) -> None:
         """FR-27 gate (user design 2026-08-27): arming a deferred restart
         takes the SAME authority as firing one now — the machine-wide
         consequence is identical, only its timing is chosen by the machine
@@ -7664,9 +7679,55 @@ class Org:
         ⚠ The gate runs HERE, at the arm, and never again. The prime is
         deliberately spent by a background loop with no re-check, because the
         agent that armed it is expected to be gone by then — surviving its
-        author is the entire feature (see supervisor._fire_prime)."""
+        author is the entire feature (see supervisor._fire_prime).
+
+        ⚠ FR-32 · A DEADLINE REQUIRES A REASON, and this is the same brake
+        `self_restart_checks` puts on `force` rather than a second opinion
+        about it. A deadline IS a scheduled force: the escalation stops every
+        working agent on the machine. Without this, `prime_restart` with a
+        short deadline would be a way to reach a forced deploy without ever
+        saying why — a hole straight through the brake, in the one path where
+        NOBODY IS PRESENT to be asked afterwards. And unlike force, the gate
+        is the last moment anyone can be asked at all."""
+        if action == "arm" and deadline_minutes is not None:
+            if not (reason or "").strip():
+                raise LedgerError(
+                    "a primed restart with a DEADLINE requires a `reason` — "
+                    "when the deadline expires it stops every agent that is "
+                    "mid-turn on this machine, and nobody will be present to "
+                    "explain why. This is the last moment you can. Drop "
+                    "`deadline_minutes` for an ordinary prime that simply "
+                    "waits for quiet.")
+            # local import: `supervisor` imports THIS module, so a top-level
+            # one is a cycle. Reading the bounds from where the engine
+            # defines them is what stops the gate and the engine drifting
+            # into two different ideas of a legal deadline.
+            from . import supervisor as _sup       # noqa: PLC0415
+            lo, hi = (_sup.PRIME_DEADLINE_MIN_MINUTES,
+                      _sup.PRIME_DEADLINE_MAX_MINUTES)
+            # ⚠ BOUNDS ONLY — there was an `isinstance(…, int)` here and
+            # pyright proved it vacuous (the parameter is `int | None` and
+            # the None is already gone). Whole-number-ness is enforced at the
+            # door instead, by `api._arg_opt_int`, which is the only caller
+            # that ever sees free-form input and REFUSES a non-number rather
+            # than reading it as "no deadline". A check that cannot fail is
+            # not a check; this one can, and does.
+            #
+            # ⚠ REFUSED, not clamped. A caller who asked for one minute and
+            # silently got five has been lied to about when its machine will
+            # be cut.
+            if not lo <= deadline_minutes <= hi:
+                raise LedgerError(
+                    f"deadline_minutes must be a whole number between {lo} "
+                    f"and {hi} (got {deadline_minutes!r}). Below {lo} the "
+                    f"ordinary quiet path never gets a fair chance, so it "
+                    f"would be `force` wearing a hat; above {hi} the deadline "
+                    f"has stopped meaning 'this could not wait'.")
         self._restart_authority(nid, "primed restart")
-        self._log("prime_restart_" + action, nid, {}, [])
+        self._log("prime_restart_" + action, nid,
+                  {k: v for k, v in (
+                      ("target", target), ("reason", (reason or "").strip()[:200] or None),
+                      ("deadline_minutes", deadline_minutes)) if v}, [])
 
     def _moot_asks(self, nid: str, why: str) -> None:
         """The asker leaving the org moots its active request (redteam gap
