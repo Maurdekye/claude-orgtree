@@ -80,22 +80,52 @@ heading goes stale silently every time the table grows — which is the exact
 defect this document exists to prevent, one level up. So there is no number
 here: if you need one, count the rows.
 
-`last confirmed` is the tip a row was actually observed at, per row, because
-they were not all measured at once. `f2d42f5` was the last FULL sweep (130
-suites, 122 passed); rows touched since carry their own commit. Re-measure at
-YOUR tip before quoting any of it — see "The method".
+⚠ **A SUITE'S RESULT IS NOT A PROPERTY OF THE SUITE. It is a property of the
+suite AND HOW IT WAS RUN, and a row that omits the second half will keep
+producing the same argument.** `compaction` passes under `run_tests.py` and
+fails on a direct `python tests/test_compaction.py` — the runner gives it
+`--hermetic`. A row that had said only "compaction fails" was true, useless,
+and cost an afternoon. **Every row names its mode.** "runner" means
+`tools/run_tests.py` in the fast tier from a git worktree; "direct" means
+executing the file yourself.
 
-| suite | last confirmed | why it fails, and why it is not yours |
-|---|---|---|
-| `account-pool-state` | `f2d42f5` | hits the REAL API and gets a live `429 rate_limit_error`. Fails or passes with the account's usage, not with the code. |
-| `compaction` | `02615b9` | `urllib.error.HTTPError: HTTP 422` out of its own rig. Verified pre-existing in a detached worktree at `9fbe898` with the changes absent. |
-| `crash-reports` | `f2d42f5` | needs `frontend/node_modules/.bin/esbuild.cmd` to build a real minified bundle; `FileNotFoundError [WinError 2]` in any worktree without `node_modules`. **THE METHOD DETERMINES THE NUMBER: every worktree run sees it fail, and only a run inside `E:\` itself sees it pass.** This is not two agents disagreeing — it is one suite that cannot pass where we are all required to work. Confirmed independently by `storage-design`, 2026-09-03. Compare a worktree run only against a worktree baseline; comparing one against a count quoted from `E:\` shows a phantom `crash-reports` regression and sends you bisecting. Do NOT `npm install` to make it go away — `E:\frontend\node_modules` is off-limits. |
-| `extern-handle-attach` | `f2d42f5` | `norm_extern_handles([H2,H1,H2]) == [H2,H1]` — a real dedupe/order assertion, failing on main. |
-| `external-mail` | `19dd472` | ⚠ **THE REASON CHANGED — the old red was hiding this one.** It used to fail on rig hygiene (rigs minting their own `ORGTREE_DATA` without redirecting `net_hub_address`); that assertion was re-pointed in `02d1c18` once `net._under_os_temp` floored temp roots. With §1 passing the suite reaches point 7 and fails there instead: `a kiosk whose doc will not load is listed WITHOUT kiosk_cfg`. `store.load_org` no longer raises on a slug/file-name disagreement, so the reproduction's precondition has stopped holding — likely SQLite-store fallout, not a listing defect. |
-| `harvest` | `02615b9` | structural fixture: "BEHAVIOUR CHANGED — ORDER: widened text assembled at line X, classifier still runs at line Y". Greps `supervisor.py` BY LINE NUMBER. **The integers move with any insertion; the RELATION is the assertion.** A changed pair is not evidence you caused it. |
-| `headless` | `02615b9` | structural fixture: `body.index('org.d.get("api_key")')` → `ValueError: substring not found`. Greps source text. |
-| `run-completion` | `f2d42f5` | the runner testing itself under a kill; "the killed run printed NO RUN COMPLETE line". |
-| `turn-lifecycle` | `02615b9` | structural fixture greps for `st["queue"][0:0] = leftover`, which someone rewrote to `st["queue"].extend(leftover)`. Zero matches on main → the fixture trips before it asserts anything. ⚠ At `02615b9` it produced NO OUTPUT and did not finish within 200 s in a worktree — a hang, not the fixture trip. Not chased; its grep is for a LITERAL string, so a `supervisor.py` insertion cannot move it either way. |
+`last confirmed` is the tip a row was actually observed at, per row, because
+they were not all measured at once. Re-measure at YOUR tip before quoting any
+of it — see "The method".
+
+`tail` is what the runner now tells you and could not before: whether the
+suite RAN ITS REMAINING CHECKS. **A red row is not a measured suite.** Most
+suites here use a deliberate fail-fast `check()` that raises rather than
+recording, so a red one dies at its first failure and everything after it is
+unmeasured — `⚐ ABORTED — tail unmeasured` in the console names exactly that
+case (`stopped_early`, `1798963`).
+
+| suite | mode | last confirmed | tail | why it fails, and why it is not yours |
+|---|---|---|---|---|
+| `account-pool-state` | runner | `1798963` | complete, 39 | hits the REAL API and gets a live `429 rate_limit_error`. Fails or passes with the account's usage, not with the code. |
+| `codex-prewarm` | runner | `c896a00` | complete, 6 | `initialize stays once per process: got 2, wanted 1`. Verified on clean `c896a00`; it had never been in this list. |
+| `compaction` | **runner: PASSES** (487 checks) · **direct: FAILS** | `1798963` | complete | `urllib.error.HTTPError: HTTP 422` out of its own rig on a direct run only. The runner passes it `--hermetic`. This row exists to hold the mode rule above, not to report a red. |
+| `harvest` | runner | `1798963` | complete, 38 | structural fixture: "BEHAVIOUR CHANGED — ORDER: widened text assembled at line X, classifier still runs at line Y". Greps `supervisor.py` BY LINE NUMBER. **The integers move with any insertion; the RELATION is the assertion.** A changed pair is not evidence you caused it. |
+| `headless` | runner | `1798963` | complete, 35 | structural fixture: `body.index('org.d.get("api_key")')` → `ValueError: substring not found`. Greps source text. |
+| `mcp-lifecycle-finalize` | runner | `c896a00` | ⚑ DRIFT | `AssertionError: 0 is not None : vacuous: child died before EOF` across three lifecycle tests. Verified on clean `c896a00`; it had never been in this list either. |
+| `run-completion` | runner | `1798963` | **⚐ ABORTED — stopped at 13** | the runner testing itself under a kill. It prints an intermediate "13 checks passed, 4 failed" and then DIES on `a killed run left a COMPLETE marker — the marker lies`, so everything after that point is unmeasured. Identical on `c896a00`. |
+| `turn-lifecycle` | runner | `1798963` | complete, 96 | structural fixture greps for `st["queue"][0:0] = leftover`, rewritten to `st["queue"].extend(leftover)`. Zero matches → the fixture trips before it asserts anything. ⚠ On a DIRECT run at `02615b9` it produced no output and did not finish within 200 s — a hang, not the fixture trip. Not chased; its grep is for a LITERAL string, so a `supervisor.py` insertion cannot move it either way. |
+
+**Removed 2026-09-04 — these now pass, and the reason each one was red is
+worth more than the row was:**
+
+| suite | was | now | what it turned out to be |
+|---|---|---|---|
+| `crash-reports` | died at check **1 of 8** since 2026-08-30 | 8/8 in any worktree | its skip guard checked `NODE_BIN` and the resolver script — a binary on PATH and a file in this repo, both always present — and **not** `esbuild`, the one thing a worktree lacks. Present, plausible, inert. |
+| `extern-handle-attach` | died at check **2 of 19** since `e9ef008` | 19/19 | the CHECK was stale, not the code: it asserted insertion order while `norm_extern_handles` has sorted since the warm-identity work. **17 checks — the whole external-handle privilege surface — were unmeasured for four days behind it.** |
+| `gpt-reserve-detection` | died at check **11 of 22** since `c5049fa`, hours | 24/24 | its `NoAppServer` guard WORKED and caught a real change: `astra` became a conditional tier and `provider_hire_gate` now re-queries live inventory. A working instrument reporting a genuine change, not a stale fixture. |
+| `external-mail` | died at check **8 of 241** for 25 days, then 79 | 240/240 | the §1 rig-hygiene assertion, added by *"No test rig may register against the operator's real mail hub"* — a correct, valuable guard that did its own job perfectly and cost 233 checks. **§4 kiosk sealing, §8 the extern HTTP surface and §10 authorization were all inside the dark part.** A guard that aborts a suite is not free, and nobody priced it. |
+
+⚠ **FLAGGED, NOT CHASED (2026-09-04):** `c5049fa` made rollout tiers
+conditional, and `provider_hire_gate` now performs a **live model-inventory
+refresh that spawns a codex app-server on the HIRE path**. That is a latency
+and robustness property on a user-facing action. It needs an owner; it is
+recorded here so it is not rediscovered.
 
 **Three of these (`harvest`, `headless`, `turn-lifecycle`) grep `supervisor.py`
 by line number or literal text.** They are drift detectors, and anything that
@@ -162,7 +192,12 @@ rows had a base slug that was no longer a local org — **deleting an org did
 not unregister it from the hub**. Fixed in `7d8c652`; the rule for who may
 say an org is gone is `docs/mailserver-spec.md` §13.
 
-### `external-mail`, 2026-09-04: the red was hiding a second, unrelated red
+### `external-mail`, 2026-09-04: the red that was hiding a second red
+
+⚠ **HISTORY, NOT PRESENT STATE. It is 240/240 on both backends as of**
+**`c0e39b2`.** Kept because the sequence is the lesson, and because a fixed
+thing described as live is the same error as a live thing described as
+fixed — both were nearly said out loud today. Name the tree.
 
 The rig-hygiene assertion has been re-pointed. It used to demand
 `net_hub_address` from every rig that mints its own `ORGTREE_DATA`; it now
