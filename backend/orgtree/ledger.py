@@ -274,6 +274,53 @@ TOOL_KEYS: Final = ("bash", "web", "edit", "subagents")   # the built-in tool sw
 # existing three keep their order and nothing stored re-ranks.
 PM_LEVELS: Final = ("plan", "default", "acceptEdits", "bypassPermissions")
 
+#: Longest charter / team_charter a set_scope EDIT may write, in characters.
+#: This used to be a silent `[:4000]` slice: over-long text was cut mid-word
+#: and nothing anywhere said so. This org's own shipped team charter had been
+#: ending mid-sentence for an unknown period and no agent ever read its last
+#: rule (user ruling 2026-09-04: "warn or refuse instead of cutting").
+CHARTER_MAX: Final = 4000
+
+
+def check_charter(field: str, value: str, current: str | None,
+                  warnings: list[str]) -> str:
+    """Vet one charter field for `set_scope`. Returns the text to STORE.
+
+    Never truncates. Over-long text either REFUSES (a genuine edit) or passes
+    through whole with a loud warning (an unchanged resend).
+
+    ⚠ THE UNCHANGED-RESEND CARVE-OUT IS LOAD-BEARING, NOT A COURTESY.
+    `hire()` does NOT limit charter length, so charters longer than
+    CHARTER_MAX already exist in live orgs — a shipped preset,
+    docs/charters/coordinator.md, is itself over 4000 chars. The ⚙ panel sends
+    EVERY field on every save (`modals.tsx` doSave), so a plain folder or
+    effort edit on such a node carries that over-long charter back unchanged.
+    Refusing THAT would turn a silent bug into a hard lockout: the node could
+    never be retooled again, for anything. So an unchanged value is kept as-is
+    and merely reported. It cannot smuggle NEW over-long text in — it only
+    ever matches what is already stored.
+    """
+    v = value.strip()
+    if len(v) <= CHARTER_MAX:
+        return v
+    over = len(v) - CHARTER_MAX
+    nbytes = len(v.encode("utf-8"))
+    if v == (current or "").strip():
+        # unchanged: keep it WHOLE (cutting is the thing we are here to stop)
+        # and say so on every save, so it never goes quiet again.
+        warnings.append(
+            f"{field} is {len(v)} chars ({nbytes} bytes) — {over} over the "
+            f"{CHARTER_MAX}-char limit. It was left UNCHANGED and whole, "
+            f"because it was already this long and refusing would lock this "
+            f"agent out of every other setting. Shorten it below "
+            f"{CHARTER_MAX} to edit it.")
+        return v
+    raise LedgerError(
+        f"{field} is too long: {len(v)} chars ({nbytes} bytes), {over} over "
+        f"the {CHARTER_MAX}-char limit. NOTHING WAS SAVED — shorten it by at "
+        f"least {over} characters and save again. (The text is not truncated: "
+        f"this code used to cut it here silently and lose the tail.)")
+
 
 def norm_tools(t: Mapping[str, Any] | None) -> ToolGrant:
     """Normalize a tool grant: four built-in switches + an MCP server name list.
@@ -5423,6 +5470,21 @@ class Org:
         want_handles: list[str] | None = None
         if external_handles is not None:
             want_handles = norm_extern_handles(external_handles, where="retool")
+        # Charter LENGTH, vetted here with everything else and BEFORE the first
+        # mutation below, so an over-long charter leaves the node
+        # byte-identical (the atomicity contract above) instead of writing the
+        # dirs and tools and then blowing up. `check_charter` never truncates:
+        # it refuses a too-long EDIT and passes an unchanged one through with a
+        # warning. Both outcomes reach a human — `modals.tsx` doSave toasts
+        # `warnings`, and toasts the raised message on the error path.
+        new_charter: str | None = None
+        new_team_charter: str | None = None
+        if charter is not None:
+            new_charter = check_charter(
+                "charter", charter, n.get("charter"), warnings)
+        if team_charter is not None:
+            new_team_charter = check_charter(
+                "team_charter", team_charter, n.get("team_charter"), warnings)
 
         if want_dirs is not None:
             _t, kept, _v, _p, b = self._apply_ceiling(
@@ -5608,9 +5670,9 @@ class Org:
         # §15 cascade: charter = this node's role card · team_charter = standing
         # instructions binding this node's whole subtree (manager-owned)
         if charter is not None:
-            n["charter"] = charter.strip()[:4000] or None
+            n["charter"] = new_charter or None
         if team_charter is not None:
-            n["team_charter"] = team_charter.strip()[:4000] or None
+            n["team_charter"] = new_team_charter or None
         if self_edit:
             # D-105: notifying an agent that it changed its own team charter
             # is a letter to itself. Its reports need no notice either — the

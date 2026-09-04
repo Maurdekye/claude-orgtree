@@ -2492,11 +2492,26 @@ CHARTERS_DIR = os.path.normpath(os.path.join(
     os.path.dirname(__file__), "..", "..", "docs", "charters"))
 
 
+#: A preset body is still capped in the payload, but the cap is now DECLARED.
+#: It used to be a bare `body[:6000]`: a longer preset was cut mid-word and
+#: neither the payload nor the UI said anything, so the hire form offered a
+#: card whose text simply stopped (user ruling 2026-09-04: a limit is fine,
+#: silence is not). Kept as a cut rather than made unbounded because this
+#: endpoint serves whatever .md files sit in the directory.
+PRESET_MAX = 6000
+
+
 @app.get("/api/charters")
 def charters_list() -> dict[str, Any]:
     """Named charter presets for the manual hire form (user ruling): every
     .md in docs/charters/ is a preset. A file may open with an explanatory
-    header ending at a '---' line — only what follows is the charter body."""
+    header ending at a '---' line — only what follows is the charter body.
+
+    Each record carries `chars` (the body's TRUE length, before any cut) and
+    `truncated`. The payload carries `charter_max`, the length above which a
+    charter can no longer be EDITED (ledger.CHARTER_MAX) — a preset can sit
+    under PRESET_MAX and still be over that, which is why the form shows it.
+    """
     out: list[dict[str, Any]] = []
     if os.path.isdir(CHARTERS_DIR):
         for f in sorted(os.listdir(CHARTERS_DIR)):
@@ -2508,10 +2523,16 @@ def charters_list() -> dict[str, Any]:
             except OSError:
                 continue
             body = text.split("\n---\n", 1)[-1].strip()
-            out.append({"name": f[:-3].replace("-", " "), "content": body[:6000],
+            out.append({"name": f[:-3].replace("-", " "),
+                        "content": body[:PRESET_MAX],
+                        # the length BEFORE the cut — what makes the cut
+                        # visible instead of silent
+                        "chars": len(body),
+                        "truncated": len(body) > PRESET_MAX,
                         # shown on hover of a picked preset card (user spec)
                         "path": os.path.abspath(os.path.join(CHARTERS_DIR, f))})
-    return {"charters": out}
+    return {"charters": out, "preset_max": PRESET_MAX,
+            "charter_max": ledger_mod.CHARTER_MAX}
 
 
 @app.get("/api/mcp-servers")

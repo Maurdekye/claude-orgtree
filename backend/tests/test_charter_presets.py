@@ -78,8 +78,8 @@ def t(label):
     return deco
 
 
-def charters(dirpath):
-    """GET /api/charters against `dirpath`, as {name: content}."""
+def payload(dirpath):
+    """GET /api/charters against `dirpath` — the whole payload."""
     old = api.CHARTERS_DIR
     api.CHARTERS_DIR = dirpath
     try:
@@ -87,7 +87,17 @@ def charters(dirpath):
     finally:
         api.CHARTERS_DIR = old
     assert isinstance(out, dict) and "charters" in out, out
-    return {c["name"]: c["content"] for c in out["charters"]}
+    return out
+
+
+def records(dirpath):
+    """GET /api/charters against `dirpath`, as {name: full record}."""
+    return {c["name"]: c for c in payload(dirpath)["charters"]}
+
+
+def charters(dirpath):
+    """GET /api/charters against `dirpath`, as {name: content}."""
+    return {k: v["content"] for k, v in records(dirpath).items()}
 
 
 HEADER = "Paste this into the charter field of a single top-level agent"
@@ -123,7 +133,8 @@ write("big.md", ("x\n\n---\n\n" + "y" * 7000 + "\n").replace("\n", "\r\n"))
 # which is exactly what a595353 shipped
 write("bom.md", ("x\n\n---\n\n" + BOM + BODY + "\n").replace("\n", "\r\n"))
 
-GOT = charters(FIX)
+RECS = records(FIX)
+GOT = {k: v["content"] for k, v in RECS.items()}
 
 
 @t("a CRLF preset does not serve its header")
@@ -165,11 +176,49 @@ def _late():
     assert "---" in c, "the body's own horizontal rule was eaten"
 
 
-@t("the 6000-char truncation is unchanged")
+@t("the 6000-char cut still happens - and is now DECLARED, not silent")
 def _trunc():
-    c = GOT["big"]
-    assert len(c) == 6000, f"expected the 6000 cap, got {len(c)}"
+    # This check used to read "the 6000-char truncation is unchanged" and
+    # assert only len == 6000. The cut is still here (the endpoint serves
+    # whatever .md files exist, so the cap stays), but a cut that says nothing
+    # is the defect: the hire form offered a card whose text simply stopped.
+    # Now the record must CARRY the true length and admit it was cut.
+    r = RECS["big"]
+    c = r["content"]
+    assert len(c) == api.PRESET_MAX, \
+        f"expected the {api.PRESET_MAX} cap, got {len(c)}"
     assert c.startswith("y"), f"truncated the wrong end: {c[:40]!r}"
+    assert r.get("truncated") is True, \
+        f"a cut body did not report truncated=True: {r.get('truncated')!r}"
+    assert r.get("chars") == 7000, (
+        "the record must carry the body's TRUE length (7000, the fixture's "
+        f"'y' * 7000) so the UI can say what was lost; got {r.get('chars')!r}")
+    assert r["chars"] > len(c), "chars must be the pre-cut length, not the cut one"
+
+
+@t("POSITIVE CONTROL: an UNCUT preset reports truncated=False and a true length")
+def _not_trunc():
+    # Without this, `truncated` could be hardcoded True and _trunc would still
+    # pass - the flag would mean nothing. This proves the flag DISCRIMINATES.
+    r = RECS["crlf"]
+    assert r.get("truncated") is False, \
+        f"a short body claimed it was truncated: {r.get('truncated')!r}"
+    assert r.get("chars") == len(r["content"]), (
+        "for an uncut body chars must equal the served length: "
+        f"{r.get('chars')} vs {len(r['content'])}")
+
+
+@t("the payload states BOTH limits, so no client has to hardcode them")
+def _limits():
+    p = payload(FIX)
+    assert p.get("preset_max") == api.PRESET_MAX, p.get("preset_max")
+    # the charter EDIT limit - a preset can be under preset_max and still be
+    # over this, which is the case the hire form has to warn about
+    from orgtree import ledger as _lg
+    assert p.get("charter_max") == _lg.CHARTER_MAX, p.get("charter_max")
+    assert p["charter_max"] < p["preset_max"], (
+        "charter_max is expected to be the TIGHTER of the two - if that ever "
+        "stops being true, the hire form's warning logic needs revisiting")
 
 
 @t("POSITIVE CONTROL: a BOM in a body IS served - so §2's check can fire")
@@ -194,7 +243,8 @@ print("\n§2 the shipped presets")
 
 REAL = os.path.normpath(os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "..", "..", "docs", "charters"))
-SERVED = charters(REAL)
+SERVED_RECS = records(REAL)
+SERVED = {k: v["content"] for k, v in SERVED_RECS.items()}
 FILES = sorted(f for f in os.listdir(REAL) if f.endswith(".md"))
 CRLF_ON_DISK = [f for f in FILES
                 if open(os.path.join(REAL, f), "rb").read().count(b"\r\n")]
@@ -223,8 +273,10 @@ def _clean_body(fn):
             "the middle of a file is invisible in every editor and survives "
             "str.strip(); it is what PowerShell Set-Content -Encoding utf8 "
             "leaves behind when a file is assembled from another one.")
-        assert len(c) < 6000, \
-            f"{fn} is {len(c)} chars and is being truncated at 6000"
+        # ask the ENDPOINT whether it cut this file, rather than re-deriving
+        # the cap here — a length check would go stale the moment the cap moves
+        assert SERVED_RECS[fn[:-3].replace("-", " ")]["truncated"] is False, \
+            f"{fn} is {len(c)} chars and is being cut at {api.PRESET_MAX}"
     return go
 
 
@@ -232,13 +284,26 @@ for _f in FILES:
     check(f"{_f} serves a clean body only", _clean_body(_f))
 
 
-@t("served lengths, recorded")
+@t("served lengths, recorded - against BOTH limits")
 def _lengths():
+    from orgtree import ledger as _lg
+    over = []
     for f in FILES:
         c = SERVED[f[:-3].replace("-", " ")]
         raw = os.path.getsize(os.path.join(REAL, f))
+        flag = "  << over charter_max" if len(c) > _lg.CHARTER_MAX else ""
+        if flag:
+            over.append(f)
         print(f"        {f:16s} file {raw:6d} B   served {len(c):5d} chars"
-              f"   headroom {6000 - len(c):5d}")
+              f"   cut headroom {api.PRESET_MAX - len(c):5d}"
+              f"   edit headroom {_lg.CHARTER_MAX - len(c):6d}{flag}")
+    if over:
+        # NOT a failure: hire() does not enforce CHARTER_MAX, so these are
+        # hireable. They just cannot be EDITED later without shortening, and
+        # the hire form now says so on the card.
+        print(f"\n        note: {over} exceed the {_lg.CHARTER_MAX}-char "
+              "charter EDIT limit. Hiring works; a later charter edit will "
+              "refuse until shortened. The draft card warns about this.")
 
 
 if not CRLF_ON_DISK:

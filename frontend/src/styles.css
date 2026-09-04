@@ -2518,6 +2518,14 @@ button.cc-name:hover {
   padding: 0; border: none; background: none; color: var(--ink);
 }
 .df-charter:focus { outline: none; }
+/* charter length warnings — text that is too long used to be cut in silence,
+   so this sits in the hire form itself, under the box being typed into */
+.df-charter-warn {
+  font-size: 9px; line-height: 1.4; padding: 4px 6px; border-radius: 4px;
+  color: var(--warn, #b3541e);
+  background: color-mix(in srgb, var(--warn, #b3541e) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--warn, #b3541e) 40%, transparent);
+}
 .df-foot { display: flex; gap: 6px; align-items: center; }
 .df-foot button {
   height: 22px; box-sizing: border-box;

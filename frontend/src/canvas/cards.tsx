@@ -902,7 +902,10 @@ interface DraftNodeProps {
   onCancel: () => void
 }
 
-type CharterPreset = { name: string; content: string; path: string }
+type CharterPreset = {
+  name: string; content: string; path: string
+  chars?: number; truncated?: boolean
+}
 
 export function DraftNode({ pos, draft, map, seats, maxTop, defaultTop, kioskRemaining,
   tree, zoom, pxc, onConfirm, onCancel }: DraftNodeProps) {
@@ -919,12 +922,27 @@ export function DraftNode({ pos, draft, map, seats, maxTop, defaultTop, kioskRem
   // them into actual charter text (prepended to any manual entry).
   const [presets, setPresets] = useState<CharterPreset[]>([])
   const [chosen, setChosen] = useState<CharterPreset[]>([])
+  // the two limits, as the SERVER reports them — never hardcoded here, or this
+  // warning would drift out of agreement with the thing it warns about
+  const [charterMax, setCharterMax] = useState<number | null>(null)
   useEffect(() => {
-    getCharters().then((r) => setPresets(r.charters ?? [])).catch(() => {})
+    getCharters().then((r) => {
+      setPresets(r.charters ?? [])
+      setCharterMax(r.charter_max ?? null)
+    }).catch(() => {})
   }, [])
   const finalCharter = () =>
     [...chosen.map((c) => c.content), charter].filter((t) => t.trim())
       .join('\n\n')
+  // ⚠ the whole point of this card's length warning: charter text used to be
+  // cut without a word — at 6000 on the way out of /api/charters, and at 4000
+  // on the way into a later edit. Both are now SAID, here, while the person is
+  // still looking at the text. `cut` = a preset whose file was longer than the
+  // endpoint will serve. `over` = the composed charter is longer than a charter
+  // may later be EDITED to; hiring still works, so this warns, never blocks.
+  const cut = chosen.filter((c) => c.truncated)
+  const composed = finalCharter().length
+  const over = charterMax != null && composed > charterMax
   // top-level drafts pre-fill the org's default grant (50 unless configured),
   // clamped only by a kiosk's remaining headroom
   const [grant, setGrant] = useState(() => {
@@ -1028,6 +1046,20 @@ export function DraftNode({ pos, draft, map, seats, maxTop, defaultTop, kioskRem
               value={charter} onChange={(e) => setCharter(e.target.value)}
               onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey && ok && !isMobile) { e.preventDefault(); hire() } }} />
           </div>
+          {cut.length > 0 && (
+            <div className="df-charter-warn" role="alert">
+              ⚠ {cut.map((c) => `${c.name} (${c.chars} chars)`).join(', ')}
+              {cut.length > 1 ? ' were' : ' was'} CUT SHORT by the server —
+              the hire gets only the first part. Shorten the preset file.
+            </div>
+          )}
+          {over && (
+            <div className="df-charter-warn" role="alert">
+              ⚠ this charter is {composed} chars, over the {charterMax}-char
+              edit limit. The hire keeps it whole, but you will not be able to
+              CHANGE it later without first shortening it below {charterMax}.
+            </div>
+          )}
           <div className="df-foot">
             <span className="spacer" />
             <button onClick={onCancel}><CloseIcon fontSize="inherit" /> cancel</button>
