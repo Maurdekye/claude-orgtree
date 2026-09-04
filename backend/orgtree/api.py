@@ -5405,6 +5405,27 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
                     a = dict(a, tools={**_tsc["tools"],
                                        "mcp": list(_tsc["tools"].get("mcp") or [])},
                              org_visibility=_tsc.get("org_visibility", "full"))
+                elif body.node != USER:
+                    # THE OTHER HALF OF THE SAME RULE (Astra audit 2026-09-04
+                    # §11): the schema no longer lists add_dirs / tools /
+                    # org_visibility as required, because the superior branch
+                    # above refuses them and a flat `required` cannot say
+                    # "required in one mode, forbidden in the other". So the
+                    # ordinary mode's no-defaults rule is stated HERE, at the
+                    # door, naming the mode — the ledger's own §4.2 refusal
+                    # still stands behind it (and still checks every tool
+                    # switch), but its wording predates the second mode and
+                    # cannot tell a caller which of the two it got wrong.
+                    _missing = [f for f in ("add_dirs", "tools",
+                                            "org_visibility")
+                                if a.get(f) is None]
+                    if _missing:
+                        raise LedgerError(
+                            f"an ordinary hire (hire_type='subordinate', the "
+                            f"default) has no defaults — state "
+                            f"{', '.join(_missing)} explicitly ([] is a "
+                            f"valid add_dirs). Only hire_type='superior' "
+                            f"takes them from the target instead")
                 result = org.hire(body.node, _dest,
                                   a.get("tier"), _arg_num(a, "grant", 0),  # type: ignore[arg-type]  # ledger 422s a missing tier; _arg_num so hire's own whole-grant refusal can still fire
                                   a.get("name") or "", add_dirs=hdirs,

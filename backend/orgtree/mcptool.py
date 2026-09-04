@@ -732,12 +732,20 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "orgtree_hire",
         "description": (
-            "Hire a subagent under you (or deeper in your subtree). There are NO "
-            "defaults for you: write the hire's CHARTER in full (its role and "
-            "standing instructions — injected into every one of its turns, "
-            "editable later via orgtree_retool), and state exactly which "
-            "folders, tools and org visibility it needs — you cannot grant "
-            "anything you do not hold yourself. Seat costs: haiku 1, sonnet 2, "
+            "Hire a subagent under you (or deeper in your subtree), or INSERT "
+            "a superior above a seat in your subtree (hire_type='superior'). "
+            "There are NO defaults for you: write the hire's CHARTER in full "
+            "(its role and standing instructions — injected into every one of "
+            "its turns, editable later via orgtree_retool). TWO MODES, ONE "
+            "RULE EACH, enforced by the server: an ORDINARY hire (hire_type "
+            "omitted or 'subordinate') MUST state add_dirs, tools and "
+            "org_visibility explicitly — refused if any is missing — and you "
+            "cannot grant anything you do not hold yourself; a SUPERIOR "
+            "insertion MUST OMIT add_dirs, tools, org_visibility and "
+            "permission_mode — refused if any is present — because the seat "
+            "takes the target's own. The schema therefore lists those fields "
+            "as optional; which mode you are in decides whether they are "
+            "required or forbidden. Seat costs: haiku 1, sonnet 2, "
             "opus 5, fable 10 (Claude); gpt-reserve 0.2, luna 0.2, terra 2, "
             "sol 5 (Codex — "
             "hireable only while the Codex CLI is signed in on this machine; "
@@ -781,10 +789,24 @@ TOOLS: list[dict[str, Any]] = [
                                                       "mode": {"type": "string",
                                                                "enum": ["rw", "ro"]}},
                                        "required": ["path", "mode"]},
-                             "description": "folder grants; [] means scratch-only"},
-                "tools": TOOLS_SCHEMA,
+                             "description":
+                                 "folder grants; [] means scratch-only. "
+                                 "REQUIRED for an ordinary (subordinate) "
+                                 "hire; MUST BE OMITTED for hire_type="
+                                 "'superior' (the seat takes the target's)"},
+                "tools": {**TOOLS_SCHEMA,
+                          "description":
+                              "every switch stated explicitly. REQUIRED for "
+                              "an ordinary (subordinate) hire; MUST BE "
+                              "OMITTED for hire_type='superior' (the seat "
+                              "takes the target's)"},
                 "org_visibility": {"type": "string",
-                                   "enum": ["self", "team", "subtree", "full"]},
+                                   "enum": ["self", "team", "subtree", "full"],
+                                   "description":
+                                       "REQUIRED for an ordinary "
+                                       "(subordinate) hire; MUST BE OMITTED "
+                                       "for hire_type='superior' (the seat "
+                                       "takes the target's)"},
                 "parent": {"type": "string",
                            "description": "the older spelling of `target` — "
                                           "still honoured; omit to hire "
@@ -806,9 +828,11 @@ TOOLS: list[dict[str, Any]] = [
                         "In this mode OMIT add_dirs, tools, org_visibility "
                         "and permission_mode: the seat takes the TARGET's "
                         "(the team below it must stay within what it "
-                        "holds), so passing your own is refused rather than "
-                        "silently overwritten — retool it afterwards if it "
-                        "should hold less. Costs you exactly what the same "
+                        "holds), so passing ANY of them — even values equal "
+                        "to the target's — is refused rather than silently "
+                        "overwritten; retool it afterwards if it should hold "
+                        "less. (In 'subordinate' mode the first three are "
+                        "REQUIRED instead.) Costs you exactly what the same "
                         "ordinary hire costs; the insertion itself moves no "
                         "credits. With target=yourself this hires your own "
                         "replacement into your seat and puts you under it; "
@@ -871,8 +895,15 @@ TOOLS: list[dict[str, Any]] = [
                                  "description": "kind of the kickoff mail "
                                                 "(default 'request')"},
             },
-            "required": ["name", "tier", "grant", "charter", "add_dirs", "tools",
-                         "org_visibility"],
+            # add_dirs / tools / org_visibility are deliberately NOT here:
+            # they are REQUIRED in subordinate mode and FORBIDDEN in
+            # superior mode, and a flat `required` list cannot say that. A
+            # client that enforced the old list could never construct a
+            # superior insertion at all (Astra audit 2026-09-04, §11). The
+            # per-mode rule is enforced at the API door and in the ledger —
+            # the schema is the honest surface of it, not the enforcement.
+            # test_hire_schema_contract.py holds both halves to it.
+            "required": ["name", "tier", "grant", "charter"],
         },
     },
     {

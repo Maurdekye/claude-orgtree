@@ -10,7 +10,7 @@ the MCP catalog in `backend/orgtree/mcptool.py`.
 | Tool | Use |
 |---|---|
 | `orgtree_chart` | Show the organization visible to the caller, including scope and credit information. Pass `include_archived` to list retired nodes. |
-| `orgtree_hire` | Hire a report. Supply its name, provider tier, charter, grant, folders, tools, visibility, and permission mode; a `kickoff` starts its first task. |
+| `orgtree_hire` | Hire a report, or insert a superior above a seat in your subtree (`hire_type='superior'`). An ordinary hire must state folders, tools and visibility explicitly (plus name, tier, charter, grant, and permission mode); a superior insertion must omit folders, tools, visibility and permission mode, because the seat takes the target's own. Either way a `kickoff` starts its first task. |
 | `orgtree_retool` | Change a report's folders, tools, visibility, mode, charter, team charter, or effort. A caller may only change its own team charter. |
 | `orgtree_switch_model` | Change a report's tier. A provider change requires confirmation and starts a fresh session; its scratch, mail, and breadcrumbs remain. |
 | `orgtree_retire` | Archive a node, preserving it for rehire. Retiring a node with live reports retires that subtree. |
