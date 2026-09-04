@@ -179,51 +179,120 @@ def cmd_rollback(root: str, stop_before_parking: bool = False) -> int:
     # (phase1-audit, cutover_tool_resume.py, 2026-09-04.)
     have_db = set(_slugs(store, ".db"))
     have_json = {f[:-5] for f in os.listdir(orgs) if f.endswith(".json")}
-    parked_only = sorted(have_json - have_db)          # already moved out
+    json_only = sorted(have_json - have_db)            # .json with no .db
 
-    # ⚠ THREE STATES, AND THEY MUST NOT BE CONFUSED WITH EACH OTHER. Answered
-    # BEFORE the claim, because claiming a root with any JSON-without-DB slug
-    # raises `MigrationRefused` first and buries whichever of these it is.
-    #   no databases at all  -> the rollback already finished
-    #   some parked, some not -> killed part-way (below)
-    #   all databases         -> not begun; the normal path
+    # ⚠ STATES OF THE ROOT, AND THEY MUST NOT BE CONFUSED WITH EACH OTHER.
+    # Answered BEFORE the claim, because claiming a root with any
+    # JSON-without-DB slug raises `MigrationRefused` first and buries
+    # whichever of these it is.
+    #   no databases at all   -> the rollback already finished
+    #   some databases, some JSON-only:
+    #     - databases parked in parked-*/  -> killed part-way through a rollback
+    #     - no parked databases, premigrations on dbs -> part-way through a migration
+    #     - otherwise -> mixed data root
+    #   all databases          -> not begun; the normal path
     if not have_db:
         print(f"\nThe rollback on this root is already COMPLETE — there are "
               f"no databases left in orgs/.\n"
               f"  documents: {', '.join(sorted(have_json)) or '(none)'}\n"
               f"\nNothing to do. Start the JSON build.", file=sys.stderr)
         return 1
-    if have_db and parked_only and not store.migration_authorised():
+    if have_db and json_only and not store.migration_authorised():
         me = os.path.join("tools", "cutover.py")
-        print(
-            f"\nTHIS ROOT IS PART-WAY THROUGH A ROLLBACK, not at the start of "
-            f"one.\n"
-            f"  already parked : {', '.join(parked_only)}\n"
-            f"  still database : {', '.join(sorted(have_db))}\n"
-            f"\nEvery export is already installed, so nothing is lost — and "
-            f"both backends\nrefuse this root, which is why you are seeing "
-            f"this rather than a half-empty org.\n"
-            f"\nPlain re-running cannot proceed: the parked slugs now look "
-            f"like unmigrated\nJSON, so claiming the root refuses first.\n"
-            f"\nTo finish it, authorise the one operation that reverses the "
-            f"partial move —\nrebuilding the parked slugs' databases FROM "
-            f"THEIR INSTALLED EXPORTS, which\nrestores whole-root SQLite "
-            f"authority — and this command then completes the\nrollback "
-            f"normally:\n"
-            f"\n  Windows  cmd /c \"set ORGTREE_MIGRATE=1&& python "
-            f"{me} rollback {root}\"\n"
-            f"  POSIX    ORGTREE_MIGRATE=1 python {me} rollback {root}\n"
-            f"\n⚠ That is deliberately NOT automatic. Reconstructing an org's "
-            f"authority from\nan export is exactly the operation that must "
-            f"never happen because a tool decided\nit was probably fine. Read "
-            f"the two lists above and confirm they are what you\nexpect before "
-            f"you run it.", file=sys.stderr)
+        parked_dirs = [
+            os.path.join(store.DATA_ROOT, d)
+            for d in os.listdir(store.DATA_ROOT)
+            if d.startswith("parked-") and os.path.isdir(os.path.join(store.DATA_ROOT, d))
+        ]
+        parked = []
+        unmigrated = []
+        for s in json_only:
+            if any(os.path.exists(os.path.join(pd, f"{s}.db")) for pd in parked_dirs):
+                parked.append(s)
+            else:
+                unmigrated.append(s)
+
+        have_prem = {f[:-len(".json.premigration")]
+                     for f in os.listdir(orgs) if f.endswith(".json.premigration")}
+
+        if parked and not unmigrated:
+            print(
+                f"\nTHIS ROOT IS PART-WAY THROUGH A ROLLBACK, not at the start of "
+                f"one.\n"
+                f"  already parked : {', '.join(parked)}\n"
+                f"  still database : {', '.join(sorted(have_db))}\n"
+                f"\nEvery export is already installed, so nothing is lost — and "
+                f"both backends\nrefuse this root, which is why you are seeing "
+                f"this rather than a half-empty org.\n"
+                f"\nPlain re-running cannot proceed: the parked slugs now look "
+                f"like unmigrated\nJSON, so claiming the root refuses first.\n"
+                f"\nTo finish it, authorise the one operation that reverses the "
+                f"partial move —\nrebuilding the parked slugs' databases FROM "
+                f"THEIR INSTALLED EXPORTS, which\nrestores whole-root SQLite "
+                f"authority — and this command then completes the\nrollback "
+                f"normally:\n"
+                f"\n  Windows  cmd /c \"set ORGTREE_MIGRATE=1&& python "
+                f"{me} rollback {root}\"\n"
+                f"  POSIX    ORGTREE_MIGRATE=1 python {me} rollback {root}\n"
+                f"\n⚠ That is deliberately NOT automatic. Reconstructing an org's "
+                f"authority from\nan export is exactly the operation that must "
+                f"never happen because a tool decided\nit was probably fine. Read "
+                f"the two lists above and confirm they are what you\nexpect before "
+                f"you run it.", file=sys.stderr)
+        elif unmigrated and not parked and have_db <= have_prem:
+            print(
+                f"\nTHIS ROOT IS PART-WAY THROUGH A MIGRATION, not a rollback.\n"
+                f"  unmigrated JSON : {', '.join(unmigrated)}\n"
+                f"  still database  : {', '.join(sorted(have_db))}\n"
+                f"\nNothing has been lost: unconverted orgs still have their .json, "
+                f"and converted\norgs have their database (and .json.premigration). "
+                f"Both backends refuse this\nroot, which is why you are seeing this "
+                f"rather than a half-empty org.\n"
+                f"\nPlain re-running cannot proceed: the unconverted slugs have no "
+                f"database, so\nclaiming the root refuses with MigrationRefused first.\n"
+                f"\nTo roll back this root to JSON, authorise migrating the remaining "
+                f"JSON orgs\nto SQLite (restoring whole-root SQLite authority), after "
+                f"which this command\ncan export and park every database normally:\n"
+                f"\n  Windows  cmd /c \"set ORGTREE_MIGRATE=1&& python "
+                f"{me} rollback {root}\"\n"
+                f"  POSIX    ORGTREE_MIGRATE=1 python {me} rollback {root}\n"
+                f"\n⚠ That is deliberately NOT automatic. Converting an org's "
+                f"authority is exactly\nthe operation that must never happen because "
+                f"a tool decided it was probably\nfine. Read the two lists above and "
+                f"confirm they are what you expect before\nyou run it.", file=sys.stderr)
+        else:
+            lines = []
+            if parked:
+                lines.append(f"  already parked  : {', '.join(parked)}")
+            if unmigrated:
+                lines.append(f"  unmigrated JSON : {', '.join(unmigrated)}")
+            lines.append(f"  still database  : {', '.join(sorted(have_db))}")
+            detail = "\n".join(lines)
+            print(
+                f"\nTHIS ROOT IS IN A MIXED STATE (both databases and JSON documents).\n"
+                f"{detail}\n"
+                f"\nNothing has been lost, but both backends refuse this root. "
+                f"The tool cannot\nreliably distinguish whether this root was "
+                f"part-way through a migration or an\ninterrupted rollback, but "
+                f"claiming it refuses with MigrationRefused until\nevery org has "
+                f"a database.\n"
+                f"\nTo finish rolling back to JSON, authorise migrating the JSON orgs "
+                f"to SQLite\n(restoring whole-root SQLite authority), after which this "
+                f"command can export\nand park every database normally:\n"
+                f"\n  Windows  cmd /c \"set ORGTREE_MIGRATE=1&& python "
+                f"{me} rollback {root}\"\n"
+                f"  POSIX    ORGTREE_MIGRATE=1 python {me} rollback {root}\n"
+                f"\n⚠ That is deliberately NOT automatic. Converting an org's "
+                f"authority is exactly\nthe operation that must never happen because "
+                f"a tool decided it was probably\nfine. Read the lists above and "
+                f"confirm they are what you expect before\nyou run it.", file=sys.stderr)
         return 2
 
     store.claim_data_root()
     # re-read AFTER the claim: with the opt-in set, claiming is what rebuilds
-    # a part-way root's parked slugs from their installed exports, so the list
-    # here can legitimately be longer than the one above.
+    # a part-way root's parked slugs from their installed exports (or migrates
+    # unmigrated JSON orgs), so the list here can legitimately be longer than
+    # the one above.
     slugs = _slugs(store, ".db")
 
     print(f"1/3  exporting and validating all {len(slugs)} org(s) BEFORE "

@@ -722,6 +722,54 @@ out["nodes"] = sorted(store.load_org("beta").d["nodes"])
     check("the BackendMismatch refusal routes to the audited tool and never "
           "restates the rollback", the_refusal_routes_to_the_tool)
 
+    def rollback_on_partially_migrated_root_does_not_claim_rollback() -> None:
+        """A root part-way through a MIGRATION (some orgs converted to .db,
+        others still .json) is mixed, but is NOT part-way through a rollback.
+        Running cutover.py rollback without ORGTREE_MIGRATE must refuse (rc=2),
+        must identify the unconverted org as unmigrated JSON (not parked), and
+        must NOT claim a rollback happened."""
+        root = fresh_root()
+        r = child("store.migrate_org('alpha'); out['done'] = True",
+                  root, migrate="1")
+        assert r["done"] is True, r
+        assert os.path.exists(os.path.join(root, "orgs", "alpha.db"))
+        assert os.path.exists(os.path.join(root, "orgs", "beta.json"))
+        assert not os.path.exists(os.path.join(root, "orgs", "beta.db"))
+
+        cutover_py = os.path.normpath(os.path.join(BACKEND, "..", "tools", "cutover.py"))
+        env = child_env(root, "sqlite")
+        env.pop("ORGTREE_MIGRATE", None)
+        p = subprocess.run([sys.executable, cutover_py, "rollback", root],
+                           env=env, capture_output=True, text=True, timeout=60)
+        eq(p.returncode, 2, f"expected rc=2 on mixed root: {p.stderr}")
+        err = p.stderr
+
+        assert "PART-WAY THROUGH A ROLLBACK" not in err, (
+            "a partially-migrated root must not claim a rollback happened:\n" + err)
+        assert "already parked" not in err, (
+            "an unmigrated org must not be called parked:\n" + err)
+        assert "beta" in err, "must name the unmigrated org beta:\n" + err
+        assert "alpha" in err, "must name the database org alpha:\n" + err
+
+        # Positive control: on a root that genuinely has a parked database in parked-*,
+        # cutover.py rollback DOES identify it as a partial rollback and names it parked.
+        child("store.migrate_org('beta'); out['done'] = True", root, migrate="1")
+        parked_dir = os.path.join(root, "parked-control")
+        os.makedirs(parked_dir, exist_ok=True)
+        shutil.move(os.path.join(root, "orgs", "alpha.db"), os.path.join(parked_dir, "alpha.db"))
+        with open(os.path.join(root, "orgs", "alpha.json"), "w", encoding="utf-8") as f:
+            f.write("{}")
+        p2 = subprocess.run([sys.executable, cutover_py, "rollback", root],
+                            env=env, capture_output=True, text=True, timeout=60)
+        eq(p2.returncode, 2, f"expected rc=2 on parked root: {p2.stderr}")
+        assert "already parked" in p2.stderr, (
+            "positive control: an actually parked org must be called parked:\n" + p2.stderr)
+        assert "alpha" in p2.stderr, p2.stderr
+        assert "beta" in p2.stderr, p2.stderr
+    check("cutover.py rollback on a mixed root names the condition and does not claim a rollback happened",
+          rollback_on_partially_migrated_root_does_not_claim_rollback)
+
+
 
 if __name__ == "__main__":
     try:
