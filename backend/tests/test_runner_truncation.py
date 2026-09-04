@@ -196,15 +196,36 @@ def t_the_failure_summary_is_not_matched_by_an_ok_line_alone() -> None:
 
 # --------------------------------------------------------- group wiring
 def t_run_one_uses_the_predicate() -> None:
-    """The predicate is only worth anything if the runner asks it. Source
-    check, in the spirit of `group: callers`: a floor nothing stands on is
-    not a floor."""
-    src = open(RUNNER, encoding="utf-8").read()
-    assert "r.truncated = stopped_early(r.out)" in src, (
+    """The predicate is only worth anything if the runner asks it. In the
+    spirit of `group: callers`: a floor nothing stands on is not a floor.
+
+    ⚠ READ THE AST, NOT THE TEXT — and this check taught itself that lesson
+    on its first run. The first version grepped the file for
+    `"rc == 0 and oks"` and failed, because `stopped_early`'s own comment
+    QUOTES the old gate while explaining why it is gone. A source grep cannot
+    tell code from prose about code, which is the same fragility that makes
+    `harvest` and `turn-lifecycle` drift detectors rather than tests.
+    `ast.unparse` discards comments entirely, so what is asserted here is what
+    the interpreter will actually execute.
+    """
+    import ast
+    mod = ast.parse(open(RUNNER, encoding="utf-8").read())
+    fns = {n.name: n for n in ast.walk(mod)
+           if isinstance(n, ast.FunctionDef)}
+    assert "run_one" in fns, "run_one is gone from the runner"
+    body = ast.unparse(fns["run_one"])
+    assert "r.truncated = stopped_early(r.out)" in body, (
         "run_one no longer routes truncation through stopped_early - the "
         "tested predicate and the shipped behaviour have separated")
-    assert "rc == 0 and oks" not in src, (
-        "the rc == 0 gate is back in the runner")
+    # ⚠ AND NOT ONE CHARACTER MORE. The first draft also banned
+    # "rc == 0" anywhere before that line, which is wrong: run_one
+    # legitimately reads the exit code two lines up to set PASS/FAIL. A
+    # check that forbids a correct line is a check someone deletes. The
+    # gate cannot return through the predicate anyway - stopped_early takes
+    # only its output text, pinned by t_the_rc_gate_is_gone.
+    assert body.count("r.truncated") == 1, (
+        "truncation is decided in more than one place in run_one - one of "
+        "them will drift")
 
 
 def t_a_timeout_writes_itself_into_the_log() -> None:
