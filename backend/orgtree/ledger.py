@@ -1232,12 +1232,62 @@ class Org:
         2026-09-03: no live org had a kiosk ceiling set at all, so nothing
         real changed on the day."""
         mt = (self.kiosk_ceiling() or {}).get("max_tier")
-        if (mt in TIERS and tier in TIERS
-                and TIERS[tier] > TIERS[mt]):
+        cap = TIERS[mt] if mt in TIERS else None
+        seat = self._ceiling_seat(tier)
+        if cap is not None and seat is not None and seat > cap:
             raise LedgerError(
                 f"the kiosk ceiling caps agent tier at {mt} — {tier} agents "
                 f"cannot be hired, rehired or switched to in this org "
                 f"(admins change this in kiosk settings)")
+
+    def _ceiling_seat(self, tier: str) -> float | None:
+        """The seat `tier` brings to the CEILING ORDERING, or None if it has
+        no place in that ordering at all.
+
+        ⚠ THE `or-*` HALF WAS INVISIBLE HERE UNTIL 2026-09-04, and the cap
+        silently admitted everything it names. `_check_tier_ceiling` asked
+        `tier in TIERS` against the MODULE table, which holds the eleven
+        static bands and never an OpenRouter tier — those are minted at
+        runtime and live only in the per-org `d["tiers"]`. So the test was
+        skipped, not failed: MEASURED on this code, a `max_tier="haiku"`
+        (seat 1) kiosk admitted an `or-moonshotai-kimi-k3` (seat 3) at hire,
+        at switch_model and at plain rehire, while correctly refusing a
+        static opus (seat 5). An API-layer gate hid most of it
+        (`api.provider_hire_gate` refuses OpenRouter tiers in kiosk orgs
+        outright) but that gate is explicitly temporary — "until its
+        sandboxing is settled" — and the plain-rehire door skips it by
+        design, so the ledger was NOT carrying the guarantee its own
+        docstring claims for every actor.
+
+        WHICH TABLE EACH SIDE READS, and why it is not one table:
+          · a STATIC tier keeps reading the module `TIERS`. Reading the
+            document for it too would be tidier, but a document may carry an
+            operator's OWN price for a static band (the authority suite has a
+            fixture with `terra: 7`), and re-pricing the ceiling off that
+            would change refusals for orgs that have nothing to do with
+            OpenRouter. Out of scope, deliberately.
+          · an `or-*` tier reads `self.d["tiers"]` — the SAME table
+            `seat_cost` charges from, so the ordering and the bill agree by
+            construction. There is nowhere else it could read: the module
+            table has no row to offer.
+
+        Both sides are seats on one credit scale, quantised to 0.01, so the
+        comparison is well defined; `>` stays STRICT, so an `or-*` seat equal
+        to the cap is admitted exactly as flash is admitted under a haiku cap.
+
+        None means "not in the ordering", and the caller then refuses
+        nothing — the same fail-open the module-table test had for an unknown
+        tier. An `or-*` tier absent from the document cannot reach here from a
+        real door anyway: `hire` and `switch_model` both refuse an unknown
+        tier against `self.d["tiers"]` before the ceiling runs."""
+        if tier in TIERS:
+            return TIERS[tier]
+        from . import openrouter as _orr        # noqa: PLC0415 — as the load hook
+        if _orr.is_tier(tier):
+            v = (self.d.get("tiers") or {}).get(tier)
+            if isinstance(v, (int, float)) and not isinstance(v, bool):
+                return float(v)
+        return None
 
     def _apply_ceiling(self, tools: ToolGrant | None = None,
                        dirs: list[DirGrant] | None = None,
@@ -1391,11 +1441,19 @@ class Org:
         # credits around (side effects the admin should choose per agent), so
         # existing over-cap agents stay and the cap blocks NEW use only. Named
         # here so nothing is silent.
+        #
+        # ⚠ COUNTED THROUGH `_ceiling_seat`, NOT THE MODULE TABLE. These two
+        # scans are the admin's only view of what a new cap has just stranded,
+        # and `TIERS.get(n["model"], 0)` scored every `or-*` agent at 0 — so a
+        # cap set over a room full of OpenRouter agents reported "0 above" and
+        # the admin acted on a number that was counting a different question.
+        # It has to be the same comparison the refusal uses or the report is
+        # about a rule that is not the rule.
         mt = ms.get("max_tier")
         if mt in TIERS:
             over = sorted(i for i, n in self.nodes.items()
                           if n["state"] == "live"
-                          and TIERS.get(n["model"], 0) > TIERS[mt])
+                          and (self._ceiling_seat(n["model"]) or 0) > TIERS[mt])
             if over:
                 warnings.append(
                     f"{len(over)} live agent(s) above the {mt} tier cap "
@@ -1409,7 +1467,7 @@ class Org:
             # admin was told nothing at all.
             stuck = sorted(i for i, n in self.nodes.items()
                            if n["state"] == "archived"
-                           and TIERS.get(n["model"], 0) > TIERS[mt])
+                           and (self._ceiling_seat(n["model"]) or 0) > TIERS[mt])
             if stuck:
                 warnings.append(
                     f"{len(stuck)} ARCHIVED agent(s) above the {mt} tier cap "
@@ -3414,9 +3472,21 @@ class Org:
         # EFFECTIVE tier is tested: a rehire that downgrades below the cap
         # is welcome (motto: permit as much as possible); reseed ignores the
         # override, so unrecoverable nodes test their own tier.
+        #
+        # ⚠ `tier is None`, NOT `tier not in TIERS`. The old spelling meant
+        # "no override was given" and was written as "the override is not a
+        # static band", which are the same sentence only while every tier is
+        # static. An `or-*` override took the None branch and the ceiling then
+        # tested the tier the node ALREADY RAN instead of the one being asked
+        # for: MEASURED, an archived `or-z-ai-glm-5-3-flash` (seat 0.1) node
+        # was rehired as `or-moonshotai-kimi-k3` (seat 3) under a haiku cap
+        # (seat 1) and admitted. The provider-crossing refusal above hides
+        # this whenever the node ran on Claude, which is why it survived: the
+        # only way to see it is an OpenRouter node rehired onto another
+        # OpenRouter tier, where nothing crosses.
         self._check_tier_ceiling(
-            n["model"] if n["state"] == "unrecoverable" or tier not in TIERS
-            else tier)             # `tier not in TIERS` filtered out None
+            n["model"] if n["state"] == "unrecoverable" or tier is None
+            else tier)
         if n["state"] == "unrecoverable":
             # motto bridge: the session is dead but the node — name, position,
             # charter, credits, reports, mailbox — is fine. Rehire = re-seed.

@@ -1855,22 +1855,174 @@ def section_edges():
           lambda: eq((af.audit()["no_overdraft"], af.audit()["problems"]),
                      (True, [])))
 
-    # ⚠ THE ORDERING WARNING DOES NOT REACH THIS CHANGE, and that is worth
-    # pinning rather than assuming. `_check_tier_ceiling` compares the MODULE
-    # `TIERS` constant, which never contains an `or-*` tier — those live only
-    # in the per-org table. So an or-* tier is invisible to the kiosk ceiling
-    # both before and after this repricing, and no tie can break. (That
-    # invisibility is a separate pre-existing gap in the ceiling, not
-    # something this change introduces or is entitled to fix.)
+    # ⚠ THE ORDERING WARNING DID NOT REACH THIS CHANGE — no tie could break,
+    # because an `or-*` tier was not in the ordering AT ALL. That is what this
+    # check pinned when it was written, and the note that used to sit here
+    # called the invisibility "a separate pre-existing gap in the ceiling, not
+    # something this change is entitled to fix". It was fixed on 2026-09-04
+    # (see §CEILING below), so the reason this hire is admitted has CHANGED:
+    # not "the ceiling never consults it" but "0.1 is genuinely under a luna
+    # cap of 0.2". Same outcome, different sentence — worth saying, because a
+    # green assertion whose stated reason has silently stopped being true is
+    # how a test starts guarding nothing.
     orc = live_shaped_doc()
     orc.d["kiosk"] = {"enabled": True}
     orc.set_kiosk_ceiling({"max_tier": "luna"})
-    check("an or-* tier is not in the module TIERS, so the kiosk ordering "
-          "this repricing might have disturbed never consults it",
+    check("an or-* tier is still not a MODULE tier, and at 0.1 it is under a "
+          "luna cap on its own price rather than by being unseen",
           lambda: (eq(T_DS in TIERS, False, "not a module tier"),
                    eq(Org(json.loads(json.dumps(orc.d)))
                       .hire(USER, None, T_DS, 1, "or1")["node"], "or1",
                       "admitted at 0.1 exactly as it was at 1")))
+
+    # ══════════════════════════════════════════════════════ §CEILING (2026-09-04)
+    # THE KIOSK CAP USED TO ADMIT EVERY OpenRouter TIER IT NAMES.
+    #
+    # `_check_tier_ceiling` asked `tier in TIERS` against the MODULE table.
+    # An `or-*` tier is never in it — those are minted at runtime and live
+    # only in the per-org `d["tiers"]` — so the test was SKIPPED, not failed,
+    # and the cap admitted a $3/M model under a haiku cap while refusing a
+    # static opus. `api.provider_hire_gate` hid most of it by refusing
+    # OpenRouter tiers in kiosk orgs outright, but that gate is explicitly
+    # temporary ("until its sandboxing is settled") and the plain-rehire door
+    # skips it by design, so the ledger was not carrying the guarantee its own
+    # docstring claims "for every actor".
+    #
+    # ⚠ THE FIXTURE HAS TO CREATE THE CONDITION. No live org had a kiosk
+    # ceiling set at all when this was written, so nothing here can be found
+    # by looking — a cap must be set, and it must be set BELOW a tier that is
+    # actually present, or every assertion below is free.
+    # a third or-* row, with NO favorite record behind it — the same shape as
+    # T_GLM above (a deselected favorite whose org row survives). The document
+    # row IS the whole input to the ordering; nothing consults the catalog.
+    T_K3 = "or-moonshotai-kimi-k3"
+
+    def capped(slug, cap="haiku"):
+        """a kiosk org capped at `cap`, carrying three or-* rows: 0.1, 2, 3."""
+        o = Org.create(slug)
+        o.d["tiers"].update({T_DS: 0.1, T_GROK: 2, T_K3: 3})
+        o.d["models"].update({T_DS: "~deepseek/deepseek-v4-flash-latest",
+                              T_GROK: "x-ai/grok-4.6",
+                              T_K3: "moonshotai/kimi-k3"})
+        o.d["kiosk"] = {"enabled": True}
+        o.set_kiosk_ceiling({"max_tier": cap})
+        return o
+
+    # ── the control, FIRST: prove the cap discriminates before trusting a
+    # refusal. A cap that refused everything, or one set above every tier in
+    # the table, would make every check under it meaningless.
+    check("[control] a haiku cap refuses a static opus, admits a static "
+          "haiku, and admits an or-* tier genuinely BELOW it",
+          lambda: (expect_error(
+              lambda: capped("ceil-c1").hire(USER, None, "opus", 0, "n"),
+              "caps agent tier at haiku"),
+              eq(capped("ceil-c2").hire(USER, None, "haiku", 0, "n")["node"],
+                 "n", "static haiku admitted"),
+              eq(capped("ceil-c3").hire(USER, None, T_DS, 0, "n")["node"],
+                 "n", "or-* at 0.1 admitted under a cap of 1")))
+
+    check("HIRE: an or-* tier ABOVE the cap is refused, and the refusal names "
+          "the tier the caller asked for",
+          lambda: expect_error(
+              lambda: capped("ceil-h").hire(USER, None, T_K3, 0, "n"),
+              f"caps agent tier at haiku — {T_K3} agents"))
+
+    def with_node(slug, tier, cap="haiku"):
+        """…and the same org with `tier` hired BEFORE the cap existed — the
+        reachable route, since a kiosk refuses the or-* hire at the API door."""
+        o = Org.create(slug)
+        o.d["tiers"].update({T_DS: 0.1, T_GROK: 2, T_K3: 3})
+        o.d["models"].update({T_DS: "~deepseek/deepseek-v4-flash-latest",
+                              T_GROK: "x-ai/grok-4.6",
+                              T_K3: "moonshotai/kimi-k3"})
+        o.hire(USER, None, tier, 0, "n")
+        o.d["kiosk"] = {"enabled": True}
+        o.set_kiosk_ceiling({"max_tier": cap})
+        return o
+
+    check("SWITCH_MODEL: a live node cannot be switched UP onto an or-* tier "
+          "above the cap…",
+          lambda: expect_error(
+              lambda: with_node("ceil-s", "haiku").switch_model(USER, "n", T_K3),
+              f"{T_K3} agents"))
+    check("…but a switch onto an or-* tier under the cap is still welcome "
+          "(the motto: permit as much as possible)",
+          lambda: eq(with_node("ceil-s2", "haiku")
+                     .switch_model(USER, "n", T_DS)["model"], T_DS))
+
+    def archived(slug, tier, cap="haiku"):
+        o = with_node(slug, tier, cap)
+        o.retire(USER, "n")
+        return o
+
+    # the door the API gate does NOT cover: a plain rehire passes
+    # `user_choice_only=True`, which returns from `provider_hire_gate` before
+    # the kiosk holdout. If the ledger does not hold this, nothing does.
+    check("PLAIN REHIRE: an archived or-* agent above the cap stays out",
+          lambda: expect_error(
+              lambda: archived("ceil-r", T_K3).rehire(USER, "n"),
+              f"{T_K3} agents"))
+    _under = archived("ceil-r2", T_DS)
+    check("…and one below the cap comes back, so the cap is not a blanket "
+          "no-or-* rule wearing a ceiling's clothes",
+          lambda: eq((_under.rehire(USER, "n"),
+                      _under.node("n")["state"])[1], "live"))
+
+    # ⚠ THE SECOND BUG, and it is not the module-table one. rehire read
+    # `tier not in TIERS` where it meant `tier is None`, so an or-* OVERRIDE
+    # took the no-override branch and the ceiling tested the tier the node
+    # ALREADY RAN. Only visible between two OpenRouter tiers: with a Claude
+    # node the provider-crossing refusal fires first and hides it.
+    check("REHIRE + or-* OVERRIDE: the tier ASKED FOR is tested, not the one "
+          "the node used to run",
+          lambda: expect_error(
+              lambda: archived("ceil-o", T_DS).rehire(USER, "n", tier=T_K3),
+              f"{T_K3} agents"))
+    _down = archived("ceil-o2", T_K3)
+    check("…and the override still works DOWNWARD — an over-cap archived "
+          "agent is rescued by rehiring it cheaper, not stranded",
+          lambda: eq((_down.rehire(USER, "n", tier=T_DS),
+                      _down.node("n")["model"])[1], T_DS))
+
+    # ties: `>` is strict, so a seat EQUAL to the cap is admitted — the same
+    # rule that admits flash under a haiku cap. Named rather than discovered.
+    check("a TIE is admitted: an or-* tier at exactly the cap's seat passes, "
+          "as flash does under a haiku cap",
+          lambda: (eq(capped("ceil-t", "sonnet").hire(
+              USER, None, T_GROK, 0, "n")["node"], "n", "or-* 2 under cap 2"),
+              eq(capped("ceil-t2").hire(USER, None, "flash", 0, "n")["node"],
+                 "n", "static flash 1 under cap 1")))
+
+    # the admin's REPORT has to count the same rule the refusal enforces, or
+    # it is a number about a different question. It scored or-* agents at 0.
+    rep = Org.create("ceil-rep")
+    rep.d["tiers"].update({T_K3: 3})
+    rep.d["models"].update({T_K3: "moonshotai/kimi-k3"})
+    rep.hire(USER, None, T_K3, 0, "orlive")
+    rep.hire(USER, None, "opus", 0, "opuslive")
+    rep.hire(USER, None, T_K3, 0, "orarch")
+    rep.retire(USER, "orarch")
+    rep.d["kiosk"] = {"enabled": True}
+    _w = " || ".join(rep.set_kiosk_ceiling({"max_tier": "haiku"})["warnings"])
+    check("set_kiosk_ceiling's over-cap report counts or-* agents too — live "
+          "and archived — instead of scoring them 0",
+          lambda: (eq("orlive" in _w, True, f"live or-* named: {_w}"),
+                   eq("opuslive" in _w, True, "the static one still named"),
+                   eq("orarch" in _w, True, "archived or-* named (stranded)")))
+
+    # fail-open, deliberately: a tier with no row in this document brings no
+    # seat to the ordering, so the ceiling refuses nothing and the real doors
+    # refuse it first for being unknown. Both halves asserted — the second is
+    # what makes the first safe rather than a hole.
+    check("an or-* tier absent from the document is not refused BY THE "
+          "CEILING — hire refuses it earlier, for not existing",
+          lambda: (eq(capped("ceil-u")._ceiling_seat("or-nobody-nope"), None,
+                      "no seat, so no place in the ordering"),
+                   expect_error(
+                       lambda: capped("ceil-u2").hire(
+                           USER, None, "or-nobody-nope", 0, "n"),
+                       "unknown tier")))
+
     # put the rig back: a favorite is GLOBAL to this data root, so leaving it
     # selected would add an or-* row to every org built after this point — and
     # the static-vocabulary check just below counts the tier table exactly.
