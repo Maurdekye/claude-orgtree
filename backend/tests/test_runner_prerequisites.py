@@ -68,10 +68,26 @@ def run(fake_policy=None, no_frontend=False):
     if no_frontend:
         sys.argv.append("--no-frontend")
     out = io.StringIO()
+    # ⚠ MINT A SCRATCH ORGTREE_DATA BEFORE DRIVING THE RUNNER. `rt.main()`
+    # runs IN THIS PROCESS, and `run_tests.py` strips every ORGTREE_* from the
+    # suites it launches — so without this the runner sees no data root and
+    # REFUSES, exit 2, the moment `store.py` defaults to sqlite. That refusal
+    # is correct and this suite was the thing at fault: it drove the runner
+    # while relying on the default root being harmless, which under JSON it
+    # was and under SQLite it is not (an unrooted sqlite claim migrates
+    # ~/orgtree). The guard did not break this suite; it revealed the
+    # assumption. `root` is already this case's own temp directory.
+    # (sqlite-review, 2026-09-04, found by the full-suite flip diff.)
+    had = os.environ.get("ORGTREE_DATA")
+    os.environ["ORGTREE_DATA"] = root
     try:
         with contextlib.redirect_stdout(out):
             rc = rt.main()
     finally:
+        if had is None:
+            os.environ.pop("ORGTREE_DATA", None)
+        else:
+            os.environ["ORGTREE_DATA"] = had
         rt.discover = real_discover
         rt.required_skip_failures = real_policy
         sys.argv = old_argv

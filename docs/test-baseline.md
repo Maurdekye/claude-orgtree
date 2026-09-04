@@ -807,3 +807,217 @@ any orgtree module is imported, which fixes all four at the source; `mcptool.py`
 has always done this for its own stdio. **Do not "fix" call sites by removing
 glyphs** — the point is that a future author typing an em-dash need not know
 any of this. `test_access_record.py` §7/§8 pin both halves.
+
+## ⚠⚠ A PROBE CAN BE CONFIDENTLY WRONG, AND IT IS WORSE THAN PROSE
+
+Written by `sqlite-review`, 2026-09-04, after nearly making a tool worse by
+fixing it to match a check. Two instances of the same disease landed on the
+same day, from opposite directions, and both are worth carrying.
+
+**Instance 1 — an assertion that demanded ONE safe outcome when there were two.**
+A rollback tool had a real defect: interrupted part-way, it could leave a data
+root that a backend would start on *with an org silently missing*. The probe
+written to catch that asserted **"neither backend starts"**. That sounds like
+the safety property. It is not the safety property.
+
+The invariant is **NO ORG CAN SILENTLY VANISH**, and it admits *two* safe
+outcomes:
+
+  * every moved file is put back, the root is INTACT, and the backend starts
+    with EVERY org present — the best case; or
+  * nothing can start at all, because the store refuses in both directions.
+
+What must never happen is a backend starting with an org **missing**. When the
+tool was fixed, its recovery path produced the *first* outcome — and the probe
+went red, because it demanded the second. **Had the tool been changed to
+satisfy the probe, the tool would have got worse.** The check was not merely
+failing; it was arguing against correctness while looking like evidence.
+
+**Instance 2** (`cache-invalidation-audit`, same day) is the mirror image: a
+check that *looked* like it was verifying something while observing nothing at
+all. One over-specifies and rejects a correct answer; the other under-specifies
+and accepts anything. Both are green-or-red for reasons unrelated to the thing
+they name.
+
+### What to do about it
+
+**When a check fails, ask which of you is wrong before you touch the code.**
+The default assumption — "the check is the spec" — is exactly what makes this
+dangerous, because a probe carries the authority of a measurement while being
+nothing but a sentence someone wrote.
+
+Three questions that catch it:
+
+1. **Can you state the invariant in words that do not mention the
+   implementation?** "Neither backend starts" is a description of a mechanism.
+   "No org can silently vanish" is an invariant. If your assertion only
+   survives in mechanism terms, it is probably pinning an accident.
+2. **Does the invariant admit more than one acceptable outcome?** If it does
+   and your assertion names one, the assertion is wrong, not incomplete.
+3. **Has this check ever been watched to fail for the RIGHT reason?** The
+   suite convention here is that a check which has never failed is not yet a
+   check — the sharper version is that a check which has never failed *against
+   the defect it names* is not yet a check. Mutation-test it: plant the defect
+   and confirm the red comes from the defect and not from a coincidence.
+
+And the reason this belongs in the baseline file rather than in one probe's
+header: **the same failure mode applies to this document.** Every name in the
+list above is an assertion about the world that was true when someone measured
+it. That is why the instruction at the top is to re-measure rather than to
+trust — and it is the same instruction, one level up.
+
+## A red that was hiding behind a stale red: the kiosk-enumeration fixture
+
+`cache-invalidation-audit` suppressed the §1 hygiene drift detector in
+`test_external_mail.py`, and the suite then reached point 7 and failed:
+*"kiosk enumeration: a kiosk whose doc will not load is listed WITHOUT
+kiosk_cfg"*. **A stale red had hidden a live one, which is the argument for
+keeping reds honest, arriving on schedule.**
+
+### The call, and why — `sqlite-review`, 2026-09-04
+
+**The fixture is obsolete. It is NOT a store regression, and I checked that
+rather than assuming it, because it looked exactly like one.**
+
+The check manufactured "a kiosk whose doc will not load" by rewriting an org's
+internal slug to disagree with its file name. That worked because `/api/orgs`
+then did a **second** `store.load_org` **by that internal slug**, which raised
+`no such org` and dropped the endpoint onto its bare-row fallback — a row with
+`kiosk: True` and no `kiosk_cfg`.
+
+`d6d38cd` ("The org listing parses each document once, not twice") removed that
+second lookup for performance: the endpoint keeps the document it already
+parsed. Its own docstring records the consequence — *"the `LedgerError` branch
+that handled that window in `orgs_list` is gone with it."*
+
+**Measured both ways before deciding**, because "a slug/file-name disagreement
+ceasing to be an error" is precisely what the SQLite work would look like:
+
+    load_org("sealed-renamed")  -> STILL RAISES LedgerError: no such org
+    list_orgs()                 -> STILL reports the internal slug
+    load_org("sealed")          -> loads, as it always did
+
+Nothing about slug/file-name disagreement stopped being an error. **The
+listing simply stopped asking**, and `d6d38cd` is in `f5b4ce3` — it predates
+the storage branch entirely.
+
+**So the old behaviour was not load-bearing and is not restored.** The row now
+carries *more* information, not less: both `kiosk: True` and `kiosk_cfg`. The
+security property the check existed for — that `externtool.py` filters on the
+authoritative `kiosk` field rather than on `kiosk_cfg` — is unaffected, and is
+now asserted **directly** against the real filter with a chosen payload rather
+than through a scenario that can no longer produce it. Reverting the fix in
+`externtool.py` still turns it red. A second check pins the new endpoint
+behaviour so the next reader is not left guessing.
+
+⚠ The rewritten check is **backend-aware**. `store.org_path` is the `.db`
+under a SQLite default, so `json.load` on it dies — the same class as the nine
+format assertions in `test_persistence.py`: a test reaching past the store to
+the on-disk format. **Any suite that pokes an org document as a file has this
+problem the moment the default flips**, and that is a general warning, not a
+note about this one fixture.
+
+## Stating an A/B result at the precision the evidence supports
+
+`sqlite-review`, 2026-09-04, after `phase1-audit` caught two flaws in a table I
+had already sent. Both are worth keeping because neither made the conclusion
+wrong — they made the *stated reason* for it wrong, which is worse in a
+document somebody will reuse.
+
+**Flaw 1: I counted failing CHECKS and presented them as run rates.** For
+`dupresult` the check counts were 3 and 3, which reads as "identical". The run
+rates were **JSON 2/3, SQLite 3/3**. Equal check counts across arms do not
+demonstrate equal behaviour when a section can fail several checks in one run.
+
+**Flaw 2: the log directory mixed two batches.** The rig wrote to
+`logs/ab-<section>/`, so a later 3-round batch overwrote `r1..r3` of an earlier
+10-round one and left `r4..r10` in place. A summary that walked the directory
+silently averaged two different experiments. Fixed — one directory per batch,
+stamped — because **a rig that cannot tell you which run a log came from is not
+a rig.**
+
+### What actually carries a "not backend-specific" claim
+
+Not the counts. Three things, in this order:
+
+1. **Identical failure SIGNATURES across arms.** Same check, same assertion,
+   same captured state — for these, `{'mailbox': True, journal/transcript
+   False}`, i.e. the mail is safely persisted and simply was not delivered
+   inside the window.
+2. **Direction reversal across batches.** A dedicated 10-round batch gave
+   `freeze` at JSON 4/10 against SQLite 3/10; a later 3-round batch gave 2/3
+   against 1/3. A defect that belonged to one backend does not keep changing
+   which side it prefers.
+3. **The failing name MOVING within a section.** `dupresult` produced three
+   different check names across arms in one hour. That is a section whose
+   check name is not a stable experimental unit, so comparing its names — or
+   its counts of them — compares nothing.
+
+Counts are illustration. Signatures and reversals are the evidence. **A number
+that does not prove what it appears to prove is worse than no number**,
+especially in a table headed for someone who will not re-derive it.
+
+## ⚠⚠ PRESENT, PLAUSIBLE, AND INERT — the failure class of 2026-09-04
+
+Three defects on one day shared a shape, and the shape is worth a name because
+it defeats reading. In each case something **existed, looked correct, and did
+nothing** — and in each case the appearance of correctness is precisely what
+stopped anyone checking whether it worked.
+
+**1. An env var set to a value the vendor never accepts.**
+`AGY_CLI_DISABLE_AUTO_UPDATE="1"`, where the vendor requires the literal
+string `"true"`. Present in the environment, spelled correctly, obviously
+about the right thing. Inert for an unknown length of time.
+
+**2. A floor no caller went through.** A guard that would have done its job
+correctly if anything had reached it.
+
+**3. `\b` in a non-raw Python string.** A regex written through a `'''…'''`
+patch rather than an `r"…"` literal, so `\b` became a **literal backspace
+byte** (0x08) instead of a word boundary. The pattern read perfectly in an
+editor and matched nothing. Found with `cat -A`. **Reading it never would
+have found it, at any level of care** — the character is invisible.
+
+### Why this class is different from an ordinary bug
+
+An ordinary bug does something wrong; you can see the wrong thing. These do
+**nothing**, and nothing looks identical to "working, and the condition it
+guards has not occurred." A guard that never fires and a guard that cannot
+fire are the same picture from outside.
+
+That is also why they survive review. Every one of these would pass a careful
+reading, because at the level of reading they *are* correct.
+
+### The only defence
+
+**Prove the mechanism fired, don't verify that it exists.**
+
+- For a setting or a flag: make it take effect and observe the effect. The
+  performance harness in this work refuses to record a sample unless the child
+  reports back the backend it actually resolved — and that guard was itself
+  proved by asking for one backend while forcing the other, and watching it
+  refuse.
+- For a guard: watch it fail against the defect it names. A check that has
+  never been watched to fail *for the right reason* is not yet a check.
+- For a pattern, a template, or anything with escapes: **run it against known
+  inputs in both directions** — does it match what it must, and leave alone
+  what it must not. Both. A regex validated only on the strings it should
+  match is half-tested, and the half you skipped is where the silence lives.
+
+### And the corollary that cost the most today
+
+**Validate against a corpus, not against your examples.** An early-abort
+classifier written for this work was validated against three logs of known
+outcome and pronounced good. Run against 157 real logs it called **sixty
+finished suites "unfinished"** — `PASSED 21/21`, `34 checks passed`,
+`10/10 checks passed`, forms its author had simply never thought of.
+
+Three examples cannot show you the shape of a corpus. They can only confirm
+that you thought of the three.
+
+⚠ The repair for that one is instructive in its own right and it is **not**
+"collect more formats". `stopped_early()` in `tools/run_tests.py` gets it
+right by inverting the question: *there is no closed set of summary formats;
+there IS a closed set of ways a run dies.* Find the last traceback and ask
+whether anything reporting counts comes after it. Chasing formats one at a
+time was the wrong shape, and a flag that cries wolf is worthless within a day.

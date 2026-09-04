@@ -965,30 +965,87 @@ def s4_kiosk():
         row = [o for o in j if o["slug"] == "sealed"][0]
         assert "kiosk_cfg" in row
 
-    @t("⚑→✓ kiosk enumeration: a kiosk whose doc will not load is listed WITHOUT kiosk_cfg")
+    @t("kiosk enumeration: a row carrying kiosk:True is filtered even with NO "
+       "kiosk_cfg — the defect externtool.py fixed")
     def _():
-        # reproduction of the defect fixed in externtool.py. /api/orgs falls back
-        # to the bare list row whenever store.load_org raises — a doc whose
-        # internal slug disagrees with its file name (rename, restore, or a
-        # concurrent delete_org rename) does exactly that. The row still carries
-        # the authoritative `kiosk: True` from store.list_orgs.
-        p = store.org_path("sealed")
-        d = json.load(open(p, encoding="utf-8"))
-        orig = d["slug"]
-        d["slug"] = "sealed-renamed"
-        json.dump(d, open(p, "w", encoding="utf-8"))
+        """The security property, asserted directly instead of through a
+        scenario that can no longer produce it.
+
+        ⚠ THIS CHECK USED TO MANUFACTURE ITS INPUT and no longer can. It made
+        an org's internal slug disagree with its file name, because
+        `/api/orgs` then did a SECOND `store.load_org` BY THAT INTERNAL SLUG,
+        which raised `no such org` and dropped the endpoint onto its bare-row
+        fallback — a row with `kiosk: True` and no `kiosk_cfg`.
+
+        `d6d38cd` ("The org listing parses each document once, not twice")
+        removed that second lookup: the endpoint now keeps the document it
+        already parsed, and its own docstring records that the `LedgerError`
+        branch went with it. So the bare row is unreachable by this route.
+
+        ⚠ NOT a store change, and worth stating because it looks like one:
+        `store.load_org("sealed-renamed")` STILL raises `no such org`, and
+        `list_orgs` still reports the internal slug. Measured both ways on
+        2026-09-04 while deciding this. A slug/file-name disagreement did not
+        stop being an error — the listing simply stopped asking.
+
+        The fix in `externtool.py` is unaffected: it filters on the
+        authoritative `kiosk` field rather than on `kiosk_cfg`, so the shape
+        below is exactly what it must reject, however the row arises. Driving
+        the real filter over a chosen payload tests that directly; reverting
+        the fix in `externtool.py` still turns this RED."""
+        assert "sealed-x" not in _extern_visible(
+            [{"slug": "sealed-x", "name": "sealed-x", "kiosk": True},
+             {"slug": "open-x", "name": "open-x", "kiosk": False}])
+        assert "open-x" in _extern_visible(
+            [{"slug": "open-x", "name": "open-x", "kiosk": False}])
+
+    @t("...and the one-pass listing now returns that kiosk's row COMPLETE, "
+       "which the filter excludes on `kiosk` either way")
+    def _():
+        """The new truth, pinned so the next reader is not left guessing what
+        the endpoint does with a mismatched slug.
+
+        Strictly more information than before, not less: the row now carries
+        BOTH `kiosk: True` and `kiosk_cfg`, and the filter excludes it on the
+        first of those — which is the whole point of the externtool fix."""
+        # ⚠ BACKEND-AWARE. `store.org_path` is the `.db` under the SQLite
+        # default, so `json.load` on it dies with a JSONDecodeError — the same
+        # class as the nine format assertions in test_persistence.py and the
+        # doc()/plant sites in test_turn_lifecycle: a test reaching past the
+        # store to the on-disk format. The internal slug lives in the `doc`
+        # table there, not in a file.
+        def _set_slug(new_slug: str) -> str:
+            if store.STORE_BACKEND == "sqlite":
+                conn = store._open_conn(store._db_path("sealed"))
+                try:
+                    was = json.loads(conn.execute(
+                        "SELECT val FROM doc WHERE key='slug'").fetchone()[0])
+                    conn.execute("BEGIN IMMEDIATE")
+                    conn.execute("UPDATE doc SET val=? WHERE key='slug'",
+                                 (json.dumps(new_slug),))
+                    conn.execute("COMMIT")
+                finally:
+                    conn.close()
+                store._POOL.close_all("sealed")
+                return was
+            p = store.org_path("sealed")
+            d = json.load(open(p, encoding="utf-8"))
+            was = d["slug"]
+            d["slug"] = new_slug
+            json.dump(d, open(p, "w", encoding="utf-8"))
+            return was
+
+        orig = _set_slug("sealed-renamed")
         try:
             _, rows = call("GET", "/api/orgs")
             row = [o for o in rows if o["slug"] == "sealed-renamed"][0]
-            assert "kiosk_cfg" not in row and row["kiosk"] is True, row
-            # the OLD filter (kiosk_cfg only) would have listed it…
-            assert [o["slug"] for o in rows if not o.get("kiosk_cfg")].count(
-                "sealed-renamed") == 1
-            # …and the real externtool.py, driven over this same payload, does not
+            assert row["kiosk"] is True, row
+            assert "kiosk_cfg" in row, (
+                "the one-pass listing should carry the parsed doc through; if "
+                "this is missing again, the second load_org is back")
             assert "sealed-renamed" not in _extern_visible(rows)
         finally:
-            d["slug"] = orig
-            json.dump(d, open(p, "w", encoding="utf-8"))
+            _set_slug(orig)
 
     @t("the fixed filter still lists ordinary orgs")
     def _():
@@ -2488,15 +2545,37 @@ def s11_failures():
         store.save_org(o)
         assert len(api._extern_scan("@mcp:cp", None, None)) == 1
         p = store.org_path("corrupt")
+        # ⚠ BACKEND-AWARE CORRUPTION. `org_path` is the `.db` under a SQLite
+        # default, and simply writing garbage over it DOES NOT MAKE THE ORG
+        # UNLOADABLE: a pooled connection is still open on that database, so
+        # the clobber does not take effect and `load_org` keeps serving the
+        # intact document. Measured 2026-09-04 — the scan then still returned
+        # the message and this check failed under sqlite while passing under
+        # json, which is a property of the FIXTURE, not of the store.
+        # Closing the pool first makes the next open fail properly with
+        # `DatabaseError: file is not a database`, which is what this check
+        # is actually about.
+        if store.STORE_BACKEND == "sqlite":
+            store._POOL.close_all("corrupt")
         keep = open(p, "rb").read()
+        side = {}
+        for suf in ("-wal", "-shm"):
+            if os.path.exists(p + suf):
+                side[suf] = open(p + suf, "rb").read()
+                os.remove(p + suf)
         with open(p, "wb") as f:
             f.write(b"{not json")
         try:
             st, j = call("GET", "/api/extern/cp/messages")
             assert st == 200 and j["messages"] == [], (st, j)
         finally:
+            if store.STORE_BACKEND == "sqlite":
+                store._POOL.close_all("corrupt")
             with open(p, "wb") as f:
                 f.write(keep)
+            for suf, blob in side.items():
+                with open(p + suf, "wb") as f:
+                    f.write(blob)
 
     @t("a lone unpaired surrogate in a body does not take the whole scan down")
     def _():
