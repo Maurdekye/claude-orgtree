@@ -2159,13 +2159,26 @@ def load_org(slug: str) -> Org:
         try:
             with _POOL.acquire(slug) as conn:
                 doc = _load_lazy(conn, slug)
-            # ⚠ INSIDE the try: `Org.__init__` walks `mail_log` to backfill
-            # message ids (ledger.py:568), which MATERIALISES that section —
-            # a second trip to the database, in the same window, after the
-            # `with` block has already closed. Constructing outside the try
-            # let that trip raise a raw sqlite3 error (and, before
+            # ⚠ INSIDE the try: `Org.__init__` CAN walk `mail_log` to backfill
+            # message ids (`_backfill_mail_log_ids`), which MATERIALISES that
+            # section — a second trip to the database, in the same window,
+            # after the `with` block has already closed. Constructing outside
+            # the try let that trip raise a raw sqlite3 error (and, before
             # `_open_conn(create=False)`, a bare `KeyError('nodes')` off an
             # empty document) out of a plain read.
+            #
+            # ⚠ "CAN", not "does". That backfill is MARKER-KEYED: it returns
+            # immediately once `_migrations["mail_log_ids"]` is set, so it
+            # walks `mail_log` only on a document that has never been through
+            # it. Measured on the live 12.7 MB document, 2026-09-04: with the
+            # marker present (as every live org has it) `load_org` leaves ALL
+            # EIGHT lazy sections unmaterialised and pulls zero bytes of them;
+            # strip the marker and `mail_log` materialises on construction.
+            # The earlier wording here said it happened on every load, which
+            # would mean the lazy design buys nothing on reads — and a
+            # performance report was nearly written on that basis. The
+            # placement below is still right, because the unmarked path is
+            # real; the cost is not paid twice.
             return Org(cast("OrgDoc", doc))
         except sqlite3.OperationalError as e:
             # deleted between the exists() check and the open — delete_org
