@@ -934,12 +934,25 @@ export function DraftNode({ pos, draft, map, seats, maxTop, defaultTop, kioskRem
   // the advisory threshold, as the SERVER reports it — never hardcoded here,
   // or this notice would drift out of agreement with the backend
   const [charterLong, setCharterLong] = useState<number | null>(null)
+  const [presetLoad, setPresetLoad] = useState<'pending' | 'error' | 'ready'>('pending')
+  const [presetError, setPresetError] = useState<string | null>(null)
+  const [presetRetry, setPresetRetry] = useState(0)
   useEffect(() => {
+    let current = true
+    setPresetLoad('pending')
+    setPresetError(null)
     getCharters().then((r) => {
+      if (!current) return
       setPresets(r.charters ?? [])
       setCharterLong(r.charter_long ?? null)
-    }).catch(() => {})
-  }, [])
+      setPresetLoad('ready')
+    }).catch((e: unknown) => {
+      if (!current) return
+      setPresetError(e instanceof Error && e.message ? e.message : 'request failed')
+      setPresetLoad('error')
+    })
+    return () => { current = false }
+  }, [presetRetry])
   const finalCharter = () =>
     [...chosen.map((c) => c.content), charter].filter((t) => t.trim())
       .join('\n\n')
@@ -1020,7 +1033,19 @@ export function DraftNode({ pos, draft, map, seats, maxTop, defaultTop, kioskRem
           </div>
           {/* grant lives ONLY on the credit bar (user ruling) — no slider,
               no readout line; the bar's own tip reports grant + seat */}
-          {presets.length > 0 && (
+          {presetLoad === 'pending' && (
+            <div className="df-preset-status" role="status" aria-live="polite">
+              Loading charter presets...
+            </div>
+          )}
+          {presetLoad === 'error' && (
+            <div className="df-preset-status" role="alert">
+              Unable to load charter presets ({presetError ?? 'request failed'}).
+              <button type="button"
+                onClick={() => setPresetRetry((n) => n + 1)}>Retry</button>
+            </div>
+          )}
+          {presetLoad === 'ready' && presets.length > 0 && (
             <select className="df-preset-add" value=""
               onChange={(e) => {
                 const p = presets.find((x) => x.name === e.target.value)

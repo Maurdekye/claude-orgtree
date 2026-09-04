@@ -2143,6 +2143,9 @@ export function SettingsPanel({ tree, toast, close }: {
     (k in edit ? edit[k] as T : server)
   const clearEdits = () => setEdit({})
   const [orgMd, setOrgMd] = useState<string | null>(null)
+  const [orgMdLoad, setOrgMdLoad] = useState<'pending' | 'error' | 'ready'>('pending')
+  const [orgMdError, setOrgMdError] = useState<string | null>(null)
+  const [orgMdRetry, setOrgMdRetry] = useState(0)
   // what the server said about org.md's length and how much of it agents
   // actually receive — the editor is the only place the operator can learn it
   const [orgMdMeta, setOrgMdMeta] = useState<OrgMdPayload | null>(null)
@@ -2248,15 +2251,27 @@ export function SettingsPanel({ tree, toast, close }: {
     // saved into the new one during the load window.
     setOrgMd(null)
     setOrgMdMeta(null)
+    setOrgMdLoad('pending')
+    setOrgMdError(null)
+    let current = true
     getOrgMd(tree.slug).then((r) => {
+      if (!current) return
       setOrgMdMeta(r)
       // ☠ Same family as the empty-write scar above: if the READ was cut, the
       // buffer is not the file. Saving it back would rewrite org.md short and
       // destroy the tail for real. Refuse to load it into an editable buffer
       // at all — null keeps the textarea disabled and skips the write.
       setOrgMd(r.read_truncated ? null : r.content)
-    }).catch(() => setOrgMd(null))
-  }, [tree.slug])
+      setOrgMdLoad('ready')
+    }).catch((e: unknown) => {
+      if (!current) return
+      setOrgMd(null)
+      setOrgMdMeta(null)
+      setOrgMdError(e instanceof Error && e.message ? e.message : 'request failed')
+      setOrgMdLoad('error')
+    })
+    return () => { current = false }
+  }, [tree.slug, orgMdRetry])
   return (
     <div className="overlay" onClick={close}>
       <div className="settings" onClick={(e) => e.stopPropagation()}>
@@ -2364,9 +2379,25 @@ export function SettingsPanel({ tree, toast, close }: {
             + "you. It is delivered at session start, so saving restarts "
             + "every agent here. Keep it short: it sits in each agent's "
             + "cached prefix on every lane."}>
+            {orgMdLoad === 'pending' && (
+              <div className="orgmd-status" role="status" aria-live="polite">
+                Loading org.md...
+              </div>
+            )}
+            {orgMdLoad === 'error' && (
+              <div className="orgmd-status" role="alert">
+                Unable to load org.md ({orgMdError ?? 'request failed'}). The
+                editor is disabled until it loads successfully.
+                <button type="button"
+                  onClick={() => setOrgMdRetry((n) => n + 1)}>Retry</button>
+              </div>
+            )}
             <textarea className="orgmd-editor" value={orgMd ?? ''}
               aria-label="org.md" disabled={orgMd == null}
               onChange={(e) => setOrgMd(e.target.value)} />
+            {orgMdLoad === 'ready' && orgMd === '' && (
+              <div className="orgmd-status">No org.md charter is configured.</div>
+            )}
             {/* ⚠ the writer-facing half of the delivery cut. The prompt block
                 already tells the AGENT its copy was cut, but an agent cannot
                 shorten org.md — the operator is the only one who can, and was
