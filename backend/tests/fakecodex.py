@@ -46,6 +46,11 @@ Env probe: whatever FAKECODEX_ENVPROBE names (comma-separated env keys) is
 written as JSON to <cwd>/envprobe.json at turn start — how the suite proves
 credential hygiene without the impostor ever seeing a real credential.
 
+Sandbox probe: FAKECODEX_SANDBOXPROBE names a file that collects one JSON
+line per thread/start and thread/resume recording the `sandbox` the client
+sent — how test_codex_sandbox_mode.py proves the OS privilege level on the
+wire, for the FIRST turn and every resumed one (see `sandbox_probe`).
+
 Invoked as `python fakecodex.py app-server` (codexrun passes an argv head).
 """
 import json
@@ -133,6 +138,32 @@ def wait_request(method, timeout=8.0):
                 return r
         time.sleep(0.01)
     return None
+
+
+def sandbox_probe(method, params):
+    """FAKECODEX_SANDBOXPROBE names a file that receives one JSON line per
+    `thread/start` and `thread/resume`: the `sandbox` value the client put on
+    the wire, and whether it sent the key at all.
+
+    The OS sandbox mode is a security boundary, and the real app-server takes
+    it on BOTH calls — measured against codex-cli 0.153.3, which answers a
+    misspelt value on either with "unknown variant `…`, expected one of
+    `read-only`, `workspace-write`, `danger-full-access`". A resumed thread
+    does NOT inherit what it was born with; it comes back at the server's own
+    default. So a runner that sends the mode on start and forgets it on resume
+    silently runs every turn after an agent's first at the wrong privilege
+    level, and this double has to be able to show that.
+
+    Recorded as separate rows rather than last-wins: the defect is a
+    DIFFERENCE between the two calls, which a single value cannot express.
+    """
+    path = os.environ.get("FAKECODEX_SANDBOXPROBE")
+    if not path:
+        return
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(json.dumps({"method": method,
+                            "present": "sandbox" in params,
+                            "sandbox": params.get("sandbox")}) + "\n")
 
 
 def run_turn(thread_id, turn_id, dyn_tools):
@@ -472,9 +503,11 @@ def main():
                                            "credits": []},
             })
         elif method == "thread/start":
+            sandbox_probe(method, params)
             dyn_tools = params.get("dynamicTools") or []
             reply(rid, {"thread": {"id": thread_id}})
         elif method == "thread/resume":
+            sandbox_probe(method, params)
             thread_id = str(params.get("threadId") or thread_id)
             # the real server takes dynamicTools on resume too (measured,
             # probe_resume_dyntools.py) — mirror it, so a runner that stops

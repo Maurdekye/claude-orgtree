@@ -8603,16 +8603,19 @@ def _codex_sandbox(sc: Mapping[str, Any]) -> str:
     red-side-up in test_codex_sandbox_mode.py; do not "simplify" this into
     checking permission_mode first.
 
-    ⚠ TODAY THIS GOVERNS ONLY A THREAD'S FIRST TURN. `codexrun` puts
-    `sandbox` on `thread/start` and `thread/fork` and NOT on `thread/resume`,
-    and a resumed thread does not keep what it was born with — it comes back
-    at the app-server's own default. Measured against codex-cli 0.153.3: a
-    thread born `danger-full-access` wrote a file outside its cwd on turn 1
-    and was refused by the OS on turn 2 ("Access to the path … is denied")
-    purely because turn 2 resumed. So every turn after an agent's first
-    silently runs `workspace-write` whatever this function answers. The
-    commit that follows sends it on resume too; until then, do not read this
-    return value as "what the next turn will run under".
+    ⚠ THIS MUST REACH THE WIRE ON EVERY TURN, NOT ONLY THE FIRST. A codex
+    thread does NOT carry its sandbox forward from birth: resumed, it comes
+    back at the app-server's own default. Measured against codex-cli 0.153.3
+    — a thread born `danger-full-access` wrote a file outside its cwd on turn
+    1 and was refused by the OS on turn 2 ("Access to the path … is denied")
+    purely because turn 2 resumed; sending the mode on resume both kept full
+    access across a resume and RAISED a `workspace-write` thread into it. So
+    `codexrun` puts `sandbox` on `thread/resume` as well as `thread/start`
+    and `thread/fork`, and a retool of `permission_mode` takes effect on the
+    node's very next turn in both directions. Delete it from any one of those
+    three and this function becomes a control that reads correctly, shows
+    correctly in the UI, and stops applying — test_codex_sandbox_mode.py §6
+    is what goes red.
     """
     if not sc.get("tools", {}).get("edit", True):
         return "read-only"

@@ -43,6 +43,7 @@ scripted app-server double, and ORGTREE_DATA is a throwaway temp root
 established BEFORE `orgtree.store` is imported.
 """
 
+import json
 import os
 import sys
 import tempfile
@@ -179,6 +180,34 @@ def turn_sandbox(slug: str, nid: str) -> tuple[str, str]:
     return rec.turn_kwarg, rec.turn_attr
 
 
+def wire_sandbox(slug: str, nid: str, turns: int = 2) -> list[dict]:
+    """Run `turns` REAL turns and return what fakecodex saw on the wire.
+
+    One row per `thread/start` / `thread/resume`, in order. The first turn of
+    a fresh node starts a thread; every turn after it resumes one — which is
+    the whole point, because the app-server does NOT carry a resumed thread's
+    sandbox forward from its birth. Measured against codex-cli 0.153.3: a
+    thread born `danger-full-access` wrote outside its cwd on turn 1 and was
+    refused by the OS on turn 2 when resume carried no sandbox, and could
+    write again when it did.
+    """
+    probe = os.path.join(tempfile.mkdtemp(prefix="codexsbx-wire-"), "sbx.jsonl")
+    os.environ["FAKECODEX_SANDBOXPROBE"] = probe
+    try:
+        for i in range(turns):
+            st = supervisor.state(slug, nid)
+            with supervisor._state_lock:
+                st["busy"] = True
+            supervisor._run_one_turn(
+                slug, nid, {"text": f"wire probe {i}", "view": f"wire probe {i}"})
+    finally:
+        os.environ.pop("FAKECODEX_SANDBOXPROBE", None)
+    if not os.path.exists(probe):
+        return []
+    with open(probe, encoding="utf-8") as f:
+        return [json.loads(ln) for ln in f if ln.strip()]
+
+
 def fork_sandbox(slug: str, nid: str) -> str:
     """Drive the COMPACTION site and return the kwarg compact_fork received.
 
@@ -307,6 +336,37 @@ def main() -> int:
     check(f"normal turn and compaction agree across all {len(PM_LEVELS) * 2} "
           f"scopes",
           lambda: eq(disagree, [], "scopes where the two sites disagree"))
+
+    print("§6 EVERY turn is governed, not only a thread's first")
+    # The app-server does not carry a resumed thread's sandbox forward from
+    # its birth — it comes back at the server's own default. So a mode sent on
+    # thread/start and forgotten on thread/resume is a control that applies
+    # for exactly one turn and then silently stops, while the UI goes on
+    # showing it. Measured live (codex-cli 0.153.3): a thread born
+    # danger-full-access wrote outside its cwd on turn 1 and was refused by the
+    # OS on turn 2 with resume carrying no sandbox; sending it on resume both
+    # KEPT full access across a resume and RAISED a workspace-write thread into
+    # it. These rows are what fakecodex saw on the wire, not a kwarg.
+    w_slug, w_nid = mkorg("wire bypass", edit=True, pm="bypassPermissions")
+    rows = wire_sandbox(w_slug, w_nid, turns=2)
+    methods = [r["method"] for r in rows]
+    check("two turns produce a thread/start then a thread/resume",
+          lambda: eq(methods, ["thread/start", "thread/resume"],
+                     "the wire calls fakecodex saw"))
+    check("the RESUMED turn carries the sandbox key at all",
+          lambda: eq([r["present"] for r in rows], [True, True],
+                     "sandbox key present on each call"))
+    check("both the started and the resumed turn run danger-full-access",
+          lambda: eq([r["sandbox"] for r in rows],
+                     ["danger-full-access", "danger-full-access"],
+                     "sandbox on the wire, turn 1 then turn 2"))
+
+    o_slug, o_nid = mkorg("wire ordinary", edit=True, pm="acceptEdits")
+    o_rows = wire_sandbox(o_slug, o_nid, turns=2)
+    check("an ordinary agent stays workspace-write on the resumed turn too",
+          lambda: eq([r["sandbox"] for r in o_rows],
+                     ["workspace-write", "workspace-write"],
+                     "sandbox on the wire, turn 1 then turn 2"))
 
     print()
     if FAIL:

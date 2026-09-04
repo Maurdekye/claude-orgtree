@@ -834,8 +834,28 @@ class CodexTurn:
             # accepts both and calls the tool in the resumed turn. Without
             # them every turn after an agent's first had no org powers and a
             # stale identity, which fakecodex (mirroring the wire) caught.
+            #
+            # ⚠ AND SO DOES `sandbox` (2026-09-04). It used to ride only
+            # `thread/start`, which pinned a thread's OS sandbox mode to
+            # whatever it was BORN with: once `supervisor._codex_sandbox`
+            # started answering `danger-full-access` for a bypassPermissions
+            # node, lowering that node back down changed the setting in the UI
+            # and revoked nothing on the thread it already had — a security
+            # control that appears to apply and does not.
+            #
+            # MEASURED, not inferred, because this server IGNORES unknown
+            # request fields (an invented `nonsenseField` is accepted
+            # silently), so "the server took it" would prove nothing. The
+            # proof is that `thread/resume` REJECTS a deliberately misspelt
+            # sandbox value — `{"code": -32600, "message": "Invalid request:
+            # unknown variant `danger-full-acess`, expected one of
+            # `read-only`, `workspace-write`, `danger-full-access`"}` — so the
+            # field is genuinely parsed by resume's schema, and behaviourally
+            # a resumed turn that could write outside its cwd stops being able
+            # to when resumed at `workspace-write`. codex-cli 0.153.3.
             res = self.client.request("thread/resume", {
                 "threadId": self.thread_id,
+                "sandbox": self.sandbox,
                 "developerInstructions": self.developer_instructions,
                 "dynamicTools": self.dynamic_tools or None})
             resumed = _thread_id_of(res)
