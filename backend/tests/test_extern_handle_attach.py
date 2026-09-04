@@ -119,8 +119,27 @@ def _validator_accepts_the_mcp_form():
     assert norm_extern_handles([H1, H2], where="hire") == [H1, H2]
 
 
-def _validator_dedupes_preserving_order():
-    assert norm_extern_handles([H2, H1, H2], where="hire") == [H2, H1]
+def _validator_dedupes_into_one_canonical_order():
+    """Dedupe, then SORT — and the sort is the point, not a detail.
+
+    ⚠ DO NOT "FIX" THIS BACK TO INSERTION ORDER. External handles render into
+    `identity_prompt`, so this list IS cached identity: reversing an unchanged
+    list used to kill a valid warm process and buy a cold turn for nothing
+    (`e9ef008`, and `docs/cache-hazards.md` — "Set-like grants need one
+    canonical order"). Handle order carries no mail authority and controls no
+    routing, so a canonical order costs nothing, while asserting insertion
+    order would re-open exactly the churn the sort exists to prevent.
+
+    This check asserted insertion order until 2026-09-04 and had been failing
+    since `e9ef008` (2026-08-31). Because `check()` in this file does not
+    catch, that failure took the OTHER 17 CHECKS WITH IT — the whole handle
+    privilege surface below, unmeasured for four days.
+
+    Stated so it cannot pass by accident: the input order is the REVERSE of
+    the answer, and the expected value is written out rather than computed by
+    sorting, so a sort that silently became a no-op fails here.
+    """
+    assert norm_extern_handles([H2, H1, H2], where="hire") == [H1, H2]
 
 
 def _validator_rejects_non_mcp():
@@ -156,7 +175,8 @@ def _hire_and_retool_share_one_rulebook():
 
 
 check("validator accepts the @mcp: form", _validator_accepts_the_mcp_form)
-check("validator dedupes, preserving order", _validator_dedupes_preserving_order)
+check("validator dedupes into ONE canonical order (cached identity)",
+      _validator_dedupes_into_one_canonical_order)
 check("validator rejects every non-@mcp: form", _validator_rejects_non_mcp)
 check("validator caps the count (and the boundary is legal)", _validator_caps_the_count)
 check("hire and retool share one rulebook", _hire_and_retool_share_one_rulebook)

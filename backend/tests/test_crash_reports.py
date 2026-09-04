@@ -41,6 +41,24 @@ PASS = 0
 NODE_BIN = shutil.which("node")
 
 
+def _esbuild_cli():
+    """The path `_build_known_bundle` actually invokes.
+
+    ⚠ THIS EXISTS BECAUSE THE GUARD BELOW WAS PRESENT, PLAUSIBLE AND
+    INERT. It checked `NODE_BIN` and the resolver script — a binary on
+    PATH and a file in this repo, both of which are ALWAYS there — and
+    not esbuild, which is the one thing that goes missing. esbuild lives
+    in `frontend/node_modules`, which a fresh git worktree does not have,
+    and this whole team is required to work in worktrees. So check 1 died
+    with `FileNotFoundError [WinError 2]` and took checks 2-8 with it —
+    the entire server-side intake path, unmeasured everywhere except the
+    shared checkout, since this suite was written (2026-08-30).
+    """
+    return os.path.join(
+        crashreports.FRONTEND_ROOT, "node_modules", ".bin",
+        "esbuild.cmd" if os.name == "nt" else "esbuild")
+
+
 def check(label, fn):
     global PASS
     fn()
@@ -67,9 +85,7 @@ def _build_known_bundle(tmpdir):
             "KnownCrashingFunction()\n"
         )
     out = os.path.join(tmpdir, "bundle.js")
-    esbuild_cli = os.path.join(
-        crashreports.FRONTEND_ROOT, "node_modules", ".bin",
-        "esbuild.cmd" if os.name == "nt" else "esbuild")
+    esbuild_cli = _esbuild_cli()
     subprocess.run(
         [esbuild_cli, src, f"--outfile={out}", "--bundle", "--minify",
          "--sourcemap", "--keep-names"],
@@ -79,7 +95,15 @@ def _build_known_bundle(tmpdir):
 
 def test_resolve_stack_real_map():
     if not NODE_BIN or not os.path.isfile(crashreports.RESOLVER):
-        skip("resolve_stack against a real build", "node or resolve-stack.mjs unavailable")
+        skip("resolve_stack against a real build",
+             "node or resolve-stack.mjs unavailable")
+        return
+    if not os.path.isfile(_esbuild_cli()):
+        # a SKIP, not a failure: the rest of this suite does not need a
+        # real bundle, and killing the run here is what hid it
+        skip("resolve_stack against a real build",
+             "esbuild is absent (no frontend/node_modules in this "
+             "worktree) — checks below still run")
         return
     with tempfile.TemporaryDirectory() as tmp:
         bundle = _build_known_bundle(tmp)

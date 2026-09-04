@@ -213,8 +213,20 @@ _CHECKS = [
 #: last-resort count — the `ok N` lines themselves, for a suite that never
 #: reached its own total
 _OK_LINE = re.compile(r"^\s*ok\s+(\d+)\b", re.M)
-_TOTAL_LINE = re.compile(r"ALL\s+[\d,]+\s+CHECKS PASS|checks passed|^ℹ\s*pass\s",
-                         re.M)
+#: A suite that reached its own end, in EITHER outcome. The first three
+#: alternatives are the finished-and-green conventions; the fourth is what a
+#: catch-and-continue suite prints when it finished and something failed
+#: ("12 passed - 1 FAILED", "35 passed · 1 FAILED · 0 findings", …).
+#:
+#: THE FOURTH IS NOT DECORATION. Without it a suite that ran every check and
+#: reported failures reads identically to one that died at check 2, because
+#: neither printed "checks passed" — and `truncated` below is no longer gated
+#: on rc == 0, so the miss would flag honest suites as cut short. Separator is
+#: deliberately loose: this tree uses `-`, `·` and `,` for the same sentence.
+_TOTAL_LINE = re.compile(
+    r"ALL\s+[\d,]+\s+CHECKS PASS|checks passed|^ℹ\s*pass\s"
+    r"|\d+\s+passed\b[^\n]*\bFAILED\b",
+    re.M)
 
 
 class Suite:
@@ -391,6 +403,37 @@ def _kill_tree(proc):
         pass
 
 
+def stopped_early(out):
+    """Did this suite stop before reaching its own final total?
+
+    Lifted out of `run_one` so it can be exercised without a subprocess:
+    a predicate this load-bearing that could only be reached by running a
+    real suite is one nobody checks.
+    """
+    # ⚠ TRUNCATION IS NOT AN rc == 0 CONCERN, AND GATING IT THERE HID FOUR
+    # SUITES FOR UP TO 25 DAYS. This used to read `r.rc == 0 and oks and …`,
+    # so the flag could never fire on a FAILING suite — which is the only
+    # population where it matters. Most suites here use a deliberate
+    # fail-fast `check()` (it raises rather than recording), so a red one dies
+    # at its first failure and every later check simply never runs. The
+    # runner then reported `r.checks` from the last `ok N` line, i.e. THE
+    # ABORT POINT, in the same column and the same words it uses for a
+    # completed total: `extern-handle-attach` printed "2 checks" for a
+    # 19-check suite and nothing anywhere said the other 17 had not run.
+    #
+    # Measured 2026-09-04: crash-reports 1/8 since the suite was born,
+    # extern-handle-attach 2/19 since 2026-08-31, external-mail 8/241 for 25
+    # days — with §4 kiosk sealing, §8 the extern HTTP surface and §10
+    # authorization inside the dark part. A separate tool had to be written to
+    # recover what this function already knew and threw away.
+    #
+    # The fail-fast convention is FINE and is not the defect (it is what makes
+    # a green run a clean binary signal). Reporting an abort as if it were a
+    # total is the defect.
+    oks = _OK_LINE.findall(out)
+    return bool(oks and not _TOTAL_LINE.search(out))
+
+
 def run_one(suite, cmd, timeout, logdir):
     r = Result()
     r.suite, r.checks, r.guard_lines = suite, None, []
@@ -407,6 +450,18 @@ def run_one(suite, cmd, timeout, logdir):
         _kill_tree(proc)
         out = proc.communicate()[0] or b""
         r.rc, r.state = -1, "TIMEOUT"
+        # ⚠ WRITE THE KILL INTO THE LOG, not only onto the console.
+        # The ⏱ mark lived in this process's stdout and nowhere else, so
+        # from a saved logdir a HANG was indistinguishable from a suite
+        # that aborted having printed nothing — both are simply a file
+        # that stops. Anyone reading logs later (a flip diff, a bisect,
+        # an agent that was not here) had to be handed the runner
+        # transcript separately or count a killed suite as a finished
+        # one. A log should say what happened to it.
+        out += (f"\n[run_tests] ⏱ TIMEOUT after {timeout}s — this suite "
+                f"was KILLED, it did not finish. Nothing below this line "
+                f"ran, and the counts above are where it had got to.\n"
+                ).encode("utf-8")
     r.secs = time.time() - t0
     r.out = (out or b"").decode("utf-8", "replace")
 
@@ -418,10 +473,7 @@ def run_one(suite, cmd, timeout, logdir):
     oks = _OK_LINE.findall(r.out)
     if r.checks is None and oks:
         r.checks = int(oks[-1])
-    # a suite that exits 0 having printed `ok N` lines but never its own total
-    # did not finish — the convention in this tree is a final `ALL N CHECKS
-    # PASS`, and its absence is how a silently truncated run looks
-    r.truncated = bool(r.rc == 0 and oks and not _TOTAL_LINE.search(r.out))
+    r.truncated = stopped_early(r.out)
 
     # ⚠ A PASSING CHECK'S OWN LINE IS NOT EVIDENCE OF A FAILURE, and reading
     # it as one turned this alarm into noise on every single run (measured
@@ -644,11 +696,21 @@ def main():
 
     def done(r):
         mark = {"PASS": "✓", "FAIL": "✗", "TIMEOUT": "⏱"}[r.state]
-        n = f"{r.checks} checks" if r.checks is not None else ""
+        # ⚠ SAY WHICH NUMBER THIS IS. For a suite that never reached its
+        # own total the count is where it STOPPED, and printing it as
+        # "N checks" is what let a 19-check suite report "2 checks" for
+        # weeks with nothing to distinguish it from a suite that has two.
+        n = ("" if r.checks is None else
+             f"stopped at {r.checks}" if r.truncated else
+             f"{r.checks} checks")
         flag = {"FIRED": "  ⚑ DRIFT", "silent": "  ⚐ guard silent"}.get(
             r.guard_state, "")
         if r.truncated:
-            flag += "  ⚐ no final total"
+            # different words for different objects: a green suite that
+            # forgot its total, versus a red one that died mid-run and
+            # left an unmeasured tail behind it
+            flag += ("  ⚐ no final total" if r.rc == 0 else
+                     "  ⚐ ABORTED — tail unmeasured")
         print(f"  {mark} {r.suite.id:<26}{n:>12}{r.secs:9.1f}s{flag}", flush=True)
 
     # the parallel lane first; the exclusive lane runs alone afterwards so no
@@ -720,9 +782,21 @@ def main():
     if cut:
         print()
         for r in cut:
-            print(f"⚐ {r.suite.id} exited 0 after {r.checks} `ok` lines but "
-                  f"never printed its own total — the convention here is a "
-                  f"final `ALL N CHECKS PASS`, so this run did not finish.")
+            if r.rc == 0:
+                print(f"⚐ {r.suite.id} exited 0 after {r.checks} `ok` lines "
+                      f"but never printed its own total — the convention "
+                      f"here is a final `ALL N CHECKS PASS`, so this run "
+                      f"did not finish.")
+            else:
+                # the case that was invisible: most suites here use a
+                # fail-fast `check()`, so a red one dies at its FIRST
+                # failure and every later check never runs. Nothing else
+                # in this output says so.
+                print(f"⚐ {r.suite.id} STOPPED at check {r.checks} and "
+                      f"never reached its own total — the checks after "
+                      f"that point DID NOT RUN. A red row is not a "
+                      f"measured suite; read the log before treating "
+                      f"anything below the failure as covered.")
     if silent:
         print()
         for r in silent:
