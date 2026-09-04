@@ -14010,7 +14010,9 @@ def _compact_split_body(slug: str, nid: str) -> None:
                                 env=spawn_env(org, tier=str(n.get("model") or "")),
                                 stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                 stderr=subprocess.PIPE, text=True, encoding="utf-8",
-                                errors="replace")
+                                errors="replace",
+                                creationflags=(subprocess.CREATE_NO_WINDOW  # type: ignore[attr-defined]
+                                               if os.name == "nt" else 0))
         _leash(proc)
         try:
             out, _err = proc.communicate(input="/compact", timeout=COMPACT_TIMEOUT)
@@ -14269,7 +14271,9 @@ def remote_control_start(slug: str, nid: str) -> dict[str, Any]:
         proc = subprocess.Popen(
             _claude_argv() + ["remote-control", "--session-id", sid],
             cwd=cwd, stdin=subprocess.DEVNULL, stdout=logf, stderr=logf,
-            text=True, encoding="utf-8", errors="replace")
+            text=True, encoding="utf-8", errors="replace",
+            creationflags=(subprocess.CREATE_NO_WINDOW  # type: ignore[attr-defined]
+                           if os.name == "nt" else 0))
     except OSError as e:
         _remote_unpark(slug, nid)
         return {"error": f"could not start the remote-control server: {e}"}
@@ -15120,7 +15124,9 @@ def immediate_command(slug: str, nid: str, text: str) -> bool:
                                     stdin=subprocess.PIPE,
                                     stdout=subprocess.PIPE,
                                     stderr=subprocess.PIPE, text=True,
-                                    encoding="utf-8", errors="replace")
+                                    encoding="utf-8", errors="replace",
+                                    creationflags=(subprocess.CREATE_NO_WINDOW  # type: ignore[attr-defined]
+                                                   if os.name == "nt" else 0))
             _leash(proc)
             try:
                 out, _err = proc.communicate(input=text.strip(), timeout=120)
