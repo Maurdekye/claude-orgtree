@@ -39,6 +39,7 @@ import type {
 import { ConfirmModal } from './modals'
 import { InboxView, RetiredFold } from './mail'
 import { AskCard } from './asks'
+import { deriveProgress, ProgressChip, ProgressView } from './progress'
 import { isMobile } from '../mobile'
 
 interface ContextWheelProps {
@@ -967,7 +968,11 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
   // a double-click while the request is in flight; the response/WS tree state
   // remains authoritative if another desk wins the race.
   const [processToggleBusy, setProcessToggleBusy] = useState(false)
-  const [view, setView] = useState<'chat' | 'history' | 'files' | 'inbox'>('chat')     // chat | history | files | inbox
+  const [view, setView] = useState<'chat' | 'history' | 'files' | 'inbox' | 'progress'>('chat')     // chat | history | files | inbox | progress
+  // FR-2: the task-progress model — PURE, derived from the node and the
+  // conversation the desk already holds (progress.tsx). No new poll, no new
+  // endpoint, and nothing that costs the agent a turn.
+  const progress = useMemo(() => deriveProgress(node, convo), [node, convo])
   // №7's denials banner and its dismissal state are gone (user bug
   // 2026-08-02): a denial already renders inline as an errored ToolChip where
   // it happened, so the banner was a duplicate that also sorted a past event
@@ -1482,7 +1487,7 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
             {!live && <button onClick={() => op({ op: 'rehire', node: node.id })}>rehire</button>}
           </span>
           <span className="cc-tabs">
-            {(['chat', 'history', 'files', 'inbox'] as const).map((v) => (
+            {(['chat', 'history', 'files', 'inbox', 'progress'] as const).map((v) => (
               <button key={v} className={view === v ? 'on' : ''}
                 onClick={() => setView(v)}>
                 {v}{v === 'inbox' && (chat?.mail_pending ?? 0) > 0
@@ -1518,6 +1523,8 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
         {node.last_status && !bannerDuplicatesStatus &&
           <span className={'statuschip ' + node.last_status.status}
             title={node.last_status.summary}>{node.last_status.status}</span>}
+        {/* FR-2: the collapsed task-progress summary; click → the tab */}
+        <ProgressChip model={progress} onClick={() => setView('progress')} />
         {node.frozen &&
           <span className="badge frozen" title={node.frozen.error ?? undefined}>
             <FrozenIcon fontSize="inherit" />{' '}
@@ -1937,6 +1944,7 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
       )}
       {view === 'history' && <HistoryView slug={slug} nid={node.id} />}
       {view === 'files' && <FilesView slug={slug} nid={node.id} />}
+      {view === 'progress' && <ProgressView model={progress} />}
       {view === 'inbox' && <InboxView slug={slug} nid={node.id} tier={node.tier}
         onRetract={(m) => retractMail(slug, node.id, m.id)
           .then(() => refresh(true))

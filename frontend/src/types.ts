@@ -382,6 +382,10 @@ export interface TreeNode {
   /** concurrently running subagents (Task/Agent calls in flight) — desk
    *  header shows it beside the working clock, only when > 0 */
   tasks?: number
+  /** BACKGROUND subagents (api.py annotate: supervisor `bg_tasks`) — they
+   *  outlive the turn's reply, which is why a node can sit busy for a long
+   *  time with nothing else to show. FR-2's progress panel renders it. */
+  bg_tasks?: number
   last_error: string | null
   /** G4: what the agent is doing this instant, derived server-side from the
    *  live tail. The client used to build this itself from websocket events. */
@@ -879,6 +883,8 @@ export interface LiveRowPayload {
   n?: number
   /** the live copy was capped at emit time; the durable twin carries it whole */
   truncated?: boolean
+  /** FR-2: a TodoWrite row's checklist (supervisor._todo_live_extra) */
+  todos?: { content: string; status: string }[]
 }
 
 export interface ChatPayload {

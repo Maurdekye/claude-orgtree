@@ -664,6 +664,8 @@ export interface CanvasNode {
   /** concurrently running subagents (Task/Agent calls in flight) — desk
    *  header shows it beside the working clock, only when > 0 */
   tasks?: number
+  /** background subagents (TreeNode.bg_tasks) — FR-2's progress panel */
+  bg_tasks?: number
   last_error?: string | null
 }
 
@@ -778,6 +780,13 @@ export interface LiveRow {
   n?: number
   /** the live copy was capped at emit time; the durable twin carries it whole */
   truncated?: boolean
+  /** server stamp (supervisor.live_row) — ISO, present on every server row */
+  at?: string
+  /** FR-2: a TodoWrite row's checklist, structurally (supervisor.
+   *  _todo_live_extra) — only the newest TodoWrite row keeps it. Absent on
+   *  a backend from before the live-wire fix, which the progress panel
+   *  renders as "updating…" rather than as a list. */
+  todos?: { content: string; status: string }[]
 }
 
 // the canvas exposes its inverse-zoom to CSS; React's CSSProperties has no

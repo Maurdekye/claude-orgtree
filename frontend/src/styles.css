@@ -4656,3 +4656,51 @@ label.set-row { cursor: pointer; }
   margin-top: 24px; padding: 12px 36px; border-radius: 12px; font-size: 40px;
   border: 3px solid var(--accent); color: var(--accent);
 }
+
+/* ------------------------------------------------- FR-2: task-progress panel
+   (canvas/progress.tsx). Lives INSIDE .desk-inner, so it inherits the desk's
+   counter-scale; authored at the same virtual size as the chat, never
+   hand-tuned below it. The panel's rule: every section carries a sentence
+   (.progress-note) — the checklist is optional, the sentence is not. */
+.progress-chip {
+  font-size: 9px; padding: 0 6px; border-radius: 8px; font-family: var(--mono);
+  color: var(--dim); border: 1px solid var(--line); background: none; cursor: pointer;
+  line-height: 1.5;
+}
+.progress-chip:hover { color: var(--ink-strong); background: var(--panel-2); }
+.progress-chip.supply-live { color: var(--work); border-color: rgba(124, 192, 255, .4); }
+.progress-chip.supply-durable { color: var(--ink); }
+.progress-chip.supply-lane-cannot { border-style: dashed; }
+.msgs.progress { gap: 6px; padding: 4px 6px; }
+.progress-state { font-size: 12px; color: var(--dim); padding: 2px 0 4px; border-bottom: 1px solid var(--line-soft); }
+.progress-state b { color: var(--ink-strong); font-weight: 600; }
+.progress-sec h4 {
+  margin: 0 0 2px; font-size: 11px; font-weight: 600; color: var(--ink-strong);
+  text-transform: lowercase; letter-spacing: .02em;
+}
+.progress-sec h4 .dim { font-weight: 400; }
+.progress-fold {
+  background: none; border: none; padding: 0; font: inherit; color: inherit;
+  cursor: pointer; text-align: left;
+}
+.progress-fold:hover { color: var(--accent); }
+.progress-note { font-size: 12px; color: var(--dim); line-height: 1.35; overflow-wrap: anywhere; }
+.progress-note.stale { color: var(--warn, #e5c07b); }
+.progress-todo .todo-items { list-style: none; margin: 4px 0 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.progress-todo .todo-item { display: flex; gap: 6px; font-size: 12.5px; line-height: 1.3; align-items: baseline; }
+.progress-todo .todo-glyph { font-family: var(--mono); flex: none; }
+.progress-todo .todo-item.completed { color: var(--dim); }
+.progress-todo .todo-item.completed .todo-text { text-decoration: line-through; }
+.progress-todo .todo-item.in_progress { color: var(--work); }
+.progress-todo .todo-item.in_progress .todo-glyph { animation: progress-pulse 1.6s ease-in-out infinite; }
+.progress-todo .todo-items.previous { opacity: .55; }
+.progress-todo .todo-items.previous::before {
+  content: 'previous list'; display: block; font-size: 10px; color: var(--dim);
+  text-transform: uppercase; letter-spacing: .06em; margin-bottom: 2px;
+}
+@keyframes progress-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+.progress-reported-row { display: flex; gap: 6px; align-items: baseline; margin-bottom: 2px; flex-wrap: wrap; }
+.progress-summary { font-size: 12.5px; color: var(--ink); overflow-wrap: anywhere; }
+.progress-tail { list-style: none; margin: 3px 0 0; padding: 0; font-family: var(--mono); font-size: 11px; color: var(--ink); }
+.progress-tail li { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.progress-tail .dim { margin-right: 4px; }
