@@ -13,7 +13,7 @@ import {
   FullscreenIcon, PublicIcon, RemoveIcon, ViewListIcon,
 } from '../icons'
 import {
-  ago, anyTierSeat, attentionPip, codexTierOffer, CODEX_TIER_LETTER, CODEX_TIER_SEAT, CODEX_TIERS, DOG_H, DOG_W, DRAFT, ease, edgeJumpPlacement, type EJForm, EXTERN, fallbackActive, familyOffer, flatten, ANTIGRAVITY_TIER_LETTER, ANTIGRAVITY_TIER_SEAT, ANTIGRAVITY_TIERS, hireOf, INBOX, INBOX_H, layout, NODE_H, NODE_W, noteTierModels, openrouterTierIds, orgPxc, presenceOf, segD, setOpenRouterTiers,
+  ago, ALL_TIER_SEAT, anyTierSeat, attentionPip, codexTierOffer, CODEX_TIER_LETTER, CODEX_TIER_SEAT, CODEX_TIERS, DOG_H, DOG_W, DRAFT, ease, edgeJumpPlacement, type EJForm, EXTERN, fallbackActive, familyOffer, flatten, ANTIGRAVITY_TIER_LETTER, ANTIGRAVITY_TIER_SEAT, ANTIGRAVITY_TIERS, hireOf, INBOX, INBOX_H, layout, NODE_H, NODE_W, noteTierModels, openrouterTierIds, orgPxc, presenceOf, segD, setOpenRouterTiers,
   providerOf, queuedSwitchTitle, savedView, saveView, segPoint, sizeOf, smooth, SPRING_C, SPRING_K, startView, startZoomOn, TIER_LETTER, TIER_SEAT, tierLabel, TIERS, useCrowdPiles, usePolled, USER, USER_H,
   USER_W, withDraftTree, Z_DESK, Z_MAX, Z_MINI,
 } from './shared'
@@ -121,7 +121,12 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
   // The seen-stamp bookkeeping stays: the inbox count badge still uses it.
   const [, setInboxSeen] = useState(
     () => localStorage.getItem('orgtree-inbox-seen-' + slug) ?? '')
-  const seats = tree.tiers ?? { haiku: 1, sonnet: 2, opus: 5, fable: 10, 'gpt-reserve': 0.2, luna: 0.2, terra: 2, sol: 5, flash: 1, pro: 2 }
+  // ⚠ NOT A LITERAL. This used to spell out eleven prices of its own and the
+  // copy went stale: `astra` reached ledger.TIERS and shared.ts's codex table
+  // but never this line, so a payload without `tiers` priced an astra seat at
+  // nothing. `ALL_TIER_SEAT` is the merge of the three family tables, which
+  // chiptips §8b holds against the backend — one place to update, one check.
+  const seats = tree.tiers ?? ALL_TIER_SEAT
   // FR-15 M8: hire surfaces render from the provider payload — whether the
   // codex family is hireable HERE and NOW (CLI installed + signed in) or
   // still a disabled preview, with the payload's own reason as the tooltip.

@@ -76,6 +76,24 @@ export const ANTIGRAVITY_TIER_SEAT: Record<string, number> = { flash: 1, pro: 2 
 /** Provider-neutral surfaces (for example the live-agent summary) use this;
  * provider-specific controls keep using their family list. */
 export const ALL_TIERS = [...TIERS, ...CODEX_TIERS, ...ANTIGRAVITY_TIERS]
+/** Every STATIC tier's seat in one table — the merge of the three family
+ *  tables above, and the frontend's whole answer for "what does a seat cost"
+ *  when the payload does not say.
+ *
+ *  ⚠ IT EXISTS TO KILL A FIFTH COPY. `OrgCanvas` used to spell the same
+ *  eleven prices out again as a literal `tree.tiers ?? {…}` fallback, and on
+ *  2026-09-04 that copy was found missing `astra` — added to `ledger.TIERS`
+ *  in c5049fa and to `CODEX_TIER_SEAT` here, but never to the literal. So on
+ *  a payload without `tiers` the UI quoted a price the backend does not
+ *  charge, and only one test noticed. Deriving the fallback from the family
+ *  tables means a tier added to a family is priced everywhere at once; the
+ *  families themselves are still checked against `ledger.TIERS` by
+ *  chiptips §8b.
+ *
+ *  The OpenRouter half is deliberately NOT here: those tiers are minted at
+ *  runtime from the payload, so there is no static price to fall back to. */
+export const ALL_TIER_SEAT: Record<string, number> =
+  { ...TIER_SEAT, ...CODEX_TIER_SEAT, ...ANTIGRAVITY_TIER_SEAT }
 
 /* ── THE OPENROUTER FAMILY (2026-09-02) — TIERS MINTED AT RUNTIME ─────────
  *

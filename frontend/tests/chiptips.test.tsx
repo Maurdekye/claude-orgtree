@@ -382,69 +382,97 @@ uiTest('§6 the overseer’s lone badge drops the role word and keeps the cost',
 // badges and still needs all three words.
 
 // ===================================================================== §8
-// THE SECOND COPY. Everything above proves the UI renders whatever tier table
-// it is handed. The server hands it one — but `OrgCanvas` also carries a
-// literal fallback for a payload that arrives without `tiers`:
+// THE SECOND COPY — AND WHY THERE ISN'T ONE ANY MORE. Everything above proves
+// the UI renders whatever tier table it is handed. The server hands it one —
+// but `OrgCanvas` also needs an answer for a payload that arrives without
+// `tiers`, and until 2026-09-04 that answer was a literal:
 //
 //     const seats = tree.tiers ?? { haiku: 1, sonnet: 2, opus: 5, fable: 10,
 //       'gpt-reserve': 0.2, luna: 0.2, terra: 2, sol: 5, flash: 1, pro: 2 }
 //
-// That is a genuine second price table living in the frontend. It agrees with
-// the backend today. Nothing made it agree, and nothing would notice if a
-// future ruling moved a seat price the way 2026-08-12 moved sonnet from 3 to
-// 2 — the UI would quote a price the backend does not charge, on exactly the
-// path (a payload missing `tiers`) that no fixture exercises.
+// That was a genuine second price table living in the frontend, and it went
+// stale exactly as this comment used to warn it would: `astra` was added to
+// `ledger.TIERS` in c5049fa and to `CODEX_TIER_SEAT` in shared.ts, and this
+// literal was never touched. This check caught it — and it was the ONLY
+// thing that did.
 //
-// Checked as SOURCE rather than through a render on purpose: the fallback is
-// unreachable whenever the server behaves, so a behavioural test would have
-// to fake a broken payload to see it, and would then be asserting about a
-// state the server does not produce. What matters is that the two literals
-// agree, and that is a property of the text.
+// The fix was not a twelfth number. The fallback now READS the family tables
+// (`ALL_TIER_SEAT` = TIER_SEAT + CODEX_TIER_SEAT + ANTIGRAVITY_TIER_SEAT), so
+// there is no second table left to drift, and §8b already holds those three
+// against `ledger.TIERS`. So this section changed job: it no longer compares
+// two literals, it holds the DERIVATION in place.
+//
+// TWO HALVES, each of which can fail on its own:
+//   (a) VALUE — the merged table really is the backend's table. Catches a
+//       merge that drops a family (e.g. spreading two of the three), which
+//       §8b cannot see because §8b reads the three sources, not the merge.
+//   (b) SOURCE — OrgCanvas's fallback is the identifier, not a table. Catches
+//       someone re-inlining prices here, which is the original defect.
+//
+// ⚠ WHAT THIS DOES NOT CHECK, said plainly: not a render. A behavioural check
+// through the hire badges would be VACUOUS — every downstream reader of
+// `seats` (cards.tsx `fam(...)`, the HireSheet `seatOf`) falls back through
+// its own family table with `seats[t] ?? CODEX_TIER_SEAT[t] ?? 0`, so a
+// fallback that was `{}` would still render every correct price. The readers
+// that use `seats` RAW are the kiosk cap and the draft credit bar
+// (cards.tsx `seats[draft.tier] ?? 0`), and reaching those needs a fixture
+// that is mostly fixture. The agreement is a property of the code, so the
+// code is what gets read.
 
-test('§8 the frontend’s fallback tier table matches the backend’s', () => {
+test('§8 the frontend’s fallback tier table matches the backend’s', async () => {
+  // (a) the VALUE actually handed to `seats` when a payload omits `tiers`
+  const { ALL_TIER_SEAT } = await import('../src/canvas/shared')
+  assert.deepEqual({ ...ALL_TIER_SEAT }, SEATS,
+    'shared.ts ALL_TIER_SEAT — the fallback OrgCanvas hands to every card when '
+    + 'the payload carries no `tiers` — disagrees with ledger.TIERS.\n'
+    + `  frontend fallback: ${JSON.stringify(ALL_TIER_SEAT)}\n`
+    + `  backend charges:   ${JSON.stringify(SEATS)}\n`
+    + 'If the three family tables are each right (see §8b), the merge itself '
+    + 'is dropping or overriding one.')
+
+  // (b) and OrgCanvas still READS it rather than spelling prices out again
   const src = readFileSync(
     path.join(__SRC_DIR__, 'canvas', 'OrgCanvas.tsx'), 'utf8')
-  const m = /tree\.tiers\s*\?\?\s*\{([^}]*)\}/.exec(src)
-  assert.ok(m, 'OrgCanvas no longer has a `tree.tiers ?? {…}` fallback — if it '
+  const m = /tree\.tiers\s*\?\?\s*([^\n]*)/.exec(src)
+  assert.ok(m, 'OrgCanvas no longer has a `tree.tiers ?? …` fallback — if it '
     + 'was removed, delete this check with it; if it moved, update the pattern')
-  const fallback: Record<string, number> = {}
-  // `[\d.]+`, not `\d+`: seats are FRACTIONAL below $1/M since 2026-09-03
-  // (gpt-reserve and luna are 0.2). An integer-only pattern reads "0.2" as
-  // "0" and the comparison then fails for a reason that has nothing to do
-  // with the two tables disagreeing — or, worse, would have quietly matched
-  // a fallback of 0, which is a seat that bounds nothing.
-  for (const [, k, v] of m![1]!.matchAll(/["']?([\w-]+)["']?\s*:\s*([\d.]+)/g)) fallback[k!] = Number(v)
-
-  assert.deepEqual(fallback, SEATS,
-    'the tier prices hard-coded in OrgCanvas.tsx disagree with ledger.TIERS.\n'
-    + `  frontend fallback: ${JSON.stringify(fallback)}\n`
-    + `  backend charges:   ${JSON.stringify(SEATS)}\n`
-    + 'A payload without `tiers` would make the UI quote a price the backend '
-    + 'does not charge. Update the fallback, or drop it and let the tooltip '
-    + 'render nothing rather than a number nobody honours.')
+  assert.equal(m![1]!.trim(), 'ALL_TIER_SEAT',
+    `OrgCanvas's tier fallback is \`${m![1]!.trim()}\`, not the shared `
+    + 'ALL_TIER_SEAT table. A literal here is a second price table: that is '
+    + 'exactly how `astra` came to be missing from it on 2026-09-04, and '
+    + 'nothing but this check noticed. Add the tier to the family table in '
+    + 'shared.ts instead — every surface reads it from there.')
 })
 
 // ===================================================================== §8b
-// THE THIRD, FOURTH AND FIFTH COPIES. §8 guards ONE frontend price table —
-// the `tree.tiers ?? {…}` fallback — and `shared.ts` carries three more:
-// TIER_SEAT, CODEX_TIER_SEAT and ANTIGRAVITY_TIER_SEAT. They are not dead
-// code: `anyTierSeat` falls back through all three, and the desk, the cards
-// and the hire surfaces all price through it, so a stale entry here is a
-// price quoted at a seat the ledger does not charge.
+// THE ONLY REMAINING COPIES — and now the whole frontend's source of truth.
+// `shared.ts` carries three family tables: TIER_SEAT, CODEX_TIER_SEAT and
+// ANTIGRAVITY_TIER_SEAT. They are not dead code: `anyTierSeat` falls back
+// through all three, the desk, the cards and the hire surfaces all price
+// through it, and since 2026-09-04 `ALL_TIER_SEAT` merges them into the
+// fallback §8 guards. So a stale entry here is a price quoted at a seat the
+// ledger does not charge — on every surface at once.
 //
 // Found the hard way (2026-09-03): the sub-$1 repricing moved gpt-reserve and
-// luna to 0.2 in the backend, §8 went green because it only reads OrgCanvas,
+// luna to 0.2 in the backend, §8 went green because it only read OrgCanvas,
 // and CODEX_TIER_SEAT sat at the old 1 until a rehire panel rendered
-// "seat 1" in a test that happened to assert the number. That is precisely
-// the drift §8's own comment warns about, in the table §8 does not read.
-// Parsed as SOURCE for the same reason §8 is: these are literals, the
-// agreement is a property of the text, and importing them would prove only
-// that the module loads.
+// "seat 1" in a test that happened to assert the number. That was precisely
+// the drift §8's own comment warned about, in the table §8 did not read.
+// Parsed as SOURCE: these are literals, the agreement with `ledger.TIERS` is
+// a property of the text, and importing them would prove only that the
+// module loads. (§8 imports the MERGE for a different reason — a merge that
+// silently drops a family is a value bug, not a text one.)
 
 test('§8b every static seat table in shared.ts matches the backend’s', () => {
   const src = readFileSync(path.join(__SRC_DIR__, 'canvas', 'shared.ts'), 'utf8')
   const table = (name: string): Record<string, number> => {
-    const m = new RegExp(`${name}:\\s*Record<string,\\s*number>\\s*=\\s*\\{([^}]*)\\}`)
+    // ⚠ ANCHORED ON `export const`, not on the bare name: `TIER_SEAT` is a
+    // SUBSTRING of `CODEX_TIER_SEAT`, `ANTIGRAVITY_TIER_SEAT` and
+    // `ALL_TIER_SEAT`, so an unanchored pattern reads whichever declaration
+    // happens to come first in the file and would start silently measuring a
+    // different table the day these are reordered.
+    const m = new RegExp(
+      `export const ${name}:\\s*Record<string,\\s*number>\\s*=\\s*\\{([^}]*)\\}`)
       .exec(src)
     assert.ok(m, `shared.ts no longer declares ${name} as a literal record — `
       + 'if it moved or was derived, update this check; do not delete it '
