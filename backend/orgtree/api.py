@@ -6193,7 +6193,10 @@ def _legacy_targets(slug: str) -> tuple[list[str], list[str]]:
             for d in ("usr", "var", "etc", "opt", "root", "srv")
             if subprocess.run(["docker", "volume", "inspect",
                                sandbox.sys_volume(slug, d)],
-                              capture_output=True).returncode == 0]
+                              capture_output=True,
+                              creationflags=(subprocess.CREATE_NO_WINDOW  # type: ignore[attr-defined]
+                                             if os.name == "nt" else 0)
+                              ).returncode == 0]
     dirs = [p for p in (sandbox.sandbox_root(slug),
                         store.workspace_dir(slug), store.scratch_root(slug))
             if os.path.isdir(p)]
@@ -6236,7 +6239,9 @@ def sweep_legacy(slug: str, request: Request) -> dict[str, Any]:
     failures: list[str] = []
     if vols:
         r = subprocess.run(["docker", "volume", "rm", "-f", *vols],
-                           capture_output=True, text=True, timeout=120)
+                           capture_output=True, text=True, timeout=120,
+                           creationflags=(subprocess.CREATE_NO_WINDOW  # type: ignore[attr-defined]
+                                          if os.name == "nt" else 0))
         if r.returncode != 0:
             failures.append((r.stderr or r.stdout)[-200:])
     for p in dirs:
