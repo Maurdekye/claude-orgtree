@@ -1802,7 +1802,12 @@ def _sec_reset_timing_body() -> None:
         o = _FakeOrg(slug="zz", api_key="sk", api_fallback=True,
                      api_fallback_until=time.time() + (3600 if window else -1),
                      auto_resume=True)
-        o.nodes = {"n": {"state": "live", "frozen": dict(fzd)}}
+        # a CLAUDE tier, stated: the fast-wake is scoped to the route the key
+        # can serve (audit F1, 2026-09-05), and a node with no tier at all is
+        # not one — every hired node carries its model, and this stand-in
+        # must too or the "subscription-lane freeze" below is not one
+        o.nodes = {"n": {"state": "live", "model": "haiku",
+                         "frozen": dict(fzd)}}
         return o
     check("lane · a freeze earned ON the key lane is still resumable — "
           "un-exempting `on_fallback` in _resumable makes ▶ skip the node "

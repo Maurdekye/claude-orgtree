@@ -9349,3 +9349,60 @@ eleven checks; the eight positive ones red before the change, and the three
 that pass either way each shown red against a mutant — including a two-stage
 one that proves the `until_ts` gate, not luck, is what keeps a self-healing
 freeze quiet.
+
+### D-242 · the Anthropic fallback window belongs to the route that can spend the key — readiness and activation both ask per tier
+
+Finding (Astra audit F1, 2026-09-04; fixed 2026-09-05 by `route-fallback`).
+Two ends of one bug, both in `supervisor.py`, both asking the ORG a question
+that only a ROUTE can answer:
+
+- `auto_resume_ready` read `api_fallback_active(org)` once and fast-woke
+  every limit-frozen node not marked `on_fallback`. Reproduced: a Luna
+  (Codex) node frozen for another 24 hours became ready the moment the org's
+  Anthropic fallback was enabled. Its Codex route had gained nothing —
+  `codexrun` strips every `ANTHROPIC_*` variable — so the wake re-drove it
+  into the same wall, re-froze, and would again on the next tick.
+- the freeze stamp in `_run_one_turn` opened `api_fallback_until` for ANY
+  tier's usage limit on the shared Claude-CLI path. D-194's bound ("the
+  turn's capture is provably Anthropic-only") stopped being true the day
+  D-232 put OpenRouter tiers down that same path: Claude Code is the OR
+  harness, openrouter.ai the endpoint, and the OR spawn carries an EMPTY
+  `ANTHROPIC_API_KEY`. So an OpenRouter 429 could open the org's ANTHROPIC
+  billing window — nothing for the OR node, every Claude sibling onto the
+  metered key for a wall they never hit. Traced from source in the audit;
+  reproduced through the real turn loop before the fix (a fake OR 429 on an
+  `or-*` tier stamped `api_fallback_until`).
+
+Ruling: **both sites ask `api_fallback_active_for(org, tier)` / its
+eligibility half `api_fallback_tier(tier)`** — D-194's own classifier, the
+POSITIVE axis (a KNOWN Claude tier, read from `providers.claude_tiers()`),
+not a second provider table. Readiness fast-wakes a limit freeze only when the
+window is open for THAT node's tier; the stamp opens (or marks `on_fallback`
+on) a window only for an eligible tier, and for any other tier pops
+`on_fallback` off the record exactly as `freeze_provider_limit` does. A
+node with no tier, or an unrecognised one, reads as ineligible — the safe
+direction, and the one D-194 already chose for money.
+
+What is deliberately UNCHANGED, and measured so: every other recovery path.
+Codex, Antigravity and OpenRouter freezes wake at their own reset (window open
+or shut); a Claude freeze wakes under the window as before; a freeze earned ON
+the key lane keeps its own reset; auth and capped-untrusted freezes stay
+parked; a dry account pool becoming wet still wakes; `fable_api_fallback` and
+the fable lock are untouched (fable is a Claude tier, so it is eligible). The
+brief named "stop all recovery" and "fix readiness but leave activation
+unscoped" as wrong answers; the mutant for each is rejected.
+
+Bounds: the SPAWN-time capture `on_fallback_key = api_fallback_active(org)` in
+`_run_one_turn` is still org-wide. For an OR tier inside an open window it
+paints the card's fallback red and hands `bills_the_key` a lane the spawn did
+not use — a cost-split/display attribution question on D-194's axis, not the
+freeze/readiness boundary this ruling covers. Left as found and named here so
+it is not mistaken for an oversight. The account-lane failover's treatment of
+an OR limit (`accounts.resolve` asked about an `or-*` tier) is likewise
+separate.
+
+Measured in `test_route_fallback_scope.py`: a provider matrix (Claude, Codex,
+Antigravity, OpenRouter) under an open window, the audit's Luna fixture ported
+verbatim, and the fake OR 429 through the real loop with a haiku control that
+MUST open the window. 25 checks; red on the unpatched source (11 fail, every
+control green), green after; nine mutants each rejected by a named check.

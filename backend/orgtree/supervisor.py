@@ -2936,8 +2936,23 @@ def api_fallback_active_for(org: Org, tier: str,
     to add it to an exclusion list. (`claude_tiers()` is the one place that
     already answers "which tiers are Claude's"; this reads it rather than
     keeping a second copy that could disagree with it.)"""
-    return (tier in {t["tier"] for t in providers.claude_tiers()}
-            and api_fallback_active(org, now))
+    return api_fallback_tier(tier) and api_fallback_active(org, now)
+
+
+def api_fallback_tier(tier: str) -> bool:
+    """CAN a process for this tier bill the org's Anthropic API key at all —
+    the eligibility half of `api_fallback_active_for`, with no window asked
+    about. Split out (audit F1, 2026-09-05) because two sites need the
+    eligibility BEFORE a window exists: the freeze stamp that decides whether
+    to OPEN one, and readiness deciding whether an open one is this node's.
+
+    The axis is the same positive one, for the same reason: a KNOWN Claude
+    tier. Codex and Antigravity are stripped of every `ANTHROPIC_*` variable;
+    an OpenRouter tier is handed the OR token and an EMPTY `ANTHROPIC_API_KEY`
+    (`spawn_env`) — the key cannot serve any of them, so a window opened on
+    their walls buys nothing and moves every Claude sibling onto the metered
+    key for a limit they never hit. Unknown tiers read as ineligible."""
+    return tier in {t["tier"] for t in providers.claude_tiers()}
 
 
 def _bank_api_cost(org: Org, amount: float) -> None:
@@ -12364,7 +12379,22 @@ def _run_one_turn(slug: str, nid: str,
                             # org in and _fable_fallback_eligible said the
                             # spare key actually exists, in which case this is
                             # the branch that keeps the fable agent running.
-                            if api_fallback_active(o2):
+                            #
+                            # ⚠ AND ONLY FOR A TIER THE KEY CAN SERVE (audit
+                            # F1, 2026-09-05). This is the SHARED claude-CLI
+                            # failure path, and an OpenRouter tier runs down
+                            # it too — Claude Code is its harness, the
+                            # gateway its endpoint. Both branches below asked
+                            # only the ORG ("is a window open" / "is there a
+                            # key"), so an OpenRouter 429 opened the org's
+                            # ANTHROPIC billing window: nothing for this node
+                            # (its spawn carries an EMPTY ANTHROPIC_API_KEY),
+                            # every claude sibling onto the metered key for a
+                            # wall they never hit. `api_fallback_tier` is the
+                            # cost split's own eligibility axis (D-194) —
+                            # not a second provider table.
+                            _fz_tier = str(o2.node(nid).get("model") or "")
+                            if api_fallback_active_for(o2, _fz_tier):
                                 # frozen ON the key lane: that record owns its
                                 # own reset — mark it so readiness never
                                 # insta-wakes it into the same wall.
@@ -12377,6 +12407,13 @@ def _run_one_turn(slug: str, nid: str,
                                 # beside a paid, open, unused key window
                                 # (redteam 2026-08-18).
                                 fz["on_fallback"] = on_fallback_key
+                            elif not api_fallback_tier(_fz_tier):
+                                # no key lane serves this route — the record
+                                # must say nothing about one, and must not
+                                # inherit a sibling window's answer from an
+                                # earlier freeze that survived `_ensure_frozen`
+                                # (same rule as freeze_provider_limit)
+                                fz.pop("on_fallback", None)
                             elif (o2.d.get("api_fallback")
                                   and o2.d.get("api_key")
                                   and (not _fable_tier
@@ -16878,7 +16915,16 @@ def auto_resume_ready(org: Org, now: float | None = None) -> set[str]:
     """
     now = time.time() if now is None else now
     last = float(org.d.get("auto_resume_last") or 0)
-    fb = api_fallback_active(org, now)
+    # ⚠ THE ORG-WIDE WINDOW IS THE WRONG QUESTION HERE (audit F1, 2026-09-05).
+    # This was `fb = api_fallback_active(org, now)`, read once and applied to
+    # every node below — so enabling an ANTHROPIC fallback key made a Luna
+    # (Codex) node frozen for another 24 hours "ready" at once, and the wake
+    # re-drove it into a wall its own route had not cleared. The key serves
+    # exactly the Claude tiers; `api_fallback_active_for` is the classifier
+    # that already knew that for the cost split (D-194), asked PER NODE below.
+    # (`fb_org` is only the short-circuit: no window at all — the usual tick —
+    # means no tier lookup per node. It never decides on its own.)
+    fb_org = api_fallback_active(org, now)
     # ONE resolver answer per TIER per tick, not per node: this whole function
     # runs under `store.DOC_LOCK` (see the loop), and `accounts.resolve` is two
     # FILE reads — the roster and the CLI's own config. Neither is a network
@@ -16931,10 +16977,15 @@ def auto_resume_ready(org: Org, now: float | None = None) -> set[str]:
             # every branch below, including the fallback fast-wake: a window
             # another node's REAL limit opened must not drag this one along.)
             continue
-        if fb and fz.get("limit") and not fz.get("on_fallback"):
+        if (fb_org and fz.get("limit") and not fz.get("on_fallback")
+                and api_fallback_active_for(
+                    org, str(n.get("model") or ""), now)):
             # api_fallback (2026-08-17): the key lane is open RIGHT NOW —
             # a subscription-side limit freeze has nothing to wait for.
             # (A freeze earned ON the key lane keeps its own until_ts.)
+            # …FOR THIS NODE'S ROUTE. A codex, antigravity or openrouter
+            # freeze is a wall on a lane the key cannot serve; it waits for
+            # its own reset like any timed freeze (the branches below).
             ready.add(nid)
             continue
         if (fz.get("limit") and fz.get("pool") == "dry"
