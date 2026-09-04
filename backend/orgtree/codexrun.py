@@ -622,6 +622,61 @@ def compact_fork(argv_head: list[str], *, cwd: str, model: str | None,
         client.close()
 
 
+_USAGE_COUNTER_FIELDS = (
+    "totalTokens", "inputTokens", "cachedInputTokens",
+    "outputTokens", "reasoningOutputTokens", "cacheWriteInputTokens")
+
+
+def _usage_before_last(token_usage: dict[str, Any]) -> dict[str, Any] | None:
+    """Infer the thread counter immediately before this turn's first request."""
+    total = token_usage.get("total")
+    last = token_usage.get("last")
+    if not isinstance(total, dict) or not isinstance(last, dict):
+        return None
+    base: dict[str, Any] = {}
+    for key in _USAGE_COUNTER_FIELDS:
+        if key in total or key in last:
+            value = int(total.get(key) or 0) - int(last.get(key) or 0)
+            if value < 0:
+                return None
+            base[key] = value
+    return base or None
+
+
+def _turn_usage(token_usage: dict[str, Any] | None,
+                baseline: dict[str, Any] | None
+                ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """Convert Codex's thread-cumulative counter into this turn's delta.
+
+    A missing baseline retains the old full-snapshot fallback.  If a known
+    counter moves backwards (thread reset, app-server replacement, or provider
+    discontinuity), the current snapshot becomes the new baseline and is
+    booked whole: never a negative cost and never a silent zero.  The second
+    return value is durable audit evidence for the supervisor to record.
+    """
+    if not isinstance(token_usage, dict):
+        return token_usage, None
+    total = token_usage.get("total")
+    if not isinstance(total, dict) or not isinstance(baseline, dict):
+        return token_usage, None
+    backwards = [key for key in _USAGE_COUNTER_FIELDS
+                 if key in baseline and key in total
+                 and int(total.get(key) or 0) < int(baseline.get(key) or 0)]
+    normalized = dict(token_usage)
+    normalized["sessionTotal"] = dict(total)
+    if backwards:
+        reset = {"fields": backwards, "baseline": dict(baseline),
+                 "current": dict(total), "policy": "book_current_snapshot"}
+        return normalized, reset
+    delta = dict(total)
+    for key in _USAGE_COUNTER_FIELDS:
+        if key in total or key in baseline:
+            delta[key] = max(0, int(total.get(key) or 0)
+                             - int(baseline.get(key) or 0))
+    normalized["total"] = delta
+    return normalized, None
+
+
 class CodexTurn:
     """One turn's lifecycle, from spawn to normalized result.
 
@@ -643,6 +698,7 @@ class CodexTurn:
                  approval_decide: Callable[[str, dict[str, Any]], str] | None = None,
                  env_extra: dict[str, str] | None = None,
                  config_overrides: list[str] | None = None,
+                 usage_baseline: dict[str, Any] | None = None,
                  client: AppServerClient | None = None) -> None:
         self._caller_on_event = on_event
         self.cwd = cwd
@@ -656,6 +712,15 @@ class CodexTurn:
         self.turn_id: str | None = None
         self.agent_text: list[str] = []
         self.token_usage: dict[str, Any] | None = None
+        # `tokenUsage.total` is THREAD-cumulative, despite its turn-local
+        # notification name.  A pre-turn notification gives the baseline
+        # directly; otherwise the first post-start snapshot minus its `last`
+        # request reconstructs it.  Keeping this inside the adapter prevents
+        # every consumer (billing, compaction, future telemetry) from having
+        # to rediscover the provider's counter semantics.
+        self._token_usage_base: dict[str, Any] | None = (
+            dict(usage_baseline) if isinstance(usage_baseline, dict) else None)
+        self._turn_started = False
         self.rate_limits: dict[str, Any] | None = None
         #: EVERY rate-limit snapshot this turn saw, keyed by limitId — the
         #: board, not the last card off it. `rate_limits` above stays last-wins
@@ -695,7 +760,19 @@ class CodexTurn:
         elif method == "thread/tokenUsage/updated":
             tu = params.get("tokenUsage")
             if isinstance(tu, dict):
-                self.token_usage = tu
+                if not self._turn_started and self._token_usage_base is None:
+                    total = tu.get("total")
+                    if isinstance(total, dict):
+                        self._token_usage_base = dict(total)
+                else:
+                    # Infer only from the FIRST in-turn snapshot. If an older
+                    # server omits `last` there, retain the safe full-total
+                    # fallback; inferring from a later request would discard
+                    # earlier work in this same turn.
+                    if self._token_usage_base is None \
+                            and self.token_usage is None:
+                        self._token_usage_base = _usage_before_last(tu)
+                    self.token_usage = tu
         elif method == "account/rateLimits/updated":
             rl = params.get("rateLimits")
             if isinstance(rl, dict):
@@ -785,6 +862,7 @@ class CodexTurn:
                 on_thread(self.thread_id)
             except Exception:                              # noqa: BLE001
                 pass      # journaling never blocks a turn — see the docstring
+        self._turn_started = True
         turn = self.client.request("turn/start", {
             "threadId": self.thread_id,
             "input": user_input,
@@ -833,12 +911,18 @@ class CodexTurn:
             self.status = STATUS_FAILED
         if close_client:
             self.client.close()
+        usage, usage_reset = _turn_usage(
+            self.token_usage, self._token_usage_base)
         return {
             "thread_id": self.thread_id,
             "turn_id": self.turn_id,
             "status": self.status or STATUS_FAILED,
             "agent_text": "".join(self.agent_text),
-            "token_usage": self.token_usage,
+            "token_usage": usage,
+            # A counter moving backwards is not silently clamped: the current
+            # snapshot is booked as a new baseline and the supervisor records
+            # this evidence on the node for audit/reconciliation.
+            "usage_reset": usage_reset,
             "rate_limits": self.rate_limits,
             # D-209: the CLI's own reason, and the whole rate-limit board that
             # dates it. Both are None/{} on every healthy turn.

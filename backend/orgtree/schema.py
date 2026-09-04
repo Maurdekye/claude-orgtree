@@ -255,6 +255,13 @@ class NodeDoc(TypedDict):
     # (NB: `effort` lives in NodeScope, not here — sc["effort"].)
     team_charter: NotRequired[str | None]
     cost_usd: NotRequired[float]
+    # Latest observed backwards move in Codex's thread-cumulative token
+    # counter. The adapter books the new snapshot whole and records the old
+    # and new values here instead of silently clamping a negative delta.
+    codex_usage_reset: NotRequired[dict[str, Any]]
+    # Last raw thread-cumulative Codex token snapshot. It baselines the next
+    # resumed turn; a new provider thread ignores it and establishes its own.
+    codex_usage_total: NotRequired[dict[str, Any]]
     # None = explicitly unknown (no session record has ever measured it)
     occupancy: NotRequired[int | None]
     # …and this says the figure above was ESTIMATED, not measured: a compaction

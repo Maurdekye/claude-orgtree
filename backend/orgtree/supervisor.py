@@ -8537,6 +8537,7 @@ def _codex_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
         on_event=_on_event, tool_dispatch=_tool_call,
         approval_decide=_approve,
         env_extra=dict(process_spec["env_extra"]),
+        usage_baseline=(n.get("codex_usage_total") if resume_tid else None),
         client=wp_turn.client if wp_turn is not None else None)
     mcp_client = turn.client
     mcp_owner = turn.client.proc
@@ -8906,6 +8907,14 @@ def _codex_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
             "cache_creation_input_tokens": 0,
         },
     }
+    if isinstance(tu, dict):
+        session_total = tu.get("sessionTotal") or tu.get("total")
+        if isinstance(session_total, dict):
+            res["_codex_usage_total"] = dict(session_total)
+    usage_reset = res_raw.get("usage_reset")
+    if isinstance(usage_reset, dict):
+        res["_codex_usage_reset"] = {
+            "at": now_iso(), **usage_reset}
     return res, providers.codex_occupancy(tu)
 
 
@@ -12763,6 +12772,15 @@ def _after_turn(slug: str, nid: str, org: Org, res: dict[str, Any],
             # next terminal failure is a NEW episode and gets said out loud
             # again, rather than being swallowed as "already told them".
             n.pop("hard_fail_run", None)
+            codex_total = res.get("_codex_usage_total")
+            if isinstance(codex_total, dict):
+                n["codex_usage_total"] = dict(codex_total)
+            codex_reset = res.get("_codex_usage_reset")
+            if isinstance(codex_reset, dict):
+                # A counter discontinuity is recoverable accounting, but it
+                # is never silent: the current snapshot was booked as the
+                # safe new baseline and this records exactly why.
+                n["codex_usage_reset"] = dict(codex_reset)
             # a completed turn is exactly what "compacted and not run since"
             # was waiting for — whatever this turn measured or failed to
             # measure, the successor's session is no longer only a summary

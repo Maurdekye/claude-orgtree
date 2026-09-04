@@ -28,7 +28,7 @@ with open(os.path.join(os.environ["ORGTREE_DATA"], "defaults.json"), "w",
           encoding="utf-8") as _f:
     _f.write('{"net_hub_address": "http://127.0.0.1:9"}')
 
-from orgtree import codexrun                                       # noqa: E402
+from orgtree import codexrun, providers                            # noqa: E402
 
 FAKE = [sys.executable,
         os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -81,6 +81,40 @@ def main():
     check("token usage folded from the notification stream",
           lambda: eq((res["token_usage"] or {}).get("total", {})
                      .get("totalTokens"), 42, "tokens"))
+
+    live_total = {"totalTokens": 15561541, "inputTokens": 15517141,
+                  "cachedInputTokens": 15295616, "outputTokens": 44400,
+                  "reasoningOutputTokens": 11979}
+    live_base = {"totalTokens": 6370404, "inputTokens": 6344363,
+                 "cachedInputTokens": 6177280, "outputTokens": 26041,
+                 "reasoningOutputTokens": 7246}
+    live_usage, live_reset = codexrun._turn_usage(
+        {"last": {}, "total": live_total}, live_base)
+    check("a live Codex session snapshot is reduced to this turn's exact "
+          "delta before billing",
+          lambda: eq((live_usage or {}).get("total"), {
+              "totalTokens": 9191137, "inputTokens": 9172778,
+              "cachedInputTokens": 9118336, "outputTokens": 18359,
+              "reasoningOutputTokens": 4733}, "live token delta"))
+    check("the exact live turn bills $4.232282, never its $7.892346 "
+          "session snapshot",
+          lambda: eq(providers.codex_cost("sol", live_usage), 4.232282,
+                     "live delta cost"))
+    check("an ordinary increasing counter records no reset",
+          lambda: eq(live_reset, None, "reset marker"))
+
+    reset_usage, reset = codexrun._turn_usage(
+        {"last": {}, "total": {"totalTokens": 120,
+                                  "inputTokens": 100,
+                                  "cachedInputTokens": 80,
+                                  "outputTokens": 20}}, live_total)
+    check("a backwards counter books the current snapshot whole instead of "
+          "a negative or silent-zero delta",
+          lambda: eq((reset_usage or {}).get("total", {}).get("totalTokens"),
+                     120, "reset usage"))
+    check("the backwards fields and safe policy are explicit audit evidence",
+          lambda: eq((reset or {}).get("policy"),
+                     "book_current_snapshot", "reset policy"))
     check("rate-limit standing folded too",
           lambda: eq((res["rate_limits"] or {}).get("limitId"), "codex",
                      "limits"))

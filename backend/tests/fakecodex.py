@@ -55,6 +55,7 @@ import threading
 import time
 
 SCENARIO = os.environ.get("FAKECODEX_SCENARIO", "tool")
+TURN_COUNT = 0
 
 # ── the measured usage-limit ending (D-209) ──────────────────────────────────
 # Transcribed from the Codex CLI's OWN rollout for the incident that started
@@ -135,6 +136,9 @@ def wait_request(method, timeout=8.0):
 
 
 def run_turn(thread_id, turn_id, dyn_tools):
+    global TURN_COUNT
+    TURN_COUNT += 1
+    turn_number = TURN_COUNT
     notify("turn/started", {"threadId": thread_id, "turn": {"id": turn_id}})
     probe = os.environ.get("FAKECODEX_ENVPROBE", "")
     probe_path = os.environ.get("FAKECODEX_ENVPROBE_PATH", "envprobe.json")
@@ -300,12 +304,63 @@ def run_turn(thread_id, turn_id, dyn_tools):
                 "turn": {"id": turn_id, "status": "interrupted",
                          "error": None}})
             return
+    if SCENARIO == "cumulative_usage":
+        # Exact first two snapshots measured on nowindow-spawn.  Turn two's
+        # full counter prices to $3.660064, but its NEW work is only $0.148005.
+        first = {"totalTokens": 6057714, "inputTokens": 6032418,
+                 "cachedInputTokens": 5867648, "outputTokens": 25296,
+                 "reasoningOutputTokens": 7126}
+        if turn_number == 1:
+            notify("thread/tokenUsage/updated", {
+                "threadId": thread_id,
+                "tokenUsage": {"last": dict(first), "total": dict(first)}})
+        elif turn_number == 2:
+            interim = {"totalTokens": 6158880, "inputTokens": 6133484,
+                       "cachedInputTokens": 5968128, "outputTokens": 25396,
+                       "reasoningOutputTokens": 7166}
+            notify("thread/tokenUsage/updated", {
+                "threadId": thread_id,
+                "tokenUsage": {
+                    "last": {"totalTokens": 101166, "inputTokens": 101066,
+                             "cachedInputTokens": 100480,
+                             "outputTokens": 100,
+                             "reasoningOutputTokens": 40},
+                    "total": interim}})
+            notify("thread/tokenUsage/updated", {
+                "threadId": thread_id,
+                "tokenUsage": {
+                    "last": {"totalTokens": 211524, "inputTokens": 210879,
+                             "cachedInputTokens": 209152,
+                             "outputTokens": 645,
+                             "reasoningOutputTokens": 80},
+                    "total": {"totalTokens": 6370404,
+                              "inputTokens": 6344363,
+                              "cachedInputTokens": 6177280,
+                              "outputTokens": 26041,
+                              "reasoningOutputTokens": 7246}}})
+        else:
+            reset = {"totalTokens": 120, "inputTokens": 100,
+                     "cachedInputTokens": 80, "outputTokens": 20,
+                     "reasoningOutputTokens": 3}
+            notify("thread/tokenUsage/updated", {
+                "threadId": thread_id,
+                "tokenUsage": {"last": dict(reset), "total": dict(reset)}})
+        notify("turn/completed", {"threadId": thread_id,
+                                  "turn": {"id": turn_id,
+                                           "status": "completed",
+                                           "error": None}})
+        return
+    unit = {"totalTokens": 42, "inputTokens": 30,
+            "cachedInputTokens": 10, "outputTokens": 12,
+            "reasoningOutputTokens": 0}
     notify("thread/tokenUsage/updated", {
         "threadId": thread_id,
-        "tokenUsage": {"total": {"totalTokens": 42, "inputTokens": 30,
-                                 "cachedInputTokens": 10,
-                                 "outputTokens": 12,
-                                 "reasoningOutputTokens": 0}}})
+        # The real app-server reports a thread-cumulative `total` and one
+        # request in `last`. A repeated literal total made resumed fake turns
+        # claim that no new work happened under the real normalization rule.
+        "tokenUsage": {"last": unit,
+                       "total": {key: value * turn_number
+                                 for key, value in unit.items()}}})
     notify("account/rateLimits/updated", {
         "rateLimits": {"limitId": "codex",
                        "primary": {"usedPercent": 1,

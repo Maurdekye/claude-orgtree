@@ -259,6 +259,74 @@ def main() -> int:
             "startup app-server did not survive the turn boundary")
     check("codex tier takes the codex leg; books like a turn", t1)
 
+    print("§1b thread-cumulative usage books per-turn deltas")
+    os.environ["FAKECODEX_SCENARIO"] = "cumulative_usage"
+    os.environ["FAKECODEX_THREAD_ID"] = "fake-cumulative-thread"
+    cumulative_slug, cumulative_nid = mkorg("cumulative-usage")
+    warmpool.keeper_pass_now()
+
+    def t1c():
+        run_turn(cumulative_slug, cumulative_nid, "first measured turn")
+        after_first = float(node_doc(
+            cumulative_slug, cumulative_nid).get("cost_usd") or 0.0)
+        run_turn(cumulative_slug, cumulative_nid, "second measured turn")
+        n = node_doc(cumulative_slug, cumulative_nid)
+        ring = n.get("turns") or []
+        eq([turn.get("cost") for turn in ring],
+           [3.512059, 0.148005],
+           "each ring row is one turn, not a growing session snapshot")
+        eq(round(float(n.get("cost_usd") or 0.0) - after_first, 6),
+           0.148005, "the node's second-turn increment is the delta")
+        eq((n.get("codex_usage_total") or {}).get("totalTokens"), 6370404,
+           "raw session counter is retained as the next-turn baseline")
+        assert not n.get("codex_usage_reset"), (
+            "an increasing counter was falsely marked as a reset")
+    check("the exact $3.660064 second snapshot books only its $0.148005 "
+          "delta", t1c)
+
+    def t1d():
+        run_turn(cumulative_slug, cumulative_nid, "counter reset turn")
+        n = node_doc(cumulative_slug, cumulative_nid)
+        ring = n.get("turns") or []
+        eq(ring[-1].get("cost"), 0.000512,
+           "reset books the current snapshot whole")
+        marker = n.get("codex_usage_reset") or {}
+        eq(marker.get("policy"), "book_current_snapshot",
+           "reset policy is durable")
+        assert "totalTokens" in (marker.get("fields") or []), marker
+    check("a backwards counter is non-negative, non-zero and durably marked",
+          t1d)
+    os.environ["FAKECODEX_SCENARIO"] = "tool"
+    os.environ.pop("FAKECODEX_THREAD_ID", None)
+
+    def t1e():
+        # Claude's supervisor boundary already supplies PER-TURN dollars.
+        # Preserve the measured decreasing sequence: a generic "harmonizer"
+        # that starts treating these as cumulative would subtract or discard
+        # the second, smaller but entirely real turn.
+        co = store.create_org("zz codexdisp claude-cost-control")
+        cn = co.hire(
+            USER, None, "opus", 0, "claude", add_dirs=[],
+            tools={"bash": True, "web": False, "edit": True,
+                   "subagents": False, "mcp": []},
+            org_visibility="team", charter="Claude cost control")["node"]
+        store.save_org(co)
+        supervisor._after_turn(
+            co.d["slug"], cn, co,
+            {"status": "completed", "total_cost_usd": 2.092458,
+             "duration_ms": 1, "usage": {}}, {}, 100)
+        supervisor._after_turn(
+            co.d["slug"], cn, co,
+            {"status": "completed", "total_cost_usd": 0.470193,
+             "duration_ms": 1, "usage": {}}, {}, 110)
+        n = node_doc(co.d["slug"], cn)
+        eq([t.get("cost") for t in n.get("turns") or []],
+           [2.092458, 0.470193],
+           "Claude's decreasing provider results remain per-turn")
+        eq(n.get("cost_usd"), 2.562651,
+           "Claude lifetime cost sums the two per-turn results")
+    check("Claude's measured decreasing cost shape stays per-turn", t1e)
+
     def t1b():
         # Upgrade fixture: this node completed a turn under the old Codex
         # integration and persisted the app-server's 258.4k observation. The
