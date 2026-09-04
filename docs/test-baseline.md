@@ -84,6 +84,66 @@ shifts that file's lines can change what they say. If you touch
 `supervisor.py`, re-measure the baseline at YOUR tip rather than trusting a
 list someone measured two commits ago.
 
+### Re-measured 2026-09-04 at `02615b9` by `cache-invalidation-audit`
+
+Same names, one addition, and one row that turned out to be more interesting
+than "a known red".
+
+**`compaction` — ADD IT TO THE LIST.** `urllib.error.HTTPError: HTTP 422` out
+of its own rig. Verified pre-existing the only way that settles it: a detached
+worktree at `9fbe898` with my changes ABSENT failed identically. Method for
+any of these — `git worktree add --detach <scratch>/mainchk <tip-before-your-
+branch>` and run the suite there. It costs one checkout and it is the
+difference between "this was already red" and "I broke it and then read a
+document that told me I had not".
+
+**`headless` unchanged**, same `body.index('org.d.get("api_key")')` →
+`ValueError: substring not found`.
+
+**`harvest` unchanged in KIND, and this is the part worth reading if you have
+just edited `supervisor.py`.** It still fails on the ORDER fixture, but the
+line numbers it prints have moved — `11615/11739` in the row above,
+`12008/12132` here. That is the fixture doing its job: it asserts a RELATION
+between two positions, so a uniform shift (my change inserted ~110 lines well
+above both) leaves the relation intact and the failure identical. **A changed
+pair of numbers in that message is not evidence you caused it.** Read the
+relation, not the integers.
+
+**`turn-lifecycle` produced NO OUTPUT and did not finish within 200 s** in a
+worktree at this tip — a hang, not the documented fixture trip. Not chased.
+Its fixture greps for a LITERAL string (`st["queue"][0:0] = leftover`), not a
+line number, so a `supervisor.py` insertion cannot move it either way. Worth
+someone's time separately; do not read a `supervisor.py` change into it.
+
+**`external-mail` — the assertion is CORRECT ABOUT THE HAZARD AND WRONG ABOUT
+THESE NINE RIGS, and the difference matters before anyone "fixes" it.**
+
+It flags every rig that mints its own `ORGTREE_DATA` without also writing
+`net_hub_address`. That is a proxy for "could register fixture orgs against
+the operator's real hub". Measured, not reasoned:
+
+* Registration happens **only** through `net.start_net_client()`, which is
+  called from the backend's startup path (`api.py`). `store.create_org` in a
+  throwaway data root writes a doc and contacts nothing.
+* **None of the nine flagged rigs starts a backend.** Grepped each for
+  `start_net_client` / `uvicorn` / `TestClient` / lifespan; the two apparent
+  hits were the word "startup" in prose.
+* **None of their fixture orgs is on the real hub.** Fetched the live roster
+  (`GET /ui/data` on `127.0.0.1:7370`, 135 rows) and matched every name those
+  rigs create — `sendmail rig`, `sendmail rig claude`, `sendfile rig`,
+  `sendfile rig claude`, `Old Host Org`, `Boxed Org`, `zz-or-cost-test`,
+  `zz turn activity`. **Zero hits.** The 2026-08-10 pollution names the
+  suite's own comment cites (`arch`, `capnode`, `lonedead`, `norescue`,
+  `order2`) are gone too — that was this suite, and this suite was fixed.
+
+So the pollution the assertion exists to prevent is real, has happened once,
+and is not happening now. What the roster DOES hold is 132 rows whose base
+slug is no longer a local org at all — UI-probe orgs (`zz crowdtoggle a/b`,
+`zz keyloss probe`) and historical real ones (`orgtree-*`, `cc-*`). That is a
+different defect: **deleting an org locally does not unregister it from the
+hub.** Do not fold the two together.
+
+
 ### ⚠ The count also depends on YOUR CHECKOUT: a symlinked node_modules
 
 A frontend change is untestable without `frontend/node_modules`, and the team
