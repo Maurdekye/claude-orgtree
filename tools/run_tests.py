@@ -213,20 +213,8 @@ _CHECKS = [
 #: last-resort count — the `ok N` lines themselves, for a suite that never
 #: reached its own total
 _OK_LINE = re.compile(r"^\s*ok\s+(\d+)\b", re.M)
-#: A suite that reached its own end, in EITHER outcome. The first three
-#: alternatives are the finished-and-green conventions; the fourth is what a
-#: catch-and-continue suite prints when it finished and something failed
-#: ("12 passed - 1 FAILED", "35 passed · 1 FAILED · 0 findings", …).
-#:
-#: THE FOURTH IS NOT DECORATION. Without it a suite that ran every check and
-#: reported failures reads identically to one that died at check 2, because
-#: neither printed "checks passed" — and `truncated` below is no longer gated
-#: on rc == 0, so the miss would flag honest suites as cut short. Separator is
-#: deliberately loose: this tree uses `-`, `·` and `,` for the same sentence.
-_TOTAL_LINE = re.compile(
-    r"ALL\s+[\d,]+\s+CHECKS PASS|checks passed|^ℹ\s*pass\s"
-    r"|\d+\s+passed\b[^\n]*\bFAILED\b",
-    re.M)
+_TOTAL_LINE = re.compile(r"ALL\s+[\d,]+\s+CHECKS PASS|checks passed|^ℹ\s*pass\s",
+                         re.M)
 
 
 class Suite:
@@ -375,7 +363,7 @@ def discover(py):
 
 class Result:
     __slots__ = ("suite", "rc", "out", "secs", "checks", "state",
-                 "guard_state", "guard_lines", "truncated")
+                 "guard_state", "guard_lines", "truncated", "aborted")
 
 
 def child_env():
@@ -403,35 +391,53 @@ def _kill_tree(proc):
         pass
 
 
-def stopped_early(out):
-    """Did this suite stop before reaching its own final total?
+#: A line that REPORTS COUNTS — a suite's own summary, in any of the shapes
+#: this tree actually uses. Deliberately loose (a number plus one of the
+#: words), because the point is only "did it get to the end and tell us".
+_SUMMARY = re.compile(
+    # ⚠ NOT ON A TRACEBACK FRAME, and getting this wrong cost a whole
+    # sweep. The first version allowed the bare word 'check', and EVERY
+    # frame in every fail-fast suite here reads
+    #     File '...test_x.py', line 142, in check
+    # — digits and the keyword, on one line, INSIDE the traceback. So the
+    # predicate found a 'summary' after every death and reported that
+    # nothing had aborted. A sweep with zero findings looked like success;
+    # it was the instrument failing to see the one suite that really does
+    # die. Frames are excluded by shape, and a real summary has to carry a
+    # pass/fail word rather than the word 'check'.
+    r"^(?!\s*(?:File \"|Traceback))"
+    r"[^\n]*\b\d[\d,]*\b[^\n]*\b(?:passed|PASS|FAILED|failed)\b",
+    re.M)
 
-    Lifted out of `run_one` so it can be exercised without a subprocess:
-    a predicate this load-bearing that could only be reached by running a
-    real suite is one nobody checks.
+
+def stopped_early(out):
+    """Did this suite DIE mid-run, leaving its remaining checks unmeasured?
+
+    ⚠ THIS ASKS WHETHER THE PROCESS DIED, NOT WHETHER A PHRASE IS MISSING,
+    and the difference is the whole design. The first version of this fix
+    flagged "no recognised final total" — an open-ended absence — and a full
+    sweep immediately branded two suites that had run to completion:
+    `account-pool-state` ends "1 of 39 checks FAILED" and `codex-prewarm`
+    ends "1 FAILED, 6 PASSED", neither of which matched the phrase list. A
+    flag that cries wolf is worthless within a day, so chasing summary
+    formats one at a time was the wrong shape: there is no closed set of them.
+    There IS a closed set of ways a run dies.
+
+    So: find the LAST traceback, and ask whether anything after it reports
+    counts. A suite that caught its failures prints its summary after the
+    traceback it echoed; a suite that died has nothing after it. A suite that
+    never raised at all is not a candidate.
+
+    Lifted out of `run_one` and given only the output text, so it can be
+    exercised without a subprocess and so an exit code cannot creep back into
+    the decision — that gate is what hid four dark tails for up to 25 days.
     """
-    # ⚠ TRUNCATION IS NOT AN rc == 0 CONCERN, AND GATING IT THERE HID FOUR
-    # SUITES FOR UP TO 25 DAYS. This used to read `r.rc == 0 and oks and …`,
-    # so the flag could never fire on a FAILING suite — which is the only
-    # population where it matters. Most suites here use a deliberate
-    # fail-fast `check()` (it raises rather than recording), so a red one dies
-    # at its first failure and every later check simply never runs. The
-    # runner then reported `r.checks` from the last `ok N` line, i.e. THE
-    # ABORT POINT, in the same column and the same words it uses for a
-    # completed total: `extern-handle-attach` printed "2 checks" for a
-    # 19-check suite and nothing anywhere said the other 17 had not run.
-    #
-    # Measured 2026-09-04: crash-reports 1/8 since the suite was born,
-    # extern-handle-attach 2/19 since 2026-08-31, external-mail 8/241 for 25
-    # days — with §4 kiosk sealing, §8 the extern HTTP surface and §10
-    # authorization inside the dark part. A separate tool had to be written to
-    # recover what this function already knew and threw away.
-    #
-    # The fail-fast convention is FINE and is not the defect (it is what makes
-    # a green run a clean binary signal). Reporting an abort as if it were a
-    # total is the defect.
-    oks = _OK_LINE.findall(out)
-    return bool(oks and not _TOTAL_LINE.search(out))
+    if not _OK_LINE.findall(out):
+        return False              # nothing measured; a different problem
+    died = out.rfind("Traceback (most recent call last):")
+    if died < 0:
+        return False              # it did not raise its way out
+    return not _SUMMARY.search(out[died:])
 
 
 def run_one(suite, cmd, timeout, logdir):
@@ -473,7 +479,15 @@ def run_one(suite, cmd, timeout, logdir):
     oks = _OK_LINE.findall(r.out)
     if r.checks is None and oks:
         r.checks = int(oks[-1])
-    r.truncated = stopped_early(r.out)
+    # TWO DIFFERENT FACTS, kept apart on purpose. `aborted` is new and
+    # means the process died with checks left to run. `truncated` is the
+    # older, narrower signal it has always been: a suite that exited 0
+    # without printing its own total. Folding them together is what
+    # produced the false positives a sweep caught on 2026-09-04.
+    oks = _OK_LINE.findall(r.out)
+    r.aborted = stopped_early(r.out)
+    r.truncated = bool(r.rc == 0 and oks
+                       and not _TOTAL_LINE.search(r.out))
 
     # ⚠ A PASSING CHECK'S OWN LINE IS NOT EVIDENCE OF A FAILURE, and reading
     # it as one turned this alarm into noise on every single run (measured
@@ -696,21 +710,20 @@ def main():
 
     def done(r):
         mark = {"PASS": "✓", "FAIL": "✗", "TIMEOUT": "⏱"}[r.state]
-        # ⚠ SAY WHICH NUMBER THIS IS. For a suite that never reached its
-        # own total the count is where it STOPPED, and printing it as
-        # "N checks" is what let a 19-check suite report "2 checks" for
-        # weeks with nothing to distinguish it from a suite that has two.
+        # ⚠ SAY WHICH NUMBER THIS IS, but only when it is true. `aborted`
+        # means the process DIED with checks left; a green suite that
+        # merely never printed a recognised total did not stop early and
+        # must not be described as if it had. Saying so cost two false
+        # positives in the sweep that caught it.
         n = ("" if r.checks is None else
-             f"stopped at {r.checks}" if r.truncated else
+             f"stopped at {r.checks}" if r.aborted else
              f"{r.checks} checks")
         flag = {"FIRED": "  ⚑ DRIFT", "silent": "  ⚐ guard silent"}.get(
             r.guard_state, "")
-        if r.truncated:
-            # different words for different objects: a green suite that
-            # forgot its total, versus a red one that died mid-run and
-            # left an unmeasured tail behind it
-            flag += ("  ⚐ no final total" if r.rc == 0 else
-                     "  ⚐ ABORTED — tail unmeasured")
+        if r.aborted:
+            flag += "  ⚐ ABORTED — tail unmeasured"
+        elif r.truncated:
+            flag += "  ⚐ no final total"
         print(f"  {mark} {r.suite.id:<26}{n:>12}{r.secs:9.1f}s{flag}", flush=True)
 
     # the parallel lane first; the exclusive lane runs alone afterwards so no
@@ -778,25 +791,24 @@ def main():
             print(f"\n  {r.suite.id}:")
             for ln in r.guard_lines:
                 print(f"    {ln.strip()[:160]}")
-    cut = [r for r in results if r.truncated]
+    gone = [r for r in results if r.aborted]
+    if gone:
+        print()
+        for r in gone:
+            print(f"⚐ {r.suite.id} STOPPED at check {r.checks} and never "
+                  f"reached its own total — the checks after that point "
+                  f"DID NOT RUN. A red row is not a measured suite; read "
+                  f"the log before treating anything below the failure "
+                  f"as covered.")
+    cut = [r for r in results if r.truncated and not r.aborted]
     if cut:
         print()
         for r in cut:
-            if r.rc == 0:
-                print(f"⚐ {r.suite.id} exited 0 after {r.checks} `ok` lines "
-                      f"but never printed its own total — the convention "
-                      f"here is a final `ALL N CHECKS PASS`, so this run "
-                      f"did not finish.")
-            else:
-                # the case that was invisible: most suites here use a
-                # fail-fast `check()`, so a red one dies at its FIRST
-                # failure and every later check never runs. Nothing else
-                # in this output says so.
-                print(f"⚐ {r.suite.id} STOPPED at check {r.checks} and "
-                      f"never reached its own total — the checks after "
-                      f"that point DID NOT RUN. A red row is not a "
-                      f"measured suite; read the log before treating "
-                      f"anything below the failure as covered.")
+            print(f"⚐ {r.suite.id} exited 0 after {r.checks} `ok` lines "
+                  f"but never printed its own total — the convention "
+                  f"here is a final `ALL N CHECKS PASS`, so this run did "
+                  f"not finish.")
+
     if silent:
         print()
         for r in silent:

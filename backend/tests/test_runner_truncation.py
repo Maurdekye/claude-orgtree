@@ -130,6 +130,52 @@ ImportError: no module named orgtree
 """
 
 
+FINISHED_COUNT_OF_TOTAL = """
+ok  38  4.5 building the standing table makes no network call
+ok  39  4.6 …and the tripwire can fire
+   · 1.7a the live primary 429 wording enters the limit path
+Traceback (most recent call last):
+  File "x.py", line 1, in _
+AssertionError: 429 rate_limit_error
+
+1 of 39 checks FAILED
+"""
+
+FINISHED_FAILED_FIRST = """
+  ok   6  a thing
+Traceback (most recent call last):
+AssertionError: initialize stays once per process
+
+1 FAILED, 6 PASSED
+"""
+
+GREEN_OWN_FORMAT = """
+  ok  24  a thing
+
+PASS — gpt-reserve detection, 24 checks
+"""
+
+
+#: THE SHAPE THAT DEFEATED THE SECOND VERSION OF THIS PREDICATE, taken
+#: verbatim from a real sweep log. Every fail-fast suite in this tree routes
+#: through a function named `check`, so its traceback frames read
+#: `File "...", line 142, in check` — digits and a keyword on one line. A
+#: summary recogniser that allowed the bare word "check" matched THAT, decided
+#: a summary followed every death, and reported that nothing had aborted at
+#: all. The sweep came back clean and the instrument was simply blind.
+REAL_ABORT_THROUGH_CHECK = """
+  ok  78  a kiosk is sealed from the outside
+  ok  79  …and from the inside
+Traceback (most recent call last):
+  File "C:\wt\backend\tests\test_external_mail.py", line 2610, in <module>
+    s4_kiosk()
+  File "C:\wt\backend\tests\test_external_mail.py", line 142, in check
+    fn()
+  File "C:\wt\backend\tests\test_external_mail.py", line 983, in _
+    assert "kiosk_cfg" not in row and row["kiosk"] is True, row
+AssertionError: {'slug': 'sealed-renamed', 'nodes': 1, 'live': 1}
+"""
+
 # ------------------------------------------------------- group aborted
 def t_a_fail_fast_abort_is_reported_as_stopped_early() -> None:
     """THE HEADLINE. A suite that died at its first failure printed `ok`
@@ -150,6 +196,58 @@ def t_the_rc_gate_is_gone() -> None:
         f"predicate, a failing suite can be excluded from truncation again, "
         f"which is the defect that hid four suites")
 
+
+
+def t_a_suite_that_finished_with_failures_is_not_branded() -> None:
+    """THE CHECKS A FULL SWEEP EARNED, and the reason this predicate was
+    rebuilt. The first version asked "is a recognised total missing" — an
+    open-ended absence — and a real sweep immediately branded two suites
+    that had run every check: `account-pool-state` ends "1 of 39 checks
+    FAILED" and `codex-prewarm` ends "1 FAILED, 6 PASSED". Neither
+    matched the phrase list, and there is no closed set of summary
+    formats to chase. There IS a closed set of ways a run dies, so the
+    predicate asks that instead.
+
+    A flag that cries wolf is worthless within a day; a false positive
+    here would be worse than the failure it reports."""
+    for name, out in (("count-of-total", FINISHED_COUNT_OF_TOTAL),
+                      ("failed-first", FINISHED_FAILED_FIRST)):
+        assert not rt.stopped_early(out), (
+            f"a suite that ran every check and summarised its failures "
+            f"({name}) was branded as having stopped early")
+
+
+def t_a_green_suite_in_its_own_format_is_not_branded() -> None:
+    """A suite whose final line the runner does not recognise did not stop
+    early — it just spells its total its own way. That is a different and
+    much older complaint, and it is not this flag's business."""
+    assert not rt.stopped_early(GREEN_OWN_FORMAT)
+
+
+def t_a_caught_failure_echoing_a_traceback_is_not_a_death() -> None:
+    """Catch-and-continue suites PRINT tracebacks for the failures they
+    recorded, then carry on. The discriminator is whether anything reports
+    counts AFTER the last one."""
+    assert not rt.stopped_early(FINISHED_WITH_FAILURES_DASH
+                                + "\nTraceback (most recent call last):"
+                                + "\nAssertionError: x"
+                                + "\n12 passed - 1 FAILED\n")
+
+
+def t_a_real_abort_through_a_check_frame_is_still_caught() -> None:
+    """THE FALSIFIER THIS FILE MOST NEEDED, and it was added after a full
+    sweep came back with ZERO aborts — including the one suite that
+    verifiably dies. Every fail-fast suite here routes through a function
+    named `check`, so every traceback frame carries `in check`; a summary
+    recogniser that accepted the bare word matched inside the traceback
+    and concluded a summary followed every death.
+
+    An instrument that reports nothing found must prove it can find
+    something. This is that proof, on real bytes from a real log."""
+    assert rt.stopped_early(REAL_ABORT_THROUGH_CHECK), (
+        "a genuine abort was missed because its traceback frames pass "
+        "through a function named check - the recogniser is matching "
+        "inside the traceback it is supposed to be looking past")
 
 # -------------------------------------------------------- group finished
 def t_a_green_suite_is_not_flagged() -> None:
@@ -184,14 +282,25 @@ def t_a_catching_suite_that_failed_is_not_branded_truncated() -> None:
             f"separator) was flagged as stopped early")
 
 
-def t_the_failure_summary_is_not_matched_by_an_ok_line_alone() -> None:
-    """Anti-vacuity for the check above: the recogniser must key on the
-    SUMMARY, not on the presence of the word FAILED anywhere. A suite that
-    printed a FAIL line and then died is still an abort."""
-    out = "  ok   1  a thing\n  FAIL     another thing\nTraceback…\n"
+def t_a_fail_line_then_death_is_still_a_death() -> None:
+    """ANTI-VACUITY for the group above. A suite may print a FAIL line
+    and THEN die - a catching wrapper that records one failure and is
+    killed by the next. Nothing reports counts after the traceback, so
+    this is an abort and must still be flagged. Without this the group
+    above could be satisfied by a predicate that simply never fires.
+
+    (The first version of this check fed a fixture ending in a literal
+    "Traceback…" with an ellipsis rather than the real first line, so it
+    passed against the phrase-based predicate for the wrong reason and
+    failed the moment the predicate started looking for the real thing.
+    A fixture that does not resemble the input is not a fixture.)"""
+    out = (" ok   1  a thing\n"
+           "  FAIL     another thing\n"
+           "Traceback (most recent call last):\n"
+           "AssertionError: the second one killed it\n")
     assert rt.stopped_early(out), (
-        "a suite that printed a FAIL line and then died was treated as "
-        "finished - the recogniser is matching the word, not the summary")
+        "a suite that printed a FAIL line and then DIED was treated as "
+        "finished - nothing reported counts after the traceback")
 
 
 # --------------------------------------------------------- group wiring
@@ -214,7 +323,7 @@ def t_run_one_uses_the_predicate() -> None:
            if isinstance(n, ast.FunctionDef)}
     assert "run_one" in fns, "run_one is gone from the runner"
     body = ast.unparse(fns["run_one"])
-    assert "r.truncated = stopped_early(r.out)" in body, (
+    assert "r.aborted = stopped_early(r.out)" in body, (
         "run_one no longer routes truncation through stopped_early - the "
         "tested predicate and the shipped behaviour have separated")
     # ⚠ AND NOT ONE CHARACTER MORE. The first draft also banned
@@ -223,9 +332,9 @@ def t_run_one_uses_the_predicate() -> None:
     # check that forbids a correct line is a check someone deletes. The
     # gate cannot return through the predicate anyway - stopped_early takes
     # only its output text, pinned by t_the_rc_gate_is_gone.
-    assert body.count("r.truncated") == 1, (
-        "truncation is decided in more than one place in run_one - one of "
-        "them will drift")
+    assert body.count("r.aborted") == 1, (
+        "the abort verdict is reached in more than one place in run_one - "
+        "one of them will drift")
 
 
 def t_a_timeout_writes_itself_into_the_log() -> None:
@@ -248,6 +357,15 @@ def main() -> int:
           t_a_fail_fast_abort_is_reported_as_stopped_early)
     check("the rc == 0 gate cannot come back by accident",
           t_the_rc_gate_is_gone)
+    check("a real abort through a `check` frame is still caught",
+          t_a_real_abort_through_a_check_frame_is_still_caught)
+    print("group false-positives: what a full sweep caught")
+    check("a suite that finished WITH failures is not branded",
+          t_a_suite_that_finished_with_failures_is_not_branded)
+    check("a green suite in its own total format is not branded",
+          t_a_green_suite_in_its_own_format_is_not_branded)
+    check("a caught failure echoing a traceback is not a death",
+          t_a_caught_failure_echoing_a_traceback_is_not_a_death)
     print("group finished: a suite that reached its own end is left alone")
     check("a green suite is not flagged, in all three conventions",
           t_a_green_suite_is_not_flagged)
@@ -256,8 +374,8 @@ def main() -> int:
     print("group finished-with-failures: the one a careless fix gets wrong")
     check("a catching suite that failed is not branded truncated",
           t_a_catching_suite_that_failed_is_not_branded_truncated)
-    check("...and the recogniser keys on the summary, not the word FAILED",
-          t_the_failure_summary_is_not_matched_by_an_ok_line_alone)
+    check("ANTI-VACUITY: a FAIL line then death is still a death",
+          t_a_fail_line_then_death_is_still_a_death)
     print("group wiring: the runner actually asks")
     check("run_one routes truncation through the predicate",
           t_run_one_uses_the_predicate)
