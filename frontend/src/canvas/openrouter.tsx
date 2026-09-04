@@ -444,7 +444,7 @@ export function ModelPicker({ doc, busy, onToggle, onClose }: {
             // a page the comparison is against `prev_vendor` — the row before
             // this page — so a group split across a page boundary says
             // "continued" instead of pretending to start again there.
-            const before = i === 0 ? page.prev_vendor : page.items[i - 1].vendor
+            const before = i === 0 ? page.prev_vendor : page.items[i - 1]?.vendor
             const head = page.group_by_vendor && m.vendor !== before
             const cont = page.group_by_vendor && i === 0 && m.vendor === before
             return (

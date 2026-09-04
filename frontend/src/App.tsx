@@ -14,6 +14,7 @@ import {
 } from './api'
 import { bumpLive } from './livebus'
 import { AudienceFold, ConfirmModal, MailFolders, MailList, OrgCanvas, OrgRecord, RetiredFold, useEsc } from './Canvas'
+import { KillSwitch } from './KillSwitch'
 import { DiskBrowser, DiskFullAlert } from './DiskBrowser'
 import {
   AutorenewIcon, BlockIcon, CheckIcon, ChevronRightIcon, CloseIcon, CopyIcon, EyeIcon, LanIcon,
@@ -211,7 +212,6 @@ export default function App() {
   // lifted up here — that panel owns its selection.
   const [showGallery, setShowGallery] = useState(false)
   const [focusAgent, setFocusAgent] = useState<string | null>(null)
-  const [killArmed, setKillArmed] = useState(false)  // the killswitch latch
   // the usage button GLOWS once a lane nears its wall (user feature
   // 2026-08-19), so a freeze stops being the first notice. It rides
   // /api/usage/peek — the CACHE-ONLY readout — because this poll runs whether
@@ -251,11 +251,6 @@ export default function App() {
     const t = setInterval(() => setNowTick(Date.now()), 15000)
     return () => clearInterval(t)
   }, [])
-  useEffect(() => {           // an unlatched killswitch re-latches on its own
-    if (!killArmed) return
-    const t = setTimeout(() => setKillArmed(false), 6000)
-    return () => clearTimeout(t)
-  }, [killArmed])
 
   // №17: a toast may carry an UNDO — a 12-second reverse on the gesture just
   // made (mis-drag reorders, accidental promotes, one-click retires)
@@ -831,36 +826,14 @@ export default function App() {
                   <button className="mob-only bar-row"
                     onClick={() => { setBarMore(false); setShowSettings(true) }}>
                     <SettingsIcon fontSize="inherit" /> settings</button>}
-                <span className="kill mob-only">
-                  <button className={'kill-latch' + (killArmed ? ' open' : '')}
-                    onClick={() => setKillArmed((a) => !a)}>
-                    {killArmed ? <LockOpenIcon fontSize="inherit" /> : <LockIcon fontSize="inherit" />}</button>
-                  <button className="kill-btn" disabled={!killArmed}
-                    onClick={() => {
-                      setKillArmed(false); setBarMore(false)
-                      killAll(slug)
-                        .then((r) => { toast([`interrupted ${r.interrupted.length} agent(s); queues cleared`]); refreshTree(slug) })
-                        .catch((e: Error) => toast([`error: ${e.message}`]))
-                    }}><StopIcon fontSize="inherit" /> STOP ALL</button>
-                </span>
+                <KillSwitch slug={slug} toast={toast} refreshTree={refreshTree}
+                  onKilled={() => setBarMore(false)} className="mob-only" />
                 </div>
                 <span style={{ flex: 1 }} />
-                {/* the killswitch: unlatch, then press — interrupts EVERY
+                {/* the killswitch: unlatch (expands STOP ALL to the left),
+                    then press after 500ms safety window — interrupts EVERY
                     active agent and clears their queues */}
-                <span className="kill">
-                  <button className={'kill-latch' + (killArmed ? ' open' : '')}
-                    title={killArmed ? 're-latch' : 'unlatch the killswitch'}
-                    onClick={() => setKillArmed((a) => !a)}>
-                    {killArmed ? <LockOpenIcon fontSize="inherit" /> : <LockIcon fontSize="inherit" />}</button>
-                  <button className="kill-btn" disabled={!killArmed}
-                    title="interrupt every active agent at once"
-                    onClick={() => {
-                      setKillArmed(false)
-                      killAll(slug)
-                        .then((r) => { toast([`interrupted ${r.interrupted.length} agent(s); queues cleared`]); refreshTree(slug) })
-                        .catch((e: Error) => toast([`error: ${e.message}`]))
-                    }}><StopIcon fontSize="inherit" /> STOP ALL</button>
-                </span>
+                <KillSwitch slug={slug} toast={toast} refreshTree={refreshTree} />
                 {/* the SECOND inbox icon (user ruling 2026-08-04): it glows —
                     alone in the whole chrome — iff an un-nulled ask (question
                     or credit request) is waiting on the user. Two-tier badge

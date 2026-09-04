@@ -406,23 +406,45 @@ button.badge.audience-fold.alert {
 .resume-note { font-size: 11.5px; color: var(--dim); max-width: 34em; }
 .auto-resume { font-size: 11px; color: var(--dim); padding: 3px 8px; }
 .auto-resume.on { color: var(--ok); border-color: rgba(111, 211, 119, .5); }
-/* the killswitch: a latch you must open, then a big red STOP ALL */
+/* the killswitch: a latch you must open, which expands a big red STOP ALL to the left */
 .kill { display: inline-flex; gap: 0; align-items: stretch; }
 .kill-latch {
-  background: var(--input); border: 1px solid var(--line); border-right: none;
-  border-radius: 5px 0 0 5px; padding: 3px 8px; font-size: 12px;
+  background: var(--input); border: 1px solid var(--line);
+  border-radius: 5px; padding: 3px 8px; font-size: 12px;
+  display: inline-flex; align-items: center; justify-content: center;
+  cursor: pointer;
 }
-.kill-latch.open { background: rgba(241, 76, 76, .18); border-color: var(--bad); }
+.kill-latch.open {
+  background: rgba(241, 76, 76, .18); border-color: var(--bad);
+  border-radius: 0 5px 5px 0;
+}
 .kill-btn {
-  border-radius: 0 5px 5px 0; padding: 3px 12px;
   font-weight: 800; letter-spacing: .06em; font-size: 12px;
-  background: var(--input); border: 1px solid var(--line); color: var(--dim);
+  white-space: nowrap; overflow: hidden;
+  display: inline-flex; align-items: center; justify-content: center; gap: 4px;
+  background: var(--input); color: var(--dim);
+  box-sizing: border-box;
+  transition: max-width 0.2s ease, padding 0.2s ease, opacity 0.2s ease, border-color 0.2s ease;
 }
-.kill-btn:not(:disabled) {
+.kill-btn.collapsed {
+  max-width: 0; padding-left: 0; padding-right: 0; border: none; margin: 0;
+  opacity: 0; pointer-events: none; visibility: hidden;
+}
+.kill-btn.expanded {
+  max-width: 140px; padding: 3px 12px;
+  border: 1px solid var(--line); border-right: none;
+  border-radius: 5px 0 0 5px;
+  opacity: 1; visibility: visible;
+}
+.kill-btn.expanded:disabled {
+  cursor: not-allowed;
+}
+.kill-btn.expanded:not(:disabled) {
   background: var(--bad); border-color: var(--bad); color: #fff;
   box-shadow: 0 0 10px rgba(241, 76, 76, .5);
+  cursor: pointer;
 }
-.kill-btn:not(:disabled):hover { background: #ff5f5f; }
+.kill-btn.expanded:not(:disabled):hover { background: #ff5f5f; }
 /* the active-agent summary chip: total · working · per-model counts */
 .chip.agents { display: inline-flex; gap: 7px; align-items: baseline; }
 .chip.agents b { font-family: var(--mono); font-weight: 700; }
