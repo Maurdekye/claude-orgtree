@@ -84,6 +84,30 @@ def main():
           "never the turn's summed input",
           lambda: eq(providers.antigravity_occupancy(res["token_usage"]),
                      8400, "occ"))
+
+    _, live, _ = _run("sessioncumulative",
+                       conversation_id="live-prior-conversation")
+    check("a resumed result's exact 1,314,610-token SESSION snapshot does not "
+          "overwrite this turn's per-request accounting",
+          lambda: eq(live["token_usage"], {
+              "model": "gemini-3.8-flash", "input": 17709,
+              "cached": 232176, "output": 1560, "thinking": 943,
+              "last_prompt": 63829, "requests": 4}, "live cumulative usage"))
+    check("the live multi-request turn bills only its own arithmetic",
+          lambda: eq(providers.antigravity_cost(live["token_usage"]),
+                     0.036545, "per-turn cost"))
+    check("the same live turn's occupancy is its final 63,829-token request, "
+          "not its 249,885-token turn total or 1,314,610-token session total",
+          lambda: eq(providers.antigravity_occupancy(live["token_usage"]),
+                     63829, "live occupancy"))
+
+    _, fallback, _ = _run("resultonly")
+    check("result usage remains the non-zero fallback when no priced step "
+          "was observed, without inventing a last-request occupancy",
+          lambda: eq(fallback["token_usage"], {
+              "model": "gemini-3.8-flash", "input": 7000,
+              "cached": 11000, "output": 300, "thinking": 100,
+              "last_prompt": 0, "requests": 1}, "result fallback"))
     check("the argv carries the measured print-mode surface: stdin prompt, "
           "stream-json both ways, --add-dir cwd, base model + --effort, "
           "skip-permissions",

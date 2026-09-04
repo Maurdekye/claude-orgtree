@@ -14,6 +14,11 @@ FAKEANTIGRAVITY_SCENARIO:
                  run_command step between two priced requests, so the
                  dispatch suite can prove journal/live-row folding and the
                  last-request occupancy rule
+    sessioncumulative
+                 four priced requests copied from a live resumed turn, then a
+                 result whose usage is the whole session's cumulative total
+                 (the measured 2026-09-04 shape)
+    resultonly   no priced step, only result usage — the accounting fallback
     interrupt    one priced request, then a stall until killed — the
                  measured kill-mid-turn shape (no result event ever comes)
     wrongmodel   init.model reports "fake-default-model" regardless of
@@ -194,6 +199,28 @@ def main_turn():
         "tools": ["call_mcp_tool", "run_command", "write_to_file",
                   "view_file"]}})
     _step(cid, 0, "DONE", "user_input")
+    if SCENARIO == "resultonly":
+        emit({"event": "result", "result": {
+            "conversation_id": cid, "status": "SUCCESS", "response": "done",
+            "duration_seconds": 1.0, "num_turns": 1,
+            "usage": _usage(7000, 300, 100, 11000)}})
+        return
+    if SCENARIO == "sessioncumulative":
+        # Exact request arithmetic from window-verify's second live turn.  The
+        # result is the session snapshot the CLI actually emits: the preceding
+        # turn plus these four requests, not these requests alone.
+        reqs = [(7105, 579, 516, 52954), (5625, 284, 226, 57031),
+                (2242, 400, 138, 61099), (2737, 297, 63, 61092)]
+        for idx, (inp, out, think, cached) in enumerate(reqs, 1):
+            _step(cid, idx, "ACTIVE", "agent_response",
+                  text_delta="done" if idx == len(reqs) else "")
+            _step(cid, idx, "DONE", "agent_response", text_delta="",
+                  usage=_usage(inp, out, think, cached))
+        emit({"event": "result", "result": {
+            "conversation_id": cid, "status": "SUCCESS", "response": "done",
+            "duration_seconds": 3.2, "num_turns": 2,
+            "usage": _usage(132605, 17559, 15999, 1182005)}})
+        return
     if SCENARIO == "usage_limit":
         # MEASURED 2026-09-03 02:36 local (agy 1.1.24, the account's weekly
         # wall): a lone ERROR result after init, `usage` all zeros, rc=1,

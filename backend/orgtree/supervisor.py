@@ -9316,6 +9316,13 @@ def _antigravity_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
         "type": "assistant", "timestamp": now_iso(),
         "message": {"id": f"agy-{cid or 'turn'}-usage",
                     "role": "assistant", "model": model_id, "content": [],
+                    # Cumulative/turn billing traffic and final-request context
+                    # are distinct quantities.  The generic transcript reader
+                    # correctly treats Claude-shaped usage as ONE request, so
+                    # give it the adapter's separately measured last request
+                    # rather than inviting it to sum this multi-request turn.
+                    "last_prompt_tokens":
+                        providers.antigravity_occupancy(tu),
                     "usage": {
                         "input_tokens": tu_in,
                         "cache_read_input_tokens": tu_cached,
@@ -19274,6 +19281,20 @@ def _occ_record(fill: _OccTracker, rec: dict[str, Any]) -> None:
         return
     u = m.get("usage")
     if not isinstance(u, dict):
+        return
+    mid = m.get("id")
+    if isinstance(mid, str) and mid.startswith("agy-") \
+            and mid.endswith("-usage"):
+        # Antigravity's journal row is synthetic: its usage block accounts for
+        # every priced request in the turn, while occupancy is the LAST
+        # request.  New rows carry that measurement separately.  Rows written
+        # before 2026-09-04 have no marker and (worse) contain session-
+        # cumulative usage; ignoring them makes the desk fall back to the
+        # already-correct node occupancy immediately after deployment.
+        observed = m.get("last_prompt_tokens")
+        if (isinstance(observed, (int, float))
+                and not isinstance(observed, bool) and _finite(observed)):
+            fill.assistant(int(observed))
         return
     # the SAME question the stream loop asks, so the same implementation
     # (this site already had the `or 0` the stream loop was missing; the

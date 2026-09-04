@@ -163,6 +163,10 @@ def main():
         u = usage[-1]["message"]["usage"]
         eq((u["input_tokens"], u["cache_read_input_tokens"],
             u["output_tokens"]), (16690, 1200, 60), "usage rec")
+        eq(usage[-1]["message"].get("last_prompt_tokens"), 8400,
+           "synthetic usage row carries final-request occupancy separately")
+        eq(supervisor.read_chat(store.load_org(s1), n1)["occupancy"], 8400,
+           "chat reads the final request, not the multi-request turn total")
     check("the journal holds user, text and usage records", t1b)
 
     print("§2 tool events fold into the transcript vocabulary")
@@ -189,6 +193,59 @@ def main():
         eq([(r["content"], r["is_error"]) for r in results],
            [("PONG:hi", False), ("HOOK-CMD\r\n", False)], "tool_result fold")
     check("call_mcp_tool / built-in steps become tool_use/tool_result", t2)
+
+    print("§2b the live cumulative-session shape: billing, occupancy and legacy")
+    s2b, n2b = mkorg("session-cumulative", tier="flash")
+    os.environ["FAKEANTIGRAVITY_SCENARIO"] = "sessioncumulative"
+    os.environ["FAKEANTIGRAVITY_CONVERSATION_ID"] = \
+        "fake-agy-session-cumulative"
+
+    def t2b():
+        run_turn(s2b, n2b, "live cumulative result")
+        n = node_doc(s2b, n2b)
+        eq(round(float(n.get("cost_usd") or 0.0), 6), 0.036545,
+           "booked cost is current-turn request sums")
+        eq(n.get("occupancy"), 63829, "node occupancy is final request")
+        recs = journal_lines(s2b, "fake-agy-session-cumulative")
+        usage = [r for r in recs if (r.get("message") or {}).get("usage")][-1]
+        m = usage["message"]
+        eq((m["usage"]["input_tokens"],
+            m["usage"]["cache_read_input_tokens"],
+            m["usage"]["output_tokens"], m["last_prompt_tokens"]),
+           (17709, 232176, 1560, 63829),
+           "journal separates turn billing from final-request occupancy")
+        eq(supervisor.read_chat(store.load_org(s2b), n2b)["occupancy"],
+           63829, "chat never renders the exact live 1,314,610 session total")
+    check("session-cumulative result books one turn and displays one request",
+          t2b)
+
+    def t2c():
+        marked = supervisor._OccTracker(1_000_000)
+        supervisor._occ_record(marked, {
+            "type": "assistant", "message": {
+                "id": "agy-live-current-conversation-usage",
+                "role": "assistant", "model": "gemini-3.8-flash",
+                "content": [], "last_prompt_tokens": 63829, "usage": {
+                    "input_tokens": 17709,
+                    "cache_read_input_tokens": 232176,
+                    "output_tokens": 1560}}})
+        eq((marked.value, marked.estimated), (63829, False),
+           "marked aggregate uses its dedicated final-request measurement")
+        fill = supervisor._OccTracker(1_000_000)
+        supervisor._occ_record(fill, {
+            "type": "assistant", "message": {
+                "id": "agy-live-prior-conversation-usage",
+                "role": "assistant", "model": "gemini-3.8-flash",
+                "content": [], "usage": {
+                    "input_tokens": 132605,
+                    "cache_read_input_tokens": 1182005,
+                    "output_tokens": 17559}}})
+        eq((fill.value, fill.estimated), (None, False),
+           "unmarked legacy aggregate is unknown, so the desk uses node occupancy")
+    check("legacy Antigravity aggregate rows are ignored immediately", t2c)
+
+    os.environ["FAKEANTIGRAVITY_SCENARIO"] = "text"
+    os.environ.pop("FAKEANTIGRAVITY_CONVERSATION_ID", None)
 
     print("§3 resume rides --conversation with org powers; a re-mint starts "
           "fresh")

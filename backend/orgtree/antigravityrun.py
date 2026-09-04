@@ -546,8 +546,17 @@ class AntigravityTurn:
                       "last_prompt": self._last_prompt,
                       "requests": max(1, self._requests)}
                 ru = _dict(result.get("usage")) if result else {}
-                if ru and int(ru.get("total_tokens") or 0):
-                    # the CLI's own totals are authoritative for the bill
+                if (not usage_seen and ru
+                        and int(ru.get("total_tokens") or 0)):
+                    # A resumed conversation's result.usage is cumulative over
+                    # the WHOLE SESSION (measured live: turn 2's result was
+                    # exactly turn 1 + turn 2), so it must never overwrite the
+                    # per-request fold above or every earlier turn is billed
+                    # again.  It remains the fallback when this CLI generation
+                    # emits no priced step at all: unknown/overstated is safer
+                    # there than silently booking zero work.  last_prompt stays
+                    # 0 because a session total cannot answer how large the
+                    # final request was.
                     tu["input"] = int(ru.get("input_tokens") or 0)
                     tu["cached"] = int(ru.get("cache_read_tokens") or 0)
                     tu["output"] = int(ru.get("output_tokens") or 0)
