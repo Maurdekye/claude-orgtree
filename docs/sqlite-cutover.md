@@ -90,6 +90,34 @@ other hardware.
 
 ---
 
+## ⚠ If you are running *inside* orgtree, do not follow the steps by hand
+
+Step 1 below is "stop the backend", and every agent on this machine runs inside
+that backend. Typed into an agent's own shell, step 1 kills the shell and steps
+2–5 never happen: the root is left mid-flight with nobody watching, and the
+thing that would have brought it back is the process that just died.
+
+Use the detached wrapper instead. It performs this whole runbook — including
+both recoveries below — from a process with no parent to lose:
+
+```
+python tools\cutover_deploy.py C:\Users\<you>\orgtree
+```
+
+It prints a log path and returns in about two seconds; everything after that
+happens without it. Read the log afterwards — it is the only record.
+
+Two things it does that hand-running does not, and that are easy to forget:
+
+* it holds `Global\orgtree-update` for the whole migration, so the **5-minute
+  `orgtree-ensure` task cannot relaunch a backend into the middle of it**;
+* it pins `ORGTREE_STORE=json` when it has to bring a backend back up on a root
+  it did *not* migrate. The checkout on disk now defaults to SQLite, so "just
+  start it again" no longer means "start the backend that was running".
+
+The steps below remain the record of what actually happens, and are what to
+follow when the backend is already down and you are at a real console.
+
 ## The cutover
 
 **The deployed backend never receives `ORGTREE_MIGRATE=1`.** Migration is an
