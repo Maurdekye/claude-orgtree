@@ -1154,8 +1154,19 @@ def orgs_create(body: OrgCreate) -> dict[str, Any]:
     # global default org settings (user spec): every new org is born with them.
     # net_hub_address is CONFIG for the local hub entry, not an org-doc key —
     # popped here and translated below, never written raw into the doc.
+    # ⚠ THE FALLBACK IS net._default_address(), NEVER
+    # DEFAULT_HUB_ADDRESS RAW. This line held the second implementation of
+    # "which hub does a new org point at", and the two disagreed the moment
+    # one of them grew a floor: _default_address refuses the operator's real
+    # hub for a data root under the OS temp directory, and this did not, so
+    # a test rig's fixture orgs were still born pointing straight at it.
+    # MEASURED 2026-09-04 in a throwaway root: _default_address() answered
+    # the discard port while an org created through THIS endpoint came out
+    # holding http://127.0.0.1:7370. The pop stays — it is what keeps the
+    # key out of the org doc — and only the fallback moves, which also
+    # puts the explicit value in exactly one place instead of two.
     local_hub_addr = str(dflt.pop("net_hub_address", "") or "") \
-        or net.DEFAULT_HUB_ADDRESS
+        or net._default_address()
     if dflt:
         with store.DOC_LOCK:
             org.d.update(dflt)  # type: ignore[arg-type]  # defaults.json holds org-doc-shaped keys

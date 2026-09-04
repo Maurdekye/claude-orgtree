@@ -203,6 +203,51 @@ def t_a_nonexistent_path_still_resolves() -> None:
         "a not-yet-created path under temp was not recognised")
 
 
+# ---------------------------------------------------------- group: callers
+def t_a_new_org_is_born_pointing_at_the_floored_address() -> None:
+    """THE CHECK THAT WAS MISSING, and its absence is the lesson.
+
+    The first version of this suite tested `_default_address()` and stopped
+    there. `orgs_create` held a SECOND implementation of the same question -
+    `dflt.pop("net_hub_address") or net.DEFAULT_HUB_ADDRESS` - which never
+    consulted the floor. So in a throwaway root `_default_address()` answered
+    the discard port while an org created through the endpoint came out
+    holding the operator's REAL hub. Measured, not reasoned: the live hub's
+    own log showed a request arriving from a test run.
+
+    A floor nothing stands on is not a floor. Test the CALLER, not only the
+    helper."""
+    from orgtree import api
+    out = api.orgs_create(api.OrgCreate(name="floor caller probe"))
+    try:
+        hubs = store.load_org(out["slug"]).d.get("net_hubs") or []
+        addrs = [h.get("address") for h in hubs]
+        assert net.DEFAULT_HUB_ADDRESS not in addrs, (
+            f"an org created in a THROWAWAY data root was born pointing at "
+            f"the operator's real hub: {addrs}")
+        assert addrs == [net.UNROUTABLE_HUB_ADDRESS], addrs
+    finally:
+        store.delete_org(out["slug"])
+
+
+def t_an_explicit_default_still_reaches_a_new_org() -> None:
+    """...and the operator's own choice is not swallowed by the floor."""
+    from orgtree import api
+    p = os.path.join(store.DATA_ROOT, "defaults.json")
+    with open(p, "w", encoding="utf-8") as f:
+        json.dump({"net_hub_address": "http://10.0.0.9:7370"}, f)
+    try:
+        out = api.orgs_create(api.OrgCreate(name="floor explicit probe"))
+        try:
+            hubs = store.load_org(out["slug"]).d.get("net_hubs") or []
+            assert [h.get("address") for h in hubs] == [
+                "http://10.0.0.9:7370"], hubs
+        finally:
+            store.delete_org(out["slug"])
+    finally:
+        os.remove(p)
+
+
 # ----------------------------------------------------------- group: reality
 def t_this_machines_real_data_root_is_not_under_temp() -> None:
     """The floor is only safe if the operator's real install is on the other
@@ -235,6 +280,11 @@ def main() -> int:
           t_a_sibling_with_a_shared_PREFIX_does_not_count)
     check("a path that does not exist yet still resolves",
           t_a_nonexistent_path_still_resolves)
+    print("group callers: the floor is only real where it is used")
+    check("a new org is born pointing at the floored address",
+          t_a_new_org_is_born_pointing_at_the_floored_address)
+    check("an explicit default still reaches a new org",
+          t_an_explicit_default_still_reaches_a_new_org)
     print("group reality: this machine")
     check("the real data root is not under temp",
           t_this_machines_real_data_root_is_not_under_temp)
