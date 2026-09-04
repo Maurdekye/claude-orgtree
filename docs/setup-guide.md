@@ -74,6 +74,14 @@ tool call.
 the host. These private installs are discovered automatically; a global install
 on `PATH` works too.
 
+A deploy holds the Codex CLI at or above `backend/orgtree/codexpin.py`'s `PIN`,
+so the install below is a one-off. **Upgrading by hand needs an explicit
+version** — `npm install --prefix ~/orgtree/codex @openai/codex@<version>
+--save-exact` — because the bare form writes a caret range and a caret on a
+`0.x` version permits patch updates only, so re-running it reports success
+without changing anything. OpenAI picks which models to offer from the CLI
+version, so a stale pin silently hides newer tiers.
+
 ```bash
 # Codex: gpt-reserve (seat 0.2), luna (0.2), terra (2), sol (5)
 npm install --prefix ~/orgtree/codex @openai/codex

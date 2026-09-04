@@ -231,6 +231,16 @@ Install and sign in to either CLI on the machine running orgtree. The Accounts
 panel reports whether each provider is installed and connected; once it is,
 its tier row is immediately available in the hire controls.
 
+A deploy keeps the Codex CLI at the version in `backend/orgtree/codexpin.py`
+(a floor — a newer CLI you installed yourself is left alone), so you only run
+the command below once. **To upgrade it by hand later, name the version:**
+`npm install --prefix ~/orgtree/codex @openai/codex@<version> --save-exact`.
+The bare form will NOT upgrade an existing install — it writes a caret range,
+and a caret on a `0.x` version permits patch updates only, so re-running it
+reports success and changes nothing. That matters because OpenAI decides which
+models to offer from the CLI version: a stale Codex CLI makes newer tiers
+vanish from the hire picker with no other symptom.
+
 ```bash
 # Codex: gpt-reserve (seat 0.2), luna (0.2), terra (2), sol (5)
 npm install --prefix ~/orgtree/codex @openai/codex

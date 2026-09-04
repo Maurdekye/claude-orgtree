@@ -727,6 +727,138 @@ if ($env:ORGTREE_CLAUDE) {
 }
 }   # end -not $EnsureUp (section 4b)
 
+# -- 4c - the Codex CLI pin --------------------------------------------------
+# Nothing in this repo refreshed this pin until 2026-09-04: no codex step in
+# update.ps1, update.sh or tools\install-autostart.ps1, so <data>\codex sat at
+# whatever a human last installed by hand -- 28 August on the machine where it
+# was found. OpenAI gates rollout models on the REPORTING CLIENT VERSION, so
+# the stale pin was never offered `gpt-6-astra` (measured: 0.150.1 -> 9 model
+# ids, 0.153.0 -> the same 9 plus astra, same account and same code), the tier
+# was invisible, and the refusal blamed the ACCOUNT.
+#
+# SAME WINDOW AND SAME RULES AS 4b ABOVE, for the same reasons: between the
+# stop and the start because a running app-server holds codex.exe open on
+# Windows and an in-place npm install fails EBUSY on the one file the upgrade
+# is about; a FLOOR rather than an equality so a deliberately-newer CLI is
+# never rolled backwards; and NEVER fatal -- a CLI that would not update is a
+# degraded install, a backend that never came back is an outage.
+#
+# ⚠ THE VERSION SPEC IS EXPLICIT AND --save-exact, AND THAT IS THE WHOLE TRICK.
+# MEASURED 2026-09-04 with `npm install --dry-run` against a prefix whose
+# package.json read `^0.150.1`, with 0.153.3 published:
+#     npm install                        -> resolves 0.150.1
+#     npm install @openai/codex          -> resolves 0.150.1   <- the setup
+#                                                                 guide's own
+#                                                                 command
+#     npm install @openai/codex@0.153.3 --save-exact -> 0.153.3
+# A caret on a 0.x version permits PATCH updates only, so `^0.150.1` can never
+# reach 0.153.x -- and naming the package does NOT override the range already
+# recorded. That is how a pin sat still for a week while every re-run of the
+# documented command reported success. --save-exact then replaces the range
+# with an exact spec so the next deploy is not fighting the same caret.
+if (-not $EnsureUp) {
+Write-Host "`n== codex cli =="
+$cdxDir  = Join-Path $dataRoot 'codex'
+$cdxPkgJ = Join-Path $cdxDir 'node_modules\@openai\codex\package.json'
+
+# The floor is READ FROM THE CODE (backend\orgtree\codexpin.py), never retyped
+# here -- the same rule 4b states: a version written down twice is a machine
+# that reports one number and runs another. codexpin imports nothing but `re`,
+# so this cannot fail for a reason unrelated to the pin.
+$cdxHave = $null
+if (Test-Path $cdxPkgJ) {
+    try { $cdxHave = (Get-Content $cdxPkgJ -Raw | ConvertFrom-Json).version } catch { $cdxHave = $null }
+}
+# THE DECISION IS NOT MADE HERE. `codexpin.decide` owns it so that this script
+# and update.sh cannot drift into disagreeing on one platform, and so the rule
+# is reachable by the test suite instead of only by running a deploy.
+$cdxWant = $null; $cdxAct = $null; $cdxWhy = $null
+try {
+    $cdxJson = (& $py -c "import json,sys; sys.path.insert(0, sys.argv[1]); from orgtree import codexpin; h=sys.argv[2]; d=codexpin.decide(h if h else None); d['pin']=codexpin.PIN; d['pkg']=codexpin.PACKAGE; print(json.dumps(d))" (Join-Path $root 'backend') ([string]$cdxHave) | Select-Object -First 1)
+    $cdxObj  = $cdxJson | ConvertFrom-Json
+    $cdxWant = $cdxObj.pin; $cdxAct = $cdxObj.action; $cdxWhy = $cdxObj.reason
+    $cdxPkg  = $cdxObj.pkg
+} catch { $cdxAct = $null }
+
+if (-not $cdxAct) {
+    Write-Host "could not read the Codex pin from backend\orgtree\codexpin.py -- LEAVING THE CODEX CLI ALONE (guessing a version is how a machine ends up running one thing and reporting another)." -ForegroundColor Yellow
+} elseif ($env:ORGTREE_CODEX) {
+    # The override wins at runtime (providers.codex_path resolves ORGTREE_CODEX
+    # first), so installing the pin underneath it would build something nothing
+    # runs. Report the truth instead, including when the override is behind.
+    $cdxOvVer = $null
+    try { $cdxOvVer = (& $env:ORGTREE_CODEX --version 2>$null | Select-Object -First 1) } catch {}
+    Write-Host "ORGTREE_CODEX is set -- the pin is NOT what this machine runs. Leaving it untouched."
+    Write-Host "  running: $env:ORGTREE_CODEX ($(if ($cdxOvVer) { $cdxOvVer } else { 'version unreadable' }))"
+} elseif ($cdxAct -eq 'unknown' -or $cdxAct -eq 'keep') {
+    Write-Host $cdxWhy
+} else {
+    Write-Host "$cdxWhy (installing into $cdxDir)" -ForegroundColor Cyan
+    function Install-CodexPin {
+        # `| Out-Host` for the same reason 4b gives: a native command's stdout
+        # joins the FUNCTION'S output stream, so without it the return value is
+        # npm's log lines followed by the boolean and the caller tests a
+        # non-empty array (always true) instead of the exit code.
+        npm install --prefix $cdxDir "$cdxPkg@$cdxWant" `
+            --no-audit --no-fund --save-exact | Out-Host
+        return ($LASTEXITCODE -eq 0)
+    }
+    # VERIFY, NEVER TRUST THE EXIT CODE, and verify the NATIVE BINARY -- the
+    # codex package delivers its executable through a platform-specific
+    # optional dependency (@openai/codex-<os>-<arch>), which is exactly the
+    # class npm's optional-deps bug leaves behind while reporting success.
+    # `providers._codex_pin` globs for that vendor binary, so a tree without it
+    # is a tree the backend will not resolve however healthy npm called it.
+    function Test-CodexPin {
+        $v = $null
+        if (Test-Path $cdxPkgJ) {
+            try { $v = (Get-Content $cdxPkgJ -Raw | ConvertFrom-Json).version } catch { $v = $null }
+        }
+        if (-not $v) { return $false }
+        $native = @(Get-ChildItem -Path (Join-Path $cdxDir 'node_modules\@openai') `
+            -Filter 'codex.exe' -Recurse -ErrorAction SilentlyContinue)
+        if ($native.Count -eq 0) { return $false }
+        # the floor again, from the same source of truth -- "did the install
+        # land something at least as new as we asked for", not "did it change"
+        $chk = $null
+        try {
+            $chk = (& $py -c "import sys; sys.path.insert(0, sys.argv[1]); from orgtree import codexpin; print(codexpin.decide(sys.argv[2], sys.argv[3])['action'])" (Join-Path $root 'backend') $v $cdxWant | Select-Object -First 1)
+        } catch { $chk = $null }
+        return ($chk -eq 'keep')
+    }
+    $cdxOk = (Install-CodexPin) -and (Test-CodexPin)
+    if (-not $cdxOk) {
+        # Same two causes as the Claude pin: npm's optional-deps bug, and a
+        # codex.exe still held open by an app-server that outlived the backend.
+        # Wait out the second, then install clean. Only the managed pin
+        # directory is ever removed and it holds nothing but this package.
+        Write-Host "the in-place upgrade did not take -- clean reinstall of the codex pin" -ForegroundColor Yellow
+        Start-Sleep -Seconds 3
+        Remove-Item -Recurse -Force (Join-Path $cdxDir 'node_modules') -ErrorAction SilentlyContinue
+        Remove-Item -Force (Join-Path $cdxDir 'package-lock.json') -ErrorAction SilentlyContinue
+        Remove-Item -Force (Join-Path $cdxDir 'package.json') -ErrorAction SilentlyContinue
+        $cdxOk = (Install-CodexPin) -and (Test-CodexPin)
+    }
+    if ($cdxOk) {
+        Write-Host "Codex CLI: now $cdxWant (pin)" -ForegroundColor Green
+    } else {
+        # Loud, specific, and NOT fatal. See the section header. The machine
+        # comes back on whatever pin it had; if the clean reinstall above also
+        # failed there may be no pin at all, and the backend then resolves
+        # PATH -- which is why this says how to check rather than assuming.
+        Write-Host ""
+        Write-Host "the Codex CLI pin could NOT be updated to $cdxWant." -ForegroundColor Red
+        Write-Host "  the backend is still being started and turns still run, but codex agents" -ForegroundColor Red
+        Write-Host "  may be on an older CLI -- and OpenAI does not offer rollout models to one," -ForegroundColor Red
+        Write-Host "  so a tier can be missing from the hire picker with no other symptom." -ForegroundColor Red
+        Write-Host "  most likely a codex.exe still running from $cdxDir, or npm could not reach the registry." -ForegroundColor Red
+        Write-Host "  to retry by hand:  npm install --prefix `"$cdxDir`" $cdxPkg@$cdxWant --no-audit --no-fund --save-exact" -ForegroundColor Red
+        Write-Host "  (the bare `"npm install $cdxPkg`" from the setup guide will NOT do it -- see 4c)" -ForegroundColor Red
+        Write-Host ""
+    }
+}
+}   # end -not $EnsureUp (section 4c)
+
 $logDir = $dataRoot
 if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Force $logDir | Out-Null }
 $out = Join-Path $logDir 'backend.log'

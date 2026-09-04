@@ -716,6 +716,100 @@ else
   fi
 fi
 
+# -- 4c - the Codex CLI pin --------------------------------------------------
+# The bash half of update.ps1's section 4c; the reasoning lives there in full
+# and is not repeated here. In short: nothing in this repo refreshed this pin
+# until 2026-09-04, so it sat at whatever a human last installed by hand;
+# OpenAI gates rollout models on the reporting CLI version, so a stale pin
+# silently HIDES a hireable tier. It runs in the same window as 4b (between the
+# stop and the start, because a running codex process holds its own image open
+# on Windows and this script runs under Git Bash there too), it is a FLOOR
+# rather than an equality, and it NEVER blocks the restart.
+#
+# ⚠ THE VERSION SPEC IS EXPLICIT AND --save-exact. Measured 2026-09-04 against
+# a prefix pinned `^0.150.1` with 0.153.3 published: `npm install` resolved
+# 0.150.1, and so did `npm install @openai/codex` -- the setup guide's own
+# command. A caret on a 0.x version permits PATCH updates only, and naming the
+# package does not override the range already recorded.
+printf '\n== codex cli ==\n'
+CDX_DIR="$DATA_ROOT/codex"
+CDX_PKG="$CDX_DIR/node_modules/@openai/codex/package.json"
+
+# read from package.json rather than by running the binary: same source
+# `providers` prefers, and it still answers when the binary is what is broken
+cdx_version() {
+  [ -f "$CDX_PKG" ] || return 0
+  sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$CDX_PKG" | head -n 1
+}
+CDX_HAVE=$(cdx_version)
+# THE DECISION IS NOT MADE HERE. `codexpin.decide` owns it so that this script
+# and update.ps1 cannot drift into disagreeing on one platform, and so the rule
+# is reachable by the test suite instead of only by running a deploy.
+# LINE-SEPARATED rather than the JSON update.ps1 reads back, because POSIX sh
+# has no JSON parser and a sed-based one would break on the first reason string
+# containing a quote. `reason` is LAST so it may contain anything at all.
+CDX_OUT=$("$PY" -c 'import sys; sys.path.insert(0, sys.argv[1]); from orgtree import codexpin; h=sys.argv[2]; d=codexpin.decide(h if h else None); print(d["action"]); print(codexpin.PIN); print(codexpin.PACKAGE); print(d["reason"])' "$ROOT/backend" "${CDX_HAVE:-}" 2>/dev/null)
+CDX_ACT=$(printf '%s\n' "$CDX_OUT" | sed -n '1p')
+CDX_WANT=$(printf '%s\n' "$CDX_OUT" | sed -n '2p')
+CDX_PKGNAME=$(printf '%s\n' "$CDX_OUT" | sed -n '3p')
+CDX_WHY=$(printf '%s\n' "$CDX_OUT" | sed -n '4,$p')
+
+if [ -z "$CDX_ACT" ]; then
+  note "could not read the Codex pin from backend/orgtree/codexpin.py -- LEAVING THE CODEX CLI ALONE (guessing a version is how a machine ends up running one thing and reporting another)."
+elif [ -n "${ORGTREE_CODEX:-}" ]; then
+  # the override wins at runtime (providers.codex_path resolves it first), so
+  # installing the pin underneath it would build something nothing runs
+  CDX_OV=$("$ORGTREE_CODEX" --version 2>/dev/null | head -n 1)
+  echo "ORGTREE_CODEX is set -- the pin is NOT what this machine runs. Leaving it untouched."
+  echo "  running: $ORGTREE_CODEX (${CDX_OV:-version unreadable})"
+elif [ "$CDX_ACT" = unknown ] || [ "$CDX_ACT" = keep ]; then
+  echo "$CDX_WHY"
+else
+  echo "$CDX_WHY (installing into $CDX_DIR)"
+  install_codex_pin() {
+    npm install --prefix "$CDX_DIR" "$CDX_PKGNAME@$CDX_WANT" \
+      --no-audit --no-fund --save-exact
+  }
+  # VERIFY rather than trust the exit code, and verify the NATIVE binary: the
+  # codex package delivers its executable through a platform-specific optional
+  # dependency, which is the class npm's optional-deps bug leaves behind while
+  # reporting success. `providers._codex_pin` globs for exactly that vendor
+  # binary, so a tree without it is a tree the backend will not resolve.
+  test_codex_pin() {
+    local v act
+    v=$(cdx_version); [ -n "$v" ] || return 1
+    find "$CDX_DIR/node_modules/@openai" -type f -name 'codex' -o \
+         -type f -name 'codex.exe' 2>/dev/null | head -n 1 | grep -q . || return 1
+    act=$("$PY" -c 'import sys; sys.path.insert(0, sys.argv[1]); from orgtree import codexpin; print(codexpin.decide(sys.argv[2], sys.argv[3])["action"])' \
+      "$ROOT/backend" "$v" "$CDX_WANT" 2>/dev/null | head -n 1)
+    [ "$act" = keep ]
+  }
+  CDX_OK=0
+  if install_codex_pin && test_codex_pin; then CDX_OK=1; fi
+  if [ "$CDX_OK" = 0 ]; then
+    # same two causes as the Claude pin: npm's optional-deps bug, and a codex
+    # process that outlived the backend still holding its image open
+    note "the in-place upgrade did not take -- clean reinstall of the codex pin"
+    sleep 3
+    rm -rf "$CDX_DIR/node_modules" "$CDX_DIR/package-lock.json" "$CDX_DIR/package.json"
+    if install_codex_pin && test_codex_pin; then CDX_OK=1; fi
+  fi
+  if [ "$CDX_OK" = 1 ]; then
+    good "Codex CLI: now $CDX_WANT (pin)"
+  else
+    # loud, specific, and NOT fatal
+    printf '%s\n' "$RED"
+    echo "the Codex CLI pin could NOT be updated to $CDX_WANT."
+    echo "  the backend is still being started and turns still run, but codex agents"
+    echo "  may be on an older CLI -- and OpenAI does not offer rollout models to one,"
+    echo "  so a tier can be missing from the hire picker with no other symptom."
+    echo "  most likely a codex process still running from $CDX_DIR, or npm could not reach the registry."
+    echo "  to retry by hand:  npm install --prefix \"$CDX_DIR\" $CDX_PKGNAME@$CDX_WANT --no-audit --no-fund --save-exact"
+    echo "  (the bare \"npm install $CDX_PKGNAME\" from the setup guide will NOT do it -- see 4c)"
+    printf '%s\n' "$OFF"
+  fi
+fi
+
 mkdir -p "$DATA_ROOT" || die "cannot create $DATA_ROOT"
 OUT="$DATA_ROOT/backend.log"
 ERRLOG="$DATA_ROOT/backend.err.log"
