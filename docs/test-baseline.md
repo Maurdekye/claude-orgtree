@@ -144,6 +144,50 @@ different defect: **deleting an org locally does not unregister it from the
 hub.** Do not fold the two together.
 
 
+### `external-mail`, 2026-09-04: the red was hiding a second, unrelated red
+
+The rig-hygiene assertion has been re-pointed. It used to demand
+`net_hub_address` from every rig that mints its own `ORGTREE_DATA`; it now
+demands `tempfile.mkdtemp` OR `net_hub_address`, because
+`net._default_address()` floors any data root that resolves under the OS temp
+directory to an unroutable address (`net._under_os_temp`, landed `07f66e4`).
+
+⚠ **THE ASSERTION IS ONLY SUFFICIENT BECAUSE THAT FLOOR EXISTS.** If the floor
+is ever removed or narrowed, `mkdtemp` stops being an adequate answer and the
+check silently becomes worthless while still passing. Both names are in its
+docstring so a grep from the `net.py` end lands there first.
+
+⚠ **"Every rig already uses `mkdtemp`" is a fact about today, not the reason
+the check exists.** `grep -L mkdtemp` over the rigs that mint a data root
+returned nothing on 2026-09-04. The check is what keeps that true. Do not read
+a green run as permission to skip it in a new rig.
+
+**And the part worth knowing: `external-mail` still fails, on something else
+entirely.** The hygiene assertion aborted the suite in §1, so nothing after it
+had run in a long time. With §1 passing, the suite reaches point 7 and fails
+there instead:
+
+> `⚑→✓ kiosk enumeration: a kiosk whose doc will not load is listed WITHOUT
+> kiosk_cfg` — `assert "kiosk_cfg" not in row and row["kiosk"] is True`.
+
+The check rewrites a kiosk org's internal slug so it disagrees with its file
+name, which used to make `store.load_org` raise and force `/api/orgs` onto its
+bare-row fallback. It no longer raises, so the row arrives complete with
+`kiosk_cfg`. **The reproduction's precondition has stopped holding** — this
+looks like fallout from the SQLite store work, not a new defect in the
+listing.
+
+Verified as pre-existing and independent of the floor: the same patched suite
+run in a detached worktree at `6b83496` (floor absent) fails identically at the
+same line.
+
+**Not a disclosure bug.** `/api/orgs` is the ADMIN listing, and the check's own
+neighbours assert that the real `externtool` filter still hides the org from
+outside view. What is broken is the fixture's ability to reproduce the
+condition it was written for — the same drift-detector shape as `harvest` and
+`turn-lifecycle`.
+
+
 ### ⚠ The count also depends on YOUR CHECKOUT: a symlinked node_modules
 
 A frontend change is untestable without `frontend/node_modules`, and the team

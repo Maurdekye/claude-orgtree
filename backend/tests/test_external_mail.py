@@ -352,16 +352,42 @@ def s1_fixtures():
 
     @t("every rig in this directory points the mail hub at a dead port")
     def _():
-        """The guard for the thing this suite got wrong TWICE OVER. The
-        2026-08-06 fix for "hundreds of disconnected orgs" isolated three
-        rigs; nothing then checked the other twenty-odd, and this file — the
-        one that boots a live backend — was among the ones missed, so the
-        same pollution recurred on 2026-08-10 with ~45 fixture orgs.
+        """The guard for the thing this suite got wrong TWICE OVER, RE-POINTED
+        2026-09-04 at the hazard that is left after the floor.
 
-        An isolated ORGTREE_DATA is not isolation from the hub: the fallback
-        address is the operator's real one. So the property is checked over
-        the whole directory rather than trusted per file — any rig that mints
-        a throwaway data root must also write `net_hub_address`."""
+        History: the 2026-08-06 fix for "hundreds of disconnected orgs"
+        isolated three rigs; nothing then checked the other twenty-odd, and
+        this file - the one that boots a live backend - was among the ones
+        missed, so the same pollution recurred on 2026-08-10 with ~45 fixture
+        orgs in the operator's live roster.
+
+        WHAT CHANGED. `net._default_address()` now returns an unroutable
+        address when defaults.json names no hub AND the data root resolves to
+        somewhere under the OS temp directory (`net._under_os_temp`). A rig
+        that mints its root with `tempfile.mkdtemp` is therefore floored
+        whether or not it ever heard of the hub, and demanding
+        `net_hub_address` from it as well would be asking for a belt that
+        holds nothing up.
+
+        ⚠ THIS ASSERTION IS ONLY SUFFICIENT BECAUSE THAT FLOOR EXISTS. It is
+        coupled to `net._under_os_temp` and to the temp branch of
+        `net._default_address`. If either is removed or narrowed - say, to
+        honour some other default when defaults.json is absent - `mkdtemp`
+        stops being an adequate answer and THIS CHECK SILENTLY BECOMES
+        WORTHLESS while still passing. Both names are written here so a grep
+        from the other end lands on this comment before that happens.
+
+        WHAT IS STILL DANGEROUS, and is what this now detects: a rig that
+        points ORGTREE_DATA at a fixed path OUTSIDE the OS temp directory and
+        names no hub address. That root is not floored, so if the rig also
+        boots a backend, `_participants` registers its fixture orgs against
+        the operator's real hub exactly as before.
+
+        ⚠ EVERY RIG IN THIS DIRECTORY HAPPENS TO USE `mkdtemp` TODAY - checked
+        2026-09-04, `grep -L mkdtemp` over them returns nothing. That is a
+        fact about today and NOT this assertion's reason for existing. The
+        check is what keeps it true; do not read the current pass rate as
+        permission to skip it."""
         here = os.path.dirname(os.path.abspath(__file__))
         missing = []
         for fn in sorted(os.listdir(here)):
@@ -370,13 +396,18 @@ def s1_fixtures():
             src = open(os.path.join(here, fn), encoding="utf-8").read()
             if 'ORGTREE_DATA"] =' not in src and "ORGTREE_DATA'] =" not in src:
                 continue                      # no data root of its own
+            if "mkdtemp" in src:
+                continue        # under the OS temp dir; net._under_os_temp
             if "net_hub_address" not in src:
                 missing.append(fn)
         assert not missing, (
-            "these rigs mint their own ORGTREE_DATA but never redirect "
-            "net_hub_address, so every org they create is registered against "
-            "the operator's REAL hub at net.DEFAULT_HUB_ADDRESS and stays in "
-            f"the roster as an unreachable recipient: {missing}")
+            "these rigs point ORGTREE_DATA at a root that is NOT under the OS "
+            "temp directory and never set net_hub_address, so they are on the "
+            "wrong side of net._under_os_temp's floor: every org they create "
+            "is registered against the operator's REAL hub at "
+            f"net.DEFAULT_HUB_ADDRESS and stays in the roster as an "
+            f"unreachable recipient. Use tempfile.mkdtemp for the data root, "
+            f"or set net_hub_address: {missing}")
 
 
 # ============================================================================ §2
