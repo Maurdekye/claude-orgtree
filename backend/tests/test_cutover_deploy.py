@@ -79,6 +79,18 @@ def code(p: str) -> str:
                     if not ln.lstrip().startswith("#"))
 
 
+def call_site(p: str, needle: str) -> bool:
+    """Is `needle` in `p` OUTSIDE a comment?
+
+    ⚠ The same trap as `code()`, hit a THIRD time and therefore given its own
+    name.  `tools/cutover_deploy.py` carries a comment reading
+    `# supervisor.py _detached_spawn: CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP`
+    and the check for that flag pair matched it -- so deleting the flags from
+    the actual Popen call left the check GREEN.  Assert against the call, not
+    against the file's description of the call."""
+    return needle in code(p)
+
+
 # ------------------------------------------------ §1  the detach is copied --
 
 def _flags_in(text: str) -> set[str]:
@@ -239,6 +251,64 @@ def the_mutex_is_the_same_one_update_ps1_takes() -> None:
         "task can start a backend mid-migration")
 
 
+# ------------------------- §4b  no launch here allocates a new console ----
+
+def no_launch_in_the_wrapper_allocates_a_visible_console() -> None:
+    """MEASURED by window-cert, 2026-09-04, through its window hook: on this
+    machine Windows Terminal is the default terminal application, so anything
+    that allocates a NEW console gets a VISIBLE Windows-Terminal-hosted window
+    on the user's desktop.  The trigger is the console allocation, not the
+    command -- `cmd /c timeout` was tested and cleared.
+
+        Start-Process (default)      new console, WT-hosted   POPS
+        Start-Process -WindowStyle Hidden   new console       hidden
+        Start-Process -NoNewWindow          none, inherited   hidden
+
+    A bare `Start-Process` anywhere in this wrapper therefore paints a window
+    during a deploy -- and the deploy runs unattended, so nobody would see it
+    happen and nobody could fix it afterwards.  Every launch is checked, not
+    just the top-level detach."""
+    body = code(PS1)
+    calls = [m for m in re.finditer(r"Start-Process\b", body)]
+    assert calls, "no Start-Process at all -- has Run been rewritten?"
+    for m in calls:
+        window = body[m.start():m.start() + 400]
+        # `code()` joined lines with "|", so a continuation is still in reach
+        assert ("-NoNewWindow" in window
+                or "-WindowStyle Hidden" in window), (
+            "a Start-Process in the wrapper allocates a new console and will "
+            "paint a Windows Terminal window on the user's desktop mid-deploy:"
+            " ...%s..." % window[:120])
+
+
+def the_launcher_allocates_no_console_either() -> None:
+    """The top-level detach is the one launch that is not a Start-Process.
+    CREATE_NO_WINDOW is what makes it windowless AND keeps its output; the
+    console-allocating alternative would both pop and, as DETACHED_PROCESS,
+    lose the log."""
+    assert call_site(PY, "creationflags=CREATE_NO_WINDOW "
+                         "| CREATE_NEW_PROCESS_GROUP"), (
+        "the launcher no longer spawns the cutover with CREATE_NO_WINDOW at "
+        "the actual call site, so it may allocate a console and paint a "
+        "window (a comment naming the flags is not a spawn using them)")
+
+
+def the_wrapper_registers_no_scheduled_task() -> None:
+    """It has no business registering one, and a task is where the two really
+    expensive mistakes live: a launch shape that pops a console, and an S4U
+    principal, which looks like the tidy choice for unattended work and
+    silently lands the relaunched backend in session 0 -- away from the
+    profile whose ~/.claude credentials every agent turn needs.  This wrapper
+    detaches with a process handle instead and touches no task at all."""
+    for src in (code(PS1), code(PY)):
+        for bad in ("Register-ScheduledTask", "New-ScheduledTask", "schtasks",
+                    "-LogonType", "S4U"):
+            assert bad not in src, (
+                "the wrapper now touches Task Scheduler (%s) -- the principal "
+                "must stay InteractiveToken and the action must be hosted the "
+                "way tools/install-autostart.ps1 hosts it" % bad)
+
+
 # ------------------------------------ §5  the pipe, and the missing BOM ----
 
 def no_child_output_goes_through_a_pipeline() -> None:
@@ -347,6 +417,14 @@ check("the bound port and the checked port are the same port",
 check("-EnsureUp does not pull", ensure_up_does_not_pull)
 check("the mutex is the one update.ps1 takes",
       the_mutex_is_the_same_one_update_ps1_takes)
+
+print("\n== §4b  no launch allocates a visible console ==")
+check("no Start-Process in the wrapper allocates a new console",
+      no_launch_in_the_wrapper_allocates_a_visible_console)
+check("the launcher allocates no console either",
+      the_launcher_allocates_no_console_either)
+check("the wrapper registers no scheduled task",
+      the_wrapper_registers_no_scheduled_task)
 
 print("\n== §5  the pipe that hung it, the BOM that garbled it ==")
 check("no child output goes through a pipeline",
