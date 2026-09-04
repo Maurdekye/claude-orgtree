@@ -900,6 +900,7 @@ def _reap_orphans() -> None:
             pass
 
 
+import secrets as _secrets                                   # noqa: E402
 import atexit                                                # noqa: E402
 atexit.register(_reap_orphans)
 
@@ -912,7 +913,55 @@ mail_spark: Callable[[str, str, str], None] = \
     lambda slug, frm, to: None   # noqa: E731 — spark-on-the-wire animation;
                                  # 'org_inbox' = the mailbox panel endpoint
 
+#: THE EPOCH'S BOOT HALF. `draft_epoch` counts in memory and therefore restarts
+#: at 0 with the process. A bare counter could then REPEAT a value some client
+#: is still holding, and a client whose recorded epoch sat above the server's
+#: would hold a draft that never retires — a stuck double that appears only
+#: after a deploy, which is the worst possible time to meet it. Pairing the
+#: count with a per-process token makes a repeat impossible by construction
+#: rather than unlikely: after a restart every epoch differs from every epoch
+#: any client can be holding.
+#:
+#: (`api.INSTANCE` + `noteInstance` already force a full page reload on a
+#: restart, so in practice no client survives to be confused. This does not
+#: lean on that: a correctness property should not depend on another layer's
+#: recovery behaviour continuing to exist.)
+_BOOT_TOKEN = _secrets.token_hex(4)
+
 _LIVE_KEEP = 40           # rows retained per node; the UI renders far fewer
+
+
+def _text_became_durable(slug: str, nid: str) -> None:
+    """Advance the node's draft epoch: a message the desk has been rendering as
+    a live DRAFT now exists as a durable row.
+
+    THE INVARIANT, which is the whole point of this being one function: every
+    lane that emits a non-sticky `{kind:"text"}` payload must pass through here.
+    A `text` frame is the seam's handover signal, and the epoch is the same
+    statement carried as STATE instead of as an event — so a client that missed
+    the frame still learns the draft is superseded on its next ordinary poll.
+
+    That is the difference that matters. The frame is an optimisation; the
+    epoch is the guarantee. The antigravity lane shipped a double-render for
+    exactly as long as it emitted no frame (user report 2026-09-04), and the
+    other two lanes were one dropped websocket frame away from the same
+    symptom the whole time.
+
+    Sticky rows are excluded deliberately: `/context` output lives in no
+    transcript, supersedes no draft, and is not a turn's streamed reply."""
+    st = state(slug, nid)                     # takes _state_lock itself
+    with _state_lock:                         # ...so acquire it only after
+        st["draft_epoch"] = int(st.get("draft_epoch") or 0) + 1
+
+
+def draft_epoch(slug: str, nid: str) -> str:
+    """The epoch as the payload carries it: an OPAQUE token, never a number.
+
+    The client does equality on it and nothing else — no ordering, no
+    arithmetic — so it cannot draw a wrong conclusion from a value that moved
+    in an unexpected direction. See `_BOOT_TOKEN` for why the boot half is
+    there, and convo.ts for why "differs" is the safe test."""
+    return f"{_BOOT_TOKEN}:{int(state(slug, nid).get('draft_epoch') or 0)}"
 
 
 def live_row(slug: str, nid: str, payload: dict[str, Any]) -> None:
@@ -939,6 +988,13 @@ def live_row(slug: str, nid: str, payload: dict[str, Any]) -> None:
         st["live_n"] = n = int(st.get("live_n") or 0) + 1
         rows.append({**payload, "at": now_iso(), "n": n})
         del rows[:-_LIVE_KEEP]
+    # the claude and codex lanes reach the epoch through here, because their
+    # text rows go out as live rows (their transcript may lag, so the row holds
+    # the content until it catches up). The antigravity lane journals its own
+    # record synchronously and needs no live row, so it calls
+    # `_text_became_durable` directly — same invariant, one lane's shape.
+    if payload.get("kind") == "text" and not payload.get("sticky"):
+        _text_became_durable(slug, nid)
     stream(slug, nid, payload)
 
 
@@ -952,6 +1008,10 @@ def state(slug: str, nid: str) -> dict[str, Any]:
             # The doc is the home; a restart no longer changes the answer.
             "busy": False, "waiting": False, "queue": [], "last_error": None,
             "turns_run": 0, "turn_activity": False,
+            # how many times this node's streamed text has become durable —
+            # see `_text_became_durable`. In memory, so it restarts at 0;
+            # `_BOOT_TOKEN` is what keeps that from ever colliding.
+            "draft_epoch": 0,
             # Process existence is not warmth: a serving process is live but
             # not parked. Relaunch is set by the backend lifecycle owner when
             # that specific process is known stale; the UI never guesses why.
@@ -9360,6 +9420,7 @@ def _antigravity_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
     # draft is showing. D-50 holds — the evidence is named and already on
     # disk, because the journal write above happens FIRST.
     if res_raw.get("agent_text"):
+        _text_became_durable(slug, nid)
         stream(slug, nid, {"kind": "text",
                            "text": str(res_raw["agent_text"])[:2000]})
     res: dict[str, Any] = {
@@ -19915,6 +19976,9 @@ def read_chat(org: Org, nid: str, last: int | None = None, *,
     # stranded rows the client had already been shown. Slice for the payload,
     # reconcile against everything.
     out["live"] = _sweep_live(org.d["slug"], nid, msgs)
+    # STATE, not an event: the desk retires a superseded draft on this even if
+    # it caught no frame at all (see `_text_became_durable`).
+    out["draft_epoch"] = draft_epoch(org.d["slug"], nid)
     if last is not None and last > 0:
         msgs = msgs[-last:]
     out["messages"] = msgs

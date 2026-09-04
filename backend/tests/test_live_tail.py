@@ -708,6 +708,76 @@ def main() -> int:
     check("an identical text in an EARLIER turn is not a twin",
           _history_never_supplies_a_twin)
 
+    # ------------------------------------------- ⑥ the draft epoch, per lane
+    print()
+    print("the draft epoch — the handover carried as STATE, on every lane")
+
+    # WHY. `{kind:"text"}` retires the desk's streamed draft, and it is an
+    # EVENT: drop the frame and the reply sits on screen twice until the turn
+    # ends. `draft_epoch` is the same statement as state, so an ordinary poll
+    # carries it. The invariant that must hold for EVERY lane — the thing the
+    # antigravity lane broke by emitting no frame at all — is that a text row
+    # going durable advances the epoch.
+
+    def _epoch_advances_on_a_text_row():
+        w = World("epoch")
+        try:
+            w.write_user("go")
+            before = supervisor.draft_epoch(w.slug, w.nid)
+            w.emit_text("done.")          # the claude/codex shape: a live row
+            after = supervisor.draft_epoch(w.slug, w.nid)
+            assert after != before, (
+                f"a durable text row did not advance the epoch ({before!r})")
+            # and it is carried to the desk
+            assert w.poll()["draft_epoch"] == after, w.poll().get("draft_epoch")
+        finally:
+            w.destroy()
+    check("a text row advances the epoch, and the payload carries it",
+          _epoch_advances_on_a_text_row)
+
+    def _tools_and_thoughts_do_not():
+        # only a message supersedes a draft. If a tool chip moved the epoch,
+        # every tool call would blank a reply still being typed — the GAP
+        # direction, which is worse than the double (D-50).
+        w = World("epoch-noise")
+        try:
+            w.write_user("go")
+            before = supervisor.draft_epoch(w.slug, w.nid)
+            w.emit_tool("t1")
+            w.emit_thought(2)
+            assert supervisor.draft_epoch(w.slug, w.nid) == before,                 "a tool or thought row moved the draft epoch"
+        finally:
+            w.destroy()
+    check("tool and thought rows leave the epoch alone", _tools_and_thoughts_do_not)
+
+    def _sticky_does_not():
+        # /context output lives in no transcript and supersedes no draft
+        w = World("epoch-sticky")
+        try:
+            w.write_user("go")
+            before = supervisor.draft_epoch(w.slug, w.nid)
+            w.emit_sticky("context: 42%")
+            assert supervisor.draft_epoch(w.slug, w.nid) == before,                 "a sticky row moved the draft epoch"
+        finally:
+            w.destroy()
+    check("a sticky row leaves the epoch alone", _sticky_does_not)
+
+    def _epoch_is_per_node_and_boot_scoped():
+        a, b = World("epoch-a"), World("epoch-b")
+        try:
+            for w in (a, b):
+                w.write_user("go")
+            a.emit_text("only a")
+            assert supervisor.draft_epoch(a.slug, a.nid)                 != supervisor.draft_epoch(b.slug, b.nid),                 "one node's message moved another node's epoch"
+            # the boot half is what stops a restarted count from repeating a
+            # value some client is still holding
+            boot = supervisor.draft_epoch(a.slug, a.nid).rsplit(":", 1)[0]
+            assert boot and boot == supervisor._BOOT_TOKEN, boot
+        finally:
+            a.destroy(); b.destroy()
+    check("the epoch is per node and carries the boot token",
+          _epoch_is_per_node_and_boot_scoped)
+
     # ------------------------------------------- ⑥ a steer is not a boundary
     print()
     print("mid-turn mail — the row the CLI never wrote (user report 2026-09-03)")

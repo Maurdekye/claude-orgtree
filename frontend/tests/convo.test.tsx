@@ -372,6 +372,109 @@ convoTest('§1.8 the `text` handover retires a draft while the turn is STILL BUS
     assert.equal(shown, 1, `the reply is on screen ${shown} times`)
   })
 
+convoTest('§1.9 a DROPPED text frame still retires the draft — on state alone',
+  async ({ SL, ND, s, desk }) => {
+    // THE GUARANTEE §1.8 does not give. That test proves the handover works
+    // when the frame ARRIVES; this one takes the frame away, which is the
+    // governing invariant of this file — the websocket is an optimisation and
+    // nothing on screen may depend on having caught an event.
+    //
+    // Before `draft_epoch` the only mid-turn retirement was `staleDraft`, and
+    // that becomes true ONLY because a frame arrived. So one dropped frame put
+    // the reply on screen twice until the turn ended, on EVERY provider. The
+    // server now advances an opaque token whenever a turn's streamed text
+    // becomes durable, so an ordinary poll carries the same news.
+    const d = await desk()
+    await advance(3000)
+    s.drain()
+    await inAct(() => {
+      ingestStream(SL, { node: ND, kind: 'delta', text: 'the whole reply', t: Date.now() })
+    })
+    await advance(500)
+    assert.equal(d.now().draft, 'the whole reply', 'the draft is on screen')
+    // the reply becomes durable and the epoch advances — and the `text` frame
+    // is NEVER delivered. The turn also keeps running, so idleness cannot be
+    // credited with the retirement either.
+    s.textDurable('the whole reply')
+    await advance(30000)
+    const c = d.now()
+    assert.equal(c.chat?.busy, true, 'the turn must still be busy for this to mean anything')
+    assert.equal(c.draft, '', 'the draft outlived its replacement with no frame to retire it')
+    const shown = [...(c.chat?.messages ?? []).map((m) => m.text), c.draft]
+      .filter((t) => (t || '').includes('the whole reply')).length
+    assert.equal(shown, 1, `the reply is on screen ${shown} times`)
+  })
+
+convoTest('§1.10 a draft that is still being typed is NOT retired by the epoch',
+  async ({ SL, ND, s, desk }) => {
+    // the other direction, and the one D-50 actually cares about: retiring
+    // early is a GAP, which is worse than the double. An epoch that moved for
+    // some EARLIER message must not blank a draft that is still growing.
+    const d = await desk()
+    await advance(3000)
+    s.drain()
+    // an earlier reply in this turn goes durable BEFORE this draft starts
+    s.textDurable('first message')
+    await inAct(() => {
+      ingestStream(SL, { node: ND, kind: 'text', text: 'first message', t: Date.now() })
+    })
+    await advance(3000)
+    await inAct(() => {
+      ingestStream(SL, { node: ND, kind: 'delta', text: 'second mess', t: Date.now() })
+    })
+    await advance(8000)
+    // nothing new became durable, so the epoch has not moved since this draft
+    // began — the draft must survive, however many polls land
+    assert.equal(d.now().draft, 'second mess', 'a live draft was blanked by a stale epoch')
+    await inAct(() => {
+      ingestStream(SL, { node: ND, kind: 'delta', text: 'age', t: Date.now() })
+    })
+    await advance(8000)
+    assert.equal(d.now().draft, 'second message', 'a GROWING draft must keep its baseline')
+  })
+
+convoTest('§1.11 a backend restart cannot leave the desk permanently ahead',
+  async ({ SL, ND, s, desk }) => {
+    // The count lives in memory, so a restart puts it back to 0. If the desk
+    // kept comparing against the old sequence it would sit permanently ahead
+    // of the server and NO later handover would ever retire a draft again — a
+    // stuck double that appears only after a deploy, which is the worst
+    // possible time to meet it.
+    //
+    // So a changed boot half RE-SYNCS rather than decides. It deliberately
+    // does not retire on the spot: a restart kills the turn, so `idle` clears
+    // the draft on the next payload anyway (and in the real app `noteInstance`
+    // has already reloaded the page). What must be true is that the desk is
+    // working again immediately, which is what this asserts.
+    const d = await desk()
+    await advance(3000)
+    s.drain()
+    s.textDurable('one'); s.textDurable('two'); s.textDurable('three')
+    await advance(3000)
+    await inAct(() => {
+      ingestStream(SL, { node: ND, kind: 'delta', text: 'mid-flight', t: Date.now() })
+    })
+    await advance(500)
+    assert.equal(d.now().draft, 'mid-flight')
+    // orgtree restarts under the page: new process, count back to 0
+    s.boot = 'boot1'
+    s.epoch = 0
+    await advance(30000)
+    // a NEW handover on the new sequence, with its frame dropped. If the desk
+    // were still holding 3 it would need four more before it noticed anything;
+    // having re-synced, this one is enough.
+    await inAct(() => {
+      ingestStream(SL, { node: ND, kind: 'delta', text: 'after the restart', t: Date.now() })
+    })
+    await advance(500)
+    s.textDurable('after the restart')
+    await advance(30000)
+    const c = d.now()
+    assert.equal(c.chat?.busy, true, 'the turn must still be busy for this to mean anything')
+    assert.equal(c.draft, '',
+      'the desk stayed ahead of the restarted server and stopped retiring drafts')
+  })
+
 convoTest('§1.7 a fetch already in flight may not blank a live draft',
   async ({ SL, ND, s, desk }) => {
     // the mirror image of §1.5, and the trap D-50 fell into: a request issued

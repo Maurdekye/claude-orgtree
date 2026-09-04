@@ -177,6 +177,41 @@ interface Entry {
    *  declare that scaffolding stale if the request went out AFTER it — one
    *  already in flight describes a world from before the stream started. */
   streamAt: number
+  /** THE EPOCH THE CURRENT DRAFT BEGAN IN — the payload token that was on
+   *  screen when the first delta of this draft arrived (`draft_epoch`).
+   *
+   *  This is the draft's retirement carried as STATE rather than as an event.
+   *  `staleDraft` only ever becomes true because a `text` frame or a
+   *  `turn_done` pulse ARRIVED, so a dropped frame left the reply on screen
+   *  twice until the turn ended — for every provider, and permanently for the
+   *  antigravity lane, which emitted no frame at all until 2026-09-04. The
+   *  server advances this token whenever a turn's streamed text becomes
+   *  durable, so an ordinary poll now carries the same news.
+   *
+   *  null = no baseline yet (no payload had loaded when the draft started), so
+   *  the epoch cannot retire it and the frame path stands alone until the next
+   *  fetch sets one — the same "unknown means cannot retire yet" rule
+   *  UNKNOWN_SEQ uses for ghosts. */
+  /** HOW MANY HANDOVERS THIS DESK HAS SEEN, against how many the server has
+   *  made. The server counts every time a turn's streamed text becomes durable
+   *  (`supervisor._text_became_durable`); this counts the `text` frames that
+   *  announced them. If the server's count is ahead while a draft is on
+   *  screen, this desk MISSED a handover — the draft is superseded, frame or
+   *  no frame, and retires on the next ordinary poll.
+   *
+   *  Counting the same events on both sides is what makes this immune to poll
+   *  timing, and two simpler rules were tried and are wrong:
+   *    · capturing the epoch when the draft STARTS reads a payload that may be
+   *      a poll old, so a message that went durable just before would look like
+   *      news about this draft and blank a reply still being typed;
+   *    · re-syncing on the first payload after the draft starts adopts the very
+   *      handover it needed to notice, and never retires anything.
+   *  A GAP is worse than the double (D-50), and only the count avoids both. */
+  textSeen: number
+  /** the server process the count belongs to. It counts in memory, so a
+   *  restart puts it back to 0 — comparing across that would compare two
+   *  different sequences. A changed boot half re-syncs instead of deciding. */
+  epochBoot: string | null
   /** debounce for the post-event refetch */
   nudge: ReturnType<typeof setTimeout> | null
   poll: ReturnType<typeof setTimeout> | null
@@ -212,6 +247,7 @@ function entry(k: string): Entry {
   let e = M.get(k)
   if (!e) {
     e = { s: BLANK, subs: new Set(), thinkT0: 0, clock: null, nudge: null,
+          textSeen: 0, epochBoot: null,
           staleDraft: false, staleThink: false, staleAt: 0, streamAt: 0,
           poll: null, inflight: false, inflightAt: 0, fetchedAt: 0,
           installed: 0, dirty: false }
@@ -406,7 +442,42 @@ export function refreshConvo(slug: string, nid: string,
     // distinguishes "this draft was superseded" from "this draft is still
     // being typed" without going back to the string matching P2 deleted.
     const idle = !c.busy && startedAt >= e.streamAt
-    if ((fresh && e.staleDraft) || idle) { retire.draft = ''; e.staleDraft = false }
+    // THE EPOCH: the server says a turn's streamed text became durable since
+    // this draft began, so the draft is superseded — whether or not the frame
+    // that would have said so ever arrived. This is what makes the retirement
+    // survive a dropped websocket frame, which the `staleDraft` path cannot.
+    //
+    // DIFFERS, not "is greater". The token is opaque and the client does no
+    // ordering on it, so it cannot reach a wrong conclusion from a value that
+    // moved unexpectedly — and a backend restart (which resets the count but
+    // changes the boot half) retires the draft rather than stranding it. That
+    // is also the safe direction: retiring shows the durable transcript row,
+    // while sticking shows the reply twice.
+    // "<boot>:<n>" — see supervisor.draft_epoch
+    const cut = (c.draft_epoch ?? '').lastIndexOf(':')
+    const boot = cut < 0 ? null : c.draft_epoch!.slice(0, cut)
+    const made = cut < 0 ? null : Number(c.draft_epoch!.slice(cut + 1))
+    const sameBoot = boot !== null && boot === e.epochBoot
+    const missed = sameBoot && made !== null && Number.isFinite(made)
+      && made > e.textSeen && !!e.s.draft
+    if ((fresh && e.staleDraft) || idle || missed) {
+      retire.draft = ''
+      e.staleDraft = false
+    }
+    // Re-sync when there is nothing on screen to protect, or when the count
+    // belongs to a different server process than the one we were counting
+    // against. Deliberately AFTER the decision above.
+    if (boot !== null && made !== null && Number.isFinite(made)
+        && (!sameBoot || retire.draft !== undefined || !e.s.draft)) {
+      // Residual, stated rather than hidden: a message that goes durable in
+      // the gap between the last poll and a draft starting is not accounted
+      // for here, so a dropped frame in that same window leaves the epoch
+      // looking moved once. It retires the new draft a beat early; the next
+      // delta redraws it. That is a flicker, not a gap, and it needs BOTH a
+      // dropped frame and that exact window.
+      e.epochBoot = boot
+      e.textSeen = made
+    }
     if ((fresh && e.staleThink) || idle) {
       retire.thinking = ''
       retire.thinkSecs = null
@@ -550,6 +621,11 @@ export function ingestStream(slug: string, ev: StreamEvent): void {
   if (ev.kind === 'delta') {
     e.streamAt = Date.now()
     const base = e.staleDraft ? '' : entry(k).s.draft
+    // a draft that is STARTING (nothing on screen, or what was there has been
+    // superseded) records the epoch it began in — everything the server marks
+    // durable from here on supersedes it. A draft that is merely GROWING keeps
+    // its original baseline, or each new token would move the goalposts and
+    // the draft could never be retired by state at all.
     e.staleDraft = false
     patch(k, { draft: (base + ev.text).slice(-12000) })
     return
@@ -572,7 +648,7 @@ export function ingestStream(slug: string, ev: StreamEvent): void {
   stopClock(e)
   e.staleThink = true
   e.staleAt = Date.now()
-  if (ev.kind === 'text') e.staleDraft = true
+  if (ev.kind === 'text') { e.staleDraft = true; e.textSeen += 1 }
   if (ev.kind === 'steered') {
     // one steered delivery retires one ghost — see dropPending. Matched on a
     // bounded needle for the same reason as serverCopies: the server caps the
@@ -685,6 +761,8 @@ export function resetConvos(): void {
     e.thinkT0 = 0
     e.staleDraft = false
     e.staleThink = false
+    e.textSeen = 0
+    e.epochBoot = null
     e.staleAt = 0
     e.streamAt = 0
     e.inflight = false

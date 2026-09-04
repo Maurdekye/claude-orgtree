@@ -897,6 +897,13 @@ export interface ChatPayload {
    *  and no turn has measured what the summary left behind yet */
   occupancy_estimated?: boolean
   messages: ChatMessage[]
+  /** THE DRAFT'S SUPERSESSION, AS STATE. An opaque token that changes whenever
+   *  a turn's streamed text becomes durable (supervisor.draft_epoch). The desk
+   *  records the token its draft began in and retires the draft when this
+   *  DIFFERS — never by ordering it, never by comparing message text.
+   *  Missing on an older backend, which simply leaves the frame path in
+   *  charge, exactly as before. */
+  draft_epoch?: string
   /** the server-owned live tail: rows this turn produced that the transcript
    *  has not caught up on yet, already swept against it server-side
    *  (supervisor._sweep_live). The client renders these; it does not build

@@ -190,6 +190,22 @@ export class FakeServer {
     return m
   }
 
+  /** the server's draft epoch — an opaque token that changes whenever a turn's
+   *  streamed text becomes durable (supervisor.draft_epoch). `boot` is the
+   *  per-process half; changing it models a backend restart. */
+  boot = 'boot0'
+  epoch = 0
+  draftEpoch(): string { return `${this.boot}:${this.epoch}` }
+
+  /** what `_text_became_durable` does: the reply is now a durable row AND the
+   *  epoch advances. Use this instead of `assistantMsg` wherever the point is
+   *  that a STREAMED draft has been superseded. */
+  textDurable(text: string, extra: Partial<ChatMessage> = {}): ChatMessage {
+    const m = this.assistantMsg(text, extra)
+    this.epoch += 1
+    return m
+  }
+
   assistantMsg(text: string, extra: Partial<ChatMessage> = {}): ChatMessage {
     const m: ChatMessage = {
       role: 'assistant', text, seq: this.seq++,
@@ -231,6 +247,7 @@ export class FakeServer {
       occupancy_estimated: this.occupancy_estimated,
       messages: this.messages.slice(-n).map((m) => ({ ...m })),
       live: this.live.map((r) => ({ ...r })),
+      draft_epoch: this.draftEpoch(),
       mail_pending: this.pending_mail.length,
       pending_mail: this.projectedPending().map((m) => ({ ...m, body: (m.body || '').slice(0, cap) })),
     }
