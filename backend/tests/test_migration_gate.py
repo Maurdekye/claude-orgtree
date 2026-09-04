@@ -583,6 +583,108 @@ out["nodes"] = sorted(store.load_org("beta").d["nodes"])
     check("an interrupted final rename is completed at claim without the opt-in (that migration was already authorised)",
           interrupted_finished)
 
+    # ================= the REVERSE direction: one active format per root =====
+    # The gate above stops SQLite reading a JSON root. Nothing stopped the
+    # converse, and it FAILED OPEN: a JSON process on a migrated root started,
+    # claimed it, and reported `list_orgs() == []`. That is the shape of an
+    # incident — the flip goes out, something unrelated looks wrong, someone
+    # reverts the CODE without restoring the DATA, and the orgs look gone
+    # while `update.ps1`'s health check (HTTP 200 from /api/orgs, nothing
+    # more) calls the rollback a success. (phase1-audit, 2026-09-04.)
+
+    def json_refuses_a_migrated_root() -> None:
+        """DB only, no JSON — the empty-org case."""
+        root = fresh_root(migrated=True)
+        before = tree(root)
+        r = child("store.claim_data_root()\n"
+                  "out['orgs'] = [o.get('slug') for o in store.list_orgs()]",
+                  root, backend="json")
+        eq(r["err_type"], "BackendMismatch",
+           f"expected BackendMismatch, got {r['err_type']} ({r.get('err')!r}): ")
+        msg = r["err"]
+        assert "BACKEND MISMATCH" in msg, msg
+        assert "NOTHING HAS BEEN WRITTEN" in msg, msg
+        assert "ORGTREE_STORE=sqlite" in msg, msg        # the way out is named
+        assert "export_json" in msg, msg                 # ...and the remedy
+        assert "premigration" in msg, msg                # ...and the trap
+        eq(r["owner_held"], False, "a refused process must not hold the claim: ")
+        unchanged(root, before)
+    check("a JSON process REFUSES a root whose orgs are SQLite databases "
+          "— it used to start and report ZERO ORGS",
+          json_refuses_a_migrated_root)
+
+    def json_refuses_even_with_a_json_present() -> None:
+        """DB and JSON both — the SILENT case, and the worse one.
+
+        An operator restores an export, or copies a `.json` back, BEFORE
+        parking the database. The JSON process would start, look entirely
+        normal, and make the older document the authority again — discarding
+        every write SQLite accepted since the migration. Nothing about that
+        is alarming to look at, which is exactly why the machine has to
+        refuse rather than the operator having to remember."""
+        root = fresh_root(migrated=True)
+        # a post-cutover write that exists ONLY in the database
+        r = child("o = store.load_org('alpha')\n"
+                  "o.d['events'] = list(o.d.get('events') or []) + "
+                  "[{'marker': 'AFTER-CUTOVER'}]\n"
+                  "store.save_org(o)\nout['wrote'] = True", root)
+        eq(r.get("wrote"), True, r.get("tb"))
+        shutil.copyfile(os.path.join(root, "orgs", "alpha.json.premigration"),
+                        os.path.join(root, "orgs", "alpha.json"))
+        doc = json.load(open(os.path.join(root, "orgs", "alpha.json"),
+                             encoding="utf-8"))
+        marks = [e.get("marker") for e in (doc.get("events") or [])]
+        assert "AFTER-CUTOVER" not in marks, \
+            f"fixture: the .json was supposed to be STALE, it has {marks}"
+        before = tree(root)
+        r = child("store.claim_data_root()", root, backend="json")
+        eq(r["err_type"], "BackendMismatch", f"got {r['err_type']}: {r.get('err')!r}")
+        assert "STALE" in r["err"], \
+            "the message must say the .json is stale, or the operator will " \
+            "look at a perfectly good-looking file and route around the check"
+        eq(r["owner_held"], False)
+        unchanged(root, before)
+    check("...and refuses even when a .json is sitting beside the database, "
+          "because that .json is stale by definition",
+          json_refuses_even_with_a_json_present)
+
+    def empty_is_not_invisible() -> None:
+        """A genuinely empty root and a root whose orgs are all invisible
+        must not look alike. §80 taught this codebase that once already, with
+        `nodes: {}` reading back as no nodes."""
+        root = os.path.join(_TMP, "emptyroot")
+        os.makedirs(os.path.join(root, "orgs"), exist_ok=True)
+        r = child("store.claim_data_root()\n"
+                  "out['orgs'] = [o.get('slug') for o in store.list_orgs()]",
+                  root, backend="json")
+        eq(r["err_type"], None, r.get("tb"))
+        eq(r["orgs"], [], "an empty root reports empty, honestly: ")
+    check("a genuinely EMPTY root still starts under JSON — empty and "
+          "invisible must not look alike", empty_is_not_invisible)
+
+    def plain_json_root_still_starts() -> None:
+        root = fresh_root()
+        r = child("store.claim_data_root()\n"
+                  "out['orgs'] = sorted(o.get('slug') for o in store.list_orgs())",
+                  root, backend="json")
+        eq(r["err_type"], None, r.get("tb"))
+        assert "alpha" in (r["orgs"] or []), r["orgs"]
+    check("a plain JSON root still starts under JSON — the check must not "
+          "fire on a healthy root", plain_json_root_still_starts)
+
+    def the_two_refusals_are_one_rule() -> None:
+        """Symmetry is the point. If these were two ad-hoc checks, one
+        handler could not cover both and the next reader would add a third."""
+        root = fresh_root()
+        r = child("out['sub'] = ["
+                  "issubclass(store.BackendMismatch, store.MigrationError),"
+                  "issubclass(store.MigrationRefused, store.MigrationError)]",
+                  root, backend="json")
+        eq(r["sub"], [True, True],
+           "both directions must be MigrationError so one handler refuses both: ")
+    check("both directions of the invariant are the same exception family",
+          the_two_refusals_are_one_rule)
+
 
 if __name__ == "__main__":
     try:

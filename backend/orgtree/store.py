@@ -300,14 +300,29 @@ def claim_data_root(root: str | None = None) -> None:
         return
     base = root or DATA_ROOT
     on_data_root = os.path.abspath(base) == os.path.abspath(DATA_ROOT)
+    # ⚠⚠ ONE ACTIVE FORMAT PER ROOT, stated once per direction. Both arms
+    # run BEFORE the claim and BEFORE the makedirs, so a refused start leaves
+    # the root byte-for-byte as it found it.
     if STORE_BACKEND == "sqlite" and on_data_root:
-        # ⚠ before the claim, before the makedirs: a refused start leaves
-        # the root byte-for-byte as it found it. The same check runs again
-        # inside `migrate_pending` under DOC_LOCK, so a `.json` that lands in
-        # the gap between here and there is refused too, not migrated.
+        # the same check runs again inside `migrate_pending` under DOC_LOCK,
+        # so a `.json` that lands in the gap between here and there is
+        # refused too, not migrated.
         pending = pending_migrations(base)
         if pending and not migration_authorised():
             raise MigrationRefused(_refusal_text(base, pending))
+    elif STORE_BACKEND == "json" and on_data_root:
+        # The reverse, which had no rule at all and therefore FAILED OPEN.
+        # ANY active database refuses — not merely one without a `.json`
+        # beside it. The DB+JSON case is the worse of the two: it looks
+        # entirely normal, and choosing the `.json` silently discards every
+        # write SQLite accepted after the migration. An empty root has
+        # neither and starts, so "genuinely empty" and "all orgs invisible"
+        # cannot be confused (№80 taught this codebase that lesson once).
+        dbs = active_databases(base)
+        if dbs:
+            names = set(os.listdir(os.path.join(base, "orgs")))
+            shadowed = [s for s in dbs if f"{s}.json" in names]
+            raise BackendMismatch(_mismatch_text(base, dbs, shadowed))
     os.makedirs(base, exist_ok=True)
     fd = os.open(owner_file(base), os.O_RDWR | os.O_CREAT, 0o644)
     if not _try_lock(fd):
@@ -568,6 +583,58 @@ class MigrationRefused(MigrationError):
     withheld one the same way — never a fallback to reading nothing."""
 
 
+class BackendMismatch(MigrationError):
+    """A JSON process was pointed at a root whose orgs are SQLite databases.
+
+    The mirror of `MigrationRefused`, and deliberately the same family so
+    every place that already refuses on a withheld migration refuses on a
+    backend mismatch identically — never a fallback to reading nothing.
+
+    This is the direction that FAILED OPEN. SQLite meeting JSON refused; JSON
+    meeting SQLite started, claimed the root and reported `list_orgs() == []`
+    (phase1-audit, 2026-09-04). Which is the shape of a real incident: the
+    flip goes out, something unrelated looks wrong, someone reverts the CODE
+    without restoring the DATA, and the org appears to have vanished while
+    `update.ps1`'s health check — which only wants HTTP 200 from /api/orgs —
+    reports the rollback a success."""
+
+
+def active_databases(root: str | None = None) -> list[str]:
+    """Slugs with an `orgs/<slug>.db` under `root` (DATA_ROOT by default).
+
+    The exact mirror of `pending_migrations`: one `listdir`, nothing opened,
+    nothing created, the same slug-shape and containment checks against
+    `root`'s own orgs dir. Sorted.
+
+    ⚠ EXISTENCE, not validity. A `.db` is not opened to see whether it is a
+    real orgtree database, and that is the safe direction: this check exists
+    to prevent a JSON process from silently becoming the authority for a root
+    that SQLite owns, so anything shaped like an org database must stop it. A
+    corrupt or foreign `.db` is MORE reason to refuse, not less — and the
+    remedy (move it out of `orgs/`) is the same either way.
+
+    Trash and exports live outside `orgs/` and are invisible here, which is
+    why parking a database IS the way out of the refusal."""
+    d = os.path.join(root or DATA_ROOT, "orgs")
+    try:
+        names = set(os.listdir(d))
+    except OSError:
+        return []
+    out: list[str] = []
+    for f in sorted(names):
+        if not f.endswith(".db"):
+            continue
+        slug = f[:-3]
+        try:
+            _slug_shape(slug)
+        except LedgerError:
+            continue
+        if not _slug_contained(slug, d):
+            continue
+        out.append(slug)
+    return out
+
+
 def pending_migrations(root: str | None = None) -> list[str]:
     """Slugs with an `orgs/<slug>.json` and no `orgs/<slug>.db` under `root`
     (DATA_ROOT by default). A pure read: one `listdir`, no directory made,
@@ -613,6 +680,53 @@ def _refusal_text(root: str, pending: list[str]) -> str:
         f"  To migrate THIS root now:  set {MIGRATE_ENV}=1 and start again.\n"
         f"  To keep it as JSON:        set ORGTREE_STORE=json.\n"
         f"  Wrong root?                set ORGTREE_DATA to the one you meant.\n"
+        f"\n"
+        f"  NOTHING HAS BEEN WRITTEN.\n"
+        f"{bar}")
+
+
+def _mismatch_text(root: str, dbs: list[str], shadowed: list[str]) -> str:
+    bar = "!" * 74
+    both = (
+        f"\n"
+        f"  ⚠ {len(shadowed)} of them ALSO have a .json beside the database:\n"
+        f"      {', '.join(shadowed)}\n"
+        f"  Do not trust those .json files because they are there and look\n"
+        f"  fine. The database is the authority on this root, and a .json\n"
+        f"  sitting next to one is STALE by definition — it predates every\n"
+        f"  write SQLite has accepted since the migration. Starting JSON here\n"
+        f"  would silently make the older document the truth again.\n"
+    ) if shadowed else ""
+    return (
+        f"\n{bar}\n"
+        f"  BACKEND MISMATCH — {len(dbs)} SQLite org(s) under a JSON backend\n"
+        f"\n"
+        f"  data root : {root}\n"
+        f"  databases : {', '.join(dbs)}\n"
+        f"{both}"
+        f"\n"
+        f"  This process runs ORGTREE_STORE=json, but orgs/ holds .db documents.\n"
+        f"  A JSON process cannot read them, and starting anyway would present\n"
+        f"  these orgs as GONE while every health check passed — /api/orgs would\n"
+        f"  answer 200 with an empty list. One root, one format: if the data is\n"
+        f"  SQLite, the code must be too.\n"
+        f"\n"
+        f"  If you meant to run SQLite:   set ORGTREE_STORE=sqlite.\n"
+        f"  Wrong root?                   set ORGTREE_DATA to the one you meant.\n"
+        f"\n"
+        f"  If you are ROLLING BACK to JSON, the order matters and it is not\n"
+        f"  the obvious one:\n"
+        f"    1. start SQLite once more and `export_json` EVERY org;\n"
+        f"    2. check every export loads before you move anything;\n"
+        f"    3. move the .db files (and -wal/-shm) OUT of orgs/ — park them,\n"
+        f"       never delete them;\n"
+        f"    4. install those exports as <slug>.json;\n"
+        f"    5. then start JSON.\n"
+        f"\n"
+        f"  ⚠ DO NOT roll back by restoring <slug>.json.premigration. That file\n"
+        f"  is the document as it stood BEFORE the migration and contains none\n"
+        f"  of the writes SQLite has accepted since. Restoring it is not a\n"
+        f"  rollback, it is a discard.\n"
         f"\n"
         f"  NOTHING HAS BEEN WRITTEN.\n"
         f"{bar}")
