@@ -769,7 +769,15 @@ export function CreditBar({ seat = 0, grant, committed, segments = [], draftMode
     // committed a live reallocation on release
     if (Math.abs(e.clientY - drag.y0) < 6) return
     const dg = (drag.y0 - e.clientY) / (pxc * zoom)
-    const v = Math.round(Math.max(min, Math.min(max ?? Infinity, drag.g0 + dg)))
+    // ⚠ CLAMP AFTER ROUNDING, and round the FLOOR up. Rounding last put the
+    // value back below its own floor whenever `min` (the committed amount)
+    // was fractional — a sub-$1 seat under this node is enough — so with a
+    // grant of 104.2 a small UPWARD drag produced 104: an increase gesture
+    // that shrinks the grant. `Math.ceil(min)` is the smallest WHOLE grant
+    // that still covers what the children hold, which is the real floor now
+    // that a grant is a whole number (user ruling 2026-09-04).
+    const v = Math.min(max ?? Infinity,
+      Math.max(Math.ceil(min), Math.round(drag.g0 + dg)))
     if (draftMode) onDragValue?.(v)
     else {
       setDrag((d) => d && { ...d, val: v })

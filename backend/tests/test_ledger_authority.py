@@ -250,10 +250,21 @@ def section_move_ceiling():
 # unchanged; only the fragment matching it moved.
 GRANT_WRITE_SITES = {
     # line-fragment → the guard that must stand between it and the cap
-    'hop_n["grant"] = _q(hop_n["grant"] + c)':
-        "_chain_acquire — D-014 pre-check above it",
-    '["grant"] = _q(self.nodes[k]["grant"] + remaining)':
-        "_chain_acquire — D-014 pre-check",
+    # 2026-09-04: the two _chain_acquire writes (the per-contribution hop and
+    # the user-pool `remaining` sweep) became ONE write of the per-node total,
+    # because a grant is now snapped UP to a whole credit (user ruling) and a
+    # rounding applied once per contributor would round the same grant twice.
+    # The D-014 pre-check moved with it and now runs on the ROUNDED total —
+    # strictly the larger number, so the guard did not weaken.
+    'hop_n["grant"] = _q(hop_n["grant"] + extra)':
+        "_chain_acquire — D-014 pre-check above it, on the rounded total",
+    # The one-shot whole-grant repair of documents written before that ruling.
+    # It can RAISE a top-level grant and is deliberately NOT cap-checked: a
+    # migration grandfathers, exactly as _check_top_grant's own docstring says
+    # existing over-cap grants are grandfathered and only INCREASES refused.
+    # It runs once per document (`whole_grants_v1`) and never during an op.
+    '_n["grant"] = _want':
+        "load-hook repair — grandfathered, once per doc, rounds UP only",
     'n["grant"] = grant': "rehire — _check_top_grant when grant rises at top",
     'n["grant"] = _q(n["grant"] - delta)':
         "switch_model downgrade — _check_top_grant (delta < 0 here, so this "

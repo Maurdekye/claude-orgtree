@@ -810,6 +810,72 @@ class Org:
         # id it harvested ITSELF, under its own marker).
         for _n in self.nodes.values():
             _n.pop("gemini_session", None)
+        # ☞ …and the GRANTS THEMSELVES, for the same reason every migration
+        # above exists: the forward fix in `_chain_acquire` reaches only new
+        # cascades, and the operator's own coordinator is sitting on 104.2
+        # RIGHT NOW with a credit bar it cannot move. A doc that already
+        # carries a fractional grant is not repaired by anything else, so it
+        # is repaired here (user ruling 2026-09-04: a fractional grant is an
+        # invalid state; round UP to the next whole credit).
+        #
+        # ⚠ UP, NEVER DOWN, and never at spend time. Rounding a grant down
+        # would silently take back capacity somebody was granted, which is the
+        # one outcome worse than an operation that refuses. Nothing here
+        # touches a SEAT: `seat_cost` still reads the tier table, gpt-reserve
+        # and luna still cost 0.2, and `free` is still whatever the seats
+        # leave over — routinely a fraction, and correct as one.
+        #
+        # DEEPEST FIRST, and `max(grant, committed)` rather than plain ceil:
+        # rounding a child up raises its parent's commitment by the same
+        # fraction, so the parent is measured AFTER its children have moved
+        # and is lifted to cover them. That keeps `free() >= 0` — the audit
+        # invariant — true through the migration instead of merely before it.
+        #
+        # ⚠ ONCE PER DOCUMENT, and the flag is the whole point — this is the
+        # one migration in this hook that must NOT stand as a rule. A
+        # `switch_model` MELT still lands a seat difference in a grant, on
+        # purpose, so the node's total holding does not move (opus 5 → or-free
+        # 0.1 on a 0-grant node leaves grant 0.1 and holding 0.2). Rounding
+        # that up costs the PARENT the difference — harmless once, but as a
+        # standing rule every switch-and-reload cycle would add up to a credit
+        # out of nowhere, which is exactly the slow mint a one-way rounding
+        # rule produces. `Org.create` runs this same hook on an empty doc, so
+        # a new org is stamped immediately and only documents written before
+        # the ruling are ever touched. The melt itself is reported, not
+        # changed: it is not mine to redesign.
+        #
+        # ⚠ AND IT MUST NOT EXPLODE ON A MALFORMED DOCUMENT. This hook runs on
+        # EVERY load, including the synthetic and half-written docs the store
+        # suites feed it, and `committed`/`seat_cost`/`ancestors` all assume a
+        # well-formed node table (a node with no `parent` key raised KeyError
+        # out of `Org.__init__` and took `load_org` with it — caught by
+        # test_sqlite_store before this landed). So the precondition is stated
+        # and checked rather than caught: if any node is missing a field this
+        # needs, the repair is SKIPPED AND NOT STAMPED, so a later load of a
+        # sound document still performs it.
+        if not _doc.get("whole_grants_v1"):
+            _sound = all(
+                isinstance(_v, dict) and "parent" in _v and "grant" in _v
+                and _v.get("model") in (_doc.get("tiers") or {})
+                for _v in self.nodes.values())
+
+            def _rank(k: str) -> int:        # depth, cycle-safe, no node() calls
+                d, seen = 0, {k}
+                cur = self.nodes[k].get("parent")
+                while isinstance(cur, str) and cur in self.nodes and cur not in seen:
+                    seen.add(cur)
+                    d += 1
+                    cur = self.nodes[cur].get("parent")
+                return -d
+
+            if _sound:
+                for _nid in sorted(self.nodes, key=_rank):
+                    _n = self.nodes[_nid]
+                    _want = math.ceil(_q(max(float(_n.get("grant") or 0),
+                                             self.committed(_nid))))
+                    if _want != _n.get("grant"):
+                        _n["grant"] = _want
+                _doc["whole_grants_v1"] = True
         # pre-№41 spend freezes wrote the usage-limit keys (error, until=None);
         # re-tag them so clear_hard_freeze("spend") actually clears them
         # instead of leaving a stale-reason freeze the API reports as cleared
@@ -3041,29 +3107,79 @@ class Org:
         if remaining > 0:
             for k in chain:
                 adds[k] = adds.get(k, 0) + remaining
+        # ☞ A GRANT IS A WHOLE NUMBER OF CREDITS (user ruling 2026-09-04,
+        # verbatim: "the fix should probably be to just round up grants to the
+        # next whole number when saturating superiors like that; fractional
+        # grant amounts is an invalid state anyway imo"). SEATS stay
+        # fractional — that ruling is untouched, and `free` is still whatever
+        # the seats leave over. It is the GRANT, and so the CAP a saturating
+        # hire raises a superior to, that must land whole.
+        #
+        # This is where the invalid state was minted. `need` is seat + grant,
+        # so one sub-$1 seat anywhere makes every contribution below it a
+        # fraction, and the inflation carried that fraction straight into a
+        # grant: hiring a 104-credit `gpt-reserve` report under a 100-credit
+        # superior left the superior on 104.2, measured. The comment on
+        # `switch_model` claiming a melt is "THE ONE PATH THAT MAKES A GRANT
+        # FRACTIONAL" was simply wrong, and the UI and the ops door were both
+        # written against it — the credit bar rounds its TARGET to a whole
+        # number and sends `target - grant`, which off 104.2 is 0.7999…, and
+        # `Op.delta` types delta as an int. So the operator could not move the
+        # bar in either direction: HTTP 422, no dialog. Reproduced 2026-09-04.
+        #
+        # `carry` is what makes the round-up affordable rather than merely
+        # tidy. Rounding node j up by e_j raises its parent's commitment by
+        # e_j, so the parent is handed e_j on top of its own planned inflation
+        # BEFORE it rounds in its turn. Walking bottom-up, every hop ends at
+        # (its un-rounded planned free + its own rounding) — never below what
+        # the un-rounded plan already proved affordable, so no free() can go
+        # negative and no parent pays for a child's rounding twice. Whatever
+        # falls off the top is the user's own pool, which is the same purse
+        # `remaining` draws on, and `_check_top_grant` still governs it.
+        #
+        # ⚠ USER ACTOR ONLY. An agent's cascade has no pool behind it: the
+        # last carry would have to come out of the actor's own free, which it
+        # may not have, and refusing there would break hires that work today.
+        # Those cascades keep the exact fractional arithmetic — see the report
+        # to the coordinator; the ops door no longer 422s on one either way.
+        if actor == USER:
+            carry = 0.0
+            for k in chain:
+                want = _q(adds.get(k, 0.0) + carry)
+                if want <= 0:
+                    carry = 0.0
+                    continue
+                g = self.nodes[k]["grant"]
+                whole = _q(math.ceil(_q(g + want)) - g)
+                carry = _q(whole - want)
+                adds[k] = whole
         for k, extra in adds.items():
             if self.nodes[k]["parent"] is None:
                 self._check_top_grant(self.nodes[k]["grant"] + extra,
                                       "carrying these credits down the chain")
         # a contribution from chain[i] inflates every grant BELOW it, so the
-        # credits are actually spendable at the payer
+        # credits are actually spendable at the payer. The per-node TOTAL is
+        # `adds` (rounded up, above) — applied once here rather than summed
+        # contribution by contribution, so the rounding is not re-applied per
+        # contributor.
+        for k, extra in adds.items():
+            # `extra` is a credit quantity (slices of `need`, itself seat +
+            # grant, plus the whole-number rounding) — _q keeps the inflated
+            # grant on the 0.01 grid. ⚠ ONE LINE, on purpose:
+            # test_ledger_authority §2 audits grant writes by regex and a
+            # wrapped one registers as the meaningless fragment `_q(`.
+            hop_n = self.nodes[k]
+            hop_n["grant"] = _q(hop_n["grant"] + extra)
         for i, k, c in contrib:
-            # c is a credit quantity (a slice of `need`, itself seat + grant),
-            # so it may be fractional once a sub-$1 seat is on the chain — _q
-            # keeps the inflated grant on the 0.01 grid. ⚠ ONE LINE, on
-            # purpose: test_ledger_authority §2 audits grant writes by regex
-            # and a wrapped one registers as the meaningless fragment `_q(`.
-            for j in range(i):
-                hop_n = self.nodes[chain[j]]
-                hop_n["grant"] = _q(hop_n["grant"] + c)
             warnings += self._stranding_warnings(k, frees[i], frees[i] - c)
             if i > 0:
                 warnings.append(
                     f"§4.6: {c:g} credit(s) bubbled up to {k}; grants below it "
                     f"were inflated to carry them down — reclaim with reallocate")
         if remaining > 0:             # user actor: the infinite pool absorbs it
-            for k in chain:
-                self.nodes[k]["grant"] = _q(self.nodes[k]["grant"] + remaining)
+            # (the inflation itself is already in `adds` and applied above —
+            # this branch is now only its warning, and re-applying it here is
+            # exactly the double-credit the rounding would have hidden)
             warnings.append(
                 f"§4.6: {remaining:g} credit(s) drawn from your pool — the "
                 f"chain's grants inflated to carry them down; reclaim with "
@@ -4174,6 +4290,17 @@ class Org:
         # switch_model melt makes that a fraction. The old int() silently
         # dropped it, so approving "give this node 10" landed 9.8.
         delta = _q(delta)
+        # ☞ …and then SNAP THE TARGET UP to a whole credit (user ruling
+        # 2026-09-04). This is the one op that writes a grant straight from an
+        # operator's input, so it is the one that must not be able to re-open
+        # the invalid state the migration just closed — e.g. a stale credit
+        # bar still showing the pre-heal 104.2 and sending its 0.8. Snapping
+        # the TARGET rather than the RESULT is deliberate: every check below
+        # (the free-credit refusal, the §4.6 chain acquire, the D-014 cap)
+        # then runs on the amount actually being written, so a round-up that
+        # nobody can afford is REFUSED rather than overdrawn. UP only — a snap
+        # downward would hand back less than the caller asked for.
+        delta = _q(math.ceil(_q(n["grant"] + delta)) - n["grant"])
         warnings: list[str] = []
         strand: list[str] = []
         if delta > 0:

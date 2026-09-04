@@ -6755,7 +6755,19 @@ class Op(Body):
     above: str | None = None
     org_visibility: str | None = None
     effort: str | None = None     # hire — thinking effort, applied WITH the hire
-    delta: int | None = None      # reallocate
+    # reallocate. ⚠ FLOAT, not int, and the difference is a user-visible
+    # outage: the credit bar rounds its TARGET to a whole number and sends
+    # `target - grant`, so against a grant that is fractional for ANY reason
+    # (a switch_model melt still makes one, by design — the node's holding
+    # must not move) every delta it can compute is fractional and pydantic
+    # refused the whole request with `int_from_float`. Measured 2026-09-04 on
+    # the operator's 104.2 coordinator: 422 in BOTH directions, no dialog,
+    # nothing in the event log — "it just fails outright". `reallocate`
+    # itself has always been fraction-correct (it quantises every write), so
+    # the int was the only thing standing in the way. This widens what the
+    # door ACCEPTS, not what the ledger ALLOWS: the free-credit check, the
+    # §4.6 chain acquire and the D-014 top-level cap all still run.
+    delta: float | None = None
     new_parent: str | None = None  # promote / demote
     dir: str | None = None        # revoke_dir
     # ceiling spec §1: the one-action bridge — re-send the same op with this
