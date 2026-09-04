@@ -1,10 +1,24 @@
 # The SQLite cutover — operator runbook
 
-`STORE_BACKEND` now defaults to `sqlite`. This is the procedure for flipping a
-live data root, and for getting back if you need to.
+SQLite is orgtree's canonical format and `STORE_BACKEND` defaults to `sqlite`.
+JSON is the legacy format: **deprecated and past LTS as of 2026-09-04 (user
+ruling)**. It is not a backend you choose between — it is a format you are
+migrated off, automatically, the first time you update.
+
+**If you are just upgrading an install, read the next section and stop.** This
+document is the operator runbook for the conversion itself: what the automatic
+path does on your behalf, and what to do at a console when it has not.
 
 Read the rollback section **before** you run the cutover, not after. The order
 of the rollback is not the obvious one, and the obvious one loses data.
+
+⚠ **Deprecated does not mean deleted, and three things stay.** The JSON
+*reader* stays, because a migration that cannot read JSON cannot migrate
+anyone — it is the on-ramp. `cutover.py rollback`, which writes JSON back out,
+stays and becomes *more* load-bearing now that the migration is automatic: it
+is the safety net, emergency-only rather than gone. And `MigrationRefused` /
+`BackendMismatch` stay, because deprecating a format does not make a misread or
+half-converted root safe.
 
 ---
 
@@ -90,6 +104,73 @@ other hardware.
 
 ---
 
+## If you are UPGRADING AN EXISTING INSTALL, you do not follow this runbook
+
+**User ruling, 2026-09-04 (17:00Z and 17:02Z).** SQLite is orgtree's canonical
+and default format. JSON is **deprecated and past LTS**. An existing install
+still on JSON is migrated **automatically the moment it updates** — no prompt,
+no flag, and nothing for the operator to know or type:
+
+```
+powershell -ExecutionPolicy Bypass -File update.ps1     # Windows
+./update.sh                                             # Linux / macOS
+```
+
+That is the whole procedure. Everything below this section is the record of
+what those scripts do on your behalf, and what to do at a real console when
+something has already gone wrong.
+
+**The defect this closes.** `main` defaults to `ORGTREE_STORE=sqlite`. Before
+2026-09-04 an install still on JSON that pulled `main` got a backend that
+refused to start (`MigrationRefused`) against its own data root — and if it had
+the autostart tasks registered, `orgtree-ensure` relaunched that refusing build
+every five minutes forever. A routine `git pull` became a permanent outage.
+
+**How the automatic upgrade is wired**, per platform, because they differ:
+
+| | Windows | Linux / macOS |
+|---|---|---|
+| detects | `update.ps1` §1c | `update.sh` §1c |
+| when | after the `git pull`, before the UI build, long before the stop | the same |
+| how | hands the whole sequence to `tools/cutover_deploy.py`, detached | runs `tools/cutover.py` inline, between its own stop and start |
+| mutex + prove-stopped | yes (`Global\orgtree-update`, owner-lock probe) | no — see below |
+| automatic rollback | yes, the wrapper's drilled ladder | **no** — it prints the command |
+| 5-minute watchdog | `-EnsureUp` brings a JSON root back up **on JSON** and writes `UPGRADE-PENDING.txt` into the data root | no watchdog exists on POSIX |
+
+⚠ **Why the detection is after the pull and not at the top of the script.** The
+question being asked is about *the code this run is about to deploy*. An install
+still on the old build has a `store.py` that still defaults to `json`, so a
+check placed before the pull reads "JSON code, JSON root, all fine" and does
+nothing — inert on exactly the population it exists for. It is equally
+important that it is **before the stop**: an install that decides here has not
+been stopped and is still serving; one that discovers the problem after the stop
+is down.
+
+⚠ **POSIX is not the same path and this document does not pretend otherwise.**
+`tools/cutover_deploy.{py,ps1}` is Windows-only. `update.sh` gets the same
+*outcome* by driving the same portable tool (`tools/cutover.py`) in the window
+it already opens between stopping the backend and starting it, but it has no
+machine-wide mutex, does not prove the stop by taking the data root's owner
+lock, and **never rolls back automatically** — it stops and prints the rollback
+command instead, because a rollback rewrites org authority from an export and
+that is not a thing a second, undrilled implementation should decide to do.
+
+**What it never does.** The deployed backend still never receives
+`ORGTREE_MIGRATE=1`. What the 2026-09-04 ruling changed is only *who supplies
+the authorisation*: the deploy now supplies it on the operator's behalf, still
+scoped to the single child process that migrates, which then exits. See the
+note under "The cutover" below.
+
+**What it will not do seamlessly, on purpose.** A **mixed** root — both `.db`
+and `.json` in `orgs/` — starts nothing and stops the deploy. "Seamless" does
+not extend to guessing about half-migrated data. And a failed migration leaves
+the install **running on its old build**, not down.
+
+**Opting out.** `ORGTREE_NO_AUTOCUTOVER=1` skips the automatic upgrade; you
+then also need `ORGTREE_STORE=json` or the backend refuses the root it is
+pointed at. This is also how `tools/cutover_deploy.ps1` stops the `update.ps1`
+it runs at its own step 5 from handing back to it.
+
 ## ⚠ If you are running *inside* orgtree, do not follow the steps by hand
 
 Step 1 below is "stop the backend", and every agent on this machine runs inside
@@ -121,8 +202,27 @@ follow when the backend is already down and you are at a real console.
 ## The cutover
 
 **The deployed backend never receives `ORGTREE_MIGRATE=1`.** Migration is an
-offline operator action, not a startup event. Anything that depends on removing
-a flag "immediately afterwards" is a step someone eventually skips.
+offline action performed by a process that then exits, never a startup event.
+Anything that depends on removing a flag "immediately afterwards" is a step
+someone eventually skips.
+
+> ⚠ **Amended 2026-09-04 by user ruling.** This paragraph used to continue
+> "…and it is an *operator* action, never automatic". That is no longer true of
+> the upgrade path: `update.ps1` / `update.sh` now supply the authorisation
+> themselves when they find an unmigrated JSON root, because the ruling is that
+> an existing install must be migrated with no friction the moment it updates.
+>
+> **The rest of the rule is unchanged, and is load-bearing.** The flag still
+> lives only in the environment of the one child that runs `cutover.py migrate`
+> — a one-shot `.cmd` file on Windows, a command prefix on POSIX — and that
+> child exits. No process that goes on to *start a backend* has ever held it.
+> A backend that could convert a data root as a side effect of being pointed at
+> one is the 2026-09-03 incident, and that is still forbidden. What changed is
+> who types the authorisation, not where it lives or how long it lasts.
+>
+> `tools/cutover.py migrate` also still refuses without the flag, so the gate
+> is not decoration: the authorisation still comes from outside the tool that
+> does the converting.
 
 1. **Stop the backend.** This is not politeness — it is what guarantees the
    migrating process holds the owner claim rather than racing for it.

@@ -257,6 +257,168 @@ $pyKind = if ($py -eq $venvPy) { ' [.venv]' } else { ' [system -- deps shared wi
 $pyVer = (& $py -c "import sys; print(sys.version.split()[0])")
 Write-Host "python: $py ($pyVer)$pyKind"
 
+# -- 1c - the store pre-flight, and the automatic upgrade off JSON ----------
+# USER RULING 2026-09-04 (17:00Z and 17:02Z, relayed through the coordinator):
+# SQLite is orgtree's canonical format, JSON is DEPRECATED AND PAST LTS, and an
+# existing JSON install must be migrated AUTOMATICALLY the moment it updates --
+# no prompt, no flag, nothing for the operator to know or type.
+#
+# THE DEFECT THIS CLOSES. main defaults to ORGTREE_STORE=sqlite. An install
+# still on the JSON format that pulls main gets a backend that REFUSES to start
+# (MigrationRefused) against its own data root; and if that install registered
+# the autostart tasks, `orgtree-ensure` relaunches the refusing build every five
+# minutes forever. A routine `git pull` became a permanent outage.
+#
+# ⚠⚠ WHY THIS IS *HERE* AND NOT AT THE TOP OF THE FILE, which is the whole
+# point: the thing being asked about is THE CODE THIS RUN IS ABOUT TO DEPLOY.
+# An old install's store.py still defaults to `json`, so a check placed before
+# the pull reads "JSON code, JSON root -- all fine" and does nothing, on exactly
+# the population this exists for. It has to be AFTER the pull (line ~193) and
+# it has to be BEFORE THE STOP (section 4, ~line 390): an install that hands
+# over here has not been stopped, has not been rebuilt, and is still serving.
+# It is also after 1b because it needs an interpreter, and before the frontend
+# build because the wrapper's own deploy does that build.
+#
+# WHAT IT DOES NOT DO: decide anything itself. tools/preflight_store.py asks
+# store.py's own STORE_BACKEND / pending_migrations() / active_databases() --
+# the three expressions claim_data_root consults when it decides whether to
+# raise -- so this cannot drift into checking something adjacent to the truth.
+$dataRoot = $env:ORGTREE_DATA
+if (-not $dataRoot) { $dataRoot = Join-Path $env:USERPROFILE 'orgtree' }
+
+$preflight = Join-Path $root 'tools\preflight_store.py'
+# 4 is UNKNOWN, and UNKNOWN PROCEEDS. A missing pre-flight script, an
+# interpreter that will not run it, a probe that cannot import the store -- all
+# of those leave the deploy behaving exactly as it did before this section
+# existed. A guard a normal, correct deploy can trip is worse than no guard.
+$pfRc = 4
+if (Test-Path $preflight) {
+    Write-Host "`n== store pre-flight =="
+    try {
+        & $py $preflight --data $dataRoot --repo $root
+        $pfRc = $LASTEXITCODE
+        if ($null -eq $pfRc) { $pfRc = 4 }
+    } catch {
+        Write-Host "the store pre-flight could not run ($_) -- deploying as before." -ForegroundColor Yellow
+        $pfRc = 4
+    }
+} else {
+    Write-Host "no tools\preflight_store.py in this checkout -- deploying as before." -ForegroundColor Yellow
+}
+
+if ($pfRc -eq 2) {
+    # MIXED. Both formats present: NEITHER backend starts, by design, and this
+    # is the one state the ruling explicitly does not extend "seamless" to.
+    # Stopping here leaves the install exactly as it is -- which for a mixed
+    # root means down, and it was already down before this ran.
+    Write-Host "REFUSING to deploy: this data root is half-migrated (see above)." -ForegroundColor Red
+    Write-Host "Nothing was stopped, rebuilt or started. This needs a person." -ForegroundColor Red
+    exit 1
+}
+if ($pfRc -eq 3) {
+    # MISMATCH. The root is SQLite and something is pinning this build to JSON
+    # (usually a User-scope ORGTREE_STORE left by an aborted cutover). The fix
+    # is to stop pinning, and it is NOT this script's to make silently:
+    # unsetting an operator's environment variable behind their back is how a
+    # machine ends up running one thing and reporting another.
+    Write-Host "REFUSING to deploy: the backend would refuse this root (see above)." -ForegroundColor Red
+    Write-Host "Nothing was stopped, rebuilt or started." -ForegroundColor Red
+    exit 1
+}
+if ($pfRc -eq 1) {
+    # MIGRATE -- the upgrade case, and the reason this section exists.
+    if ($env:ORGTREE_NO_AUTOCUTOVER) {
+        # The escape hatch, and the recursion guard. tools/cutover_deploy.ps1
+        # sets this for every child it spawns, so the update.ps1 IT runs at its
+        # own step 5 can never hand back to it. An operator may set it too.
+        Write-Host "ORGTREE_NO_AUTOCUTOVER is set -- NOT upgrading this root automatically." -ForegroundColor Yellow
+        Write-Host "The backend will refuse this root unless ORGTREE_STORE=json is also set." -ForegroundColor Yellow
+    } elseif ($EnsureUp) {
+        # ⚠ THE 5-MINUTE WATCHDOG DOES NOT RUN A CUTOVER. Its job is to get a
+        # dead backend serving again in seconds; a multi-minute pull-build-
+        # migrate sequence fired from a repeating timer is the opposite of
+        # that, and it would fire again 5 minutes later whether or not the
+        # first one finished. So this leg does the one thing that restores
+        # service immediately: start the backend in the format the root is
+        # ACTUALLY in. The full deploy (at logon, or run by hand) does the
+        # upgrade. Reaching here at all means an earlier upgrade did not
+        # complete, so it is a fallback, not the path.
+        #
+        # ⚠ FOR THIS LAUNCH ONLY -- deliberately NOT the User-scope pin
+        # cutover_deploy.ps1's Set-JsonPin writes. A persistent pin set by a
+        # watchdog is a pin nobody knows exists, and it would then make the
+        # next full deploy read "JSON build, JSON root, all fine" and never
+        # upgrade anything. This one dies with the process.
+        $env:ORGTREE_STORE = 'json'
+        Write-Host "-EnsureUp: starting this backend on JSON for THIS LAUNCH so the install" -ForegroundColor Yellow
+        Write-Host "is serving again now. The upgrade to SQLite happens on the next full deploy." -ForegroundColor Yellow
+        # Invisible is not the same as undisclosed (ruling, 17:00Z). The ensure
+        # task runs under `conhost --headless` with NO output redirection --
+        # verified by reading tools\install-autostart.ps1 -- so everything
+        # printed above is LOST. A file in the data root is the only place an
+        # operator can find this afterwards. Overwritten, never appended: this
+        # runs every 5 minutes.
+        try {
+            $note = Join-Path $dataRoot 'UPGRADE-PENDING.txt'
+            @("orgtree: this install is still on the JSON format.",
+              "",
+              "Written by update.ps1 -EnsureUp at $((Get-Date).ToUniversalTime().ToString('u')).",
+              "The backend was relaunched with ORGTREE_STORE=json for that one launch,",
+              "so your install is serving normally -- but on the deprecated format.",
+              "",
+              "SQLite is orgtree's canonical format (user ruling 2026-09-04) and the",
+              "upgrade is automatic. To take it now, run a full deploy:",
+              "    powershell -ExecutionPolicy Bypass -File `"$root\update.ps1`"",
+              "",
+              "Reaching this file means an earlier automatic upgrade did not complete.",
+              "Look for cutover-*.log in this folder for what happened.",
+              "This file is rewritten every 5 minutes while the install stays on JSON,",
+              "and is safe to delete."
+            ) | Set-Content -Path $note -Encoding ascii
+        } catch {
+            Write-Host "(could not write the UPGRADE-PENDING note: $_)" -ForegroundColor Yellow
+        }
+    } else {
+        # THE HANDOFF. tools/cutover_deploy.{py,ps1} already sequences exactly
+        # what is needed here -- mutex, stop-and-PROVE-stopped, migrate,
+        # export-verify, deploy -- and it has been drilled against forced
+        # failures at each step. It is not reimplemented here: a procedure
+        # written in two places drifts, and the copy that drifts is the one
+        # nobody re-reads. Its step 5 runs THIS script again, which is why the
+        # handoff is a spawn-and-exit rather than a call.
+        #
+        # ⚠ THE MUTEX IS RELEASED FIRST, AND THAT IS LOAD-BEARING. The wrapper
+        # takes the SAME named mutex at its step 0 with WaitOne(0); holding it
+        # here means the wrapper it just launched exits 3 ("another deploy is
+        # running") two seconds later, and the launcher reports the cutover as
+        # having died instantly. Verified by reading both files.
+        if ($mutexHeld) { [void]$mutex.ReleaseMutex(); $mutexHeld = $false }
+        Write-Host "`n== handing this deploy to the automatic upgrade ==" -ForegroundColor Cyan
+        $cdRc = 1
+        try {
+            & $py (Join-Path $root 'tools\cutover_deploy.py') $dataRoot --repo $root
+            $cdRc = $LASTEXITCODE
+            if ($null -eq $cdRc) { $cdRc = 1 }
+        } catch {
+            Write-Host "could not launch the upgrade: $_" -ForegroundColor Red
+            $cdRc = 1
+        }
+        if ($cdRc -ne 0) {
+            Write-Host "`nthe automatic upgrade could not be LAUNCHED (exit $cdRc)." -ForegroundColor Red
+            Write-Host "NOTHING WAS STOPPED, REBUILT OR STARTED -- this install is exactly as it" -ForegroundColor Red
+            Write-Host "was a minute ago, still serving its orgs on the JSON format." -ForegroundColor Red
+            Write-Host "Deploying past this point would start a backend that refuses this root," -ForegroundColor Red
+            Write-Host "so this run stops here instead. Re-run update.ps1 to try again." -ForegroundColor Red
+            exit 1
+        }
+        Write-Host "`nthe upgrade is now running DETACHED and owns the rest of this deploy:" -ForegroundColor Green
+        Write-Host "  stop -> migrate -> export-verify -> pull, build, restart -> health-check" -ForegroundColor Green
+        Write-Host "It survives this process exiting, which is the point -- watch the log named" -ForegroundColor Green
+        Write-Host "above. This run's job is done." -ForegroundColor Green
+        exit 0
+    }
+}
+
 # -- 2 - frontend (skipped under -EnsureUp: relaunch what is built) ---------
 if (-not $EnsureUp) {
 Write-Host "`n== building the UI =="
@@ -346,8 +508,9 @@ if ($LASTEXITCODE -ne 0) { Write-Host "pip install failed" -ForegroundColor Red;
 }   # end -not $EnsureUp (sections 2-3)
 
 # -- 4 - restart the backend ------------------------------------------------
-$dataRoot = $env:ORGTREE_DATA
-if (-not $dataRoot) { $dataRoot = Join-Path $env:USERPROFILE 'orgtree' }
+# ($dataRoot is resolved in section 1c, which needs it before this point and
+# must not derive it a second time -- two copies of "where is the data root"
+# is how a script stops a backend in one place and health-checks another.)
 $port = '7360'
 $portFile = Join-Path $dataRoot '.port'
 if (Test-Path $portFile) { $port = (Get-Content $portFile -Raw).Trim() }

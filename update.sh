@@ -232,6 +232,69 @@ else
   git --no-pager log --oneline "$BEFORE..$AFTER"
 fi
 
+# -- 1c - the store pre-flight, and the automatic upgrade off JSON ----------
+# USER RULING 2026-09-04 (17:00Z and 17:02Z): SQLite is orgtree's canonical
+# format, JSON is DEPRECATED AND PAST LTS, and an existing JSON install must be
+# migrated AUTOMATICALLY the moment it updates -- no prompt, no flag, nothing
+# for the operator to know or type.
+#
+# THE DEFECT THIS CLOSES. main defaults to ORGTREE_STORE=sqlite. An install
+# still on the JSON format that pulls main gets a backend that REFUSES to start
+# (MigrationRefused) against its own data root, and a routine `git pull` becomes
+# an outage.
+#
+# ⚠⚠ WHY IT IS *HERE*: the question is about THE CODE THIS RUN IS ABOUT TO
+# DEPLOY. An old install's store.py still defaults to `json`, so a check placed
+# BEFORE the pull reads "JSON code, JSON root -- all fine" and does nothing, on
+# exactly the population it exists for. After the pull, before the build, and a
+# very long way before the stop.
+#
+# ⚠ POSIX HAS NO DETACHED CUTOVER WRAPPER. tools/cutover_deploy.{py,ps1} is
+# Windows-only (Get-NetTCPConnection, Stop-Process, a Global\ mutex), so this
+# script cannot hand off the way update.ps1 does. What it CAN do is run the
+# same portable tool -- tools/cutover.py, which is plain Python and has no
+# Windows in it -- in the window it already opens between stopping the backend
+# and starting it. That inline ladder is section 4a-cutover below. The
+# differences from the Windows path are stated there rather than glossed.
+DATA_ROOT=${ORGTREE_DATA:-$HOME/orgtree}
+PREFLIGHT="$ROOT/tools/preflight_store.py"
+DO_CUTOVER=0
+# 4 is UNKNOWN, and UNKNOWN PROCEEDS: a missing script, an interpreter that
+# will not run it, or a probe that cannot import the store all leave this
+# deploy behaving exactly as it did before this section existed. A guard a
+# normal, correct deploy can trip is worse than no guard.
+# Any exit code this script does not recognise -- 127 for an interpreter that
+# would not launch, 2 for a bad argument -- lands in no case arm below and
+# therefore proceeds, which is the same fail-open the 4 is.
+PF_RC=4
+if [ -f "$PREFLIGHT" ]; then
+  printf '\n== store pre-flight ==\n'
+  PF_RC=0
+  "$PY" "$PREFLIGHT" --data "$DATA_ROOT" --repo "$ROOT" || PF_RC=$?
+else
+  note "no tools/preflight_store.py in this checkout -- deploying as before."
+fi
+
+case "$PF_RC" in
+  2)
+    # MIXED. Both formats present: NEITHER backend starts, by design. This is
+    # the one state the ruling explicitly does not extend "seamless" to.
+    die "REFUSING to deploy: this data root is half-migrated (see above). Nothing was stopped, rebuilt or started. This needs a person." ;;
+  3)
+    # MISMATCH. The root is SQLite and something pins this build to JSON. The
+    # fix is to stop pinning, and unsetting an operator's environment variable
+    # behind their back is how a machine runs one thing and reports another.
+    die "REFUSING to deploy: the backend would refuse this root (see above). Nothing was stopped, rebuilt or started." ;;
+  1)
+    if [ -n "${ORGTREE_NO_AUTOCUTOVER:-}" ]; then
+      note "ORGTREE_NO_AUTOCUTOVER is set -- NOT upgrading this root automatically."
+      note "The backend will refuse this root unless ORGTREE_STORE=json is also set."
+    else
+      DO_CUTOVER=1
+      note "this install will be upgraded to SQLite during this deploy (see above)."
+    fi ;;
+esac
+
 # -- 2 - frontend -----------------------------------------------------------
 printf '\n== building the UI ==\n'
 cd "$ROOT/frontend" || die "no frontend/ directory"
@@ -280,7 +343,9 @@ printf '\n== python deps ==\n'
 # between stopping the old backend and starting the new one)
 
 # -- 4 - restart the backend ------------------------------------------------
-DATA_ROOT=${ORGTREE_DATA:-$HOME/orgtree}
+# (DATA_ROOT is resolved in section 1c, which needs it before this point and
+# must not derive it a second time -- two copies of "where is the data root"
+# is how a script stops a backend in one place and health-checks another.)
 PORT=7360
 if [ -f "$DATA_ROOT/.port" ]; then
   FILE_PORT=$(tr -d '[:space:]' < "$DATA_ROOT/.port")
@@ -350,6 +415,128 @@ if [ -n "${PIDS:-}" ]; then
     sleep 0.5
   fi
   [ -n "$(listeners)" ] && die "port $PORT is still held -- stop that process and re-run"
+fi
+
+# -- 4a-cutover - the automatic upgrade off JSON (POSIX) --------------------
+# Runs ONLY when section 1c found an unmigrated JSON root under a SQLite build.
+# This is the window the Windows path uses too: the backend is stopped and
+# nothing has been started, which is the only moment a data root can be
+# converted safely.
+#
+# ⚠ HOW THIS DIFFERS FROM THE WINDOWS PATH, stated rather than glossed:
+#   * Windows hands the whole sequence to tools/cutover_deploy.{py,ps1}, which
+#     is detached, holds a machine-wide mutex, PROVES the backend stopped by
+#     taking the data root's owner lock, and has a drilled recovery ladder.
+#     None of that exists for POSIX and this is not a port of it.
+#   * What IS shared is the part that touches data: tools/cutover.py, plain
+#     portable Python, the same `migrate` and `export-verify` subcommands the
+#     Windows wrapper shells out to. The tool is the same; the driving is not.
+#   * This script does NOT roll back automatically. A rollback rewrites org
+#     authority from an export, and running that from a second, undrilled
+#     implementation is a worse risk than stopping and printing the command.
+#     The command is printed in full where it is needed.
+#   * There is no `-EnsureUp` mode in this script and no 5-minute watchdog on
+#     POSIX (tools/install-autostart.ps1 is Windows-only), so the "relaunch a
+#     refusing build forever" failure does not exist here to guard against.
+#
+# ORGTREE_STORE_FORCED is the one thing this section can leave behind for the
+# rest of the script: an upgrade that did not happen means the backend started
+# below must be a JSON one, or it refuses the root it is pointed at.
+UPGRADE_FAILED=0
+if [ "$DO_CUTOVER" = 1 ]; then
+  printf '\n== upgrading this data root to SQLite ==\n'
+  echo "root: $DATA_ROOT"
+  CUT="$ROOT/tools/cutover.py"
+
+  # ⚠ ORGTREE_MIGRATE LIVES IN THIS ONE CHILD'S ENVIRONMENT AND NOWHERE ELSE.
+  # It is not exported and it is not set in this shell: a variable that must be
+  # removed afterwards is a step someone eventually skips, and the run that
+  # crashes in between would hand a migrate-authorised environment to a
+  # backend. The deployed backend must never be able to convert a root as a
+  # side effect of being started -- that rule (docs/sqlite-cutover.md, and
+  # store.py's MIGRATE_ENV comment) is UNCHANGED by the 2026-09-04 ruling.
+  # What changed is only WHO supplies the authorisation: the deploy now does
+  # it on the operator's behalf, scoped to this one command.
+  MIG_RC=0
+  ORGTREE_MIGRATE=1 "$PY" "$CUT" migrate "$DATA_ROOT" || MIG_RC=$?
+  if [ "$MIG_RC" != 0 ]; then
+    # A migration that stops part-way leaves a MIXED root, which starts under
+    # NEITHER backend. A plain re-run re-attempts only what is still pending,
+    # so finishing the job is the cheap correct move. (Same reasoning, and the
+    # same single retry, as tools/cutover_deploy.ps1 step 3.)
+    note "migrate exited $MIG_RC -- retrying ONCE, because a part-way root starts under neither backend"
+    MIG_RC=0
+    ORGTREE_MIGRATE=1 "$PY" "$CUT" migrate "$DATA_ROOT" || MIG_RC=$?
+  fi
+
+  # WHICH OF THE THREE STATES IS THIS ROOT IN? Read from orgs/ itself, at the
+  # moment the decision needs it, because that is what decides which backends
+  # will start. A boolean cannot describe this root: a migration that converts
+  # two orgs and fails on the third returns non-zero, and calling that "still
+  # JSON" would start a JSON backend against a directory holding databases.
+  # `*.json` does not match `<slug>.json.premigration`, which is what makes a
+  # fully migrated root read as `sqlite` rather than as `mixed`.
+  N_DB=$(ls -1 "$DATA_ROOT"/orgs/*.db 2>/dev/null | wc -l | tr -d ' ')
+  N_DOC=$(ls -1 "$DATA_ROOT"/orgs/*.json 2>/dev/null | wc -l | tr -d ' ')
+  echo "root state: $N_DB database(s), $N_DOC document(s) in orgs/"
+
+  if [ "$N_DB" != 0 ] && [ "$N_DOC" != 0 ]; then
+    printf '%s\n' "$RED"
+    echo "!! THE MIGRATION STOPPED PART-WAY. NOTHING WILL BE STARTED."
+    echo "   orgs/ holds BOTH databases and documents. Neither backend starts on"
+    echo "   this root, and that is deliberate: refusing is what stops an org"
+    echo "   silently disappearing into a backend carrying half the root."
+    echo "   NOTHING HAS BEEN LOST -- every converted org still has its"
+    echo "   .json.premigration and every unconverted org still has its .json."
+    echo "   Run this, read the two lists it prints, and follow what it says:"
+    echo "       $PY $CUT rollback $DATA_ROOT"
+    echo "   Do not start a backend by hand first."
+    printf '%s\n' "$OFF"
+    exit 1
+  fi
+
+  if [ "$N_DB" = 0 ]; then
+    # Still entirely JSON: nothing was converted. Bring the install back up on
+    # the format its data is actually in -- the ruling's second non-negotiable
+    # is that a failed migration leaves the install RUNNING on its old build.
+    # Exported, so the backend started at the bottom of this script inherits
+    # it; this process dies at the end of the deploy, so nothing persists.
+    export ORGTREE_STORE=json
+    UPGRADE_FAILED=1
+    printf '%s\n' "$YEL"
+    echo "THE UPGRADE DID NOT HAPPEN and your data root is untouched -- still JSON,"
+    echo "exactly as it was. Read the migrate output above for the cause."
+    echo "This deploy is continuing and will bring your install back UP on the old"
+    echo "format (ORGTREE_STORE=json, for this launch only), so you are not down."
+    printf '%s\n' "$OFF"
+  else
+    # Migrated. The export is what makes a rollback possible at all, and the
+    # ruling keeps that gate: it runs before the new build takes its first
+    # write, which is now, because nothing has been started yet.
+    EXP_RC=0
+    "$PY" "$CUT" export-verify "$DATA_ROOT" || EXP_RC=$?
+    if [ "$EXP_RC" != 0 ]; then
+      printf '%s\n' "$RED"
+      echo "!! EXPORT-VERIFY FAILED (exit $EXP_RC) AFTER THE MIGRATION SUCCEEDED."
+      echo "   Your data root is MIGRATED: orgs/ holds databases and the old"
+      echo "   documents are parked as <slug>.json.premigration. A JSON backend"
+      echo "   refuses this root (BackendMismatch) -- do NOT set ORGTREE_STORE=json."
+      echo "   At least one org did not survive a round trip out of SQLite, so the"
+      echo "   rollback route is not proven. The deploy continues and starts the"
+      echo "   SQLite backend, because the root and the code agree and a stopped"
+      echo "   install is worse than an unproven export -- but READ THE OUTPUT"
+      echo "   ABOVE, and if this install is not healthy afterwards the way back is:"
+      echo "       $PY $CUT rollback $DATA_ROOT"
+      printf '%s\n' "$OFF"
+      UPGRADE_FAILED=1
+    else
+      good "UPGRADED: this root is now SQLite. The old documents are kept as"
+      good "  $DATA_ROOT/orgs/<slug>.json.premigration (a record, not a way back)"
+      good "  and the validated export -- which IS the way back -- is in"
+      good "  $DATA_ROOT/exports/. Rollback, if ever needed:"
+      good "      $PY $CUT rollback $DATA_ROOT"
+    fi
+  fi
 fi
 
 # -- 4b - the Claude Code CLI pin (No.44, D-222) -----------------------------------
@@ -550,7 +737,20 @@ if [ "$OK" = 1 ] && [ "$STALE" = 1 ]; then
 fi
 printf '\n'
 case "$HEALTH_RC" in
-  0) good "== up: http://localhost:$PORT ($AFTER) ==" ;;
+  0)
+    good "== up: http://localhost:$PORT ($AFTER) =="
+    # A healthy backend is not a successful deploy when the deploy set out to
+    # upgrade this install and did not. Saying "up" and exiting 0 here is how a
+    # scheduled job reports green forever while the install stays on a format
+    # that is past LTS.
+    if [ "${UPGRADE_FAILED:-0}" = 1 ]; then
+      printf '%s\n' "$RED"
+      echo "-- but THE UPGRADE TO SQLITE DID NOT COMPLETE. Your install is up and"
+      echo "   serving; see the '== upgrading this data root ==' section above for"
+      echo "   what happened. Exiting non-zero so this is not read as a clean deploy."
+      printf '%s\n' "$OFF"
+      exit 1
+    fi ;;
   2) die "backend did not come up -- check $ERRLOG" ;;
   1) die "the backend is UP but is not carrying this install's orgs (see above). The org documents are still on disk; this is a serving fault. Backend log: $OUT" ;;
   *) die "the deploy health check could not establish that this backend came up carrying its orgs (see above). That is reported as a FAILURE on purpose: 'I could not tell' is not 'healthy'. Backend log: $OUT" ;;

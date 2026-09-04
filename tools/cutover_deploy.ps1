@@ -211,6 +211,21 @@ $env:ORGTREE_DATA = $Root
 Say "ORGTREE_DATA pinned to $Root for every child (update.ps1 defaults to the"
 Say "  live root otherwise, whatever -Root said)"
 
+# ⚠ AND THE RECURSION GUARD, for the same reason and in the same place.
+# update.ps1 section 1c now HANDS OFF to this wrapper when it finds an
+# unmigrated JSON root under a SQLite build (user ruling 2026-09-04: the
+# upgrade is automatic, not something an operator asks for).  Step 5 of this
+# wrapper runs update.ps1.  Root state alone would break the cycle -- by step 5
+# the root holds databases, so the pre-flight says PROCEED -- but "it cannot
+# recurse because of what the data looks like by then" is exactly the kind of
+# reasoning this repo has been burned by.  Every child this wrapper spawns is
+# told not to hand back, so the cycle is impossible by construction rather than
+# by argument.  Both recoveries relaunch through update.ps1 too, and neither
+# may turn into a second cutover attempt.
+$env:ORGTREE_NO_AUTOCUTOVER = '1'
+Say "ORGTREE_NO_AUTOCUTOVER=1 for every child (update.ps1 hands JSON roots to"
+Say "  THIS script; a child that handed back would loop)"
+
 # ---- helpers (all void; results land in $script:rc / $script:health) -------
 function Get-BackendPort {
     $p = '7360'
