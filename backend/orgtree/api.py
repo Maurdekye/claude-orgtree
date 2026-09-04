@@ -4659,6 +4659,70 @@ def _seat_finish(org: Org, slug: str, actor: str, nid: str, a: dict[str, Any],
     return None
 
 
+def _forced_self_restart(body: AgentCall, a: dict[str, Any]) -> dict[str, Any]:
+    """FR-31 (user request 2026-09-04): `orgtree_self_restart` with force.
+
+    ⚠ ITS OWN BRANCH, RETURNING EARLY, AND THAT IS THE POINT. The ordinary
+    self-restart keeps running through the big dispatch below with not one
+    line changed — the default cannot regress because the default was not
+    touched. Force is a separate, longer, noisier road to the same deploy,
+    which is what the user asked for after watching a hand-rolled version of
+    it lose a race: "a force switch is a loaded weapon, and its danger is
+    exactly proportional to how easy it is to reach by accident".
+
+    ⚠ AND IT HAS TO BE ITS OWN BRANCH FOR A MECHANICAL REASON TOO. The
+    quiesce WAITS for other agents' turns to finish, and those turns need
+    `store.DOC_LOCK` to book their cost — the same constraint written on
+    `supervisor.interrupt_before_archive`. Run inside the dispatch's
+    `with store.DOC_LOCK:` block, every wait would time out and the quiesce
+    would report that nobody settled while in fact nobody could: a guard that
+    runs, reports, and means nothing. So the order here is deliberate:
+
+      1. AUTHORITY AND THE REASON, under the lock, and SAVED. The decision is
+         on disk before a single turn is stopped, so a forced restart that
+         kills this very process still leaves a record of who ordered it.
+      2. THE QUIESCE, with no lock held — stop everyone, wait for them to
+         settle. It takes the deploy hold first, so nobody woken in the
+         meantime can get running behind us.
+      3. THE LAUNCH, which owns that hold from here on either way.
+      4. THE COST, recorded after, naming who was actually cut.
+
+    Steps 2 and 3 are adjacent with nothing between them that can raise, so
+    the hold cannot be orphaned in the gap."""
+    slug, nid = body.org, body.node
+    target = str(a.get("target") or "org")
+    reason = str(a.get("reason") or "")
+    if target not in ("org", "mailhub", "both"):
+        raise HTTPException(422, "target must be org|mailhub|both")
+    with store.DOC_LOCK:
+        try:
+            org = store.load_org(slug)
+            org.node(nid)
+            org.self_restart_gate(nid, force=True, reason=reason)
+        except LedgerError as e:
+            raise HTTPException(422, str(e))
+        store.save_org(org)
+    # ⚠ the mailhub leg never had a mid-turn precondition — it rebuilds a
+    # container and no agent turn runs through it — so there is nothing for
+    # force to force. Stopping the machine for it would be pure damage.
+    q: dict[str, Any] | None = None
+    if target in ("org", "both"):
+        q = supervisor.force_quiesce_for_restart(exclude=(slug, nid))
+        if not q.get("ok"):
+            raise HTTPException(409, str(q.get("why") or "force refused"))
+    r = supervisor.launch_self_restart(slug, nid, target,
+                                       force=True, quiesced=q)
+    if q:
+        with store.DOC_LOCK:
+            org = store.load_org(slug)
+            org.log_forced_restart(
+                nid, cast("list[str]", q.get("cut") or []),
+                cast("list[str]", q.get("not_settled") or []))
+            store.save_org(org)
+    hub_changed(slug)
+    return r
+
+
 @app.post("/api/agent")
 def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
     """Backend for the orgtree MCP server every node loads. The calling NODE is the
@@ -4685,6 +4749,9 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
             403, "the frozen deployment profile disables agent-triggered "
                  "self-update, self-restart, and primed restart; deploy this "
                  "installation through an operator-controlled path")
+    if body.tool in ("orgtree_self_restart", "orgtree_self_update") \
+            and _arg_flag(a, "force"):
+        return _forced_self_restart(body, a)
     if body.tool in ("orgtree_read_transcript", "orgtree_read_scratch",
                      "orgtree_chart", "orgtree_send_file"):
         try:

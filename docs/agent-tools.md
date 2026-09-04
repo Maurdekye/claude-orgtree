@@ -49,7 +49,7 @@ the MCP catalog in `backend/orgtree/mcptool.py`.
 | Tool | Use |
 |---|---|
 | `orgtree_watchdog` | Create, inspect, pause, resume, or remove a file, command, process, or stream monitor. A `once: true` create makes a one-shot dog. |
-| `orgtree_self_restart` | Rebuild and restart the current backend from its committed repository state. It refuses while an agent is mid-turn. |
+| `orgtree_self_restart` | Rebuild and restart the current backend from its committed repository state. It refuses while an agent is mid-turn. `force: true` (with a `reason`) deploys anyway — it stops every working agent, waits for their turns to finish, and then deploys; they come back idle and do not resume on their own. |
 | `orgtree_prime_restart` | Arm the same restart to run automatically once the machine is quiet. |
 
 ## Common constraints

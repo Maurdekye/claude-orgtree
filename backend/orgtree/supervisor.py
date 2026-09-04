@@ -16650,9 +16650,180 @@ def _working_locked(exclude: tuple[str, str] | None = None) -> list[str]:
     return sorted(out)
 
 
+# ── FR-31 · THE FORCED DEPLOY ─────────────────────────────────────────────
+# User request 2026-09-04, after watching the workaround fail. The mid-turn
+# refusal above is correct and stays the default, but it can be IMPOSSIBLE to
+# satisfy: on a busy machine the idle window never opens. A primed restart
+# waits for a quiet that may never come — measured that day, a prime sat
+# unfired for over two hours with urgent fixes undeployed.
+#
+# ⚠ WHAT ACTUALLY FAILED, because it decides this whole design. The manual
+# workaround was: interrupt every working agent by hand, then call
+# `orgtree_self_restart` into the gap. THE FIRST ATTEMPT LOST THAT RACE —
+# the interrupted agents had started NEW turns before the second call landed,
+# so the refusal fired again. A force switch that merely SKIPS the busy check
+# reproduces that harm rather than that race: it cuts turns mid-write.
+#
+# ⇒ SO FORCE IS NOT "SKIP THE CHECK". It is QUIESCE, THEN DEPLOY, and the
+# order below is the whole point:
+#
+#   1. peek the rate limit FIRST. A force that is about to be refused for
+#      firing too soon must not cut a single turn on its way to the refusal.
+#   2. TAKE THE DEPLOY HOLD BEFORE INTERRUPTING ANYONE. This is what closes
+#      the race the workaround lost. `_deploy_done` cleared means every later
+#      turn start PARKS at `_hold_for_deploy` (D-142/a, "the single choke
+#      point: all three thread starts target this function"), so an agent
+#      woken by mail one millisecond after we look cannot get running behind
+#      us. Interrupt-then-hold would leave exactly the gap that lost the race.
+#   3. CLEAR EACH NODE'S QUEUE AND STEER, then interrupt. ⚠ Clearing is not
+#      tidiness and removing it silently breaks this: `_run_turn` calls
+#      `_hold_for_deploy` ONCE at entry and then LOOPS the queue, and there is
+#      a second in-process boundary feed besides. An interrupted turn with a
+#      queued message therefore starts another turn WITHOUT passing the hold —
+#      `busy` never clears, the wait below times out, and the deploy cuts a
+#      live turn while reporting that it settled. Mail is not lost by this:
+#      the box lives in the org doc and nothing is dequeued until a turn
+#      really starts (`interrupt_all` and `interrupt_before_archive` clear the
+#      same two fields for the same reason).
+#   4. WAIT for `busy` to clear — the signal that the turn's own `finally`
+#      (cost booking, occupancy, compaction, a queued model switch) has
+#      landed. Bounded, and a node that does not settle is REPORTED, never
+#      silently counted as settled.
+#
+# The hold taken in (2) is owned by the caller until `launch_self_restart`
+# either adopts it (its own deploy window watcher will release it) or releases
+# it. Both are in that function; see `_force_hold_settle`.
+
+#: how long the forced quiesce waits for the interrupted turns to settle.
+#: ⚠ ONE SHARED DEADLINE, not per node — every target is interrupted before
+#: any is waited on, so they settle in parallel and a per-node budget would
+#: multiply by the number of agents on the machine. More generous than
+#: `ARCHIVE_INTERRUPT_TIMEOUT_S` because nobody is watching this one and the
+#: consolation prize for giving up early is a turn cut mid-write.
+FORCE_QUIESCE_TIMEOUT_S: Final = 25.0
+
+#: who owns the deploy hold a forced restart took. `token` identifies the
+#: taking, so a late release cannot let go of a LATER force's hold; `open` is
+#: whether that taking is still unsettled.
+_force_hold: dict[str, Any] = {"token": 0, "open": False}
+
+
+def _force_hold_take() -> int | None:
+    """Clear `_deploy_done` so no new turn can start, and return the token
+    that owns that hold. None when a deploy window is already open — somebody
+    else's deploy owns the hold and ours must neither adopt nor release it."""
+    with _state_lock:
+        if not _deploy_done.is_set():
+            return None
+        _deploy_done.clear()
+        _force_hold["token"] += 1
+        _force_hold["open"] = True
+        return cast("int", _force_hold["token"])
+
+
+def _force_hold_settle(token: int | None, *, release: bool,
+                       why: str = "") -> bool:
+    """Close out a hold taken by `_force_hold_take`.
+
+    `release=True` sets `_deploy_done` — use it when the launch armed NO
+    window of its own, so nothing else will ever let go and every org on the
+    machine would sit silent until `DEPLOY_HOLD_MAX`. `release=False` marks
+    the hold ADOPTED: the launch's own child watcher owns it now, and setting
+    the event here would readmit turns into a live deploy.
+
+    Token-matched, so a stale caller cannot settle a newer force's hold."""
+    if token is None:
+        return False
+    with _state_lock:
+        if not _force_hold["open"] or _force_hold["token"] != token:
+            return False
+        _force_hold["open"] = False
+        if not release:
+            return True
+        _deploy_done.set()
+    print(f"[orgtree] forced restart: deploy hold released ({why})",
+          flush=True)
+    return True
+
+
+def force_quiesce_for_restart(
+        exclude: tuple[str, str] | None = None,
+        timeout: float = FORCE_QUIESCE_TIMEOUT_S) -> dict[str, Any]:
+    """Stop every working agent on this machine and WAIT for their turns to
+    settle, so the forced deploy that follows cuts nothing mid-write.
+
+    ⚠ MUST be called with `store.DOC_LOCK` NOT held by this thread — the same
+    constraint, for the same reason, as `interrupt_before_archive`: the
+    interrupted turns' own `finally` blocks need that lock to book their cost,
+    and `DOC_LOCK` is same-thread-reentrant only, so waiting on them while
+    holding it would let every wait time out and report a quiesce that never
+    happened.
+
+    ⚠ ON SUCCESS THIS LEAVES A HOLD ON THE MACHINE (`hold_token`). The caller
+    must hand it to `launch_self_restart`, which settles it either way.
+
+    Returns {"ok": False, "why": …} having cut NOTHING, or {"ok": True, …}
+    with `cut` (who was working when we looked), `interrupted` (who actually
+    had a turn to stop) and `not_settled` (who was still busy when the wait
+    ran out — these are the ones the deploy may cut mid-write, and they are
+    reported rather than assumed away)."""
+    with _state_lock:
+        since = time.time() - _self_restart_at[0]
+        if since < SELF_RESTART_MIN_GAP:
+            # ⚠ BEFORE ANY CUT. Discovering the rate limit after interrupting
+            # the machine would spend every agent's turn on a call that then
+            # refuses to deploy anything at all.
+            return {"ok": False, "why": (
+                f"a self-restart was already launched {int(since)}s ago — one "
+                f"at a time, machine-wide. NOTHING was interrupted; read that "
+                f"deploy's log first and try again in "
+                f"{int(SELF_RESTART_MIN_GAP - since)}s if it did not land.")}
+    token = _force_hold_take()
+    if token is None:
+        return {"ok": False, "why": (
+            "a deploy is already in flight on this machine (turns are being "
+            "held for it right now). NOTHING was interrupted — wait for it "
+            "to land.")}
+    try:
+        with _state_lock:
+            targets = [k for k, st in _state.items()
+                       if k != exclude and (st.get("busy") or st.get("queue"))]
+            for k in targets:
+                # ⚠ see step 3 in the block comment above: without this the
+                # boundary feeds the next queued message straight back into a
+                # turn that never passes the hold, and `busy` never clears.
+                _state[k]["queue"].clear()
+                _state[k]["steer"] = []
+        interrupted: list[str] = []
+        for (s, k) in targets:
+            if interrupt_turn(s, k).get("interrupted"):
+                interrupted.append(f"{s}/{k}")
+        deadline = time.monotonic() + timeout
+        not_settled: list[str] = []
+        for (s, k) in targets:
+            while state(s, k)["busy"] and time.monotonic() < deadline:
+                time.sleep(0.1)
+            if state(s, k)["busy"]:
+                not_settled.append(f"{s}/{k}")
+        cut = sorted(f"{s}/{k}" for s, k in targets)
+        print(f"[orgtree] forced restart: quiesced {len(cut)} agent(s) "
+              f"({', '.join(cut) or 'none'})"
+              + (f"; STILL RUNNING after {timeout:g}s: "
+                 f"{', '.join(not_settled)}" if not_settled else ""),
+              flush=True)
+        return {"ok": True, "hold_token": token, "cut": cut,
+                "interrupted": sorted(interrupted),
+                "not_settled": sorted(not_settled)}
+    except BaseException:
+        # a quiesce that raised owns a hold nobody else will ever release
+        _force_hold_settle(token, release=True, why="the quiesce failed")
+        raise
+
+
 def launch_self_restart(
         slug: str, nid: str, target: str,
-        *, child_started: Callable[[Any], None] | None = None,
+        *, force: bool = False, quiesced: dict[str, Any] | None = None,
+        child_started: Callable[[Any], None] | None = None,
 ) -> dict[str, Any]:
     """FR-14 (user request 2026-08-06): an org redeploys ITSELF — the shared
     backend install and/or the machine's mail hub — without an outside
@@ -16679,6 +16850,13 @@ def launch_self_restart(
         shipping none is safer than shipping a confident wrong one;
       · verification guidance to the agent: your own next turn existing IS
         the liveness check; a quiet peer is NOT evidence of breakage.
+
+    FR-31 (user request 2026-09-04) added `force`, and it does NOT mean "skip
+    the mid-turn refusal" — see the block comment above
+    `force_quiesce_for_restart` for what it does mean and why. A forced launch
+    is accepted ONLY with that function's completed record in `quiesced`;
+    `force=True` on its own is refused right here, so no later caller can turn
+    the flag into a hard cut by passing it and nothing else.
     """
     if not deployment.current_policy().allow_agent_restart:
         raise RuntimeError(
@@ -16687,6 +16865,7 @@ def launch_self_restart(
             "an operator-controlled path")
     if target not in ("org", "mailhub", "both"):
         raise ValueError(f"unknown self-restart target {target!r}")
+    hold_token = quiesced.get("hold_token") if quiesced else None
     # D-104: "only when nobody else is working" is a REFUSAL, not advice. The
     # org leg restarts the shared backend and cuts every in-flight turn on the
     # machine, and the deciding agent cannot see other orgs' nodes to check
@@ -16694,7 +16873,25 @@ def launch_self_restart(
     # and no agent turn runs through it.
     if target in ("org", "both"):
         busy = others_working(exclude=(slug, nid))
-        if busy:
+        if busy and force and quiesced is None:
+            # ☠ FORCE WITHOUT A QUIESCE IS A HARD CUT, and this function will
+            # not perform one. The flag alone is exactly the design the user
+            # was shown failing: it would cut these turns mid-write. Reaching
+            # here means a caller passed the flag and skipped
+            # `force_quiesce_for_restart`, so refuse and say which call is
+            # missing rather than deploying on top of live work.
+            return {"launched": [], "refused": True, "busy": busy,
+                    "forced": False,
+                    "status": (
+                        f"NOT launched — force was requested but the machine "
+                        f"was never quiesced, and {len(busy)} agent(s) are "
+                        f"mid-turn: {', '.join(busy[:8])}"
+                        + (" …" if len(busy) > 8 else "")
+                        + ". A forced restart STOPS those turns and waits for "
+                        "them to settle first; it does not deploy on top of "
+                        "them. Call supervisor.force_quiesce_for_restart() "
+                        "and pass its record as `quiesced`.")}
+        if busy and not force:
             return {"launched": [], "refused": True, "busy": busy,
                     "status": (
                         f"NOT launched — {len(busy)} agent(s) on this machine "
@@ -16703,7 +16900,11 @@ def launch_self_restart(
                         + (" …" if len(busy) > 8 else "")
                         + ". Wait until the machine is idle and call again; "
                         "the update is not going anywhere. (target='mailhub' "
-                        "is unaffected and can run now.)")}
+                        "is unaffected and can run now.) If the machine never "
+                        "goes quiet: orgtree_prime_restart arms a deploy that "
+                        "fires by itself the moment it does, and force=true "
+                        "deploys NOW by stopping those agents — it costs them "
+                        "their turns, so use it when the wait is worse.")}
     repo = os.path.normpath(os.path.join(BACKEND_DIR, ".."))
     data = os.path.expanduser(os.environ.get("ORGTREE_DATA") or "~/orgtree")
     os.makedirs(data, exist_ok=True)
@@ -16711,6 +16912,11 @@ def launch_self_restart(
     with _state_lock:
         since = now_t - _self_restart_at[0]
         if since < SELF_RESTART_MIN_GAP:
+            # a forced call peeked this before it cut anything, so reaching it
+            # here means another deploy raced us in between — hand the hold
+            # back or the machine stays silent for nothing
+            _force_hold_settle(hold_token, release=True,
+                               why="the launch hit the rate limit")
             return {"status": f"a self-restart was already launched "
                               f"{int(since)}s ago — one at a time, "
                               f"machine-wide; read its log first",
@@ -16722,94 +16928,162 @@ def launch_self_restart(
     with open(logpath, "ab") as lf:
         lf.write(f"== self-restart launched by {slug}/{nid} "
                  f"target={target} at {now_iso()} ==\n".encode())
+        if quiesced:
+            # ⚠ THE COST, IN THE MACHINE-WIDE RECORD, BEFORE THE DEPLOY RUNS.
+            # The tool's answer names the cut too, but that answer is read by
+            # one agent whose own turn this restart is about to end. This file
+            # outlives the process and is what says afterwards who paid.
+            cut = cast("list[str]", quiesced.get("cut") or [])
+            ns = cast("list[str]", quiesced.get("not_settled") or [])
+            lf.write(f"== FORCED: {len(cut)} agent(s) were mid-turn and were "
+                     f"stopped for this deploy: {', '.join(cut) or 'none'}\n"
+                     .encode())
+            if ns:
+                lf.write(f"== ⚠ NOT SETTLED within "
+                         f"{FORCE_QUIESCE_TIMEOUT_S:g}s (their turns may be "
+                         f"cut mid-write): {', '.join(ns)}\n".encode())
     launched: list[str] = []
     warnings: list[str] = []
     armed_window = False
-    if target in ("org", "both"):
-        # Linux is a first-class install target (user ruling 2026-08-06):
-        # update.sh mirrors update.ps1 step for step
-        #
-        # ☠ NO -OnlyIfBehind / ORGTREE_ONLY_IF_BEHIND (user ruling 2026-08-21).
-        # This launch used to pass it, and that made the tool STRUCTURALLY
-        # UNABLE to deploy a local commit, silently. Measured here the same
-        # morning: three fixes were merged locally to main and the tool was
-        # called; the pull was a no-op because main was AHEAD of origin, so
-        # the script printed "already up to date -- NOT restarting" and exited
-        # 0 BEFORE the rebuild. The merge sat on disk while the running
-        # backend served the old build, and the tool reported success. Pushing
-        # first does not help — then HEAD merely EQUALS origin, still not
-        # "behind" — so there was no way to use this tool to ship anything you
-        # had just written. It took an operator-style run WITHOUT the flag.
-        #
-        # The flag's original worry (2026-08-09) was real but was aimed at the
-        # wrong target: a restart with nothing to deploy cuts every org for no
-        # gain. What stops that is the CALLER deciding it has a reason to
-        # deploy — now said plainly in the tool card and the prompt — not a
-        # gate that also silently swallows the legitimate case. The flag stays
-        # DECLARED in both scripts for operators/scheduled jobs; nothing in
-        # this repo passes it any more.
-        # ⚠ D-142/a: the window is armed for the ORG leg ONLY, and on the
-        # child that can actually kill us. A mailhub-only deploy rebuilds a
-        # container and never touches this backend, so holding turns for it
-        # would stop every org on the machine for a restart that was never
-        # coming. On target="both" TWO children are spawned and only this one
-        # is the danger — the hub leg literally sleeps 45s and then rebuilds.
-        if os.name == "nt":
-            child = _detached_spawn(
-                ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
-                 "-File", os.path.join(repo, "update.ps1")], repo, logpath)
-            if child is not None and child_started is not None:
-                child_started(child)
-            armed_window = _arm_deploy_window(child)
-        else:
-            # ⚠ the var is cleared EXPLICITLY, not merely left unset. update.sh
-            # reads ${ORGTREE_ONLY_IF_BEHIND:-} from its inherited environment,
-            # so simply passing no env would let an ambient value — a leftover
-            # systemd unit, a profile export on the box — silently re-gate the
-            # deploy and reinstate the exact bug D-142 removed, on Linux only,
-            # where it is hardest to notice.
-            child = _detached_spawn(
-                ["bash", os.path.join(repo, "update.sh")], repo, logpath,
-                env={**os.environ, "ORGTREE_ONLY_IF_BEHIND": ""})
-            if child is not None and child_started is not None:
-                child_started(child)
-            armed_window = _arm_deploy_window(child)
-        launched.append("org backend (git pull + rebuild + restart — "
-                        "EVERY org on this machine restarts)")
-    if target in ("mailhub", "both"):
-        hubdir = os.path.join(repo, "hub")
-        if not os.path.isfile(os.path.join(hubdir, "compose.yaml")):
-            warnings.append("no hub/compose.yaml in this clone — mail hub "
-                            "skipped")
-        else:
-            # "both": update.ps1 owns the git pull; the hub leg only waits
-            # for it and rebuilds (two concurrent pulls race the git index).
-            # "mailhub" alone pulls for itself first.
-            if target == "both":
-                cmd_nt = "Start-Sleep 45; docker compose up -d --build"
-                cmd_px = "sleep 45 && docker compose up -d --build"
+    try:
+        if target in ("org", "both"):
+            # Linux is a first-class install target (user ruling 2026-08-06):
+            # update.sh mirrors update.ps1 step for step
+            #
+            # ☠ NO -OnlyIfBehind / ORGTREE_ONLY_IF_BEHIND (user ruling 2026-08-21).
+            # This launch used to pass it, and that made the tool STRUCTURALLY
+            # UNABLE to deploy a local commit, silently. Measured here the same
+            # morning: three fixes were merged locally to main and the tool was
+            # called; the pull was a no-op because main was AHEAD of origin, so
+            # the script printed "already up to date -- NOT restarting" and exited
+            # 0 BEFORE the rebuild. The merge sat on disk while the running
+            # backend served the old build, and the tool reported success. Pushing
+            # first does not help — then HEAD merely EQUALS origin, still not
+            # "behind" — so there was no way to use this tool to ship anything you
+            # had just written. It took an operator-style run WITHOUT the flag.
+            #
+            # The flag's original worry (2026-08-09) was real but was aimed at the
+            # wrong target: a restart with nothing to deploy cuts every org for no
+            # gain. What stops that is the CALLER deciding it has a reason to
+            # deploy — now said plainly in the tool card and the prompt — not a
+            # gate that also silently swallows the legitimate case. The flag stays
+            # DECLARED in both scripts for operators/scheduled jobs; nothing in
+            # this repo passes it any more.
+            # ⚠ D-142/a: the window is armed for the ORG leg ONLY, and on the
+            # child that can actually kill us. A mailhub-only deploy rebuilds a
+            # container and never touches this backend, so holding turns for it
+            # would stop every org on the machine for a restart that was never
+            # coming. On target="both" TWO children are spawned and only this one
+            # is the danger — the hub leg literally sleeps 45s and then rebuilds.
+            if os.name == "nt":
+                child = _detached_spawn(
+                    ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+                     "-File", os.path.join(repo, "update.ps1")], repo, logpath)
+                if child is not None and child_started is not None:
+                    child_started(child)
+                armed_window = _arm_deploy_window(child)
             else:
-                cmd_nt = "git pull; docker compose up -d --build"
-                cmd_px = "git pull && docker compose up -d --build"
-            child = _detached_spawn(
-                ["powershell", "-NoProfile", "-Command", cmd_nt]
-                if os.name == "nt" else ["bash", "-lc", cmd_px],
-                hubdir, logpath)
-            if child is not None and child_started is not None:
-                child_started(child)
-            launched.append("mail hub container (rebuilt in place — the "
-                            "data volume, ports and .env are never touched)")
+                # ⚠ the var is cleared EXPLICITLY, not merely left unset. update.sh
+                # reads ${ORGTREE_ONLY_IF_BEHIND:-} from its inherited environment,
+                # so simply passing no env would let an ambient value — a leftover
+                # systemd unit, a profile export on the box — silently re-gate the
+                # deploy and reinstate the exact bug D-142 removed, on Linux only,
+                # where it is hardest to notice.
+                child = _detached_spawn(
+                    ["bash", os.path.join(repo, "update.sh")], repo, logpath,
+                    env={**os.environ, "ORGTREE_ONLY_IF_BEHIND": ""})
+                if child is not None and child_started is not None:
+                    child_started(child)
+                armed_window = _arm_deploy_window(child)
+            launched.append("org backend (git pull + rebuild + restart — "
+                            "EVERY org on this machine restarts)")
+        if target in ("mailhub", "both"):
+            hubdir = os.path.join(repo, "hub")
+            if not os.path.isfile(os.path.join(hubdir, "compose.yaml")):
+                warnings.append("no hub/compose.yaml in this clone — mail hub "
+                                "skipped")
+            else:
+                # "both": update.ps1 owns the git pull; the hub leg only waits
+                # for it and rebuilds (two concurrent pulls race the git index).
+                # "mailhub" alone pulls for itself first.
+                if target == "both":
+                    cmd_nt = "Start-Sleep 45; docker compose up -d --build"
+                    cmd_px = "sleep 45 && docker compose up -d --build"
+                else:
+                    cmd_nt = "git pull; docker compose up -d --build"
+                    cmd_px = "git pull && docker compose up -d --build"
+                child = _detached_spawn(
+                    ["powershell", "-NoProfile", "-Command", cmd_nt]
+                    if os.name == "nt" else ["bash", "-lc", cmd_px],
+                    hubdir, logpath)
+                if child is not None and child_started is not None:
+                    child_started(child)
+                launched.append("mail hub container (rebuilt in place — the "
+                                "data volume, ports and .env are never touched)")
+    finally:
+        # ⚠ UNCONDITIONAL, and in a `finally` for the same reason
+        # `_fire_prime`'s release is: a forced call cleared `_deploy_done`
+        # itself BEFORE interrupting anyone (that is what closed the race
+        # the manual workaround lost), so nothing else will ever let go of
+        # it. If the org leg armed its own window the watcher owns the
+        # release now and setting the event here would readmit turns into a
+        # live deploy; if it did not — a mailhub-only leg, a spawn that
+        # raised — the hold is orphaned and every org on this machine is
+        # silent until DEPLOY_HOLD_MAX. A no-op when nothing was forced.
+        _force_hold_settle(
+            hold_token, release=not armed_window,
+            why="the launch armed no deploy window of its own")
     return {"launched": launched, "log": logpath,
             # did the ORG leg arm the turn-hold window? The prime engine
             # reads this to decide whether the hold it took before the launch
             # now has an owner (see `_fire_prime`). Nothing else consumes it.
             "deploy_window": armed_window,
+            # ⚠ WHAT THIS DEPLOY COST, in the answer the caller reads. The
+            # person who fires a force is the one who should see the bill.
+            **({"forced": True,
+                "cut": quiesced.get("cut") or [],
+                "interrupted": quiesced.get("interrupted") or [],
+                **({"not_settled": quiesced["not_settled"]}
+                   if quiesced.get("not_settled") else {})} if quiesced
+               else {}),
             **({"warnings": warnings} if warnings else {}),
-            "status": ("deploy running detached — if the backend restarts, "
+            "status": (_forced_status_prefix(quiesced)
+                       + "deploy running detached — if the backend restarts, "
                        "your turn may be cut and the org resumes on the new "
                        "build. Your own next turn existing IS the liveness "
                        "check; a quiet remote peer is NOT evidence of "
                        "breakage. The log tells the story: " + logpath)}
+
+
+def _forced_status_prefix(quiesced: dict[str, Any] | None) -> str:
+    """What a forced deploy says it just did, ahead of the ordinary status.
+
+    Two facts belong in front of everything else, and neither is decoration:
+    WHO was stopped (the caller authorized this cost and has to see it), and
+    that THEY DO NOT RESUME BY THEMSELVES. An interrupted agent comes back
+    idle on the new build with its mail still in its box and no turn pending;
+    somebody has to nudge it or the forced deploy leaves a trail of silently
+    stalled agents. Saying it here means the caller is told at the moment it
+    can still act on it."""
+    if not quiesced:
+        return ""
+    cut = cast("list[str]", quiesced.get("cut") or [])
+    ns = cast("list[str]", quiesced.get("not_settled") or [])
+    if not cut:
+        return ("FORCED, but nothing had to be cut — the machine was already "
+                "idle when the deploy claimed it. ")
+    head = (f"FORCED — {len(cut)} agent(s) were mid-turn and their turns were "
+            f"STOPPED for this deploy: {', '.join(cut)}. ")
+    if ns:
+        head += (f"⚠ {len(ns)} of them had not finished settling "
+                 f"{FORCE_QUIESCE_TIMEOUT_S:g}s later and may be cut "
+                 f"mid-write — their last tool call, cost booking or file "
+                 f"write may land after the restart: {', '.join(ns)}. ")
+    head += ("⚠ THEY DO NOT RESUME ON THEIR OWN. Each comes back idle on the "
+             "new build with its mail still unread and no turn pending — "
+             "message them (or tell their managers to) or the work you "
+             "interrupted simply stops. ")
+    return head
 
 
 # ── FR-27 · THE PRIMED RESTART ────────────────────────────────────────────

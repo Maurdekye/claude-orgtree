@@ -312,7 +312,18 @@ TOOLS: list[dict[str, Any]] = [
             "peer transport is unbounded). No automatic rollback — if the "
             "update misbehaves, tell the user. Top-level agents and "
             "user-audience holders only; kiosks sealed; one launch per 5 "
-            "minutes machine-wide. ☞ USE THIS TOOL — never run update.ps1 / "
+            "minutes machine-wide. ⚠ FORCE (force=true, and it needs a "
+            "`reason`): deploy NOW even though agents are mid-turn. It does "
+            "not skip the check — it STOPS every working agent on this "
+            "machine, waits for their turns to actually finish, and then "
+            "deploys, and its answer names everyone it stopped. THE AGENTS DO "
+            "NOT RESUME BY THEMSELVES: each comes back idle on the new build "
+            "with its mail unread and no turn pending, so after a forced "
+            "deploy YOU must message them (or their managers) or the work you "
+            "interrupted just stops. Use it when the wait is worse than that "
+            "— an urgent fix on a machine that never goes quiet. Otherwise "
+            "use orgtree_prime_restart, which costs nobody anything. ☞ USE "
+            "THIS TOOL — never run update.ps1 / "
             "update.sh yourself from your own terminal. The update restarts "
             "the backend, which tears down the turn that launched it, so a "
             "script started from your shell dies mid-build and leaves the "
@@ -322,7 +333,9 @@ TOOLS: list[dict[str, Any]] = [
             "survives your own teardown. ⚠ target 'org'/'both' REFUSES while any "
             "agent on this machine is mid-turn, and names them — the restart "
             "would cut them off. That refusal is the precondition working: "
-            "wait for the machine to go idle and call again. ⚠ A restart "
+            "wait for the machine to go idle and call again — or arm "
+            "orgtree_prime_restart, which fires by itself when it does. Only "
+            "if the machine never goes quiet, see FORCE below. ⚠ A restart "
             "cuts every org on this machine, so call it when you have a "
             "REASON — code committed that needs to be running, or a backend "
             "that must be bounced. Not speculatively, not on a hunch, not "
@@ -334,6 +347,22 @@ TOOLS: list[dict[str, Any]] = [
                 "target": {"type": "string",
                            "enum": ["org", "mailhub", "both"],
                            "description": "what to update (default 'org')"},
+                # ⚠ NO DEFAULT AND NO CLEVERNESS: absent means false, which
+                # means today's refusal. The only way to force is to write
+                # force=true AND say why — see ledger.self_restart_checks.
+                "force": {"type": "boolean",
+                          "description": "DANGEROUS, default false. Deploy "
+                                         "even though agents are mid-turn, by "
+                                         "STOPPING them first and waiting for "
+                                         "their turns to settle. Requires "
+                                         "`reason`. They come back idle and do "
+                                         "NOT resume on their own — you have "
+                                         "to message them afterwards."},
+                "reason": {"type": "string",
+                           "description": "REQUIRED with force=true: why this "
+                                          "could not wait. Recorded against "
+                                          "you, and it is what the "
+                                          "interrupted agents' managers read."},
             },
             "required": [],
         },
@@ -365,6 +394,12 @@ TOOLS: list[dict[str, Any]] = [
             "target: 'org' (the backend — restarts every org here), "
             "'mailhub' (rebuilds the hub container in place), or 'both'. "
             "Give a `reason`: it is what the person who sees the chip reads. "
+            "⚠ NOT THE SAME TOOL AS force: this one WAITS for quiet and costs "
+            "nobody a turn, and it is the right answer almost always. "
+            "orgtree_self_restart force=true is the opposite trade — it "
+            "deploys NOW by stopping the agents that are working. Reach for "
+            "this one first; reach for force only when the machine will not "
+            "go quiet and the wait is worse than the interruption. "
             "Top-level agents and user-audience holders only; kiosks sealed. "
             "⚠ Still a real restart — have a REASON (code committed that "
             "needs to be running, a backend that must be bounced). 'Primed' "

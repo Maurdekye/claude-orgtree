@@ -1551,6 +1551,407 @@ def hermetic() -> None:
     check("☠ selfrestart · target 'org' REFUSES while another agent is "
           "mid-turn, and names them", _org_target_refuses_while_busy)
 
+    # ---- FR-31 (user request 2026-09-04): FORCE. The refusal above is the
+    # DEFAULT and these exist mostly to prove it stays that way. The user
+    # asked for force after watching the manual workaround — interrupt every
+    # agent by hand, then race the restart into the gap — LOSE that race: the
+    # interrupted agents took new turns before the second call landed. So the
+    # forced path is quiesce-then-deploy, and the checks below attack the
+    # negative cases first, because a force that is too easy to reach is the
+    # whole hazard.
+
+    def _the_default_is_still_the_refusal():
+        """☠ DESIGN POINT 1: nobody gets a forced restart by omitting an
+        argument. Both spellings of "I did not ask for this" — the argument
+        absent, and the string "false" an LLM writes where the schema says
+        boolean — must land on the ordinary refusal. Positive control
+        included: the flag must still be readable when it IS meant."""
+        for v in ({}, {"force": False}, {"force": "false"}, {"force": ""},
+                  {"force": "no"}, {"force": None}, {"force": 0},
+                  {"force": "0"}, {"force": "None"}):
+            assert not _apimod._arg_flag(v, "force"), v
+        for v in ({"force": True}, {"force": "true"}, {"force": "yes"},
+                  {"force": 1}):
+            assert _apimod._arg_flag(v, "force"), v
+        # …and the door the api takes: absent force never reaches the branch
+        supervisor.state(other_slug, other_nid)["busy"] = True
+        supervisor._self_restart_at[0] = 0.0
+        try:
+            r = supervisor.launch_self_restart(su_slug, su_nid, "org")
+            assert r.get("refused") and not r["launched"], r
+            assert not r.get("forced"), r
+        finally:
+            supervisor.state(other_slug, other_nid)["busy"] = False
+    check("☠ selfrestart/force · the DEFAULT is still the refusal — absent, "
+          "False and the string \"false\" all mean 'do not force'",
+          _the_default_is_still_the_refusal)
+
+    def _force_alone_does_not_skip_the_refusal():
+        """☠ THE ONE THAT MATTERS MOST. `force` is not "deploy on top of live
+        turns", it is "stop them first". A launch handed the flag and NO
+        quiesce record must refuse — otherwise every future caller has a
+        one-argument path to cutting a turn mid-write, which is the harm the
+        whole feature exists to avoid."""
+        supervisor.state(other_slug, other_nid)["busy"] = True
+        supervisor._self_restart_at[0] = 0.0
+        try:
+            before = len(_DEPLOY_ATTEMPTS)
+            r = supervisor.launch_self_restart(su_slug, su_nid, "org",
+                                               force=True)
+            assert r.get("refused") and not r["launched"], r
+            assert f"{other_slug}/{other_nid}" in r["busy"], r
+            assert "quiesce" in r["status"], r["status"]
+            assert len(_DEPLOY_ATTEMPTS) == before, \
+                "force alone reached a real deploy spawn"
+            assert supervisor._self_restart_at[0] == 0.0, \
+                "the refused force spent the machine-wide rate limit"
+        finally:
+            supervisor.state(other_slug, other_nid)["busy"] = False
+    check("☠ selfrestart/force · force WITHOUT a completed quiesce is refused "
+          "— the flag alone is never a hard cut",
+          _force_alone_does_not_skip_the_refusal)
+
+    def _the_hold_is_taken_before_anyone_is_interrupted():
+        """☠ THE RACE THE MANUAL WORKAROUND LOST, read from the source because
+        the ordering never reaches a return value.
+
+        Two orderings inside the quiesce are load-bearing and both are silent
+        when broken:
+          · the deploy hold BEFORE the interrupts — a turn started after
+            `_deploy_done` is cleared parks at `_hold_for_deploy`, so nobody
+            woken in the gap can get running behind us. Interrupt-first
+            reopens exactly the gap that lost the race on 2026-09-04.
+          · the queue clear BEFORE the interrupts — `_run_turn` passes the
+            hold ONCE and then loops the queue, so an interrupted turn with a
+            queued message starts another one that never passes the hold;
+            `busy` would then never clear and the wait would report a quiesce
+            that did not happen."""
+        src = open(supervisor.__file__, encoding="utf-8").read()
+        body = src[src.index("def force_quiesce_for_restart("):]
+        body = body[:body.index("\ndef ")]
+        for needle in ("_force_hold_take()", "interrupt_turn(",
+                       '["queue"].clear()'):
+            assert needle in body, f"the quiesce no longer does {needle!r}"
+        assert body.index("_force_hold_take()") < body.index("interrupt_turn("), \
+            "the quiesce interrupts agents BEFORE taking the deploy hold — " \
+            "an agent woken in that gap starts a turn the deploy then cuts, " \
+            "which is the exact race the manual workaround lost"
+        assert body.index('["queue"].clear()') < body.index("interrupt_turn("), \
+            "the quiesce interrupts before clearing queues — the turn " \
+            "boundary feeds the next queued message into a turn that never " \
+            "passes the deploy hold, so `busy` never clears"
+    check("☠ selfrestart/force · the deploy hold and the queue clear both "
+          "come BEFORE the interrupts",
+          _the_hold_is_taken_before_anyone_is_interrupted)
+
+    def _the_quiesce_stops_waits_and_reports():
+        """The heart of it: interrupt, WAIT for the turn boundary, and report
+        anyone who did not make it rather than assume they did.
+
+        ⚠ THE POSITIVE CONTROL IS THE WEDGED NODE. A `not_settled` list that
+        is always empty would look identical to a quiesce that works, so this
+        fixture contains one agent that settles and one that never does, and
+        asserts they land on opposite sides."""
+        q_slug, (q_settle, q_wedged) = horg(2)
+        st_a = supervisor.state(q_slug, q_settle)
+        st_b = supervisor.state(q_slug, q_wedged)
+        st_a["busy"] = True
+        st_a["queue"] = ["mail that would start ANOTHER turn"]
+        # a REAL interrupt path that needs no live process: a node parked
+        # waiting for its MCP tools exits deterministically on this event
+        st_a["mcp_readiness_waiting"] = True
+        ev = threading.Event()
+        st_a["mcp_tool_event"] = ev
+        st_b["busy"] = True                       # never settles
+        supervisor._self_restart_at[0] = 0.0
+
+        def _settle() -> None:
+            time.sleep(0.4)
+            st_a["busy"] = False
+        threading.Thread(target=_settle, daemon=True).start()
+        q = supervisor.force_quiesce_for_restart(
+            exclude=(su_slug, su_nid), timeout=2.0)
+        try:
+            assert q["ok"], q
+            assert not supervisor._deploy_done.is_set(), \
+                "the quiesce did not take the deploy hold — an agent woken " \
+                "by mail could still start a turn into the deploy"
+            assert f"{q_slug}/{q_settle}" in q["cut"], q
+            assert f"{q_slug}/{q_wedged}" in q["cut"], q
+            # interrupted, not merely listed
+            assert f"{q_slug}/{q_settle}" in q["interrupted"], q
+            assert ev.is_set(), "the readiness gate was never actually woken"
+            assert st_a["queue"] == [], st_a["queue"]
+            # ☠ the control: a turn that does not settle is REPORTED…
+            assert f"{q_slug}/{q_wedged}" in q["not_settled"], q
+            # …and one that does is not
+            assert f"{q_slug}/{q_settle}" not in q["not_settled"], q
+        finally:
+            st_b["busy"] = False
+            st_a.pop("mcp_readiness_waiting", None)
+            st_a.pop("mcp_tool_event", None)
+            supervisor._force_hold_settle(q.get("hold_token"), release=True,
+                                          why="check finished")
+        assert supervisor._deploy_done.is_set()
+    check("☠ selfrestart/force · the quiesce interrupts, clears the queue, "
+          "WAITS for the boundary, and reports who did not settle",
+          _the_quiesce_stops_waits_and_reports)
+
+    def _a_rate_limited_force_cuts_nobody():
+        """☠ A force that is about to be refused must not spend a single
+        agent's turn on the way to the refusal. The rate limit is peeked
+        BEFORE anything is interrupted, and the proof is that the fixture's
+        queue survives."""
+        st = supervisor.state(other_slug, other_nid)
+        st["busy"] = True
+        st["queue"] = ["untouched"]
+        supervisor._self_restart_at[0] = time.time()
+        try:
+            q = supervisor.force_quiesce_for_restart(exclude=(su_slug, su_nid))
+            assert not q["ok"], q
+            assert "NOTHING was interrupted" in q["why"], q
+            assert st["queue"] == ["untouched"], \
+                "a force refused for rate-limiting still cut the machine"
+            assert supervisor._deploy_done.is_set(), \
+                "a refused force walked away holding the deploy hold"
+        finally:
+            supervisor._self_restart_at[0] = 0.0
+            st["queue"] = []
+            st["busy"] = False
+    check("☠ selfrestart/force · a rate-limited force interrupts NOBODY",
+          _a_rate_limited_force_cuts_nobody)
+
+    def _force_with_a_quiesce_proceeds_and_names_what_it_cut():
+        """The green half: with the machine quiesced, the deploy runs — and
+        the answer says who paid for it (design point 2) and that they will
+        not pick their own work back up (design point 4)."""
+        st = supervisor.state(other_slug, other_nid)
+        st["busy"] = True
+        supervisor._self_restart_at[0] = 0.0
+        try:
+            q = supervisor.force_quiesce_for_restart(
+                exclude=(su_slug, su_nid), timeout=0.4)
+            assert q["ok"], q
+            before = len(_DEPLOY_ATTEMPTS)
+            r = supervisor.launch_self_restart(su_slug, su_nid, "org",
+                                               force=True, quiesced=q)
+            assert r["launched"], r
+            assert len(_DEPLOY_ATTEMPTS) == before + 1, \
+                "the forced launch never reached a deploy at all"
+            assert r.get("forced") is True, r
+            assert f"{other_slug}/{other_nid}" in r["cut"], r
+            assert other_nid in r["status"], r["status"]
+            assert "DO NOT RESUME" in r["status"], r["status"]
+            # and the machine-wide log carries it too — the tool's answer is
+            # read by an agent whose own turn this restart is about to end
+            log = open(r["log"], encoding="utf-8", errors="replace").read()
+            assert "FORCED" in log and other_nid in log, log
+        finally:
+            st["busy"] = False
+            supervisor._self_restart_at[0] = 0.0
+        # the launch armed its own window, so the hold now has an owner and
+        # releases when the (already-exited) child is reaped
+        for _ in range(40):
+            if supervisor._deploy_done.is_set():
+                break
+            time.sleep(0.05)
+        assert supervisor._deploy_done.is_set(), \
+            "the forced deploy's window never released the hold"
+    check("☠ selfrestart/force · a quiesced force DEPLOYS, and names every "
+          "agent it stopped", _force_with_a_quiesce_proceeds_and_names_what_it_cut)
+
+    def _a_launch_that_never_spawns_hands_the_hold_back():
+        """☠ AN ORPHANED HOLD SILENCES EVERY ORG ON THIS MACHINE until
+        DEPLOY_HOLD_MAX. The forced path clears `_deploy_done` itself, before
+        the launch, so nothing else will ever let go of it — the release has
+        to survive a spawn that raises."""
+        st = supervisor.state(other_slug, other_nid)
+        st["busy"] = True
+        supervisor._self_restart_at[0] = 0.0
+        real = supervisor._detached_spawn
+
+        def _boom(*_a, **_k):
+            raise OSError("no spawn today")
+        try:
+            q = supervisor.force_quiesce_for_restart(
+                exclude=(su_slug, su_nid), timeout=0.3)
+            assert q["ok"] and not supervisor._deploy_done.is_set(), q
+            supervisor._detached_spawn = _boom     # type: ignore[assignment]
+            try:
+                supervisor.launch_self_restart(su_slug, su_nid, "org",
+                                               force=True, quiesced=q)
+            except OSError:
+                pass
+            assert supervisor._deploy_done.is_set(), \
+                "the launch died still holding the deploy hold — every org " \
+                "on this machine would run nothing until DEPLOY_HOLD_MAX"
+        finally:
+            supervisor._detached_spawn = real      # type: ignore[assignment]
+            st["busy"] = False
+            supervisor._self_restart_at[0] = 0.0
+        assert _no_deploy.installed(), \
+            "this check left the deploy interlock disarmed"
+    check("☠ selfrestart/force · a launch that never spawns hands the deploy "
+          "hold back", _a_launch_that_never_spawns_hands_the_hold_back)
+
+    def _force_without_a_reason_is_refused():
+        """Design point 1 again, at the ledger. A forced restart spends other
+        agents' turns; the one defence against it becoming a reflex is that it
+        cannot be fired without saying why. Whitespace is not a reason."""
+        org = store.load_org(su_slug)
+        for bad in (None, "", "   ", "\n\t "):
+            try:
+                org.self_restart_checks(su_nid, force=True, reason=bad)
+            except Exception as e:                               # noqa: BLE001
+                assert "reason" in str(e), e
+            else:
+                raise AssertionError(
+                    f"a forced restart was authorized with reason={bad!r}")
+        # the positive controls: the ordinary call is untouched, and a real
+        # reason passes
+        org.self_restart_checks(su_nid)
+        org.self_restart_checks(su_nid, force=True, reason="deploy the fix")
+    check("☠ selfrestart/force · force with no reason is REFUSED (and the "
+          "unforced call is untouched)", _force_without_a_reason_is_refused)
+
+    def _the_force_is_recorded_with_its_reason_and_its_cost():
+        """Design point 2's other half: the record afterwards. Two events on
+        purpose — the DECISION, which is written before anyone is cut and so
+        cannot name a victim, and the COST, which is written after and can."""
+        with store.DOC_LOCK:
+            org = store.load_org(su_slug)
+            n0 = len(org.d["events"])
+            org.self_restart_gate(su_nid, force=True,
+                                  reason="deploy the mail fix")
+            org.log_forced_restart(su_nid, ["x/one", "y/two"], ["y/two"])
+            store.save_org(org)
+        ev = store.load_org(su_slug).d["events"][n0:]
+        assert [e["op"] for e in ev] == ["self_restart",
+                                         "self_restart_forced"], ev
+        assert ev[0]["detail"]["force"] is True, ev[0]
+        assert ev[0]["detail"]["reason"] == "deploy the mail fix", ev[0]
+        assert ev[1]["detail"]["cut"] == ["x/one", "y/two"], ev[1]
+        assert any("y/two" in w for w in ev[1]["warnings"]), ev[1]
+        # ☠ and the UNFORCED gate still records exactly what it always did —
+        # the default path is not merely working, it is unchanged
+        with store.DOC_LOCK:
+            org = store.load_org(su_slug)
+            n1 = len(org.d["events"])
+            org.self_restart_gate(su_nid)
+            store.save_org(org)
+        e2 = store.load_org(su_slug).d["events"][n1]
+        assert e2["op"] == "self_restart" and e2["detail"] == {}, e2
+    check("☠ selfrestart/force · the decision AND the cost are both recorded",
+          _the_force_is_recorded_with_its_reason_and_its_cost)
+
+    class _FakeRequest:
+        """What `/api/agent` reads off the request: the sandbox bridge slug,
+        via getattr with a None default. Nothing else."""
+        state = type("S", (), {})()
+
+    def _the_api_branch_quiesces_without_holding_the_doc_lock():
+        """☠ THE INERT-GUARD TRAP, attacked head-on.
+
+        The quiesce WAITS for other agents' turns to finish, and a finishing
+        turn needs `store.DOC_LOCK` to book its cost. Run the quiesce inside
+        the dispatch's `with store.DOC_LOCK:` block and every wait times out:
+        the force still deploys, the result still lists a cut, and the whole
+        thing reports a quiesce THAT NEVER HAPPENED — a guard that reads
+        correctly, runs, and means nothing.
+
+        So the fixture makes settling REQUIRE the lock: a node whose `busy`
+        clears only after a background thread has acquired DOC_LOCK. If the
+        api branch held it, that node would land in `not_settled`."""
+        f_slug, (f_nid,) = horg()
+        st = supervisor.state(f_slug, f_nid)
+        st["busy"] = True
+        supervisor._self_restart_at[0] = 0.0
+
+        def _settle_behind_the_lock() -> None:
+            time.sleep(0.2)
+            with store.DOC_LOCK:        # blocks if the caller is holding it
+                st["busy"] = False
+        threading.Thread(target=_settle_behind_the_lock, daemon=True).start()
+        before = len(_DEPLOY_ATTEMPTS)
+        # through the REAL /api/agent dispatch, so the routing is covered too
+        body = _apimod.AgentCall(org=su_slug, node=su_nid,
+                                 tool="orgtree_self_restart",
+                                 args={"target": "org", "force": True,
+                                       "reason": "the machine never goes quiet"})
+        try:
+            r = _apimod.agent_call(body, _FakeRequest())
+            assert len(_DEPLOY_ATTEMPTS) == before + 1, "no deploy was reached"
+            assert r.get("forced") is True, r
+            assert f"{f_slug}/{f_nid}" in r["cut"], r
+            assert f"{f_slug}/{f_nid}" not in r.get("not_settled", []), \
+                "the node never settled — the api branch is holding " \
+                "DOC_LOCK across the quiesce, so every wait times out and " \
+                "the 'quiesce' is theatre"
+            # …and the org doc carries both records
+            ops = [e["op"] for e in store.load_org(su_slug).d["events"][-2:]]
+            assert ops == ["self_restart", "self_restart_forced"], ops
+        finally:
+            st["busy"] = False
+            supervisor._self_restart_at[0] = 0.0
+        for _ in range(40):
+            if supervisor._deploy_done.is_set():
+                break
+            time.sleep(0.05)
+        assert supervisor._deploy_done.is_set()
+    check("☠ selfrestart/force · the api branch quiesces with DOC_LOCK FREE "
+          "— the wait is real, not a timeout",
+          _the_api_branch_quiesces_without_holding_the_doc_lock)
+
+    def _the_api_branch_refuses_a_reasonless_force_before_cutting():
+        """The reason gate sits ahead of the quiesce, so a force that will be
+        refused for having no reason stops nobody on its way there."""
+        g_slug, (g_nid,) = horg()
+        st = supervisor.state(g_slug, g_nid)
+        st["busy"] = True
+        st["queue"] = ["untouched"]
+        supervisor._self_restart_at[0] = 0.0
+        before = len(_DEPLOY_ATTEMPTS)
+        body = _apimod.AgentCall(org=su_slug, node=su_nid,
+                                 tool="orgtree_self_restart",
+                                 args={"force": True})
+        try:
+            try:
+                _apimod.agent_call(body, _FakeRequest())
+            except Exception as e:                               # noqa: BLE001
+                assert "reason" in str(e), e
+            else:
+                raise AssertionError("a reasonless force was accepted")
+            assert st["queue"] == ["untouched"], \
+                "a force refused for having no reason still cut the machine"
+            assert len(_DEPLOY_ATTEMPTS) == before, "it deployed anyway"
+            assert supervisor._deploy_done.is_set(), "it left a deploy hold"
+        finally:
+            st["busy"] = False
+            st["queue"] = []
+            supervisor._self_restart_at[0] = 0.0
+    check("☠ selfrestart/force · a reasonless force is refused BEFORE it "
+          "stops anybody",
+          _the_api_branch_refuses_a_reasonless_force_before_cutting)
+
+    def _the_card_offers_force_without_defaulting_to_it():
+        from orgtree import mcptool                         # noqa: PLC0415
+        card = next(t for t in mcptool.TOOLS
+                    if t["name"] == "orgtree_self_restart")
+        props = card["inputSchema"]["properties"]
+        assert props.get("force", {}).get("type") == "boolean", props
+        assert "default" not in props["force"], \
+            "the card gives `force` a default — absent must mean 'do not force'"
+        assert "force" not in card["inputSchema"].get("required", []), card
+        assert "reason" in props, props
+        d = card["description"]
+        # design point 4, on the card itself rather than buried in a result
+        assert "DO NOT RESUME BY THEMSELVES" in d, d
+        # and it must not read as the easy option
+        assert "orgtree_prime_restart" in d, d
+    check("selfrestart/force · the tool card offers force with no default, "
+          "and says the agents stall afterwards",
+          _the_card_offers_force_without_defaulting_to_it)
+
     def _spawn_flags() -> int:
         """The creationflags _detached_spawn would pass on Windows, read from
         the source: the value never reaches a return, and a probe alone would

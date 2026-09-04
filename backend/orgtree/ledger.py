@@ -7432,14 +7432,68 @@ class Org:
                 "holders of a user audience) may trigger it; ask your "
                 "superior to run it, or to grant you a user audience")
 
-    def self_restart_gate(self, nid: str) -> None:
+    def self_restart_gate(self, nid: str, force: bool = False,
+                          reason: str | None = None) -> None:
         """FR-14 gate (user request 2026-08-06): a self-restart restarts the
         SHARED install — every org on this machine — so it takes the same
         gate as asking the user directly: top-level, or a held user
         audience. Kiosks are sealed outright. The launch itself lives in
-        supervisor.launch_self_restart; this only authorizes and records."""
-        self._restart_authority(nid, "self-restart")
-        self._log("self_restart", nid, {}, [])
+        supervisor.launch_self_restart; this only authorizes and records.
+
+        FR-31 (2026-09-04): `force` deploys THROUGH agents that are mid-turn,
+        by stopping them. It takes the same AUTHORITY — the machine-wide
+        consequence is the same restart — plus one thing the ordinary call
+        does not need: a REASON, and this is the one place that can insist.
+        A forced restart spends other agents' turns, and the only defence
+        against it becoming a reflex is that it cannot be fired without
+        saying why. The reason is what the record shows afterwards and what
+        the interrupted agents' managers read when they ask what happened.
+        ⚠ Do not soften this to a default string: a reason nobody had to
+        write says nothing, and force would then be exactly as easy to reach
+        as the safe call — which is the whole thing this feature must not
+        be."""
+        self.self_restart_checks(nid, force, reason)
+        self._log("self_restart", nid,
+                  {"force": True, "reason": (reason or "").strip()[:200]}
+                  if force else {}, [])
+
+    def self_restart_checks(self, nid: str, force: bool = False,
+                            reason: str | None = None) -> None:
+        """`self_restart_gate` minus the record — everything that can REFUSE.
+
+        Split out because a forced restart has to be refused BEFORE it stops
+        every agent on the machine, and that stopping must happen outside
+        DOC_LOCK (see supervisor.force_quiesce_for_restart). api.agent_call
+        therefore runs this as a pre-guard and `self_restart_gate` repeats it
+        under the lock, exactly the shape retire/dissolve already use. One
+        body, two entry points: a second copy of the rule would drift, and
+        the way it would drift is by being laxer on the forced path."""
+        if force and not (reason or "").strip():
+            raise LedgerError(
+                "a FORCED self-restart requires a `reason` — it stops every "
+                "agent that is mid-turn on this machine, and that cost is "
+                "recorded against you. Say why in one line, or drop `force` "
+                "and wait for the machine to go idle (orgtree_prime_restart "
+                "arms a deploy that fires by itself when it does).")
+        self._restart_authority(nid,
+                                "forced self-restart" if force
+                                else "self-restart")
+
+    def log_forced_restart(self, nid: str, cut: list[str],
+                           not_settled: list[str]) -> None:
+        """Record what a forced restart actually cut, once it is known.
+
+        A SECOND event on purpose. `self_restart_gate` records the DECISION
+        and runs before anyone is interrupted, so it cannot name a single
+        victim; this one records the COST and runs after the quiesce, so it
+        can. Collapsing them into one would mean either a decision recorded
+        too late to be the authorization, or a cost recorded before it was
+        paid. Nodes that had not settled ride the event's `warnings`, where
+        the org's event view already surfaces them."""
+        self._log("self_restart_forced", nid,
+                  {"cut": list(cut), "cut_count": len(cut)},
+                  [f'"{n}" was still mid-turn when the deploy launched — its '
+                   f"turn may have been cut mid-write" for n in not_settled])
 
     def prime_restart_gate(self, nid: str, action: str) -> None:
         """FR-27 gate (user design 2026-08-27): arming a deferred restart
