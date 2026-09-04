@@ -56,6 +56,8 @@ def resolve_stack(raw_stack: str) -> str:
             input=json.dumps({"stack": raw_stack, "mapsDir": MAPS_DIR}),
             capture_output=True, text=True, timeout=_RESOLVE_TIMEOUT_S,
             check=False,
+            creationflags=(subprocess.CREATE_NO_WINDOW  # type: ignore[attr-defined]
+                           if os.name == "nt" else 0),
         )
         if proc.returncode != 0 or not proc.stdout:
             return raw_stack

@@ -99,7 +99,10 @@ class DiskError(RuntimeError):
 
 
 def _run(args: list[str], timeout: int = 60) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(args, capture_output=True, text=True, timeout=timeout)
+    return subprocess.run(
+        args, capture_output=True, text=True, timeout=timeout,
+        creationflags=(subprocess.CREATE_NO_WINDOW  # type: ignore[attr-defined]
+                       if os.name == "nt" else 0))
 
 
 def distro() -> str:
