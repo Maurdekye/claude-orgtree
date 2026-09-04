@@ -33,6 +33,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -605,7 +606,12 @@ out["nodes"] = sorted(store.load_org("beta").d["nodes"])
         assert "BACKEND MISMATCH" in msg, msg
         assert "NOTHING HAS BEEN WRITTEN" in msg, msg
         assert "ORGTREE_STORE=sqlite" in msg, msg        # the way out is named
-        assert "export_json" in msg, msg                 # ...and the remedy
+        # ⚠ the remedy is the audited COMMAND, not a recipe. This line used to
+        # require `export_json`, back when the message spelled the rollback
+        # out step by step — and that spelled-out copy is exactly what drifted
+        # into the refuted park-before-install order while the tool and the
+        # runbook were corrected around it.
+        assert "tools/cutover.py rollback" in msg, msg
         assert "premigration" in msg, msg                # ...and the trap
         eq(r["owner_held"], False, "a refused process must not hold the claim: ")
         unchanged(root, before)
@@ -684,6 +690,37 @@ out["nodes"] = sorted(store.load_org("beta").d["nodes"])
            "both directions must be MigrationError so one handler refuses both: ")
     check("both directions of the invariant are the same exception family",
           the_two_refusals_are_one_rule)
+
+    def the_refusal_routes_to_the_tool() -> None:
+        """The message must POINT AT the rollback, never restate it.
+
+        ⚠ THIS EXISTS BECAUSE THE MESSAGE DRIFTED. It used to carry its own
+        five-step rollback, and when the ordering was corrected — install the
+        exports while the databases are still authoritative, park them only
+        after — the runbook and `tools/cutover.py` were both fixed and this
+        message was not. It went on telling operators to park FIRST, which is
+        the order proved to leave SQLite starting with an org silently
+        missing. A procedure written in two places drifts, and the copy that
+        drifts is the one nobody re-reads — which here is the copy an operator
+        actually sees, at the worst possible moment.
+
+        So: it names the audited command, and it does not contain a recipe.
+        The ordering assertion is the one with teeth: if the words ever come
+        back, they must come back in the safe order."""
+        msg = store._mismatch_text("/root", ["alpha"], [])
+        assert "tools/cutover.py rollback" in msg,             "the refusal must name the audited command: " + msg
+        steps = [ln for ln in msg.splitlines()
+                 if re.match(r"^\s*\d+[.)]\s", ln)]
+        assert not steps, (
+            "the refusal has grown a hand-written procedure again — that is "
+            "how it drifted out of step with the tool last time: " + str(steps))
+        low = msg.lower()
+        if "park" in low and "install" in low:
+            assert low.index("install") < low.index("park"), (
+                "install-before-park is the safety property; this message "
+                "names them in the refuted order")
+    check("the BackendMismatch refusal routes to the audited tool and never "
+          "restates the rollback", the_refusal_routes_to_the_tool)
 
 
 if __name__ == "__main__":

@@ -696,6 +696,21 @@ def _refusal_text(root: str, pending: list[str]) -> str:
 
 
 def _mismatch_text(root: str, dbs: list[str], shadowed: list[str]) -> str:
+    """The refusal an operator reads at the moment of a code/data asymmetry.
+
+    ⚠ IT ROUTES TO THE TOOL AND DOES NOT RESTATE THE PROCEDURE, deliberately.
+    This message used to carry its own five-step rollback, and when the
+    ordering was corrected — install the exports while the databases are still
+    authoritative, park them only after — the runbook and the tool were fixed
+    and THIS WAS NOT. It went on telling operators to park first, which
+    `cutover_tool_partial.py` proved can leave SQLite starting with an org
+    silently missing. (phase1-audit, 2026-09-04.)
+    
+    A procedure written in two places drifts, and the copy that drifts is the
+    one nobody re-reads. This is the copy an operator actually sees, at the
+    worst possible moment, so it names the audited command and the invariant
+    behind it and nothing else. `test_migration_gate` pins that it stays a
+    pointer: no numbered sequence, and no park-before-install ordering."""
     bar = "!" * 74
     both = (
         f"\n"
@@ -724,14 +739,18 @@ def _mismatch_text(root: str, dbs: list[str], shadowed: list[str]) -> str:
         f"  If you meant to run SQLite:   set ORGTREE_STORE=sqlite.\n"
         f"  Wrong root?                   set ORGTREE_DATA to the one you meant.\n"
         f"\n"
-        f"  If you are ROLLING BACK to JSON, the order matters and it is not\n"
-        f"  the obvious one:\n"
-        f"    1. start SQLite once more and `export_json` EVERY org;\n"
-        f"    2. check every export loads before you move anything;\n"
-        f"    3. move the .db files (and -wal/-shm) OUT of orgs/ — park them,\n"
-        f"       never delete them;\n"
-        f"    4. install those exports as <slug>.json;\n"
-        f"    5. then start JSON.\n"
+        f"  If you are ROLLING BACK to JSON, do NOT hand-roll it. With the\n"
+        f"  backend stopped:\n"
+        f"\n"
+        f"      python tools/cutover.py rollback <root>\n"
+        f"\n"
+        f"  It exports and validates EVERY org before anything moves, installs\n"
+        f"  the exports while the databases are still authoritative, and only\n"
+        f"  then parks them — so an interruption at any point leaves a root\n"
+        f"  that refuses to start rather than one that starts with an org\n"
+        f"  missing. It also recognises a half-finished rollback and prints\n"
+        f"  the exact command to finish it. docs/sqlite-cutover.md has the\n"
+        f"  reasoning.\n"
         f"\n"
         f"  ⚠ DO NOT roll back by restoring <slug>.json.premigration. That file\n"
         f"  is the document as it stood BEFORE the migration and contains none\n"

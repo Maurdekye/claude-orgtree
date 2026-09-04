@@ -11,8 +11,9 @@ of the rollback is not the obvious one, and the obvious one loses data.
 ## What changes, and why it was worth doing
 
 The JSON backend keeps one document per org and rewrites the whole thing on
-every save. On this install `orgs/orgtree.json` is **12.7 MB across 205 nodes
-(193 archived)**, of which **74% is append-only log sections** — `mail_log`
+every save. On this install `orgs/orgtree.json` was **12.7 MB across 205 nodes
+(193 archived)** when this was written and is growing by roughly half a
+megabyte a day, of which **74% is append-only log sections** — `mail_log`
 5.1 MB, `steered_log` 2.0 MB, `events` 1.35 MB. Changing one field re-serialised
 all of it.
 
@@ -65,19 +66,20 @@ and will save the next person re-measuring this when the document is 20 MB.
 
 **The two regressions are real and are listed on purpose.**
 
-*Reading a lazy section* is 40× slower in ratio and 30 ms in absolute terms.
+*Reading a lazy section* is 39.7× slower in ratio and 34 ms in absolute terms.
 It is already inside the per-turn number above: a turn pays it and is still
 twice as fast, because a turn writes far more than it lazily reads.
 
 *Producing a portable copy* is **not the same operation on both sides.** Under
 JSON the document already *is* the export, so that column is a file copy;
 under SQLite `export_json` reconstructs the whole document from rows. Equal
-purpose, different work. It runs once, offline, during a rollback — where 177 ms
-does not matter.
+purpose, different work. It runs once, offline, during a rollback — where
+**208 ms** (worst measured 475 ms) does not matter.
 
-**Sustained writes.** 4000 consecutive saves: median 8.0 ms, worst 79.8 ms.
+**Sustained writes** (separate soak, 2026-09-04 12:46Z, 4000 consecutive
+saves): median 8.0 ms, worst 79.8 ms.
 The worst case is the WAL checkpoint, it happened once, and **it is still
-faster than JSON's median save of 94 ms**. The WAL bounds itself at ~4.1 MB
+faster than JSON's median save in the same soak, 94 ms**. The WAL bounds itself at ~4.1 MB
 (`wal_autocheckpoint` = 1000 pages × 4096) and does not grow with write volume.
 No tuning has been applied and none is recommended without its own measurement.
 
