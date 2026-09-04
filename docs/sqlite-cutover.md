@@ -200,7 +200,7 @@ That is the correct behaviour for a half-finished rollback, and it is only
 available because the mismatch wall refuses on **any** active database rather
 than only on ones lacking a `.json`.
 
-⚠ This is also why a rollback is **all-or-nothing across the root**: the rule
+⚠ A rollback also cannot be done one org at a time: the rule
 is one active format per root, not per org, so you cannot roll back one org
 and leave the rest.
 
@@ -224,8 +224,41 @@ table above. You do not need the rollback to be atomic; you need it to be
 unable to leave a root that looks fine and is missing an org. That is what is
 enforced, and it is enforced by the store rather than by this document.
 
-If a rollback fails part-way: **fix whatever blocked it and re-run the same
-command.** The exports are already installed and re-reading them is harmless.
+### If a rollback fails part-way
+
+**Which recovery you need depends on how far it got, and `cutover.py rollback`
+tells you which state it is looking at rather than making you work it out.**
+
+| state of `orgs/` | what happened | what to do |
+|---|---|---|
+| every org still has a `.db` | it failed before or during the install, or the put-back succeeded | fix the blocker and **re-run the same command** |
+| some orgs are `.json`-only, others still have a `.db` | **killed part-way through parking** | see below — a plain re-run *cannot* work |
+| no `.db` left at all | it finished | nothing to do; **start the JSON build** |
+
+⚠ **A plain re-run cannot recover a part-way-parked root**, and this document
+said it could until 2026-09-04. The already-parked slugs now look like
+unmigrated JSON, so claiming the root refuses before the tool can resume. The
+fix is not to make the tool push through: it is to authorise, explicitly, the
+one operation that reverses the partial move — rebuilding those slugs'
+databases **from their already-installed current exports**, restoring
+whole-root SQLite authority, after which the rollback completes normally:
+
+```
+Windows  cmd /c "set ORGTREE_MIGRATE=1&& python tools\cutover.py rollback <root>"
+POSIX    ORGTREE_MIGRATE=1 python tools/cutover.py rollback <root>
+```
+
+The tool prints exactly that command, with the list of which slugs are parked
+and which are still databases, so nobody has to derive it at 3am.
+
+⚠ **It is deliberately not automatic.** Reconstructing an org's authority from
+an export is precisely the operation that must never happen because a tool
+decided it was probably fine — the value of the two walls is that a confused
+root *stops* instead of guessing. Read the two lists the tool prints and
+confirm they are what you expect before running it.
+
+Nothing is lost in any of these states: the exports were installed and
+validated before the first database moved.
 
 ---
 
