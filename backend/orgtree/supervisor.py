@@ -8563,6 +8563,64 @@ def _codex_process_spec(org: Org, nid: str, *,
     }
 
 
+def _codex_sandbox(sc: Mapping[str, Any]) -> str:
+    """The OS sandbox mode one Codex turn runs under, from the node's scope.
+
+    ⚠ THIS EXPRESSION IS A SECURITY BOUNDARY. It decides what a model may
+    touch on the operator's real machine, and one of its three answers
+    deliberately removes that boundary. Read the whole docstring before
+    changing it.
+
+    Codex has three modes; until 2026-09-04 orgtree only ever passed two,
+    chosen from the `edit` tool switch alone, and the node's orgtree
+    `permission_mode` had no influence at all. The consequence was measured:
+    a Codex seat could commit but could not write a git ref in a shared
+    checkout on another drive, because `workspace-write` confines writes to
+    the turn's cwd. A Claude seat with the same scope had no such limit.
+
+    · `read-only`          — no writes at all.
+    · `workspace-write`    — writes confined to the turn's cwd (the node's
+                             scratch dir). The historical default.
+    · `danger-full-access` — THE OS SANDBOX IS OFF. The turn can read and
+                             write any path the operator's own account can,
+                             on every drive, and reach the network
+                             unfiltered. It is NOT limited to the node's
+                             granted dirs: those are an orgtree-level
+                             convention that the OS does not enforce, and
+                             nothing below this line re-imposes them.
+
+    Full access is handed to exactly one configuration: `bypassPermissions`,
+    whose entire meaning on the Claude lane is already "do not ask" — this is
+    provider parity, not a new privilege class. `sc["permission_mode"]` is the
+    same value the Claude lane passes as `--permission-mode` (see
+    `_build_cmd`); `ledger` setdefaults it on load and clamps it down to the
+    kiosk ceiling, so it is always one of `PM_LEVELS`.
+
+    The `edit` switch gates it (coordinator ruling 2026-09-04, "option B"). A
+    node with edit OFF stays `read-only` whatever its permission_mode, so that
+    turning a switch OFF can never make an agent MORE powerful — a surprise
+    nobody reading the config would predict. The rejected variant is pinned
+    red-side-up in test_codex_sandbox_mode.py; do not "simplify" this into
+    checking permission_mode first.
+
+    ⚠ TODAY THIS GOVERNS ONLY A THREAD'S FIRST TURN. `codexrun` puts
+    `sandbox` on `thread/start` and `thread/fork` and NOT on `thread/resume`,
+    and a resumed thread does not keep what it was born with — it comes back
+    at the app-server's own default. Measured against codex-cli 0.153.3: a
+    thread born `danger-full-access` wrote a file outside its cwd on turn 1
+    and was refused by the OS on turn 2 ("Access to the path … is denied")
+    purely because turn 2 resumed. So every turn after an agent's first
+    silently runs `workspace-write` whatever this function answers. The
+    commit that follows sends it on resume too; until then, do not read this
+    return value as "what the next turn will run under".
+    """
+    if not sc.get("tools", {}).get("edit", True):
+        return "read-only"
+    if sc.get("permission_mode") == "bypassPermissions":
+        return "danger-full-access"
+    return "workspace-write"
+
+
 def _codex_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
                text: str, toks: list[str],
                images: list[dict[str, Any]] | None = None,
@@ -9025,8 +9083,8 @@ def _codex_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
         # measured superset of orgtree's low…max (Appendix B.3) — pass-through
         effort=org.effective_effort(nid),
         thread_id=resume_tid,
-        sandbox=("workspace-write" if tools_sc.get("edit", True)
-                 else "read-only"),
+        # a security boundary — read `_codex_sandbox` before touching this
+        sandbox=_codex_sandbox(n["scope"]),
         dynamic_tools=dyn, developer_instructions=ident,
         config_overrides=mcp_overrides,
         on_event=_on_event, tool_dispatch=_tool_call,
@@ -14399,12 +14457,14 @@ def _compact_split_codex_body(slug: str, nid: str, org: Org,
             raise RuntimeError(
                 "the current session is not a resumable Codex thread")
         cwd = scratch_dir(slug, nid)
-        tools_sc = n["scope"].get("tools", {})
         compacted = codexrun.compact_fork(
             providers.codex_argv(exe), cwd=cwd, model=model,
             thread_id=old_sid, timeout=COMPACT_TIMEOUT,
-            sandbox=("workspace-write" if tools_sc.get("edit", True)
-                     else "read-only"),
+            # THE SAME rule as a normal turn, from the same helper. A fork
+            # that computed its own would let one agent run at two different
+            # OS privilege levels depending on whether it happened to be
+            # compacting — a split nobody would find for weeks.
+            sandbox=_codex_sandbox(n["scope"]),
             developer_instructions=identity_prompt(org, nid),
             env_extra={"ORGTREE_ORG": slug, "ORGTREE_NODE": nid,
                        "ORGTREE_PORT": os.environ.get("ORGTREE_PORT", "7360")})
