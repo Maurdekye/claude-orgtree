@@ -157,6 +157,38 @@ class NoAppServer:
         codexrun.AppServerClient = self._c
 
 
+#: The Codex tiers whose availability does not depend on live evidence.
+#:
+#: ⚠ THIS SPLIT IS LOAD-BEARING AND IT IS NEW. `c5049fa` (2026-09-04, "gate
+#: rollout models on live Codex inventory") made rollout tiers CONDITIONAL:
+#: `provider_hire_gate` re-queries account-scoped inventory for them with
+#: `force=True`, which reaches for an app-server. The spent-window checks
+#: below used to loop `providers.CODEX_TIERS` wholesale, so the day `astra`
+#: became conditional they started failing on a gate that has nothing to do
+#: with a usage window — and because `check()` in this file does not catch,
+#: that abort took the other 11 checks with it.
+#:
+#: The guard was not wrong and neither was the gate: `NoAppServer` caught a
+#: real change. The narrowing keeps the spent-window property honest, and the
+#: conditional gate gets its OWN check below rather than being routed around.
+_ALWAYS_CODEX_TIERS = sorted(
+    set(providers.CODEX_TIERS) - set(providers.CONDITIONAL_CODEX_TIERS))
+
+
+def _always_and_conditional_are_both_non_empty():
+    """ANTI-VACUITY for the two checks below. If every Codex tier became
+    conditional the spent-window loop would iterate nothing and pass while
+    proving nothing; if none were, the conditional check would have no
+    subject. Assert the split has members on both sides before leaning on
+    either."""
+    assert _ALWAYS_CODEX_TIERS, (
+        "every Codex tier is now CONDITIONAL — the spent-window check below "
+        "would loop over nothing and pass vacuously")
+    assert providers.CONDITIONAL_CODEX_TIERS, (
+        "no Codex tier is conditional any more — the companion check below "
+        "has no subject, so delete it rather than let it pass empty")
+
+
 # ------------------------------------------------------- §1 the grant signal
 print("\n§1  the grant signal — a window of its own, in BOTH directions")
 
@@ -300,7 +332,14 @@ def a_spent_window_withholds_no_codex_tier():
 
 def a_spent_window_refuses_no_hire_at_the_door():
     """The other door. The chip not stopping a click is not the same as the
-    server accepting one, and 65273fa gated both."""
+    server accepting one, and 65273fa gated both.
+
+    ⚠ ALWAYS-AVAILABLE TIERS ONLY — see `_ALWAYS_CODEX_TIERS`. The property
+    here is about the SPENT USAGE WINDOW. A conditional tier is refused by a
+    different gate for a different reason, and that reason is pinned by
+    `a_conditional_tier_is_refused_for_inventory_not_the_window` rather than
+    hidden by widening this loop back out.
+    """
     from orgtree import api
     from orgtree.ledger import Org
     set_board(reserve=True, percent=100, reached=True)
@@ -308,8 +347,53 @@ def a_spent_window_refuses_no_hire_at_the_door():
     org.d["max_top_grant"] = 200
     try:
         with NoAppServer():
-            for tier in providers.CODEX_TIERS:
+            for tier in _ALWAYS_CODEX_TIERS:
                 api.provider_hire_gate(org, tier)
+    finally:
+        codex_limits.invalidate()
+
+
+def a_conditional_tier_is_refused_for_inventory_not_the_window():
+    """The companion, and what makes the narrowing above honest rather than
+    convenient.
+
+    A conditional tier IS refused with no app-server available — its gate
+    re-queries live inventory with `force=True` and missing evidence refuses.
+    What this pins is the REASON: it must name the conditional-availability
+    gate and must NOT cite the usage window. If it ever starts citing the
+    window, the two gates have been conflated and the user ruling this whole
+    section exists for — hiring PREPARES an agent, a spent window does not
+    refuse one — has been quietly undone for rollout tiers.
+    """
+    from orgtree import api
+    from orgtree.ledger import LedgerError, Org
+    set_board(reserve=True, percent=100, reached=True)
+    org = Org.create("conditional")
+    org.d["max_top_grant"] = 200
+    try:
+        with NoAppServer():
+            for tier in sorted(providers.CONDITIONAL_CODEX_TIERS):
+                try:
+                    api.provider_hire_gate(org, tier)
+                except LedgerError as e:
+                    msg = str(e)
+                    assert "conditional Codex tier" in msg, (
+                        f"{tier} was refused, but not by the conditional "
+                        f"gate: {msg}")
+                    for window_word in ("usage window", "spent", "limit "
+                                        "reached"):
+                        assert window_word not in msg.lower(), (
+                            f"{tier}'s refusal cites the usage window "
+                            f"({window_word!r}) — the availability gate and "
+                            f"the spent-window ruling have been conflated: "
+                            f"{msg}")
+                else:
+                    raise AssertionError(
+                        f"{tier} was ADMITTED with no app-server available. "
+                        f"Its gate re-queries inventory with force=True, so "
+                        f"either evidence is being taken from a cache it "
+                        f"should not trust, or this check no longer "
+                        f"reproduces the condition it was written for.")
     finally:
         codex_limits.invalidate()
 
@@ -318,8 +402,13 @@ check("the spent-account fixture is really spent (anti-vacuity)",
       the_board_really_does_say_spent)
 check("a spent usage window withholds no Codex tier — user ruling: hiring "
       "PREPARES an agent", a_spent_window_withholds_no_codex_tier)
-check("…and refuses no hire at the door either",
+check("the always/conditional tier split has members both sides "
+      "(anti-vacuity)", _always_and_conditional_are_both_non_empty)
+check("…and refuses no ALWAYS-available hire at the door either",
       a_spent_window_refuses_no_hire_at_the_door)
+check("a CONDITIONAL tier is refused for inventory, never for the "
+      "spent window",
+      a_conditional_tier_is_refused_for_inventory_not_the_window)
 
 
 # ------------------------------------------------------------- §3 the rule
