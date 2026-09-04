@@ -160,31 +160,54 @@ The rollback is: **take a current export, then park the database.**
 python tools/cutover.py rollback <root>
 ```
 
-with the backend stopped. That does, in this order and refusing to continue if
-any step fails:
+with the backend stopped. That does, in this order:
 
 1. **Claim the root** — which is what makes this process the only writer
    rather than one racing another.
-2. **Export every org and validate every export** — all of them, before a
-   single authoritative file moves.
-3. **Park the databases**: checkpoint, close the pooled connections, then move
-   `<slug>.db`, `-wal` and `-shm` out of `orgs/` into `parked-<stamp>/`.
-   **Moved, never deleted.** Trash and exports live outside `orgs/`, which is
-   why parking is the way out of a `BackendMismatch` refusal.
-4. **Install the exports** as `<slug>.json`.
+2. **Export every org and validate every export** — all of them, before
+   anything moves.
+3. **Install every export** as `<slug>.json`, *while every database is still
+   authoritative* — temp file, fsync, atomic replace, then the installed
+   bytes are re-read. A `.json` beside a live `.db` is inert: SQLite reads the
+   database and ignores it.
+4. **Only then park the databases**: checkpoint, close the pooled
+   connections, move `<slug>.db`, `-wal` and `-shm` into `parked-<stamp>/`.
+   **Moved, never deleted.**
 
 Then start the JSON build.
 
-⚠ **Steps 3 and 4 are all-or-nothing across the whole root.** A JSON process
-started part-way through silently omits every org whose database has been
-parked but whose export is not yet installed — and it will *look* fine. This
-is also why the invariant refuses a root holding *any* database rather than
-only ones lacking a `.json`: you cannot roll back one org and leave the rest.
+### ⚠ Why install-before-park, which is not the obvious order
 
-⚠ The pooled connection from the export step still holds each database open,
-and Windows will not move a file anything holds. `cutover.py` checkpoints and
-closes before moving; hand-rolling this is how you get a half-parked root.
-Measured — the first version of the tool died exactly there.
+The obvious order — park, then install — **fails open**, and it was measured
+doing so. Interrupt the parking loop (an external lock, an I/O error, the
+process dying) and you get some orgs parked with no `.json` installed. Start
+the default SQLite build on that root and **it comes up cleanly reporting only
+the orgs that survived**: the parked ones have silently vanished, because a
+slug holding only a `.json.premigration` is not "pending" and the migration
+wall never sees it.
+
+Installing first makes every interruption fail **closed**:
+
+| interrupted… | SQLite | JSON |
+|---|---|---|
+| after step 2 | works, all orgs | refuses (databases present) |
+| after step 3 | works, all orgs | refuses (databases present) |
+| **during step 4** | **refuses** (parked slugs are JSON-without-DB) | **refuses** (a database remains) |
+| after step 4 | refuses until migrated | starts, all orgs |
+
+During the parking, *neither backend can start until the last database moves*.
+That is the correct behaviour for a half-finished rollback, and it is only
+available because the mismatch wall refuses on **any** active database rather
+than only on ones lacking a `.json`.
+
+⚠ This is also why a rollback is **all-or-nothing across the root**: the rule
+is one active format per root, not per org, so you cannot roll back one org
+and leave the rest.
+
+⚠ The pooled connection from the export step holds each database open, and
+Windows will not move a file anything holds. `cutover.py` checkpoints and
+closes first; hand-rolling this is how you get a half-parked root. Measured —
+an early version of the tool died exactly there.
 
 ⚠ **Do not start JSON part-way through.** A mid-install start silently omits
 every org whose database has been parked but whose export is not yet installed.

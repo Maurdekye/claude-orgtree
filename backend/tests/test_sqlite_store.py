@@ -1055,15 +1055,26 @@ print(json.dumps({"refused": None, "names": names, "nodes": list(org.d["nodes"])
           "backup, never a rollback", premigration_beside_a_live_db_is_REFUSED)
 
     def the_supported_rollback_works() -> None:
-        """Export, validate, PARK the database, install the export, then start.
+        """Export, validate, INSTALL, then park — and the order is the point.
 
-        This is the order docs/sqlite-cutover.md prescribes, and the reason
-        it is that order: the export is taken from the live database, so it
-        carries every post-migration write, and nothing authoritative moves
-        until the replacement has been proved readable."""
+        ⚠ INSTALL FIRST, PARK SECOND. The obvious order is the other way and
+        it FAILS OPEN: phase1-audit interrupted a park-then-install rollback
+        and got orgs parked with no `.json` installed, which SQLite then
+        started on cleanly while those orgs were simply GONE — a
+        `.json.premigration` alone is not "pending", so the migration wall
+        never sees it.
+
+        Installing while the databases are still authoritative is safe
+        because a `.json` sitting beside a `.db` is inert, and that is only
+        true because the mismatch wall refuses on ANY active database. It
+        makes every interruption fail closed: after the install both
+        backends disagree safely (SQLite works, JSON refuses), and DURING the
+        parking neither can start at all. See probes/c6_rollback_order.py."""
         p = store.export_json("synth")
         doc = json.load(open(p, encoding="utf-8"))
-        Org(doc)                                  # validate BEFORE moving
+        Org(doc)                                  # validate BEFORE anything
+        shutil.copy(p, store._json_path("synth"))     # install FIRST
+        Org(json.load(open(store._json_path("synth"), encoding="utf-8")))
         parked = os.path.join(store.DATA_ROOT, "parked")
         os.makedirs(parked, exist_ok=True)
         # the pool still holds a connection from export_json; Windows will not
@@ -1092,7 +1103,6 @@ print(json.dumps({"refused": None, "names": names, "nodes": list(org.d["nodes"])
             if os.path.exists(src):
                 shutil.move(src, dst)
                 moved.append((dst, src))
-        shutil.copy(p, store._json_path("synth"))
         try:
             res = _run_child()
             eq(res["refused"], None, f"JSON must start after a real rollback: "
@@ -1107,8 +1117,8 @@ print(json.dumps({"refused": None, "names": names, "nodes": list(org.d["nodes"])
             os.remove(store._json_path("synth"))
             for dst, src in moved:                # put the database back
                 shutil.move(dst, src)
-    check("the SUPPORTED rollback — export, validate, park the database, "
-          "install the export — starts under JSON and reads it",
+    check("the SUPPORTED rollback — export, validate, INSTALL, then park — "
+          "starts under JSON and reads it (install-first is the safety)",
           the_supported_rollback_works)
 
     def bad_backend_value() -> None:
