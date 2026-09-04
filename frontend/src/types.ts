@@ -1332,9 +1332,18 @@ export interface DefaultsPayload {
 }
 
 // GET /api/orgs/{slug}/orgmd
+// `chars` is the file's TRUE length; `read_truncated` says `content` is only
+// the first `edit_max` of it — and a truncated read MUST NOT be saved back or
+// it rewrites the file short. `prompt_max` is how much of org.md actually
+// reaches an agent's system prompt: a file can be saved whole and still be
+// DELIVERED short, which is the thing the operator was never told.
 export interface OrgMdPayload {
   path: string | null
   content: string
+  chars?: number
+  read_truncated?: boolean
+  edit_max?: number
+  prompt_max?: number
 }
 
 // GET /api/orgs/{slug}/audiences

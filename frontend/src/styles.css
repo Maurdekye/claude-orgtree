@@ -4508,6 +4508,15 @@ label.set-row { cursor: pointer; }
 @media (max-height: 560px) {
   .settings textarea.orgmd-editor { height: 9rem; max-height: 42vh; }
 }
+/* org.md length warnings — the file saves whole but is DELIVERED cut, and the
+   operator is the only person who can shorten it, so it is said here */
+.orgmd-warn {
+  margin-top: 6px; font-size: 11px; line-height: 1.45;
+  padding: 6px 8px; border-radius: 4px;
+  color: var(--warn, #b3541e);
+  background: color-mix(in srgb, var(--warn, #b3541e) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--warn, #b3541e) 40%, transparent);
+}
 /* ---- the header usage modal's per-account sections ---- */
 .usage-acct { display: flex; flex-direction: column; gap: 6px;
   border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }

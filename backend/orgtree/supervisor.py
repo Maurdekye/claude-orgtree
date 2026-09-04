@@ -3834,7 +3834,28 @@ def _claudemd_block(org: Org, nid: str) -> str:
     return "\n\n".join(parts)
 
 
-ORG_CHARTER_MAX = 12_000      # chars of org.md carried in the system prompt
+#: Chars of org.md carried in the system prompt. DELIVERY only — the file on
+#: disk is always stored whole; this bounds what reaches an agent.
+#:
+#: ⚠ DELIBERATELY NOT UNCAPPED, unlike agent charters (ledger.CHARTER_LONG,
+#: user ruling "uncap it"). The line drawn there was: text a person typed and
+#: can see should not be cut. org.md sits on that side — it has a real editor —
+#: so the argument for uncapping applies, and it still lost to two facts:
+#:
+#:   * MEASURED 2026-09-04: the largest org.md on this machine is 1,874 chars,
+#:     15% of this bound. Nothing is within 6x of it. Moving a number that is
+#:     not biting anyone is speculative churn.
+#:   * BLAST RADIUS. A charter costs one agent. This text is concatenated into
+#:     EVERY agent's prompt in EVERY org, on every turn — so at this bound the
+#:     worst case is ~3k tokens (~4 chars/token) per agent per turn, forever,
+#:     and today's real cost is ~470. Unbounded, one careless paste is a
+#:     context failure for every agent at once rather than a local one.
+#:
+#: The defect was never the number — it was that the cut announced itself only
+#: INLINE, to the agent, which cannot shorten org.md. The operator, who can,
+#: was never told. That half is fixed in `orgmd_put`/`orgmd_get`. Revisit this
+#: number when a real org.md actually approaches it; the editor now says so.
+ORG_CHARTER_MAX = 12_000
 
 
 def _org_charter_block(org: Org) -> str:

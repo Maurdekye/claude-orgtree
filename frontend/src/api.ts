@@ -269,7 +269,10 @@ export const getOrgMd = (slug: string): Promise<OrgMdPayload> =>
   req(`/api/orgs/${slug}/orgmd`)
 export const putOrgMd = (
   slug: string, content: string,
-): Promise<{ path: string; bytes: number }> =>
+): Promise<{
+  path: string; bytes: number; chars?: number
+  prompt_max?: number; prompt_truncated?: boolean; warnings?: string[]
+}> =>
   req(`/api/orgs/${slug}/orgmd`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },

@@ -37,7 +37,7 @@ import { addPending, dropPending, ingestPulse, ingestStream, resetConvos } from 
 import type {
   AskInfo, AudiencesPayload, CacheForecast, DefaultsPayload, HostPayload, InboxPayload,
   KioskSpecRequest,
-  MailEntry, OpRequest, OrgEvent, OrgListEntry, SweepPreview, ToastFn,
+  MailEntry, OpRequest, OrgEvent, OrgListEntry, OrgMdPayload, SweepPreview, ToastFn,
   ProvidersPayload,
   ToastUndo, TreeFrozen, TreeNode, TreePayload, UsageLimit, UsagePeek,
 } from './types'
@@ -2143,6 +2143,9 @@ export function SettingsPanel({ tree, toast, close }: {
     (k in edit ? edit[k] as T : server)
   const clearEdits = () => setEdit({})
   const [orgMd, setOrgMd] = useState<string | null>(null)
+  // what the server said about org.md's length and how much of it agents
+  // actually receive — the editor is the only place the operator can learn it
+  const [orgMdMeta, setOrgMdMeta] = useState<OrgMdPayload | null>(null)
   // D-222 (user ruling 2026-09-01, "consolidate settings into ONE modal"):
   // the advanced disclosure and the nested AdvancedOrgModal it opened are
   // gone from this panel. Its categories are now tabs of THIS modal, with
@@ -2244,7 +2247,15 @@ export function SettingsPanel({ tree, toast, close }: {
     // null also resets on org switch so the previous org's text cannot be
     // saved into the new one during the load window.
     setOrgMd(null)
-    getOrgMd(tree.slug).then((r) => setOrgMd(r.content)).catch(() => setOrgMd(null))
+    setOrgMdMeta(null)
+    getOrgMd(tree.slug).then((r) => {
+      setOrgMdMeta(r)
+      // ☠ Same family as the empty-write scar above: if the READ was cut, the
+      // buffer is not the file. Saving it back would rewrite org.md short and
+      // destroy the tail for real. Refuse to load it into an editable buffer
+      // at all — null keeps the textarea disabled and skips the write.
+      setOrgMd(r.read_truncated ? null : r.content)
+    }).catch(() => setOrgMd(null))
   }, [tree.slug])
   return (
     <div className="overlay" onClick={close}>
@@ -2356,6 +2367,27 @@ export function SettingsPanel({ tree, toast, close }: {
             <textarea className="orgmd-editor" value={orgMd ?? ''}
               aria-label="org.md" disabled={orgMd == null}
               onChange={(e) => setOrgMd(e.target.value)} />
+            {/* ⚠ the writer-facing half of the delivery cut. The prompt block
+                already tells the AGENT its copy was cut, but an agent cannot
+                shorten org.md — the operator is the only one who can, and was
+                the only one never told. This says it where they are typing. */}
+            {orgMdMeta?.read_truncated && (
+              <div className="orgmd-warn" role="alert">
+                ⚠ This file is {orgMdMeta.chars} chars — larger than the
+                editor loads ({orgMdMeta.edit_max}). Editing is DISABLED so a
+                partial copy cannot be saved over the whole file. Edit
+                org.md on disk instead.
+              </div>
+            )}
+            {orgMd != null && orgMdMeta?.prompt_max != null
+              && orgMd.length > orgMdMeta.prompt_max && (
+              <div className="orgmd-warn" role="alert">
+                ⚠ {orgMd.length} chars — only the first {orgMdMeta.prompt_max}
+                {' '}reach an agent. The last {orgMd.length - orgMdMeta.prompt_max}
+                {' '}chars are delivered to NO agent on any provider. The file
+                saves whole; the delivery is what is cut.
+              </div>
+            )}
           </SetBlock>
         </SetGroup>
         </SettingsTabPanel>
@@ -2599,7 +2631,11 @@ export function SettingsPanel({ tree, toast, close }: {
                   auto_resume_compact: arCompact,
                   auto_cheap_compact: { enabled: accOn,
                     occ: (+accOcc || 50) / 100 } }),
-              orgMd != null ? putOrgMd(tree.slug, orgMd).then(() => ({}))
+              // pass the org.md warnings through rather than swallowing them:
+              // a save that delivers less than it stored has to SAY so, and
+              // this array is already how every other job reaches the toast
+              orgMd != null
+                ? putOrgMd(tree.slug, orgMd).then((r) => ({ warnings: r.warnings }))
                 : Promise.resolve({}),
             ]
             if (kk && (+kkCredits !== (kk.credits ?? 0)

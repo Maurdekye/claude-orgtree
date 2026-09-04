@@ -4208,8 +4208,24 @@ def node_scratch(slug: str, nid: str, path: str = "") -> dict[str, Any]:
     raise HTTPException(404, f"no such path: {path!r}")
 
 
+#: How much of org.md the EDITOR is handed. A bound, because this reads an
+#: arbitrary file off disk — but a declared one, and the UI must refuse to SAVE
+#: a truncated read. ☠ A short read plus one ordinary save rewrites the file
+#: short and the operator's text is gone for real; App.tsx already carries the
+#: scar of the sibling version of this bug (a failed read that armed an empty
+#: write). `read_truncated` is what lets the client disarm the save.
+ORGMD_EDIT_MAX = 60_000
+
+
 @app.get("/api/orgs/{slug}/orgmd")
 def orgmd_get(slug: str, request: Request) -> dict[str, Any]:
+    """The org.md editor's read.
+
+    Reports `chars` (the file's TRUE length) and `read_truncated`, plus
+    `prompt_max` — how much of it actually reaches an agent. A file can be
+    saved whole and still be delivered short; the editor says so, because the
+    operator is the only person who can shorten it and was the one person
+    never told."""
     try:
         org = store.load_org(slug)
     except LedgerError as e:
@@ -4217,11 +4233,18 @@ def orgmd_get(slug: str, request: Request) -> dict[str, Any]:
     ws = org.d.get("workspace")
     p = os.path.join(ws, "CLAUDE.md") if ws else None
     content = ""
+    chars = 0
+    read_cut = False
     if p and os.path.isfile(p):
-        content = open(p, encoding="utf-8", errors="replace").read()[:60000]
+        raw = open(p, encoding="utf-8", errors="replace").read()
+        chars = len(raw)
+        read_cut = chars > ORGMD_EDIT_MAX
+        content = raw[:ORGMD_EDIT_MAX]
     if _public_slug(request) and p:
         p = os.path.basename(p)      # the host path is the operator's, not the org's
-    return {"path": p, "content": content}
+    return {"path": p, "content": content, "chars": chars,
+            "read_truncated": read_cut, "edit_max": ORGMD_EDIT_MAX,
+            "prompt_max": supervisor.ORG_CHARTER_MAX}
 
 
 class OrgMd(Body):
@@ -4255,7 +4278,27 @@ async def orgmd_put(slug: str, body: OrgMd) -> dict[str, Any]:
     with open(p, "w", encoding="utf-8") as f:
         f.write(body.content)
     await hub.changed(slug)
-    return {"path": p, "bytes": len(body.content)}
+    # ⚠ THE FILE IS ALWAYS SAVED WHOLE. What is bounded is DELIVERY: only the
+    # first ORG_CHARTER_MAX chars reach an agent's system prompt. That cut
+    # announced itself inline in the prompt — to the AGENT, which cannot act on
+    # it — and said nothing to the operator, the one person who can shorten the
+    # file. This is that missing half. It never refuses: it is the operator's
+    # own file and their own org.
+    n = len(body.content)
+    over = n - supervisor.ORG_CHARTER_MAX
+    res: dict[str, Any] = {"path": p, "bytes": n, "chars": n,
+                           "prompt_max": supervisor.ORG_CHARTER_MAX,
+                           "prompt_truncated": over > 0}
+    if over > 0:
+        res["warnings"] = [
+            f"Saved WHOLE to disk ({n} chars), but only the first "
+            f"{supervisor.ORG_CHARTER_MAX} reach an agent: the last {over} "
+            f"chars are delivered to NO agent, on any provider. Agents are "
+            f"told their copy was cut, but they cannot shorten it — you are "
+            f"the only one who can. Trim the file below "
+            f"{supervisor.ORG_CHARTER_MAX} chars so the whole directive "
+            f"arrives."]
+    return res
 
 
 class AudienceAction(Body):
