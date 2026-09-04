@@ -2957,10 +2957,13 @@ def _looks_like_usage_limit(blob: str) -> bool:
     # №8 adjacent fix: the CLI's session-limit phrasing is "You've hit your
     # session limit — resets 1:40pm", which matched NONE of the original
     # second set — the freeze machinery never fired for exactly that case
+    # 2026-09-04: Anthropic's live 429 says "would exceed your account's rate
+    # limit"; the too-long "exceeded" stem silently returned False here.
     b = blob.lower()
     return ("limit" in b and any(w in b for w in
                                  ("usage", "weekly", "reached", "exceeded",
-                                  "quota", "hit your", "resets", "session")))
+                                  "exceed", "quota", "hit your", "resets",
+                                  "session")))
 
 
 def _looks_like_auth_failure(res: dict[str, Any]) -> bool:
