@@ -4095,6 +4095,29 @@ def _mail_refs(org_slug: str, box: str, rows: list[Any],
     return rows
 
 
+def _sent_refs(org_slug: str, rows: list[Any]) -> list[Any]:
+    """Stamp SENT rows, which are a different question from delivered ones.
+
+    ⚠ A SENT ROW IS A COPY OF A MAIL THAT LIVES IN SOMEBODY ELSE'S BOX. The
+    user's outbox is written by `post_mail` as `{**entry, "to": to}` — the same
+    entry it just appended to the RECIPIENT's archive — so addressing these
+    rows from the box you are reading names a message that is not there, and
+    on a colliding id names a DIFFERENT message that is (Astra, 2026-09-05).
+    Each row carries its own `to`, and `refs.mail` maps exactly the three
+    delivery values `post_mail` can return; anything else (a `@net:` peer)
+    gets no reference rather than an invented one.
+    """
+    for r in rows:
+        if isinstance(r, dict) and r.get("id"):
+            to = str(r.get("to") or "")
+            ref = refs.mail(org_slug,
+                            "user_inbox" if to == USER else to,
+                            str(r["id"]))
+            if ref:
+                r["ref"] = ref
+    return rows
+
+
 def _work_refs(org_slug: str, payload: dict[str, Any]) -> dict[str, Any]:
     """Stamp every listed item with its own reference. A LIST is where a
     reader most often needs one — the user asked to link EXISTING work, not
@@ -4440,7 +4463,7 @@ def user_inbox(slug: str) -> dict[str, Any]:
     return {"pending": _mail_refs(slug, "user", d.get("user_inbox", [])),
             "delivered": _mail_refs(slug, "user",
                                     d.get("user_mail_log", [])[-50:]),
-            "sent": _mail_refs(slug, "user", d.get("user_outbox", [])[-50:])}
+            "sent": _sent_refs(slug, d.get("user_outbox", [])[-50:])}
 
 
 class InboxRead(Body):
@@ -8037,12 +8060,7 @@ def node_inbox(slug: str, nid: str) -> dict[str, Any]:
     # the RECIPIENT's box, not this node's — a reference built from `nid` here
     # would name a mail that is not there. Each sent row carries its own `to`,
     # so it addresses its own box.
-    for m in sent:
-        to = str(m.get("to") or "")
-        ref = refs.mail(slug, "user_inbox" if to == USER else to,
-                        str(m.get("id") or ""))
-        if ref:
-            m["ref"] = ref
+    _sent_refs(slug, sent)
     return {"pending": _mail_refs(slug, "node", waiting, nid),
             "delivered": _mail_refs(slug, "node", delivered[-50:], nid),
             "sent": sent[-50:]}

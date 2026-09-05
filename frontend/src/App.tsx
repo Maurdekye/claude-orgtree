@@ -25,7 +25,7 @@ import {
 } from './icons'
 import { DirList } from './forms'
 import { FolderPickerHost } from './picker'
-import { activeDocCount, ALL_TIERS, attentionPip, availableAutopsyModels, deskDpi, fallbackActive, fmtCredits, formatCount, freezeKind, isOpenRouterTier, jumpTo, orgPxc, presenceOfPayload, primedRestartChip, setDeskDpi, TIER_LETTER, tierLabel, unicodeLength, usePolled } from './canvas/shared'
+import { activeDocCount, ALL_TIERS, attentionPip, availableAutopsyModels, deskDpi, fallbackActive, fmtCredits, formatCount, freezeKind, isOpenRouterTier, jumpKey, jumpTo, orgPxc, presenceOfPayload, primedRestartChip, setDeskDpi, TIER_LETTER, tierLabel, unicodeLength, usePolled } from './canvas/shared'
 import { AskCard } from './canvas/asks'
 import { AgentName } from './canvas/identity'
 import { AccountsPanel, UsageBars } from './canvas/accounts'
@@ -239,7 +239,9 @@ export default function App() {
   // 'last' = whatever mode was used last (the header chip's path)
   const [showDisk, setShowDisk] = useState<false | 'last' | 'largest'>(false)
   const [showInbox, setShowInbox] = useState(false)
-  const [inboxJump, setInboxJump] = useState<string | null>(null)   // mail id a chat link targets
+  // the mail a chat link or a reference targets — a REQUEST, so a second
+  // click on the same message is a second request (`jumpTo` in shared.ts)
+  const [inboxJump, setInboxJump] = useState<JumpReq | null>(null)
   const [drawer, setDrawer] = useState(false)
   const [doomedOrg, setDoomedOrg] = useState<OrgListEntry | null>(null)   // org row pending deletion
   const [showDefaults, setShowDefaults] = useState(false)   // global new-org defaults
@@ -1004,7 +1006,7 @@ export default function App() {
                 onOpenDocHandled={() => setDocJump(null)}
                 onAccounts={BASE ? undefined : () => setShowAccounts(true)}
                 onInbox={(jump: unknown) => {
-                  setInboxJump(typeof jump === 'string' ? jump : null)
+                  setInboxJump(typeof jump === 'string' ? jumpTo(jump) : null)
                   setShowInbox(true)
                 }}
                 onWorkItem={(item: string) => {
@@ -1028,7 +1030,8 @@ export default function App() {
               )}
               {showInbox && (
                 <InboxPanel slug={slug} tree={tree} toast={toast}
-                  refresh={() => refreshTree(slug)} jumpTo={inboxJump}
+                  refresh={() => refreshTree(slug)}
+                  jumpTo={inboxJump?.id ?? null} jumpSeq={inboxJump?.seq}
                   onFocusAgent={(id) => {
                     setShowInbox(false)
                     setInboxJump(null)
@@ -1954,7 +1957,7 @@ function useShellRefs(slug: string, tree: TreePayload | null, routes: {
   return useRefRoutes(slug, nodes, { ...routes, tierOf })
 }
 
-export function InboxPanel({ slug, tree, toast, refresh, close, jumpTo,
+export function InboxPanel({ slug, tree, toast, refresh, close, jumpTo, jumpSeq,
   onFocusAgent, onOpenItem, onOpenDoc, onOpenMail }: {
   slug: string
   tree: TreePayload
@@ -1962,6 +1965,8 @@ export function InboxPanel({ slug, tree, toast, refresh, close, jumpTo,
   refresh?: () => void
   close: () => void
   jumpTo: string | null
+  /** the request's own identity, so a repeat click is a new request */
+  jumpSeq?: number | null
   onFocusAgent?: (agentId: string) => void
   /** a canonical reference written in a mail BODY, followed. Each is
    *  optional and each one supplied is one more kind of token this panel
@@ -1973,6 +1978,18 @@ export function InboxPanel({ slug, tree, toast, refresh, close, jumpTo,
 }) {
   useEsc(close)
   const [folder, setFolder] = useState('inbox')
+  // ⚠ A REFERENCE MUST OPEN THE FOLDER THE MESSAGE IS IN. The user's own
+  // sends are a separate folder here, and a `@mail:` token naming one
+  // arrived with the panel showing `inbox` — so the message was one
+  // unmarked click away and the panel looked ordinary. The node inbox has
+  // done this since the mail-route work; this side had not (Astra,
+  // 2026-09-05).
+  //
+  // Keyed on the REQUEST, not on the box: switching whenever the data
+  // changes would drag the reader out of a folder they chose by hand on
+  // every poll. `box` is in the deps because the answer is not knowable
+  // until it has loaded.
+  const foldedJump = useRef<string | null>(null)
   const nodes = flatNodes(tree)
   const mailRefs = useShellRefs(slug, tree,
     { onOpenItem, onFocusAgent, onOpenDoc, onOpenMail })
@@ -1992,6 +2009,15 @@ export function InboxPanel({ slug, tree, toast, refresh, close, jumpTo,
   // null (identity changed — §6.10), and blanking the inbox on every
   // mark-read would regress the instant-ack this bump exists to provide
   const box = usePolled(() => getInbox(slug), [slug], 5000, readBump)
+  useEffect(() => {
+    const key = jumpKey(jumpTo, jumpSeq)
+    if (!jumpTo || !box || foldedJump.current === key) return
+    foldedJump.current = key
+    const here = (rows: { id?: string }[] | undefined) =>
+      (rows ?? []).some((m) => m.id === jumpTo)
+    if (here(box.pending) || here(box.delivered)) setFolder('inbox')
+    else if (here(box.sent)) setFolder('sent')
+  }, [jumpTo, jumpSeq, box])
   const aud = usePolled(() => getAudiences(slug), [slug])
   // №10: the record loads on demand — and keeps loading while that tab is up
   const events = usePolled(
@@ -2144,6 +2170,7 @@ export function InboxPanel({ slug, tree, toast, refresh, close, jumpTo,
               // uploads/ (the upload landed there at stage time) — key on
               // m.to; a row without one ('' = unreachable) keeps plain chips
               : <MailList delivered={box.sent ?? []} outgoing refs={mailRefs}
+                  jumpTo={jumpTo} jumpSeq={jumpSeq}
                   onFocusAgent={onFocusAgent ? (agentId) => { close(); onFocusAgent(agentId) } : undefined}
                   fileHref={(p, m) => typeof m.to === 'string' && m.to
                     ? fileUrl(slug, m.to, p) : ''}
