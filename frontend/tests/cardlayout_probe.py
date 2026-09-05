@@ -94,7 +94,8 @@ def main() -> int:
                 const b = card.querySelector('.expandbtn');
                 const br = b?.getBoundingClientRect();
                 const badges = card.querySelector('.sq-badges')?.getBoundingClientRect();
-                const actions = card.querySelector('.sq-actions')?.getBoundingClientRect();
+                const actionEl = card.querySelector('.sq-actions');
+                const actions = actionEl?.getBoundingClientRect();
                 // the idle age: where it sits, and whether it is really visible
                 const seatEl = card.querySelector('.sq-workstate');
                 const wordEl = card.querySelector('.sq-workstate .sq-idle');
@@ -110,6 +111,8 @@ def main() -> int:
                   button: br && {x:br.x,y:br.y,w:br.width,h:br.height},
                   badges: badges && {x:badges.x,y:badges.y,w:badges.width,h:badges.height},
                   actions: actions && {x:actions.x,y:actions.y,w:actions.width,h:actions.height},
+                  actionOrder: actionEl && [...actionEl.children].map((el) =>
+                    [...el.classList].find((name) => name.endsWith('btn')) ?? el.tagName),
                   rows: rows.map((e) => e.className), actionJustify:
                     getComputedStyle(card.querySelector('.sq-actions')).justifyContent };
               });
@@ -122,7 +125,9 @@ def main() -> int:
                 ref.remove();
               }
               return { normal: read('#normal'), mini: read('#mini'), references,
-                pinned: document.querySelector('#pinned .expandbtn') === null };
+                pinned: document.querySelector('#pinned .expandbtn') === null,
+                pinnedActions: [...document.querySelectorAll('#pinned .sq-actions > button')]
+                  .map((el) => [...el.classList].find((name) => name.endsWith('btn')) ?? el.tagName) };
             }""")
             # Capture a real hover state: the existing card design deliberately
             # reveals its action row only while the pointer is over a card.
@@ -157,6 +162,8 @@ def main() -> int:
                 failures.append(f"{lod}/{row['id']}: expand center outside card")
             if row["actionJustify"] != "flex-start":
                 failures.append(f"{lod}/{row['id']}: actions justify {row['actionJustify']}")
+            if not row["actionOrder"] or row["actionOrder"][0] != "mailbtn":
+                failures.append(f"{lod}/{row['id']}: mail action is not leftmost: {row['actionOrder']!r}")
             if "sq-head" not in row["rows"] or "sq-actions" not in row["rows"]:
                 failures.append(f"{lod}/{row['id']}: row structure missing")
             for part in (row.get("actions"), row.get("badges")):
@@ -178,6 +185,8 @@ def main() -> int:
         failures.append(f"expand routed to {opened!r}, expected codex-terra then agy")
     if not values["pinned"]:
         failures.append("pinned card still exposes duplicate expand action")
+    if not values["pinnedActions"] or values["pinnedActions"][0] != "mailbtn":
+        failures.append(f"pinned card mail action is not leftmost: {values['pinnedActions']!r}")
     if not values["mobileActionsHidden"]:
         failures.append("mobile card controls are hidden without removing the action row")
     print(json.dumps({"measurements": values, "opened": opened, "screenshot": str(shot)}, indent=2))

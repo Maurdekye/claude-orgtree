@@ -1443,6 +1443,12 @@ export function NodeSquare({ node, pos, lod, focused: deskOpen, dragging, isDrop
         </div>
       </div>}
       {!focused && <div className="sq-actions">
+        <button className={'mailbtn' + ((node.mail_pending ?? 0) > 0 ? ' has' : '')}
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={(e) => { e.stopPropagation(); onInbox() }}>
+          <MailIcon fontSize="inherit" />{(node.mail_pending ?? 0) > 0 &&
+            <span className={'count prov-' + providerOf(node.tier ?? '')}>{node.mail_pending}</span>}
+        </button>
         {onPin && !pinned &&
           <button className="expandbtn" aria-label="Expand agent window"
             title="Expand agent window"
@@ -1450,12 +1456,6 @@ export function NodeSquare({ node, pos, lod, focused: deskOpen, dragging, isDrop
             onClick={(e) => { e.stopPropagation(); onPin() }}>
             <FullscreenIcon fontSize="inherit" />
           </button>}
-        <button className={'mailbtn' + ((node.mail_pending ?? 0) > 0 ? ' has' : '')}
-          onPointerDown={(e) => e.stopPropagation()}
-          onClick={(e) => { e.stopPropagation(); onInbox() }}>
-          <MailIcon fontSize="inherit" />{(node.mail_pending ?? 0) > 0 &&
-            <span className={'count prov-' + providerOf(node.tier ?? '')}>{node.mail_pending}</span>}
-        </button>
         {/* retire without the zoom-in (user request 2026-08-17): hover-revealed
             like the gear/mail, confirm-gated like the desk button. Wears the
             desk's retire/dissolve split so it is never a dead control. */}
