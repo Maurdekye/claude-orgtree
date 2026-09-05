@@ -679,8 +679,8 @@ button.badge.audience-fold.alert {
   font: 600 10px/1 var(--mono); color: var(--dim); }
 .sq-idle.done { color: var(--ok); }
 .sq-idle.blocked { color: var(--bad); }
-/* the age beside the state word, matching .turn-status-time on the desk. It
-   never shrinks: the WORD truncates first, so the time cannot be cut to "2" */
+/* the age beside the state word; flex:none so the WORD truncates first and the
+   clock is never cut to "2" */
 .sq-idle-time {
   flex: none; margin-left: 4px; white-space: nowrap;
   font: 600 10px/1 var(--mono); color: var(--dim);

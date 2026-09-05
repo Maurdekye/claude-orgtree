@@ -149,16 +149,21 @@ test('an idle card carries its age BESIDE the state word, not as a separate badg
       { status: 'done', summary: 'finished', at: '' }
     const view = await mountView(card(idle, 'norm', noop), (el) => el)
     try {
-      const seat = view.el.querySelector('.sq-workstate')!
-      const word = seat.querySelector('.sq-idle')!
-      const time = seat.querySelector('.sq-idle-time')!
-      assert.ok(word, 'the state word is gone')
-      assert.ok(time, 'the age is not in the same seat as the word')
-      assert.match(time.textContent ?? '', /\d/, 'the age rendered no number')
+      // ⚠ COUNTS AND BOOLEANS, NEVER DOM NODES. A failing assert.equal on an
+      // element makes node:test diff the whole rendered tree, which allocates
+      // until it dies — the test then HANGS instead of naming what broke, and
+      // the check reads green-or-mysterious rather than green-or-red.
+      const seat = view.el.querySelector('.sq-workstate')
+      const word = seat?.querySelector('.sq-idle')
+      const time = seat?.querySelector('.sq-idle-time')
+      assert.equal(Boolean(word), true, 'the state word is gone')
+      assert.equal(Boolean(time), true, 'the age is not in the same seat as the word')
+      assert.match(time?.textContent ?? '', /\d/, 'the age rendered no number')
       // the word comes first, the age second — "beside", in that order
-      assert.equal(word.nextElementSibling, time)
+      assert.equal(word?.nextElementSibling === time, true,
+        'the age is not the element immediately after the word')
       // and the badge it used to be is GONE from the whole card
-      assert.equal(view.el.querySelector('.turnago'), null,
+      assert.equal(view.el.querySelectorAll('.turnago').length, 0,
         'the separate age badge is still rendered somewhere on the card')
     } finally { await view.unmount() }
   })
@@ -171,10 +176,14 @@ test('a busy card keeps its activity treatment and shows no idle age', async () 
     [{ at: new Date(Date.now() - 120_000).toISOString(), killed: false, cost: 0, denials: 0 }]
   const view = await mountView(card(busy, 'norm', noop), (el) => el)
   try {
-    assert.ok(view.el.querySelector('.sq-workstate .actlabel, .sq-workstate .act'),
-      'the busy card lost its activity treatment')
-    assert.equal(view.el.querySelector('.sq-idle'), null, 'a busy card shows a state word')
-    assert.equal(view.el.querySelector('.sq-idle-time'), null, 'a busy card shows an idle age')
-    assert.equal(view.el.querySelector('.turnago'), null)
+    // counts only — see the note in the idle test above
+    assert.equal(view.el.querySelectorAll('.sq-workstate .actlabel, .sq-workstate .act').length,
+      1, 'the busy card lost its activity treatment')
+    assert.equal(view.el.querySelectorAll('.sq-idle').length, 0,
+      'a busy card shows a state word')
+    assert.equal(view.el.querySelectorAll('.sq-idle-time').length, 0,
+      'a busy card shows an idle age')
+    assert.equal(view.el.querySelectorAll('.turnago').length, 0,
+      'a busy card shows the old age badge')
   } finally { await view.unmount() }
 })

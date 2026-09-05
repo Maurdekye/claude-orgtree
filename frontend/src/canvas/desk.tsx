@@ -186,8 +186,8 @@ export function RouteBadge({ route }: { route?: CodexRouteInfo | null }) {
  * which exists only when the agent chose to report a status. */
 export function LastTurnAge({ turn, busy = false, variant = 'badge' }: {
   turn?: TurnStat | null; busy?: boolean
-  /** `inline` sits beside the card's state word, the way the desk banner's
-   *  time sits beside its label (user 2026-09-05) — same value, same clock */
+  /** `inline` sits beside the card's state word, as the banner's time sits
+   *  beside its label — same value, same clock */
   variant?: 'badge' | 'map' | 'inline'
 }) {
   useSyncExternalStore(subscribeAgeClock, () => ageClockSecond,

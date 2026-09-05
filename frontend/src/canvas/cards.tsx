@@ -1424,8 +1424,9 @@ export function NodeSquare({ node, pos, lod, focused: deskOpen, dragging, isDrop
                     title={`${node.last_status.status}: ${node.last_status.summary}`} />}
               </>
               : <>
-                {/* the age sits BESIDE the state word, as on the desk (user
-                    2026-09-05) — not as a separate badge further along */}
+                {/* the age is the word's SIBLING, not its child: `.sq-idle`
+                    keeps its own ellipsis, and `.sq-idle-time` is flex:none so
+                    the word truncates before the clock does */}
                 <span className={'sq-idle ' + (node.last_status?.status ?? (live ? 'idle' : node.state))}
                   title={node.last_status?.summary ?? undefined}>
                   {node.last_status?.status ?? (live ? 'idle' : node.state)}
@@ -1499,8 +1500,6 @@ export function NodeSquare({ node, pos, lod, focused: deskOpen, dragging, isDrop
               title={`${node.bearer_state} bearer — where this agent's context `
                 + 'came from, not what it is doing; a rehired bearer works '
                 + 'like any other agent'}>{node.bearer_state}</span>}
-          {/* FR-23's age is no longer a badge here — it moved up beside the
-              state word in `sq-workstate` (user 2026-09-05) */}
           {/* ⭐ clickable (user ruling 2026-08-06): the freeze badge IS the
               per-node unstick — the control lives where the user finds the
               agent, not only in org-level panels */}
