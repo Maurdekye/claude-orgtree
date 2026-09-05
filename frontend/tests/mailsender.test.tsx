@@ -42,7 +42,7 @@ import type { TestContext } from 'node:test'
 import assert from 'node:assert/strict'
 import { refreshConvo, resetConvos } from '../src/convo'
 import { SenderChip } from '../src/App'
-import { DeskChat, Msg } from '../src/canvas/desk'
+import { DeskChat, LineagePanel, Msg } from '../src/canvas/desk'
 import { MailList, OrgInboxModal } from '../src/canvas/mail'
 import { AgentDirectoryProvider } from '../src/canvas/identity'
 import type { AgentDirectory } from '../src/canvas/identity'
@@ -558,4 +558,73 @@ uiTest('§6.1 SenderChip in a LIST ROW: chip, jump, and the row does not select 
     await inAct(() => { (rowsOf(el)[0]!.querySelector('.l2') as HTMLElement).click() })
     assert.equal(selected(el), true,
       'positive control: the row body still selects, so the check above could fail')
+  })
+
+// ═══════════════════════════════════════════════════════════════════ §7
+// THE ARCHIVED TRANSCRIPT. `LineagePanel` reads a prior generation's real
+// conversation through the same `Msg`, mail cards and all — so it is the one
+// remaining place a mail card could have fallen back to a bare name.
+// ═══════════════════════════════════════════════════════════════════ §7
+
+function bearerNode(): CanvasNode {
+  return {
+    ...node('agent-a', { tier: 'opus' }),
+    generation: 2,
+    lineage: [{
+      id: 'agent-a@1', tier: 'opus', generation: 1, state: 'archived',
+      bearer_state: 'preserving', at: '2026-09-01T10:00:00.000Z',
+    }],
+  } as unknown as CanvasNode
+}
+
+/** the panel fetches the archived transcript; serve it one mail envelope */
+function serveTranscript(from: string) {
+  const s = new FakeServer()
+  s.userMsg(envelope(from, 'your superior'))
+  installFetch(s)
+}
+
+uiTest('§7.1 a mail card inside an archived generation carries the same chip '
+  + 'and the same route as one in the live desk', async ({ mount }) => {
+    serveTranscript('peer-one')
+    const jumped: string[] = []
+    const closed: number[] = []
+    const { el } = await mount(
+      <LineagePanel node={bearerNode()} slug="org"
+        op={() => Promise.resolve({} as OpResult)}
+        map={new Map<string, CanvasNode>([['peer-one', node('peer-one', { tier: 'sonnet' })]])}
+        onFocusAgent={(id) => { jumped.push(id) }}
+        close={() => { closed.push(1) }} />)
+    const read = q(el, 'button').find((b) => txt(b).trim() === 'read')
+    assert.ok(read, 'positive control: the panel offers a transcript to read')
+    await inAct(() => { read!.click() })
+    await flush()
+    const h = el.querySelector('.lin-read .turn-mail-head') as HTMLElement | null
+    assert.ok(h, 'positive control: the archived transcript rendered a mail CARD')
+    assert.equal(q(h!, '.tier').length, 1, 'with the sender\'s model chip')
+    const jump = q(h!, 'button.cc-name-jump')
+    assert.equal(jump.length, 1, 'and a route to that agent')
+    await inAct(() => { jump[0]!.click() })
+    // ⚠ A MODAL MUST CLOSE BEFORE IT NAVIGATES, or the camera glides to a desk
+    // sitting behind this overlay. Every other modal here does the same.
+    assert.deepEqual(jumped, ['peer-one'], 'the click focused that agent')
+    assert.equal(closed.length, 1, 'and closed the panel first')
+  })
+
+uiTest('§7.2 …and the same panel with no tree behind it draws a plain name',
+  async ({ mount }) => {
+    // the anti-vacuity pair: identical mount but for the two new props, which
+    // is exactly what this panel looked like before they existed
+    serveTranscript('peer-one')
+    const { el } = await mount(
+      <LineagePanel node={bearerNode()} slug="org"
+        op={() => Promise.resolve({} as OpResult)} close={noop} />)
+    const read = q(el, 'button').find((b) => txt(b).trim() === 'read')
+    await inAct(() => { read!.click() })
+    await flush()
+    const h = el.querySelector('.lin-read .turn-mail-head') as HTMLElement | null
+    assert.ok(h, 'positive control: the card is still rendered')
+    assert.ok(txt(h!).includes('peer-one'), 'and still names the sender')
+    absent(h!, '.tier', 'but with no tree to ask, there is no chip')
+    absent(h!, 'button.cc-name-jump', 'and nowhere to go')
   })

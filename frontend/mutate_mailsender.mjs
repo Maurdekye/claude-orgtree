@@ -124,6 +124,22 @@ const MUTANTS = [
     from: `              why={chipWhy} atDestination={atDest}`,
     to: `              atDestination={atDest}`,
   },
+  // ──────────────────────────── the archived transcript reader (§7)
+  {
+    name: 'the lineage panel stops providing a directory, so an archived '
+      + 'generation is the one place a mail card is still a bare name',
+    file: DESK, kills: "with the sender's model chip",
+    from: `                      <AgentDirectoryProvider value={lineageDir}>`,
+    to: `                      <>`,
+    also: { from: `                      </AgentDirectoryProvider>`, to: `                      </>` },
+  },
+  {
+    name: 'the lineage panel navigates WITHOUT closing itself, so the camera '
+      + 'glides to a desk sitting behind the overlay',
+    file: DESK, kills: 'and closed the panel first',
+    from: `      ? (id: string) => { closeRef.current(); focusRef.current?.(id) }`,
+    to: `      ? (id: string) => { focusRef.current?.(id) }`,
+  },
   {
     name: "an unknown current model is back-filled from the desk's own tier",
     file: DESK, kills: 'an unknown model is an answer, never back-filled',

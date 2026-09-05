@@ -2712,6 +2712,7 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox, onWorkItem,
       {lineageId && map.get(lineageId) && (
         <MaybePortal><LineagePanel node={map.get(lineageId)!} op={op} slug={slug}
           presence={presence} userDisabled={userDisabled}
+          map={map} onFocusAgent={centerOn}
           close={() => setLineageId(null)} /></MaybePortal>
       )}
       {dogView && (tree.watchdogs ?? []).some((w) => w.id === dogView) && (

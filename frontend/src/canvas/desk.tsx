@@ -2336,12 +2336,18 @@ interface LineagePanelProps {
    *  should disable this archived bearer's otherwise valid rehire path with
    *  a Settings-specific explanation. */
   userDisabled?: ProviderPresence
+  /** the tree on screen, so an archived generation's transcript can identify
+   *  the agents that wrote to it. This panel reads a REAL transcript through
+   *  the same `Msg` the desk uses, mail cards and all — without these two it
+   *  would be the one place a mail card silently drew a bare name again. */
+  map?: Map<string, CanvasNode>
+  onFocusAgent?: (id: string) => void
   close: () => void
 }
 
 export function LineagePanel({ node, op, slug, presence = ALL_PRESENT,
   userDisabled = { claude: false, openai: false, google: false, openrouter: false },
-  close }: LineagePanelProps) {
+  map, onFocusAgent, close }: LineagePanelProps) {
   // spitshined (user request): generation cards in the app's current visual
   // language — tier token, per-generation consult-tier picker (№16: a bearer
   // answers from context, so any tier serves), live bearers marked green
@@ -2350,6 +2356,21 @@ export function LineagePanel({ node, op, slug, presence = ALL_PRESENT,
   // №12: READING an archived bearer's transcript is free — rehiring is for
   // asking it questions, not for looking at what it holds
   const [reading, setReading] = useState<string | null>(null)     // bearer id being read
+  // the identity facts for the archived transcripts read below. ⚠ Focusing an
+  // agent from a MODAL has to close the modal first — the camera would
+  // otherwise glide to a desk sitting behind this overlay, which is the same
+  // rule every other modal here follows. And `onFocus` is OMITTED when the
+  // caller gave no route: a button that runs nothing is worse than none.
+  const mapRef = useRef(map); mapRef.current = map
+  const focusRef = useRef(onFocusAgent); focusRef.current = onFocusAgent
+  const closeRef = useRef(close); closeRef.current = close
+  const canFocus = Boolean(onFocusAgent)
+  const lineageDir = useMemo<AgentDirectory>(() => ({
+    resolve: (id: string) => mapRef.current?.get(id),
+    onFocus: canFocus
+      ? (id: string) => { closeRef.current(); focusRef.current?.(id) }
+      : undefined,
+  }), [canFocus])
   // retiring a knowledge bearer asks too (user bug 2026-08-09) — every other
   // seat-freeing button in the app confirms, and this one drops a whole
   // consultable generation off the end of the lineage
@@ -2482,8 +2503,19 @@ export function LineagePanel({ node, op, slug, presence = ALL_PRESENT,
                 {readChat == null
                   ? <div className="dim pad">loading transcript…</div>
                   : readChat.messages.length
-                    ? readChat.messages.slice(-80).map((m, i) => (
-                        <Msg key={i} m={m} slug={slug} nid={b.id} />))
+                    ? (
+                      // the SAME identity facts the live desk supplies: an
+                      // archived generation's mail cards would otherwise be
+                      // the one place a sender fell back to a bare name.
+                      // ⚠ `nid` is the BEARER's id, so a mail the bearer sent
+                      // to itself still reads as its own desk and does not
+                      // offer a click — which is right, and comes free from
+                      // the card's own destination test.
+                      <AgentDirectoryProvider value={lineageDir}>
+                        {readChat.messages.slice(-80).map((m, i) => (
+                          <Msg key={i} m={m} slug={slug} nid={b.id} />))}
+                      </AgentDirectoryProvider>
+                    )
                     : <div className="dim pad">no transcript found</div>}
               </div>)}
           </div>
