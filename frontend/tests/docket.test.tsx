@@ -763,6 +763,10 @@ uiTest('§16 NodeInboxModal counterparty is clickable agent jump that closes mod
   const { el } = await mount(
     <NodeInboxModal node={node} slug="org1" jumpTo={null}
       close={() => { closed = true }}
+      // the tree's answer for this id. Without a resolver MailList claims no
+      // local jump at all — a handler alone used to be read as "yes", which is
+      // the phantom jump mailsender §12 removes.
+      hasAgent={(id) => id === 'agent-peer'}
       onFocusAgent={(id) => { focused = id }} />
   )
   await flush()

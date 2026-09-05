@@ -172,8 +172,8 @@ const MUTANTS = [
   {
     name: 'the live steered row goes back to a bold name with no identity',
     file: DESK, kills: 'the sender wears its model chip',
-    from: `  const { mail, rest: tail } = splitTurnMail(rest)`,
-    to: `  const { rest: tail } = splitTurnMail(rest); const mail = []`,
+    from: `  const mail = whole.mail.length ? whole.mail : cut?.mail ?? []`,
+    to: `  const mail: TurnMail[] = []`,
   },
   {
     name: 'the live row is dressed as the SETTLED card, telling the reader a '
@@ -234,6 +234,85 @@ const MUTANTS = [
     file: DESK, kills: 'an unknown model is an answer, never back-filled',
     from: `  return <AgentName id={from} tier={agent.tier} nameClass={nameClass}`,
     to: `  return <AgentName id={from} tier={agent.tier ?? 'opus'} nameClass={nameClass}`,
+  },
+  // ───────────────────────── a copy the server cut (§11) and existence (§12)
+  {
+    name: 'the durable recovery fires on ANY missing [END MAIL], not on what '
+      + 'the server declared',
+    file: DESK, kills: 'an undeclared cut is not a cut',
+    from: `  const cutMail = m.role === 'user' && m.truncated && !turnMail.mail.length`,
+    to: `  const cutMail = m.role === 'user' && !turnMail.mail.length`,
+  },
+  {
+    name: 'the durable recovery is gone — a cut envelope loses every sender',
+    file: DESK, kills: 'positive control: the transcript rendered a mail CARD at all',
+    from: `    ? splitTruncatedMail(rest) : null`,
+    to: `    ? null : null`,
+  },
+  {
+    name: 'a header cut in half is read as a sender anyway',
+    file: DESK, kills: 'a half-read header is not a sender',
+    from: `    const one = block.includes('\\n') ? parseMailBlock(block) : null`,
+    to: `    const one = parseMailBlock(block)`,
+  },
+  {
+    name: 'an unreadable block in the MIDDLE stops refusing the envelope',
+    file: DESK, kills: 'nothing is identified out of an envelope we only half understand',
+    from: `    if (i < blocks.length - 1) return null`,
+    to: `    if (false) return null`,
+  },
+  {
+    name: 'the recovery no longer declares the cut, so the cards read as the '
+      + 'whole message',
+    file: DESK, kills: 'the cards do not claim to be the whole message',
+    from: `        {cutMail && <div className="trunc-note">`,
+    to: `        {false && <div className="trunc-note">`,
+  },
+  {
+    name: 'the LIVE row ignores the truncated flag and recovers from any '
+      + 'missing marker',
+    file: DESK, kills: 'no chip is built from an undeclared cut',
+    from: `  const cut = whole.mail.length || !truncated ? null : splitTruncatedMail(rest)`,
+    to: `  const cut = whole.mail.length ? null : splitTruncatedMail(rest)`,
+  },
+  {
+    name: 'the live feed stops handing the truncated flag to the row',
+    file: DESK, kills: 'the sender wears its chip',
+    from: `                      truncated={f.truncated} slug={slug} nid={node.id} />`,
+    to: `                      slug={slug} nid={node.id} />`,
+  },
+  {
+    name: 'the live row stops declaring its cut',
+    file: DESK, kills: 'the cut is declared',
+    from: `      {cut && <div className="trunc-note">`,
+    to: `      {false && <div className="trunc-note">`,
+  },
+  {
+    name: 'MailList ignores the existence resolver — the phantom jump returns',
+    file: MAIL, kills: 'no resolver, no claimed route',
+    from: `      onFocus={hasAgent?.(id) ? onFocusAgent : undefined} />`,
+    to: `      onFocus={onFocusAgent} />`,
+  },
+  {
+    name: 'existence is decided by TIER truthiness, so a real agent whose '
+      + 'model is unknown is stranded',
+    file: MAIL, kills: 'A REAL AGENT WITH AN UNKNOWN MODEL STILL NAVIGATES',
+    from: `      onFocus={hasAgent?.(id) ? onFocusAgent : undefined} />`,
+    to: `      onFocus={tierOf?.(id) ? onFocusAgent : undefined} />`,
+  },
+  {
+    name: 'NodeInboxModal accepts the resolver and forwards nothing',
+    file: MAIL, kills: 'the modal handed the tree down',
+    from: `tier={node.tier}
+          tierOf={tierOf} hasAgent={hasAgent}`,
+    to: `tier={node.tier}
+          tierOf={tierOf}`,
+  },
+  {
+    name: 'InboxView accepts the resolver and forwards nothing to its inbox list',
+    file: MAIL, kills: 'the modal handed the tree down',
+    from: `                tierOf={tierOf} hasAgent={hasAgent}\n                waitLabel="awaiting next turn"`,
+    to: `                tierOf={tierOf}\n                waitLabel="awaiting next turn"`,
   },
 ]
 

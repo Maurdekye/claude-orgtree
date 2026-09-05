@@ -2731,6 +2731,7 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox, onWorkItem,
       {inboxId && map.get(inboxId) && (
         <MaybePortal><NodeInboxModal node={map.get(inboxId)!} slug={slug}
           tierOf={(id) => map.get(id)?.tier}
+          hasAgent={(id) => map.has(id)}
           jumpTo={nodeInboxJump}
           onFocusAgent={centerOn}
           close={() => { setInboxId(null); setNodeInboxJump(null) }} /></MaybePortal>

@@ -1333,15 +1333,11 @@ button.cc-name:hover {
 .turn-mail-head b { color: var(--ink); font-size: 11.5px; }
 .turn-mail-head span:not(:last-child)::after { content: '·'; margin-left: 7px; color: var(--line); }
 .turn-mail-head time { font-variant-numeric: tabular-nums; }
-/* THE SENDER'S IDENTITY IN A TRANSCRIPT MAIL CARD (user ruling 2026-09-05).
-   The header used to draw a bare `<b>`; it now draws the shared `AgentName`,
-   and these three rules exist so that is a CHIP AND A CLICK — not a restyle.
+/* THE SENDER'S IDENTITY IN A TRANSCRIPT MAIL CARD. The header draws the shared
+   `AgentName`; these rules make that a chip and a click, not a restyle.
 
-   ⚠ THE SEPARATOR RULE ABOVE MATCHES ANY SPAN, and both halves of an identity
-   ARE spans (the chip always, the name whenever it does not navigate). Left
-   alone it punctuates between the model card and the name it belongs to:
-   "S · peer-one your peer · …". Suppressed here, so the identity reads as one
-   thing and the metadata that follows keeps its dots.
+   ⚠ The separator rule above matches ANY span, and both halves of an identity
+   are spans — left alone it puts a '·' between the model chip and its own name.
    ⚠ SPECIFICITY, MEASURED: `span:not(:last-child)` is (0,2,1) — `:not()` takes
    its argument's weight — so a bare `.turn-mail-head .tier::after` at (0,2,0)
    LOSES and the dot stays. It did, in Edge, until this selector was widened. */
@@ -1363,27 +1359,19 @@ button.cc-name:hover {
 .desk-body .turn-mail-head .tier {
   width: 14px; height: 14px; font-size: 8.5px; border-radius: 3px;
 }
-/* THE LIVE STEERED ROW — mail that arrived MID-TURN, still streaming, before
-   the transcript refresh replaces it with a settled `.turn-mail` card.
-   ⚠ IT DELIBERATELY DOES NOT LOOK LIKE THAT CARD. No card background, no
-   border, no metadata strip: it stays the `.msg.user.live` bubble it has
-   always been, because dressing it as the settled card would tell the reader
-   the message had landed in the transcript when it has not. All that changes
-   is the sender — the bold `**name**` stripEnvelope left behind is now a real
-   identity (user ruling 2026-09-05, "inline in the transcript too"). */
+/* THE LIVE STEERED ROW — mail that arrived MID-TURN, before the transcript
+   refresh replaces it with a settled `.turn-mail` card.
+   ⚠ NO card background, border or metadata strip: it stays the
+   `.msg.user.live` bubble, because the settled card's dress would claim the
+   message had landed in the transcript. Only the sender changes. */
 .live-mail + .live-mail { margin-top: 7px; }
 .live-mail-head { display: flex; align-items: center; gap: 5px; }
-/* the same three corrections `.turn-mail-head .cc-name` needs, for the same
-   reason: the switchboard's `.cc-name` is a flexible, wrapping 12.5px column
-   header, and all three are wrong on a one-line attribution. */
+/* the switchboard's `.cc-name` is a flexible, wrapping 12.5px column header —
+   all three wrong on a one-line attribution.
+   ⚠ THE UNRESOLVED `<b>` MUST MATCH IT. Left at the body's 14px sans it made a
+   TALLER line than the identified name, and the probe's "the chip did not grow
+   the row" then passed for a reason that was not the chip. */
 .live-mail-head .cc-name,
-/* ⚠ AND THE UNRESOLVED NAME GETS THE SAME TYPE, which is not decoration. A
-   sender this tree cannot vouch for renders as a bare `<b>`; left at the
-   body's 14px sans it made a TALLER attribution line than the identified one,
-   and the probe's "the chip did not grow the row" comparison then passed for
-   a reason that had nothing to do with the chip. Same type both sides, and
-   the chip is the only difference left. (`.turn-mail-head b` does this for
-   the settled card already.) */
 .live-mail-head b {
   font-family: var(--mono); font-size: 13px; font-weight: 700;
   color: var(--ink); min-width: 0; flex: none;
@@ -1887,12 +1875,10 @@ button.cc-name:hover {
 }
 .mailrow .l1 .mfrom { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mailrow .l1 .mtime { color: var(--dim); flex-shrink: 0; }
-/* THE SENDER'S IDENTITY IN A LIST ROW (user ruling 2026-09-05, reiterated:
-   the model card and the click-to-desk belong in the LIST, not only in the
-   reading pane). The cell now holds a chip and a name element instead of a
-   text node, so it becomes a flex line — and the ellipsis has to move with
-   it: `text-overflow` on a flex container never reaches a CHILD's text, so
-   each child clips itself and the chip is excused. */
+/* THE SENDER'S IDENTITY IN A LIST ROW. The cell holds a chip and a name
+   element instead of a text node, so it becomes a flex line — and the ellipsis
+   moves with it: `text-overflow` on a flex container never reaches a CHILD's
+   text, so each child clips itself and the chip is excused. */
 .mailrow .l1 .mfrom { display: flex; align-items: center; gap: 5px; min-width: 0; }
 .mailrow .l1 .mfrom > * { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .mailrow .l1 .mfrom .tier, .mailrow .l1 .mfrom .sender .tier {

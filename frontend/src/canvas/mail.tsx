@@ -76,13 +76,17 @@ export interface MailListProps {
    *  that cannot answer omits it and no chip is drawn, which is the honest
    *  outcome rather than a guessed one. */
   tierOf?: (id: string) => string | null | undefined
+  /** does the tree on screen hold a node by this id? EXISTENCE, never tier:
+   *  a real agent whose model is unknown still navigates, without a chip.
+   *  Omitted = this caller cannot say, so no local jump is claimed. */
+  hasAgent?: (id: string) => boolean
 }
 
 const MAIL_WINDOW = 40
 
 export function MailList({ pending = [], delivered = [], waitLabel, sender, rowSender,
   outgoing, onRead, onReply, onRetract, jumpTo, fileHref, mdBase, renderBody, rowMark,
-  onFocusAgent, tierOf }: MailListProps) {
+  onFocusAgent, tierOf, hasAgent }: MailListProps) {
   // ONE order, by send time, always — never grouped, never re-grouped.
   //
   // Unread used to sort as its own block on top, which meant the list
@@ -145,7 +149,11 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, rowS
     // an @org / @net address is not an agent in this org: no chip, no jump,
     // and no identity invented for it
     if (!isAgentId(id)) return <span>{id}</span>
-    return <AgentName id={id} tier={tierOf?.(id)} onFocus={onFocusAgent} />
+    // …and neither is a name this tree does not hold: a since-retired agent or
+    // an id off an archived envelope was drawn as a jump that focused nothing.
+    // No resolver = the caller cannot vouch for the id, so no jump is offered.
+    return <AgentName id={id} tier={tierOf?.(id)}
+      onFocus={hasAgent?.(id) ? onFocusAgent : undefined} />
   }
   const S: (id: string, m: MailRow) => ReactNode = sender ?? defaultIdentity
   // user ruling 2026-09-05, reiterated: the model chip and the click-to-desk
@@ -558,10 +566,12 @@ interface InboxViewProps {
   /** the SENDERS' models, for the chip beside each name. Resolved by the
    *  caller because only it holds the tree; omitted, no chip is drawn. */
   tierOf?: (id: string) => string | null | undefined
+  /** does the tree hold a node by this id? Same contract as MailList's. */
+  hasAgent?: (id: string) => boolean
 }
 
 export function InboxView({ slug, nid, onRetract, jumpTo, tier, onFocusAgent,
-  tierOf }: InboxViewProps) {
+  tierOf, hasAgent }: InboxViewProps) {
   const [folder, setFolder] = useState('inbox')
   // G5: was a fetch keyed on the `pulse` prop, which meant it refreshed on turn
   // events and on nothing else — and a mail DELIVERY is not a turn event, so
@@ -586,7 +596,7 @@ export function InboxView({ slug, nid, onRetract, jumpTo, tier, onFocusAgent,
           ? <div className="dim pad">loading…</div>
           : folder === 'inbox'
             ? <MailList pending={pending} delivered={box.delivered}
-                tierOf={tierOf}
+                tierOf={tierOf} hasAgent={hasAgent}
                 waitLabel="awaiting next turn" jumpTo={jumpTo}
                 fileHref={(p) => fileUrl(slug, nid, p)}
                 mdBase={() => fileBase(slug, nid)}
@@ -606,7 +616,7 @@ export function InboxView({ slug, nid, onRetract, jumpTo, tier, onFocusAgent,
             // outbox/ on send (api.py routes them through _agent_send_file),
             // so the same scratch-keyed href serves the Sent folder too
             : <MailList delivered={box.sent ?? []} outgoing
-                tierOf={tierOf}
+                tierOf={tierOf} hasAgent={hasAgent}
                 onFocusAgent={onFocusAgent}
                 fileHref={(p) => fileUrl(slug, nid, p)}
                 mdBase={() => fileBase(slug, nid)} />}
@@ -687,17 +697,18 @@ interface NodeInboxModalProps {
   jumpTo?: string | null
   onFocusAgent?: (agentId: string) => void
   tierOf?: (id: string) => string | null | undefined
+  hasAgent?: (id: string) => boolean
 }
 
 export function NodeInboxModal({ node, slug, close, jumpTo, onFocusAgent,
-  tierOf }: NodeInboxModalProps) {
+  tierOf, hasAgent }: NodeInboxModalProps) {
   useEsc(close)
   return (
     <div className="overlay" onClick={close} onPointerDown={(e) => e.stopPropagation()}>
       <div className="settings wide" onClick={(e) => e.stopPropagation()}>
         <h3><MailIcon fontSize="inherit" /> {node.id} <span className="dim">· inbox</span></h3>
         <InboxView slug={slug} nid={node.id} jumpTo={jumpTo} tier={node.tier}
-          tierOf={tierOf}
+          tierOf={tierOf} hasAgent={hasAgent}
           onFocusAgent={onFocusAgent ? (id) => { close(); onFocusAgent(id) } : undefined} />
         <div className="row">
           <button className="primary" onClick={close}>close</button>

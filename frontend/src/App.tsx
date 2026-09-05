@@ -1832,11 +1832,8 @@ export function SenderChip({ id, nodes, onFocusAgent }: {
   if (id === SYSTEM || id === 'system') return <b className="dim">system</b>
   if (id === USER) return <b>you</b>
   const n = nodes.get(id)
-  // ⚠ ONLY AN ESTABLISHED LOCAL NODE NAVIGATES. This used to accept any name
-  // that merely did not start with '@' — so an unknown spelling (a since-
-  // retired agent, an id from an archived envelope, a peer this tree does not
-  // hold) was drawn as a jump button that focused nothing. The name stays
-  // readable, verbatim; what it loses is a route that was never there.
+  // ⚠ ONLY AN ESTABLISHED LOCAL NODE NAVIGATES: a name this tree does not hold
+  // stays readable and loses a route that was never there.
   if (!n) return <b>{id}</b>
   const chip = (
     <span className={'sender ' + (n?.state ?? '')} title={n ? `${tierLabel(n.tier)} · ${n.state}` : id}>

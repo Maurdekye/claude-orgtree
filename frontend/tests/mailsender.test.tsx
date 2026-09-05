@@ -34,7 +34,25 @@
 // Anti-vacuity, stated per section: every "renders nothing" assertion is
 // paired with a mount that differs in ONE fact and does render it.
 //
+// ⚠⚠ WHAT THIS FILE DOES **NOT** OBSERVE — read before quoting it as evidence.
+//
+//  A. THE LIVE MID-TURN ROW IS NOT REACHABLE IN THIS BUILD. §9 and §11.7-11.9
+//     hand-build `{kind:'steered'}` live rows. The backend has no such row:
+//     `st["live"]` is written only by `supervisor.live_row()`, whose call sites
+//     emit tool/text/thought/plan and never 'steered'; the 'steered' WEBSOCKET
+//     frame (commit_steer, body[:2000]) goes through `api.stream()`, which only
+//     pushes over the socket, and convo.ts's handler for it retires a ghost and
+//     nudges a refetch without ever appending a live row. So `LiveSteerRow` is
+//     correct code for a branch nothing currently renders. Its DURABLE twin —
+//     the steered_log row (`role:'user'`, `steered`, `truncated`) drawn by
+//     `Msg` — IS reachable, and §11.1-11.6/§11.10 are about that one.
+//  B. desk.tsx's own inbox-tab call site is verified BY READING only — see
+//     §12.5, which records why and what would have to change.
+//  C. The pre-existing case "truncated, but the envelope is whole" still shows
+//     no cut note (§11.4 pins it as it is; this change did not add one).
+//
 // Run:  cd frontend && node tests/run.mjs mailsender
+//       cd frontend && node mutate_mailsender.mjs        (40/40 killed)
 
 import { FakeServer, flush, inAct, installFetch, mountView, realClock, useFakeClock } from './harness'
 import test from 'node:test'
@@ -43,7 +61,7 @@ import assert from 'node:assert/strict'
 import { refreshConvo, resetConvos } from '../src/convo'
 import { SenderChip } from '../src/App'
 import { DeskChat, LineagePanel, Msg } from '../src/canvas/desk'
-import { MailList, OrgInboxModal } from '../src/canvas/mail'
+import { MailList, NodeInboxModal, OrgInboxModal } from '../src/canvas/mail'
 import { AgentDirectoryProvider } from '../src/canvas/identity'
 import type { AgentDirectory } from '../src/canvas/identity'
 import type { CanvasNode, MailRow } from '../src/canvas/shared'
@@ -360,6 +378,7 @@ uiTest('§3.1 the LIST ROW carries the model chip and the click-to-desk, not '
     const jumped: string[] = []
     const { el } = await mount(
       <MailList delivered={[row()]} tierOf={(id) => (id === 'peer-one' ? 'sonnet' : null)}
+        hasAgent={(id) => id === 'peer-one'}
         onFocusAgent={(id) => { jumped.push(id) }} />)
     const f = mfrom(el)
     assert.equal(q(f, '.tier').length, 1, 'the row names the sender with its model')
@@ -405,7 +424,7 @@ uiTest('§4.1 clicking the sender NAVIGATES without selecting the mail, and '
   + 'clicking the row still selects it', async ({ mount }) => {
     const jumped: string[] = []
     const { el } = await mount(
-      <MailList delivered={[row()]} tierOf={() => 'sonnet'}
+      <MailList delivered={[row()]} tierOf={() => 'sonnet'} hasAgent={() => true}
         onFocusAgent={(id) => { jumped.push(id) }} />)
     assert.equal(selected(el), false,
       'the box opens with nothing selected (user spec 2026-08-05)')
@@ -429,7 +448,7 @@ uiTest('§4.2 …and clicking the sender of the mail you are READING does not '
     // out from under the reader.
     const jumped: string[] = []
     const { el } = await mount(
-      <MailList delivered={[row()]} tierOf={() => 'sonnet'}
+      <MailList delivered={[row()]} tierOf={() => 'sonnet'} hasAgent={() => true}
         onFocusAgent={(id) => { jumped.push(id) }} />)
     await inAct(() => { (rowsOf(el)[0]!.querySelector('.l2') as HTMLElement).click() })
     assert.equal(selected(el), true, 'positive control: it is open')
@@ -543,7 +562,7 @@ uiTest('§5.3 a list that DECLARES its counterparty plain text keeps a plain '
     // …and the CONTROL that the fixture could have produced one: the same
     // props with the declaration removed do draw both.
     const c = await mount(
-      <MailList delivered={[row()]}
+      <MailList delivered={[row()]} hasAgent={() => true}
         tierOf={() => 'opus'} onFocusAgent={(id) => { jumped.push(id) }} />)
     assert.equal(q(mfrom(c.el), '.tier').length, 1,
       'control: without the plain-text declaration the very same props DO '
@@ -808,6 +827,10 @@ async (t: TestContext) => {
 
 async function liveDesk(t: TestContext, opts: {
   from: string; others?: CanvasNode[]; text?: string;
+  /** the server DECLARED this copy cut (supervisor caps the frame at 2000) */
+  truncated?: boolean;
+  /** what the transcript carries a moment later; defaults to the same text */
+  settleText?: string;
 }): Promise<{ el: HTMLElement; settle: () => Promise<void> }> {
   const SL = 'org'
   const ND = `ms${++_n}`
@@ -819,7 +842,8 @@ async function liveDesk(t: TestContext, opts: {
   for (const o of opts.others ?? []) map.set(o.id, o)
   const text = opts.text ?? envelope(opts.from)
   s.busy = true
-  s.liveRow('steered', text)
+  const lr = s.liveRow('steered', text)
+  if (opts.truncated) lr.truncated = true
   const v = await mountView(
     <DeskChat node={nd} map={map} op={op} slug={SL} toast={noop} pub={false}
       bare onJump={noop} />, (host) => host)
@@ -835,7 +859,7 @@ async function liveDesk(t: TestContext, opts: {
     // text lands in the durable transcript
     settle: async () => {
       s.live = []
-      s.userMsg(text)
+      s.userMsg(opts.settleText ?? text)
       await refreshConvo(SL, ND, { force: true })
       await flush()
     },
@@ -958,4 +982,391 @@ uiTest('§10.2 …and its navigation button declares type="button", so it cannot
     assert.equal(b.length, 1, 'positive control: there is a button to judge')
     assert.equal(b[0]!.getAttribute('type'), 'button',
       'an untyped button inside a form defaults to submit')
+  })
+
+// ═══════════════════════════════════════════════════════════════════ §11
+// A COPY THE SERVER CUT.
+//
+// The supervisor caps a steered message and DECLARES the cap: the live frame
+// at `body[:2000]` and the durable steered-log row at `s[:100000]`, each with
+// `truncated: true` beside it. Either cap can land before `[END MAIL]`, and
+// `splitTurnMail` then refuses the whole envelope — so exactly the messages
+// long enough to be worth reading were the ones whose senders went nameless.
+//
+// ⚠ WHAT IS ON TRIAL IS THE LINE BETWEEN "COMPLETE ENOUGH TO NAME" AND
+// "GUESSED". A header that ends inside the copy is evidence; a header the cut
+// ran through is not, and neither is a line that merely looks like one. Every
+// positive here is paired with the same text one fact away from it.
+// ═══════════════════════════════════════════════════════════════════ §11
+
+const HEAD = (from: string, at = '2026-09-05T10:00:00Z') =>
+  `FROM ${from} (your peer) · message · ${at}`
+/** the whole envelope the backend writes, with a body of the given length */
+const longMail = (from: string, bodyLen: number) =>
+  `[MAIL — 1 message(s)]\n${HEAD(from)}\n${'wordy '.repeat(Math.ceil(bodyLen / 6))}`
+  + `\n[END MAIL]\n\n(orgtree) You have new mail above.`
+/** the two caps, exactly as supervisor.py writes them */
+const DURABLE_CAP = 100000   // steered_log row: s[:100000]
+const LIVE_CAP = 2000        // commit_steer frame: body[:2000]
+
+const cutMsg = (text: string, truncated = true): ChatMessage =>
+  ({ role: 'user', text, seq: 1, ts: '2026-09-05T10:00:00Z',
+    ...(truncated ? { truncated } : {}) })
+
+uiTest('§11.1 a durable steered row cut at the server own 100000 still names '
+  + 'its sender, keeps its body, and says it was cut', async ({ mount }) => {
+    const whole = longMail('peer-one', 200000)
+    assert.ok(whole.length > DURABLE_CAP,
+      'precondition: the envelope must be long enough for the cap to bite')
+    const text = whole.slice(0, DURABLE_CAP)
+    assert.ok(!text.includes('[END MAIL]'),
+      'precondition: the cut landed BEFORE the closing marker — the whole point')
+    const { el } = await mount(
+      <AgentDirectoryProvider value={dirAll}>
+        <Msg m={cutMsg(text)} slug="org" nid="me" />
+      </AgentDirectoryProvider>)
+    const h = head(el)
+    assert.ok(txt(h).includes('peer-one'), 'the sender is named')
+    assert.equal(q(h, '.tier').length, 1, 'and wears its model chip')
+    assert.ok(txt(el).includes('wordy'), 'the body that survived the cut is shown')
+    assert.equal(q(el, '.trunc-note').length, 1,
+      'and the cards do not claim to be the whole message')
+  })
+
+uiTest('§11.2 …and WITHOUT the server truncated flag the same text is left '
+  + 'exactly as it was', async ({ mount }) => {
+    // the anti-vacuity pair for §11.1: identical bytes, one flag apart. The
+    // recovery is unlocked by what the SERVER declared, never by guessing that
+    // a missing [END MAIL] means a cut.
+    const text = longMail('peer-one', 200000).slice(0, DURABLE_CAP)
+    const { el } = await mount(
+      <AgentDirectoryProvider value={dirAll}>
+        <Msg m={cutMsg(text, false)} slug="org" nid="me" />
+      </AgentDirectoryProvider>)
+    assert.equal(q(el, '.turn-mail-head').length, 0,
+      'an undeclared cut is not a cut: no card is built from it')
+    assert.ok(txt(el).includes('peer-one'), 'the name is still readable')
+    absent(el, '.tier', 'but nothing is identified')
+  })
+
+uiTest('§11.3 a cut INSIDE the sender header identifies nobody',
+  async ({ mount }) => {
+    // ⚠ THE CUT LANDS INSIDE THE TIMESTAMP, DELIBERATELY. A header cut earlier
+    // matches nothing and would be refused for free; cut here it STILL MATCHES
+    // `DIRECT_MAIL_RE` (`· message · 2026`), so the only thing stopping a
+    // sender being minted out of a half-read line is the rule that the header
+    // must END inside the copy. Cutting anywhere cheaper makes this check
+    // vacuous — it passed for the wrong reason until a mutant said so.
+    const whole = longMail('peer-one', 50)
+    const cutAt = whole.indexOf(HEAD('peer-one'))
+      + 'FROM peer-one (your peer) · message · 2026'.length
+    const text = whole.slice(0, cutAt)
+    assert.ok(text.endsWith('2026'),
+      `the cut is mid-timestamp: ${JSON.stringify(text)}`)
+    assert.ok(!text.slice(text.indexOf('FROM')).includes('\n'),
+      'precondition: the header line does not end inside this copy')
+    assert.ok(/^FROM (\S+) \((.*?)\) · ([^·\n]+) · ([^\n]+)/
+      .test(text.slice(text.indexOf('FROM'))),
+      'ANTI-VACUITY: the settled header pattern DOES match this half-line, so '
+      + 'the refusal below can only come from the completeness rule')
+    const { el } = await mount(
+      <AgentDirectoryProvider value={dirAll}>
+        <Msg m={cutMsg(text)} slug="org" nid="me" />
+      </AgentDirectoryProvider>)
+    assert.equal(q(el, '.turn-mail-head').length, 0,
+      'a half-read header is not a sender')
+    absent(el, '.tier', 'and nothing is guessed from it')
+    assert.ok(txt(el).includes('peer-one'),
+      `the name in the half-read line is still readable: ${JSON.stringify(txt(el))}`)
+    absent(el, '.cc-name',
+      'but as plain text — nothing on screen claims it as a resolved identity')
+  })
+
+uiTest('§11.4 a truncated copy whose envelope is WHOLE takes the ordinary path',
+  async ({ mount }) => {
+    // the cut fell in the tail, after [END MAIL] — splitTurnMail reads it, and
+    // the recovery must not fire. (Limit, stated: this pre-existing case shows
+    // no cut note, and this change does not add one.)
+    const text = longMail('peer-one', 20)
+    assert.ok(text.includes('[END MAIL]'), 'precondition: the envelope is whole')
+    const { el } = await mount(
+      <AgentDirectoryProvider value={dirAll}>
+        <Msg m={cutMsg(text)} slug="org" nid="me" />
+      </AgentDirectoryProvider>)
+    assert.equal(q(el, '.turn-mail-head').length, 1, 'one card, as always')
+    assert.equal(q(el, '.trunc-note').length, 0,
+      'and the recovery path did not fire — there was nothing to recover')
+  })
+
+uiTest('§11.5 a cut inside the SECOND header keeps the first sender and guesses '
+  + 'nothing about the second', async ({ mount }) => {
+    const whole = `[MAIL — 2 message(s)]\n${HEAD('peer-one')}\nfirst body\n---\n`
+      + `${HEAD('peer-two', '2026-09-05T10:05:00Z')}\nsecond body\n[END MAIL]\n`
+    const text = whole.slice(0, whole.indexOf('peer-two') + 4)
+    const { el } = await mount(
+      <AgentDirectoryProvider value={dirAll}>
+        <Msg m={cutMsg(text)} slug="org" nid="me" />
+      </AgentDirectoryProvider>)
+    assert.equal(q(el, '.turn-mail-head').length, 1,
+      'exactly the one message whose header ended inside the copy')
+    assert.ok(txt(q(el, '.turn-mail-head')[0]!).includes('peer-one'),
+      'and it is the first one')
+    assert.ok(txt(el).includes('first body'), 'its body is there')
+    assert.ok(txt(el).includes('FROM peer'),
+      'and the half-read second header is shown as the text it is')
+  })
+
+uiTest('§11.6 a FROM-shaped line in the BODY is not provenance',
+  async ({ mount }) => {
+    // the failure this forecloses: reading any line that looks like a header as
+    // a sender would let a message body mint an identity for itself.
+    const whole = `[MAIL — 1 message(s)]\n${HEAD('peer-one')}\n`
+      + `quoting them:\n${HEAD('@ghost')}\n` + 'wordy '.repeat(30000)
+      + `\n[END MAIL]\n`
+    const text = whole.slice(0, DURABLE_CAP)
+    assert.ok(!text.includes('[END MAIL]'), 'precondition: it is cut')
+    const { el } = await mount(
+      <AgentDirectoryProvider value={dirAll}>
+        <Msg m={cutMsg(text)} slug="org" nid="me" />
+      </AgentDirectoryProvider>)
+    assert.equal(q(el, '.turn-mail-head').length, 1,
+      'ONE card — the body line did not become a second message')
+    assert.ok(txt(q(el, '.turn-mail-head')[0]!).includes('peer-one'),
+      'positive control: the real header was read')
+    assert.equal(q(el, '.turn-mail-head .cc-name').length, 1,
+      'and only one name was resolved as an identity')
+  })
+
+test('§11.7 the LIVE row does the same at its own 2000-byte cap, and is still '
+  + 'a live row', async (t: TestContext) => {
+  const whole = longMail('peer-one', 8000)
+  assert.ok(whole.length > LIVE_CAP, 'precondition: long enough for the frame cap')
+  const text = whole.slice(0, LIVE_CAP)
+  assert.ok(!text.includes('[END MAIL]'), 'precondition: cut before the marker')
+  const { el } = await liveDesk(t, {
+    from: 'peer-one', text, truncated: true,
+    others: [node('peer-one', { tier: 'sonnet' })],
+  })
+  const r = liveRowOf(el)
+  assert.equal(q(r, '.tier').length, 1, 'the sender wears its chip')
+  assert.ok(q(r, '.tier')[0]!.classList.contains('t-sonnet'), 'the right model')
+  assert.equal(q(r, 'button.cc-name-jump').length, 1, 'and its route')
+  assert.ok(txt(r).includes('wordy'), 'the body that survived is still shown')
+  absent(el, '.turn-mail', 'and it is NOT dressed as a settled card')
+  assert.equal(q(r, '.trunc-note').length, 1, 'the cut is declared')
+})
+
+test('§11.8 …and the same bytes without the flag render exactly as before',
+  async (t: TestContext) => {
+    const text = longMail('peer-one', 8000).slice(0, LIVE_CAP)
+    const { el } = await liveDesk(t, {
+      from: 'peer-one', text,       // truncated NOT set
+      others: [node('peer-one', { tier: 'sonnet' })],
+    })
+    const r = liveRowOf(el)
+    assert.ok(txt(r).includes('peer-one'), 'the name is readable')
+    absent(r, '.tier', 'but no chip is built from an undeclared cut')
+    absent(r, '.trunc-note', 'and nothing is claimed about a cut')
+  })
+
+test('§11.9 the cut preview hands over to the WHOLE durable body — same sender, '
+  + 'no duplicate, no leftover cut note', async (t: TestContext) => {
+    const whole = longMail('peer-one', 8000)
+    const { el, settle } = await liveDesk(t, {
+      from: 'peer-one', text: whole.slice(0, LIVE_CAP), truncated: true,
+      settleText: whole,
+      others: [node('peer-one', { tier: 'sonnet' })],
+    })
+    assert.equal(q(el, '.trunc-note').length, 1,
+      'positive control: the live row declared its cut')
+    await settle()
+    assert.equal(q(el, '.msg.user.live').length, 0, 'the live row retired')
+    const cards = q(el, '.turn-mail-head')
+    assert.equal(cards.length, 1, 'one settled card took its place')
+    assert.equal(q(cards[0]!, '.tier').length, 1, 'the identity survived')
+    assert.ok(q(cards[0]!, '.tier')[0]!.classList.contains('t-sonnet'),
+      'and it is the same model')
+    assert.equal(q(el, '.trunc-note').length, 0,
+      'and the whole body carries no claim of a cut')
+  })
+
+// ═══════════════════════════════════════════════════════════════════ §12
+// `MailList`'s OWN phantom jump. Its default identity renderer treated any id
+// that merely did not start with '@' as one of ours, so a since-retired agent
+// or a name off an archived envelope was drawn as a button focusing nothing.
+//
+// ⚠ EXISTENCE IS NOT TIER. A real agent whose current model is unknown draws
+// no chip and MUST still navigate; keying the jump on tier truthiness would
+// pass every "unknown name does not jump" check and silently strand it.
+// ═══════════════════════════════════════════════════════════════════ §12
+
+const mailFrom = (from: string, id: string): MailRow =>
+  ({ id, from, to: 'me', at: `2026-09-05T09:0${id.slice(-1)}:00.000Z`,
+    body: `body ${id}` }) as MailRow
+
+const ROWS: MailRow[] = [
+  mailFrom('peer-known', 'm1'),      // in the tree, model known
+  mailFrom('peer-notier', 'm2'),     // in the tree, model unknown
+  mailFrom('peer-gone', 'm3'),       // not in the tree at all
+]
+const TREE: Record<string, string | null> = { 'peer-known': 'sonnet', 'peer-notier': null }
+const rowNamed = (el: HTMLElement, name: string) =>
+  q(el, '.mailer-list .mailrow').find((r) => txt(r).includes(name))!
+
+uiTest('§12.1 the LIST ROW jumps only to agents the tree holds — and unknown '
+  + 'model is not unknown agent', async ({ mount }) => {
+    const { el } = await mount(
+      <MailList delivered={ROWS} onFocusAgent={noop}
+        tierOf={(id) => TREE[id]}
+        hasAgent={(id) => id in TREE} />)
+    const known = rowNamed(el, 'peer-known')
+    assert.equal(q(known, 'button.cc-name-jump').length, 1,
+      'positive control: an agent the tree holds is a route')
+    assert.equal(q(known, '.tier').length, 1, 'and wears its chip')
+    const notier = rowNamed(el, 'peer-notier')
+    assert.equal(q(notier, 'button.cc-name-jump').length, 1,
+      'A REAL AGENT WITH AN UNKNOWN MODEL STILL NAVIGATES')
+    absent(notier, '.tier', 'it just has no chip to show')
+    const gone = rowNamed(el, 'peer-gone')
+    assert.ok(txt(gone).includes('peer-gone'), 'the missing name stays readable')
+    absent(gone, 'button.cc-name-jump', 'but claims no desk to go to')
+  })
+
+uiTest('§12.2 the READING PANE answers the same way', async ({ mount }) => {
+  const { el } = await mount(
+    <MailList delivered={ROWS} onFocusAgent={noop}
+      tierOf={(id) => TREE[id]}
+      hasAgent={(id) => id in TREE} />)
+  const open = async (name: string) => {
+    await inAct(() => { rowNamed(el, name).click() })
+    await flush()
+    return el.querySelector('.mailer-read') as HTMLElement
+  }
+  const pane1 = await open('peer-known')
+  assert.equal(q(pane1, 'button.cc-name-jump').length, 1,
+    'positive control: the pane routes a known sender')
+  const pane2 = await open('peer-gone')
+  assert.ok(txt(pane2).includes('peer-gone'), 'the missing name is readable here too')
+  absent(pane2, 'button.cc-name-jump', 'and offers no route')
+})
+
+uiTest('§12.3 with NO resolver the same list claims no local jump at all',
+  async ({ mount }) => {
+    // the anti-vacuity pair for §12.1: identical rows, identical handler, one
+    // prop removed. A caller that cannot say whether an id is one of ours must
+    // not have its silence read as "yes".
+    const { el } = await mount(
+      <MailList delivered={ROWS} onFocusAgent={noop} tierOf={(id) => TREE[id]} />)
+    assert.equal(q(el, '.mailer-list .mailrow').length, 3,
+      'positive control: the rows are there to judge')
+    assert.equal(q(el, 'button.cc-name-jump').length, 0,
+      'no resolver, no claimed route — not even for peer-known')
+    assert.equal(q(rowNamed(el, 'peer-known'), '.tier').length, 1,
+      'the chip is a separate fact and still shows')
+  })
+
+test('§12.4 …and it is WIRED: NodeInboxModal carries the tree down to the row',
+  async (t: TestContext) => {
+    // ⚠ THE PROP IS THE EASY HALF. `hasAgent` accepted by MailList and passed
+    // by nobody draws no jump anywhere and every test above still passes —
+    // present, plausible and inert. This mounts the REAL modal, which owns the
+    // NodeInboxModal → InboxView → MailList chain, and requires the jump back.
+    useFakeClock()
+    const had = (globalThis as { fetch?: typeof fetch }).fetch
+    ;(globalThis as unknown as { fetch: typeof fetch }).fetch = (() =>
+      Promise.resolve({
+        ok: true, status: 200, headers: new Headers(),
+        json: () => Promise.resolve({ pending: [], sent: [], delivered: ROWS }),
+      })) as unknown as typeof fetch
+    t.after(() => {
+      (globalThis as { fetch?: typeof fetch }).fetch = had; realClock()
+    })
+    const mountModal = async (hasAgent?: (id: string) => boolean) => {
+      const v = await mountView(
+        <NodeInboxModal node={node('me')} slug="org" jumpTo={null}
+          close={noop} onFocusAgent={noop}
+          tierOf={(id) => TREE[id]} hasAgent={hasAgent} />, (host) => host)
+      await flush()
+      t.after(async () => { try { await v.unmount() } catch { /* gone */ } })
+      return v.el
+    }
+    const wired = await mountModal((id) => id in TREE)
+    assert.equal(q(rowNamed(wired, 'peer-known'), 'button.cc-name-jump').length, 1,
+      'the modal handed the tree down: a known sender is a route')
+    absent(rowNamed(wired, 'peer-gone'), 'button.cc-name-jump',
+      'and a name the tree does not hold is not')
+    // THE CONTROL: the same mount without the resolver draws no route, so the
+    // assertion above cannot be passing on a component that always draws one.
+    const bare = await mountModal(undefined)
+    assert.equal(q(bare, 'button.cc-name-jump').length, 0,
+      'CONTROL BROKEN: a route appeared with no resolver')
+  })
+
+test('§12.5 …and so does the DESK\'s own inbox tab', async (t: TestContext) => {
+  // the second wiring site. `hasAgent` sits beside `tierOf` at BOTH top-level
+  // call sites, and a one-line omission at either is invisible to every test
+  // that mounts MailList itself. This drives the real DeskChat.
+  useFakeClock()
+  const s = new FakeServer()
+  const tr = installFetch(s)
+  const inner = (globalThis as { fetch: typeof fetch }).fetch
+  ;(globalThis as unknown as { fetch: typeof fetch }).fetch = ((
+    url: string, init?: unknown,
+  ) => (String(url).includes('/inbox')
+    ? Promise.resolve({
+      ok: true, status: 200, headers: new Headers(),
+      json: () => Promise.resolve({ pending: [], sent: [], delivered: ROWS }),
+    })
+    : (inner as (u: string, i?: unknown) => Promise<unknown>)(url, init))
+  ) as unknown as typeof fetch
+  void tr
+  const nd = node(`ms${++_n}`, { tier: 'opus' })
+  const map = new Map<string, CanvasNode>([
+    [nd.id, nd], ['peer-known', node('peer-known', { tier: 'sonnet' })],
+  ])
+  const v = await mountView(
+    <DeskChat node={nd} map={map} op={op} slug="org" toast={noop} pub={false}
+      bare onJump={noop} />, (host) => host)
+  t.after(async () => {
+    try { await v.unmount() } catch { /* gone */ }
+    ;(globalThis as { fetch?: typeof fetch }).fetch = inner
+    resetConvos(); realClock()
+  })
+  await flush()
+  const tab = q(v.el, '.cc-tabs button').find((b) => txt(b).trim().startsWith('inbox'))
+  assert.ok(tab, 'positive control: the desk has an inbox tab to open')
+  await inAct(() => { tab!.click() })
+  await flush(); await flush()
+  assert.ok(q(v.el, '.mailer-list .mailrow').length >= 2,
+    'positive control: the inbox rendered its rows, so a missing jump below '
+    + 'would be about the wiring and not about an empty list')
+  assert.equal(q(rowNamed(v.el, 'peer-known'), '.tier').length, 1,
+    'positive control: `tierOf` IS wired here, so the chip proves the desk '
+    + 'hands its tree down and this list is reading it')
+  // scoped to the mailbox: the desk HEADER draws this agent's own name as a
+  // jump, and counting that would answer a question about the header
+  assert.equal(q(v.el, '.mailwrap button.cc-name-jump').length, 0,
+    'and no name here claims a desk, because this call site supplies no focus '
+    + 'handler - see the header: a route appearing means someone added one '
+    + 'and must honour hasAgent with it')
+})
+
+uiTest('§11.10 an unreadable block in the MIDDLE refuses the whole envelope',
+  async ({ mount }) => {
+    // the cut can only ever be at the END. A block the parser cannot read
+    // anywhere else is an envelope shape we do not know, and guessing which of
+    // its neighbours are real would be the silent-loss failure splitTurnMail
+    // already refuses. Same rule here, one step further along.
+    const whole = `[MAIL — 3 message(s)]\n${HEAD('peer-one')}\nfirst body\n---\n`
+      + `SOME FUTURE SHAPE we do not parse\nwith a body\n---\n`
+      + `${HEAD('peer-three', '2026-09-05T10:09:00Z')}\n` + 'wordy '.repeat(20)
+    const { el } = await mount(
+      <AgentDirectoryProvider value={dirAll}>
+        <Msg m={cutMsg(whole)} slug="org" nid="me" />
+      </AgentDirectoryProvider>)
+    assert.equal(q(el, '.turn-mail-head').length, 0,
+      'nothing is identified out of an envelope we only half understand')
+    assert.ok(txt(el).includes('SOME FUTURE SHAPE'),
+      'and every line of it is still on screen')
+    assert.ok(txt(el).includes('first body'), 'including the part we could read')
   })

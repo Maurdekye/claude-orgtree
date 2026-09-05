@@ -1550,32 +1550,16 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
           .catch((e: Error) => toast([`error: ${e.message}`]))}><CloseIcon fontSize="inherit" /></button>
     </span>
   )
-  // THE DESK'S OWN TREE, handed to the transcript's mail cards.
-  //
-  // The lookup reads a ref so a rebuilt-but-identical `map` — the canvas makes
-  // a fresh one on most renders — does not churn the context value and
-  // re-render every memo'd row in the windowed list.
-  //
-  // ⚠ BUT A REF WRITE NOTIFIES NOBODY, so the value is memoised on
-  // `agentFactsSig`: the ids the tree holds and the tier of each. That is the
-  // difference between a directory that is merely current when something else
-  // happens to re-render, and one where a model switch, a retirement or a new
-  // hire actually reaches a transcript that has not otherwise changed. Same
-  // facts → same string → same value → no churn; changed facts → new value →
-  // the consumers re-render. (Found in review: without this, a mail card kept
-  // showing yesterday's model and a link to an agent that had gone.)
-  //
-  // ⚠ `onFocus` IS OMITTED, NOT STUBBED, WHEN THERE IS NOWHERE TO GO. A
-  // surface without `onJump` (there are such call sites) must render a name
-  // that does not click, rather than a button that runs an empty function —
-  // a control that looks live and does nothing is worse than no control.
+  // The desk's own tree, handed to the transcript's mail cards. The lookup
+  // reads a ref so a rebuilt-but-identical `map` does not churn the value;
+  // the memo keys on `agentFactsSig` because an id or tier change must reach
+  // the memo'd rows and a ref write reaches nobody. `onFocus` is OMITTED, not
+  // stubbed, when there is no route — a dead control is worse than none.
+  // `destination` is the header's own `!bare` test: only the focused desk is
+  // somewhere you already are.
   const mapRef = useRef(map); mapRef.current = map
   const jumpRef = useRef(onJump); jumpRef.current = onJump
   const canJump = Boolean(onJump)
-  // ⚠ THE SAME DESTINATION TEST THE HEADER USES, and the same reason it is
-  // `!bare` and never an id comparison: a switchboard panel or a pinned window
-  // is NOBODY's focused desk, so even this agent's own self-mail must still
-  // navigate there. Only the focused desk itself is a destination.
   const destination = bare ? null : node.id
   const facts = agentFactsSig(map)
   const agentDir = useMemo<AgentDirectory>(() => ({
@@ -1993,7 +1977,7 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
                 ? <div key={f.n ?? 'f' + i} className="msg live tools"><DotIcon fontSize="inherit" className="tooldot" /> {f.text}</div>
                 : f.kind === 'steered'
                   ? <LiveSteerRow key={f.n ?? 'f' + i} text={f.text}
-                      slug={slug} nid={node.id} />
+                      truncated={f.truncated} slug={slug} nid={node.id} />
                   : <div key={f.n ?? 'f' + i} className="msg assistant live">
                       <div className="md" dangerouslySetInnerHTML={md(f.text, fileBase(slug, node.id))} />
                       {/* the live copy is capped at 2000 chars server-side —
@@ -2097,6 +2081,7 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
       {view === 'progress' && <ProgressView model={progress} />}
       {view === 'inbox' && <InboxView slug={slug} nid={node.id} tier={node.tier}
         tierOf={(id) => map.get(id)?.tier}
+        hasAgent={(id) => map.has(id)}
         onRetract={(m) => retractMail(slug, node.id, m.id)
           .then(() => refresh(true))
           // rethrow: InboxView's optimistic hide rolls back on rejection
@@ -2368,20 +2353,11 @@ export function LineagePanel({ node, op, slug, presence = ALL_PRESENT,
   // asking it questions, not for looking at what it holds
   const [reading, setReading] = useState<string | null>(null)     // bearer id being read
   // the identity facts for the archived transcripts read below. ⚠ Focusing an
-  // agent from a MODAL has to close the modal first — the camera would
-  // otherwise glide to a desk sitting behind this overlay, which is the same
-  // rule every other modal here follows. And `onFocus` is OMITTED when the
-  // caller gave no route: a button that runs nothing is worse than none.
-  //
-  // ⚠ NO `destination`. A modal is not any agent's focused desk, so EVERY
-  // resolved name here navigates — including a mail this very bearer sent to
-  // itself, because clicking it closes the modal and takes you somewhere you
-  // are not. (Before this it compared the sender against the bearer id and
-  // went inert, which is the mistake the AgentName contract already names.)
-  //
-  // ⚠ And the value is memoised on `agentFactsSig`, not on the refs, for the
-  // reason spelled out at DeskChatInner's copy: a ref write reaches no
-  // consumer, and these mail cards can sit on screen unchanged for minutes.
+  // agent from a MODAL closes the modal first, or the camera glides to a desk
+  // behind this overlay. `onFocus` is omitted when the caller gave no route.
+  // NO `destination`: a modal is nobody's focused desk, so every resolved name
+  // navigates — the bearer's own self-mail included. Memoised on
+  // `agentFactsSig` for the reason at DeskChatInner's copy.
   const mapRef = useRef(map); mapRef.current = map
   const focusRef = useRef(onFocusAgent); focusRef.current = onFocusAgent
   const closeRef = useRef(close); closeRef.current = close
@@ -2602,6 +2578,24 @@ export interface TurnMail {
 const TURN_MAIL_RE = /^\s*\[MAIL — \d+ message\(s\)\]\n([\s\S]*?)\n\[END MAIL\]\n*/
 const NOTICE_MAIL_RE = /^NOTICE FROM (\S+) \((.*?)\) · (.*?) — informational, delivered passively; no reply is expected\n?([\s\S]*)$/
 const DIRECT_MAIL_RE = /^FROM (\S+) \((.*?)\) · ([^·\n]+) · ([^\n]+)\n?([\s\S]*)$/
+// the opening line alone: a copy the server cut has no closing marker
+const TRUNC_MAIL_OPEN_RE = /^\s*\[MAIL — \d+ message\(s\)\]\n/
+
+// one header parser, so the whole-envelope and truncated-preview readers below
+// cannot drift on who sent a message or where its body starts
+const parseMailBlock = (block: string): TurnMail | null => {
+  const notice = NOTICE_MAIL_RE.exec(block)
+  if (notice) {
+    return { from: notice[1] ?? '', relationship: notice[2] ?? '', kind: 'notice',
+      at: notice[3] ?? '', body: notice[4] ?? '', passive: true }
+  }
+  const direct = DIRECT_MAIL_RE.exec(block)
+  if (direct) {
+    return { from: direct[1] ?? '', relationship: direct[2] ?? '', kind: direct[3] ?? '',
+      at: direct[4] ?? '', body: direct[5] ?? '', passive: false }
+  }
+  return null
+}
 
 export const splitTurnMail = (text: string | null | undefined) => {
   const value = text ?? ''
@@ -2609,47 +2603,50 @@ export const splitTurnMail = (text: string | null | undefined) => {
   if (!matched) return { mail: [] as TurnMail[], rest: value }
   const mail: TurnMail[] = []
   for (const block of (matched[1] ?? '').split('\n---\n')) {
-    const notice = NOTICE_MAIL_RE.exec(block)
-    if (notice) {
-      mail.push({ from: notice[1] ?? '', relationship: notice[2] ?? '', kind: 'notice',
-        at: notice[3] ?? '', body: notice[4] ?? '', passive: true })
-      continue
-    }
-    const direct = DIRECT_MAIL_RE.exec(block)
-    if (direct) {
-      mail.push({ from: direct[1] ?? '', relationship: direct[2] ?? '', kind: direct[3] ?? '',
-        at: direct[4] ?? '', body: direct[5] ?? '', passive: false })
-      continue
-    }
+    const one = parseMailBlock(block)
     // A future envelope shape must stay visible rather than silently vanish.
-    return { mail: [] as TurnMail[], rest: value }
+    if (!one) return { mail: [] as TurnMail[], rest: value }
+    mail.push(one)
   }
   return { mail, rest: value.slice(matched[0].length) }
 }
 
+/** The envelope in a copy the SERVER DECLARED CUT — no `[END MAIL]`, because
+ *  the cut landed before it. Used only when a `truncated` flag says so.
+ *
+ *  Identity comes from COMPLETE headers and nothing else: a block whose header
+ *  line does not end inside the copy is never parsed, so a cut mid-header
+ *  cannot invent a sender. Returns null when nothing can be established;
+ *  `cut` is the trailing partial block, which the caller still displays. */
+export const splitTruncatedMail = (text: string | null | undefined) => {
+  const value = text ?? ''
+  const opened = TRUNC_MAIL_OPEN_RE.exec(value)
+  if (!opened) return null
+  const blocks = value.slice(opened[0].length).split('\n---\n')
+  const mail: TurnMail[] = []
+  for (let i = 0; i < blocks.length; i++) {
+    const block = blocks[i] ?? ''
+    // a terminated first line is what makes the header complete
+    const one = block.includes('\n') ? parseMailBlock(block) : null
+    if (one) { mail.push(one); continue }
+    // only the LAST block may be unreadable — that is where the cut is. An
+    // unrecognised shape anywhere else is refused, as splitTurnMail refuses.
+    if (i < blocks.length - 1) return null
+    return mail.length ? { mail, cut: block } : null
+  }
+  return { mail, cut: '' }
+}
+
 /** A mail sender's identity: its model chip and the route to its desk, or the
- *  plain name when this surface cannot vouch for it.
+ *  plain name when this surface cannot vouch for it. Facts by context — see
+ *  `AgentDirectory`.
  *
- *  User ruling 2026-09-05, reiterated: an agent sender wears its model card
- *  and takes you to its desk in the INLINE TRANSCRIPT too, not only in the
- *  mailbox. The facts arrive by context — see `AgentDirectory` for why
- *  context and not a prop threaded through memo'd `Msg`.
- *
- *  ⚠ ELIGIBILITY IS TWO INDEPENDENT FACTS, and neither is the name matching:
- *
- *   · NAMESPACE. Every party from outside this org is minted with an `@ns:`
- *     prefix at the boundary — `@mcp:<peer>` (api.py `_extern_peer`, whose
- *     peer id is `[A-Za-z0-9._-]{1,64}` and so cannot smuggle one in),
- *     `@org:<slug>` (api.py interorg) and `@net:<from>` (net.py inbound),
- *     which are the three call sites of `post_external_mail` — plus the
- *     `@user`/`@system` sentinels. So the '@' test excludes an outside party
- *     BY ORIGIN, not by anything about how it spells itself.
- *   · EXISTENCE. `dir.resolve` must return a node the tree on screen holds.
- *
- *  A bare name that resolves is therefore one of ours because the boundary
- *  gave it no other way in — not because the string matched. `test_external
- *  _mail.py §5` is the check on that boundary; if it ever ships an
- *  un-prefixed external sender, this rule is wrong and that test fails. */
+ *  ⚠ ELIGIBILITY IS TWO FACTS, and neither is the name matching:
+ *  NAMESPACE — every party from outside the org enters with an `@ns:` prefix
+ *  (`@mcp:`/`@org:`/`@net:`, the three call sites of `post_external_mail`)
+ *  plus the `@user`/`@system` sentinels, so the '@' test excludes outsiders by
+ *  ORIGIN; and EXISTENCE — the tree on screen must hold the node.
+ *  `test_external_mail.py §5` is the check on the boundary half. */
 function MailFrom({ from, nameClass }: { from: string; nameClass?: string }) {
   const dir = useAgentDirectory()
   const agent = from && !from.startsWith('@') ? dir?.resolve(from) : undefined
@@ -2705,37 +2702,30 @@ function TurnMailCard({ mail, slug, nid }: { mail: TurnMail; slug: string; nid: 
 
 /** MAIL THAT ARRIVED MID-TURN, drawn while the turn is still running.
  *
- *  ⚠ IT MUST GO ON LOOKING LIVE. This row is the streaming stand-in for a
- *  message the transcript has not caught up with; a `TurnMailCard` replaces
- *  it a moment later. Dressing it as that card would tell the reader the
- *  message had settled into the transcript when it has not — so it keeps
- *  `.msg.user.live` and only the SENDER is upgraded, from the bold name
- *  `stripEnvelope` used to leave behind to the same identity the settled card
- *  will show (user ruling 2026-09-05: inline in the transcript too).
- *
- *  ⚠ IT PARSES WITH `splitTurnMail`, the settled card's own parser, so the
- *  two cannot drift on who the sender is or where the body starts. An
- *  envelope shape that parser does not recognise falls back to EXACTLY the
- *  previous rendering rather than dropping text — `splitTurnMail` refuses the
- *  same way, and a live row that swallowed an unfamiliar envelope would be
- *  the silent-loss failure.
- *
- *  Attachments stay as the [ATTACHED FILE] lines the envelope carries, which
- *  is what this row already showed; the settled card turns them into chips.
- *  That is a deliberate difference, not an oversight: the files are on the
- *  agent's disk, and the card arrives with the transcript. */
-function LiveSteerRow({ text, slug, nid }: { text: string; slug: string; nid: string }) {
+ *  ⚠ IT STAYS LIVE: `.msg.user.live`, never the settled card's dress — only
+ *  the SENDER is upgraded from a bold name to its identity. Parsed with the
+ *  settled card's own parsers so the two cannot drift; a complete header in a
+ *  server-declared truncated copy still names its sender while the body stays
+ *  live, and an unrecognised envelope falls back to the previous rendering
+ *  rather than dropping text. Attachments stay as [ATTACHED FILE] lines —
+ *  the settled card makes them chips. */
+function LiveSteerRow({ text, slug, nid, truncated }:
+  { text: string; slug: string; nid: string; truncated?: boolean }) {
   // notices are split off here too: the live row would otherwise flash raw
   // [ORG NOTICES] chrome for the second before the transcript refresh
   // renders them as a card
   const rest = splitNotices(text).rest
-  const { mail, rest: tail } = splitTurnMail(rest)
+  const whole = splitTurnMail(rest)
+  // the server caps this copy and DECLARES the cut, which takes `[END MAIL]`
+  // with it; complete headers before the cut still name their senders
+  const cut = whole.mail.length || !truncated ? null : splitTruncatedMail(rest)
+  const mail = whole.mail.length ? whole.mail : cut?.mail ?? []
   const fb = fileBase(slug, nid)
   if (!mail.length) {
     return <div className="msg user live md"
       dangerouslySetInnerHTML={md(stripEnvelope(rest), fb)} />
   }
-  const after = stripEnvelope(tail)
+  const after = stripEnvelope(whole.mail.length ? whole.rest : cut!.cut)
   return (
     <div className="msg user live">
       {mail.map((m, i) => (
@@ -2746,6 +2736,9 @@ function LiveSteerRow({ text, slug, nid }: { text: string; slug: string; nid: st
         </div>
       ))}
       {after && <div className="md" dangerouslySetInnerHTML={md(after, fb)} />}
+      {/* the cards above would otherwise read as the whole message */}
+      {cut && <div className="trunc-note">
+        ✂ shown truncated — the full text follows shortly</div>}
     </div>
   )
 }
@@ -2898,16 +2891,24 @@ export const Msg = memo(function Msg({ m, slug, nid, onMailLink, onWorkLink }: {
   // (user spec 2026-08-25)
   const turnMail = m.role === 'user'
     ? splitTurnMail(rest) : { mail: [] as TurnMail[], rest }
-  if (turnMail.mail.length > 0) {
-    const tail = stripEnvelope(turnMail.rest)
+  // the steered log caps a row and DECLARES the cut; a cut that landed before
+  // `[END MAIL]` used to take every sender in the envelope down with it
+  const cutMail = m.role === 'user' && m.truncated && !turnMail.mail.length
+    ? splitTruncatedMail(rest) : null
+  if (turnMail.mail.length > 0 || cutMail) {
+    const mails = turnMail.mail.length ? turnMail.mail : cutMail!.mail
+    const tail = stripEnvelope(turnMail.mail.length ? turnMail.rest : cutMail!.cut)
     return (
       <div className="turn-mail-batch">
         {notices.length > 0 && <NoticeLine notices={notices} />}
-        {turnMail.mail.map((mail, i) =>
+        {mails.map((mail, i) =>
           <TurnMailCard key={`${mail.at}-${i}`} mail={mail} slug={slug} nid={nid} />)}
         {tail && <div className="msg user turn-mail-tail">
           <div className="msgtext md" dangerouslySetInnerHTML={md(tail, fileBase(slug, nid))} />
         </div>}
+        {/* the cards above would otherwise read as the whole message */}
+        {cutMail && <div className="trunc-note">
+          ✂ shown truncated — the agent received the full message</div>}
       </div>
     )
   }
