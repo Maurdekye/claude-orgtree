@@ -240,6 +240,8 @@ IDLE_DOCKET_REMINDER_ROLE: dict[str, str] = {
     "reviewer": " — awaiting YOUR review",
     "unassigned_review": " — NO REVIEWER NAMED: assign one, do not review "
                          "your own work",
+    "stale_reviewer": " — its named reviewer is no longer live: name another, "
+                      "do not review your own work",
 }
 IDLE_DOCKET_REMINDER_NUDGE = (
     "(orgtree) This is the automatic idle-docket reminder. The internally "

@@ -283,8 +283,12 @@ gets a single notification listing both, each row saying which it is.
 
 A `review` item with **no reviewer recorded** goes to the owner, worded as a
 missing review assignment — the outstanding action there is naming a reviewer,
-and self-review is prohibited. Ownership and reviewership both ignore
-generation: a compaction or rehire replaces the agent, not the assignment.
+and self-review is prohibited. A reviewer that is **no longer live** counts as
+no reviewer, under its own role, because the reminder pass never wakes a
+retired seat and the item would otherwise stop reaching anybody at all; the
+recorded reviewer is left alone and the owner is asked to name another.
+Ownership and reviewership both ignore generation: a compaction or rehire
+replaces the agent, not the assignment — being retired is a different thing.
 
 ## The standing instructions
 

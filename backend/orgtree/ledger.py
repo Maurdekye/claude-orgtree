@@ -10156,14 +10156,24 @@ class Org:
         assignment and never as "review your own work" (Astra 2026-09-05;
         self-review is prohibited). Every other status is owed by the owner.
 
+        A reviewer that is GONE — retired, or no longer a node at all — is
+        treated as no reviewer, under its own role `stale_reviewer`. Otherwise
+        the item would name a recipient the reminder pass never wakes (retired
+        seats are excluded there), and it would quietly stop reaching anybody
+        at all: a review nobody is doing and nobody is asked about. The owner
+        is asked to name another instead.
+
         ⚠ Ownership and reviewership both ignore GENERATION: a compaction or
-        rehire replaces the agent, not the assignment. `reviewer` is
-        codex-sandbox's field and may be absent on items written before it
-        exists; absent reads exactly like null.
+        rehire replaces the agent, not the assignment. Being RETIRED is a
+        different thing from a moved generation and is the only state checked
+        here. `reviewer` is codex-sandbox's field and may be absent on items
+        written before it exists; absent reads exactly like null.
         """
         owner = self._work_actor_node(it.get("owner"))
         if it.get("status") == "review":
             rv = self._work_actor_node(it.get("reviewer"))
+            if rv and (self.nodes.get(rv) or {}).get("state") != "live":
+                return owner, "stale_reviewer"
             if rv:
                 return rv, "reviewer"
             return owner, "unassigned_review"

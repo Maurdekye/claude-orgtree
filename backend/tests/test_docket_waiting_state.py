@@ -394,6 +394,31 @@ check("a compacted or rehired reviewer is still the reviewer",
       reviewership_ignores_generation)
 
 
+def a_retired_reviewer_hands_it_back() -> None:
+    """A reviewer that is gone names a recipient the reminder pass never
+    wakes, so the item would stop reaching anybody at all. It falls back to
+    the owner under its own role instead."""
+    slug = fixture(peers=("peer",))
+    wid = item(slug, "Under review", status="review")
+    name_reviewer(slug, wid, "peer")
+    org = store.load_org(slug)
+    assert [r["role"] for r in org.work_idle_reminder_items("peer")] == \
+        ["reviewer"], "control: a live reviewer owes it"
+    do(slug, lambda org: org.retire(USER, "peer"))
+    org = store.load_org(slug)
+    assert org.node("peer")["state"] != "live", "fixture must really retire it"
+    assert org.work_idle_reminder_items("peer") == []
+    rows = org.work_idle_reminder_items("agent")
+    assert [(r["slug"], r["role"]) for r in rows] == \
+        [(wid, "stale_reviewer")], rows
+    # and the reviewer is still RECORDED — nothing was rewritten behind it
+    assert org._work_find(wid)[0]["reviewer"]["node"] == "peer"
+
+
+check("a retired reviewer hands the item back to the owner rather than "
+      "leaving it silent", a_retired_reviewer_hands_it_back)
+
+
 print("\n§4  exclusions are per item, before anyone is grouped")
 
 
