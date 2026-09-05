@@ -670,18 +670,73 @@ def _strict_http_status(value: Any) -> int | None:
     return value if 400 <= value <= 599 else None
 
 
+#: the two spellings of the SAME field, read wherever a record might carry it.
+#: `api_error_status` is what the CLI writes to STDOUT — it is the name in the
+#: SDK message schema, and the one the RESULT event actually uses.
+#: `apiErrorStatus` is the internal name, which is what lands in the CLI's own
+#: transcript files. Both are read here so a record from either source answers
+#: the same question; NEITHER is coerced (see `_strict_http_status`), and a
+#: record carrying neither answers None. Read out of the pinned CLI binary
+#: (2.1.258) on 2026-09-05 — see `_typed_api_status` for what each source is
+#: actually observed to carry.
+_STATUS_KEYS = ("api_error_status", "apiErrorStatus")
+
+
+def _typed_status_field(obj: Any) -> int | None:
+    """The HTTP error status on ONE record, under either spelling, or None."""
+    if not isinstance(obj, dict):
+        return None
+    rec = cast("dict[str, Any]", obj)
+    for key in _STATUS_KEYS:
+        status = _strict_http_status(rec.get(key))
+        if status is not None:
+            return status
+    return None
+
+
+def _is_engine_error_event(ev: dict[str, Any], msg: dict[str, Any]) -> bool:
+    """Did the ENGINE author this assistant record to carry an API error?
+
+    Three marks, any one of which is enough and none of which a model can
+    emit: the `<synthetic>` model id, the CLI's own flag in its STDOUT
+    spelling (`is_api_error_message` — the name in the SDK message schema),
+    and the same flag in the internal/transcript spelling
+    (`isApiErrorMessage`). The stdout spelling was missing here until
+    2026-09-05: only the model id admitted a real stream event, and the
+    camelCase read was answering a field the stream does not carry."""
+    return (msg.get("model") == "<synthetic>"
+            or ev.get("is_api_error_message") is True
+            or ev.get("isApiErrorMessage") is True
+            or msg.get("isApiErrorMessage") is True)
+
+
 def _note_synthetic_status(into: dict[str, Any], ev: dict[str, Any],
                            text: str) -> None:
-    """The LATEST unresolved synthetic API error, with its status — the one
-    carrier of a typed status the stream shows BEFORE the result event.
+    """The LATEST unresolved engine-authored API error, with its status.
 
-    Measured in a CLI transcript on this machine (2.1.258, sdk-cli, an
-    OpenRouter-driven grok-4.6 agent, 2026-09-03T12:22:56Z): a top-level
-    assistant record with `message.model == "<synthetic>"`,
-    `isApiErrorMessage: true`, `error: "unknown"` and `apiErrorStatus: 402`
-    beside the human sentence. Presence in the stdout stream is inferred from
-    the record being the same message object; this reads the event and the
-    message and stays inert when neither carries the field.
+    ⚠ HYPOTHETICAL COMPATIBILITY, NOT A PRODUCTION PATH (2026-09-05). The
+    pinned CLI does NOT put a status on an assistant event, under either
+    spelling — read out of the 2.1.258 binary this machine drives: the stdout
+    projection for an assistant message is
+    `{type, message, parent_tool_use_id, session_id, uuid, timestamp, error,
+    request_id?, supersedes?, …Oit(…), tool_use_meta?}`, and `Oit` in full is
+    `{aborted, is_api_error_message, api_error, resumed_from_incomplete_
+    thinking, is_virtual, batch_tool_uses, wire_tool_inputs}`. No status
+    field, and `api_error` is an enum (max_output_tokens | dlp_request_denied)
+    rather than a number. Every occurrence of `api_error_status` in that
+    binary was read: the assistant schema declares it and nothing populates
+    it; the RESULT event is where it is actually set. So on the pinned build
+    this function's slot NEVER fills from a real stream, and the turn is
+    classified by `_typed_api_status`'s FIRST source instead.
+
+    It is kept, and reads both spellings, for two reasons: a build that does
+    populate the declared field would work without a code change, and the
+    same shape IS what the CLI writes into its own transcript records (2.1.258,
+    sdk-cli, an OpenRouter-driven grok-4.6 agent, 2026-09-03T12:22:56Z: a
+    top-level record with `message.model == "<synthetic>"`,
+    `isApiErrorMessage: true`, `error: "unknown"`, `apiErrorStatus: 402`).
+    ⚠ Do not read a green check over this path as evidence that production
+    behaviour was reproduced — the suite says which checks are which.
 
     LATEST WINS, unlike `_note_api_error` beside it: that one records the
     originating CAUSE for the durable narrative; this one records the state
@@ -702,12 +757,9 @@ def _note_synthetic_status(into: dict[str, Any], ev: dict[str, Any],
     what every non-OpenRouter turn does. Nothing here invents a status from
     prose — an untyped error stays untyped."""
     _clear_synthetic_status(into)
-    status = _strict_http_status(ev.get("apiErrorStatus"))
+    status = _typed_status_field(ev)
     if status is None:
-        msg = ev.get("message")
-        if isinstance(msg, dict):
-            status = _strict_http_status(
-                cast("dict[str, Any]", msg).get("apiErrorStatus"))
+        status = _typed_status_field(ev.get("message"))
     if status is None:
         return
     into["status"] = status
@@ -727,15 +779,29 @@ def _typed_api_status(res: dict[str, Any],
                       stream_err: Mapping[str, Any]) -> int | None:
     """The HTTP error status this turn ENDED on, as a strict int, or None.
 
-    Precedence: the top-level RESULT event first — `api_error_status` on a
-    result flagged `is_error` (measured 2026-08-24 for 401) — then the latest
-    unresolved synthetic status the stream showed (`_note_synthetic_status`).
-    A clean result with no synthetic left standing answers None, and None
+    Precedence: the top-level RESULT event first, then the latest unresolved
+    engine-authored status the stream showed (`_note_synthetic_status`). A
+    clean result with no such status left standing answers None, and None
     means "no typed evidence": the caller falls back to the prose predicates
     exactly as before this existed. A typed answer is never widened by prose
-    and prose never invents a number (coordinator ruling 2026-09-05)."""
+    and prose never invents a number (coordinator ruling 2026-09-05).
+
+    ⚠ THE FIRST SOURCE IS THE ONLY ONE THE PINNED CLI FEEDS. Read out of the
+    2.1.258 binary (2026-09-05): the engine keeps two locals, reset on every
+    user message, and assigns BOTH on every assistant message —
+    `Ko = Ie.isApiErrorMessage === true` and `jr = Ie.apiErrorStatus ?? null`
+    — then builds the result with `is_error: Ko` and `api_error_status: jr`.
+    So the flag and the number come from the LAST assistant message and move
+    together: a turn whose last assistant message is the synthetic refusal
+    ends `is_error: true` WITH the number, and a turn that produced real
+    output after the error ends `is_error: false` with the number cleared —
+    the CLI's own version of "an error that was retried past does not
+    classify the turn". Requiring `is_error` here is therefore not a
+    restriction the CLI can surprise us on; the two travel as a pair.
+    The second source is hypothetical compatibility — see
+    `_note_synthetic_status`."""
     if res.get("is_error") is True:
-        status = _strict_http_status(res.get("api_error_status"))
+        status = _typed_status_field(res)
         if status is not None:
             return status
     return _strict_http_status(stream_err.get("status"))
@@ -13664,9 +13730,14 @@ def _run_one_turn(slug: str, nid: str,
                             # can exist, so its own output always comes first.
                             saw_agent_out[0] = True
                         _msg = ev.get("message", {})
-                        if _msg.get("model") == "<synthetic>" \
-                                or ev.get("isApiErrorMessage") \
-                                or _msg.get("isApiErrorMessage"):
+                        # ⚠ the CLI's OWN flag is `is_api_error_message` on
+                        # stdout and `isApiErrorMessage` in its transcript
+                        # (2.1.258 binary, read 2026-09-05). Only the model id
+                        # admitted a real stream event until then, because the
+                        # camelCase read here was asking the wire for a field
+                        # it does not write. `_is_engine_error_event` reads
+                        # every spelling in one place.
+                        if _is_engine_error_event(ev, _msg):
                             # transcript records carry content as a STRING;
                             # stream events as blocks — accept both
                             _c = _msg.get("content")
@@ -13691,13 +13762,12 @@ def _run_one_turn(slug: str, nid: str,
                             # wins, top-level only): independent of the two
                             # prose branches above, so a limit-worded 402
                             # still carries its number for the lane that
-                            # classifies by number. Only an ENGINE-authored
-                            # message may set it — `<synthetic>` is a model
-                            # id no model can emit, and `isApiErrorMessage`
-                            # is the CLI's own flag on that record.
-                            if not sub and (_msg.get("model") == "<synthetic>"
-                                            or ev.get("isApiErrorMessage")
-                                            is True):
+                            # classifies by number. ⚠ The pinned CLI writes NO
+                            # status on an assistant event — this call is
+                            # hypothetical compatibility and reads the
+                            # transcript shape; the production number arrives
+                            # on the RESULT event. See _note_synthetic_status.
+                            if not sub:
                                 _note_synthetic_status(stream_api_err, ev, _t)
                         elif not sub:
                             # a REAL top-level assistant message: any API
@@ -14459,18 +14529,26 @@ def _run_one_turn(slug: str, nid: str,
                     and stream_api_err.get("status") is not None
                     and res.get("is_error") is not True
                     and not str(res.get("result") or "").strip()):
-                # the REAL SHAPE of a gateway refusal, measured in a CLI
-                # transcript on this machine (2.1.258, sdk-cli, 2026-09-03):
-                # a `<synthetic>` assistant record flagged isApiErrorMessage
-                # with `apiErrorStatus: 402` — and then the turn ends
-                # NORMALLY, `is_error` unset, `result` empty. Nothing above
-                # sets `err_blob` for that (the limit adoption needs the word
-                # "limit", and this 402's sentence has none), so the turn was
+                # ⚠ HYPOTHETICAL COMPATIBILITY, NOT A MEASURED PRODUCTION
+                # SHAPE (corrected 2026-09-05). This guards a turn that shows
+                # an engine-authored API error and then ends NORMALLY —
+                # `is_error` unset, `result` empty — where nothing above sets
+                # `err_blob` (the limit adoption needs the word "limit", and
+                # the captured 402's sentence has none) and the turn would be
                 # booked COMPLETED: no error row, no mail, no freeze, the
-                # agent silently stopped. Same adoption as `synth_limit_txt`
-                # directly above — engine-authored text, never the agent's —
-                # gated on a status a model cannot emit, and only when no
-                # real assistant message followed (`_clear_synthetic_status`).
+                # agent silently stopped.
+                #
+                # That ending was ASSUMED, carried over from
+                # test_limit_freeze's documented shape because the result
+                # event was not in the captured transcript. The pinned CLI
+                # does not produce it: the engine copies the LAST assistant
+                # message's error flag and status onto the result together
+                # (see `_typed_api_status`), so this refusal ends `is_error:
+                # true` WITH its number and the ordinary failure path handles
+                # it. This branch cannot fire on that build at all — its gate
+                # is a stream-side status the wire never carries. It is kept
+                # as a cheap net for a build that ends cleanly after an error,
+                # and it is engine-authored text, never the agent's.
                 err_blob = (str(stream_api_err.get("status_text") or "")
                             or f"the CLI reported API status "
                                f"{stream_api_err['status']}")

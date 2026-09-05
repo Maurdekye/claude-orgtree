@@ -46,17 +46,33 @@ R.MUTANTS[:] = [
      "                _limit_class = _or_typed in (401, 402, 429) \\\n                    or _looks_like_usage_limit(err_blob)\n                _net_class = _or_typed >= 500",
      "exclusive · typed 403 with limit wording stays TERMINAL, status in the door"),
 
+    # ▶ THE PRIMARY PATH. On the pinned CLI the ONLY typed evidence is the
+    # result event's own number, so this is the mutation that says whether the
+    # OpenRouter classification is load-bearing in production at all. It must
+    # die to a check driven in the EMITTED shape, not to a compatibility one.
+    ("the RESULT event's typed status is ignored (only the stream slot is read)",
+     SUP,
+     "        status = _typed_status_field(res)\n        if status is not None:\n            return status",
+     "        pass",
+     "balance · …frozen cause=balance on the probe floor, run 1, no window, no pool"),
+
+    ("the CLI's STDOUT flag spelling is not recognised (only the camelCase one)",
+     SUP,
+     "            or ev.get(\"is_api_error_message\") is True\n",
+     "",
+     "reader · engine authorship: the model id and BOTH flag spellings, nothing else"),
+
     ("a retried-past synthetic error is never cleared",
      SUP,
      "                        elif not sub:\n                            # a REAL top-level assistant message: any API",
      "                        elif False:\n                            # a REAL top-level assistant message: any API",
-     "coherence · synthetic 402 → real output → EMPTY result is a COMPLETED turn (the clearing)"),
+     "compat · status-bearing error → real output → EMPTY result is COMPLETED (the clearing)"),
 
     ("an UNTYPED latest engine error leaves the earlier status standing",
      SUP,
-     "    _clear_synthetic_status(into)\n    status = _strict_http_status(ev.get(\"apiErrorStatus\"))",
-     "    status = _strict_http_status(ev.get(\"apiErrorStatus\"))",
-     "coherence · typed 401 → UNTYPED engine error is terminal on the later error, not an auth park"),
+     "    _clear_synthetic_status(into)\n    status = _typed_status_field(ev)",
+     "    status = _typed_status_field(ev)",
+     "compat · typed 401 → UNTYPED engine error is terminal on the later error, not an auth park"),
 
     # ⚠ THE OBVIOUS FIRST-WINS MUTATION IS DEAD CODE NOW. Guarding the two
     # assignment lines with `if "status" in into: return` can never fire —
@@ -66,20 +82,20 @@ R.MUTANTS[:] = [
     # but put the EARLIER value back whenever the later event is also typed.
     ("the synthetic slot is FIRST-wins (a stale 401 parks a 402 as auth)",
      SUP,
-     "    _clear_synthetic_status(into)\n    status = _strict_http_status(ev.get(\"apiErrorStatus\"))",
+     "    _clear_synthetic_status(into)\n    status = _typed_status_field(ev)",
      "    _first = (into.get(\"status\"), into.get(\"status_text\"))\n"
      "    _clear_synthetic_status(into)\n"
-     "    status = _strict_http_status(ev.get(\"apiErrorStatus\"))\n"
+     "    status = _typed_status_field(ev)\n"
      "    if _first[0] is not None and status is not None:\n"
      "        into[\"status\"], into[\"status_text\"] = _first\n"
      "        return",
-     "coherence · consecutive 401 → 402 is the 402 (latest), not a stale auth park"),
+     "compat · consecutive 401 → 402 is the 402 (latest), not a stale auth park"),
 
     ("the clean-empty-result adoption is dropped (the 402 books a completed turn)",
      SUP,
      "                    and stream_api_err.get(\"status\") is not None\n                    and res.get(\"is_error\") is not True",
      "                    and stream_api_err.get(\"status\") is None\n                    and res.get(\"is_error\") is not True",
-     "balance · the captured 402 ending on a clean empty result is a FAILURE"),
+     "compat · status-bearing error + clean empty result is a FAILURE (hypothetical shape)"),
 
     ("a served turn no longer resets the balance run",
      SUP,

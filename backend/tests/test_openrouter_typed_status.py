@@ -4,39 +4,53 @@ failure rather than a completed turn.
 
     python backend/tests/test_openrouter_typed_status.py   (no pytest)
 
-WHAT WAS MEASURED, AND WHAT THIS RIG REPRODUCES
------------------------------------------------
-· A CLI transcript on this machine (Claude Code 2.1.258, entrypoint sdk-cli,
-  an orgtree agent on `x-ai/grok-4.6` through openrouter.ai, 2026-09-03
-  12:22:56Z) ends on a `<synthetic>` assistant record flagged
-  `isApiErrorMessage`, `error: "unknown"`, `apiErrorStatus: 402`, whose text
-  is "API Error: 402 This request would exceed your available credits given
-  your current in-flight requests. Retry after in-flight requests settle, or
-  add credits." That sentence has no "limit" in it, and the CLI's typed code
-  was `unknown`, not `billing_error`. The result event that ended the session
-  is NOT in the transcript; test_limit_freeze documents the clean-result
-  ending as the measured shape for a synthetic API error, and the probe
-  (codex-delivery/evidence) showed orgtree booking that ending as a COMPLETED
-  turn — no error row, no mail, no freeze.
+THREE KINDS OF EVIDENCE, KEPT APART ON PURPOSE
+----------------------------------------------
+MEASURED (a captured artefact on this machine):
+· A CLI transcript (Claude Code 2.1.258, entrypoint sdk-cli, an orgtree agent
+  on `x-ai/grok-4.6` through openrouter.ai, 2026-09-03 12:22:56Z) ends on a
+  `<synthetic>` assistant record flagged `isApiErrorMessage`, `error:
+  "unknown"`, `apiErrorStatus: 402`, whose text is "API Error: 402 This
+  request would exceed your available credits given your current in-flight
+  requests. Retry after in-flight requests settle, or add credits." That
+  sentence has no "limit" in it, and the CLI's typed code was `unknown`, not
+  `billing_error`. ⚠ Those are TRANSCRIPT field names.
 · With a Claude login present, `accounts.resolve("or-…")` answers "primary,
   available", so an OpenRouter 429 was RE-DRIVEN "on the next account in
   line" — the next spawn of an OR tier takes the same gateway key — instead
   of freezing (probe `or_redrive_probe.py`). audit F1's activation check ran
   on a signed-out rig and could not see it.
-· OpenRouter's wording for 401/403/5xx is NOT observed; those rows carry
-  labelled PLACEHOLDER text. The checks ask what orgtree does with a status
-  and a sentence, never what the gateway says.
+
+SOURCE-DERIVED (read out of the pinned 2.1.258 binary on 2026-09-05, not from
+a captured stdout stream — see evidence/cli-stdout-shape-2.1.258.md):
+· the stdout assistant event carries NO status field under any spelling, and
+  the CLI's own flag on it is `is_api_error_message`, not `isApiErrorMessage`;
+· the engine assigns `is_error` and `api_error_status` on the RESULT event
+  from the LAST assistant message together, so the captured refusal ends
+  `is_error: true` WITH its number — and a turn that produced real output
+  after an error ends `is_error: false` with the number gone.
+  This rig's PRIMARY checks drive that shape.
+
+NOT OBSERVED, and never asserted as if it were:
+· OpenRouter's own wording for 401/403/5xx — those rows carry labelled
+  PLACEHOLDER text. The checks ask what orgtree does with a status and a
+  sentence, never what the gateway says.
+· any build that populates the declared assistant-level status. §6b drives it
+  anyway, LABELLED HYPOTHETICAL, so the compatibility code is at least
+  coherent; it is not evidence about production.
 
     §1  the strict status reader (pure)
     §2  the OpenRouter lane, login present — freeze, never re-drive
     §3  exclusive class by number: 403/limit terminal · 503/limit retry · 429/no-limit freeze
     §4  401 → parked auth freeze with the OpenRouter remedy
-    §5  the measured 402 shape → failure, balance probe, F2 ownership, cap, manual resume, reset on success
-    §6  coherence: an error retried past does not classify; the latest one does
+    §5  the captured 402 in the EMITTED shape → failure, balance probe, F2 ownership, cap, manual resume, reset on success
+    §6  coherence in the emitted shape: the later error classifies; the CLI's own retried-past rule
+    §6b compatibility only: the transcript spellings, hypothetical
     §7  the Claude lane is byte-for-byte unchanged (controls)
 
-Anti-vacuity: `tests/_mutate_or_typed.py` breaks the shipped code eleven ways
-and requires a NAMED check here to go red for each.
+Anti-vacuity: `tests/_mutate_or_typed.py` breaks the shipped code thirteen ways
+and requires a NAMED check here to go red for each — including one that
+proves the PRIMARY path (the result event's number) is load-bearing.
 """
 from __future__ import annotations
 
@@ -159,10 +173,19 @@ function serve(text) {
                     content: [{ type: 'text', text: s.text || 'ack.' }], usage: { input_tokens: 1000, output_tokens: 10 } }
       say({ type: 'assistant', message: msg }); record({ type: 'assistant', message: msg })
     } else if (s.kind === 'synthetic') {
+      // THE WIRE SHAPE (default): the flag in its stdout spelling and NO
+      // status — what the 2.1.258 emitter actually writes. `legacy: true`
+      // switches to the CLI's own TRANSCRIPT spellings, which is the only
+      // place `apiErrorStatus` exists; `status` implies it.
       const msg = { role: 'assistant', model: '<synthetic>', content: [{ type: 'text', text: s.text }],
                     usage: { input_tokens: 0, output_tokens: 0 }, stop_reason: 'stop_sequence' }
-      const ev = { type: 'assistant', message: msg, isApiErrorMessage: true, error: s.code || 'unknown' }
-      if (s.status !== undefined) ev.apiErrorStatus = s.status
+      const ev = { type: 'assistant', message: msg, error: s.code || 'unknown' }
+      if (s.legacy || s.status !== undefined) {
+        ev.isApiErrorMessage = true
+        if (s.status !== undefined) ev.apiErrorStatus = s.status
+      } else {
+        ev.is_api_error_message = true
+      }
       say(ev); record(ev)
     } else if (s.kind === 'retry') {
       say({ type: 'system', subtype: 'api_retry', error: s.code || 'server_error' })
@@ -202,10 +225,27 @@ def steps(*items: dict[str, Any]) -> None:
     open(H._COUNT, "w", encoding="utf-8").close()
 
 
-def synthetic(text: str, status: int | None, code: str = "unknown") -> dict[str, Any]:
+def synthetic(text: str, status: int | None = None,
+              code: str = "unknown") -> dict[str, Any]:
+    """An engine-authored API-error assistant event IN THE WIRE SHAPE —
+    `is_api_error_message: true`, `model: "<synthetic>"`, NO status.
+
+    Passing `status` (or `legacy()`) switches the step to the CLI's own
+    TRANSCRIPT spellings instead. That is a COMPATIBILITY fixture: the pinned
+    binary writes no status on an assistant event under any spelling, so a
+    check built on it is not reproducing production."""
     d: dict[str, Any] = {"kind": "synthetic", "text": text, "code": code}
     if status is not None:
         d["status"] = status
+    return d
+
+
+def legacy(text: str, status: int | None = None,
+           code: str = "unknown") -> dict[str, Any]:
+    """The transcript-spelling twin of `synthetic`, with no status at all —
+    for the compatibility checks that ask about the OLD field names."""
+    d = synthetic(text, status, code)
+    d["legacy"] = True
     return d
 
 
@@ -312,6 +352,28 @@ def sec_reader() -> None:
     def _result_first():
         assert T({"is_error": True, "api_error_status": 401}, {"status": 402}) == 401
     check("reader · the is_error result's number outranks the stream's", _result_first)
+
+    def _both_spellings():
+        F = supervisor._typed_status_field
+        assert F({"api_error_status": 402}) == 402, "the STDOUT spelling was not read"
+        assert F({"apiErrorStatus": 402}) == 402, "the TRANSCRIPT spelling was not read"
+        assert F({"api_error_status": "402"}) is None, "a digit string was coerced"
+        assert F({"apiErrorStatus": True}) is None and F(None) is None and F("402") is None
+        assert F({"api_error_status": 401, "apiErrorStatus": 402}) == 401, (
+            "the stdout spelling must win when a record somehow carries both")
+    check("reader · one field, two spellings — stdout and transcript, neither coerced", _both_spellings)
+
+    def _engine_authored():
+        E = supervisor._is_engine_error_event
+        assert E({}, {"model": "<synthetic>"}), "the synthetic model id was not recognised"
+        assert E({"is_api_error_message": True}, {}), (
+            "the CLI's STDOUT flag was not recognised — the stream does not "
+            "use the camelCase spelling, so this is the only flag on the wire")
+        assert E({"isApiErrorMessage": True}, {}), "the transcript flag was not recognised"
+        assert E({}, {"isApiErrorMessage": True}), "the message-level flag was not recognised"
+        assert not E({}, {"model": "x-ai/grok-4.6"}), "an ordinary message was called engine-authored"
+        assert not E({"is_api_error_message": "yes"}, {}), "a truthy non-True flag was believed"
+    check("reader · engine authorship: the model id and BOTH flag spellings, nothing else", _engine_authored)
 
     def _clean_result_ignores_its_number():
         assert T({"is_error": False, "api_error_status": 401}, {}) is None, (
@@ -519,8 +581,13 @@ def sec_balance() -> None:
 
 
 def _sec_balance_body() -> None:
+    # ▶ THE PRIMARY SHAPE — what the pinned 2.1.258 emitter writes for the
+    # captured refusal: an engine-authored error event with the flag in its
+    # STDOUT spelling and NO status, then a result carrying `is_error` and
+    # `api_error_status` together (the engine copies both off the last
+    # assistant message). Everything below this line runs from that shape.
     slug, boss, nid = team()
-    steps(synthetic(REAL_402, 402), clean_result(""))
+    steps(synthetic(REAL_402), err_result(REAL_402, 402))
     raised = run(slug, nid)
     n1 = node(slug, nid)
     fz1 = dict(n1.get("frozen") or {})
@@ -530,7 +597,7 @@ def _sec_balance_body() -> None:
         assert "402" in raised, raised
         assert supervisor.state(slug, nid).get("turns_run", 0) == 0, "turns_run advanced"
         assert any("402" in r for r in rows(slug, nid)), rows(slug, nid)
-    check("balance · the captured 402 ending on a clean empty result is a FAILURE", _not_completed)
+    check("balance · the captured 402 IN THE SHAPE THE CLI EMITS is a FAILURE", _not_completed)
 
     def _balance_freeze():
         assert fz1.get("cause") == "balance" and fz1.get("limit") is True, fz1
@@ -607,9 +674,9 @@ def _sec_balance_body() -> None:
     check("balance · ▶ after a top-up: the served turn clears the run (reset only on success)", _manual_resume_then_success_resets)
 
     slug3, boss3, nid3 = team()
-    steps(synthetic(REAL_402, 402), clean_result(""))
+    steps(synthetic(REAL_402), err_result(REAL_402, 402))
     run(slug3, nid3)
-    steps(synthetic(REAL_402, 402), err_result(REAL_402, 402))
+    steps(synthetic(REAL_402), err_result(REAL_402, 402))
     supervisor.resume_frozen(slug3, only={nid3})
     settle(slug3, nid3)
 
@@ -623,7 +690,7 @@ def _sec_balance_body() -> None:
 # ══════════════════════════════════════════════════════════════════════ §6
 
 def sec_coherence() -> None:
-    print("\n§6  coherence — a retried-past error does not classify; the latest one does")
+    print("\n§6  coherence in the emitted shape — the later error classifies")
     undo = H._stub_login()
     try:
         _sec_coherence_body()
@@ -632,8 +699,12 @@ def sec_coherence() -> None:
 
 
 def _sec_coherence_body() -> None:
+    # ▶ THE EMITTED SHAPE FIRST. The CLI has its own retried-past rule and it
+    # is not ours: the engine copies the LAST assistant message's error flag
+    # and status onto the result, so a turn that produced real output after a
+    # refusal arrives here as `is_error: false` with the number already gone.
     slug, boss, nid = team()
-    steps(synthetic(REAL_402, 402), assistant("recovered, here is the answer"),
+    steps(synthetic(REAL_402), assistant("recovered, here is the answer"),
           clean_result("recovered, here is the answer"))
     raised = run(slug, nid)
 
@@ -642,17 +713,74 @@ def _sec_coherence_body() -> None:
         n = node(slug, nid)
         assert not n.get("frozen") and not rows(slug, nid), (n.get("frozen"), rows(slug, nid))
         assert supervisor.state(slug, nid).get("turns_run") == 1, "the recovered turn was not booked"
-    check("coherence · synthetic 402 → real output → nonempty result is a COMPLETED turn", _retried_past)
+    check("coherence · the CLI's own rule: real output after an error → clean result → COMPLETED", _retried_past)
 
-    # ⚠ THE CHECK ABOVE CANNOT SEE THE CLEARING. Its result text is NONEMPTY,
-    # and the clean-empty-result adoption never fires on a nonempty result —
-    # so the turn stays completed whether or not the retried-past status was
-    # retired. Removing `_clear_synthetic_status` left it green (mutation
-    # round, 2026-09-05). THIS one is the same sequence ending on the EMPTY
-    # clean result the adoption actually reads: the only thing standing
-    # between it and a balance freeze is the clearing.
     slug, boss, nid = team()
-    steps(synthetic(REAL_402, 402), assistant("recovered, and said nothing more"),
+    steps(assistant("partial work"), synthetic(REAL_402),
+          err_result(REAL_402, 402))
+    raised = run(slug, nid)
+
+    def _later_error():
+        assert raised and "402" in raised, (
+            f"real output followed by a refusal was booked completed: {raised!r}")
+        assert supervisor.state(slug, nid).get("turns_run", 0) == 0
+        fz = dict(node(slug, nid).get("frozen") or {})
+        assert fz.get("cause") == "balance", fz
+    check("coherence · real output → LATER refusal classifies by the later error, in the emitted shape", _later_error)
+
+    slug, boss, nid = team()
+    steps(synthetic(REAL_402), clean_result(""))
+    raised = run(slug, nid)
+
+    def _no_status_unchanged():
+        assert (raised is None and not node(slug, nid).get("frozen")
+                and not rows(slug, nid)
+                and supervisor.state(slug, nid).get("turns_run") == 1), (
+            "an engine error with no number anywhere changed behaviour — "
+            "nothing here may invent a status from prose")
+    check("coherence · an engine error with NO number anywhere is yesterday's behaviour (control)", _no_status_unchanged)
+
+    _sec_compat_body()
+
+
+# ══════════════════════════════════════════════════════════════════════ §6b
+#
+# ⚠ EVERY CHECK BELOW IS HYPOTHETICAL COMPATIBILITY, NOT PRODUCTION.
+#
+# They drive the stand-in with the CLI's TRANSCRIPT spellings —
+# `isApiErrorMessage` plus `apiErrorStatus` on an assistant event — because
+# that is the only place those fields exist. The pinned 2.1.258 emitter puts
+# NO status on an assistant event under any spelling (evidence:
+# codex-delivery/evidence/cli-stdout-shape-2.1.258.md, read out of the
+# binary), so `_note_synthetic_status` and the clean-empty-result adoption
+# CANNOT FIRE on that build. What these checks establish is that the code
+# would behave coherently on a build that did populate the declared field —
+# nothing about what orgtree does today. A green run here is not evidence
+# that a production shape was reproduced.
+
+def _sec_compat_body() -> None:
+    print("\n§6b compatibility — the transcript spellings, a shape the pinned "
+          "CLI does NOT emit (hypothetical)")
+
+    slug, boss, nid = team()
+    steps(legacy(REAL_402, 402), clean_result(""))
+    raised = run(slug, nid)
+
+    def _clean_empty_adopted():
+        assert raised and "402" in raised, (
+            f"a status-bearing engine error ending on a clean EMPTY result "
+            f"was booked as a completed turn: {raised!r}")
+        fz = dict(node(slug, nid).get("frozen") or {})
+        assert fz.get("cause") == "balance", fz
+    check("compat · status-bearing error + clean empty result is a FAILURE (hypothetical shape)", _clean_empty_adopted)
+
+    # ⚠ A NONEMPTY RESULT CANNOT SEE THE CLEARING: the adoption never fires on
+    # one, so the turn stays completed whether or not the retried-past status
+    # was retired (that mutant survived a whole round, 2026-09-05). The EMPTY
+    # ending is where the clearing is the only thing between the turn and a
+    # balance freeze.
+    slug, boss, nid = team()
+    steps(legacy(REAL_402, 402), assistant("recovered, and said nothing more"),
           clean_result(""))
     raised = run(slug, nid)
 
@@ -665,22 +793,10 @@ def _sec_coherence_body() -> None:
         assert not n.get("frozen"), n.get("frozen")
         assert not rows(slug, nid), rows(slug, nid)
         assert supervisor.state(slug, nid).get("turns_run") == 1, "the recovered turn was not booked"
-    check("coherence · synthetic 402 → real output → EMPTY result is a COMPLETED turn (the clearing)", _retried_past_empty)
+    check("compat · status-bearing error → real output → EMPTY result is COMPLETED (the clearing)", _retried_past_empty)
 
     slug, boss, nid = team()
-    steps(assistant("partial work"), synthetic(REAL_402, 402), clean_result(""))
-    raised = run(slug, nid)
-
-    def _later_error():
-        assert raised and "402" in raised, (
-            f"real output followed by a 402 and an empty result was booked completed: {raised!r}")
-        assert supervisor.state(slug, nid).get("turns_run", 0) == 0
-        fz = dict(node(slug, nid).get("frozen") or {})
-        assert fz.get("cause") == "balance", fz
-    check("coherence · real output → LATER synthetic 402 → empty result classifies by the later error", _later_error)
-
-    slug, boss, nid = team()
-    steps(synthetic(PH_401, 401, "authentication_failed"), synthetic(REAL_402, 402),
+    steps(legacy(PH_401, 401, "authentication_failed"), legacy(REAL_402, 402),
           clean_result(""))
     run(slug, nid)
 
@@ -689,7 +805,7 @@ def _sec_coherence_body() -> None:
         assert fz.get("cause") == "balance", (
             f"consecutive 401 → 402 parked as AUTH on the stale first status: {fz}")
         assert fz.get("until_ts"), "…and it was parked without a probe horizon"
-    check("coherence · consecutive 401 → 402 is the 402 (latest), not a stale auth park", _consecutive_401_402)
+    check("compat · consecutive 401 → 402 is the 402 (latest), not a stale auth park", _consecutive_401_402)
 
     # …and the same rule when the LATEST engine error carries NO number. It is
     # still the state the turn is in, so the earlier 401 is stale — the turn
@@ -697,8 +813,8 @@ def _sec_coherence_body() -> None:
     # parked as auth on a status the CLI had already moved past. (Astra found
     # `_note_synthetic_status` returning early without clearing, 2026-09-05.)
     slug, boss, nid = team()
-    steps(synthetic(PH_401, 401, "authentication_failed"),
-          synthetic(PH_UNTYPED_TERMINAL, None), err_result(PH_UNTYPED_TERMINAL))
+    steps(legacy(PH_401, 401, "authentication_failed"),
+          legacy(PH_UNTYPED_TERMINAL), err_result(PH_UNTYPED_TERMINAL))
     raised = run(slug, nid)
 
     def _typed_then_untyped():
@@ -710,19 +826,7 @@ def _sec_coherence_body() -> None:
         assert "PLACEHOLDER no auth credentials" not in " ".join(rows(slug, nid)), (
             f"the durable row carries the RETIRED 401's sentence: {rows(slug, nid)}")
         assert supervisor.state(slug, nid).get("turns_run", 0) == 0
-    check("coherence · typed 401 → UNTYPED engine error is terminal on the later error, not an auth park", _typed_then_untyped)
-
-    slug, boss, nid = team()
-    steps(synthetic(REAL_402, None), clean_result(""))
-    raised = run(slug, nid)
-
-    def _no_status_unchanged():
-        assert (raised is None and not node(slug, nid).get("frozen")
-                and not rows(slug, nid)
-                and supervisor.state(slug, nid).get("turns_run") == 1), (
-            "a synthetic record with NO status changed behaviour — the "
-            "adoption is gated on a number the model cannot emit")
-    check("coherence · a synthetic error with no status is exactly yesterday's behaviour (control)", _no_status_unchanged)
+    check("compat · typed 401 → UNTYPED engine error is terminal on the later error, not an auth park", _typed_then_untyped)
 
 
 # ══════════════════════════════════════════════════════════════════════ §7
