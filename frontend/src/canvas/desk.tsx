@@ -9,7 +9,7 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import type { ReactNode } from 'react'
 import type {
   CacheForecast, ChatMessage, ChatPayload, CodexRouteInfo, HistoryItem, PendingMail,
-  Readiness, ScratchPayload, TurnStat,
+  Denial, Readiness, ScratchPayload, TurnStat,
   ToolChip as ToolChipData, ToastFn,
 } from '../types'
 import {
@@ -944,6 +944,71 @@ export function NavChip({ n, dir, onJump }:
   )
 }
 
+/** the slice of a card the spend badge reads — CanvasNode does not declare
+ *  every additive TreeNode field, and synthetic cards carry a subset */
+type SpendNode = {
+  cost_usd?: number | null
+  cost_usd_unknown?: boolean
+  turns?: TurnStat[] | null
+  last_denials?: Denial[] | null
+  last_approvals?: Denial[] | null
+}
+
+/** The header's $ badge — the per-turn ring in its tooltip (№15) and, under
+ *  it, the ⚙-rights rows behind the ring's counts.
+ *
+ *  ⚠ THE GATE IS THE BEHAVIOUR HERE, which is why this is exported and
+ *  mounted in a test. It used to be `cost > 0 || cost unknown`, i.e. "no
+ *  money, nothing to say". But a complete turn on a SUBSCRIPTION lane costs
+ *  a real, known $0.00 — so a codex seat whose approval seam had just let a
+ *  sandbox-blocked command out rendered no badge at all, and the only
+ *  surface those rows have disappeared with it. Rights now open the badge on
+ *  their own, and the label stays truthful: a known zero prints as $0.00,
+ *  never as an estimate.
+ *
+ *  The count test reads the SAME five turns the tooltip renders, so a badge
+ *  opened for rights always has something about rights inside it. */
+export function SpendBadge({ node }: { node: SpendNode }) {
+  const cost = node.cost_usd ?? 0
+  const costUnknown = node.cost_usd_unknown === true
+  const turns = (node.turns ?? []).slice(-5).reverse()
+  /* the rights rows behind those counts, for the LAST turn only (that is all
+     the node carries). Same tooltip, no new chip — the №15 precedent.
+     "approved" means orgtree's approval seam said yes to a sandbox-blocked
+     request; it is not an observation that the command ran. */
+  const rights = [
+    ...(node.last_denials ?? []).map((d) =>
+      `denied · ${d.tool}${d.arg ? ` · ${d.arg}` : ''}`
+      + (d.cwd ? ` · in ${d.cwd}` : '')),
+    ...(node.last_approvals ?? []).map((d) =>
+      `approved · ${d.tool}${d.arg ? ` · ${d.arg}` : ''}`
+      + (d.cwd ? ` · in ${d.cwd}` : '')),
+  ]
+  const anyRights = rights.length > 0
+    || turns.some((t) => (t.denials ?? 0) > 0 || (t.approvals ?? 0) > 0)
+  if (!(cost > 0 || costUnknown || anyRights)) return null
+  return (
+    <span className="badge dim"
+      title={[
+        turns.map((t) =>
+          `${fmtShort(t.at)} · $${(t.cost ?? 0).toFixed(2)}`
+          + (t.estimated ? ' est.' : '')
+          + (t.cost_source ? ` · ${t.cost_source}` : '')
+          + (t.cost_unknown_fields?.length
+            ? ` · unresolved: ${t.cost_unknown_fields.join(', ')}` : '')
+          + (t.ms ? ` · ${Math.round(t.ms / 1000)}s` : '')
+          + (t.denials ? ` · ${t.denials} denied` : '')
+          + (t.approvals ? ` · ${t.approvals} approved` : '')
+          + (t.killed ? ' · killed' : '')).join('\n')
+          || 'per-turn detail appears after the next turn',
+        ...rights,
+      ].join('\n')}>
+      {costUnknown
+        ? (cost > 0 ? `$${cost.toFixed(2)} estimated/incomplete` : '$?')
+        : `$${cost.toFixed(2)}`}</span>
+  )
+}
+
 // how long the send receipt (§№11) stays up — long enough to read a routing
 // word you were not expecting, short enough that it never describes a message
 // that has already been answered
@@ -1406,9 +1471,6 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
 
   const liveKids = node.children.some((c) => c.state === 'live')
   const lastTurn = node.turns?.[node.turns.length - 1]
-  // CanvasNode also covers synthetic cards, so it does not duplicate every
-  // additive TreeNode field. Real tree cards retain this field through flatten.
-  const costUnknown = 'cost_usd_unknown' in node && node.cost_usd_unknown === true
   const contextOccupancy = chat?.occupancy ?? node.occupancy
   const contextEstimated = chat?.occupancy != null
     ? chat.occupancy_estimated : node.occupancy_est
@@ -1633,35 +1695,7 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
           .map((g) => heldChip(g))}
         <RetiredFold ids={heldRet}
           render={(g) => heldChip(g, true)} />
-        {((node.cost_usd ?? 0) > 0 || costUnknown) && (
-          <span className="badge dim"
-            title={[
-              (node.turns ?? []).slice(-5).reverse().map((t) =>
-                `${fmtShort(t.at)} · $${(t.cost ?? 0).toFixed(2)}`
-                + (t.estimated ? ' est.' : '')
-                + (t.cost_source ? ` · ${t.cost_source}` : '')
-                + (t.cost_unknown_fields?.length
-                  ? ` · unresolved: ${t.cost_unknown_fields.join(', ')}` : '')
-                + (t.ms ? ` · ${Math.round(t.ms / 1000)}s` : '')
-                + (t.denials ? ` · ${t.denials} denied` : '')
-                + (t.approvals ? ` · ${t.approvals} approved` : '')
-                + (t.killed ? ' · killed' : '')).join('\n')
-                || 'per-turn detail appears after the next turn',
-              /* the rights rows behind those counts, for the LAST turn only
-                 (that is all the node carries). Same tooltip, no new chip —
-                 the №15 precedent. "approved" means orgtree's approval seam
-                 said yes to a sandbox-blocked request; it is not an
-                 observation that the command ran. */
-              ...(node.last_denials ?? []).map((d) =>
-                `denied · ${d.tool}${d.arg ? ` · ${d.arg}` : ''}`),
-              ...(node.last_approvals ?? []).map((d) =>
-                `approved · ${d.tool}${d.arg ? ` · ${d.arg}` : ''}`
-                + (d.cwd ? ` · in ${d.cwd}` : '')),
-            ].join('\n')}>
-            {costUnknown
-              ? ((node.cost_usd ?? 0) > 0
-                ? `$${node.cost_usd!.toFixed(2)} estimated/incomplete` : '$?')
-              : `$${node.cost_usd!.toFixed(2)}`}</span>)}
+        <SpendBadge node={node} />
         {(chat?.queued ?? 0) > 0 && <span className="badge">{chat!.queued} queued</span>}
         {/* The "ran as" badge, back for FALLBACKS ONLY (user ruling
             2026-08-25: "when an agent is running off a fallback, cite the

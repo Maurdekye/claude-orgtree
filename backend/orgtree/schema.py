@@ -102,7 +102,8 @@ class TurnStat(TypedDict):
     #: It counts approvals, not observed executions: the callback answers
     #: before anything runs, and the seam itself cannot classify a request
     #: beyond "codex asked". Absent on the claude/AGY lanes, which have no
-    #: such callback.
+    #: such callback. It is the TRUE number the seam answered, not the length
+    #: of `last_approvals` — the detail rows are capped at 8, this is not.
     approvals: NotRequired[int]
     # killed-turn accounting (2026-08-04): output tokens ride every entry so a
     # later killed turn can estimate its unreported spend from the node's own

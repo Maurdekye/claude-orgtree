@@ -16641,8 +16641,14 @@ def _after_turn(slug: str, nid: str, org: Org, res: dict[str, Any],
         _rights_row(d) for d in (res.get("permission_denials") or [])[:8]]
     # …and the codex seam's ACCEPTED escalations (2026-09-05), same shape,
     # same cap, opposite meaning. Approved, not executed — see TurnStat.
-    approvals: list[Denial] = [
-        _rights_row(d) for d in (res.get("permission_approvals") or [])[:8]]
+    raw_approvals = res.get("permission_approvals") or []
+    approvals: list[Denial] = [_rights_row(d) for d in raw_approvals[:8]]
+    # ⚠ THE COUNT IS THE REAL COUNT, NOT THE ROW COUNT. The detail rows stay
+    # capped at 8 — they ride on the node document — but the ring's number is
+    # what says how much the seam let out, and counting the CAPPED list
+    # reported nine approved escalations as eight. A short count on this
+    # number is the one thing it must never do.
+    n_approvals = len(raw_approvals)
     spend_total = None
     cache_event: dict[str, Any] | None = None
     if cost or occ or cw or denials or res:
@@ -16762,7 +16768,7 @@ def _after_turn(slug: str, nid: str, org: Org, res: dict[str, Any],
                                "ms": res.get("duration_ms"),
                                "denials": len(denials)}
             if "permission_approvals" in res:
-                entry["approvals"] = len(approvals)
+                entry["approvals"] = n_approvals
             if out_toks:
                 entry["toks"] = out_toks
             if res.get("_cost_complete") is not None:

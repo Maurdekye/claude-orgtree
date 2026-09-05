@@ -787,6 +787,28 @@ def main() -> int:
                      "no last_approvals / no ring approvals / denials still "
                      "booked as []"))
 
+    # TRUNCATION CONTROL: the detail rows are capped at 8 because they ride on
+    # the node document; the ring's COUNT is not, and must not be the length
+    # of the capped list. Nine approved escalations reported as eight is a
+    # short count on the one number that says how much the seam let out.
+    # Driven straight through `_after_turn` — nine live approval round trips
+    # would measure the double's scheduling, not this arithmetic.
+    nine = [{"tool_name": "commandExecution",
+             "tool_input": {"command": f"echo {i}", "cwd": "C:\\fake\\w"}}
+            for i in range(9)]
+    org = store.load_org(a_slug)
+    supervisor._after_turn(
+        a_slug, a_nid, org,
+        {"status": "completed", "total_cost_usd": 0.01, "duration_ms": 1,
+         "usage": {}, "permission_denials": [], "permission_approvals": nine},
+        supervisor.state(a_slug, a_nid), 100)
+    after9 = store.load_org(a_slug).node(a_nid)
+    check("nine approvals: 8 detail rows, but the ring counts NINE",
+          lambda: eq((len(after9.get("last_approvals") or []),
+                      (after9.get("turns") or [{}])[-1].get("approvals")),
+                     (8, 9),
+                     "capped rows / true count (was 8 before 2026-09-05)"))
+
     print()
     if FAIL:
         print(f"{len(FAIL)} FAILED, {PASS} passed")
