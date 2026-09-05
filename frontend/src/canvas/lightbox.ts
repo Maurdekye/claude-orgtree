@@ -63,18 +63,32 @@ const onKey = (e: KeyboardEvent) => {
   }
 }
 
-// every image inside a markdown body (.md is innerHTML — no React handlers)
-// opens in the viewer. An image the author wrapped in a LINK keeps the link:
-// explicit navigation outranks the default view. Broken images (relative path
-// that resolved to nothing) keep their broken-icon state instead of opening
-// an empty viewer.
-if (typeof document !== 'undefined') document.addEventListener('click', (e) => {
+/** If `e.target` is (or is inside) an eligible `.md img`, opens the viewer
+ *  for it and returns true. An image the author wrapped in a LINK keeps the
+ *  link: explicit navigation outranks the default view. Broken images
+ *  (relative path that resolved to nothing) keep their broken-icon state
+ *  instead of opening an empty viewer.
+ *
+ *  Exported (not just used by the document listener below) so a surface
+ *  that must stop a click from propagating past itself for OTHER reasons —
+ *  docs.tsx's DocReader stops every click from reaching the surrounding
+ *  `.overlay`'s backdrop-close handler — can still recognise and open an
+ *  eligible image directly, instead of the click silently never reaching
+ *  this file at all. */
+export function openLightboxIfEligibleImage(e: { target: EventTarget | null; preventDefault(): void }): boolean {
   const img = (e.target as Element | null)?.closest?.('.md img') as HTMLImageElement | null
-  if (!img || img.closest('a')) return
-  if (img.complete && img.naturalWidth === 0) return
+  if (!img || img.closest('a')) return false
+  if (img.complete && img.naturalWidth === 0) return false
   e.preventDefault()
   openLightbox(img.currentSrc || img.src, {
     name: img.alt || undefined,
     download: img.currentSrc || img.src,
   })
+  return true
+}
+
+// every image inside a markdown body (.md is innerHTML — no React handlers)
+// opens in the viewer, via the one check above.
+if (typeof document !== 'undefined') document.addEventListener('click', (e) => {
+  openLightboxIfEligibleImage(e)
 })

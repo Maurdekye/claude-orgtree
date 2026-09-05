@@ -9,6 +9,7 @@ import { useEffect, useState } from 'react'
 import type { ToastFn } from '../types'
 import { dismissDocument, fileBase, getDocument } from '../api'
 import { md } from './shared'
+import { openLightboxIfEligibleImage } from './lightbox'
 import { CloseIcon, DocIcon } from '../icons'
 import { fmtFull } from '../timefmt'
 
@@ -96,7 +97,19 @@ export function DocReader({ slug, docId, toast, close }: {
   return (
     <div className="overlay" onClick={close}
       onPointerDown={(e) => e.stopPropagation()}>
-      <div className="settings doc-reader" onClick={(e) => e.stopPropagation()}>
+      <div className="settings doc-reader" onClick={(e) => {
+        // user report: an image here showed the zoom-in cursor but did
+        // nothing on click. lightbox.ts opens the viewer from a
+        // document-level listener that only ever sees a BUBBLED click —
+        // and this div stops every click from bubbling past it (so the
+        // surrounding `.overlay`'s backdrop-close below doesn't fire for
+        // clicks inside the reader). That stopPropagation is still needed
+        // for everything else in here; an eligible image is handled
+        // directly, right here, instead of being let through to bubble
+        // (which would also reach `.overlay` and close the reader).
+        openLightboxIfEligibleImage(e)
+        e.stopPropagation()
+      }}>
         <div className="doc-reader-head">
           <DocIcon fontSize="inherit" />
           <b>{doc?.title ?? '…'}</b>
