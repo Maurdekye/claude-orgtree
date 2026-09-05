@@ -1341,8 +1341,12 @@ button.cc-name:hover {
    ARE spans (the chip always, the name whenever it does not navigate). Left
    alone it punctuates between the model card and the name it belongs to:
    "S · peer-one your peer · …". Suppressed here, so the identity reads as one
-   thing and the metadata that follows keeps its dots. */
-.turn-mail-head .tier::after, .turn-mail-head .cc-name::after { content: none; }
+   thing and the metadata that follows keeps its dots.
+   ⚠ SPECIFICITY, MEASURED: `span:not(:last-child)` is (0,2,1) — `:not()` takes
+   its argument's weight — so a bare `.turn-mail-head .tier::after` at (0,2,0)
+   LOSES and the dot stays. It did, in Edge, until this selector was widened. */
+.turn-mail-head span.tier:not(:last-child)::after,
+.turn-mail-head span.cc-name:not(:last-child)::after { content: none; }
 /* the name gets the header's own `b` back: the switchboard's `.cc-name` is
    12.5px with `min-width: 6ch` and wrapping turned on, all three wrong inside
    a one-line metadata strip */
@@ -1871,6 +1875,13 @@ button.cc-name:hover {
   font-family: inherit; font-size: inherit; font-weight: inherit;
   color: inherit; min-width: 0; flex: 0 1 auto; white-space: nowrap;
   overflow-wrap: normal;
+  /* ⚠ AND THE BUTTON CHROME, WHICH IS NOT OPTIONAL HERE. The user's own inbox
+     is a `.settings` modal, and `.settings button` (0,1,1) sets
+     `padding: 7px 15px; border-radius: 6px` — it TIES with `button.cc-name`'s
+     reset and wins on source order. Measured before this line existed: an
+     11px mail row became 65.6px, drawn as a rounded button. Four classes beat
+     both. (The same trap the `.docket-ref` comment records.) */
+  padding: 0; border: none; border-radius: 0; background: none;
 }
 .mailrow .l1 .mfrom button.cc-name:hover { color: var(--accent); text-decoration: underline; }
 /* SenderChip (the user's own inbox) wraps its name in a `<b>`. That was right
