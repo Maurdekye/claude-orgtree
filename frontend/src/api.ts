@@ -256,9 +256,13 @@ export const dismissDocument = (slug: string, did: string):
   req(`/api/orgs/${slug}/documents/${did}`, { method: 'DELETE' })
 // LOCKED docket wire contract v3 (luna-reserve/evidence/docket-wire-
 // contract-v3.md) — see types.ts's "work docket" section.
-export const getWorkItems = (slug: string, archived = false):
-  Promise<WorkItemsPayload> =>
-  req(`/api/orgs/${slug}/work-items${archived ? '?archived=1' : ''}`)
+export const getWorkItems = (slug: string, archived = false,
+                             backlogged = false): Promise<WorkItemsPayload> =>
+  req(`/api/orgs/${slug}/work-items`
+    + (archived || backlogged
+      ? '?' + [archived ? 'archived=1' : '', backlogged ? 'backlogged=1' : '']
+        .filter(Boolean).join('&')
+      : ''))
 export const getWorkItem = (slug: string, id: string): Promise<WorkItemPayload> =>
   req(`/api/orgs/${slug}/work-items/${id}`)
 export const replyWorkItem = (slug: string, id: string, body: string):

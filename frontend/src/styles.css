@@ -40,6 +40,15 @@
                                is in progress" — two different facts. The old
                                shared terracotta also sat ΔE 8.5 from blocked
                                red (near-identical even for normal vision). */
+  --review: #b48ead;        /* docket "under review" (muted violet). It used to
+                               borrow --warn, which is the caution band: review is
+                               a normal, healthy state and must not read as a
+                               warning. Chosen in the one hue gap left between
+                               --work (sky) and --accent (terracotta). */
+  --backlog: #6bb7b0;       /* docket "backlogged" — parked, not started. Quiet on
+                               purpose: it is neither in flight (--work) nor
+                               finished (--dim), and desaturating it is what keeps
+                               a long backlog from shouting over current work. */
   --shadow: 0 2px 8px rgba(0, 0, 0, .36);
   --mono: Consolas, 'Cascadia Mono', 'Courier New', monospace;
   /* the counterpart --mono always implied: the app's ordinary text face. It
@@ -2717,18 +2726,43 @@ main.solo { width: 100%; }
    ordinary/archived entries; orange selection for attention"). */
 .docket-modal .gallery-head { display: flex; align-items: center; gap: 12px; margin: 0 0 4px; }
 .docket-modal .gallery-head h3 { margin: 0; }
-.docket-sortbar { display: inline-flex; align-items: center; gap: 4px; }
-.docket-sortbar .docket-sort-btn {
-  background: none; border: 1px solid transparent; color: var(--dim);
-  font-size: 12px; padding: 2px 8px; border-radius: 4px; cursor: pointer;
-  white-space: nowrap; font-family: var(--sans);
+/* the arrangement control gets its own strip: three choices plus two filter
+   checkboxes on one line would crowd the header the gallery keeps clean */
+.docket-sortbar {
+  display: flex; align-items: center; gap: 8px; margin: 0 0 6px;
+  font-size: 12px;
 }
-.docket-sortbar .docket-sort-btn:hover { color: var(--ink-strong); }
-.docket-sortbar .docket-sort-btn.on {
-  color: var(--ink-strong); background: var(--panel-2); border-color: var(--line);
+.docket-group-select {
+  font-size: 12px; padding: 2px 6px; font-family: var(--sans);
+  background: var(--input); color: var(--ink); border: 1px solid var(--line);
+  border-radius: 4px; cursor: pointer;
 }
-.docket-showarchived { font-size: 12.5px; color: var(--dim); cursor: pointer; display: inline-flex; align-items: center; gap: 5px; }
-.docket-showarchived input { cursor: pointer; margin: 0; }
+.docket-sort-why { font-size: 11.5px; }
+/* the two filters, styled as one pair — same line as the heading, the way the
+   gallery's show-retired checkbox is */
+.docket-showarchived, .docket-showbacklog {
+  font-size: 12.5px; color: var(--dim); cursor: pointer;
+  display: inline-flex; align-items: center; gap: 5px; white-space: nowrap;
+}
+.docket-showarchived input, .docket-showbacklog input { cursor: pointer; margin: 0; }
+/* GROUP HEADINGS. Every grouped mode names its buckets, and the two appended
+   groups name themselves in EVERY mode — which is what makes "the backlog and
+   the archive are always at the bottom" visible rather than merely true. */
+.docket-group-head {
+  display: flex; align-items: baseline; gap: 6px;
+  padding: 8px 10px 3px; font-size: 10.5px; font-weight: 700;
+  letter-spacing: .04em; text-transform: uppercase; color: var(--dim);
+  border-bottom: 1px solid var(--line-soft); position: sticky; top: 0;
+  background: var(--panel); z-index: 1;
+}
+.docket-group-n { font-weight: 600; letter-spacing: 0; }
+.docket-section.tone-backlog .docket-group-head { color: var(--backlog); }
+.docket-section.tone-archive .docket-group-head { color: var(--dim); }
+/* the appended groups are set apart from current work by a real rule, so the
+   boundary survives a screenshot */
+.docket-section.tone-backlog, .docket-section.tone-archive {
+  border-top: 1px solid var(--line);
+}
 .docket-modal .mailrow { overflow: hidden; }
 .docket-modal .mailrow .l1 .mfrom {
   font-family: var(--sans); font-weight: 600;
@@ -2749,6 +2783,16 @@ main.solo { width: 100%; }
 /* ATTENTION: orange title, orange status text — placed after .active/
    .archived so it wins on order (an item is never both), not by accident
    of specificity */
+/* BACKLOG: legible but deliberately unemphatic — work nobody has picked up
+   should not compete with work in flight. Distinct from .archived (which is
+   past) by keeping the ordinary background and only softening the ink. */
+.docket-modal .mailrow.backlog .l1 .mfrom {
+  color: color-mix(in srgb, var(--ink-strong) 72%, var(--bg)); font-weight: 600;
+}
+.docket-modal .mailrow.backlog .l2 { color: var(--dim); }
+/* ATTENTION: orange title, orange status text — placed after .active/
+   .archived/.backlog so it wins on order (an item is never both), not by
+   accident of specificity */
 .docket-modal .mailrow.attention .l1 .mfrom { color: var(--accent); font-weight: 700; }
 .docket-modal .mailrow.attention .l2 { color: var(--accent); }
 /* neutral selection for ordinary/archived rows (gallery's own rule) */
@@ -2763,7 +2807,8 @@ main.solo { width: 100%; }
 .docket-status.status-open { color: var(--ink); }
 .docket-status.status-in_progress { color: var(--work); }
 .docket-status.status-blocked { color: var(--bad); }
-.docket-status.status-review { color: var(--warn); }
+.docket-status.status-review { color: var(--review); }
+.docket-status.status-backlogged { color: var(--backlog); }
 .docket-status.status-done { color: var(--ok); }
 .docket-status.status-superseded, .docket-status.status-dropped { color: var(--dim); }
 .docket-status.attention { color: var(--accent); }
@@ -2771,7 +2816,8 @@ main.solo { width: 100%; }
 /* Left border indicators by status */
 .docket-modal .mailrow.status-in_progress { border-left: 3px solid var(--work); }
 .docket-modal .mailrow.status-blocked { border-left: 3px solid var(--bad); }
-.docket-modal .mailrow.status-review { border-left: 3px solid var(--warn); }
+.docket-modal .mailrow.status-review { border-left: 3px solid var(--review); }
+.docket-modal .mailrow.status-backlogged { border-left: 3px solid var(--backlog); }
 .docket-modal .mailrow.status-done { border-left: 3px solid var(--ok); }
 .docket-modal .mailrow.status-open { border-left: 3px solid var(--line); }
 .docket-modal .mailrow.status-superseded,
@@ -2811,12 +2857,45 @@ main.solo { width: 100%; }
 .docket-question-note { margin-bottom: 6px; }
 .docket-reply-label { font-size: 12px; margin: 4px 0 6px; display: flex; align-items: center; gap: 4px; }
 .docket-foot { font-size: 11.5px; padding-top: 8px; }
+/* ⚠ text-overflow DOES NOTHING on a flex container. The old rule put the
+   ellipsis on the inline-flex wrapper, so a long agent name did not truncate —
+   it ran on under the Dismiss button (Astra review 2026-09-05). The wrapper now
+   only clips; the ellipsis lives on the plain inline element inside it. */
 .docket-modal .mailrow .docket-updater {
-  font-family: var(--mono); font-size: 11px;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  min-width: 0; flex-shrink: 1;
-  display: inline-flex; align-items: center; gap: 4px;
+  min-width: 0; flex-shrink: 1; overflow: hidden;
+  display: inline-flex; align-items: center;
 }
+.docket-actor {
+  font-family: var(--mono); font-size: 11px;
+  display: inline-flex; align-items: center; gap: 4px;
+  min-width: 0; overflow: hidden;
+}
+/* `padding: 0` is load-bearing. A <button> carries the UA's own padding, which
+   made this box measurably WIDER than the wrapper clipping it — the text was
+   hidden, but the element's own rect still reached past the Dismiss button
+   beside it. Shrinking to the wrapper is what makes the truncation honest. */
+.docket-actor .docket-actor-name {
+  display: block; flex: 1 1 auto; min-width: 0; max-width: 100%;
+  padding: 0; border: 0; background: none;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* an agent whose generation has since been replaced wears no model chip — the
+   name is dimmed instead, and the title says why */
+.docket-actor.fit-moved .docket-actor-name,
+.docket-actor.fit-gone .docket-actor-name { color: var(--dim); font-style: italic; }
+/* THE ITEM'S READABLE NAME, click to copy */
+.docket-slug {
+  font-family: var(--mono); font-size: 10.5px; color: var(--dim);
+  background: var(--input); border: 1px solid var(--line-soft);
+  border-radius: 3px; padding: 0 5px; cursor: pointer; flex-shrink: 0;
+  max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.docket-slug:hover { color: var(--ink-strong); border-color: var(--line); }
+.docket-slug.copied { color: var(--ok); border-color: var(--ok); }
+.docket-pane-sub .docket-slug { margin: 0 4px; vertical-align: middle; }
+/* THE DESCRIPTION — problem first, then the proposed solution */
+.docket-desc { margin: 0 0 12px; }
+.docket-desc-body { white-space: pre-wrap; font-size: 12.5px; line-height: 1.5; }
 .docket-modal .mailrow .docket-dismiss { margin-left: auto; flex-shrink: 0; }
 .docket-modal button.cc-name, .mailer-head button.cc-name {
   font-size: inherit; font-family: var(--mono); color: inherit; display: inline;

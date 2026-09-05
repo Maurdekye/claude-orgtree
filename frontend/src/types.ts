@@ -1834,11 +1834,19 @@ export interface WorkDismissal {
  *  backend delivery/evidence metadata without adding crowded UI"). */
 export interface WorkItem {
   id: string
+  /** the HUMAN-READABLE name derived from the title (user 2026-09-05), unique
+   *  and fixed at creation — it does NOT follow a later title edit. Null on an
+   *  item that predates slugs and has not been written since: the backend
+   *  refuses to persist a backfill on a read, so show `id` in that case rather
+   *  than inventing a name the server does not agree with. */
+  slug: string | null
   rev: number
   kind: 'code' | 'non-code'
   title: string
   objective: string
-  /** open | in_progress | blocked | review | done | superseded | dropped */
+  /** backlogged | open | in_progress | blocked | review | done | superseded
+   *  | dropped. `backlogged` = not yet approached or approved: served in its
+   *  own group behind its own toggle and never counted as active. */
   status: string
   blocked_reason: string | null
   /** DERIVED on every read: (physically archived OR done && docket_at older
@@ -1889,11 +1897,19 @@ export interface WorkItem {
   [k: string]: unknown
 }
 
-// GET /api/orgs/{slug}/work-items[?archived=1]
+// GET /api/orgs/{slug}/work-items[?archived=1][&backlogged=1]
 export interface WorkItemsPayload {
   items: WorkItem[]
+  /** present only when asked for; each is APPENDED below `items`, never
+   *  merged into it — revealing a group must not re-sort the main list */
   archived?: WorkItem[]
-  counts: { attention: number; active: number; archived: number }
+  backlogged?: WorkItem[]
+  /** `active` excludes backlogged AND closed items; `attention` does not, so
+   *  a flagged backlog row still lights the badge (and the backend keeps such
+   *  a row in `items`, so the badge always opens onto a visible row) */
+  counts: {
+    attention: number; active: number; archived: number; backlogged: number
+  }
   now: string
 }
 

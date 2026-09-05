@@ -11,7 +11,8 @@ import type { AskInfo, CanvasNode, MailEntry, MailPayload, OrgInboxEntry, TreePa
 
 interface Call { method: string; url: string; body?: unknown }
 
-function mockWorkItems(activeItems: WorkItem[], archivedItems: WorkItem[] = [], extraCalls?: Call[]): Call[] {
+function mockWorkItems(activeItems: WorkItem[], archivedItems: WorkItem[] = [],
+                       extraCalls?: Call[], backlogItems: WorkItem[] = []): Call[] {
   const calls: Call[] = extraCalls ?? [];
   (globalThis as unknown as { fetch: typeof fetch }).fetch =
     ((url: string, init?: RequestInit) => {
@@ -26,7 +27,8 @@ function mockWorkItems(activeItems: WorkItem[], archivedItems: WorkItem[] = [], 
       if (method === 'POST' && path.includes('/dismiss-attention')) {
         const m = path.match(/\/work-items\/([^/]+)\/dismiss-attention$/)
         const id = m ? m[1] : ''
-        const found = [...activeItems, ...archivedItems].find((x) => x.id === id)
+        const found = [...activeItems, ...archivedItems, ...backlogItems]
+          .find((x) => x.id === id)
         return ok({ item: found ? { ...found, manual_attention: null, status: 'blocked' } : null })
       }
       if (method === 'POST' && path.includes('/reply')) {
@@ -36,18 +38,21 @@ function mockWorkItems(activeItems: WorkItem[], archivedItems: WorkItem[] = [], 
         const isDeferred = found?.last_updater?.node === 'archived-agent'
         return ok({ accepted: true, to: found?.last_updater?.node ?? 'agent', deferred: isDeferred })
       }
-      if (method === 'GET' && path.includes('/work-items?archived=1')) {
+      if (method === 'GET' && path.includes('/work-items')) {
+        // the two filters are INDEPENDENT query flags, and a group is served
+        // only when its flag is set — the same contract ledger.work_list keeps
+        const wantArch = path.includes('archived=1')
+        const wantBack = path.includes('backlogged=1')
         return ok({
           items: activeItems,
-          archived: archivedItems,
-          counts: { attention: activeItems.filter((x) => x.effective_attention).length, active: activeItems.length, archived: archivedItems.length },
-          now: '2026-09-05T10:00:00.000Z',
-        })
-      }
-      if (method === 'GET' && path.match(/\/work-items$/)) {
-        return ok({
-          items: activeItems,
-          counts: { attention: activeItems.filter((x) => x.effective_attention).length, active: activeItems.length, archived: archivedItems.length },
+          ...(wantArch ? { archived: archivedItems } : {}),
+          ...(wantBack ? { backlogged: backlogItems } : {}),
+          counts: {
+            attention: activeItems.filter((x) => x.effective_attention).length,
+            active: activeItems.filter((x) => x.status !== 'backlogged').length,
+            archived: archivedItems.length,
+            backlogged: backlogItems.length,
+          },
           now: '2026-09-05T10:00:00.000Z',
         })
       }
@@ -61,6 +66,7 @@ function mockWorkItems(activeItems: WorkItem[], archivedItems: WorkItem[] = [], 
 
 const mkItem = (o: Partial<WorkItem>): WorkItem => ({
   id: 'w10000001',
+  slug: 'test-work-item',
   rev: 1,
   kind: 'code',
   title: 'Test Work Item',
@@ -128,6 +134,28 @@ const rows = (el: HTMLElement) => [...el.querySelectorAll('.mailrow.docket-row')
 const pane = (el: HTMLElement) => el.querySelector('.mailer-read')
 const showArchivedBox = (el: HTMLElement) =>
   el.querySelector('.docket-showarchived input') as HTMLInputElement
+/** the arrangement is a PERSISTED preference, so a test that asserts the
+ *  default must clear it first — otherwise it silently inherits whatever the
+ *  previous test chose, and "the default is No group" stops being tested */
+const forgetGroupChoice = () => window.localStorage.removeItem('orgtree.docket.group')
+const showBacklogBox = (el: HTMLElement) =>
+  el.querySelector('.docket-showbacklog input') as HTMLInputElement
+const groupSelect = (el: HTMLElement) =>
+  el.querySelector('.docket-group-select') as HTMLSelectElement
+const titles = (el: HTMLElement) =>
+  rows(el).map((r) => r.querySelector('.l1 .mfrom')?.textContent ?? '')
+const headings = (el: HTMLElement) =>
+  [...el.querySelectorAll('.docket-group-head > span:first-child')]
+    .map((h) => h.textContent ?? '')
+/** drive the <select> the way a user does, through its change handler */
+async function chooseGroup(el: HTMLElement, value: string) {
+  const sel = groupSelect(el)
+  await inAct(() => {
+    sel.value = value
+    sel.dispatchEvent(new window.Event('change', { bubbles: true }))
+  })
+  await flush()
+}
 
 const docketModal = (extra?: Partial<{
   close: () => void
@@ -969,96 +997,267 @@ uiTest('§22 entry styling colors entries by status', async (mount) => {
   assert.ok(rList[4]!.querySelector('.docket-status.status-done'), 'status element has status-done class')
 })
 
-uiTest('§23 sort controls support Recently updated and Group by status', async (mount) => {
+uiTest('§23 three grouping modes; archive and backlog stay last in every one', async (mount) => {
+  // the server hands rows back newest-first with a total order already applied
   mockWorkItems([
-    mkItem({ id: 'w1', title: 'Open New', status: 'open', docket_at: '2026-09-05T10:30:00.000Z' }),
-    mkItem({ id: 'w2', title: 'In Progress Old', status: 'in_progress', docket_at: '2026-09-05T10:00:00.000Z' }),
-    mkItem({ id: 'w3', title: 'In Progress New', status: 'in_progress', docket_at: '2026-09-05T10:40:00.000Z' }),
-    mkItem({ id: 'w4', title: 'Blocked Mid', status: 'blocked', docket_at: '2026-09-05T10:20:00.000Z' }),
+    mkItem({ id: 'w3', title: 'In Progress New', status: 'in_progress', docket_at: '2026-09-05T10:40:00.000Z', owner: { node: 'ana', generation: 1 } }),
+    mkItem({ id: 'w1', title: 'Open New', status: 'open', docket_at: '2026-09-05T10:30:00.000Z', owner: { node: 'bo', generation: 1 } }),
+    mkItem({ id: 'w4', title: 'Blocked Mid', status: 'blocked', docket_at: '2026-09-05T10:20:00.000Z', owner: null }),
+    mkItem({ id: 'w2', title: 'In Progress Old', status: 'in_progress', docket_at: '2026-09-05T10:00:00.000Z', owner: { node: 'ana', generation: 1 } }),
+  ], [
+    mkItem({ id: 'w9', title: 'Archived One', status: 'done', archived: true }),
+  ], undefined, [
+    mkItem({ id: 'w8', title: 'Backlog One', status: 'backlogged' }),
   ])
+  forgetGroupChoice()
   const { el } = await mount(docketModal())
   await flush()
-
-  // Find sort controls
-  const sortBtns = [...el.querySelectorAll('.docket-sort-btn')]
-  assert.equal(sortBtns.length, 2, 'two sort buttons rendered')
-  const recentBtn = sortBtns.find((b) => b.textContent?.includes('Recently updated')) as HTMLButtonElement
-  const statusBtn = sortBtns.find((b) => b.textContent?.includes('Group by status')) as HTMLButtonElement
-  assert.ok(recentBtn, 'Recently updated button present')
-  assert.ok(statusBtn, 'Group by status button present')
-  assert.ok(recentBtn.classList.contains('on'), 'Recently updated active by default')
-
-  // Default: recency order (w3: 10:40, w1: 10:30, w4: 10:20, w2: 10:00)
-  let rList = rows(el)
-  assert.equal(rList[0]!.querySelector('.l1 .mfrom')?.textContent, 'In Progress New')
-  assert.equal(rList[1]!.querySelector('.l1 .mfrom')?.textContent, 'Open New')
-  assert.equal(rList[2]!.querySelector('.l1 .mfrom')?.textContent, 'Blocked Mid')
-  assert.equal(rList[3]!.querySelector('.l1 .mfrom')?.textContent, 'In Progress Old')
-
-  // Click 'Group by status'
-  await inAct(() => statusBtn.click())
+  await inAct(() => showArchivedBox(el).click())
   await flush()
-  assert.ok(statusBtn.classList.contains('on'), 'Group by status now active')
-
-  // Status group order: in_progress first, then blocked, open
-  rList = rows(el)
-  assert.equal(rList[0]!.querySelector('.l1 .mfrom')?.textContent, 'In Progress New')
-  assert.equal(rList[1]!.querySelector('.l1 .mfrom')?.textContent, 'In Progress Old')
-  assert.equal(rList[2]!.querySelector('.l1 .mfrom')?.textContent, 'Blocked Mid')
-  assert.equal(rList[3]!.querySelector('.l1 .mfrom')?.textContent, 'Open New')
-
-  // Click 'Recently updated' back
-  await inAct(() => recentBtn.click())
+  await inAct(() => showBacklogBox(el).click())
   await flush()
-  assert.ok(recentBtn.classList.contains('on'))
-  rList = rows(el)
-  assert.equal(rList[0]!.querySelector('.l1 .mfrom')?.textContent, 'In Progress New')
-  assert.equal(rList[1]!.querySelector('.l1 .mfrom')?.textContent, 'Open New')
+
+  const opts = [...groupSelect(el).options].map((o) => o.value)
+  assert.deepEqual(opts, ['none', 'status', 'agent'], 'exactly three arrangements')
+  assert.equal(groupSelect(el).value, 'none', 'no grouping by default')
+
+  // NO GROUP: the order the server chose, untouched, then the appended groups
+  assert.deepEqual(titles(el), ['In Progress New', 'Open New', 'Blocked Mid',
+    'In Progress Old', 'Backlog One', 'Archived One'])
+  assert.deepEqual(headings(el),
+    ['Backlogged — not yet approached', 'Archived'],
+    'ungrouped mode heads only the two appended groups')
+
+  // BY STATUS: blocked, in_progress, review, open (attention first when present)
+  await chooseGroup(el, 'status')
+  assert.deepEqual(headings(el), ['Blocked', 'In progress', 'Open',
+    'Backlogged — not yet approached', 'Archived'])
+  assert.deepEqual(titles(el), ['Blocked Mid', 'In Progress New', 'In Progress Old',
+    'Open New', 'Backlog One', 'Archived One'])
+
+  // BY AGENT: owner, most recently active first, Unassigned named and last
+  await chooseGroup(el, 'agent')
+  assert.deepEqual(headings(el), ['ana', 'bo', 'Unassigned',
+    'Backlogged — not yet approached', 'Archived'])
+  assert.deepEqual(titles(el), ['In Progress New', 'In Progress Old', 'Open New',
+    'Blocked Mid', 'Backlog One', 'Archived One'])
+
+  // THE INVARIANT: in all three, the last two rows are the two appended groups
+  // — ticking a filter can only ever add to the bottom of the list
+  for (const mode of ['none', 'status', 'agent']) {
+    await chooseGroup(el, mode)
+    assert.deepEqual(titles(el).slice(-2), ['Backlog One', 'Archived One'], mode)
+  }
 })
 
-uiTest('§24 model icons render TierChip on docket entries from tree roots', async (mount) => {
+uiTest('§23b attention outranks every status group, and an unknown status is still reachable', async (mount) => {
+  mockWorkItems([
+    mkItem({ id: 'w1', title: 'Open Plain', status: 'open' }),
+    mkItem({ id: 'w2', title: 'Flagged Open', status: 'open', effective_attention: true, attention_sources: ['manual'] }),
+    mkItem({ id: 'w3', title: 'Blocked Plain', status: 'blocked' }),
+    mkItem({ id: 'w4', title: 'Odd', status: 'invented_later' }),
+  ])
+  forgetGroupChoice()
+  const { el } = await mount(docketModal())
+  await flush()
+  await chooseGroup(el, 'status')
+  assert.deepEqual(headings(el), ['Needs attention', 'Blocked', 'Open', 'Other closed'])
+  assert.deepEqual(titles(el), ['Flagged Open', 'Blocked Plain', 'Open Plain', 'Odd'])
+})
+
+uiTest('§23c the chosen arrangement persists across a remount', async (mount) => {
+  mockWorkItems([mkItem({ id: 'w1', title: 'Only', status: 'open' })])
+  forgetGroupChoice()
+  const { el } = await mount(docketModal())
+  await flush()
+  assert.equal(groupSelect(el).value, 'none', 'the default with nothing stored')
+  await chooseGroup(el, 'agent')
+  assert.equal(window.localStorage.getItem('orgtree.docket.group'), 'agent')
+
+  // a fresh panel reads the stored choice rather than resetting to the default
+  const again = await mount(docketModal())
+  await flush()
+  assert.equal(groupSelect(again.el).value, 'agent')
+  forgetGroupChoice()
+})
+
+uiTest('§24 the model chip is shown only when it can honestly be attributed', async (mount) => {
+  const node = (id: string, tier: string, generation: number) => ({
+    id, title: id, tier, model_id: 'm', state: 'live', seat: 1, grant: 1, free: 1,
+    scope: { permission_mode: 'normal' }, ui_order: 1, cost_usd: 0,
+    occupancy: null, context_window: null, charter: null, generation,
+  })
   const tree = mkTree({
-    roots: [
-      {
-        id: 'worker-agent',
-        title: 'Worker Agent',
-        tier: 'sonnet',
-        model_id: 'claude-3-5-sonnet',
-        state: 'live',
-        seat: 1,
-        grant: 1,
-        free: 1,
-        scope: { permission_mode: 'normal' },
-        ui_order: 1,
-        cost_usd: 0,
-        occupancy: null,
-        context_window: null,
-        charter: null,
-      },
-    ],
+    roots: [node('worker-agent', 'sonnet', 1),
+      node('rolled-agent', 'opus', 4)] as unknown as TreeNode[],
   })
   mockWorkItems([
-    mkItem({
-      id: 'w1',
-      title: 'Tiered Task',
-      status: 'in_progress',
-      last_updater: { node: 'worker-agent', generation: 1 },
-    }),
+    mkItem({ id: 'w1', title: 'Current', last_updater: { node: 'worker-agent', generation: 1 } }),
+    // the SAME node, but this update was written by an EARLIER generation: the
+    // model that generation ran under is not recorded anywhere
+    mkItem({ id: 'w2', title: 'Superseded generation', last_updater: { node: 'rolled-agent', generation: 2 } }),
+    mkItem({ id: 'w3', title: 'Gone', last_updater: { node: 'never-existed', generation: 1 } }),
   ])
   const { el } = await mount(docketModal({ tree }))
   await flush()
+  const [rCur, rMoved, rGone] = rows(el)
 
-  const r = rows(el)[0]!
-  const tierChip = r.querySelector('.docket-updater .tier')
-  assert.ok(tierChip, 'TierChip rendered in row docket-updater')
-  assert.ok(tierChip.classList.contains('t-sonnet'), 'tier class t-sonnet applied')
-  assert.equal(tierChip.textContent?.trim(), 'S', 'tier letter S rendered')
+  // POSITIVE CONTROL — without it the assertions below would also pass on a
+  // component that simply never renders a chip at all
+  const chip = rCur!.querySelector('.docket-updater .tier')
+  assert.ok(chip, 'the current generation DOES get a model chip')
+  assert.ok(chip.classList.contains('t-sonnet'))
+  assert.equal(chip.textContent?.trim(), 'S')
 
-  // Check detail pane
-  await inAct(() => (r as HTMLElement).click())
+  assert.equal(rMoved!.querySelector('.docket-updater .tier'), null,
+    'an old generation must not be labelled with the model the node wears today')
+  assert.match(rMoved!.querySelector('.docket-actor')?.getAttribute('title') ?? '',
+    /not recorded/, 'and the row says why the badge is missing')
+  assert.ok(rMoved!.querySelector('.docket-actor')?.classList.contains('fit-moved'))
+  assert.equal(rGone!.querySelector('.docket-updater .tier'), null)
+  assert.ok(rGone!.querySelector('.docket-actor')?.classList.contains('fit-gone'))
+
+  // the detail pane obeys the same rule
+  await inAct(() => (rCur as HTMLElement).click())
   await flush()
+  assert.ok(el.querySelector('.docket-pane-sub .tier')?.classList.contains('t-sonnet'))
+  await inAct(() => (rMoved as HTMLElement).click())
+  await flush()
+  assert.equal(el.querySelector('.docket-pane-sub .tier'), null)
+})
 
-  const paneTier = el.querySelector('.docket-pane-sub .tier')
-  assert.ok(paneTier, 'TierChip rendered in detail pane subheader')
-  assert.ok(paneTier.classList.contains('t-sonnet'))
+uiTest('§25 the backlog is hidden until asked for, counted apart, and never merged into current work', async (mount) => {
+  mockWorkItems([
+    mkItem({ id: 'w1', title: 'Current', status: 'in_progress' }),
+  ], [], undefined, [
+    mkItem({ id: 'w2', title: 'Parked', status: 'backlogged' }),
+  ])
+  const { el } = await mount(docketModal())
+  await flush()
+  assert.deepEqual(titles(el), ['Current'], 'the backlog is not shown by default')
+  assert.match(el.querySelector('.docket-showbacklog')?.textContent ?? '', /Show backlogged/)
+  assert.match(el.querySelector('.docket-showbacklog')?.textContent ?? '', /1/,
+    'the count rides the label, so a hidden backlog is still discoverable')
+
+  await inAct(() => showBacklogBox(el).click())
+  await flush()
+  assert.deepEqual(titles(el), ['Current', 'Parked'], 'appended, never interleaved')
+  const parked = rows(el)[1]!
+  assert.ok(parked.classList.contains('backlog'), 'it reads as its own state')
+  assert.ok(parked.classList.contains('status-backlogged'))
+  assert.ok(!parked.classList.contains('active') && !parked.classList.contains('archived'))
+  assert.match(parked.querySelector('.docket-status')?.textContent ?? '', /Backlogged/)
+
+  // unticking puts it back out of sight without disturbing the rest
+  await inAct(() => showBacklogBox(el).click())
+  await flush()
+  assert.deepEqual(titles(el), ['Current'])
+})
+
+uiTest('§26 an attention-holding backlog row arrives in the MAIN list, not behind the filter', async (mount) => {
+  // the backend keeps such a row in `items` so the toolbar badge always opens
+  // onto something visible; the UI must therefore not hide it on status alone
+  mockWorkItems([
+    mkItem({ id: 'w1', title: 'Parked but flagged', status: 'backlogged',
+      effective_attention: true, attention_sources: ['manual'] }),
+  ])
+  const { el } = await mount(docketModal())
+  await flush()
+  assert.deepEqual(titles(el), ['Parked but flagged'], 'visible with the filter OFF')
+  const r = rows(el)[0]!
+  assert.ok(r.classList.contains('attention'), 'attention wins over the backlog styling')
+  assert.match(r.querySelector('.docket-status')?.textContent ?? '', /Needs attention/)
+})
+
+uiTest('§27 each row and the detail pane show the readable name, with copy and an id fallback', async (mount) => {
+  const copied: string[] = []
+  Object.defineProperty(window.navigator, 'clipboard', {
+    configurable: true,
+    value: { writeText: (t: string) => { copied.push(t); return Promise.resolve() } },
+  })
+  mockWorkItems([
+    mkItem({ id: 'w1', slug: 'git-review-workspace', title: 'Named' }),
+    // an item written before slugs existed: the server serves null rather than
+    // minting one on a read, so the UI shows the id instead of inventing a name
+    mkItem({ id: 'w2ffffff', slug: null, title: 'Unnamed' }),
+  ])
+  const { el } = await mount(docketModal())
+  await flush()
+  const [rNamed, rOld] = rows(el)
+  assert.equal(rNamed!.querySelector('.docket-slug')?.textContent, 'git-review-workspace')
+  assert.equal(rOld!.querySelector('.docket-slug')?.textContent, 'w2ffffff')
+  assert.match(rOld!.querySelector('.docket-slug')?.getAttribute('title') ?? '',
+    /predates readable names/)
+
+  // copying must not ALSO select the row — the click cannot be allowed to bubble
+  await inAct(() => (rNamed!.querySelector('.docket-slug') as HTMLElement).click())
+  await flush()
+  assert.deepEqual(copied, ['git-review-workspace'])
+  assert.ok(el.querySelector('.mailer-none'), 'clicking copy must not open the item')
+
+  await inAct(() => (rNamed as HTMLElement).click())
+  await flush()
+  assert.equal(pane(el)?.querySelector('.docket-slug')?.textContent, 'git-review-workspace')
+})
+
+uiTest('§28 the detail pane leads with the description, and says so when there is none', async (mount) => {
+  mockWorkItems([
+    mkItem({ id: 'w1', title: 'Described',
+      objective: 'agents cite opaque ids the user cannot read; give each item a name' }),
+    mkItem({ id: 'w2', title: 'Bare', objective: '' }),
+  ])
+  const { el } = await mount(docketModal())
+  await flush()
+  await inAct(() => (rows(el)[0] as HTMLElement).click())
+  await flush()
+  const desc = pane(el)?.querySelector('.docket-desc')
+  assert.match(desc?.textContent ?? '', /DESCRIPTION/)
+  assert.match(desc?.textContent ?? '', /agents cite opaque ids/)
+  // it LEADS: the description comes before the two progress lists
+  const order = [...(pane(el)?.querySelectorAll('.docket-desc, .docket-list') ?? [])]
+    .map((n) => n.className)
+  assert.equal(order[0], 'docket-desc')
+
+  await inAct(() => (rows(el)[1] as HTMLElement).click())
+  await flush()
+  assert.match(pane(el)?.querySelector('.docket-desc')?.textContent ?? '',
+    /predates the rule/, 'an older item without one says so rather than showing blank')
+})
+
+uiTest('§29 the panel never re-sorts what the server ordered', async (mount) => {
+  // deliberately NOT in recency order, and tied on docket_at: a component that
+  // sorted for itself would disagree with the server, and two orderings of the
+  // same rows is exactly the shuffle this pins down
+  mockWorkItems([
+    mkItem({ id: 'waaa', title: 'First from server', docket_at: '2026-09-05T10:00:00.000Z' }),
+    mkItem({ id: 'wzzz', title: 'Second from server', docket_at: '2026-09-05T10:00:00.000Z' }),
+    mkItem({ id: 'wmmm', title: 'Third from server', docket_at: '2026-09-05T11:00:00.000Z' }),
+  ])
+  const { el } = await mount(docketModal())
+  await flush()
+  assert.deepEqual(titles(el),
+    ['First from server', 'Second from server', 'Third from server'])
+})
+
+uiTest('§30 a long agent name truncates instead of running under the Dismiss button', async (mount) => {
+  mockWorkItems([mkItem({
+    id: 'w1', title: 'Long updater', effective_attention: true,
+    attention_sources: ['manual'],
+    manual_attention: { reason: 'look', at: '2026-09-05T09:00:00.000Z', by: { node: 'a', generation: 1 }, set_rev: 1 },
+    last_updater: { node: 'an-extremely-long-agent-identifier-that-will-not-fit', generation: 1 },
+  })])
+  const { el } = await mount(docketModal())
+  await flush()
+  const r = rows(el)[0]!
+  // THE ACTUAL DEFECT: text-overflow does nothing on a flex container, so the
+  // ellipsis has to sit on a NON-flex element inside the wrapper. The structure
+  // is what a jsdom test can honestly check; the rendered pixels are measured
+  // in the browser capture instead.
+  const wrap = r.querySelector('.docket-actor') as HTMLElement
+  const name = r.querySelector('.docket-actor-name') as HTMLElement
+  assert.ok(wrap && name, 'the name has its own element inside the flex wrapper')
+  assert.ok(!name.classList.contains('docket-actor'),
+    'the truncating element must not itself be the flex container')
+  assert.equal(name.textContent, 'an-extremely-long-agent-identifier-that-will-not-fit')
+  assert.ok(r.querySelector('.docket-dismiss'), 'and the Dismiss button is still rendered')
 })

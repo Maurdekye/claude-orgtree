@@ -3,7 +3,16 @@
 // SHAPED ON THE DOCUMENT GALLERY (same list-left/content-right structure,
 // user spec) — wears the same `.settings.wide`/`.mailer`/`.mailer-list`/
 // `.mailrow`/`.mailer-read` classes DocGalleryModal does, styled by its own
-// `.docket-modal` scope the way `.gallery-modal` styles its own rows.
+// `.docket-modal` scope the way `.gallery-modal` styles its own rows. The
+// header follows the gallery's exactly: the <h3>, then the filter checkboxes
+// immediately beside it with NO spacer between — the grouping control sits on
+// its own strip below so the header does not crowd.
+//
+// THREE GROUPINGS, ONE INVARIANT (user 2026-09-05): no group / by status / by
+// agent. Whichever is chosen, the two filtered groups — backlog and archive —
+// are APPENDED BELOW the current work, never mixed into it. Ticking a box adds
+// a section at the end; it never re-sorts, reloads or resets what is already
+// on screen, and never disturbs the selected item or a half-typed reply.
 //
 // Attached questions are NOT a second answering form: each is rendered as
 // the real <AskCard> for the matching entry in `tree.asks` (which stays
@@ -12,8 +21,11 @@
 // `questions` array (wire contract v3) is only used to know WHICH asks to
 // look up and for the "who is asking" header — never to answer directly.
 
-import { useEffect, useMemo, useState } from 'react'
-import type { AskInfo, ToastFn, TreeNode, TreePayload, WorkItem } from '../types'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import type { MouseEvent } from 'react'
+import type {
+  AskInfo, ToastFn, TreeNode, TreePayload, WorkActor, WorkItem,
+} from '../types'
 import {
   dismissWorkItemAttention, getWorkItems, replyWorkItem,
 } from '../api'
@@ -24,6 +36,7 @@ import { MailReplyBox } from './mail'
 import { ago, useEsc, usePolled } from './shared'
 
 const STATUS_LABEL: Record<string, string> = {
+  backlogged: 'Backlogged',
   open: 'Open',
   in_progress: 'In progress',
   blocked: 'Blocked',
@@ -34,26 +47,151 @@ const STATUS_LABEL: Record<string, string> = {
 }
 const statusLabel = (status: string): string => STATUS_LABEL[status] ?? status
 
-const STATUS_ORDER: Record<string, number> = {
-  in_progress: 1,
-  review: 2,
-  blocked: 3,
-  open: 4,
-  done: 5,
-  superseded: 6,
-  dropped: 7,
+/** Group-by-status order, exactly as specified: effective attention first,
+ *  then blocked, in_progress, review, open, done, then everything else that
+ *  is closed. A status the backend adds later lands in "Other" rather than
+ *  vanishing — an unknown row must still be reachable. */
+const STATUS_GROUPS: { key: string; heading: string }[] = [
+  { key: 'attention', heading: 'Needs attention' },
+  { key: 'blocked', heading: 'Blocked' },
+  { key: 'in_progress', heading: 'In progress' },
+  { key: 'review', heading: 'Under review' },
+  { key: 'open', heading: 'Open' },
+  { key: 'backlogged', heading: 'Backlogged' },
+  { key: 'done', heading: 'Done' },
+  { key: 'other', heading: 'Other closed' },
+]
+
+export type DocketGroupMode = 'none' | 'status' | 'agent'
+const GROUP_MODES: { value: DocketGroupMode; label: string }[] = [
+  { value: 'none', label: 'No group' },
+  { value: 'status', label: 'Group by status' },
+  { value: 'agent', label: 'Group by agent' },
+]
+/** app-local, per browser — a display preference, not org state */
+const GROUP_KEY = 'orgtree.docket.group'
+
+export function readGroupMode(): DocketGroupMode {
+  try {
+    const v = window.localStorage.getItem(GROUP_KEY)
+    if (v === 'none' || v === 'status' || v === 'agent') return v
+  } catch { /* storage disabled or unavailable — fall back to the default */ }
+  return 'none'
 }
 
-function buildTierMap(roots?: TreeNode[]): Map<string, string> {
-  const map = new Map<string, string>()
+function writeGroupMode(m: DocketGroupMode): void {
+  try { window.localStorage.setItem(GROUP_KEY, m) } catch { /* ignore */ }
+}
+
+// THE ROW ORDER IS THE SERVER'S, and this file deliberately does not restate
+// it. `ledger.work_list` already sorts every group by newest docket update
+// first with the item id breaking a tie, which makes the order total and
+// therefore stable across polls. Grouping here only PARTITIONS that sequence —
+// `filter` and first-appearance bucketing both preserve relative order — so a
+// group can never contradict the order the server chose, and there is no
+// second copy of the comparator to drift out of step with it.
+
+/** What we may honestly say about the agent an item points at. The tier chip
+ *  is a MODEL claim, and the only model this app knows is the one the node
+ *  wears NOW — so it may only be shown when the actor's generation is still
+ *  the current one. An earlier generation ran under whatever tier it had at
+ *  the time, which is not recorded anywhere, so the chip is omitted rather
+ *  than back-filled with today's answer (Astra review 2026-09-05). */
+export type ActorFit = 'current' | 'moved' | 'retired' | 'gone'
+
+export interface NodeFacts { tier: string; generation: number; live: boolean }
+
+export function buildNodeFacts(roots?: TreeNode[]): Map<string, NodeFacts> {
+  const map = new Map<string, NodeFacts>()
   const walk = (nodes?: TreeNode[]) => {
     for (const n of nodes ?? []) {
-      if (n.id && n.tier) map.set(n.id, n.tier)
+      if (n.id) {
+        map.set(n.id, {
+          tier: n.tier,
+          generation: Number(n.generation ?? 0),
+          live: n.state === 'live',
+        })
+      }
       walk(n.children)
     }
   }
   walk(roots)
   return map
+}
+
+export function actorFit(actor: WorkActor | null | undefined,
+                         facts: Map<string, NodeFacts>):
+  { fit: ActorFit; tier?: string } {
+  if (!actor?.node) return { fit: 'gone' }
+  const n = facts.get(actor.node)
+  if (!n) return { fit: 'gone' }
+  if (Number(n.generation) !== Number(actor.generation ?? 0)) return { fit: 'moved' }
+  if (!n.live) return { fit: 'retired', tier: n.tier }
+  return { fit: 'current', tier: n.tier }
+}
+
+const FIT_WHY: Record<ActorFit, string | null> = {
+  current: null,
+  // a RETIRED agent is still the same generation, so its recorded model is
+  // still the one that did the work — the chip stays, the row explains itself
+  retired: 'this agent has been retired',
+  moved: 'this agent has been replaced since this update — the model it ran '
+    + 'under then is not recorded, so no model badge is shown',
+  gone: 'this agent is no longer in the org',
+}
+
+/** An agent identity as it appears everywhere in this panel: the model chip
+ *  only when we can honestly attribute it, the name truncating with a real
+ *  ellipsis, and a jump to its desk. */
+function ActorName({ actor, facts, onFocusAgent, close }: {
+  actor: WorkActor | null | undefined
+  facts: Map<string, NodeFacts>
+  onFocusAgent?: (agentId: string) => void
+  close?: () => void
+}) {
+  if (!actor?.node) return null
+  const { fit, tier } = actorFit(actor, facts)
+  const why = FIT_WHY[fit]
+  return (
+    <span className={'docket-actor fit-' + fit} title={why ?? undefined}>
+      {tier && <TierChip tier={tier} />}
+      {/* the ellipsis lives on THIS element, not on the inline-flex wrapper
+          around it: text-overflow does nothing on a flex container, which is
+          why the long name used to run under the Dismiss button instead of
+          truncating (Astra review 2026-09-05) */}
+      <button className="cc-name cc-name-jump docket-actor-name"
+        title={`focus ${actor.node}'s desk`}
+        onClick={(e) => { e.stopPropagation(); close?.(); onFocusAgent?.(actor.node) }}>
+        {actor.node}
+      </button>
+    </span>
+  )
+}
+
+/** The item's readable name, click to copy. Falls back to the opaque id for an
+ *  item written before slugs existed — the server refuses to mint one on a
+ *  read, so there is genuinely nothing else to show. */
+function SlugChip({ item }: { item: WorkItem }) {
+  const [copied, setCopied] = useState(false)
+  const name = item.slug ?? item.id
+  const copy = useCallback((e: MouseEvent) => {
+    e.stopPropagation()
+    const done = () => { setCopied(true); window.setTimeout(() => setCopied(false), 1200) }
+    try {
+      const cb = navigator.clipboard
+      if (cb?.writeText) { void cb.writeText(name).then(done, () => undefined); return }
+    } catch { /* no clipboard in this context — the name is still readable */ }
+    done()
+  }, [name])
+  return (
+    <button className={'docket-slug' + (copied ? ' copied' : '')}
+      title={item.slug
+        ? `${name} — click to copy this item's name`
+        : `${name} — this item predates readable names; it gets one on its next update`}
+      onClick={copy}>
+      {copied ? 'copied' : name}
+    </button>
+  )
 }
 
 export function DocketToolbarButton({ summary, onClick }: {
@@ -74,6 +212,74 @@ export function DocketToolbarButton({ summary, onClick }: {
   )
 }
 
+/** the owner-less group's heading — named explicitly rather than left as a
+ *  silent remainder at the bottom of the list (user 2026-09-05) */
+export const UNASSIGNED = 'Unassigned'
+
+interface Section {
+  key: string
+  heading: string | null
+  items: WorkItem[]
+  /** styling hook for the two appended groups, so they read as set apart
+   *  from current work rather than as two more status buckets */
+  tone?: 'backlog' | 'archive'
+}
+
+/** The whole list, in order. The contract this function exists to keep: the
+ *  backlog and the archive are ALWAYS the last two sections, in that order, in
+ *  every grouping mode — so ticking a box can only ever add something to the
+ *  bottom of the list. */
+export function buildSections(mode: DocketGroupMode, active: WorkItem[],
+                              backlog: WorkItem[], archived: WorkItem[],
+                              ownerName: (it: WorkItem) => string): Section[] {
+  const out: Section[] = []
+  const rest = active
+
+  if (mode === 'status') {
+    const bucket = (it: WorkItem): string => {
+      if (it.effective_attention) return 'attention'
+      if (STATUS_GROUPS.some((g) => g.key === it.status)) return it.status
+      return 'other'
+    }
+    for (const g of STATUS_GROUPS) {
+      const items = rest.filter((it) => bucket(it) === g.key)
+      if (items.length) out.push({ key: 'st:' + g.key, heading: g.heading, items })
+    }
+  } else if (mode === 'agent') {
+    const groups = new Map<string, WorkItem[]>()
+    for (const it of rest) {
+      const who = ownerName(it)
+      const list = groups.get(who)
+      if (list) list.push(it)
+      else groups.set(who, [it])
+    }
+    // A Map keeps insertion order, and rows arrive newest-first, so the agents
+    // come out in order of their most recent activity WITHOUT a second sort —
+    // and therefore without a second chance to disagree with the server.
+    for (const [who, items] of groups) {
+      if (who !== UNASSIGNED) out.push({ key: 'ag:' + who, heading: who, items })
+    }
+    const un = groups.get(UNASSIGNED)
+    // last, and always named rather than left as a silent remainder
+    if (un) out.push({ key: 'ag:unassigned', heading: UNASSIGNED, items: un })
+  } else if (rest.length) {
+    out.push({ key: 'all', heading: null, items: rest })
+  }
+
+  // ALWAYS LAST, ALWAYS IN THIS ORDER, in every mode: ticking a filter may only
+  // ever append a section to the bottom of the list (user 2026-09-05).
+  if (backlog.length) {
+    out.push({
+      key: 'backlog', tone: 'backlog', items: backlog,
+      heading: 'Backlogged — not yet approached',
+    })
+  }
+  if (archived.length) {
+    out.push({ key: 'archive', tone: 'archive', items: archived, heading: 'Archived' })
+  }
+  return out
+}
+
 export function DocketModal({ slug, toast, close, tree, onFocusAgent }: {
   slug: string
   toast: ToastFn
@@ -87,56 +293,50 @@ export function DocketModal({ slug, toast, close, tree, onFocusAgent }: {
 }) {
   useEsc(close)
   const [showArchived, setShowArchived] = useState(false)
-  const [sortMode, setSortMode] = useState<'recent' | 'status'>('recent')
+  const [showBacklog, setShowBacklog] = useState(false)
+  const [groupMode, setGroupMode] = useState<DocketGroupMode>(readGroupMode)
   const [bump, setBump] = useState(0)
   const [archivedCache, setArchivedCache] = useState<WorkItem[]>([])
+  const [backlogCache, setBacklogCache] = useState<WorkItem[]>([])
 
-  // Polled data: deps is [slug] so toggling showArchived does not clear data to null
+  // Polled data: deps is [slug] so ticking a filter does not clear data to null
   // (which would unmount the pane and wipe the user's in-flight reply draft).
-  // refreshKey causes an immediate re-fetch on archive toggle or bump.
-  const data = usePolled(() => getWorkItems(slug, showArchived), [slug], 5000, `${bump}-${showArchived}`)
+  // The refresh key causes an immediate re-fetch on a toggle or a bump, while
+  // the previous rows stay on screen until the new ones land.
+  const data = usePolled(() => getWorkItems(slug, showArchived, showBacklog),
+    [slug], 5000, `${bump}-${showArchived}-${showBacklog}`)
 
-  useEffect(() => {
-    if (data?.archived) {
-      setArchivedCache(data.archived)
-    }
-  }, [data?.archived])
+  useEffect(() => { if (data?.archived) setArchivedCache(data.archived) },
+    [data?.archived])
+  useEffect(() => { if (data?.backlogged) setBacklogCache(data.backlogged) },
+    [data?.backlogged])
 
-  const tiersByNode = useMemo(() => buildTierMap(tree?.roots), [tree?.roots])
-  const tierOf = (node?: string | null) => (node ? tiersByNode.get(node) : undefined)
+  const facts = useMemo(() => buildNodeFacts(tree?.roots), [tree?.roots])
 
   const active = data?.items ?? []
+  // while a toggle's first fetch is in flight the cached group keeps showing,
+  // so the list grows once and never blinks
   const archived = showArchived ? (data?.archived ?? archivedCache) : []
-  const archivedCount = data?.counts?.archived ?? (data?.archived?.length ?? archivedCache.length)
+  const backlog = showBacklog ? (data?.backlogged ?? backlogCache) : []
+  const archivedCount = data?.counts?.archived ?? archivedCache.length
+  const backlogCount = data?.counts?.backlogged ?? backlogCache.length
 
-  // Sort rows based on sortMode
-  const rows = useMemo(() => {
-    const recencyOrder = (a: WorkItem, b: WorkItem) => {
-      const ta = a.docket_at ?? a.at ?? ''
-      const tb = b.docket_at ?? b.at ?? ''
-      return ta < tb ? 1 : ta > tb ? -1 : 0
-    }
-    if (sortMode === 'recent') {
-      return [...active.slice().sort(recencyOrder), ...archived.slice().sort(recencyOrder)]
-    }
-    return [...active, ...archived].sort((a, b) => {
-      const oa = STATUS_ORDER[a.status] ?? 99
-      const ob = STATUS_ORDER[b.status] ?? 99
-      if (oa !== ob) return oa - ob
-      if (a.archived !== b.archived) return a.archived ? 1 : -1
-      return recencyOrder(a, b)
-    })
-  }, [active, archived, sortMode])
+  const ownerName = useCallback((it: WorkItem) => it.owner?.node ?? UNASSIGNED, [])
+  const sections = useMemo(
+    () => buildSections(groupMode, active, backlog, archived, ownerName),
+    [groupMode, active, backlog, archived, ownerName])
+  const rowCount = sections.reduce((n, s) => n + s.items.length, 0)
 
   // selection BY ID, not index — the list repolls under the user (G5)
   const [selId, setSelId] = useState<string | null>(null)
   const allKnown = useMemo(() => {
     const map = new Map<string, WorkItem>()
     for (const item of active) map.set(item.id, item)
+    for (const item of (data?.backlogged ?? backlogCache)) map.set(item.id, item)
     for (const item of (data?.archived ?? archivedCache)) map.set(item.id, item)
     return map
-  }, [active, data?.archived, archivedCache])
-  const cur = rows.find((r) => r.id === selId) ?? (selId ? allKnown.get(selId) : undefined)
+  }, [active, data?.archived, data?.backlogged, archivedCache, backlogCache])
+  const cur = allKnown.get(selId ?? '')
   const asksById = new Map<string, AskInfo>((tree.asks ?? []).map((a) => [a.id, a]))
 
   const onDismiss = (item: WorkItem) => {
@@ -151,54 +351,83 @@ export function DocketModal({ slug, toast, close, tree, onFocusAgent }: {
       .catch((e: Error) => toast([`error: ${e.message}`]))
   }
 
+  const pickGroup = (m: DocketGroupMode) => { setGroupMode(m); writeGroupMode(m) }
+
   return (
     <div className="overlay" onClick={(e) => { e.stopPropagation(); close() }}
       onPointerDown={(e) => e.stopPropagation()}>
       <div className="settings wide docket-modal" onClick={(e) => e.stopPropagation()}>
+        {/* the gallery's header shape exactly: heading, then the filters
+            immediately beside it — no spacer in between (user ruling
+            2026-09-05: "the same position as the presented-documents panel's
+            checkbox") */}
         <div className="gallery-head docket-head">
           <h3><DocketIcon fontSize="inherit" /> Work docket</h3>
-          <div className="docket-sortbar mail-folders" role="group" aria-label="Sort docket entries">
-            <button type="button"
-              className={'docket-sort-btn' + (sortMode === 'recent' ? ' on' : '')}
-              onClick={() => setSortMode('recent')}>
-              Recently updated
-            </button>
-            <button type="button"
-              className={'docket-sort-btn' + (sortMode === 'status' ? ' on' : '')}
-              onClick={() => setSortMode('status')}>
-              Group by status
-            </button>
-          </div>
-          <span className="spacer" />
-          <label className="checkline docket-showarchived" title="include archived and closed work items">
+          <label className="checkline docket-showarchived"
+            title="include archived and closed work items">
             <input type="checkbox" checked={showArchived}
               onChange={(e) => setShowArchived(e.target.checked)} />
             Show archived
             {archivedCount > 0 && <span className="dim"> · {archivedCount}</span>}
           </label>
+          <label className="checkline docket-showbacklog"
+            title="include work that has not been approached or approved yet">
+            <input type="checkbox" checked={showBacklog}
+              onChange={(e) => setShowBacklog(e.target.checked)} />
+            Show backlogged
+            {backlogCount > 0 && <span className="dim"> · {backlogCount}</span>}
+          </label>
+          <span className="spacer" />
           <button className="chip-x" title="close" onClick={close}>
             <CloseIcon fontSize="inherit" />
           </button>
         </div>
+        {/* its own strip, so the header above stays as uncrowded as the
+            gallery's (Astra 2026-09-05) */}
+        <div className="docket-sortbar">
+          <label className="dim" htmlFor="docket-group">Arrange</label>
+          <select id="docket-group" className="docket-group-select" value={groupMode}
+            onChange={(e) => pickGroup(e.target.value as DocketGroupMode)}>
+            {GROUP_MODES.map((g) =>
+              <option key={g.value} value={g.value}>{g.label}</option>)}
+          </select>
+          <span className="dim docket-sort-why">
+            {groupMode === 'none'
+              ? 'most recently updated first'
+              : 'newest first inside each group'}
+          </span>
+        </div>
         <div className="mailpane">
           {!data
             ? <div className="dim pad">loading…</div>
-            : rows.length === 0
+            : rowCount === 0
               ? <div className="dim pad">no work items yet</div>
               : (
                 <div className="mailer">
                   <div className="mailer-list">
-                    {rows.map((r) => (
-                      <DocketRow key={r.id} item={r} selected={r.id === selId}
-                        onClick={() => setSelId(r.id === selId ? null : r.id)}
-                        onDismiss={onDismiss} tierOf={tierOf} />
+                    {sections.map((s) => (
+                      <div key={s.key}
+                        className={'docket-section' + (s.tone ? ' tone-' + s.tone : '')}>
+                        {s.heading && (
+                          <div className="docket-group-head">
+                            <span>{s.heading}</span>
+                            <span className="dim docket-group-n">{s.items.length}</span>
+                          </div>
+                        )}
+                        {s.items.map((r) => (
+                          <DocketRow key={r.id} item={r} selected={r.id === selId}
+                            onClick={() => setSelId(r.id === selId ? null : r.id)}
+                            onDismiss={onDismiss} facts={facts}
+                            onFocusAgent={onFocusAgent} close={close} />
+                        ))}
+                      </div>
                     ))}
                   </div>
                   <div className="mailer-read">
                     {cur
                       ? <DocketPane key={cur.id} slug={slug} item={cur} toast={toast}
                           asksById={asksById} onDismiss={onDismiss}
-                          close={close} onFocusAgent={onFocusAgent} tierOf={tierOf} />
+                          close={close} onFocusAgent={onFocusAgent} facts={facts} />
                       : <div className="dim pad mailer-none">select an item to view it</div>}
                   </div>
                 </div>
@@ -210,25 +439,31 @@ export function DocketModal({ slug, toast, close, tree, onFocusAgent }: {
   )
 }
 
-function DocketRow({ item, selected, onClick, onDismiss, tierOf }: {
+function DocketRow({ item, selected, onClick, onDismiss, facts, onFocusAgent, close }: {
   item: WorkItem
   selected: boolean
   onClick: () => void
   onDismiss: (item: WorkItem) => void
-  tierOf?: (node?: string | null) => string | undefined
+  facts: Map<string, NodeFacts>
+  onFocusAgent?: (agentId: string) => void
+  close?: () => void
 }) {
   const attention = item.effective_attention
-  // active (white) / attention (orange) / archived (grey, darker bg) — three
-  // mutually exclusive states per spec; archived wins visually even if (in
-  // principle) it also had attention, but the backend never actually hands
-  // us that combination (an attention item comes back archived:false).
-  const state = item.archived ? 'archived' : (attention ? 'attention' : 'active')
-  const cls = ['mailrow', 'docket-row', state, 'status-' + item.status, selected ? 'on' : ''].filter(Boolean).join(' ')
+  // active (white) / attention (orange) / backlog (its own quiet colour) /
+  // archived (grey, darker bg). Archived wins over backlog, and attention wins
+  // over both — the backend never hands us an archived attention row, but the
+  // precedence is written here so the row cannot be ambiguous either way.
+  const state = item.archived
+    ? 'archived'
+    : attention
+      ? 'attention'
+      : item.status === 'backlogged' ? 'backlog' : 'active'
+  const cls = ['mailrow', 'docket-row', state, 'status-' + item.status,
+    selected ? 'on' : ''].filter(Boolean).join(' ')
   const label = attention ? 'Needs attention' : statusLabel(item.status)
   // Dismiss clears the MANUAL flag only — a question-only attention item has
   // nothing to dismiss (answering the question is the only way to clear it).
   const canDismiss = item.attention_sources.includes('manual')
-  const updaterNode = item.last_updater?.node
   return (
     <div className={cls} title={item.title} onClick={onClick}>
       <div className="l1">
@@ -239,12 +474,11 @@ function DocketRow({ item, selected, onClick, onDismiss, tierOf }: {
         <span className={'docket-status status-' + item.status + (attention ? ' attention' : '')}>
           {label}
         </span>
-        {updaterNode && (
-          <span className="docket-updater">
-            <TierChip tier={tierOf?.(updaterNode)} />
-            {updaterNode}
-          </span>
-        )}
+        <SlugChip item={item} />
+        <span className="docket-updater">
+          <ActorName actor={item.last_updater} facts={facts}
+            onFocusAgent={onFocusAgent} close={close} />
+        </span>
         {canDismiss && (
           <button className="badge docket-dismiss" title="clear this manually-raised flag"
             onClick={(e) => { e.stopPropagation(); onDismiss(item) }}>
@@ -269,7 +503,7 @@ function DocketList({ heading, items }: { heading: string; items: string[] }) {
   )
 }
 
-function DocketPane({ slug, item, toast, asksById, onDismiss, close, onFocusAgent, tierOf }: {
+function DocketPane({ slug, item, toast, asksById, onDismiss, close, onFocusAgent, facts }: {
   slug: string
   item: WorkItem
   toast: ToastFn
@@ -277,7 +511,7 @@ function DocketPane({ slug, item, toast, asksById, onDismiss, close, onFocusAgen
   onDismiss: (item: WorkItem) => void
   close: () => void
   onFocusAgent?: (agentId: string) => void
-  tierOf?: (node?: string | null) => string | undefined
+  facts: Map<string, NodeFacts>
 }) {
   const attention = item.effective_attention
   const label = attention ? 'Needs attention' : statusLabel(item.status)
@@ -301,17 +535,28 @@ function DocketPane({ slug, item, toast, asksById, onDismiss, close, onFocusAgen
         <span className={'docket-status status-' + item.status + (attention ? ' attention' : '')}>
           {label}
         </span>
+        <SlugChip item={item} />
         {' · Updated ' + ago(item.docket_at ?? item.at)}
         {lastUpdater?.node && (
           <>
             {' by '}
-            <TierChip tier={tierOf?.(lastUpdater.node)} />
-            <button className="cc-name cc-name-jump" title={`focus ${lastUpdater.node}'s desk`}
-              onClick={() => { close(); onFocusAgent?.(lastUpdater.node) }}>
-              {lastUpdater.node}
-            </button>
+            <ActorName actor={lastUpdater} facts={facts}
+              onFocusAgent={onFocusAgent} close={close} />
           </>
         )}
+      </div>
+      {/* THE DESCRIPTION, first thing in the pane (user 2026-09-05): the
+          problem currently faced, then the proposed solution. Mandatory on
+          every item created from now on; older items may genuinely have none,
+          and that is said plainly rather than papered over. */}
+      <div className="docket-desc">
+        <div className="docket-list-heading dim">DESCRIPTION</div>
+        {item.objective
+          ? <div className="docket-desc-body">{item.objective}</div>
+          : <div className="dim docket-list-empty">
+              no description — this item predates the rule that every item
+              states its problem and proposed solution
+            </div>}
       </div>
       <DocketList heading="DONE SO FAR" items={item.done_so_far} />
       <DocketList heading="WORKING ON / NEXT" items={item.working_on_next} />
@@ -319,11 +564,8 @@ function DocketPane({ slug, item, toast, asksById, onDismiss, close, onFocusAgen
         <div className="docket-attention-box">
           <div className="docket-question-head">
             Manual attention from{' '}
-            <TierChip tier={tierOf?.(manualAttn.by.node)} />
-            <button className="cc-name cc-name-jump" title={`focus ${manualAttn.by.node}'s desk`}
-              onClick={() => { close(); onFocusAgent?.(manualAttn.by.node) }}>
-              {manualAttn.by.node}
-            </button>
+            <ActorName actor={manualAttn.by} facts={facts}
+              onFocusAgent={onFocusAgent} close={close} />
           </div>
           <div>{manualAttn.reason}</div>
         </div>
@@ -341,7 +583,6 @@ function DocketPane({ slug, item, toast, asksById, onDismiss, close, onFocusAgen
           <div key={q.ask_id} className="docket-question-box">
             <div className="docket-question-head">
               Question from{' '}
-              <TierChip tier={tierOf?.(q.node)} />
               <button className="cc-name cc-name-jump" title={`focus ${q.node}'s desk`}
                 onClick={() => { close(); onFocusAgent?.(q.node) }}>
                 {q.node}
@@ -362,11 +603,8 @@ function DocketPane({ slug, item, toast, asksById, onDismiss, close, onFocusAgen
         <>
           <div className="dim docket-reply-label">
             Reply to{' '}
-            <TierChip tier={tierOf?.(lastUpdater.node)} />
-            <button className="cc-name cc-name-jump" title={`focus ${lastUpdater.node}'s desk`}
-              onClick={() => { close(); onFocusAgent?.(lastUpdater.node) }}>
-              {lastUpdater.node}
-            </button>
+            <ActorName actor={lastUpdater} facts={facts}
+              onFocusAgent={onFocusAgent} close={close} />
             {' · last updated this item'}
           </div>
           <MailReplyBox target={lastUpdater.node}
