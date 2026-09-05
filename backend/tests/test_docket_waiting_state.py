@@ -467,5 +467,5 @@ check("own work and somebody else's review arrive in ONE list, each row "
       "saying which it is", one_agent_one_list)
 
 
-print(f"\n{FAIL} FAILED, {PASS} PASSED")
+print(f"\nALL {PASS} CHECKS PASS" if not FAIL else f"\n{FAIL} FAILED, {PASS} PASSED")
 sys.exit(1 if FAIL else 0)

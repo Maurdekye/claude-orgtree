@@ -29,7 +29,8 @@ archive is unbounded.
 | `slug` | **the only identifier.** Readable, derived from the title, unique across active+archive, fixed at creation — it does NOT follow a later title edit, so a name already written down keeps working. Every stored reference uses it: `dependencies`, `superseded_by`, ask `work_item`, the routes, the frontend's keys |
 | `rev` | bumped by every mutation (verify revalidates against it) |
 | `title`, `objective`, `kind` (`code` / `non-code`) | what and why |
-| `status` | `backlogged` · `open` · `in_progress` · `blocked` · `review` · `done` · `superseded` · `dropped`. `review` means **review by agents** — see below |
+| `status` | `backlogged` · `open` · `in_progress` · `blocked` · `waiting` · `review` · `done` · `superseded` · `dropped`. `review` means **review by agents**, `waiting` means an external event — see below |
+| `blocked_reason`, `waiting_reason` | the state's own information, required on entry to that state and cleared on the way out, so at most one is ever set |
 | `owner` `{node, generation}` | who is responsible, at the generation assigned; `owner_current` / `owner_state` say whether that seat is still live and unchanged |
 | `participants` | node ids with narrow collaborator rights (below) |
 | `done_so_far`, `working_on_next` | **the docket status** — the latest two lists |
