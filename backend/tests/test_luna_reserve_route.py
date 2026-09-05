@@ -1024,6 +1024,23 @@ def main() -> int:
             pass
         else:
             raise AssertionError("self-retool must not set prefer_reserve")
+        # Positive control: adding the new optional clear flag must not make
+        # an ordinary self team-charter retool look like an extra edit.
+        again.set_scope(pid, pid, team_charter="self team control")
+        eq(again.node(pid).get("team_charter"), "self team control",
+           "self team-charter retool still succeeds with omitted clear flag")
+        # Negative control: an explicit clear is still a superior-only edit,
+        # and refusal must leave the node unchanged.
+        try:
+            again.set_scope(pid, pid, clear_prefer_reserve=True)
+        except LedgerError:
+            pass
+        else:
+            raise AssertionError("self-retool must not clear prefer_reserve")
+        eq(again.node(pid).get("team_charter"), "self team control",
+           "refused self clear leaves team charter unchanged")
+        eq(again.node(pid)["scope"].get("prefer_reserve"), True,
+           "refused self clear leaves preference unchanged")
         app_prefer(True)
     check("§12 prefer_reserve: absent inherits app default, explicit value "
           "persists across reload and remains superior-only", t_pref)

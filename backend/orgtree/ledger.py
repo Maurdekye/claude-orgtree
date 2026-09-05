@@ -5553,7 +5553,10 @@ class Org:
                 ("model_version", model_version),
                 ("auto_cheap_compact", auto_cheap_compact),
                 ("prefer_reserve", prefer_reserve),
-                ("clear_prefer_reserve", clear_prefer_reserve),
+                # False is the request-model default (omitted), while True
+                # is an explicit attempt to clear an individual override.
+                ("clear_prefer_reserve",
+                 True if clear_prefer_reserve else None),
                 # a handle is an outbound-mail PRIVILEGE (the post_mail
                 # per-address bypass), so self-granting one would let a node
                 # hand itself a channel out of the org — the exact thing the
