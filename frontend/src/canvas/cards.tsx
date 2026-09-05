@@ -11,7 +11,7 @@ import type { ToastFn, TreePayload } from '../types'
 import { audienceAction, getCharters, saveKiosk, unstickNode } from '../api'
 import {
   CheckIcon, CloseIcon, FocusIcon, FullscreenIcon, FrozenIcon, LayersIcon,
-  LockIcon, MailIcon, RetireIcon, SettingsIcon,
+  LockIcon, MailIcon, PinIcon, RetireIcon, SettingsIcon,
 } from '../icons'
 import {
   anyTierSeat, codexTierOffer, CODEX_TIER_LETTER, CODEX_TIER_SEAT, CODEX_TIERS, DESK_SCALE, deskDpi, DRAFT, familyOffer, fmtCredits, formatCount, freezeKind, FREEZE_LABEL_SHORT, ANTIGRAVITY_TIER_LETTER, ANTIGRAVITY_TIER_SEAT, ANTIGRAVITY_TIERS, isOpenRouterTier, NODE_H, NODE_W, openrouterTierIds, providerOf, queuedSwitchTitle, TIER_LETTER, TIER_SEAT, tierLabel, TIERS, unicodeLength, USER,
@@ -74,6 +74,9 @@ interface UserNodeProps {
    *  the desk header identically — user spec 2026-08-19) */
   onNodeLineage?: (id: string) => void
   onNodeConfig?: (id: string) => void
+  /** pinned agents keep their tab but not a second chat — see EyeDeskProps */
+  pinnedIds?: ReadonlySet<string>
+  onShowPin?: (id: string) => void
 }
 
 export function UserNode({ pos, isDrop, stats, pip, seats, codexHire, claudeHire, onNoHarness,
@@ -81,7 +84,8 @@ export function UserNode({ pos, isDrop, stats, pip, seats, codexHire, claudeHire
   kiosk, pub, kioskRemaining, kioskSegs, pxc, zoom, onInbox, onGear, onSpawn,
   onMailLink,
   focused, eyeW, onFocus, posX, onJump, map, op, slug, toast,
-  compactAt, maxTop, onOpenDoc, onNodeLineage, onNodeConfig }: UserNodeProps) {
+  compactAt, maxTop, onOpenDoc, onNodeLineage, onNodeConfig,
+  pinnedIds, onShowPin }: UserNodeProps) {
   // const extraction: the kiosk-credits narrowing must survive the commit
   // closure below (a property check alone would not)
   const kioskCredits = kiosk?.credits
@@ -203,7 +207,8 @@ export function UserNode({ pos, isDrop, stats, pip, seats, codexHire, claudeHire
           onGear={onGear} pub={pub} eyeW={eyeW} posX={posX} onJump={onJump}
           compactAt={compactAt} maxTop={maxTop} pxc={pxc}
           onMailLink={onMailLink} onOpenDoc={onOpenDoc}
-          onNodeLineage={onNodeLineage} onNodeConfig={onNodeConfig} />
+          onNodeLineage={onNodeLineage} onNodeConfig={onNodeConfig}
+          pinnedIds={pinnedIds} onShowPin={onShowPin} />
       )}
     </div>
   )
@@ -245,11 +250,18 @@ interface EyeDeskProps {
    *  built here, separately, and never got the same handler. So it re-centred
    *  only while it was NOT already focused. Same gesture, same result. */
   onRecenter?: () => void
+  /** user ruling 2026-09-05: an agent PINNED to screenspace already has a live
+   *  chat on screen, so the switchboard must not mount a SECOND one. Its tab
+   *  stays in the row and raises the existing window instead. */
+  pinnedIds?: ReadonlySet<string>
+  onShowPin?: (id: string) => void
 }
 
 export function EyeDesk({ map, op, slug, toast, pip,
   onInbox, onGear, pub, eyeW, posX, onJump, compactAt, maxTop, pxc,
-  onMailLink, onOpenDoc, onNodeLineage, onNodeConfig, onRecenter }: EyeDeskProps) {
+  onMailLink, onOpenDoc, onNodeLineage, onNodeConfig, onRecenter,
+  pinnedIds, onShowPin }: EyeDeskProps) {
+  const isPinned = (id: string) => !!pinnedIds?.has(id)
   const agents = [...map.values()].filter((n) =>
     n.id !== USER && n.id !== DRAFT && n.state === 'live' && !n.isBearerOf
     && (n.parent === USER || n.audiences_held?.includes(USER)))
@@ -332,7 +344,12 @@ export function EyeDesk({ map, op, slug, toast, pip,
     // the arrival rule on lines that already arrived
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [idsKey, slug])
-  const open = agents.filter((a) => !minned.has(a.id))
+  // ⚠ PINNED IS A SEPARATE FILTER FROM `minned`, NOT A WRITE INTO IT. A pin
+  // borrows the panel; it must not consume the reader's own open/minimized
+  // choice, so unpinning restores exactly the tab state they left. The chat
+  // itself is the same component either way and its draft and scroll are
+  // persisted per node id (desk.tsx №2), not per surface.
+  const open = agents.filter((a) => !minned.has(a.id) && !isPinned(a.id))
   // the inner virtual panel matches the card interior through the desk scale.
   // DESK_SCALE/deskDpi are shared so this stays in step with .desk-inner's
   // transform — the same equation used to be written out here AND in the CSS
@@ -365,10 +382,14 @@ export function EyeDesk({ map, op, slug, toast, pip,
           </svg>
           <div className="eye-tabs">
           {agents.map((a) => (
-            <span key={a.id} className={'eye-tab' + (minned.has(a.id) ? '' : ' on')}>
+            <span key={a.id} className={'eye-tab'
+              + (isPinned(a.id) ? ' pinned' : minned.has(a.id) ? '' : ' on')}>
               <button className="eye-tab-main"
-                title={minned.has(a.id) ? 'open this chat' : 'minimize this chat'}
-                onClick={() => toggle(a.id)}>
+                title={isPinned(a.id)
+                  ? 'this chat is open in a pinned window — click to raise it'
+                  : minned.has(a.id) ? 'open this chat' : 'minimize this chat'}
+                onClick={() => isPinned(a.id) ? onShowPin?.(a.id) : toggle(a.id)}>
+                {isPinned(a.id) && <PinIcon fontSize="inherit" />}
                 <span className={'tier t-' + a.tier}>{TIER_LETTER[a.tier!] ?? '?'}</span>
                 {a.id}
                 {a.busy && <DestinationBusy tier={a.tier} />}
@@ -439,8 +460,17 @@ export function EyeDesk({ map, op, slug, toast, pip,
                 onConfig={onNodeConfig ? () => onNodeConfig(a.id) : undefined} />
             </div>
           ))}
+          {/* the empty state has to name the RIGHT absence: "every chat is
+              minimized" is a lie when they are pinned, and the reader would go
+              looking for a tab to un-minimize that does not exist */}
           {!open.length && agents.length > 0 &&
-            <div className="dim pad">every chat is minimized — click a tab above</div>}
+            <div className="dim pad">{
+              agents.every((a) => isPinned(a.id))
+                ? 'every chat is open in a pinned window — click a tab to raise one'
+                : agents.some((a) => isPinned(a.id))
+                  ? 'every chat is minimized or pinned — click a tab above'
+                  : 'every chat is minimized — click a tab above'
+            }</div>}
         </div>
       </div>
     </div>

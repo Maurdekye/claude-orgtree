@@ -2295,6 +2295,12 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
               posX={(id) => posOf(id)?.x ?? 0}
               onJump={(id) => centerOn(id)}
               map={map} op={op} slug={slug} toast={toast}
+              /* a pinned agent already has a live chat on screen: the
+                 switchboard shows its TAB but no second panel, and the tab
+                 raises the existing window (same call the card placeholder
+                 makes). User ruling 2026-09-05. */
+              pinnedIds={pinnedIds}
+              onShowPin={(id) => showPin(slug, id, vpSizeNow())}
               compactAt={tree.compact_at} maxTop={tree.max_top_grant ?? 1000}
               /* the pip is DECIDED HERE and handed down (D-169): asks + urgent
                  mail outrank plain unread, and `asks_open` already covers

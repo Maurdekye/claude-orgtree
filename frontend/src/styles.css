@@ -3463,6 +3463,17 @@ svg.MuiSvgIcon-root {
   font-size: 13px; padding: 4px 9px;
 }
 .eye-tab.on .eye-tab-main { color: var(--ink-strong); }
+/* PINNED: the chat is live in a pinned window, so this tab raises that window
+   instead of opening a second copy (user ruling 2026-09-05). Dashed, so it
+   reads as "elsewhere" rather than as another on/off state. */
+.eye-tab.pinned {
+  border-style: dashed;
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--line));
+}
+.eye-tab.pinned .eye-tab-main { color: var(--ink-strong); }
+.eye-tab.pinned .eye-tab-main > svg:first-child {
+  font-size: 12px; color: var(--accent);
+}
 .eye-tab-main .tier { width: 17px; height: 17px; font-size: 10px; }
 .eye-tab-x {
   background: none; border: none; border-left: 1px solid var(--line-soft);
