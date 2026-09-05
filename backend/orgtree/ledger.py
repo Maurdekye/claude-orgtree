@@ -6916,21 +6916,16 @@ class Org:
             if doc.get("node") in renamed:
                 doc["node"] = renamed[doc["node"]]
         # Work items, CURRENT-identity fields only. `owner`, `last_updater`
-        # and `participants` say who holds an item NOW, and every authority
-        # path reads them: `_work_can_manage` compares the actor to the owner
-        # and its ancestor fallback requires the anchor to still BE a node, so
-        # `work_list` stops listing the item and `work_update`/`assign` refuse;
-        # `work_reply_target` refuses outright when the last updater is not in
-        # `nodes`, and a user reply on the item then reaches nobody. Left
-        # un-re-keyed, a rename silently makes an agent's own docket
-        # unreadable to it while the user's view (actor == USER) still shows
-        # it — measured on the live document 2026-09-05, three items.
+        # and `participants` say who holds an item now, and the authority
+        # paths read them: `_work_can_manage` compares the actor to the owner
+        # and needs that anchor to still BE a node, and `work_reply_target`
+        # refuses when the last updater is not. Un-re-keyed, a rename leaves
+        # an agent unable to see or answer on its own docket.
         #
         # `created_by`, `history[].by`/`from`, `evidence[].by`, the delivery
         # claims and `accepted.by` are AUTHORED HISTORY and keep the old name,
-        # for the same ruling that leaves mail bodies and the event log alone.
-        # Nothing here touches `rev`, `updated_at`, `docket_at` or `history`:
-        # an identity re-key is not a docket update and must not look like one.
+        # like mail bodies and the event log. `rev`, `updated_at`, `docket_at`
+        # and `history` do not move: a re-key is not a docket update.
         self._rekey_work_identity(renamed)
         # the display title (set at hire from the raw name) follows the
         # identity — tree() ships it beside the id, so a stale title would
@@ -6958,11 +6953,88 @@ class Org:
 
     @staticmethod
     def _work_ref(it: WorkItem) -> str:
-        """How a work item is NAMED in anything a person reads — its
-        human-readable slug, falling back to the opaque id only for an item
-        old enough to predate slugs (user ruling 2026-09-05: the slug is the
-        docket's identity)."""
-        return str(it.get("slug") or it.get("id") or "")
+        """A work item's name: its slug, and only its slug (user ruling
+        2026-09-05 — the docket is identified solely by readable slug). An
+        item with none is unnamed here rather than named by an opaque id."""
+        return str(it.get("slug") or "")
+
+    #: ops that can BIND, UNBIND or MOVE a node name, and so break the chain
+    #: from a rename to the node standing under that name now
+    _NAME_BINDING_OPS: frozenset[str] = frozenset((
+        "hire", "rename", "delete", "insert_parent",
+        "swap_seats", "subjugate",           # a seat swap moves agents between
+                                             # node keys (swap_seats logs `_op`)
+        "recover_lost_generation", "drop_phantom_generation",
+    ))
+    #: ops that NAME a node without rebinding the name. Anything in neither set
+    #: is unclassified, and an unclassified op naming the destination refuses
+    #: the repair — a new op must be classified deliberately, not assumed safe.
+    _NAME_KEEPING_OPS: frozenset[str] = frozenset((
+        # `dissolve` ARCHIVES a subtree (state → "archived"); it never removes
+        # a node, so the names stay bound to the same records. A retire with
+        # live reports becomes one, so this is the ordinary path, not an edge.
+        "dissolve",
+        "retire", "rehire", "reseed", "unrecoverable", "move_batch",
+        "reallocate", "set_scope", "switch_model", "switch_queued",
+        "switch_queue_cancelled", "switch_queue_dropped", "unstick",
+        "ceiling_set", "ceiling_raise", "rescind", "revoke_dir",
+        "cheap_compact", "cli_compact", "compact_split", "self_restart",
+        "self_restart_forced", "heal",
+        "ask", "ask_answered", "ask_dismissed", "ask_moot", "ask_withdrawn",
+        "credit_request", "credit_answer", "credit_deny", "credit_refused",
+        "credit_dismissed", "credit_moot", "credit_request_withdrawn",
+        "scope_request", "scope_decided", "scope_moot",
+        "audience_grant", "audience_deny", "audience_revoke",
+        "watchdog_create", "watchdog_remove", "watchdog_fire",
+        "watchdog_alert", "watchdogs_pause_all",
+        "mail", "ext_mail", "extern_handle_detached",
+        "present", "present_dismissed", "present_evicted",
+        "work_create", "work_update", "work_assign", "work_accept",
+        "work_archived", "work_dismiss", "work_slugs",
+        "fable_filter", "fable_limit", "fable_unlock", "rename_repair",
+        "set_defaults", "in", "out",
+    ))
+    #: detail keys that NAME a node as such. `mail`'s `to`, an event's `actor`
+    #: and prose in a `gist` mention a node; these BIND one.
+    _NODE_KEYS: tuple[str, ...] = ("node", "new", "a", "b", "target", "under")
+
+    def _rename_chain_intact(self, i: int, dests: set[str]) -> str:
+        """Is the identity that a rename produced still the one standing under
+        those names? Returns "" when it is, else why it cannot be shown.
+
+        `i` is the index of the rename event. The org event log is APPEND-ONLY
+        and never pruned, so finding that event means every later event is
+        here too, and the question is answerable from retained evidence alone:
+        replay forward and see whether anything re-bound the name.
+
+        A name matching is NOT the argument — rename A→B, delete B, hire a
+        fresh B and the new holder would inherit the old one's records. Nor is
+        any timestamp tolerance: the chain is what is checked, not how close
+        two stamps are. An op that is neither known-binding nor known-keeping
+        refuses, so an op added later has to be classified rather than
+        silently assumed harmless."""
+        for e in list(self.d.get("events") or [])[i + 1:]:
+            d = e.get("detail") or {}
+            if not isinstance(d, dict):
+                continue
+            named = {str(d.get(k)) for k in self._NODE_KEYS if d.get(k)}
+            removed = d.get("removed")
+            if isinstance(removed, list):
+                named |= {str(x) for x in removed}
+            hit = sorted(named & dests)
+            if not hit:
+                continue
+            op = str(e.get("op") or "")
+            if op in self._NAME_BINDING_OPS:
+                return (f"{op!r} at {e.get('at')} re-bound {hit[0]!r} after the "
+                        f"rename, so the node standing there now is not "
+                        f"demonstrably the one that was renamed")
+            if op not in self._NAME_KEEPING_OPS:
+                return (f"{op!r} at {e.get('at')} names {hit[0]!r} and this "
+                        f"ledger has not classified that op, so it cannot "
+                        f"show the name stayed with the same node — refusing "
+                        f"rather than assuming it did")
+        return ""
 
     def _rekey_work_identity(self, renamed: dict[str, str],
                              only: list[WorkItem] | None = None
@@ -7010,46 +7082,57 @@ class Org:
                                documents: list[str] | None = None,
                                work_items: list[str] | None = None
                                ) -> dict[str, Any]:
-        """Finish a rename that happened BEFORE the re-key covered a record.
+        """Finish a rename for records a rename before the re-key stranded.
 
-        Not a node-rekey facility: it cannot be pointed at an arbitrary pair of
-        names. The old and new ids are read out of ONE logged `rename` event,
-        named by its exact `at` stamp, and the records to move are given
-        explicitly by id — an allowlist, not a pattern. Every named record must
-        still hold the OLD id (the old-value check) or the whole call is
-        refused before anything is written (§4.7, validate-all-then-mutate), so
-        a stale plan can never half-apply.
+        AUTHORITY — the user, or the renamed identity itself, and nobody else.
+        An item owned by a name that no longer exists cannot go through
+        `work_assign`: `_work_can_manage` refuses for exactly the reason being
+        repaired.
 
-        Authority is the narrowest that can do the job: the user, or the
-        RENAMED IDENTITY ITSELF. An item whose owner is a name that no longer
-        exists cannot be repaired through `work_assign` — `_work_can_manage`
-        refuses precisely because of the damage being repaired — so the agent
-        that the rename was applied to may put its own records back on its own
-        id, and nobody else may.
+        BOUND — not a node-rekey facility. The old and new ids are read out of
+        ONE logged `rename` event named by its exact `at`; there are no
+        old/new arguments. The records come from an explicit allowlist, each
+        must still hold the old id, and the identity chain from that rename to
+        the node standing under the new name must be intact
+        (`_rename_chain_intact`).
 
-        What moves: `documents[].node`, and the CURRENT-identity work-item
-        fields (`owner`, `last_updater`, `participants`). What does NOT: every
-        authored-history field on an item, `rev`/`updated_at`/`docket_at`, the
-        event log, mail bodies and sender fields. The repair adds no docket
-        history entry — inventing an actor for work the agent did not do would
-        corrupt the very record this preserves; the org event log carries the
-        one `rename_repair` line instead."""
+        ATOMICITY — validate all, then mutate (§4.7). Every write is computed
+        during validation and applied afterwards, so nothing below the
+        validation can raise and a refused call writes nothing at all.
+
+        CURRENT vs HISTORY — moves `documents[].node` and the current-identity
+        work fields (`owner`, `last_updater`, `participants`). Leaves every
+        authored-history field, `rev`, `updated_at`, `docket_at`, the event
+        log, and mail bodies and senders. No docket history entry is added:
+        that would mean inventing an actor. The org log carries one
+        `rename_repair` line instead."""
         want_docs = [str(x) for x in (documents or [])]
         want_work = [str(x) for x in (work_items or [])]
         if not want_docs and not want_work:
             raise LedgerError(
                 "name the records to repair — this operation takes an explicit "
-                "allowlist of document and work-item ids, never a pattern")
+                "allowlist of documents and work items, never a pattern")
+        # A repeated reference is a confused plan, and it used to be worse than
+        # that: validation read the same record twice and passed, then the
+        # second mutate pass read the value the first had already changed and
+        # raised — after a write, in the one method whose promise is that
+        # nothing below the validation can raise (Astra review 2026-09-05).
+        for label, want in (("document", want_docs), ("work item", want_work)):
+            dupes = sorted({x for x in want if want.count(x) > 1})
+            if dupes:
+                raise LedgerError(
+                    f"the same {label} is named more than once in the "
+                    f"allowlist: {dupes}. Name each record once")
 
         at = str(rename_at or "").strip()
-        hits = [e for e in (self.d.get("events") or [])
+        hits = [(i, e) for i, e in enumerate(self.d.get("events") or [])
                 if e.get("op") == "rename" and e.get("at") == at]
         if len(hits) != 1:
             raise LedgerError(
                 f"expected exactly one logged rename at {at!r}; found "
                 f"{len(hits)}. This operation only completes a rename the "
                 f"event log actually records")
-        detail = hits[0].get("detail") or {}
+        at_index, detail = hits[0][0], hits[0][1].get("detail") or {}
         old, new = str(detail.get("node") or ""), str(detail.get("new") or "")
         if not old or not new:
             raise LedgerError(f"the rename event at {at!r} names no node")
@@ -7065,6 +7148,19 @@ class Org:
                 f"{old!r} still exists in this org — these records are not "
                 f"orphaned by that rename, and moving them would take records "
                 f"away from a node that is still there")
+        # a node cannot predate itself: one created after its own rename is a
+        # different node wearing the name. An ordering between two recorded
+        # stamps, not a tolerance — nothing here treats "close in time" as
+        # identity.
+        created = str(n.get("created") or "")
+        if not created:
+            raise LedgerError(
+                f"{new!r} records no creation time, so this ledger cannot show "
+                f"it is the node that was renamed. Refusing")
+        if created > at:
+            raise LedgerError(
+                f"{new!r} was created at {created}, after the rename at {at} — "
+                f"it is a different node standing under that name")
 
         # ---- validate every named record BEFORE touching one of them
         docs_by_id = {str(d.get("id")): d for d in self.d.get("documents") or []}
@@ -7075,6 +7171,10 @@ class Org:
             if v == old or v.startswith(old + "@"):
                 renamed[v] = new + v[len(old):]
 
+        # every write is computed HERE, against the values as they are now, and
+        # applied only after the last check — so the mutate phase never reads a
+        # value an earlier write changed
+        doc_writes: list[tuple[dict[str, Any], str]] = []
         for did in want_docs:
             d = docs_by_id.get(did)
             if d is None:
@@ -7085,10 +7185,10 @@ class Org:
                     f"document {did!r} is owned by {node!r}, not {old!r} — "
                     f"refusing the whole repair rather than guessing")
             _map(node)
+            doc_writes.append((d, renamed[node]))
 
-        # items are named the way the docket names them — `_work_find` takes a
-        # slug or an id, so this keeps working through the slug migration and
-        # hardcodes neither
+        # items are named by slug — the docket's sole identity (user ruling
+        # 2026-09-05)
         targets: list[WorkItem] = []
         fields: dict[str, list[str]] = {}
         for wid in want_work:
@@ -7097,15 +7197,23 @@ class Org:
             except LedgerError:
                 raise LedgerError(f"no work item {wid!r} in this org") from None
             if any(x is it for x in targets):
-                continue
+                raise LedgerError(
+                    f"{wid!r} names a work item already in the allowlist. "
+                    f"Name each record once")
+            ref = self._work_ref(it)
+            if not ref:
+                raise LedgerError(
+                    f"work item {wid!r} has no slug, and the docket is "
+                    f"identified by slug — write to the item first, then "
+                    f"repair it by name")
             targets.append(it)
             held = self._work_identity_holders(it, old)
             if not held:
                 raise LedgerError(
-                    f"work item {wid!r} holds no current-identity field naming "
+                    f"work item {ref!r} holds no current-identity field naming "
                     f"{old!r} — it is already repaired, or it was never "
                     f"affected. Refusing the whole repair")
-            fields[self._work_ref(it)] = held
+            fields[ref] = held
             for f in self.WORK_IDENTITY_FIELDS:
                 a = it.get(f)
                 if isinstance(a, dict) and isinstance(a.get("node"), str):
@@ -7114,9 +7222,16 @@ class Org:
                 if isinstance(p, str):
                     _map(p)
 
+        # the last check, and the one a matching name cannot stand in for: is
+        # the node under the destination still the identity that rename made?
+        why = self._rename_chain_intact(at_index, set(renamed.values()))
+        if why:
+            raise LedgerError(f"the identity chain from that rename is broken: "
+                              f"{why}")
+
         # ---- mutate (nothing below may raise)
-        for did in want_docs:
-            docs_by_id[did]["node"] = renamed[str(docs_by_id[did]["node"])]
+        for d, node_now in doc_writes:
+            d["node"] = node_now
         moved = self._rekey_work_identity(renamed, only=targets)
         warnings = [
             f"repaired {len(want_docs)} document(s) and {len(moved)} work-item "

@@ -11,6 +11,16 @@ NAMED check go red. One behaviour is rewritten at a time in a COPY of the
 tree; nothing here touches the working tree, and the copy's line endings are
 irrelevant because it is never committed.
 
+TWO GUARDS ARE DEFENCE IN DEPTH AND ARE NOT MUTATED HERE, because no test can
+reach them while the guard in front holds — saying so is more honest than
+adding a mutant that survives:
+  · the repair PRECOMPUTES its writes during validation, so the mutate phase
+    cannot read a value an earlier write changed. The duplicate refusal in
+    front of it means nothing can reach that path twice any more.
+  · the chain scan also reads a `delete` event's `removed` list. A node whose
+    name only appears there is itself deleted, so the "destination must be
+    live" check refuses first.
+
 Two controls make the rest mean anything:
   NOOP    one comment word changed        must SURVIVE (else the suite is
                                           environment-sensitive and every kill
@@ -48,7 +58,7 @@ MUTANTS: list[tuple[str, str, str, str, str]] = [
     (
         "SANITY-CONTROL-work-items-lose-their-name",
         "orgtree/ledger.py",
-        '        return str(it.get("slug") or it.get("id") or "")',
+        '        return str(it.get("slug") or "")',
         '        return "banana"',
         "one event records the repair",
     ),
@@ -158,6 +168,70 @@ MUTANTS: list[tuple[str, str, str, str, str]] = [
         '        if n is None or n.get("state") != "live":',
         "        if n is None:",
         "a retired destination is refused",
+    ),
+    (
+        "repair-accepts-a-duplicate-allowlist",     # raised AFTER a write
+        "orgtree/ledger.py",
+        "            dupes = sorted({x for x in want if want.count(x) > 1})\n"
+        "            if dupes:",
+        "            dupes = sorted({x for x in want if want.count(x) > 1})\n"
+        "            if False:",
+        "a duplicate in the allowlist refuses",
+    ),
+    (
+        "repair-lets-two-references-name-one-item",
+        "orgtree/ledger.py",
+        "            if any(x is it for x in targets):\n"
+        "                raise LedgerError(",
+        "            if False:\n"
+        "                raise LedgerError(",
+        "two references naming ONE item",
+    ),
+    (
+        "repair-skips-the-identity-chain",
+        "orgtree/ledger.py",
+        "        why = self._rename_chain_intact(at_index, set(renamed.values()))",
+        '        why = ""',
+        "the chain, not the clock",
+    ),
+    (
+        "chain-knows-no-binding-ops",
+        "orgtree/ledger.py",
+        "            if op in self._NAME_BINDING_OPS:",
+        "            if False:",
+        # the two branches overlap on purpose (a binding op is also absent from
+        # the keeping set), so the RENAME case still refuses with the other
+        # message. The seat-swap check asserts the specific reason, and that is
+        # what distinguishes them.
+        "a seat swap naming the destination refuses",
+    ),
+    (
+        "chain-assumes-unclassified-ops-are-harmless",
+        "orgtree/ledger.py",
+        "            if op not in self._NAME_KEEPING_OPS:",
+        "            if False:",
+        "cannot classify",
+    ),
+    (
+        "chain-refuses-ordinary-life-too",            # the control half
+        "orgtree/ledger.py",
+        "    _NAME_KEEPING_OPS: frozenset[str] = frozenset((",
+        "    _NAME_KEEPING_OPS: frozenset[str] = frozenset(()) and frozenset((",
+        "does NOT block the repair",
+    ),
+    (
+        "repair-ignores-a-destination-created-after-the-rename",
+        "orgtree/ledger.py",
+        "        if created > at:",
+        "        if False:",
+        "created after the rename",
+    ),
+    (
+        "work-items-fall-back-to-an-opaque-id",
+        "orgtree/ledger.py",
+        '        return str(it.get("slug") or "")',
+        '        return str(it.get("slug") or it.get("id") or "")',
+        "no slug is refused",
     ),
     (
         "repair-logs-nothing",

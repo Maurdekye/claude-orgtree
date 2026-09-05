@@ -825,6 +825,127 @@ def sec_repair() -> None:
     check("re-running the same repair is refused, not silently re-applied",
           _second_run_refuses)
 
+    def _duplicate_ids_refuse_and_write_nothing():
+        """A repeated reference used to pass validation (the same record read
+        twice) and then raise on the SECOND mutate pass, after a write — in
+        the one method whose promise is that nothing below the validation can
+        raise. The whole document is compared, not a spot check."""
+        import copy
+        org, at, owned = rig()
+        before = copy.deepcopy(dict(org.d))
+        expect_error(lambda: org.repair_rename_identity(
+            USER, at, documents=["d-stranded", "d-stranded"]), "more than once")
+        expect_error(lambda: org.repair_rename_identity(
+            USER, at, work_items=[owned, owned]), "more than once")
+        # …and the mixed plan Astra asked for: one valid, one duplicate, one
+        # that cannot be repaired at all
+        expect_error(lambda: org.repair_rename_identity(
+            USER, at, documents=["d-stranded", "d-stranded", "d-other"]),
+            "more than once")
+        assert dict(org.d) == before, \
+            "a refused repair must leave the ENTIRE document unchanged"
+    check("a duplicate in the allowlist refuses, and writes nothing at all",
+          _duplicate_ids_refuse_and_write_nothing)
+
+    def _two_references_to_one_item_refuse():
+        org, at, owned = rig()
+        it = item(org, owned)
+        expect_error(lambda: org.repair_rename_identity(
+            USER, at, work_items=[owned, str(it["id"])]), "already in the allowlist")
+        assert item(org, owned)["owner"]["node"] == "kid"
+    check("two references naming ONE item are a duplicate too",
+          _two_references_to_one_item_refuse)
+
+    def _an_item_without_a_slug_is_refused():
+        org, at, owned = rig()
+        it = item(org, owned)
+        wid = str(it["id"])
+        it.pop("slug", None)
+        expect_error(lambda: org.repair_rename_identity(
+            USER, at, work_items=[wid]), "identified by slug")
+    check("an item with no slug is refused — the docket is named by slug",
+          _an_item_without_a_slug_is_refused)
+
+    def _a_reused_name_after_deletion_is_refused():
+        """THE ONE A MATCHING NAME CANNOT ANSWER. Rename kid→sprocket, delete
+        sprocket, hire a fresh agent called sprocket: the new holder must not
+        inherit the old one's records."""
+        org, at, owned = rig()
+        org.delete(USER, "sprocket")
+        org.hire("boss", "boss", "haiku", 1, "sprocket", **spec())
+        expect_error(lambda: org.repair_rename_identity(
+            USER, at, work_items=[owned]), "identity chain")
+        assert item(org, owned)["owner"]["node"] == "kid"
+    check("a name re-used by a NEW hire after deletion is refused",
+          _a_reused_name_after_deletion_is_refused)
+
+    def _a_different_agent_renamed_into_the_name_is_refused():
+        """The same attack without a fresh hire, so the creation stamp cannot
+        be what catches it: the impostor node existed BEFORE the rename, and
+        only the event chain shows the name changed hands."""
+        org, at, owned = rig()
+        org.hire("boss", "boss", "haiku", 1, "impostor", **spec())
+        # make it older than the rename, so the created-time check passes
+        org.nodes["impostor"]["created"] = "2000-01-01T00:00:00.000Z"
+        org.delete(USER, "sprocket")
+        org.rename(USER, "impostor", "sprocket")
+        # two renames can land in the same millisecond, and then `at` names
+        # two events and the repair refuses for THAT reason instead of the one
+        # under test — push the second one out deterministically
+        org.d["events"][-1]["at"] = "2099-01-01T00:00:00.000Z"
+        assert org.nodes["sprocket"]["created"] < at, \
+            "fixture must defeat the created-time check, or this proves nothing"
+        # the SPECIFIC reason, not just "some refusal": a rename re-bound the
+        # name. A vaguer needle would pass on the unclassified-op branch too
+        # and stop distinguishing the two halves of the scan.
+        expect_error(lambda: org.repair_rename_identity(
+            USER, at, work_items=[owned]), "re-bound")
+        assert item(org, owned)["owner"]["node"] == "kid"
+    check("a name taken over by an OLDER node is refused too (the chain, not "
+          "the clock)", _a_different_agent_renamed_into_the_name_is_refused)
+
+    def _the_legitimate_case_still_passes():
+        """The positive control for both refusals above: an ordinary life
+        after the rename — retirement, rehire, a model switch, an answered ask
+        — must not block the repair."""
+        org, at, owned = rig()
+        org.retire("boss", "sprocket")
+        org.rehire("boss", "sprocket", 5)
+        org.switch_model("boss", "sprocket", "opus")
+        org._log("ask_answered", USER, {"node": "sprocket", "id": "a1"}, [])
+        r = org.repair_rename_identity(USER, at, work_items=[owned])
+        assert item(org, owned)["owner"]["node"] == "sprocket", r
+    check("an ordinary life after the rename does NOT block the repair",
+          _the_legitimate_case_still_passes)
+
+    def _an_unclassified_op_refuses():
+        """A future op that names the node and that this ledger has not
+        classified must refuse, not be assumed harmless."""
+        org, at, owned = rig()
+        org._log("teleport_node", USER, {"node": "sprocket"}, [])
+        expect_error(lambda: org.repair_rename_identity(
+            USER, at, work_items=[owned]), "has not classified")
+    check("an op this ledger cannot classify refuses the repair",
+          _an_unclassified_op_refuses)
+
+    def _a_seat_swap_refuses():
+        org, at, owned = rig()
+        org._log("swap_seats", USER, {"a": "sprocket", "b": "grandkid"}, [])
+        expect_error(lambda: org.repair_rename_identity(
+            USER, at, work_items=[owned]), "re-bound")
+    check("a seat swap naming the destination refuses (it moves agents "
+          "between node keys)", _a_seat_swap_refuses)
+
+    def _a_node_created_after_its_own_rename_is_refused():
+        """The corroborating ordering check, isolated: two recorded stamps
+        compared, no tolerance and no window."""
+        org, at, owned = rig()
+        org.nodes["sprocket"]["created"] = "2099-01-01T00:00:00.000Z"
+        expect_error(lambda: org.repair_rename_identity(
+            USER, at, work_items=[owned]), "after the rename")
+    check("a destination created after the rename it claims is refused",
+          _a_node_created_after_its_own_rename_is_refused)
+
     def _logged_once():
         org, at, owned = rig()
         org.repair_rename_identity(USER, at, documents=["d-stranded"],
