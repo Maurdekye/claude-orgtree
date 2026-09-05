@@ -40,11 +40,10 @@ plain dict, so the whole storage change lives behind `load_org` / `save_org`:
     `notice_log`, `user_mail_log`, `user_outbox`) are ABSENT until first touched
     and then materialise from their row tables. 75 % of reads never touch one.
   * `save_org` is compare-on-save: every small section and every node is
-    re-serialised and written only if it differs from what was loaded; a
-    materialised log section is rewritten (all rows of that section / owner)
-    only if its content differs. Phase 1 has NO append fast path — a changed log
-    section is always fully rewritten. That is deliberate (§4.4): a wrong fast
-    path loses history, a slow correct path is merely today's performance.
+    re-serialised and written only if it differs from what was loaded. Loaded
+    log rows keep their SQLite `seq` identity, so append/update/delete writes
+    only the proven rows; an unprovable reorder or replacement falls back to
+    replacing that owner/section. Dict logs are lazy per owner.
   * Nothing outside this module changed for it. `Org.d` still behaves as a dict
     (see `LazyDoc` for the four `dict`-subclass hazards and how they are met).
 
@@ -74,6 +73,7 @@ from its children ran a sqlite build against `~/orgtree` — the live root — a
 from __future__ import annotations
 
 import contextlib
+import copy
 import hashlib
 import json
 import os
@@ -949,118 +949,365 @@ _POOL = _Pool()
 
 # ------------------------------------------------------------ the proxies
 class AppendLog(list[Any]):
-    """A materialised flat log (`events`, `notice_log`, …) or one owner's list
-    inside a dict log. A `list` in every respect; additionally it REMEMBERS
-    that it was mutated through a list method (`full_rewrite`).
+    """A row-backed log that remains an ordinary mutable ``list``.
 
-    Phase 1 (§4.4, "full_rewrite forced on"): the flag is recorded and never
-    consulted for correctness — `save_org` decides whether to rewrite a
-    section by comparing its content against what was loaded, which also
-    catches the one mutation no list method can see: an entry edited in place
-    (`entry["read"] = True`). Phase 2's append fast path is what will read
-    this journal, and the reviewer's job (§10.2) is to find a mutation it does
-    not express."""
+    ``_rows`` is the committed baseline in list order: ``(seq, JSON)``.
+    Save compares current serialized values to it, so nested entry edits are
+    visible even though no list method saw them. ``full_rewrite`` is only a
+    conservative signal for operations whose row identity cannot be safely
+    retained (middle insert, reorder, or a variable-size slice assignment).
+    """
 
-    full_rewrite: bool = False      # class default so a `__new__`-only copy has it
+    full_rewrite: bool = False
+    _rows: list[tuple[int, str]] = []
+    _row_ids: list[int | None] = []
+
+    def __new__(cls, *a: Any, **kw: Any) -> "AppendLog":
+        obj = cast("AppendLog", super().__new__(cls))
+        obj.full_rewrite = False
+        obj._rows = []
+        obj._row_ids = []
+        return obj
+
+    def __init__(self, values: Iterable[Any] = (), *,
+                 rows: list[tuple[int, str]] | None = None) -> None:
+        super().__init__(values)
+        self.full_rewrite = False
+        self._rows = list(rows) if rows is not None else []
+        self._row_ids = ([seq for seq, _ in self._rows] if rows is not None
+                         else [None] * len(self))
 
     def _touch(self) -> None:
         self.full_rewrite = True
 
+    def _adopt(self, rows: list[tuple[int, str]]) -> None:
+        self._rows = rows
+        self._row_ids = [seq for seq, _ in rows]
+        self.full_rewrite = False
+
+    def __copy__(self) -> "AppendLog":
+        other = AppendLog(self, rows=self._rows)
+        other._row_ids = list(self._row_ids)
+        other.full_rewrite = self.full_rewrite
+        return other
+
+    def __deepcopy__(self, memo: dict[int, Any]) -> "AppendLog":
+        other = AppendLog()
+        memo[id(self)] = other
+        list.extend(other, copy.deepcopy(list(self), memo))
+        other._rows = copy.deepcopy(self._rows, memo)
+        other._row_ids = copy.deepcopy(self._row_ids, memo)
+        other.full_rewrite = self.full_rewrite
+        return other
+
     def append(self, x: Any) -> None:
-        self._touch()
         super().append(x)
+        self._row_ids.append(None)
 
     def extend(self, xs: Iterable[Any]) -> None:
-        self._touch()
-        super().extend(xs)
+        values = list(xs)
+        super().extend(values)
+        self._row_ids.extend([None] * len(values))
 
     def insert(self, i: Any, x: Any) -> None:
-        self._touch()
+        if i != len(self):
+            self._touch()
         super().insert(i, x)
+        self._row_ids.insert(i, None)
 
     def pop(self, *a: Any) -> Any:
-        self._touch()
-        return super().pop(*a)
+        if len(a) > 1:
+            return super().pop(*a)
+        i = a[0] if a else -1
+        self._row_ids.pop(i)
+        return super().pop(i)
 
     def remove(self, x: Any) -> None:
-        self._touch()
-        super().remove(x)
+        i = self.index(x)
+        self._row_ids.pop(i)
+        super().__delitem__(i)
 
     def clear(self) -> None:
-        self._touch()
         super().clear()
+        self._row_ids.clear()
 
     def sort(self, *a: Any, **kw: Any) -> None:
         self._touch()
         super().sort(*a, **kw)
+        self._row_ids = [None] * len(self)
 
     def reverse(self) -> None:
         self._touch()
         super().reverse()
+        self._row_ids = [None] * len(self)
 
     def __setitem__(self, i: Any, v: Any) -> None:
-        self._touch()
+        if isinstance(i, slice):
+            values = list(v)
+            old_n = len(range(*i.indices(len(self))))
+            if old_n != len(values):
+                self._touch()
+            super().__setitem__(i, values)
+            if self.full_rewrite:
+                self._row_ids = [None] * len(self)
+            return
         super().__setitem__(i, v)
 
     def __delitem__(self, i: Any) -> None:
-        self._touch()
+        if isinstance(i, slice):
+            del self._row_ids[i]
+        else:
+            self._row_ids.pop(i)
         super().__delitem__(i)
 
     def __iadd__(self, xs: Any) -> Any:
-        self._touch()
-        return super().__iadd__(xs)
+        values = list(xs)
+        super().__iadd__(values)
+        self._row_ids.extend([None] * len(values))
+        return self
 
     def __imul__(self, n: Any) -> Any:
         self._touch()
-        return super().__imul__(n)
+        super().__imul__(n)
+        self._row_ids = [None] * len(self)
+        return self
 
 
 class SectionMap(dict[str, Any]):
-    """A materialised dict log (`mail_log`, `steered_log`, `turn_error_log`):
-    `{owner: [entry…]}` with the loaded lists as `AppendLog`s. A `dict` in
-    every respect; additionally remembers structural mutation (`pop(owner)`,
-    `box[new] = box.pop(old)`, `setdefault(owner, [])`) in `full_rewrite`.
+    """A dict-log map that loads row values only for the requested owner.
 
-    ⚠ A caller's own object is NEVER swapped for an `AppendLog`: after
-    `lst = []; box.setdefault(nid, lst); lst.append(x)` the append must land,
-    and it would not if `setdefault` had stored a copy. Identity beats
-    journaling here; the compare-on-save in `save_org` does not care which
-    type the value is. (Phase 2 has to solve this before its fast path can
-    trust the journal — recorded in the handover.)"""
+    Owner presence/order is metadata, distinct from ``_snaps`` which holds
+    row baselines only for owners actually loaded. Full-dict operations first
+    materialize the remaining owners so dict-subclass fast paths never omit a
+    virtual owner or expose placeholders. Already-returned mutable lists keep
+    their identity during later bulk materialization.
 
-    full_rewrite: bool = False
+    This is not a coherent-document snapshot: an owner first touched after a
+    commit can be newer than eager ``LazyDoc`` fields. S2 owns that policy;
+    this proxy does not keep a long read transaction open.
 
-    def _touch(self) -> None:
-        self.full_rewrite = True
+    CPython's C JSON encoder short-circuits an empty dict subclass before its
+    overridden ``items()`` runs. A private backing seed prevents that shortcut;
+    every observable mapping path removes it before returning real values.
+    """
 
-    def __setitem__(self, k: str, v: Any) -> None:
-        self._touch()
-        super().__setitem__(k, v)
+    _SEED = object()
 
-    def __delitem__(self, k: str) -> None:
-        self._touch()
-        super().__delitem__(k)
+    _STATE_DEFAULTS: dict[str, Callable[[], Any]] = {
+        "_slug": str, "_sect": str, "_order": list, "_present": set,
+        "_dropped": set, "_added": set, "_replaced": set, "_snaps": dict,
+    }
 
-    def pop(self, k: str, *default: Any) -> Any:   # pyright: ignore[reportIncompatibleMethodOverride]
-        self._touch()
-        return super().pop(k, *default)
+    def __getattr__(self, name: str) -> Any:
+        factory = SectionMap._STATE_DEFAULTS.get(name)
+        if factory is None:
+            raise AttributeError(name)
+        value = factory()
+        object.__setattr__(self, name, value)
+        return value
+
+    def __init__(self, slug: str = "", sect: str = "",
+                 owners: Iterable[str] = ()) -> None:
+        super().__init__()
+        self._slug = slug
+        self._sect = sect
+        self._order = list(owners)
+        self._present = set(self._order)
+        self._dropped: set[str] = set()
+        self._added: set[str] = set()
+        self._replaced: set[str] = set()
+        self._snaps: dict[str, list[tuple[int, str]]] = {}
+        # Never observable: it exists only to make CPython's C JSON encoder
+        # call our items() instead of short-circuiting an empty backing dict.
+        dict.__setitem__(self, cast(str, self._SEED), None)
+
+    def _load_owner(self, owner: str) -> AppendLog:
+        with _POOL.acquire(self._slug) as conn:
+            rows = [(cast(int, seq), cast(str, val)) for seq, val in conn.execute(
+                "SELECT seq, val FROM log_d WHERE sect=? AND owner=? ORDER BY seq",
+                (self._sect, owner))]
+        log = AppendLog((json.loads(val) for _, val in rows), rows=rows)
+        self._snaps[owner] = log._rows
+        dict.__setitem__(self, owner, log)
+        return log
+
+    def __missing__(self, owner: str) -> Any:
+        if owner in self._present and owner not in self._dropped:
+            return self._load_owner(owner)
+        raise KeyError(owner)
+
+    def materialize_all(self) -> None:
+        missing = [o for o in self._order
+                   if o in self._present and not dict.__contains__(self, o)]
+        if missing:
+            wanted = set(missing)
+            grouped: dict[str, list[tuple[int, str]]] = {o: [] for o in missing}
+            with _POOL.acquire(self._slug) as conn:
+                conn.execute("BEGIN")
+                try:
+                    for owner, seq, val in conn.execute(
+                            "SELECT owner, seq, val FROM log_d "
+                            "WHERE sect=? ORDER BY seq", (self._sect,)):
+                        owner = cast(str, owner)
+                        if owner in wanted:
+                            grouped[owner].append((cast(int, seq), cast(str, val)))
+                finally:
+                    conn.execute("COMMIT")
+            for owner in missing:
+                rows = grouped[owner]
+                log = AppendLog((json.loads(val) for _, val in rows), rows=rows)
+                self._snaps[owner] = log._rows
+                dict.__setitem__(self, owner, log)
+        expected = [o for o in self._order if o in self._present]
+        if list(dict.keys(self)) != expected:
+            values = {o: dict.__getitem__(self, o) for o in expected}
+            dict.clear(self)
+            for owner in expected:
+                dict.__setitem__(self, owner, values[owner])
+
+    def _unmaterialized(self) -> set[str]:
+        return {o for o in self._present if not dict.__contains__(self, o)}
+
+    def __contains__(self, owner: object) -> bool:
+        return (dict.__contains__(self, owner)
+                or (isinstance(owner, str) and owner in self._present
+                    and owner not in self._dropped))
+
+    def get(self, owner: str, default: Any = None) -> Any:  # pyright: ignore[reportIncompatibleMethodOverride]
+        try:
+            return self[owner]
+        except KeyError:
+            return default
+
+    def __setitem__(self, owner: str, value: Any) -> None:
+        if owner not in self._present:
+            self._order.append(owner)
+            self._added.add(owner)
+        self._present.add(owner)
+        self._dropped.discard(owner)
+        self._replaced.add(owner)
+        dict.__setitem__(self, owner, value)
+
+    def __delitem__(self, owner: str) -> None:
+        if owner not in self:
+            raise KeyError(owner)
+        if dict.__contains__(self, owner):
+            dict.__delitem__(self, owner)
+        self._present.discard(owner)
+        self._dropped.add(owner)
+        self._replaced.discard(owner)
+        self._order = [o for o in self._order if o != owner]
+
+    def pop(self, owner: str, *default: Any) -> Any:  # pyright: ignore[reportIncompatibleMethodOverride]
+        if len(default) > 1:
+            raise TypeError(
+                f"pop expected at most 2 arguments, got {len(default) + 1}")
+        if owner in self:
+            value = self[owner]
+            del self[owner]
+            return value
+        if default:
+            return default[0]
+        raise KeyError(owner)
 
     def popitem(self) -> tuple[str, Any]:
-        self._touch()
-        return super().popitem()
+        if not self._order:
+            raise KeyError("popitem(): dictionary is empty")
+        owner = self._order[-1]
+        return owner, self.pop(owner)
 
     def clear(self) -> None:
-        self._touch()
-        super().clear()
+        self._dropped |= self._present
+        self._present.clear()
+        self._added.clear()
+        self._replaced.clear()
+        self._order.clear()
+        dict.clear(self)
 
-    def setdefault(self, k: str, default: Any = None) -> Any:   # pyright: ignore[reportIncompatibleMethodOverride]
-        if k not in self:
-            self._touch()
-        return super().setdefault(k, default)
+    def setdefault(self, owner: str, default: Any = None) -> Any:  # pyright: ignore[reportIncompatibleMethodOverride]
+        if owner in self:
+            return self[owner]
+        self[owner] = default
+        return default
 
-    def update(self, *a: Any, **kw: Any) -> None:   # pyright: ignore[reportIncompatibleMethodOverride]
-        self._touch()
-        super().update(*a, **kw)
+    def update(self, *a: Any, **kw: Any) -> None:  # pyright: ignore[reportIncompatibleMethodOverride]
+        for owner, value in dict(*a, **kw).items():
+            self[owner] = value
+
+    def __ior__(self, other: Any) -> Any:
+        self.update(other)
+        return self
+
+    def keys(self):  # pyright: ignore[reportIncompatibleMethodOverride]
+        self.materialize_all()
+        return dict.keys(self)
+
+    def items(self):  # pyright: ignore[reportIncompatibleMethodOverride]
+        self.materialize_all()
+        return dict.items(self)
+
+    def values(self):  # pyright: ignore[reportIncompatibleMethodOverride]
+        self.materialize_all()
+        return dict.values(self)
+
+    def __iter__(self) -> Iterator[str]:
+        self.materialize_all()
+        return dict.__iter__(self)
+
+    def __reversed__(self) -> Iterator[str]:
+        # Owner order is complete metadata; values need not be read merely to
+        # enumerate keys backwards. Never expose the private backing seed.
+        return reversed([owner for owner in self._order
+                         if owner in self._present])
+
+    def __bool__(self) -> bool:
+        # Production uses `(org.d.get("mail_log") or {}).get(owner)`. Dict's
+        # default truth test calls __len__, which is a whole-map operation for
+        # this proxy. Presence metadata is sufficient and keeps that real
+        # caller idiom owner-selective.
+        return bool(self._present)
+
+    def __len__(self) -> int:
+        self.materialize_all()
+        return dict.__len__(self)
+
+    def __eq__(self, other: object) -> bool:
+        self.materialize_all()
+        return dict.__eq__(self, other)
+
+    def __ne__(self, other: object) -> Any:
+        result = self.__eq__(other)
+        return result if result is NotImplemented else not result
+
+    __hash__ = None  # type: ignore[assignment]
+
+    def __repr__(self) -> str:
+        self.materialize_all()
+        return dict.__repr__(self)
+
+    def copy(self) -> dict[str, Any]:  # pyright: ignore[reportIncompatibleMethodOverride]
+        self.materialize_all()
+        return dict(dict.items(self))
+
+    def __deepcopy__(self, memo: dict[int, Any]) -> "SectionMap":
+        self.materialize_all()
+        other = SectionMap(self._slug, self._sect)
+        memo[id(self)] = other
+        other._order = copy.deepcopy(self._order, memo)
+        other._present = copy.deepcopy(self._present, memo)
+        other._dropped = copy.deepcopy(self._dropped, memo)
+        other._added = copy.deepcopy(self._added, memo)
+        other._replaced = copy.deepcopy(self._replaced, memo)
+        for owner in self._order:
+            if dict.__contains__(self, owner):
+                dict.__setitem__(other, owner,
+                                 copy.deepcopy(dict.__getitem__(self, owner), memo))
+        other._snaps = copy.deepcopy(self._snaps, memo)
+        return other
+
+    def __reduce_ex__(self, protocol: int) -> Any:
+        self.materialize_all()
+        return super().__reduce_ex__(protocol)
 
 
 class LazyDoc(dict[str, Any]):
@@ -1143,6 +1390,10 @@ class LazyDoc(dict[str, Any]):
             if not dict.__contains__(self, k):
                 with contextlib.suppress(KeyError):
                     self[k]
+            if dict.__contains__(self, k):
+                value = dict.__getitem__(self, k)
+                if isinstance(value, SectionMap):
+                    value.materialize_all()
 
     def _unmaterialized(self) -> set[str]:
         return {k for k in self._present
@@ -1266,11 +1517,19 @@ def _meta_set(conn: sqlite3.Connection, key: str, val: str) -> None:
                  "ON CONFLICT(key) DO UPDATE SET val=excluded.val", (key, val))
 
 
-def _owners_of(conn: sqlite3.Connection, sect: str) -> list[str]:
-    """Owner order for a dict log: the recorded list, then any owner that has
-    rows but is (somehow) not in it, in first-row order."""
+def _owners_of(conn: sqlite3.Connection, sect: str, *,
+               include_orphans: bool = True) -> list[str]:
+    """Owner order for a dict log.
+
+    Canonical databases record it in metadata. Hot lazy loads trust that
+    transactionally-maintained row and do not scan other owners merely to
+    enumerate them. Eager export/migration reconstruction also appends any
+    orphaned owner rows defensively.
+    """
     raw = _meta_get(conn, _META_OWNERS + sect)
     owners: list[str] = cast("list[str]", json.loads(raw)) if raw else []
+    if raw is not None and not include_orphans:
+        return owners
     seen = set(owners)
     for (o,) in conn.execute(
             "SELECT owner FROM log_d WHERE sect=? GROUP BY owner ORDER BY MIN(seq)",
@@ -1282,23 +1541,37 @@ def _owners_of(conn: sqlite3.Connection, sect: str) -> list[str]:
 
 
 def _read_dict_log(conn: sqlite3.Connection, sect: str
-                   ) -> tuple[dict[str, list[str]], SectionMap]:
-    """(per-owner row strings, the parsed SectionMap) for one dict log."""
-    strs: dict[str, list[str]] = {o: [] for o in _owners_of(conn, sect)}
-    for owner, val in conn.execute(
-            "SELECT owner, val FROM log_d WHERE sect=? ORDER BY seq", (sect,)):
-        strs.setdefault(cast(str, owner), []).append(cast(str, val))
-    out = SectionMap()
-    for o, lst in strs.items():
-        dict.__setitem__(out, o, AppendLog(json.loads(s) for s in lst))
-    return strs, out
+                   ) -> tuple[dict[str, list[tuple[int, str]]], SectionMap]:
+    """Fully reconstruct one dict log on ``conn``.
+
+    Hot LazyDoc reads do not call this: they create a metadata-only
+    ``SectionMap`` in ``_load_section`` and select one owner on demand.
+    Migration verification/export need the complete value and use this path.
+    """
+    owners = _owners_of(conn, sect)
+    snaps: dict[str, list[tuple[int, str]]] = {o: [] for o in owners}
+    for owner, seq, val in conn.execute(
+            "SELECT owner, seq, val FROM log_d WHERE sect=? ORDER BY seq", (sect,)):
+        snaps.setdefault(cast(str, owner), []).append(
+            (cast(int, seq), cast(str, val)))
+    out = SectionMap("", sect, owners)
+    for owner in owners:
+        rows = snaps[owner]
+        log = AppendLog((json.loads(val) for _, val in rows), rows=rows)
+        out._snaps[owner] = log._rows
+        dict.__setitem__(out, owner, log)
+    # This is the eager reconstruction path used by export/migration.  Drop
+    # SectionMap's private JSON-encoder seed before returning a plain-looking
+    # fully materialized mapping.
+    out.materialize_all()
+    return snaps, out
 
 
 def _read_list_log(conn: sqlite3.Connection, sect: str
-                   ) -> tuple[list[str], AppendLog]:
-    strs = [cast(str, v) for (v,) in conn.execute(
-        "SELECT val FROM log_l WHERE sect=? ORDER BY seq", (sect,))]
-    return strs, AppendLog(json.loads(s) for s in strs)
+                   ) -> tuple[list[tuple[int, str]], AppendLog]:
+    rows = [(cast(int, seq), cast(str, val)) for seq, val in conn.execute(
+        "SELECT seq, val FROM log_l WHERE sect=? ORDER BY seq", (sect,))]
+    return rows, AppendLog((json.loads(val) for _, val in rows), rows=rows)
 
 
 def _load_section(slug: str, sect: str, snap_logs: dict[str, Any]) -> Any:
@@ -1312,11 +1585,14 @@ def _load_section(slug: str, sect: str, snap_logs: dict[str, Any]) -> Any:
             snap_logs[sect] = cast(str, row[0])
             return json.loads(cast(str, row[0]))
         if sect in DICT_LOGS:
-            strs_d, sm = _read_dict_log(conn, sect)
-            snap_logs[sect] = strs_d
+            # Owner names/order are cheap metadata. Row baselines remain
+            # empty until SectionMap loads a particular owner.
+            sm = SectionMap(
+                slug, sect, _owners_of(conn, sect, include_orphans=False))
+            snap_logs[sect] = sm._snaps
             return sm
-        strs_l, al = _read_list_log(conn, sect)
-        snap_logs[sect] = strs_l
+        rows_l, al = _read_list_log(conn, sect)
+        snap_logs[sect] = rows_l
         return al
 
 
@@ -1441,46 +1717,145 @@ _UPSERT_DOC = ("INSERT INTO doc(key,val) VALUES(?,?) "
                "ON CONFLICT(key) DO UPDATE SET val=excluded.val")
 
 
+def _delete_log_seqs(conn: sqlite3.Connection, table: str,
+                     seqs: Iterable[int]) -> None:
+    ids = list(seqs)
+    if not ids:
+        return
+    marks = ",".join("?" for _ in ids)
+    conn.execute(f"DELETE FROM {table} WHERE seq IN ({marks})", ids)
+
+
+def _write_log_rows(conn: sqlite3.Connection, table: str,
+                    scope_sql: str, scope_args: tuple[Any, ...],
+                    insert_sql: str, insert_prefix: tuple[Any, ...],
+                    cur: list[Any], snap: list[tuple[int, str]] | None,
+                    *, incremental: AppendLog | None = None
+                    ) -> list[tuple[int, str]]:
+    """Reconcile a single ordered log while retaining proven row identities.
+
+    ``AppendLog._row_ids`` follows list mutations, including deletion among
+    duplicated equal values. Existing ids must stay increasing and any new
+    ``None`` ids must be a suffix; otherwise order cannot be represented by
+    AUTOINCREMENT seq and this owner/section takes the safe full-rewrite path.
+    Returned baselines are adopted only after the surrounding transaction
+    commits, never while rollback is still possible.
+    """
+    strs = [_dumps(entry) for entry in cur]
+    old = list(snap or [])
+    old_by_id = {seq: val for seq, val in old}
+
+    ids: list[int | None] | None = None
+    if incremental is not None and not incremental.full_rewrite \
+            and len(incremental._row_ids) == len(cur):
+        candidate = list(incremental._row_ids)
+        kept = [seq for seq in candidate if seq is not None]
+        first_new = next((i for i, seq in enumerate(candidate) if seq is None), len(candidate))
+        if (kept == sorted(kept) and len(kept) == len(set(kept))
+                and all(seq in old_by_id for seq in kept)
+                and all(seq is None for seq in candidate[first_new:])):
+            ids = candidate
+
+    if snap is not None and ids is not None:
+        kept_ids = {cast(int, seq) for seq in ids if seq is not None}
+        _delete_log_seqs(conn, table, (seq for seq, _ in old if seq not in kept_ids))
+        result: list[tuple[int, str]] = []
+        for entry, val, seq in zip(cur, strs, ids):
+            if seq is None:
+                cursor = conn.execute(insert_sql, (*insert_prefix, _at_of(entry), val))
+                result.append((cast(int, cursor.lastrowid), val))
+            else:
+                if old_by_id[seq] != val:
+                    conn.execute(f"UPDATE {table} SET at=?, val=? WHERE seq=?",
+                                 (_at_of(entry), val, seq))
+                result.append((seq, val))
+        return result
+
+    # A plain list replacement, migration, reordering, or unprovable journal
+    # falls back to an exact replacement of this bounded scope.
+    if snap is not None and [val for _, val in old] == strs:
+        return old
+    conn.execute(f"DELETE FROM {table} WHERE {scope_sql}", scope_args)
+    result = []
+    for entry, val in zip(cur, strs):
+        cursor = conn.execute(insert_sql, (*insert_prefix, _at_of(entry), val))
+        result.append((cast(int, cursor.lastrowid), val))
+    return result
+
+
 def _write_dict_log(conn: sqlite3.Connection, sect: str, cur: dict[str, Any],
-                    snap: dict[str, list[str]] | None) -> dict[str, list[str]]:
-    """Reconcile one dict log. `snap is None` means "assume nothing about the
-    rows" (a plain-dict save, or the migration): every owner is rewritten.
-    Otherwise an owner is rewritten iff its row strings differ. Returns the
-    new snapshot."""
-    new_snap: dict[str, list[str]] = {}
-    if snap is None:
+                    snap: dict[str, list[tuple[int, str]]] | None
+                    ) -> dict[str, list[tuple[int, str]]]:
+    """Reconcile loaded owners without touching unloaded owners."""
+    if not isinstance(cur, SectionMap) or snap is None:
+        # Plain-dict save/migration/full section replacement: exact whole
+        # section reconciliation, as before.
         conn.execute("DELETE FROM log_d WHERE sect=?", (sect,))
-    for owner, lst in cur.items():
-        if not isinstance(lst, list):
-            raise LedgerError(f"{sect}[{owner!r}] must be a list, not {type(lst).__name__}")
-        entries = cast("list[Any]", lst)
-        strs = [_dumps(e) for e in entries]
-        new_snap[owner] = strs
-        if snap is not None and snap.get(owner) == strs:
+        new_snap: dict[str, list[tuple[int, str]]] = {}
+        for owner, value in cur.items():
+            if not isinstance(value, list):
+                raise LedgerError(
+                    f"{sect}[{owner!r}] must be a list, not {type(value).__name__}")
+            entries = cast("list[Any]", value)
+            new_snap[owner] = _write_log_rows(
+                conn, "log_d", "sect=? AND owner=?", (sect, owner),
+                "INSERT INTO log_d(sect, owner, at, val) VALUES(?,?,?,?)",
+                (sect, owner), entries, None)
+        _meta_set(conn, _META_OWNERS + sect, _dumps(list(cur.keys())))
+        return new_snap
+
+    new_snap = {owner: list(rows) for owner, rows in snap.items()
+                if owner in cur._present}
+    for owner in cur._dropped:
+        conn.execute("DELETE FROM log_d WHERE sect=? AND owner=?", (sect, owner))
+        new_snap.pop(owner, None)
+    # Walk loaded/new real owners in document order.  Raw dict iteration would
+    # also see SectionMap's private JSON-encoder seed until a whole-map
+    # operation has materialized the section.  Unloaded owner metadata is
+    # deliberately not a row baseline and must remain untouched.
+    for owner in cur._order:
+        if not dict.__contains__(cur, owner):
             continue
-        if snap is not None:
-            conn.execute("DELETE FROM log_d WHERE sect=? AND owner=?", (sect, owner))
-        conn.executemany("INSERT INTO log_d(sect, owner, at, val) VALUES(?,?,?,?)",
-                         [(sect, owner, _at_of(e), s) for e, s in zip(entries, strs)])
-    if snap is not None:
-        for owner in snap:
-            if owner not in cur:
-                conn.execute("DELETE FROM log_d WHERE sect=? AND owner=?", (sect, owner))
-    owners = _dumps(list(cur.keys()))
-    if snap is None or _dumps(list(snap.keys())) != owners:
-        _meta_set(conn, _META_OWNERS + sect, owners)
+        value = dict.__getitem__(cur, owner)
+        if not isinstance(value, list):
+            raise LedgerError(
+                f"{sect}[{owner!r}] must be a list, not {type(value).__name__}")
+        entries = cast("list[Any]", value)
+        if owner in cur._replaced:
+            baseline = None
+        else:
+            baseline = snap.get(owner)
+        new_snap[owner] = _write_log_rows(
+            conn, "log_d", "sect=? AND owner=?", (sect, owner),
+            "INSERT INTO log_d(sect, owner, at, val) VALUES(?,?,?,?)",
+            (sect, owner), entries, baseline,
+            incremental=value if isinstance(value, AppendLog)
+            and owner not in cur._replaced else None)
+    raw_old_owners = _meta_get(conn, _META_OWNERS + sect)
+    # Owner names are a separate journal from loaded row snapshots. Merge
+    # only this proxy's structural changes into the currently committed
+    # order, so a stale document cannot erase a concurrently added owner or
+    # resurrect one concurrently deleted but never touched here.
+    if cur._dropped or cur._added:
+        committed_order = cast(
+            "list[str]", json.loads(raw_old_owners)) if raw_old_owners else []
+        merged_order = [owner for owner in committed_order
+                        if owner not in cur._dropped and owner not in cur._added]
+        merged_order.extend(owner for owner in cur._order
+                            if owner in cur._added and owner in cur._present)
+        owners = _dumps(merged_order)
+        if raw_old_owners != owners:
+            _meta_set(conn, _META_OWNERS + sect, owners)
     return new_snap
 
 
 def _write_list_log(conn: sqlite3.Connection, sect: str, cur: list[Any],
-                    snap: list[str] | None) -> list[str]:
-    strs = [_dumps(e) for e in cur]
-    if snap is not None and snap == strs:
-        return strs
-    conn.execute("DELETE FROM log_l WHERE sect=?", (sect,))
-    conn.executemany("INSERT INTO log_l(sect, at, val) VALUES(?,?,?)",
-                     [(sect, _at_of(e), s) for e, s in zip(cur, strs)])
-    return strs
+                    snap: list[tuple[int, str]] | None
+                    ) -> list[tuple[int, str]]:
+    return _write_log_rows(
+        conn, "log_l", "sect=?", (sect,),
+        "INSERT INTO log_l(sect, at, val) VALUES(?,?,?)", (sect,), cur, snap,
+        incremental=cur if isinstance(cur, AppendLog) else None)
 
 
 def _drop_lazy_rows(conn: sqlite3.Connection, sect: str) -> None:
@@ -1506,9 +1881,9 @@ def _write_lazy(conn: sqlite3.Connection, sect: str, value: Any,
             snap = None
         if expect_dict:
             return _write_dict_log(conn, sect, cast("dict[str, Any]", value),
-                                   cast("dict[str, list[str]] | None", snap))
+                                   cast("dict[str, list[tuple[int, str]]] | None", snap))
         return _write_list_log(conn, sect, cast("list[Any]", value),
-                               cast("list[str] | None", snap))
+                               cast("list[tuple[int, str]] | None", snap))
     # wrong shape → blob; make sure no rows linger
     _drop_lazy_rows(conn, sect)
     s = _dumps(value)
@@ -1658,19 +2033,47 @@ def _save_sqlite(org: Org) -> None:
         for k in unmat:
             if k in lazy._snap_logs:
                 new_logs[k] = lazy._snap_logs[k]
+        for k in LAZY_SECTIONS:
+            if not dict.__contains__(d, k):
+                continue
+            value = dict.__getitem__(d, k)
+            committed = new_logs.get(k)
+            if isinstance(value, SectionMap) and isinstance(committed, dict):
+                value._snaps = committed
+                for owner in value._order:
+                    if not dict.__contains__(value, owner):
+                        continue
+                    log = dict.__getitem__(value, owner)
+                    owner_rows = committed.get(owner)
+                    if isinstance(log, AppendLog) and owner_rows is not None:
+                        log._adopt(owner_rows)
+                value._dropped.clear()
+                value._added.clear()
+                value._replaced.clear()
+            elif isinstance(value, AppendLog) and isinstance(committed, list):
+                value._adopt(committed)
         lazy._snap_doc = new_doc
         lazy._snap_nodes = new_nodes
         lazy._snap_logs = {k: v for k, v in new_logs.items() if v is not None}
+        # Preserve the shared snapshot identity between each SectionMap and
+        # its LazyDoc. deepcopy relies on this remaining one graph.
+        for k in DICT_LOGS:
+            if dict.__contains__(d, k):
+                value = dict.__getitem__(d, k)
+                if isinstance(value, SectionMap):
+                    lazy._snap_logs[k] = value._snaps
         lazy._key_order = order
         lazy._present = ({k for k in LAZY_SECTIONS
                           if dict.__contains__(d, k) and k not in new_doc} | unmat)
         lazy._dropped = set()
         for k in LAZY_SECTIONS:
             v = dict.get(d, k)
-            if isinstance(v, (AppendLog, SectionMap)):
+            if isinstance(v, AppendLog):
                 v.full_rewrite = False
-                if isinstance(v, SectionMap):
-                    for lst in dict.values(v):
+            elif isinstance(v, SectionMap):
+                for owner in v._order:
+                    if dict.__contains__(v, owner):
+                        lst = dict.__getitem__(v, owner)
                         if isinstance(lst, AppendLog):
                             lst.full_rewrite = False
 

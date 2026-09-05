@@ -477,7 +477,7 @@ def s2_roundtrip() -> None:
 
 # ===========================================================================
 def s3_save() -> None:
-    if not section("3. Save semantics — compare-on-save, Phase 1 full rewrite"):
+    if not section("3. Save semantics — compare-on-save and row reconciliation"):
         return
     slug = "saves"
     o = fresh(slug, nodes=4)
@@ -542,23 +542,27 @@ def s3_save() -> None:
            "events rows rewritten although unchanged: ")
     check("a materialised-but-unchanged log section is not rewritten", log_untouched_unchanged)
 
-    def log_append_full_rewrite() -> None:
+    def log_append_incremental() -> None:
         o = store.load_org(slug)
         # ⚠ plant the section rather than inherit it: `node_add_remove_order`
         # above hires, and `hire` appends an event of its own
         o.d["events"] = [{"at": f"t{i}", "i": i} for i in range(20)]
         store.save_org(o)
         o = store.load_org(slug)
+        before = rows(slug, "SELECT seq FROM log_l WHERE sect='events' ORDER BY seq")
         o.d["events"].append({"at": "t99", "i": 99})
-        assert o.d["events"].full_rewrite is True, "AppendLog journal flag not set"
+        assert o.d["events"].full_rewrite is False, "append wrongly forced a rewrite"
         store.save_org(o)
         assert o.d["events"].full_rewrite is False, "flag not reset after save"
+        eq(rows(slug, "SELECT seq FROM log_l WHERE sect='events' ORDER BY seq")[:-1],
+           before, "append replaced existing row identities: ")
         got = [json.loads(r[0]) for r in rows(slug, "SELECT val FROM log_l WHERE sect='events' ORDER BY seq")]
         eq(len(got), 21)
         eq(got[-1], {"at": "t99", "i": 99})
         eq(got[0], {"at": "t0", "i": 0})
         eq(store.load_org(slug).d["events"], got, "reload: ")
-    check("append to a list log: persisted (Phase 1 rewrites the section), order intact", log_append_full_rewrite)
+    check("append to a list log inserts one tail row and keeps existing identities",
+          log_append_incremental)
 
     def in_place_entry_edit() -> None:
         o = store.load_org(slug)
@@ -1786,10 +1790,384 @@ def s11_desync_guard() -> None:
 
 
 # ===========================================================================
+def s12_selective_incremental_logs() -> None:
+    if not section("12. S1 owner-selective reads and incremental log writes"):
+        return
+
+    def owner_read_does_not_parse_another_owner() -> None:
+        slug = "s1-owner-read"
+        o = fresh(slug)
+        o.d["mail_log"] = {
+            "wanted": [{"id": "good", "at": "t"}],
+            "poison": [{"id": "will-be-corrupted", "at": "t"}],
+        }
+        store.save_org(o)
+        # A corrupt unrelated row is a behavioural materialisation detector:
+        # the wanted owner must remain readable, while the positive control
+        # proves that touching poison really does parse and reject that row.
+        with sqlite3.connect(store._db_path(slug)) as c:
+            c.execute("UPDATE log_d SET val='{not-json' "
+                      "WHERE sect='mail_log' AND owner='poison'")
+        traced: list[str] = []
+        with store._POOL.acquire(slug) as c:
+            c.set_trace_callback(traced.append)
+        try:
+            o = store.load_org(slug)
+            log = (o.d.get("mail_log") or {}).get("wanted")
+            box = dict.__getitem__(o.d, "mail_log")
+            eq(log, [{"id": "good", "at": "t"}])
+        finally:
+            with store._POOL.acquire(slug) as c:
+                c.set_trace_callback(None)
+        eq(set(box._snaps), {"wanted"}, "loaded row baselines: ")
+        owner_selects = [q for q in traced if
+                         "SELECT seq, val FROM log_d" in q and
+                         "owner='wanted'" in q]
+        eq(len(owner_selects), 1, "selective owner query count: ")
+        if any("GROUP BY owner" in q or
+               "SELECT owner, seq, val FROM log_d" in q for q in traced):
+            raise AssertionError(f"hot read scanned unrelated owners: {traced}")
+        try:
+            box["poison"]
+            raise AssertionError("positive control: corrupt owner parsed successfully")
+        except json.JSONDecodeError:
+            pass
+    check("reading one dict-log owner does not parse another; corrupt-owner control fires",
+          owner_read_does_not_parse_another_owner)
+
+    def append_is_one_row_write() -> None:
+        slug = "s1-one-append"
+        o = fresh(slug)
+        o.d["mail_log"] = {
+            "owner": [{"id": str(i), "at": f"t{i}"} for i in range(62)],
+            "other": [{"id": f"x{i}", "at": f"x{i}"} for i in range(62)],
+        }
+        store.save_org(o)
+        o = store.load_org(slug)
+        log = o.d["mail_log"]["owner"]
+        with store._POOL.acquire(slug) as c:
+            before = c.total_changes
+        log.append({"id": "63", "at": "t63"})
+        store.save_org(o)
+        with store._POOL.acquire(slug) as c:
+            delta = c.total_changes - before
+        eq(delta, 1, "SQL rows changed by one append: ")
+        eq(len(rows(slug, "SELECT seq FROM log_d WHERE sect='mail_log' AND owner='owner'")), 63)
+        eq(store.load_org(slug).d["mail_log"]["owner"][-1]["id"], "63")
+    check("one append to a 62-row owner changes exactly one SQL row", append_is_one_row_write)
+
+    def sectionmap_dict_contract() -> None:
+        slug = "s1-map-contract"
+        o = fresh(slug)
+        o.d["mail_log"] = {
+            "a": [{"id": "a0"}], "b": [{"id": "b0"}], "empty": []}
+        store.save_org(o)
+        expected = {"a": [{"id": "a0"}], "b": [{"id": "b0"}], "empty": []}
+
+        box = store.load_org(slug).d["mail_log"]
+        eq(box._snaps, {}, "fresh SectionMap unexpectedly loaded rows: ")
+        eq(bool(box), True, "nonempty metadata-only truthiness: ")
+        eq(box._snaps, {}, "truthiness unexpectedly loaded rows: ")
+        eq(list(reversed(box)), ["empty", "b", "a"],
+           "reverse owner order/private seed: ")
+        eq(box._snaps, {}, "reverse iteration unexpectedly loaded rows: ")
+        eq(json.loads(json.dumps(box)), expected,
+           "zero-loaded json.dumps C encoder: ")
+        eq(set(json.loads(json.dumps(box))), set(expected),
+           "private backing state leaked through json.dumps: ")
+        box = store.load_org(slug).d["mail_log"]
+        held_a = box["a"]
+        eq(set(box._snaps), {"a"}, "one-owner load materialized others: ")
+        eq(json.loads(json.dumps(box)), expected,
+           "one-loaded json.dumps C encoder: ")
+        eq(box["a"] is held_a, True,
+           "json.dumps replaced an already-returned owner list: ")
+        box = store.load_org(slug).d["mail_log"]
+        eq(json.loads(json.dumps({"nested": box})), {"nested": expected},
+           "nested json.dumps C encoder: ")
+        box = store.load_org(slug).d["mail_log"]
+        eq(json.loads(json.dumps(box, indent=2)), expected,
+           "zero-loaded json.dumps Python encoder: ")
+        empty_slug = "s1-map-contract-empty"
+        empty_org = fresh(empty_slug)
+        empty_org.d["mail_log"] = {}
+        store.save_org(empty_org)
+        empty_box = store.load_org(empty_slug).d["mail_log"]
+        eq(bool(empty_box), False, "empty metadata-only truthiness: ")
+        eq(list(reversed(empty_box)), [], "empty SectionMap reverse: ")
+        eq(json.loads(json.dumps(empty_box)), {}, "empty SectionMap json.dumps: ")
+
+        standalone = store.SectionMap()
+        standalone["a"] = [1]
+        eq(list(reversed(standalone)), ["a"],
+           "standalone SectionMap reverse leaked private backing state: ")
+
+        box = store.load_org(slug).d["mail_log"]
+        eq(dict(box), expected, "dict(box): ")
+        box = store.load_org(slug).d["mail_log"]
+        eq({**box}, expected, "{**box}: ")
+        box = store.load_org(slug).d["mail_log"]
+        eq(json.loads(json.dumps(box or {})), expected, "json.dumps(box or {}): ")
+        box = store.load_org(slug).d["mail_log"]
+        eq(box == expected, True, "box == dict: ")
+        eq(expected == box, True, "dict == box: ")
+        box = store.load_org(slug).d["mail_log"]
+        original_a = box["a"]
+        box.materialize_all()
+        eq(box["a"] is original_a, True, "bulk load replaced a returned owner list: ")
+
+        mutated = store.load_org(slug)
+        box = mutated.d["mail_log"]
+        caller: list[dict] = []
+        eq(box.setdefault("new", caller) is caller, True, "setdefault identity: ")
+        caller.append({"id": "new0"})
+        box.update({"updated": [{"id": "u0"}]})
+        box |= {"merged": [{"id": "m0"}]}
+        owner, value = box.popitem()
+        eq((owner, value), ("merged", [{"id": "m0"}]), "popitem order/value: ")
+        try:
+            box.pop("absent", None, None)
+            raise AssertionError("SectionMap.pop accepted too many defaults")
+        except TypeError:
+            pass
+        store.save_org(mutated)
+        got = store.load_org(slug).d["mail_log"]
+        eq(got["new"], [{"id": "new0"}])
+        eq(got["updated"], [{"id": "u0"}])
+
+        original = store.load_org(slug)
+        original_ids = [r[0] for r in rows(
+            slug, "SELECT seq FROM log_d WHERE sect='mail_log' AND owner='a' ORDER BY seq")]
+        clone = copy.deepcopy(original.d["mail_log"])
+        eq(clone["a"]._row_ids, original_ids,
+           "deepcopy duplicated or discarded row identities: ")
+        clone["a"].append({"id": "a1"})
+        original.d["mail_log"] = clone
+        store.save_org(original)
+        eq([x["id"] for x in store.load_org(slug).d["mail_log"]["a"]],
+           ["a0", "a1"], "deepcopy independently saveable: ")
+        after_clone_ids = [r[0] for r in rows(
+            slug, "SELECT seq FROM log_d WHERE sect='mail_log' AND owner='a' ORDER BY seq")]
+        eq(after_clone_ids[:-1], original_ids,
+           "deepcopy save rewrote proven existing rows: ")
+        back = pickle.loads(pickle.dumps(store.load_org(slug).d["mail_log"]))
+        eq(dict(back), dict(store.load_org(slug).d["mail_log"]), "pickle content: ")
+    check("SectionMap preserves dict/spread/equality/update/ior/popitem/identity/deepcopy/pickle behavior",
+          sectionmap_dict_contract)
+
+    def unbacked_appendlog_is_an_ordinary_list() -> None:
+        log = store.AppendLog([1])
+        eq(log._row_ids, [None], "unbacked initial row journal: ")
+        eq(log.pop(), 1, "AppendLog([1]).pop(): ")
+        eq(log, [])
+        log = store.AppendLog([1, 2])
+        del log[0]
+        eq(log, [2])
+        eq(log._row_ids, [None])
+    check("an unbacked AppendLog preserves ordinary pop/delete list semantics",
+          unbacked_appendlog_is_an_ordinary_list)
+
+    def edits_deletes_truncation_and_replacement() -> None:
+        slug = "s1-mutations"
+        o = fresh(slug)
+        o.d["notice_log"] = [{"id": str(i), "at": f"t{i}"} for i in range(8)]
+        store.save_org(o)
+
+        o = store.load_org(slug)
+        log = o.d["notice_log"]
+        before_ids = [r[0] for r in rows(slug,
+            "SELECT seq FROM log_l WHERE sect='notice_log' ORDER BY seq")]
+        log[3]["edited"] = True                 # invisible to list journaling
+        store.save_org(o)
+        after_ids = [r[0] for r in rows(slug,
+            "SELECT seq FROM log_l WHERE sect='notice_log' ORDER BY seq")]
+        eq(after_ids, before_ids, "an entry edit replaced row identities: ")
+        eq(store.load_org(slug).d["notice_log"][3]["edited"], True)
+
+        o = store.load_org(slug)
+        log = o.d["notice_log"]
+        removed_seq = before_ids[4]
+        del log[4]                                # one middle row
+        store.save_org(o)
+        ids = [r[0] for r in rows(slug,
+            "SELECT seq FROM log_l WHERE sect='notice_log' ORDER BY seq")]
+        eq(ids, [x for x in before_ids if x != removed_seq], "middle delete row ids: ")
+
+        o = store.load_org(slug)
+        log = o.d["notice_log"]
+        surviving = [r[0] for r in rows(slug,
+            "SELECT seq FROM log_l WHERE sect='notice_log' ORDER BY seq")][-3:]
+        log.append({"id": "new", "at": "tn"})
+        del log[:-4]                              # cap idiom: head delete + append
+        store.save_org(o)
+        ids = [r[0] for r in rows(slug,
+            "SELECT seq FROM log_l WHERE sect='notice_log' ORDER BY seq")]
+        eq(ids[:3], surviving, "head truncation rewrote survivors: ")
+        eq(store.load_org(slug).d["notice_log"],
+           [{"id": "5", "at": "t5"}, {"id": "6", "at": "t6"},
+            {"id": "7", "at": "t7"}, {"id": "new", "at": "tn"}])
+
+        o = store.load_org(slug)
+        o.d["notice_log"] = [{"id": "replacement", "at": "r"}]
+        store.save_org(o)
+        eq(store.load_org(slug).d["notice_log"], [{"id": "replacement", "at": "r"}])
+    check("mutable entries, middle delete, head truncation+append, and full replacement stay exact",
+          edits_deletes_truncation_and_replacement)
+
+    def seq_identity_duplicates_at_and_second_save() -> None:
+        slug = "s1-seq-identity"
+        o = fresh(slug)
+        o.d["notice_log"] = [
+            {"same": True, "at": "old"},
+            {"same": True, "at": "old"},
+            {"same": True, "at": "old"},
+        ]
+        store.save_org(o)
+        seqs = [r[0] for r in rows(slug,
+            "SELECT seq FROM log_l WHERE sect='notice_log' ORDER BY seq")]
+        o = store.load_org(slug)
+        log = o.d["notice_log"]
+        del log[1]
+        log[0]["at"] = "new"
+        store.save_org(o)
+        got = rows(slug,
+            "SELECT seq, at, val FROM log_l WHERE sect='notice_log' ORDER BY seq")
+        eq([r[0] for r in got], [seqs[0], seqs[2]],
+           "duplicate-value deletion lost row identity: ")
+        eq(got[0][1], "new", "indexed at column was not updated: ")
+        eq(json.loads(got[0][2])["at"], "new", "JSON at disagrees: ")
+        log.append({"id": "first append", "at": "a1"})
+        store.save_org(o)
+        first = [r[0] for r in rows(slug,
+            "SELECT seq FROM log_l WHERE sect='notice_log' ORDER BY seq")]
+        log.append({"id": "second append", "at": "a2"})
+        store.save_org(o)
+        second = [r[0] for r in rows(slug,
+            "SELECT seq FROM log_l WHERE sect='notice_log' ORDER BY seq")]
+        eq(second[:-1], first, "second save rewrote the first save: ")
+
+        o = store.load_org(slug)
+        rev = o.d["notice_log"]
+        before = list(rev)
+        rev.reverse()                            # explicitly safe fallback
+        store.save_org(o)
+        eq(store.load_org(slug).d["notice_log"], list(reversed(before)))
+    check("seq identity survives duplicates/deletion; at updates; second save and reorder are exact",
+          seq_identity_duplicates_at_and_second_save)
+
+    def failed_commit_does_not_adopt_rows() -> None:
+        slug = "s1-rollback-retry"
+        o = fresh(slug)
+        o.d["events"] = [{"id": "old", "at": "t0"}]
+        store.save_org(o)
+        o = store.load_org(slug)
+        log = o.d["events"]
+        old_rows = list(log._rows)
+        log.append({"id": "retry", "at": "t1"})
+        real = store._write_doc
+
+        def fail_after_writes(conn, d, lazy):
+            result = real(conn, d, lazy)
+            raise RuntimeError("fail after row writes")
+
+        store._write_doc = fail_after_writes  # pyright: ignore[reportAttributeAccessIssue, reportAssignmentType]
+        try:
+            try:
+                store.save_org(o)
+                raise AssertionError("injected post-write failure did not fire")
+            except RuntimeError as exc:
+                eq(str(exc), "fail after row writes")
+        finally:
+            store._write_doc = real  # pyright: ignore[reportAttributeAccessIssue]
+        eq(log._rows, old_rows, "rolled-back rows were adopted as committed: ")
+        eq(log._row_ids, [old_rows[0][0], None], "pending append identity was lost: ")
+        eq(store.load_org(slug).d["events"], [{"id": "old", "at": "t0"}],
+           "rolled-back append leaked: ")
+        store.save_org(o)
+        eq([x["id"] for x in store.load_org(slug).d["events"]], ["old", "retry"])
+    check("a failed commit keeps old row baselines and the retry persists the pending append",
+          failed_commit_does_not_adopt_rows)
+
+    def owner_metadata_and_loaded_snapshots_stay_distinct() -> None:
+        slug = "s1-owner-order"
+        o = fresh(slug)
+        o.d["mail_log"] = {
+            "a": [{"id": "a"}], "b": [{"id": "b"}], "empty": []}
+        store.save_org(o)
+        o = store.load_org(slug)
+        box = o.d["mail_log"]
+        moved = box.pop("a")
+        box["renamed"] = moved
+        del box["b"]
+        empty2: list[dict] = []
+        box.setdefault("new-empty", empty2)
+        store.save_org(o)
+        got = store.load_org(slug).d["mail_log"]
+        eq(list(got), ["empty", "renamed", "new-empty"], "owner order: ")
+        eq(got["empty"], [])
+        eq(got["renamed"], [{"id": "a"}])
+        eq(got["new-empty"], [])
+        eq(json.loads(rows(slug,
+            "SELECT val FROM meta WHERE key='owners:mail_log'")[0][0]),
+           ["empty", "renamed", "new-empty"])
+    check("owner add/delete/rename/empty rows reload in exact insertion order",
+          owner_metadata_and_loaded_snapshots_stay_distinct)
+
+    def stale_docs_preserve_unloaded_other_owner() -> None:
+        slug = "s1-stale-docs"
+        o = fresh(slug)
+        o.d["mail_log"] = {"a": [{"id": "a0"}], "b": [{"id": "b0"}]}
+        store.save_org(o)
+        first = store.load_org(slug)
+        first.d["mail_log"]["a"].append({"id": "a1"})
+        second = store.load_org(slug)
+        second.d["mail_log"]["b"].append({"id": "b1"})
+        second.d["mail_log"]["c"] = [{"id": "c0"}]
+        store.save_org(second)
+        store.save_org(first)
+        got = store.load_org(slug).d["mail_log"]
+        eq([x["id"] for x in got["a"]], ["a0", "a1"])
+        eq([x["id"] for x in got["b"]], ["b0", "b1"],
+           "saving an older doc overwrote an owner it never loaded: ")
+        eq(got["c"], [{"id": "c0"}],
+           "saving an older doc erased a concurrently added owner: ")
+
+        stale = store.load_org(slug)
+        stale.d["mail_log"]["a"].append({"id": "a2"})
+        structural = store.load_org(slug)
+        del structural.d["mail_log"]["b"]
+        structural.d["mail_log"]["d"] = [{"id": "d0"}]
+        store.save_org(structural)
+        store.save_org(stale)
+        got = store.load_org(slug).d["mail_log"]
+        eq(list(got), ["a", "c", "d"], "concurrent owner order: ")
+        eq(got["d"], [{"id": "d0"}],
+           "saving an older doc erased a second concurrent addition: ")
+        eq("b" in got, False,
+           "saving an older doc resurrected a concurrently deleted owner: ")
+
+        stale_structural = store.load_org(slug)
+        stale_box = stale_structural.d["mail_log"]
+        concurrent_structural = store.load_org(slug)
+        concurrent_structural.d["mail_log"]["e"] = [{"id": "e0"}]
+        store.save_org(concurrent_structural)
+        stale_box["f"] = [{"id": "f0"}]
+        store.save_org(stale_structural)
+        got = store.load_org(slug).d["mail_log"]
+        eq(list(got), ["a", "c", "d", "e", "f"],
+           "stale structural save did not merge current owner metadata: ")
+        eq(got["e"], [{"id": "e0"}])
+        eq(got["f"], [{"id": "f0"}])
+    check("a stale document preserves concurrently changed/added/deleted unloaded owners",
+          stale_docs_preserve_unloaded_other_owner)
+
+
+# ===========================================================================
 if __name__ == "__main__":
     for fn in (s1_lazydoc, s2_roundtrip, s3_save, s4_migration_mechanics,
                s5_delete_restore, s6_revision_hooks, s7_rollback, s8_export,
-               s9_review, s10_empty_is_not_absent, s11_desync_guard):
+               s9_review, s10_empty_is_not_absent, s11_desync_guard,
+               s12_selective_incremental_logs):
         try:
             fn()
         except BaseException:                              # noqa: BLE001
