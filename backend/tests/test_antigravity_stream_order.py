@@ -996,6 +996,21 @@ def main() -> int:
                           sum(1 for v in res_.values() for r in v
                               if UNAVAILABLE in r["body"])), ([1], 1),
                          f"uses {uses_} results {res_}"))
+        # THE SAME EXIT, the other durable mark. MEASURED on 68a720a
+        # (probe_agy_lifecycle.py, evidence/agy-lifecycle-before-68a720a.json):
+        # with `close()` raising, `proc_live` stayed True and
+        # `proc_lifecycle_owner` still held the finished turn, so the node's
+        # card kept a live-process dot while the node sat idle — it only
+        # cleared when that node next ran a turn. §18 is the control that
+        # proves the flag is really raised in the first place, without which
+        # "cleared" here would be free.
+        st_ = supervisor.state(slug_, nid_)
+        check(f"the process-lifecycle record is cleared even when "
+              f"{patch_name}() raises on the way out ({label})",
+              lambda: eq((bool(st_.get("proc_live")),
+                          st_.get("proc_lifecycle_owner")), (False, None),
+                         f"proc_live {st_.get('proc_live')!r} owner "
+                         f"{type(st_.get('proc_lifecycle_owner')).__name__}"))
 
     closes_despite("waitraise", "wait", "the turn thread never reaches the "
                                         "code after the try")
@@ -1434,6 +1449,75 @@ def main() -> int:
                       dict(env_t["jstate"]["text_open"])),
                      ([("agy-seamtoken-2", "late text")], {}),
                      f"{committed_t}"))
+
+    print("§18 the process-lifecycle record: raised for the turn that owns "
+          "the process, cleared when that turn ends")
+    # THE CONTROL FOR §11's two clear-on-a-raising-exit checks. Without it
+    # "cleared" is free — a node that never raised the flag reads False too.
+    # It also pins WHOSE liveness the record describes: the owner token must
+    # be this turn object, not merely something truthy.
+    scenario("toolevents", "agy-life-normal")
+    slug18, nid18 = mkorg("lifecycle")
+    during18: dict = {}
+    _orig_wait18 = antigravityrun.AntigravityTurn.wait
+
+    def watching_wait(self, *a, **kw):
+        st_ = supervisor.state(slug18, nid18)
+        during18["live"] = bool(st_.get("proc_live"))
+        during18["owner_is_this_turn"] = (
+            st_.get("proc_lifecycle_owner") is self)
+        return _orig_wait18(self, *a, **kw)
+
+    antigravityrun.AntigravityTurn.wait = watching_wait
+    try:
+        run_turn(slug18, nid18, "an ordinary turn")
+    finally:
+        antigravityrun.AntigravityTurn.wait = _orig_wait18
+    st18 = supervisor.state(slug18, nid18)
+    check("positive control: while the turn runs, the process is recorded "
+          "LIVE and owned by that very turn",
+          lambda: eq((during18.get("live"),
+                      during18.get("owner_is_this_turn")), (True, True),
+                     f"{during18}"))
+    check("and an ordinary turn's end clears both the flag and the owner",
+          lambda: eq((bool(st18.get("proc_live")),
+                      st18.get("proc_lifecycle_owner")), (False, None),
+                     f"proc_live {st18.get('proc_live')!r} owner "
+                     f"{type(st18.get('proc_lifecycle_owner')).__name__}"))
+
+    # …and the ORDER inside that teardown is itself a claim: the tool sweep is
+    # innermost because the MCP retirement beside it can raise. Planting that
+    # raise is the only way to tell a real nesting from a comment about one.
+    scenario("interruptmidtool", "agy-life-mcpraise")
+    slug18b, nid18b = mkorg("lifecyclemcp")
+    _orig_end = supervisor._mcp_tool_count_end
+    fired18: dict = {}
+
+    def boom_end(*a, **kw):
+        fired18["raised"] = True
+        raise RuntimeError("planted _mcp_tool_count_end failure")
+
+    supervisor._mcp_tool_count_end = boom_end
+    try:
+        run_turn(slug18b, nid18b, "raise from the MCP retirement")
+    except Exception:                                            # noqa: BLE001
+        pass
+    finally:
+        supervisor._mcp_tool_count_end = _orig_end
+    uses18, res18 = tool_rows(slug18b)
+    st18b = supervisor.state(slug18b, nid18b)
+    check("anti-vacuity: the planted MCP-retirement failure really fired with "
+          "a tool open",
+          lambda: eq((fired18.get("raised"), len(uses18)), (True, 1),
+                     f"fired {fired18}, tool_use rows {uses18}"))
+    check("a raise from the MCP retirement still leaves the open tool closed "
+          "and the lifecycle record cleared",
+          lambda: eq((sorted(len(v) for v in res18.values()),
+                      sum(1 for v in res18.values() for r in v
+                          if UNAVAILABLE in r["body"]),
+                      bool(st18b.get("proc_live"))), ([1], 1, False),
+                     f"uses {uses18} results {res18} "
+                     f"proc_live {st18b.get('proc_live')!r}"))
 
     print()
     for label, tb in FAIL:

@@ -13055,10 +13055,26 @@ def _antigravity_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
                                 why="the turn ended before the steer pump's "
                                     "next poll")
             turn.close()
-            warmpool._set_proc_lifecycle(slug, nid, live=False, owner=turn)
-            _mcp_tool_count_end(slug, nid, turn)
         finally:
-            _commit_unfinished_tools()
+            # ⚠ THE LIFECYCLE CLEAR IS A `finally`, not a statement after
+            # `turn.close()`. Close is named above as an exit that can raise,
+            # and with the clear behind it a raising teardown left `proc_live`
+            # True and `proc_lifecycle_owner` still pointing at the finished
+            # turn — a live-process indicator on an idle node, standing until
+            # that node next ran. Both calls are owner-guarded and safe to
+            # repeat, so making them unconditional costs nothing; the MCP
+            # retirement still only fires on an OBSERVED process exit, so a
+            # close that failed to kill keeps its generation owned rather
+            # than publishing an exit that did not happen.
+            #
+            # `_commit_unfinished_tools` stays INNERMOST: the D4 row invariant
+            # outranks the indicator, and `_mcp_tool_count_end` can raise.
+            try:
+                warmpool._set_proc_lifecycle(slug, nid, live=False,
+                                             owner=turn)
+                _mcp_tool_count_end(slug, nid, turn)
+            finally:
+                _commit_unfinished_tools()
     with dlock:
         draft_timer = dstate.get("timer")
         if draft_timer:
