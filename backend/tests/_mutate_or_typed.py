@@ -50,7 +50,7 @@ R.MUTANTS[:] = [
      SUP,
      "                        elif not sub:\n                            # a REAL top-level assistant message: any API",
      "                        elif False:\n                            # a REAL top-level assistant message: any API",
-     "coherence · synthetic 402 → real output → nonempty result is a COMPLETED turn"),
+     "coherence · synthetic 402 → real output → EMPTY result is a COMPLETED turn (the clearing)"),
 
     ("the synthetic slot is FIRST-wins (a stale 401 parks a 402 as auth)",
      SUP,

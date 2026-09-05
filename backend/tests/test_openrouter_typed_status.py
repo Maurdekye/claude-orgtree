@@ -35,7 +35,7 @@ WHAT WAS MEASURED, AND WHAT THIS RIG REPRODUCES
     §6  coherence: an error retried past does not classify; the latest one does
     §7  the Claude lane is byte-for-byte unchanged (controls)
 
-Anti-vacuity: `tests/_mutate_or_typed.py` breaks the shipped code five ways
+Anti-vacuity: `tests/_mutate_or_typed.py` breaks the shipped code ten ways
 and requires a NAMED check here to go red for each.
 """
 from __future__ import annotations
@@ -629,6 +629,29 @@ def _sec_coherence_body() -> None:
         assert supervisor.state(slug, nid).get("turns_run") == 1, "the recovered turn was not booked"
     check("coherence · synthetic 402 → real output → nonempty result is a COMPLETED turn", _retried_past)
 
+    # ⚠ THE CHECK ABOVE CANNOT SEE THE CLEARING. Its result text is NONEMPTY,
+    # and the clean-empty-result adoption never fires on a nonempty result —
+    # so the turn stays completed whether or not the retried-past status was
+    # retired. Removing `_clear_synthetic_status` left it green (mutation
+    # round, 2026-09-05). THIS one is the same sequence ending on the EMPTY
+    # clean result the adoption actually reads: the only thing standing
+    # between it and a balance freeze is the clearing.
+    slug, boss, nid = team()
+    steps(synthetic(REAL_402, 402), assistant("recovered, and said nothing more"),
+          clean_result(""))
+    raised = run(slug, nid)
+
+    def _retried_past_empty():
+        assert raised is None, (
+            f"a turn that produced a REAL assistant message after a 402 and "
+            f"then ended on an empty clean result was failed on the "
+            f"retried-past status: {raised}")
+        n = node(slug, nid)
+        assert not n.get("frozen"), n.get("frozen")
+        assert not rows(slug, nid), rows(slug, nid)
+        assert supervisor.state(slug, nid).get("turns_run") == 1, "the recovered turn was not booked"
+    check("coherence · synthetic 402 → real output → EMPTY result is a COMPLETED turn (the clearing)", _retried_past_empty)
+
     slug, boss, nid = team()
     steps(assistant("partial work"), synthetic(REAL_402, 402), clean_result(""))
     raised = run(slug, nid)
@@ -719,9 +742,12 @@ def main() -> None:
         sec_claude_unchanged()
     finally:
         openrouter.set_key("")
-    print(f"\n{PASS} ok, {len(FAIL)} failed")
     for label, tb in FAIL:
         print(f"\n--- {label}\n{tb}")
+    if FAIL:
+        print(f"\n{len(FAIL)} of {PASS + len(FAIL)} checks FAILED")
+    else:
+        print(f"\nALL {PASS} CHECKS PASS")
     try:
         shutil.rmtree(H._TMP, ignore_errors=True)
     except OSError:
