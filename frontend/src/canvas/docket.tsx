@@ -843,7 +843,16 @@ export function DocketModal({ slug, toast, close, tree, onFocusAgent,
         clicks to itself. */}
     {docView && (
       <DocReader slug={slug} docId={docView} toast={toast}
-        close={() => setDocView(null)} />
+        close={() => setDocView(null)}
+        // ⚠ THE READER CLOSES BEFORE ITS REFERENCE OPENS, except when the
+        // destination IS another document. The item and the agent live
+        // BEHIND this overlay, so following one without closing would look
+        // like the click did nothing — the same reason every other
+        // cross-panel jump in this file closes what it is leaving.
+        refs={{ world: refWorld, onOpen: (r) => {
+          if (r.ref.kind !== 'doc') setDocView(null)
+          openRef(r)
+        } }} />
     )}
     </>
   )

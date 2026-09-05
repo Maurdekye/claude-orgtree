@@ -439,3 +439,105 @@ test('§9 the badge counts documents from CURRENTLY HIRED agents only', () => {
       ] }),
   ]), 3, 'a deep live report is counted; a deep retired one is not')
 })
+
+// -------------------------------------- §13-§15: references inside a document
+//
+// A presented plan is prose somebody wrote, so it can name an item, an agent
+// or the mail it answers. The body is rendered markdown, so this is the DOM
+// pass (refmd), and what these three checks are really about is WHO answers:
+// the panel for a document it lists, the shell for everything else, and
+// nobody at all when no route was supplied.
+
+const refsFor = (opened: unknown[]) => ({
+  world: {
+    org: 'org1',
+    agents: new Map([['agent1', 'agent1']]),
+    handles: new Set<'item' | 'agent' | 'doc' | 'mail'>(
+      ['item', 'agent', 'doc', 'mail']),
+  },
+  onOpen: (r: { ref: { kind: string; id: string } }) =>
+    opened.push(`${r.ref.kind}:${r.ref.id}`),
+})
+
+uiTest('§13 a reference in a document body is a control, and one the shell '
+  + 'owns is handed up', async (mount) => {
+    mockDocs([row({ id: 'd1' })],
+      { d1: 'as agreed in @item:org1/the-plan and @agent:org1/agent1' })
+    const opened: unknown[] = []
+    const { el } = await mount(
+      <DocGalleryModal slug="org1" toast={noop} close={noop}
+        refs={refsFor(opened)} />)
+    await flush()
+    await inAct(() => (rows(el)[0] as HTMLElement).click())
+    await flush()
+    const chips = [...(pane(el)?.querySelectorAll('[data-ref-token]') ?? [])]
+    assert.equal(chips.length, 2, 'both references were decided')
+    await inAct(() => (chips[0] as HTMLElement).click())
+    await flush()
+    assert.deepEqual(opened, ['item:the-plan'])
+  })
+
+uiTest('§14 a document referencing a document THIS PANEL LISTS opens it here',
+  async (mount) => {
+    // ⚠ this panel IS the document reader. Handing a document off to the
+    // shell's reader would close the list the reader is part of, to show the
+    // same kind of thing somewhere else.
+    // ⚠ THE TARGET BELONGS TO A RETIRED AGENT, so it is NOT in the filtered
+    // list this panel is showing. A panel that asked what it is SHOWING
+    // rather than what it HOLDS would fall through to the shell here, and
+    // with two live documents that mistake is invisible.
+    mockDocs([row({ id: 'd1', title: 'the plan' }),
+      row({ id: 'd2', title: 'the appendix', node: 'agent2',
+        node_state: 'archived' })],
+    { d1: 'the numbers are in @doc:org1/d2', d2: 'appendix body' })
+    const opened: unknown[] = []
+    const { el } = await mount(
+      <DocGalleryModal slug="org1" toast={noop} close={noop}
+        refs={refsFor(opened)} />)
+    await flush()
+    await inAct(() => (rows(el)[0] as HTMLElement).click())
+    await flush()
+    await inAct(() => (pane(el)!
+      .querySelector('[data-ref-token]') as HTMLElement).click())
+    await flush()
+    assert.match(pane(el)?.textContent ?? '', /appendix body/,
+      'the referenced document opened in this panel')
+    assert.deepEqual(opened, [],
+      'and the shell was not asked to open it somewhere else')
+    // and the row was REVEALED: selecting a row the filter hides would look
+    // like the reference did nothing to the list
+    assert.ok(showRetired(el).checked, 'the retired group was turned on')
+    assert.ok(rows(el).some((r) => (r.textContent ?? '').includes('appendix')),
+      'the referenced document is now a visible row')
+  })
+
+uiTest('§15 CONTROL — a document this panel does NOT list falls through to '
+  + 'the shell, which is the one that has the exact fetch',
+async (mount) => {
+  mockDocs([row({ id: 'd1' })], { d1: 'see @doc:org1/d9 for the rest' })
+  const opened: unknown[] = []
+  const { el } = await mount(
+    <DocGalleryModal slug="org1" toast={noop} close={noop}
+      refs={refsFor(opened)} />)
+  await flush()
+  await inAct(() => (rows(el)[0] as HTMLElement).click())
+  await flush()
+  await inAct(() => (pane(el)!
+    .querySelector('[data-ref-token]') as HTMLElement).click())
+  await flush()
+  assert.deepEqual(opened, ['doc:d9'],
+    'a document this panel does not hold is the shell\'s to answer for')
+})
+
+uiTest('§15b CONTROL — with no refs at all a document body is plain prose',
+  async (mount) => {
+    mockDocs([row({ id: 'd1' })], { d1: 'as agreed in @item:org1/the-plan' })
+    const { el } = await mount(gallery())
+    await flush()
+    await inAct(() => (rows(el)[0] as HTMLElement).click())
+    await flush()
+    assert.equal(pane(el)?.querySelector('[data-ref-token]'), null,
+      'a panel with nowhere to send anybody draws no controls')
+    assert.match(pane(el)?.textContent ?? '', /@item:org1\/the-plan/,
+      'and the token is still readable as written')
+  })

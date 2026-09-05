@@ -20,13 +20,15 @@
 // The BODY half is shared for real: `useDoc` + `dismissDoc` from docs.tsx
 // are the same fetch and the same dismiss the overlay reader uses.
 
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import type { DocRow } from '../api'
 import { fileBase, getDocuments, sendMessage } from '../api'
 import { addPending } from '../convo'
 import type { ToastFn } from '../types'
 import { CloseIcon, DocIcon } from '../icons'
 import { dismissDoc, useDoc } from './docs'
+import { RefMdBody } from './refmd'
+import type { RefWorld, ResolvedRef } from './reflinks'
 import { openLightboxIfEligibleImage } from './lightbox'
 import { fmtFull } from '../timefmt'
 import { MailReplyBox } from './mail'
@@ -65,12 +67,18 @@ const PANE_STATE_WHY: Record<DocRow['node_state'], string | null> =
 
 const isHired = (r: DocRow) => r.node_state === 'live'
 
-export function DocGalleryModal({ slug, toast, close, onFocusAgent, onReply }: {
+export function DocGalleryModal({ slug, toast, close, onFocusAgent, onReply,
+  refs }: {
   slug: string
   toast: ToastFn
   close: () => void
   onFocusAgent?: (agentId: string) => void
   onReply?: (node: string, text: string) => Promise<unknown> | void
+  /** canonical references written inside a document, and where they go. A
+   *  presented plan names items, agents and the mail it answers; this panel
+   *  can open none of those itself, so the shell supplies the routes and
+   *  what it does not supply reads as "not opened from here". */
+  refs?: { world: RefWorld; onOpen?: (r: ResolvedRef) => void }
 }) {
   useEsc(close)
   const data = usePolled(() => getDocuments(slug), [slug])
@@ -94,6 +102,28 @@ export function DocGalleryModal({ slug, toast, close, onFocusAgent, onReply }: {
   // narrows it, so an index would silently address a different document
   const [selId, setSelId] = useState<string | null>(null)
   const cur = rows?.find((r) => r.id === selId)
+  // ⚠ A DOCUMENT REFERENCING A DOCUMENT STAYS HERE. This panel IS the
+  // document reader; sending the reader off to the shell's copy would close
+  // the list the reader is part of, to show the same kind of thing somewhere
+  // else. Only a document this panel does not list falls through to the
+  // shell (which has the exact fetch, and reports what it finds).
+  //
+  // ⚠ IT MATCHES AGAINST `all`, NOT `rows`. `rows` is the filtered view, so
+  // a reference to a RETIRED agent's document would fall through whenever the
+  // "show retired" box happened to be unticked — the panel deciding what it
+  // holds by what it is currently showing.
+  const paneRefs = useMemo(() => (refs && {
+    world: refs.world,
+    onOpen: (r: ResolvedRef) => {
+      if (r.ref.kind === 'doc' && (all ?? []).some((d) => d.id === r.ref.id)) {
+        setShowRetired((on) => on || !(all ?? []).some(
+          (d) => d.id === r.ref.id && isHired(d)))
+        setSelId(r.ref.id)
+        return
+      }
+      refs.onOpen?.(r)
+    },
+  }) || undefined, [refs, all])
   return (
     <div className="overlay" onClick={(e) => { e.stopPropagation(); close() }}
       onPointerDown={(e) => e.stopPropagation()}>
@@ -171,7 +201,7 @@ export function DocGalleryModal({ slug, toast, close, onFocusAgent, onReply }: {
                           onDismissed={() => setSelId(null)}
                           close={close}
                           onFocusAgent={onFocusAgent}
-                          onReply={onReply} />
+                          onReply={onReply} refs={paneRefs} />
                       : <div className="dim pad mailer-none">
                           select a document to read it</div>}
                   </div>
@@ -193,7 +223,8 @@ export function DocGalleryModal({ slug, toast, close, onFocusAgent, onReply }: {
  *  Agent name links directly to focus the agent (same as switchboard).
  *  A reply box below the body allows messaging the owning agent directly
  *  (only if not retired). */
-function DocPane({ slug, row, toast, onDismissed, close, onFocusAgent, onReply }: {
+function DocPane({ slug, row, toast, onDismissed, close, onFocusAgent, onReply,
+  refs }: {
   slug: string
   row: DocRow
   toast: ToastFn
@@ -201,6 +232,7 @@ function DocPane({ slug, row, toast, onDismissed, close, onFocusAgent, onReply }
   close: () => void
   onFocusAgent?: (agentId: string) => void
   onReply?: (node: string, text: string) => Promise<unknown> | void
+  refs?: { world: RefWorld; onOpen?: (r: ResolvedRef) => void }
 }) {
   // an evicted row has no body to fetch — say so instead of spending a
   // request to render the 404 the endpoint would answer with
@@ -248,8 +280,9 @@ function DocPane({ slug, row, toast, onDismissed, close, onFocusAgent, onReply }
             {err && <div className="ask-warn">could not load the document: {err}</div>}
             {/* relative image srcs resolve against the PRESENTING node's
                 files — `![](outbox/chart.png)` embeds a figure that agent saved */}
-            {doc && <div className="mailer-body md"
-              dangerouslySetInnerHTML={md(doc.body, fileBase(slug, doc.node))} />}
+            {doc && <RefMdBody className="mailer-body md"
+              html={md(doc.body, fileBase(slug, doc.node))}
+              world={refs?.world} onOpen={refs?.onOpen} />}
             {!doc && !err && <div className="dim pad">loading…</div>}
             {replyable && (
               <MailReplyBox target={row.node}

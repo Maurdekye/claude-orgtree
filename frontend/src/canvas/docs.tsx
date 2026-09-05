@@ -9,6 +9,8 @@ import { useEffect, useState } from 'react'
 import type { ToastFn } from '../types'
 import { dismissDocument, fileBase, getDocument } from '../api'
 import { md } from './shared'
+import { RefMdBody } from './refmd'
+import type { RefWorld, ResolvedRef } from './reflinks'
 import { openLightboxIfEligibleImage } from './lightbox'
 import { CloseIcon, DocIcon } from '../icons'
 import { fmtFull } from '../timefmt'
@@ -82,11 +84,17 @@ export function DocChips({ docs, onOpen }: {
 
 /** the in-page reader: title bar (✕ closes the reader; "dismiss" removes
  *  the card itself), markdown body under the desk's .md styling */
-export function DocReader({ slug, docId, toast, close }: {
+export function DocReader({ slug, docId, toast, close, refs }: {
   slug: string
   docId: string
   toast: ToastFn
   close: () => void
+  /** canonical references (`@item:org/slug`) written INSIDE the document.
+   *  A presented plan is exactly the kind of prose that names an item, an
+   *  agent or the mail it answers, and it is rendered markdown — so this is
+   *  the DOM pass, not the React renderer. Omitted, the tokens are prose:
+   *  a reader with nowhere to send anybody must not draw controls. */
+  refs?: { world: RefWorld; onOpen?: (r: ResolvedRef) => void }
 }) {
   const { doc, err } = useDoc(slug, docId)
   useEffect(() => {
@@ -122,8 +130,9 @@ export function DocReader({ slug, docId, toast, close }: {
         {err && <div className="ask-warn">could not load the document: {err}</div>}
         {/* relative image srcs resolve against the PRESENTING node's files —
             `![](outbox/chart.png)` embeds a figure the agent saved */}
-        {doc && <div className="doc-reader-body md"
-          dangerouslySetInnerHTML={md(doc.body, fileBase(slug, doc.node))} />}
+        {doc && <RefMdBody className="doc-reader-body md"
+          html={md(doc.body, fileBase(slug, doc.node))}
+          world={refs?.world} onOpen={refs?.onOpen} />}
       </div>
     </div>
   )

@@ -380,18 +380,18 @@ const MUTANTS = [
         backdrop handler and close BOTH. As siblings the reader is simply the
         later element at the same z-index, so it paints on top and keeps its
         clicks to itself. */}
-    {docView && (
-      <DocReader slug={slug} docId={docView} toast={toast}
-        close={() => setDocView(null)} />
+    {docView && (`,
+    to: `      </div>
+    {docView && (`,
+    also: {
+      from: `        } }} />
     )}
     </>`,
-    to: `      </div>
-      {docView && (
-        <DocReader slug={slug} docId={docView} toast={toast}
-          close={() => setDocView(null)} />
-      )}
+      to: `        } }} />
+    )}
     </div>
     </>`,
+    },
   },
 ]
 

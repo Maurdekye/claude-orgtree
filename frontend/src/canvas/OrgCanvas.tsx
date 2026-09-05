@@ -23,6 +23,9 @@ import type {
 } from './shared'
 import { Activity, ContextWheel, DeskChat, DestinationBusy, LineagePanel, ProcessLifecycleMark } from './desk'
 import { DocReader } from './docs'
+import { mailRefTarget } from './reflinks'
+import type { RefWorld, ResolvedRef } from './reflinks'
+import type { RefKind } from './workrefs'
 import { NodeInboxModal, OrgInboxModal } from './mail'
 import { NodeConfig, PilePicker, UserConfig, WatchdogPanel } from './modals'
 import { DraftNode, NodeSquare, UserNode } from './cards'
@@ -1240,6 +1243,39 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox, onWorkItem,
   }, [animateTo, focusView, regionOf, setFront, toast])
   const centerRef = useRef<typeof centerOn | null>(null)
   centerRef.current = centerOn
+
+  // ---- canonical references written INSIDE a presented document
+  //
+  // The canvas is the one surface that can reach all four destinations: it
+  // holds the mail router, the document reader and the camera, and the shell
+  // above it owns the docket. So `handles` is full here — except for `item`,
+  // which follows `onWorkItem` the way it does everywhere else, because the
+  // docket is not ours to open if nobody handed us the route.
+  //
+  // ⚠ NO ITEM OR DOCUMENT INDEX. The canvas holds neither list; the docket
+  // states an item it does not have and the reader reports a document it
+  // cannot fetch. Agents and node mailboxes it CAN answer for, from `map`.
+  const docRefs = useMemo(() => {
+    const handles = new Set<RefKind>(['agent', 'doc', 'mail'])
+    if (onWorkItem) handles.add('item')
+    const world: RefWorld = {
+      org: slug,
+      agents: new Map([...map.keys()].map((id) => [id, id])),
+      mail: (r) => (r.box !== 'node' ? 'ready'
+        : map.has(String(r.node ?? '')) ? 'ready' : 'absent'),
+      handles,
+    }
+    return { world, onOpen: (r: ResolvedRef) => {
+      // a document opening another document SWAPS the reader; everything
+      // else lives behind it, so the reader closes first or the click looks
+      // like it did nothing
+      if (r.ref.kind === 'doc') { setDocView(r.ref.id); return }
+      setDocView(null)
+      if (r.ref.kind === 'item') onWorkItem?.(r.ref.id)
+      else if (r.ref.kind === 'agent') centerRef.current?.(r.ref.id)
+      else if (r.ref.kind === 'mail') openMailRef.current?.(mailRefTarget(r.ref))
+    } }
+  }, [slug, map, onWorkItem])
 
   useEffect(() => {
     if (!focusAgent) return
@@ -2749,6 +2785,7 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox, onWorkItem,
       )}
       {docView && (
         <MaybePortal><DocReader slug={slug} docId={docView} toast={toast}
+          refs={docRefs}
           close={() => setDocView(null)} /></MaybePortal>
       )}
       {userCfg && (

@@ -918,6 +918,72 @@ uiTest('§32 a mail reference is opened by the caller that owns a mailbox, and '
       { kind: 'mail', org: 'org1', box: 'node', node: 'agent1', id: 'm7' }])
   })
 
+uiTest('§34 a reference INSIDE the opened document works, and the reader gets '
+  + 'out of the way first', async (mount) => {
+    // ⚠ A DOCUMENT IS PROSE SOMEBODY WROTE, so it names items and agents
+    // too. The item it names lives BEHIND this reader, so following the
+    // reference without closing the reader would look like the click did
+    // nothing at all.
+    mockServer({
+      items: [
+        mkItem({ slug: 'the-source-item',
+          objective: 'the contract is @doc:org1/d1' }),
+        mkItem({ slug: 'the-target-item', title: 'Target' }),
+      ],
+      archived: [], backlogged: [],
+      docs: { d1: { title: 'The contract', node: 'agent1',
+        body: 'superseded by @item:org1/the-target-item last week',
+        at: '2026-09-05T09:00:00.000Z' } },
+    })
+    const el = await mount(modal())
+    await flush()
+    await inAct(() => (rows(el)[0] as HTMLElement).click())
+    await flush()
+    await inAct(() => (el.querySelector(
+      '.docket-desc button.ref-chip.ref-doc') as HTMLElement).click())
+    await flush()
+    const inner = el.querySelector('.doc-reader-body [data-ref-token]')
+    assert.ok(inner, 'the reference in the document body was decided')
+    assert.equal(inner!.tagName, 'BUTTON', 'and it is a control')
+
+    await inAct(() => (inner as HTMLElement).click())
+    await flush()
+    assert.equal(el.querySelector('.doc-reader'), null,
+      'the reader closed rather than covering what it opened')
+    assert.equal(
+      el.querySelector('.docket-pane-sub .docket-slug-text')?.textContent,
+      'the-target-item', 'and the item it named is selected')
+  })
+
+uiTest('§34b CONTROL — a document referencing a DOCUMENT swaps the reader '
+  + 'instead of closing it', async (mount) => {
+    mockServer({
+      items: [mkItem({ slug: 'the-source-item',
+        objective: 'the contract is @doc:org1/d1' })],
+      archived: [], backlogged: [],
+      docs: {
+        d1: { title: 'The contract', node: 'agent1',
+          body: 'the numbers are in @doc:org1/d2',
+          at: '2026-09-05T09:00:00.000Z' },
+        d2: { title: 'The appendix', node: 'agent1', body: 'appendix body',
+          at: '2026-09-05T09:00:00.000Z' },
+      },
+    })
+    const el = await mount(modal())
+    await flush()
+    await inAct(() => (rows(el)[0] as HTMLElement).click())
+    await flush()
+    await inAct(() => (el.querySelector(
+      '.docket-desc button.ref-chip.ref-doc') as HTMLElement).click())
+    await flush()
+    await inAct(() => (el.querySelector(
+      '.doc-reader-body [data-ref-token]') as HTMLElement).click())
+    await flush()
+    assert.ok(el.querySelector('.doc-reader'), 'the reader is still open')
+    assert.match(el.querySelector('.doc-reader-body')?.textContent ?? '',
+      /appendix body/, 'showing the document that was referenced')
+  })
+
 uiTest('§33 a jump that lands on nothing SAYS SO, and a jump that lands does '
   + 'not', async (mount) => {
     // ⚠ THE SILENCE THIS ENDS: an unknown jump was discarded, leaving the

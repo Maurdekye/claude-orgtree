@@ -268,6 +268,22 @@ export default function App() {
   // from the node chips), so this travels the same way the mail pointer does
   // rather than growing a second reader up here.
   const [docJump, setDocJump] = useState<string | null>(null)
+  // the SAME world the user's inbox uses, for the other panel that renders
+  // prose somebody wrote: a presented document. One builder, so the two
+  // cannot answer differently about the same token (see `useShellRefs`).
+  //
+  // ⚠ `doc` IS ROUTED EVEN THOUGH THE GALLERY IS THE DOCUMENT PANEL. It
+  // handles a document it LISTS itself, in place; this route is the fallback
+  // for one it does not, and the reader it opens performs the exact fetch and
+  // reports what it finds.
+  const galleryRefs = useShellRefs(slug ?? '', tree ?? null, {
+    onOpenItem: (item) => {
+      setShowGallery(false); setDocketJump(item); setShowDocket(true)
+    },
+    onFocusAgent: (id) => { setShowGallery(false); setFocusAgent(id) },
+    onOpenDoc: (id) => { setShowGallery(false); setDocJump(id) },
+    onOpenMail: (r) => { setShowGallery(false); setMailJump(mailRefTarget(r)) },
+  })
   // the usage button GLOWS once a lane nears its wall (user feature
   // 2026-08-19), so a freeze stops being the first notice. It rides
   // /api/usage/peek — the CACHE-ONLY readout — because this poll runs whether
@@ -1060,6 +1076,7 @@ export default function App() {
             setShowGallery(false)
             setFocusAgent(id)
           }}
+          refs={galleryRefs}
           close={() => setShowGallery(false)} />
       )}
       {showDocket && slug && tree && (
@@ -1908,6 +1925,70 @@ interface UserAudReq {
   [k: string]: unknown
 }
 
+/** The world a SHELL PANEL judges canonical references against, and the one
+ *  place that decides what happens when one is clicked.
+ *
+ *  Two panels render prose that can carry a reference — the user's inbox and
+ *  the document gallery — and they must answer the same way. Written twice
+ *  they would drift, and the drift would be invisible: one panel quietly
+ *  calling a real item missing looks exactly like a real missing item.
+ *
+ *  ⚠ NO ITEM OR DOCUMENT INDEX, DELIBERATELY. Neither panel holds either
+ *  list, and `undefined` means "do not judge — the destination will". The
+ *  destinations do: the docket states an id it does not have, and the reader
+ *  reports a document it cannot fetch. An EMPTY Map here would report every
+ *  real item mentioned in every mail as missing.
+ *
+ *  ⚠ AGENTS AND NODE MAILBOXES IT MUST ANSWER FOR, from the tree it already
+ *  polls — because the mail router downstream opens nothing and says nothing
+ *  for a node it has never heard of, so a chip offered for one would be a
+ *  control that does nothing. Before the tree arrives the answer is `loading`,
+ *  which is NOT `absent`: an empty tree would call every mailbox imaginary
+ *  for as long as the first fetch takes.
+ *
+ *  ⚠ AND `handles` FOLLOWS THE CALLBACKS. A kind with no route reads "not
+ *  opened from here", which stays true, rather than becoming a live chip that
+ *  swallows the click. */
+function useShellRefs(slug: string, tree: TreePayload | null, routes: {
+  onOpenItem?: (itemSlug: string) => void
+  onFocusAgent?: (agentId: string) => void
+  onOpenDoc?: (docId: string) => void
+  onOpenMail?: (ref: TypedRef) => void
+}) {
+  const { onOpenItem, onFocusAgent, onOpenDoc, onOpenMail } = routes
+  const world = useMemo<RefWorld>(() => {
+    const handles = new Set<RefKind>()
+    if (onOpenItem) handles.add('item')
+    if (onFocusAgent) handles.add('agent')
+    if (onOpenDoc) handles.add('doc')
+    if (onOpenMail) handles.add('mail')
+    const nodes = tree ? flatNodes(tree) : null
+    return {
+      org: slug,
+      agents: nodes
+        ? new Map([...nodes.keys()].map((id) => [id, id]))
+        : 'loading',
+      mail: (r) => (r.box !== 'node' ? 'ready'
+        : !nodes ? 'pending'
+          : nodes.has(String(r.node ?? '')) ? 'ready' : 'absent'),
+      handles,
+    }
+  }, [slug, tree, onOpenItem, onFocusAgent, onOpenDoc, onOpenMail])
+  const onOpen = useCallback((r: ResolvedRef) => {
+    if (r.ref.kind === 'item') onOpenItem?.(r.ref.id)
+    else if (r.ref.kind === 'agent') onFocusAgent?.(r.ref.id)
+    else if (r.ref.kind === 'doc') onOpenDoc?.(r.ref.id)
+    else if (r.ref.kind === 'mail') onOpenMail?.(r.ref)
+  }, [onOpenItem, onFocusAgent, onOpenDoc, onOpenMail])
+  // ⚠ THE CALLERS PASS INLINE ARROWS, so `routes` is a fresh object every
+  // render and this memo recomputes with it. That is deliberate and it is
+  // cheap: what it produces is compared by OUTCOME downstream (refmd's pass
+  // returns having touched nothing when every chip still says the same
+  // thing), so a new world object does not cost a rebuild — and pinning the
+  // identity here would mean stale routes after any state change.
+  return useMemo(() => ({ world, onOpen }), [world, onOpen])
+}
+
 export function InboxPanel({ slug, tree, toast, refresh, close, jumpTo,
   onFocusAgent, onOpenItem, onOpenDoc, onOpenMail }: {
   slug: string
@@ -1928,42 +2009,8 @@ export function InboxPanel({ slug, tree, toast, refresh, close, jumpTo,
   useEsc(close)
   const [folder, setFolder] = useState('inbox')
   const nodes = flatNodes(tree)
-  // ---- canonical references inside a mail body
-  //
-  // ⚠ THIS PANEL HOLDS NO LIST OF ITEMS OR DOCUMENTS, and says so by leaving
-  // both unset: `undefined` means "do not judge — the destination will", and
-  // the destinations do (the docket states an id it does not have; the reader
-  // reports a document it cannot fetch). An empty Map here would call every
-  // real item in every mail missing.
-  //
-  // ⚠ AGENTS AND NODE MAILBOXES IT CAN answer for, from the tree it already
-  // has — and it must, because the router downstream opens nothing and says
-  // nothing for a node it has never heard of.
-  const refWorld = useMemo<RefWorld>(() => {
-    const handles = new Set<RefKind>()
-    if (onOpenItem) handles.add('item')
-    if (onFocusAgent) handles.add('agent')
-    if (onOpenDoc) handles.add('doc')
-    if (onOpenMail) handles.add('mail')
-    return {
-      org: slug,
-      agents: new Map([...nodes.keys()].map((id) => [id, id])),
-      mail: (r) => (r.box !== 'node' ? 'ready'
-        : nodes.has(String(r.node ?? '')) ? 'ready' : 'absent'),
-      handles,
-    }
-    // `nodes` is rebuilt on every render from the polled tree; keying on the
-    // tree itself keeps the world stable between polls that changed nothing
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [slug, tree, onOpenItem, onFocusAgent, onOpenDoc, onOpenMail])
-  const openRef = useCallback((r: ResolvedRef) => {
-    if (r.ref.kind === 'item') onOpenItem?.(r.ref.id)
-    else if (r.ref.kind === 'agent') onFocusAgent?.(r.ref.id)
-    else if (r.ref.kind === 'doc') onOpenDoc?.(r.ref.id)
-    else if (r.ref.kind === 'mail') onOpenMail?.(r.ref)
-  }, [onOpenItem, onFocusAgent, onOpenDoc, onOpenMail])
-  const mailRefs = useMemo(() => ({ world: refWorld, onOpen: openRef }),
-    [refWorld, openRef])
+  const mailRefs = useShellRefs(slug, tree,
+    { onOpenItem, onFocusAgent, onOpenDoc, onOpenMail })
   // G5: mail arrives, and audience requests are raised by agents, while this
   // panel sits open. Polled while mounted rather than fetched once — the same
   // gate as everywhere else: "is anyone looking at this".
