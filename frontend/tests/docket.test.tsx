@@ -1206,7 +1206,14 @@ uiTest('§27 the name is TEXT, in both places, with an id fallback and no copy c
     // minting one on a read, so the UI shows the id instead of inventing a name
     mkItem({ id: 'w2ffffff', slug: null, title: 'Unnamed' }),
   ])
-  const { el } = await mount(docketModal())
+  // ⚠ onFocusAgent IS PASSED HERE ON PURPOSE, because App.tsx always passes it
+  // (App.tsx:1027) and the assertion below is about the agent jump. It used to
+  // be omitted, and the panel rendered the jump button anyway — a button whose
+  // handler was `onFocusAgent?.(…)`, i.e. a control that did nothing. The
+  // shared AgentName renders plain text when there is nowhere to go, so
+  // omitting the prop here would now be testing a shape the product never
+  // renders. The assertion itself is unchanged.
+  const { el } = await mount(docketModal({ onFocusAgent: noop }))
   await flush()
   const [rNamed, rOld] = rows(el)
   assert.equal(rNamed!.querySelector('.l1 .mfrom')?.textContent, 'git-review-workspace')

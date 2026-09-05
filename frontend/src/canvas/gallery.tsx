@@ -32,19 +32,12 @@ import { fmtFull } from '../timefmt'
 import { MailReplyBox } from './mail'
 import { ago, md, TIER_LETTER, tierLabel, useEsc, usePolled } from './shared'
 
-/** the presenting agent's model, as the letter chip every other surface uses
- *  for a tier (user request 2026-09-03: "for each agent entry, show its model
- *  icon card"). Same markup and same `t-<tier>` colour class as the mail
- *  sender chip and the node card, so a model reads the same everywhere.
- *  Nothing renders once the node is gone and the ledger has no tier to give. */
-export function TierChip({ tier }: { tier?: string | null }) {
-  if (!tier) return null
-  return (
-    <span className={'tier t-' + tier} title={tierLabel(tier)}>
-      {TIER_LETTER[tier] ?? tier.slice(0, 1).toUpperCase()}
-    </span>
-  )
-}
+/** the presenting agent's model card. MOVED to canvas/identity.tsx, which is
+ *  now the one place an agent's chip-and-name is drawn; re-exported here so
+ *  every existing importer keeps working and no call site had to change to
+ *  make the move. */
+import { TierChip } from './identity'
+export { TierChip }
 
 /** why a row is secondary, for the tooltip. NOT a badge any more (user,
  *  2026-09-03: "dont put a big 'retired' card in their row; just grey them

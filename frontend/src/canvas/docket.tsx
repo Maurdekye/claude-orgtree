@@ -31,7 +31,7 @@ import {
 } from '../api'
 import { CloseIcon, DocketIcon } from '../icons'
 import { AskCard } from './asks'
-import { TierChip } from './gallery'
+import { AgentName } from './identity'
 import { MailReplyBox } from './mail'
 import { ago, useEsc, usePolled } from './shared'
 import { buildSlugIndex, WorkRefText } from './workrefs'
@@ -154,18 +154,21 @@ function ActorName({ actor, facts, onFocusAgent, close }: {
   if (!actor?.node) return null
   const { fit, tier } = actorFit(actor, facts)
   const why = FIT_WHY[fit]
+  // ⚠ `why` STAYS ON THE WRAPPER, and `tier` is passed through EXACTLY as
+  // actorFit returned it — undefined for a moved or gone actor. AgentName
+  // renders no chip without a tier, so the abstention this panel decided
+  // survives the move into the shared component instead of being back-filled
+  // there. docket.test.tsx §24 is what holds that down.
   return (
     <span className={'docket-actor fit-' + fit} title={why ?? undefined}>
-      {tier && <TierChip tier={tier} />}
-      {/* the ellipsis lives on THIS element, not on the inline-flex wrapper
-          around it: text-overflow does nothing on a flex container, which is
+      {/* the ellipsis lives on the NAME element, not on this inline-flex
+          wrapper: text-overflow does nothing on a flex container, which is
           why the long name used to run under the Dismiss button instead of
-          truncating (Astra review 2026-09-05) */}
-      <button className="cc-name cc-name-jump docket-actor-name"
-        title={`focus ${actor.node}'s desk`}
-        onClick={(e) => { e.stopPropagation(); close?.(); onFocusAgent?.(actor.node) }}>
-        {actor.node}
-      </button>
+          truncating (Astra review 2026-09-05) — hence `nameClass` */}
+      <AgentName id={actor.node} tier={tier} nameClass="docket-actor-name"
+        onFocus={onFocusAgent
+          ? (id) => { close?.(); onFocusAgent(id) }
+          : undefined} />
     </span>
   )
 }
