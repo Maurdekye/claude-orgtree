@@ -36,6 +36,18 @@ export interface MailListProps {
   waitLabel?: ReactNode
   /** custom head-identity renderer; receives the counterparty id + the mail */
   sender?: (id: string, m: MailRow) => ReactNode
+  /** custom LIST-ROW identity renderer, for the one call site whose `sender`
+   *  is a compound line ("@agent as @org → @recipient") that would not fit a
+   *  row.
+   *
+   *  ⚠ IT DEFAULTS TO `sender`, AND THE DIRECTION OF THAT DEFAULT IS THE
+   *  POINT. The row and the reading pane name the same party, so a call site
+   *  that declared its counterparty plain text — the org inbox, whose peers
+   *  came from OUTSIDE this org — gets plain text in the row too, WITHOUT
+   *  having to remember a second prop. Forgetting `rowSender` can only ever
+   *  make the row agree with the pane; it can never make the row resolve an
+   *  identity the pane refused to. */
+  rowSender?: (id: string, m: MailRow) => ReactNode
   outgoing?: boolean
   onRead?: (m: MailRow) => void
   onReply?: (m: MailRow, text: string) => void
@@ -68,9 +80,9 @@ export interface MailListProps {
 
 const MAIL_WINDOW = 40
 
-export function MailList({ pending = [], delivered = [], waitLabel, sender, outgoing,
-  onRead, onReply, onRetract, jumpTo, fileHref, mdBase, renderBody, rowMark, onFocusAgent,
-  tierOf }: MailListProps) {
+export function MailList({ pending = [], delivered = [], waitLabel, sender, rowSender,
+  outgoing, onRead, onReply, onRetract, jumpTo, fileHref, mdBase, renderBody, rowMark,
+  onFocusAgent, tierOf }: MailListProps) {
   // ONE order, by send time, always — never grouped, never re-grouped.
   //
   // Unread used to sort as its own block on top, which meant the list
@@ -128,14 +140,18 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, outg
   const paging = useRef(false)
   useEffect(() => { paging.current = false }, [vis])
   const isAgentId = (id: string) => Boolean(id && !id.startsWith('@') && id !== USER && id !== 'system' && id !== 'SYSTEM')
-  const S: (id: string, m: MailRow) => ReactNode =
-    sender ?? ((id) => {
-      if (id === USER) return <span>@user</span>
-      // an @org / @net address is not an agent in this org: no chip, no jump,
-      // and no identity invented for it
-      if (!isAgentId(id)) return <span>{id}</span>
-      return <AgentName id={id} tier={tierOf?.(id)} onFocus={onFocusAgent} />
-    })
+  const defaultIdentity = (id: string) => {
+    if (id === USER) return <span>@user</span>
+    // an @org / @net address is not an agent in this org: no chip, no jump,
+    // and no identity invented for it
+    if (!isAgentId(id)) return <span>{id}</span>
+    return <AgentName id={id} tier={tierOf?.(id)} onFocus={onFocusAgent} />
+  }
+  const S: (id: string, m: MailRow) => ReactNode = sender ?? defaultIdentity
+  // user ruling 2026-09-05, reiterated: the model chip and the click-to-desk
+  // belong on the sender in the LIST as well as in the reading pane — the row
+  // is the surface you read a mailbox from, and it was the bare name.
+  const R: (id: string, m: MailRow) => ReactNode = rowSender ?? S
   const partyOf = (m: MailRow) => (outgoing ? m.to : m.from)
   const qn = q.trim().toLowerCase()
   const shown = qn
@@ -293,8 +309,13 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, outg
               }
             }}>
             <div className="l1">
+              {/* the row's identity. ⚠ It is a CLICK TARGET inside a row that
+                  is itself a click target (selection): every name renderer
+                  that navigates must stop the bubble, or focusing an agent
+                  would also select — or deselect — the mail you clicked from.
+                  `AgentName` does that itself; `SenderChip` was made to. */}
               <span className="mfrom">
-                {outgoing ? '→ ' : ''}{party(m) === USER ? '@user' : party(m)}
+                {outgoing ? '→ ' : ''}{R(party(m)!, m)}
               </span>
               {m._ask && <span className="askkind">{m.kind ?? 'ask'}</span>}
               {/* the count rides the chip that already said `notice`, so the
@@ -894,6 +915,12 @@ export function OrgInboxModal({ inbox, net, map, slug, toast, close, jumpTo, onF
                     sender={(id) => <b>{id}</b>} />
                 : <MailList delivered={out} outgoing jumpTo={jumpTo}
                     rowMark={glyph}
+                    /* the list row names the RECIPIENT only — the pane's
+                       "@agent as @org → @recipient" line is three identities
+                       and does not belong in a row. Plain text for the same
+                       reason as the inbox side: this recipient is an outside
+                       party, whatever it happens to be called. */
+                    rowSender={(id) => <b>{id}</b>}
                     sender={(id, m) => {
                       const byIsLocalAgent = Boolean(m?._by && map.has(m._by))
                       return (

@@ -41,7 +41,8 @@ import { ConfirmModal } from './modals'
 import { InboxView, RetiredFold } from './mail'
 import { AskCard } from './asks'
 import { deriveProgress, ProgressChip, ProgressView } from './progress'
-import { AgentName } from './identity'
+import { AgentDirectoryProvider, AgentName, useAgentDirectory } from './identity'
+import type { AgentDirectory } from './identity'
 import { isMobile } from '../mobile'
 import { fmtFull, fmtShort, fmtStamp, localizeFreezeUntil } from '../timefmt'
 
@@ -1549,8 +1550,27 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
           .catch((e: Error) => toast([`error: ${e.message}`]))}><CloseIcon fontSize="inherit" /></button>
     </span>
   )
+  // THE DESK'S OWN TREE, handed to the transcript's mail cards.
+  //
+  // Read through refs so the context VALUE is stable: `map` and `onJump` are
+  // rebuilt by the canvas on most renders, and a fresh value here would
+  // re-render every consumer on every render — the exact cost the memo'd,
+  // windowed message list exists to avoid. The refs keep the lookup current
+  // without churning the value.
+  //
+  // ⚠ `onFocus` IS OMITTED, NOT STUBBED, WHEN THERE IS NOWHERE TO GO. A
+  // surface without `onJump` (there are such call sites) must render a name
+  // that does not click, rather than a button that runs an empty function —
+  // a control that looks live and does nothing is worse than no control.
+  const mapRef = useRef(map); mapRef.current = map
+  const jumpRef = useRef(onJump); jumpRef.current = onJump
+  const canJump = Boolean(onJump)
+  const agentDir = useMemo<AgentDirectory>(() => ({
+    resolve: (id: string) => mapRef.current.get(id),
+    onFocus: canJump ? (id: string) => jumpRef.current?.(id) : undefined,
+  }), [canJump])
   const content = (
-    <>
+    <AgentDirectoryProvider value={agentDir}>
       <div className="cc-head">
         <div className="cc-head-top">
         <span className="cc-head-left">
@@ -2204,7 +2224,7 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
           : <button className="cc-send" disabled={!canMail || !text.trim()}
               onClick={send}><ArrowUpIcon fontSize="inherit" /></button>}
       </div>
-    </>
+    </AgentDirectoryProvider>
   )
   // bare: the switchboard hosts many chats inside ONE counter-scaled surface —
   // no overlay wrapper, no second scale (that would double-scale), no
@@ -2558,11 +2578,44 @@ export const splitTurnMail = (text: string | null | undefined) => {
 function TurnMailCard({ mail, slug, nid }: { mail: TurnMail; slug: string; nid: string }) {
   const { rest: body, files } = parseAttachedFiles(mail.body)
   const fb = fileBase(slug, nid)
+  // user ruling 2026-09-05, reiterated: an agent sender wears its model chip
+  // and clicks through to its desk in the INLINE TRANSCRIPT too, not only in
+  // the mailbox. The facts come from the desk's own tree via context — see
+  // AgentDirectory for why context and not a prop through memo'd `Msg`.
+  const dir = useAgentDirectory()
+  // ⚠ WHO IS ELIGIBLE, and every clause is doing work:
+  //  · '@'-prefixed is a SENTINEL, not a name — @user, @system, and every
+  //    outside peer (@mcp:/@org:/@net:, the only three shapes the backend
+  //    ever mints for one). No chip, no jump, nothing inferred.
+  //  · `dir.resolve` must return the agent. A name that does not resolve in
+  //    the tree on screen is not ours, so an outside party spelling itself
+  //    exactly like one of our agents cannot borrow our model chip or a
+  //    route into our tree — the name matching is not the evidence.
+  const agent = mail.from && !mail.from.startsWith('@')
+    ? dir?.resolve(mail.from) : undefined
+  // this card is IN that agent's own desk when it sent the mail to itself
+  // (relationship "yourself"), and the click would then go nowhere — the
+  // destination is the surface you are already on
+  const atDest = mail.from === nid
+  // ⚠ THE CHIP IS THE SENDER'S CURRENT MODEL AND SAYS SO. The envelope
+  // records no generation, so it cannot mean "the model that wrote this" the
+  // way a docket actor line's does — same ruling and the same sentence as a
+  // prose mention (workrefs.tsx). An unknown current tier draws NO chip
+  // rather than a guess; TierChip already refuses a null.
+  const chipWhy = !agent ? undefined
+    : (agent.tier ? `${mail.from} — current model, ${agent.tier}.`
+      : `${mail.from} — current model not known.`)
+    + (atDest ? ' This is its own desk.'
+      : dir?.onFocus ? ' Go to its desk.' : '')
   return (
     <section className={'turn-mail' + (mail.passive ? ' passive' : '')
       + (mail.from === USER ? ' from-user' : '')}>
       <header className="turn-mail-head">
-        <b>{mail.from}</b>
+        {agent
+          ? <AgentName id={mail.from} tier={agent.tier} nameClass="turn-mail-from"
+              why={chipWhy} atDestination={atDest}
+              onFocus={dir?.onFocus ? (id) => dir.onFocus!(id) : undefined} />
+          : <b>{mail.from}</b>}
         <span>{mail.relationship}</span>
         <span>{mail.kind}</span>
         <time>{fmtFull(mail.at)}</time>

@@ -1333,6 +1333,32 @@ button.cc-name:hover {
 .turn-mail-head b { color: var(--ink); font-size: 11.5px; }
 .turn-mail-head span:not(:last-child)::after { content: '·'; margin-left: 7px; color: var(--line); }
 .turn-mail-head time { font-variant-numeric: tabular-nums; }
+/* THE SENDER'S IDENTITY IN A TRANSCRIPT MAIL CARD (user ruling 2026-09-05).
+   The header used to draw a bare `<b>`; it now draws the shared `AgentName`,
+   and these three rules exist so that is a CHIP AND A CLICK — not a restyle.
+
+   ⚠ THE SEPARATOR RULE ABOVE MATCHES ANY SPAN, and both halves of an identity
+   ARE spans (the chip always, the name whenever it does not navigate). Left
+   alone it punctuates between the model card and the name it belongs to:
+   "S · peer-one your peer · …". Suppressed here, so the identity reads as one
+   thing and the metadata that follows keeps its dots. */
+.turn-mail-head .tier::after, .turn-mail-head .cc-name::after { content: none; }
+/* the name gets the header's own `b` back: the switchboard's `.cc-name` is
+   12.5px with `min-width: 6ch` and wrapping turned on, all three wrong inside
+   a one-line metadata strip */
+.turn-mail-head .cc-name {
+  font-family: var(--mono); font-size: 11.5px; font-weight: 700;
+  color: var(--ink); min-width: 0; flex: none;
+  white-space: nowrap; overflow-wrap: normal;
+}
+.turn-mail-head button.cc-name:hover { color: var(--accent); text-decoration: underline; }
+/* …and the chip is smaller than the desk's 16px one: this header is 10.5px,
+   and a 16px chip stands a whole line taller than the words beside it.
+   (`.desk-body .tier` is (0,2,0); this needs three to win, since a mail card
+   is always inside a desk body.) */
+.desk-body .turn-mail-head .tier {
+  width: 14px; height: 14px; font-size: 8.5px; border-radius: 3px;
+}
 .turn-mail-passive { font-style: italic; }
 /* The metadata header is emphatic; the arbitrary agent-authored markdown body
    is not. Its own **bold** remains meaningful and is the only bold it gets. */
@@ -1823,6 +1849,33 @@ button.cc-name:hover {
 }
 .mailrow .l1 .mfrom { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mailrow .l1 .mtime { color: var(--dim); flex-shrink: 0; }
+/* THE SENDER'S IDENTITY IN A LIST ROW (user ruling 2026-09-05, reiterated:
+   the model card and the click-to-desk belong in the LIST, not only in the
+   reading pane). The cell now holds a chip and a name element instead of a
+   text node, so it becomes a flex line — and the ellipsis has to move with
+   it: `text-overflow` on a flex container never reaches a CHILD's text, so
+   each child clips itself and the chip is excused. */
+.mailrow .l1 .mfrom { display: flex; align-items: center; gap: 5px; min-width: 0; }
+.mailrow .l1 .mfrom > * { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.mailrow .l1 .mfrom .tier, .mailrow .l1 .mfrom .sender .tier {
+  /* the row's line is 11px; the 22px default chip (and SenderChip's 16px one)
+     would set the row's height by itself, which is the one thing adding a
+     chip here must not do */
+  width: 14px; height: 14px; font-size: 8.5px; border-radius: 3px;
+  flex: none; overflow: visible;
+}
+/* the name keeps THE ROW's type, not the switchboard button's 12.5px — and
+   `inherit` rather than a literal, so `.mailrow.unread .l1 .mfrom`'s accent
+   and 700 weight still reach it */
+.mailrow .l1 .mfrom .cc-name {
+  font-family: inherit; font-size: inherit; font-weight: inherit;
+  color: inherit; min-width: 0; flex: 0 1 auto; white-space: nowrap;
+  overflow-wrap: normal;
+}
+.mailrow .l1 .mfrom button.cc-name:hover { color: var(--accent); text-decoration: underline; }
+/* SenderChip (the user's own inbox) wraps its name in a `<b>`. That was right
+   in the reading pane and wrong in a row, where bold is what `unread` means. */
+.mailrow .l1 .mfrom .sender b { font-weight: inherit; }
 .mailrow .l2 {
   margin-top: 2px; font-size: 11px; color: var(--dim);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;

@@ -16,6 +16,7 @@
 // ⚠ THE OWN-DESK EXEMPTION IS EXPLICIT AND KEYED ON DESTINATION. `atDestination`
 // is supplied by the surface, never inferred here from the id.
 
+import { createContext, useContext } from 'react'
 import type { MouseEvent as ReactMouseEvent, ReactNode } from 'react'
 import { TIER_LETTER, tierLabel } from './shared'
 
@@ -101,4 +102,35 @@ export function AgentName({
       </button>
     </>
   )
+}
+
+/** What a DEEP surface knows about the agents it names.
+ *
+ *  The transcript's mail cards sit under a `memo`'d row inside a windowed
+ *  list, several components below the only place that holds the tree — so the
+ *  identity facts arrive as context rather than as props threaded through
+ *  `Msg`. That is not a style preference: props on a memo'd row are recreated
+ *  every render and would defeat the memo the windowing exists to protect.
+ *
+ *  ⚠ NO PROVIDER MEANS PLAIN TEXT, and that is the correct outcome, not a
+ *  degraded one. A surface that cannot answer "is this one of OUR agents"
+ *  must not draw a chip or a jump for a name it cannot vouch for. */
+export interface AgentDirectory {
+  /** The agent, or `undefined` when this id is NOT an agent of the tree on
+   *  screen. ⚠ THIS IS THE WHOLE PROVENANCE TEST. A name that does not
+   *  resolve here gets no chip and no navigation, so an outside party that
+   *  spells itself exactly like one of our agents cannot borrow either. */
+  resolve: (id: string) => { tier?: string | null } | undefined
+  /** focus that agent's desk. Omit it and resolved names still wear their
+   *  chip but do not click — the honest state for a read-only surface. */
+  onFocus?: (id: string) => void
+}
+
+const AgentDirectoryCtx = createContext<AgentDirectory | null>(null)
+
+export const AgentDirectoryProvider = AgentDirectoryCtx.Provider
+
+/** null when no surface above supplied one — callers render plain text. */
+export function useAgentDirectory(): AgentDirectory | null {
+  return useContext(AgentDirectoryCtx)
 }

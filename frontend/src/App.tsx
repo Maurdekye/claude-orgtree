@@ -1842,8 +1842,13 @@ export function SenderChip({ id, nodes, onFocusAgent }: {
   )
   if (onFocusAgent && isAgent) {
     return (
+      /* ⚠ stopPropagation is load-bearing since this chip moved into the mail
+         LIST ROW as well as the reading pane: the row's own onClick toggles
+         selection, so without it clicking a sender's name would jump AND
+         select (or, on the open mail, deselect the thing you were reading).
+         `AgentName` stops it for the same reason; the two must not drift. */
       <button className="cc-name cc-name-jump" title={`focus ${id}'s desk`}
-        onClick={() => onFocusAgent(id)}>
+        onClick={(e) => { e.stopPropagation(); onFocusAgent(id) }}>
         {chip}
       </button>
     )
