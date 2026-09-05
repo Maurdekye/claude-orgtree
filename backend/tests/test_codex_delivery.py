@@ -986,7 +986,10 @@ def main() -> int:
                      ("limbo", [], ["X", "A"], "rejected"), "transition"))
     import ast as _ast
     import inspect as _inspect
-    _src = _inspect.getsource(supervisor._codex_leg)
+    # the codex leg body is `_codex_leg_attempt` since the Luna route wrapper
+    # (item 12); `_codex_leg` is the wrapper. Look in whichever holds the pump.
+    _src = _inspect.getsource(getattr(supervisor, "_codex_leg_attempt",
+                                      supervisor._codex_leg))
     _fn = next((n for n in _ast.walk(_ast.parse(_src)) if isinstance(n, _ast.FunctionDef)
                 and n.name == "_late_steer"), None)
     _requeues = [n for n in _ast.walk(_fn) if isinstance(n, _ast.Call)
