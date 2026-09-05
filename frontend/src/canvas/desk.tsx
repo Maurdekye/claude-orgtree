@@ -2150,7 +2150,7 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
       )}
       {view === 'history' && <HistoryView slug={slug} nid={node.id} />}
       {view === 'files' && <FilesView slug={slug} nid={node.id} />}
-      {view === 'progress' && <ProgressView model={progress} />}
+      {view === 'progress' && <ProgressView model={progress} refs={deskRefs} />}
       {/* the mailbox is a name surface too (user request 2026-09-05: the inbox
           was named explicitly). `onJump` is the SAME callback NavChip and the
           header already use here, so no new route is invented — and it is

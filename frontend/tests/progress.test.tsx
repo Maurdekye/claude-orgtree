@@ -586,3 +586,129 @@ test('§4b DeskChat (Codex): a live turn/plan/updated row reaches the SAME panel
   assert.match(view.el.querySelector('.msgs.progress h4')?.textContent ?? '', /Codex/)
   assert.equal(view.el.querySelector('.cc-head-meta .progress-chip')?.textContent, '◐ 1/2')
 })
+
+// ------------------------------------------------ §5 references in the card
+//
+// A checklist item and a status summary are PROSE AN AGENT WROTE, so a
+// canonical reference can appear in either. What makes this worth a section
+// rather than a line: the card renders text NODES, not markdown, so it uses
+// the React reference renderer — and a surface that judges references against
+// nothing would light up every name it sees.
+//
+// ⚠ THE ACTIVITY AND NOTE LINES ARE DELIBERATELY LEFT ALONE. `progress-note`,
+// the subagents note and the activity tail are composed by `deriveProgress`
+// itself — machine sentences about the agent, not text the agent wrote — and
+// linkifying them would invent a reference nobody put there. §5b pins that.
+
+/** the same glyph fixture as `GLYPHS`, with a canonical reference written into
+ *  the items — the shape a real checklist line takes.
+ *
+ *  ⚠ THE IN-PROGRESS ITEM CARRIES ONE ON PURPOSE, and this is not decoration:
+ *  `describeList` quotes the current item into the machine note (`· now: …`),
+ *  so the SAME token appears in text the agent wrote and in text the app
+ *  wrote. Without that, §5b's "the note never linkifies" had nothing to
+ *  linkify and passed for free — the over-linkifying mutant SURVIVED a full
+ *  run before this line was written. */
+const REF_GLYPHS = ['☑ read @item:org/slug-identity',
+  '◐ write @item:org/desk-refs'].join('\n')
+
+const refWorld = (kinds: string[] = ['item', 'agent']) => ({
+  org: 'org',
+  agents: new Map([['peer-one', 'peer-one']]),
+  handles: new Set(kinds),
+} as unknown as Parameters<typeof ProgressView>[0]['refs'] extends undefined
+  ? never : NonNullable<Parameters<typeof ProgressView>[0]['refs']>['world'])
+
+test('§5 a reference in a checklist item and in the reported summary is a control that opens it',
+async () => {
+  const opened: unknown[][] = []
+  const refs = {
+    world: refWorld(),
+    onOpen: (...a: unknown[]) => { opened.push(a) },
+  } as unknown as NonNullable<Parameters<typeof ProgressView>[0]['refs']>
+  const model = deriveProgress(
+    node({ last_status: { status: 'working', summary: 'landing @item:org/sort-selector', at: new Date().toISOString() } }),
+    convo({}, [todoMsg(REF_GLYPHS)]))
+  const v = await mountView(<ProgressView model={model} refs={refs} />, (el) => el)
+  try {
+    const chips = [...v.el.querySelectorAll('.ref-chip')]
+    assert.equal(chips.length, 3,
+      'two checklist items and the summary (found ' + chips.length + ')')
+    assert.deepEqual(chips.map((c) => c.textContent),
+      ['slug-identity', 'desk-refs', 'sort-selector'])
+    // the item text around the reference survives untouched
+    assert.equal(v.el.querySelector('.todo-item .todo-text')?.textContent,
+      'read slug-identity')
+    const { act } = await import('react')
+    await act(async () => { (chips[0] as HTMLButtonElement).click() })
+    assert.equal(opened.length, 1, 'the chip is a real control')
+    assert.equal((opened[0][0] as { ref: { id: string } }).ref.id, 'slug-identity')
+  } finally { await v.unmount() }
+})
+
+test('§5b CONTROL: with no world the same card is plain text, and the machine-written notes never linkify',
+async () => {
+  const model = deriveProgress(
+    node({ last_status: { status: 'working', summary: 'landing @item:org/sort-selector', at: new Date().toISOString() } }),
+    convo({}, [todoMsg(REF_GLYPHS)]))
+  const plain = await mountView(<ProgressView model={model} />, (el) => el)
+  try {
+    assert.equal(plain.el.querySelectorAll('.ref-chip').length, 0,
+      'no world ⇒ no judgement, and no control that would do nothing')
+    // …and the text is still all there, character for character
+    assert.equal(plain.el.querySelector('.todo-item .todo-text')?.textContent,
+      'read @item:org/slug-identity')
+    assert.equal(plain.el.querySelector('.progress-summary')?.textContent,
+      'landing @item:org/sort-selector')
+  } finally { await plain.unmount() }
+  // the control's control: WITH a world the very same mount does linkify, so
+  // the assertions above cannot pass because nothing rendered
+  const refs = { world: refWorld(), onOpen: () => {} } as unknown as
+    NonNullable<Parameters<typeof ProgressView>[0]['refs']>
+  const lit = await mountView(<ProgressView model={model} refs={refs} />, (el) => el)
+  try {
+    assert.equal(lit.el.querySelectorAll('.ref-chip').length, 3)
+    // ⚠ THE ANTI-VACUITY CONTROL FOR THE LINE BELOW: the note really does
+    // contain a token, quoted out of the current checklist item, so "no chips
+    // in the note" is a decision and not an absence of input.
+    const note = lit.el.querySelector('.progress-todo .progress-note')?.textContent ?? ''
+    assert.match(note, /@item:org\/desk-refs/,
+      'the note quotes the current item, so there IS something here to linkify')
+    assert.equal(lit.el.querySelectorAll('.progress-note .ref-chip').length, 0,
+      'deriveProgress writes those lines, not the agent — nothing to point at')
+  } finally { await lit.unmount() }
+})
+
+test('§5c the REAL desk hands the progress card its references', async (t) => {
+  resetConvos()
+  useFakeClock()
+  const server = new FakeServer()
+  installFetch(server)
+  server.busy = true
+  server.userMsg('plan the work')
+  const n = node({ id: 'agent', busy: true, inflight_at: new Date().toISOString(), proc_live: true })
+  const opened: string[] = []
+  const view = await mountView(
+    <DeskChat node={n} map={new Map([['agent', n]])} op={op} slug="org" toast={noop}
+      pub={false} bare onJump={noop}
+      onWorkLink={(w) => { opened.push(String(w?.slug)) }} />,
+    (el) => el)
+  t.after(async () => { await view.unmount(); resetConvos(); realClock() })
+  await flush()
+  server.live.push({ kind: 'tool', text: 'TodoWrite', id: 'toolu_r',
+    todos: [{ content: 'land @item:org/sort-selector', status: 'in_progress' }] })
+  await advance(3000)
+  await flush()
+  const { act } = await import('react')
+  const chip = view.el.querySelector<HTMLButtonElement>('.cc-head-meta .progress-chip')
+  assert.ok(chip, 'positive control: the progress chip is there to click')
+  await act(async () => { chip!.click() })
+  assert.ok(view.el.querySelector('.msgs.progress'), 'the progress panel opened')
+  const refChip = view.el.querySelector<HTMLButtonElement>('.msgs.progress .ref-chip')
+  assert.ok(refChip, 'the checklist item reference is dead text — the desk did not '
+    + 'hand the card its world')
+  assert.equal(refChip!.textContent, 'sort-selector')
+  await act(async () => { refChip!.click() })
+  assert.deepEqual(opened, ['sort-selector'],
+    'and it routes through the docket route the desk itself was given')
+})

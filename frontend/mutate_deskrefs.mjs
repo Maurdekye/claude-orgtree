@@ -23,6 +23,7 @@ import { readFileSync, writeFileSync } from 'node:fs'
 
 const DESK = 'src/canvas/desk.tsx'
 const LINKS = 'src/canvas/reflinks.tsx'
+const PROG = 'src/canvas/progress.tsx'
 
 const MUTANTS = [
   {
@@ -149,6 +150,40 @@ const MUTANTS = [
     to: `  }, [org, agents, onOpenItem, onFocusAgent, onOpenDoc, onOpenMail, Math.random()])`,
   },
   {
+    // THE PROGRESS CARD'S CHECKLIST — a Codex plan step or a TodoWrite item is
+    // prose an agent wrote, and the card is a different renderer from the chat
+    // (text nodes, not markdown), so the chat's checks say nothing about it.
+    name: 'a checklist item renders as plain text again',
+    file: PROG, suite: 'progress', kills: '§5 a reference in a checklist item',
+    from: `              <span className="todo-text"><Written text={t.content} refs={refs} /></span>`,
+    to: `              <span className="todo-text">{t.content}</span>`,
+  },
+  {
+    name: 'the reported status summary renders as plain text again',
+    file: PROG, suite: 'progress', kills: '§5 a reference in a checklist item',
+    from: `            {m.reported.summary && <span className="progress-summary">
+              <Written text={m.reported.summary} refs={refs} /></span>}`,
+    to: `            {m.reported.summary && <span className="progress-summary">{m.reported.summary}</span>}`,
+  },
+  {
+    // ⚠ THE OVER-LINKIFYING MUTANT, and the one that makes §5b more than a
+    // "does nothing when off" check. `progress-note` is written by
+    // deriveProgress — a machine sentence ABOUT the agent — so a chip there
+    // points at something nobody referenced.
+    name: 'the machine-written note linkifies too',
+    file: PROG, suite: 'progress', kills: '§5b CONTROL',
+    from: `      <div className="progress-note">{v.note}</div>`,
+    to: `      <div className="progress-note"><Written text={v.note} refs={refs} /></div>`,
+  },
+  {
+    // the desk stops handing the card its world: the card still renders, the
+    // checklist is still right, and every reference in it is dead.
+    name: 'the desk mounts the progress card without its refs',
+    file: DESK, suite: 'progress', kills: '§5c the REAL desk',
+    from: `      {view === 'progress' && <ProgressView model={progress} refs={deskRefs} />}`,
+    to: `      {view === 'progress' && <ProgressView model={progress} />}`,
+  },
+  {
     // AND THE CONTROL'S OWN CONTROL. If the world never changed at all, §9's
     // first half would pass for free — a latch that is simply frozen is not a
     // latch, it is a stale answer.
@@ -161,9 +196,13 @@ const MUTANTS = [
 
 const norm = (s) => s.replace(/\r\n/g, '\n')
 
-function runSuite() {
+/** ⚠ THE SUITE IS PER MUTANT. The desk chat and the progress card are two
+ *  renderers of the same feature, and running one suite for both would report
+ *  every progress mutant as SURVIVED — a harness that cannot see its own
+ *  target is worse than no harness, because it prints a number. */
+function runSuite(name = 'deskrefs') {
   try {
-    execFileSync(process.execPath, ['tests/run.mjs', 'deskrefs'],
+    execFileSync(process.execPath, ['tests/run.mjs', name],
       { stdio: 'pipe', encoding: 'utf8' })
     return { failed: false, out: '' }
   } catch (e) {
@@ -171,9 +210,9 @@ function runSuite() {
   }
 }
 
-console.log('baseline — the deskrefs suite must be GREEN before anything is mutated')
-{
-  const r = runSuite()
+for (const suite of ['deskrefs', 'progress']) {
+  console.log(`baseline — the ${suite} suite must be GREEN before anything is mutated`)
+  const r = runSuite(suite)
   if (r.failed) {
     console.error('  BASELINE RED — fix that first, not this file')
     console.error(r.out.split('\n').slice(-40).join('\n'))
@@ -203,7 +242,7 @@ for (const m of MUTANTS) {
   if (stale) { survived++; continue }
   try {
     writeFileSync(m.file, Buffer.from(mutated.replace(/\n/g, '\r\n'), 'utf8'))
-    const r = runSuite()
+    const r = runSuite(m.suite)
     const named = r.out.includes(m.kills)
     if (r.failed && named) {
       console.log(`killed — ${m.name}`)
