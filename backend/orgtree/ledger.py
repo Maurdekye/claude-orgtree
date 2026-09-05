@@ -6999,20 +6999,17 @@ class Org:
     _NODE_KEYS: tuple[str, ...] = ("node", "new", "a", "b", "target", "under")
 
     def _rename_chain_intact(self, i: int, dests: set[str]) -> str:
-        """Is the identity that a rename produced still the one standing under
-        those names? Returns "" when it is, else why it cannot be shown.
+        """Is the identity a rename produced still the one standing under
+        those names? "" when it is, else why it cannot be shown. `i` is the
+        rename event's index.
 
-        `i` is the index of the rename event. The org event log is APPEND-ONLY
-        and never pruned, so finding that event means every later event is
-        here too, and the question is answerable from retained evidence alone:
-        replay forward and see whether anything re-bound the name.
-
-        A name matching is NOT the argument — rename A→B, delete B, hire a
-        fresh B and the new holder would inherit the old one's records. Nor is
-        any timestamp tolerance: the chain is what is checked, not how close
-        two stamps are. An op that is neither known-binding nor known-keeping
-        refuses, so an op added later has to be classified rather than
-        silently assumed harmless."""
+        The log is append-only and never pruned, so finding that event means
+        every later one is retained: replay forward and see whether anything
+        re-bound the name. A matching name is not the argument — rename A→B,
+        delete B, hire a fresh B, and the new holder would inherit the old
+        one's records — and no timestamp tolerance is used. An op that is
+        neither known-binding nor known-keeping refuses, so a new op must be
+        classified rather than assumed harmless."""
         for e in list(self.d.get("events") or [])[i + 1:]:
             d = e.get("detail") or {}
             if not isinstance(d, dict):
@@ -7112,11 +7109,9 @@ class Org:
             raise LedgerError(
                 "name the records to repair — this operation takes an explicit "
                 "allowlist of documents and work items, never a pattern")
-        # A repeated reference is a confused plan, and it used to be worse than
-        # that: validation read the same record twice and passed, then the
-        # second mutate pass read the value the first had already changed and
-        # raised — after a write, in the one method whose promise is that
-        # nothing below the validation can raise (Astra review 2026-09-05).
+        # A repeated reference passes validation twice (the same record read
+        # twice) and would then reach the mutate phase twice, so it is refused
+        # here rather than left to the write.
         for label, want in (("document", want_docs), ("work item", want_work)):
             dupes = sorted({x for x in want if want.count(x) > 1})
             if dupes:
