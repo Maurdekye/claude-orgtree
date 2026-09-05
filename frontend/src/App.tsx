@@ -1944,7 +1944,11 @@ function useShellRefs(slug: string, tree: TreePayload | null, routes: {
   onOpenMail?: (ref: TypedRef) => void
 }) {
   const nodes = useMemo(() => (tree ? flatNodes(tree) : null), [tree])
-  return useRefRoutes(slug, nodes, routes)
+  // a shell panel is not AT an agent either — it can only say what each
+  // one is running
+  const tierOf = useCallback(
+    (id: string) => nodes?.get(id)?.tier, [nodes])
+  return useRefRoutes(slug, nodes, { ...routes, tierOf })
 }
 
 export function InboxPanel({ slug, tree, toast, refresh, close, jumpTo,

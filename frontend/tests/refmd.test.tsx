@@ -243,11 +243,17 @@ test('§11 the click is decided AGAIN, against the world as it is now', () => {
 // --------------------------------------------------------------- in a component
 
 function uiTest(name: string,
-  body2: (mount: (el: React.ReactElement) => Promise<HTMLElement>)
+  body2: (mount: (el: React.ReactElement) => Promise<HTMLElement>,
+          render: (el: React.ReactElement) => Promise<unknown>)
     => Promise<void>): void {
   test(name, async (t: TestContext) => {
     useFakeClock()
     const open: { unmount: () => Promise<void> }[] = []
+    // ⚠ RE-RENDERS THE SAME ROOT, never mounts a second one: what a prop
+    // CHANGE does to a body already on screen is a different question from
+    // what a fresh mount does with the new prop, and only the first one can
+    // leave a stale chip behind.
+    let last: { render: (el: React.ReactElement) => Promise<unknown> } | null = null
     t.after(async () => {
       for (const m of open) { try { await m.unmount() } catch { /* gone */ } }
       realClock()
@@ -255,8 +261,9 @@ function uiTest(name: string,
     await body2(async (el) => {
       const v = await mountView(el, (host) => host)
       open.push(v)
+      last = v as unknown as typeof last
       return v.el
-    })
+    }, async (el) => last!.render(el))
   })
 }
 
@@ -316,3 +323,156 @@ uiTest('§13 the body changing REPLACES the chips rather than losing them',
       assert.equal(after[0]!.textContent, 'beta')
     } finally { await view.unmount() }
   })
+
+// ─────────────────────────────────── §7 the cheap exit, and what it compares
+//
+// ⚠ ASTRA'S COUNTEREXAMPLES, 2026-09-05. The exit compared OUTCOMES, so it
+// answered "nothing changed" while the visible answer had changed underneath.
+// Both of these were executed against the shipped code and both were wrong:
+//
+//   · a document that gained its real title kept showing the id
+//   · a body that lost its handler kept a live BUTTON that did nothing
+//
+// A skipped rebuild is invisible by construction — the chip still looks like a
+// chip — which is why these compare the RENDERED FACTS, not the outcome.
+
+test('§7 a relabelled target is re-rendered, not skipped as unchanged', () => {
+  const el = body('see @doc:orgtree/d7 for the rest')
+  const before = world({ docs: new Map([['d7', 'before']]) })
+  assert.equal(linkifyRefs(el, before), 1)
+  assert.equal(chips(el)[0]!.textContent, 'before')
+  // the SAME outcome, a different label: the fetch came back with the real
+  // title. Comparing outcomes alone left "before" on screen.
+  const after = world({ docs: new Map([['d7', 'after']]) })
+  const n = linkifyRefs(el, after)
+  assert.notEqual(n, -1, 'the pass declared nothing to do while the label changed')
+  assert.equal(chips(el)[0]!.textContent, 'after')
+})
+
+test('§7b losing the handler turns a live control back into text', () => {
+  const el = body('see @item:orgtree/alpha for the rest')
+  const w = world({ items: new Map([['alpha', 'alpha']]) })
+  assert.equal(linkifyRefs(el, w, true), 1)
+  assert.equal(chips(el)[0]!.tagName, 'BUTTON')
+  const n = linkifyRefs(el, w, false)
+  assert.notEqual(n, -1, 'the pass declared nothing to do while clickability changed')
+  assert.equal(chips(el)[0]!.tagName, 'SPAN',
+    'a control with nothing behind it is worse than plain text')
+  // CONTROL: a body rendered non-clickable from the start is a SPAN too, so
+  // the assertion above is about the TRANSITION, not about the renderer
+  const fresh = body('see @item:orgtree/alpha for the rest')
+  linkifyRefs(fresh, w, false)
+  assert.equal(chips(fresh)[0]!.tagName, 'SPAN')
+})
+
+test('§7c CONTROL — a pass that really changes nothing still touches nothing',
+  () => {
+    const el = body('see @item:orgtree/alpha for the rest')
+    const w = world({ items: new Map([['alpha', 'alpha']]) })
+    assert.equal(linkifyRefs(el, w), 1)
+    const node = chips(el)[0]!
+    assert.equal(linkifyRefs(el, w), -1,
+      'an unchanged pass must report that it did nothing')
+    assert.equal(chips(el)[0], node,
+      'and must leave the very same node, or the reader loses their selection')
+  })
+
+test('§7d a click on a chip whose world has gone is refused, not a crash',
+  () => {
+    // ⚠ EXECUTED BY ASTRA AGAINST THE SHIPPED CODE: this threw
+    // "Cannot read properties of null (reading 'org')" — resolveRef ran before
+    // the guard that was supposed to protect it.
+    const el = body('see @item:orgtree/alpha for the rest')
+    linkifyRefs(el, world({ items: new Map([['alpha', 'alpha']]) }))
+    const chip = chips(el)[0]!
+    let opened = 0
+    const h = refClickHandler(() => null, () => { opened += 1 })
+    assert.doesNotThrow(() => { h({ target: chip, stopPropagation() {}, preventDefault() {} } as unknown as Event) })
+    assert.equal(opened, 0, 'and it opened nothing')
+  })
+
+// ───────────────────────────────────── §8 identity: model icon, destination
+//
+// An agent reference carries the same two facts its NAME carries elsewhere.
+// Astra rejected the earlier exception — "the world decides by kind, not per
+// id" — as a workaround; the surface says where it is instead.
+
+test('§8 an agent reference wears its current model', () => {
+  const el = body('ask @agent:orgtree/peer-one about it')
+  linkifyRefs(el, world({
+    agents: new Map([['peer-one', 'peer-one']]),
+    tierOf: () => 'opus',
+  }))
+  const c = chips(el)[0]!
+  assert.equal(c.tagName, 'BUTTON')
+  const icon = c.querySelector('.tier')
+  assert.ok(icon, 'no model icon beside the agent reference')
+  assert.ok(icon!.className.includes('t-opus'))
+  assert.match(c.textContent ?? '', /peer-one/, 'and the name is still there')
+})
+
+test('§8b an unknown model does not disable a known identity', () => {
+  const el = body('ask @agent:orgtree/peer-one about it')
+  linkifyRefs(el, world({
+    agents: new Map([['peer-one', 'peer-one']]),
+    tierOf: () => null,
+  }))
+  const c = chips(el)[0]!
+  assert.equal(c.tagName, 'BUTTON', 'an unknown model is not an unknown agent')
+  assert.equal(c.querySelectorAll('.tier').length, 0, 'and nothing is guessed')
+})
+
+test('§8c at its own focused desk the reference is identity, not a route', () => {
+  const el = body('this is @agent:orgtree/me writing')
+  linkifyRefs(el, world({
+    agents: new Map([['me', 'me']]), tierOf: () => 'opus', destination: 'me',
+  }))
+  const c = chips(el)[0]!
+  assert.equal(c.tagName, 'SPAN', 'somewhere you already are is not a destination')
+  assert.ok(c.querySelector('.tier'), 'but it keeps its identity')
+  assert.match(c.getAttribute('title') ?? '', /this is its own desk/)
+})
+
+test('§8d CONTROL — the same reference on a surface that is NOT its desk '
+  + 'still navigates', () => {
+  for (const destination of [null, 'somebody-else']) {
+    const el = body('this is @agent:orgtree/me writing')
+    linkifyRefs(el, world({
+      agents: new Map([['me', 'me']]), tierOf: () => 'opus', destination,
+    }))
+    assert.equal(chips(el)[0]!.tagName, 'BUTTON',
+      `destination ${String(destination)}: a pinned window, a switchboard panel `
+      + 'and a lineage card all still navigate')
+  }
+})
+
+test('§8e the destination refusal is in the ROUTER too, not only the renderer',
+  () => {
+    const el = body('this is @agent:orgtree/me writing')
+    const w = world({ agents: new Map([['me', 'me']]), destination: 'me' })
+    const chip = (linkifyRefs(el, w), chips(el)[0]!)
+    let opened = 0
+    const h = refClickHandler(() => w, () => { opened += 1 })
+    h({ target: chip, stopPropagation() {}, preventDefault() {} } as unknown as Event)
+    assert.equal(opened, 0,
+      'a click that arrives anyway — keyboard, stale chip — must still refuse')
+  })
+
+uiTest('§14b LOSING the world takes the controls with it', async (mount, render) => {
+  // ⚠ §14 mounts WITHOUT a world; this one HAS one and then loses it, which is
+  // a different code path and the one that was wrong. Chips left behind still
+  // look live, still take the click, and have nothing behind them (Astra,
+  // 2026-09-05).
+  const el = await mount(
+    <Pane text="see @item:orgtree/alpha now"
+      w={world({ items: new Map([['alpha', 'alpha']]) })} onOpen={() => {}} />)
+  await flush()
+  assert.equal(el.querySelectorAll('[data-ref-token]').length, 1,
+    'positive control: it linked while it had a world')
+  await render(<Pane text="see @item:orgtree/alpha now" w={null} />)
+  await flush()
+  assert.equal(el.querySelectorAll('[data-ref-token]').length, 0,
+    'a chip outlived the world that justified it')
+  assert.match(el.textContent ?? '', /@item:orgtree\/alpha/,
+    'and the token the author wrote is back, exactly')
+})

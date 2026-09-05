@@ -21,8 +21,94 @@ import { readFileSync, writeFileSync } from 'node:fs'
 
 const REFMD = 'src/canvas/refmd.tsx'
 const WORKREFS = 'src/canvas/workrefs.tsx'
+const REFLINKS = 'src/canvas/reflinks.tsx'
 
 const MUTANTS = [
+  {
+    // ⚠ ASTRA'S COUNTEREXAMPLE: the exit compared OUTCOMES, so a document that
+    // gained its real title kept showing the id — same outcome, different
+    // visible answer, no rebuild.
+    name: 'the cheap exit compares only the outcome again',
+    file: REFMD, kills: 'a relabelled target is re-rendered',
+    from: `      return el.getAttribute(SIG)
+        === chipSig(r, r.outcome === 'ready' && clickable && !r.atDestination)`,
+    to: `      return r.outcome === el.getAttribute(OUT)`,
+  },
+  {
+    // the other half of the same defect: clickability is not part of the
+    // comparison, so a body that loses its handler keeps a live button
+    name: 'the cheap exit ignores whether the chip can still be clicked',
+    file: REFMD, kills: 'losing the handler turns a live control back into text',
+    from: `        === chipSig(r, r.outcome === 'ready' && clickable && !r.atDestination)`,
+    to: `        === chipSig(r, r.outcome === 'ready')`,
+  },
+  {
+    // a world that goes away leaves its controls behind
+    name: 'losing the world leaves the chips in the DOM',
+    file: REFMD, kills: '§14b LOSING the world takes the controls with it',
+    from: `    else unlinkifyRefs(host.current)`,
+    to: `    else { /* leave them */ }`,
+  },
+  {
+    // the crash Astra executed: resolve before the guard
+    name: 'the click handler resolves before checking the world',
+    file: REFMD, kills: 'a click on a chip whose world has gone is refused',
+    from: `    const world = worldOf()
+    if (!world) return
+    const r = resolveRef(parsed, world)`,
+    to: `    const r = resolveRef(parsed, worldOf() as RefWorld)`,
+  },
+  {
+    // identity on the DOM chip
+    name: 'the DOM chip drops the model icon',
+    file: REFMD, kills: '§8 an agent reference wears its current model',
+    from: `  if (r.ref.kind === 'agent' && r.tier) {`,
+    to: `  if (false) {`,
+  },
+  {
+    name: 'the DOM chip is a control even at its own desk',
+    file: REFMD, kills: 'at its own focused desk the reference is identity',
+    from: `  const live = r.outcome === 'ready' && clickable && !r.atDestination`,
+    to: `  const live = r.outcome === 'ready' && clickable`,
+  },
+  {
+    name: 'the click handler follows a reference to where you already are',
+    file: REFMD, kills: 'the destination refusal is in the ROUTER too',
+    from: `    if (r.outcome !== 'ready' || r.atDestination) return`,
+    to: `    if (r.outcome !== 'ready') return`,
+  },
+  {
+    // identity on the REACT chip — the other renderer of the same decision
+    name: 'the React chip drops the model icon',
+    file: REFLINKS, suite: 'reflinks', kills: 'an agent reference wears its current model and still navigates',
+    from: `  const icon = r.ref.kind === 'agent' && r.tier`,
+    to: `  const icon = false`,
+  },
+  {
+    name: 'the React chip is a control even at its own desk',
+    file: REFLINKS, suite: 'reflinks', kills: 'at its own focused desk it is identity without a control',
+    from: `  if (r.outcome === 'ready' && onOpen && !r.atDestination) {`,
+    to: `  if (r.outcome === 'ready' && onOpen) {`,
+  },
+  {
+    // ⚠ AN IDENTITY INVENTED FOR A TARGET THAT DOES NOT EXIST — the tier
+    // resolver will answer for any string it is handed.
+    name: 'a model is claimed for an agent this org does not have',
+    file: REFLINKS, suite: 'reflinks', kills: 'the model is only claimed for a reference that resolves',
+    from: `  const tier = ref.kind === 'agent' && outcome === 'ready'
+    ? world.tierOf?.(ref.id) ?? null : null`,
+    to: `  const tier = ref.kind === 'agent'
+    ? world.tierOf?.(ref.id) ?? null : null`,
+  },
+  {
+    // the destination rule applied to a name that does not resolve
+    name: 'the destination is compared before the reference resolves',
+    file: REFLINKS, suite: 'reflinks', kills: 'the two renderers agree',
+    from: `  const atDestination = ref.kind === 'agent' && outcome === 'ready'
+    && !!world.destination && world.destination === ref.id`,
+    to: `  const atDestination = ref.kind === 'agent'
+    && world.destination === ref.id`,
+  },
   {
     // ⚠ THE WRONG-TARGET DEFECT, restored. Without the boundary a malformed
     // token does not fail — it truncates, and the surviving prefix is a valid
@@ -81,7 +167,8 @@ const MUTANTS = [
   {
     name: 'the chip is built by writing html instead of text',
     file: REFMD, kills: '§8 the html is never re-parsed',
-    from: `  el.textContent = r.outcome === 'ready' ? r.label : r.token`,
+    from: `  el.appendChild(doc.createTextNode(
+    r.outcome === 'ready' ? r.label : r.token))`,
     to: `  el.innerHTML = r.outcome === 'ready' ? r.label : r.token`,
   },
   {
@@ -89,16 +176,15 @@ const MUTANTS = [
     // exactly what the person fixing it needs to see
     name: 'a failed reference shows the label rather than what was written',
     file: REFMD, kills: '§9 CONTROL',
-    from: `  el.textContent = r.outcome === 'ready' ? r.label : r.token`,
-    to: `  el.textContent = r.label`,
+    from: `  el.appendChild(doc.createTextNode(
+    r.outcome === 'ready' ? r.label : r.token))`,
+    to: `  el.appendChild(doc.createTextNode(r.label))`,
   },
   {
     name: 'the click trusts the rendered chip instead of asking again',
     file: REFMD, kills: '§11 the click is decided AGAIN',
-    from: `    const r = resolveRef(parsed, worldOf())
-    if (r.outcome !== 'ready') return`,
-    to: `    const r = resolveRef(parsed, worldOf())
-    if (el.getAttribute(OUT) !== 'ready') return`,
+    from: `    if (r.outcome !== 'ready' || r.atDestination) return`,
+    to: `    if (el.getAttribute(OUT) !== 'ready') return`,
   },
   {
     name: 'undoing an injection restores the chip\'s LABEL, not the token',
@@ -119,9 +205,9 @@ const MUTANTS = [
   {
     name: 'the effect only runs when the world object changes identity',
     file: REFMD, kills: '§13 the body changing',
-    from: `    if (host.current && world) linkifyRefs(host.current, world, !!onOpen)
+    from: `    else unlinkifyRefs(host.current)
   })`,
-    to: `    if (host.current && world) linkifyRefs(host.current, world, !!onOpen)
+    to: `    else unlinkifyRefs(host.current)
   }, [world, onOpen])`,
   },
   {
@@ -131,16 +217,17 @@ const MUTANTS = [
     // "another org".
     name: 'a surface with no world judges anyway',
     file: REFMD, kills: '§14 a body with no world',
-    from: `    if (host.current && world) linkifyRefs(host.current, world, !!onOpen)`,
-    to: `    if (host.current) linkifyRefs(host.current, world, !!onOpen)`,
+    from: `    if (world) linkifyRefs(host.current, world, !!onOpen)
+    else unlinkifyRefs(host.current)`,
+    to: `    linkifyRefs(host.current, world ?? { org: '' }, !!onOpen)`,
   },
 ]
 
 const norm = (s) => s.replace(/\r\n/g, '\n')
 
-function runSuite() {
+function runSuite(name = 'refmd') {
   try {
-    execFileSync(process.execPath, ['tests/run.mjs', 'refmd'],
+    execFileSync(process.execPath, ['tests/run.mjs', name],
       { stdio: 'pipe', encoding: 'utf8' })
     return { failed: false, out: '' }
   } catch (e) {
@@ -185,7 +272,7 @@ for (const m of MUTANTS) {
   if (stale) { survived++; continue }
   try {
     writeFileSync(m.file, Buffer.from(mutated.replace(/\n/g, '\r\n'), 'utf8'))
-    const r = runSuite()
+    const r = runSuite(m.suite)
     const named = r.out.includes(m.kills)
     if (r.failed && named) {
       console.log(`killed — ${m.name}`)

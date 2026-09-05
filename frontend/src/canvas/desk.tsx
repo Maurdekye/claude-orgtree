@@ -1624,7 +1624,13 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
       ? (id: string) => docRef.current!(id) : undefined,
     onOpenMail: mailLinkRef.current
       ? (r: TypedRef) => mailLinkRef.current!(mailRefTarget(r)) : undefined,
-  }), [routeSig])
+    // ⚠ THE SAME `destination` THE HEADER'S OWN NAME USES, not a second
+    // reading of the same rule: only the FOCUSED desk is somewhere you
+    // already are, so a pinned window and a switchboard panel both still
+    // navigate. One value, two renderers.
+    destination,
+    tierOf: (id: string) => mapRef.current.get(id)?.tier,
+  }), [routeSig, destination])
   const deskRefs = useRefRoutes(slug, agentIndex, deskRoutes)
   const content = (
     <AgentDirectoryProvider value={agentDir}>

@@ -25,6 +25,7 @@
 import { flush, inAct, mountView } from './harness'
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { linkifyRefs } from '../src/canvas/refmd'
 import { RefChip, RefProse, TypedRefText, refToken, resolveRef, splitTypedRefs }
   from '../src/canvas/reflinks'
 import type { RefWorld } from '../src/canvas/reflinks'
@@ -444,5 +445,126 @@ test('§12 CONTROL — an explicit @agent token is NOT eaten by an item that '
   await inAct(() => (bare[0] as HTMLElement).click())
   assert.deepEqual(picked, [NAME], 'and the bare word went to the item')
   assert.deepEqual(focused, [], 'the bare word did not go to the agent')
+  await view.unmount()
+})
+
+// ───────────────────────────────── §11 identity on the REACT chip
+//
+// The DOM chip and this one are two renderings of one decision, and Astra
+// found both rendering a bare label: an agent reference carried none of the
+// identity an agent NAME carries everywhere else. Checked on both sides,
+// because one of them being right is how this comes back.
+
+const agentWorld = (o: Partial<RefWorld> = {}): RefWorld => world({
+  agents: new Map([['peer-one', 'peer-one'], ['me', 'me']]),
+  tierOf: (id: string) => (id === 'peer-one' ? 'opus' : 'sonnet'),
+  ...o,
+})
+
+test('§11 an agent reference wears its current model and still navigates',
+async () => {
+  const r = decide(`@agent:${HERE}/peer-one`, agentWorld())
+  assert.equal(r.tier, 'opus', 'the resolver did not carry the model through')
+  const view = await mountView(<RefChip r={r} onOpen={() => {}} />, (el) => el)
+  await flush()
+  const chip = view.el.querySelector('.ref-chip') as HTMLElement
+  assert.equal(chip.tagName, 'BUTTON')
+  assert.ok(chip.querySelector('.tier.t-opus'), 'no model icon on the chip')
+  assert.match(chip.textContent ?? '', /peer-one/)
+  await view.unmount()
+})
+
+test('§11b an unknown model leaves the identity intact', async () => {
+  const r = decide(`@agent:${HERE}/peer-one`, agentWorld({ tierOf: () => null }))
+  const view = await mountView(<RefChip r={r} onOpen={() => {}} />, (el) => el)
+  await flush()
+  const chip = view.el.querySelector('.ref-chip') as HTMLElement
+  assert.equal(chip.tagName, 'BUTTON', 'an unknown model is not an unknown agent')
+  assert.equal(chip.querySelectorAll('.tier').length, 0, 'and nothing is guessed')
+  await view.unmount()
+})
+
+test('§11c at its own focused desk it is identity without a control', async () => {
+  const r = decide(`@agent:${HERE}/me`, agentWorld({ destination: 'me' }))
+  assert.equal(r.atDestination, true)
+  let opened = 0
+  const view = await mountView(
+    <RefChip r={r} onOpen={() => { opened += 1 }} />, (el) => el)
+  await flush()
+  const chip = view.el.querySelector('.ref-chip') as HTMLElement
+  assert.equal(chip.tagName, 'SPAN', 'somewhere you already are is not a route')
+  assert.ok(chip.querySelector('.tier'), 'but the identity is still drawn')
+  assert.ok(chip.className.includes('ref-here'))
+  await inAct(() => { chip.click() })
+  assert.equal(opened, 0)
+  await view.unmount()
+})
+
+test('§11d CONTROL — the same name on a surface that is not its desk navigates',
+async () => {
+  for (const destination of [null, 'someone-else']) {
+    const r = decide(`@agent:${HERE}/me`, agentWorld({ destination }))
+    assert.equal(r.atDestination, false,
+      `destination ${String(destination)}: a pinned window and a switchboard `
+      + 'panel both still navigate')
+    const view = await mountView(<RefChip r={r} onOpen={() => {}} />, (el) => el)
+    await flush()
+    assert.equal((view.el.querySelector('.ref-chip') as HTMLElement).tagName,
+      'BUTTON')
+    await view.unmount()
+  }
+})
+
+test('§11e the model is only claimed for a reference that resolves', async () => {
+  // an agent this org does not have gets no icon: an identity drawn beside a
+  // name that does not exist is an invention, and the tier resolver would
+  // happily answer for anything
+  const r = decide(`@agent:${HERE}/nobody`, agentWorld({
+    agents: new Map([['peer-one', 'peer-one']]), tierOf: () => 'opus',
+  }))
+  assert.equal(r.outcome, 'absent')
+  assert.equal(r.tier, null, 'a model was claimed for an agent that is not here')
+  const view = await mountView(<RefChip r={r} onOpen={() => {}} />, (el) => el)
+  await flush()
+  assert.equal(view.el.querySelectorAll('.tier').length, 0)
+  await view.unmount()
+})
+
+test('§11f the two renderers agree — same facts, same structure', async () => {
+  // ⚠ THE PIN BETWEEN THE REACT CHIP AND THE DOM CHIP. They are two renderings
+  // of one decision and they drifted once already (both rendered a bare label
+  // while the resolver was carrying identity).
+  const r = decide(`@agent:${HERE}/peer-one`, agentWorld())
+  const view = await mountView(<RefChip r={r} onOpen={() => {}} />, (el) => el)
+  await flush()
+  const react = view.el.querySelector('.ref-chip') as HTMLElement
+  const host = document.createElement('div')
+  host.innerHTML = `<p>ask @agent:${HERE}/peer-one about it</p>`
+  linkifyRefs(host, agentWorld())
+  const dom = host.querySelector('.ref-chip') as HTMLElement
+  assert.ok(dom, 'the DOM walk produced no chip to compare against')
+  assert.equal(dom.tagName, react.tagName)
+  assert.equal(dom.title, react.title)
+  assert.equal(dom.textContent, react.textContent)
+  assert.equal(dom.querySelector('.tier')?.className,
+    react.querySelector('.tier')?.className)
+  await view.unmount()
+})
+
+test('§11g the destination rule waits for the reference to resolve', async () => {
+  // ⚠ "you are already there" is a claim about a REAL agent. An org that does
+  // not hold this name must still say so — deciding `atDestination` before the
+  // lookup would turn a broken reference into a calm "this is its own desk".
+  const r = decide(`@agent:${HERE}/ghost`, agentWorld({
+    agents: new Map([['peer-one', 'peer-one']]), destination: 'ghost',
+  }))
+  assert.equal(r.outcome, 'absent')
+  assert.equal(r.atDestination, false,
+    'a name this org does not have was reported as somewhere you already are')
+  const view = await mountView(<RefChip r={r} onOpen={() => {}} />, (el) => el)
+  await flush()
+  const chip = view.el.querySelector('.ref-chip') as HTMLElement
+  assert.ok(chip.className.includes('ref-absent'))
+  assert.match(chip.textContent ?? '', /unavailable/)
   await view.unmount()
 })

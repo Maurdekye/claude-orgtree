@@ -1269,6 +1269,9 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox, onWorkItem,
     onFocusAgent: (id: string) => { centerRef.current?.(id) },
     onOpenDoc: (id: string) => setDocView(id),
     onOpenMail: (r: TypedRef) => { openMailRef.current?.(mailRefTarget(r)) },
+    // the canvas is not AT any agent, so every name here is somewhere to
+    // go; it can say what each one is running
+    tierOf: (id: string) => map.get(id)?.tier,
   })
   // the DOCUMENT READER's own copy: same world, same routes, plus the one
   // thing that belongs to the reader rather than to the canvas — a document

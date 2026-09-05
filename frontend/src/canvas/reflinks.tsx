@@ -3,7 +3,7 @@
 //
 // The MATCHER lives in `workrefs.tsx` and the FORMAT in `backend/orgtree/refs.py`.
 // This file is only the middle step nobody had written: deciding, for one token
-// on one surface, WHICH OF FOUR THINGS IS TRUE.
+// on one surface, WHICH OF THESE FIVE IS TRUE.
 //
 //   ready     — this org, and something here can open it
 //   pending   — this org, but the index that would confirm it has not arrived
@@ -25,6 +25,7 @@
 import { useCallback, useMemo } from 'react'
 import type { ReactNode } from 'react'
 import { REF_TOKEN_RE, WorkRefText, parseRef } from './workrefs'
+import { TIER_LETTER } from './shared'
 import type { MentionIndex, RefKind, TypedRef } from './workrefs'
 
 export type RefOutcome =
@@ -54,6 +55,23 @@ export interface RefWorld {
    *  surface answers for the BOX (can I address it at all?) and the mail list
    *  answers for the message once it has loaded one. */
   mail?: (ref: TypedRef) => RefOutcome
+  /** THE AGENT WHOSE SURFACE THIS IS, when the surface has one.
+   *
+   *  A reference to the agent whose focused desk you are already reading is
+   *  not a destination, so it renders as identity without a control — the
+   *  same rule `AgentName` follows, and now the same MECHANISM rather than a
+   *  second one: the surface says where it is, and the resolver decides.
+   *
+   *  ⚠ THIS IS A PROPERTY OF THE SURFACE, NOT OF THE KIND. A pinned window, a
+   *  switchboard panel and a lineage card all show an agent's own name and all
+   *  must still navigate — the click takes you to its focused desk, somewhere
+   *  you are not. Only the focused desk itself passes its own id here. */
+  destination?: string | null
+  /** an agent's CURRENT model, for the icon beside its name. A RESOLVER, not
+   *  a map: a caller that cannot answer omits it and no icon is drawn, which
+   *  is the honest outcome rather than a guessed one — and an unknown model
+   *  never disables a known identity. */
+  tierOf?: (id: string) => string | null | undefined
   /** which kinds THIS panel can actually open. Omitted means all of them.
    *
    *  ⚠ THIS IS NOT THE SAME QUESTION AS WHETHER THE TARGET EXISTS, and
@@ -75,6 +93,12 @@ export interface ResolvedRef {
   label: string
   /** why, in words, for the tooltip and for the unavailable chip */
   why: string
+  /** an AGENT's current model, when the surface can say. Absent = no icon,
+   *  never a guess, and never a reason to withhold the control. */
+  tier?: string | null
+  /** this reference names the agent whose surface you are already on: real,
+   *  resolvable, and not somewhere to go */
+  atDestination?: boolean
 }
 
 const KIND_WORD: Record<TypedRef['kind'], string> = {
@@ -134,11 +158,21 @@ export function resolveRef(ref: TypedRef, world: RefWorld): ResolvedRef {
   const index = ref.kind === 'item' ? world.items
     : ref.kind === 'doc' ? world.docs : world.agents
   const [outcome, label] = judge(index, ref.id)
+  // AN AGENT REFERENCE CARRIES THE SAME TWO FACTS ITS NAME DOES ELSEWHERE:
+  // the model it is running now, and whether you are already looking at it.
+  // ⚠ THE MODEL IS ONLY CLAIMED FOR ONE THAT RESOLVES. Drawing an icon beside
+  // a name this org does not have would be an identity invented for a target
+  // that does not exist.
+  const tier = ref.kind === 'agent' && outcome === 'ready'
+    ? world.tierOf?.(ref.id) ?? null : null
+  const atDestination = ref.kind === 'agent' && outcome === 'ready'
+    && !!world.destination && world.destination === ref.id
   return {
-    ref, token, outcome, label: label ?? ref.id,
-    why: outcome === 'ready' ? `open the ${kind} ${ref.id}`
-      : outcome === 'pending' ? `still loading this org's ${kind}s`
-        : `no ${kind} named ${ref.id} in this org`,
+    ref, token, outcome, label: label ?? ref.id, tier, atDestination,
+    why: atDestination ? `${ref.id} — this is its own desk`
+      : outcome === 'ready' ? `open the ${kind} ${ref.id}`
+        : outcome === 'pending' ? `still loading this org's ${kind}s`
+          : `no ${kind} named ${ref.id} in this org`,
   }
 }
 
@@ -214,8 +248,13 @@ export function useRefRoutes(org: string, agents: ReadonlyMap<string, unknown> |
     onFocusAgent?: (agentId: string) => void
     onOpenDoc?: (docId: string) => void
     onOpenMail?: (ref: TypedRef) => void
+    /** the agent whose surface this is, when it has one (`RefWorld`) */
+    destination?: string | null
+    /** an agent's current model (`RefWorld`) */
+    tierOf?: (id: string) => string | null | undefined
   }): RefRoutes {
-  const { onOpenItem, onFocusAgent, onOpenDoc, onOpenMail } = routes
+  const { onOpenItem, onFocusAgent, onOpenDoc, onOpenMail,
+    destination, tierOf } = routes
   const world = useMemo<RefWorld>(() => {
     const handles = new Set<RefKind>()
     if (onOpenItem) handles.add('item')
@@ -230,10 +269,18 @@ export function useRefRoutes(org: string, agents: ReadonlyMap<string, unknown> |
       mail: (r) => (r.box !== 'node' ? 'ready'
         : !agents ? 'pending'
           : agents.has(String(r.node ?? '')) ? 'ready' : 'absent'),
+      destination: destination ?? null,
+      tierOf,
       handles,
     }
-  }, [org, agents, onOpenItem, onFocusAgent, onOpenDoc, onOpenMail])
+  }, [org, agents, onOpenItem, onFocusAgent, onOpenDoc, onOpenMail,
+    destination, tierOf])
   const onOpen = useCallback((r: ResolvedRef) => {
+    // ⚠ THE DESTINATION IS NOT A ROUTE. A chip at its own desk renders inert,
+    // but a click can still arrive — a keyboard, an old chip, a caller that
+    // built its own control — so the refusal lives here too rather than only
+    // in the renderer.
+    if (r.atDestination) return
     if (r.ref.kind === 'item') onOpenItem?.(r.ref.id)
     else if (r.ref.kind === 'agent') onFocusAgent?.(r.ref.id)
     else if (r.ref.kind === 'doc') onOpenDoc?.(r.ref.id)
@@ -318,20 +365,34 @@ export function RefChip({ r, onOpen }: {
   onOpen?: (r: ResolvedRef) => void
 }) {
   const cls = `ref-chip ref-${r.ref.kind} ref-${r.outcome}`
-  if (r.outcome === 'ready' && onOpen) {
+    + (r.atDestination ? ' ref-here' : '')
+  // an agent's CURRENT model, the same claim its name carries everywhere else.
+  // No tier means no icon and a working control — an unknown model is not an
+  // unknown agent (Astra, 2026-09-05).
+  const icon = r.ref.kind === 'agent' && r.tier
+    ? <span className={'tier t-' + r.tier}>{TIER_LETTER[r.tier] ?? '?'}</span>
+    : null
+  // ⚠ AT THE DESTINATION IT IS IDENTITY, NOT A ROUTE. A reference to the agent
+  // whose focused desk you are reading is real and resolvable and goes
+  // nowhere, so it keeps its icon and loses its control — the rule
+  // `AgentName` already follows, decided by the world rather than restated.
+  if (r.outcome === 'ready' && onOpen && !r.atDestination) {
     return (
       <button type="button" className={cls} title={r.why}
         onClick={(e) => { e.stopPropagation(); onOpen(r) }}>
-        {r.label}
+        {icon}{r.label}
       </button>
     )
+  }
+  if (r.outcome === 'ready') {
+    return <span className={cls} title={r.why}>{icon}{r.label}</span>
   }
   // ⚠ THE TOKEN IS SHOWN ON A FAILED REF, not the bare id. Whoever has to fix
   // the reference needs to see what was actually written, and on `foreign`
   // the org segment is the entire explanation.
   return (
     <span className={cls} title={r.why}>
-      {r.outcome === 'ready' ? r.label : r.token}
+      {r.token}
       <span className="ref-why">{r.outcome === 'pending' ? '…'
         : r.outcome === 'foreign' ? 'other org'
           : r.outcome === 'elsewhere' ? 'not from here' : 'unavailable'}</span>
