@@ -801,48 +801,26 @@ def _note_synthetic_status(into: dict[str, Any], ev: dict[str, Any],
                            text: str) -> None:
     """The LATEST unresolved engine-authored API error, with its status.
 
-    ⚠ HYPOTHETICAL COMPATIBILITY, NOT A PRODUCTION PATH (2026-09-05). The
-    pinned CLI does NOT put a status on an assistant event, under either
-    spelling — read out of the 2.1.258 binary this machine drives: the stdout
-    projection for an assistant message is
-    `{type, message, parent_tool_use_id, session_id, uuid, timestamp, error,
-    request_id?, supersedes?, …Oit(…), tool_use_meta?}`, and `Oit` in full is
-    `{aborted, is_api_error_message, api_error, resumed_from_incomplete_
-    thinking, is_virtual, batch_tool_uses, wire_tool_inputs}`. No status
-    field, and `api_error` is an enum (max_output_tokens | dlp_request_denied)
-    rather than a number. Every occurrence of `api_error_status` in that
-    binary was read: the assistant schema declares it and nothing populates
-    it; the RESULT event is where it is actually set. So on the pinned build
-    this function's slot NEVER fills from a real stream, and the turn is
-    classified by `_typed_api_status`'s FIRST source instead.
+    THE CONTRACT. Latest wins, unlike `_note_api_error` beside it: that one
+    records the originating CAUSE for the durable narrative, this one records
+    the state the turn is IN, so a 401 followed by a 402 is in the 402. Both
+    slots move together, so a number can never sit beside another error's
+    sentence. The typed pair is retired FIRST, before the read, so an event
+    carrying no number of its own also clears an earlier one — that event is
+    the state the turn is in now, and the prose predicates must then read the
+    LATEST sentence. Nothing here invents a status from prose.
 
-    It is kept, and reads both spellings, for two reasons: a build that does
-    populate the declared field would work without a code change, and the
-    same shape IS what the CLI writes into its own transcript records (2.1.258,
-    sdk-cli, an OpenRouter-driven grok-4.6 agent, 2026-09-03T12:22:56Z: a
-    top-level record with `message.model == "<synthetic>"`,
-    `isApiErrorMessage: true`, `error: "unknown"`, `apiErrorStatus: 402`).
-    ⚠ Do not read a green check over this path as evidence that production
-    behaviour was reproduced — the suite says which checks are which.
-
-    LATEST WINS, unlike `_note_api_error` beside it: that one records the
-    originating CAUSE for the durable narrative; this one records the state
-    the turn is IN, and a 401 followed by a 402 is in the 402. Both slots
-    (`status` and `status_text`) move together so the number can never sit
-    beside another error's sentence. `_clear_synthetic_status` retires them
-    when a real assistant message follows — an error that was retried past is
-    resolved and must not classify the turn.
-
-    ⚠ AN UNTYPED ENGINE ERROR IS ALSO THE LATEST ONE. This event is the state
-    the turn is in NOW, so an earlier event's number is stale the moment it
-    arrives — even when this one carries no number of its own. Returning
-    early without clearing left a typed 401 standing in front of a later,
-    untyped failure, and the turn was classified (and parked) as auth on a
-    status that belonged to an error the CLI had already moved past (Astra,
-    2026-09-05). Clearing FIRST is what makes the fallback honest: with no
-    number the prose predicates read the LATEST sentence, which is exactly
-    what every non-OpenRouter turn does. Nothing here invents a status from
-    prose — an untyped error stays untyped."""
+    ⚠ EVIDENCE LIMIT: THIS PATH IS HYPOTHETICAL COMPATIBILITY. The pinned
+    2.1.258 CLI puts no status on an assistant event under either spelling —
+    read out of the binary; the assistant schema declares `api_error_status`
+    and nothing populates it, and the RESULT event is where it is set. So this
+    slot never fills from a real stream and `_typed_api_status`'s FIRST source
+    classifies the turn. It is kept because it IS the shape the CLI writes to
+    its own transcript, and a build that populated the declared field would
+    then work unchanged. A green check over this path is not evidence that
+    production behaviour was reproduced; the suite says which checks are
+    which. Retained review artifact (not in this repo):
+    cli-stdout-shape-2.1.258.md, in codex-delivery's scratch."""
     _clear_synthetic_status(into)
     status = _typed_status_field(ev)
     if status is None:
@@ -874,19 +852,14 @@ def _typed_api_status(res: dict[str, Any],
     and prose never invents a number (coordinator ruling 2026-09-05).
 
     ⚠ THE FIRST SOURCE IS THE ONLY ONE THE PINNED CLI FEEDS. Read out of the
-    2.1.258 binary (2026-09-05): the engine keeps two locals, reset on every
-    user message, and assigns BOTH on every assistant message —
-    `Ko = Ie.isApiErrorMessage === true` and `jr = Ie.apiErrorStatus ?? null`
-    — then builds the result with `is_error: Ko` and `api_error_status: jr`.
-    So the flag and the number come from the LAST assistant message and move
-    together: a turn whose last assistant message is the synthetic refusal
-    ends `is_error: true` WITH the number, and a turn that produced real
-    output after the error ends `is_error: false` with the number cleared —
-    the CLI's own version of "an error that was retried past does not
-    classify the turn". Requiring `is_error` here is therefore not a
-    restriction the CLI can surprise us on; the two travel as a pair.
-    The second source is hypothetical compatibility — see
-    `_note_synthetic_status`."""
+    2.1.258 binary: the engine assigns `is_error` and `api_error_status` onto
+    the result from the LAST assistant message together, so the flag and the
+    number travel as a pair — a turn ending on the synthetic refusal carries
+    both, and a turn that produced real output after an error carries neither.
+    Requiring `is_error` here is therefore not a restriction the CLI can
+    surprise us on. The second source is hypothetical compatibility; see
+    `_note_synthetic_status`, and the retained review artifact
+    cli-stdout-shape-2.1.258.md (codex-delivery's scratch, not this repo)."""
     if res.get("is_error") is True:
         status = _typed_status_field(res)
         if status is not None:
@@ -15070,26 +15043,21 @@ def _run_one_turn(slug: str, nid: str,
                     and stream_api_err.get("status") is not None
                     and res.get("is_error") is not True
                     and not str(res.get("result") or "").strip()):
-                # ⚠ HYPOTHETICAL COMPATIBILITY, NOT A MEASURED PRODUCTION
-                # SHAPE (corrected 2026-09-05). This guards a turn that shows
-                # an engine-authored API error and then ends NORMALLY —
-                # `is_error` unset, `result` empty — where nothing above sets
-                # `err_blob` (the limit adoption needs the word "limit", and
-                # the captured 402's sentence has none) and the turn would be
-                # booked COMPLETED: no error row, no mail, no freeze, the
-                # agent silently stopped.
+                # ⚠ HYPOTHETICAL COMPATIBILITY, NOT A MEASURED SHAPE. This
+                # guards a turn that shows an engine-authored API error and
+                # then ends NORMALLY — `is_error` unset, `result` empty —
+                # which nothing above sets `err_blob` for, so it would book
+                # COMPLETED: no error row, no mail, no freeze.
                 #
-                # That ending was ASSUMED, carried over from
-                # test_limit_freeze's documented shape because the result
-                # event was not in the captured transcript. The pinned CLI
-                # does not produce it: the engine copies the LAST assistant
-                # message's error flag and status onto the result together
-                # (see `_typed_api_status`), so this refusal ends `is_error:
-                # true` WITH its number and the ordinary failure path handles
-                # it. This branch cannot fire on that build at all — its gate
-                # is a stream-side status the wire never carries. It is kept
-                # as a cheap net for a build that ends cleanly after an error,
-                # and it is engine-authored text, never the agent's.
+                # The pinned CLI does not produce that ending: the engine
+                # copies the last assistant message's error flag and status
+                # onto the result together (see `_typed_api_status`), so this
+                # refusal ends `is_error: true` WITH its number and the
+                # ordinary failure path handles it. This branch's gate is a
+                # stream-side status the wire never carries, so it cannot fire
+                # on that build; it is a cheap net for one that ends cleanly
+                # after an error, and its text is engine-authored, never the
+                # agent's.
                 err_blob = (str(stream_api_err.get("status_text") or "")
                             or f"the CLI reported API status "
                                f"{stream_api_err['status']}")
@@ -17184,46 +17152,34 @@ def _failure_cost_source(
     """WHICH NUMBER a failed OpenRouter turn is charged, and where it came
     from — amount, `cost_source`, completeness, unresolved fields.
 
-    THE LADDER, in order, with what each rung actually knows:
+    THE LADDER, in order, with what each rung knows:
 
-    1. NATIVE — a cost the provider itself reported (`_native_turn_cost`).
-       It OUTRANKS the rungs below and a valid zero is an amount rather than a
-       miss — but it is INCOMPLETE, sourced `provider-native-unscoped`, with
-       `scope` unresolved. ⚠ WHY NOT COMPLETE (coordinator, 2026-09-05): a
-       field's existence establishes neither its provenance nor what it
-       covers. Nobody has observed such a field on this lane, so we do not
-       know whether it would be PER-REQUEST — in which case taking the largest
-       one seen UNDER-counts a multi-message turn — or PROCESS-CUMULATIVE, in
-       which case it needs a warm baseline subtracted the way
-       `total_cost_usd` does and taking it raw OVER-counts a warm
-       continuation. Calling it complete would be inventing a turn-scope
-       contract for a field nobody has seen. If a build ever documents one,
-       THAT contract can be implemented and labelled separately; until then
-       this rung books the number and says outright that its scope is unknown.
-    2. CATALOGUE — the favourite's snapshot prices applied to the tokens this
-       turn is known to have consumed. INCOMPLETE by construction here, and
-       for a reason worth stating: a failed turn has no result event, so the
-       usage is a PARTIAL RECEIPT — the last top-level message's own
-       point-in-time counts, plus the turn's cumulative output. A turn that
-       died after several messages is therefore UNDER-counted on input, which
-       is the recoverable direction. `usage` is always among the unresolved
-       fields for that reason, on top of whatever prices were missing.
-    3. THE CLI'S FIGURE — `total_cost_usd`, INCOMPLETE. The CLI prices a
-       non-Anthropic model off its own default table and is measured wrong by
-       an order of magnitude on this lane (a $0.004 turn booked as $0.134), so
+    1. THE OPTIONAL COST FIELD, if an event carries one
+       (`_native_turn_cost`). Outranks the rungs below; a valid zero is an
+       amount, not a miss. Books INCOMPLETE as `provider-native-unscoped`
+       (a source string kept for compatibility, not a provenance claim)
+       with `scope` unresolved: a field's existence establishes neither
+       its provenance nor what it covers, and none has been observed here. Per-request, taking
+       the largest seen UNDER-counts a multi-message turn; process-cumulative,
+       taking it raw OVER-counts a warm continuation (no baseline is
+       subtracted here as `total_cost_usd` has one). A documented turn-level
+       contract would be a separate, separately-labelled rung.
+    2. CATALOGUE — snapshot prices over the tokens the turn is known to have
+       used. INCOMPLETE by construction: a failed turn has no result event, so
+       the receipt is PARTIAL (the last top-level message's counts plus
+       cumulative output) and under-counts a multi-message turn, which is the
+       recoverable direction. `usage` is therefore always unresolved here.
+    3. THE CLI'S FIGURE — INCOMPLETE. Measured wrong by an order of magnitude
+       for a non-Anthropic vendor on this lane ($0.004 booked as $0.134), so
        the money books but never presents as a measurement.
 
-    ⚠ NO `costBasis` RUNG. A failed turn rarely has `modelUsage` at all, and
-    even when it does, `costBasis` describes THE MOST RECENT REQUEST for one
-    model — not the turn — and `list` names Claude Code's own built-in list
-    prices, which is not proof that the turn's total equals the gateway's
-    invoice (coordinator, 2026-09-05). One matched row saying `list` may not
-    promote a whole turn to complete, and a turn whose rows disagree, or whose
-    key never matched, has told us less still.
+    ⚠ NO `costBasis` RUNG. That field describes THE MOST RECENT REQUEST for
+    one model, not the turn, and `list` names Claude Code's own built-in list
+    prices — not proof that a turn's total equals the gateway invoice. Rows
+    that disagree, or a key that never matched, say less still.
 
-    Returning an amount of 0.0 with `complete` False means "nothing worth
-    booking was established" — the caller books nothing rather than writing a
-    confident zero."""
+    An amount of 0.0 with `complete` False and no source means nothing was
+    established; the caller books nothing rather than a confident zero."""
     if native is not None:
         return native, "provider-native-unscoped", False, ["scope"]
     _u = dict(usage or {})
@@ -17276,25 +17232,19 @@ def _charge_reported_spend(slug: str, nid: str, paid: float,
     `killed` so the desk shows the turn did not complete, without pretending
     the money was not spent.
 
-    ⚠ WHERE THE NUMBER CAME FROM IS PART OF THE RECORD (2026-09-05). This
-    used to book `paid` with no provenance at all — no source, no
-    completeness, and no `cost_usd_unknown` — so a failed OpenRouter turn
-    charged the CLI's default-table guess, measured wrong by an order of
-    magnitude on that lane, in the same shape as a figure the provider
-    reported. The lane now runs `_failure_cost_source`, and whatever it
-    answers is stamped on the entry; anything short of a COMPLETE amount also
-    raises the node's `cost_usd_unknown`, which is what carries the doubt into
-    the node and org lifetime totals.
+    WHERE THE NUMBER CAME FROM IS PART OF THE RECORD. The OpenRouter lane
+    runs `_failure_cost_source` and stamps whatever it answers on the entry;
+    anything short of a COMPLETE amount also raises the node's
+    `cost_usd_unknown`, which is what carries the doubt into the node and org
+    lifetime totals.
 
-    ⚠ AND WHEN NO ROW CAN BE BOOKED AT ALL, THE DOUBT IS STILL RECORDED
-    (coordinator, 2026-09-05). A failed turn on this lane whose model has no
-    price and whose CLI figure is zero establishes no dollar amount — but it
-    is KNOWN to have consumed tokens, and returning quietly left the node's
-    existing lifetime total reading as though it were complete. The uncertainty
-    is now persisted even though no cost row is written, which is the whole
-    claim of this function: nothing is invented, and nothing pretends to be
-    known. A turn with no observed consumption at all raises nothing, because
-    there is no evidence to record.
+    ⚠ AND WHEN NO ROW CAN BE BOOKED AT ALL, THE DOUBT IS STILL RECORDED. A
+    failed turn on an unpriced model whose CLI figure is zero establishes no
+    amount, but it is KNOWN to have consumed tokens, and returning quietly
+    leaves the node's existing lifetime total reading as complete. The flag is
+    persisted with no cost row written and no dollar invented. A turn with no
+    observed consumption raises nothing — there is no evidence to record, and
+    a flag nothing clears is a decoration.
 
     Every other lane is byte-for-byte unchanged: `paid`, no stamps, no flag."""
     try:
@@ -17400,31 +17350,31 @@ def _reported_cost(value: Any) -> float | None:
 
 
 def _native_turn_cost(ev: Mapping[str, Any]) -> float | None:
-    """A cost the PROVIDER itself put on this event, or None.
+    """The OPTIONAL cost field on this event, if it carries one, or None.
 
-    ⚠ HYPOTHETICAL COMPATIBILITY, and measured to be so (2026-09-05). The
-    pinned CLI's `usage` object is defined with exactly eleven fields —
-    input_tokens, output_tokens, cache_creation_input_tokens,
-    cache_read_input_tokens, server_tool_use, service_tier, cache_creation,
-    inference_geo, speed, iterations, output_tokens_details — and NONE of them
-    is a cost; the result event carries `total_cost_usd`, `usage` and
-    `modelUsage` but no bare `cost` either. Read out of the 2.1.258 binary and
-    confirmed independently against a captured transcript whose 560 assistant
-    records carry those same eleven keys.
+    Named neutrally on purpose: nothing here establishes that such a field
+    would be the provider's own figure. It is an optional number the CLI
+    might one day put on an event, and its provenance is exactly as
+    unestablished as its scope (below). The `provider-native-unscoped`
+    source string is kept as it stands for compatibility with rows already
+    written; read it as "the optional field", not as a provenance claim.
 
-    ⚠ AND IT IS NOT BELIEVED AS A TURN TOTAL. The caller takes the largest
-    value seen across the turn's events, which is a guess about a field whose
-    scope nobody has observed: per-request it under-counts, process-cumulative
-    it over-counts a warm continuation (no baseline is subtracted here, unlike
-    `total_cost_usd`). `_failure_cost_source` therefore books it INCOMPLETE
-    with `scope` unresolved rather than inventing a contract for it.
+    ⚠ EVIDENCE LIMIT: NO SUCH FIELD EXISTS ON THIS BUILD, so this returns None
+    on every turn it serves. The pinned 2.1.258 `usage` object is defined with
+    eleven fields and none is a cost, and the result event carries
+    `total_cost_usd`, `usage` and `modelUsage` but no bare `cost` — read out
+    of the binary and matching a captured transcript's 560 assistant records.
+    It is kept so a build that DID report a figure would be recorded rather
+    than thrown away.
 
-    So this returns None on every turn this build serves. It exists because a
-    build that DID report a provider figure would then be recorded rather than
-    thrown away, and because the alternative — asking for a native cost at the
-    charging site and quietly falling through — is the shape that hides
-    exactly this kind of fact. ⚠ Do not read a green check over this helper as
-    evidence that a native cost was ever observed."""
+    ⚠ AND IT IS NOT A TURN TOTAL. The caller takes the largest value seen
+    across the turn, which is a guess about a field whose scope nobody has
+    observed: per-request that under-counts, process-cumulative it
+    over-counts a warm continuation (no baseline is subtracted here as
+    `total_cost_usd` has one). `_failure_cost_source` books it INCOMPLETE with
+    `scope` unresolved. A green check over this helper is not evidence that
+    such a field was ever observed. Retained review artifact (not in this
+    repo): c4-native-cost-groundwork.md, in codex-delivery's scratch."""
     for holder in (ev, ev.get("usage"), (ev.get("message") or {}).get("usage")
                    if isinstance(ev.get("message"), dict) else None):
         if isinstance(holder, dict):
