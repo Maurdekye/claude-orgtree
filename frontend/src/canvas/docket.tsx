@@ -947,6 +947,26 @@ export function DocketModal({ slug, toast, close, tree, onFocusAgent,
   )
 }
 
+/** The items ONE agent is answerable for: everything assigned to it, plus
+ *  everything it was named to REVIEW (user 2026-09-05: "reviewer desk docket
+ *  must expose reviews even if not owner").
+ *
+ *  ⚠ MATCHED BY NAME, AT ANY GENERATION. An item assigned to `worker` before
+ *  a cheap compaction is still `worker`'s work; the generation is what the
+ *  row's model chip reasons about, never what decides whose work this is.
+ *
+ *  Exported and pure so the desk's header chip counts EXACTLY the rows the tab
+ *  will show — a chip counting one set beside a list showing another is the
+ *  plausible-and-wrong surface this codebase keeps refusing. */
+export function agentItems(data: {
+  items?: WorkItem[]; archived?: WorkItem[]; backlogged?: WorkItem[]
+} | null | undefined, nid: string): WorkItem[] | null {
+  if (!data) return null
+  return [...(data.items ?? []), ...(data.backlogged ?? []),
+          ...(data.archived ?? [])]
+    .filter((it) => it.owner?.node === nid || it.reviewer?.node === nid)
+}
+
 /** THE AGENT'S OWN DOCKET — the desk tab (user ruling 2026-09-05 21:07: the
  *  Progress tab's contents are replaced entirely by the items assigned to this
  *  agent).
@@ -965,30 +985,26 @@ export function DocketModal({ slug, toast, close, tree, onFocusAgent,
  *  to `worker` before a cheap compaction is still assigned to `worker`; the
  *  generation is what the row's chip reasons about, never what decides whether
  *  the work is yours. */
-export function AgentDocketView({ slug, nid, facts, toast, onFocusAgent }: {
+export function AgentDocketView({ slug, nid, mine, facts, toast, onFocusAgent,
+  onChanged }: {
   slug: string
   nid: string
+  /** this agent's items, already selected by `agentItems` — null while the
+   *  desk's first poll is in flight. The DESK owns the poll, so the header
+   *  chip and this tab count the same rows and there is one request, not two. */
+  mine: WorkItem[] | null
   facts: Map<string, NodeFacts>
   toast: ToastFn
   onFocusAgent?: (agentId: string) => void
+  /** ask the desk to refetch — a dismissal changes the server's copy */
+  onChanged?: () => void
 }) {
-  const [bump, setBump] = useState(0)
   const [selId, setSelId] = useState<string | null>(null)
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(
     () => new Set<string>())
-  // the SAME endpoint the panel polls, at the same interval, with both extra
-  // groups asked for: an agent's finished and not-yet-started work is still
-  // its work, and hiding it here would make the tab disagree with the docket
-  // about what this agent holds.
-  const data = usePolled(() => getWorkItems(slug, true, true),
-                         [slug], 5000, `${bump}-${nid}`)
-  const mine = useMemo(() => {
-    const all = [...(data?.items ?? []), ...(data?.backlogged ?? []),
-                 ...(data?.archived ?? [])]
-    return all.filter((it) => it.owner?.node === nid)
-  }, [data, nid])
+  const rows = mine ?? []
   const byName = useMemo(
-    () => new Map(mine.map((it) => [it.slug, it])), [mine])
+    () => new Map(rows.map((it) => [it.slug, it])), [rows])
   const refIndex = useMemo(
     () => buildMentionIndex(byName.values(),
                             [...facts].map(([id, f]) => [id, f.tier] as const)),
@@ -1006,15 +1022,15 @@ export function AgentDocketView({ slug, nid, facts, toast, onFocusAgent }: {
     dismissWorkItemAttention(slug, item.slug, item.manual_attention.set_rev)
       .then(() => {
         toast([`dismissed the attention flag on “${item.title}”`])
-        setBump((n) => n + 1)
+        onChanged?.()
       })
       .catch((e: Error) => toast([`error: ${e.message}`]))
   }
   return (
     <div className="msgs docket-modal docket-agent">
-      {!data
+      {mine === null
         ? <div className="dim pad">loading…</div>
-        : mine.length === 0
+        : rows.length === 0
           ? <div className="dim pad">
               no docket items are assigned to {nid} — assignment is ownership,
               so this is everything it is responsible for
@@ -1022,7 +1038,7 @@ export function AgentDocketView({ slug, nid, facts, toast, onFocusAgent }: {
           : (
             <div className="mailer">
               <div className="mailer-list">
-                {nestRows(mine, collapsed).map((row) => (
+                {nestRows(rows, collapsed).map((row) => (
                   <DocketRow key={row.item.slug} item={row.item}
                     selected={row.item.slug === selId}
                     depth={row.depth} kids={row.kids}

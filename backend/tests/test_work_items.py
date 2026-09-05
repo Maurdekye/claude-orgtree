@@ -1170,13 +1170,16 @@ def doctrine_rides_the_identity_prompt_on_every_lane():
     card = next(t for t in mcptool.TOOLS if t["name"] == "orgtree_work")
     assert card["inputSchema"]["required"] == ["action"]
     acts = set(card["inputSchema"]["properties"]["action"]["enum"])
-    assert acts == {"list", "get", "create", "update", "assign", "participants", "evidence",
+    assert acts == {"list", "get", "create", "update", "assign", "review",
+                    "participants", "evidence",
                     "claim", "verify", "check", "accept", "archive", "supersede",
                     "move"}
     for a in sorted(acts - {"list", "get", "verify", "create"}):
-        # `move` needs a destination to get as far as resolving the item; the
-        # probe is about DISPATCH (422, not "unknown action"), so give it one
-        extra = {"parent": ""} if a == "move" else {}
+        # `move` needs a destination to get as far as resolving the item, and
+        # `review` a decision; the probe is about DISPATCH (422, not "unknown
+        # action"), so give each one what it needs to get that far
+        extra = ({"parent": ""} if a == "move"
+                 else {"decision": "approve"} if a == "review" else {})
         st, js = work(slug, "boss", a, slug="w00000000", **extra)
         assert st == 422, (a, st, js)       # every action is dispatched (unknown id, not unknown action)
         assert "action must be" not in js["detail"], (a, js)

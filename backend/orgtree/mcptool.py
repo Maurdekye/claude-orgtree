@@ -331,6 +331,17 @@ TOOLS: list[dict[str, Any]] = [
             "their superiors, the user, and listed participants; nothing is "
             "org-public. Done items archive by themselves an hour after "
             "their last update, records kept. A later update without "
+            "ASSIGNMENT IS OWNERSHIP (user ruling 2026-09-05): the assigned "
+            "agent holds the item's management rights, is who the docket "
+            "names, and is where the user's replies on it go. `assign` TELLS "
+            "it so. YOUR OWN UPDATE CLAIMS THE ITEM — so when you update "
+            "somebody else's item, pass `owner` naming the agent that already "
+            "holds it and it stays with them. `review` is the named "
+            "reviewer's verdict (decision approve|changes): approve completes "
+            "the item, changes sends it back to the owner as in_progress. A "
+            "reviewer is named by the update that enters status review "
+            "(`reviewer`), may never be the owner, and gets read + evidence + "
+            "that one decision — never ownership. "
             "attention:true CLEARS a standing attention flag; a user "
             "dismissal makes the item blocked and an exact repeat of the "
             "dismissed reason is refused. `backlogged` means NOT YET "
@@ -346,23 +357,26 @@ TOOLS: list[dict[str, Any]] = [
             "fixed at creation and does not follow a later title change, so a "
             "name already written down keeps working. The "
             "user's replies on an item go "
-            "to its LAST UPDATER; question answers go to their asker "
-            "(attach questions with orgtree_ask work_item)."),
+            "to the agent it is ASSIGNED to; question answers go to their "
+            "asker (attach questions with orgtree_ask work_item)."),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "action": {"type": "string",
                            "enum": ["list", "get", "create", "update", "assign",
-                                    "participants", "evidence", "claim",
-                                    "verify", "check", "accept", "archive",
-                                    "supersede", "move"]},
+                                    "review", "participants", "evidence",
+                                    "claim", "verify", "check", "accept",
+                                    "archive", "supersede", "move"]},
                 "slug": {"type": "string", "description": "the work item's readable name, e.g. git-review-workspace (every action but list/create). Items have no other identifier"},
                 "include_archived": {"type": "boolean", "description": "list: include archived items"},
                 "include_backlogged": {"type": "boolean", "description": "list: include backlogged (not yet started) items"},
                 "title": {"type": "string", "description": "create/update: short concrete title"},
                 "objective": {"type": "string", "description": "create (REQUIRED) / update: the item's description — the PROBLEM faced first, then the proposed solution"},
                 "kind": {"type": "string", "description": "create: code|non-code · evidence: note|link|file|commit|log"},
-                "owner": {"type": "string", "description": "create/assign: owner node (you or a subordinate)"},
+                "owner": {"type": "string", "description": "create/assign: owner node (you or a subordinate) · update: the explicit assignment — name the CURRENT owner to keep an item where it is when you update somebody else's"},
+                "reviewer": {"type": "string", "description": "update entering status review: the agent that will check this work. Required there, never the owner, and it is read+evidence+the review decision — not ownership"},
+                "decision": {"type": "string", "enum": ["approve", "changes"],
+                             "description": "review: approve completes the item; changes returns it to its owner as in_progress (put what you want changed in `note`)"},
                 "participants": {"type": "array", "items": {"type": "string"},
                                  "description": "create: collaborator node ids"},
                 "add": {"type": "array", "items": {"type": "string"}, "description": "participants: node ids to add"},

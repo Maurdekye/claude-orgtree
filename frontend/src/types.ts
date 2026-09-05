@@ -1898,6 +1898,11 @@ export interface WorkItem {
   owner: WorkActor | null
   owner_current: boolean
   owner_state: 'live' | 'retired' | 'missing' | 'generation moved' | null
+  /** the agent named to CHECK this work while it sits at `review` — read,
+   *  evidence and the one review decision, never ownership. Null on every item
+   *  that has not entered review since the field shipped; nothing back-fills
+   *  it, because a reviewer nobody chose is not a reviewer. */
+  reviewer: WorkActor | null
   participants: string[]
   created_by: WorkActor | 'user' | '@user'
   at: string

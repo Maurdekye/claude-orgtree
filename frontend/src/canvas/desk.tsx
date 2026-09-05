@@ -14,7 +14,8 @@ import type {
 } from '../types'
 import {
   audienceAction, BASE, compactNode, fileBase, fileUrl, getChat, getHistory,
-  getScratch, interruptNode, processControl, retractMail, saveScope, sendMessage,
+  getScratch, getWorkItems, interruptNode, processControl, retractMail,
+  saveScope, sendMessage,
   unstickNode, uploadFile,
 } from '../api'
 import { AttachThumb, fmtBytes, ImgCardCaption, isImg, parseAttachedFiles } from './img'
@@ -40,7 +41,8 @@ import type {
 import { ConfirmModal } from './modals'
 import { InboxView, RetiredFold } from './mail'
 import { AskCard } from './asks'
-import { deriveProgress, ProgressChip, ProgressView } from './progress'
+import { AgentDocketView, agentItems } from './docket'
+import { buildNodeFacts } from './docket'
 import { AgentDirectoryProvider, AgentName, agentFactsSig, useAgentDirectory } from './identity'
 import type { AgentDirectory } from './identity'
 import { mailRefTarget, useRefRoutes } from './reflinks'
@@ -1097,11 +1099,29 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
   // a double-click while the request is in flight; the response/WS tree state
   // remains authoritative if another desk wins the race.
   const [processToggleBusy, setProcessToggleBusy] = useState(false)
-  const [view, setView] = useState<'chat' | 'history' | 'files' | 'inbox' | 'progress'>('chat')     // chat | history | files | inbox | progress
-  // FR-2: the task-progress model — PURE, derived from the node and the
-  // conversation the desk already holds (progress.tsx). No new poll, no new
-  // endpoint, and nothing that costs the agent a turn.
-  const progress = useMemo(() => deriveProgress(node, convo), [node, convo])
+  const [view, setView] = useState<'chat' | 'history' | 'files' | 'inbox' | 'docket'>('chat')     // chat | history | files | inbox | docket
+  // THE AGENT'S OWN DOCKET (user ruling 2026-09-05 21:07). It replaced the
+  // derived task-progress model that used to live in this tab — the user
+  // called that content irrelevant, and what an agent is answerable for is
+  // recorded work, not a reading of its transcript.
+  //
+  // ⚠ ONE POLL, OWNED HERE. The tab and the header chip must count the same
+  // rows, so the desk fetches and `agentItems` selects; two independent polls
+  // would eventually disagree on screen. It is the same endpoint the Work
+  // panel uses, at a slower interval — this is a summary, not the panel.
+  const [workBump, setWorkBump] = useState(0)
+  const work = usePolled(() => getWorkItems(slug, true, true),
+                         [slug], 15000, `${workBump}`)
+  const myWork = useMemo(() => agentItems(work, node.id), [work, node.id])
+  // the identity facts the docket rows read (which model an owner ran under,
+  // whether that seat is still live) — the same shape the Work panel builds,
+  // from the canvas map this desk already holds rather than a second fetch
+  const workFacts = useMemo(
+    () => new Map([...map].map(([id, n]) => [id, {
+      tier: n.tier ?? '',
+      generation: Number(n.generation ?? 0),
+      live: n.state === 'live',
+    }])), [map])
   // №7's denials banner and its dismissal state are gone (user bug
   // 2026-08-02): a denial already renders inline as an errored ToolChip where
   // it happened, so the banner was a duplicate that also sorted a past event
@@ -1686,7 +1706,7 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
             {!live && <button onClick={() => op({ op: 'rehire', node: node.id })}>rehire</button>}
           </span>
           <span className="cc-tabs">
-            {(['chat', 'history', 'files', 'inbox', 'progress'] as const).map((v) => (
+            {(['chat', 'history', 'files', 'inbox', 'docket'] as const).map((v) => (
               <button key={v} className={view === v ? 'on' : ''}
                 onClick={() => setView(v)}>
                 {v}{v === 'inbox' && (chat?.mail_pending ?? 0) > 0
@@ -1722,8 +1742,17 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
         {node.last_status && !bannerDuplicatesStatus &&
           <span className={'statuschip ' + node.last_status.status}
             title={node.last_status.summary}>{node.last_status.status}</span>}
-        {/* FR-2: the collapsed task-progress summary; click → the tab */}
-        <ProgressChip model={progress} onClick={() => setView('progress')} />
+        {/* the collapsed count of what this agent is answerable for; click →
+            the tab that lists it. It counts EXACTLY the rows the tab shows
+            (both read `agentItems`), because a chip that disagrees with the
+            list it opens is worse than no chip at all. */}
+        <button className="progress-chip"
+          title={myWork === null ? 'loading the docket…'
+            : `${myWork.length} docket item(s) assigned to ${node.id}, or `
+              + `naming it as reviewer`}
+          onClick={() => setView('docket')}>
+          docket {myWork === null ? '…' : myWork.length}
+        </button>
         {node.frozen &&
           <span className="badge frozen" title={node.frozen.error ?? undefined}>
             <FrozenIcon fontSize="inherit" />{' '}
@@ -2149,7 +2178,9 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
       )}
       {view === 'history' && <HistoryView slug={slug} nid={node.id} />}
       {view === 'files' && <FilesView slug={slug} nid={node.id} />}
-      {view === 'progress' && <ProgressView model={progress} refs={deskRefs} />}
+      {view === 'docket' && <AgentDocketView slug={slug} nid={node.id}
+        mine={myWork} facts={workFacts} toast={toast} onFocusAgent={onJump}
+        onChanged={() => setWorkBump((n) => n + 1)} />}
       {/* the mailbox is a name surface too (user request 2026-09-05: the inbox
           was named explicitly). `onJump` is the SAME callback NavChip and the
           header already use here, so no new route is invented — and it is
