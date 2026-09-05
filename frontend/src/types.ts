@@ -120,6 +120,27 @@ export interface TurnStat {
   cost_complete?: boolean
   cost_source?: string
   cost_unknown_fields?: string[]
+  /** OpenRouter lane only (2026-09-05): what the CLI REPORTED about the
+   *  messages it delivered this turn — never what SERVED it. On a gateway
+   *  lane the reported model is routinely an echo of the id that was
+   *  REQUESTED. A summary over the turn: every distinct value, `mixed` when
+   *  more than one was seen, `truncated` when the per-message records hit
+   *  their cap (the lists are then what was kept). Absent on every other
+   *  lane and on every historical row. See `reportedLabel`. */
+  reported?: {
+    requests: number
+    models: string[]
+    providers: string[]
+    mixed: boolean
+    first_id?: string
+    first_request_id?: string
+    truncated?: boolean
+  }
+  /** audit C-2, OpenRouter lane only: did the `modelUsage` lookup the cost
+   *  path performs — keyed by the id ORGTREE asked for — match a key the CLI
+   *  actually wrote? Recorded so a miss stops being indistinguishable from a
+   *  hit. Diagnostic only; not rendered. */
+  model_usage_key?: { asked: string; matched: boolean; keys?: string[] }
 }
 
 // schema.py AudienceGrant (§7.3)

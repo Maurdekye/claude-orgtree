@@ -131,3 +131,66 @@ test('spend still opens the badge on its own, unknown cost still says so',
       assert.equal(partial.span?.textContent, '$2.00 estimated/incomplete')
     } finally { await partial.view.unmount() }
   })
+
+// ── the reported upstream is the SECOND surface this gate can hide ────────
+//
+// Same failure as the rights rows above, one surface later: a FREE or
+// known-zero OpenRouter turn costs $0.00, has no denials and no approvals,
+// and the tooltip is the only place its reported upstream is rendered. With
+// the gate at (cost || unknown || rights) the badge did not exist, so the
+// metadata could not be read on exactly the turns a free model is used for.
+// Caught in review before it shipped.
+const reported = (over: Partial<NonNullable<TurnStat['reported']>> = {}) => ({
+  requests: 1, models: ['x-ai/grok-4.6'], providers: ['xAI'], mixed: false,
+  ...over,
+})
+
+test('a known-zero turn with reported metadata still shows the badge', async () => {
+  const { view, span, title } = await badge({
+    cost_usd: 0, turns: [turn({ reported: reported() } as Partial<TurnStat>)],
+  })
+  try {
+    assert.ok(span, 'a free $0.00 turn hid the only surface its upstream has')
+    assert.equal(span.textContent, '$0.00',
+      'a known zero is still $0.00 — opening the badge must not make it an estimate')
+    assert.match(title, /reported upstream xAI/)
+    assert.match(title, /model x-ai\/grok-4\.6/)
+    assert.doesNotMatch(title, /serv/i,
+      'the tooltip may not say anything was served — the model is an echo of the request')
+  } finally { await view.unmount() }
+})
+
+test('a known-zero turn with NO reported metadata still shows no badge', async () => {
+  // NEGATIVE CONTROL for the clause above. Without it, the first check would
+  // pass under a gate that opened for every zero-cost node in the org.
+  const quiet = await badge({ cost_usd: 0, turns: [turn()] })
+  try {
+    assert.equal(quiet.span, null, 'no spend, no rights, no metadata: stay away')
+  } finally { await quiet.view.unmount() }
+
+  // an EMPTY block is not metadata either — the backend writes no block at
+  // all when a turn reported nothing, but a stale or partial row must not
+  // open the badge on nothing
+  const empty = await badge({
+    cost_usd: 0,
+    turns: [turn({ reported: { requests: 0, models: [], providers: [], mixed: false } } as Partial<TurnStat>)],
+  })
+  try {
+    assert.equal(empty.span, null, 'an empty reported block opened an empty badge')
+  } finally { await empty.view.unmount() }
+})
+
+test('metadata on a turn the tooltip never renders does not open the badge',
+  async () => {
+    // the same window rule the rights clause follows: the gate counts the
+    // five turns the tooltip shows, so a badge opened for metadata has it
+    const five = [turn(), turn(), turn(), turn(), turn()]
+    const outside = await badge({
+      cost_usd: 0,
+      turns: [turn({ reported: reported() } as Partial<TurnStat>), ...five],
+    })
+    try {
+      assert.equal(outside.span, null,
+        'a turn outside the rendered window opened a badge with nothing in it')
+    } finally { await outside.view.unmount() }
+  })

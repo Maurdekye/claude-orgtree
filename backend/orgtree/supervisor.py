@@ -717,6 +717,86 @@ def _is_engine_error_event(ev: dict[str, Any], msg: dict[str, Any]) -> bool:
             or msg.get("isApiErrorMessage") is True)
 
 
+#: how many per-message records the turn keeps before it stops collecting.
+#: A turn is a handful of messages; this exists so a pathological one cannot
+#: grow the org document without bound.
+_REPORTED_CAP = 64
+
+#: (key, where it sits, how much of it is kept) — an ALLOWLIST of scalars,
+#: nothing else is copied off a message. `model`, `provider` and `id` sit on
+#: the message; `request_id` is the wrapper-level field the stdout projection
+#: adds when the message has one, and on the OpenRouter lane the captured
+#: transcript shows it carrying the gateway's own generation id (`gen-…`).
+_REPORTED_FIELDS = (("model", "msg", 80), ("provider", "msg", 40),
+                    ("id", "msg", 64), ("request_id", "ev", 64))
+
+
+def _note_reported(acc: dict[str, Any], ev: dict[str, Any],
+                   msg: dict[str, Any]) -> None:
+    """Record what the CLI REPORTED about one delivered assistant message.
+
+    ⚠ REPORTED, NEVER "SERVED". Nothing here is evidence about which machine
+    answered: these are the values the CLI put on the message, and on a
+    gateway lane `model` is routinely an echo of the id that was REQUESTED.
+    The turn summary keeps every distinct value and says when they differ
+    (`mixed`) rather than choosing one and calling it the answer.
+
+    Only the allowlisted scalars are copied, only when they are non-empty
+    strings, and each is bounded. A message carrying none of them adds
+    nothing — not an empty row — so `requests` counts messages that actually
+    reported something.
+
+    WHAT IS ESTABLISHED, AND HOW (2026-09-05, both recorded so a reader can
+    weigh them separately): the VALUES are measured in a captured transcript
+    on this machine (2.1.258, an OpenRouter-driven grok-4.6 agent: `provider`
+    "xAI" on 559 of 560 assistant records and absent on the synthetic one,
+    `model` echoing the requested id on all 560, `id` on all 560, and the
+    record-level `requestId` carrying `gen-1788438176-…`). That these reach
+    STDOUT is SOURCE-DERIVED, read out of the same build's binary: the stdout
+    projection passes the message object by reference and adds
+    `request_id` when the message has one. It is NOT a captured stdout
+    observation, and no live turn was run to check it."""
+    rec: dict[str, str] = {}
+    for key, where, limit in _REPORTED_FIELDS:
+        val = (msg if where == "msg" else ev).get(key)
+        if isinstance(val, str) and val.strip():
+            rec[key] = val.strip()[:limit]
+    if not rec:
+        return
+    acc["requests"] = int(acc.get("requests") or 0) + 1
+    rows = cast("list[dict[str, str]]", acc.setdefault("rows", []))
+    if len(rows) < _REPORTED_CAP:
+        rows.append(rec)
+    else:
+        acc["truncated"] = True
+
+
+def _reported_summary(acc: Mapping[str, Any]) -> dict[str, Any] | None:
+    """The turn's reported metadata as ONE record for the ring, or None.
+
+    A SUMMARY OVER THE TURN, not "the last one": every distinct reported
+    model and provider is kept, sorted, and `mixed` says outright when the
+    turn saw more than one of either. ⚠ When `truncated` is set, `models`,
+    `providers` and `mixed` describe the rows that were KEPT — `mixed` is
+    then a lower bound and never a denial that the rest differed."""
+    rows = cast("list[dict[str, str]]", acc.get("rows") or [])
+    if not rows:
+        return None
+    models = sorted({r["model"] for r in rows if r.get("model")})
+    providers = sorted({r["provider"] for r in rows if r.get("provider")})
+    out: dict[str, Any] = {
+        "requests": int(acc.get("requests") or 0),
+        "models": models, "providers": providers,
+        "mixed": len(models) > 1 or len(providers) > 1}
+    for key, name in (("id", "first_id"), ("request_id", "first_request_id")):
+        first = next((r[key] for r in rows if r.get(key)), "")
+        if first:
+            out[name] = first
+    if acc.get("truncated"):
+        out["truncated"] = True
+    return out
+
+
 def _note_synthetic_status(into: dict[str, Any], ev: dict[str, Any],
                            text: str) -> None:
     """The LATEST unresolved engine-authored API error, with its status.
@@ -13310,6 +13390,13 @@ def _run_one_turn(slug: str, nid: str,
             # own transcript the whole time. RECORDING ONLY: this feeds
             # `_for_the_record` and nothing else. See D-149.
             stream_api_err: dict[str, Any] = {}
+            # what the CLI REPORTED about each delivered message — collected
+            # on the OpenRouter lane only, because that is the lane where the
+            # tier orgtree asked for and whatever answered can differ (see
+            # `_note_reported`). Empty everywhere else, and an empty
+            # accumulator summarises to None, so no other lane's ring changes.
+            reported_acc: dict[str, Any] = {}
+            _report_lane = str(st.get("ran_as") or "") == OPENROUTER_IDENTITY
             turn_occ = 0        # context-size HIGH-WATER over the turn's calls
                                 # (per-message point-in-time usage — see the
                                 # max() site; №24 was about the result event)
@@ -13813,6 +13900,11 @@ def _run_one_turn(slug: str, nid: str,
                             # turn that went on to produce output. A synthetic
                             # error AFTER this one sets the slot afresh.
                             _clear_synthetic_status(stream_api_err)
+                            # …and this is the message the metadata describes:
+                            # engine-authored records are excluded above, so
+                            # `<synthetic>` never lands in the reported set.
+                            if _report_lane:
+                                _note_reported(reported_acc, ev, _msg)
                         u = ev.get("message", {}).get("usage") or {}
                         if u and not sub:
                             # Exact last top-level request receipt. The result
@@ -15581,6 +15673,9 @@ def _run_one_turn(slug: str, nid: str,
             res["_mcp_tool_count"] = turn_mcp_count
             res["_mcp_tool_names"] = turn_mcp_names
             res["_mcp_tool_fingerprint"] = turn_mcp_fingerprint
+            _rep = _reported_summary(reported_acc)
+            if _rep is not None:
+                res["_reported"] = _rep
             if last_cache_usage:
                 res["_cache_usage"] = last_cache_usage
             paid_booked = True     # _after_turn books `res`'s cost itself
@@ -16748,6 +16843,7 @@ def _after_turn(slug: str, nid: str, org: Org, res: dict[str, Any],
     if nid not in org.nodes:
         return
     _tier0 = str(org.node(nid).get("model") or "")
+    _mu_probe: dict[str, Any] | None = None     # audit C-2, set on the OR lane
     # THE OPENROUTER LANE'S COST (2026-09-02, measured on 2.1.258). The CLI
     # canonicalizes an `anthropic/…` id (modelUsage.canonicalModel) and
     # prices it at LIST (`costBasis: "list"`) — exactly OpenRouter's
@@ -16768,6 +16864,22 @@ def _after_turn(slug: str, nid: str, org: Org, res: dict[str, Any],
         _model_id = org.model_for(nid)
         _mu = cast("dict[str, Any]", res.get("modelUsage") or {})
         _row = cast("dict[str, Any]", _mu.get(_model_id) or {})
+        # ⚠ THIS LOOKUP CAN MISS, AND THE MISS IS INVISIBLE (audit C-2). The
+        # key is the id ORGTREE asked for; the CLI writes `modelUsage` under
+        # whatever key IT used, and on a proxied lane the two need not agree
+        # — the actual gateway key has never been observed. A miss leaves
+        # `_row` empty, the `costBasis == "list"` branch silently does not
+        # apply, and the turn falls to catalogue estimation marked
+        # incomplete. That is the recoverable direction, so nothing here
+        # changes what is charged; what changes is that the miss is now on
+        # the record instead of being indistinguishable from a hit. The keys
+        # are recorded as reported and are NOT read as a served model.
+        _mu_probe = {"asked": _model_id, "matched": _model_id in _mu}
+        if _mu:
+            # bounded BOTH ways — four keys, and each key itself clipped.
+            # The CLI's key is a model id today, but it is the CLI's string
+            # and not ours, and this one lands in the org document.
+            _mu_probe["keys"] = [str(k)[:80] for k in sorted(_mu)][:4]
         _usage_raw = res.get("usage")
         _u = (cast("dict[str, Any]", _usage_raw)
               if isinstance(_usage_raw, dict) else {})
@@ -17008,6 +17120,14 @@ def _after_turn(slug: str, nid: str, org: Org, res: dict[str, Any],
                 entry["cost_unknown_fields"] = list(
                     dict.fromkeys(cast("list[str]", _cost_unknown)))
             _stamp_ran_as(entry, slug, nid)
+            if isinstance(res.get("_reported"), dict):
+                # REPORTED MODEL / UPSTREAM, never "served" — see
+                # `_note_reported`. A summary over the turn's messages, with
+                # `mixed` stated rather than a single value chosen.
+                entry["reported"] = dict(cast("dict[str, Any]",
+                                              res["_reported"]))
+            if _mu_probe is not None:
+                entry["model_usage_key"] = dict(_mu_probe)
             _route_rec = res.get("_codex_route")
             if isinstance(_route_rec, dict):
                 # the ROUTE RECEIPT on the ring (item 12): what this turn was

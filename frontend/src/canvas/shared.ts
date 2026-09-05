@@ -1771,6 +1771,36 @@ export const md = (text: string | null | undefined,
   }
   return hit
 }
+/** What the CLI REPORTED about the messages a turn delivered, for the $ badge
+ *  tooltip — OpenRouter lane only, absent everywhere else.
+ *
+ *  ⚠ THE WORD "SERVED" IS NOT AVAILABLE TO THIS SURFACE, and that is the whole
+ *  point of the function. On a gateway lane the reported model is routinely an
+ *  ECHO of the id that was requested, so "served by x-ai/grok-4.6" would be a
+ *  claim about which machine answered that nothing here can support. It says
+ *  `reported`, it names every distinct value rather than picking one, and when
+ *  the turn saw more than one it says so instead of hiding it behind the last
+ *  one. `partial` marks a turn whose per-message records hit their cap: the
+ *  values listed are then the ones kept, so `mixed` is a floor and never a
+ *  denial that the rest differed. */
+export const reportedLabel = (r: {
+  models?: string[]
+  providers?: string[]
+  mixed?: boolean
+  truncated?: boolean
+} | null | undefined): string => {
+  const providers = (r?.providers ?? []).filter(Boolean)
+  const models = (r?.models ?? []).filter(Boolean)
+  if (!providers.length && !models.length) return ''
+  const parts = [
+    providers.length ? `upstream ${providers.join(', ')}` : '',
+    models.length ? `model ${models.join(', ')}` : '',
+  ].filter(Boolean)
+  return `reported ${parts.join(' · ')}`
+    + (r?.mixed ? ' (mixed)' : '')
+    + (r?.truncated ? ' (partial)' : '')
+}
+
 export const smooth = (t: number) => t * t * (3 - 2 * t)
 
 // ---- connection segments (world space). kind 'c' = cubic bezier, 'l' = line.

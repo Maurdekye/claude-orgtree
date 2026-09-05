@@ -26,7 +26,7 @@ import {
   HearingIcon, LayersIcon, LockIcon, MailIcon, PlayIcon, PsychologyIcon,
   SettingsIcon, SparkIcon, StopIcon, WarnIcon,
 } from '../icons'
-import { ago, ALL_PRESENT, ALL_TIERS, anyTierSeat, CODEX_TIERS, CopyIcon, EXTERN, fmtCredits, freezeKind, FREEZE_LABEL, ANTIGRAVITY_TIERS, isOpenRouterTier, md, openrouterTierIds, PROVIDER_LABEL, providerOf, queuedSwitchTitle, TIER_LETTER, tierCapabilityNotes, tierLabel, tierShown, USER, useEsc, usePolled } from './shared'
+import { ago, ALL_PRESENT, ALL_TIERS, anyTierSeat, CODEX_TIERS, CopyIcon, EXTERN, fmtCredits, freezeKind, FREEZE_LABEL, ANTIGRAVITY_TIERS, isOpenRouterTier, md, openrouterTierIds, PROVIDER_LABEL, providerOf, queuedSwitchTitle, reportedLabel, TIER_LETTER, tierCapabilityNotes, tierLabel, tierShown, USER, useEsc, usePolled } from './shared'
 import type { ProviderPresence } from './shared'
 import {
   addPending, CHAT_WINDOW, dismissPending, dropPending,
@@ -962,7 +962,15 @@ type SpendNode = {
  *  real, known $0.00 and would hide the rights rows with the badge. Rights
  *  open it on their own, off the SAME five turns the tooltip renders, so a
  *  badge opened for rights always has rights in it. A known zero prints as
- *  $0.00, never as an estimate. */
+ *  $0.00, never as an estimate.
+ *
+ *  ⚠ AND THE SAME TRAP CLAIMED THE REPORTED METADATA (2026-09-05, caught in
+ *  review before it shipped). A free or known-zero OpenRouter turn with no
+ *  denials and no approvals passed the gate at `false` — and this tooltip is
+ *  the ONLY place the reported upstream is rendered, so the whole surface
+ *  vanished on exactly the turns a free model is used for. It opens the
+ *  badge on the same terms as rights: presence over the SAME five turns, so
+ *  a badge opened for metadata always has that metadata in it. */
 export function SpendBadge({ node }: { node: SpendNode }) {
   const cost = node.cost_usd ?? 0
   const costUnknown = node.cost_usd_unknown === true
@@ -980,7 +988,9 @@ export function SpendBadge({ node }: { node: SpendNode }) {
   ]
   const anyRights = rights.length > 0
     || turns.some((t) => (t.denials ?? 0) > 0 || (t.approvals ?? 0) > 0)
-  if (!(cost > 0 || costUnknown || anyRights)) return null
+  /* …the same test for the reported upstream, over the same five turns */
+  const anyReported = turns.some((t) => reportedLabel(t.reported) !== '')
+  if (!(cost > 0 || costUnknown || anyRights || anyReported)) return null
   return (
     <span className="badge dim"
       title={[
@@ -988,6 +998,7 @@ export function SpendBadge({ node }: { node: SpendNode }) {
           `${fmtShort(t.at)} · $${(t.cost ?? 0).toFixed(2)}`
           + (t.estimated ? ' est.' : '')
           + (t.cost_source ? ` · ${t.cost_source}` : '')
+          + (reportedLabel(t.reported) ? ` · ${reportedLabel(t.reported)}` : '')
           + (t.cost_unknown_fields?.length
             ? ` · unresolved: ${t.cost_unknown_fields.join(', ')}` : '')
           + (t.ms ? ` · ${Math.round(t.ms / 1000)}s` : '')

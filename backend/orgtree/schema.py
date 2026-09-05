@@ -121,6 +121,21 @@ class TurnStat(TypedDict):
     # a post-mortem can still read. Absent when the node has not run in this
     # backend process — absent, not "unknown", so it cannot read as a measure.
     ran_as: NotRequired[str]
+    #: WHAT THE CLI REPORTED ABOUT THE MESSAGES IT DELIVERED (2026-09-05),
+    #: OpenRouter lane only, absent everywhere else and on every historical
+    #: row. A SUMMARY over the turn — `models`, `providers`, `requests`,
+    #: `first_id`, `first_request_id`, `mixed`, `truncated` — never a single
+    #: value chosen as the answer. ⚠ REPORTED, NOT SERVED: on a gateway lane
+    #: the reported model is routinely an echo of the id that was REQUESTED,
+    #: so this says what the CLI put on the message and nothing about which
+    #: machine answered. See `supervisor._note_reported`.
+    reported: NotRequired[dict[str, Any]]
+    #: audit C-2: did the `modelUsage` lookup key the cost path uses — the id
+    #: ORGTREE asked for — match a key the CLI actually wrote? `asked`,
+    #: `matched`, and up to four of the CLI's own keys. It records a miss
+    #: that was previously indistinguishable from a hit; it does not change
+    #: what is charged, and the keys are not read as a served model.
+    model_usage_key: NotRequired[dict[str, Any]]
 
 
 class FrozenInfo(TypedDict, total=False):
