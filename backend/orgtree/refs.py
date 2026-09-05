@@ -36,12 +36,29 @@ from __future__ import annotations
 import re
 from typing import Any
 
-#: one segment of a reference. Deliberately the intersection of every
-#: identity alphabet in the product, so a token can never carry a delimiter.
+#: org slugs, item slugs, document ids and mail ids — all of them come from
+#: `ledger.slugify`, `Org._work_slugify` or a hex mint, so none can carry a
+#: delimiter.
 SEG = r"[a-z0-9-]+"
 
-#: the whole family, for a matcher that has to find these inside prose
-TOKEN_RE = re.compile(r"@(item|doc|agent|mail):((?:" + SEG + r")(?:/" + SEG + r")*)")
+#: ⚠ A NODE ID IS A WIDER DOMAIN THAN A SLUG, and assuming otherwise was wrong
+#: here. A knowledge bearer is `<name>@<generation>` (`ledger.py`: `pred_id =
+#: f"{nid}@{gen}"`), so `codex-checklist@4` is a real, addressable agent. The
+#: first version of this module derived its alphabet from the hire path alone
+#: and would have refused every bearer — and a parser that "recovered" by
+#: truncating at the `@` would silently address the LIVE agent instead of the
+#: bearer, which is the wrong-target failure this format exists to prevent.
+#: So the generation is part of the segment, never something to cut off.
+NODE = r"[a-z0-9-]+(?:@[0-9]+)?"
+
+#: the whole family, for a matcher that has to find these inside prose. The
+#: node positions are the only ones that admit `@`, and only as `@<digits>` —
+#: so a following `@item:…` can never be swallowed into one.
+TOKEN_RE = re.compile(
+    r"@(?:(item|doc):(" + SEG + r"/" + SEG + r")"
+    r"|(agent):(" + SEG + r"/" + NODE + r")"
+    r"|(mail):(" + SEG + r"/(?:user|org)/" + SEG
+    + r"|" + SEG + r"/node/" + NODE + r"/" + SEG + r"))")
 
 KINDS = ("item", "doc", "agent", "mail")
 MAIL_BOXES = ("user", "org", "node")
@@ -77,9 +94,23 @@ def mail(org: str, delivered: str, mid: str) -> str | None:
         return f"@mail:{org}/user/{m}"
     if d.startswith("@"):
         return f"@mail:{org}/org/{m}"
-    if re.fullmatch(SEG, d):
+    if re.fullmatch(NODE, d):
         return f"@mail:{org}/node/{d}/{m}"
     return None
+
+
+def find_all(text: str) -> list[tuple[str, str]]:
+    """Every token in `text`, as `(kind, rest)` pairs, in order.
+
+    The regex uses an alternation so the node positions can admit `@<gen>`,
+    which makes its group numbering an implementation detail. Callers — and
+    the cross-language fixture — use this instead of reading groups."""
+    out: list[tuple[str, str]] = []
+    for m in TOKEN_RE.finditer(str(text or "")):
+        kind = m.group(1) or m.group(3) or m.group(5)
+        rest = m.group(2) or m.group(4) or m.group(6)
+        out.append((str(kind), str(rest)))
+    return out
 
 
 def parse(token: str) -> dict[str, Any] | None:
@@ -87,15 +118,11 @@ def parse(token: str) -> dict[str, Any] | None:
     m = TOKEN_RE.fullmatch(str(token or ""))
     if not m:
         return None
-    kind, rest = m.group(1), m.group(2).split("/")
+    kind = m.group(1) or m.group(3) or m.group(5)
+    rest = (m.group(2) or m.group(4) or m.group(6)).split("/")
     if kind in ("item", "doc", "agent"):
-        if len(rest) != 2:
-            return None
         return {"kind": kind, "org": rest[0], "id": rest[1]}
-    # mail
-    if len(rest) == 3 and rest[1] in ("user", "org"):
+    if len(rest) == 3:
         return {"kind": "mail", "org": rest[0], "box": rest[1], "id": rest[2]}
-    if len(rest) == 4 and rest[1] == "node":
-        return {"kind": "mail", "org": rest[0], "box": "node",
-                "node": rest[2], "id": rest[3]}
-    return None
+    return {"kind": "mail", "org": rest[0], "box": "node",
+            "node": rest[2], "id": rest[3]}

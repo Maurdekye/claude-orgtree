@@ -550,7 +550,7 @@ uiTest('§21 selecting a child OPENS ITS ANCESTORS, or the row is not there',
 
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
-import { parseRef, REF_TOKEN_RE } from '../src/canvas/workrefs'
+import { findRefs, parseRef } from '../src/canvas/workrefs'
 
 // ⚠ `__SRC_DIR__`, NOT `import.meta.url`: run.mjs bundles each suite into
 // node_modules/.orgtree-tests, so a URL relative to the module resolves next
@@ -589,9 +589,7 @@ test('§22 THE TWO PARSERS AGREE, token for token', () => {
 
 test('§23 …and they find the same tokens in the same prose', () => {
   for (const [text, want] of Object.entries(FIXTURE.prose)) {
-    const got = [...text.matchAll(new RegExp(REF_TOKEN_RE.source, 'g'))]
-      .map((m) => [m[1], m[0].slice(String(m[1]).length + 2)])
-    assert.deepEqual(got, want.map((w) => [w[0], w[1]]),
+    assert.deepEqual(findRefs(text), want.map((w) => [w[0], w[1]]),
       `the two matchers disagree about ${JSON.stringify(text)}`)
   }
 })

@@ -220,31 +220,47 @@ export interface TypedRef {
   node?: string
 }
 
-/** one segment — the intersection of every identity alphabet in the product,
- *  which is why `:` and `/` can be delimiters at all */
+/** org slugs, item slugs, document ids and mail ids */
 const SEG = '[a-z0-9-]+'
-export const REF_TOKEN_RE =
-  new RegExp(`@(item|doc|agent|mail):(?:${SEG})(?:/${SEG})*`, 'g')
+/** ⚠ A NODE ID IS A WIDER DOMAIN. A knowledge bearer is `<name>@<generation>`
+ *  (`ledger.py`: `pred_id = f"{nid}@{gen}"`), so `codex-checklist@4` is a real
+ *  addressable agent. A parser that "recovered" by truncating at the `@` would
+ *  address the LIVE agent instead of the bearer — the wrong-target failure
+ *  this format exists to prevent. The generation is part of the segment. */
+const NODE = '[a-z0-9-]+(?:@[0-9]+)?'
+
+/** the family, for scanning prose. Only the node positions admit `@`, and
+ *  only as `@<digits>`, so a following `@item:…` is never swallowed. */
+export const REF_TOKEN_RE = new RegExp(
+  `@(?:(item|doc):(${SEG}/${SEG})`
+  + `|(agent):(${SEG}/${NODE})`
+  + `|(mail):(${SEG}/(?:user|org)/${SEG}|${SEG}/node/${NODE}/${SEG}))`, 'g')
+
+/** Every token in `text`, as `[kind, rest]`, in order. The alternation makes
+ *  group numbering an implementation detail; callers use this. */
+export function findRefs(text: string): [string, string][] {
+  const out: [string, string][] = []
+  for (const m of String(text ?? '').matchAll(
+    new RegExp(REF_TOKEN_RE.source, 'g'))) {
+    out.push([String(m[1] ?? m[3] ?? m[5]), String(m[2] ?? m[4] ?? m[6])])
+  }
+  return out
+}
 
 /** A token to its parts, or null when it is not one. Never a guess: a
  *  malformed token resolves to nothing rather than to something plausible. */
 export function parseRef(token: string): TypedRef | null {
-  const m = new RegExp(`^@(item|doc|agent|mail):((?:${SEG})(?:/${SEG})*)$`)
-    .exec(String(token ?? ''))
+  const m = new RegExp(`^${REF_TOKEN_RE.source}$`).exec(String(token ?? ''))
   if (!m) return null
-  const kind = m[1] as RefKind
-  const seg = (m[2] as string).split('/')
+  const kind = (m[1] ?? m[3] ?? m[5]) as RefKind
+  const seg = String(m[2] ?? m[4] ?? m[6]).split('/')
   if (kind !== 'mail') {
-    return seg.length === 2
-      ? { kind, org: seg[0] as string, id: seg[1] as string } : null
+    return { kind, org: seg[0] as string, id: seg[1] as string }
   }
-  if (seg.length === 3 && (seg[1] === 'user' || seg[1] === 'org')) {
+  if (seg.length === 3) {
     return { kind, org: seg[0] as string, box: seg[1] as MailBox,
       id: seg[2] as string }
   }
-  if (seg.length === 4 && seg[1] === 'node') {
-    return { kind, org: seg[0] as string, box: 'node',
-      node: seg[2] as string, id: seg[3] as string }
-  }
-  return null
+  return { kind, org: seg[0] as string, box: 'node',
+    node: seg[2] as string, id: seg[3] as string }
 }

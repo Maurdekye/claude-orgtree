@@ -4078,6 +4078,23 @@ def work_item_accept(slug: str, wid: str, body: WorkAccept) -> dict[str, Any]:
     return r
 
 
+def _mail_refs(org_slug: str, box: str, rows: list[Any],
+               node: str | None = None) -> list[Any]:
+    """Stamp each mail row with its own reference, so a reader can link to a
+    message that already exists rather than only to one it just sent.
+
+    The BOX is the caller's, because a mail id alone does not address a mail —
+    the three box families mint ids independently."""
+    delivered = ("user_inbox" if box == "user"
+                 else "@org" if box == "org" else str(node or ""))
+    for r in rows:
+        if isinstance(r, dict) and r.get("id"):
+            ref = refs.mail(org_slug, delivered, str(r["id"]))
+            if ref:
+                r["ref"] = ref
+    return rows
+
+
 def _work_refs(org_slug: str, payload: dict[str, Any]) -> dict[str, Any]:
     """Stamp every listed item with its own reference. A LIST is where a
     reader most often needs one — the user asked to link EXISTING work, not
@@ -4170,12 +4187,17 @@ def _work_read_call(body: AgentCall, a: dict[str, Any]) -> dict[str, Any]:
         org = store.load_org(body.org)
         org._require_live(body.node)
         _work_identity_guard(org)
+        # ⚠ THESE RETURN EARLY, outside the lock and outside `_attach_ref`, so
+        # they have to stamp their own. An agent reading the docket is the
+        # caller most likely to need a reference it can paste.
         if act == "list":
-            return org.work_list(
+            return _work_refs(body.org, org.work_list(
                 body.node,
                 include_archived=_arg_flag(a, "include_archived"),
-                include_backlogged=_arg_flag(a, "include_backlogged"))
-        return {"item": org.work_get(body.node, _work_ref(a))}
+                include_backlogged=_arg_flag(a, "include_backlogged")))
+        it = org.work_get(body.node, _work_ref(a))
+        it["ref"] = refs.item(body.org, str(it["slug"]))
+        return {"item": it}
     except LedgerError as e:
         raise HTTPException(422, str(e))
 
@@ -4415,9 +4437,10 @@ def user_inbox(slug: str) -> dict[str, Any]:
             slug, ("user_mail_log", "user_outbox")).d
     except LedgerError as e:
         raise HTTPException(404, str(e))
-    return {"pending": d.get("user_inbox", []),
-            "delivered": d.get("user_mail_log", [])[-50:],
-            "sent": d.get("user_outbox", [])[-50:]}
+    return {"pending": _mail_refs(slug, "user", d.get("user_inbox", [])),
+            "delivered": _mail_refs(slug, "user",
+                                    d.get("user_mail_log", [])[-50:]),
+            "sent": _mail_refs(slug, "user", d.get("user_outbox", [])[-50:])}
 
 
 class InboxRead(Body):
@@ -8010,7 +8033,19 @@ def node_inbox(slug: str, nid: str) -> dict[str, Any]:
         if m["from"] == nid:
             sent.append({**m, "to": USER})
     sent.sort(key=lambda m: m["at"])
-    return {"pending": waiting, "delivered": delivered[-50:], "sent": sent[-50:]}
+    # ⚠ `sent` IS MIRRORED FROM THE RECIPIENTS' ARCHIVES, so each row lives in
+    # the RECIPIENT's box, not this node's — a reference built from `nid` here
+    # would name a mail that is not there. Each sent row carries its own `to`,
+    # so it addresses its own box.
+    for m in sent:
+        to = str(m.get("to") or "")
+        ref = refs.mail(slug, "user_inbox" if to == USER else to,
+                        str(m.get("id") or ""))
+        if ref:
+            m["ref"] = ref
+    return {"pending": _mail_refs(slug, "node", waiting, nid),
+            "delivered": _mail_refs(slug, "node", delivered[-50:], nid),
+            "sent": sent[-50:]}
 
 
 @app.get("/api/orgs/{slug}/events")

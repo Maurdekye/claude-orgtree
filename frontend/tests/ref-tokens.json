@@ -3,6 +3,11 @@
   "parse": {
     "": null,
     "@": null,
+    "@agent:alpha/codex-checklist@4": {
+      "id": "codex-checklist@4",
+      "kind": "agent",
+      "org": "alpha"
+    },
     "@agent:alpha/luna-reserve": {
       "id": "luna-reserve",
       "kind": "agent",
@@ -20,6 +25,7 @@
       "kind": "item",
       "org": "alpha"
     },
+    "@item:alpha/not-a-node@4": null,
     "@item:alpha/w1234abcd": {
       "id": "w1234abcd",
       "kind": "item",
@@ -33,6 +39,13 @@
     "@item:only-one-segment": null,
     "@item:org/": null,
     "@item:org/thing/": null,
+    "@mail:alpha/node/codex-checklist@4/ab12cd34": {
+      "box": "node",
+      "id": "ab12cd34",
+      "kind": "mail",
+      "node": "codex-checklist@4",
+      "org": "alpha"
+    },
     "@mail:alpha/node/luna-reserve/ab12cd34": {
       "box": "node",
       "id": "ab12cd34",
@@ -65,6 +78,16 @@
     "item:org/thing": null
   },
   "prose": {
+    "@agent:a/b@2@item:a/c": [
+      [
+        "agent",
+        "a/b@2"
+      ],
+      [
+        "item",
+        "a/c"
+      ]
+    ],
     "@item:alpha/thing.": [
       [
         "item",
@@ -81,6 +104,12 @@
       [
         "doc",
         "alpha/d1a2b3c4"
+      ]
+    ],
+    "ask @agent:alpha/codex-checklist@4 about it": [
+      [
+        "agent",
+        "alpha/codex-checklist@4"
       ]
     ],
     "https://x.dev/@item:alpha/thing is a URL": [

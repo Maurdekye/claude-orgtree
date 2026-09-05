@@ -145,10 +145,19 @@ def a_send_with_no_local_box_gets_no_reference():
 def the_matcher_finds_tokens_in_prose_and_stops_at_the_token():
     """The family regex is what a prose matcher scans with; it must end where
     the token ends rather than swallowing the punctuation after it."""
-    found = refs.TOKEN_RE.findall(
+    found = refs.find_all(
         "see @item:alpha/git-review-workspace, and @mail:alpha/user/ab12. done")
     assert found == [("item", "alpha/git-review-workspace"),
                      ("mail", "alpha/user/ab12")], found
+    # ⚠ A BEARER'S GENERATION IS PART OF THE NAME, never something to cut off:
+    # truncating at the `@` would address the LIVE agent instead of the
+    # bearer, which is the wrong-target failure this format exists to prevent.
+    assert refs.find_all("ask @agent:alpha/codex-checklist@4 about it") ==         [("agent", "alpha/codex-checklist@4")]
+    assert refs.parse("@agent:alpha/codex-checklist@4") ==         {"kind": "agent", "org": "alpha", "id": "codex-checklist@4"}
+    assert refs.parse("@mail:alpha/node/codex-checklist@4/ab12") ==         {"kind": "mail", "org": "alpha", "box": "node",
+         "node": "codex-checklist@4", "id": "ab12"}
+    # ...and a token butting straight up against the next one still splits
+    assert refs.find_all("@agent:a/b@2@item:a/c") ==         [("agent", "a/b@2"), ("item", "a/c")]
 
 
 def the_cross_language_fixture_is_current():
