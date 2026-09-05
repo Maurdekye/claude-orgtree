@@ -773,8 +773,11 @@ export function InboxView({ slug, nid, onRetract, jumpTo, jumpSeq, tier, onFocus
   // behalf of may be one with no `lookup` of its own (Sent), and such a list
   // can only say "not in this folder" — a claim about the message, made while
   // the question is still in flight or after it FAILED.
-  const [jumpAsk, setJumpAsk] = useState<
-    { key: string; asking: boolean; failed: boolean } | null>(null)
+  // ⚠ NOT KEYED ON THE REQUEST. Every path out of the effect below writes it —
+  // found in a loaded list, asked, answered, failed — so it always describes
+  // the latest request; and the one path that does NOT run (no `box` yet)
+  // renders "loading…" in place of any list that could read it.
+  const [jumpAsk, setJumpAsk] = useState<'asking' | 'failed' | null>(null)
   // a deliberate retry, as in the list: nothing re-asks on its own
   const [askAgain, setAskAgain] = useState(0)
   // ⚠ A REQUEST IS SUPERSEDED ONLY BY A NEWER REQUEST. Held in a ref, not in
@@ -785,9 +788,8 @@ export function InboxView({ slug, nid, onRetract, jumpTo, jumpSeq, tier, onFocus
   const askKey = useRef<string | null>(null)
   useEffect(() => () => { askKey.current = null }, [])
   useEffect(() => {
-    const key = jumpKey(jumpTo, jumpSeq)
     // a retry is a new attempt at the same request: it must pass the latch
-    const req = key + '#' + askAgain
+    const req = jumpKey(jumpTo, jumpSeq) + '#' + askAgain
     if (!jumpTo || !box || foldedJump.current === req) return
     foldedJump.current = req
     const here = (rows: MailRow[] | undefined) =>
@@ -801,25 +803,21 @@ export function InboxView({ slug, nid, onRetract, jumpTo, jumpSeq, tier, onFocus
     // folder they chose. The answer's folder is decided here:
     // `@mail:org/node/<nid>/<id>` names that node's RECEIVED mail.
     askKey.current = req
-    setJumpAsk({ key, asking: true, failed: false })
+    setJumpAsk('asking')
     Promise.resolve(nodeLookup(jumpTo))
       .then((m) => {
         if (askKey.current !== req) return
-        setJumpAsk({ key, asking: false, failed: false })
+        setJumpAsk(null)
         if (m) setFolder('inbox')
       })
       .catch(() => {
         if (askKey.current !== req) return
-        setJumpAsk({ key, asking: false, failed: true })
+        setJumpAsk('failed')
       })
     // ⚠ `jumpSeq` IS IN THE DEPS because this effect READS it. Without it a
     // repeat request never re-runs, and the latch compares a new key the
     // effect is never woken to look at.
   }, [jumpTo, jumpSeq, box, nodeLookup, askAgain])
-  // only for THIS request: a previous jump's outcome says nothing about it
-  const askState = jumpAsk && jumpAsk.key === jumpKey(jumpTo, jumpSeq)
-    ? (jumpAsk.asking ? 'asking' : jumpAsk.failed ? 'failed' : null)
-    : null
   useEffect(() => {         // let go as soon as the server has caught up
     if (!box) return
     setDropped((d) => d.filter((id) => box.pending.some((m) => m.id === id)))
@@ -860,7 +858,7 @@ export function InboxView({ slug, nid, onRetract, jumpTo, jumpSeq, tier, onFocus
                list does not read an unfinished or failed one as an absence. */
             : <MailList delivered={box.sent ?? []} outgoing jumpTo={jumpTo}
                 jumpSeq={jumpSeq} tierOf={tierOf} hasAgent={hasAgent} refs={refs}
-                askState={askState}
+                askState={jumpAsk}
                 onAskRetry={() => setAskAgain((n) => n + 1)}
                 onFocusAgent={onFocusAgent}
                 fileHref={(p) => fileUrl(slug, nid, p)}

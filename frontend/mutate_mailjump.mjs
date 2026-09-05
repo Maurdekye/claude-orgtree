@@ -44,7 +44,9 @@ const MUTANTS = [
     name: 'the failed lookup offers no retry',
     file: MAIL, kills: 'a lookup that FAILS says so',
     from: `                    <button type="button" className="mailer-retry"
-                      onClick={() => setRetry((n) => n + 1)}>try again</button>`,
+                      onClick={onAskRetry ?? (() => setRetry((n) => n + 1))}>
+                      try again
+                    </button>`,
     to: ``,
   },
   {
@@ -53,16 +55,16 @@ const MUTANTS = [
     // latch below it is irrelevant when the effect is never woken.
     name: 'the folder effect stops depending on the request it reads',
     file: MAIL, kills: '§11 a repeat request re-runs the folder decision',
-    from: `  }, [jumpTo, jumpSeq, box, nodeLookup])`,
-    to: `  }, [jumpTo, box, nodeLookup])`,
+    from: `  }, [jumpTo, jumpSeq, box, nodeLookup, askAgain])`,
+    to: `  }, [jumpTo, box, nodeLookup, askAgain])`,
   },
   {
     // ⚠ ASTRA'S THIRD: the answer rendered where the reader happened to be,
     // so an incoming message wore an outgoing row's dress in the wrong folder.
     name: 'a found message does not open the folder that holds it',
     file: MAIL, kills: '§11c a reference to retained mail outside the window',
-    from: `      .then((m) => { if (live && m) setFolder('inbox') })`,
-    to: `      .then(() => { /* leave the folder where it is */ })`,
+    from: `        if (m) setFolder('inbox')`,
+    to: `        /* leave the folder where it is */`,
   },
   {
     // ⚠ ASTRA'S BLOCKER 6, restored: the pane never asks, so a retained message
@@ -85,8 +87,8 @@ const MUTANTS = [
     // the one second somebody is actually looking at it
     name: 'the pane claims absence while it is still asking',
     file: MAIL, kills: 'while the question is in flight it says so',
-    from: `  const lookingUp = outsideWindow && Boolean(lookup)
-    && (!ask || ask.asking)`,
+    from: `  const lookingUp = outsideWindow
+    && ((Boolean(lookup) && (!ask || ask.asking)) || askState === 'asking')`,
     to: `  const lookingUp = false`,
   },
   {
@@ -168,6 +170,83 @@ const MUTANTS = [
     to: `                      Message {jumpTo} is not in this folder. It may have
                       been retracted, or it may not be one you can open.`,
   },
+  // ───── the round Astra executed against 222088a: a folder that cannot ask
+  {
+    // ⚠ ASTRA'S FIRST BOUNDARY CASE. The panel asks on behalf of a list with
+    // no `lookup`; swallowing the rejection leaves that list saying the only
+    // thing it can know unaided, which is a claim about the message.
+    name: 'the panel swallows its own failed question again',
+    file: MAIL, kills: '§12 a rejected question, followed from Sent',
+    from: `                askState={jumpAsk}`,
+    to: ``,
+  },
+  {
+    // the outcome reaches the list but the failure half is dropped: the
+    // network error is once more rendered as "retracted".
+    name: "the owner's FAILED question is not read as a failure",
+    file: MAIL, kills: '§12 a rejected question, followed from Sent',
+    from: `  const lookupFailed = outsideWindow && (Boolean(ask?.failed) || askState === 'failed')`,
+    to: `  const lookupFailed = outsideWindow && Boolean(ask?.failed)`,
+  },
+  {
+    // the in-flight half dropped: an unanswered question reads as an absence
+    name: "the owner's OPEN question is not read as still open",
+    file: MAIL, kills: '§12b an unanswered question',
+    from: `    && ((Boolean(lookup) && (!ask || ask.asking)) || askState === 'asking')`,
+    to: `    && (Boolean(lookup) && (!ask || ask.asking))`,
+  },
+  {
+    // the retry re-asks the LIST's lookup, which this list does not have —
+    // so the button is present, plausible and does nothing at all
+    name: 'the retry does not re-ask the owner that actually asked',
+    file: MAIL, kills: '§12 a rejected question, followed from Sent',
+    from: `                      onClick={onAskRetry ?? (() => setRetry((n) => n + 1))}>`,
+    to: `                      onClick={() => setRetry((n) => n + 1)}>`,
+  },
+  {
+    // ⚠ ASTRA'S SECOND BOUNDARY CASE. The empty-window sentence back above
+    // every jump outcome: a found message, an open question and a real
+    // absence all replaced by a remark about the folder.
+    name: 'an empty window answers an explicit jump with "no mail yet"',
+    file: MAIL, kills: '§13 an explicit jump into an empty window',
+    from: `  if (!all.length && !jumpTo) return <div className="dim pad">no mail yet</div>`,
+    to: `  if (!all.length) return <div className="dim pad">no mail yet</div>`,
+  },
+  {
+    // …and the overcorrection, which §13c exists to catch: an ordinary empty
+    // folder nobody linked into loses its own sentence.
+    name: 'an ordinary empty folder stops saying it is empty',
+    file: MAIL, kills: '§13c CONTROL',
+    from: `  if (!all.length && !jumpTo) return <div className="dim pad">no mail yet</div>`,
+    to: ``,
+  },
+  {
+    // ⚠ ASTRA'S READ-ONLY CONCERN, reproduced and now guarded. `box` is in the
+    // deps and the poll replaces it every few seconds, so an effect-scoped
+    // cancel throws away any answer slower than one tick — and the re-run
+    // returns early on the latch, leaving the question dropped in silence.
+    name: 'a repoll underneath the question throws the answer away',
+    file: MAIL, kills: '§14 an answer that arrives after a repoll',
+    from: `    askKey.current = req
+    setJumpAsk('asking')`,
+    to: `    askKey.current = req
+    setJumpAsk('asking')
+    cancelOnRepoll = () => { askKey.current = null }`,
+    // the cancel is installed as the effect's cleanup, which is exactly what
+    // the previous code did — the poll's next `box` then runs it
+    also: {
+      from: `  useEffect(() => {
+    // a retry is a new attempt at the same request: it must pass the latch`,
+      to: `  let cancelOnRepoll
+  useEffect(() => {
+    // a retry is a new attempt at the same request: it must pass the latch`,
+    },
+    then: {
+      from: `  }, [jumpTo, jumpSeq, box, nodeLookup, askAgain])`,
+      to: `    return () => cancelOnRepoll?.()
+  }, [jumpTo, jumpSeq, box, nodeLookup, askAgain])`,
+    },
+  },
 ]
 
 const norm = (s) => s.replace(/\r\n/g, '\n')
@@ -197,7 +276,8 @@ let survived = 0
 for (const m of MUTANTS) {
   const before = readFileSync(m.file)
   const text = norm(before.toString('utf8'))
-  const edits = [{ from: m.from, to: m.to }, ...(m.also ? [m.also] : [])]
+  const edits = [{ from: m.from, to: m.to },
+    ...(m.also ? [m.also] : []), ...(m.then ? [m.then] : [])]
   let mutated = text
   let stale = false
   for (const e of edits) {
