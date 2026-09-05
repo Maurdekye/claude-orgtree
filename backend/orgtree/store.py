@@ -1540,7 +1540,7 @@ def _owners_of(conn: sqlite3.Connection, sect: str, *,
     return owners
 
 
-def _read_dict_log(conn: sqlite3.Connection, sect: str
+def _read_dict_log(conn: sqlite3.Connection, sect: str, slug: str = ""
                    ) -> tuple[dict[str, list[tuple[int, str]]], SectionMap]:
     """Fully reconstruct one dict log on ``conn``.
 
@@ -1554,7 +1554,7 @@ def _read_dict_log(conn: sqlite3.Connection, sect: str
             "SELECT owner, seq, val FROM log_d WHERE sect=? ORDER BY seq", (sect,)):
         snaps.setdefault(cast(str, owner), []).append(
             (cast(int, seq), cast(str, val)))
-    out = SectionMap("", sect, owners)
+    out = SectionMap(slug, sect, owners)
     for owner in owners:
         rows = snaps[owner]
         log = AppendLog((json.loads(val) for _, val in rows), rows=rows)
@@ -1596,15 +1596,31 @@ def _load_section(slug: str, sect: str, snap_logs: dict[str, Any]) -> Any:
         return al
 
 
-def _load_lazy(conn: sqlite3.Connection, slug: str) -> LazyDoc:
-    """The eager half of a load: every `doc` row and every node, inside ONE
-    read transaction so the two cannot straddle a commit. `nodes` is eager
-    because `Org.__init__` walks every node on every construction (§4.3)."""
+def _load_lazy(conn: sqlite3.Connection, slug: str,
+               preload: Iterable[str] = ()) -> LazyDoc:
+    """Load eager rows plus an optional coherent set of lazy sections.
+
+    Ordinary loads pass no ``preload`` and retain S1's owner-selective lazy
+    reads. A snapshot load names the lazy sections its projection combines
+    with eager fields; those sections are fully read on this same connection
+    and inside this same short transaction. The transaction ends before the
+    returned ``Org`` can do arbitrary work.
+
+    The guarantee is bounded: eager fields and named sections share one
+    SQLite snapshot. An unnamed lazy section may load from a newer revision.
+    """
+    selected = frozenset(preload)
+    unknown = selected - LAZY_SECTIONS
+    if unknown:
+        raise ValueError(f"not lazy sections: {sorted(unknown)!r}")
     d = LazyDoc(slug)
+    preloaded: dict[str, Any] = {}
+    preload_snaps: dict[str, Any] = {}
     conn.execute("BEGIN")
     try:
         raw_order = _meta_get(conn, _META_KEY_ORDER)
         key_order: list[str] = cast("list[str]", json.loads(raw_order)) if raw_order else []
+        schema_version = _meta_get(conn, "schema_version")
         doc_rows: dict[str, str] = {cast(str, k): cast(str, v) for k, v in
                                     conn.execute("SELECT key, val FROM doc")}
         node_rows = [(cast(str, i), cast(str, v)) for i, v in
@@ -1617,9 +1633,50 @@ def _load_lazy(conn: sqlite3.Connection, slug: str) -> LazyDoc:
         for sect in LIST_LOGS:
             if conn.execute("SELECT 1 FROM log_l WHERE sect=? LIMIT 1", (sect,)).fetchone():
                 present.add(sect)
-    finally:
-        conn.execute("COMMIT")
-    if _meta_get(conn, "schema_version") is None:
+        # A recorded key is present even when it has zero rows. Resolve this
+        # before preloading so an empty selected section is frozen as empty,
+        # rather than left for __missing__ to discover after another commit.
+        for k in key_order:
+            if k in LAZY_SECTIONS and k not in doc_rows:
+                present.add(k)
+
+        effective = set(selected)
+        if selected:
+            # Org.__init__ performs a marker-keyed legacy mail-id backfill.
+            # On an unmarked document it reads mail_log even when the route
+            # did not name that section, so bind that exceptional read to the
+            # same snapshot as construction's eager fields.
+            raw_migrations = doc_rows.get("_migrations")
+            migrations = json.loads(raw_migrations) if raw_migrations else {}
+            if not isinstance(migrations, dict) \
+                    or Org.MAIL_LOG_ID_MIGRATION not in migrations:
+                effective.add("mail_log")
+
+        for sect in LAZY_SECTIONS:
+            if sect not in effective or sect in doc_rows or sect not in present:
+                continue
+            if sect in DICT_LOGS:
+                snaps, value = _read_dict_log(conn, sect, slug)
+            else:
+                snaps, value = _read_list_log(conn, sect)
+            preload_snaps[sect] = snaps
+            preloaded[sect] = value
+    except BaseException:
+        # Never return a connection to the pool with a live read transaction,
+        # including on JSON decoding or row construction failure.
+        if conn.in_transaction:
+            with contextlib.suppress(Exception):
+                conn.execute("ROLLBACK")
+        raise
+    else:
+        try:
+            conn.execute("COMMIT")
+        except BaseException:
+            if conn.in_transaction:
+                with contextlib.suppress(Exception):
+                    conn.execute("ROLLBACK")
+            raise
+    if schema_version is None:
         # ⚠ THE DURABILITY CHECK THE JSON BACKEND GOT FOR FREE. A JSON doc
         # that is zero-length or truncated raises `JSONDecodeError`, and
         # `_scan_orgs` skips it; SQLite is far more forgiving — a ZERO-LENGTH
@@ -1639,11 +1696,6 @@ def _load_lazy(conn: sqlite3.Connection, slug: str) -> LazyDoc:
             "orgtree database (no schema_version row) — it may be truncated "
             "or zero-length; restore it from deleted/ or from its "
             ".json.premigration")
-    # a key in the recorded order that is a lazy section counts as present
-    # even with zero rows — that is what `key_order` is for
-    for k in key_order:
-        if k in LAZY_SECTIONS and k not in doc_rows:
-            present.add(k)
     # anything on disk but missing from the recorded order goes at the end
     order = list(key_order)
     known = set(order)
@@ -1671,7 +1723,10 @@ def _load_lazy(conn: sqlite3.Connection, slug: str) -> LazyDoc:
             d._snap_doc[k] = doc_rows[k]
             dict.__setitem__(d, k, json.loads(doc_rows[k]))
         elif k in LAZY_SECTIONS:
-            pass                                    # stays lazy
+            if k in preloaded:
+                d._snap_logs[k] = preload_snaps[k]
+                dict.__setitem__(d, k, preloaded[k])
+            # otherwise stays lazy
         # else: a key recorded in the order with nothing behind it — dropped
     # ⚠ `nodes` is kept UNCONDITIONALLY, not `and node_rows`. An org with no
     # hires yet has `nodes: {}` — a real, empty section, not a missing one —
@@ -2630,43 +2685,51 @@ def list_orgs_with_docs() -> list[tuple[dict[str, Any], Org]]:
     return out
 
 
+def _load_sqlite_org(slug: str, preload: Iterable[str] = ()) -> Org:
+    """Shared SQLite half for ordinary and bounded-snapshot loads."""
+    slug = _safe_slug(slug)
+    _ensure_migrated(slug)
+    db = _db_path(slug)
+    if not os.path.exists(db):
+        raise LedgerError(f"no such org: {slug!r}")
+    try:
+        with _POOL.acquire(slug) as conn:
+            doc = _load_lazy(conn, slug, preload)
+        # Keep Org construction inside this error boundary. On an unmarked
+        # document its mail-id backfill can read mail_log; snapshot loads add
+        # that section to their bounded transaction in _load_lazy.
+        return Org(cast("OrgDoc", doc))
+    except sqlite3.OperationalError as e:
+        if not os.path.exists(db):
+            raise LedgerError(f"no such org: {slug!r}") from None
+        raise LedgerError(f"cannot open org {slug!r}: {e}") from e
+
+
+def load_org_snapshot(slug: str, sections: Iterable[str]) -> Org:
+    """Load one coherent projection without retaining a read transaction.
+
+    Under SQLite, eager fields and every named lazy section are captured in
+    one short read transaction on one physical connection. The returned
+    mutable proxies keep their normal save baselines. Unnamed lazy sections
+    retain ordinary S1 behavior and may observe a later commit.
+
+    JSON already parses the entire document atomically, so its behavior and
+    rollback compatibility remain exactly ``load_org``.
+    """
+    if isinstance(sections, str):
+        raise TypeError("sections must be an iterable of section names")
+    selected = tuple(sections)
+    unknown = set(selected) - LAZY_SECTIONS
+    if unknown:
+        raise ValueError(f"not lazy sections: {sorted(unknown)!r}")
+    if STORE_BACKEND == "sqlite":
+        return _load_sqlite_org(slug, selected)
+    return load_org(slug)
+
+
 def load_org(slug: str) -> Org:
     if STORE_BACKEND == "sqlite":
-        slug = _safe_slug(slug)
-        _ensure_migrated(slug)
-        db = _db_path(slug)
-        if not os.path.exists(db):
-            raise LedgerError(f"no such org: {slug!r}")
-        try:
-            with _POOL.acquire(slug) as conn:
-                doc = _load_lazy(conn, slug)
-            # ⚠ INSIDE the try: `Org.__init__` CAN walk `mail_log` to backfill
-            # message ids (`_backfill_mail_log_ids`), which MATERIALISES that
-            # section — a second trip to the database, in the same window,
-            # after the `with` block has already closed. Constructing outside
-            # the try let that trip raise a raw sqlite3 error (and, before
-            # `_open_conn(create=False)`, a bare `KeyError('nodes')` off an
-            # empty document) out of a plain read.
-            #
-            # ⚠ "CAN", not "does". That backfill is MARKER-KEYED: it returns
-            # immediately once `_migrations["mail_log_ids"]` is set, so it
-            # walks `mail_log` only on a document that has never been through
-            # it. Measured on the live 12.7 MB document, 2026-09-04: with the
-            # marker present (as every live org has it) `load_org` leaves ALL
-            # EIGHT lazy sections unmaterialised and pulls zero bytes of them;
-            # strip the marker and `mail_log` materialises on construction.
-            # The earlier wording here said it happened on every load, which
-            # would mean the lazy design buys nothing on reads — and a
-            # performance report was nearly written on that basis. The
-            # placement below is still right, because the unmarked path is
-            # real; the cost is not paid twice.
-            return Org(cast("OrgDoc", doc))
-        except sqlite3.OperationalError as e:
-            # deleted between the exists() check and the open — delete_org
-            # renames the database out from under readers by design
-            if not os.path.exists(db):
-                raise LedgerError(f"no such org: {slug!r}") from None
-            raise LedgerError(f"cannot open org {slug!r}: {e}") from e
+        return _load_sqlite_org(slug)
     p = _json_path(slug)
     if not os.path.exists(p):
         raise LedgerError(f"no such org: {slug!r}")

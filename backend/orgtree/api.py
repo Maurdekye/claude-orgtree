@@ -1427,7 +1427,7 @@ def _rederive_freeze_reset(node: dict[str, Any],
 @app.get("/api/orgs/{slug}")
 def org_tree(slug: str, request: Request) -> dict[str, Any]:
     try:
-        org = store.load_org(slug)
+        org = store.load_org_snapshot(slug, ("org_inbox",))
     except LedgerError as e:
         raise HTTPException(404, str(e))
     _t0 = time.perf_counter()
@@ -3744,7 +3744,8 @@ def user_inbox(slug: str) -> dict[str, Any]:
     identically): unread mail + the read archive + the Sent folder (every user
     message is mail and gets recorded)."""
     try:
-        d = store.load_org(slug).d
+        d = store.load_org_snapshot(
+            slug, ("user_mail_log", "user_outbox")).d
     except LedgerError as e:
         raise HTTPException(404, str(e))
     return {"pending": d.get("user_inbox", []),
@@ -3940,7 +3941,7 @@ def org_inbox_entries(slug: str) -> dict[str, Any]:
     time the cap changed.
     """
     try:
-        org = store.load_org(slug)
+        org = store.load_org_snapshot(slug, ("org_inbox",))
     except LedgerError as e:
         raise HTTPException(404, str(e))
     log = cast("list[dict[str, Any]]", org.d.get("org_inbox") or [])
@@ -6868,7 +6869,8 @@ def node_inbox(slug: str, nid: str) -> dict[str, Any]:
     view): mail still waiting for its next turn, plus recently delivered mail
     with full bodies (the event log keeps only a gist)."""
     try:
-        org = store.load_org(slug)
+        org = store.load_org_snapshot(
+            slug, ("mail_log", "user_mail_log"))
         org.node(nid)
     except LedgerError as e:
         raise HTTPException(404, str(e))
