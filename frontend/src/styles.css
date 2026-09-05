@@ -2782,6 +2782,30 @@ main.solo { width: 100%; }
   background: var(--panel); z-index: 1;
 }
 .docket-group-n { font-weight: 600; letter-spacing: 0; }
+/* AN AGENT'S GROUP HEAD wears the agent's model chip and its name is the jump
+   to its desk. The name is a `.cc-name`, which everywhere else is a 12.5px
+   mono flex block — here it is HANDED THE HEADING'S OWN FONT back, so this is
+   a chip and a click added to the heading, not a restyled heading.
+
+   ⚠ SPECIFICITY: `.docket-modal button.cc-name` (0,2,1) already sets the mono
+   face and `font-size: inherit` for this panel, so the reset needs three
+   classes to win. Measured the same trap the `.docket-ref` comment below
+   records — a bare `.cc-name` rule loses and the heading turns mono. */
+.docket-group-head .docket-group-agent {
+  display: inline-flex; align-items: center; gap: 6px; min-width: 0;
+}
+.docket-modal .docket-group-head .cc-name.docket-group-name {
+  font-family: inherit; font-size: inherit; font-weight: inherit;
+  letter-spacing: inherit; color: inherit; text-transform: inherit;
+  min-width: 0; flex: 0 1 auto; display: inline-block;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.docket-modal .docket-group-head button.cc-name.docket-group-name:hover {
+  color: var(--accent); text-decoration: underline;
+}
+/* the chip is a hair smaller here than in a row: the head is 10.5px and the
+   row's 16px chip stands a full line taller than the words beside it */
+.docket-modal .docket-group-head .tier { width: 14px; height: 14px; font-size: 8.5px; }
 .docket-section.tone-backlog .docket-group-head { color: var(--backlog); }
 .docket-section.tone-archive .docket-group-head { color: var(--dim); }
 /* the appended groups are set apart from current work by a real rule, so the
@@ -2998,6 +3022,18 @@ main.solo { width: 100%; }
   vertical-align: baseline;
 }
 .docket-modal .docket-ref:hover { color: var(--ink-strong); }
+/* AN AGENT MENTIONED IN PROSE reads as the same kind of mention — it is a
+   `.cc-name` from the shared identity component, so it needs the same three-
+   class reset to beat `.docket-modal button.cc-name` (0,2,1) and keep the
+   0.92em size the sentence around it was measured against. It carries no
+   model chip: see the note on WorkRefText for why prose may not claim one. */
+.docket-modal .cc-name.docket-ref.docket-ref-agent {
+  font-size: 0.92em; font-weight: inherit; color: var(--accent);
+  min-width: 0; flex: none; display: inline;
+}
+.docket-modal .cc-name.docket-ref.docket-ref-agent:hover {
+  color: var(--ink-strong);
+}
 /* w2d5fab0a elements 1 and 2 — NESTED SUB-ITEMS AND THEIR SKELETON LINES.
    The indent and the lines are both driven by `--docket-depth`, set once on
    the row, so a deeper tree needs no new rules and no spacer elements. The

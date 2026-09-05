@@ -77,8 +77,8 @@ const MUTANTS = [
   {
     name: 'an empty slug is allowed into the index',
     file: REFS, kills: 'contributes nothing to the index',
-    from: `    if (it?.slug) out.set(it.slug, it.slug)`,
-    to: `    if (it?.slug != null) out.set(it.slug, it.slug)`,
+    from: `  for (const it of items) if (it?.slug) out.set(it.slug, { kind: 'item', slug: it.slug })`,
+    to: `  for (const it of items) if (it?.slug != null) out.set(it.slug, { kind: 'item', slug: it.slug })`,
   },
   {
     name: 'mentions render as plain text — the renderer is never asked',
@@ -124,9 +124,11 @@ const MUTANTS = [
     name: 'both progress lists are handed over as the same kind',
     file: DOCKET, kills: 'different kinds of line',
     from: `      <DocketList heading="WORKING ON / NEXT" items={item.working_on_next}
-        mark="next" slugIndex={slugIndex} onGoToItem={onGoToItem} />`,
+        mark="next" refIndex={refIndex} onGoToItem={onGoToItem}
+        onGoToAgent={goToAgent} />`,
     to: `      <DocketList heading="WORKING ON / NEXT" items={item.working_on_next}
-        mark="done" slugIndex={slugIndex} onGoToItem={onGoToItem} />`,
+        mark="done" refIndex={refIndex} onGoToItem={onGoToItem}
+        onGoToAgent={goToAgent} />`,
   },
   {
     // the recovery pass for cycles is one word away from resurrecting every
@@ -147,6 +149,94 @@ const MUTANTS = [
     file: DOCKET, kills: 'selects, reveals and marks',
     from: `    selected ? 'on' : '', flash ? 'docket-flash' : '',`,
     to: `    selected ? 'on' : '',`,
+  },
+  // ------------------------------- canonize-the-model-chip-and-clickable-agent-name
+  // ------------------------------- the OWNER GROUP HEAD and AGENTS IN PROSE
+  // (killed by docketname.test.tsx, which `run.mjs docket` also runs)
+  {
+    name: 'the agent group head goes back to being a plain word',
+    file: DOCKET, kills: 'did not render an identity',
+    from: `                            {s.agent
+                              ? <GroupAgentHead agent={s.agent} items={s.items}
+                                  facts={facts} onFocusAgent={onFocusAgent}
+                                  close={close} />
+                              : <span>{s.heading}</span>}`,
+    to: `                            <span>{s.heading}</span>`,
+  },
+  {
+    // THE PLAUSIBLE WRONG BUILD: the heading names an agent, so read its model
+    // straight off the live tree. It is right until one group holds two
+    // generations of that name.
+    name: "the group head takes today's model for every generation",
+    file: DOCKET, kills: 'attributed one model to two generations',
+    from: `  const { tier, why } = groupIdentity(items, facts)`,
+    to: `  const tier = facts.get(agent)?.tier
+  const why = null`,
+  },
+  {
+    name: 'a group with two answers keeps the first one instead of abstaining',
+    file: DOCKET, kills: 'attributed one model to two generations',
+    from: `  const only = seen.size === 1 ? [...seen.values()][0] : undefined`,
+    to: `  const only = [...seen.values()][0]`,
+  },
+  {
+    name: 'the owner-LESS group is treated as an agent named "Unassigned"',
+    file: DOCKET, kills: 'drawn as if it were an agent',
+    from: `      if (who !== UNASSIGNED) {
+        out.push({ key: 'ag:' + who, heading: who, items, agent: who })
+      }`,
+    to: `      if (who !== UNASSIGNED) {
+        out.push({ key: 'ag:' + who, heading: who, items, agent: who })
+      }
+      else out.push({ key: 'ag:x', heading: who, items, agent: who })`,
+  },
+  {
+    name: 'an agent named in prose renders as text, never as a jump',
+    file: REFS, kills: 'is an agent this org has',
+    from: `        return onFocusAgent
+          ? (`,
+    to: `        return false
+          ? (`,
+  },
+  {
+    name: 'an agent wins a name the docket also serves as an item',
+    file: REFS, kills: 'won a name the docket also has as an item',
+    from: `  for (const id of agentIds ?? []) if (id) out.set(id, { kind: 'agent', id })
+  for (const it of items) if (it?.slug) out.set(it.slug, { kind: 'item', slug: it.slug })`,
+    to: `  for (const it of items) if (it?.slug) out.set(it.slug, { kind: 'item', slug: it.slug })
+  for (const id of agentIds ?? []) if (id) out.set(id, { kind: 'agent', id })`,
+  },
+  {
+    // the abstention this feature is built on: prose records no generation, so
+    // it may claim no model
+    name: 'a name in prose is given a model badge',
+    file: REFS, kills: 'given a model it does not record',
+    from: `              <AgentName id={ref.id} nameClass="docket-ref docket-ref-agent"`,
+    to: `              <AgentName id={ref.id} tier="fable" nameClass="docket-ref docket-ref-agent"`,
+  },
+  {
+    name: 'a jump from prose leaves the docket open over the desk',
+    file: DOCKET, kills: 'stayed open over the desk it focused',
+    from: `    ? (id: string) => { close(); onFocusAgent(id) }`,
+    to: `    ? (id: string) => { onFocusAgent(id) }`,
+  },
+  {
+    name: 'a jump from the group head leaves the docket open over the desk',
+    file: DOCKET, kills: 'stayed open over the desk it focused',
+    from: `          ? (id) => { close?.(); onFocusAgent(id) }
+          : undefined} />
+    </span>
+  )
+}
+
+/** The item's readable name.`,
+    to: `          ? (id) => { onFocusAgent(id) }
+          : undefined} />
+    </span>
+  )
+}
+
+/** The item's readable name.`,
   },
 ]
 

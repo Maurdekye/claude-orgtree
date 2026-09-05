@@ -34,8 +34,8 @@ import { AskCard } from './asks'
 import { AgentName } from './identity'
 import { MailReplyBox } from './mail'
 import { ago, useEsc, usePolled } from './shared'
-import { buildSlugIndex, WorkRefText } from './workrefs'
-import type { SlugIndex } from './workrefs'
+import { buildMentionIndex, WorkRefText } from './workrefs'
+import type { MentionIndex } from './workrefs'
 
 const STATUS_LABEL: Record<string, string> = {
   backlogged: 'Backlogged',
@@ -173,6 +173,30 @@ function ActorName({ actor, facts, onFocusAgent, close }: {
   )
 }
 
+/** The by-agent grouping's heading: the agent itself, not a word about it.
+ *
+ *  ⚠ THE HEADING'S OWN TYPOGRAPHY IS KEPT. `.cc-name` is a 12.5px mono block
+ *  elsewhere and this heading is 10.5px uppercase and letterspaced; the
+ *  stylesheet hands the name back the heading's font so this is a chip and a
+ *  click being added, not the heading being restyled. */
+function GroupAgentHead({ agent, items, facts, onFocusAgent, close }: {
+  agent: string
+  items: WorkItem[]
+  facts: Map<string, NodeFacts>
+  onFocusAgent?: (agentId: string) => void
+  close?: () => void
+}) {
+  const { tier, why } = groupIdentity(items, facts)
+  return (
+    <span className="docket-group-agent">
+      <AgentName id={agent} tier={tier} why={why} nameClass="docket-group-name"
+        onFocus={onFocusAgent
+          ? (id) => { close?.(); onFocusAgent(id) }
+          : undefined} />
+    </span>
+  )
+}
+
 /** The item's readable name. Falls back to the opaque id for an item written
  *  before slugs existed — the server refuses to mint one on a read, so there
  *  is genuinely nothing else to show. */
@@ -218,13 +242,47 @@ export function DocketToolbarButton({ summary, onClick }: {
  *  silent remainder at the bottom of the list (user 2026-09-05) */
 export const UNASSIGNED = 'Unassigned'
 
-interface Section {
+export interface Section {
   key: string
   heading: string | null
   items: WorkItem[]
   /** styling hook for the two appended groups, so they read as set apart
    *  from current work rather than as two more status buckets */
   tone?: 'backlog' | 'archive'
+  /** the AGENT this group is named after, when the heading is an agent id and
+   *  not a word. Set only by the by-agent grouping, and never for the
+   *  owner-less group — `Unassigned` is a label, not a name that resolves. */
+  agent?: string
+}
+
+/** The identity a GROUP HEADING may claim. The heading names one agent, but a
+ *  group can hold items whose owner records disagree about which generation of
+ *  that name owns them — an item assigned before a rehire and one assigned
+ *  after are both "owned by foo".
+ *
+ *  ⚠ SO THE CHIP IS SHOWN ONLY WHEN EVERY OWNER IN THE GROUP ATTRIBUTES THE
+ *  SAME MODEL. One disagreement and the heading claims nothing, because there
+ *  is no single honest answer for the group as a whole — the per-row actors
+ *  underneath still each say their own. This is the same abstention `actorFit`
+ *  makes for one actor, applied to a set. */
+export function groupIdentity(items: WorkItem[], facts: Map<string, NodeFacts>):
+  { tier?: string; why: string | null } {
+  const seen = new Map<string, { fit: ActorFit; tier?: string }>()
+  for (const it of items) {
+    const r = actorFit(it.owner, facts)
+    seen.set(r.fit + '/' + (r.tier ?? ''), r)
+  }
+  // no items is not a disagreement — an empty group has nothing to attribute
+  // and nothing to explain (it also never reaches the screen)
+  if (seen.size === 0) return { why: null }
+  const only = seen.size === 1 ? [...seen.values()][0] : undefined
+  if (!only) {
+    return {
+      why: 'this group holds items owned by different generations of this '
+        + 'agent, so no one model can be attributed to the group',
+    }
+  }
+  return { tier: only.tier, why: FIT_WHY[only.fit] }
 }
 
 /** One rendered line: the item, how deep it sits, and how many children of
@@ -330,7 +388,12 @@ export function buildSections(mode: DocketGroupMode, active: WorkItem[],
     // come out in order of their most recent activity WITHOUT a second sort —
     // and therefore without a second chance to disagree with the server.
     for (const [who, items] of groups) {
-      if (who !== UNASSIGNED) out.push({ key: 'ag:' + who, heading: who, items })
+      // `agent` carries the id SEPARATELY from the heading text, so the
+      // renderer never has to guess whether a heading is a name — `Unassigned`
+      // is a word and every other group head here is an agent.
+      if (who !== UNASSIGNED) {
+        out.push({ key: 'ag:' + who, heading: who, items, agent: who })
+      }
     }
     const un = groups.get(UNASSIGNED)
     // last, and always named rather than left as a silent remainder
@@ -455,14 +518,20 @@ export function DocketModal({ slug, toast, close, tree, onFocusAgent,
   const cur = allKnown.get(selId ?? '')
   const asksById = new Map<string, AskInfo>((tree.asks ?? []).map((a) => [a.id, a]))
 
-  // ---- slug mentions in prose become links to the item they name
+  // ---- names in prose become links to the item or the agent they name
   //
-  // The index is built from `allKnown`, which is exactly the set of items this
-  // org served to this viewer. That is what keeps a link same-org by
-  // construction rather than by a check someone could forget: a name from
-  // another org is not in the map, so it is never marked as a mention.
-  const slugIndex = useMemo(
-    () => buildSlugIndex(allKnown.values()), [allKnown])
+  // The index is built from `allKnown` and from the tree this panel was handed,
+  // which are exactly the items and the agents this org served to this viewer.
+  // That is what keeps a link same-org by construction rather than by a check
+  // someone could forget: a name from another org is in neither, so it is never
+  // marked as a mention.
+  //
+  // ⚠ AGENTS COME FROM `facts`, i.e. from the LIVE TREE, so only a name that
+  // still resolves to somebody can link. An agent that has been dissolved out
+  // of the tree leaves prose about it as prose — there is nowhere to go, and a
+  // link that lands nowhere is worse than a word.
+  const refIndex = useMemo(
+    () => buildMentionIndex(allKnown.values(), facts.keys()), [allKnown, facts])
   const [flash, setFlash] = useState<string | null>(null)
   const rows = useRef(new Map<string, HTMLDivElement>())
   // COLLAPSE IS OPT-IN. Everything starts expanded, because a docket that
@@ -610,7 +679,16 @@ export function DocketModal({ slug, toast, close, tree, onFocusAgent,
                         className={'docket-section' + (s.tone ? ' tone-' + s.tone : '')}>
                         {s.heading && (
                           <div className="docket-group-head">
-                            <span>{s.heading}</span>
+                            {/* an agent's group head IS that agent: its model
+                                chip and a jump to its desk, drawn by the same
+                                component every other name uses. A status,
+                                the backlog, the archive and `Unassigned` are
+                                words and stay plain spans. */}
+                            {s.agent
+                              ? <GroupAgentHead agent={s.agent} items={s.items}
+                                  facts={facts} onFocusAgent={onFocusAgent}
+                                  close={close} />
+                              : <span>{s.heading}</span>}
                             <span className="dim docket-group-n">{s.items.length}</span>
                           </div>
                         )}
@@ -638,7 +716,7 @@ export function DocketModal({ slug, toast, close, tree, onFocusAgent,
                       ? <DocketPane key={cur.slug} slug={slug} item={cur} toast={toast}
                           asksById={asksById} onDismiss={onDismiss}
                           close={close} onFocusAgent={onFocusAgent} facts={facts}
-                          slugIndex={slugIndex} onGoToItem={goToItem} />
+                          refIndex={refIndex} onGoToItem={goToItem} />
                       : <div className="dim pad mailer-none">select an item to view it</div>}
                   </div>
                 </div>
@@ -736,11 +814,12 @@ function DocketRow({ item, selected, onClick, onDismiss, facts, onFocusAgent,
   )
 }
 
-function DocketList({ heading, items, slugIndex, onGoToItem, mark }: {
+function DocketList({ heading, items, refIndex, onGoToItem, onGoToAgent, mark }: {
   heading: string
   items: string[]
-  slugIndex: SlugIndex
+  refIndex: MentionIndex
   onGoToItem?: (id: string) => void
+  onGoToAgent?: (id: string) => void
   /** w2d5fab0a element 4: the two progress lists get DIFFERENT bullets —
    *  a tick for what is finished, an arrow for what is still ahead. They sit
    *  one under the other and read as one wall of dots otherwise, and which
@@ -755,7 +834,8 @@ function DocketList({ heading, items, slugIndex, onGoToItem, mark }: {
         : <ul className={'docket-list-items mark-' + mark}>
             {items.map((t, i) => (
               <li key={i}>
-                <WorkRefText text={t} index={slugIndex} onPick={onGoToItem} />
+                <WorkRefText text={t} index={refIndex} onPick={onGoToItem}
+                  onFocusAgent={onGoToAgent} />
               </li>
             ))}
           </ul>}
@@ -764,7 +844,7 @@ function DocketList({ heading, items, slugIndex, onGoToItem, mark }: {
 }
 
 function DocketPane({ slug, item, toast, asksById, onDismiss, close, onFocusAgent,
-  facts, slugIndex, onGoToItem }: {
+  facts, refIndex, onGoToItem }: {
   slug: string
   item: WorkItem
   toast: ToastFn
@@ -773,7 +853,7 @@ function DocketPane({ slug, item, toast, asksById, onDismiss, close, onFocusAgen
   close: () => void
   onFocusAgent?: (agentId: string) => void
   facts: Map<string, NodeFacts>
-  slugIndex: SlugIndex
+  refIndex: MentionIndex
   onGoToItem?: (id: string) => void
 }) {
   const attention = item.effective_attention
@@ -783,6 +863,11 @@ function DocketPane({ slug, item, toast, asksById, onDismiss, close, onFocusAgen
   // (TS does not narrow a property access across a nested arrow function)
   const lastUpdater = item.last_updater
   const manualAttn = item.manual_attention
+  // an agent named in prose goes to its desk exactly as an actor line does —
+  // the panel closes first, or the desk it focuses opens behind this modal
+  const goToAgent = onFocusAgent
+    ? (id: string) => { close(); onFocusAgent(id) }
+    : undefined
   return (
     <>
       {/* THE ONLY PLACE THE FULL DESCRIPTIVE TITLE IS PRINTED (user
@@ -818,8 +903,8 @@ function DocketPane({ slug, item, toast, asksById, onDismiss, close, onFocusAgen
         <div className="docket-list-heading dim">DESCRIPTION</div>
         {item.objective
           ? <div className="docket-desc-body">
-              <WorkRefText text={item.objective} index={slugIndex}
-                onPick={onGoToItem} />
+              <WorkRefText text={item.objective} index={refIndex}
+                onPick={onGoToItem} onFocusAgent={goToAgent} />
             </div>
           : <div className="dim docket-list-empty">
               no description — this item predates the rule that every item
@@ -827,9 +912,10 @@ function DocketPane({ slug, item, toast, asksById, onDismiss, close, onFocusAgen
             </div>}
       </div>
       <DocketList heading="DONE SO FAR" items={item.done_so_far} mark="done"
-        slugIndex={slugIndex} onGoToItem={onGoToItem} />
+        refIndex={refIndex} onGoToItem={onGoToItem} onGoToAgent={goToAgent} />
       <DocketList heading="WORKING ON / NEXT" items={item.working_on_next}
-        mark="next" slugIndex={slugIndex} onGoToItem={onGoToItem} />
+        mark="next" refIndex={refIndex} onGoToItem={onGoToItem}
+        onGoToAgent={goToAgent} />
       {manualAttn && (
         <div className="docket-attention-box">
           <div className="docket-question-head">
@@ -838,8 +924,8 @@ function DocketPane({ slug, item, toast, asksById, onDismiss, close, onFocusAgen
               onFocusAgent={onFocusAgent} close={close} />
           </div>
           <div>
-            <WorkRefText text={manualAttn.reason} index={slugIndex}
-              onPick={onGoToItem} />
+            <WorkRefText text={manualAttn.reason} index={refIndex}
+              onPick={onGoToItem} onFocusAgent={goToAgent} />
           </div>
         </div>
       )}

@@ -18,17 +18,17 @@ import test from 'node:test'
 import type { TestContext } from 'node:test'
 import assert from 'node:assert/strict'
 import { DocketModal } from '../src/canvas/docket'
-import { buildSlugIndex, splitRefs } from '../src/canvas/workrefs'
-import type { SlugIndex } from '../src/canvas/workrefs'
+import { buildMentionIndex, splitRefs } from '../src/canvas/workrefs'
+import type { RefIndex } from '../src/canvas/workrefs'
 import type { TreePayload, WorkItem } from '../src/types'
 
 // ---------------------------------------------------------------- the matcher
 
-const idx = (...slugs: string[]): SlugIndex =>
+const idx = (...slugs: string[]): RefIndex<string> =>
   new Map(slugs.map((s) => [s, s]))
 
 /** what the reader ends up looking at: linked runs marked with «» */
-const shape = (text: string, index: SlugIndex) =>
+const shape = (text: string, index: RefIndex<unknown>) =>
   splitRefs(text, index).map((p) => (p.ref ? `«${p.text}»` : p.text)).join('')
 
 test('§1 a bare mention becomes a link, and the prose around it is untouched',
@@ -115,7 +115,7 @@ test('§6 an item with no slug contributes nothing to the index', () => {
     // which matches at every position — the scanner would never terminate
     { slug: '' },
   ] as unknown as WorkItem[]
-  const index = buildSlugIndex(items)
+  const index = buildMentionIndex(items)
   assert.deepEqual([...index.keys()], ['has-a-name'])
   assert.equal(shape('w2 and w3 are unnamed', index), 'w2 and w3 are unnamed')
 })

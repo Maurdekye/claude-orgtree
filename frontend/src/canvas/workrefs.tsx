@@ -18,9 +18,10 @@
 //     input exactly — whitespace included, since these surfaces render with
 //     `white-space: pre-wrap`.
 
-import { useMemo } from 'react'
+import { Fragment, useMemo } from 'react'
 import type { ReactNode } from 'react'
 import type { WorkItem } from '../types'
+import { AgentName } from './identity'
 
 /** The names that may be matched, and what each one resolves to. A Map is
  *  both halves at once — the key set is what the matcher scans for, and the
@@ -33,16 +34,30 @@ import type { WorkItem } from '../types'
  *  can forget. Prose is full of words that look like names and are not. */
 export type RefIndex<T> = Map<string, T>
 
-/** The docket's own index: every item this org served, by its name. */
-export type SlugIndex = RefIndex<string>
+/** What a name in docket prose turns out to be. The panel's writing talks
+ *  about two kinds of name — the docket's own items, and this org's agents —
+ *  and ONE index holds both kinds, because two indexes would mean scanning the
+ *  same sentence twice with two sets of boundary rules and two chances for a
+ *  short name to win inside a long one. */
+export type MentionRef =
+  | { kind: 'item'; slug: string }
+  | { kind: 'agent'; id: string }
 
-export function buildSlugIndex(items: Iterable<WorkItem>): SlugIndex {
-  const out: SlugIndex = new Map()
-  for (const it of items) {
-    // an empty name would compile into the alternation as an empty branch,
-    // which matches at every position and spins the scanner forever
-    if (it?.slug) out.set(it.slug, it.slug)
-  }
+/** The docket's own index: every item this org served and every agent it
+ *  currently has, by name. */
+export type MentionIndex = RefIndex<MentionRef>
+
+/** ⚠ ITEMS WIN A COLLISION. An item named exactly like an agent is one name
+ *  with two meanings, and this panel is the docket: the reader following it is
+ *  after the item. The order of these two loops IS that rule — agents first,
+ *  items second, so an item overwrites the agent entry. */
+export function buildMentionIndex(items: Iterable<WorkItem>,
+                                  agentIds?: Iterable<string>): MentionIndex {
+  const out: MentionIndex = new Map()
+  // an empty name would compile into the alternation as an empty branch,
+  // which matches at every position and spins the scanner forever
+  for (const id of agentIds ?? []) if (id) out.set(id, { kind: 'agent', id })
+  for (const it of items) if (it?.slug) out.set(it.slug, { kind: 'item', slug: it.slug })
   return out
 }
 
@@ -131,22 +146,51 @@ export function RefText<T>({ text, index, render }: {
   )
 }
 
-/** The docket's rendering of a mention: an underlined name that goes there. */
-export function WorkRefText({ text, index, onPick }: {
+/** The docket's rendering of a mention: an underlined name that goes there.
+ *
+ *  An ITEM mention selects that item; an AGENT mention goes to that agent's
+ *  desk, drawn by the shared `AgentName` so a name is one component
+ *  everywhere.
+ *
+ *  ⚠ AN AGENT MENTION WEARS NO MODEL CHIP, and that is an abstention, not an
+ *  oversight. Everywhere else in this panel the chip says "this is the model
+ *  that did this" — an actor line carries the generation the update was
+ *  written under, so the attribution is recorded. Prose carries no generation
+ *  at all: a name in a sentence written weeks ago may not be the agent that
+ *  now answers to it. Rather than let one glyph mean "who did it" in a row and
+ *  "who would answer now" in a paragraph, the mention claims nothing about the
+ *  model and only offers the jump — which does go to whoever holds the name
+ *  now, and says so in its title. */
+export function WorkRefText({ text, index, onPick, onFocusAgent }: {
   text: string
-  index: SlugIndex
+  index: MentionIndex
   onPick?: (name: string) => void
+  onFocusAgent?: (id: string) => void
 }) {
-  return (
-    <RefText<string> text={text} index={index}
-      render={onPick && ((name: string, shown: string, key: number) => (
-        <button key={key} type="button" className="docket-ref"
-          title={`go to ${shown}`}
-          onClick={(e) => { e.stopPropagation(); onPick(name) }}>
-          {shown}
-        </button>
-      ))} />
-  )
+  const render = (onPick || onFocusAgent)
+    ? (ref: MentionRef, shown: string, key: number): ReactNode => {
+      if (ref.kind === 'agent') {
+        return onFocusAgent
+          ? (
+            <Fragment key={key}>
+              <AgentName id={ref.id} nameClass="docket-ref docket-ref-agent"
+                onFocus={(id) => onFocusAgent(id)} />
+            </Fragment>
+          )
+          : <span key={key}>{shown}</span>
+      }
+      return onPick
+        ? (
+          <button key={key} type="button" className="docket-ref"
+            title={`go to ${shown}`}
+            onClick={(e) => { e.stopPropagation(); onPick(ref.slug) }}>
+            {shown}
+          </button>
+        )
+        : <span key={key}>{shown}</span>
+    }
+    : undefined
+  return <RefText<MentionRef> text={text} index={index} render={render} />
 }
 
 // ---------------------------------------------------------------- typed refs
