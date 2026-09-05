@@ -1655,6 +1655,29 @@ def _set_proc_lifecycle(slug: str, nid: str, *, live: bool,
         pass
 
 
+def publish_observed_exit(slug: str, nid: str, owner: Any, *,
+                          exited: bool) -> None:
+    """Clear a generation's live record ONLY on an exit that was observed.
+
+    An exit nobody saw is not a fact. `_mcp_tool_count_end` already refuses to
+    retire a generation on one — this is the same rule for the liveness record
+    beside it, in one place rather than restated at each provider leg's
+    teardown. `exited` is the CALLER's observation, because the three legs
+    observe differently (a Popen's `poll()`, a turn's `poll()`, and a turn that
+    never started and so has no pid at all), and the kill that produces the
+    exit stays at the call site for the same reason: `close()`, a tree kill and
+    a tree kill plus an in-container reap are not the same act.
+
+    Returns nothing on purpose. Whether the record actually moved is
+    `_set_proc_lifecycle`'s to decide — it refuses a clear whose owner token is
+    not the current one — so a `True` from here would claim a publication this
+    function cannot know happened.
+    """
+    if not exited:
+        return
+    _set_proc_lifecycle(slug, nid, live=False, owner=owner)
+
+
 def is_warm(slug: str, nid: str) -> bool:
     with _pool_lock:
         wp = _pool.get((slug, nid))

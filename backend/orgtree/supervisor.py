@@ -12387,9 +12387,9 @@ def _codex_leg_attempt(slug: str, nid: str, org: Org, st: dict[str, Any],
                         turn.client.close()
                     except Exception:                        # noqa: BLE001
                         pass
-                if turn.client.proc.poll() is not None:
-                    warmpool._set_proc_lifecycle(slug, nid, live=False,
-                                                 owner=turn)
+                warmpool.publish_observed_exit(
+                    slug, nid, turn,
+                    exited=turn.client.proc.poll() is not None)
                 _mcp_tool_count_end(slug, nid, turn.client.proc)
     # Last local observation: if auth moved while the process ran, neither
     # the selected account nor the now-current account is authoritative for
@@ -13355,9 +13355,10 @@ def _antigravity_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
                         turn.close()
                     except Exception:                        # noqa: BLE001
                         pass
-                if turn.pid is None or turn.poll() is not None:
-                    warmpool._set_proc_lifecycle(slug, nid, live=False,
-                                                 owner=turn)
+                # a turn with no pid never started, so it has already ended
+                warmpool.publish_observed_exit(
+                    slug, nid, turn,
+                    exited=turn.pid is None or turn.poll() is not None)
                 # self-guarding: retires a generation only on an observed exit
                 _mcp_tool_count_end(slug, nid, turn)
             finally:
@@ -15301,9 +15302,9 @@ def _run_one_turn(slug: str, nid: str,
                                 except (subprocess.TimeoutExpired, OSError,
                                         ValueError):
                                     pass
-                            if proc.poll() is not None:
-                                warmpool._set_proc_lifecycle(
-                                    slug, nid, live=False, owner=wp_turn or proc)
+                            warmpool.publish_observed_exit(
+                                slug, nid, wp_turn or proc,
+                                exited=proc.poll() is not None)
                             _mcp_tool_count_end(slug, nid, proc)
                 finally:
                     # ⛔ FAIL LOUD (user ruling 2026-08-20). The process is gone.

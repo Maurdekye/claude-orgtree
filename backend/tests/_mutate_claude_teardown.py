@@ -41,8 +41,7 @@ SUP = "orgtree/supervisor.py"
 # ⚠ `if proc.poll() is not None:` appears TWICE in supervisor.py, so that
 # anchor carries the line under it. The `live=True` raise is anchored on
 # `owner=wp_turn or proc`, which is this leg's token and no other's.
-_PUBLISH = ("                            if proc.poll() is not None:\n"
-            "                                warmpool._set_proc_lifecycle(")
+_PUBLISH = ("                                exited=proc.poll() is not None)")
 _RAISE = ("            warmpool._set_proc_lifecycle(slug, nid, live=True,\n"
           "                                         owner=wp_turn or proc, "
           "adopt=True)")
@@ -74,8 +73,16 @@ MUTANTS: list[tuple[str, str, str, str, str]] = [
         "an-unobserved-exit-is-published-anyway",
         SUP,
         _PUBLISH,
-        "                            if True:\n"
-        "                                warmpool._set_proc_lifecycle(",
+        "                                exited=True)",
+        "outlives the teardown's bounded kill",
+    ),
+    (
+        # the shared publisher itself, mutated once: this lane's own
+        # surviving-process check must feel it
+        "the-shared-publisher-stops-checking-the-exit",
+        "orgtree/warmpool.py",
+        "    if not exited:\n        return",
+        "    if False:\n        return",
         "outlives the teardown's bounded kill",
     ),
     (
@@ -134,8 +141,22 @@ def run_suite(root: str) -> tuple[int, str]:
 
 
 def failed_labels(out: str) -> list[str]:
-    """test_claude_teardown.py prints `  FAIL     <label>` per red check."""
-    return [x.strip() for x in re.findall(r"^  FAIL\s+(.+)$", out, re.M)]
+    """Every red check's label, from BOTH places the suite writes one.
+
+    ⚠ The live `  FAIL     <label>` line is printed while the fixture's own
+    background threads are still writing `[orgtree] …` lines to the same
+    stream, and an interleaved write can corrupt it. That is not theoretical:
+    one round here reported a mutant SURVIVED, and the same mutant applied by
+    hand to the same tree killed its named check every time afterwards. The
+    end-of-run `FAILED: <label>` block is written after every turn has ended,
+    so it is the quieter of the two; read both and de-duplicate.
+    """
+    seen: list[str] = []
+    for pat in (r"^  FAIL\s+(.+)$", r"^FAILED: (.+)$"):
+        for x in re.findall(pat, out, re.M):
+            if x.strip() not in seen:
+                seen.append(x.strip())
+    return seen
 
 
 def main() -> int:
@@ -185,6 +206,13 @@ def main() -> int:
                     bad.append(name)
                 else:
                     print(f"  survived {name}  (as required)")
+                continue
+            if _code != 0 and not labels:
+                # rc says the suite failed and nothing parsed: the READING is
+                # broken, not the mutant. Never let that read as "survived".
+                print(f"  ! {name}: the suite exited {_code} but printed no "
+                      f"parseable FAIL label. Re-run and read its output.")
+                bad.append(name)
                 continue
             hit = [x for x in labels if must_fail in x]
             if not labels:

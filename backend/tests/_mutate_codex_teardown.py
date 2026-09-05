@@ -41,10 +41,9 @@ SUP = "orgtree/supervisor.py"
 # pair at the same indentation, and both legs raise the record with a
 # byte-identical `live=True … adopt=True` call — so the short forms match
 # twice and this harness refuses them rather than mutating the wrong leg.
-_CLEAR = ("                if turn.client.proc.poll() is not None:\n"
-          "                    warmpool._set_proc_lifecycle(slug, nid, "
-          "live=False,\n"
-          "                                                 owner=turn)")
+_PUBLISH = ("                warmpool.publish_observed_exit(\n"
+            "                    slug, nid, turn,\n"
+            "                    exited=turn.client.proc.poll() is not None)")
 # the two legs' whole `with _state_lock:` block is identical from
 # `st["responding"] = True` down, so the anchor has to start one line higher,
 # at the leg-named turn handle.
@@ -98,16 +97,15 @@ MUTANTS: list[tuple[str, str, str, str, str]] = [
     (
         "clear-dropped-entirely",
         SUP,
-        _CLEAR,
-        "                if turn.client.proc.poll() is not None:\n"
-        "                    pass",
+        _PUBLISH,
+        "                pass",
         "the record clears when the cold client's close() raises",
     ),
     (
         "clear-runs-with-a-token-that-can-never-match",   # present and inert
         SUP,
-        _CLEAR,
-        _CLEAR.replace("owner=turn)", "owner=object())"),
+        _PUBLISH,
+        _PUBLISH.replace("slug, nid, turn,", "slug, nid, object(),"),
         "the record clears when the cold client's close() raises",
     ),
 
@@ -115,8 +113,17 @@ MUTANTS: list[tuple[str, str, str, str, str]] = [
     (
         "an-unobserved-exit-is-published-anyway",
         SUP,
-        "                if turn.client.proc.poll() is not None:",
-        "                if True:",
+        "                    exited=turn.client.proc.poll() is not None)",
+        "                    exited=True)",
+        "a process still running after the teardown keeps the record",
+    ),
+    (
+        # the shared publisher itself: one mutant, and every lane's own
+        # surviving-process check should feel it
+        "the-shared-publisher-stops-checking-the-exit",
+        "orgtree/warmpool.py",
+        "    if not exited:\n        return",
+        "    if False:\n        return",
         "a process still running after the teardown keeps the record",
     ),
     (
@@ -141,8 +148,22 @@ def run_suite(root: str) -> tuple[int, str]:
 
 
 def failed_labels(out: str) -> list[str]:
-    """test_codex_dispatch.py prints `  FAIL     <label>` per red check."""
-    return [x.strip() for x in re.findall(r"^  FAIL\s+(.+)$", out, re.M)]
+    """Every red check's label, from BOTH places the suite writes one.
+
+    ⚠ The live `  FAIL     <label>` line is printed while the fixture's own
+    background threads are still writing `[orgtree] …` lines to the same
+    stream, and an interleaved write can corrupt it. That is not theoretical:
+    one round here reported a mutant SURVIVED, and the same mutant applied by
+    hand to the same tree killed its named check every time afterwards. The
+    end-of-run `FAILED: <label>` block is written after every turn has ended,
+    so it is the quieter of the two; read both and de-duplicate.
+    """
+    seen: list[str] = []
+    for pat in (r"^  FAIL\s+(.+)$", r"^FAILED: (.+)$"):
+        for x in re.findall(pat, out, re.M):
+            if x.strip() not in seen:
+                seen.append(x.strip())
+    return seen
 
 
 def main() -> int:
@@ -192,6 +213,13 @@ def main() -> int:
                     bad.append(name)
                 else:
                     print(f"  survived {name}  (as required)")
+                continue
+            if _code != 0 and not labels:
+                # rc says the suite failed and nothing parsed: the READING is
+                # broken, not the mutant. Never let that read as "survived".
+                print(f"  ! {name}: the suite exited {_code} but printed no "
+                      f"parseable FAIL label. Re-run and read its output.")
+                bad.append(name)
                 continue
             hit = [x for x in labels if must_fail in x]
             if not labels:
