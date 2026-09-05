@@ -229,7 +229,19 @@ class Page:
         self.pg.wait_for_timeout(900)   # the glide, and the desk it opens
         return True
 
-    def click_agent(self, name: str) -> bool:
+    def click_agent(self, name: str, direct: bool = False) -> bool:
+        """Focus `name`. `direct=True` dispatches the pointer pair on the card
+        element itself instead of clicking its screen position.
+
+        ⚠ WHY THAT IS NOT CHEATING, in the one section that uses it. When pins
+        cover most of the viewport the agent's CARD can itself be underneath
+        one, so a hit-tested click lands on the pin and nothing focuses — the
+        same way `.hud-eye` is covered in §C/§D. Focusing an obscured agent is
+        still perfectly reachable in the product (the agent tray, a mail link,
+        the focusAgent prop all call the same camera path without touching the
+        card), so dispatching directly models a real route rather than
+        inventing one. §A/§B use a REAL mouse click, where the card is visible
+        and fidelity is worth more."""
         js = """
         (name) => {
           const c = [...document.querySelectorAll('.sq')].find(
@@ -242,12 +254,33 @@ class Page:
         at = self.pg.evaluate(js, name)
         if not at:
             return False
-        self.pg.mouse.click(at["x"], at["y"])
+        if direct:
+            hit = self.pg.evaluate("""
+            (name) => {
+              const c = [...document.querySelectorAll('.sq')].find(
+                (e) => e.querySelector('.name')?.textContent?.trim() === name);
+              if (!c) return 0;
+              for (const t of ['pointerdown', 'pointerup']) {
+                c.dispatchEvent(new PointerEvent(t, { bubbles: true,
+                  cancelable: true, pointerId: 1, pointerType: 'mouse',
+                  isPrimary: true, button: 0, buttons: 1,
+                  clientX: 0, clientY: 0 }));
+              }
+              return 1;
+            }
+            """, name)
+            if not hit:
+                return False
+        else:
+            self.pg.mouse.click(at["x"], at["y"])
         self.pg.wait_for_timeout(900)
         return True
 
     def box(self, sel: str) -> dict | None:
         return self.pg.evaluate(BOX, sel)
+
+    def toasts(self) -> list[str]:
+        return self.pg.evaluate("() => window.__probe.toasts.slice()")
 
     def viewport_box(self) -> dict:
         b = self.box(".viewport")
@@ -380,6 +413,46 @@ def run(html: pathlib.Path, verbose: bool = True) -> tuple[list[str], dict]:
                 ok(f"§D the switchboard fits a tall/narrow region "
                    f"({sw2['width']:.0f}x{sw2['height']:.0f} inside "
                    f"{reg_t['w']}x{reg_t['h']})")
+
+        # ---- §F THE DELIBERATE OVERFLOW, stated as a measurement rather than
+        # a caveat. `focusView` floors the zoom at Z_DESK so that a region too
+        # small for a readable desk still gets a READABLE one — overflowing on
+        # purpose, because a focus gesture that cannot focus is worse. §B-§E
+        # therefore prove fitting only ABOVE that floor, and this section marks
+        # exactly where the guarantee stops: below it the desk is expected to
+        # escape, and the UI is expected to SAY so rather than silently
+        # producing a picture the user cannot account for.
+        pins_slot = [
+            {"id": "qa", "x": 0, "y": 0, "w": 540, "h": vp["h"]},
+            {"id": "ops", "x": 740, "y": 0, "w": 540, "h": vp["h"]},
+        ]
+        P.reset(pins_slot)
+        P.click_agent("cto", direct=True)
+        reg_s = clear_region(pins_slot, vp)
+        desk_s = P.box(".sq.desk:not(.user)")
+        obs["slot_region"], obs["slot_desk"] = reg_s, desk_s
+        if not reg_s or not desk_s:
+            bad(f"§F nothing to measure (region={reg_s}, desk={desk_s}) — the "
+                "readable-floor limit is unverified")
+        else:
+            ov = overflow(desk_s, reg_s)
+            obs["slot_overflow"] = ov
+            if not any(v > 0 for v in ov.values()):
+                bad(f"§F the desk FIT a {reg_s['w']}px region at the Z_DESK "
+                    "floor — then either the floor moved or this fixture is "
+                    "no longer below it, and the limitation stated in the "
+                    "item is not the one the code has")
+            else:
+                ok(f"§F below the readable floor the desk deliberately "
+                   f"overflows a {reg_s['w']}px region by "
+                   f"{max(ov.values()):.0f}px — fitting is guaranteed only "
+                   "above Z_DESK")
+            said = [t for t in P.toasts() if "too little room" in t]
+            if not said:
+                bad("§F …but nothing told the user why: the obstruction "
+                    f"message never fired (toasts={P.toasts()})")
+            else:
+                ok(f"§F …and it says why: {said[-1]!r}")
 
         # ---- §E no pins: the region is the viewport and nothing is cramped
         P.reset()

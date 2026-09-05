@@ -1126,8 +1126,12 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
     if (reg.status === 'blocked') return null
     const r = reg.rect
     // click-to-focus fills the window with the card, small margin all round.
-    // The EYE fits by HEIGHT only — it is the one cell that expands in width
-    // to the screen's aspect ratio (the switchboard), so height is the fit.
+    // The EYE fits on BOTH AXES against `eyeWorldW` (w14aace89). It used to
+    // fit by HEIGHT ONLY, which was correct while it could widen freely to the
+    // screen's aspect ratio — but its width is floored at USER_W, so in a
+    // region narrower than it is tall the cell is relatively wider than the
+    // space and a height-derived zoom overflowed sideways (measured in a
+    // browser: an 811px switchboard in a 748px region).
     // audit 2026-08-01 (found by the mobile sweep, but a live DESKTOP bug):
     // on short/narrow windows the fit-derived zoom lands BELOW Z_DESK — the
     // camera animates and no desk (or switchboard) ever opens, silently.
