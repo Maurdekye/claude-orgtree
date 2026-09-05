@@ -98,13 +98,11 @@ function writeGroupMode(m: DocketGroupMode): void {
 // group can never contradict the order the server chose, and there is no
 // second copy of the comparator to drift out of step with it.
 
-/** What we may honestly say about the agent an item points at. The tier chip
- *  is a MODEL claim, and the only model this app knows is the one the node
- *  wears NOW — so it may only be shown when the actor's generation is still
- *  the current one. An earlier generation ran under whatever tier it had at
- *  the time, which is not recorded anywhere, so the chip is omitted rather
- *  than back-filled with today's answer (Astra review 2026-09-05). */
-export type ActorFit = 'current' | 'moved' | 'retired' | 'gone'
+/** What we may honestly say about the agent an item points at. A node keeps
+ *  its identity across session generations: when the node is live, the
+ *  docket's name resolves to that live successor and its current model. Only
+ *  a node that is actually retired gets the historical treatment. */
+export type ActorFit = 'current' | 'retired' | 'gone'
 
 export interface NodeFacts { tier: string; generation: number; live: boolean }
 
@@ -132,18 +130,18 @@ export function actorFit(actor: WorkActor | null | undefined,
   if (!actor?.node) return { fit: 'gone' }
   const n = facts.get(actor.node)
   if (!n) return { fit: 'gone' }
-  if (Number(n.generation) !== Number(actor.generation ?? 0)) return { fit: 'moved' }
+  // The actor's generation records who wrote the item, but it does not turn
+  // the node id into a different identity. A live node is therefore the
+  // current destination even when the item names an archived predecessor.
   if (!n.live) return { fit: 'retired', tier: n.tier }
   return { fit: 'current', tier: n.tier }
 }
 
 const FIT_WHY: Record<ActorFit, string | null> = {
   current: null,
-  // a RETIRED agent is still the same generation, so its recorded model is
-  // still the one that did the work — the chip stays, the row explains itself
+  // a RETIRED agent keeps its recorded model, so the chip stays and the row
+  // explains itself
   retired: 'this agent has been retired',
-  moved: 'this agent has been replaced since this update — the model it ran '
-    + 'under then is not recorded, so no model badge is shown',
   gone: 'this agent is no longer in the org',
 }
 
@@ -160,10 +158,9 @@ function ActorName({ actor, facts, onFocusAgent, close }: {
   const { fit, tier } = actorFit(actor, facts)
   const why = FIT_WHY[fit]
   // ⚠ `why` STAYS ON THE WRAPPER, and `tier` is passed through EXACTLY as
-  // actorFit returned it — undefined for a moved or gone actor. AgentName
-  // renders no chip without a tier, so the abstention this panel decided
-  // survives the move into the shared component instead of being back-filled
-  // there. docket.test.tsx §24 is what holds that down.
+  // actorFit returned it. A live node gets the model it wears now, even when
+  // this work was written by an earlier generation; a missing node gets no
+  // invented chip.
   return (
     <span className={'docket-actor fit-' + fit} title={why ?? undefined}>
       {/* the ellipsis lives on the NAME element, not on this inline-flex
@@ -189,9 +186,9 @@ function GroupAgentHead({ agent, items, facts, onFocusAgent, close }: {
   onFocusAgent?: (agentId: string) => void
   close?: () => void
 }) {
-  const { tier, why } = groupIdentity(items, facts)
+  const { fit, tier, why } = groupIdentity(items, facts)
   return (
-    <span className="docket-group-agent">
+    <span className={'docket-group-agent' + (fit ? ' fit-' + fit : '')}>
       <AgentName id={agent} tier={tier} why={why} nameClass="docket-group-name"
         onFocus={onFocusAgent
           ? (id) => { close?.(); onFocusAgent(id) }
@@ -265,7 +262,7 @@ export interface Section {
  *  disagreement the heading claims nothing and its title says so. `actorFit`'s
  *  abstention for one actor, applied to a set. */
 export function groupIdentity(items: WorkItem[], facts: Map<string, NodeFacts>):
-  { tier?: string; why: string | null } {
+  { fit?: ActorFit; tier?: string; why: string | null } {
   const seen = new Map<string, { fit: ActorFit; tier?: string }>()
   for (const it of items) {
     const r = actorFit(it.owner, facts)
@@ -280,7 +277,7 @@ export function groupIdentity(items: WorkItem[], facts: Map<string, NodeFacts>):
         + 'agent, so no one model can be attributed to the group',
     }
   }
-  return { tier: only.tier, why: FIT_WHY[only.fit] }
+  return { fit: only.fit, tier: only.tier, why: FIT_WHY[only.fit] }
 }
 
 /** One rendered line: the item, how deep it sits, and how many children of

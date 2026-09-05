@@ -1098,7 +1098,7 @@ uiTest('§23c the chosen arrangement persists across a remount', async (mount) =
   forgetGroupChoice()
 })
 
-uiTest('§24 the model chip is shown only when it can honestly be attributed', async (mount) => {
+uiTest('§24 active successors stay normal while retired actors stay historical', async (mount) => {
   const node = (id: string, tier: string, generation: number) => ({
     id, title: id, tier, model_id: 'm', state: 'live', seat: 1, grant: 1, free: 1,
     scope: { permission_mode: 'normal' }, ui_order: 1, cost_usd: 0,
@@ -1106,41 +1106,46 @@ uiTest('§24 the model chip is shown only when it can honestly be attributed', a
   })
   const tree = mkTree({
     roots: [node('worker-agent', 'sonnet', 1),
-      node('rolled-agent', 'opus', 4)] as unknown as TreeNode[],
+      node('rolled-agent', 'opus', 4),
+      { ...node('retired-agent', 'haiku', 3), state: 'archived' },
+    ] as unknown as TreeNode[],
   })
   mockWorkItems([
     mkItem({ title: 'Current', last_updater: { node: 'worker-agent', generation: 1 } }),
-    // the SAME node, but this update was written by an EARLIER generation: the
-    // model that generation ran under is not recorded anywhere
+    // the SAME live node, but this update was written by an EARLIER generation:
+    // the docket resolves it to the current successor and current model
     mkItem({ title: 'Superseded generation', last_updater: { node: 'rolled-agent', generation: 2 } }),
+    mkItem({ title: 'Retired', last_updater: { node: 'retired-agent', generation: 3 } }),
     mkItem({ title: 'Gone', last_updater: { node: 'never-existed', generation: 1 } }),
   ])
   const { el } = await mount(docketModal({ tree }))
   await flush()
-  const [rCur, rMoved, rGone] = rows(el)
+  const [rCur, rSuccessor, rRetired, rGone] = rows(el)
 
   // POSITIVE CONTROL — without it the assertions below would also pass on a
   // component that simply never renders a chip at all
   const chip = rCur!.querySelector('.docket-updater .tier')
-  assert.ok(chip, 'the current generation DOES get a model chip')
-  assert.ok(chip.classList.contains('t-sonnet'))
-  assert.equal(chip.textContent?.trim(), 'S')
+  assert.equal(Boolean(chip), true, 'the current generation DOES get a model chip')
+  assert.equal(Boolean(chip?.classList.contains('t-sonnet')), true)
+  assert.equal(chip?.textContent?.trim(), 'S')
 
-  assert.equal(rMoved!.querySelector('.docket-updater .tier'), null,
-    'an old generation must not be labelled with the model the node wears today')
-  assert.match(rMoved!.querySelector('.docket-actor')?.getAttribute('title') ?? '',
-    /not recorded/, 'and the row says why the badge is missing')
-  assert.ok(rMoved!.querySelector('.docket-actor')?.classList.contains('fit-moved'))
-  assert.equal(rGone!.querySelector('.docket-updater .tier'), null)
-  assert.ok(rGone!.querySelector('.docket-actor')?.classList.contains('fit-gone'))
+  assert.equal(rSuccessor!.querySelector('.docket-updater .tier')?.textContent?.trim(), 'O',
+    'an earlier generation on a live node gets the current successor model')
+  assert.equal(rSuccessor!.querySelector('.docket-actor')?.classList.contains('fit-current'), true)
+  assert.equal(rSuccessor!.querySelector('.docket-actor-name')?.classList.contains('docket-actor-name'), true)
+  assert.equal(rRetired!.querySelector('.docket-updater .tier')?.textContent?.trim(), 'H',
+    'a retired node keeps its recorded model badge')
+  assert.equal(rRetired!.querySelector('.docket-actor')?.classList.contains('fit-retired'), true)
+  assert.equal(Boolean(rGone!.querySelector('.docket-updater .tier')), false)
+  assert.equal(rGone!.querySelector('.docket-actor')?.classList.contains('fit-gone'), true)
 
   // the detail pane obeys the same rule
   await inAct(() => (rCur as HTMLElement).click())
   await flush()
   assert.ok(el.querySelector('.docket-pane-sub .tier')?.classList.contains('t-sonnet'))
-  await inAct(() => (rMoved as HTMLElement).click())
+  await inAct(() => (rSuccessor as HTMLElement).click())
   await flush()
-  assert.equal(el.querySelector('.docket-pane-sub .tier'), null)
+  assert.equal(el.querySelector('.docket-pane-sub .tier')?.classList.contains('t-opus'), true)
 })
 
 uiTest('§25 the backlog is hidden until asked for, counted apart, and never merged into current work', async (mount) => {

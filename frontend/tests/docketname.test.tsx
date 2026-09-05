@@ -185,7 +185,7 @@ uiTest('§N2 the group head name goes to that agent, and closes the panel',
     assert.equal(closed, 1, 'the panel stayed open over the desk it focused')
   })
 
-uiTest('§N3 a group whose owners DISAGREE claims no model — and the control',
+uiTest('§N3 a group with an active earlier generation uses the current model',
   async (mount) => {
     groupByAgent()
     // both items are owned by `checklist-evidence`, but one by the generation
@@ -202,12 +202,8 @@ uiTest('§N3 a group whose owners DISAGREE claims no model — and the control',
     await flush()
     const id = agentHead(heads(el)[0]!)
     assert.ok(id, 'the agent group head vanished')
-    absent(id!.querySelector('.tier'),
-      'the heading attributed one model to two generations')
-    assert.match(
-      id!.querySelector('.cc-name')?.getAttribute('title') ?? '',
-      /different generations/,
-      'the heading withheld the chip without saying why')
+    assert.equal(id!.querySelector('.tier')?.textContent, 'F',
+      'the heading uses the current successor model for both generations')
     // the name still navigates — the agent is reachable, only the model is
     // unknown
     assert.ok(id!.querySelector('button.cc-name'))
@@ -237,7 +233,7 @@ test('§N4 groupIdentity: one answer, or none — the unit', () => {
   const own = (generation: number) =>
     mkItem({ owner: { node: 'a', generation } } as Partial<WorkItem>)
   assert.equal(groupIdentity([own(2), own(2)], facts).tier, 'opus')
-  assert.equal(groupIdentity([own(2), own(1)], facts).tier, undefined)
+  assert.equal(groupIdentity([own(2), own(1)], facts).tier, 'opus')
   // a retired agent is still the same generation: the model that did the work
   // IS recorded, so the chip stays and the reason says what happened
   const retired = new Map<string, NodeFacts>([

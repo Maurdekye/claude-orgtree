@@ -2894,6 +2894,9 @@ main.solo { width: 100%; }
 .docket-modal .docket-group-head button.cc-name.docket-group-name:hover {
   color: var(--accent); text-decoration: underline;
 }
+.docket-group-agent.fit-retired .docket-group-name {
+  color: var(--dim); font-style: italic;
+}
 /* the chip is a hair smaller here than in a row: the head is 10.5px and the
    row's 16px chip stands a full line taller than the words beside it */
 .docket-modal .docket-group-head .tier { width: 14px; height: 14px; font-size: 8.5px; }
@@ -3070,10 +3073,10 @@ main.solo { width: 100%; }
   padding: 0; border: 0; background: none;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-/* an agent whose generation has since been replaced wears no model chip — the
-   name is dimmed instead, and the title says why */
-.docket-actor.fit-moved .docket-actor-name,
-.docket-actor.fit-gone .docket-actor-name { color: var(--dim); font-style: italic; }
+/* Only a genuinely retired node is historical. A live node remains the
+   current destination even when this work was written by an earlier
+   generation, so its name and current model chip stay normal. */
+.docket-actor.fit-retired .docket-actor-name { color: var(--dim); font-style: italic; }
 /* THE ITEM'S READABLE NAME, click to copy */
 /* THE ITEM'S NAME IS TEXT, NOT A CONTROL (user 2026-09-05). It was a padded,
    bordered copy button in both the list and the detail pane; in a narrow list
