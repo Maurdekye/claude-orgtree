@@ -759,6 +759,71 @@ def main():
     check("a wall that names no reset still freezes — on the probe floor — "
           "and stands undated", t9c)
 
+    # ── the per-message ceiling must not eat the wall ──────────────────────
+    # MEASURED on 74c325a (probe_agy_ceiling.py, evidence/agy-ceiling-
+    # before-74c325a.json): with the ceiling already exceeded, THIS SAME WALL
+    # came back as "turn killed: exceeded the …s per-message ceiling" and the
+    # standing stayed empty — the node stopped with no freeze, no reset and
+    # nothing to auto-resume on. In production the window is the leg's own
+    # setup time (`t0` is taken before the process is spawned, while `wait()`
+    # counts its deadline from later), so `elapsed >= ceiling` can be true for
+    # a turn `wait()` never actually killed. Both runs below hand `wait()` a
+    # large timeout so its deadline never fires: the ONLY thing varied is the
+    # leg's elapsed-versus-ceiling comparison.
+    def _over_ceiling(scen: str, label: str, text: str):
+        from orgtree import antigravityrun                   # noqa: PLC0415
+        os.environ["FAKEANTIGRAVITY_SCENARIO"] = scen
+        s_, n_ = mkorg(label)
+        orig_wait = antigravityrun.AntigravityTurn.wait
+        orig_ceiling = supervisor.TURN_TIMEOUT
+
+        def wide_wait(self, *a, **kw):
+            kw["timeout"] = 120.0
+            return orig_wait(self, **kw)
+
+        antigravityrun.AntigravityTurn.wait = wide_wait
+        supervisor.TURN_TIMEOUT = 0.01
+        try:
+            run_turn(s_, n_, text)
+        finally:
+            antigravityrun.AntigravityTurn.wait = orig_wait
+            supervisor.TURN_TIMEOUT = orig_ceiling
+            os.environ["FAKEANTIGRAVITY_SCENARIO"] = "text"
+        return s_, n_
+
+    def t9d():
+        # POSITIVE CONTROL: the lowered ceiling really does bite. A failure
+        # that is NOT a wall, past the same ceiling, is still the ceiling kill
+        # — without this, t9e below would pass on a ceiling that never fired.
+        sd, nd = _over_ceiling("diesmidstep", "ceilctl",
+                               "a death past the ceiling")
+        err = str(supervisor.state(sd, nd).get("last_error") or "")
+        assert "per-message ceiling" in err, err
+        eq(node_doc(sd, nd).get("frozen"), None,
+           "a plain death past the ceiling is not a freeze")
+    check("control: a non-wall failure past the ceiling is still reported as "
+          "the ceiling kill", t9d)
+
+    def t9e():
+        antigravity_limits.invalidate()
+        t0 = time.time()
+        se, ne = _over_ceiling("usage_limit", "ceilwall",
+                               "a wall past the ceiling")
+        err = str(supervisor.state(se, ne).get("last_error") or "")
+        assert "Individual quota reached" in err and \
+               "per-message ceiling" not in err, err
+        fz = node_doc(se, ne).get("frozen") or {}
+        eq((fz.get("limit"), fz.get("reset_src")), (True, "provider"),
+           "the wall past the ceiling still freezes on the CLI's own reset")
+        assert abs(float(fz["until_ts"]) - (t0 + WALL_SECS)) < 30, fz
+        snap = antigravity_limits.snapshot()
+        eq((snap["available"], snap["limits"][0]["percent"]), (True, 100.0),
+           "and the standing records it")
+        antigravity_limits.invalidate()
+    check("a wall arriving with the ceiling already exceeded is that wall, "
+          "not a timeout: it keeps its freeze, its reset and the standing",
+          t9e)
+
     print()
     if FAIL:
         print(f"{PASS} passed, {len(FAIL)} FAILED")

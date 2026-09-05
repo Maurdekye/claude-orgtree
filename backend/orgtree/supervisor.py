@@ -13088,9 +13088,6 @@ def _antigravity_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
     _commit_unfinished_text()
     status = str(res_raw.get("status") or antigravityrun.STATUS_FAILED)
     if status == antigravityrun.STATUS_FAILED:
-        if time.time() - t0 >= TURN_TIMEOUT:
-            raise RuntimeError(f"turn killed: exceeded the {TURN_TIMEOUT}s "
-                               "per-message ceiling")
         tail = " | ".join(turn.stderr_tail[-3:])[:300]
         reason = str(res_raw.get("stop_reason") or "")
         detail = reason[:200]
@@ -13118,6 +13115,19 @@ def _antigravity_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
         if _looks_like_usage_limit(blob):
             reset_ts = antigravity_limits.observe_wall(
                 reason or tail, tier=tier, now=time.time())
+        # ⚠ THE CEILING IS TESTED AFTER THE WALL, AND ONLY WHERE THERE IS NO
+        # WALL. This is the codex leg's stated rule — "a turn that ran to the
+        # ceiling AND came back with a real error is that error, not a
+        # timeout" — but its guard (`not detail`) cannot be copied onto this
+        # lane: this adapter always sets a stop_reason, so `not detail` would
+        # delete the raise instead of narrowing it. The cost of getting it
+        # wrong is the whole of D-209 above: a wall reported as a timeout
+        # keeps its reason but loses the freeze AND the reset, so the agent
+        # stops without a thaw and never auto-resumes. An ordinary timeout is
+        # not a wall and still raises here.
+        if reset_ts is None and time.time() - t0 >= TURN_TIMEOUT:
+            raise RuntimeError(f"turn killed: exceeded the {TURN_TIMEOUT}s "
+                               "per-message ceiling")
         raise _ProviderTurnFailed(
             "turn failed: the Antigravity CLI reported an error"
             + (f" — {detail}" if detail else "")
