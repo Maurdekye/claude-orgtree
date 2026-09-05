@@ -677,6 +677,9 @@ FROZEN = [
     ("POST", f"/api/orgs/{K}/disk/resize/apply", "disk resize apply"),
     ("GET", f"/api/orgs/{K}/sweep-legacy", "the legacy-sweep preview"),
     ("POST", f"/api/orgs/{K}/sweep-legacy", "the legacy sweep"),
+    # it rewrites the whole docket and writes a JSON export of the document
+    # to disk — an operator control that was reachable from a share token
+    ("POST", f"/api/orgs/{K}/migrate-work-identity", "the identity migration"),
 ]
 
 

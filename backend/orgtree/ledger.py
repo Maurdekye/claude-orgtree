@@ -9285,23 +9285,23 @@ class Org:
 
     # ---------------------------------------------------------------- migration
     def work_identity_state(self) -> str:
-        """`"slug"` when this document holds no old-style identity, `"legacy"`
-        when it does.
+        """`"slug"` when the RECORDS are wholly slug-keyed, `"legacy"` when
+        anything still needs converting.
 
-        ⚠ THE MARKER IS NOT THE ONLY EVIDENCE, AND MUST NOT BE. A document
-        that has never held a work item — every org on the day it is created —
-        has nothing to convert, and refusing to serve its empty docket until
-        someone ran a migration would be an absurd answer to a question the
-        document already satisfies. So the state is ALSO derived: no item
-        carrying an `id` means nothing old is in here.
-
-        The marker still gets written when a real conversion happens, because
-        that is a durable record that it occurred; it is just not the sole
-        thing standing between a fresh org and a working docket."""
-        if self.d.get("work_identity") == self.WORK_IDENTITY_SLUG:
-            return self.WORK_IDENTITY_SLUG
-        if any("id" in it for it in self._work_all()):
-            return "legacy"
+        ⚠ DERIVED FROM THE RECORDS; the durable marker is NOT consulted. A
+        marker can outlive the records it describes — an old-build round trip
+        or a partial restore leaves one set over an unconverted child — and a
+        state that trusts it serves mixed identity. No items at all is `slug`.
+        (test_work_items.py: "the marker is not evidence".)"""
+        for it in self._work_all():
+            if "id" in it:
+                return "legacy"
+            if not str(it.get("slug") or ""):
+                return "legacy"          # unnamed: nothing can reference it
+            for ref in ([it.get("parent"), it.get("superseded_by")]
+                        + list(it.get("dependencies") or [])):
+                if ref and self._WORK_OLD_ID.match(str(ref)):
+                    return "legacy"      # a pointer still written the old way
         return self.WORK_IDENTITY_SLUG
 
     def _work_require_current_identity(self) -> None:
@@ -9583,15 +9583,10 @@ class Org:
         """Physically move eligible, attention-free done items into the
         archive. Called at the head of every docket mutation; a read never
         writes. Returns the moved ids (logged, never silent)."""
-        # ⚠ A DOCKET WRITE ON AN UNCONVERTED DOCUMENT IS REFUSED HERE, at the
-        # head of every mutation, rather than left to each route to remember.
-        # The conversion has to happen inside the route's own lock and save
-        # (`api._work_identity_ready`), and a route that forgets writes a
-        # document that is half old-identity and half new — which then 409s on
-        # the very next read. codex-delivery hit exactly that with its own
-        # repair route on a trial rebase: 200, mutated, saved, and the next GET
-        # refused. One missed call, one line away from correct, every test
-        # still green. So it stops being something to remember.
+        # ⚠ Refused HERE, at the head of every mutation, so no route has to
+        # remember to convert first: a half-converted document 409s on its
+        # next read. Routes that mutate work fields directly bypass this and
+        # must call `api._work_identity_ready` themselves.
         self._work_require_current_identity()
         now_ts = _time.time() if now_ts is None else now_ts
         named = self._work_backfill_slugs()
@@ -9746,12 +9741,9 @@ class Org:
         """`history`, with any pointer at an item this viewer may not read
         replaced by `null`.
 
-        ⚠ THIS EXISTS BECAUSE THE SUPERSEDE ROW LEAKED. `superseded_by` is
-        carefully gated, and the same name was travelling out unchecked one
-        field away, in `history[].by` — the id used to sit there and said
-        nothing, the name says the title. Found by a leak control that
-        searched the WHOLE payload for the hidden item's name rather than
-        checking the one field the author was thinking about."""
+        ⚠ A NAME IS A TITLE. Every field that can hold one is gated, not
+        just the obvious ones — `superseded_by` was gated while the same name
+        left unchecked in `history[].by`."""
         out: list[dict[str, Any]] = []
         for row in (it.get("history") or []):
             if not isinstance(row, dict):
@@ -9766,8 +9758,9 @@ class Org:
 
     def _work_pointer_visible(self, wid: Any, viewer: str) -> bool | None:
         """May `viewer` read the item a pointer names? None when no pointer.
-        The id itself is served (it carries no title/status/owner); this says
-        whether `get` would answer."""
+
+        Callers use this to decide whether to serve the NAME at all: a name is
+        derived from a title, so an unreadable pointer is served anonymously."""
         if not wid:
             return None
         try:
@@ -10033,10 +10026,9 @@ class Org:
         self._log("work_create", actor,
                   {"item": wid, "title": t[:60]}, [])
         return {"created": wid, "slug": it["slug"], "rev": 1,
-                "status": f"work item {it['slug']} ({wid}) created — refer to "
-                          f"it as {it['slug']} in mail and reports; either "
-                          f"name works in every later update, question and "
-                          f"handoff"}
+                "status": f"work item {it['slug']} created — that name is "
+                          f"its only identity; use it in mail, reports and "
+                          f"every later update, question and handoff"}
 
     def work_update(self, actor: str, wid: str, done_so_far: Any,
                     working_on_next: Any, status: str | None = None,
@@ -10414,9 +10406,12 @@ class Org:
             self._work_hist(it, actor, "move", {"from": was, "to": None})
             self._work_stamp_docket(it, actor)
             return {"moved": it["slug"], "parent": None, "rev": it["rev"]}
+        # ⚠ read the prior parent BEFORE overwriting it, or every move
+        # records `from: null` and claims the item was at the top level
+        was = it.get("parent")
         it["parent"] = self._work_parent_check(actor, it, ref)   # type: ignore[typeddict-unknown-key]
         self._work_hist(it, actor, "move",
-                        {"from": None, "to": it.get("parent")})
+                        {"from": was, "to": it.get("parent")})
         self._work_stamp_docket(it, actor)
         return {"moved": it["slug"], "parent": it.get("parent"),
                 "rev": it["rev"]}

@@ -493,6 +493,9 @@ def _public_denied(method: str, rest: str, slug: str) -> tuple[int, str] | None:
         or rest.endswith("/process")
         or rest == "/api/fs"                                 # filesystem browse
         or (method == "PUT" and rest.endswith("/orgmd"))     # org.md edits
+        # rewrites the whole docket and writes a JSON export to disk — an
+        # operator control, frozen explicitly like `/settings` beside it
+        or rest.endswith("/migrate-work-identity")
         or rest == "/api/agent"                              # node MCP gateway
         or rest == "/api/mcp-servers"
         # machine-local account routing (2026-08-25): which accounts this
@@ -4053,12 +4056,16 @@ def _work_ref(a: dict[str, Any]) -> str:
     with an empty reference and the useless message "no work item ''". This is
     not an alias — nothing is resolved from `id`, and a caller passing both is
     told to stop rather than quietly served."""
-    if a.get("id") is not None and a.get("slug") is None:
+    if "id" in a:
+        # ⚠ BY PRESENCE, not by emptiness: a call sending BOTH would otherwise
+        # be served from `slug` while its `id` said something else. A name
+        # shaped like a retired id is still fine when it arrives as `slug`.
         raise LedgerError(
             "`orgtree_work` takes the item's readable name as `slug` now, not "
-            "`id` — items have one identity and it is the readable one. If "
-            "what you are holding is an old `w########`, it will not resolve "
-            "either: run `list` and use the name shown")
+            "`id` — items have one identity and it is the readable one. Drop "
+            "the `id` argument. If what you are holding is an old "
+            "`w########`, it will not resolve either: run `list` and use the "
+            "name shown")
     return str(a.get("slug") or "")
 
 

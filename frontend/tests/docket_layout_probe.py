@@ -85,7 +85,13 @@ CONTROLS = {
     "centred": """.docket-row .l1 { justify-content: space-between; }
 .docket-row .l1 .mtime { margin-left: 0; }""",
     # w2d5fab0a element 1: nesting that does not read as nesting
-    "flat": """.docket-row.docket-child { padding-left: 10px !important; }""",
+    "flat": """.docket-row.docket-child {
+  margin-left: 0 !important; padding-left: 10px !important; }""",
+    # Astra 2026-09-05: every edge parked in one column at the far left,
+    # instead of travelling with the item it describes
+    "sharededge": """.docket-row.docket-child {
+  margin-left: 0 !important;
+  padding-left: calc(10px + var(--docket-depth, 1) * 16px) !important; }""",
     # w2d5fab0a element 2: the skeleton lines gone
     "noline": """.docket-row.docket-child::before, .docket-row.docket-child::after {
   display: none !important; }""",
@@ -259,12 +265,14 @@ MEASURE = r"""
     if (!parent) bad.push('a child row with no parent row above it')
     const cb = child.getBoundingClientRect()
     const nameL = child.querySelector('.l1 .mfrom')?.getBoundingClientRect().left ?? 0
-    // ⚠ THE INDENT IS THE ROW'S, NOT THE NAME'S. A parent carries a fold
-    // arrow and a leaf does not, so comparing name positions measures the
-    // arrow instead of the nesting — and reported the child as EIGHT PIXELS
-    // LEFT of its parent while the indent was working perfectly.
-    const indent = px(getComputedStyle(child).paddingLeft)
-      - (parent ? px(getComputedStyle(parent).paddingLeft) : 0)
+    // ⚠ MEASURED FROM WHERE THE ROW ACTUALLY STARTS, not from one property.
+    // Two earlier versions of this check measured the wrong thing: the NAME's
+    // position (which tracks the fold arrow, and reported a child as eight
+    // pixels LEFT of its parent while the indent worked), and then
+    // `paddingLeft` (which went constant the moment the indent moved to a
+    // margin so the edge could indent with the row). The row's own left is
+    // the property being claimed, and it does not care how it was produced.
+    const indent = cb.left - (parent ? parent.getBoundingClientRect().left : cb.left)
     if (indent < 12) {
       bad.push(`a sub-item is indented only ${indent.toFixed(0)}px from its `
         + 'parent — it does not read as nested')

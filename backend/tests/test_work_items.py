@@ -1735,6 +1735,118 @@ check("a parent you may not read is named to nobody, but its existence is "
       "still admitted", a_parent_you_may_not_read_is_named_to_nobody)
 
 
+def the_marker_is_not_evidence_the_records_are():
+    """⚠ COUNTEREXAMPLE EXECUTED BY coordinator-astra, 2026-09-05.
+
+    `work_identity_state` used to check the durable marker FIRST and return
+    early, which made the marker the only thing that mattered: a document
+    whose marker was set while a child still carried an opaque key reported
+    `slug` and was served as MIXED IDENTITY. The docstring on that very
+    function claimed the marker was not the sole evidence. It was.
+
+    An old-build round trip or a partially restored document produces exactly
+    that shape, so this is not a hypothetical. The state is now derived from
+    the RECORDS and the marker is not consulted at all."""
+    slug = fresh_org()
+    parent = create(slug, title="Marked parent")
+    child = create(slug, title="Unconverted child")
+
+    org = store.load_org(slug)
+    it, _ = org._work_find(child)
+    it["id"] = "wdeadbeef"          # type: ignore[typeddict-unknown-key]
+    org.d["work_identity"] = "slug"  # the marker LIES
+    store.save_org(org)
+
+    assert store.load_org(slug).work_identity_state() == "legacy", \
+        "a set marker was taken as proof while a record still held an old key"
+    # the read path must refuse it rather than serve two kinds of name
+    assert client.get(f"/api/orgs/{slug}/work-items").status_code == 409
+
+    # POSITIVE CONTROL 1: with the record actually clean, the same document is
+    # slug-keyed whether or not the marker is there
+    org = store.load_org(slug)
+    it, _ = org._work_find(child)
+    del it["id"]                    # type: ignore[misc]
+    del org.d["work_identity"]      # type: ignore[misc]
+    store.save_org(org)
+    assert store.load_org(slug).work_identity_state() == "slug", \
+        "clean records were called legacy because the marker was missing"
+    assert client.get(f"/api/orgs/{slug}/work-items").status_code == 200
+
+    # POSITIVE CONTROL 2: a POINTER still written the old way is legacy too —
+    # the records are not clean just because no item carries an `id`
+    org = store.load_org(slug)
+    it, _ = org._work_find(parent)
+    it["dependencies"] = ["wdeadbeef"]
+    store.save_org(org)
+    assert store.load_org(slug).work_identity_state() == "legacy", \
+        "an old-style POINTER survived while the state reported converted"
+
+
+def an_empty_org_needs_no_migration():
+    """The other end of the same rule: a document with no work items has
+    nothing to convert, and refusing to serve its empty docket until someone
+    ran a migration would answer a question the document already satisfies."""
+    slug = fresh_org()
+    assert store.load_org(slug).work_identity_state() == "slug"
+    assert client.get(f"/api/orgs/{slug}/work-items").status_code == 200
+
+
+def a_move_records_the_parent_it_actually_had():
+    """⚠ COUNTEREXAMPLE EXECUTED BY coordinator-astra, 2026-09-05: moving
+    gamma from alpha to beta recorded `from: null`, claiming it had been at
+    the top level. The prior parent was read AFTER it had been overwritten.
+    History that reads correctly and says something false."""
+    slug = fresh_org()
+    alpha = create(slug, title="Alpha")
+    beta = create(slug, title="Beta")
+    gamma = create(slug, title="Gamma", parent=alpha)
+
+    ok(slug, "boss", "move", slug=gamma, parent=beta)
+    moves = [h for h in get_item(slug, gamma)["history"] if h.get("op") == "move"]
+    assert moves, "the move was not recorded at all"
+    assert moves[-1]["from"] == alpha and moves[-1]["to"] == beta, moves[-1]
+
+    # and the root case still records honestly in both directions
+    ok(slug, "boss", "move", slug=gamma, parent="")
+    last = [h for h in get_item(slug, gamma)["history"] if h.get("op") == "move"][-1]
+    assert last["from"] == beta and last["to"] is None, last
+
+
+def passing_the_retired_argument_is_refused_even_alongside_slug():
+    """⚠ COUNTEREXAMPLE EXECUTED BY coordinator-astra, 2026-09-05.
+
+    `_work_ref` refused `id` only when `slug` was ABSENT, so a call sending
+    BOTH was quietly served from `slug` while its `id` said something else —
+    the contract the function's own docstring states, contradicted by the
+    function. Refused by PRESENCE now."""
+    slug = fresh_org()
+    wid = create(slug, title="Gamma item")
+
+    st, js = work(slug, "boss", "get", id="other", slug=wid)
+    assert st != 200, ("both arguments were accepted", js)
+    assert "Drop the `id`" in str(js), js
+    # ...including an explicitly null one, which is still the caller saying it
+    st, js = work(slug, "boss", "get", id=None, slug=wid)
+    assert st != 200, ("a null `id` alongside `slug` was accepted", js)
+
+    # POSITIVE CONTROL: `slug` alone works, and a canonical name that happens
+    # to be SHAPED like a retired id is still perfectly valid as `slug`
+    assert ok(slug, "boss", "get", slug=wid)["item"]["slug"] == wid
+    odd = create(slug, title="W1234abcd")
+    assert odd == "w1234abcd", odd
+    assert ok(slug, "boss", "get", slug=odd)["item"]["slug"] == odd
+
+
+check("the marker is not evidence — the records are",
+      the_marker_is_not_evidence_the_records_are)
+check("an empty org needs no migration", an_empty_org_needs_no_migration)
+check("a move records the parent it actually had",
+      a_move_records_the_parent_it_actually_had)
+check("passing the retired `id` argument is refused even alongside `slug`",
+      passing_the_retired_argument_is_refused_even_alongside_slug)
+
+
 def agents_are_told_to_use_the_slug():
     slug = fresh_org()
     org = store.load_org(slug)

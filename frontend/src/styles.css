@@ -3003,21 +3003,28 @@ main.solo { width: 100%; }
    the row, so a deeper tree needs no new rules and no spacer elements. The
    line is a left border on the row's padding, not an element, so it cannot be
    selected, copied, or read out by a screen reader as content. */
+/* ⚠ THE COLOURED EDGE INDENTS WITH ITS ROW (Astra 2026-09-05). Leaving every
+   edge in one column at the far left was an unrequested departure from the
+   approved design: the status colour and the dot belong WITH the item they
+   describe, and a shared strip reads as one item's edge running past several
+   rows. `border-left` sits at the row's own left, so the row is inset with a
+   margin and the padding carries only the tree indent. */
 .docket-row.docket-child {
-  padding-left: calc(10px + var(--docket-depth, 1) * 16px);
+  margin-left: calc(var(--docket-depth, 1) * 16px);
+  padding-left: 10px;
   position: relative;
 }
+/* the trunk, drawn in the space the margin opened — OUTSIDE the row's own
+   box, so it never crowds the edge or the dot */
 .docket-row.docket-child::before {
   content: ''; position: absolute; top: 0; bottom: 0;
-  left: calc(4px + (var(--docket-depth, 1) - 1) * 16px);
-  width: 1px; background: var(--line-soft);
+  left: -12px; width: 1px; background: var(--line-soft);
 }
 /* the elbow into the row itself, so a child reads as attached to its parent
    rather than merely indented */
 .docket-row.docket-child::after {
   content: ''; position: absolute; top: 50%;
-  left: calc(4px + (var(--docket-depth, 1) - 1) * 16px);
-  width: 8px; height: 1px; background: var(--line-soft);
+  left: -12px; width: 9px; height: 1px; background: var(--line-soft);
 }
 /* the fold arrow. Its own click target, kept away from the row's — the
    approved design says the arrow expands and the row selects. */

@@ -235,26 +235,14 @@ export interface DocketRowInfo {
   kids: number
 }
 
-/** Turn one section's flat, server-ordered list into the nested display order
- *  (w2d5fab0a element 1).
+/** One section's flat, server-ordered list as the nested display order.
  *
- *  ⚠ THE SERVER'S ORDER IS STILL THE ORDER. This only RE-PARENTS — a parent
- *  keeps its own position among the roots, and its children follow it in the
- *  order the server gave them. There is no second comparator here to drift out
- *  of step with `ledger.work_list`, which is the same reason `buildSections`
- *  only ever partitions.
- *
- *  ⚠ A PARENT OUTSIDE THIS SECTION IS NOT A PARENT HERE. The backlog and the
- *  archive are separate appended groups, and a child whose parent sits in a
- *  different group has nothing to nest under on screen — it renders as a root
- *  of this section rather than vanishing. Losing a row because its parent was
- *  filtered out would hide work.
- *
- *  ⚠ AND IT CANNOT HANG. The backend refuses cycles on write, but a document
- *  can still hold one from a migration or a hand edit, and a renderer that
- *  walks a ring locks the tab. `seen` bounds the walk and the leftovers are
- *  appended as roots, so a bad document costs correctness of NESTING and never
- *  the list itself. */
+ *  ⚠ THE SERVER'S ORDER IS STILL THE ORDER: this only re-parents, so there is
+ *  no second comparator to drift out of step with `ledger.work_list`.
+ *  ⚠ A parent in ANOTHER section is not a parent here — the child renders as a
+ *  root rather than vanishing, because losing a row would hide work.
+ *  ⚠ It cannot hang on a cycle: the walk is bounded and strays are appended,
+ *  so a bad document costs nesting and never the list. */
 export function nestRows(items: WorkItem[],
                          collapsed: ReadonlySet<string>): DocketRowInfo[] {
   const here = new Set(items.map((i) => i.slug))
@@ -268,12 +256,9 @@ export function nestRows(items: WorkItem[],
     if (list) list.push(it)
     else kids.set(p, [it])
   }
-  // ⚠ REACHABILITY IS COMPUTED WITHOUT THE FOLD, and the display walk applies
-  // it. Conflating the two is how the first version leaked: the recovery pass
-  // below re-added every row that a COLLAPSED parent had hidden, so folding a
-  // subtree moved its children to the bottom of the list instead of hiding
-  // them. "Not drawn because you folded it" and "not drawn because nothing
-  // leads here" are different states and only the second needs rescuing.
+  // ⚠ REACHABILITY IGNORES THE FOLD; the display walk applies it. "Not drawn
+  // because you folded it" and "not drawn because nothing leads here" are
+  // different states, and only the second is rescued below.
   const reachable = new Set<string>()
   const mark = (it: WorkItem) => {
     if (reachable.has(it.slug)) return
@@ -502,9 +487,8 @@ export function DocketModal({ slug, toast, close, tree, onFocusAgent,
     // the link did nothing.
     if (it.archived) setShowArchived(true)
     else if (it.status === 'backlogged') setShowBacklog(true)
-    // ⚠ AND OPEN ITS ANCESTORS. A collapsed parent means the row does not
-    // exist on screen, so selecting it would look like the link did nothing —
-    // the same failure as selecting a row inside a filtered-out group.
+    // ⚠ AND OPEN ITS ANCESTORS: a collapsed parent means the row is not on
+    // screen, so the link would appear to do nothing.
     const line = ancestorsOf([...allKnown.values()], id)
     if (line.length) {
       setCollapsed((c) => {
@@ -535,23 +519,14 @@ export function DocketModal({ slug, toast, close, tree, onFocusAgent,
     el?.scrollIntoView?.({ block: 'nearest' })
   }, [flash, sections])
 
-  // ⚠ A JUMP WAITS FOR ITS ITEM AND IS CONSUMED EXACTLY ONCE. The panel opens
-  // before the first poll answers, so the named item is usually not in
-  // `allKnown` yet; acting immediately would silently do nothing and the link
-  // would look broken. It also must not re-fire on every later render, or
-  // reopening the docket would keep dragging the user back to whatever some
-  // earlier chip pointed at — hence `onJumpHandled`, which clears it upstream.
+  // ⚠ A JUMP WAITS FOR ITS ITEM, then is consumed once. The panel mounts
+  // before the first poll answers, so acting immediately would silently do
+  // nothing. A name this org does not have is discarded rather than held —
+  // it may be unreadable to this viewer, or gone.
   //
-  // A name this org does not have is DISCARDED once the data has arrived,
-  // rather than held forever: the item may be one the viewer may not read, or
-  // simply gone, and either way there is nothing to select.
-  //
-  // ⚠ "ONCE" IS ENFORCED HERE, NOT BY THE PARENT CLEARING THE PROP. The deps
-  // below change identity on ordinary renders — `allKnown` is rebuilt on every
-  // poll — so an effect that only checked `jumpTo` would re-fire for as long
-  // as the prop stayed set, dragging the selection back each time the user
-  // moved it. App does clear it, but a component that is only correct because
-  // its caller is well-behaved is not correct. Measured: 4 firings, not 1.
+  // ⚠ "ONCE" IS ENFORCED HERE, not by the parent clearing the prop: the deps
+  // change identity on every poll, so a check on `jumpTo` alone re-fires and
+  // drags the selection back each time the user moves it.
   const doneJump = useRef<string | null>(null)
   useEffect(() => {
     if (!jumpTo || !data || doneJump.current === jumpTo) return
