@@ -77,7 +77,7 @@ with open(os.path.join(os.environ["ORGTREE_DATA"], "defaults.json"), "w",
     _f.write('{"net_hub_address": "http://127.0.0.1:9"}')
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
-from orgtree import opreceipts, store                      # noqa: E402
+from orgtree import store                                  # noqa: E402
 from orgtree.ledger import TOOL_KEYS, USER, LedgerError, Org   # noqa: E402
 
 PASS: list[str] = []
@@ -1151,21 +1151,18 @@ def s8_export() -> None:
         doc = synthetic_doc("synth")
         p = store.export_json("synth", os.path.join(_TMP, "synth-export.json"))
         exp = json.load(open(p, encoding="utf-8"))
-        # ⚠ ONE DELIBERATE DIFFERENCE (luna-reserve, 2026-09-05, w71d69aac).
-        # The export carries a receipt SNAPSHOT STAMP that the live document
-        # does not: a document restored from this file must not read its own
-        # missing receipts as "that operation never applied", because a
-        # rollback does not recall mail already delivered or a process
-        # already started. Everything else must still be the document
-        # verbatim, so the exception is pinned here rather than loosened:
-        # the stamp is the ONLY key that may differ, and it must be present.
-        assert opreceipts.export_stamp(exp), exp.get("op_receipts_meta")
-        stripped = {k: v for k, v in exp.items() if k != "op_receipts_meta"}
-        eq(store.canon(stripped),
-           store.canon({k: v for k, v in doc.items()
-                        if k != "op_receipts_meta"}))
-        eq([k for k in exp if k != "op_receipts_meta"],
-           [k for k in doc if k != "op_receipts_meta"], "key order: ")
+        # ⚠ NO EXCEPTION HERE, and it is worth saying why the exception that
+        # briefly lived here is gone (luna-reserve, 2026-09-05, w71d69aac).
+        # The export carried a receipt SNAPSHOT STAMP for one afternoon, so
+        # that a restored document could recognise itself as a world that had
+        # stopped. It could not do that job — three of the four documented
+        # restore routes never pass through `export_json` at all — and custody
+        # is now established by the backend's own operation epoch, which no
+        # export can carry. So this is sqlite-review's original assertion,
+        # unweakened: the export IS the document, byte for byte and key for
+        # key.
+        eq(store.canon(exp), store.canon(doc))
+        eq(list(exp), list(doc), "key order: ")
         p2 = store.export_json("synth")
         assert p2.startswith(os.path.join(store.DATA_ROOT, "exports")), p2
         assert not os.path.dirname(p2).endswith("orgs")

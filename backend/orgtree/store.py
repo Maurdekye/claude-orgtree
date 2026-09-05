@@ -87,7 +87,6 @@ from collections.abc import Callable, Generator, Iterable, Iterator
 from typing import Any, cast
 
 from datetime import datetime, timezone
-from . import opreceipts
 from .ledger import LedgerError, Org, slugify
 from .ledger import now as _ledger_now
 from .schema import OrgDoc
@@ -2498,11 +2497,15 @@ def export_json(slug: str, dest: str | None = None) -> str:
         raise LedgerError(f"no such org: {slug!r}")
     with _POOL.acquire(slug) as conn:
         doc = reconstruct_full(conn)
-    # ⚠ ON THE EXPORTED COPY, never on the live document: `reconstruct_full`
-    # builds a fresh dict. A document restored from this file is a world that
-    # stopped here, and a receipt lookup must not read that stop as proof
-    # about anything minted later — see `opreceipts.stamp_export`.
-    opreceipts.stamp_export(doc)
+    # ⚠ NOTHING IS STAMPED INTO THE EXPORT, and that is deliberate. A stamp
+    # lived here until 2026-09-05, so that a document restored from this file
+    # could be recognised as a world that stopped. It could not do the job:
+    # three of the four documented restore routes never pass through here (a
+    # `.json` dropped in by hand, a database out of `deleted/`, a parked
+    # database moved back), and two of them restore a DATABASE no export-time
+    # stamp can reach. Custody is established by the backend's own epoch
+    # instead (`opreceipts.custody`), which a restore cannot carry — so this
+    # export is byte-for-byte the live document again.
     if dest is None:
         d = os.path.join(DATA_ROOT, "exports")
         os.makedirs(d, exist_ok=True)

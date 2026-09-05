@@ -5171,6 +5171,10 @@ class AgentCall(Body):
     # envelope is refused, because that spelling is the one an older backend
     # silently drops while executing the operation anyway.
     op_key: str = ""
+    # The epoch `orgtree_op_epoch` issued the client before it minted that
+    # key. Same field rule, same reason: it reaches here only through the
+    # wrapper, never off the envelope.
+    op_epoch: str = ""
 
 
 # every `args` key the tool schema documents as text: an identifier, a tier
@@ -5575,6 +5579,15 @@ def _op_post_expected(tool: str, a: dict[str, Any]) -> list[str]:
     return out
 
 
+def _op_custody(org: Org, body: AgentCall) -> tuple[str, str]:
+    """This process's current epoch for this document, and whether the call's
+    own epoch still matches it. Must run inside DOC_LOCK, on the document as
+    loaded — the seq it reads is the one the rewind check compares."""
+    epoch, why = opreceipts.custody(cast("dict[str, Any]", org.d),
+                                    store.DATA_ROOT, body.org)
+    return epoch, why
+
+
 def _op_admit(org: Org, body: AgentCall, a: dict[str, Any]
               ) -> dict[str, Any] | None:
     """Admission, inside the caller's DOC_LOCK. Returns the receipt context
@@ -5584,8 +5597,12 @@ def _op_admit(org: Org, body: AgentCall, a: dict[str, Any]
         return None
     gen = _op_generation(org, body.node)
     d = cast("dict[str, Any]", org.d)
+    # custody FIRST: a rewind detected here rotates the epoch, which is what
+    # makes this very call's epoch stale and refuses it.
+    epoch, _why = _op_custody(org, body)
     decision, info = opreceipts.admit(d, body.node, gen, body.op_key,
-                                      body.tool, a)
+                                      body.tool, a,
+                                      epoch_ok=(body.op_epoch == epoch))
     if decision == opreceipts.REPLAY:
         row = cast("dict[str, Any]", info["row"])
         return {"replay": {
@@ -5647,6 +5664,7 @@ class _op_inflight:
 
 
 OP_CALL, OP_LOOKUP = opreceipts.OP_CALL, opreceipts.OP_LOOKUP
+OP_EPOCH = opreceipts.OP_EPOCH
 
 
 def _op_unwrap(body: AgentCall) -> AgentCall:
@@ -5671,22 +5689,24 @@ def _op_unwrap(body: AgentCall) -> AgentCall:
     That is what makes the absence of a receipt evidence, and it is why this
     file no longer has a bootstrap grace to get wrong."""
     if body.tool != OP_CALL:
-        if body.op_key:
+        if body.op_key or body.op_epoch:
             # the spelling an old build would have executed blind. Refuse it
             # HERE rather than honour it, or the guarantee above holds only
             # for clients that happen to use the wrapper.
             raise HTTPException(
-                422, f"an `op_key` on the request envelope is not accepted: a "
-                     f"keyed operation is issued as `{OP_CALL}` with "
-                     f"`{{tool, args, op_key}}`. Nothing was done.")
+                422, f"an `op_key`/`op_epoch` on the request envelope is not "
+                     f"accepted: a keyed operation is issued as `{OP_CALL}` "
+                     f"with `{{tool, args, op_key, op_epoch}}`. Nothing was "
+                     f"done.")
         return body
     a = body.args if isinstance(body.args, dict) else {}
     tool, key, inner = (str(a.get("tool") or ""), str(a.get("op_key") or ""),
                         a.get("args"))
+    epoch = str(a.get("op_epoch") or "")
     # ⚠ every refusal below is a CLIENT bug, and none of them may read like
     # the old build's "unknown orgtree tool" — that string is what the client
     # falls back on, and a fallback here would silently drop the receipt.
-    if tool in (OP_CALL, OP_LOOKUP):
+    if tool in opreceipts.VERBS:
         # ⚠ NOT left to the dispatch's own unknown-tool refusal: that message
         # would name `orgtree_op_call`, which is precisely the string the
         # client reads as "this backend has no receipts".
@@ -5695,10 +5715,22 @@ def _op_unwrap(body: AgentCall) -> AgentCall:
         raise HTTPException(
             422, f"`{OP_CALL}` needs `tool` (the verb being keyed), `args` (an "
                  f"object) and `op_key`. Nothing was done.")
+    if not epoch:
+        # ⚠ REFUSED, NOT DEMOTED (Astra, 2026-09-05). The tempting reading is
+        # "no epoch, so run it unprotected" — but this request ASKED for a
+        # receipt, and answering it with an unrecorded execution is exactly
+        # the silent loss of coverage the wrapper exists to prevent. Only a
+        # bare, unwrapped call is unprotected; a wrapper without an epoch is
+        # a client that skipped its preflight, and it is told so.
+        raise HTTPException(
+            422, f"`{OP_CALL}` needs the `op_epoch` this backend issued "
+                 f"through `{OP_EPOCH}` before the key was minted. Nothing "
+                 f"was done, and nothing was executed unprotected.")
     # an EMPTY or unknown `tool` is deliberately left to the dispatch, whose
     # "unknown orgtree tool '<name>'" names the inner verb and so still reads
     # correctly to a client
-    return body.model_copy(update={"tool": tool, "args": inner, "op_key": key})
+    return body.model_copy(update={"tool": tool, "args": inner, "op_key": key,
+                                   "op_epoch": epoch})
 
 
 def _op_absent(key: str, cls: str, at: str = "") -> dict[str, Any]:
@@ -5761,7 +5793,32 @@ def _op_lookup_call(body: AgentCall, a: dict[str, Any]) -> dict[str, Any]:
             raise HTTPException(422, str(e))
         gen = _op_generation(org, body.node)
         d = cast("dict[str, Any]", org.d)
+        epoch, _why = opreceipts.custody(d, store.DATA_ROOT, body.org)
         row = opreceipts.find(d, body.node, key)
+        if str(a.get("op_epoch") or "") != epoch:
+            # ⚠ CUSTODY, ASKED THE ONLY WAY IT CAN BE ANSWERED. The key was
+            # issued under an epoch this process has rotated — a restart, or
+            # this document rewound underneath us — so the log in front of us
+            # is not the one that would have recorded this call, and its
+            # silence means NOTHING. A row that IS here still answers
+            # `applied`: a receipt is durable positive evidence and reporting
+            # it executes nothing (Astra, 2026-09-05). And there is no fence:
+            # a stale-epoch original is already refused at admission, so
+            # writing a row to stop it would buy nothing and would advance
+            # the very counter the rewind check reads.
+            if row is not None and row.get("outcome") == "applied":
+                return {"state": "applied", "op_key": key, "receipt": row,
+                        "status": "the document transaction committed (its "
+                                  "receipt survived, and is being read under "
+                                  "a later operation epoch); post-commit "
+                                  "effects are not covered"}
+            return {"state": "unknown", "reason": "epoch_rotated",
+                    "op_key": key, "coverage": cls,
+                    "status": "the operation epoch this key was issued under "
+                              "is no longer current — the backend restarted, "
+                              "or this document was restored — so the absence "
+                              "of a receipt proves nothing about whether the "
+                              "call applied. Do NOT reissue it; check the org."}
         if row is not None:
             # ⚠ THE FINGERPRINT IS COMPARED AT THE ROW'S OWN GENERATION, not
             # at the seat's current one: `fingerprint` includes the
@@ -5769,7 +5826,11 @@ def _op_lookup_call(body: AgentCall, a: dict[str, Any]) -> dict[str, Any]:
             # never match and every receipt would read as a conflict the
             # moment the seat compacted.
             row_gen = int(row.get("gen") or 0)
-            fp = opreceipts.fingerprint(tool, body.node, row_gen, for_args)
+            # …and at the row's own SUBJECT, for the same reason: a rename
+            # moved the row to this seat's new id without touching the print
+            # it was minted with (`opreceipts.rekey_nodes`).
+            fp = opreceipts.fingerprint(tool, opreceipts.fp_node(row),
+                                        row_gen, for_args)
             if row.get("tool") != tool or row.get("fp") != fp:
                 # ⚠ CHECKED FOR A FENCED ROW TOO (Astra, 2026-09-05). Only
                 # the `applied` branch compared, so a lookup asking about a
@@ -5807,7 +5868,7 @@ def _op_lookup_call(body: AgentCall, a: dict[str, Any]) -> dict[str, Any]:
                               "way — the outcome is unknown"}
         # nothing recorded, nothing running: FENCE the key, then answer.
         decision, info = opreceipts.admit(d, body.node, gen, key, tool,
-                                          for_args)
+                                          for_args, epoch_ok=True)
         if decision == opreceipts.REFUSE:
             return {"state": "unknown", "reason": info.get("reason"),
                     "op_key": key, "coverage": cls,
@@ -5845,6 +5906,31 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
         a = _norm_args(body.args)
     except LedgerError as e:
         raise HTTPException(422, str(e))
+    if body.tool == OP_EPOCH:
+        # THE PREFLIGHT. The client asks for the operation epoch before it
+        # mints a key, and binds the key to the answer. A VERB, for the same
+        # reason as the other two: an old build refuses it as unknown, and
+        # that refusal is the client's signal that this backend cannot
+        # protect it — arriving BEFORE any mutation has been attempted
+        # rather than after one has already applied.
+        #
+        # It mutates nothing. It does take DOC_LOCK, because the seq it reads
+        # is what the rewind check compares and reading it beside a
+        # half-written transaction would be a false rewind.
+        with store.DOC_LOCK:
+            try:
+                org = store.load_org(body.org)
+                org.node(body.node)
+            except LedgerError as e:
+                raise HTTPException(422, str(e))
+            epoch, why = opreceipts.custody(cast("dict[str, Any]", org.d),
+                                            store.DATA_ROOT, body.org)
+        return {"epoch": epoch, "org": body.org,
+                # named so a reader can see WHY a fresh epoch appeared; the
+                # client does not branch on it
+                "minted": why or "",
+                "status": "bind the next operation key to this epoch; a call "
+                          "carrying any other one is refused before dispatch"}
     if body.tool == OP_LOOKUP:
         # asking, not acting — see `_op_lookup_call`. A VERB rather than a
         # flag on the envelope, and that is a safety property, not a taste:

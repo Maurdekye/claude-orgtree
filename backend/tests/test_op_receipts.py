@@ -100,17 +100,30 @@ def fresh_org():
     return org.d["slug"]
 
 
-def call(_slug, _node, _tool, key="", **args):
+def epoch_of(slug, node="mid"):
+    """The client's preflight, through the real verb."""
+    r = client.post("/api/agent", json={"org": slug, "node": node,
+                                        "tool": opreceipts.OP_EPOCH,
+                                        "args": {}})
+    assert r.status_code == 200, r.text
+    return str(r.json()["epoch"])
+
+
+def call(_slug, _node, _tool, key="", _epoch=None, **args):
     """⚠ underscored parameters on purpose: `node`, `to`, `key` and `action`
     are all ordinary tool ARGUMENTS, and a bare name here would collide with
     them.
 
-    A keyed call goes out as `orgtree_op_call` — the wrapper is the wire
-    format, not a detail of it, so every check here drives the shape a real
-    client sends."""
+    A keyed call goes out as `orgtree_op_call` carrying the key AND the epoch
+    the backend issued for it — the wrapper is the wire format, not a detail
+    of it, so every check here drives the shape a real client sends. Pass
+    `_epoch` to send a different one (that is a stale-custody test); the
+    default fetches the current one the way the client does."""
     if key:
+        ep = epoch_of(_slug, _node) if _epoch is None else _epoch
         body = {"org": _slug, "node": _node, "tool": opreceipts.OP_CALL,
-                "args": {"tool": _tool, "args": args, "op_key": key}}
+                "args": {"tool": _tool, "args": args, "op_key": key,
+                         "op_epoch": ep}}
     else:
         body = {"org": _slug, "node": _node, "tool": _tool, "args": args}
     r = client.post("/api/agent", json=body)
@@ -119,9 +132,10 @@ def call(_slug, _node, _tool, key="", **args):
     return r.status_code, js
 
 
-def lookup(_slug, _node, _key, _for_tool, **for_args):
+def lookup(_slug, _node, _key, _for_tool, _epoch=None, **for_args):
+    ep = epoch_of(_slug, _node) if _epoch is None else _epoch
     st, js = call(_slug, _node, "orgtree_op_lookup", op_key=_key,
-                  for_tool=_for_tool, for_args=for_args)
+                  op_epoch=ep, for_tool=_for_tool, for_args=for_args)
     assert st == 200, (st, js)
     return js
 
@@ -468,6 +482,14 @@ def _concurrent_duplicates():
     second admits on a stale read and the org gets two of everything."""
     slug = fresh_org()
     key = k()
+    # ⚠ THE EPOCH IS FETCHED HERE, ONCE, OUTSIDE THE RACE. `call()` fetches
+    # it on demand, and when it did so inside `go()` the `held` barrier lined
+    # up the two PREFLIGHTS instead of the two keyed calls — thread B's real
+    # request then arrived after A's transaction had committed, the race was
+    # gone, and M6 (admission hoisted outside the lock) survived the suite
+    # again (2026-09-05). The thing being raced must be the only request in
+    # the thread.
+    ep = epoch_of(slug, "boss")
     real = store.save_org
     held = threading.Event()
 
@@ -481,7 +503,8 @@ def _concurrent_duplicates():
     lock = threading.Lock()
 
     def go():
-        r = call(slug, "boss", "orgtree_hire", key=key, **hire_args("twin"))
+        r = call(slug, "boss", "orgtree_hire", key=key, _epoch=ep,
+                 **hire_args("twin"))
         with lock:
             out.append(r)
 
@@ -609,19 +632,40 @@ def _wrapper_refusals_do_not_look_like_an_old_build():
     never answer a malformed wrapper with anything that reads like that, or a
     client bug quietly becomes a duplicate."""
     slug = fresh_org()
-    for bad in ({"args": {"to": "boss"}, "op_key": k()},          # no tool
-                {"tool": "orgtree_message", "op_key": k()},       # no args
-                {"tool": "orgtree_message", "args": {"to": "boss"}},  # no key
-                {"tool": opreceipts.OP_CALL, "args": {}, "op_key": k()},
-                {"tool": opreceipts.OP_LOOKUP, "args": {}, "op_key": k()}):
+    ep = epoch_of(slug)
+    # ⚠ EVERY CASE CARRIES A VALID EPOCH except the one that is ABOUT the
+    # epoch. Without it, the missing-epoch refusal fires first for all of
+    # them, and the guard each case exists to test is never reached — which
+    # is how M11 (the wrapper nesting itself) survived the suite once the
+    # epoch check was added (2026-09-05). A nested wrapper WITH an epoch is
+    # the case that would fall through to the dispatch and be refused with
+    # the old build's exact words.
+    for bad in ({"args": {"to": "boss"}, "op_key": k(), "op_epoch": ep},  # no tool
+                {"tool": "orgtree_message", "op_key": k(), "op_epoch": ep},  # no args
+                {"tool": "orgtree_message", "args": {"to": "boss"},
+                 "op_epoch": ep},                                       # no key
+                {"tool": "orgtree_message", "args": {"to": "boss"},
+                 "op_key": k()},                                        # no epoch
+                {"tool": opreceipts.OP_CALL, "args": {}, "op_key": k(),
+                 "op_epoch": ep},
+                {"tool": opreceipts.OP_LOOKUP, "args": {}, "op_key": k(),
+                 "op_epoch": ep},
+                {"tool": opreceipts.OP_EPOCH, "args": {}, "op_key": k(),
+                 "op_epoch": ep}):
         r = client.post("/api/agent", json={
             "org": slug, "node": "mid", "tool": opreceipts.OP_CALL,
             "args": bad})
         assert r.status_code == 422, (bad, r.status_code, r.text)
-        assert not mcptool._old_build_refusal(r.text), (bad, r.text)
-    # positive control: the string the client DOES act on is recognised
+        for verb in opreceipts.VERBS:
+            assert not mcptool._old_build_refusal(r.text, verb), (bad, r.text)
+    # positive control: the string the client DOES act on is recognised —
+    # and it is recognised for the verb it NAMES, not for any of them
     assert mcptool._old_build_refusal(
-        '{"detail":"unknown orgtree tool \'orgtree_op_call\'"}')
+        '{"detail":"unknown orgtree tool \'orgtree_op_epoch\'"}',
+        opreceipts.OP_EPOCH)
+    assert not mcptool._old_build_refusal(
+        '{"detail":"unknown orgtree tool \'orgtree_op_epoch\'"}',
+        opreceipts.OP_CALL)
     assert not rows(slug)
 
 
@@ -882,13 +926,15 @@ def _coverage_is_complete():
                             "api.py"), encoding="utf-8").read()
     slice_ = src[src.index('@app.post("/api/agent")'):src.index("_UPLOAD_MAX")]
     verbs = set(re.findall(r'"(orgtree_\w+)"', slice_))
-    # ⚠ THE TWO RECEIPT VERBS ARE NOT IN THAT SLICE — they are constants in
-    # opreceipts, spelled nowhere in the dispatch — so they would be exempt by
-    # ACCIDENT. Put them in, then take them out on purpose, and prove the
-    # exemption is not covering anything: neither is an operation, so neither
-    # can carry a receipt.
-    verbs |= {opreceipts.OP_CALL, opreceipts.OP_LOOKUP}
-    for v in (opreceipts.OP_CALL, opreceipts.OP_LOOKUP):
+    # ⚠ THE RECEIPT VERBS ARE NOT ALL IN THAT SLICE — they are constants in
+    # opreceipts, and OP_CALL/OP_LOOKUP are spelled nowhere in the dispatch —
+    # so they would be exempt by ACCIDENT. Put them in, then take them out on
+    # purpose, and prove the exemption covers nothing: none of them is an
+    # operation, so none can carry a receipt. OP_EPOCH joins them
+    # DELIBERATELY (Astra, 2026-09-05) rather than riding in on whichever
+    # branch happens to spell it.
+    verbs |= set(opreceipts.VERBS)
+    for v in opreceipts.VERBS:
         assert not opreceipts.receipted(v, {}), v
         verbs.discard(v)
     missing = sorted(v for v in verbs if not opreceipts.coverage(v, {}))
@@ -991,61 +1037,324 @@ check("the receipt brackets exactly the DOCUMENT events its call produced",
 print("\n§9  compatibility — old documents, no key, JSON")
 
 
-def _an_export_is_stamped_as_a_snapshot():
-    """⚠ ASTRA, 2026-09-05T12:20Z: do not promise retention through a restore.
-
-    A document rolled back from an export loses the receipts written after it
-    — but NOT their effects: mail already delivered to another org, a process
-    already started. So a key minted after the snapshot cannot be judged from
-    the restored document, and the answer must be `unknown` rather than the
-    "never applied, safe to reissue" that an empty log otherwise reads as."""
+def _the_export_is_the_document():
+    """No snapshot stamp, and no other difference either. Custody is the
+    backend's own epoch now, which no exported file can carry — so the export
+    is the document, and `test_sqlite_store` §8 asserts that byte for byte."""
     slug = fresh_org()
     call(slug, "mid", "orgtree_message", key=k(), to="boss", body="a")
-    if store.STORE_BACKEND == "sqlite":
-        exported = json.load(open(store.export_json(slug), encoding="utf-8"))
-    else:                      # JSON backend: the document IS the export
-        exported = json.loads(json.dumps(store.load_org(slug).d))
-        opreceipts.stamp_export(exported)
-    stamp = opreceipts.export_stamp(exported)
-    assert stamp, exported.get("op_receipts_meta")
-
-    # ⚠ THE RESTORE happens later than the export, and the key that matters
-    # was minted BEFORE the snapshot (Astra's correction, 12:31Z): its
-    # operation may have applied AFTER the snapshot, which leaves it missing
-    # from the restored document exactly like a late-minted one. A mint time
-    # cannot separate those, so neither may be answered "not applied".
-    restore_ms = stamp + 60_000
-    for label, mint_ms in (("minted before the snapshot", stamp - 5_000),
-                           ("minted after the snapshot", stamp + 1_000)):
-        d = json.loads(json.dumps(exported))          # a fresh restore each time
-        decision, info = opreceipts.admit(
-            d, "mid", 0, opreceipts.mint_key(mint_ms), "orgtree_message",
-            {"to": "boss"}, now_ms=restore_ms)
-        assert decision == opreceipts.REFUSE, (label, decision, info)
-        assert info["reason"] == "restored_from_export", (label, info)
-
-    # …and a receipt the snapshot DOES contain still reads normally: absence
-    # is what a restored document cannot speak to, not the rows it has.
-    old_row = exported["op_receipts"][0]
-    assert opreceipts.find(exported, "mid", old_row["key"]) is old_row
-
-    # the first touch converts the stamp into an ordinary watermark at THAT
-    # moment — not at the export's — and a key minted after the restore is
-    # covered normally, because its whole life is inside this document.
-    assert opreceipts.resume_after_restore(exported, restore_ms)
-    assert not opreceipts.export_stamp(exported)
-    assert opreceipts.watermark(exported) == restore_ms
-    assert not opreceipts.resume_after_restore(exported, restore_ms + 1), \
-        "the conversion ran twice"
-    fresh = opreceipts.mint_key(restore_ms + 1_000)
-    decision, info = opreceipts.admit(exported, "mid", 0, fresh,
-                                      "orgtree_message", {"to": "boss"},
-                                      now_ms=restore_ms + 2_000)
-    assert decision == opreceipts.ADMIT, (decision, info)
+    if store.STORE_BACKEND != "sqlite":
+        return
+    exported = json.load(open(store.export_json(slug), encoding="utf-8"))
+    live = json.loads(json.dumps(store.load_org(slug).d))
+    assert exported["op_receipts_meta"] == live["op_receipts_meta"], (
+        exported["op_receipts_meta"], live["op_receipts_meta"])
+    assert not any(k_.startswith("export") or k_ == "restored_at"
+                   for k_ in exported["op_receipts_meta"]), \
+        exported["op_receipts_meta"]
 
 
-check("a document restored from an export answers unknown, never not_applied",
-      _an_export_is_stamped_as_a_snapshot)
+check("an export carries no stamp: it is the document",
+      _the_export_is_the_document)
+
+
+# ================================================== §10 custody (the epoch)
+print("\n§10  custody — the epoch a key is bound to")
+
+
+def _restart_mints_a_fresh_epoch():
+    slug = fresh_org()
+    first = epoch_of(slug)
+    assert first and epoch_of(slug) == first, "the epoch moved on its own"
+    opreceipts.forget_custody(store.DATA_ROOT, slug)      # emulate a restart
+    second = epoch_of(slug)
+    assert second != first, (first, second)
+    # …and it is per-document: another org's custody is untouched
+    other = fresh_org()
+    e_other = epoch_of(other)
+    opreceipts.forget_custody(store.DATA_ROOT, slug)
+    assert epoch_of(other) == e_other, "one org's restart rotated another's"
+
+
+check("a restart mints a fresh epoch, per document",
+      _restart_mints_a_fresh_epoch)
+
+
+def _a_rewind_under_a_live_backend_rotates():
+    """The restore this process can still see: the document comes back with
+    FEWER receipts than we have written into it."""
+    slug = fresh_org()
+    before = epoch_of(slug)
+    call(slug, "mid", "orgtree_message", key=k(), to="boss", body="a")
+    call(slug, "mid", "orgtree_message", key=k(), to="boss", body="b")
+    assert epoch_of(slug) == before, "ordinary appends rotated the epoch"
+    snapshot = json.loads(json.dumps(store.load_org(slug).d))
+    assert snapshot["op_receipts_meta"]["seq"] == 2, snapshot["op_receipts_meta"]
+
+    # …one more receipt, and then the rewind: the document is put back the
+    # way a restore puts it back, with the two-receipt state.
+    call(slug, "mid", "orgtree_message", key=k(), to="boss", body="c")
+    assert epoch_of(slug) == before
+    org = store.load_org(slug)
+    org.d["op_receipts"] = [dict(r) for r in snapshot["op_receipts"]]
+    org.d["op_receipts_meta"] = dict(snapshot["op_receipts_meta"])
+    store.save_org(org)
+    after = epoch_of(slug)
+    assert after != before, "a rewound document kept its epoch"
+    # and it settles: the new epoch is stable once the rewind is absorbed
+    assert epoch_of(slug) == after
+
+
+check("a document rewound under a live backend rotates the epoch",
+      _a_rewind_under_a_live_backend_rotates)
+
+
+def _a_delayed_call_under_a_stale_epoch_never_runs():
+    """⚠ ASTRA'S BLOCKER, and the reason the quarantine is gone. The original
+    applied, its answer was lost, the document was restored — and the delayed
+    original arrives afterwards. It must be REFUSED, and the org must show
+    that it did not happen a second time."""
+    slug = fresh_org()
+    stale = epoch_of(slug)
+    key = k()
+    st, js = call(slug, "boss", "orgtree_hire", key=key, _epoch=stale,
+                  **hire_args("twice"))
+    assert st == 200, (st, js)
+    assert "twice" in nodes(slug), nodes(slug)
+    before = nodes(slug)
+    # ⚠ A SECOND RECEIPTED CALL BEFORE THE RESTART, and it is not decoration.
+    # The epoch verb loads the document and never saves it, and the first
+    # keyed call's custody touch runs before any meta exists — so a build
+    # that PERSISTED the epoch into the document (the mistake the boot
+    # rotation exists to be immune to) had nothing to write and no save to
+    # write it through, and M24 survived the suite twice (2026-09-05). This
+    # call is the save such a build would persist through; the restart
+    # below must still mint a fresh epoch regardless.
+    st, js = call(slug, "mid", "orgtree_message", key=k(), _epoch=stale,
+                  to="boss", body="still the same epoch")
+    assert st == 200, (st, js)
+    assert epoch_of(slug) == stale, "an ordinary append rotated the epoch"
+
+    opreceipts.forget_custody(store.DATA_ROOT, slug)     # the restart/restore
+    fresh = epoch_of(slug)
+    assert fresh != stale
+
+    st, js = call(slug, "boss", "orgtree_hire", key=key, _epoch=stale,
+                  **hire_args("twice"))
+    assert st == 422, (st, js)
+    assert "stale_epoch" in str(js), js
+    assert nodes(slug) == before, "the delayed call hired a second time"
+
+    # ⚠ THE POSITIVE CONTROL. Without it this passes on a build that refuses
+    # everything: the SAME call under the CURRENT epoch is admitted, executes
+    # exactly once, and replays rather than doubling.
+    key2 = k()
+    st, js = call(slug, "boss", "orgtree_hire", key=key2, _epoch=fresh,
+                  **hire_args("once"))
+    assert st == 200, (st, js)
+    assert "once" in nodes(slug), nodes(slug)
+    st, js = call(slug, "boss", "orgtree_hire", key=key2, _epoch=fresh,
+                  **hire_args("once"))
+    assert st == 200 and js.get("replayed"), js
+    assert len([n for n in nodes(slug) if n.startswith("once")]) == 1, nodes(slug)
+
+
+check("a delayed call under a rotated epoch is refused, and the org proves it "
+      "did not run again", _a_delayed_call_under_a_stale_epoch_never_runs)
+
+
+def _a_lookup_under_a_stale_epoch_is_unknown_but_a_receipt_still_speaks():
+    slug = fresh_org()
+    stale = epoch_of(slug)
+    applied_key, missing_key = k(), k()
+    call(slug, "mid", "orgtree_message", key=applied_key, _epoch=stale,
+         to="boss", body="a")
+
+    opreceipts.forget_custody(store.DATA_ROOT, slug)
+    # a receipt that SURVIVED still answers `applied` — durable positive
+    # evidence, and saying so executes nothing
+    ans = lookup(slug, "mid", applied_key, "orgtree_message", _epoch=stale,
+                 to="boss", body="a")
+    assert ans["state"] == "applied", ans
+    # …while an absent one is unknown, never not_applied
+    ans = lookup(slug, "mid", missing_key, "orgtree_message", _epoch=stale,
+                 to="boss", body="b")
+    assert ans["state"] == "unknown", ans
+    assert ans["reason"] == "epoch_rotated", ans
+    # and no fence was written for it: the section must not have grown
+    assert [r["key"] for r in rows(slug)] == [applied_key], rows(slug)
+
+    # ⚠ ANTI-VACUITY. A build that answered `unknown` to everything would
+    # pass everything above. Under the CURRENT epoch, an absent key is still
+    # answered not_applied.
+    current = epoch_of(slug)
+    ans = lookup(slug, "mid", k(), "orgtree_message", _epoch=current,
+                 to="boss", body="c")
+    assert ans["state"] == "not_applied", ans
+
+
+check("a stale-epoch lookup is unknown, but a surviving receipt still says "
+      "applied", _a_lookup_under_a_stale_epoch_is_unknown_but_a_receipt_still_speaks)
+
+
+def _a_backwards_clock_changes_nothing():
+    """⚠ ASTRA'S SECOND BLOCKER. The old design leaned on "enough time has
+    passed since the restore"; a server clock that steps BACKWARDS made that
+    false. Custody is a token now, so neither direction of the clock moves an
+    answer."""
+    slug = fresh_org()
+    stale = epoch_of(slug)
+    key = k()
+    call(slug, "mid", "orgtree_message", key=key, _epoch=stale, to="boss",
+         body="a")
+    opreceipts.forget_custody(store.DATA_ROOT, slug)
+    fresh = epoch_of(slug)
+
+    real_time = time.time
+    try:
+        time.time = lambda: real_time() - 1_000.0       # the clock rolls back
+        ans = lookup(slug, "mid", k(), "orgtree_message", _epoch=stale,
+                     to="boss", body="z")
+        assert ans["state"] == "unknown", ans           # still unknown
+        st, js = call(slug, "mid", "orgtree_message", key=k(), _epoch=stale,
+                      to="boss", body="z")
+        assert st == 422 and "stale_epoch" in str(js), (st, js)
+        # …and with NO rotation, a backwards clock must not change a correct
+        # answer either: this key is fresh and its epoch is current
+        ans = lookup(slug, "mid", k(), "orgtree_message", _epoch=fresh,
+                     to="boss", body="y")
+        assert ans["state"] == "not_applied", ans
+    finally:
+        time.time = real_time
+
+
+check("neither direction of the server clock moves a custody answer",
+      _a_backwards_clock_changes_nothing)
+
+
+def _a_wrapper_without_an_epoch_is_refused_not_demoted():
+    slug = fresh_org()
+    r = client.post("/api/agent", json={
+        "org": slug, "node": "mid", "tool": opreceipts.OP_CALL,
+        "args": {"tool": "orgtree_message",
+                 "args": {"to": "boss", "body": "a"}, "op_key": k()}})
+    assert r.status_code == 422, (r.status_code, r.text)
+    assert opreceipts.OP_EPOCH in r.text, r.text
+    # ⚠ THE ASSERTION THAT MATTERS: refused AND not executed. A build that
+    # "helpfully" ran it unprotected would pass the status check alone.
+    assert not (store.load_org(slug).d.get("mail") or {}).get("boss"), \
+        "a wrapper with no epoch was executed unprotected"
+    # the refusal must not read like an old build, or the client would drop
+    # to an unprotected reissue on it
+    assert not mcptool._old_build_refusal(r.text, opreceipts.OP_CALL), r.text
+    # …and an epoch on the ENVELOPE is refused the same way a key is
+    r = client.post("/api/agent", json={
+        "org": slug, "node": "mid", "tool": "orgtree_message",
+        "args": {"to": "boss", "body": "a"}, "op_epoch": "deadbeef"})
+    assert r.status_code == 422, (r.status_code, r.text)
+    assert not (store.load_org(slug).d.get("mail") or {}).get("boss")
+
+
+check("a keyed wrapper with no epoch is refused, never run unprotected",
+      _a_wrapper_without_an_epoch_is_refused_not_demoted)
+
+
+def _the_client_never_reissues_after_a_stale_refusal():
+    """⚠ ASTRA, 2026-09-05T13:20Z: a stale-epoch refusal proves THIS attempt
+    did nothing. It cannot prove the earlier attempt did nothing, so minting
+    a fresh key and trying again is exactly the duplicate receipts exist to
+    prevent.
+
+    Emulated end to end: the operation APPLIED, its answer was lost, custody
+    rotated, and the client's next attempt with the bound key is refused."""
+    slug = fresh_org()
+    sent: list[str] = []
+    real_post = mcptool._post
+
+    def through_test_client(payload, timeout=30):
+        sent.append(str(payload.get("tool") or ""))
+        r = client.post("/api/agent", json=payload)
+        return ("ok" if r.status_code == 200 else "refused"), r.text
+
+    mcptool.ORG, mcptool.NODE = slug, "boss"
+    mcptool._post = through_test_client
+    mcptool._EPOCH.clear()
+    try:
+        # 1  it applies, and the client caches the epoch it was issued
+        out = json.loads(mcptool.call_api("orgtree_hire", hire_args("solo")))
+        assert out.get("node") == "solo", out
+        assert nodes(slug).count("solo") == 1
+
+        # 2  the restore/restart: custody rotates under the client's feet
+        opreceipts.forget_custody(store.DATA_ROOT, slug)
+        before = nodes(slug)
+        sent.clear()
+
+        # 3  the client tries the same operation again — its cached epoch is
+        #    stale, and the refusal must NOT become a fresh-key reissue
+        out = json.loads(mcptool.call_api("orgtree_hire", hire_args("solo2")))
+        assert out.get("state") == "stale", out
+        assert out.get("reason") == "stale_epoch", out
+        assert nodes(slug) == before, "the client reissued after the refusal"
+        assert sent.count(opreceipts.OP_CALL) == 1, sent
+
+        # 4  POSITIVE CONTROL: the refreshed epoch works for the NEXT,
+        #    independent call — the client refreshed, it just did not reuse
+        #    the refresh on the refused one.
+        sent.clear()
+        out = json.loads(mcptool.call_api("orgtree_hire", hire_args("later")))
+        assert out.get("node") == "later", out
+        assert sent == [opreceipts.OP_CALL], sent   # no new preflight needed
+    finally:
+        mcptool._post = real_post
+        mcptool._EPOCH.clear()
+
+
+check("the client reports a stale-epoch refusal and never reissues it",
+      _the_client_never_reissues_after_a_stale_refusal)
+
+
+def _a_rename_keeps_the_receipt_findable():
+    """A call applied under the old id must not vanish when the seat is
+    renamed — that silence reads as "not applied, safe to reissue"."""
+    slug = fresh_org()
+    key = k()
+    call(slug, "worker", "orgtree_message", key=key, to="mid", body="a")
+    row0 = rows(slug)[0]
+    assert row0["node"] == "worker", row0
+    fp0 = row0["fp"]
+
+    r = client.post("/api/agent", json={
+        "org": slug, "node": "boss", "tool": "orgtree_rename",
+        "args": {"node": "worker", "name": "runner"}})
+    assert r.status_code == 200, r.text
+    moved = rows(slug)[0]
+    assert moved["node"] == "runner", moved
+    assert moved["fp_node"] == "worker", moved
+    assert moved["fp"] == fp0, "the fingerprint was recomputed"
+
+    ans = lookup(slug, "runner", key, "orgtree_message", to="mid", body="a")
+    assert ans["state"] == "applied", ans
+
+    # a SECOND rename must not overwrite where the print came from
+    r = client.post("/api/agent", json={
+        "org": slug, "node": "boss", "tool": "orgtree_rename",
+        "args": {"node": "runner", "name": "sprinter"}})
+    assert r.status_code == 200, r.text
+    twice = rows(slug)[0]
+    assert (twice["node"], twice["fp_node"]) == ("sprinter", "worker"), twice
+    ans = lookup(slug, "sprinter", key, "orgtree_message", to="mid", body="a")
+    assert ans["state"] == "applied", ans
+
+    # …and the delayed original under the new id REPLAYS instead of running
+    st, js = call(slug, "sprinter", "orgtree_message", key=key, to="mid",
+                  body="a")
+    assert st == 200 and js.get("replayed"), js
+    assert len((store.load_org(slug).d.get("mail") or {}).get("mid")) == 1
+
+
+check("a rename moves the receipt and keeps its original fingerprint",
+      _a_rename_keeps_the_receipt_findable)
 
 
 def _client_against_a_backend_without_receipts():
@@ -1064,7 +1373,7 @@ def _client_against_a_backend_without_receipts():
     def old_build(payload, timeout=30):
         tool = str(payload.get("tool") or "")
         seen.append((tool, str((payload.get("args") or {}).get("tool") or "")))
-        if tool in (opreceipts.OP_CALL, opreceipts.OP_LOOKUP):
+        if tool in opreceipts.VERBS:
             # the pre-receipts dispatch, word for word
             return "refused", ('{"detail":"unknown orgtree tool '
                                f"'{tool}'" '"}')
@@ -1075,12 +1384,17 @@ def _client_against_a_backend_without_receipts():
 
     mcptool.ORG, mcptool.NODE = slug, "mid"
     mcptool._post = old_build
+    mcptool._EPOCH.clear()
     try:
         out = mcptool.call_api("orgtree_message", {"to": "boss", "body": "x"})
         assert '"delivered"' in out, out
         assert len((store.load_org(slug).d.get("mail") or {}).get("boss")) == 1
         assert not rows(slug), "an old build cannot have filed a receipt"
-        assert [t for t, _ in seen] == [opreceipts.OP_CALL, "orgtree_message"]
+        # ⚠ THE PREFLIGHT COMES FIRST, and that ordering is the safety
+        # property: this backend announced it has no receipts through a READ,
+        # before any mutation was attempted. The wrapper was never sent.
+        assert [t for t, _ in seen] == [opreceipts.OP_EPOCH,
+                                        "orgtree_message"], seen
 
         # …and now the lost answer. `unknown`, with no lookup attempted.
         seen.clear()
@@ -1088,12 +1402,13 @@ def _client_against_a_backend_without_receipts():
         def old_build_lost(payload, timeout=30):
             tool = str(payload.get("tool") or "")
             seen.append((tool, ""))
-            if tool in (opreceipts.OP_CALL, opreceipts.OP_LOOKUP):
+            if tool in opreceipts.VERBS:
                 return "refused", ('{"detail":"unknown orgtree tool '
                                    f"'{tool}'" '"}')
             return "lost", "timed out"
 
         mcptool._post = old_build_lost
+        mcptool._EPOCH.clear()
         lost = json.loads(mcptool.call_api("orgtree_message",
                                            {"to": "boss", "body": "y"}))
         assert lost["state"] == "unknown", lost
@@ -1112,12 +1427,15 @@ def _client_against_a_backend_without_receipts():
             return ("ok" if r.status_code == 200 else "refused"), r.text
 
         mcptool._post = modern
+        mcptool._EPOCH.clear()
         out = json.loads(mcptool.call_api("orgtree_message",
                                           {"to": "nobody", "body": "z"}))
         assert "error" in out, out
-        assert [t for t, _ in seen] == [opreceipts.OP_CALL], seen
+        assert [t for t, _ in seen] == [opreceipts.OP_EPOCH,
+                                        opreceipts.OP_CALL], seen
     finally:
         mcptool._post = real_post
+        mcptool._EPOCH.clear()
 
 
 check("a client of this build never leaves an unrecorded effect on an old one",

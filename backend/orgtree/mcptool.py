@@ -1622,8 +1622,8 @@ def _post(payload: dict[str, Any], timeout: float = 30) -> tuple[str, str]:
         return _lost_kind(e), str(e)
 
 
-def _old_build_refusal(text: str) -> bool:
-    """The refusal a backend WITHOUT receipts gives the wrapper verb —
+def _old_build_refusal(text: str, verb: str) -> bool:
+    """The refusal a backend WITHOUT receipts gives one of the receipt verbs —
     measured against the real pre-receipts build (a0fac2f):
 
         422 {"detail": "unknown orgtree tool 'orgtree_op_call'"}
@@ -1632,7 +1632,84 @@ def _old_build_refusal(text: str) -> bool:
     wrapper name the verb too, and treating one of those as "this build has no
     receipts" would drop the key and reissue the call unprotected — turning a
     client bug into the duplicate this whole file exists to prevent."""
-    return "unknown orgtree tool" in text and opreceipts.OP_CALL in text
+    return "unknown orgtree tool" in text and verb in text
+
+
+def _stale_epoch_refusal(text: str) -> bool:
+    """The backend's refusal of a key bound to an epoch it has since rotated.
+    Both halves again: the marker the server writes for THIS reason, and the
+    reason itself."""
+    return "op_key refused" in text and "stale_epoch" in text
+
+
+# The epoch this process was issued for this org, and the one thing it is
+# for: binding a key to the backend's own custody of the receipt log. Held
+# for the life of the process — it changes only when the backend restarts or
+# the document is restored, and both of those refuse the next call carrying
+# the old one, which is when we go and get another.
+_EPOCH: dict[str, str] = {}
+
+
+def _fetch_epoch() -> tuple[str, str]:
+    """(epoch, problem). One of them is always empty.
+
+    `problem` is `unsupported_build` when this backend has no receipts at all
+    — the one case in which a mutating call may go out unprotected, and it is
+    established HERE, by a read, before any mutation has been attempted."""
+    for attempt in (1, 2):
+        kind, text = _post({"org": ORG, "node": NODE,
+                            "tool": opreceipts.OP_EPOCH, "args": {}},
+                           timeout=15)
+        if kind == "ok":
+            try:
+                got = str((json.loads(text) or {}).get("epoch") or "")
+            except json.JSONDecodeError:
+                got = ""
+            if got:
+                return got, ""
+            return "", f"the backend answered {opreceipts.OP_EPOCH} without " \
+                       f"an epoch"
+        if kind == "refused":
+            if _old_build_refusal(text, opreceipts.OP_EPOCH):
+                return "", "unsupported_build"
+            return "", f"the backend refused {opreceipts.OP_EPOCH}: " \
+                       f"{text[:200]}"
+        if kind == "unsent" or attempt == 2:
+            return "", f"{kind}: {text[:200]}"
+        # `lost` on a READ that mutates nothing — asking again costs nothing
+        # and cannot double anything
+    return "", "unreachable"
+
+
+def _epoch(refresh: bool = False) -> tuple[str, str]:
+    if refresh:
+        _EPOCH.pop(ORG, None)
+    got = _EPOCH.get(ORG)
+    if got:
+        return got, ""
+    got, problem = _fetch_epoch()
+    if got:
+        _EPOCH[ORG] = got
+    return got, problem
+
+
+def _finish_plain(answer: tuple[str, str]) -> str:
+    """An UNPROTECTED call's four outcomes — the shape this client had before
+    receipts existed. Reached in exactly two cases, both of which have already
+    established that no receipt is possible: a receipt verb calling itself,
+    and a backend that refused the epoch read as an unknown verb."""
+    kind, text = answer
+    if kind == "ok":
+        return text
+    if kind == "refused":
+        return json.dumps({"error": text})
+    if kind == "unsent":
+        return json.dumps({"error": f"orgtree API unreachable: {text}"})
+    return json.dumps({
+        "error": f"orgtree API gave no answer for this call ({text}), and no "
+                 f"operation receipt covers it, so whether it applied CANNOT "
+                 f"be established. Check the org before repeating it.",
+        "state": "unknown", "reason": "unsupported_build"})
 
 
 def call_api(tool: str, args: dict[str, Any]) -> str:
@@ -1650,21 +1727,59 @@ def call_api(tool: str, args: dict[str, Any]) -> str:
     # The receipt verbs are never themselves keyed: a lookup is a QUESTION,
     # and wrapping it would make asking whether something applied an
     # operation with its own key.
-    key = "" if tool in (opreceipts.OP_CALL, opreceipts.OP_LOOKUP) \
-        else opreceipts.mint_key()
     plain = {"org": ORG, "node": NODE, "tool": tool, "args": args}
+    if tool in opreceipts.VERBS or not opreceipts.receipted(tool, args):
+        # Nothing to protect, so nothing to preflight: a receipt verb is a
+        # question, and a NONE-class verb (a chart, a transcript read, a
+        # rename) never reaches the document transaction a receipt rides —
+        # the backend drops the key for exactly those, and reading the org
+        # must not start failing because a preflight could not be answered.
+        return _finish_plain(_post(plain))
+    epoch, problem = _epoch()
+    if problem == "unsupported_build":
+        # This backend predates receipts. It cannot execute a keyed call at
+        # all (measured, `probe_old_build.py`), and it has just told us so
+        # through a READ that applied nothing — which is the only moment at
+        # which dropping to an unprotected call is safe, because nothing has
+        # been attempted yet. From here this call is exactly what this client
+        # made before receipts existed.
+        return _finish_plain(_post(plain))
+    if not epoch:
+        if problem.startswith("unsent"):
+            # no connection was ever made, so this is the ordinary
+            # backend-is-down case and deserves its ordinary words
+            return json.dumps({"error": f"orgtree API unreachable: {problem}"})
+        # ⚠ NOT DEMOTED TO AN UNPROTECTED CALL. We could not establish
+        # coverage, and running the mutation anyway would leave precisely the
+        # unrecorded effect this module exists to prevent. Nothing was sent.
+        return json.dumps({
+            "error": f"orgtree: this call was NOT made. Its operation "
+                     f"coverage could not be established ({problem}), and a "
+                     f"mutating call is not sent unprotected. Nothing has "
+                     f"changed; try again.",
+            "state": "not_applied", "reason": "no_epoch"})
+    key = opreceipts.mint_key()
     kind, text = _post({"org": ORG, "node": NODE, "tool": opreceipts.OP_CALL,
-                        "args": {"tool": tool, "args": args, "op_key": key}}
-                       if key else plain)
-    if key and kind == "refused" and _old_build_refusal(text):
-        # This backend predates receipts. It applied NOTHING (it refused the
-        # verb before dispatch — measured, `probe_old_build.py`), so reissuing
-        # plainly is safe, and it is what this client did before receipts
-        # existed. The call is UNPROTECTED from here: `key` is dropped so a
-        # lost answer below reports unknown instead of asking a lookup this
-        # backend cannot answer either.
-        key = ""
-        kind, text = _post(plain)
+                        "args": {"tool": tool, "args": args, "op_key": key,
+                                 "op_epoch": epoch}})
+    if kind == "refused" and _stale_epoch_refusal(text):
+        # ⚠ NO AUTOMATIC REISSUE UNDER A FRESH KEY (Astra, 2026-09-05). This
+        # refusal proves THIS attempt did nothing. It says nothing about any
+        # earlier attempt: the epoch rotated because the backend restarted or
+        # the document was restored, and either could have taken the receipt
+        # of a call that already applied. Refreshing the cached epoch is for
+        # the agent's NEXT, independent call; this one is reported, not
+        # retried.
+        _epoch(refresh=True)
+        return json.dumps({
+            "error": "orgtree: this call was refused before it ran, because "
+                     "its operation epoch is no longer current — the backend "
+                     "restarted, or the org document was restored. NOTHING "
+                     "was done by this attempt. If you had an earlier attempt "
+                     "at this same operation, its outcome is UNKNOWN: check "
+                     "the org before repeating it.",
+            "state": "stale", "reason": "stale_epoch",
+            "detail": text[:400]})
     if kind == "ok":
         return text
     if kind == "refused":
@@ -1674,18 +1789,13 @@ def call_api(tool: str, args: dict[str, Any]) -> str:
         # wording, and it is still the true one for this case
         return json.dumps({"error": f"orgtree API unreachable: {text}"})
     lost = text
-    if not key:
-        # nothing to ask about: either this call is a receipt verb itself, or
-        # the backend has no receipts and said so
-        return json.dumps({
-            "error": f"orgtree API gave no answer for this call ({lost}), and "
-                     f"no operation receipt covers it, so whether it applied "
-                     f"CANNOT be established. Check the org before repeating "
-                     f"it.",
-            "state": "unknown", "reason": "unsupported_build"})
+    # ⚠ THE ORIGINAL KEY AND THE EPOCH IT WAS BOUND TO — never a refreshed
+    # one. The question is whether THAT call applied, and asking it under a
+    # newer epoch would be asking about a different world.
     lkind, ltext = _post({"org": ORG, "node": NODE,
                           "tool": opreceipts.OP_LOOKUP,
-                          "args": {"op_key": key, "for_tool": tool,
+                          "args": {"op_key": key, "op_epoch": epoch,
+                                   "for_tool": tool,
                                    "for_args": args}}, timeout=15)
     if lkind == "ok":
         try:

@@ -50,12 +50,61 @@ largest mint time it evicted, and the watermark only ever increases. So:
 Below the watermark the answer is `unknown`. That is the whole design: the
 capped log may forget, and forgetting always costs a refusal, never a
 duplicate.
+
+CUSTODY — WHY THE LOG THIS DOCUMENT CARRIES IS STILL THE ONE THAT WAS
+RECORDING. A restore puts an older document back, and the receipts inside it
+went back with it: operations that applied are no longer recorded, while the
+mail they sent and the processes they started were never recalled. The absence
+of a row then means nothing at all.
+
+This was first attempted with a stamp written into the exported copy, and then
+with a quarantine measured in milliseconds. Both were wrong, and both were
+wrong the same way — they asked a CLOCK a question only custody can answer:
+
+  · the stamp reached one of the four documented restore routes. A `.json`
+    dropped in by hand, a database restored out of `deleted/`, a parked
+    database moved back and any legacy backup carry no stamp, and two of those
+    restore a DATABASE, which an export-time stamp can never reach;
+  · the quarantine gated the LOOKUP's "not applied" while ADMISSION still
+    compared the client's mint time to the server's clock. A pre-restore key
+    minted by a client running 30 s ahead was admitted and executed a second
+    time one second into the quarantine, and a server clock that stepped
+    BACKWARDS revived a key the quarantine had supposedly outlived. Both
+    reproduced by execution, 2026-09-05 (evidence/admit-holes.json).
+
+So a key is bound to a server-issued EPOCH at mint, and an existing key is
+never rebound. The epoch lives in THIS PROCESS's memory (`_EPOCHS`), is never
+read back from the document, and rotates on exactly two events:
+
+    BOOT           the table starts empty, so the first touch after a restart
+                   mints a fresh one. Every restore that requires stopping the
+                   backend — and they all do, it holds the files open — is
+                   covered by this alone, legacy backups included.
+    A REWIND       `op_receipts_meta.seq` counts appends; this process
+                   remembers the highest it has seen per (root, slug) in
+                   `_SEEN`. A document that comes back with a LOWER seq than
+                   this process has already written was rewound underneath a
+                   running backend. `_SEEN` is not in the data root, so a
+                   restore cannot roll it back with the document — that is the
+                   whole point of keeping it here rather than on disk.
+
+An epoch that does not match refuses ADMISSION before dispatch (so a delayed
+pre-restore duplicate never executes, whatever any clock says) and answers a
+lookup `unknown` when there is no row. A row that IS found still answers
+`applied` across a rotation: a receipt is durable positive evidence, and
+saying so executes nothing.
+
+WHAT REMAINS UNCOVERED, SAID PLAINLY: a whole-root rewind performed LIVE,
+under a running backend, that loses no receipt this process has already seen.
+If it loses one, `_SEEN` catches it; if it loses none, nothing here has
+misjudged anything. Nothing else in this module infers coverage from a time.
 """
 from __future__ import annotations
 
 import hashlib
 import json
 import re
+import threading
 import time
 import uuid
 from typing import Any, cast
@@ -72,12 +121,17 @@ SKEW_MS = 60_000            # a key minted "in the future" by more than this is 
 SECTION = "op_receipts"
 META = "op_receipts_meta"
 
-# The two verbs receipts add to the dispatch. Both are DISPATCH-ONLY on
+# The three verbs receipts add to the dispatch. All are DISPATCH-ONLY on
 # purpose — a backend without receipts refuses an unknown verb and executes
 # nothing, which is how a client learns it cannot be protected here, and (for
-# `OP_CALL`) the reason a missing receipt is evidence at all.
+# `OP_CALL`) the reason a missing receipt is evidence at all. `OP_EPOCH` is
+# the client's PREFLIGHT: it reads the current epoch and mutates nothing, and
+# an old build refusing it is the safest possible moment to discover that this
+# backend has no receipts — before any mutation has been attempted.
 OP_CALL = "orgtree_op_call"
 OP_LOOKUP = "orgtree_op_lookup"
+OP_EPOCH = "orgtree_op_epoch"
+VERBS = (OP_CALL, OP_LOOKUP, OP_EPOCH)
 
 # `<mint_ms>-<24 hex>`. The mint time is IN the key so the server can judge
 # the key's own age without having recorded it first — which is what lets a
@@ -309,7 +363,7 @@ def _meta(d: dict[str, Any], now_ms: int, create: bool) -> dict[str, Any]:
         # established by the SHAPE of the request, not by its age.
         m = {"schema": SCHEMA, "coverage": COVERAGE, "created_at": now_ms,
              "from_ms": 0, "horizon_ms": HORIZON_MS, "ceiling": CEILING,
-             "trim_to": TRIM_TO, "evicted": 0}
+             "trim_to": TRIM_TO, "evicted": 0, "seq": 0}
         d[META] = m
     return m
 
@@ -319,71 +373,76 @@ def watermark(d: dict[str, Any]) -> int:
     return int(m.get("from_ms") or 0)
 
 
-def stamp_export(doc: dict[str, Any], now_ms: int | None = None) -> None:
-    """Mark an EXPORTED COPY as a point-in-time snapshot (`store.export_json`
-    calls this on the reconstructed document, never on a live one).
-
-    A document restored from an export is a world that stopped at the export.
-    Everything the live system did between the export and the restore is gone
-    from it — including receipts whose effects were NOT undone, because a
-    document rollback does not recall mail already delivered to another org or
-    a process already started. So a key minted after this snapshot was taken
-    can never be judged from the restored document, and the honest answer for
-    it is `unknown`.
-
-    The stamp is cleared by the first receipt appended after the restore,
-    which also lifts the watermark to that moment (see `append`) — so the
-    window in which everything is unknown is exactly the window in which
-    nothing here can know anything."""
-    ms = int(time.time() * 1000) if now_ms is None else int(now_ms)
-    m = cast("dict[str, Any] | None", doc.get(META))
-    if m is None:
-        # ⚠ EVEN WITH NO RECEIPTS. A document that never carried one still
-        # needs the stamp: without it, a key minted between the export and
-        # the restore finds no row, no meta and a watermark of 0, and reads
-        # as "never applied" — which is the whole failure, on the document
-        # least able to argue with it.
-        m = {"schema": SCHEMA, "coverage": COVERAGE, "from_ms": 0,
-             "horizon_ms": HORIZON_MS, "ceiling": CEILING,
-             "trim_to": TRIM_TO, "evicted": 0}
-        doc[META] = m
-    m["export_stamp"] = ms
-
-
-def export_stamp(d: dict[str, Any]) -> int:
+def seq(d: dict[str, Any]) -> int:
+    """How many receipts this document has ever appended. Monotonic within one
+    continuously-recording document, and the ONLY thing `_SEEN` compares."""
     m = cast("dict[str, Any]", d.get(META) or {})
-    return int(m.get("export_stamp") or 0)
+    return int(m.get("seq") or 0)
 
 
-def restored_at(d: dict[str, Any]) -> int:
-    m = cast("dict[str, Any]", d.get(META) or {})
-    return int(m.get("restored_at") or 0)
+# --------------------------------------------------------------- custody
+#
+# ⚠ IN MEMORY, DELIBERATELY, AND NOT IN THE DATA ROOT. Both tables below are
+# this process's own witness. A file inside `DATA_ROOT` would be restored
+# along with the document it is supposed to be judging — which is how the two
+# previous attempts failed. Keeping them here means:
+#
+#   · a restart empties them, so every restore that stops the backend (all of
+#     them — it holds the database open) mints a fresh epoch on the next
+#     touch, and no key from before can be answered `not_applied`;
+#   · a rewind under a LIVE backend is caught by the seq comparison, because
+#     the restore cannot reach `_SEEN`.
+#
+# Keyed by (data root, slug): a test root and the live root never share an
+# epoch, and one org's restore does not invalidate another org's keys.
+
+_LOCK = threading.Lock()
+_EPOCHS: dict[tuple[str, str], str] = {}
+_SEEN: dict[tuple[str, str], int] = {}
 
 
-def resume_after_restore(d: dict[str, Any], now_ms: int) -> bool:
-    """The first receipt-layer touch of a RESTORED document converts its
-    snapshot stamp into an ordinary watermark at this moment.
+def new_epoch() -> str:
+    return uuid.uuid4().hex[:16]
 
-    ⚠ THE EXPORT'S OWN TIME IS DELIBERATELY NOT USED (Astra, 2026-09-05).
-    Refusing only keys minted after the export was wrong: a key minted BEFORE
-    the snapshot whose operation applied AFTER it is missing from the restored
-    document in exactly the same way, so a mint time cannot establish custody
-    here either. What is true is narrower and needs no arithmetic — on a
-    restored document the absence of a receipt proves nothing about anything,
-    until the document is recording again. Every key minted before the restore
-    therefore reads `unknown`, and every key minted after it is covered
-    normally, because its whole life is inside the restored document's own
-    record.
 
-    Idempotent, and safe to run in a transaction that is then discarded: the
-    watermark only ever rises, and a rise only ever costs a refusal."""
-    if not export_stamp(d):
-        return False
-    m = cast("dict[str, Any]", d[META])
-    m.pop("export_stamp", None)
-    m["restored_at"] = now_ms
-    m["from_ms"] = max(int(m.get("from_ms") or 0), now_ms)
-    return True
+def custody(d: dict[str, Any], root: str, slug: str) -> tuple[str, str]:
+    """The current epoch for this document, and why it is current.
+
+    Returns (epoch, rotation_reason) where the reason is "" when the epoch was
+    already established and this document is still ahead of everything this
+    process has written to it. MUST be called inside the caller's `DOC_LOCK`,
+    with the document as loaded, before any receipt decision is taken."""
+    n, k = seq(d), (root, slug)
+    with _LOCK:
+        ep, seen = _EPOCHS.get(k), _SEEN.get(k)
+        why = ""
+        if ep is None:
+            # first touch in this process: a restart, a fresh root, or an org
+            # this backend has not served since it booted
+            why = "boot"
+        elif seen is not None and n < seen:
+            # this document has FEWER receipts than this process has already
+            # appended to it: it was replaced by an older copy while we ran
+            why = f"rewound from seq {seen} to {n}"
+        if why:
+            ep = new_epoch()
+            _EPOCHS[k] = ep
+            _SEEN[k] = n
+        else:
+            _SEEN[k] = max(int(seen or 0), n)
+        return cast("str", ep), why
+
+
+def forget_custody(root: str = "", slug: str = "") -> None:
+    """Drop remembered custody — for tests that emulate a restart, and for a
+    document leaving this process's care. No arguments = everything."""
+    with _LOCK:
+        if not root and not slug:
+            _EPOCHS.clear()
+            _SEEN.clear()
+            return
+        _EPOCHS.pop((root, slug), None)
+        _SEEN.pop((root, slug), None)
 
 
 def schema_ahead(d: dict[str, Any]) -> str:
@@ -423,6 +482,41 @@ def find(d: dict[str, Any], node: str, key: str) -> dict[str, Any] | None:
     return None
 
 
+def fp_node(row: dict[str, Any]) -> str:
+    """The node id this row's fingerprint was computed WITH — which is not
+    necessarily the id the row is filed under today, because `rekey_nodes`
+    moves a row to the seat's new name after a rename while leaving the
+    fingerprint exactly as it was minted."""
+    return str(row.get("fp_node") or row.get("node") or "")
+
+
+def rekey_nodes(d: dict[str, Any], renamed: dict[str, str]) -> int:
+    """Follow a RENAME. `ledger.rename` re-keys every per-node structure in
+    the document; the receipt rows are one of them, and without this a call
+    that applied under the old id is invisible to a lookup under the new one —
+    which reads as "not applied, safe to reissue" about an operation that
+    happened.
+
+    ⚠ THE FINGERPRINT IS NEVER RECOMPUTED (Astra's constraint). It covers the
+    call's original subject, so `fp_node` records the id it was computed with
+    and is written with `setdefault`: a seat renamed A → B → C still
+    fingerprints at A, because only the first rename may claim to be where the
+    print came from.
+
+    Returns the number of rows moved. Does NOT materialise the section when
+    the document has never carried a receipt."""
+    if SECTION not in d or not renamed:
+        return 0
+    moved = 0
+    for row in _log(d, create=False):
+        old = str(row.get("node") or "")
+        if old in renamed:
+            row.setdefault("fp_node", old)
+            row["node"] = renamed[old]
+            moved += 1
+    return moved
+
+
 # ------------------------------------------------------------- admission
 #
 # Every one of these decisions is taken INSIDE the caller's single DOC_LOCK
@@ -434,14 +528,40 @@ ADMIT, REPLAY, CONFLICT, REFUSE = "admit", "replay", "conflict", "refuse"
 
 
 def admit(d: dict[str, Any], node: str, generation: int, key: str, tool: str,
-          args: dict[str, Any], now_ms: int | None = None
-          ) -> tuple[str, dict[str, Any]]:
-    """Decide what happens to a keyed call. Returns (decision, info)."""
+          args: dict[str, Any], now_ms: int | None = None, *,
+          epoch_ok: bool) -> tuple[str, dict[str, Any]]:
+    """Decide what happens to a keyed call. Returns (decision, info).
+
+    `epoch_ok` is REQUIRED and has no default: it is the custody proof (the
+    epoch the client was issued still being this process's epoch for this
+    document), and a guard with a permissive default is a guard that goes
+    missing at the one call site that forgets it."""
     ms = int(time.time() * 1000) if now_ms is None else int(now_ms)
     mint = parse_key(key)
     if mint is None:
         return REFUSE, {"reason": "malformed_key",
                         "detail": "op_key must be `<mint_ms>-<24 hex>`"}
+    if not epoch_ok:
+        # ⚠ THE ONE REFUSAL NO CLOCK CAN REACH, and the reason this file no
+        # longer has a quarantine. The key was issued under an epoch this
+        # process has since rotated — a restart, or a document rewound
+        # underneath us — so a request still carrying it may be the delayed
+        # original of a call that ALREADY APPLIED and whose receipt went with
+        # the restore. Refuse before dispatch. A row found here is reported
+        # because it is useful, not because it changes the decision: an
+        # existing row makes "already applied" certain, and its absence
+        # proves nothing at all.
+        prior = find(d, node, key)
+        return REFUSE, {
+            "reason": "stale_epoch", "row": prior,
+            "detail": ("this key was issued under an operation epoch that is "
+                       "no longer current — the backend restarted, or this "
+                       "document was restored — so nothing was done. "
+                       + ("A receipt shows the operation ALREADY APPLIED; do "
+                          "not issue it again." if prior is not None else
+                          "Whether the original call applied is UNKNOWN: its "
+                          "receipt would have been rolled out of the document "
+                          "by the same event. Do not assume it failed."))}
     if mint > ms + SKEW_MS:
         return REFUSE, {"reason": "key_from_the_future",
                         "detail": f"minted {(mint - ms) / 1000:.0f}s ahead of "
@@ -472,13 +592,16 @@ def admit(d: dict[str, Any], node: str, generation: int, key: str, tool: str,
                                       f"operation ALREADY APPLIED and will "
                                       f"not be run again. Issue a fresh key "
                                       f"if you mean to do it now."}
-        fp = fingerprint(tool, node, generation, args)
+        # ⚠ AT THE ROW'S OWN SUBJECT, not at the seat's current name: a rename
+        # moved this row to the new id (`rekey_nodes`) without touching the
+        # print it was minted with, so recomputing it here at the new name
+        # would read every renamed seat's receipt as a conflict.
+        fp = fingerprint(tool, fp_node(row), generation, args)
         if row.get("tool") != tool or row.get("fp") != fp:
             return CONFLICT, {"row": row, "reason": "key_reused",
                               "detail": f"this key already identifies "
                                         f"{row.get('tool')} at {row.get('at')}"}
         return REPLAY, {"row": row}
-    resume_after_restore(d, ms)
     ahead = schema_ahead(d)
     if ahead:
         return REFUSE, {"reason": "schema_ahead",
@@ -490,15 +613,6 @@ def admit(d: dict[str, Any], node: str, generation: int, key: str, tool: str,
     # different code path from "receipts exist and nothing was evicted". Both
     # mean a watermark of 0; say so once.
     if mint < watermark(d):
-        if mint < restored_at(d):
-            return REFUSE, {
-                "reason": "restored_from_export",
-                "detail": "this document was restored from an export after "
-                          "the key was minted, so whatever happened to the "
-                          "key was rolled out of the document and cannot be "
-                          "read back — and a rollback does not recall mail "
-                          "already delivered or a process already started. "
-                          "The outcome is unknown"}
         return REFUSE, {"reason": "horizon_evicted",
                         "detail": "receipts for keys this old have been "
                                   "evicted; the outcome is unknown"}
@@ -514,10 +628,11 @@ def append(d: dict[str, Any], row: dict[str, Any], now_ms: int | None = None
     """File a row and evict if the log is over the ceiling. Returns the meta."""
     ms = int(time.time() * 1000) if now_ms is None else int(now_ms)
     m = _meta(d, ms, create=True)
-    # a receipt can be the FIRST touch after a restore (the admission that
-    # produced it converts the stamp, but a caller that appends without
-    # admitting — the fence — must not leave a stamped document recording)
-    resume_after_restore(d, ms)
+    # ⚠ THE COUNTER THIS PROCESS'S WITNESS COMPARES (`custody`). It counts
+    # appends, never rows, so an eviction cannot lower it and a rewind cannot
+    # hide behind one: a restored document has a SMALLER seq than the number
+    # of receipts we have written into it, and that is the whole detection.
+    m["seq"] = int(m.get("seq") or 0) + 1
     log = _log(d, create=True)
     log.append(row)
     if len(log) > CEILING:

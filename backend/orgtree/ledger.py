@@ -34,7 +34,7 @@ from collections.abc import Callable, Iterable, Mapping
 from datetime import datetime, timedelta, timezone
 from typing import Any, Final, Literal, cast
 
-from . import clipin, deployment
+from . import clipin, deployment, opreceipts
 from .schema import (AudienceGrant, DirGrant, FrozenInfo, MailEntry, NodeDoc,
                      NoticeEntry, OrgDoc, OrgInboxEntry, ToolGrant,
                      UserMailEntry, WorkActor, WorkItem, WorkStage)
@@ -6927,6 +6927,12 @@ class Org:
         # like mail bodies and the event log. `rev`, `updated_at`, `docket_at`
         # and `history` do not move: a re-key is not a docket update.
         self._rekey_work_identity(renamed)
+        # operation receipts are per-node too (opreceipts.rekey_nodes): a call
+        # that applied under the old id must not become invisible to a lookup
+        # under the new one, which would read as "not applied, safe to
+        # reissue". The row moves; the FINGERPRINT it was minted with does
+        # not, so a seat renamed A → B → C still prints at A.
+        opreceipts.rekey_nodes(cast("dict[str, Any]", self.d), renamed)
         # the display title (set at hire from the raw name) follows the
         # identity — tree() ships it beside the id, so a stale title would
         # show exactly the name the rename was meant to replace
