@@ -227,7 +227,7 @@ function uiTest(name: string,
 
 function Pane({ text, w, onOpen }: {
   text: string
-  w: RefWorld
+  w: RefWorld | null
   onOpen?: (id: string) => void
 }) {
   const host = useRefMd(w, onOpen ? (r) => onOpen(r.ref.id) : undefined)
@@ -249,6 +249,19 @@ uiTest('§12 a component rendering markdown gets its references linked, and '
     await flush()
     assert.deepEqual(opened, ['alpha'])
   })
+
+uiTest('§14 a body with no world is left entirely alone', async (mount) => {
+  // ⚠ NO WORLD IS NOT AN EMPTY WORLD. A caller that was given no org cannot
+  // tell a local reference from a foreign one; judging anyway would mark
+  // every token in the app's own prose "another org", which is a confident
+  // wrong answer where silence is the right one.
+  const el = await mount(
+    <Pane text="see @item:orgtree/alpha now" w={null} />)
+  await flush()
+  assert.equal(el.querySelector('[data-ref-token]'), null)
+  assert.match(el.textContent ?? '', /@item:orgtree\/alpha/,
+    'and the token is still readable as written')
+})
 
 uiTest('§13 the body changing REPLACES the chips rather than losing them',
   async (mount) => {

@@ -100,12 +100,20 @@ const MUTANTS = [
   {
     name: 'the effect only runs when the world object changes identity',
     file: REFMD, kills: '§13 the body changing',
-    from: `  useEffect(() => {
-    if (host.current) linkifyRefs(host.current, world, !!onOpen)
+    from: `    if (host.current && world) linkifyRefs(host.current, world, !!onOpen)
   })`,
-    to: `  useEffect(() => {
-    if (host.current) linkifyRefs(host.current, world, !!onOpen)
+    to: `    if (host.current && world) linkifyRefs(host.current, world, !!onOpen)
   }, [world, onOpen])`,
+  },
+  {
+    // ⚠ NO WORLD IS NOT AN EMPTY WORLD. Without the guard a caller that
+    // was given no org judges every token in its own app's prose against
+    // `undefined` — and the org check runs first, so they all come out
+    // "another org".
+    name: 'a surface with no world judges anyway',
+    file: REFMD, kills: '§14 a body with no world',
+    from: `    if (host.current && world) linkifyRefs(host.current, world, !!onOpen)`,
+    to: `    if (host.current) linkifyRefs(host.current, world, !!onOpen)`,
   },
 ]
 
