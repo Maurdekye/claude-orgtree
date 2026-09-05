@@ -20473,7 +20473,8 @@ def steer_receipt_text(e: Mapping[str, Any]) -> str:
     else:
         base = "delivered mid-task (older row, evidence not recorded)"
     if e.get("confirmed_duplicate"):
-        base += " · delivered twice (both recorded)"
+        # two OR MORE distinct recorded deliveries -- never say a number
+        base += " · recorded more than once (a confirmed duplicate)"
     elif e.get("retried"):
         base += " · after a retry — an earlier attempt may also have arrived"
     return base

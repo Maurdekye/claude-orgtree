@@ -2426,9 +2426,11 @@ export const pendTag = (m: PendingMail): string =>
     ? '⚠ stuck — no turn owns this message; report it (an orgtree restart re-presents it)'
     : m.stage === 'queued'
       ? 'queued — delivers at the next turn boundary…'
-    // D1: past the steer store — the hook has it, the CLI's record decides
+    // D1: past the steer store. `claimed` does NOT mean the hook has it (a
+    // lost response leaves a claim with nothing delivered); `acked` means the
+    // hook said it received it; only the CLI's record makes it delivered
     : m.stage === 'claimed'
-      ? 'handed to the hook — awaiting its receipt…'
+      ? 'claimed for the hook — awaiting its receipt…'
     : m.stage === 'acked'
       ? 'received by the hook — awaiting the CLI’s record…'
       : m.stage === 'turn' || (!m.stage && m.via === 'turn')

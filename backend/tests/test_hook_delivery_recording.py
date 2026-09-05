@@ -821,11 +821,20 @@ check("UI: receipt wording distinguishes legacy handoff / recorded / retry / con
       lambda: eq((supervisor.steer_receipt_text(d13["steered"][0]).startswith("delivered mid-task — handed to the hook (legacy"),
                   supervisor.steer_receipt_text({"level": "recorded"}),
                   supervisor.steer_receipt_text({"level": "recorded", "retried": True}).endswith("may also have arrived"),
-                  supervisor.steer_receipt_text({"level": "recorded", "retried": True, "confirmed_duplicate": True}).endswith("delivered twice (both recorded)"),
+                  supervisor.steer_receipt_text({"level": "recorded", "retried": True, "confirmed_duplicate": True}).endswith("recorded more than once (a confirmed duplicate)"),
                   supervisor.steer_receipt_text({})),
                  (True, "delivered mid-task — recorded by the CLI", True, True,
                   "delivered mid-task (older row, evidence not recorded)"), "receipt texts"))
 belt(slug, nid)
+# focused wording controls on the desk source: a claim is not a handoff, and
+# a confirmed duplicate is "more than once", never a count
+_desk = open(os.path.join(HERE, "..", "..", "frontend", "src", "canvas", "desk.tsx"), encoding="utf-8").read()
+check("UI: the claimed tag says 'claimed for the hook', never 'handed to the hook'",
+      lambda: eq(("claimed for the hook — awaiting its receipt" in _desk, "handed to the hook" in _desk), (True, False), "desk.tsx"))
+check("UI: the acked tag keeps receipt distinct from record",
+      lambda: truthy("received by the hook — awaiting the CLI" in _desk, "desk.tsx"))
+check("UI: no receipt text states an exact delivery count",
+      lambda: truthy("twice" not in supervisor.steer_receipt_text({"level": "recorded", "confirmed_duplicate": True}), "receipt"))
 
 # ── §14 retention boundary ─────────────────────────────────────────────────
 print("\n§14 attempts: open while recoverable, resolved when the mail left by another route, capped per batch")
