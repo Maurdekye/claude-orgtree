@@ -2658,31 +2658,21 @@ main.solo { width: 100%; }
   color: var(--accent); text-decoration: underline;
 }
 
-/* ACTIVE agents' rows read WHITE (accepted docket styling, 2026-09-05,
-   supersedes the 2026-09-03 "orange flare similar to unread mail" ruling —
-   the accent/terracotta headline below is gone). `--ink-strong` is this
-   file's own "white" token, already used for every other prominent-text
-   spot in this modal (`.doc-pane-title-row b`, the `.mfrom` override
-   above). */
+/* ACTIVE agents' rows: white title */
 .gallery-modal .mailrow.active .l1 .mfrom { color: var(--ink-strong); font-weight: 700; }
 .gallery-modal .mailrow.active .l2 { color: var(--ink); }
 
-/* …and a RETIRED agent's row reads MUTED GREY, darker than an active one
-   (accepted docket styling, 2026-09-05 — a stronger step of de-emphasis
-   than the original "just grey them out slightly" ruling). Deliberately
-   not `opacity` and not the disabled grey: the row stays fully readable
-   and fully clickable — it is old, not unavailable. `--dim` on BOTH lines
-   (the title used to sit at full `--ink` brightness; only the detail line
-   was muted) is what makes the pair read as one consistently darker row
-   instead of a bright title over a dim subtitle. */
+/* RETIRED agents' rows: muted grey throughout, darker resting background */
 .gallery-modal .mailrow.past .l1 .mfrom { color: var(--dim); font-weight: 500; }
 .gallery-modal .mailrow.past .l2 { color: var(--dim); }
 .gallery-modal .mailrow.past .tier { opacity: .75; }
+.gallery-modal .mailrow.past { background: color-mix(in srgb, black 12%, var(--bg)); }
 
-/* the header row: title and the show-retired checkbox share one line
-   (accepted docket styling, 2026-09-05 — the checkbox used to sit on its
-   own line below the title). `.settings h3`'s own bottom margin moves to
-   this wrapper so the space above `.mailpane` is unchanged. */
+/* gallery selection is NEUTRAL, not mail's accent-tinted .on — placed after
+   .past so a selected retired row gets this, not its own darker background */
+.gallery-modal .mailrow.on { background: var(--panel-2); }
+
+/* header: title and the show-retired checkbox share one line */
 .gallery-modal .gallery-head {
   display: flex; align-items: center; justify-content: space-between;
   gap: 12px; margin: 0 0 4px;
