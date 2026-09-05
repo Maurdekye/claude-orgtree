@@ -9449,11 +9449,9 @@ class Org:
     WORK_EVIDENCE_MAX: Final = 50
     WORK_HISTORY_MAX: Final = 100
     WORK_LIST_ENTRY_MAX: Final = 40          # entries per docket list
-    # The attention reason must now carry the SPECIFICS the user is being asked
-    # to confirm — requested against delivered, the decision or edge case added,
-    # and the confirmation wanted (user 2026-09-05). 500 chars truncated that to
-    # roughly one of the three, silently, so the field is 1000.
-    WORK_ATTENTION_REASON_MAX: Final = 1000
+    # the attention reason, which now has to hold requested-against-delivered,
+    # the extra, and the confirmation wanted (user 2026-09-05)
+    WORK_ATTENTION_REASON_MAX: Final = 500
     WORK_ARCHIVE_AFTER_S: Final = 3600       # strictly greater than → archived
     #
     # `backlogged` (user 2026-09-05) is NOT a closed state and NOT an active

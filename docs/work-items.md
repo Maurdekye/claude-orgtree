@@ -69,12 +69,16 @@ flag, or an attached question. Nothing in the backend requires `review` before
 `accept` — an item that was only ever waiting on the user is accepted from
 whatever open status it is in.
 
+The two ways to reach the user are not interchangeable: a **question** is an
+attached `orgtree_ask`, and the **manual flag** is for a concrete thing they
+must see or confirm that is not a question.
+
 The user's own review is wanted only when one of these actually holds:
 
 * a decision was taken **beyond** the stated spec,
 * a **specialized edge case** was chosen,
 * a **definition gap** was filled on their behalf, or
-* a real question or blocker remains.
+* something is blocked on them that no attached question is already asking.
 
 Being visible in the UI is not a reason, and neither is who owns the item. Work
 that matches the stated requirements exactly — no deviations, no extra edge
@@ -94,7 +98,7 @@ the exact decision, edge case or definition added beyond the spec, and the
 confirmation wanted. `Ready for review` and `please approve` are not enough —
 this field is what the user reads to know what they are approving, so the detail
 lives here rather than in `evidence` or the done list. It is capped at
-`WORK_ATTENTION_REASON_MAX` (1000 characters) and the detail pane renders it
+`WORK_ATTENTION_REASON_MAX` (500 characters) and the detail pane renders it
 with newlines preserved.
 
 **Manual flag.** `update … attention: true, attention_reason: "…"` sets

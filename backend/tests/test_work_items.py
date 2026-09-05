@@ -2033,19 +2033,27 @@ check("an item waiting only on the user is accepted without ever entering `revie
 def the_attention_reason_holds_the_specifics_it_must_now_carry():
     """The reason has to name requested-against-delivered, the decision or edge
     case added, and the confirmation wanted (user 2026-09-05) — three things at
-    once. The old 500-character cap cut that down SILENTLY. Control: one
-    character past the current cap is still cut, so this measures a boundary
-    that exists rather than the absence of one."""
+    once, inside the 500-character field. Both halves of that matter, so both
+    are measured: a real three-part reason survives whole, INCLUDING the line
+    breaks the detail pane renders, and one character past the cap is still
+    cut — otherwise "it came back whole" would only be saying that nothing
+    truncates anything."""
     slug = fresh_org()
     wid = create(slug)
     cap = store.load_org(slug).WORK_ATTENTION_REASON_MAX
+    assert cap == 500, "the cap the reason has to fit inside changed"
     three = ("REQUESTED: a CSV export.\n"
              "DELIVERED: a CSV export, plus a TSV switch.\n"
-             "BEYOND SPEC: the TSV switch is mine, not yours — "
-             + "the importer here rejects commas inside quoted fields, so CSV "
-               "alone loses rows. " * 6
-             + "\nCONFIRM: keep the TSV switch, or strip it back to CSV only?")
-    assert 500 < len(three) <= cap, len(three)
+             "BEYOND SPEC: the TSV switch is mine, not yours — the importer "
+             "here rejects commas inside quoted fields, so CSV alone loses "
+             "rows on the only file you gave me, and re-quoting them changes "
+             "what the downstream sheet reads back for every free-text "
+             "column.\n"
+             "CONFIRM: keep the TSV switch, or strip it back to CSV only and "
+             "accept the dropped rows?")
+    # near the ceiling on purpose: a short reason would fit under any cap and
+    # prove nothing about whether all three parts can be written at once
+    assert 300 < len(three) <= cap, len(three)
     ok(slug, "boss", "update", slug=wid, attention=True, attention_reason=three,
        done_so_far=["exporter written"], working_on_next=["your call"])
     got = get_item(slug, wid)["manual_attention"]["reason"]
@@ -2063,7 +2071,7 @@ def the_attention_reason_holds_the_specifics_it_must_now_carry():
     assert "what was asked" in d and "confirmation" in d, d
 
 
-check("the attention reason carries all three parts, and the cap that would cut them is 1000",
+check("a three-part attention reason survives whole, line breaks included, inside the 500 cap",
       the_attention_reason_holds_the_specifics_it_must_now_carry)
 
 
@@ -2073,6 +2081,8 @@ check("the attention reason carries all three parts, and the cap that would cut 
 POLICY_PHRASES = (
     "REVIEW BY AGENTS",
     "NEVER THE `review` STATUS",
+    "a QUESTION is an attached orgtree_ask",   # not the same door as the flag
+    "is NOT a question",
     "BEYOND the stated spec",            # trigger 1
     "specialized edge case",             # trigger 2
     "definition gap",                    # trigger 3

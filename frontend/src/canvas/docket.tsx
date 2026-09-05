@@ -37,11 +37,8 @@ import { ago, useEsc, usePolled } from './shared'
 import { buildMentionIndex, WorkRefText } from './workrefs'
 import type { MentionIndex } from './workrefs'
 
-// `review` READS AS "Agent review" EVERYWHERE (user ruling 2026-09-05). The
-// status says agents are checking the work; asking the USER to look at
-// something is the attention flag or an attached question, never this status.
-// "Under review" was ambiguous between the two and is gone.
-const REVIEW_HELP = 'Review by agents — a request for you rides the attention flag or a question'
+// `review` is the AGENT check, not the user's (user ruling 2026-09-05)
+const REVIEW_HELP ='Review by agents — a request for you rides the attention flag or a question'
 const STATUS_LABEL: Record<string, string> = {
   backlogged: 'Backlogged',
   open: 'Open',
@@ -53,9 +50,7 @@ const STATUS_LABEL: Record<string, string> = {
   dropped: 'Dropped',
 }
 const statusLabel = (status: string): string => STATUS_LABEL[status] ?? status
-/** the hover help beside a status word, where the word alone can be read two
- *  ways. Only `review` has one; everything else deliberately returns nothing
- *  rather than a restatement of its own label. */
+/** hover help, only where the status word can be read two ways */
 const statusHelp = (status: string): string | undefined =>
   (status === 'review' ? REVIEW_HELP : undefined)
 
@@ -926,11 +921,7 @@ function DocketPane({ slug, item, toast, asksById, onDismiss, close, onFocusAgen
             <ActorName actor={manualAttn.by} facts={facts}
               onFocusAgent={onFocusAgent} close={close} />
           </div>
-          {/* THE REASON IS WHERE THE SPECIFICS LIVE (user 2026-09-05): what was
-              asked against what was built, the decision or edge case added, and
-              the confirmation wanted. It is written as several lines, so it gets
-              the DESCRIPTION's pre-wrap treatment — the plain <div> ran it all
-              together into one paragraph and the detail became unreadable. */}
+          {/* the reason is written as several lines; a plain <div> ran them together */}
           <div className="docket-attention-body">
             <WorkRefText text={manualAttn.reason} index={refIndex}
               onPick={onGoToItem} onFocusAgent={goToAgent} />
