@@ -5526,6 +5526,14 @@ def _delivery_stages(slug: str, nid: str,
                       if isinstance(x, dict) for t in x.get("toks") or []}
         queue_toks = {str(t) for x in st["queue"]
                       if isinstance(x, dict) for t in x.get("toks") or []}
+        # D1: a carrier a hook has CLAIMED (and maybe acked) is further along
+        # than "in the steer store" — say so, keyed by token
+        claimed: dict[str, str] = {}
+        for x in list(st.get("steer") or []) + list(st["queue"]):
+            cl = x.get("claim") if isinstance(x, dict) else None
+            if cl and cl.get("delivery_id"):
+                for t in x.get("toks") or []:
+                    claimed[str(t)] = "acked" if cl.get("acked") else "claimed"
         owned = bool(st.get("busy") or st.get("waiting")
                      or st.get("responding") or st.get("proc_control")
                      or leased)
@@ -5545,8 +5553,8 @@ def _delivery_stages(slug: str, nid: str,
             # (review round 2), and the receipt must say so
             out[tok] = "queued" if (owned or young) else "stranded"
         elif owned or young:
-            out[tok] = ("steer" if tok in steer_toks
-                        else "turn" if via_turn else "steer")
+            out[tok] = (claimed.get(tok) or ("steer" if tok in steer_toks
+                        else "turn" if via_turn else "steer"))
         else:
             out[tok] = "stranded"
     return out
@@ -14070,6 +14078,11 @@ def _run_one_turn(slug: str, nid: str,
         # any drained batch that never reached the process folds back into
         # the mailbox — mail survives a turn that failed to launch. Batches
         # whose text still rides an in-memory carrier stay journaled.
+        # D1: before the belt folds anything, let the CLI's transcript say
+        # what it already recorded — a claimed carrier the CLI wrote into
+        # context is delivered, and must not ride the queue into the next
+        # boundary as a duplicate. Positive-only; absence proves nothing yet.
+        scan_steer_records(slug, nid)
         with _state_lock:
             # THE BELT (D-229). The steer store only means anything while a
             # turn is responding, and this turn is over: whatever is still
@@ -14094,6 +14107,16 @@ def _run_one_turn(slug: str, nid: str,
             _steer_fold_log(slug, nid, len(residual), "turn boundary",
                             why="left in the steer store after the turn "
                                 "ended (lane fold missed — belt)")
+        with _state_lock:
+            uncertain = _steer_uncertain_count(st["queue"])
+        if uncertain:
+            # D1: the hook RECEIVED these (acked) but the CLI never recorded
+            # them before the turn ended. They ride the queue to the next
+            # boundary: a duplicate is possible and the receipt says so.
+            _steer_fold_log(slug, nid, uncertain, "turn boundary",
+                            why="received by the hook but not recorded by "
+                                "the CLI before the turn ended — redelivered "
+                                "at the next boundary; a duplicate is possible")
         _fold_back_undelivered(slug, nid, keep_toks=alive)
         st.pop("on_fallback", None)     # this turn's lane is spent
         with _state_lock:
@@ -19938,6 +19961,338 @@ def pop_steer(slug: str, nid: str, *, return_carriers: bool = False,
     return out
 
 
+# ------------------------------------------------ D1: claim / receipt / record
+# The claude lane's hook fetch used to BE the commit (`pop_steer` above): the
+# durable "the agent was told this" row was written and the journal batch
+# confirmed away BEFORE the HTTP response left the server, so a response lost
+# on the wire lost the message with a delivery receipt standing over it
+# (astras-entrance-exam audit D1, reproduced through the real door in
+# tests/test_hook_delivery_recording.py §2). The user's ruling (reset-action-
+# plan item 3): "delivered" is committed only once the CLI's own transcript
+# RECORDS the hook context. Three steps, each durable, each idempotent:
+#
+#   claim   `claim_steer`  the fetch. Carriers stay in the steer store and the
+#           batches stay in `delivering`; each gets a lease-bound claim naming
+#           a fresh delivery_id and the hook's tool_use_id (its OWNER). The
+#           attempt record is written to the doc BEFORE the messages are
+#           returned; if that write fails nothing is returned.
+#   receipt `ack_steer`    the hook, having printed, says it received the
+#           body. Stops re-offers. Commits NOTHING.
+#   record  `scan_steer_records`  the transcript row
+#           {"type":"attachment","attachment":{"type":"hook_additional_context",
+#            "toolUseID":…,"content":"…ORGTREE-DELIVERY:<id>…"}} — shape read
+#           from real transcripts, field names from the pinned CLI's own hook
+#           schema (2.1.258) — whose toolUseID equals the attempt's owner.
+#           This is the ONLY commit: durable steered row, batch confirmed away,
+#           `steered` frame.
+#
+# A claim nobody acks is re-offered after STEER_CLAIM_LEASE_S at the next
+# hook; a claim that WAS acked is never re-offered (the hook had it) — the
+# turn-boundary belt folds it to the queue instead, and says so. A record
+# that lands after a fold reclaims the mail if it is still untouched, else the
+# re-drained carrier is flagged so its row admits a possible duplicate.
+# Nothing here claims the model read anything: `recorded` is the harness's
+# record, not consumption. Design + model: scratch/mail-ack-contract/contract.md.
+
+#: seconds a hook's unacked claim owns a batch before another hook may take
+#: it. PROPOSED, NOT MEASURED against the live root (the hook client gives up
+#: at 2 s; save_org can retry for 2.1 s on Windows under contention) — a late
+#: ack past this costs one `retried` delivery, never a loss.
+STEER_CLAIM_LEASE_S = float(os.environ.get("ORGTREE_STEER_LEASE") or 10.0)
+STEER_MARK = "ORGTREE-DELIVERY:"
+_STEER_MARK_RE = re.compile(r"ORGTREE-DELIVERY:([0-9a-f]{16})")
+STEER_ATTEMPTS_KEEP = 40
+
+
+def _steer_attempts(org: Org, nid: str) -> dict[str, dict[str, Any]]:
+    return org.d.setdefault("steer_attempts", {}).setdefault(nid, {})
+
+
+def _trim_steer_attempts(org: Org, nid: str) -> None:
+    """Keep the newest few RESOLVED attempts (recorded or folded-and-done) so a
+    late row can still be matched, and every unresolved one."""
+    atts = _steer_attempts(org, nid)
+    done = sorted((a.get("at") or "", k) for k, a in atts.items() if a.get("recorded_at"))
+    for _, k in done[:-STEER_ATTEMPTS_KEEP]:
+        atts.pop(k, None)
+
+
+def claim_steer(slug: str, nid: str, tool_use_id: str,
+                transcript_path: str = "") -> tuple[str | None, list[Any]]:
+    """The hook's fetch, D1-safe: hand out everything offerable under a lease
+    and a durable attempt record, commit nothing. Returns (delivery_id, texts);
+    (None, []) when nothing is offerable or the claim could not be made
+    durable.
+
+    Atomicity (contract.md §9, enforced here rather than assumed):
+      1. selection and the RAM claim happen in ONE `_state_lock` take, so a
+         concurrent fetch sees the claim the instant it exists;
+      2. the attempt record + batch claims are saved under DOC_LOCK BEFORE
+         the texts are returned;
+      3. if that save fails, the RAM claims are released and nothing is
+         returned — a delivery whose claim is not durable never happens.
+    Lock order is `_state_lock` (released) then DOC_LOCK, the order every
+    other site in this file uses."""
+    scan_steer_records(slug, nid)           # positive-only: a record may have landed
+    st = state(slug, nid)
+    now = time.time()
+    did = os.urandom(8).hex()
+    with _state_lock:
+        chosen: list[dict[str, Any]] = []
+        for i, c in enumerate(st.get("steer") or []):
+            if not isinstance(c, dict):
+                # a bare-string carrier predates journaling; wrap it so it
+                # can carry a claim (same text, explicit empty view = hidden)
+                c = {"text": str(c), "view": str(c)}
+                st["steer"][i] = c
+            cl = c.get("claim")
+            if cl and (cl.get("acked") or now < float(cl.get("lease_until") or 0)):
+                continue
+            c["claim"] = {"delivery_id": did, "tool_use_id": tool_use_id,
+                          "claimed_at": now, "lease_until": now + STEER_CLAIM_LEASE_S,
+                          "acked": False, "attempts": int((cl or {}).get("attempts") or 0) + 1}
+            chosen.append(c)
+        if not chosen:
+            return None, []
+    out, views, toks = _steer_parts(chosen)
+    try:
+        size = os.path.getsize(transcript_path) if transcript_path else 0
+    except OSError:
+        size = 0
+    try:
+        with store.DOC_LOCK:
+            org = store.load_org(slug)
+            if nid not in org.nodes:
+                raise LedgerError("node gone")
+            mail_ids: list[str] = []
+            for b in (org.d.get("delivering") or {}).get(nid) or []:
+                if b.get("tok") in toks:
+                    cl = b.setdefault("claim", {})
+                    cl.update({"delivery_id": did, "tool_use_id": tool_use_id,
+                               "claimed_at": now, "lease_until": now + STEER_CLAIM_LEASE_S})
+                    b["attempts"] = int(b.get("attempts") or 0) + 1
+                    b.setdefault("delivery_ids", []).append(did)
+                    mail_ids.extend(str(m.get("id")) for m in b.get("mail") or [] if m.get("id"))
+            _steer_attempts(org, nid)[did] = {
+                "at": now_iso(), "tool_use_id": tool_use_id, "toks": list(toks),
+                "mail_ids": mail_ids, "transcript_path": transcript_path,
+                "tp_offset": size,
+                "views": [str(v)[:100000] for v in views], "texts_n": len(out),
+                "retried": any(int(c["claim"].get("attempts") or 0) > 1 for c in chosen)}
+            _trim_steer_attempts(org, nid)
+            store.save_org(org)
+    except Exception:                                        # noqa: BLE001
+        with _state_lock:
+            for c in chosen:
+                if c.get("claim", {}).get("delivery_id") == did:
+                    c["claim"] = None
+        return None, []
+    return did, out
+
+
+def ack_steer(slug: str, nid: str, delivery_id: str, tool_use_id: str) -> dict[str, Any]:
+    """The hook's receipt. Validated in order — issued, owner matches, not
+    already acked — then applied to every batch and carrier the delivery
+    covered. Commits nothing: the record does that."""
+    st = state(slug, nid)
+    with store.DOC_LOCK:
+        try:
+            org = store.load_org(slug)
+        except Exception:                                    # noqa: BLE001
+            return {"status": "unavailable"}
+        att = _steer_attempts(org, nid).get(delivery_id) if nid in org.nodes else None
+        if att is None:
+            return {"status": "unknown"}
+        if att.get("tool_use_id") != tool_use_id:
+            return {"status": "owner-mismatch"}
+        if att.get("acked_at"):
+            return {"status": "already-acked"}
+        att["acked_at"] = now_iso()
+        for b in (org.d.get("delivering") or {}).get(nid) or []:
+            if delivery_id in (b.get("delivery_ids") or []):
+                b.setdefault("acked_ids", []).append(delivery_id)
+        store.save_org(org)
+    with _state_lock:
+        for c in list(st.get("steer") or []) + list(st["queue"]):
+            cl = c.get("claim") if isinstance(c, dict) else None
+            if cl and cl.get("delivery_id") == delivery_id:
+                cl["acked"] = True
+    return {"status": "receipt"}
+
+
+def _read_steer_records(att: Mapping[str, Any]) -> list[tuple[str, str]]:
+    """(delivery_id, toolUseID) for every hook_additional_context row carrying
+    a delivery marker, read from the attempt's transcript from the file size
+    it had when the claim was made (the row cannot precede its claim)."""
+    path = str(att.get("transcript_path") or "")
+    if not path:
+        return []
+    found: list[tuple[str, str]] = []
+    try:
+        with open(path, "rb") as f:
+            f.seek(int(att.get("tp_offset") or 0))
+            for raw in f:
+                if b"hook_additional_context" not in raw or b"ORGTREE-DELIVERY:" not in raw:
+                    continue
+                try:
+                    rec = json.loads(raw.decode("utf-8", "replace"))
+                except ValueError:
+                    continue
+                a = rec.get("attachment") if isinstance(rec, dict) else None
+                if not isinstance(a, dict) or a.get("type") != "hook_additional_context":
+                    continue
+                for m in _STEER_MARK_RE.finditer(str(a.get("content") or "")):
+                    found.append((m.group(1), str(a.get("toolUseID") or "")))
+    except OSError:
+        return []
+    return found
+
+
+def _apply_steer_record(org: Org, nid: str, did: str, att: dict[str, Any],
+                        stamp: str) -> tuple[list[str], dict[str, Any]]:
+    """The commit, on an org already loaded under DOC_LOCK (caller saves).
+    Every batch the delivery carried is confirmed away; every folded copy is
+    reclaimed if its mail is untouched in the mailbox; every re-drained copy
+    is flagged. Returns (texts to announce, row)."""
+    toks = set(att.get("toks") or [])
+    dlmap = org.d.get("delivering") or {}
+    dl = dlmap.get(nid) or []
+    batches = [b for b in dl if b.get("tok") in toks]
+    recorded_ids = sorted({did} | {x for b in batches for x in b.get("recorded_ids") or []})
+    acked_ids = sorted({x for b in batches for x in b.get("acked_ids") or []}
+                       | ({did} if att.get("acked_at") else set()))
+    attempts = max([int(b.get("attempts") or 0) for b in batches] + [1])
+    prev_rec = sorted({x for b in batches for x in b.get("previously_recorded") or []})
+    if batches:
+        keep = [b for b in dl if b.get("tok") not in toks]
+        if keep:
+            dlmap[nid] = keep
+        else:
+            dlmap.pop(nid, None)
+    else:
+        # folded already: the mail is back in the box (reclaim it) or has been
+        # re-drained into a newer batch (flag that batch)
+        ids = set(att.get("mail_ids") or [])
+        box = (org.d.get("mail") or {}).get(nid) or []
+        present = [m for m in box if str(m.get("id")) in ids]
+        if ids and len(present) == len(ids):
+            org.d["mail"][nid] = [m for m in box if str(m.get("id")) not in ids]
+        elif ids:
+            for b in dl:
+                if any(str(m.get("id")) in ids for m in b.get("mail") or []):
+                    b.setdefault("previously_recorded", []).append(did)
+    row = {"at": stamp, "delivery_id": did, "level": "recorded",
+           "delivery_ids": sorted({did} | {x for b in batches for x in b.get("delivery_ids") or []}),
+           "acked_ids": acked_ids, "recorded_ids": sorted(set(recorded_ids) | set(prev_rec)),
+           "attempts": attempts,
+           "retried": bool(att.get("retried")) or attempts > 1 or bool(prev_rec),
+           "confirmed_duplicate": len(set(recorded_ids) | set(prev_rec)) >= 2}
+    log = org.d.setdefault("steered_log", {}).setdefault(nid, [])
+    for v in att.get("views") or []:
+        s = str(v)
+        if not s:
+            continue
+        log.append({**row, "text": s[:100000], **({"truncated": True} if len(s) > 100000 else {})})
+    del log[:-40]
+    while len(log) > 5 and sum(len(e.get("text") or "") for e in log) > 300000:
+        log.pop(0)
+    att["recorded_at"] = stamp
+    net_ids = [str(m["net_id"]) for b in batches for m in (b.get("mail") or []) if m.get("net_id")]
+    return net_ids, row
+
+
+def scan_steer_records(slug: str, nid: str) -> dict[str, int]:
+    """Read the transcripts named by this node's unresolved attempts and
+    COMMIT every delivery the CLI has recorded. Idempotent: a recorded attempt
+    is skipped; a row whose toolUseID is not the attempt's owner is refused.
+    Run at every hook fetch, at the turn-boundary belt (before the fold) and
+    at reconcile. Best-effort and cheap: reads from the claim-time offset."""
+    st = state(slug, nid)
+    out: dict[str, int] = {}
+    try:
+        with store.DOC_LOCK:
+            org = store.load_org(slug)
+            if nid not in org.nodes:
+                return out
+            atts = _steer_attempts(org, nid)
+            pending = {k: a for k, a in atts.items() if not a.get("recorded_at")}
+        if not pending:
+            return out
+        hits: dict[str, str] = {}
+        for did, att in pending.items():
+            for found_id, tool in _read_steer_records(att):
+                if found_id == did:
+                    hits[did] = tool
+        if not hits:
+            return out
+        announce: list[tuple[str, dict[str, Any]]] = []
+        with store.DOC_LOCK:
+            org = store.load_org(slug)
+            if nid not in org.nodes:
+                return out
+            atts = _steer_attempts(org, nid)
+            changed = False
+            for did, tool in hits.items():
+                att = atts.get(did)
+                if att is None or att.get("recorded_at"):
+                    continue
+                if tool != att.get("tool_use_id"):
+                    out["owner-mismatch"] = out.get("owner-mismatch", 0) + 1
+                    continue
+                net_ids, row = _apply_steer_record(org, nid, did, att, now_iso())
+                announce.append((did, {"att": att, "net_ids": net_ids, "row": row}))
+                changed = True
+            if changed:
+                _trim_steer_attempts(org, nid)
+                store.save_org(org)
+        for did, info in announce:
+            with _state_lock:
+                st["steer"] = [c for c in st.get("steer") or []
+                               if not (isinstance(c, dict) and (c.get("claim") or {}).get("delivery_id") == did)]
+                st["queue"] = [c for c in st["queue"]
+                               if not (isinstance(c, dict) and (c.get("claim") or {}).get("delivery_id") == did)]
+            if info["net_ids"]:
+                try:
+                    net.note_read(slug, info["net_ids"])
+                except Exception:                                # noqa: BLE001
+                    pass
+            for v in info["att"].get("views") or []:
+                body = str(v)
+                if body:
+                    stream(slug, nid, {"kind": "steered", "text": body[:2000],
+                                       "recorded": True,
+                                       **({"truncated": True} if len(body) > 2000 else {})})
+            out["recorded"] = out.get("recorded", 0) + 1
+    except Exception:                                        # noqa: BLE001
+        pass
+    return out
+
+
+def _reconcile_steer_records(org: Org) -> int:
+    """Startup: on the org in hand (caller holds DOC_LOCK and saves), commit
+    every unresolved attempt whose transcript row exists. No RAM, no frames —
+    the desk rereads the durable rows."""
+    n = 0
+    for nid in list(org.nodes):
+        atts = (org.d.get("steer_attempts") or {}).get(nid) or {}
+        for did, att in list(atts.items()):
+            if att.get("recorded_at"):
+                continue
+            tool = dict(_read_steer_records(att)).get(did)
+            if tool is None or tool != att.get("tool_use_id"):
+                continue
+            _apply_steer_record(org, nid, did, att, now_iso())
+            n += 1
+    return n
+
+
+def _steer_uncertain_count(carriers: Iterable[Any]) -> int:
+    """How many folded carriers had been RECEIVED by a hook (acked) without the
+    CLI recording them — the fold that may produce a duplicate."""
+    return sum(1 for c in carriers
+               if isinstance(c, dict) and (c.get("claim") or {}).get("acked"))
+
+
 def note_steer_poll(slug: str, nid: str) -> None:
     """A TOOL-CALL BOUNDARY just happened for this node (D-236).
 
@@ -22011,6 +22366,12 @@ def reconcile(slug: str) -> list[str]:
         # returns to the mailbox and the revive scan below drives it. (An
         # inflight replay may overlap a batch caught mid-hand-off — that is
         # a duplicate delivery, never a loss.)
+        # D1: the transcript is durable even though RAM is gone — commit any
+        # claimed delivery the CLI recorded before folding the rest back.
+        try:
+            _reconcile_steer_records(org)
+        except Exception:                                    # noqa: BLE001
+            pass
         dlv = org.d.pop("delivering", None) or {}
         for dnid, batches in dlv.items():
             if dnid not in org.nodes:

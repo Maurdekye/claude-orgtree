@@ -483,6 +483,7 @@ def _public_denied(method: str, rest: str, slug: str) -> tuple[int, str] | None:
         # no call site for it). Reachable from the kiosk it POPPED the node's
         # pending mid-task mail — reading it AND destroying the delivery.
         or rest.endswith("/steer")
+        or rest.endswith("/steer/ack")                       # its receipt door (D1)
         # The warm-process toggle kills/spawns host CLI processes and is an
         # admin-only control. Public desks still receive passive lifecycle
         # status, but a kiosk token must never be able to use it as a DoS or
@@ -3217,8 +3218,18 @@ def node_message(slug: str, nid: str, body: Message) -> dict[str, Any]:
     return sent
 
 
+class SteerClaim(Body):
+    tool_use_id: str = ""
+    transcript_path: str = ""
+
+
+class SteerAck(Body):
+    delivery_id: str
+    tool_use_id: str = ""
+
+
 @app.post("/api/orgs/{slug}/nodes/{nid}/steer")
-def node_steer(slug: str, nid: str) -> dict[str, Any]:
+def node_steer(slug: str, nid: str, body: SteerClaim | None = None) -> dict[str, Any]:
     """Called by the PostToolUse steering hook inside a node's turn: pops ALL
     the node's pending mid-task mail — user and agent alike — for immediate
     delivery (sender attribution rides inside each message).
@@ -3242,8 +3253,25 @@ def node_steer(slug: str, nid: str) -> dict[str, Any]:
     # its next 2.5 s heartbeat to notice. Delivery and its announcement are one
     # fact, so they are stated in one place — `supervisor.commit_steer`, which
     # every lane reaches. Same frame, same cap, same declared truncation.
+    if body is not None and body.tool_use_id:
+        # D1 (user ruling, reset-action-plan item 3): the fetch is a CLAIM,
+        # not a commit. The hook names the tool call it runs in (its owner)
+        # and the transcript the CLI will record into; the messages are
+        # committed only when that record appears (`scan_steer_records`).
+        did, msgs = supervisor.claim_steer(slug, nid, body.tool_use_id,
+                                           body.transcript_path)
+        return {"messages": msgs, "delivery_id": did}
+    # an old hook (no stdin identity) still gets the legacy fetch-is-commit
+    # behaviour rather than nothing at all — loud in the log, not silent
     msgs = supervisor.pop_steer(slug, nid)
     return {"messages": msgs}
+
+
+@app.post("/api/orgs/{slug}/nodes/{nid}/steer/ack")
+def node_steer_ack(slug: str, nid: str, body: SteerAck) -> dict[str, Any]:
+    """The hook's RECEIPT for a claimed delivery, after it has printed the
+    context. Owner-checked, idempotent, commits nothing (D1)."""
+    return supervisor.ack_steer(slug, nid, body.delivery_id, body.tool_use_id)
 
 
 @app.get("/api/orgs/{slug}/nodes/{nid}/steer-state")

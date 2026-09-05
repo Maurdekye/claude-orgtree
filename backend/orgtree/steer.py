@@ -80,17 +80,39 @@ def identity() -> tuple[str | None, str | None, str | None, str | None]:
     return org, node, f"http://127.0.0.1:{port}", ""
 
 
-def main() -> None:
+def hook_identity(raw: str) -> tuple[str, str]:
+    """(tool_use_id, transcript_path) from the PostToolUse payload — the two
+    fields the D1 contract rides on. Field names are the pinned CLI's own
+    hook-input schema (2.1.258: session_id, transcript_path, cwd, tool_name,
+    tool_input, tool_response, tool_use_id). Missing or malformed → empty,
+    and the backend then serves the legacy fetch."""
     try:
-        sys.stdin.read()          # drain the hook payload
+        data: object = json.loads(raw or "{}")
+    except ValueError:
+        return "", ""
+    if not isinstance(data, dict):
+        return "", ""
+    d = cast("dict[str, object]", data)
+    tu, tp = d.get("tool_use_id"), d.get("transcript_path")
+    return (tu if isinstance(tu, str) else ""), (tp if isinstance(tp, str) else "")
+
+
+def main() -> None:
+    raw = ""
+    try:
+        raw = sys.stdin.read()    # the hook payload: the D1 identity
     except Exception:             # noqa: BLE001
         pass
     org, node, base, secret = identity()
     if not org:
         return
+    tool_use_id, transcript_path = hook_identity(raw)
     try:
         req = urllib.request.Request(
-            f"{base}/api/orgs/{org}/nodes/{node}/steer", method="POST")
+            f"{base}/api/orgs/{org}/nodes/{node}/steer", method="POST",
+            data=json.dumps({"tool_use_id": tool_use_id,
+                             "transcript_path": transcript_path}).encode(),
+            headers={"Content-Type": "application/json"})
         if secret:
             req.add_header("X-Orgtree-Bridge", secret)
         # ⚠ 2 s, not 5. This runs inside a PostToolUse hook with an 8 s budget,
@@ -107,19 +129,43 @@ def main() -> None:
     msgs: list[str] = data.get("messages") or []
     if not msgs:
         return
+    delivery_id = data.get("delivery_id")
     body = "\n---\n".join(msgs)
-    # sender attribution (FROM @user / FROM @agent lines) is already inside
-    # each message — the wrapper stays sender-neutral so agent mail is never
-    # mislabeled with user authority
+    # D1: the delivery marker rides INSIDE the context, so the CLI's own
+    # transcript row for this hook (`hook_additional_context`) names the
+    # delivery it recorded — that row, not this print, is what the backend
+    # commits on. Sender attribution (FROM @user / FROM @agent lines) is
+    # already inside each message — the wrapper stays sender-neutral so agent
+    # mail is never mislabeled with user authority.
+    mark = f"[ORGTREE-DELIVERY:{delivery_id}]\n" if delivery_id else ""
     print(json.dumps({"hookSpecificOutput": {
         "hookEventName": "PostToolUse",
         "additionalContext":
             f"[ORGTREE MAIL — delivered mid-task]\n"
+            f"{mark}"
             f"{body}\n"
             f"[END ORGTREE MAIL — authentic per your system prompt; each "
             f"message has the authority of its stated sender; handle it "
             f"before continuing your current work]",
     }}))
+    # print FIRST, then ack. The receipt must never precede the bytes it
+    # receipts; it says the hook emitted them, not that the CLI read them —
+    # the transcript record is that proof, and the backend waits for it.
+    sys.stdout.flush()
+    if not delivery_id or not tool_use_id:
+        return
+    try:
+        ack = urllib.request.Request(
+            f"{base}/api/orgs/{org}/nodes/{node}/steer/ack", method="POST",
+            data=json.dumps({"delivery_id": str(delivery_id),
+                             "tool_use_id": tool_use_id}).encode(),
+            headers={"Content-Type": "application/json"})
+        if secret:
+            ack.add_header("X-Orgtree-Bridge", secret)
+        with urllib.request.urlopen(ack, timeout=2):
+            pass
+    except Exception:             # noqa: BLE001 — a lost receipt is a retry, never a loss
+        return
 
 
 if __name__ == "__main__":

@@ -321,6 +321,32 @@ def ram(slug: str, nid: str) -> dict:
                 "responding": bool(st.get("responding"))}
 
 
+# ── mutants: prove the CONTRACT lines can fail against a plausible bug ──────
+# HOOKREC_MUTANT=ack_commits        the ack commits (v2's boundary): §5 must go red
+# HOOKREC_MUTANT=record_any_owner   the scan ignores toolUseID: §7 must go red
+MUTANT = os.environ.get("HOOKREC_MUTANT", "")
+if MUTANT == "ack_commits":
+    _real_ack = supervisor.ack_steer
+
+    def _ack_commits(slug, nid, delivery_id, tool_use_id):
+        r = _real_ack(slug, nid, delivery_id, tool_use_id)
+        if r.get("status") == "receipt":
+            with store.DOC_LOCK:
+                org = store.load_org(slug)
+                att = supervisor._steer_attempts(org, nid).get(delivery_id)
+                if att and not att.get("recorded_at"):
+                    supervisor._apply_steer_record(org, nid, delivery_id, att, supervisor.now_iso())
+                    store.save_org(org)
+        return r
+    supervisor.ack_steer = _ack_commits
+    api.supervisor.ack_steer = _ack_commits
+elif MUTANT == "record_any_owner":
+    _real_read = supervisor._read_steer_records
+
+    def _any_owner(att):
+        return [(d, att.get("tool_use_id")) for d, _t in _real_read(att)]
+    supervisor._read_steer_records = _any_owner
+
 # ═══════════════════════════════════════════════════════════════════════════
 serve_app()
 PROXY = Proxy()
@@ -352,6 +378,8 @@ turn_end(slug, nid)
 
 # ── §2 the D1 case: response lost AFTER the real handler ran ───────────────
 print("\n§2 lost response through the real door — RED ON MAIN, green under contract.md §11")
+LEASE = 0.6
+supervisor.STEER_CLAIM_LEASE_S = LEASE      # the lease is a constant; shortened for the test only
 slug, nid = mkorg("lost")
 responding(slug, nid)
 sent = post_user_mail(slug, nid, MARK + " lost")
@@ -363,11 +391,16 @@ drop = list(PROXY.log)
 after_lost = doc(slug, nid)
 ram_lost = ram(slug, nid)
 PROXY.mode = "pass"
-r_retry = run_hook(PROXY, slug, nid, "toolu_lost_2", "sess-lost")
-after_retry = doc(slug, nid)
+r_retry = run_hook(PROXY, slug, nid, "toolu_lost_2", "sess-lost")       # inside the lease
+time.sleep(LEASE + 0.2)
+r_late = run_hook(PROXY, slug, nid, "toolu_lost_3", "sess-lost")        # after the lease
+after_late = doc(slug, nid)
+r_scan = run_hook(PROXY, slug, nid, "toolu_lost_4", "sess-lost")        # its fetch scans the record
+after_scan = doc(slug, nid)
 EVIDENCE["sections"]["lost_response"] = {
     "before": before, "hook_lost": r_lost, "proxy": drop, "doc_after_lost": after_lost,
-    "ram_after_lost": ram_lost, "hook_retry": r_retry, "doc_after_retry": after_retry}
+    "ram_after_lost": ram_lost, "hook_retry_inside_lease": r_retry, "hook_after_lease": r_late,
+    "doc_after_late": after_late, "doc_after_scan": after_scan}
 check("fixture: one delivering batch existed before the hook", lambda: eq(len(before["delivering"]), 1, before))
 check("instrument: the server answered and the proxy dropped the whole response",
       lambda: truthy(drop and drop[0]["from_upstream"] > 0 and drop[0]["to_client"] == 0, drop))
@@ -379,9 +412,22 @@ check("CONTRACT: the batch is still owned (delivering) after the lost response",
       lambda: eq(len(after_lost["delivering"]), 1, after_lost))
 check("CONTRACT: the message still rides a carrier the node owns (RAM steer store)",
       lambda: truthy(ram_lost["steer"], ram_lost))
-check("CONTRACT: the mail is delivered by a later hook or the turn-end fold, never dropped",
-      lambda: truthy(r_retry["has_mail"] or (turn_end(slug, nid), doc(slug, nid)["mailbox"])[1],
-                     {"retry": r_retry["has_mail"], "doc": doc(slug, nid)}))
+check("CONTRACT: the batch carries a durable claim naming the hook's tool_use_id",
+      lambda: eq((after_lost["delivering"][0].get("claim") or {}).get("tool_use_id"), "toolu_lost_1",
+                 after_lost["delivering"]))
+check("CONTRACT: a retry inside the lease is offered nothing (single live claim)",
+      lambda: eq(r_retry["has_mail"], False, r_retry))
+check("CONTRACT: a retry after the lease receives the message, with a delivery marker",
+      lambda: truthy(r_late["has_mail"] and "ORGTREE-DELIVERY:" in (r_late["context"] or ""), r_late))
+check("CONTRACT: the hook's ack alone did not commit (no row before the record is scanned)",
+      lambda: eq(len(after_late["steered"]), 0, after_late["steered"]))
+check("CONTRACT: the CLI's record commits it — one row, level recorded, retried=True, not a confirmed duplicate",
+      lambda: eq([(r.get("level"), r.get("retried"), r.get("confirmed_duplicate")) for r in after_scan["steered"]],
+                 [("recorded", True, False)], after_scan["steered"]))
+check("CONTRACT: the batch is confirmed away once recorded", lambda: eq(after_scan["delivering"], [], after_scan))
+check("nothing sits in the mailbox or the steer store afterwards",
+      lambda: eq((after_scan["mailbox"], ram(slug, nid)["steer"]), ([], []), doc(slug, nid)))
+turn_end(slug, nid)
 
 # ── §3 concurrent hook fetches are exclusive (holds on main) ───────────────
 print("\n§3 concurrent pollers: two hooks at once, one message — exactly one gets it")
@@ -409,6 +455,154 @@ check("the transcript recorded it exactly once",
                      if "hook_additional_context" in line and MARK in line), 1, "rows"))
 turn_end(slug, nid)
 
+# ── §5 received by the hook, never recorded by the CLI ─────────────────────
+print("\n§5 acked but never recorded: NOT delivered; folded at the boundary, visibly uncertain")
+
+
+def belt(slug: str, nid: str) -> dict:
+    """The turn-boundary belt as `_run_one_turn` runs it (scan, fold, receipt,
+    journal fold-back), without a turn."""
+    supervisor.scan_steer_records(slug, nid)
+    st = supervisor.state(slug, nid)
+    with supervisor._state_lock:
+        st["responding"] = False
+        residual = supervisor._fold_steer(st)
+        alive = [t for x in st["queue"] if isinstance(x, dict) for t in x.get("toks") or []]
+        uncertain = supervisor._steer_uncertain_count(st["queue"])
+    if uncertain:
+        supervisor._steer_fold_log(slug, nid, uncertain, "turn boundary",
+                                   why="received by the hook but not recorded by the CLI before the "
+                                       "turn ended — redelivered at the next boundary; a duplicate is possible")
+    supervisor._fold_back_undelivered(slug, nid, keep_toks=alive)
+    return {"residual": len(residual), "alive": alive, "uncertain": uncertain}
+
+
+slug, nid = mkorg("unrecorded")
+responding(slug, nid)
+post_user_mail(slug, nid, MARK + " unrecorded")
+r1 = run_hook(PROXY, slug, nid, "toolu_unrec_1", "sess-unrec", record=False)   # CLI interrupted
+time.sleep(LEASE + 0.2)
+r2 = run_hook(PROXY, slug, nid, "toolu_unrec_2", "sess-unrec")
+d_before = doc(slug, nid)
+b = belt(slug, nid)
+d_after = doc(slug, nid)
+q = ram(slug, nid)["queue"]
+EVIDENCE["sections"]["acked_unrecorded"] = {"hook": r1, "retry_after_lease": r2, "belt": b,
+                                            "doc_before": d_before, "doc_after": d_after, "queue": q}
+check("the hook received and acked it", lambda: truthy(r1["has_mail"] and r1["rc"] == 0, r1))
+check("CONTRACT: an acked delivery is never re-offered, even after the lease", lambda: eq(r2["has_mail"], False, r2))
+check("CONTRACT: no delivered row without the CLI's record", lambda: eq(d_after["steered"], [], d_after))
+check("CONTRACT: the belt folds it to the queue, still journaled, claim marked acked",
+      lambda: truthy(len(q) == 1 and (q[0].get("claim") or {}).get("acked") and len(d_after["delivering"]) == 1,
+                     {"queue": q, "doc": d_after}))
+check("CONTRACT: the fold receipt says a duplicate is possible",
+      lambda: truthy(any("not recorded" in (f.get("text") or "") for f in d_after["folds"]), d_after["folds"]))
+
+# ── §6 the record lands late, after the fold ───────────────────────────────
+print("\n§6 late record after the fold: the next scan reclaims it from the queue")
+did = None
+try:
+    org = store.load_org(slug)
+    atts = (org.d.get("steer_attempts") or {}).get(nid) or {}
+    did = next(k for k, a in atts.items() if a.get("tool_use_id") == "toolu_unrec_1")
+except StopIteration:
+    pass
+# the CLI writes the row it never got to write (same content, right toolUseID)
+with open(transcript_for("sess-unrec"), "a", encoding="utf-8") as f:
+    f.write(json.dumps({"type": "attachment", "attachment": {
+        "type": "hook_additional_context", "hookEvent": "PostToolUse", "toolUseID": "toolu_unrec_1",
+        "content": r1["context"]}}) + "\n")
+scan1 = supervisor.scan_steer_records(slug, nid)
+scan2 = supervisor.scan_steer_records(slug, nid)
+d6 = doc(slug, nid)
+q6 = ram(slug, nid)["queue"]
+EVIDENCE["sections"]["late_record"] = {"delivery_id": did, "scan1": scan1, "scan2": scan2, "doc": d6, "queue": q6}
+check("attempt record exists for the first hook", lambda: truthy(did, "no attempt"))
+check("CONTRACT: the late record commits — one row, level recorded",
+      lambda: eq([r.get("level") for r in d6["steered"]], ["recorded"], d6["steered"]))
+check("CONTRACT: the queued copy is reclaimed (no redelivery) and the batch confirmed away",
+      lambda: eq((q6, d6["delivering"], d6["mailbox"]), ([], [], []), {"queue": q6, "doc": d6}))
+check("CONTRACT: a second scan is a no-op (idempotent)", lambda: eq((scan2, len(d6["steered"])), ({}, 1), scan2))
+
+# ── §7 ownership: valid ids under the wrong tool ───────────────────────────
+print("\n§7 ownership: a record or ack under another toolUseID commits nothing")
+slug, nid = mkorg("owner")
+responding(slug, nid)
+post_user_mail(slug, nid, MARK + " owner")
+# hook fetches and prints, but the fake CLI files the row under another tool id
+r7 = run_hook(PROXY, slug, nid, "toolu_own_1", "sess-own", record=False)
+with open(transcript_for("sess-own"), "a", encoding="utf-8") as f:
+    f.write(json.dumps({"type": "attachment", "attachment": {
+        "type": "hook_additional_context", "hookEvent": "PostToolUse", "toolUseID": "toolu_SOMEONE_ELSE",
+        "content": r7["context"]}}) + "\n")
+scan7 = supervisor.scan_steer_records(slug, nid)
+d7 = doc(slug, nid)
+org = store.load_org(slug)
+did7 = next(k for k, a in ((org.d.get("steer_attempts") or {}).get(nid) or {}).items())
+import urllib.request
+
+
+def http_ack(delivery_id: str, tool: str) -> dict:
+    req = urllib.request.Request(
+        f"http://127.0.0.1:{APP_PORT}/api/orgs/{slug}/nodes/{nid}/steer/ack", method="POST",
+        data=json.dumps({"delivery_id": delivery_id, "tool_use_id": tool}).encode(),
+        headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=5) as r:
+        return json.load(r)
+
+
+a_wrong = http_ack(did7, "toolu_SOMEONE_ELSE")
+a_forged = http_ack("0000000000000000", "toolu_own_1")
+a_repeat = http_ack(did7, "toolu_own_1")          # the hook already acked once
+EVIDENCE["sections"]["ownership"] = {"scan": scan7, "doc": d7, "ack_wrong": a_wrong,
+                                     "ack_forged": a_forged, "ack_repeat": a_repeat}
+check("CONTRACT: a record under the wrong toolUseID is refused (owner-mismatch, no row)",
+      lambda: eq((scan7.get("owner-mismatch"), d7["steered"]), (1, []), {"scan": scan7, "doc": d7}))
+check("CONTRACT: an ack under the wrong tool is refused", lambda: eq(a_wrong.get("status"), "owner-mismatch", a_wrong))
+check("CONTRACT: an ack for an unissued delivery is unknown", lambda: eq(a_forged.get("status"), "unknown", a_forged))
+check("CONTRACT: a repeated ack is idempotent", lambda: eq(a_repeat.get("status"), "already-acked", a_repeat))
+belt(slug, nid)
+
+# ── §8 backend restart: the transcript is durable, RAM is not ──────────────
+print("\n§8 restart reconcile: a recorded delivery commits from the doc + transcript alone")
+slug, nid = mkorg("restart")
+responding(slug, nid)
+post_user_mail(slug, nid, MARK + " restart")
+r8 = run_hook(PROXY, slug, nid, "toolu_rs_1", "sess-rs")        # printed, recorded, acked; never scanned
+# the backend dies here: forget RAM, then run the reconcile step on the doc
+supervisor.state(slug, nid).clear()
+supervisor.state(slug, nid).update({"queue": []})
+with store.DOC_LOCK:
+    org = store.load_org(slug)
+    n_rec = supervisor._reconcile_steer_records(org)
+    dlv = org.d.pop("delivering", None) or {}       # what reconcile() folds back afterwards
+    left = list(dlv.get(nid) or [])
+    store.save_org(org)
+d8 = doc(slug, nid)
+EVIDENCE["sections"]["restart"] = {"hook": r8, "reconciled": n_rec, "folded_after": len(left), "doc": d8}
+check("the hook delivered and the CLI recorded before the 'crash'", lambda: truthy(r8["has_mail"], r8))
+check("CONTRACT: reconcile commits the recorded delivery from the transcript (no fold, no duplicate)",
+      lambda: eq((n_rec, len(left), [r.get("level") for r in d8["steered"]], d8["mailbox"]),
+                 (1, 0, ["recorded"], []), {"n": n_rec, "left": left, "doc": d8}))
+
+# ── §9 one delivery, two batches ───────────────────────────────────────────
+print("\n§9 one hook fetch carrying two batches: the record confirms both")
+slug, nid = mkorg("two")
+responding(slug, nid)
+post_user_mail(slug, nid, MARK + " two-A")
+post_user_mail(slug, nid, MARK + " two-B")
+d9_before = doc(slug, nid)
+r9 = run_hook(PROXY, slug, nid, "toolu_two_1", "sess-two")
+run_hook(PROXY, slug, nid, "toolu_two_2", "sess-two")           # scans
+d9 = doc(slug, nid)
+EVIDENCE["sections"]["two_batches"] = {"before": d9_before, "hook": r9, "doc": d9}
+check("fixture: two delivering batches", lambda: eq(len(d9_before["delivering"]), 2, d9_before))
+check("one hook received both messages", lambda: eq((r9["context"] or "").count(MARK), 2, r9))
+check("CONTRACT: both batches confirmed away and both rows recorded, none retried",
+      lambda: eq((d9["delivering"], sorted((r["level"], r["retried"]) for r in d9["steered"])),
+                 ([], [("recorded", False), ("recorded", False)]), d9))
+belt(slug, nid)
+
 # ── §4 hook latency on this machine (a measurement, not a bound) ───────────
 print("\n§4 hook round trip on this machine, idle, N=10 (fetch with mail present)")
 slug, nid = mkorg("latency")
@@ -432,4 +626,6 @@ if os.environ.get("HOOKREC_EVIDENCE"):
 print(f"\n{PASS} passed, {len(FAIL)} failed")
 for label, tb in FAIL:
     print(f"\n--- {label}\n{tb}")
+if not FAIL:
+    print(f"ALL {PASS} CHECKS PASS")
 sys.exit(1 if FAIL else 0)
