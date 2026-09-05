@@ -303,31 +303,69 @@ check("a key is scoped to its node — another node neither replays nor reads it
       _scoped_to_node)
 
 
-def _scoped_to_generation():
+def _bump_generation(slug, node):
+    """`generation` is the field the ledger bumps whenever a seat's session
+    lineage changes (`_archive_session_in_place`, `compact_split`,
+    `record_cli_compaction`). Set directly, because what is under test is what
+    the RECEIPT does across the bump, not the ledger's own bump."""
+    org = store.load_org(slug)
+    org.d["nodes"][node]["generation"] = 1
+    store.save_org(org)
+    assert store.load_org(slug).d["nodes"][node].get("generation") == 1
+
+
+def _same_key_in_a_new_generation_never_runs_again():
+    """⚠ ASTRA, 2026-09-05T12:20Z. This check used to assert the OPPOSITE —
+    that a new generation "starts clean" and the same key runs again. It was
+    the duplicate the feature exists to prevent, written down as a
+    requirement: a keyed call applies, the answer is lost, the seat compacts
+    (its generation bumps), and the delayed original then arrives and is
+    admitted a second time because the receipt is invisible at the new
+    generation.
+
+    A key belongs to the call that minted it, not to an incarnation. Finding
+    it in ANY generation means it has been used."""
     slug = fresh_org()
     key = k()
     st, _ = call(slug, "worker", "orgtree_status", key=key, status="working",
                  summary="on it")
     assert st == 200
     assert rows(slug)[0]["gen"] == 0
-    # `generation` is the field the ledger bumps whenever a seat's session
-    # lineage changes (`_archive_session_in_place`, `compact_split`,
-    # `record_cli_compaction`). Moved here directly, because what is under
-    # test is the SCOPING rule — that a new generation does not inherit the
-    # old one's keys — not the ledger's own bump, which those paths own.
-    org = store.load_org(slug)
-    org.d["nodes"]["worker"]["generation"] = 1
-    store.save_org(org)
-    gen = store.load_org(slug).d["nodes"]["worker"].get("generation")
-    assert gen == 1, gen
+    before = len(rows(slug))
+    _bump_generation(slug, "worker")
     st, js = call(slug, "worker", "orgtree_status", key=key, status="working",
                   summary="on it")
-    assert st == 200 and js.get("replayed") is not True, js
-    assert [r["gen"] for r in rows(slug) if r["node"] == "worker"] == [0, 1]
+    assert st == 422, (st, js)
+    assert "generation" in str(js), js
+    assert len(rows(slug)) == before, "the delayed original filed a second receipt"
 
 
-check("generation is part of the scope — a rehired seat starts clean",
-      _scoped_to_generation)
+check("the same key in a NEW generation is refused, never run again",
+      _same_key_in_a_new_generation_never_runs_again)
+
+
+def _lookup_across_a_generation_bump():
+    """The other half of the same hole: the call DID apply, the seat then
+    compacted, and the lookup — which reads the node's CURRENT generation —
+    could not see the receipt and answered `not_applied`, i.e. "safe to
+    reissue" for an operation that had already happened."""
+    slug = fresh_org()
+    key = k()
+    st, _ = call(slug, "mid", "orgtree_message", key=key, to="boss", body="a")
+    assert st == 200
+    _bump_generation(slug, "mid")
+    ans = lookup(slug, "mid", key, "orgtree_message", to="boss", body="a")
+    assert ans["state"] == "applied", ans
+    assert ans["receipt"]["gen"] == 0, ans
+    # …and a DIFFERENT operation under that key still conflicts, at either
+    # generation: the fingerprint is compared at the receipt's own generation,
+    # not recomputed at the current one (which would never match anything).
+    other = lookup(slug, "mid", key, "orgtree_message", to="boss", body="z")
+    assert other["state"] == "conflict", other
+
+
+check("a lookup across a generation bump still finds the receipt",
+      _lookup_across_a_generation_bump)
 
 
 def _malformed_and_stale():
@@ -678,6 +716,35 @@ def _fence_is_idempotent():
 check("asking twice fences once and answers the same", _fence_is_idempotent)
 
 
+def _a_fenced_key_still_identifies_ONE_operation():
+    """⚠ ASTRA, 2026-09-05T12:20Z. The APPLIED branch compares the verb and
+    the fingerprint before answering; the FENCED branch did not. So a lookup
+    that asked about a different operation under a key some other call had
+    fenced was told "that one did not apply, safe to reissue" — an answer
+    about a call the fence never covered, and with the coverage class taken
+    from the ASKER's verb rather than the row's.
+
+    A key identifies one call. Asking about a different one is a conflict,
+    fenced or not."""
+    slug = fresh_org()
+    key = k()
+    first = lookup(slug, "mid", key, "orgtree_message", to="boss", body="a")
+    assert first["state"] == "not_applied", first
+    for tool, args in (("orgtree_message", {"to": "boss", "body": "DIFFERENT"}),
+                       ("orgtree_message", {"to": "worker", "body": "a"}),
+                       ("orgtree_send_notice", {"to": "boss", "body": "a"})):
+        ans = lookup(slug, "mid", key, tool, **args)
+        assert ans["state"] == "conflict", (tool, args, ans)
+    assert len(rows(slug)) == 1, "a conflicting lookup wrote a row"
+    # positive control: the operation the fence DID cover still answers
+    same = lookup(slug, "mid", key, "orgtree_message", to="boss", body="a")
+    assert same["state"] == "not_applied", same
+
+
+check("a fenced key still identifies ONE operation — a different one conflicts",
+      _a_fenced_key_still_identifies_ONE_operation)
+
+
 def _pre_transaction_never_says_not_applied():
     """`orgtree_retire` waits for the target's turn boundary BEFORE the
     transaction. A missing receipt cannot speak for that wait, so the answer
@@ -922,6 +989,63 @@ check("the receipt brackets exactly the DOCUMENT events its call produced",
 
 # ==================================================== §9 compatibility
 print("\n§9  compatibility — old documents, no key, JSON")
+
+
+def _an_export_is_stamped_as_a_snapshot():
+    """⚠ ASTRA, 2026-09-05T12:20Z: do not promise retention through a restore.
+
+    A document rolled back from an export loses the receipts written after it
+    — but NOT their effects: mail already delivered to another org, a process
+    already started. So a key minted after the snapshot cannot be judged from
+    the restored document, and the answer must be `unknown` rather than the
+    "never applied, safe to reissue" that an empty log otherwise reads as."""
+    slug = fresh_org()
+    call(slug, "mid", "orgtree_message", key=k(), to="boss", body="a")
+    if store.STORE_BACKEND == "sqlite":
+        exported = json.load(open(store.export_json(slug), encoding="utf-8"))
+    else:                      # JSON backend: the document IS the export
+        exported = json.loads(json.dumps(store.load_org(slug).d))
+        opreceipts.stamp_export(exported)
+    stamp = opreceipts.export_stamp(exported)
+    assert stamp, exported.get("op_receipts_meta")
+
+    # ⚠ THE RESTORE happens later than the export, and the key that matters
+    # was minted BEFORE the snapshot (Astra's correction, 12:31Z): its
+    # operation may have applied AFTER the snapshot, which leaves it missing
+    # from the restored document exactly like a late-minted one. A mint time
+    # cannot separate those, so neither may be answered "not applied".
+    restore_ms = stamp + 60_000
+    for label, mint_ms in (("minted before the snapshot", stamp - 5_000),
+                           ("minted after the snapshot", stamp + 1_000)):
+        d = json.loads(json.dumps(exported))          # a fresh restore each time
+        decision, info = opreceipts.admit(
+            d, "mid", 0, opreceipts.mint_key(mint_ms), "orgtree_message",
+            {"to": "boss"}, now_ms=restore_ms)
+        assert decision == opreceipts.REFUSE, (label, decision, info)
+        assert info["reason"] == "restored_from_export", (label, info)
+
+    # …and a receipt the snapshot DOES contain still reads normally: absence
+    # is what a restored document cannot speak to, not the rows it has.
+    old_row = exported["op_receipts"][0]
+    assert opreceipts.find(exported, "mid", old_row["key"]) is old_row
+
+    # the first touch converts the stamp into an ordinary watermark at THAT
+    # moment — not at the export's — and a key minted after the restore is
+    # covered normally, because its whole life is inside this document.
+    assert opreceipts.resume_after_restore(exported, restore_ms)
+    assert not opreceipts.export_stamp(exported)
+    assert opreceipts.watermark(exported) == restore_ms
+    assert not opreceipts.resume_after_restore(exported, restore_ms + 1), \
+        "the conversion ran twice"
+    fresh = opreceipts.mint_key(restore_ms + 1_000)
+    decision, info = opreceipts.admit(exported, "mid", 0, fresh,
+                                      "orgtree_message", {"to": "boss"},
+                                      now_ms=restore_ms + 2_000)
+    assert decision == opreceipts.ADMIT, (decision, info)
+
+
+check("a document restored from an export answers unknown, never not_applied",
+      _an_export_is_stamped_as_a_snapshot)
 
 
 def _client_against_a_backend_without_receipts():

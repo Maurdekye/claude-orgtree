@@ -87,6 +87,7 @@ from collections.abc import Callable, Generator, Iterable, Iterator
 from typing import Any, cast
 
 from datetime import datetime, timezone
+from . import opreceipts
 from .ledger import LedgerError, Org, slugify
 from .ledger import now as _ledger_now
 from .schema import OrgDoc
@@ -2497,6 +2498,11 @@ def export_json(slug: str, dest: str | None = None) -> str:
         raise LedgerError(f"no such org: {slug!r}")
     with _POOL.acquire(slug) as conn:
         doc = reconstruct_full(conn)
+    # ⚠ ON THE EXPORTED COPY, never on the live document: `reconstruct_full`
+    # builds a fresh dict. A document restored from this file is a world that
+    # stopped here, and a receipt lookup must not read that stop as proof
+    # about anything minted later — see `opreceipts.stamp_export`.
+    opreceipts.stamp_export(doc)
     if dest is None:
         d = os.path.join(DATA_ROOT, "exports")
         os.makedirs(d, exist_ok=True)

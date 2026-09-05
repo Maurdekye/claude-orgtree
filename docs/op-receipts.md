@@ -100,7 +100,7 @@ the client learns the build cannot answer.
 | `conflict` | that key already identifies a different operation |
 | `running` | a call with this key is executing **in this process** right now |
 | `not_applied` | provably nothing committed, and the key is now fenced |
-| `unknown` | with a reason: `horizon_evicted`, `schema_ahead`, `unsupported_operation`, `pre_transaction_step`, `unsupported_build`, `lookup_failed` |
+| `unknown` | with a reason: `horizon_evicted`, `restored_from_export`, `schema_ahead`, `unsupported_operation`, `pre_transaction_step`, `unsupported_build`, `lookup_failed` |
 
 The in-flight table behind `running` is **process-local and not durable**. It
 only ever adds certainty; its absence is never evidence, because a request
@@ -141,6 +141,47 @@ any other. There is **no bootstrap grace window**: one existed until
 2026-09-05 and admitted any key minted within five minutes of the section's
 creation as "covered", which a mint time cannot establish. Coverage comes
 from the shape of the request instead.
+
+### A key belongs to a call, not to an incarnation
+
+`generation` is **not** part of the match. It was, and that made a receipt
+invisible the moment the seat's session lineage changed: the call applied at
+generation *g*, the answer was lost, the seat compacted, and then the lookup
+— which reads the seat's *current* generation — found nothing and said
+"not applied". A delayed original arriving on the same key was admitted and
+ran a second time, for the same reason.
+
+So a key is matched on `(node, key)`. Finding it under **any** generation
+means it has been used: admission refuses a key whose receipt sits at another
+generation (it never runs and never replays someone else's result as this
+incarnation's), and the lookup answers from the receipt it finds. The
+fingerprint is compared at the **row's** generation, because the generation is
+part of the fingerprint and recomputing it at a bumped one would never match.
+
+A fenced row is compared the same way. Only the `applied` branch used to
+check, so a lookup asking about a *different* operation under a fenced key was
+told "that did not apply" — about a call the fence never covered.
+
+### A restored document cannot speak for its own gaps
+
+`store.export_json` stamps the **exported copy** (never the live document) as
+a point-in-time snapshot. A document rolled back from that export lost the
+receipts written after it — but not their effects: a document rollback does
+not recall mail already delivered to another org, or a process already
+started.
+
+The rule this supports is narrow, and deliberately does not use the export's
+time. A key minted *before* the snapshot whose operation applied *after* it is
+missing from the restored document exactly like a late-minted one, so a mint
+time establishes nothing here. What is true is that on a restored document the
+absence of a receipt proves nothing at all until the document is recording
+again. So the first receipt-layer touch converts the stamp into an ordinary
+watermark **at that moment**: every key minted before the restore reads
+`unknown` / `restored_from_export`, and every key minted after it is covered
+normally, because its whole life is inside the restored document's own record.
+
+⚠ Exercised: `export_json` and the admission/append behaviour. **Not**
+exercised: the install path in `tools/cutover.py`, which is the operator's.
 
 A document written by a *newer* receipts build (a higher `schema` or
 `coverage` in the meta) answers `unknown` / `schema_ahead`: its rows were

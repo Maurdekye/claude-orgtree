@@ -319,6 +319,73 @@ def watermark(d: dict[str, Any]) -> int:
     return int(m.get("from_ms") or 0)
 
 
+def stamp_export(doc: dict[str, Any], now_ms: int | None = None) -> None:
+    """Mark an EXPORTED COPY as a point-in-time snapshot (`store.export_json`
+    calls this on the reconstructed document, never on a live one).
+
+    A document restored from an export is a world that stopped at the export.
+    Everything the live system did between the export and the restore is gone
+    from it — including receipts whose effects were NOT undone, because a
+    document rollback does not recall mail already delivered to another org or
+    a process already started. So a key minted after this snapshot was taken
+    can never be judged from the restored document, and the honest answer for
+    it is `unknown`.
+
+    The stamp is cleared by the first receipt appended after the restore,
+    which also lifts the watermark to that moment (see `append`) — so the
+    window in which everything is unknown is exactly the window in which
+    nothing here can know anything."""
+    ms = int(time.time() * 1000) if now_ms is None else int(now_ms)
+    m = cast("dict[str, Any] | None", doc.get(META))
+    if m is None:
+        # ⚠ EVEN WITH NO RECEIPTS. A document that never carried one still
+        # needs the stamp: without it, a key minted between the export and
+        # the restore finds no row, no meta and a watermark of 0, and reads
+        # as "never applied" — which is the whole failure, on the document
+        # least able to argue with it.
+        m = {"schema": SCHEMA, "coverage": COVERAGE, "from_ms": 0,
+             "horizon_ms": HORIZON_MS, "ceiling": CEILING,
+             "trim_to": TRIM_TO, "evicted": 0}
+        doc[META] = m
+    m["export_stamp"] = ms
+
+
+def export_stamp(d: dict[str, Any]) -> int:
+    m = cast("dict[str, Any]", d.get(META) or {})
+    return int(m.get("export_stamp") or 0)
+
+
+def restored_at(d: dict[str, Any]) -> int:
+    m = cast("dict[str, Any]", d.get(META) or {})
+    return int(m.get("restored_at") or 0)
+
+
+def resume_after_restore(d: dict[str, Any], now_ms: int) -> bool:
+    """The first receipt-layer touch of a RESTORED document converts its
+    snapshot stamp into an ordinary watermark at this moment.
+
+    ⚠ THE EXPORT'S OWN TIME IS DELIBERATELY NOT USED (Astra, 2026-09-05).
+    Refusing only keys minted after the export was wrong: a key minted BEFORE
+    the snapshot whose operation applied AFTER it is missing from the restored
+    document in exactly the same way, so a mint time cannot establish custody
+    here either. What is true is narrower and needs no arithmetic — on a
+    restored document the absence of a receipt proves nothing about anything,
+    until the document is recording again. Every key minted before the restore
+    therefore reads `unknown`, and every key minted after it is covered
+    normally, because its whole life is inside the restored document's own
+    record.
+
+    Idempotent, and safe to run in a transaction that is then discarded: the
+    watermark only ever rises, and a rise only ever costs a refusal."""
+    if not export_stamp(d):
+        return False
+    m = cast("dict[str, Any]", d[META])
+    m.pop("export_stamp", None)
+    m["restored_at"] = now_ms
+    m["from_ms"] = max(int(m.get("from_ms") or 0), now_ms)
+    return True
+
+
 def schema_ahead(d: dict[str, Any]) -> str:
     """A document written by a NEWER receipts build, now being read by this
     one. Its rows were admitted and classified by rules this build does not
@@ -333,14 +400,25 @@ def schema_ahead(d: dict[str, Any]) -> str:
     return ""
 
 
-def find(d: dict[str, Any], node: str, generation: int, key: str
-         ) -> dict[str, Any] | None:
-    """The row for this SCOPED key: (node, generation, key). A different node
-    or a different generation is a different scope — it can neither replay
-    nor read this one."""
+def find(d: dict[str, Any], node: str, key: str) -> dict[str, Any] | None:
+    """The row for this key on this node.
+
+    ⚠ GENERATION IS NOT A MATCHER (Astra, 2026-09-05). It was, and that made
+    a receipt INVISIBLE the moment the seat's session lineage changed: the
+    call applied at generation g, the answer was lost, the seat compacted,
+    and then the lookup (which reads the CURRENT generation) found nothing and
+    said "not applied — safe to reissue", while a delayed original arriving on
+    the same key was admitted and ran a second time. Both are the duplicate
+    this file exists to prevent.
+
+    A key belongs to the CALL that minted it, not to an incarnation. Finding
+    it under any generation means it has been used; what the generation
+    decides is how the row may be ANSWERED, not whether it is seen — see
+    `admit` (a foreign generation can never be admitted) and the lookup (which
+    compares the fingerprint at the ROW's generation, because that is the one
+    it was computed with)."""
     for row in reversed(_log(d, create=False)):
-        if (row.get("key") == key and row.get("node") == node
-                and int(row.get("gen") or 0) == int(generation)):
+        if row.get("key") == key and row.get("node") == node:
             return row
     return None
 
@@ -372,7 +450,7 @@ def admit(d: dict[str, Any], node: str, generation: int, key: str, tool: str,
         return REFUSE, {"reason": "key_stale",
                         "detail": f"minted {(ms - mint) / 1000:.0f}s ago; the "
                                   f"receipt horizon is {HORIZON_MS // 1000}s"}
-    row = find(d, node, generation, key)
+    row = find(d, node, key)
     if row is not None:
         if row.get("outcome") == "fenced":
             # a lookup already fenced this key: the caller was told the
@@ -381,12 +459,26 @@ def admit(d: dict[str, Any], node: str, generation: int, key: str, tool: str,
                             "detail": "this key was fenced by a lookup at "
                                       f"{row.get('at')} — it can no longer be "
                                       "admitted; issue a fresh key"}
+        if int(row.get("gen") or 0) != int(generation):
+            # the key was used by an EARLIER INCARNATION of this seat. There
+            # is no safe reading: the receipt proves the call already applied
+            # once, and the seat that would run it now is not the one that
+            # issued it. Refuse — never execute, never replay somebody else's
+            # result as this incarnation's.
+            return REFUSE, {"reason": "foreign_generation", "row": row,
+                            "detail": f"this key was used at generation "
+                                      f"{row.get('gen')} and this seat is now "
+                                      f"at generation {generation}; the "
+                                      f"operation ALREADY APPLIED and will "
+                                      f"not be run again. Issue a fresh key "
+                                      f"if you mean to do it now."}
         fp = fingerprint(tool, node, generation, args)
         if row.get("tool") != tool or row.get("fp") != fp:
             return CONFLICT, {"row": row, "reason": "key_reused",
                               "detail": f"this key already identifies "
                                         f"{row.get('tool')} at {row.get('at')}"}
         return REPLAY, {"row": row}
+    resume_after_restore(d, ms)
     ahead = schema_ahead(d)
     if ahead:
         return REFUSE, {"reason": "schema_ahead",
@@ -398,6 +490,15 @@ def admit(d: dict[str, Any], node: str, generation: int, key: str, tool: str,
     # different code path from "receipts exist and nothing was evicted". Both
     # mean a watermark of 0; say so once.
     if mint < watermark(d):
+        if mint < restored_at(d):
+            return REFUSE, {
+                "reason": "restored_from_export",
+                "detail": "this document was restored from an export after "
+                          "the key was minted, so whatever happened to the "
+                          "key was rolled out of the document and cannot be "
+                          "read back — and a rollback does not recall mail "
+                          "already delivered or a process already started. "
+                          "The outcome is unknown"}
         return REFUSE, {"reason": "horizon_evicted",
                         "detail": "receipts for keys this old have been "
                                   "evicted; the outcome is unknown"}
@@ -413,6 +514,10 @@ def append(d: dict[str, Any], row: dict[str, Any], now_ms: int | None = None
     """File a row and evict if the log is over the ceiling. Returns the meta."""
     ms = int(time.time() * 1000) if now_ms is None else int(now_ms)
     m = _meta(d, ms, create=True)
+    # a receipt can be the FIRST touch after a restore (the admission that
+    # produced it converts the stamp, but a caller that appends without
+    # admitting — the fence — must not leave a stamped document recording)
+    resume_after_restore(d, ms)
     log = _log(d, create=True)
     log.append(row)
     if len(log) > CEILING:

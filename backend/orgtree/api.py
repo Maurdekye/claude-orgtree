@@ -5761,21 +5761,37 @@ def _op_lookup_call(body: AgentCall, a: dict[str, Any]) -> dict[str, Any]:
             raise HTTPException(422, str(e))
         gen = _op_generation(org, body.node)
         d = cast("dict[str, Any]", org.d)
-        row = opreceipts.find(d, body.node, gen, key)
-        if row is not None and row.get("outcome") == "applied":
-            fp = opreceipts.fingerprint(tool, body.node, gen, for_args)
+        row = opreceipts.find(d, body.node, key)
+        if row is not None:
+            # ⚠ THE FINGERPRINT IS COMPARED AT THE ROW'S OWN GENERATION, not
+            # at the seat's current one: `fingerprint` includes the
+            # generation, so recomputing it at a bumped generation would
+            # never match and every receipt would read as a conflict the
+            # moment the seat compacted.
+            row_gen = int(row.get("gen") or 0)
+            fp = opreceipts.fingerprint(tool, body.node, row_gen, for_args)
             if row.get("tool") != tool or row.get("fp") != fp:
+                # ⚠ CHECKED FOR A FENCED ROW TOO (Astra, 2026-09-05). Only
+                # the `applied` branch compared, so a lookup asking about a
+                # DIFFERENT operation under a fenced key was answered "that
+                # did not apply, safe to reissue" — about a call the fence
+                # never covered, classified by the ASKER's verb. A key
+                # identifies one call in either state.
                 return {"state": "conflict", "op_key": key, "receipt": row,
                         "status": "that key already identifies a DIFFERENT "
                                   "operation; this one was never done"}
+        if row is not None and row.get("outcome") == "applied":
             return {"state": "applied", "op_key": key, "receipt": row,
                     "status": "the document transaction committed; "
                               "post-commit effects are not covered"}
         if row is not None and row.get("outcome") == "fenced":
             # an earlier lookup already fenced it — the SAME answer as fencing
             # it here, including the coverage caveat: a fence stops the
-            # document effect, and cannot speak for work done outside it
-            return _op_absent(key, cls, at=str(row.get("at") or ""))
+            # document effect, and cannot speak for work done outside it.
+            # The class comes from the ROW, not from the asker's verb, which
+            # by now is known to be the same call.
+            return _op_absent(key, str(row.get("cls") or cls),
+                              at=str(row.get("at") or ""))
         with _OP_INFLIGHT_LOCK:
             running = (body.org, body.node, key) in _OP_INFLIGHT
         if running:
