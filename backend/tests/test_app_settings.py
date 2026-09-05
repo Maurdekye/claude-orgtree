@@ -200,7 +200,8 @@ def runtime_round_trip_uses_warm_flag() -> None:
     assert initial.json() == {
         "warming_enabled": True,
         "working_checkups_enabled": True,
-        "wait_for_mcp_tools_enabled": False}, initial.json()
+        "wait_for_mcp_tools_enabled": False,
+        "idle_docket_reminders_enabled": False}, initial.json()
 
     off = client.put(
         "/api/app-settings/runtime", json={"enabled": False})
@@ -208,7 +209,8 @@ def runtime_round_trip_uses_warm_flag() -> None:
     assert off.json() == {
         "warming_enabled": False,
         "working_checkups_enabled": True,
-        "wait_for_mcp_tools_enabled": False}, off.json()
+        "wait_for_mcp_tools_enabled": False,
+        "idle_docket_reminders_enabled": False}, off.json()
     assert open(flag, encoding="utf-8").read().strip() == "0"
     warmpool._FLAG_CACHE["at"] = 0.0
     assert warmpool.warm_enabled() is False
@@ -220,7 +222,8 @@ def runtime_round_trip_uses_warm_flag() -> None:
     assert checkups_off.json() == {
         "warming_enabled": False,
         "working_checkups_enabled": False,
-        "wait_for_mcp_tools_enabled": False}, checkups_off.json()
+        "wait_for_mcp_tools_enabled": False,
+        "idle_docket_reminders_enabled": False}, checkups_off.json()
     assert appsettings.working_checkups_enabled() is False
 
     # Process warming has no preference mirror: warm.flag remains both its
@@ -235,7 +238,8 @@ def runtime_round_trip_uses_warm_flag() -> None:
     assert on.json() == {
         "warming_enabled": True,
         "working_checkups_enabled": False,
-        "wait_for_mcp_tools_enabled": False}, on.json()
+        "wait_for_mcp_tools_enabled": False,
+        "idle_docket_reminders_enabled": False}, on.json()
     checkups_on = client.put(
         "/api/app-settings/runtime",
         json={"working_checkups_enabled": True})
@@ -249,6 +253,23 @@ def runtime_round_trip_uses_warm_flag() -> None:
     assert readiness_on.json()["wait_for_mcp_tools_enabled"] is True
     assert appsettings.wait_for_mcp_tools_enabled() is True
     assert appsettings.load(strict=True)["runtime"]["wait_for_mcp_tools"] is True
+    # the idle docket reminder is the one runtime choice that defaults OFF
+    # on a record that never mentioned it, and it round-trips like the rest
+    assert "idle_docket_reminders" not in appsettings.load(strict=True)["runtime"]
+    assert appsettings.idle_docket_reminders_enabled() is False
+    reminders_on = client.put(
+        "/api/app-settings/runtime",
+        json={"idle_docket_reminders_enabled": True})
+    assert reminders_on.status_code == 200, reminders_on.text
+    assert reminders_on.json()["idle_docket_reminders_enabled"] is True
+    assert reminders_on.json()["working_checkups_enabled"] is True, (
+        "one runtime switch must never disturb another")
+    assert appsettings.load(strict=True)["runtime"]["idle_docket_reminders"] is True
+    reminders_off = client.put(
+        "/api/app-settings/runtime",
+        json={"idle_docket_reminders_enabled": False})
+    assert reminders_off.json()["idle_docket_reminders_enabled"] is False
+    assert appsettings.idle_docket_reminders_enabled() is False
     denied = api._public_denied(
         "PUT", "/api/app-settings/runtime", "public-org")
     assert denied == (

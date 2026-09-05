@@ -3118,6 +3118,7 @@ class RuntimePreference(Body):
     enabled: bool | None = None
     working_checkups_enabled: bool | None = None
     wait_for_mcp_tools_enabled: bool | None = None
+    idle_docket_reminders_enabled: bool | None = None
 
 
 def _runtime_preferences() -> dict[str, bool]:
@@ -3126,6 +3127,8 @@ def _runtime_preferences() -> dict[str, bool]:
         "working_checkups_enabled": appsettings.working_checkups_enabled(),
         "wait_for_mcp_tools_enabled": (
             appsettings.wait_for_mcp_tools_enabled()),
+        "idle_docket_reminders_enabled": (
+            appsettings.idle_docket_reminders_enabled()),
     }
 
 
@@ -3144,11 +3147,12 @@ async def runtime_preference_info() -> dict[str, bool]:
 
 @app.put("/api/app-settings/runtime")
 async def runtime_preference(body: RuntimePreference) -> dict[str, bool]:
-    """Update either runtime choice without disturbing the other one."""
+    """Update one runtime choice without disturbing the others."""
     from fastapi.concurrency import run_in_threadpool
 
     if (body.enabled is None and body.working_checkups_enabled is None
-            and body.wait_for_mcp_tools_enabled is None):
+            and body.wait_for_mcp_tools_enabled is None
+            and body.idle_docket_reminders_enabled is None):
         raise HTTPException(422, "one runtime setting is required")
     try:
         if body.enabled is not None:
@@ -3161,6 +3165,10 @@ async def runtime_preference(body: RuntimePreference) -> dict[str, bool]:
             await run_in_threadpool(
                 appsettings.set_wait_for_mcp_tools_enabled,
                 body.wait_for_mcp_tools_enabled)
+        if body.idle_docket_reminders_enabled is not None:
+            await run_in_threadpool(
+                appsettings.set_idle_docket_reminders_enabled,
+                body.idle_docket_reminders_enabled)
         result = await run_in_threadpool(_runtime_preferences)
     except (appsettings.AppSettingsUnreadable, OSError) as e:
         raise HTTPException(500, str(e)) from e

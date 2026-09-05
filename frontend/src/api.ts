@@ -380,6 +380,14 @@ export const setWaitForMcpToolsEnabled = (
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ wait_for_mcp_tools_enabled: enabled }),
   })
+export const setIdleDocketRemindersEnabled = (
+  enabled: boolean,
+): Promise<RuntimeSettingsPayload> =>
+  req('/api/app-settings/runtime', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ idle_docket_reminders_enabled: enabled }),
+  })
 export const getUsage = (): Promise<UsagePayload> => req('/api/usage')
 // cache-only — the glow polls this; only the modal above may cost a fetch
 export const getUsagePeek = (): Promise<UsagePeek> => req('/api/usage/peek')

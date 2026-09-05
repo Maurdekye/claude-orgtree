@@ -212,6 +212,29 @@ WORKING_CHECKUP_NUDGE = (
     "internally attributed mail above asks you to verify the work, make "
     "progress, and report your status honestly.")
 
+# The docket's own reminder, and a SEPARATE opt-in switch from the checkup
+# above: an agent can be idle — settled, reported done, never reported at all
+# — while items it owns are still open, and none of that is a working status.
+# Same 20-minute quiet threshold and the same keeper cadence; what differs is
+# who it looks at and what it says.
+IDLE_DOCKET_REMINDER_AFTER_S = 20.0 * 60.0
+IDLE_DOCKET_REMINDER_MAX_ITEMS = 20
+#: first line of the reserved mail — how a pending reminder is recognised
+IDLE_DOCKET_REMINDER_MARK = "[AUTOMATIC IDLE DOCKET REMINDER]"
+IDLE_DOCKET_REMINDER_BODY = (
+    IDLE_DOCKET_REMINDER_MARK + "\n"
+    "You have been idle for 20 minutes and these docket items you own are "
+    "still unfinished:\n{items}\n"
+    "Pick the work back up: read each one with orgtree_work get, take the "
+    "next concrete step, and leave an honest orgtree_work update. Assert "
+    "review only if an item is really finished, and blocked (with a reason) "
+    "if it truly cannot move. Items that are backlogged, or that are waiting "
+    "on the user through an attention flag or an open question, are "
+    "deliberately not listed here.")
+IDLE_DOCKET_REMINDER_NUDGE = (
+    "(orgtree) This is the automatic idle-docket reminder. The internally "
+    "attributed mail above lists the {n} unfinished docket item(s) you own.")
+
 # real context windows per tier (user-verified) — the CLI's
 # modelUsage.contextWindow under-reported 1M-window models as 200k.
 # Override with ORGTREE_CONTEXT_WINDOWS='{"opus": 500000, ...}'
@@ -8988,18 +9011,8 @@ def _reported_working(n: NodeDoc | dict[str, Any]) -> bool:
     return isinstance(status, dict) and status.get("status") == "working"
 
 
-def _working_checkup_anchor(n: NodeDoc | dict[str, Any]) -> float:
-    """Latest durable working-status activity boundary, as epoch seconds."""
-    status = n.get("last_status")
-    stamps = [str(n.get("working_activity_at") or "")]
-    if isinstance(status, dict):
-        stamps.append(str(status.get("at") or ""))
-    turns = n.get("turns")
-    if isinstance(turns, list) and turns and isinstance(turns[-1], dict):
-        # A long real turn can finish well after its wake. Its completion is
-        # actual activity, so the 20 minutes begin there rather than firing as
-        # soon as the busy bit falls.
-        stamps.append(str(turns[-1].get("at") or ""))
+def _latest_epoch(stamps: list[str]) -> float:
+    """Newest parseable ISO stamp as epoch seconds; 0.0 when none are."""
     vals: list[float] = []
     for stamp in stamps:
         if not stamp:
@@ -9012,10 +9025,35 @@ def _working_checkup_anchor(n: NodeDoc | dict[str, Any]) -> float:
     return max(vals, default=0.0)
 
 
-def _working_checkup_eligible(org: Org, nid: str) -> bool:
-    """Durable half of checkup admission; ordinary turn gates still recheck."""
+def _activity_stamps(n: NodeDoc | dict[str, Any]) -> list[str]:
+    """The durable activity boundaries every automatic wake clock reads.
+
+    ⚠ THE MAX OF ALL OF THEM, never the status stamp alone: a node can carry
+    a years-old `last_status` and have finished a real turn a minute ago, and
+    reading only the status would call that seat 20 minutes idle. A long real
+    turn also finishes well after its wake, so its COMPLETION is the boundary
+    rather than the moment the busy bit falls.
+    """
+    status = n.get("last_status")
+    stamps = [str(n.get("working_activity_at") or "")]
+    if isinstance(status, dict):
+        stamps.append(str(status.get("at") or ""))
+    turns = n.get("turns")
+    if isinstance(turns, list) and turns and isinstance(turns[-1], dict):
+        stamps.append(str(turns[-1].get("at") or ""))
+    return stamps
+
+
+def _working_checkup_anchor(n: NodeDoc | dict[str, Any]) -> float:
+    """Latest durable working-status activity boundary, as epoch seconds."""
+    return _latest_epoch(_activity_stamps(n))
+
+
+def _auto_wake_gates_clear(org: Org, nid: str) -> bool:
+    """Durable admission shared by the automatic wakes (checkup, reminder);
+    ordinary turn gates still recheck at the door."""
     n = org.nodes.get(nid)
-    if not n or n.get("state") != "live" or not _reported_working(n):
+    if not n or n.get("state") != "live":
         return False
     if (n.get("frozen") or n.get("limit_locked")
             or n.get("remote_controlled") or n.get("bearer_state")
@@ -9036,6 +9074,14 @@ def _working_checkup_eligible(org: Org, nid: str) -> bool:
     except RuntimeError:
         return False
     return True
+
+
+def _working_checkup_eligible(org: Org, nid: str) -> bool:
+    """Durable half of checkup admission; ordinary turn gates still recheck."""
+    n = org.nodes.get(nid)
+    if not n or not _reported_working(n):
+        return False
+    return _auto_wake_gates_clear(org, nid)
 
 
 def _working_checkup_reserve(slug: str, nid: str, now: float) -> str | None:
@@ -9080,8 +9126,9 @@ def _working_checkup_reserve(slug: str, nid: str, now: float) -> str | None:
         return mid
 
 
-def _working_checkup_cancel(slug: str, nid: str, mid: str) -> None:
-    """Withdraw a reservation that lost the idle-admission race."""
+def _auto_wake_cancel(slug: str, nid: str, mid: str) -> None:
+    """Withdraw an automatic wake's reservation that lost the idle-admission
+    race — the checkup's and the docket reminder's alike."""
     try:
         with store.DOC_LOCK:
             org = store.load_org(slug)
@@ -9110,6 +9157,122 @@ def _note_working_activity(slug: str, nid: str,
     except Exception:                                        # noqa: BLE001
         # Advisory bookkeeping must never become a new turn-admission gate.
         pass
+
+
+# ── idle docket reminders ─────────────────────────────────────────────────
+def _idle_docket_anchor(n: NodeDoc | dict[str, Any]) -> float:
+    """Latest boundary the idle clock reads: real activity, plus this node's
+    own last reminder. One stamp is both the cross-restart dedupe and the
+    cooldown, exactly as `working_activity_at` is for the checkup."""
+    return _latest_epoch(_activity_stamps(n)
+                         + [str(n.get("docket_reminder_at") or "")])
+
+
+def _idle_docket_reminder_body(items: list[dict[str, str]]) -> str:
+    shown = items[:IDLE_DOCKET_REMINDER_MAX_ITEMS]
+    lines = [f"- {it['slug']} ({it['status']}): {it['title']}" for it in shown]
+    if len(items) > len(shown):
+        lines.append(f"- …and {len(items) - len(shown)} more owned item(s); "
+                     "orgtree_work list shows them all")
+    return IDLE_DOCKET_REMINDER_BODY.format(items="\n".join(lines))
+
+
+def _idle_docket_reminder_reserve(
+        slug: str, nid: str,
+        now: float) -> tuple[str, list[dict[str, str]]] | None:
+    """Atomically claim one due reminder and persist its internal mail.
+
+    The durable carrier is the mail, as it is for the checkup: a backend that
+    dies after this save leaves ordinary waking mail that startup
+    reconciliation drives. `docket_reminder_at` is written in the same save
+    and is both the cross-restart dedupe and the failed-wake cooldown.
+    """
+    with store.DOC_LOCK:
+        org = store.load_org(slug)
+        if not _auto_wake_gates_clear(org, nid):
+            return None
+        items = org.work_idle_reminder_items(nid)
+        if not items:
+            # Nothing owed is not a quiet reminder: no wake AND no stamp, so
+            # the idle clock keeps belonging to real activity.
+            return None
+        n = org.node(nid)
+        anchor = _idle_docket_anchor(n)
+        if not anchor:
+            # A row carrying no timestamp at all is seeded, never fired on:
+            # absence is not evidence that 20 minutes passed.
+            n["docket_reminder_at"] = _iso_ts(now)
+            store.save_org(org)
+            return None
+        if now - anchor < IDLE_DOCKET_REMINDER_AFTER_S:
+            return None
+        mid = uuid_hex8()
+        stamp = _iso_ts(now)
+        n["docket_reminder_at"] = stamp
+        entry: MailEntry = {
+            "id": mid, "from": SYSTEM, "kind": "message",
+            "body": _idle_docket_reminder_body(items), "at": stamp,
+            "model_only": True,
+            "relationship": (
+                "the orgtree engine reminding an idle agent of the unfinished "
+                "docket items it owns after 20 minutes without a wake"),
+        }
+        box = org.d.setdefault("mail", {})
+        box.setdefault(nid, []).append(cast(MailEntry, dict(entry)))
+        log = org.d.setdefault("mail_log", {}).setdefault(nid, [])
+        log.append(cast(MailEntry, dict(entry)))
+        del log[:-100]
+        store.save_org(org)
+        return mid, items
+
+
+def _idle_docket_reminder_pass(
+        wake: Callable[[str, str, str], dict[str, Any]] | None = None,
+        now: float | None = None, *, mode_enabled: bool | None = None) -> None:
+    """One deterministic fleet sweep for idle seats holding unfinished items.
+
+    Independent of the reported-working lifecycle above and of its mode: the
+    subject here is the docket, and an idle agent need not have reported
+    anything. The admission shape is deliberately the checkup's — runtime
+    idle, durable gates, atomic reservation, idle-only wake, withdraw on a
+    lost race — because that is the shape already proven not to spam a
+    scheduler tick or to jump a real turn's queue.
+    """
+    enabled = (appsettings.idle_docket_reminders_enabled()
+               if mode_enabled is None else mode_enabled)
+    if not enabled:
+        return
+    now = time.time() if now is None else now
+    wake_fn = wake or (lambda slug, nid, text: send_message(
+        slug, nid, text, mail_ping=True, idle_only=True))
+    for row in store.list_orgs():
+        slug = row["slug"]
+        try:
+            org = store.load_org(slug)
+        except LedgerError:
+            continue
+        for nid in sorted(org.nodes):
+            try:
+                if not _working_cache_idle(slug, nid):
+                    continue
+                got = _idle_docket_reminder_reserve(slug, nid, now)
+                if not got:
+                    continue
+                mid, items = got
+                result = wake_fn(
+                    slug, nid, IDLE_DOCKET_REMINDER_NUDGE.format(n=len(items)))
+                refused = (not result.get("accepted")
+                           or bool(result.get("queued"))
+                           or any(result.get(k) for k in (
+                               "frozen", "limit_locked", "remote",
+                               "deferred", "not_idle")))
+                if refused:
+                    _auto_wake_cancel(slug, nid, mid)
+                    continue
+                mail_spark(slug, SYSTEM, nid)
+            except Exception as e:                          # noqa: BLE001
+                print(f"[orgtree] {slug}/{nid}: idle docket reminder decision "
+                      f"failed: {type(e).__name__}: {e}")
 
 
 def _working_cache_interval(org: Org, nid: str) -> tuple[float, bool] | None:
@@ -9158,11 +9321,16 @@ def _working_cache_due(org: Org, nid: str, now: float | None = None) -> bool:
     if n.get("frozen") or n.get("limit_locked") \
             or n.get("remote_controlled") or n.get("bearer_state"):
         return False
-    # An enabled-mode checkup may have been durably reserved just before the
-    # operator switched modes or the backend died. Do not run the fallback
-    # cache request beside that already-scheduled real turn; reconciliation or
-    # the next ordinary wake owns the mail.
-    if any(m.get("from") == SYSTEM and m.get("body") == WORKING_CHECKUP_PROMPT
+    # An enabled-mode checkup — or an idle docket reminder, which runs on its
+    # own switch and can be reserved for this same seat — may have been
+    # durably reserved just before the operator switched modes or the backend
+    # died. Do not run the fallback cache request beside that already-
+    # scheduled real turn; reconciliation or the next ordinary wake owns the
+    # mail.
+    if any(m.get("from") == SYSTEM
+           and (m.get("body") == WORKING_CHECKUP_PROMPT
+                or str(m.get("body") or "").startswith(
+                    IDLE_DOCKET_REMINDER_MARK))
            for m in (org.d.get("mail") or {}).get(nid) or []):
         return False
     # A never-run session has no prefix to read. Starting it here would create
@@ -9550,7 +9718,7 @@ def _working_checkup_pass(
                     # Some real activity or a durable gate won the race after
                     # reservation. It supersedes this checkup; do not leave a
                     # stale system message to surprise a later turn.
-                    _working_checkup_cancel(slug, nid, mid)
+                    _auto_wake_cancel(slug, nid, mid)
                     continue
                 mail_spark(slug, SYSTEM, nid)
             except Exception as e:                          # noqa: BLE001
@@ -9602,9 +9770,24 @@ def _working_lifecycle_keeper_pass(
             cache_launch, now, checkup_mode_enabled=False)
 
 
+def _auto_wake_keeper_pass(now: float | None = None) -> None:
+    """One scheduler tick: the reported-working lifecycle, then the docket
+    reminder.
+
+    Both switches can be on and both can name the same seat. What keeps that
+    to ONE wake is not this order — it is that either reservation leaves
+    waking mail, which `_auto_wake_gates_clear` refuses on, and the checkup
+    also moves `working_activity_at`, which the reminder's anchor reads. The
+    order only decides which one wins the tie: the checkup, because a stale
+    working status is the more urgent thing to say.
+    """
+    _working_lifecycle_keeper_pass(now=now)
+    _idle_docket_reminder_pass(now=now)
+
+
 def working_cache_keeper_pass_now() -> None:
     """Synchronous lifecycle pass; launched work remains backgrounded."""
-    _working_lifecycle_keeper_pass()
+    _auto_wake_keeper_pass()
 
 
 def start_working_cache_keeper() -> None:
@@ -9617,7 +9800,7 @@ def start_working_cache_keeper() -> None:
     def run() -> None:
         while True:
             try:
-                _working_lifecycle_keeper_pass()
+                _auto_wake_keeper_pass()
             except Exception as e:                          # noqa: BLE001
                 print(f"[orgtree] working lifecycle keeper failed: "
                       f"{type(e).__name__}: {e}")

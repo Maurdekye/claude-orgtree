@@ -8,10 +8,11 @@ localStorage because text scale and canvas density belong to the screen being
 used, not to the backend machine.
 
 The first record is D-203's per-provider admission switch. Runtime also owns
-the machine-wide stale-working checkup mode and the optional MCP-readiness
-admission gate. Providers and working checkups are default-on; the readiness
-gate is deliberately default-off so existing installs preserve today's
-no-wait turn startup unless the operator opts in.
+the machine-wide stale-working checkup mode, the optional MCP-readiness
+admission gate and the optional idle docket reminder. Providers and working
+checkups are default-on; the readiness gate and the docket reminder are
+deliberately default-off so existing installs preserve today's no-wait turn
+startup, and today's wake volume, unless the operator opts in.
 """
 
 from __future__ import annotations
@@ -104,6 +105,19 @@ def working_checkups_enabled() -> bool:
     return runtime.get("working_checkups") is not False
 
 
+def idle_docket_reminders_enabled() -> bool:
+    """Whether idle seats holding unfinished owned docket items are nudged.
+
+    Only an explicit true enables it. A newly added optional wake must not
+    start spending turns on installs that never asked for it, so absence is
+    off — the opposite compatibility rule from working checkups, which
+    existed before its setting did.
+    """
+    raw = load().get("runtime")
+    runtime = raw if isinstance(raw, dict) else {}
+    return runtime.get("idle_docket_reminders") is True
+
+
 def wait_for_mcp_tools_enabled() -> bool:
     """Whether turns wait for the last authoritative MCP tool surface.
 
@@ -165,6 +179,18 @@ def set_working_checkups_enabled(enabled: bool) -> None:
         raw = doc.get("runtime")
         runtime: dict[str, Any] = dict(raw) if isinstance(raw, dict) else {}
         runtime["working_checkups"] = bool(enabled)
+        doc["runtime"] = runtime
+        doc["version"] = VERSION
+        _save(doc)
+
+
+def set_idle_docket_reminders_enabled(enabled: bool) -> None:
+    """Persist the machine-wide idle docket reminder choice."""
+    with _LOCK:
+        doc = load(strict=True)
+        raw = doc.get("runtime")
+        runtime: dict[str, Any] = dict(raw) if isinstance(raw, dict) else {}
+        runtime["idle_docket_reminders"] = bool(enabled)
         doc["runtime"] = runtime
         doc["version"] = VERSION
         _save(doc)

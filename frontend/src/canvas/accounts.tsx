@@ -30,7 +30,8 @@ import type {
 } from '../types'
 import {
   addAccountKey, deleteAccountKey, getAccounts, getAccountUsage,
-  getProviders, getRuntimeSettings, setAccountKeyOrder, setProviderEnabled,
+  getProviders, getRuntimeSettings, setAccountKeyOrder,
+  setIdleDocketRemindersEnabled, setProviderEnabled,
   setWaitForMcpToolsEnabled, setWarmingEnabled, setWorkingCheckupsEnabled,
 } from '../api'
 import { CheckIcon, DataUsageIcon, DeleteIcon } from '../icons'
@@ -310,6 +311,8 @@ export function AccountsPanel({ toast, close }: {
   const [workingCheckupsBusy, setWorkingCheckupsBusy] = useState(false)
   const [waitForMcpTools, setWaitForMcpTools] = useState<boolean | null>(null)
   const [waitForMcpToolsBusy, setWaitForMcpToolsBusy] = useState(false)
+  const [docketReminders, setDocketReminders] = useState<boolean | null>(null)
+  const [docketRemindersBusy, setDocketRemindersBusy] = useState(false)
   const [warmingErr, setWarmingErr] = useState<string | null>(null)
   // the OpenRouter entry carries the runtime tiers (favorites); adopting them
   // here colours this panel's own chips even before the canvas has polled
@@ -326,20 +329,21 @@ export function AccountsPanel({ toast, close }: {
         setWarming(p.warming_enabled)
         setWorkingCheckups(p.working_checkups_enabled !== false)
         setWaitForMcpTools(p.wait_for_mcp_tools_enabled === true)
+        setDocketReminders(p.idle_docket_reminders_enabled === true)
         setWarmingErr(null)
       })
       .catch((e: Error) => setWarmingErr(e.message))
   }, [])
   /** D-222 — every Runtime switch does the same five things: raise its own
-   *  busy flag, PUT, adopt ALL THREE values from the reply (the endpoint
-   *  answers with the whole record, so a sibling cannot linger stale), clear
-   *  the error, toast. Written once because it was written three times, and
-   *  the three copies had already drifted: two of them adopted the reply's
+   *  busy flag, PUT, adopt EVERY value from the reply (the endpoint answers
+   *  with the whole record, so a sibling cannot linger stale), clear the
+   *  error, toast. Written once because it was written three times, and the
+   *  three copies had already drifted: two of them adopted the reply's
    *  booleans raw while the load effect and the third normalised them, so a
    *  backend that omitted a field could leave one row showing a different
    *  default from the one the checkbox was reading. The normalisation here is
    *  the load effect's, exactly — default-on for warming and checkups,
-   *  default-off for the MCP wait. */
+   *  default-off for the MCP wait and the docket reminder. */
   const runtimeSwitch = (
     put: (v: boolean) => Promise<RuntimeSettingsPayload>,
     setBusy: (b: boolean) => void,
@@ -351,6 +355,7 @@ export function AccountsPanel({ toast, close }: {
         setWarming(p.warming_enabled)
         setWorkingCheckups(p.working_checkups_enabled !== false)
         setWaitForMcpTools(p.wait_for_mcp_tools_enabled === true)
+        setDocketReminders(p.idle_docket_reminders_enabled === true)
         setWarmingErr(null)
         toast([say(p)])
       })
@@ -875,6 +880,16 @@ export function AccountsPanel({ toast, close }: {
                   + (p.wait_for_mcp_tools_enabled ? 'on' : 'off'))}
               hint={'when on, a turn waits briefly for every MCP tool its '
                 + 'last successful turn could call'} />
+            <SetToggle label="remind idle agents about unfinished docket items"
+              checked={docketReminders === true}
+              disabled={docketReminders == null || docketRemindersBusy}
+              onChange={runtimeSwitch(setIdleDocketRemindersEnabled,
+                setDocketRemindersBusy,
+                (p) => 'idle docket reminders turned '
+                  + (p.idle_docket_reminders_enabled ? 'on' : 'off'))}
+              hint={'wakes an agent idle for 20 minutes that still owns '
+                + 'active items; never for backlogged items or ones waiting '
+                + 'on you'} />
           </SetGroup>
         </SettingsTabPanel>
 
