@@ -777,6 +777,13 @@ export type OpFn = (body: OpRequest) => Promise<OpResult>
 export type MailLinkFn = (
   m: { id?: string | null; to?: string | null } | null | undefined,
 ) => void
+/** a chat chip's DOCKET pointer — the item a work write acted on, taken from
+ *  the tool result rather than inferred from the chip's text (user request
+ *  2026-09-05: an update should carry a button that opens the item, the way a
+ *  mail send carries one that opens the mail) */
+export type WorkLinkFn = (
+  w: { slug?: string | null } | null | undefined,
+) => void
 /** the webmail row: MailEntry plus the decorations MailList's callers add */
 export type MailRow = MailEntry & {
   to?: string                   // outgoing rows

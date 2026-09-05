@@ -282,7 +282,8 @@ export function buildSections(mode: DocketGroupMode, active: WorkItem[],
   return out
 }
 
-export function DocketModal({ slug, toast, close, tree, onFocusAgent }: {
+export function DocketModal({ slug, toast, close, tree, onFocusAgent,
+  jumpTo, onJumpHandled }: {
   slug: string
   toast: ToastFn
   close: () => void
@@ -292,6 +293,10 @@ export function DocketModal({ slug, toast, close, tree, onFocusAgent }: {
    *  detail pane are clickable links using this exact behavior everywhere
    *  it appears, docket included. */
   onFocusAgent?: (agentId: string) => void
+  /** open AT this item: a tool chip's docket link names the item a work write
+   *  acted on (user 2026-09-05). Consumed once — see the effect below. */
+  jumpTo?: string | null
+  onJumpHandled?: () => void
 }) {
   useEsc(close)
   const [showArchived, setShowArchived] = useState(false)
@@ -418,6 +423,31 @@ export function DocketModal({ slug, toast, close, tree, onFocusAgent }: {
     const el = rows.current.get(flash)
     el?.scrollIntoView?.({ block: 'nearest' })
   }, [flash, sections])
+
+  // ⚠ A JUMP WAITS FOR ITS ITEM AND IS CONSUMED EXACTLY ONCE. The panel opens
+  // before the first poll answers, so the named item is usually not in
+  // `allKnown` yet; acting immediately would silently do nothing and the link
+  // would look broken. It also must not re-fire on every later render, or
+  // reopening the docket would keep dragging the user back to whatever some
+  // earlier chip pointed at — hence `onJumpHandled`, which clears it upstream.
+  //
+  // A name this org does not have is DISCARDED once the data has arrived,
+  // rather than held forever: the item may be one the viewer may not read, or
+  // simply gone, and either way there is nothing to select.
+  //
+  // ⚠ "ONCE" IS ENFORCED HERE, NOT BY THE PARENT CLEARING THE PROP. The deps
+  // below change identity on ordinary renders — `allKnown` is rebuilt on every
+  // poll — so an effect that only checked `jumpTo` would re-fire for as long
+  // as the prop stayed set, dragging the selection back each time the user
+  // moved it. App does clear it, but a component that is only correct because
+  // its caller is well-behaved is not correct. Measured: 4 firings, not 1.
+  const doneJump = useRef<string | null>(null)
+  useEffect(() => {
+    if (!jumpTo || !data || doneJump.current === jumpTo) return
+    doneJump.current = jumpTo
+    if (allKnown.has(jumpTo)) goToItem(jumpTo)
+    onJumpHandled?.()
+  }, [jumpTo, data, allKnown, goToItem, onJumpHandled])
 
   const onDismiss = (item: WorkItem) => {
     if (!item.manual_attention) return

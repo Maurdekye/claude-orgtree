@@ -250,6 +250,10 @@ export default function App() {
   // the native work docket (docket-final-spec.md) — its own list+pane modal,
   // same pattern as the gallery above.
   const [showDocket, setShowDocket] = useState(false)
+  // a docket link from a tool chip: open the panel AT one item. Held as a
+  // one-shot so re-opening the docket later does not silently re-select what
+  // some earlier link pointed at — the panel consumes it and clears it.
+  const [docketJump, setDocketJump] = useState<string | null>(null)
   const [focusAgent, setFocusAgent] = useState<string | null>(null)
   // the usage button GLOWS once a lane nears its wall (user feature
   // 2026-08-19), so a freeze stops being the first notice. It rides
@@ -967,6 +971,10 @@ export default function App() {
                 onInbox={(jump: unknown) => {
                   setInboxJump(typeof jump === 'string' ? jump : null)
                   setShowInbox(true)
+                }}
+                onWorkItem={(item: string) => {
+                  setDocketJump(item)
+                  setShowDocket(true)
                 }} />
               {/* hard-full is a STATE, not an event: the alert persists (and
                   survives reloads) until usage drops; it never auto-opens
@@ -1024,11 +1032,13 @@ export default function App() {
       )}
       {showDocket && slug && tree && (
         <DocketModal slug={slug} toast={toast} tree={tree}
+          jumpTo={docketJump}
+          onJumpHandled={() => setDocketJump(null)}
           onFocusAgent={(id) => {
             setShowDocket(false)
             setFocusAgent(id)
           }}
-          close={() => setShowDocket(false)} />
+          close={() => { setDocketJump(null); setShowDocket(false) }} />
       )}
       {showAccounts && (
         <AccountsPanel toast={toast} close={() => setShowAccounts(false)} />

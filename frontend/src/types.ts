@@ -866,6 +866,10 @@ export interface ToolChip {
   images?: number
   file?: MailAttachment & { note?: string }   // orgtree_send_file download card
   mail?: { id: string; to: string }
+  /** a successful `orgtree_work` MUTATION names the item it acted on, so the
+   *  chip can offer to open it. Absent on a failed call and on the read
+   *  actions, neither of which has an item to open. */
+  work?: { slug: string }
   /** Edit chips: the pre-computed structuredPatch (supervisor.py:2912-2915) */
   diff?: { plus: number; minus: number; lines: string[]; truncated?: boolean }
   /** Task/subagent sidecar totals (supervisor.py:2917-2920) — tur.get() may

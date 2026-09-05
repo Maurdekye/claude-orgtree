@@ -19,7 +19,7 @@ import {
 } from './shared'
 import type {
   CanvasNode, DraftScope, DraftState, FamilyOffer, MailEvent, MailLinkFn,
-  HireState, OpFn, Pile, Pt, Seg, Spring, StreamEvent, View,
+  HireState, OpFn, Pile, Pt, Seg, Spring, StreamEvent, View, WorkLinkFn,
 } from './shared'
 import { Activity, ContextWheel, DeskChat, DestinationBusy, LineagePanel, ProcessLifecycleMark } from './desk'
 import { DocReader } from './docs'
@@ -41,6 +41,8 @@ export interface OrgCanvasProps {
   mailEvt: MailEvent | null
   /** open the user's inbox, optionally jumped to a specific mail id */
   onInbox?: (jump?: string) => void
+  /** open the work docket at ONE item — a tool chip's docket link */
+  onWorkItem?: (slug: string) => void
   /** D-199: open the accounts panel — the route out of the no-harness state,
    *  which the canvas can reach but cannot render itself (it lives in App). */
   onAccounts?: () => void
@@ -103,7 +105,7 @@ const migrateClientNodeState = (slug: string, from: string, to: string): void =>
   } catch { /* private mode or hand-edited state — never block tree updates */ }
 }
 
-export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
+export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox, onWorkItem,
   onAccounts, focusAgent, onFocusAgentHandled }: OrgCanvasProps) {
   const [draft, setDraft] = useState<DraftState | null>(null)
   const [configId, setConfigId] = useState<string | null>(null)
@@ -260,6 +262,11 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
     }
   }
   const openMail = useCallback<MailLinkFn>((m) => openMailRef.current?.(m), [])
+  // THE DOCKET LIVES IN APP, so a work link is handed straight up rather than
+  // half-handled here. The canvas owns the inbox modals and genuinely routes
+  // mail; it owns nothing of the docket and should not pretend to.
+  const openWork = useCallback<WorkLinkFn>(
+    (w) => { if (w?.slug) onWorkItem?.(w.slug) }, [onWorkItem])
   // RETIRED PILE (user spec): archived siblings in a cohort stack into ONE
   // pile so long-running orgs don't fill the canvas with retirees. The FRONT
   // retiree is the interactable card (zoom/desk/inbox/rehire); clicking the
@@ -2315,7 +2322,7 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
                 onInbox?.()
               }}
               onGear={() => setUserCfg(true)}
-              onMailLink={openMail} onOpenDoc={setDocView}
+              onMailLink={openMail} onWorkLink={openWork} onOpenDoc={setDocView}
               /* switchboard panel headers mirror the desk header identically
                  (user spec 2026-08-19): the gen badge and gear in each panel
                  open the same canvas-level lineage/config surfaces */
@@ -2352,7 +2359,7 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
               onConfig={() => setConfigId(n.id)}
               onInbox={() => setInboxId(n.id)} onLineage={() => setLineageId(n.id)}
               onOpenDoc={setDocView}
-              onMailLink={openMail}
+              onMailLink={openMail} onWorkLink={openWork}
               onRecenter={() => centerOn(n.id)}   /* recenter AND re-zoom to fill */
               onJump={centerOn}                   /* F-01 nav chips */
               pub={!!tree.public} kioskRemaining={kioskRemaining}
@@ -2482,7 +2489,7 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
         <PinLayer slug={slug} map={map} viewportRef={viewportRef}
           targetOf={cardRectOf} op={op} toast={toast} pub={!!tree.public}
           compactAt={tree.compact_at} maxTop={tree.max_top_grant ?? 1000}
-          pxc={pxPerCredit} onMailLink={openMail} onOpenDoc={setDocView}
+          pxc={pxPerCredit} onMailLink={openMail} onWorkLink={openWork} onOpenDoc={setDocView}
           onLineage={setLineageId} onConfig={setConfigId} onJump={centerOn} />
       )}
       {/* nav cluster (user spec): bottom-LEFT beside the agents tray, so
@@ -2778,7 +2785,7 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
                 <DeskChat bare node={n} map={map} op={op} slug={slug}
                   toast={toast} pub={!!tree.public} compactAt={tree.compact_at}
                   maxTop={tree.max_top_grant ?? 1000} pxc={pxPerCredit}
-                  onMailLink={openMail} onOpenDoc={setDocView}
+                  onMailLink={openMail} onWorkLink={openWork} onOpenDoc={setDocView}
                   onLineage={() => setLineageId(sheetId)}
                   onConfig={() => setConfigId(sheetId)}
                   onJump={(id) => {

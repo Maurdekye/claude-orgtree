@@ -9304,6 +9304,17 @@ class Org:
             return "legacy"
         return self.WORK_IDENTITY_SLUG
 
+    def _work_require_current_identity(self) -> None:
+        """Refuse a docket WRITE while the document still holds old-style
+        identity. Reads refuse in the API layer; this is the write side, and
+        it is deliberately in the ledger so no route can miss it."""
+        if self.work_identity_state() != self.WORK_IDENTITY_SLUG:
+            raise LedgerError(
+                "this docket still holds old-style opaque item ids and cannot "
+                "be written to until it is converted — the caller must run "
+                "the identity migration inside its own lock and save before "
+                "mutating (see api._work_identity_ready)")
+
     def _work_all(self) -> list[WorkItem]:
         """Active then archive, in stored order — the order the migration
         walks, so two runs on the same document name things identically."""
@@ -9570,6 +9581,16 @@ class Org:
         """Physically move eligible, attention-free done items into the
         archive. Called at the head of every docket mutation; a read never
         writes. Returns the moved ids (logged, never silent)."""
+        # ⚠ A DOCKET WRITE ON AN UNCONVERTED DOCUMENT IS REFUSED HERE, at the
+        # head of every mutation, rather than left to each route to remember.
+        # The conversion has to happen inside the route's own lock and save
+        # (`api._work_identity_ready`), and a route that forgets writes a
+        # document that is half old-identity and half new — which then 409s on
+        # the very next read. codex-delivery hit exactly that with its own
+        # repair route on a trial rebase: 200, mutated, saved, and the next GET
+        # refused. One missed call, one line away from correct, every test
+        # still green. So it stops being something to remember.
+        self._work_require_current_identity()
         now_ts = _time.time() if now_ts is None else now_ts
         named = self._work_backfill_slugs()
         if named:

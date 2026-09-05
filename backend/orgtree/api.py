@@ -4060,9 +4060,30 @@ def _work_read_call(body: AgentCall, a: dict[str, Any]) -> dict[str, Any]:
 
 
 def _work_mutate(org: Org, nid: str, a: dict[str, Any]) -> dict[str, Any]:
-    """`orgtree_work` mutating actions, under the caller's DOC_LOCK."""
+    """`orgtree_work` mutating actions, under the caller's DOC_LOCK.
+
+    Every successful mutation carries `item`: the name of the item it acted
+    on. The per-action keys (`created`, `updated`, `superseded`…) each say
+    what HAPPENED and are all shaped differently; one field that always says
+    WHICH lets a reader of the result — the desk's tool chip, which offers to
+    open the item — take the identity from the result instead of inferring it
+    from the arguments or from prose (user request 2026-09-05, Astra: use the
+    structured identity, never text)."""
     act = str(a.get("action") or "")
     wid = _work_ref(a)
+    r = _work_mutate_action(org, nid, a, act, wid)
+    if isinstance(r, dict) and "item" not in r:
+        # `create` mints the name; every other action was GIVEN one, and since
+        # only an exact name resolves, the reference the caller passed IS the
+        # canonical name — there is nothing to normalise.
+        name = str(r.get("created") or wid or "")
+        if name:
+            r["item"] = name
+    return r
+
+
+def _work_mutate_action(org: Org, nid: str, a: dict[str, Any],
+                        act: str, wid: str) -> dict[str, Any]:
 
     def _s(key: str) -> str | None:
         v = a.get(key)

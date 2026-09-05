@@ -23,7 +23,8 @@ import PushPinIcon from '@mui/icons-material/PushPinOutlined'
 import {
   ArrowDownIcon, ArrowUpIcon, AutorenewIcon, CloseIcon, DocIcon, DotIcon,
   DownloadIcon, EditIcon, EyeIcon, FileIcon, FolderIcon, FrozenIcon,
-  HearingIcon, LayersIcon, LockIcon, MailIcon, PlayIcon, PsychologyIcon,
+  DocketIcon, HearingIcon, LayersIcon, LockIcon, MailIcon, PlayIcon,
+  PsychologyIcon,
   SettingsIcon, SparkIcon, StopIcon, WarnIcon,
 } from '../icons'
 import { ago, ALL_PRESENT, ALL_TIERS, anyTierSeat, CODEX_TIERS, CopyIcon, EXTERN, fmtCredits, freezeKind, FREEZE_LABEL, ANTIGRAVITY_TIERS, isOpenRouterTier, md, openrouterTierIds, PROVIDER_LABEL, providerOf, queuedSwitchTitle, reportedLabel, TIER_LETTER, tierCapabilityNotes, tierLabel, tierShown, USER, useEsc, usePolled } from './shared'
@@ -34,7 +35,7 @@ import {
   MAX_WINDOW, refreshConvo, useConvo,
 } from '../convo'
 import type {
-  ActivityInfo, CanvasNode, LiveRow, MailLinkFn, OpFn,
+  ActivityInfo, CanvasNode, LiveRow, MailLinkFn, OpFn, WorkLinkFn,
 } from './shared'
 import { ConfirmModal } from './modals'
 import { InboxView, RetiredFold } from './mail'
@@ -909,6 +910,8 @@ interface DeskChatProps {
   compact?: boolean
   compactAt?: number
   onMailLink?: MailLinkFn
+  /** open the docket at the item a work write acted on (user 2026-09-05) */
+  onWorkLink?: WorkLinkFn
   /** FR-03: open a presented document in the in-page reader */
   onOpenDoc?: (id: string) => void
   /** FR-3: pin this desk to screenspace as a window (pins.tsx). Only the
@@ -1021,7 +1024,7 @@ const SENDMODE_MS = 6000
 
 function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
   onRecenter, onJump, maxTop, pxc, pub, bare = false, compact = false,
-  compactAt, onMailLink, onOpenDoc, onPin }: DeskChatProps) {
+  compactAt, onMailLink, onWorkLink, onOpenDoc, onPin }: DeskChatProps) {
   // THE CONVERSATION IS NOT THIS COMPONENT'S. It lives in one per-node store
   // (convo.ts) that every view of this node subscribes to, because a node can
   // be on screen twice — its card and its switchboard panel — and two private
@@ -1925,7 +1928,8 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
                   <div className="msg sys">— {gapMs > 5400e3
                     ? `${Math.round(gapMs / 3600e3)} h`
                     : `${Math.round(gapMs / 60e3)} min`} later —</div>)}
-                <Msg m={m} slug={slug} nid={node.id} onMailLink={onMailLink} />
+                <Msg m={m} slug={slug} nid={node.id} onMailLink={onMailLink}
+                  onWorkLink={onWorkLink} />
               </div>
             )
           })}
@@ -2609,9 +2613,10 @@ interface ToolChipProps {
   slug: string
   nid: string
   onMailLink?: MailLinkFn
+  onWorkLink?: WorkLinkFn
 }
 
-function ToolChip({ t, slug, nid, onMailLink }: ToolChipProps) {
+function ToolChip({ t, slug, nid, onMailLink, onWorkLink }: ToolChipProps) {
   const [open, setOpen] = useState(false)
   const expandable = Boolean(t.result || t.diff || t.images)
   // orgtree_send_file → a DOWNLOAD CARD in place of the chip (user spec
@@ -2672,6 +2677,16 @@ function ToolChip({ t, slug, nid, onMailLink }: ToolChipProps) {
                 ? 'the org inbox' : `${t.mail.to}'s inbox`}`}
             onClick={(e) => { e.stopPropagation(); onMailLink!(t.mail) }}>
             <MailIcon fontSize="inherit" /> open</button>)}
+        {/* a DOCKET WRITE carries the same affordance (user 2026-09-05): the
+            item the write acted on, opened and selected in the docket. `t.work`
+            is set from the tool RESULT, so a failed call and the read actions
+            simply do not have one — there is no "which item did they mean"
+            guess anywhere in this path. */}
+        {t.work && onWorkLink && (
+          <button className="maillink worklink"
+            title={`open ${t.work.slug} in the work docket`}
+            onClick={(e) => { e.stopPropagation(); onWorkLink!(t.work) }}>
+            <DocketIcon fontSize="inherit" /> open</button>)}
       </span>
       {open && t.diff && (
         <CopyablePre><pre className="filepre diffpre">
@@ -2693,8 +2708,9 @@ function ToolChip({ t, slug, nid, onMailLink }: ToolChipProps) {
 }
 
 // №21: memoized — rows are static once fetched; only identity changes matter
-export const Msg = memo(function Msg({ m, slug, nid, onMailLink }: {
-  m: ChatMessage; slug: string; nid: string; onMailLink?: MailLinkFn
+export const Msg = memo(function Msg({ m, slug, nid, onMailLink, onWorkLink }: {
+  m: ChatMessage; slug: string; nid: string
+  onMailLink?: MailLinkFn; onWorkLink?: WorkLinkFn
 }) {
   if (m.role === 'system') return <SysLine m={m} />
   // notices come out BEFORE the envelope strip — they are their own card
@@ -2746,7 +2762,7 @@ export const Msg = memo(function Msg({ m, slug, nid, onMailLink }: {
       {(m.tools ?? []).map((t, i) => (typeof t === 'string'
         ? <div key={i} className="tools"><DotIcon fontSize="inherit" className="tooldot" /> {t}</div>
         : <ToolChip key={t.id ?? i} t={t} slug={slug} nid={nid}
-            onMailLink={onMailLink} />))}
+            onMailLink={onMailLink} onWorkLink={onWorkLink} />))}
       {text && <div className="msgtext md" dangerouslySetInnerHTML={md(text, fb)} />}
       {files.length > 0 && (
         <div className="attach-row">

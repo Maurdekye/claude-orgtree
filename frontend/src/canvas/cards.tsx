@@ -19,6 +19,7 @@ import {
 } from './shared'
 import type {
   AttentionPip, CanvasNode, DraftScope, DraftState, HireState, MailLinkFn, OpFn, Pile,
+  WorkLinkFn,
   Pt,
 } from './shared'
 import {
@@ -57,6 +58,7 @@ interface UserNodeProps {
   onGear?: () => void
   onSpawn: (tier: string) => void
   onMailLink: MailLinkFn
+  onWorkLink: WorkLinkFn
   focused: boolean
   eyeW: number
   onFocus?: () => void
@@ -82,7 +84,7 @@ interface UserNodeProps {
 export function UserNode({ pos, isDrop, stats, pip, seats, codexHire, claudeHire, onNoHarness,
   antigravityHire, openrouterHire,
   kiosk, pub, kioskRemaining, kioskSegs, pxc, zoom, onInbox, onGear, onSpawn,
-  onMailLink,
+  onMailLink, onWorkLink,
   focused, eyeW, onFocus, posX, onJump, map, op, slug, toast,
   compactAt, maxTop, onOpenDoc, onNodeLineage, onNodeConfig,
   pinnedIds, onShowPin }: UserNodeProps) {
@@ -206,7 +208,7 @@ export function UserNode({ pos, isDrop, stats, pip, seats, codexHire, claudeHire
           pip={pip} onInbox={onInbox}
           onGear={onGear} pub={pub} eyeW={eyeW} posX={posX} onJump={onJump}
           compactAt={compactAt} maxTop={maxTop} pxc={pxc}
-          onMailLink={onMailLink} onOpenDoc={onOpenDoc}
+          onMailLink={onMailLink} onWorkLink={onWorkLink} onOpenDoc={onOpenDoc}
           onNodeLineage={onNodeLineage} onNodeConfig={onNodeConfig}
           pinnedIds={pinnedIds} onShowPin={onShowPin} />
       )}
@@ -237,6 +239,7 @@ interface EyeDeskProps {
   maxTop?: number
   pxc?: number
   onMailLink: MailLinkFn
+  onWorkLink: WorkLinkFn
   /** FR-03: open a presented document in the in-page reader */
   onOpenDoc?: (id: string) => void
   /** the panel headers mirror the desk header identically (user spec
@@ -259,7 +262,7 @@ interface EyeDeskProps {
 
 export function EyeDesk({ map, op, slug, toast, pip,
   onInbox, onGear, pub, eyeW, posX, onJump, compactAt, maxTop, pxc,
-  onMailLink, onOpenDoc, onNodeLineage, onNodeConfig, onRecenter,
+  onMailLink, onWorkLink, onOpenDoc, onNodeLineage, onNodeConfig, onRecenter,
   pinnedIds, onShowPin }: EyeDeskProps) {
   const isPinned = (id: string) => !!pinnedIds?.has(id)
   const agents = [...map.values()].filter((n) =>
@@ -455,6 +458,7 @@ export function EyeDesk({ map, op, slug, toast, pip,
               <DeskChat node={a} map={map} op={op} slug={slug}
                 toast={toast} pub={pub} bare compact compactAt={compactAt}
                 onJump={onJump} maxTop={maxTop} pxc={pxc} onMailLink={onMailLink}
+                onWorkLink={onWorkLink}
                 onOpenDoc={onOpenDoc}
                 onLineage={onNodeLineage ? () => onNodeLineage(a.id) : undefined}
                 onConfig={onNodeConfig ? () => onNodeConfig(a.id) : undefined} />
@@ -1185,6 +1189,7 @@ interface NodeSquareProps {
   compactAt?: number
   maxTier?: string | null
   onMailLink: MailLinkFn
+  onWorkLink: WorkLinkFn
   onDragStart: (e: React.PointerEvent<HTMLDivElement>, id: string) => void
   onDragMove: (e: React.PointerEvent<HTMLDivElement>, id: string) => void
   onDragEnd: (e: React.PointerEvent<HTMLDivElement>, id: string,
@@ -1218,7 +1223,7 @@ interface NodeSquareProps {
 export function NodeSquare({ node, pos, lod, focused: deskOpen, dragging, isDrop, seats, codexHire, antigravityHire, claudeHire, openrouterHire, onNoHarness, map, op, slug,
   toast, pxc, zoom, onSpawn, onSpawnSide, onSpawnTop, onConfig, onInbox, onLineage, onOpenDoc,
   onRecenter, onJump, pub, kioskRemaining, cascadeAlloc, maxTop, pile, compactAt, maxTier,
-  onMailLink, onDragStart, onDragMove, onDragEnd, onDragCancel,
+  onMailLink, onWorkLink, onDragStart, onDragMove, onDragEnd, onDragCancel,
   mapMode, dogs, oneShotDogs, pinned, pinnedFocus, onPin, onShowPin }: NodeSquareProps) {
   // `focused` below is the card's LAYOUT state — desk-sized, head hidden, no
   // drag — which a pinned placeholder shares with an open desk. Only the
@@ -1538,7 +1543,8 @@ export function NodeSquare({ node, pos, lod, focused: deskOpen, dragging, isDrop
           toast={toast}
           onLineage={onLineage} onConfig={onConfig} compactAt={compactAt}
           onRecenter={onRecenter} onJump={onJump} maxTop={maxTop} pxc={pxc}
-          pub={pub} onMailLink={onMailLink} onOpenDoc={onOpenDoc}
+          pub={pub} onMailLink={onMailLink} onWorkLink={onWorkLink}
+          onOpenDoc={onOpenDoc}
           onPin={onPin} />
       )}
       {/* FR-3: the desk is a pinned window — the desk's place holds a

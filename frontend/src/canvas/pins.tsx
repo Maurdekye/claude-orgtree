@@ -45,7 +45,7 @@ import PushPinIcon from '@mui/icons-material/PushPin'
 import { CloseIcon } from '../icons'
 import { DeskChat } from './desk'
 import { providerOf, TIER_LETTER } from './shared'
-import type { CanvasNode, MailLinkFn, OpFn } from './shared'
+import type { CanvasNode, MailLinkFn, OpFn, WorkLinkFn } from './shared'
 import type { ToastFn } from '../types'
 import { findPinSnap, validPinSnap } from './pinSnap'
 import type { PinSnap } from './pinSnap'
@@ -321,6 +321,7 @@ export interface PinLayerProps {
   maxTop: number
   pxc: number
   onMailLink: MailLinkFn
+  onWorkLink: WorkLinkFn
   onOpenDoc: (id: string) => void
   onLineage: (id: string) => void
   onConfig: (id: string) => void
@@ -425,7 +426,7 @@ type Gesture = GestureShape & { pointerId: number; moved: boolean; capture: HTML
 const EDGES = ['n', 's', 'e', 'w', 'ne', 'nw', 'se', 'sw'] as const
 
 function PinWindow({ pin, node, vp, onUnpin, slug, op, toast, pub,
-  compactAt, maxTop, pxc, onMailLink, onOpenDoc, onLineage, onConfig, onJump, map, viewportRef }:
+  compactAt, maxTop, pxc, onMailLink, onWorkLink, onOpenDoc, onLineage, onConfig, onJump, map, viewportRef }:
   PinLayerProps & { pin: Pin; node: CanvasNode; vp: { w: number; h: number } | null
     onUnpin: (id: string, from: PinRect) => void }) {
   // the in-flight gesture's rect lives in component state (one render per
@@ -569,7 +570,7 @@ function PinWindow({ pin, node, vp, onUnpin, slug, op, toast, pub,
       <div className="pinwin-body">
         <DeskChat bare node={node} map={map} op={op} slug={slug} toast={toast}
           pub={pub} compactAt={compactAt} maxTop={maxTop} pxc={pxc}
-          onMailLink={onMailLink} onOpenDoc={onOpenDoc}
+          onMailLink={onMailLink} onWorkLink={onWorkLink} onOpenDoc={onOpenDoc}
           onLineage={() => onLineage(pin.id)} onConfig={() => onConfig(pin.id)}
           onJump={onJump} />
       </div>

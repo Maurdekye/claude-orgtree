@@ -26240,6 +26240,29 @@ def _read_chat_source(org: Org, nid: str, last: int | None = None, *,
                                                      "to": r["delivered"]}
                             except (ValueError, AttributeError):
                                 pass
+                        # A DOCKET WRITE CARRIES AN "OPEN THE ITEM" LINK, the
+                        # same shape mail sends do (user request 2026-09-05:
+                        # "when an agent updates a docket item, it should have
+                        # a button next to the item that opens the docket and
+                        # selects the item, like how mails have such a
+                        # button").
+                        #
+                        # The identity comes from the RESULT's `item` field —
+                        # never from the arguments and never from the chip's
+                        # text. A failed call has no item to open, and
+                        # `list`/`get`/`verify` are not writes, so neither gets
+                        # a button: `item` is only present on a successful
+                        # mutation. Same bare-name rule as above — the
+                        # codex/antigravity lanes journal the unprefixed name.
+                        if (entry.get("name", "").removeprefix("mcp__orgtree__")
+                                == "orgtree_work"
+                                and not block.get("is_error")):
+                            try:
+                                r = json.loads(body)
+                                if isinstance(r, dict) and r.get("item"):
+                                    entry["work"] = {"slug": str(r["item"])}
+                            except (ValueError, AttributeError):
+                                pass
                     tools.append(None)   # marker: this user record is plumbing
         # №10: the pre-computed diff rides the parent record's sidecar
         tur = rec.get("toolUseResult")

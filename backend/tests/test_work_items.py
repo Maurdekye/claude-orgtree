@@ -1559,6 +1559,44 @@ check("the pre-migration backup holds the document as it stood, not as it "
       "became", the_backup_is_written_before_the_first_migrating_save)
 
 
+def a_write_that_skipped_the_conversion_is_refused_by_the_ledger():
+    """⚠ THE GUARD THAT EXISTS BECAUSE ONE LINE IS EASY TO MISS. The
+    conversion has to run inside the mutating route's own lock and save. A
+    route that forgets writes a document half in the old identity and half in
+    the new, which then refuses the very next read — codex-delivery hit
+    exactly that with its own repair route on a trial rebase: 200, mutated,
+    saved, and the next GET 409'd, with every one of its tests still green.
+
+    So the refusal lives at the head of every docket mutation in the LEDGER,
+    where no route can route around it. This calls the ledger directly,
+    bypassing the API helper, because that is precisely the mistake."""
+    slug = fresh_org()
+    wid = create(slug, title="Predates the conversion")
+    _forge_legacy_doc(slug, [(wid, True)])
+
+    org = store.load_org(slug)
+    assert org.work_identity_state() == "legacy", "the fixture did not forge one"
+    try:
+        org.work_update("boss", wid, ["a sneaky write"], [])
+    except LedgerError as e:
+        assert "converted" in str(e), e
+    else:
+        raise AssertionError(
+            "a docket write went through on an unconverted document")
+
+    # POSITIVE CONTROL: the identical write succeeds once the conversion has
+    # run, so the refusal is about the identity state and not about the write
+    org.work_identity_migrate()
+    store.save_org(org)
+    ok(slug, "boss", "update", slug=wid, done_so_far=["fine now"],
+       working_on_next=[])
+
+
+check("a docket write on an unconverted document is refused by the ledger, "
+      "not left to each route to remember",
+      a_write_that_skipped_the_conversion_is_refused_by_the_ledger)
+
+
 def agents_are_told_to_use_the_slug():
     slug = fresh_org()
     org = store.load_org(slug)
