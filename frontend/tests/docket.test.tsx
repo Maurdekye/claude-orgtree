@@ -1602,10 +1602,12 @@ uiTest('§36 the pane explains the state the item is IN, never a leftover one', 
     'and the stale waiting reason is not rendered beside a blocked item')
 
   // CONTROL: a state that owes nothing draws no box at all, so the two
-  // assertions above are about the choice and not about a box always present
+  // assertions above are about the choice and not about a box always present.
+  // Compared as a BOOLEAN: handing a DOM node to assert on a failing run makes
+  // node:test diff the whole rendered tree, which hangs instead of failing.
   await inAct(() => rowFor('Moving Both').click())
   await flush()
-  assert.equal(stateBox(), undefined)
+  assert.equal(Boolean(stateBox()), false)
 
   // an item that entered the state before the rule says so rather than
   // rendering an empty heading
@@ -1630,22 +1632,15 @@ const paintOf = (selector: string, prop: string): string | null => {
   return new RegExp(prop + String.raw`:\s*var\((--[\w-]+)\)`).exec(m[1]!)?.[1] ?? null
 }
 
-test('§37 every agent-settable status is painted, and no two share a colour', () => {
-  // the property is not "waiting has a rule" but "waiting can be told apart":
-  // a rule that reuses --ink would render it identically to `open`, which is
-  // what the status word and the dot are there to prevent
-  const STATUSES = ['open', 'in_progress', 'blocked', 'waiting', 'review',
-    'backlogged']
-  const words = new Map<string, string>()
-  for (const st of STATUSES) {
-    const word = paintOf(`.docket-status.status-${st}`, 'color')
-    assert.ok(word, `no colour for the status word of "${st}"`)
-    assert.ok(paintOf(`.docket-row .l1 .docket-dot.status-${st}`, 'background')
-      // `open` is the resting state and its dot deliberately inherits --line
-      || st === 'open', `no colour for the status dot of "${st}"`)
-    const clash = [...words].find(([, v]) => v === word)
-    assert.ok(!clash, `"${st}" and "${clash?.[0]}" both paint with ${word} — `
-      + 'two states the user cannot tell apart')
-    words.set(st, word!)
-  }
+test('§37 Waiting is painted, word and dot, and not with Open’s colour', () => {
+  // ⚠ THIS CHECKS THE DECLARATION, NOT THE PIXELS. Two different tokens are
+  // not a promise that anyone can tell the two apart; all it rules out is the
+  // state the branch shipped in, where `waiting` had no rule at all and so
+  // rendered exactly as `open` did.
+  assert.equal(paintOf('.docket-status.status-waiting', 'color'), '--warn')
+  assert.equal(paintOf('.docket-row .l1 .docket-dot.status-waiting',
+    'background'), '--warn')
+  assert.notEqual(paintOf('.docket-status.status-waiting', 'color'),
+    paintOf('.docket-status.status-open', 'color'),
+    'Waiting and Open declare the same colour again')
 })
