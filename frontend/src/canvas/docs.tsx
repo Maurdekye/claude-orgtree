@@ -10,6 +10,7 @@ import type { ToastFn } from '../types'
 import { dismissDocument, fileBase, getDocument } from '../api'
 import { md } from './shared'
 import { CloseIcon, DocIcon } from '../icons'
+import { fmtFull } from '../timefmt'
 
 export interface DocMeta { id: string; title: string; at: string }
 
@@ -99,7 +100,7 @@ export function DocReader({ slug, docId, toast, close }: {
         <div className="doc-reader-head">
           <DocIcon fontSize="inherit" />
           <b>{doc?.title ?? '…'}</b>
-          {doc && <span className="dim">· {doc.node} · {doc.at}</span>}
+          {doc && <span className="dim">· {doc.node} · {fmtFull(doc.at)}</span>}
           <span className="spacer" />
           {doc && (
             <button className="dim" title="remove the card (the document is gone)"

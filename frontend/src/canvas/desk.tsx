@@ -41,6 +41,7 @@ import { InboxView, RetiredFold } from './mail'
 import { AskCard } from './asks'
 import { deriveProgress, ProgressChip, ProgressView } from './progress'
 import { isMobile } from '../mobile'
+import { fmtFull, fmtShort, fmtStamp, localizeStamps } from '../timefmt'
 
 interface ContextWheelProps {
   occ?: number | null
@@ -185,7 +186,7 @@ export function LastTurnAge({ turn, busy = false, variant = 'badge' }: {
     () => ageClockSecond)
   if (!turn || busy) return null
   const title = 'last turn ended '
-    + (turn.at ?? '').slice(0, 16).replace('T', ' ')
+    + fmtStamp(turn.at)
     + (turn.killed ? ' (killed)' : '')
   return <span className={variant === 'map' ? 'map-ago' : 'badge dim turnago'}
     title={title} aria-label={title}>
@@ -216,7 +217,7 @@ export function TurnStatusBanner({ state, turn, inflightAt, tasks = 0,
     ? `${tasks} task${tasks === 1 ? '' : 's'}` : ''
   const title = state === 'idle'
     ? (turn
-      ? `Idle · last turn ended ${(turn.at ?? '').slice(0, 16).replace('T', ' ')}`
+      ? `Idle · last turn ended ${fmtStamp(turn.at)}`
         + (turn.killed ? ' (killed)' : '')
       : 'Idle · no completed turn yet')
         + (reportedSummary ? ` · ${reportedSummary}` : '')
@@ -1578,7 +1579,7 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
                 badge does not. Saying "resumes" here promised a retry that,
                 with the toggle off, nobody performs (2026-08-10). */}
             {!node.limit_locked && node.frozen.until
-              ? ` · ${node.frozen.connection
+              ? ` · ${localizeStamps(node.frozen.connection
                 ? node.frozen.until.replace(/^network interruption — /, '')
                 // an auth freeze's `until` says what to DO ("credential
                 // rejected — replace it, then resume"); the label above
@@ -1593,7 +1594,7 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
                 // which promised a wake that never comes on an org with
                 // auto_resume off — the default. Reporting capacity is the
                 // whole point; do not put "resumes" back.
-                : node.frozen.until}` : ''}</span>}
+                : node.frozen.until)}` : ''}</span>}
         {node.limit_locked &&
           <span className="badge dim"><LockIcon fontSize="inherit" /> limit</span>}
         {/* ⭐ the user's per-node override (ruling 2026-08-06): one click
@@ -1625,7 +1626,7 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
         {(node.cost_usd ?? 0) > 0 && (
           <span className="badge dim"
             title={(node.turns ?? []).slice(-5).reverse().map((t) =>
-              `${t.at?.slice(5, 16).replace('T', ' ')} · $${(t.cost ?? 0).toFixed(2)}`
+              `${fmtShort(t.at)} · $${(t.cost ?? 0).toFixed(2)}`
               + (t.estimated ? ' est.' : '')
               + (t.ms ? ` · ${Math.round(t.ms / 1000)}s` : '')
               + (t.denials ? ` · ${t.denials} denied` : '')
@@ -2185,7 +2186,7 @@ function HistoryView({ slug, nid }: { slug: string; nid: string }) {
       {items?.length === 0 && <div className="dim pad">nothing recorded yet</div>}
       {items?.map((it, i) => (
         <div key={i} className="hist-row">
-          <span className="dim">{it.at}</span>
+          <span className="dim">{fmtFull(it.at)}</span>
           <b>{it.kind}</b>
           <span className="dim">{it.actor}</span>
           <span>{it.detail.gist ?? it.detail.text ?? Object.entries(it.detail)
@@ -2481,7 +2482,7 @@ function TurnMailCard({ mail, slug, nid }: { mail: TurnMail; slug: string; nid: 
         <b>{mail.from}</b>
         <span>{mail.relationship}</span>
         <span>{mail.kind}</span>
-        <time>{mail.at}</time>
+        <time>{fmtFull(mail.at)}</time>
         {mail.passive && <span className="turn-mail-passive">no reply expected</span>}
       </header>
       {body && <div className="turn-mail-body md" dangerouslySetInnerHTML={md(body, fb)} />}

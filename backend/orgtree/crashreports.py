@@ -33,6 +33,7 @@ import uuid
 from typing import Any
 
 from . import store
+from . import localtime
 
 _HERE = os.path.dirname(__file__)
 FRONTEND_ROOT = os.path.normpath(os.path.join(_HERE, "..", "..", "frontend"))
@@ -108,10 +109,20 @@ def list_reports(limit: int = 50) -> list[dict[str, Any]]:
 
 def format_mail_body(report: dict[str, Any]) -> str:
     """Plain text, meant to be read by an agent — not rendered, so no markdown
-    formatting assumptions."""
+    formatting assumptions.
+
+    ⚠ AND READ BY THE USER TOO, which is why the stamp is localised
+    (assignment 19). This body is mailed to an agent, and an agent's mailbox
+    is a screen the user reads. `at` arrives from the browser's crash reporter
+    as raw epoch MILLISECONDS — not a UTC string, but not a time anybody can
+    read either. It is emitted as a token the browser renders in the user's
+    zone, with the raw value kept beside it because a crash report is also
+    correlated against server logs.
+    """
     lines = [
         f"UI crash report — kind: {report.get('kind', 'unknown')}",
-        f"at: {report.get('at')}",
+        f"at: {localtime.token(report.get('at'), 'full') or '(unknown)'} "
+        f"[raw {report.get('at')}]",
         f"url: {report.get('url')}",
         f"user agent: {report.get('userAgent')}",
         f"message: {report.get('message')}",

@@ -22,6 +22,7 @@ import {
 } from './shared'
 import type { CanvasNode, MailRow } from './shared'
 import { isMobile } from '../mobile'
+import { fmtFull, fmtShort } from '../timefmt'
 
 // One mail interface, everywhere (user ruling: the user's and the agents'
 // inboxes function identically), laid out like a webmail client: the list on
@@ -153,7 +154,7 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, outg
   // mail too — the org inbox uses this for "@agent as @org → @recipient")
   const customS = outgoing && sender != null
   const brief = (b: string | null | undefined) => (b ?? '').trim().replace(/\s+/g, ' ').slice(0, 90)
-  const when = (at: string | null | undefined) => (at ?? '').slice(5, 16).replace('T', ' ')
+  const when = fmtShort
   // reply from where you read (№11): only for incoming mail whose sender is a
   // plain agent id — @-sentinels (@user/@system/@ext:/@org:/@mcp:) route
   // elsewhere, and slugify guarantees no agent name starts with '@'
@@ -333,7 +334,7 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, outg
                   ? `${curPile.length} notices` : cur.kind}</span>
               {cur.urgent && <span className="urgentkind">urgent</span>}
               {cur.relationship && <span className="dim">{cur.relationship}</span>}
-              <span className="dim">{cur.at}</span>
+              <span className="dim">{fmtFull(cur.at)}</span>
               {cur._wait && <span className="wait">{waitLabel}</span>}
             </div>
             {/* D-169: WHY you are being interrupted, in the sender's own
@@ -593,7 +594,7 @@ export function OrgRecord({ events }: OrgRecordProps) {
   const qn = q.trim().toLowerCase()
   const rows = [...(events ?? [])].reverse().filter((ev) => !qn
     || JSON.stringify(ev).toLowerCase().includes(qn))
-  const when = (at: string | null | undefined) => (at ?? '').slice(5, 16).replace('T', ' ')
+  const when = fmtShort
   const gist = (ev: OrgEvent) => {
     const d = ev.detail || {}
     const bits = [d.node, d.from != null || d.to != null
@@ -759,7 +760,7 @@ export function OrgInboxModal({ inbox, net, map, slug, toast, close, jumpTo }: O
     const tip = m._state === 'queued' ? 'queued — not yet at the hub'
       : m._state === 'sent' ? 'at the hub — the peer has not fetched it yet'
       : m._state === 'delivered'
-        ? `delivered ${m._state_at?.slice(5, 16).replace('T', ' ') ?? ''} — no agent has read it yet`
+        ? `delivered ${fmtShort(m._state_at)} — no agent has read it yet`
         : 'read — a peer agent\'s turn consumed it'
     return <span className={'net-state' + (m._state === 'read' ? ' read' : '')}
       title={tip}> {g}</span>
@@ -1066,8 +1067,7 @@ function ComposeModal({ slug, net, entries, toast, close }: {
                     + (o.via ?? [o.kind]).join(', ')
                     + (o.online ? ' — online now'
                       : o.lastSeen
-                        ? ` — last seen ${o.lastSeen.slice(0, 16)
-                            .replace('T', ' ')} UTC`
+                        ? ` — last seen ${fmtShort(o.lastSeen)}`
                         : '')}
                   onClick={() => toggle(o.addr)}>
                   <span className={'oi-dot' + (o.online ? ' ok' : '')} />
@@ -1170,7 +1170,7 @@ function NetSection({ net }: { net?: TreePayload['net'] }) {
                   {rs.map((r) => (
                     <span key={r.slug} className="oi-peer"
                       title={(r.blurb || '') + (r.last_seen
-                        ? ` · last seen ${r.last_seen.slice(5, 16).replace('T', ' ')}` : '')
+                        ? ` · last seen ${fmtShort(r.last_seen)}` : '')
                         + ' · reachable via: '
                         + (r.transports ?? ['net']).join(', ')}>
                       <span className={'oi-dot' + (r.online ? ' ok' : '')} />

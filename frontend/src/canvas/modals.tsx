@@ -22,6 +22,7 @@ import { ago, ALL_PRESENT, anyTierSeat, codexTierOffer, CODEX_TIERS, ANTIGRAVITY
 import type { ProviderPresence } from './shared'
 import type { CanvasNode, DraftScope, DraftState, OpFn, Pile } from './shared'
 import { ProcessLifecycleMark } from './desk'
+import { fmtStamp } from '../timefmt'
 
 export interface ConfirmModalProps {
   title: ReactNode
@@ -1389,7 +1390,7 @@ export function PilePicker({ pile, map, onPick, close, op, toast }: PilePickerPr
               {lastTurn && (
                 <span className="badge dim pile-ago"
                   title={'last turn ended '
-                    + (lastTurn.at ?? '').slice(0, 16).replace('T', ' ')
+                    + fmtStamp(lastTurn.at)
                     + (lastTurn.killed ? ' (killed)' : '')}>
                   {ago(lastTurn.at)} ago</span>
               )}

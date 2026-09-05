@@ -345,10 +345,15 @@ _SOURCE_CONTRACTS = [
     ("backend/orgtree/api.py",
      r"any\(supervisor\.mail_marker_in\(t, m\) for t in _seen_user\)",
      "the D-55 identity marker is what the transcript-echo tests exercise"),
-    ("backend/orgtree/supervisor.py", r'stamp = f"· \{at\}"',
-     "the marker's first half is the entry's own stamp"),
+    # assignment 19: the human row carries its stamp as a `⟦t:…⟧` token, so
+    # the marker looks for two shapes. BOTH hold the same canonical UTC
+    # instant — neither depends on the reader's timezone, which is what lets
+    # a row written before a zone change still match after it.
     ("backend/orgtree/supervisor.py",
-     r"return \(not head\) or head in raw\[i \+ len\(stamp\):\]",
+     r'for stamp in \(f"· \{at\}", f"· \{localtime\.OPEN\}\{iso\}\|"\):',
+     "the marker tries both canonical shapes of the entry's own stamp"),
+    ("backend/orgtree/supervisor.py",
+     r"if \(not head\) or head in raw\[i \+ len\(stamp\):\]",
      "…and its second half is the head of the raw body, after the stamp"),
     ("backend/orgtree/supervisor.py", r'b\.get\("via", "steer"\) == "turn"',
      "delivering_mail's carrier split is what the via axis exercises"),

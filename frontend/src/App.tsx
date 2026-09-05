@@ -12,6 +12,7 @@ import {
   resumeFrozen, runOp, saveDefaults, saveKiosk, saveSettings, sendMessage,
   sweepLegacy,
 } from './api'
+import { fmtClock, fmtFull, localizeStamps } from './timefmt'
 import { bumpLive } from './livebus'
 import { AudienceFold, ConfirmModal, MailFolders, MailList, OrgCanvas, OrgRecord, RetiredFold, useEsc } from './Canvas'
 import { KillSwitch } from './KillSwitch'
@@ -525,7 +526,7 @@ export default function App() {
           <span className="build-badge"
             title={`running commit ${build.commit}`
               + (build.branch ? ` (branch ${build.branch})` : '')
-              + ` — started ${new Date(build.started_at).toLocaleString()}`}>
+              + ` — started ${fmtFull(build.started_at)}`}>
             {build.branch ? `${build.branch}@${build.commit}` : build.commit}</span>}
         <a className="gh-link h1-gh" href="https://github.com/Maurdekye/claude-orgtree"
           target="_blank" rel="noreferrer" title="orgtree on GitHub">
@@ -744,7 +745,8 @@ export default function App() {
                   // retired agent keeps its freeze and ▶ has never resumed it
                   const frozen = resumableFrozen(tree)
                   if (!frozen.length) return null
-                  const until = frozen.map((n) => n.frozen.until).find(Boolean)
+                  const until = localizeStamps(
+                    frozen.map((n) => n.frozen.until).find(Boolean) ?? '')
                   // RED while the reported reset time is still ahead (resuming
                   // would just re-hit the limit); normal once it has passed
                   const untilTs = Math.max(0, ...frozen.map((n) => n.frozen.until_ts || 0))
@@ -1603,8 +1605,7 @@ function AutonomyTab({ tree, toast, keyDraft, setKeyDraft }: {
       </label>}
       {fallbackActive(tree)
         && <div className="dim hub-hint">fallback ACTIVE — billing the key
-          until {new Date((tree.api_fallback_until ?? 0) * 1000)
-            .toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })},
+          until {fmtClock((tree.api_fallback_until ?? 0) * 1000)},
           then back to the subscription</div>}
       {/* fable_api_fallback (2026-08-23): off by default — a fable-tier
           weekly hit normally goes to fable_limit_policy (halt/opus/dissolve)

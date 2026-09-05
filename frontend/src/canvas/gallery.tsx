@@ -27,6 +27,7 @@ import { addPending } from '../convo'
 import type { ToastFn } from '../types'
 import { CloseIcon, DocIcon } from '../icons'
 import { dismissDoc, useDoc } from './docs'
+import { fmtFull } from '../timefmt'
 import { MailReplyBox } from './mail'
 import { ago, md, TIER_LETTER, tierLabel, useEsc, usePolled } from './shared'
 
@@ -216,7 +217,7 @@ function DocPane({ slug, row, toast, onDismissed, close, onFocusAgent, onReply }
           )}
           {PANE_STATE_WHY[row.node_state] &&
             <span className="dim">{PANE_STATE_WHY[row.node_state]}</span>}
-          <span className="dim">{row.at}</span>
+          <span className="dim">{fmtFull(row.at)}</span>
         </div>
         <div className="doc-pane-title-row">
           <b>{row.title || '(untitled)'}</b>

@@ -44,6 +44,7 @@ import type {
   ProviderInfo, ProviderTier,
 } from '../types'
 import { fmtCredits, isDarkTierColor, modelLabel, setOpenRouterTiers } from './shared'
+import { fmtHm, fmtMonth } from '../timefmt'
 
 type ToastFn = (lines: string[]) => void
 
@@ -66,8 +67,7 @@ const ctxK = (n: number): string =>
   n >= 1_000_000 ? `${(n / 1_000_000).toFixed(n % 1_000_000 ? 1 : 0)}M`
     : n >= 1000 ? `${Math.round(n / 1000)}K` : String(n)
 /** "Sep 2026" from the catalog's unix release stamp */
-const released = (secs: number): string =>
-  new Date(secs * 1000).toLocaleDateString(undefined, { year: 'numeric', month: 'short' })
+const released = (secs: number): string => fmtMonth(secs)
 /** how each sort reads in a sentence, and what each DIRECTION means in it —
  *  "ascending" is meaningless to read, "cheapest first" is not */
 const SORT_LABEL: Record<OpenRouterSort, string> = {
@@ -81,11 +81,7 @@ const DIR_LABEL: Record<OpenRouterSort, Record<'asc' | 'desc', string>> = {
   recency: { asc: 'oldest first', desc: 'newest first' },
 }
 /** "checked 01:20" — when the key was last verified, on the local clock */
-const clock = (iso: string): string => {
-  const d = new Date(iso)
-  return Number.isNaN(d.getTime()) ? iso
-    : d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-}
+const clock = (iso: string): string => fmtHm(iso) || iso
 
 /** the credit standing as the row's second line: one short phrase per figure,
  *  only the figures openrouter.ai actually reported */

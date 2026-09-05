@@ -41,7 +41,8 @@ from typing import Any, Final, cast
 
 from . import (accounts, appsettings, cachecontinuity, clipin, codex_limits,
                codex_route, deployment, envelope, imgblock,
-               limits, net, openrouter, providers, sandbox as sbx, store,
+               limits, localtime, net, openrouter, providers,
+               sandbox as sbx, store,
                tokens, turnusage, warmpool)
 from .ledger import (EXTERN, SYSTEM, USER, LedgerError, Org, expand_mcp,
                      freeze_describes_provider, now as now_iso)
@@ -2170,17 +2171,30 @@ def mail_marker_in(raw: str, m: Mapping[str, Any]) -> bool:
     it. The body is used RAW, unstripped, as `_mail_block` wrote it (see the
     whitespace note in `_in_transcript`); a legacy entry without `at` falls
     back to the bare body, which must then be non-empty or it would match
-    every bubble."""
+    every bubble.
+
+    ⚠ BOTH NEEDLES ARE CANONICAL, AND THAT IS THE POINT (assignment 19).
+    This function is applied to two texts — `_covered_by_pending` hands it the
+    raw provider event, `node_chat._in_transcript` hands it the projected row
+    — and since the human row now carries a `⟦t:…⟧` token, the stamp appears
+    in two shapes. Both contain the SAME UTC instant, so neither depends on
+    the user's timezone, the machine's locale, or when the row was written. A
+    row projected before a zone change still matches after it. Matching a
+    localised spelling would have made identity a function of display, which
+    is exactly the bug that shape invites."""
     body = str(m.get("body") or "")
     at = m.get("at")
     if not at:
         return bool(body.strip()) and body[:400] in raw
-    stamp = f"· {at}"
-    i = raw.find(stamp)
-    if i < 0:
-        return False
     head = body[:400]
-    return (not head) or head in raw[i + len(stamp):]
+    iso = localtime.to_iso(at) or str(at)
+    for stamp in (f"· {at}", f"· {localtime.OPEN}{iso}|"):
+        i = raw.find(stamp)
+        if i < 0:
+            continue
+        if (not head) or head in raw[i + len(stamp):]:
+            return True
+    return False
 
 
 def _covered_by_pending(org: Org, nid: str, raw: str) -> bool:
@@ -3447,10 +3461,16 @@ def _reset_label(ts: float) -> str:
     this freeze", and no spend mechanism exists in a non-kiosk org).
     Live-caught 2026-08-04 (test_turn_lifecycle "freeze · a limit on the first
     call"). Deriving the label from the timestamp keeps the record out of that
-    shape."""
-    t = _dtm.datetime.fromtimestamp(ts)
-    lbl = t.strftime("%I:%M%p").lstrip("0").lower()
-    return lbl if t.date() == _dtm.date.today() else t.strftime("%a ") + lbl
+    shape.
+
+    ⚠ IN THE USER'S ZONE, NOT THIS MACHINE'S (assignment 19). This used to be
+    a bare `fromtimestamp(ts)`, rendering in whatever zone the SERVER is set
+    to — right only by the coincidence that they currently agree. The value is
+    STORED (`frozen.until`) and read back long afterwards, so it carries the
+    instant as a token and the browser renders it. Signature and return type
+    are unchanged: the codex freeze path calls this (luna-reserve,
+    2026-09-05)."""
+    return localtime.token(ts, "clock")
 
 
 def _sane_inherited(ts: Any) -> float | None:
@@ -3537,8 +3557,10 @@ def _refresh_freeze_reset(slug: str, nid: str, blob: str,
         if not wrote:
             return False
         store.save_org(o)
+    # the canonical instant, not `_reset_label`'s token: this is a server log
+    # correlated across machines, and nothing localises it
     print(f"[orgtree] {slug}/{nid}: freeze reset corrected to "
-          f"{_reset_label(ts)} ({src})")
+          f"{localtime.to_iso(ts)} ({src})")
     return True
 
 
@@ -5831,7 +5853,7 @@ def _envelope(slug: str, nid: str, text: str,
         human_bits: list[str] = []
         if human_mail:
             human_bits.append(_mail_block(
-                human_mail, slug, nid, inline=(via == "turn"))[0])
+                human_mail, slug, nid, inline=(via == "turn"), human=True)[0])
         if base_view:
             human_bits.append(base_view)
         view_out.append("\n\n".join(human_bits))
@@ -5839,8 +5861,25 @@ def _envelope(slug: str, nid: str, text: str,
             tok, imgs)
 
 
+def _mail_stamp(at: Any, human: bool) -> str:
+    """The `at` as the reader of THIS copy should see it.
+
+    The AGENT copy keeps the canonical UTC instant: agents compare stamps
+    across messages and quote them back into tool calls. Its block is machine
+    context, withheld from the user's transcript by `_carries_envelope`.
+
+    The HUMAN copy carries the same instant inside a token, which the browser
+    renders in the user's zone at read time (`timefmt.localizeStamps`, inside
+    `md()`). The server does not format it: this row is durable, and a zone
+    resolved once here would still be on screen after the user changed zones.
+    An unreadable instant yields "", never the raw field.
+    """
+    return localtime.token(at, "full") if human else str(at)
+
+
 def _mail_block(mail: list[MailEntry], slug: str = "", nid: str = "",
-                inline: bool = False) -> tuple[str, list[dict[str, Any]]]:
+                inline: bool = False,
+                human: bool = False) -> tuple[str, list[dict[str, Any]]]:
     """The one [MAIL] formatter — the envelope AND the turn-start feed use it
     (they diverged once: turn-start mail silently lacked the attachment
     lines, live-caught 2026-07-31).
@@ -5883,11 +5922,12 @@ def _mail_block(mail: list[MailEntry], slug: str = "", nid: str = "",
             # orgtree_send_notice: an FYI that rode along without waking
             # anyone — visibly not a message awaiting an answer
             b = (f"NOTICE FROM {m['from']} ({m.get('relationship', 'agent')}"
-                 f"{tag}) · {m['at']} — informational, delivered passively; "
-                 f"no reply is expected")
+                 f"{tag}) · {_mail_stamp(m['at'], human)} — informational, "
+                 f"delivered passively; no reply is expected")
         else:
             b = (f"FROM {m['from']} ({m.get('relationship', 'agent')}"
-                 f"{tag}) · {m.get('kind', 'message')} · {m['at']}")
+                 f"{tag}) · {m.get('kind', 'message')} · "
+                 f"{_mail_stamp(m['at'], human)}")
         rt = m.get("reply_to")
         if rt and str(rt.get("gist") or "").strip():
             # FR-05: an inline mailbox reply carries a SNAPSHOT of what it
@@ -5902,7 +5942,11 @@ def _mail_block(mail: list[MailEntry], slug: str = "", nid: str = "",
             # the redteam's dangling-colon catch).
             _who = str(rt.get("from") or "").strip()
             _owner = f"{_who}'s message" if _who else "your message"
-            _at = str(rt.get("at") or "").strip()
+            # the quoted message's OWN stamp, localised for the human copy on
+            # the same rule as the header above (assignment 19). The gist it
+            # quotes is authored text and stays exactly as it was written.
+            _at = _mail_stamp(str(rt.get("at") or "").strip(), human) \
+                if str(rt.get("at") or "").strip() else ""
             b += (f"\n↩ IN REPLY TO {_owner}"
                   f"{f' of {_at}' if _at else ''}: “{rt.get('gist')}”")
         b += f"\n{m['body']}"
@@ -11536,7 +11580,7 @@ def _run_one_turn(slug: str, nid: str,
                 human_mail = [m for m in mail if not m.get("model_only")]
                 if human_mail:
                     human_text = _mail_block(
-                        human_mail, slug, nid, inline=True)[0]
+                        human_mail, slug, nid, inline=True, human=True)[0]
                     turn_view = (human_text + "\n\n" + turn_view
                                  if turn_view else human_text)
             if prelude:

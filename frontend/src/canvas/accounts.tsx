@@ -44,6 +44,7 @@ import {
   fmtCredits, TIER_LETTER,
   TIERS, useCrowdPiles, useDeskDpi, useEsc, useStartView, useStartZoom,
 } from './shared'
+import { fmtWhen } from '../timefmt'
 import type { StartView } from './shared'
 
 // small local copies of the usage-modal label helpers (App.tsx owns the
@@ -70,14 +71,7 @@ const usageResets = (iso: string | null): string => {
  *  rows' standing view. The relative form above answers "how long"; on its own
  *  it is useless for planning past an hour or two, which is exactly the range
  *  a weekly limit sits in. Dated only when it is not today. */
-const atClock = (iso: string | null): string => {
-  if (!iso) return ''
-  const d = new Date(iso)
-  if (!Number.isFinite(d.getTime())) return ''
-  const time = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
-  return d.toDateString() === new Date().toDateString() ? time
-    : `${d.toLocaleDateString([], { month: 'short', day: 'numeric' })} ${time}`
-}
+const atClock = (iso: string | null): string => fmtWhen(iso)
 const sevOf = (l: UsageLimit): '' | 'warn' | 'crit' => {
   const pct = Math.max(0, Math.min(100, l.percent ?? 0))
   return l.severity === 'critical' || pct >= 90 ? 'crit'

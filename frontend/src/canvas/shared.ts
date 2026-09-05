@@ -11,6 +11,7 @@ import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 // listener — loaded here because every .md surface renders through this module
 import './lightbox'
 import { onLiveBump } from '../livebus'
+import { localizeStamps } from '../timefmt'
 import type { DependencyList } from 'react'
 import type {
   ActivityInfo, AskInfo, CacheForecast, CodexRouteInfo, DirGrant, MailEntry, NodeState,
@@ -1660,11 +1661,32 @@ if (typeof document !== 'undefined') document.addEventListener('click', e => {
  *  rendered for two nodes never crosses. */
 export const md = (text: string | null | undefined,
                    imgBase?: string): { __html: string } => {
-  const key = (imgBase ?? '') + '\u0000' + (text ?? '')
+  // assignment 19: server-written prose carries its timestamps as canonical
+  // instants in `⟦t:…⟧` tokens, and this is where they become the user's
+  // local time. Doing it here rather than at each call site means every
+  // rendered surface — chat, mail bodies, documents, the gallery — gets it,
+  // and a durable row relocalises on every read instead of freezing what the
+  // server saw when it wrote the row.
+  //
+  // ⚠ IT RUNS BEFORE THE CACHE KEY, NOT INSIDE THE MISS, and that ordering IS
+  // the correctness of the cache. Keyed on the RAW text, one source string
+  // has one entry forever — so a row first drawn in Asia/Jerusalem kept
+  // serving Jerusalem's HTML after the zone changed, and a `clock` token
+  // rendered "4:11 AM" today went on saying it after local midnight, when it
+  // should have gained a date. Keying on the LOCALISED text makes the entry
+  // identify what was actually drawn: change the zone or cross midnight and
+  // the string differs, so it is a different key and a genuine miss.
+  // (`mdlocaltime.test.ts` fails on the old key and passes on this one.)
+  //
+  // Hit-path cost is one `includes('⟦t:')` — `localizeStamps` returns its
+  // input unchanged when there is no token, which is almost every string.
+  const local = localizeStamps(text ?? '')
+  const key = (imgBase ?? '') + '\u0000' + local
   let hit = _mdCache.get(key)
   if (hit === undefined) {
     hit = { __html: wrapCodeBlocks(DOMPurify.sanitize(
-      marked.parse(escapeAngles(text ?? ''), { gfm: true, breaks: true, async: false })), imgBase) }
+      marked.parse(escapeAngles(local),
+        { gfm: true, breaks: true, async: false })), imgBase) }
     if (_mdCache.size > 800) _mdCache.clear()   // bounded; refills on demand
     _mdCache.set(key, hit)
   }
