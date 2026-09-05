@@ -9463,12 +9463,28 @@ class Org:
     # `open` items are NEVER reclassified into it: only an explicit update
     # moves an item there, because plenty of open items are authorised and
     # under way (Astra ruling 2026-09-05).
+    #
+    # `waiting` (user 2026-09-05) is ACTIVE work whose next step is not the
+    # agent's to take: it names an external event and how the agent will hear
+    # of it. It counts in the active number, stays on the assigned desk and
+    # stays in the main list — the ONLY thing it changes is that the item stops
+    # producing idle reminders until its event happens. It is NOT a second
+    # backlog and NOT a closed state. `blocked` stays reminder-eligible: being
+    # stuck is a thing an agent can be nudged about.
     WORK_STATUSES: Final = ("backlogged", "open", "in_progress", "blocked",
-                            "review", "done", "superseded", "dropped")
+                            "waiting", "review", "done", "superseded",
+                            "dropped")
     WORK_AGENT_STATUSES: Final = ("backlogged", "open", "in_progress",
-                                  "blocked", "review", "dropped")
+                                  "blocked", "waiting", "review", "dropped")
     WORK_CLOSED: Final = ("done", "superseded", "dropped")
     WORK_BACKLOG: Final = "backlogged"
+    WORK_WAITING: Final = "waiting"
+    #: STATE INFORMATION, state → the field that must carry it (user
+    #: 2026-09-05). Entering one of these states requires the field; the other
+    #: states require nothing. The field is cleared on the way out, so it never
+    #: describes a state the item is no longer in.
+    WORK_STATE_INFO: Final = {"blocked": "blocked_reason",
+                              "waiting": "waiting_reason"}
     WORK_EVIDENCE_KINDS: Final = ("note", "link", "file", "commit", "log")
 
     def _work_active(self) -> list[WorkItem]:
@@ -10045,6 +10061,7 @@ class Org:
                 it.get("parent"), viewer),
             "delivery": self._work_delivery_view(it),
             "blocked_reason": it.get("blocked_reason"),
+            "waiting_reason": it.get("waiting_reason"),
             "participants": list(it.get("participants") or []),
             "dismissals": list(it.get("dismissals") or []),
             "archived": self._work_archived(it, physically, now_ts),
@@ -10127,25 +10144,59 @@ class Org:
         return {"attention": attention, "active": active,
                 "archived": archived, "backlogged": backlogged}
 
-    def work_idle_reminder_items(self, nid: str) -> list[dict[str, str]]:
-        """Items this node still owes work on, for the idle-reminder wake:
-        OWNED, in flight (`_work_counts_active`) and not waiting on the user
-        (`_work_attention`) — the docket's own two rules, read-only.
+    def _work_next_recipient(self, it: WorkItem) -> tuple[str | None, str]:
+        """THE canonical next-action recipient of one item, and the ROLE that
+        answer was reached by — who owes the next move, not who is interested.
 
-        ⚠ Ownership ignores the owner's GENERATION: a compaction or rehire
-        replaces the agent, not the assignment. Participants are not scanned.
+        An item in `review` is owed by its REVIEWER: the owner has handed it
+        over and cannot take the next step. A `review` item with NO reviewer
+        recorded falls back to the OWNER under the role `unassigned_review`,
+        because the outstanding action there is NAMING a reviewer, which only
+        the owner side can do — the caller must word that as a missing review
+        assignment and never as "review your own work" (Astra 2026-09-05;
+        self-review is prohibited). Every other status is owed by the owner.
+
+        ⚠ Ownership and reviewership both ignore GENERATION: a compaction or
+        rehire replaces the agent, not the assignment. `reviewer` is
+        codex-sandbox's field and may be absent on items written before it
+        exists; absent reads exactly like null.
+        """
+        owner = self._work_actor_node(it.get("owner"))
+        if it.get("status") == "review":
+            rv = self._work_actor_node(it.get("reviewer"))
+            if rv:
+                return rv, "reviewer"
+            return owner, "unassigned_review"
+        return owner, "owner"
+
+    def work_idle_reminder_items(self, nid: str) -> list[dict[str, str]]:
+        """Items this node owes the next action on, for the idle-reminder wake.
+
+        ⚠ THE EXCLUSIONS ARE DECIDED PER ITEM, BEFORE the recipient is even
+        asked for: in flight (`_work_counts_active`), not `waiting` on an
+        external event, not waiting on the USER (`_work_attention`). An item
+        that is excluded therefore removes ITSELF and nothing else — it can
+        never silence a different actionable item held by the same agent.
+
+        The recipient then comes from `_work_next_recipient`, so the clock this
+        list is gated by is the RECIPIENT's own idle clock — for an item under
+        review that is the reviewer's, not the owner's.
         """
         out: list[dict[str, str]] = []
         for it in self._work_active():
             if not it.get("slug"):
                 continue        # pre-slug document: named on its next write
-            if self._work_actor_node(it.get("owner")) != nid:
-                continue
             if not self._work_counts_active(it) or self._work_attention(it):
+                continue
+            if it.get("status") == self.WORK_WAITING:
+                continue        # its next step is an event, not a nudge
+            who, role = self._work_next_recipient(it)
+            if who != nid:
                 continue
             out.append({"slug": str(it.get("slug") or ""),
                         "title": str(it.get("title") or ""),
-                        "status": str(it.get("status") or "")})
+                        "status": str(it.get("status") or ""),
+                        "role": role})
         return sorted(out, key=lambda r: r["slug"])
 
     def work_list(self, viewer: str, include_archived: bool = False,
@@ -10282,7 +10333,9 @@ class Org:
                     dependencies: list[Any] | None = None,
                     done_so_far: Any = None, working_on_next: Any = None,
                     status: str = "open",
-                    parent: str | None = None) -> dict[str, Any]:
+                    parent: str | None = None,
+                    blocked_reason: str | None = None,
+                    waiting_reason: str | None = None) -> dict[str, Any]:
         self._work_require_live_agent_or_user(actor)
         self._work_sweep()
         t = str(title or "").strip()[:200]
@@ -10306,7 +10359,7 @@ class Org:
             raise LedgerError("kind must be code|non-code")
         if status not in self.WORK_AGENT_STATUSES or status == "dropped":
             raise LedgerError("a new item starts backlogged|open|in_progress"
-                              "|blocked|review")
+                              "|blocked|waiting|review")
         active = self.d.setdefault("work_items", [])
         if len(active) >= self.WORK_ACTIVE_MAX:
             raise LedgerError(
@@ -10357,7 +10410,7 @@ class Org:
             "slug": wid,
             "rev": 1, "kind": kind, "title": t,
             "objective": obj,
-            "status": status, "blocked_reason": None,
+            "status": status, "blocked_reason": None, "waiting_reason": None,
             "owner": (cast(WorkActor, self._work_actor(own)) if own else None),
             "participants": parts,
             "created_by": self._work_actor(actor), "at": stamp,
@@ -10377,6 +10430,11 @@ class Org:
             "parent": (self._work_parent_check(actor, None, str(parent))
                        if parent else None),
         }
+        # BEFORE the append: an item created straight into blocked or waiting
+        # is entering that state, so it owes the same information an update
+        # would. Refusing here leaves nothing stranded on the list.
+        self._work_state_info(it, None, {"blocked_reason": blocked_reason,
+                                         "waiting_reason": waiting_reason})
         active.append(it)
         self._log("work_create", actor,
                   {"item": wid, "title": t[:60]}, [])
@@ -10385,13 +10443,62 @@ class Org:
                           f"its only identity; use it in mail, reports and "
                           f"every later update, question and handoff"}
 
+    #: what each state-information field is asked to SAY. Presence is all any
+    #: guard can check — no code can tell whether the prose names a real event
+    #: — so the requirement is stated where the writer reads it.
+    WORK_STATE_INFO_ASKS: Final = {
+        "blocked_reason": "what is preventing progress, what would unblock it, "
+                          "and who can act when that is known",
+        "waiting_reason": "the external event this item is waiting for AND how "
+                          "you will learn it happened (a watchdog, a message, "
+                          "a build notification)",
+    }
+
+    def _work_state_info(self, it: WorkItem, was: str | None,
+                         supplied: dict[str, Any]) -> None:
+        """Carry the state's own information onto the item, after the status
+        has been set.
+
+        Three rules, one per situation, and they are not the same rule:
+          · ENTERING blocked or waiting REQUIRES the field. That is the user's
+            2026-09-05 requirement: those two states must say something.
+          · ALREADY in the state and the field not supplied: left alone. Items
+            that predate this requirement stay editable rather than becoming
+            un-updatable, which is why the check is on the transition and not
+            on every update.
+          · A BLANK string supplied is REFUSED, never stored. Blanking used to
+            erase the field silently; erasing required information without a
+            word is exactly the failure the requirement exists to stop.
+        Any other status clears both fields — a reason must never survive the
+        state it describes.
+        """
+        st = it.get("status")
+        for state, field in self.WORK_STATE_INFO.items():
+            val = supplied.get(field)
+            if st != state:
+                it[field] = None                      # type: ignore[literal-required]
+                continue
+            asks = self.WORK_STATE_INFO_ASKS[field]
+            if val is not None and not str(val).strip():
+                raise LedgerError(
+                    f"a blank {field} does not erase what is recorded — pass "
+                    f"the real text ({asks}), or omit the field to leave the "
+                    f"existing one standing")
+            if val is not None:
+                it[field] = str(val).strip()[:500]    # type: ignore[literal-required]
+            elif st != was and not str(it.get(field) or "").strip():
+                raise LedgerError(
+                    f"moving an item to `{state}` needs a nonblank {field}: "
+                    f"{asks}")
+
     def work_update(self, actor: str, wid: str, done_so_far: Any,
                     working_on_next: Any, status: str | None = None,
                     attention: bool | None = None,
                     attention_reason: str | None = None,
                     blocked_reason: str | None = None,
                     title: str | None = None, objective: str | None = None,
-                    reopen: bool = False) -> dict[str, Any]:
+                    reopen: bool = False,
+                    waiting_reason: str | None = None) -> dict[str, Any]:
         """THE docket status update. Always carries both lists (either may be
         empty, not both — Astra ruling 2026-09-05, no status-only bypass),
         moves `docket_at` and `last_updater`, and restates the manual flag:
@@ -10471,14 +10578,12 @@ class Org:
             it["accepted"] = None
             it["superseded_by"] = None
         changes: dict[str, Any] = {}
+        was = it.get("status")
         if status is not None and status != it.get("status"):
             changes["status"] = {"from": it.get("status"), "to": status}
             it["status"] = status
-        if it.get("status") == "blocked":
-            if blocked_reason is not None:
-                it["blocked_reason"] = str(blocked_reason).strip()[:500] or None
-        else:
-            it["blocked_reason"] = None
+        self._work_state_info(it, was, {"blocked_reason": blocked_reason,
+                                        "waiting_reason": waiting_reason})
         if title is not None and str(title).strip():
             changes["title"] = {"from": it.get("title"), "to": str(title).strip()[:200]}
             it["title"] = str(title).strip()[:200]
@@ -10716,6 +10821,7 @@ class Org:
         frm = it.get("status")
         it["status"] = "done"
         it["blocked_reason"] = None
+        it["waiting_reason"] = None
         it["accepted"] = {"at": now(), "by": self._work_actor(actor),
                           "note": (str(note).strip()[:500] if note else None)}
         self._work_hist(it, actor, "accept", {"from": frm})
@@ -10848,6 +10954,8 @@ class Org:
         it["status"] = "superseded"
         it["superseded_by"] = other["slug"]
         it["manual_attention"] = None
+        it["blocked_reason"] = None
+        it["waiting_reason"] = None
         self._work_hist(it, actor, "supersede", {"from": frm, "by": other["slug"]})
         self._work_stamp_docket(it, actor)
         return {"superseded": wid, "by": other["slug"], "rev": it["rev"]}
@@ -10874,7 +10982,11 @@ class Org:
         it["manual_attention"] = None
         frm = it.get("status")
         it["status"] = "blocked"
+        # the SYSTEM's own transition into blocked, and it carries its own real
+        # reason — it must keep working without agent input (Astra 2026-09-05).
+        # It also leaves `waiting`, so any waiting_reason stops applying.
         it["blocked_reason"] = f"attention flag dismissed by the user ({cur.get('reason')})"[:500]
+        it["waiting_reason"] = None
         if phys:
             # a dismissed flag on an archived item leaves it blocked, which is
             # open work — it comes back to the active list

@@ -606,8 +606,11 @@ class WorkItem(TypedDict):
     kind: str                       # "code" | "non-code" (non-code: delivery is None)
     title: str
     objective: str                  # the DESCRIPTION: problem faced first, then proposed solution (mandatory)
-    status: str                     # backlogged | open | in_progress | blocked | review | done | superseded | dropped
-    blocked_reason: NotRequired[str | None]
+    status: str                     # backlogged | open | in_progress | blocked | waiting | review | done | superseded | dropped
+    # state information, one field per state that owes it (user 2026-09-05).
+    # Required on entry to that state, cleared on the way out.
+    blocked_reason: NotRequired[str | None]   # what blocks, what would unblock, who can act
+    waiting_reason: NotRequired[str | None]   # the external event, and how the agent hears of it
     owner: WorkActor | None         # identity + generation at assignment
     participants: list[str]         # collaborator node ids: read + status update + evidence + attach a question
     created_by: WorkActor | str

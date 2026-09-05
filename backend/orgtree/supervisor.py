@@ -221,17 +221,30 @@ IDLE_DOCKET_REMINDER_MAX_ITEMS = 20
 IDLE_DOCKET_REMINDER_MARK = "[AUTOMATIC IDLE DOCKET REMINDER]"
 IDLE_DOCKET_REMINDER_BODY = (
     IDLE_DOCKET_REMINDER_MARK + "\n"
-    "You have been idle for 20 minutes and these docket items you own are "
-    "still unfinished:\n{items}\n"
+    "You have been idle for 20 minutes and these docket items are waiting on "
+    "YOU for their next action:\n{items}\n"
     "Pick the work back up: read each one with orgtree_work get, take the "
     "next concrete step, and leave an honest orgtree_work update. Assert "
-    "review only if an item is really finished, and blocked (with a reason) "
-    "if it truly cannot move. Items that are backlogged, or that are waiting "
-    "on the user through an attention flag or an open question, are "
-    "deliberately not listed here.")
+    "review only if an item is really finished; blocked (with a "
+    "blocked_reason) if it truly cannot move; waiting (with a waiting_reason "
+    "naming the external event and how you will hear of it) if its next step "
+    "is not yours to take. Items that are backlogged, already waiting on an "
+    "external event, or waiting on the user through an attention flag or an "
+    "open question are deliberately not listed here — and nor is anything "
+    "whose next action belongs to somebody else.")
+#: how each row says WHY it is on this agent's list. `owner` is the ordinary
+#: case and says nothing; the other two exist because the recipient is not the
+#: owner, or is the owner of something they must not review themselves.
+IDLE_DOCKET_REMINDER_ROLE: dict[str, str] = {
+    "owner": "",
+    "reviewer": " — awaiting YOUR review",
+    "unassigned_review": " — NO REVIEWER NAMED: assign one, do not review "
+                         "your own work",
+}
 IDLE_DOCKET_REMINDER_NUDGE = (
     "(orgtree) This is the automatic idle-docket reminder. The internally "
-    "attributed mail above lists the {n} unfinished docket item(s) you own.")
+    "attributed mail above lists the {n} unfinished docket item(s) whose next "
+    "action is yours.")
 
 # real context windows per tier (user-verified) — the CLI's
 # modelUsage.contextWindow under-reported 1M-window models as 200k.
@@ -5927,11 +5940,20 @@ DOCKET_DOCTRINE = (
     "entries (either may be empty; both empty is refused). They are your latest "
     "COMPLETE summary, not a fragment that depends on older text; keep them "
     "scannable and put detail in `evidence`. (4) Use honest statuses — "
-    "backlogged|open|in_progress|blocked|review. `backlogged` means the work "
+    "backlogged|open|in_progress|blocked|waiting|review. `backlogged` means "
+    "the work "
     "has NOT YET been approached or approved: it is kept out of the user's "
     "active count and hidden behind its own toggle, so use it for work "
     "genuinely not started, and never reclassify open work that is already "
-    "authorised or under way. `review` MEANS REVIEW BY AGENTS (user ruling "
+    "authorised or under way. `blocked` and `waiting` must SAY SO: blocked "
+    "takes a `blocked_reason` (what prevents progress, what would unblock it, "
+    "who can act), waiting takes a `waiting_reason` (the external event AND "
+    "how you will learn it happened — a watchdog, a message, a build "
+    "notification), and the move is refused without one. `waiting` is for work "
+    "whose next step is genuinely not yours to take: it stays active and on "
+    "your desk, it stops the idle reminder for THAT item only, and nothing "
+    "detects the event for you — the wake that tells you is what prompts you "
+    "to update the state yourself. `review` MEANS REVIEW BY AGENTS (user ruling "
     "2026-09-05): another agent or your coordinator is checking the work. It "
     "is NOT how you ask the user for anything — see (6). `done` only through "
     "`accept` by your "
@@ -9168,10 +9190,12 @@ def _idle_docket_anchor(n: NodeDoc | dict[str, Any]) -> float:
 
 def _idle_docket_reminder_body(items: list[dict[str, str]]) -> str:
     shown = items[:IDLE_DOCKET_REMINDER_MAX_ITEMS]
-    lines = [f"- {it['slug']} ({it['status']}): {it['title']}" for it in shown]
+    lines = [f"- {it['slug']} ({it['status']}"
+             f"{IDLE_DOCKET_REMINDER_ROLE.get(it.get('role') or 'owner', '')}"
+             f"): {it['title']}" for it in shown]
     if len(items) > len(shown):
-        lines.append(f"- …and {len(items) - len(shown)} more owned item(s); "
-                     "orgtree_work list shows them all")
+        lines.append(f"- …and {len(items) - len(shown)} more item(s) waiting "
+                     "on you; orgtree_work list shows them all")
     return IDLE_DOCKET_REMINDER_BODY.format(items="\n".join(lines))
 
 
@@ -9210,7 +9234,8 @@ def _idle_docket_reminder_reserve(
             "model_only": True,
             "relationship": (
                 "the orgtree engine reminding an idle agent of the unfinished "
-                "docket items it owns after 20 minutes without a wake"),
+                "docket items whose next action is its own, after 20 minutes "
+                "without a wake"),
         }
         box = org.d.setdefault("mail", {})
         box.setdefault(nid, []).append(cast(MailEntry, dict(entry)))

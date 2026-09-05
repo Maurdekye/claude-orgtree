@@ -76,13 +76,28 @@ def fixture(name: str, activity: float = BASE, status: str = "idle",
 
 def add_item(slug: str, title: str, *, owner: str | None = "agent",
              status: str = "open",
-             participants: list[str] | None = None) -> str:
+             participants: list[str] | None = None,
+             reviewer: str | None = None) -> str:
+    """One item. `blocked` and `waiting` carry the state information the ledger
+    now requires; `reviewer` is planted directly because the field is
+    codex-sandbox's and is not written by any verb here yet."""
     with store.DOC_LOCK:
         org = store.load_org(slug)
         r = org.work_create(USER, title,
                             objective="the problem; then the proposal",
                             owner=owner, status=status,
-                            participants=participants)
+                            participants=participants,
+                            blocked_reason=("the vendor has not answered; "
+                                            "their support can unblock it"
+                                            if status == "blocked" else None),
+                            waiting_reason=("the nightly build finishes; the "
+                                            "build watchdog mails me"
+                                            if status == "waiting" else None))
+        if reviewer is not None:
+            it, _ = org._work_find(str(r["slug"]))
+            it["reviewer"] = {"node": reviewer,
+                              "generation": int(org.node(reviewer)
+                                                .get("generation") or 0)}
         store.save_org(org)
     return str(r["slug"])
 
@@ -333,6 +348,16 @@ def unowned(slug: str) -> None:
     add_item(slug, "Nobody owns this", owner=None)
 
 
+def waiting_on_an_event(slug: str) -> None:
+    add_item(slug, "Waits for the nightly build", status="waiting")
+
+
+def reviewed_by_a_peer(slug: str) -> None:
+    """The owner is NOT the next actor while somebody else has the review."""
+    add_item(slug, "The peer is reviewing this", status="review",
+             reviewer="peer")
+
+
 for _label, _prep in (
         ("backlogged", backlogged),
         ("done", done_item),
@@ -341,7 +366,9 @@ for _label, _prep in (
         ("question", open_question),
         ("otherowner", someone_elses),
         ("participant", participant_only),
-        ("unowned", unowned)):
+        ("unowned", unowned),
+        ("waiting", waiting_on_an_event),
+        ("underpeerreview", reviewed_by_a_peer)):
     check(f"excluded: {_label} items never wake their agent (control fires)",
           excluded(_label, _prep))
 
@@ -371,7 +398,8 @@ def mixed_set_lists_only_the_eligible() -> None:
         assert sorted(listed) == sorted([
             f"- {live} (in_progress): Alpha keeps moving",
             f"- {blocked} (blocked): Bravo is stuck",
-            f"- {review} (review): Charlie awaits agent review"]), listed
+            f"- {review} (review — NO REVIEWER NAMED: assign one, do not "
+            f"review your own work): Charlie awaits agent review"]), listed
         assert "3 unfinished docket item" in calls[0][2], calls[0][2]
     finally:
         park(slug)
@@ -741,6 +769,97 @@ check("the generic checkup still fires with nothing owed, or reminders off",
       the_checkup_still_fires_when_the_reminder_passes)
 check("a reserved reminder stops the fallback cache read on that seat",
       a_reserved_reminder_blocks_the_cache_read)
+
+
+print("\n§7  the clock belongs to whoever owes the next action")
+
+
+def stamp(slug: str, nid: str, when: float) -> None:
+    """Give one seat a real activity boundary of its own."""
+    with store.DOC_LOCK:
+        org = store.load_org(slug)
+        n = org.node(nid)
+        n["last_status"] = {"status": "idle", "summary": "parked",
+                            "at": iso(when)}
+        n["turns"] = [{"at": iso(when), "cost": 0.0, "ms": 1, "denials": 0}]
+        store.save_org(org)
+
+
+def the_reviewer_clock_decides_a_review_item() -> None:
+    slug, _nid = fixture("zz-rem-reviewclock", peers=("peer",))
+    calls: list[tuple[str, str, str]] = []
+    try:
+        wid = add_item(slug, "Charlie awaits agent review", status="review",
+                       reviewer="peer")
+        # the OWNER worked a moment ago; the REVIEWER has been idle for hours
+        stamp(slug, "agent", DUE - 60)
+        stamp(slug, "peer", BASE)
+        fire(slug, DUE, calls, nid="peer")
+        assert len(calls) == 1, calls
+        assert reminders(slug, "agent") == [], "the busy owner was woken"
+        body = reminders(slug, "peer")[0]["body"]
+        assert f"- {wid} (review — awaiting YOUR review): " in body, body
+    finally:
+        park(slug, "peer")
+        park(slug)
+
+
+def the_owners_clock_does_not_decide_it() -> None:
+    """The mirror image, and it is the check that makes the one above mean
+    something: the same item, the same fleet pass, only the two clocks
+    swapped — nobody is woken at all."""
+    slug, _nid = fixture("zz-rem-ownerclock", peers=("peer",))
+    calls: list[tuple[str, str, str]] = []
+    try:
+        under = add_item(slug, "Charlie awaits agent review", status="review",
+                         reviewer="peer")
+        stamp(slug, "agent", BASE)              # the owner is long idle
+        stamp(slug, "peer", DUE - 60)           # the reviewer just worked
+        fire(slug, DUE, calls)
+        fire(slug, DUE, calls, nid="peer")
+        assert calls == [], calls
+        assert reminders(slug, "agent") == [] and reminders(slug, "peer") == []
+        # POSITIVE CONTROL: give the idle owner work of its own and it fires
+        own = add_item(slug, "Alpha is mine", status="in_progress")
+        fire(slug, DUE, calls)
+        assert len(calls) == 1, calls
+        body = reminders(slug, "agent")[0]["body"]
+        assert [ln for ln in body.splitlines() if ln.startswith("- ")] == \
+            [f"- {own} (in_progress): Alpha is mine"], body
+        assert under not in body, "the review item reached the owner"
+    finally:
+        park(slug, "peer")
+        park(slug)
+
+
+def one_wake_carries_both_kinds_of_work() -> None:
+    slug, _nid = fixture("zz-rem-mixedrole", peers=("peer",))
+    calls: list[tuple[str, str, str]] = []
+    try:
+        mine_ = add_item(slug, "Alpha is mine", status="in_progress")
+        theirs = add_item(slug, "Bravo is the peer's", owner="peer",
+                          status="review", reviewer="agent")
+        add_item(slug, "Charlie is the peer's alone", owner="peer",
+                 status="in_progress")
+        fire(slug, DUE, calls)
+        assert len(calls) == 1, calls           # ONE notification, not two
+        body = reminders(slug)[0]["body"]
+        listed = [ln for ln in body.splitlines() if ln.startswith("- ")]
+        assert sorted(listed) == sorted([
+            f"- {mine_} (in_progress): Alpha is mine",
+            f"- {theirs} (review — awaiting YOUR review): "
+            f"Bravo is the peer's"]), listed
+        assert "2 unfinished docket item" in calls[0][2], calls[0][2]
+    finally:
+        park(slug)
+
+
+check("a review item is gated by the REVIEWER's idle clock",
+      the_reviewer_clock_decides_a_review_item)
+check("an idle owner is not woken for an item under somebody else's review "
+      "(control: its own work still fires)", the_owners_clock_does_not_decide_it)
+check("own work and a review arrive in one wake, each row saying which",
+      one_wake_carries_both_kinds_of_work)
 
 
 shutil.rmtree(ROOT, ignore_errors=True)

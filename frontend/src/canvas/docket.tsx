@@ -44,19 +44,26 @@ const STATUS_LABEL: Record<string, string> = {
   open: 'Open',
   in_progress: 'In progress',
   blocked: 'Blocked',
+  waiting: 'Waiting',
   review: 'Agent review',
   done: 'Done',
   superseded: 'Superseded',
   dropped: 'Dropped',
 }
+// `waiting` is an EXTERNAL event, never the user — asking the user is the
+// attention flag (user ruling 2026-09-05)
+const WAITING_HELP = 'Active work waiting on an external event, not on the user — it names the event and how the agent will hear of it, and stops its own idle reminders until then'
 const statusLabel = (status: string): string => STATUS_LABEL[status] ?? status
 /** hover help, only where the status word can be read two ways */
 const statusHelp = (status: string): string | undefined =>
-  (status === 'review' ? REVIEW_HELP : undefined)
+  (status === 'review' ? REVIEW_HELP
+    : status === 'waiting' ? WAITING_HELP : undefined)
 
 /** Group-by-status order, exactly as specified: effective attention first,
- *  then blocked, in_progress, review, open, done, then everything else that
- *  is closed. A status the backend adds later lands in "Other" rather than
+ *  then blocked, in_progress, review, open, waiting, done, then everything
+ *  else that is closed. `waiting` sits below the states somebody can act on
+ *  today and above the backlog, because it is real work with nothing to do
+ *  right now. A status the backend adds later lands in "Other" rather than
  *  vanishing — an unknown row must still be reachable. */
 const STATUS_GROUPS: { key: string; heading: string }[] = [
   { key: 'attention', heading: 'Needs attention' },
@@ -64,6 +71,7 @@ const STATUS_GROUPS: { key: string; heading: string }[] = [
   { key: 'in_progress', heading: 'In progress' },
   { key: 'review', heading: 'Agent review' },
   { key: 'open', heading: 'Open' },
+  { key: 'waiting', heading: 'Waiting on an event' },
   { key: 'backlogged', heading: 'Backlogged' },
   { key: 'done', heading: 'Done' },
   { key: 'other', heading: 'Other closed' },
@@ -857,6 +865,15 @@ function DocketPane({ slug, item, toast, asksById, onDismiss, close, onFocusAgen
   // (TS does not narrow a property access across a nested arrow function)
   const lastUpdater = item.last_updater
   const manualAttn = item.manual_attention
+  // the state's own information, chosen BY THE CURRENT STATUS rather than by
+  // whichever field happens to be populated: a stale value must never be
+  // rendered as if it described where the item stands now
+  const stateInfo =
+    item.status === 'blocked'
+      ? { heading: 'BLOCKED BECAUSE', text: item.blocked_reason ?? '' }
+      : item.status === 'waiting'
+        ? { heading: 'WAITING FOR', text: item.waiting_reason ?? '' }
+        : null
   // as an actor line does: close first, or the desk opens behind this modal
   const goToAgent = onFocusAgent
     ? (id: string) => { close(); onFocusAgent(id) }
@@ -905,6 +922,22 @@ function DocketPane({ slug, item, toast, asksById, onDismiss, close, onFocusAgen
               states its problem and proposed solution
             </div>}
       </div>
+      {/* STATE INFORMATION (user 2026-09-05). Blocked and waiting each owe an
+          explanation, so the pane shows the one that belongs to the state the
+          item is actually in. Older blocked items may carry none: say that
+          rather than render an empty box. Reasons for states the item has
+          left are not shown — the backend clears them. */}
+      {stateInfo && (
+        <div className="docket-desc">
+          <div className="docket-list-heading dim">{stateInfo.heading}</div>
+          {stateInfo.text
+            ? <div className="docket-desc-body">{stateInfo.text}</div>
+            : <div className="dim docket-list-empty">
+                not recorded — this item entered {item.status} before the rule
+                that the state says why
+              </div>}
+        </div>
+      )}
       <DocketList heading="DONE SO FAR" items={item.done_so_far} mark="done"
         refIndex={refIndex} onGoToItem={onGoToItem} onGoToAgent={goToAgent} />
       <DocketList heading="WORKING ON / NEXT" items={item.working_on_next}

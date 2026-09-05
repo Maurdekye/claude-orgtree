@@ -4224,7 +4224,9 @@ def _work_mutate_action(org: Org, nid: str, a: dict[str, Any],
             done_so_far=a.get("done_so_far"),
             working_on_next=a.get("working_on_next"),
             status=str(a.get("status") or "open"),
-            parent=_s("parent"))
+            parent=_s("parent"),
+            blocked_reason=_s("blocked_reason"),
+            waiting_reason=_s("waiting_reason"))
     if act == "update":
         return org.work_update(
             nid, wid, a.get("done_so_far"), a.get("working_on_next"),
@@ -4232,6 +4234,7 @@ def _work_mutate_action(org: Org, nid: str, a: dict[str, Any],
             attention=(True if _arg_flag(a, "attention") else None),
             attention_reason=_s("attention_reason"),
             blocked_reason=_s("blocked_reason"),
+            waiting_reason=_s("waiting_reason"),
             title=_s("title"), objective=_s("objective"),
             reopen=_arg_flag(a, "reopen"))
     if act == "assign":

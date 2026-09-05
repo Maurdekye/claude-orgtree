@@ -59,9 +59,49 @@ update: a status change or an attention flag rides an update that restates the
 lists. The lists are **replaced**, not merged — they are the latest complete
 summary.
 
-Agents set `backlogged|open|in_progress|blocked|review|dropped`. `done` is
-refused on `update`: assert `review` and wait for `accept`. `blocked_reason` is
-kept while the status is `blocked` and cleared otherwise.
+Agents set `backlogged|open|in_progress|blocked|waiting|review|dropped`. `done`
+is refused on `update`: assert `review` and wait for `accept`.
+
+## `waiting`, and the information blocked and waiting owe
+
+User ruling 2026-09-05. `waiting` is **active work whose next step is not the
+agent's to take**: a build, a deploy, another team's landing, an external
+service. It counts as active, stays on the assigned desk and stays in the main
+list. The only thing it changes is that **this item** stops producing idle
+docket reminders until its event happens — it never silences any other item the
+same agent holds. It is not a second backlog and it is not a closed state.
+`blocked` stays reminder-eligible: being stuck is a thing an agent can usefully
+be nudged about.
+
+Nothing detects the event. There is no watcher and no automatic transition: the
+ordinary wake that tells the agent (a watchdog, a message, a build
+notification) is what prompts it to update the state by hand.
+
+Each of the two states carries its own information, in its own field:
+
+| state | field | says |
+| --- | --- | --- |
+| `blocked` | `blocked_reason` | what prevents progress, what would unblock it, and who can act when that is known |
+| `waiting` | `waiting_reason` | the external event, **and** how the agent will learn it happened |
+
+The rules are the same for both, and they are three separate rules:
+
+* **Entering** the state requires the field — on `create` as well as `update`.
+  No other status requires anything.
+* **Already** in the state, field not supplied: left alone. Items written
+  before this requirement stay editable rather than becoming un-updatable.
+* A **blank** string is refused, never stored: blanking used to erase the field
+  silently, and erasing required information without a word is the failure the
+  requirement exists to stop.
+
+The field is cleared whenever the item leaves the state, so a reason never
+survives the state it describes. The user's own dismissal of an attention flag
+still moves the item to `blocked` with its own real reason and needs no agent
+input.
+
+What the guard can and cannot do: it checks that the text is **present**. No
+code can tell whether the prose names a real event or a real blocker — that is
+what the wording in the tool help and the doctrine is for.
 
 ## `review` is the AGENT check — the user's review is attention
 
@@ -219,6 +259,31 @@ deletion of the item.
 `counts.attention` counts items (not questions) with effective attention over
 the full set; `counts.active` counts non-archived items not in
 `done|superseded|dropped`.
+
+## Who an idle docket reminder goes to
+
+The reminder (its own default-off runtime switch) wakes an idle agent with the
+items **whose next action is that agent's**, and the order of the two steps is
+the point:
+
+1. Each item decides for itself whether it can be reminded about at all —
+   closed and `backlogged` are out, `waiting` is out until its event, and
+   effective attention (a manual flag or an open attached question) is out
+   because only the user can move it. An excluded item removes **itself** and
+   nothing else; it can never silence a different actionable item held by the
+   same agent.
+2. Only then is each surviving item assigned to one recipient
+   (`Org._work_next_recipient`): an item in `review` belongs to its
+   **reviewer**, everything else to its **owner**.
+
+So the clock that gates a review item is the reviewer's own idle clock, not the
+owner's, and one agent holding both its own work and somebody else's review
+gets a single notification listing both, each row saying which it is.
+
+A `review` item with **no reviewer recorded** goes to the owner, worded as a
+missing review assignment — the outstanding action there is naming a reviewer,
+and self-review is prohibited. Ownership and reviewership both ignore
+generation: a compaction or rehire replaces the agent, not the assignment.
 
 ## The standing instructions
 

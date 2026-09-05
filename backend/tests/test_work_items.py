@@ -353,7 +353,9 @@ def participants_cannot_close_claim_or_check():
     """Astra review 2026-09-05 (reproduced red: participant `dropped` 200, `claim` 200)."""
     slug = fresh_org()
     wid = create(slug, node="boss", participants=["peer"], acceptance=["works"])
-    ok(slug, "peer", "update", slug=wid, status="blocked", done_so_far=["p"], working_on_next=[])   # positive
+    ok(slug, "peer", "update", slug=wid, status="blocked",                                          # positive
+       blocked_reason="the vendor's key has not arrived; their support can send it",
+       done_so_far=["p"], working_on_next=[])
     ok(slug, "peer", "evidence", slug=wid, kind="link", ref="http://x")                              # positive
     assert "owner-level" in refused(slug, "peer", "update", slug=wid, status="dropped",
                                     done_so_far=["p"], working_on_next=[])
