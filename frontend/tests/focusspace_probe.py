@@ -593,64 +593,171 @@ def run(html: pathlib.Path, verbose: bool = True) -> tuple[list[str], dict]:
                     "the side this section exists to check, so its absence is "
                     "the bug, not a pass")
 
-        # ---- §I THE PINNED TITLE'S NAME: click navigates, drag does not.
-        # jsdom can show the LOGIC (pins.test.tsx §B12) but not the gesture:
-        # there is no pointer capture, no hit testing and no browser-synthesised
-        # `click` after a real press-move-release. This runs the actual mouse.
+        # ---- §I THE PINNED TITLE'S NAME, with the REAL mouse and the REAL
+        # keyboard. jsdom (pins.test.tsx §B12) can show the logic but not the
+        # gesture: no pointer capture, no hit testing, and no browser-
+        # synthesised click after a press-move-release.
+        #
+        # TWO INSTRUMENTS, because neither alone is enough:
+        #   * the PULSE (`.pinwin.flash`) is produced only by `showPin`, so it
+        #     separates "navigated" from "merely raised by a pointerdown";
+        #   * the VISIBLE STACKING ORDER, hit-tested at a point where two pins
+        #     overlap, is what the reader actually gets. A pulse without the
+        #     window coming to the front would be a proxy, not the thing.
+        PIN_A = {"id": "cto", "x": 120, "y": 120, "w": 380, "h": 280}
+        PIN_B = {"id": "qa", "x": 300, "y": 220, "w": 380, "h": 280}
+        OVER = (420, 330)      # inside both rectangles
         P.reset()
-        P.click_agent("cto")
-        P.set_pins([{"id": "cto", "x": 120, "y": 120, "w": 360, "h": 260}])
-        name = pg.query_selector(".pinwin .pinwin-title .cc-name.pinwin-name")
-        obs["pin_title_name"] = bool(name)
-        if not name:
-            bad("§I the pinned window's title has no name control — the rule "
-                "says an agent's name is a route to it everywhere except "
-                "inside its own focused desk")
+        P.set_pins([PIN_A, PIN_B])
+
+        def on_top() -> str | None:
+            return pg.evaluate(
+                "([x, y]) => document.elementFromPoint(x, y)"
+                "?.closest('.pinwin')?.getAttribute('data-id') ?? null",
+                list(OVER))
+
+        def pulsed(ms: int = 260) -> bool:
+            pg.wait_for_timeout(ms)
+            return pg.evaluate(
+                "() => !!document.querySelector('.pinwin[data-id=\"cto\"].flash')")
+
+        def settle_pulse() -> None:
+            pg.wait_for_timeout(800)
+
+        def name_el():
+            return pg.query_selector('.pinwin[data-id="cto"] .pinwin-title '
+                                     '.cc-name.pinwin-name')
+
+        def raise_other() -> None:
+            t = pg.query_selector('.pinwin[data-id="qa"] .pinwin-title')
+            b = t.bounding_box()
+            pg.mouse.click(b["x"] + 40, b["y"] + b["height"] / 2)
+            pg.wait_for_timeout(700)
+
+        def enter_on_name() -> None:
+            pg.evaluate("() => document.querySelector("
+                        "'.pinwin[data-id=\"cto\"] .pinwin-title .cc-name.pinwin-name')"
+                        "?.focus()")
+            pg.keyboard.press("Enter")
+
+        nm = name_el()
+        obs["pin_title_name"] = bool(nm)
+        if not nm:
+            bad("§I the pinned window's title has no name control")
+        elif on_top() != "qa":
+            bad(f"§I precondition: the OTHER pin is not on top ({on_top()}), so "
+                "a raise would not be observable")
         else:
-            def win_rect() -> dict | None:
-                return P.box(".pinwin")
+            ok("§I two pins overlap and the other one is in front")
+            settle_pulse()
 
-            def camera() -> str:
-                return pg.evaluate(
-                    "() => document.querySelector('.space')?.style.transform ?? ''")
-
-            box = name.bounding_box()
-            cx, cy = box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
-            r0, cam0 = win_rect(), camera()
-
-            # a real DRAG that starts and ends on the name
-            pg.mouse.move(cx, cy)
-            pg.mouse.down()
-            pg.mouse.move(cx + 180, cy + 150, steps=8)
-            pg.mouse.up()
-            pg.wait_for_timeout(900)
-            r1, cam1 = win_rect(), camera()
-            obs["pin_drag"] = {"before": r0, "after": r1}
-            moved = r0 and r1 and (abs(r1["x"] - r0["x"]) > 5 or abs(r1["y"] - r0["y"]) > 5)
-            if not moved:
-                bad(f"§I positive control: dragging the title name did not move "
-                    f"the window ({r0} -> {r1}), so the next assertion is about "
-                    "a gesture that never happened")
-            elif cam1 != cam0:
-                bad("§I a DRAG on the title name also NAVIGATED — the window "
-                    f"moved and the camera went with it ({cam0!r} -> {cam1!r})")
+            # (1) KEYBOARD: Enter on the focused name must navigate — and the
+            # window must actually COME TO THE FRONT, not merely flash.
+            enter_on_name()
+            flash1 = pulsed()
+            top1 = on_top()
+            obs["pin_kbd"] = {"pulsed": flash1, "top": top1}
+            if not flash1:
+                bad("§I Enter on the title name did not navigate (no pulse)")
+            elif top1 != "cto":
+                bad(f"§I Enter pulsed but the window did not come to the front "
+                    f"({top1} is still hit-tested on top) — the pulse is a "
+                    "proxy, not the raise")
             else:
-                ok("§I dragging the title name repositions the window and "
-                   "navigates nowhere")
+                ok("§I Enter navigates: the window pulses AND is hit-tested in front")
+            settle_pulse()
 
-            # a real CLICK, same element, no movement
-            name2 = pg.query_selector(".pinwin .pinwin-title .cc-name.pinwin-name")
-            if name2:
-                b2 = name2.bounding_box()
-                pg.mouse.click(b2["x"] + b2["width"] / 2, b2["y"] + b2["height"] / 2)
-                pg.wait_for_timeout(1200)
-                cam2 = camera()
-                obs["pin_click_cam"] = {"before": cam1, "after": cam2}
-                if cam2 == cam1:
-                    bad("§I a CLICK on the title name did not navigate — the "
-                        "name is not a route to its agent, which is the rule")
-                else:
-                    ok("§I clicking the title name navigates to that agent")
+            # (2) MOUSE DRAG with no click delivered by the capture: the window
+            # moves and nothing navigates.
+            raise_other()
+            box = name_el().bounding_box()
+            cx, cy = box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
+            r0 = P.box('.pinwin[data-id="cto"]')
+            pg.mouse.move(cx, cy); pg.mouse.down()
+            pg.mouse.move(cx + 150, cy + 120, steps=8)
+            pg.mouse.up()
+            flash2 = pulsed()
+            r1 = P.box('.pinwin[data-id="cto"]')
+            moved = r0 and r1 and (abs(r1["x"] - r0["x"]) > 5 or abs(r1["y"] - r0["y"]) > 5)
+            obs["pin_drag"] = {"before": r0, "after": r1, "pulsed": flash2}
+            if not moved:
+                bad(f"§I positive control: the drag did not move the window "
+                    f"({r0} -> {r1}), so the next assertion is about a gesture "
+                    "that never happened")
+            elif flash2:
+                bad("§I a DRAG on the title name also NAVIGATED")
+            else:
+                ok("§I dragging the title name repositions it and navigates nowhere")
+            settle_pulse()
+
+            # (3) ENTER AFTER THAT DRAG — the reviewed blocker: a flag left set
+            # by a click pointer capture never delivered would eat this.
+            raise_other()
+            enter_on_name()
+            flash3 = pulsed()
+            top3 = on_top()
+            obs["pin_kbd_after_drag"] = {"pulsed": flash3, "top": top3}
+            if not flash3 or top3 != "cto":
+                bad(f"§I Enter AFTER A DRAG did not navigate (pulse={flash3}, "
+                    f"top={top3}) — a gesture left something behind that ate "
+                    "the keyboard activation")
+            else:
+                ok("§I Enter still navigates after a drag whose click was never delivered")
+            settle_pulse()
+
+            # (4) ESCAPE-CANCELLED gesture, then ENTER
+            raise_other()
+            box = name_el().bounding_box()
+            cx, cy = box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
+            pg.mouse.move(cx, cy); pg.mouse.down()
+            pg.mouse.move(cx + 120, cy + 90, steps=6)
+            pg.keyboard.press("Escape")
+            pg.mouse.up()
+            pg.wait_for_timeout(400)
+            raise_other()
+            enter_on_name()
+            flash4 = pulsed()
+            top4 = on_top()
+            if not flash4 or top4 != "cto":
+                bad(f"§I Enter after an Escape-cancelled gesture did not "
+                    f"navigate (pulse={flash4}, top={top4})")
+            else:
+                ok("§I Enter still navigates after an Escape-cancelled gesture")
+            settle_pulse()
+
+            # (5) a real MOUSE CLICK on the name: press and release in place.
+            # ⚠ NO `raise_other()` HERE. The two windows overlap and the drag in
+            # (2) moved this one, so raising the other can leave it COVERING
+            # this name — and then the click lands on the wrong window and the
+            # failure reads as "did not navigate" when the gesture never
+            # reached the control. The instrument for this case is the pulse,
+            # which does not need a stacking precondition; what it does need is
+            # for the click to actually hit the name, so that is checked.
+            box = name_el().bounding_box()
+            cx5, cy5 = box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
+            hit5 = pg.evaluate(
+                "([x, y]) => { const e = document.elementFromPoint(x, y);"
+                " return e ? (e.closest('.pinwin-name') ? 'name'"
+                " : e.closest('.pinwin')?.getAttribute('data-id') ?? 'other')"
+                " : 'nothing' }", [cx5, cy5])
+            r2 = P.box('.pinwin[data-id="cto"]')
+            if hit5 != "name":
+                bad(f"§I the click point does not reach the title name "
+                    f"({hit5!r}) — this case never ran")
+                flash5 = False
+                r3 = r2
+            else:
+                pg.mouse.click(cx5, cy5)
+                flash5 = pulsed()
+                r3 = P.box('.pinwin[data-id="cto"]')
+            if hit5 != "name":
+                pass
+            elif not flash5:
+                bad("§I a CLICK on the title name did not navigate")
+            elif r2 and r3 and (abs(r3["x"] - r2["x"]) > 2 or abs(r3["y"] - r2["y"]) > 2):
+                bad(f"§I the click also repositioned the window ({r2} -> {r3})")
+            else:
+                ok("§I clicking the title name navigates and does not reposition it")
 
         ctx.close()
         b.close()
