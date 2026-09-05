@@ -41,6 +41,7 @@ import { ConfirmModal } from './modals'
 import { InboxView, RetiredFold } from './mail'
 import { AskCard } from './asks'
 import { deriveProgress, ProgressChip, ProgressView } from './progress'
+import { AgentName } from './identity'
 import { isMobile } from '../mobile'
 import { fmtFull, fmtShort, fmtStamp, localizeFreezeUntil } from '../timefmt'
 
@@ -1553,21 +1554,20 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
       <div className="cc-head">
         <div className="cc-head-top">
         <span className="cc-head-left">
-          <span className={'tier t-' + node.tier}>{TIER_LETTER[node.tier!] ?? '?'}</span>
+          {/* ⚠ `bare` IS THE DESTINATION TEST, which is why this reads
+              `atDestination={!bare}` and never compares ids. A switchboard
+              panel and a pinned window BOTH show this agent's own name, and
+              both must still navigate — the click takes you to its focused
+              desk, somewhere you are not. Only the focused desk itself
+              (`bare === false`) is where the click would be a no-op.
+              (user feature 2026-08-17; the tab strip's ⌖ button stays.) */}
+          <AgentName id={node.id} tier={node.tier} atDestination={!bare}
+            why={bare ? undefined
+              : (node.charter || '').split('\n')[0] || node.id}
+            onFocus={onJump} />
           {node.pending_switch &&
             <span className="queued-mark" title={queuedSwitchTitle(node)}>
               →{TIER_LETTER[node.pending_switch.tier] ?? '?'}</span>}
-          {/* in a switchboard panel the NAME is also a jump: focus this
-              agent's own desk — same glide as clicking its card (user
-              feature 2026-08-17; the tab strip's ⌖ button stays) */}
-          {bare && onJump ? (
-            <button className="cc-name cc-name-jump"
-              title={`focus ${node.id}'s desk`}
-              onClick={() => onJump(node.id)}>{node.id}</button>
-          ) : (
-            <span className="cc-name"
-              title={(node.charter || '').split('\n')[0] || node.id}>{node.id}</span>
-          )}
           <span className="cc-context-seat">
             <ContextWheel occ={contextOccupancy} cw={node.context_window}
               est={contextEstimated} compactAt={compactAt} persistent

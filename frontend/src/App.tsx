@@ -27,6 +27,7 @@ import { DirList } from './forms'
 import { FolderPickerHost } from './picker'
 import { activeDocCount, ALL_TIERS, attentionPip, availableAutopsyModels, deskDpi, fallbackActive, fmtCredits, formatCount, freezeKind, isOpenRouterTier, orgPxc, presenceOfPayload, primedRestartChip, setDeskDpi, TIER_LETTER, tierLabel, unicodeLength, usePolled } from './canvas/shared'
 import { AskCard } from './canvas/asks'
+import { AgentName } from './canvas/identity'
 import { AccountsPanel, UsageBars } from './canvas/accounts'
 import { DocGalleryModal } from './canvas/gallery'
 import { DocketModal, DocketToolbarButton } from './canvas/docket'
@@ -1897,10 +1898,16 @@ export function InboxPanel({ slug, tree, toast, refresh, close, jumpTo, onFocusA
   const act = (action: string, node: string, target?: string | null) =>
     audienceAction(slug, action, node, target)
       .catch((e: Error) => toast([`error: ${e.message}`]))
+  // an audience holder is an agent of this org, so it wears the same chip and
+  // the same jump as everywhere else. `nodes.get(g)?.tier` may be undefined
+  // for a holder no longer in the tree — AgentName then draws no chip, which
+  // is the honest answer rather than a guessed one.
   const audBadge = (g: string, dim = false) => (
-    <span key={g} className={'badge ' + (dim ? 'dim' : 'free')}>
-      <HearingIcon fontSize="inherit" /> {g}
-      <button className="chip-x" title="rescind"
+    <span key={g} className={'badge aud-badge ' + (dim ? 'dim' : 'free')}>
+      <HearingIcon fontSize="inherit" />
+      <AgentName id={g} tier={nodes.get(g)?.tier}
+        onFocus={onFocusAgent} />
+      <button className="chip-x" title="rescind" type="button"
         onClick={() => act('revoke', g)}><CloseIcon fontSize="inherit" /></button>
     </span>
   )

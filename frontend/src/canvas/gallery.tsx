@@ -36,7 +36,7 @@ import { ago, md, TIER_LETTER, tierLabel, useEsc, usePolled } from './shared'
  *  now the one place an agent's chip-and-name is drawn; re-exported here so
  *  every existing importer keeps working and no call site had to change to
  *  make the move. */
-import { TierChip } from './identity'
+import { AgentName, TierChip } from './identity'
 export { TierChip }
 
 /** why a row is secondary, for the tooltip. NOT a badge any more (user,
@@ -212,13 +212,14 @@ function DocPane({ slug, row, toast, onDismissed, close, onFocusAgent, onReply }
         {/* METADATA FIRST, title second (user, 2026-09-04: "swap that row with
             the title row, it should be first, the title second"). */}
         <div className="doc-pane-meta-row">
-          <TierChip tier={row.tier} />
           {row.node ? (
-            <button className="cc-name cc-name-jump" title={`focus ${row.node}'s desk`}
-              onClick={() => { close(); onFocusAgent?.(row.node) }}>
-              {row.node}
-            </button>
+            <AgentName id={row.node} tier={row.tier}
+              onFocus={onFocusAgent
+                ? (id) => { close(); onFocusAgent(id) }
+                : undefined} />
           ) : (
+            // no node recorded at all: there is no identity to draw, and
+            // inventing one is the thing this panel must not do
             <span className="dim">?</span>
           )}
           {PANE_STATE_WHY[row.node_state] &&

@@ -21,6 +21,7 @@ import {
   EXTERN, fmtCredits, isSystemNotice, md, pileNotices, providerOf, USER, useEsc, usePolled,
 } from './shared'
 import type { CanvasNode, MailRow } from './shared'
+import { AgentName } from './identity'
 import { isMobile } from '../mobile'
 import { fmtFull, fmtShort } from '../timefmt'
 
@@ -59,12 +60,17 @@ export interface MailListProps {
   rowMark?: (m: MailRow) => ReactNode
   /** user ruling 2026-09-05: agent identities in right pane metadata are clickable jumps */
   onFocusAgent?: (agentId: string) => void
+  /** the model chip beside a sender's name. A RESOLVER, not a map: a caller
+   *  that cannot answer omits it and no chip is drawn, which is the honest
+   *  outcome rather than a guessed one. */
+  tierOf?: (id: string) => string | null | undefined
 }
 
 const MAIL_WINDOW = 40
 
 export function MailList({ pending = [], delivered = [], waitLabel, sender, outgoing,
-  onRead, onReply, onRetract, jumpTo, fileHref, mdBase, renderBody, rowMark, onFocusAgent }: MailListProps) {
+  onRead, onReply, onRetract, jumpTo, fileHref, mdBase, renderBody, rowMark, onFocusAgent,
+  tierOf }: MailListProps) {
   // ONE order, by send time, always — never grouped, never re-grouped.
   //
   // Unread used to sort as its own block on top, which meant the list
@@ -125,15 +131,10 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, outg
   const S: (id: string, m: MailRow) => ReactNode =
     sender ?? ((id) => {
       if (id === USER) return <span>@user</span>
-      if (onFocusAgent && isAgentId(id)) {
-        return (
-          <button className="cc-name cc-name-jump" title={`focus ${id}'s desk`}
-            onClick={() => onFocusAgent(id)}>
-            {id}
-          </button>
-        )
-      }
-      return <span>{id}</span>
+      // an @org / @net address is not an agent in this org: no chip, no jump,
+      // and no identity invented for it
+      if (!isAgentId(id)) return <span>{id}</span>
+      return <AgentName id={id} tier={tierOf?.(id)} onFocus={onFocusAgent} />
     })
   const partyOf = (m: MailRow) => (outgoing ? m.to : m.from)
   const qn = q.trim().toLowerCase()
@@ -871,7 +872,20 @@ export function OrgInboxModal({ inbox, net, map, slug, toast, close, jumpTo, onF
                 ? <MailList pending={inn.filter((r) => r._wait0)}
                     delivered={inn.filter((r) => !r._wait0)}
                     waitLabel="unread" onRead={markRead} jumpTo={jumpTo}
-                    sender={(id) => <b>{id}</b>} />
+                    /* ⚠ THE ORG INBOX IS THE ONE LIST WHOSE SENDERS ARE NOT
+                       THIS ORG'S AGENTS. A peer like `external-client` is an
+                       outside party and carries no `@` sigil, so MailList's
+                       default "not `@`-prefixed, therefore an agent" rule is
+                       wrong here — it would give an outsider a model chip and
+                       a jump into our tree. Resolution against `map` is the
+                       test that belongs here, and docket.test.tsx §17 is what
+                       caught this when I first removed the override. */
+                    sender={(id) => (map.has(id)
+                      ? <AgentName id={id} tier={map.get(id)?.tier}
+                          onFocus={onFocusAgent
+                            ? (a) => { close(); onFocusAgent(a) }
+                            : undefined} />
+                      : <b>{id}</b>)} />
                 : <MailList delivered={out} outgoing jumpTo={jumpTo}
                     rowMark={glyph}
                     sender={(id, m) => {
@@ -880,12 +894,15 @@ export function OrgInboxModal({ inbox, net, map, slug, toast, close, jumpTo, onF
                         /* outbound attribution (user spec): @agent as @org → @recipient */
                         <span>
                           <b>
-                            {byIsLocalAgent && onFocusAgent ? (
-                              <button className="cc-name cc-name-jump" title={`focus ${m!._by}'s desk`}
-                                onClick={() => { close(); onFocusAgent(m!._by!) }}>
-                                @{m!._by}
-                              </button>
+                            {byIsLocalAgent ? (
+                              <AgentName id={m!._by!} prefix="@"
+                                tier={map.get(m!._by!)?.tier}
+                                onFocus={onFocusAgent
+                                  ? (id) => { close(); onFocusAgent(id) }
+                                  : undefined} />
                             ) : (
+                              // not an agent of this org — the sigil and the
+                              // recorded text, with nothing inferred
                               m?._by ? `@${m._by}` : '@?'
                             )}
                           </b>
