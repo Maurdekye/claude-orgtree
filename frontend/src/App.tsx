@@ -31,9 +31,8 @@ import { AgentName } from './canvas/identity'
 import { AccountsPanel, UsageBars } from './canvas/accounts'
 import { DocGalleryModal } from './canvas/gallery'
 import { DocketModal, DocketToolbarButton } from './canvas/docket'
-import { mailRefTarget } from './canvas/reflinks'
-import type { RefWorld, ResolvedRef } from './canvas/reflinks'
-import type { RefKind, TypedRef } from './canvas/workrefs'
+import { mailRefTarget, useRefRoutes } from './canvas/reflinks'
+import type { TypedRef } from './canvas/workrefs'
 import {
   SetBlock, SetGroup, SetRow, SettingsTabPanel, SettingsTabs, SetToggle,
   useVisitedTabs,
@@ -1925,68 +1924,27 @@ interface UserAudReq {
   [k: string]: unknown
 }
 
-/** The world a SHELL PANEL judges canonical references against, and the one
- *  place that decides what happens when one is clicked.
+/** The world a SHELL PANEL judges canonical references against.
  *
  *  Two panels render prose that can carry a reference — the user's inbox and
- *  the document gallery — and they must answer the same way. Written twice
+ *  the document gallery — and they must answer the same way. The decision
+ *  itself lives in `useRefRoutes` (reflinks.tsx), which the desk builds its
+ *  world with too; all this adds is the shell's agent source, since the shell
+ *  holds a TREE where the canvas holds a flattened map. Written per surface
  *  they would drift, and the drift would be invisible: one panel quietly
  *  calling a real item missing looks exactly like a real missing item.
  *
- *  ⚠ NO ITEM OR DOCUMENT INDEX, DELIBERATELY. Neither panel holds either
- *  list, and `undefined` means "do not judge — the destination will". The
- *  destinations do: the docket states an id it does not have, and the reader
- *  reports a document it cannot fetch. An EMPTY Map here would report every
- *  real item mentioned in every mail as missing.
- *
- *  ⚠ AGENTS AND NODE MAILBOXES IT MUST ANSWER FOR, from the tree it already
- *  polls — because the mail router downstream opens nothing and says nothing
- *  for a node it has never heard of, so a chip offered for one would be a
- *  control that does nothing. Before the tree arrives the answer is `loading`,
- *  which is NOT `absent`: an empty tree would call every mailbox imaginary
- *  for as long as the first fetch takes.
- *
- *  ⚠ AND `handles` FOLLOWS THE CALLBACKS. A kind with no route reads "not
- *  opened from here", which stays true, rather than becoming a live chip that
- *  swallows the click. */
+ *  ⚠ `null` UNTIL THE TREE ARRIVES, which reads as `loading` and not as
+ *  `absent`: an empty tree would call every agent and every mailbox imaginary
+ *  for as long as the first fetch takes. */
 function useShellRefs(slug: string, tree: TreePayload | null, routes: {
   onOpenItem?: (itemSlug: string) => void
   onFocusAgent?: (agentId: string) => void
   onOpenDoc?: (docId: string) => void
   onOpenMail?: (ref: TypedRef) => void
 }) {
-  const { onOpenItem, onFocusAgent, onOpenDoc, onOpenMail } = routes
-  const world = useMemo<RefWorld>(() => {
-    const handles = new Set<RefKind>()
-    if (onOpenItem) handles.add('item')
-    if (onFocusAgent) handles.add('agent')
-    if (onOpenDoc) handles.add('doc')
-    if (onOpenMail) handles.add('mail')
-    const nodes = tree ? flatNodes(tree) : null
-    return {
-      org: slug,
-      agents: nodes
-        ? new Map([...nodes.keys()].map((id) => [id, id]))
-        : 'loading',
-      mail: (r) => (r.box !== 'node' ? 'ready'
-        : !nodes ? 'pending'
-          : nodes.has(String(r.node ?? '')) ? 'ready' : 'absent'),
-      handles,
-    }
-  }, [slug, tree, onOpenItem, onFocusAgent, onOpenDoc, onOpenMail])
-  const onOpen = useCallback((r: ResolvedRef) => {
-    if (r.ref.kind === 'item') onOpenItem?.(r.ref.id)
-    else if (r.ref.kind === 'agent') onFocusAgent?.(r.ref.id)
-    else if (r.ref.kind === 'doc') onOpenDoc?.(r.ref.id)
-    else if (r.ref.kind === 'mail') onOpenMail?.(r.ref)
-  }, [onOpenItem, onFocusAgent, onOpenDoc, onOpenMail])
-  // ⚠ THE CALLERS PASS INLINE ARROWS, so `routes` is a fresh object every
-  // render and this memo recomputes with it. That is deliberate and it is
-  // cheap: what it produces is compared by OUTCOME downstream (refmd's pass
-  // returns having touched nothing when every chip still says the same
-  // thing), so a new world object does not cost a rebuild — and pinning the
-  // identity here would mean stale routes after any state change.
-  return useMemo(() => ({ world, onOpen }), [world, onOpen])
+  const nodes = useMemo(() => (tree ? flatNodes(tree) : null), [tree])
+  return useRefRoutes(slug, nodes, routes)
 }
 
 export function InboxPanel({ slug, tree, toast, refresh, close, jumpTo,

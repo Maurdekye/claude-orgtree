@@ -22,7 +22,7 @@
 // one of the two is a lie that appears while the page is still loading — which
 // is exactly when a user is most likely to read it.
 
-import { useMemo } from 'react'
+import { useCallback, useMemo } from 'react'
 import type { ReactNode } from 'react'
 import { REF_TOKEN_RE, WorkRefText, parseRef } from './workrefs'
 import type { MentionIndex, RefKind, TypedRef } from './workrefs'
@@ -166,6 +166,86 @@ export function mailRefTarget(ref: TypedRef): { id: string; to: string } {
   if (ref.box === 'user') return { id: ref.id, to: 'user_inbox' }
   if (ref.box === 'org') return { id: ref.id, to: `@org:${ref.org}` }
   return { id: ref.id, to: String(ref.node ?? '') }
+}
+
+/** A surface's whole reference wiring: what it judges against, and what it
+ *  does when a chip is clicked. Passed around as ONE value so a component can
+ *  never be handed a world with somebody else's routes. */
+export interface RefRoutes {
+  world: RefWorld
+  onOpen: (r: ResolvedRef) => void
+}
+
+/** THE WORLD A PANEL JUDGES REFERENCES AGAINST, and the one place that decides
+ *  what a click does. Every surface that renders a reference builds its world
+ *  here — the shell panels, the docket, the desk — because written per surface
+ *  they would drift, and the drift is invisible: one panel quietly calling a
+ *  real item missing looks exactly like a real missing item.
+ *
+ *  `agents` is a MAP THE CALLER ALREADY HOLDS, not a payload this hook fetches.
+ *  The shell flattens the tree; the desk is handed the canvas map. Only the
+ *  keys are read, which is why the value type is unconstrained — the two
+ *  callers hold different node shapes and neither needs converting.
+ *
+ *  ⚠ `null` IS `loading`, NOT "none". An empty Map says "this org has no
+ *  agents", which makes every agent reference and every node mailbox absent —
+ *  a lie that appears while the first fetch is still in flight, which is
+ *  exactly when someone is most likely to read it.
+ *
+ *  ⚠ NO ITEM OR DOCUMENT INDEX, DELIBERATELY. No caller holds either list, and
+ *  `undefined` means "do not judge — the destination will". The destinations
+ *  do: the docket states an id it does not have, and the reader reports a
+ *  document it cannot fetch.
+ *
+ *  ⚠ `handles` FOLLOWS THE CALLBACKS. A kind with no route reads "not opened
+ *  from here", which stays true, rather than becoming a live chip that
+ *  swallows the click. Pass `undefined` for a route you do not have — never a
+ *  no-op function, which would claim the panel can do something it cannot.
+ *
+ *  ⚠ AND EVERY ROUTE IS CALLED WITH EXACTLY ONE ARGUMENT. Adapt at the call
+ *  site — `(id) => centerOn(id)`, never bare `centerOn` — because a handoff
+ *  that merely type-checks will hand a second argument to whatever is behind
+ *  it. That is not hypothetical: `centerOn(id, z)` reads `z ?? fit`, so a
+ *  DOM event arriving there is non-null, defeats the default, and the camera
+ *  is computed from an object (Astra, 2026-09-05). */
+export function useRefRoutes(org: string, agents: ReadonlyMap<string, unknown> | null,
+  routes: {
+    onOpenItem?: (itemSlug: string) => void
+    onFocusAgent?: (agentId: string) => void
+    onOpenDoc?: (docId: string) => void
+    onOpenMail?: (ref: TypedRef) => void
+  }): RefRoutes {
+  const { onOpenItem, onFocusAgent, onOpenDoc, onOpenMail } = routes
+  const world = useMemo<RefWorld>(() => {
+    const handles = new Set<RefKind>()
+    if (onOpenItem) handles.add('item')
+    if (onFocusAgent) handles.add('agent')
+    if (onOpenDoc) handles.add('doc')
+    if (onOpenMail) handles.add('mail')
+    return {
+      org,
+      agents: agents
+        ? new Map([...agents.keys()].map((id) => [id, id]))
+        : 'loading',
+      mail: (r) => (r.box !== 'node' ? 'ready'
+        : !agents ? 'pending'
+          : agents.has(String(r.node ?? '')) ? 'ready' : 'absent'),
+      handles,
+    }
+  }, [org, agents, onOpenItem, onFocusAgent, onOpenDoc, onOpenMail])
+  const onOpen = useCallback((r: ResolvedRef) => {
+    if (r.ref.kind === 'item') onOpenItem?.(r.ref.id)
+    else if (r.ref.kind === 'agent') onFocusAgent?.(r.ref.id)
+    else if (r.ref.kind === 'doc') onOpenDoc?.(r.ref.id)
+    else if (r.ref.kind === 'mail') onOpenMail?.(r.ref)
+  }, [onOpenItem, onFocusAgent, onOpenDoc, onOpenMail])
+  // ⚠ THE CALLERS PASS INLINE ARROWS, so `routes` is a fresh object every
+  // render and this memo recomputes with it. That is deliberate and it is
+  // cheap: what it produces is compared by OUTCOME downstream (refmd's pass
+  // returns having touched nothing when every chip still says the same
+  // thing), so a new world object does not cost a rebuild — and pinning the
+  // identity here would mean stale routes after any state change.
+  return useMemo(() => ({ world, onOpen }), [world, onOpen])
 }
 
 export interface RefRun {

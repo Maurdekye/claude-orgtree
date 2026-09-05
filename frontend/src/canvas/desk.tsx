@@ -43,6 +43,10 @@ import { AskCard } from './asks'
 import { deriveProgress, ProgressChip, ProgressView } from './progress'
 import { AgentDirectoryProvider, AgentName, agentFactsSig, useAgentDirectory } from './identity'
 import type { AgentDirectory } from './identity'
+import { mailRefTarget, useRefRoutes } from './reflinks'
+import type { RefRoutes } from './reflinks'
+import type { TypedRef } from './workrefs'
+import { RefMdBody } from './refmd'
 import { isMobile } from '../mobile'
 import { fmtFull, fmtShort, fmtStamp, localizeFreezeUntil } from '../timefmt'
 
@@ -1337,8 +1341,9 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
           what keeps the delivery tag / retract ✕ pinned at the top right where
           it already was, which the user asked for by name. */}
       <div className="pendbody">
-        {m.body && <div className="msgtext md"
-          dangerouslySetInnerHTML={md(m.body, fileBase(slug, node.id))} />}
+        {m.body && <RefMdBody className="msgtext md"
+          world={deskRefs.world} onOpen={deskRefs.onOpen}
+          html={md(m.body, fileBase(slug, node.id))} />}
         {/* a queued image renders viewable (dimmed like the bubble) — the
             upload already landed, only the MAIL is undelivered */}
         {(m.attachments ?? []).length > 0 && (
@@ -1575,6 +1580,52 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
     onFocus: canJump ? (id: string) => jumpRef.current?.(id) : undefined,
     destination,
   }), [canJump, destination, facts])
+  // CANONICAL REFERENCES WRITTEN IN THE CHAT'S PROSE (`@item:org/slug` and its
+  // three siblings), rendered as things you can click.
+  //
+  // ⚠ THE DESK NEEDS NOTHING NEW FROM THE CANVAS, which is why this is built
+  // here and not threaded down: it already holds `map` — the same map the
+  // canvas answers "is there an agent by this id?" with — and all four routes
+  // a reference can take. `onMailLink` even takes exactly the shape
+  // `mailRefTarget` returns, so the token→router translation stays the one in
+  // reflinks.tsx rather than a second copy written here.
+  //
+  // ⚠ EACH ROUTE IS OMITTED WHEN ITS PROP IS, never stubbed. A desk mounted
+  // without a route (pins.tsx and cards.tsx hand this component different
+  // subsets — that is a real case, not a hypothetical) says "not opened from
+  // this panel", which is true, instead of drawing a chip that eats the click.
+  //
+  // ⚠ AND EACH ONE ADAPTS ITS ARITY EXPLICITLY rather than handing the prop
+  // over bare. `onOpen` calls with one argument today, so a bare handoff would
+  // work and keep working right up until it did not — and the failure it would
+  // then have is a live one in this very file: `onJump` is `centerOn(id, z)`,
+  // whose `z ?? fit` default is defeated by ANY non-null second argument.
+  //
+  // ⚠ LATCHED, NOT REBUILT EACH RENDER, and that is not tidiness. `Msg` is
+  // memoized and THE COMPOSER'S TEXT LIVES IN THIS COMPONENT, so a value that
+  // changed identity every render would re-render — and re-`md()` — every row
+  // of the transcript on every keystroke. Same shape as `agentDir` above: the
+  // live values behind refs, the memo keyed on a signature of what can
+  // actually change the answers (which ids exist, which routes are wired).
+  const workRef = useRef(onWorkLink); workRef.current = onWorkLink
+  const docRef = useRef(onOpenDoc); docRef.current = onOpenDoc
+  const mailLinkRef = useRef(onMailLink); mailLinkRef.current = onMailLink
+  const agentIds = [...map.keys()].join('|')
+  const agentIndex = useMemo(
+    () => new Map([...mapRef.current.keys()].map((id) => [id, id])),
+    [agentIds])
+  const routeSig = `${!!onWorkLink}|${canJump}|${!!onOpenDoc}|${!!onMailLink}`
+  const deskRoutes = useMemo(() => ({
+    onOpenItem: workRef.current
+      ? (s: string) => workRef.current!({ slug: s }) : undefined,
+    onFocusAgent: jumpRef.current
+      ? (id: string) => jumpRef.current!(id) : undefined,
+    onOpenDoc: docRef.current
+      ? (id: string) => docRef.current!(id) : undefined,
+    onOpenMail: mailLinkRef.current
+      ? (r: TypedRef) => mailLinkRef.current!(mailRefTarget(r)) : undefined,
+  }), [routeSig])
+  const deskRefs = useRefRoutes(slug, agentIndex, deskRoutes)
   const content = (
     <AgentDirectoryProvider value={agentDir}>
       <div className="cc-head">
@@ -1963,7 +2014,7 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
                     ? `${Math.round(gapMs / 3600e3)} h`
                     : `${Math.round(gapMs / 60e3)} min`} later —</div>)}
                 <Msg m={m} slug={slug} nid={node.id} onMailLink={onMailLink}
-                  onWorkLink={onWorkLink} />
+                  onWorkLink={onWorkLink} refs={deskRefs} />
               </div>
             )
           })}
@@ -1993,9 +2044,12 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
                 ? <div key={f.n ?? 'f' + i} className="msg live tools"><DotIcon fontSize="inherit" className="tooldot" /> {f.text}</div>
                 : f.kind === 'steered'
                   ? <LiveSteerRow key={f.n ?? 'f' + i} text={f.text}
-                      truncated={f.truncated} slug={slug} nid={node.id} />
+                      truncated={f.truncated} slug={slug} nid={node.id}
+                      refs={deskRefs} />
                   : <div key={f.n ?? 'f' + i} className="msg assistant live">
-                      <div className="md" dangerouslySetInnerHTML={md(f.text, fileBase(slug, node.id))} />
+                      <RefMdBody className="md" world={deskRefs.world}
+                        onOpen={deskRefs.onOpen}
+                        html={md(f.text, fileBase(slug, node.id))} />
                       {/* the live copy is capped at 2000 chars server-side —
                           declare the cut; the transcript row that replaces
                           this one carries the whole text */}
@@ -2012,8 +2066,9 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
                 <PsychologyIcon fontSize="inherit" />{' '}thinking…
                 {thinkSecs > 0 ? ` for ${thinkSecs}s` : ''}
               </div>)}
-          {draft && <div className="msg assistant live md draft"
-            dangerouslySetInnerHTML={md(draft, fileBase(slug, node.id))} />}
+          {draft && <RefMdBody className="msg assistant live md draft"
+            world={deskRefs.world} onOpen={deskRefs.onOpen}
+            html={md(draft, fileBase(slug, node.id))} />}
           {/* D-29: the turn has begun but the CLI has not produced anything
               yet — process launch, hooks, `init`, roughly six seconds during
               which the panel showed nothing but a spinner in the chrome. This
@@ -2047,8 +2102,9 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
           {pending.map((p) => (
             <div key={'q' + p.id}
               className={'msg user pending pendghost md' + (p.failed ? ' failed' : '')}>
-              <div className="pendbody"
-                dangerouslySetInnerHTML={md(p.text, fileBase(slug, node.id))} />
+              <RefMdBody className="pendbody"
+                world={deskRefs.world} onOpen={deskRefs.onOpen}
+                html={md(p.text, fileBase(slug, node.id))} />
               {p.failed && (
                 <div className="ghost-why">
                   <WarnIcon fontSize="inherit" /> not delivered — the turn
@@ -2694,7 +2750,8 @@ function MailFrom({ from, nameClass }: { from: string; nameClass?: string }) {
     onFocus={dir?.onFocus ? (id) => dir.onFocus!(id) : undefined} />
 }
 
-function TurnMailCard({ mail, slug, nid }: { mail: TurnMail; slug: string; nid: string }) {
+function TurnMailCard({ mail, slug, nid, refs }:
+{ mail: TurnMail; slug: string; nid: string; refs?: RefRoutes }) {
   const { rest: body, files } = parseAttachedFiles(mail.body)
   const fb = fileBase(slug, nid)
   return (
@@ -2707,7 +2764,8 @@ function TurnMailCard({ mail, slug, nid }: { mail: TurnMail; slug: string; nid: 
         <time>{fmtFull(mail.at)}</time>
         {mail.passive && <span className="turn-mail-passive">no reply expected</span>}
       </header>
-      {body && <div className="turn-mail-body md" dangerouslySetInnerHTML={md(body, fb)} />}
+      {body && <RefMdBody className="turn-mail-body md"
+        world={refs?.world} onOpen={refs?.onOpen} html={md(body, fb)} />}
       {files.length > 0 && (
         <div className="attach-row">
           {files.map((f) => {
@@ -2733,8 +2791,9 @@ function TurnMailCard({ mail, slug, nid }: { mail: TurnMail; slug: string; nid: 
  *  live, and an unrecognised envelope falls back to the previous rendering
  *  rather than dropping text. Attachments stay as [ATTACHED FILE] lines —
  *  the settled card makes them chips. */
-function LiveSteerRow({ text, slug, nid, truncated }:
-  { text: string; slug: string; nid: string; truncated?: boolean }) {
+function LiveSteerRow({ text, slug, nid, truncated, refs }:
+  { text: string; slug: string; nid: string; truncated?: boolean
+    refs?: RefRoutes }) {
   // notices are split off here too: the live row would otherwise flash raw
   // [ORG NOTICES] chrome for the second before the transcript refresh
   // renders them as a card
@@ -2746,8 +2805,9 @@ function LiveSteerRow({ text, slug, nid, truncated }:
   const mail = whole.mail.length ? whole.mail : cut?.mail ?? []
   const fb = fileBase(slug, nid)
   if (!mail.length) {
-    return <div className="msg user live md"
-      dangerouslySetInnerHTML={md(stripEnvelope(rest), fb)} />
+    return <RefMdBody className="msg user live md"
+      world={refs?.world} onOpen={refs?.onOpen}
+      html={md(stripEnvelope(rest), fb)} />
   }
   const after = stripEnvelope(whole.mail.length ? whole.rest : cut!.cut)
   return (
@@ -2755,11 +2815,13 @@ function LiveSteerRow({ text, slug, nid, truncated }:
       {mail.map((m, i) => (
         <div className="live-mail" key={i}>
           <div className="live-mail-head"><MailFrom from={m.from} /></div>
-          {m.body.trim() && <div className="md"
-            dangerouslySetInnerHTML={md(m.body.trim(), fb)} />}
+          {m.body.trim() && <RefMdBody className="md"
+            world={refs?.world} onOpen={refs?.onOpen}
+            html={md(m.body.trim(), fb)} />}
         </div>
       ))}
-      {after && <div className="md" dangerouslySetInnerHTML={md(after, fb)} />}
+      {after && <RefMdBody className="md" world={refs?.world}
+        onOpen={refs?.onOpen} html={md(after, fb)} />}
       {/* the cards above would otherwise read as the whole message */}
       {cut && <div className="trunc-note">
         ✂ shown truncated — the full text follows shortly</div>}
@@ -2891,9 +2953,12 @@ function ToolChip({ t, slug, nid, onMailLink, onWorkLink }: ToolChipProps) {
 }
 
 // №21: memoized — rows are static once fetched; only identity changes matter
-export const Msg = memo(function Msg({ m, slug, nid, onMailLink, onWorkLink }: {
+export const Msg = memo(function Msg({ m, slug, nid, onMailLink, onWorkLink, refs }: {
   m: ChatMessage; slug: string; nid: string
   onMailLink?: MailLinkFn; onWorkLink?: WorkLinkFn
+  /** canonical references in this row's prose. Omitted = plain text, which is
+   *  what a surface with nowhere to send anybody should render. */
+  refs?: RefRoutes
 }) {
   if (m.role === 'system') return <SysLine m={m} />
   // notices come out BEFORE the envelope strip — they are their own card
@@ -2926,9 +2991,11 @@ export const Msg = memo(function Msg({ m, slug, nid, onMailLink, onWorkLink }: {
       <div className="turn-mail-batch">
         {notices.length > 0 && <NoticeLine notices={notices} />}
         {mails.map((mail, i) =>
-          <TurnMailCard key={`${mail.at}-${i}`} mail={mail} slug={slug} nid={nid} />)}
+          <TurnMailCard key={`${mail.at}-${i}`} mail={mail} slug={slug} nid={nid}
+            refs={refs} />)}
         {tail && <div className="msg user turn-mail-tail">
-          <div className="msgtext md" dangerouslySetInnerHTML={md(tail, fileBase(slug, nid))} />
+          <RefMdBody className="msgtext md" world={refs?.world} onOpen={refs?.onOpen}
+            html={md(tail, fileBase(slug, nid))} />
         </div>}
         {/* the cards above would otherwise read as the whole message */}
         {cutMail && <div className="trunc-note">
@@ -2954,7 +3021,8 @@ export const Msg = memo(function Msg({ m, slug, nid, onMailLink, onWorkLink }: {
         ? <div key={i} className="tools"><DotIcon fontSize="inherit" className="tooldot" /> {t}</div>
         : <ToolChip key={t.id ?? i} t={t} slug={slug} nid={nid}
             onMailLink={onMailLink} onWorkLink={onWorkLink} />))}
-      {text && <div className="msgtext md" dangerouslySetInnerHTML={md(text, fb)} />}
+      {text && <RefMdBody className="msgtext md" world={refs?.world}
+        onOpen={refs?.onOpen} html={md(text, fb)} />}
       {files.length > 0 && (
         <div className="attach-row">
           {files.map((f) => {
