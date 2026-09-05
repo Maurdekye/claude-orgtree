@@ -1641,8 +1641,12 @@ button.cc-name:hover {
   max-width: 260px; overflow: hidden; text-overflow: ellipsis;
   white-space: nowrap;
 }
-.doc-reader { width: min(760px, 92vw); max-height: 86vh; display: flex;
+.doc-reader { width: min(760px, 92vw); display: flex;
   flex-direction: column; }
+/* height only, in a compound selector: equal specificity against
+   `.settings` (below) means whichever sits LATER in the file would win,
+   which was silently `.settings`'s 88vh all along, not this 86vh */
+.settings.doc-reader { height: 86vh; }
 .doc-reader-head {
   display: flex; align-items: center; gap: 7px;
   border-bottom: 1px solid var(--line-soft); padding-bottom: 6px;
@@ -1651,7 +1655,7 @@ button.cc-name:hover {
   background: none; border: 1px solid var(--line); border-radius: 5px;
   padding: 2px 8px; cursor: pointer;
 }
-.doc-reader-body { overflow-y: auto; padding-top: 8px; min-height: 0; }
+.doc-reader-body { overflow-y: auto; padding-top: 8px; min-height: 0; flex: 1; }
 
 /* FR-04: the batch's tab strip — the Claude Code batch-AskUserQuestion
    shape: short headers as tabs, active underlined, answered tabs wear a
@@ -2575,8 +2579,10 @@ main.solo { width: 100%; }
   position: fixed; inset: 0; background: rgba(0, 0, 0, .45); z-index: 20;
   display: grid; place-items: center;
 }
+/* fixed height (user ruling), not max-height: the panel no longer resizes
+   as its content expands/contracts — overflow scrolls internally instead */
 .settings {
-  width: 660px; max-width: 94vw; max-height: 88vh; overflow-y: auto;
+  width: 660px; max-width: 94vw; height: 88vh; overflow-y: auto;
   /* no horizontal scrollbar, ever — wide children shrink or ellipsize */
   overflow-x: hidden;
   background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
@@ -2966,7 +2972,9 @@ input:focus, select:focus, textarea:focus, button:focus-visible {
 }
 .disk-alert button:hover { background: color-mix(in srgb, var(--bad) 12%, transparent); }
 .disk-overlay { z-index: 55; }   /* above modals (20), below the picker (60) */
-.disk-browser { width: min(760px, 92vw); max-height: 84vh; display: flex; flex-direction: column; }
+.disk-browser { width: min(760px, 92vw); display: flex; flex-direction: column; }
+/* height only, in a compound selector: same reasoning as `.doc-reader` */
+.settings.disk-browser { height: 84vh; }
 .disk-usage { display: flex; align-items: center; gap: 10px; font-size: 12px; padding: 2px 0 8px; }
 .disk-usage.warn { color: var(--work); }
 .disk-usage.bad { color: var(--bad); }
