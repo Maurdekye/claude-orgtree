@@ -279,7 +279,22 @@ for (const m of MUTANTS) {
       stale = true
       break
     }
-    mutated = mutated.replace(from, norm(e.to))
+    // ⚠ A REPLACER FUNCTION, NOT A STRING. In String.replace a `$` in the
+    // REPLACEMENT is special — `$&` is the match and ``$` `` is everything
+    // before it — so a mutant whose text contains one silently splices the
+    // file into itself. The suite then goes red on a syntax error hundreds of
+    // lines from anything the mutant touched, and this harness reports
+    // "WRONG CHECK", which is exactly the wrong diagnosis. Cost codex-checklist
+    // most of an hour on 2026-09-05. A function replacement disables every `$`.
+    // and the invariant that would have CAUGHT it, kept as a check rather
+    // than as a comment: one replacement changes the length by exactly the
+    // difference between the two texts.
+    const want = mutated.length - from.length + norm(e.to).length
+    mutated = mutated.replace(from, () => norm(e.to))
+    if (mutated.length !== want) {
+      throw new Error(`replacement corrupted ${m.file}: ${mutated.length} `
+        + `chars, expected ${want} — a '$' in the mutant text spliced`)
+    }
   }
   if (stale) { survived++; continue }
   try {
