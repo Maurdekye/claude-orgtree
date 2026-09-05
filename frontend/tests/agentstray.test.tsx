@@ -22,7 +22,7 @@
 
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
-import { flush, inAct, mountView, realClock, useFakeClock } from './harness'
+import { advance, flush, inAct, mountView, realClock, useFakeClock } from './harness'
 import test from 'node:test'
 import type { TestContext } from 'node:test'
 import assert from 'node:assert/strict'
@@ -202,3 +202,119 @@ test('§3 the tray’s max-height is bound to the canvas, not a small fixed slic
     + 'height auto, and .tray’s max-height: 100% would resolve to nothing')
   assert.match(wrapCss, /bottom:\s*[\d.]+px/)
 })
+
+// ═══════════════════════════════════════════════════════════════ §5-§7
+// THE STATUS SUMMARY, and the references in it (Astra 2026-09-05).
+//
+// The tray line was excluded from the reference work on two grounds and
+// Astra accepted neither: it was `summary.slice(0, 70)`, so a token past the
+// 70th character was cut before it could be recognised, and the whole row was
+// `role="button"`, so a chip could not be a control inside it without nesting
+// one button in another. Both are fixed here rather than argued: the match
+// runs over the WHOLE summary and the row is a container whose MAIN LINE is
+// the button.
+//
+// ⚠ THE FIXTURE PUTS THE TOKEN PAST CHARACTER 70 ON PURPOSE. With it early in
+// the sentence, every one of these checks passes on the OLD code too — the
+// slice would simply not have reached it — and the section would prove
+// nothing about the thing it is named after.
+
+const LONG_SUMMARY =
+  'rebased the branch, re-ran the affected suites and verified the line '
+  + 'endings before landing @item:mine/sort-selector'
+
+function treeWithStatus(ids: string[] = ['ceo']): TreePayload {
+  const t = tree(ids)
+  const root = (t as unknown as { roots: Record<string, unknown>[] }).roots[0]
+  root.last_status = { status: 'working', summary: LONG_SUMMARY,
+                       at: '2026-09-05T10:00:00.000Z' }
+  return t
+}
+
+async function openTray(mount: (el: React.ReactElement) => Promise<{ el: HTMLElement }>,
+                        onWorkItem?: (s: string) => void, ids?: string[]) {
+  const { OrgCanvas } = await import('../src/canvas/OrgCanvas')
+  const { el } = await mount(
+    <OrgCanvas tree={treeWithStatus(ids)} op={() => Promise.resolve({} as never)}
+      slug="mine" toast={noop} mailEvt={null} onWorkItem={onWorkItem} />)
+  await flush()
+  const toggle = el.querySelector('.tray-toggle') as HTMLElement
+  await inAct(() => { toggle.click() })
+  await flush()
+  return el
+}
+
+uiTest('§5 a reference past the truncation point is still a control',
+  async ({ mount }) => {
+    const opened: string[] = []
+    const el = await openTray(mount, (s) => { opened.push(s) })
+    const sum = el.querySelector('.tray-sum') as HTMLElement | null
+    assert.ok(sum, 'positive control: the row rendered its status summary')
+    // the token really is past the old cut — otherwise this section is a
+    // check on nothing
+    assert.ok(LONG_SUMMARY.indexOf('@item:') > 70,
+      'the fixture must place the token past the 70-character slice')
+    const chip = sum!.querySelector('.ref-chip') as HTMLButtonElement | null
+    assert.ok(chip, 'the summary carries no reference chip — the match is '
+      + 'still running over a truncated copy')
+    assert.equal(chip!.textContent, 'sort-selector')
+    await inAct(() => { chip!.click() })
+    assert.deepEqual(opened, ['sort-selector'], 'and it opens the item it names')
+  })
+
+uiTest('§6 the chip is a control, and it is not inside another control',
+  async ({ mount }) => {
+    // ⚠ THE ROUTE IS WIRED HERE ON PURPOSE. Without one the chip is correctly
+    // a SPAN reading "not from here" — which is the outcome table working,
+    // not a failure, and this section is about NESTING, not about outcomes.
+    // (This check first ran without a route and failed for exactly that
+    // reason; the fix was the fixture, not the code.)
+    const el = await openTray(mount, () => {})
+    const chip = el.querySelector('.tray-sum .ref-chip') as HTMLElement
+    assert.ok(chip, 'no chip to judge')
+    assert.equal(chip.tagName, 'BUTTON', 'a ready reference is a real control')
+    // ⚠ THE NESTING RULE, ASSERTED AS DOM. Walk up from the chip: nothing
+    // between it and the row may be a button or claim to be one.
+    let p: HTMLElement | null = chip.parentElement
+    while (p && !p.classList.contains('tray-row')) {
+      assert.notEqual(p.tagName, 'BUTTON', `the chip sits inside a <${p.tagName}>`)
+      assert.notEqual(p.getAttribute('role'), 'button',
+        'the chip sits inside an element claiming to be a button')
+      p = p.parentElement
+    }
+    assert.ok(p, 'the chip is not inside a tray row at all')
+    assert.notEqual(p!.getAttribute('role'), 'button',
+      'the ROW still claims to be a button, so every chip in it is nested')
+    // and the control's control: the main line IS a button, so the row did
+    // not simply lose its keyboard affordance
+    const main = p!.querySelector('.tray-main')
+    assert.ok(main, 'the row lost its main line')
+    assert.equal(main!.tagName, 'BUTTON',
+      'the row navigates by mouse only now — the keyboard route is gone')
+  })
+
+uiTest('§7 tray navigation survives: the row still goes to its agent',
+  async ({ mount }) => {
+    // ⚠ TWO AGENTS, AND THE SECOND ONE. With a single root the opening view
+    // is already centred on it, so a working camera command produces no
+    // movement and the check would fail on correct code. (It did.)
+    const el = await openTray(mount, undefined, ['ceo', 'cto'])
+    const rows = [...el.querySelectorAll('.tray-row .tray-main')] as HTMLElement[]
+    assert.equal(rows.length, 2, 'positive control: both agents are in the tray')
+    // ⚠ SETTLE FIRST, THEN READ THE BEFORE. The camera is still animating from
+    // mount, so a `before` taken immediately drifts on its own and the check
+    // passes whether or not the click did anything — measured: the mutant that
+    // removes the row's handler SURVIVED until this line existed.
+    await advance(600, 16)
+    await flush()
+    const before = spaceTransform(el)
+    await advance(600, 16)
+    await flush()
+    assert.equal(spaceTransform(el), before,
+      'control for the control: with no click the camera is now still')
+    await inAct(() => { rows[1].click() })
+    await advance(600, 16)          // the glide is rAF-driven; let it finish
+    await flush()
+    assert.notEqual(spaceTransform(el), before,
+      'clicking the row moved no camera — tray navigation is broken')
+  })

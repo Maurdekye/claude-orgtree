@@ -45,7 +45,7 @@ import type { CanvasNode, LiveRow, ProviderId } from './shared'
 import { ago, PROVIDER_LABEL, providerOf } from './shared'
 import type { Convo } from '../convo'
 import type { ChatMessage } from '../types'
-import { TypedRefText } from './reflinks'
+import { Written } from './reflinks'
 import type { RefRoutes } from './reflinks'
 
 // ------------------------------------------------------------------ model
@@ -451,21 +451,6 @@ function useOpen(): [Record<SectionId, boolean>, (id: SectionId) => void] {
 // ------------------------------------------------------------------ views
 
 const GLYPH: Record<TodoStatus, string> = { completed: '☑', in_progress: '◐', pending: '☐' }
-
-/** One line of prose written by an AGENT, with any canonical reference in it
- *  made clickable. Plain text when the surface has no world — the honest
- *  rendering for a progress card mounted somewhere with nowhere to send
- *  anybody, and the reason this takes `refs` rather than reaching for a
- *  global.
- *
- *  ⚠ THE REACT RENDERER, NOT THE MARKDOWN ONE. Nothing on this card is
- *  markdown: a checklist item and a status summary are text nodes, so they
- *  are split into runs here rather than walked as DOM. Using the DOM pass
- *  would mean claiming this text had been through `md()`, which it has not. */
-function Written({ text, refs }: { text: string; refs?: RefRoutes }) {
-  if (!refs) return <>{text}</>
-  return <TypedRefText text={text} world={refs.world} onOpen={refs.onOpen} />
-}
 
 function TodoSection({ v, historical, refs }:
 { v: TodoVerdict; historical: boolean; refs?: RefRoutes }) {

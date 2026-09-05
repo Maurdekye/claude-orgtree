@@ -23,7 +23,7 @@ import type {
 } from './shared'
 import { Activity, ContextWheel, DeskChat, DestinationBusy, LineagePanel, ProcessLifecycleMark } from './desk'
 import { DocReader } from './docs'
-import { mailRefTarget, useRefRoutes } from './reflinks'
+import { mailRefTarget, useRefRoutes, Written } from './reflinks'
 import type { ResolvedRef } from './reflinks'
 import type { TypedRef } from './workrefs'
 import { NodeInboxModal, OrgInboxModal } from './mail'
@@ -2709,7 +2709,20 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox, onWorkItem,
                 const stat: (NodeStatus & { _stale?: boolean }) | null = n.last_status
                   ?? (n.prev_status ? { ...n.prev_status, _stale: true } : null)
                 return (
-                <div key={n.id} role="button" tabIndex={0}
+                /* ⚠ THE ROW IS NO LONGER ITSELF A BUTTON, and that is what
+                   lets its summary carry reference controls. A `<button>`
+                   inside a `role="button"` is invalid nesting, so as long as
+                   the whole row claimed to be one control, a chip in the
+                   summary could not be another.
+                   Now: the row is a plain container that still navigates on
+                   click, the MAIN LINE is a real focusable button (keyboard
+                   Enter and Space arrive as a click and bubble to the row's
+                   own handler — one handler, not two, so activation cannot
+                   fire twice), and the summary sits OUTSIDE that button as a
+                   sibling. Nothing inside the main line is interactive:
+                   ContextWheel only becomes a button when given `onCompact`,
+                   which the tray does not pass. */
+                <div key={n.id}
                   className={'tray-row' + (n.state !== 'live' ? ' off' : '')
                     + (ghost ? ' ghost' : '')
                     + (n.tier && CODEX_TIERS.includes(n.tier) ? ' prov-openai'
@@ -2720,9 +2733,9 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox, onWorkItem,
                     ? 'shown for context — this row does not match the '
                       + 'current filter, but a report under it does'
                     : undefined}
-                  onClick={go}
-                  onKeyDown={(e) => { if (e.key === 'Enter') go() }}>
-                  <div className="tray-main">
+                  onClick={go}>
+                  <button type="button" className="tray-main"
+                    title={`go to ${n.id}`}>
                     <span className={'tier t-' + n.tier}>{TIER_LETTER[n.tier!] ?? '?'}</span>
                     {n.pending_switch &&
                       <span className="queued-mark" title={queuedSwitchTitle(n)}>
@@ -2749,11 +2762,26 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox, onWorkItem,
                             ? <span className={'statusdot ' + n.last_status.status}
                                 title={n.last_status.summary} />
                             : <span className="statusdot idle" title="idle" />}
-                  </div>
+                  </button>
+                  {/* ⚠ THE WHOLE SUMMARY, MATCHED BEFORE ANY TRUNCATION. This
+                      line used to be `summary.slice(0, 70)`, which cut the
+                      text before a reference could be recognised — a token
+                      landing across the 70th character was neither a link nor
+                      readable, and which it was depended on how long the
+                      sentence happened to be. The clipping was always CSS's
+                      job here anyway (`.tray-sum-text` is ellipsis-clipped),
+                      so the slice was a second truncation doing nothing the
+                      stylesheet was not already doing better.
+                      The AGE is its own element so the ellipsis cannot eat
+                      it: a long summary now hides its own tail rather than
+                      the one fact next to it that is not in the summary. */}
                   {stat?.summary && (
-                    <div className={'tray-sum' + (stat._stale ? ' stale' : '')}>
-                      {stat.status}: {stat.summary.slice(0, 70)}
-                      {stat.at ? ` · ${ago(stat.at)} ago` : ''}
+                    <div className={'tray-sum' + (stat._stale ? ' stale' : '')}
+                      title={stat.summary}>
+                      <span className="tray-sum-text">
+                        {stat.status}: <Written text={stat.summary} refs={canvasRefs} />
+                      </span>
+                      {stat.at && <span className="tray-sum-at"> · {ago(stat.at)} ago</span>}
                     </div>
                   )}
                 </div>

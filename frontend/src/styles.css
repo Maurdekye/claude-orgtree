@@ -3947,11 +3947,29 @@ svg.MuiSvgIcon-root {
 .tray-frozen { color: var(--ice); font-size: 13px; }
 /* №13/№26: rows carry the status summary as text; a filter heads the tray */
 .tray-row { flex-direction: column; align-items: stretch; gap: 2px; }
-.tray-main { display: flex; align-items: center; gap: 8px; }
-.tray-sum {
-  font-size: 10.5px; color: var(--dim); padding-left: 26px;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+/* The main line is a real <button> so the row keeps keyboard activation now
+   that the row itself is no longer one — which is what lets the summary below
+   hold reference controls without nesting a button inside a button. It is
+   stripped back to the row's own text: chrome here would draw a box around
+   every agent in the tray. */
+.tray-main {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  background: none; border: none; padding: 0; margin: 0;
+  font: inherit; color: inherit; text-align: left; cursor: pointer;
 }
+.tray-sum {
+  display: flex; align-items: baseline;
+  font-size: 10.5px; color: var(--dim); padding-left: 26px;
+  overflow: hidden; white-space: nowrap;
+}
+/* the summary clips, the AGE does not — a long summary hides its own tail
+   rather than the one fact beside it that the summary does not contain */
+.tray-sum-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.tray-sum-at { flex: none; }
+/* a reference inside a tray summary: the row's own type size, not the chip's
+   default, so one clickable word does not make the line taller than its
+   neighbours */
+.tray-sum .ref-chip { font-size: inherit; padding: 0 3px; }
 .tray-sum.stale { opacity: .55; font-style: italic; }
 .tray-filter { margin: 2px 4px 6px; }
 .tray-arch {

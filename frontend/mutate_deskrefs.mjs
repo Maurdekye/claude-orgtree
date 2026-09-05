@@ -25,6 +25,7 @@ const DESK = 'src/canvas/desk.tsx'
 const LINKS = 'src/canvas/reflinks.tsx'
 const PROG = 'src/canvas/progress.tsx'
 const MAIL = 'src/canvas/mail.tsx'
+const CANVAS = 'src/canvas/OrgCanvas.tsx'
 
 const MUTANTS = [
   {
@@ -204,6 +205,35 @@ const MUTANTS = [
     to: `            onOpen: refs.onOpen,`,
   },
   {
+    // ⚠ THE EXACT STATE ASTRA REFUSED TO ACCEPT AS FINAL: the tray line
+    // matched against a 70-character slice, so whether a reference worked
+    // depended on how long the sentence in front of it happened to be.
+    name: 'the tray matches a truncated copy of the summary again',
+    file: CANVAS, suite: 'agentstray', kills: '§5 a reference past the truncation point',
+    from: `                        {stat.status}: <Written text={stat.summary} refs={canvasRefs} />`,
+    to: `                        {stat.status}: <Written text={stat.summary.slice(0, 70)} refs={canvasRefs} />`,
+  },
+  {
+    // the other half of the same refusal: a chip cannot be a control while
+    // the row around it claims to be one.
+    name: 'the whole tray row claims to be a button again',
+    file: CANVAS, suite: 'agentstray', kills: '§6 the chip is a control',
+    from: `                <div key={n.id}
+                  className={'tray-row'`,
+    to: `                <div key={n.id} role="button" tabIndex={0}
+                  className={'tray-row'`,
+  },
+  {
+    // …and the navigation it replaced must still work, or the fix traded one
+    // defect for a worse one
+    name: 'the tray row stops navigating',
+    file: CANVAS, suite: 'agentstray', kills: '§7 tray navigation survives',
+    from: `                  onClick={go}>
+                  <button type="button" className="tray-main"`,
+    to: `                  >
+                  <button type="button" className="tray-main"`,
+  },
+  {
     // AND THE CONTROL'S OWN CONTROL. If the world never changed at all, §9's
     // first half would pass for free — a latch that is simply frozen is not a
     // latch, it is a stale answer.
@@ -230,7 +260,7 @@ function runSuite(name = 'deskrefs') {
   }
 }
 
-for (const suite of ['deskrefs', 'progress']) {
+for (const suite of ['deskrefs', 'progress', 'agentstray']) {
   console.log(`baseline — the ${suite} suite must be GREEN before anything is mutated`)
   const r = runSuite(suite)
   if (r.failed) {

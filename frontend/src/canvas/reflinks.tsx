@@ -248,6 +248,25 @@ export function useRefRoutes(org: string, agents: ReadonlyMap<string, unknown> |
   return useMemo(() => ({ world, onOpen }), [world, onOpen])
 }
 
+/** ONE LINE OF PROSE AN AGENT WROTE, with any canonical reference in it made
+ *  clickable. Plain text when the surface has no world — the honest rendering
+ *  for a panel with nowhere to send anybody, and the reason this takes `refs`
+ *  rather than reaching for a global.
+ *
+ *  ⚠ THE REACT RENDERER, NOT THE MARKDOWN ONE. Its call sites render text
+ *  NODES — a checklist item, a status summary — so the prose is split into
+ *  runs rather than walked as DOM. Using the markdown pass on them would
+ *  claim they had been through `md()`, which they have not.
+ *
+ *  ⚠ AND IT IS DELIBERATELY NOT USED FOR MACHINE-WRITTEN LINES. A sentence
+ *  the app composed ABOUT an agent (a progress note, a derived summary) can
+ *  quote an agent's text, and linkifying it would turn a quotation into a
+ *  claim that somebody wrote a reference there. */
+export function Written({ text, refs }: { text: string; refs?: RefRoutes }) {
+  if (!refs) return <>{text}</>
+  return <TypedRefText text={text} world={refs.world} onOpen={refs.onOpen} />
+}
+
 export interface RefRun {
   text: string
   ref?: ResolvedRef
