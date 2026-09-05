@@ -339,10 +339,11 @@ when something is wrong), the fable-limit chip, and ▶ resume when agents are
 frozen by a usage limit. The resume button is **red** while the reported
 reset time is still ahead (pressing it would just re-hit the limit) and
 returns to normal once the time passes. The inline **auto** toggle beside it
-arms unattended recovery: while it is on, each limit-frozen agent restarts on
-its own one minute after the latest *observed* active reset for its lane — an
-observed deadline, not a promise that capacity is back (it stays on for the
-org until toggled off). A limit freeze whose error carried no parseable reset
+arms unattended recovery: while it is on, an eligible limit freeze with an
+observed deadline becomes eligible for auto-resume one minute after the latest
+*observed* active reset for its lane, subject to the consent and connection
+checks — an observed deadline, not a promise that capacity is back (it stays
+on for the org until toggled off). A limit freeze whose error carried no parseable reset
 is labelled "unknown — probing again in ~5 min" (or "capacity recheck …" once
 a recheck time is stamped) and, with auto-resume on and the usual
 consent gates satisfied (an auth freeze is never retried; a run of limits
