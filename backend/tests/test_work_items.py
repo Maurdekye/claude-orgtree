@@ -2823,6 +2823,68 @@ check("entering review names a reviewer, tells it, and leaves the item with its 
       entering_review_names_a_reviewer)
 
 
+def the_transition_itself_delivers_one_message_that_survives_the_save():
+    """USER 2026-09-05 22:05: when an item TRANSITIONS to review, the chosen
+    reviewer must IMMEDIATELY receive a notification message.
+
+    The check above reads the return value and the mailbox of an org that is
+    still warm. This one is the delivery end of the requirement and asks the
+    harder question: after the transition has been COMMITTED, does a reader who
+    knows nothing about the call still find exactly one message, addressed to
+    the reviewer, naming the item, with one wake behind it?
+
+    ⚠ THE CONTROLS ARE THE POINT. "no second message" is free for code that
+    never sends one, so the same check re-enters review after a `changes`
+    decision and REQUIRES a second message there."""
+    slug = fresh_org()
+    wid = create(slug, node="worker", title="Delivered on transition")
+    before = len(mailbox(slug, "mid"))
+    n = len(DRIVEN)
+    ok(slug, "worker", "update", slug=wid, status="review", reviewer="mid",
+       done_so_far=["all"], working_on_next=[])
+
+    def requests(nid="mid"):
+        # read the COMMITTED document, not the object the call left behind
+        return [m for m in mailbox(slug, nid)
+                if str(m.get("body", "")).startswith(
+                    f"[DOCKET REVIEW REQUEST · {wid} ")]
+
+    got = requests()
+    assert len(got) == 1, f"the transition delivered {len(got)} messages, want 1"
+    # the mailbox KEY is the recipient — a node entry carries no `to` field
+    assert got[0]["from"] == "worker" and got[0]["kind"] == "request", got[0]
+    assert got[0].get("id") and got[0].get("at"), "the message was not recorded as mail"
+    assert "Delivered on transition" in got[0]["body"], got[0]["body"]
+    assert get_item(slug, wid)["reviewer"]["node"] == "mid", "the name did not persist"
+    assert len([d for d in DRIVEN[n:] if d[1] == "mid"]) == 1, \
+        "the transition must wake the reviewer exactly once"
+
+    # AN ORDINARY UPDATE AT REVIEW IS NOT A NEW REVIEW REQUEST (Astra 22:05):
+    # the same reviewer keeps the item and hears nothing more.
+    n2 = len(DRIVEN)
+    ok(slug, "worker", "update", slug=wid, status="review",
+       done_so_far=["all", "and a note"], working_on_next=[])
+    assert len(requests()) == 1, "an ordinary update re-sent the review request"
+    assert not [d for d in DRIVEN[n2:] if d[1] == "mid"], \
+        "an ordinary update woke the reviewer again"
+
+    # POSITIVE CONTROL: a real RE-ENTRY does send a second one, so the rule
+    # above is "one per transition" and not "only ever one".
+    ok(slug, "mid", "review", slug=wid, decision="changes", note="again please")
+    n3 = len(DRIVEN)
+    ok(slug, "worker", "update", slug=wid, status="review", reviewer="mid",
+       done_so_far=["fixed"], working_on_next=[])
+    assert len(requests()) == 2, "re-entering review sent no new request"
+    assert len([d for d in DRIVEN[n3:] if d[1] == "mid"]) == 1
+    # and nobody else was mailed a review request in the process
+    assert not requests("worker") and not requests("boss") and len(
+        mailbox(slug, "mid")) == before + 2
+
+
+check("the review transition itself delivers one message to the reviewer, and it is on disk",
+      the_transition_itself_delivers_one_message_that_survives_the_save)
+
+
 def the_reviewer_may_read_and_decide_and_nothing_else():
     slug = fresh_org()
     wid = create(slug, node="worker")
