@@ -10260,6 +10260,11 @@ def _codex_startup_manifest(
         # The actual transformed dynamicTools payload is provider-visible
         # thread input, although it is not app-server launch argv.
         "dynamic_tools": json.loads(json.dumps(dynamic_tools)),
+        # ⚠ NAME IS HISTORICAL: this is every launch `-c` override, which
+        # since 2026-09-05 includes the tool-disable flags a bash=off or
+        # web=off seat carries (`_codex_tool_config`), not only MCP servers.
+        # Kept as "mcp" deliberately — renaming would change the cache
+        # projection's shape, which is meant to stay byte-compatible.
         "mcp": list(spec["config_overrides"]),
     }
     return {
@@ -10276,7 +10281,7 @@ def _codex_startup_manifest(
         "cache_tools": cache_tools,
         "cache_argv": {
             "head": list(spec["argv_head"]),
-            "mcp": list(spec["config_overrides"]),
+            "mcp": list(spec["config_overrides"]),   # every -c override; see above
             "exe": spec["exe"],
         },
         "cache_env": {
