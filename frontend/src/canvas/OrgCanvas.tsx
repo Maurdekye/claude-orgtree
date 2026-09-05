@@ -28,6 +28,8 @@ import { NodeConfig, PilePicker, UserConfig, WatchdogPanel } from './modals'
 import { DraftNode, NodeSquare, UserNode } from './cards'
 import { addPin, clampRect, PinLayer, prunePins, renamePin, showPin, usePins } from './pins'
 import type { PinRect } from './pins'
+import { clearRegion, fitZoom } from './clearRect'
+import type { Region } from './clearRect'
 import { isCompact, isMobile, MaybePortal, sheetGate } from '../mobile'
 import { dropConvo, renameConvo } from '../convo'
 
@@ -1043,10 +1045,51 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
   // startup path can land there without a glide: the switchboard an org
   // opens on is the same switchboard the HUD eye button reaches, by
   // construction, because both ask this one function.
+  // w14aace89: the region every camera command aims at — the largest pin-free
+  // rectangle of the viewport, chosen by AREA and INDEPENDENT of what is being
+  // focused (user ruling 2026-09-05). Agent focus, the switchboard and full
+  // view therefore all agree on one visible free space; the target is fitted
+  // inside it afterwards rather than choosing it.
+  //
+  // Pins are viewport-local (pins.tsx `clampRect` bounds x into [0, vp.w-w],
+  // and PinLayer sets left/top straight from the rect), which is the same
+  // space `focusView` already does its `vp.width / 2` arithmetic in — so they
+  // drop in with no transform. Desktop only: `pinnedIds` above empties on
+  // mobile, and so does this.
+  //
+  // ⚠ THE PINS COME THROUGH A REF ON PURPOSE. `focusView`/`fitView` are built
+  // with an EMPTY dependency list, and `centerOn` -> the `focusAgent` effect
+  // hangs off their identity. Depending on `pins` directly would rebuild those
+  // callbacks every time a pin moved and re-fire that effect, snapping the
+  // camera back to the focused agent mid-drag. Reading the latest pins through
+  // a ref keeps the identities stable while still using current geometry.
+  const pinRectsRef = useRef<PinRect[]>([])
+  pinRectsRef.current = isMobile ? [] : pins.map((p) => p.rect)
+  const regionOf = useCallback((vp: { width: number; height: number }): Region => {
+    const box = { x: 0, y: 0, w: vp.width, h: vp.height }
+    // ⚠ AN UNMEASURED VIEWPORT IS NOT AN OBSTRUCTED ONE (regression caught by
+    // swbrecenter.test.tsx). Before first paint — and under jsdom, which
+    // reports every rect as zero — `getBoundingClientRect()` is 0x0.
+    // `clearRegion` correctly calls a zero-area viewport 'blocked', because a
+    // rectangle with no area genuinely holds nothing; but the CALLER must not
+    // read "I have not measured yet" as "pins cover everything" and refuse to
+    // move the camera. It reports the full box instead, which is exactly the
+    // pre-w14aace89 behaviour for that case.
+    if (box.w <= 0 || box.h <= 0) return { rect: box, status: 'full' }
+    return clearRegion(box, pinRectsRef.current)
+  }, [])
+
   const focusView = useCallback((id: string, z: number | null = null): View | null => {
     const p = targetRef.current.get(id)
     const vp = viewportRef.current?.getBoundingClientRect()
     if (!p || !vp) return null
+    // entirely covered by pins: there is nowhere to put the card, so keep the
+    // camera exactly where it is rather than animating somewhere invisible.
+    // The caller says so (`focusBlocked` below); returning null is the same
+    // "no camera" answer this function already gives for an unknown id.
+    const reg = regionOf(vp)
+    if (reg.status === 'blocked') return null
+    const r = reg.rect
     // click-to-focus fills the window with the card, small margin all round.
     // The EYE fits by HEIGHT only — it is the one cell that expands in width
     // to the screen's aspect ratio (the switchboard), so height is the fit.
@@ -1055,15 +1098,17 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
     // camera animates and no desk (or switchboard) ever opens, silently.
     // Floor the focus zoom at the desk threshold: overflowing the viewport
     // beats a focus gesture that cannot focus.
+    // …fitted into the free region rather than the whole viewport. With no
+    // pins `r` IS the viewport, so this is byte-for-byte the previous camera.
     const zz = z ?? Math.max(Z_DESK, id === USER
-      ? Math.min(Z_MAX, (vp.height - 48) / USER_H)
-      : Math.min(Z_MAX, (Math.min(vp.width, vp.height) - 48) / NODE_H))
+      ? Math.min(Z_MAX, (r.h - 48) / USER_H)
+      : Math.min(Z_MAX, (Math.min(r.w, r.h) - 48) / NODE_H))
     return {
-      x: vp.width / 2 - (p.x + NODE_W / 2) * zz,
-      y: vp.height / 2 - (p.y + NODE_H / 2) * zz,
+      x: r.x + r.w / 2 - (p.x + NODE_W / 2) * zz,
+      y: r.y + r.h / 2 - (p.y + NODE_H / 2) * zz,
       z: zz,
     }
-  }, [])
+  }, [regionOf])
   const centerOn = useCallback((id: string, z: number | null = null) => {
     // focusing a BURIED pile member brings it to the front first (user spec
     // 2026-08-05), then finishes the glide once the re-layout gives it a
@@ -1076,8 +1121,35 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
       return
     }
     const to = focusView(id, z)
-    if (to) animateTo(to)
-  }, [animateTo, focusView, setFront])
+    // w14aace89: a camera command that cannot be honoured must SAY SO. Silence
+    // here is the bad outcome the whole item exists to fix — the old code
+    // animated somewhere the card was invisible; refusing to move without a
+    // word would be no better, just quieter.
+    if (!to) {
+      const vp = viewportRef.current?.getBoundingClientRect()
+      if (vp && regionOf(vp).status === 'blocked') {
+        toast(['the pinned windows cover the whole canvas — '
+          + 'move or close one to focus there'])
+      }
+      return
+    }
+    // THE READABLE-DESK MINIMUM IS KEPT, NOT NEGOTIATED. focusView floors the
+    // zoom at Z_DESK on purpose (audit 2026-08-01: overflowing beats a focus
+    // gesture that cannot focus), so a cramped region does not silently
+    // produce an unreadable desk — it produces a readable one that overflows
+    // the free space. That is a deliberate trade the user cannot see from the
+    // result alone, so name the cause once, here.
+    const vpNow = viewportRef.current?.getBoundingClientRect()
+    if (vpNow) {
+      const reg = regionOf(vpNow)
+      if (reg.status === 'reduced'
+        && fitZoom(reg.rect, NODE_W, NODE_H, 48) < Z_DESK) {
+        toast(['the pinned windows leave too little room for a full desk — '
+          + 'showing it at readable size, overflowing behind them'])
+      }
+    }
+    animateTo(to)
+  }, [animateTo, focusView, regionOf, setFront, toast])
   const centerRef = useRef<typeof centerOn | null>(null)
   centerRef.current = centerOn
 
@@ -1107,6 +1179,10 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
       minX = Math.min(minX, p.x); minY = Math.min(minY, p.y)
       maxX = Math.max(maxX, p.x + NODE_W + 40); maxY = Math.max(maxY, p.y + NODE_H + 40)
     }
+    // same free region as focusView (w14aace89) — one region, every command
+    const reg = regionOf(vp)
+    if (reg.status === 'blocked') return null
+    const r = reg.rect
     if (!isFinite(minX)) return null
     // extra top margin: the eye's infinite bar fades 110px above its card.
     // №23: NO zero-clamp — past ~64 leaf columns the leftmost nodes go
@@ -1114,19 +1190,29 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
     // out of "fit all"
     minX -= 60; minY -= 130
     const z = Math.min(1.3, Math.max(0.24,
-      Math.min((vp.width - 48) / (maxX - minX), (vp.height - 48) / (maxY - minY))))
+      Math.min((r.w - 48) / (maxX - minX), (r.h - 48) / (maxY - minY))))
     return {
-      x: (vp.width - (maxX - minX) * z) / 2 - minX * z,
-      y: (vp.height - (maxY - minY) * z) / 2 - minY * z,
+      x: r.x + (r.w - (maxX - minX) * z) / 2 - minX * z,
+      y: r.y + (r.h - (maxY - minY) * z) / 2 - minY * z,
       z,
     }
-  }, [])
+  }, [regionOf])
   const fitAll = useCallback((animate = true, ms = 320) => {
     const to = fitView()
-    if (!to) return
+    if (!to) {
+      // same rule as centerOn: only the fully-covered case is worth a word,
+      // and only when a viewport exists at all (fitView also returns null
+      // before first layout and for an empty org, which are not obstructions)
+      const vp = viewportRef.current?.getBoundingClientRect()
+      if (vp && regionOf(vp).status === 'blocked') {
+        toast(['the pinned windows cover the whole canvas — '
+          + 'move or close one to fit the org here'])
+      }
+      return
+    }
     if (animate) animateTo(to, ms)
     else setView(to)
-  }, [animateTo, fitView])
+  }, [animateTo, fitView, regionOf, toast])
   // mobile zoom range (spec §5.1): compact retires Z_DESK — the map never
   // reaches desk zoom, so the camera-derived focusId never fires and the
   // sheet is the only desk. Desktop keeps [0.24, Z_MAX] untouched.
@@ -1654,7 +1740,17 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
     // triggers only when the zoom actually approaches screen-filling — far
     // later than an agent's desk; below that the eye stays a plain card
     if (best === USER) {
-      const zFill = Math.min(Z_MAX, vp ? (vp.height - 48) / USER_H : Z_MAX)
+      // ⚠ MEASURE "SCREEN-FILLING" AGAINST THE SAME SPACE THE CAMERA AIMED AT
+      // (w14aace89). This gate asks whether the zoom approaches the one that
+      // FILLS the surface; `focusView` now fills the free region rather than
+      // the whole viewport, so leaving `vp.height` here compared the camera's
+      // achieved zoom against a target it was never trying to reach. With a
+      // pin taking half the height the eye focused at ~2.7 while the gate
+      // still demanded ~5.2, and the switchboard could never open at all while
+      // any pin was up. Caught by focusspace.test.tsx §5, which measured the
+      // eye's RENDERED width and found the unfocused square.
+      const fillH = vp ? regionOf(vp).rect.h : 0
+      const zFill = Math.min(Z_MAX, vp ? (fillH - 48) / USER_H : Z_MAX)
       if (view.z < zFill * 0.85) return null
     }
     return bestD < NODE_W * 1.6 * view.z ? best : null
@@ -2093,8 +2189,23 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
             // switchboard). The credit bar keeps its normal outboard spot:
             // offscreen at focus, but still rendered — pan sideways and it
             // is there (user ruling; never force it on screen).
-            const eyeW = vp
-              ? Math.round(USER_H * (vp.width - 48) / (vp.height - 48))
+            // w14aace89 (user, 2026-09-05): the switchboard must EXPAND ONLY
+            // INTO THE FREE RECTANGLE, not merely be centred in it. `eyeW` is
+            // the eye cell's real laid-out width, so constraining it here is a
+            // LAYOUT change — the switchboard's rendered bounds shrink to the
+            // space the pins leave, instead of rendering full-width and having
+            // its edges sit underneath a pin.
+            // Aspect comes from the region for the same reason focusView fits
+            // to the region: the two must agree, or the camera would frame a
+            // width the cell does not actually have. No pins => region IS the
+            // viewport => identical to the previous expression.
+            const eyeReg = vp ? regionOf(vp) : null
+            const eyeR = eyeReg && eyeReg.status !== 'blocked' ? eyeReg.rect : null
+            // guard the divisor: a region thinner than the 48px margin would
+            // otherwise divide by <= 0 and hand the layout an Infinity width
+            const eyeH = eyeR ? eyeR.h - 48 : 0
+            const eyeW = eyeR && eyeH > 0
+              ? Math.round(USER_H * Math.max(1, eyeR.w - 48) / eyeH)
               : Math.round(USER_H * 16 / 9)
             return <UserNode key={USER} pos={p} isDrop={dropId === USER} seats={seats}
               codexHire={codexHire} antigravityHire={antigravityHire}
