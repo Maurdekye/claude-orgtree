@@ -493,30 +493,41 @@ def main() -> int:
     # cannot be made to agree by editing the test.
     mismatched: list[str] = []
     file_answers: set[object] = set()
+    cmd_answers: set[object] = set()
     for (pm, edit), want in sorted(EXPECTED_SANDBOX.items()):
         s, i = mkorg(f"appr {pm} {int(edit)}", edit=edit, pm=pm)
         got_turn, _ = turn_sandbox(s, i)
         d = approval_decisions(s, i)
         file_answers.add(d.get("fileChange"))
-        expect_file = "decline" if got_turn == "read-only" else "accept"
-        if d.get("fileChange") != expect_file:
+        cmd_answers.add(d.get("commandExecution"))
+        expect = "decline" if got_turn == "read-only" else "accept"
+        if d.get("fileChange") != expect:
             mismatched.append(
                 f"{pm}/edit={edit}: sandbox {got_turn} but fileChange "
-                f"{d.get('fileChange')!r} (wanted {expect_file})")
-        # bash is on in every fixture above, so the command branch must be
-        # unaffected by permission_mode — the deliberate carve-out
-        if d.get("commandExecution") != "accept":
+                f"{d.get('fileChange')!r} (wanted {expect})")
+        # ⚠ THE COMMAND BRANCH IS HELD TO THE SAME CELL (user ruling
+        # 2026-09-05). This asserted `== "accept"` for every permission_mode —
+        # the old carve-out — and that is precisely what let a `plan` seat
+        # write: a commandExecution approval is codex asking to re-run a
+        # sandbox-blocked command OUTSIDE the sandbox, so accepting one on a
+        # read-only node returns the write the sandbox had just refused.
+        # bash is ON in every fixture here, so anything but the sandbox's own
+        # answer is the hole reopening.
+        if d.get("commandExecution") != expect:
             mismatched.append(
-                f"{pm}/edit={edit}: commandExecution "
-                f"{d.get('commandExecution')!r} with bash ON")
-    check("the fileChange decision matches the sandbox in every scope",
+                f"{pm}/edit={edit}: sandbox {got_turn} but commandExecution "
+                f"{d.get('commandExecution')!r} with bash ON "
+                f"(wanted {expect})")
+    check("both approval decisions match the sandbox in every scope",
           lambda: eq(mismatched, [], "gates that disagree"))
     # ANTI-VACUITY: if `_approve` answered "accept" everywhere, the loop above
     # would still pass for the accept-side cells and quietly compare a
-    # constant. Both answers must actually occur.
+    # constant. Both answers must actually occur, on BOTH branches.
     check("the approval seam produced BOTH accept and decline",
-          lambda: eq(sorted(str(a) for a in file_answers),
-                     ["accept", "decline"], "distinct fileChange answers"))
+          lambda: eq((sorted(str(a) for a in file_answers),
+                      sorted(str(a) for a in cmd_answers)),
+                     (["accept", "decline"], ["accept", "decline"]),
+                     "distinct fileChange / commandExecution answers"))
     # …and the command branch must be able to say no at all, or "accept
     # everywhere" above proves nothing about it either
     nb_slug, nb_nid = mkorg("appr nobash", edit=True, pm="acceptEdits",
@@ -648,6 +659,54 @@ def main() -> int:
     check("a claude-tier node is NOT given the codex sandbox text",
           lambda: eq("elevated permission" in c_guide, False,
                      "codex-only guidance leaking to the claude lane"))
+
+    print("§12 a READ-ONLY codex seat is told the retry route is closed to it")
+    # §11's guidance is now a promise only a write-enabled seat can keep. Told
+    # to a `plan` or `edit=off` node — whose commandExecution approvals §8 now
+    # declines — it produces exactly the failure §11 was written to prevent,
+    # one layer up: the agent asks, is refused, and reports itself blocked
+    # without ever being told why. So the text must SPLIT, and each seat hear
+    # what is true for it.
+    for pm, edit in (("plan", True), ("acceptEdits", False), ("plan", False)):
+        s, i = mkorg(f"guide {pm} {int(edit)}", edit=edit, pm=pm)
+        g = supervisor.identity_prompt(store.load_org(s), i)
+        check(f"{pm}/edit={edit}: told the retry WILL BE REFUSED, and not "
+              f"told it will be approved",
+              lambda g=g: eq(("WILL BE REFUSED" in g,
+                              "it will be approved" in g),
+                             (True, False),
+                             "read-only wording present / write wording gone"))
+        # …and it must not leave the agent thinking every READ still works.
+        # Two were measured to stop: git outside the cwd (dubious ownership)
+        # and PowerShell .NET method calls (constrained language mode). An
+        # agent not told these reads as "the sandbox is broken".
+        check(f"{pm}/edit={edit}: names the reads that are blocked too",
+              lambda g=g: eq(("dubious ownership" in g,
+                              "constrained language mode" in g),
+                             (True, True), "both measured read limits named"))
+        # …and hands over the measured way THROUGH the git one, with the
+        # caveat that makes it safe to offer. `git -c safe.directory=<exact
+        # repo> -C <repo> log` read a nested repo with zero approvals asked
+        # from a seat declining every escalation; the same -c aimed at the
+        # PARENT still failed. Naming the form without "not OS write
+        # permissions" would read as a sanctioned way to get a write.
+        check(f"{pm}/edit={edit}: offers the command-scoped safe.directory "
+              f"read, and says it grants no write",
+              lambda g=g: eq(("safe.directory=<that repo's exact path>" in g,
+                              "not OS write permissions" in g,
+                              "never a parent path" in g),
+                             (True, True, True),
+                             "the form / the no-write caveat / no wildcards"))
+    # ANTI-VACUITY, and the regression guard for the landing route: the
+    # write-enabled seat must still get the ORIGINAL text. If the branch above
+    # were unconditional, every check in §12 would pass and §11's agent would
+    # silently lose the guidance that unblocked it.
+    w_slug, w_nid = mkorg("guide writer", edit=True, pm="default")
+    w_guide = supervisor.identity_prompt(store.load_org(w_slug), w_nid)
+    check("a write-enabled codex seat still gets the approved-retry text",
+          lambda: eq(("it will be approved" in w_guide,
+                      "WILL BE REFUSED" in w_guide),
+                     (True, False), "write-enabled wording, read-only absent"))
 
     print()
     if FAIL:

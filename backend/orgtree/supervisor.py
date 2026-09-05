@@ -4956,17 +4956,48 @@ def identity_prompt(org: Org, nid: str, include_archived: bool = False) -> str:
         # as encouragement to escalate — the second sentence is the load
         # -bearing one, because the failure to prevent is "I am blocked when
         # I am not", not "I learned to push past my scope".
-        tool_line += (
-            "Sandbox: your shell runs in an OS sandbox, and a write it "
-            "blocks is reported to you as a plain 'Permission denied' — "
-            "including writes inside your OWN working directory: an existing "
-            "repository's `.git` folder is blocked, so `git add`, "
-            "`git commit`, `git update-ref` and `git merge` all hit it. If "
-            "the write is one your grants ENTITLE you to make, that is not "
-            "a refusal: ask to retry the command with elevated permission "
-            "and it will be approved. If it is a path you were never "
-            "granted, the denial is real and stands — do not go looking for "
-            "another way around it, raise it instead. ")
+        # ⚠ AND THE PROMISE IS NOW SCOPE-DEPENDENT (2026-09-05). Since
+        # `_approve` declines commandExecution for a read-only node, telling
+        # such a node "ask and it will be approved" is a promise the seat
+        # cannot keep: it would ask, be refused, and either loop or report
+        # itself blocked for a reason it was never given. Same failure mode as
+        # the reserve agent above, one layer up. So each seat is told what is
+        # true FOR IT — see `_codex_may_write`.
+        if _codex_may_write(sc):
+            tool_line += (
+                "Sandbox: your shell runs in an OS sandbox, and a write it "
+                "blocks is reported to you as a plain 'Permission denied' — "
+                "including writes inside your OWN working directory: an "
+                "existing repository's `.git` folder is blocked, so `git "
+                "add`, `git commit`, `git update-ref` and `git merge` all hit "
+                "it. If the write is one your grants ENTITLE you to make, "
+                "that is not a refusal: ask to retry the command with "
+                "elevated permission and it will be approved. If it is a path "
+                "you were never granted, the denial is real and stands — do "
+                "not go looking for another way around it, raise it "
+                "instead. ")
+        else:
+            tool_line += (
+                "Sandbox: this is a READ-ONLY seat, and that is enforced, not "
+                "advisory. Your shell runs in an OS sandbox that restricts "
+                "writes, and a command it blocks is reported to you as a "
+                "plain 'Permission denied' or a similar refusal. Asking to "
+                "retry a blocked command with elevated permission WILL BE "
+                "REFUSED — that route exists for write-enabled seats and is "
+                "closed to yours, so a refused retry is not a mistake and not "
+                "worth a second attempt. Some commands that only READ can be "
+                "blocked as well: git may refuse a repository it is not "
+                "explicitly trusted for with 'detected dubious ownership' — "
+                "including one nested inside a directory you hold — and "
+                "PowerShell refuses .NET method calls under constrained "
+                "language mode. For a repository inside your granted scope, "
+                "`git -c safe.directory=<that repo's exact path> -C <that "
+                "repo> ...` reads it with no escalation at all; that adjusts "
+                "Git's ownership trust only, not OS write permissions, so it "
+                "will not get you a write. Use the repository's own path, "
+                "never a parent path, a wildcard, or a global config change. "
+                "Read, search and plan freely; when the work genuinely needs "
+                "a write, raise it rather than looking for a way around. ")
         codex_ok, codex_undeliverable = codex_mcp_grant(org, nid)
         mcp_names = sorted(codex_ok)
         if codex_undeliverable:
@@ -8831,29 +8862,68 @@ def _codex_may_write(sc: Mapping[str, Any]) -> bool:
       `is_error: true`, "Cannot write to … while in plan mode." The CLI
       denies the tool — this is not the model choosing to cooperate.
 
-    ⚠ SHELL COMMANDS ARE NOT COVERED HERE, AND THE SANDBOX DOES NOT COVER
-    THEM EITHER. This said the OS sandbox backstopped it — that "a plan-mode
-    agent with a terminal can still have a command approved, and what
-    actually stops it writing is the `read-only` sandbox this predicate
-    selects". THAT WAS WRONG, and I wrote it. Measured 2026-09-04, control
+    ⚠ SHELL COMMANDS ARE COVERED TOO, AND THE SANDBOX IS NOT WHAT COVERS
+    THEM. This function's docstring used to claim the OS sandbox backstopped
+    them — that "a plan-mode agent with a terminal can still have a command
+    approved, and what actually stops it writing is the `read-only` sandbox
+    this predicate selects". THAT WAS WRONG. Measured 2026-09-04, control
     pair, `sandbox="read-only"` both times: with the escalation approved the
     file WAS written; with it declined the file was NOT. When the sandbox
     blocks a command, codex asks `item/commandExecution/requestApproval` to
-    re-run it OUTSIDE the sandbox, and `_codex_leg._approve` accepts every
-    such request while the `bash` switch is on.
+    re-run it OUTSIDE the sandbox, so on this lane the sandbox mode is not the
+    enforcement for shell writes — the approval decision is.
 
-    So on this lane the sandbox mode is not the enforcement for shell writes;
-    the approval decision is. `plan` and `edit=off` are therefore only HALF
-    enforced against an agent with a terminal: its file TOOLS are declined
-    here, its shell writes escalate through. Do not read this function as a
-    guarantee that a read-only node cannot write.
+    So since 2026-09-05 the approval decision enforces it (user ruling,
+    "read-only means read-only"): `_codex_leg._approve` declines
+    `commandExecution` as well as `fileChange` whenever this predicate is
+    False. A `plan` or `edit=off` seat keeps its terminal and keeps every
+    command the sandbox itself allows; what it can no longer do is buy its way
+    back OUT of the sandbox. Write-enabled seats are untouched, which is what
+    keeps the authorized Git landing route working — that route is an
+    escalated `commandExecution`, and it belongs to nodes this predicate says
+    yes to.
 
-    Left standing deliberately, not overlooked: closing it would also close
-    the path Codex agents legitimately use to write their own `.git` (the
-    sandbox denies that too), so it is a policy call with a real cost on the
-    other side and the coordinator is taking it to the user. If you come to
-    fix it, that trade is the thing to solve — and measure what the Claude
-    lane does with Bash in plan mode first.
+    ⚠ WHAT THAT COSTS, MEASURED, NOT ASSUMED (real codex-cli 0.153.3,
+    read-only + on-request, identical batteries, escalation declined vs
+    accepted). THESE COMMANDS WERE TESTED and completed inside the sandbox
+    without ever asking for approval, so they are unaffected: reading a file
+    in the cwd, reading a file outside it, listing a directory outside it,
+    reading the environment, and `git status` / `git log` / `git diff` in the
+    cwd's own repository. That is a tested list, not a general guarantee
+    about "reads" — the two below are reads too.
+
+    Two kinds of genuine READ were measured to STOP working. Each succeeded
+    with escalation accepted and failed with it declined, which is what makes
+    them a cost of this rule rather than of the sandbox:
+
+    · `git -C <repo> log` against a repository that is NOT the turn's cwd.
+      Git's dubious-ownership refusal: the sandbox runs as a different user
+      (CodexSandboxOffline) than the one that owns the files.
+      `_codex_git_trust_env` answers this, but only for a path the node holds
+      EXACTLY. MEASURED, because I had claimed otherwise: trusting a granted
+      PARENT still produced "detected dubious ownership" for a repo nested
+      inside it, while trusting that nested repo itself succeeded with no
+      approval asked at all. So this bites on any repo whose own path is not
+      in `add_dirs` — INCLUDING one sitting inside a granted directory, which
+      is the common case for a worktree under a granted scratch folder.
+      MITIGATED, not merely lamented: `git -c safe.directory=<exact repo
+      path> -C <repo> log` read the same nested repo with ZERO approvals
+      asked, from a seat declining every escalation. Pointing that same `-c`
+      at the PARENT still failed, which is the exact-match finding confirmed
+      a third way. The read-only identity prompt hands the agent that form,
+      because it changes git's ownership trust and not OS write permissions —
+      it cannot be turned into a write.
+    · `[IO.File]::ReadAllText(<existing file>)` — a read that mutates
+      nothing. PowerShell's constrained-language mode inside the sandbox
+      refuses the method call ("Method invocation is supported only on core
+      types in this language mode") and escalation was what got past it.
+
+    Two earlier specimens were WITHDRAWN as evidence of lost reads, being
+    writes: `New-Item ([IO.Path]::GetTempFileName())` and `git gc --auto`
+    both create or rewrite files, so neither can carry a claim about reads.
+    A network read failed with escalation accepted AND declined on the
+    measuring machine: it shows no cost and equally proves nothing — do not
+    quote it either way.
     """
     if not sc.get("tools", {}).get("edit", True):
         return False
@@ -9010,16 +9080,35 @@ def _codex_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
         # --disallowed-tools decide here, and every decline is recorded so
         # `_after_turn` books it like a CLI-reported denial
         is_file = "fileChange" in method
-        # ⚠ THE FILE BRANCH ASKS `_codex_may_write`, NOT `tools_sc["edit"]`.
-        # This read the edit switch alone, so a `plan` node — the read-only
-        # planning seat, the MOST restrictive mode in PM_LEVELS — had its file
-        # changes approved like any other. The OS sandbox and this callback
-        # are two gates on one permission; when they disagree the loose one is
-        # decoration, so both now answer from the same predicate and cannot
-        # drift apart. `commandExecution` still comes from the `bash` switch —
-        # see `_codex_may_write` for why that carve-out is deliberate.
-        if (_codex_may_write(n["scope"]) if is_file
-                else tools_sc.get("bash", True)):
+        # ⚠ BOTH BRANCHES ASK `_codex_may_write`, NOT `tools_sc["edit"]`.
+        # The file branch read the edit switch alone, so a `plan` node — the
+        # read-only planning seat, the MOST restrictive mode in PM_LEVELS —
+        # had its file changes approved like any other. The OS sandbox and
+        # this callback are two gates on one permission; when they disagree
+        # the loose one is decoration, so both answer from the same predicate
+        # and cannot drift apart.
+        #
+        # ⚠ AND SO DOES THE COMMAND BRANCH, since 2026-09-05 (user ruling
+        # "read-only means read-only"). It used to be `bash` alone, which left
+        # a read-only seat a way out: a `commandExecution` approval is codex
+        # asking to re-run a sandbox-BLOCKED command OUTSIDE the sandbox, so
+        # accepting one on a `read-only` node hands back exactly the write the
+        # sandbox just refused. Measured, control pair, sandbox=read-only both
+        # times: accepted -> the file was written; declined -> it was not.
+        # `bash` still gates it too — a node without a terminal approves no
+        # command — but it is no longer the only thing that does.
+        #
+        # FAIL-CLOSED ON PURPOSE. The request params carry no field that
+        # reliably separates an unsandboxed retry from an ordinary approval:
+        # `reason` is model-written prose and `availableDecisions` /
+        # `proposedExecpolicyAmendment` were present on every request observed,
+        # all of which WERE retries. Rather than key enforcement off optional
+        # metadata that may be absent, unknown or newly-shaped in a later
+        # codex, a read-only seat declines the whole callback. What that costs
+        # is real and is written down in `_codex_may_write`.
+        may_write = _codex_may_write(n["scope"])
+        if (may_write if is_file
+                else (tools_sc.get("bash", True) and may_write)):
             return "accept"
         kind = "fileChange" if is_file else "commandExecution"
         denials.append({"tool_name": kind,
