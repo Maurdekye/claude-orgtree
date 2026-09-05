@@ -503,6 +503,66 @@ class OrgInboxEntry(TypedDict):
     attachments: NotRequired[list[dict[str, Any]]]   # [{name, bytes}] display
 
 
+class WorkActor(TypedDict):
+    """Who did something to a work item: a node AT A GENERATION. A compaction
+    or rehire bumps the generation, so the record keeps naming the process
+    that acted even after the seat is a different session. The user is the
+    literal string "user" wherever a WorkActor is accepted."""
+    node: str
+    generation: int
+
+
+class WorkStage(TypedDict, total=False):
+    """One delivery stage of a work item (docs/work-items.md). A CLAIM is
+    written by an agent/user: claimed_*, ref. VERIFICATION fields are written
+    ONLY by the backend from `workitems.evaluate` — a caller supplying any of
+    them is refused, not silently overwritten. `implemented` and `deployed`
+    are claim-only stages and keep method "self-report"."""
+    claimed_at: str
+    claimed_by: WorkActor | str
+    ref: str | None                 # sha for committed/pushed/in_build; a note/log path otherwise
+    note: str | None
+    verified: bool | None           # True/False only when git answered; None = unknown, with detail
+    method: str                     # self-report | unverified | object-exists | tracking-ref-ancestry | boot-ancestry
+    detail: str
+    resolved_oid: str | None        # the exact commit the sha resolved to in REPO_ROOT
+    target: str                     # identity compared against: tracking-ref OID or "<boot>[+dirty]"
+    ref_as_of: str
+    fetched_at: None                # never derived — git keeps no fetch time
+    observed_at: str
+
+
+class WorkAcceptance(TypedDict):
+    text: str
+    checked: dict[str, Any] | None  # {at, by, evidence_ref, note} — acceptance evidence, distinct from delivery
+
+
+class WorkItem(TypedDict):
+    """A durable unit of work in the org document (`OrgDoc.work_items`,
+    archived ones in `OrgDoc.work_items_archive`). Survives retirement,
+    compaction and reassignment because nothing about it lives on a node.
+    Bodies are user/agent content and may contain secrets: served only on
+    the user route and to agents with read right; never in prompt blocks."""
+    id: str                         # "w" + 8 hex
+    rev: int                        # bumped by every mutation; verify revalidates against it
+    kind: str                       # "code" | "non-code" (non-code: delivery is None)
+    title: str
+    objective: str
+    status: str                     # open | in_progress | blocked | review | done | superseded | dropped
+    blocked_reason: NotRequired[str | None]
+    owner: WorkActor | None         # identity + generation at assignment
+    created_by: WorkActor | str
+    at: str
+    updated_at: str
+    acceptance: list[WorkAcceptance]
+    dependencies: list[str]         # work item ids in this org (active or archived)
+    evidence: list[dict[str, Any]]  # {at, by, kind: note|link|file|commit|log, ref, note?} — cap by refusal, never truncated
+    delivery: dict[str, WorkStage | None] | None   # keys = workitems.STAGES
+    accepted: dict[str, Any] | None  # {at, by, note} — set only by work_accept (user or an ancestor of the owner)
+    history: list[dict[str, Any]]   # {at, by, field, from, to}; oldest fold into ONE {kind: "folded", ...} row past the cap
+    superseded_by: str | None
+
+
 class KioskCfg(TypedDict, total=False):
     """Kiosk is a TYPE (user ruling): limits bind whether or not the public
     URL is enabled — `enabled` only gates the token gateway."""
@@ -583,6 +643,13 @@ class OrgDoc(TypedDict):
     # supervisor.start_watchdog_engine
     watchdogs: NotRequired[list[dict[str, Any]]]
     documents: NotRequired[list[dict[str, Any]]]  # FR-03 presented documents {id, node, title, body, at} — newest 10/node, 100/org
+    # Durable work items (docs/work-items.md). Both are `doc` blobs under
+    # SQLite and plain keys under JSON — no DDL, no migration marker. The
+    # active list is capped by REFUSING creation (Org.WORK_ACTIVE_MAX); the
+    # archive is unbounded and only ever written by an explicit archive
+    # action. Nothing in either list is deleted automatically.
+    work_items: NotRequired[list[WorkItem]]
+    work_items_archive: NotRequired[list[WorkItem]]
     org_inbox: NotRequired[list[OrgInboxEntry]]
     org_inbox_read: NotRequired[int]
     kiosk: NotRequired[KioskCfg | None]
