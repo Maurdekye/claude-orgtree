@@ -27,6 +27,10 @@ FAKEANTIGRAVITY_SCENARIO:
                  "invalid model selection…", empty conversation_id, rc=1
     hookdeny     a run_command step ERRORs with the measured pre-tool-hook
                  denial message, and the run continues to SUCCESS
+    resumelost   asked to resume with --conversation, warns on stderr and
+                 starts a FRESH conversation with a new id instead — the
+                 measured lost-resume shape (the old context is gone). With
+                 no --conversation it behaves exactly like `text`
     canceled     the measured headless auto-deny outcome: result CANCELED,
                  empty response, the "no output produced" stderr line
     usage_limit  the MEASURED wall (2026-09-03, agy 1.1.24): a lone result
@@ -235,6 +239,14 @@ def main_turn():
             "duration_seconds": 0, "num_turns": 0,
             "usage": _usage(0, 0, 0, 0)}})
         sys.exit(1)
+    if SCENARIO == "resumelost" and resume:
+        # the MEASURED lost-resume shape: a warning on stderr, and a FRESH
+        # conversation with a NEW id — the asked-for one is simply not there
+        # any more and its context is gone with it
+        sys.stderr.write(f"warning: conversation {resume} not found; "
+                         "starting a new conversation\n")
+        sys.stderr.flush()
+        resume = ""
     cid = resume or os.environ.get("FAKEANTIGRAVITY_CONVERSATION_ID",
                                    "fake-agy-conv-0001")
     served = "fake-default-model" if SCENARIO == "wrongmodel" else model

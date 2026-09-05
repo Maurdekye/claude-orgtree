@@ -335,6 +335,106 @@ def main():
     check("a minted/re-minted id is never resumed — the conversation starts "
           "fresh and the harvest takes over", t3b)
 
+    def t3c():
+        # THE RESUME THAT IS NOT THERE ANY MORE. Measured shape: the CLI
+        # warns on stderr and hands back a FRESH conversation, so the agent's
+        # earlier context on this provider is gone. The leg is supposed to
+        # say so in the conversation, at the moment it happened, and adopt
+        # the new id — an agent that silently forgot everything looks to its
+        # superior like an agent that stopped cooperating.
+        s3c, n3c = mkorg("resumelost")
+        run_turn(s3c, n3c, "first turn")            # harvest an id to resume
+        first = node_doc(s3c, n3c)["session_id"]
+        assert first, "the first turn harvested a conversation id"
+        os.environ["FAKEANTIGRAVITY_SCENARIO"] = "resumelost"
+        os.environ["FAKEANTIGRAVITY_CONVERSATION_ID"] = "fake-agy-conv-NEW"
+        try:
+            run_turn(s3c, n3c, "second turn")
+        finally:
+            os.environ["FAKEANTIGRAVITY_SCENARIO"] = "text"
+            os.environ.pop("FAKEANTIGRAVITY_CONVERSATION_ID", None)
+        n = node_doc(s3c, n3c)
+        rows = (store.load_org(s3c).d.get("turn_error_log") or {}).get(n3c, [])
+        said = [r for r in rows if "could not resume" in str(r.get("text"))]
+        eq((n["session_id"], n.get("antigravity_conversation"),
+            len(said) == 1, supervisor.state(s3c, n3c).get("last_error")),
+           ("fake-agy-conv-NEW", "fake-agy-conv-NEW", True, None),
+           f"node={n.get('session_id')} rows={rows}")
+    check("a resume the CLI could not honour is SAID in the conversation, "
+          "the fresh id is adopted, and the turn still completes", t3c)
+
+    def t3d():
+        # the control: the same two turns with the resume HONOURED say
+        # nothing about a lost conversation. Without this, a leg that logged
+        # the line on every turn would pass the check above.
+        s3d, n3d = mkorg("resumekept")
+        run_turn(s3d, n3d, "first turn")
+        run_turn(s3d, n3d, "second turn")
+        rows = (store.load_org(s3d).d.get("turn_error_log") or {}).get(n3d, [])
+        said = [r for r in rows if "could not resume" in str(r.get("text"))]
+        eq((node_doc(s3d, n3d)["session_id"], said),
+           ("fake-agy-conv-0001", []), f"rows={rows}")
+    check("…and an honoured resume says nothing about it (control)", t3d)
+
+    # ── the image translation, which had NO check at all ──────────────────
+    # The mail builder validates a user's image and hands the leg an inline
+    # block. This lane's print-mode stdin takes TEXT content only, so those
+    # blocks are not deliverable and the leg announces them instead (D-180).
+    # Announcing and DROPPING look identical from the agent's side unless
+    # something reads the prompt, so this reads the prompt.
+    def _img_org(kind: str):
+        from PIL import Image
+        s, n = mkorg(f"img{kind}")
+        name = "shot.png" if kind == "image" else "notes.txt"
+        up = os.path.join(supervisor.scratch_dir(s, n), "uploads")
+        os.makedirs(up, exist_ok=True)
+        dst = os.path.join(up, name)
+        if kind == "image":
+            Image.new("RGB", (8, 8), (255, 0, 0)).save(dst)
+        else:
+            with open(dst, "wb") as f:
+                f.write(b"plain text, not an image")
+        with store.DOC_LOCK:
+            o2 = store.load_org(s)
+            o2.post_mail(USER, n, f"look at {name}",
+                         attachments=[{"name": name, "path": f"uploads/{name}",
+                                       "bytes": os.path.getsize(dst)}])
+            store.save_org(o2)
+        probe_i = os.path.join(DATA, f"wsprobe-{kind}.json")
+        os.environ["FAKEANTIGRAVITY_WSPROBE"] = probe_i
+        try:
+            run_turn(s, n, "go")
+            return str(json.load(open(probe_i, encoding="utf-8")
+                                 ).get("prompt") or "")
+        finally:
+            os.environ.pop("FAKEANTIGRAVITY_WSPROBE", None)
+
+    def t4i():
+        p = _img_org("image")
+        # the mail reached the prompt at all — without this, an empty prompt
+        # would satisfy "no image was dropped silently" for the wrong reason
+        assert "[ATTACHED FILE:" in p and "shot.png" in p, p[-400:]
+        assert "could not be inlined on this provider" in p, p[-400:]
+        assert "view_file" in p, "the note names the tool that CAN see it"
+    check("a user's image is ANNOUNCED in the prompt on this lane, not "
+          "dropped, and the note names view_file", t4i)
+
+    def t4j():
+        p = _img_org("text")
+        assert "[ATTACHED FILE:" in p and "notes.txt" in p, p[-400:]
+        assert "could not be inlined" not in p, \
+            "a non-image attachment must not fire the image note"
+    check("…and an ordinary attachment fires no image note (control)", t4j)
+
+    def t4k():
+        note = supervisor._antigravity_image_note
+        blk = [{"type": "image"}, {"type": "image"}, {"type": "text"}]
+        eq((note([]), "2 image attachments" in note(blk),
+            "1 image attachment " in note(blk[:1])),
+           ("", True, True), f"{note(blk)!r}")
+    check("the note counts only image blocks, is plural-correct, and is "
+          "EMPTY when there are none", t4k)
+
     print("§4 identity + env hygiene at the leg")
 
     def t4():
