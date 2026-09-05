@@ -10859,15 +10859,27 @@ def _antigravity_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
     dlock = threading.Lock()
 
     def _flush_draft() -> None:
+        # Extraction AND emission under `dlock`, as one step. Astra's seam
+        # review of 6ca27ad (2026-09-05): the timer thread took the buffer,
+        # dropped the lock, and only then emitted — so `_commit_text`'s own
+        # flush found an empty buffer, its `text` handover retired the desk's
+        # draft, and the timer's late `delta` then REVIVED a stale draft the
+        # durable row had already replaced (frames text→delta; one row). The
+        # handover's flush now WAITS for an in-flight timer emission instead
+        # of overtaking it. Order dlock → emit_lock → jlock; nothing takes
+        # `dlock` while holding either of the other two, and every caller
+        # (`_queue_delta`'s fire path, `_commit_text`, the end-of-turn drain)
+        # calls in with `dlock` released, so the plain lock cannot re-enter.
         with dlock:
             body = str(dstate["buf"] or "")
             dstate["buf"] = ""
             dstate["timer"] = None
-        while body:
-            # through the barrier: a delta is the FIRST assistant output of a
-            # turn, so it is the first thing that could outrun the user's row
-            _visible_stream({"kind": "delta", "text": body[:2000]})
-            body = body[2000:]
+            while body:
+                # through the barrier: a delta is the FIRST assistant output
+                # of a turn, so it is the first thing that could outrun the
+                # user's row
+                _visible_stream({"kind": "delta", "text": body[:2000]})
+                body = body[2000:]
 
     def _queue_delta(body: str) -> None:
         fire = False

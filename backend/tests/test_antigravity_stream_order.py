@@ -14,7 +14,9 @@ INVARIANTS (the Codex leg's, transposed — see test_codex_stream_order.py):
      and shows nothing;
   5. blocks completed before a failure are on disk when the failure is
      reported, and an unfinished step's streamed text is kept under its own
-     identity rather than lost.
+     identity rather than lost;
+  6. a draft `delta` never follows the `text` handover that retired the
+     draft — the timer flush and the handover are serialized (§10).
 
 Measured on main f217d94 (2026-09-05, `probe_d4.py`): the antigravity leg
 kept none of these. `AntigravityTurn._pump` dispatches every wire event from
@@ -133,6 +135,79 @@ def shape(recs: list[dict]) -> list[tuple[str, str, str]]:
                 rows.append(("tool_result", str(part.get("tool_use_id")),
                              str(part.get("content"))))
     return rows
+
+
+def draft_seam() -> dict:
+    """§10's instrument. Executes the leg's ACTUAL `_flush_draft` and
+    `_commit_text` (AST-extracted from the imported supervisor's source) in a
+    controlled namespace: the draft timer thread is held INSIDE its emission
+    after it has taken the buffer, a second thread then runs the handover,
+    and the instrument records whether that handover waited. Locks and state
+    are the real names the bodies close over; `_visible` is the open-journal
+    path (the barrier is §1's business, not this seam's)."""
+    import ast
+    import threading
+    src = open(supervisor.__file__, encoding="utf-8").read()
+    leg = next(n for n in ast.parse(src).body
+               if isinstance(n, ast.FunctionDef)
+               and n.name == "_antigravity_leg")
+    fns = [n for n in leg.body if isinstance(n, ast.FunctionDef)
+           and n.name in ("_flush_draft", "_commit_text")]
+    if len(fns) != 2:
+        raise AssertionError(f"seam: found {[f.name for f in fns]}")
+
+    def run(hold_timer: bool) -> dict:
+        frames: list[str] = []
+        journal: list[dict] = []
+        extracted = threading.Event()
+        release = threading.Event()
+
+        def visible_stream(payload):
+            if hold_timer and threading.current_thread().name == "draft-timer":
+                extracted.set()
+                if not release.wait(5):
+                    frames.append("timer-timeout")
+            frames.append(payload["kind"])
+
+        env = dict(dlock=threading.Lock(), jlock=threading.Lock(),
+                   dstate={"buf": "hello", "timer": None},
+                   jstate={"agent_items": 0},
+                   _visible_stream=visible_stream, _visible=lambda f: f(),
+                   _journal_records=lambda rows: journal.extend(rows),
+                   _text_became_durable=lambda *a: None,
+                   stream=lambda s, n, payload: frames.append(payload["kind"]),
+                   slug="seam", nid="seam", model_id="seam")
+        exec(compile(ast.Module(body=fns, type_ignores=[]),
+                     "<antigravity-leg-bodies>", "exec"), env)
+        out: dict = {"extracted": False, "handover_waiting": None,
+                     "frames_before_release": None}
+        if hold_timer:
+            timer = threading.Thread(target=env["_flush_draft"],
+                                     name="draft-timer", daemon=True)
+            timer.start()
+            out["extracted"] = extracted.wait(5)
+            handover = threading.Thread(
+                target=env["_commit_text"], args=("item", "hello", "stamp"),
+                name="reader", daemon=True)
+            handover.start()
+            handover.join(0.5)           # a WAITING handover is still alive
+            out["handover_waiting"] = handover.is_alive()
+            out["frames_before_release"] = list(frames)
+            release.set()
+            timer.join(5)
+            handover.join(5)
+            if timer.is_alive() or handover.is_alive():
+                frames.append("deadlock")
+        else:
+            env["_commit_text"]("item", "hello", "stamp")
+        out.update(frames=frames, durable_rows=len(journal))
+        return out
+
+    ctl = run(False)
+    result = run(True)
+    result["control"] = {"frames": ctl["frames"],
+                         "durable_rows": ctl["durable_rows"]}
+    return result
 
 
 SEEN: list[dict] = []
@@ -534,6 +609,34 @@ def main() -> int:
           lambda: eq(violations([{"kind": "delta", "_rows": 0},
                                  {"kind": "text", "_rows": 1}], need=1),
                      [("delta", 0)], "detected violations"))
+
+    print("§10 the draft timer cannot overtake the text handover (Astra's "
+          "seam review of 6ca27ad, 2026-09-05)")
+    # A controlled-thread seam on the leg's ACTUAL `_flush_draft` and
+    # `_commit_text` bodies (extracted by AST from the supervisor this test
+    # imported — the tree under test, not a fixed path). The timer thread is
+    # held INSIDE its emission after it took the buffer; the handover then
+    # runs on a second thread. Before the amendment the handover's own flush
+    # found an empty buffer, emitted `text`, and the timer's late `delta`
+    # followed it (frames text→delta, one durable row): a stale draft revived
+    # on the desk after its durable replacement. Now the handover must WAIT.
+    seam = draft_seam()
+    check("anti-vacuity: the timer thread really took the buffer and was "
+          "held inside its emission (the seam was reached)",
+          lambda: truthy(seam["extracted"], "timer never reached emission"))
+    check("the handover BLOCKED while the timer's emission was in flight: "
+          "its thread was still alive and no frame had gone out when the "
+          "timer was released",
+          lambda: eq((seam["handover_waiting"], seam["frames_before_release"]),
+                     (True, []), "(handover alive, frames) while timer held"))
+    check("frames after release: delta THEN text — the late timer delta "
+          "cannot follow the draft's retirement",
+          lambda: eq(seam["frames"], ["delta", "text"], "frame order"))
+    check("exactly one durable text row for the step",
+          lambda: eq(seam["durable_rows"], 1, "durable rows"))
+    check("normal control (no preemption) is the same order with one row",
+          lambda: eq(seam["control"], {"frames": ["delta", "text"],
+                                       "durable_rows": 1}, "control"))
 
     print()
     for label, tb in FAIL:
