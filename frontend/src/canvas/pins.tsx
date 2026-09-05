@@ -29,11 +29,9 @@
 // What persists (localStorage `orgtree-pins-<slug>`): the ordered array of
 // {id, rect, z, snap}. Per-slug because it holds node ids, exactly like
 // `orgtree-pile-<slug>`. It joins OrgCanvas's id-keyed storage sweep through
-// `prunePins`. Snapping/mosaic is a LATER stage; what stage 1 fixes so stage 2
-// stays cheap: geometry is a rect and only a rect; `snap: null` is in the
-// persisted shape from day one (no migration later); one commit point
-// (`commitRect`) that stage 2 fills with `resolveSnap`; min sizes; and a
-// stable array order (mosaic tiles in array order).
+// `prunePins`. Snap metadata records an alignment, never a live constraint:
+// rectangles remain authoritative and dragging/resizing never moves peers.
+// Old entries with snap:null remain valid. Geometry commits once per gesture.
 //
 // USER RULING 2026-09-04 — "PINNED MEANS PINNED": one live desk per agent,
 // always. A pinned node is excluded from the camera's `focusId` in OrgCanvas,
@@ -49,6 +47,8 @@ import { DeskChat } from './desk'
 import { providerOf, TIER_LETTER } from './shared'
 import type { CanvasNode, MailLinkFn, OpFn } from './shared'
 import type { ToastFn } from '../types'
+import { findPinSnap, validPinSnap } from './pinSnap'
+import type { PinSnap } from './pinSnap'
 
 // ------------------------------------------------------------------ types
 /** a window's box, in VIEWPORT px (origin = the .viewport's top-left) */
@@ -60,9 +60,8 @@ export interface Pin {
   /** stacking ordinal, renormalized to 0..n-1 on every raise; the CSS z-index
    *  is derived from it inside a reserved band (see zIndexOf) */
   z: number
-  /** stage 2 seam: which edge/corner this window is snapped to. Always null
-   *  in stage 1, present so the persisted shape needs no migration later. */
-  snap: null
+  /** Last edge/corner alignment; stale references are discarded on writes. */
+  snap: PinSnap | null
 }
 
 /** a window smaller than this is not a usable desk; mosaic (stage 2) must
@@ -126,7 +125,9 @@ export const readPins = (slug: string): Pin[] => {
     if (raw) {
       const arr = JSON.parse(raw) as unknown
       if (Array.isArray(arr)) {
-        out = arr.filter(isPin).map((p) => ({ id: p.id, rect: { ...p.rect }, z: p.z, snap: null }))
+        const pins = arr.filter(isPin)
+        out = pins.map((p) => ({ id: p.id, rect: { ...p.rect }, z: p.z,
+          snap: validPinSnap(p.id, p.rect, p.snap, pins, null) }))
       }
     }
   } catch { /* private mode, or garbage — same answer */ }
@@ -134,6 +135,7 @@ export const readPins = (slug: string): Pin[] => {
   return out
 }
 const writePins = (slug: string, next: Pin[]): void => {
+  next = next.map((p) => ({ ...p, snap: validPinSnap(p.id, p.rect, p.snap, next, null) }))
   cache.set(slug, next)
   try {
     if (next.length) localStorage.setItem(pinsKey(slug), JSON.stringify(next))
@@ -202,10 +204,6 @@ export const raisePin = (slug: string, id: string): void => {
 export const isPinned = (slug: string, id: string): boolean =>
   readPins(slug).some((p) => p.id === id)
 
-/** stage 2 fills this: rect → rect, honouring edge/corner snap zones.
- *  Stage 1: the identity. Every geometry commit passes through here. */
-export const resolveSnap = (r: PinRect): PinRect => r
-
 export const sizeFloor = (r: PinRect): PinRect =>
   ({ ...r, w: Math.max(PIN_MIN_W, r.w), h: Math.max(PIN_MIN_H, r.h) })
 
@@ -225,15 +223,15 @@ export const clampRect = (r: PinRect, vp: { w: number; h: number } | null): PinR
   return { ...s, x, y, w, h }
 }
 
-/** THE ONE COMMIT POINT for window geometry (drag end, resize end, raise-and-
- *  show, and stage 2's snap/mosaic): resolveSnap → clamp → write. One
- *  localStorage write per gesture, never per frame. */
+/** Geometry commits once per gesture. Drag-end resolves its snap using the
+ * latest targets before reaching this clamp/persist boundary. */
 export const commitRect = (slug: string, id: string, rect: PinRect,
-  vp: { w: number; h: number } | null): void => {
+  vp: { w: number; h: number } | null, snap: PinSnap | null = null): void => {
   const pins = readPins(slug)
   if (!pins.some((p) => p.id === id)) return
-  const next = clampRect(resolveSnap(rect), vp)
-  writePins(slug, pins.map((p) => (p.id === id ? { ...p, rect: next } : p)))
+  const next = clampRect(rect, vp)
+  writePins(slug, pins.map((p) => (p.id === id ? { ...p, rect: next,
+    snap: validPinSnap(id, next, snap, pins, vp) } : p)))
 }
 
 /** the id-keyed sweep: drop pins whose node is gone. Returns the ids dropped
@@ -270,7 +268,7 @@ export const showPin = (slug: string, id: string, vp: { w: number; h: number } |
   const pin = readPins(slug).find((p) => p.id === id)
   if (!pin) return
   raisePin(slug, id)
-  commitRect(slug, id, pin.rect, vp)
+  commitRect(slug, id, pin.rect, vp, pin.snap)
   pulsePin(slug, id)
 }
 
@@ -390,19 +388,21 @@ function MinimiseGhost({ ghost }: { ghost: Ghost }) {
     data-id={ghost.id} data-to={ghost.to ? 'card' : 'none'} />
 }
 
-type Gesture =
+type GestureShape =
   | { kind: 'move'; sx: number; sy: number; o: PinRect }
   | { kind: 'size'; sx: number; sy: number; o: PinRect; edge: string }
+type Gesture = GestureShape & { pointerId: number; moved: boolean; capture: HTMLElement }
 
 const EDGES = ['n', 's', 'e', 'w', 'ne', 'nw', 'se', 'sw'] as const
 
 function PinWindow({ pin, node, vp, onUnpin, slug, op, toast, pub,
-  compactAt, maxTop, pxc, onMailLink, onOpenDoc, onLineage, onConfig, onJump, map }:
+  compactAt, maxTop, pxc, onMailLink, onOpenDoc, onLineage, onConfig, onJump, map, viewportRef }:
   PinLayerProps & { pin: Pin; node: CanvasNode; vp: { w: number; h: number } | null
     onUnpin: (id: string, from: PinRect) => void }) {
   // the in-flight gesture's rect lives in component state (one render per
   // pointer move); the store is written ONCE, at pointer-up, via commitRect
   const [live, setLive] = useState<PinRect | null>(null)
+  const [freePlacement, setFreePlacement] = useState(false)
   const gesture = useRef<Gesture | null>(null)
   const pulse = usePulse(slug, pin.id)
   const [flash, setFlash] = useState(0)
@@ -416,26 +416,44 @@ function PinWindow({ pin, node, vp, onUnpin, slug, op, toast, pub,
   // the rect on screen: the gesture's live rect while dragging, else the
   // stored one — clamped against the CURRENT viewport so a shrink can never
   // strand a window (render-time clamp; see PinLayer's resize tick)
-  const rect = live ?? clampRect(pin.rect, vp)
+  const rect = clampRect(live ?? pin.rect, vp)
 
-  const begin = (e: ReactPointerEvent<HTMLElement>, g: Gesture) => {
-    if (e.button !== 0) return
+  const cancel = () => {
+    const g = gesture.current
+    gesture.current = null
+    if (g) { try { g.capture.releasePointerCapture(g.pointerId) } catch { /* gone */ } }
+    setLive(null)
+  }
+  useEffect(() => {
+    const escape = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && gesture.current) { e.preventDefault(); e.stopPropagation(); cancel() }
+      if (e.key === 'Shift' && gesture.current) setFreePlacement(e.type === 'keydown')
+    }
+    window.addEventListener('keydown', escape, true)
+    window.addEventListener('keyup', escape, true)
+    return () => {
+      window.removeEventListener('keydown', escape, true)
+      window.removeEventListener('keyup', escape, true)
+    }
+  }, [])
+
+  const begin = (e: ReactPointerEvent<HTMLElement>, g: GestureShape) => {
+    if (e.button !== 0 || gesture.current) return
     e.stopPropagation()          // never let this become a canvas pan
     e.preventDefault()           // no text-selection drag from the chrome
-    gesture.current = g
+    gesture.current = { ...g, pointerId: e.pointerId, moved: false, capture: e.currentTarget }
+    setFreePlacement(e.shiftKey)
     e.currentTarget.setPointerCapture(e.pointerId)
     raisePin(slug, pin.id)
   }
-  const move = (e: ReactPointerEvent<HTMLElement>) => {
-    const g = gesture.current
-    if (!g) return
+  const gestureRect = (g: Gesture, e: ReactPointerEvent<HTMLElement>) => {
     // viewport px: a window drag is 1:1 with the pointer — there is NO `/z`
     // here, unlike moveNodeDrag, because nothing about this rect is in world
     // space. That is the entire point of the feature.
     const dx = e.clientX - g.sx, dy = e.clientY - g.sy
+    const size = vpSize(viewportRef)
     if (g.kind === 'move') {
-      setLive(clampRect({ ...g.o, x: g.o.x + dx, y: g.o.y + dy }, vp))
-      return
+      return clampRect({ ...g.o, x: g.o.x + dx, y: g.o.y + dy }, size)
     }
     let { x, y, w, h } = g.o
     if (g.edge.includes('e')) w = g.o.w + dx
@@ -446,17 +464,38 @@ function PinWindow({ pin, node, vp, onUnpin, slug, op, toast, pub,
     // west/north must not walk the window across the screen
     if (w < PIN_MIN_W) { if (g.edge.includes('w')) x = g.o.x + g.o.w - PIN_MIN_W; w = PIN_MIN_W }
     if (h < PIN_MIN_H) { if (g.edge.includes('n')) y = g.o.y + g.o.h - PIN_MIN_H; h = PIN_MIN_H }
-    setLive(clampRect({ x, y, w, h }, vp))
+    return clampRect({ x, y, w, h }, size)
+  }
+  const candidate = (r: PinRect, disabled: boolean) => {
+    const size = vpSize(viewportRef)
+    return disabled ? null : findPinSnap(pin.id, r,
+      readPins(slug).filter((p) => map.has(p.id)).map((p) => ({ id: p.id, rect: clampRect(p.rect, size) })), size)
+  }
+  const move = (e: ReactPointerEvent<HTMLElement>) => {
+    const g = gesture.current
+    if (!g || e.pointerId !== g.pointerId) return
+    g.moved ||= Math.hypot(e.clientX - g.sx, e.clientY - g.sy) >= 3
+    if (!g.moved) return
+    const next = gestureRect(g, e)
+    setLive(next)
+    setFreePlacement(e.shiftKey)
   }
   const end = (e: ReactPointerEvent<HTMLElement>) => {
     const g = gesture.current
-    if (!g) return
+    if (!g || e.pointerId !== g.pointerId) return
+    const moved = g.moved || Math.hypot(e.clientX - g.sx, e.clientY - g.sy) >= 3
     gesture.current = null
     try { e.currentTarget.releasePointerCapture(e.pointerId) } catch { /* already released */ }
-    const final = live ?? g.o
     setLive(null)
-    commitRect(slug, pin.id, final, vp)
+    if (!moved) return // a title-bar click raises, never repositions or detaches
+    // Recompute at release. A target may have moved/closed since the preview,
+    // and the last pointermove may not contain the pointerup coordinates.
+    const final = gestureRect(g, e)
+    const snap = g.kind === 'move' ? candidate(final, e.shiftKey) : null
+    commitRect(slug, pin.id, snap?.rect ?? final, vpSize(viewportRef), snap?.snap ?? null)
   }
+
+  const preview = live && gesture.current?.kind === 'move' ? candidate(rect, freePlacement) : null
 
   const state = node.state === 'live' ? '' : node.state
   const style: CSSProperties = {
@@ -464,6 +503,11 @@ function PinWindow({ pin, node, vp, onUnpin, slug, op, toast, pub,
     zIndex: zIndexOf(pin.z),
   }
   return (
+    <>
+    {preview && live && <div className="pin-snap-preview" role="status"
+      style={{ left: preview.rect.x, top: preview.rect.y, width: preview.rect.w, height: preview.rect.h }}>
+      <span>{preview.label} · Shift for free placement</span>
+    </div>}
     <div className={'pinwin prov-' + providerOf(node.tier ?? '')
         + (state ? ' pin-' + state : '') + (flash ? ' flash' : '') + (live ? ' moving' : '')}
       style={style} data-id={pin.id} data-z={pin.z}
@@ -473,8 +517,9 @@ function PinWindow({ pin, node, vp, onUnpin, slug, op, toast, pub,
          re-enable list there; KEEP THEM IN STEP) */
       onPointerDown={(e) => { e.stopPropagation(); raisePin(slug, pin.id) }}>
       <div className="pinwin-title"
+        title="Drag to move; release near an edge to snap. Hold Shift for free placement. Escape cancels."
         onPointerDown={(e) => begin(e, { kind: 'move', sx: e.clientX, sy: e.clientY, o: rect })}
-        onPointerMove={move} onPointerUp={end} onPointerCancel={end}>
+        onPointerMove={move} onPointerUp={end} onPointerCancel={cancel} onLostPointerCapture={cancel}>
         <PushPinIcon fontSize="inherit" className="pinwin-glyph" />
         <span className={'tier t-' + node.tier}>{TIER_LETTER[node.tier!] ?? '?'}</span>
         <b className="pinwin-name">{node.id}</b>
@@ -497,9 +542,10 @@ function PinWindow({ pin, node, vp, onUnpin, slug, op, toast, pub,
       {EDGES.map((edge) => (
         <div key={edge} className={'pinwin-rs ' + edge}
           onPointerDown={(e) => begin(e, { kind: 'size', sx: e.clientX, sy: e.clientY, o: rect, edge })}
-          onPointerMove={move} onPointerUp={end} onPointerCancel={end} />
+          onPointerMove={move} onPointerUp={end} onPointerCancel={cancel} onLostPointerCapture={cancel} />
       ))}
     </div>
+    </>
   )
 }
 

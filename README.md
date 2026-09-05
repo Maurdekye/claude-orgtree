@@ -69,7 +69,11 @@ and per-tool feed, markdown rendering, and a composer whose send button
 turns into a red ■ STOP while the agent is responding.
 
 **Keep desks in view.** Pin a desk into a movable, resizable window that stays
-put while you pan or zoom the canvas. Pinned windows stay within the viewport,
+put while you pan or zoom the canvas. Drag near another pinned window or a
+screen edge to preview a snap; release to align desks into a mosaic. Nearby
+corners align too. Hold Shift for free placement, or Escape to cancel a drag.
+Snapping keeps window sizes and leaves neighbouring desks in place; resizing
+or dragging away releases the alignment. Pinned windows stay within the viewport,
 remember their positions in that browser, and return to their agent's place
 when unpinned. Each agent has one live desk, so pinned and canvas composers
 do not compete with one another.

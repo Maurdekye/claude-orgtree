@@ -36,7 +36,7 @@ import { NODE_H, NODE_W, Z_DESK, Z_MINI } from '../src/canvas/shared'
 import {
   addPin, clampRect, forgetPins, PIN_MAX, PIN_MIN_H, PIN_MIN_W,
   PIN_Z_BASE, PIN_Z_TOP, pinsKey, planUnpin, prunePins, raisePin,
-  readPins, removePin, zIndexOf,
+  readPins, removePin, zIndexOf, commitRect,
 } from '../src/canvas/pins'
 import type { PinRect } from '../src/canvas/pins'
 import type { TreePayload } from '../src/types'
@@ -239,6 +239,111 @@ const pinWin = (el: HTMLElement, id: string) =>
 const winRect = (w: HTMLElement): PinRect => ({
   x: parseFloat(w.style.left), y: parseFloat(w.style.top),
   w: parseFloat(w.style.width), h: parseFloat(w.style.height),
+})
+
+// Mosaic controls use the real PinLayer under OrgCanvas. jsdom supplies a
+// measured viewport explicitly; real pointer capture/geometry is also probed
+// in Edge separately. No new model or fake snap implementation in this fixture.
+async function mosaicRig(mount: Mount) {
+  const rig = await mountCanvas(mount, ['ceo', 'cto', 'qa'])
+  const size = { w: 1300, h: 850 }
+  Object.defineProperty(rig.viewport, 'getBoundingClientRect', { configurable: true,
+    value: () => ({ x: 0, y: 0, top: 0, left: 0, right: size.w, bottom: size.h,
+      width: size.w, height: size.h, toJSON: () => ({}) }) })
+  await inAct(() => {
+    addPin('mine', 'ceo', { x: 100, y: 100, w: 320, h: 240 })
+    addPin('mine', 'cto', { x: 680, y: 400, w: 320, h: 240 })
+  })
+  await flush()
+  const title = pinWin(rig.el, 'cto')!.querySelector('.pinwin-title')!
+  return { ...rig, title, size }
+}
+
+uiTest('mosaic preview and commit: two windows align, neighbours stay still, reload preserves it', async ({ mount }) => {
+  const { el, title } = await mosaicRig(mount)
+  const before = readPins('mine').find((p) => p.id === 'ceo')!.rect
+  await inAct(() => { title.dispatchEvent(pointer('pointerdown', 700, 412)) })
+  await inAct(() => { title.dispatchEvent(pointer('pointermove', 451, 117)) })
+  const preview = el.querySelector('.pin-snap-preview') as HTMLElement
+  assert.ok(preview, 'snap preview is visible before release')
+  assert.equal(preview.style.left, '420px')
+  assert.equal(preview.style.top, '100px', 'nearby corners align')
+  assert.equal(readPins('mine').find((p) => p.id === 'cto')!.rect.x, 680, 'preview never persists')
+  await inAct(() => { title.dispatchEvent(pointer('pointerup', 451, 117)) })
+  assert.deepEqual(readPins('mine').find((p) => p.id === 'cto')!.rect, { x: 420, y: 100, w: 320, h: 240 })
+  assert.deepEqual(readPins('mine').find((p) => p.id === 'ceo')!.rect, before)
+  assert.equal(el.querySelector('.pin-snap-preview'), null)
+  const saved = JSON.parse(localStorage.getItem(pinsKey('mine'))!)
+  await inAct(() => { forgetPins('mine') })
+  assert.deepEqual(readPins('mine'), saved, 'durable rect and snap survive cache reset')
+})
+
+uiTest('mosaic release uses latest coordinates and target, including removal', async ({ mount }) => {
+  const { el, title } = await mosaicRig(mount)
+  await inAct(() => { title.dispatchEvent(pointer('pointerdown', 700, 412)) })
+  await inAct(() => { title.dispatchEvent(pointer('pointermove', 451, 117)) })
+  await inAct(() => { removePin('mine', 'ceo') })
+  await inAct(() => { title.dispatchEvent(pointer('pointerup', 460, 150)) })
+  assert.deepEqual(readPins('mine').find((p) => p.id === 'cto')!.rect, { x: 440, y: 138, w: 320, h: 240 })
+  assert.equal(readPins('mine')[0]!.snap, null)
+  assert.equal(el.querySelector('.pin-snap-preview'), null)
+})
+
+uiTest('mosaic cancel and Escape revert; foreign pointer cannot steal a gesture', async ({ mount }) => {
+  const { el, title } = await mosaicRig(mount)
+  const before = { ...readPins('mine').find((p) => p.id === 'cto')!.rect }
+  for (const how of ['pointercancel', 'Escape']) {
+    await inAct(() => { title.dispatchEvent(pointer('pointerdown', 700, 412)) })
+    await inAct(() => { title.dispatchEvent(pointer('pointermove', 451, 117)) })
+    await inAct(() => {
+      if (how === 'Escape') window.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+      else title.dispatchEvent(pointer('pointercancel', 451, 117))
+    })
+    assert.deepEqual(winRect(pinWin(el, 'cto')!), before, 'cancel restores rendered rectangle immediately')
+    assert.equal(el.querySelector('.pin-snap-preview'), null)
+    await inAct(() => { title.dispatchEvent(pointer('pointerup', 451, 117)) })
+    assert.deepEqual(readPins('mine').find((p) => p.id === 'cto')!.rect, before)
+  }
+  await inAct(() => { title.dispatchEvent(pointer('pointerdown', 700, 412)) })
+  await inAct(() => { title.dispatchEvent(new window.PointerEvent('pointerup', { bubbles: true, pointerId: 99, clientX: 451, clientY: 117 })) })
+  assert.deepEqual(readPins('mine').find((p) => p.id === 'cto')!.rect, before)
+  await inAct(() => { title.dispatchEvent(pointer('pointerup', 451, 117)) })
+  assert.equal(readPins('mine').find((p) => p.id === 'cto')!.rect.x, 420, 'positive control: owning pointer commits')
+})
+
+uiTest('mosaic Shift bypass, moving away, clicking and resizing keep free placement usable', async ({ mount }) => {
+  const { el, title } = await mosaicRig(mount)
+  await inAct(() => { title.dispatchEvent(pointer('pointerdown', 700, 412)) })
+  await inAct(() => { title.dispatchEvent(new window.PointerEvent('pointerup', { bubbles: true, pointerId: 1,
+    clientX: 451, clientY: 117, shiftKey: true })) })
+  assert.deepEqual(readPins('mine').find((p) => p.id === 'cto')!.rect, { x: 431, y: 105, w: 320, h: 240 })
+  await drag(title, { x: 451, y: 117 }, { x: 450, y: 118 }) // below movement threshold
+  assert.equal(readPins('mine').find((p) => p.id === 'cto')!.rect.x, 431)
+  await drag(title, { x: 451, y: 117 }, { x: 444, y: 117 })
+  const snap = readPins('mine').find((p) => p.id === 'cto')!.snap
+  assert.ok(snap, 'positive control: normal drag snaps')
+  await drag(title, { x: 440, y: 112 }, { x: 440, y: 112 })
+  assert.deepEqual(readPins('mine').find((p) => p.id === 'cto')!.snap, snap)
+  await drag(pinWin(el, 'cto')!.querySelector('.pinwin-rs.se')!, { x: 740, y: 340 }, { x: 770, y: 360 })
+  assert.equal(readPins('mine').find((p) => p.id === 'cto')!.snap, null, 'resize detaches metadata')
+  await drag(title, { x: 440, y: 112 }, { x: 620, y: 350 })
+  assert.equal(readPins('mine').find((p) => p.id === 'cto')!.snap, null, 'drag away releases')
+})
+
+uiTest('mosaic current target movement and viewport shrink are resolved on release', async ({ mount }) => {
+  const { title, size } = await mosaicRig(mount)
+  await inAct(() => { title.dispatchEvent(pointer('pointerdown', 700, 412)) })
+  await inAct(() => { title.dispatchEvent(pointer('pointermove', 451, 117)) })
+  await inAct(() => { commitRect('mine', 'ceo', { x: 110, y: 100, w: 320, h: 240 }, size) })
+  await inAct(() => { title.dispatchEvent(pointer('pointerup', 451, 117)) })
+  assert.equal(readPins('mine').find((p) => p.id === 'cto')!.rect.x, 430, 'uses new target edge')
+  await inAct(() => { title.dispatchEvent(pointer('pointerdown', 450, 112)) })
+  await inAct(() => { title.dispatchEvent(pointer('pointermove', 900, 700)) })
+  size.w = 600; size.h = 420
+  await inAct(() => { window.dispatchEvent(new window.Event('resize')) })
+  await inAct(() => { title.dispatchEvent(pointer('pointerup', 900, 700)) })
+  const r = readPins('mine').find((p) => p.id === 'cto')!.rect
+  assert.ok(r.x >= 0 && r.y >= 0 && r.x + r.w <= 600 && r.y + r.h <= 420)
 })
 /** how many live desks exist for `id` anywhere in the host — the number the
  *  user's ruling says must never exceed one */

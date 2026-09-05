@@ -4574,6 +4574,16 @@ label.set-row { cursor: pointer; }
 .pinwin.prov-google { --accent: var(--prov-google); --accent-soft: color-mix(in srgb, var(--prov-google) 16%, transparent); }
 .pinwin.prov-openrouter { --accent: var(--prov-openrouter); --accent-soft: color-mix(in srgb, var(--prov-openrouter) 16%, transparent); }
 .pinwin.moving { will-change: left, top, width, height; }
+.pin-snap-preview {
+  position: absolute; box-sizing: border-box; pointer-events: none;
+  z-index: 17; border: 2px dashed var(--accent); border-radius: 8px;
+  background: color-mix(in srgb, var(--accent) 9%, transparent);
+}
+.pin-snap-preview > span {
+  position: absolute; top: 30px; left: 6px; right: 6px; width: fit-content;
+  max-width: calc(100% - 12px); padding: 4px 7px; border-radius: 4px;
+  background: var(--panel); color: var(--ink-strong); font-size: 11px;
+}
 /* the card placeholder's "show window" pulse */
 .pinwin.flash { animation: pinflash .65s ease-out; }
 @keyframes pinflash {
