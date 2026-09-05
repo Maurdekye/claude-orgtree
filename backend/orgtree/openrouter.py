@@ -1313,11 +1313,14 @@ def context_for(tier: str, models: Mapping[str, Any] | None = None) -> int | Non
     ⚠ NO NETWORK, EVER. Step 2 goes through `cached_card`, which reads the
     in-memory catalog snapshot and nothing else: this runs on the turn path
     and on every tree projection, and a fetch there would put an HTTP call
-    behind a context bar. A cold process — or a warm one whose catalog has
-    aged past its TTL — therefore answers None rather than reaching out,
-    and None is honest. (An earlier draft guarded `find` with
-    `_catalog_mem["cards"] is not None`; that guard is not enough, see
-    `cached_card`.)
+    behind a context bar. Unknown here means the snapshot is MISSING, not
+    that it is old — `cached_card` ignores CATALOG_TTL, so a warm process
+    whose catalog has aged past it still answers with the window it knows,
+    deliberately: a stale window is worth more than no window, and going and
+    asking is the one thing this path may not do. Only a cold process — one
+    that has never loaded the catalog — answers None, and None is honest.
+    (An earlier draft guarded `find` with `_catalog_mem["cards"] is not
+    None`; that guard is not enough, see `cached_card`.)
 
     ⚠ AND IT NEVER INVENTS A SIZE. No default window, no "probably 200k".
     A model the local catalog does not carry stays unknown, which is what
