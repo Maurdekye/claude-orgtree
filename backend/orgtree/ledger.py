@@ -9171,14 +9171,28 @@ class Org:
             return str(cast("dict[str, Any]", a).get("node") or "") or None
         return None
 
-    # ---- human-readable slugs (user 2026-09-05). Agents and the user refer to
-    # an item as `git-review-workspace`, not `w3becbb30`. The opaque id stays
-    # the ONLY internal key: history rows, dependencies, ask linkage and every
-    # stored reference keep using it, so nothing breaks if a slug is ever
-    # regenerated. A slug is assigned ONCE, at creation, and never follows a
-    # later title edit — a name people have already copied into mail must not
-    # silently start pointing at nothing.
+    # ---- THE SLUG IS THE IDENTITY (user ruling 2026-09-05: "docket items
+    # should be uniquely and solely identifiable by their readable slugs, no
+    # more ids of any sort"). There is ONE name for an item and it is readable:
+    # `git-review-workspace`. The opaque `w########` key is gone — not hidden,
+    # not aliased, not kept as a second lookup. `work_identity_migrate` below
+    # converts a document written under the old scheme, once.
+    #
+    # A slug is assigned ONCE and never follows a later title edit: a name
+    # people have already copied into mail must not silently start pointing at
+    # nothing. That is what makes it usable as a key at all.
+    #
+    # ⚠ HISTORY IS NOT AN IDENTIFIER. `history` rows and org-log payloads
+    # written before the migration still contain `w########` strings. They are
+    # immutable evidence of what happened and are left exactly as they are —
+    # but nothing resolves them any more, and nothing emits them as a current
+    # reference.
     WORK_SLUG_MAX: Final = 48
+
+    #: value of `OrgDoc["work_identity"]` once a document is slug-keyed. Its
+    #: ABSENCE is what marks a document as still needing the migration, so it
+    #: is written exactly once, in the same save as the conversion.
+    WORK_IDENTITY_SLUG: Final = "slug"
 
     @staticmethod
     def _work_slugify(title: str) -> str:
@@ -9187,18 +9201,19 @@ class Org:
         return s or "item"
 
     def _work_names_in_use(self, skip: WorkItem | None = None) -> set[str]:
-        """Every string that already NAMES an item — slugs AND opaque ids.
+        """Every string that already NAMES an item.
 
-        The ids belong in here because `_work_find` resolves an id first and
-        exactly. A slug that happens to equal some other item's id would
-        therefore be permanently unresolvable: the lookup would always land on
-        the other item, and the name would silently address the wrong row
-        rather than fail (Astra review 2026-09-05)."""
+        Since the migration there is exactly one kind of name, so this is the
+        set of slugs over ACTIVE AND ARCHIVE TOGETHER — an archived item keeps
+        its name, and reusing it would make an old reference ambiguous.
+
+        (It used to include opaque ids as well, because `_work_find` resolved
+        an id first: a slug equal to some other item's id would have been
+        permanently shadowed. There are no ids to shadow anything now.)"""
         names: set[str] = set()
         for it in self._work_active() + self._work_archive():
             if it is skip:
                 continue
-            names.add(str(it["id"]))
             if it.get("slug"):
                 names.add(str(it["slug"]))
         return names
@@ -9235,25 +9250,189 @@ class Org:
             done.append(s)
         return done
 
+    #: shape of the retired opaque key. Used ONLY to add a sentence to a
+    #: refusal that has already been decided — never to resolve anything.
+    _WORK_OLD_ID = re.compile(r"^w[0-9a-f]{8}$")
+
     def _work_find(self, wid: str) -> tuple[WorkItem, bool]:
-        """(item, physically_archived) by opaque id OR human-readable slug.
-        The ID IS TRIED FIRST and exactly: a slug can never shadow a real id,
-        so a reference that worked before slugs existed still resolves to the
-        same item. Raises when neither matches."""
+        """(item, physically_archived) by the item's slug — its only name.
+
+        ⚠ THE EXACT SLUG IS TRIED FIRST, ALWAYS, AND THAT ORDERING IS THE
+        WHOLE OF THE OLD-ID HANDLING. A legitimate title can slugify to
+        something shaped exactly like a retired id — `_work_slugify("W12345678")`
+        is `"w12345678"` — so refusing id-shaped references up front would
+        strand a real item behind a regex (Astra review 2026-09-05). Because
+        the lookup runs first, by the time the shape is consulted the string is
+        already known not to name anything; the pattern then only decides
+        whether the reader gets an extra sentence of guidance.
+
+        There is no id→slug table, by instruction and by preference: a stale
+        reference must fail loudly rather than resolve to a guess."""
         ref = str(wid or "")
         for it in self._work_active():
-            if it["id"] == ref:
-                return it, False
-        for it in self._work_archive():
-            if it["id"] == ref:
-                return it, True
-        for it in self._work_active():
             if it.get("slug") == ref:
                 return it, False
         for it in self._work_archive():
             if it.get("slug") == ref:
                 return it, True
+        if self._WORK_OLD_ID.match(ref):
+            raise LedgerError(
+                f"{ref!r} is an old-style opaque item id, and items are now "
+                f"named only by their readable slug. Old ids are not "
+                f"translated — run `orgtree_work list` and use the name shown "
+                f"(there is no item called {ref!r} either)")
         raise LedgerError(f"no work item {wid!r}")
+
+    # ---------------------------------------------------------------- migration
+    def work_identity_state(self) -> str:
+        """`"slug"` when this document holds no old-style identity, `"legacy"`
+        when it does.
+
+        ⚠ THE MARKER IS NOT THE ONLY EVIDENCE, AND MUST NOT BE. A document
+        that has never held a work item — every org on the day it is created —
+        has nothing to convert, and refusing to serve its empty docket until
+        someone ran a migration would be an absurd answer to a question the
+        document already satisfies. So the state is ALSO derived: no item
+        carrying an `id` means nothing old is in here.
+
+        The marker still gets written when a real conversion happens, because
+        that is a durable record that it occurred; it is just not the sole
+        thing standing between a fresh org and a working docket."""
+        if self.d.get("work_identity") == self.WORK_IDENTITY_SLUG:
+            return self.WORK_IDENTITY_SLUG
+        if any("id" in it for it in self._work_all()):
+            return "legacy"
+        return self.WORK_IDENTITY_SLUG
+
+    def _work_all(self) -> list[WorkItem]:
+        """Active then archive, in stored order — the order the migration
+        walks, so two runs on the same document name things identically."""
+        return self._work_active() + self._work_archive()
+
+    def work_identity_migrate(self) -> dict[str, Any] | None:
+        """Convert this document to slug-only identity. `None` when it is
+        already converted, which is what makes a second pass a no-op.
+
+        ⚠ THIS FUNCTION ONLY EDITS THE IN-MEMORY DOCUMENT. It takes no lock,
+        writes nothing and backs nothing up — its caller does all three, in
+        one locked write, so a failure anywhere below leaves the stored
+        document exactly as it was. It also cannot call the store: `store`
+        imports `ledger`, so a backup taken from in here would be an import
+        cycle as well as a save inside a save.
+
+        ORDER IS LOAD-BEARING:
+          1. every EXISTING slug is preserved and reserved first, globally
+             across active and archive, before anything is minted. Established
+             names are what other people have already written down; a
+             migration that renamed one to resolve a collision would break
+             references that were correct.
+          2. only then are missing slugs minted, deterministically.
+          3. only then are stored pointers rewritten — doing it earlier would
+             strand pointers at items whose names had not been minted yet.
+          4. only then is the opaque key dropped.
+
+        Raises rather than half-converting: a document with two items already
+        carrying the same slug is refused, because either answer (rename one,
+        or let one shadow the other) silently breaks a live reference."""
+        if self.work_identity_state() == self.WORK_IDENTITY_SLUG:
+            return None
+
+        items = self._work_all()
+
+        # (1) existing names win, and duplicates among them are a refusal
+        taken: set[str] = set()
+        for it in items:
+            s = str(it.get("slug") or "")
+            if not s:
+                continue
+            if s in taken:
+                raise LedgerError(
+                    f"cannot convert this docket to slug-only identity: two "
+                    f"items already carry the slug {s!r}. Refusing rather than "
+                    f"renaming one — an established name is a reference "
+                    f"somebody has already written down. Rename one item's "
+                    f"slug by hand, then run this again")
+            taken.add(s)
+
+        # (2) mint the missing ones, in stored order so this is reproducible
+        minted: dict[str, str] = {}
+        for it in items:
+            if it.get("slug"):
+                continue
+            s = self._work_unique_slug(str(it.get("title") or ""), taken)
+            it["slug"] = s
+            taken.add(s)
+            minted[str(it.get("id") or "")] = s
+
+        # the old key → the name that replaces it. Built over EVERY item, not
+        # just the newly named ones, because a pointer may name an item that
+        # already had a slug.
+        by_old: dict[str, str] = {}
+        for it in items:
+            old = str(it.get("id") or "")
+            if old:
+                by_old[old] = str(it["slug"])
+
+        # (3) rewrite every stored pointer. `dangling` is REPORTED, never
+        # guessed at and never silently dropped: a pointer we cannot resolve
+        # is left exactly as written so a human can see what it said.
+        dangling: list[dict[str, str]] = []
+
+        def repoint(ref: Any, where: str, owner: str) -> str:
+            r = str(ref or "")
+            if not r:
+                return r
+            if r in by_old:
+                return by_old[r]
+            if r in taken:
+                return r            # already a slug — nothing to do
+            dangling.append({"ref": r, "in": where, "item": owner})
+            return r
+
+        for it in items:
+            me = str(it["slug"])
+            deps = it.get("dependencies")
+            if isinstance(deps, list):
+                it["dependencies"] = [repoint(d, "dependencies", me) for d in deps]
+            if it.get("superseded_by"):
+                it["superseded_by"] = repoint(
+                    it["superseded_by"], "superseded_by", me)
+
+        # stored question batches and their per-card roll-up, on the asks list
+        # and on every node's live ask alike
+        for a in list(self.d.get("asks") or []):
+            self._work_repoint_ask(a, repoint)
+        for n in self.nodes.values():
+            if isinstance(n.get("ask"), dict):
+                self._work_repoint_ask(n["ask"], repoint)
+
+        # (4) the opaque key goes. Nothing above may read it after this point.
+        for it in items:
+            it.pop("id", None)       # type: ignore[misc]
+
+        self.d["work_identity"] = self.WORK_IDENTITY_SLUG   # type: ignore[typeddict-unknown-key]
+        report = {"items": len(items), "minted": minted,
+                  "dangling": dangling}
+        self._log("work_identity_migrate", "orgtree", report, [])
+        return report
+
+    @staticmethod
+    def _work_repoint_ask(a: dict[str, Any],
+                          repoint: Callable[[Any, str, str], str]) -> None:
+        """One ask card's docket pointers: the per-tab `work_item` and the
+        card-level `work_items` roll-up the UI filters on. Both are rewritten,
+        because a card that agreed with its tabs before must still agree."""
+        for q in (a.get("questions") or []):
+            if isinstance(q, dict) and q.get("work_item"):
+                q["work_item"] = repoint(q["work_item"], "ask.work_item",
+                                         str(a.get("id") or "?"))
+        if a.get("work_item"):
+            a["work_item"] = repoint(a["work_item"], "ask.work_item",
+                                     str(a.get("id") or "?"))
+        if isinstance(a.get("work_items"), list):
+            a["work_items"] = sorted({
+                repoint(w, "ask.work_items", str(a.get("id") or "?"))
+                for w in a["work_items"]})
 
     # ---- authority. Explicit, never org-wide: nothing in an item is public.
     def _work_can_manage(self, actor: str, it: WorkItem) -> bool:
@@ -9287,17 +9466,30 @@ class Org:
 
     def _work_get_for(self, actor: str, wid: str) -> tuple[WorkItem, bool]:
         """The item, or ONE refusal for both "no such item" and "not yours"
-        — a distinct message would confirm a hidden id exists."""
+        — a distinct message would confirm a hidden item exists.
+
+        ⚠ THE STALE-ID SENTENCE IS ADDED FROM THE SHAPE OF THE STRING, NEVER
+        FROM A LOOKUP, so it is identical whether the reference names nothing
+        or names something this actor may not read. That is what keeps the two
+        cases indistinguishable while still telling an agent holding a retired
+        id what actually went wrong (it would otherwise be told only that the
+        item does not exist "or is not yours", which is true and useless)."""
+        ref = str(wid or "").strip()
         try:
-            it, arch = self._work_find(str(wid or "").strip())
+            it, arch = self._work_find(ref)
         except LedgerError:
             it = None            # type: ignore[assignment]
             arch = False
         if it is None or not self._work_can_read(actor, it):
+            hint = ""
+            if self._WORK_OLD_ID.match(ref):
+                hint = (" — and note that this is shaped like a retired "
+                        "opaque item id: items are named only by their "
+                        "readable slug now, and old ids are not translated")
             raise LedgerError(
                 f"no work item {str(wid)[:20]!r} that you may read — it does "
                 f"not exist, or you are neither its owner, its creator, a "
-                f"superior of those, nor a listed participant")
+                f"superior of those, nor a listed participant{hint}")
         return it, arch
 
     # ---- derived state
@@ -9325,7 +9517,7 @@ class Org:
         src: list[str] = []
         if it.get("manual_attention"):
             src.append("manual")
-        if self._work_questions(it["id"]):
+        if self._work_questions(it["slug"]):
             src.append("question")
         return src
 
@@ -9390,10 +9582,10 @@ class Org:
                 active.remove(it)
                 it["archived_at"] = now()
                 self.d.setdefault("work_items_archive", []).append(it)
-                moved.append(it["id"])
+                moved.append(it["slug"])
         if moved:
             self._log("work_archived", "orgtree",
-                      {"ids": moved, "why": "done for over an hour"}, [])
+                      {"items": moved, "why": "done for over an hour"}, [])
         return moved
 
     def _work_owner_state(self, it: WorkItem) -> tuple[bool, str | None]:
@@ -9449,8 +9641,15 @@ class Org:
 
     def _work_view(self, it: WorkItem, physically: bool, viewer: str,
                    now_ts: float) -> dict[str, Any]:
-        """The wire shape (evidence/docket-wire-contract-v3.md). Dependencies
-        outside the viewer's read set come back `{id, visible: false}` only."""
+        """The wire shape (evidence/docket-wire-contract-v3.md).
+
+        ⚠ AN UNREADABLE DEPENDENCY IS NOW ANONYMOUS. It used to come back as
+        `{id, visible: false}` — safe, because an opaque id carries no title,
+        status or owner. THE NAME IS DERIVED FROM THE TITLE, so serving it in
+        that slot would disclose the title of an item the viewer is not
+        allowed to read. The viewer still learns that a dependency exists and
+        that it is not theirs to see; it no longer learns what it is called
+        (user ruling on slug-only identity + Astra 2026-09-05)."""
         cur, ostate = self._work_owner_state(it)
         sources = self._work_attention(it)
         deps: list[dict[str, Any]] = []
@@ -9458,24 +9657,30 @@ class Org:
             try:
                 d, _ = self._work_find(did)
             except LedgerError:
-                deps.append({"id": did, "visible": False})
+                deps.append({"visible": False})
                 continue
             if self._work_can_read(viewer, d):
-                deps.append({"id": did, "visible": True, "title": d["title"],
-                             "status": d["status"]})
+                deps.append({"slug": d["slug"], "visible": True,
+                             "title": d["title"], "status": d["status"]})
             else:
-                deps.append({"id": did, "visible": False})
+                deps.append({"visible": False})
         return {
-            # `slug` is None on an item that predates slugs and has not been
-            # written since — the UI falls back to the id rather than the read
-            # path inventing (and failing to persist) a name.
-            "slug": it.get("slug") or None,
+            "slug": it.get("slug"),
             **{k: it.get(k) for k in (
-                "id", "rev", "kind", "title", "objective", "status",
+                "rev", "kind", "title", "objective", "status",
                 "owner", "created_by", "at", "updated_at", "done_so_far",
                 "working_on_next", "docket_at", "last_updater",
                 "manual_attention", "acceptance", "evidence",
-                "accepted", "superseded_by", "history")},
+                "accepted")},
+            "history": self._work_history_view(it, viewer),
+            # SAME DISCLOSURE RULE AS `dependencies`, for the same reason:
+            # this pointer used to be an opaque id and is now a title-derived
+            # name, so it is served only to a viewer who may read what it
+            # names. `superseded_by_visible` still says a pointer exists.
+            "superseded_by": (
+                it.get("superseded_by")
+                if self._work_pointer_visible(it.get("superseded_by"), viewer)
+                else None),
             "delivery": self._work_delivery_view(it),
             "blocked_reason": it.get("blocked_reason"),
             "participants": list(it.get("participants") or []),
@@ -9483,13 +9688,41 @@ class Org:
             "archived": self._work_archived(it, physically, now_ts),
             "archived_at": it.get("archived_at"),
             "owner_current": cur, "owner_state": ostate,
-            "questions": self._work_questions(it["id"]),
+            "questions": self._work_questions(it["slug"]),
             "superseded_by_visible": self._work_pointer_visible(
                 it.get("superseded_by"), viewer),
             "effective_attention": bool(sources),
             "attention_sources": sources,
             "dependencies": deps,
         }
+
+    #: history-row fields that NAME ANOTHER WORK ITEM. Since the name is
+    #: derived from the title, each one is a disclosure and is gated exactly
+    #: like `superseded_by` and `dependencies` are.
+    _WORK_HIST_POINTERS: Final = ("by",)
+
+    def _work_history_view(self, it: WorkItem,
+                           viewer: str) -> list[dict[str, Any]]:
+        """`history`, with any pointer at an item this viewer may not read
+        replaced by `null`.
+
+        ⚠ THIS EXISTS BECAUSE THE SUPERSEDE ROW LEAKED. `superseded_by` is
+        carefully gated, and the same name was travelling out unchecked one
+        field away, in `history[].by` — the id used to sit there and said
+        nothing, the name says the title. Found by a leak control that
+        searched the WHOLE payload for the hidden item's name rather than
+        checking the one field the author was thinking about."""
+        out: list[dict[str, Any]] = []
+        for row in (it.get("history") or []):
+            if not isinstance(row, dict):
+                out.append(row)
+                continue
+            red = dict(cast("dict[str, Any]", row))
+            for f in self._WORK_HIST_POINTERS:
+                if red.get(f) and not self._work_pointer_visible(red[f], viewer):
+                    red[f] = None
+            out.append(red)
+        return out
 
     def _work_pointer_visible(self, wid: Any, viewer: str) -> bool | None:
         """May `viewer` read the item a pointer names? None when no pointer.
@@ -9558,11 +9791,17 @@ class Org:
 
         def key(v: dict[str, Any]) -> tuple[str, str]:
             # `reverse=True` applies to the WHOLE tuple, so a docket_at tie
-            # breaks on the id DESCENDING. Which direction it runs does not
+            # breaks on the NAME descending. Which direction it runs does not
             # matter; that it is total and stable does, because that is what
             # stops two rows trading places between polls.
+            #
+            # ⚠ THIS TIEBREAK USED TO READ `id`. When the opaque key was
+            # retired, `v.get("id")` quietly became "" for every row — the
+            # comparison still ran, still looked total, and had silently
+            # degenerated into "whatever order the list happened to be in".
+            # Caught by the tie test, not by reading.
             return (str(v.get("docket_at") or v.get("updated_at") or ""),
-                    str(v.get("id") or ""))
+                    str(v.get("slug") or ""))
         items.sort(key=key, reverse=True)
         arch.sort(key=key, reverse=True)
         back.sort(key=key, reverse=True)
@@ -9706,10 +9945,11 @@ class Org:
         for d in dependencies or []:
             did = str(d or "").strip()
             if did:
-                # a dependency may be GIVEN as a slug, but it is STORED as the
-                # opaque id — stored references never depend on a name
+                # resolved before storing, so a dependency on something that
+                # does not exist is refused at the point it is written rather
+                # than discovered later by a reader
                 dep, _ = self._work_find(did)
-                deps.append(dep["id"])
+                deps.append(str(dep["slug"]))
         done = self._work_norm_list(done_so_far, "done_so_far")
         nxt = self._work_norm_list(working_on_next, "working_on_next")
         if (done_so_far is not None or working_on_next is not None) \
@@ -9717,17 +9957,15 @@ class Org:
             raise LedgerError("a docket update needs at least one entry in "
                               "done_so_far or working_on_next")
         from . import workitems       # noqa: PLC0415  (sandbox->store->ledger cycle)
-        # the id must not collide with an existing NAME either — an id equal to
-        # some other item's slug would make that slug unreachable from the
-        # moment this item exists, because ids are resolved first
+        # THE NAME IS THE ONLY KEY. It is minted here, once, against every
+        # name already in use across the active list and the archive, and it
+        # never changes again — not even when the title is edited.
         taken = self._work_names_in_use()
-        wid = "w" + uuid.uuid4().hex[:8]
-        while wid in taken:
-            wid = "w" + uuid.uuid4().hex[:8]
+        wid = self._work_unique_slug(t, taken)
         taken.add(wid)
         stamp = now()
         it: WorkItem = {
-            "id": wid, "slug": self._work_unique_slug(t, taken),
+            "slug": wid,
             "rev": 1, "kind": kind, "title": t,
             "objective": obj,
             "status": status, "blocked_reason": None,
@@ -9748,7 +9986,7 @@ class Org:
         }
         active.append(it)
         self._log("work_create", actor,
-                  {"id": wid, "slug": it["slug"], "title": t[:60]}, [])
+                  {"item": wid, "title": t[:60]}, [])
         return {"created": wid, "slug": it["slug"], "rev": 1,
                 "status": f"work item {it['slug']} ({wid}) created — refer to "
                           f"it as {it['slug']} in mail and reports; either "
@@ -9886,7 +10124,7 @@ class Org:
                         {"changes": changes, "done": len(done), "next": len(nxt)})
         self._work_stamp_docket(it, actor)
         self._log("work_update", actor,
-                  {"id": wid, **({"status": status} if status else {})}, [])
+                  {"item": wid, **({"status": status} if status else {})}, [])
         return {"updated": wid, "rev": it["rev"], "status": it["status"],
                 "manual_attention": bool(it.get("manual_attention")),
                 "note": ("the standing attention flag was CLEARED by this "
@@ -9912,7 +10150,7 @@ class Org:
         parts = [p for p in (it.get("participants") or []) if p != own]
         it["participants"] = parts
         self._work_hist(it, actor, "assign", {"from": frm, "to": it["owner"]})
-        self._log("work_assign", actor, {"id": wid, "to": own}, [])
+        self._log("work_assign", actor, {"item": wid, "to": own}, [])
         return {"assigned": wid, "owner": it["owner"], "rev": it["rev"]}
 
     def work_participants(self, actor: str, wid: str,
@@ -10077,7 +10315,7 @@ class Org:
                           "note": (str(note).strip()[:500] if note else None)}
         self._work_hist(it, actor, "accept", {"from": frm})
         it["docket_at"] = now()
-        self._log("work_accept", actor, {"id": wid}, [])
+        self._log("work_accept", actor, {"item": wid}, [])
         return {"accepted": wid, "rev": it["rev"],
                 "status": "done — archives automatically once its last docket "
                           "update is over an hour old (records are kept)"}
@@ -10115,19 +10353,19 @@ class Org:
                               "the user may supersede an item")
         other, _ = self._work_get_for(actor, by)
         if not self._work_can_manage(actor, other):
-            raise LedgerError(f"you may read {other['id']} but not manage it - "
+            raise LedgerError(f"you may read {other['slug']} but not manage it - "
                               f"the replacing item needs the same owner-level right")
-        if other["id"] == it["id"]:
+        if other["slug"] == it["slug"]:
             raise LedgerError("an item cannot supersede itself")
         if it.get("status") == "superseded":
             raise LedgerError(f"{wid} is already superseded by "
                               f"{it.get('superseded_by')} - supersede that one")
         if other.get("status") in self.WORK_CLOSED:
-            raise LedgerError(f"{other['id']} is {other.get('status')} - a "
+            raise LedgerError(f"{other['slug']} is {other.get('status')} - a "
                               f"replacement must be open work")
         # a chain that leads back here would make both items unreachable
-        seen = {it["id"]}
-        cur: str | None = other["id"]
+        seen = {it["slug"]}
+        cur: str | None = other["slug"]
         while cur and cur not in seen:
             seen.add(cur)
             try:
@@ -10135,15 +10373,15 @@ class Org:
             except LedgerError:
                 break
             cur = nxt.get("superseded_by")
-        if cur == it["id"]:
+        if cur == it["slug"]:
             raise LedgerError("that would close a supersede cycle")
         frm = it.get("status")
         it["status"] = "superseded"
-        it["superseded_by"] = other["id"]
+        it["superseded_by"] = other["slug"]
         it["manual_attention"] = None
-        self._work_hist(it, actor, "supersede", {"from": frm, "by": other["id"]})
+        self._work_hist(it, actor, "supersede", {"from": frm, "by": other["slug"]})
         self._work_stamp_docket(it, actor)
-        return {"superseded": wid, "by": other["id"], "rev": it["rev"]}
+        return {"superseded": wid, "by": other["slug"], "rev": it["rev"]}
 
     # ---- the user's two controls
     def work_dismiss_attention(self, wid: str, set_rev: int) -> dict[str, Any]:
@@ -10176,7 +10414,8 @@ class Org:
             self.d.setdefault("work_items", []).append(it)
         self._work_hist(it, USER, "dismiss_attention",
                         {"set_rev": int(cur["set_rev"]), "from": frm})
-        self._log("work_dismiss", USER, {"id": wid, "set_rev": int(cur["set_rev"])}, [])
+        self._log("work_dismiss", USER, {"item": wid,
+                                         "set_rev": int(cur["set_rev"])}, [])
         notify = self._work_actor_node(it.get("last_updater")) \
             or self._work_actor_node(it.get("owner"))
         return {"dismissed": wid, "rev": it["rev"], "status": "blocked",
@@ -10198,9 +10437,11 @@ class Org:
                 f"the last updater {lu!r} no longer exists in this org — the "
                 f"reply was not sent")
         return {"node": lu, "state": self.nodes[lu].get("state"),
-                "title": it["title"]}
+                "title": it["title"], "item": it["slug"]}
 
     def work_attach_check(self, nid: str, wid: str) -> str:
-        """May `nid` attach a question to `wid`? Read right; returns the id."""
+        """May `nid` attach a question to `wid`? Read right; returns the item's
+        canonical name, so what gets STORED on the ask is the canonical form
+        rather than whatever the caller happened to type."""
         it, _ = self._work_get_for(nid, wid)
-        return it["id"]
+        return str(it["slug"])

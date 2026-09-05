@@ -3783,6 +3783,67 @@ class WorkAccept(Body):
     note: str | None = None
 
 
+# ---- slug-only identity (user 2026-09-05). A document written under the old
+# `w########` scheme has to be converted once. Three rules shape this:
+#
+#   * A READ NEVER WRITES. Serving a half-identity document — some items named,
+#     some not — would be worse than failing, because every caller would have
+#     to carry a fallback and one of them would get it wrong. So a read of an
+#     unconverted document REFUSES, loudly, naming the route that fixes it.
+#   * THE BACKUP HAPPENS BEFORE THE FIRST MIGRATING SAVE, once per org, from
+#     the committed state — `store.export_json` reconstructs from the rows, so
+#     it captures the document as it stands, not the one being edited.
+#   * ATOMICITY IS THE CALLER'S LOCK, not a property of the transform. Every
+#     path below is already inside `store.DOC_LOCK`; the conversion rides that
+#     same lock and that same `save_org`, so a failure anywhere leaves the
+#     stored document untouched.
+WORK_IDENTITY_STALE = (
+    "this organization's docket still uses the retired opaque item ids. "
+    "Items are identified solely by their readable name now — convert it "
+    "once with POST /api/orgs/{slug}/migrate-work-identity (it exports a "
+    "JSON backup first)")
+
+
+def _work_identity_ready(org: Any, slug: str) -> dict[str, Any] | None:
+    """Convert IN THIS SAVE if needed. Caller must hold `store.DOC_LOCK` and
+    must be about to `save_org`. Returns the migration report, or None when
+    the document was already converted — which is what makes calling it at
+    the head of every mutation cheap and idempotent."""
+    if org.work_identity_state() == "slug":
+        return None
+    # the pre-migration backup, from committed state, exactly once per org
+    store.export_json(slug)
+    return org.work_identity_migrate()
+
+
+def _work_identity_guard(org: Any) -> None:
+    """Read paths: refuse rather than serve a document we would have to
+    describe with two different kinds of name."""
+    if org.work_identity_state() != "slug":
+        raise HTTPException(409, WORK_IDENTITY_STALE)
+
+
+@app.post("/api/orgs/{slug}/migrate-work-identity")
+def work_identity_migrate(slug: str) -> dict[str, Any]:
+    """The one-shot conversion. Idempotent: a second call reports
+    `already: true` and writes nothing at all."""
+    with store.DOC_LOCK:
+        try:
+            org = store.load_org(slug)
+        except LedgerError as e:
+            raise HTTPException(404, str(e))
+        try:
+            report = _work_identity_ready(org, slug)
+        except LedgerError as e:
+            # a refusal (e.g. two items already sharing a name) must leave the
+            # stored document exactly as it was — nothing has been saved yet
+            raise HTTPException(422, str(e))
+        if report is None:
+            return {"already": True}
+        store.save_org(org)
+    return {"already": False, **report}
+
+
 @app.get("/api/orgs/{slug}/work-items")
 def work_items_list(slug: str, archived: int = 0,
                     backlogged: int = 0) -> dict[str, Any]:
@@ -3796,6 +3857,7 @@ def work_items_list(slug: str, archived: int = 0,
         org = store.load_org(slug)
     except LedgerError as e:
         raise HTTPException(404, str(e))
+    _work_identity_guard(org)
     return org.work_list(USER, include_archived=bool(archived),
                          include_backlogged=bool(backlogged))
 
@@ -3804,6 +3866,10 @@ def work_items_list(slug: str, archived: int = 0,
 def work_item_get(slug: str, wid: str) -> dict[str, Any]:
     try:
         org = store.load_org(slug)
+    except LedgerError as e:
+        raise HTTPException(404, str(e))
+    _work_identity_guard(org)
+    try:
         return {"item": org.work_get(USER, wid)}
     except LedgerError as e:
         raise HTTPException(404, str(e))
@@ -3824,13 +3890,20 @@ def work_item_reply(slug: str, wid: str, body: WorkReply) -> dict[str, Any]:
         except LedgerError as e:
             raise HTTPException(404, str(e))
         try:
+            _work_identity_ready(org, slug)
+        except LedgerError as e:
+            raise HTTPException(422, str(e))
+        try:
             org._work_find(wid)
         except LedgerError as e:
             raise HTTPException(404, str(e))
         try:
             tgt = org.work_reply_target(wid)
             nid = str(tgt["node"])
-            mail = (f"[DOCKET REPLY · {wid} \"{str(tgt['title'])[:80]}\"] "
+            # the CANONICAL name, not the caller's spelling — this string is
+            # an instruction the recipient will act on, and it must resolve
+            name = str(tgt.get("item") or wid)
+            mail = (f"[DOCKET REPLY · {name} \"{str(tgt['title'])[:80]}\"] "
                     f"(the user replied on this docket item — treat it as "
                     f"item-linked mail and update the item if it changes the "
                     f"work)\n{text}")
@@ -3862,6 +3935,13 @@ def work_item_dismiss(slug: str, wid: str, body: WorkDismiss) -> dict[str, Any]:
     with store.DOC_LOCK:
         try:
             org = store.load_org(slug)
+        except LedgerError as e:
+            raise HTTPException(404, str(e))
+        try:
+            _work_identity_ready(org, slug)
+        except LedgerError as e:
+            raise HTTPException(422, str(e))
+        try:
             org._work_find(wid)
         except LedgerError as e:
             raise HTTPException(404, str(e))
@@ -3900,6 +3980,13 @@ def work_item_accept(slug: str, wid: str, body: WorkAccept) -> dict[str, Any]:
     with store.DOC_LOCK:
         try:
             org = store.load_org(slug)
+        except LedgerError as e:
+            raise HTTPException(404, str(e))
+        try:
+            _work_identity_ready(org, slug)
+        except LedgerError as e:
+            raise HTTPException(422, str(e))
+        try:
             org._work_find(wid)
         except LedgerError as e:
             raise HTTPException(404, str(e))
@@ -3943,6 +4030,7 @@ def _work_read_call(body: AgentCall, a: dict[str, Any]) -> dict[str, Any]:
             return r
         org = store.load_org(body.org)
         org._require_live(body.node)
+        _work_identity_guard(org)
         if act == "list":
             return org.work_list(
                 body.node,
@@ -5758,7 +5846,14 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
                                                  if a.get("work_item") else None))
             elif body.tool == "orgtree_work":
                 # the docket's mutating actions; list/get/verify returned
-                # above, outside the lock
+                # above, outside the lock.
+                #
+                # The identity conversion rides THIS request's lock and THIS
+                # request's save, so an agent's first docket write after the
+                # upgrade converts the document as part of its own atomic
+                # write — and a failure in either half leaves the stored
+                # document untouched, because neither has been saved.
+                _work_identity_ready(org, body.org)
                 result = _work_mutate(org, body.node, a)
             elif body.tool == "orgtree_withdraw_ask":
                 result = org.withdraw_ask(body.node)

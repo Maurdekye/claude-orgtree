@@ -578,12 +578,15 @@ class WorkItem(TypedDict):
     compaction and reassignment because nothing about it lives on a node.
     Bodies are user/agent content and may contain secrets: served only on
     the user route and to agents with read right; never in prompt blocks."""
-    id: str                         # "w" + 8 hex — the ONLY internal key
-    # human-readable name from the title, unique across active+archive, assigned
-    # once and NEVER re-derived from a later title edit. Absent on items that
-    # predate slugs until the next docket write backfills them; nothing stored
-    # references an item by it.
-    slug: NotRequired[str]
+    # THE ONLY KEY, and it is readable (user 2026-09-05: "uniquely and solely
+    # identifiable by their readable slugs, no more ids of any sort"). Derived
+    # from the title, unique across active+archive, assigned ONCE and never
+    # re-derived from a later title edit — a name already written down in mail
+    # must not start pointing at nothing. Every stored reference uses it:
+    # `dependencies`, `superseded_by`, ask `work_item`. The retired `w########`
+    # key is gone; `Org.work_identity_migrate` converts an old document once,
+    # and `OrgDoc["work_identity"]` records that it has been converted.
+    slug: str
     rev: int                        # bumped by every mutation; verify revalidates against it
     kind: str                       # "code" | "non-code" (non-code: delivery is None)
     title: str
@@ -705,6 +708,10 @@ class OrgDoc(TypedDict):
     # Nothing in either list is deleted automatically.
     work_items: NotRequired[list[WorkItem]]
     work_items_archive: NotRequired[list[WorkItem]]
+    # "slug" once this document's items are keyed by their readable name. Its
+    # ABSENCE is what marks a document as still needing the one-shot identity
+    # migration, so it is written exactly once, in the same save.
+    work_identity: NotRequired[str]
     org_inbox: NotRequired[list[OrgInboxEntry]]
     org_inbox_read: NotRequired[int]
     kiosk: NotRequired[KioskCfg | None]
