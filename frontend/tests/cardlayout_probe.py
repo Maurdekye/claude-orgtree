@@ -1,0 +1,144 @@
+"""Real Edge render/cascade check for the three-row zoomed-out cards.
+
+The fixture bundles the real NodeSquare and uses the real styles.css. It checks
+normal and mini LODs, actual action centers inside their cards, expand routing,
+duplicate suppression for pinned cards, left-aligned Row 3, and distinct
+computed top accents for working Claude/Codex/Antigravity cards.
+"""
+from __future__ import annotations
+
+import json
+import pathlib
+import subprocess
+import sys
+import tempfile
+
+from playwright.sync_api import sync_playwright
+
+for stream in (sys.stdout, sys.stderr):
+    try:
+        stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
+
+HERE = pathlib.Path(__file__).resolve().parent
+FRONTEND = HERE.parent
+BUILD = HERE / "cardlayout-build.mjs"
+CARDS = FRONTEND / "src" / "canvas" / "cards.tsx"
+CSS = FRONTEND / "src" / "styles.css"
+
+
+def main() -> int:
+    src = CARDS.read_text(encoding="utf-8")
+    css = CSS.read_text(encoding="utf-8")
+    for marker in ("className=\"sq-title\"", "className=\"sq-meta\"",
+                   "className=\"expandbtn\"", "aria-label=\"Expand agent window\""):
+        if marker not in src:
+            raise SystemExit(f"fixture guard: cards.tsx no longer emits {marker}")
+    for marker in ("justify-content: flex-start", ".sq.prov-openai.busy:not(.desk)",
+                   ".sq.prov-google.busy:not(.desk)"):
+        if marker not in css:
+            raise SystemExit(f"fixture guard: styles.css no longer contains {marker}")
+    with tempfile.TemporaryDirectory(prefix="orgtree-cardlayout-") as tmp:
+        out = pathlib.Path(tmp)
+        subprocess.run(["node", str(BUILD), str(out)], cwd=FRONTEND, check=True)
+        shot = FRONTEND / "node_modules" / ".cardlayout-probe.png"
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(channel="msedge", headless=True)
+            page = browser.new_page(viewport={"width": 1200, "height": 600}, device_scale_factor=1)
+            page.goto((out / "probe.html").as_uri())
+            page.wait_for_selector("#normal .sq")
+            values = page.evaluate("""() => {
+              const read = (root) => [...document.querySelectorAll(`${root} .sq`)].map((card) => {
+                const r = card.getBoundingClientRect();
+                const rows = [...card.children].filter((e) =>
+                  e.matches('.sq-head, .sq-actions, .sq-badges'));
+                const b = card.querySelector('.expandbtn');
+                const br = b?.getBoundingClientRect();
+                const badges = card.querySelector('.sq-badges')?.getBoundingClientRect();
+                const actions = card.querySelector('.sq-actions')?.getBoundingClientRect();
+                return { id: card.querySelector('.sq-title .name')?.textContent.trim(),
+                  classes: card.className, top: getComputedStyle(card).borderTopColor,
+                  card: {x:r.x,y:r.y,w:r.width,h:r.height},
+                  button: br && {x:br.x,y:br.y,w:br.width,h:br.height},
+                  badges: badges && {x:badges.x,y:badges.y,w:badges.width,h:badges.height},
+                  actions: actions && {x:actions.x,y:actions.y,w:actions.width,h:actions.height},
+                  rows: rows.map((e) => e.className), actionJustify:
+                    getComputedStyle(card.querySelector('.sq-actions')).justifyContent };
+              });
+              const references = {};
+              for (const tier of ['haiku', 'terra', 'sol', 'luna', 'flash']) {
+                const ref = document.createElement('div');
+                ref.className = `sq norm tier-${tier}`;
+                document.body.appendChild(ref);
+                references[tier] = getComputedStyle(ref).borderTopColor;
+                ref.remove();
+              }
+              return { normal: read('#normal'), mini: read('#mini'), references,
+                pinned: document.querySelector('#pinned .expandbtn') === null };
+            }""")
+            # Capture a real hover state: the existing card design deliberately
+            # reveals its action row only while the pointer is over a card.
+            page.locator("#normal .sq").nth(1).hover()
+            page.screenshot(path=str(shot))
+            mobile = browser.new_page(viewport={"width": 480, "height": 600}, device_scale_factor=1)
+            mobile.goto((out / "probe.html").as_uri())
+            mobile.wait_for_selector("#mini .sq")
+            mobile.evaluate("() => document.documentElement.classList.add('mobile')")
+            values["mobileActionsHidden"] = mobile.evaluate("""() =>
+              [...document.querySelectorAll('.sq-actions')]
+                .every((el) => getComputedStyle(el).display === 'none')""")
+            mobile.close()
+            page.locator("#normal .sq").nth(1).hover()
+            page.locator("#normal .expandbtn").nth(1).click()
+            page.locator("#mini .sq").nth(4).hover()
+            page.locator("#mini .expandbtn").nth(4).click()
+            opened = page.evaluate("() => window.opened")
+            browser.close()
+    failures = []
+    for lod in ("normal", "mini"):
+        rows = values[lod]
+        if len(rows) != 7:
+            failures.append(f"{lod}: expected 7 cards, got {len(rows)}")
+        for row in rows:
+            if not row["button"]:
+                failures.append(f"{lod}/{row['id']}: missing expand hitbox")
+                continue
+            b, c = row["button"], row["card"]
+            if not (c["x"] <= b["x"] + b["w"] / 2 <= c["x"] + c["w"]
+                    and c["y"] <= b["y"] + b["h"] / 2 <= c["y"] + c["h"]):
+                failures.append(f"{lod}/{row['id']}: expand center outside card")
+            if row["actionJustify"] != "flex-start":
+                failures.append(f"{lod}/{row['id']}: actions justify {row['actionJustify']}")
+            if "sq-head" not in row["rows"] or "sq-actions" not in row["rows"]:
+                failures.append(f"{lod}/{row['id']}: row structure missing")
+            for part in (row.get("actions"), row.get("badges")):
+                if part and (part["y"] < row["card"]["y"]
+                             or part["y"] + part["h"] > row["card"]["y"] + row["card"]["h"]):
+                    failures.append(f"{lod}/{row['id']}: row clips outside fixed card")
+    by_id = {row["id"]: row for row in values["normal"]}
+    for node_id, tier in (("claude-agent", "haiku"), ("codex-terra-agent", "terra"),
+                          ("codex-sol-agent", "sol"), ("luna-agent", "luna"),
+                          ("agy-agent", "flash")):
+        if by_id[node_id]["top"] != values["references"][tier]:
+            failures.append(f"{node_id}: busy top {by_id[node_id]['top']} != {tier} tier {values['references'][tier]}")
+    if by_id["agy-agent"]["top"] != by_id["idle-flash-agent"]["top"]:
+        failures.append("AGY busy top differs from idle Flash tier positive control")
+    if by_id["luna-agent"]["top"] != by_id["idle-luna-agent"]["top"]:
+        failures.append("Luna busy top differs from idle Luna tier positive control")
+    if opened != ["codex-terra-agent", "agy-agent"]:
+        failures.append(f"expand routed to {opened!r}, expected codex-terra then agy")
+    if not values["pinned"]:
+        failures.append("pinned card still exposes duplicate expand action")
+    if not values["mobileActionsHidden"]:
+        failures.append("mobile card controls are hidden without removing the action row")
+    print(json.dumps({"measurements": values, "opened": opened, "screenshot": str(shot)}, indent=2))
+    if failures:
+        print("FAIL:", " | ".join(failures), file=sys.stderr)
+        return 1
+    print("PASS: browser rendered normal+mini rows, hit centers, routing, pin suppression, and computed tier accents")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

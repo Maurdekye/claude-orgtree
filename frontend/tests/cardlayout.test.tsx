@@ -1,0 +1,138 @@
+// Focused rendered coverage for the zoomed-out agent-card rows.
+//
+// This mounts the real NodeSquare and clicks the real expand controls. jsdom
+// does not lay out flex boxes, so the hit-center check supplies measured card
+// and button rectangles at the DOM boundary; CSS ownership is checked against
+// the shipped stylesheet below. The existing pins suite covers the full
+// OrgCanvas pin operation, while this fixture proves the card opens the
+// correct agent and does not offer a duplicate action once pinned.
+
+import { readFileSync } from 'node:fs'
+import path from 'node:path'
+import test from 'node:test'
+import assert from 'node:assert/strict'
+import { mountView } from './harness'
+import { NodeSquare } from '../src/canvas/cards'
+import type { CanvasNode } from '../src/canvas/shared'
+import type { OpResult } from '../src/types'
+
+declare const __SRC_DIR__: string
+
+const noop = () => {}
+const op = () => Promise.resolve({} as OpResult)
+const seats = {
+  haiku: 1, sonnet: 2, opus: 5, fable: 10,
+  'gpt-reserve': .2, luna: .2, terra: 2, sol: 5, flash: 1, pro: 2,
+}
+const hire = { enabled: true, installed: true, reason: null }
+
+function node(id: string, tier: string, busy: boolean): CanvasNode {
+  return {
+    id, title: id, state: 'live', tier, model_id: tier,
+    seat: seats[tier as keyof typeof seats] ?? 1, grant: 0, free: 0,
+    scope: { tools: {}, add_dirs: [] },
+    children: [], lineage: [], turns: [], audiences_held: [],
+    bearer_state: null, frozen: null, limit_locked: false,
+    mail_pending: 3, last_status: { status: 'working', summary: 'render fixture', at: '' },
+    prev_status: null, inflight_at: busy ? 'now' : null, last_denials: [],
+    occupancy: 620, occupancy_est: false, context_window: 1000,
+    busy, activity: { phase: 'tool', tool: 'shell · render fixture' },
+    proc_warm: true, proc_live: true, proc_relaunch: false,
+    proc_relaunch_reason: null, isBearerOf: null,
+  } as unknown as CanvasNode
+}
+
+function card(n: CanvasNode, lod: 'mini' | 'norm', onPin: () => void,
+  pinned = false) {
+  return <NodeSquare node={n} pos={{ x: 0, y: 0 }} lod={lod} focused={false}
+    dragging={false} isDrop={false} seats={seats} codexHire={hire}
+    antigravityHire={hire} claudeHire={hire} map={new Map([[n.id, n]])}
+    op={op} slug="render" toast={noop} pxc={1} zoom={lod === 'mini' ? .4 : .8}
+    compactAt={.8} pub={false} maxTop={100} kioskRemaining={null}
+    cascadeAlloc onSpawn={noop} onSpawnSide={noop} onSpawnTop={noop}
+    onConfig={noop} onInbox={noop} onLineage={noop} onOpenDoc={noop}
+    onRecenter={noop} onJump={noop} onMailLink={noop}
+    onDragStart={noop} onDragMove={noop} onDragEnd={noop}
+    onDragCancel={noop} onPin={onPin} pinned={pinned} />
+}
+
+function centre(r: { left: number; top: number; width: number; height: number }) {
+  return { x: r.left + r.width / 2, y: r.top + r.height / 2 }
+}
+
+for (const lod of ['norm', 'mini'] as const) {
+  test(`${lod} cards render three rows and route expand to the owning agent`, async () => {
+    const opened: string[] = []
+    const fixtures = [
+      node('claude-agent', 'haiku', true),
+      node('codex-agent', 'terra', true),
+      node('agy-agent', 'flash', true),
+    ]
+    const view = await mountView(<>
+      {fixtures.map((n) => card(n, lod, () => { opened.push(n.id) }))}
+    </>, (el) => el)
+    try {
+      const roots = [...view.el.querySelectorAll<HTMLElement>('.sq')]
+      assert.equal(roots.length, 3)
+      const cardRect = { left: 100, top: 80, width: 124, height: 124 }
+      for (const root of roots) {
+        const name = root.querySelector<HTMLElement>('.sq-title .name')
+        const meta = root.querySelector<HTMLElement>('.sq-meta')
+        const actions = root.querySelector<HTMLElement>('.sq-actions')
+        assert.ok(name && meta && actions, 'all three card rows are mounted')
+        assert.ok(meta.querySelector('.actlabel'), 'actual activity is in Row 2')
+        const statusDot = meta.querySelector<HTMLElement>('.sq-status-dot')
+        assert.ok(statusDot, 'self-reported working state is in Row 2')
+        assert.match(statusDot.getAttribute('aria-label') ?? '', /working:/,
+          'status dot retains an accessible state summary')
+        assert.ok(meta.querySelector('.proc-state'), 'CLI status is in Row 2')
+        assert.ok(meta.querySelector('.ctxwheel'), 'context wheel is in Row 2')
+        assert.equal(actions.querySelectorAll('button').length, 4,
+          'expand, mail, retire, and settings remain available')
+        assert.equal(root.querySelector('.sq-badges .statuschip'), null,
+          'self-reported state is not duplicated below the action row')
+        const expand = actions.querySelector<HTMLButtonElement>('.expandbtn')!
+        assert.equal(expand.getAttribute('aria-label'), 'Expand agent window')
+        assert.equal(expand.title, 'Expand agent window')
+        const buttonRect = { left: 108, top: 180, width: 20, height: 20 }
+        Object.defineProperty(expand, 'getBoundingClientRect', {
+          configurable: true, value: () => ({ ...buttonRect, right: 128, bottom: 200 }),
+        })
+        const p = centre(buttonRect)
+        const c = centre(cardRect)
+        assert.ok(p.x >= cardRect.left && p.x <= cardRect.left + cardRect.width
+          && p.y >= cardRect.top && p.y <= cardRect.top + cardRect.height,
+          `${name.textContent} expand center stays inside its card`)
+        assert.notEqual(p.x, c.x, 'button center is a distinct hit target, not card center')
+        expand.click()
+      }
+      assert.deepEqual(opened.sort(), ['agy-agent', 'claude-agent', 'codex-agent'])
+      assert.match(view.el.querySelector('.sq-actions')!.className, /sq-actions/)
+      if (lod === 'mini') {
+        assert.equal(view.el.querySelectorAll('.sq-badges').length, 0,
+          'mini cards do not leave a hidden badge row')
+      } else {
+        assert.equal(view.el.querySelectorAll('.sq-badges').length, 3,
+          'normal cards retain status/badge content below the action row')
+      }
+    } finally { await view.unmount() }
+  })
+}
+
+test('pinned cards do not offer a duplicate expand action', async () => {
+  const view = await mountView(card(node('already-pinned', 'terra', false), 'mini', noop, true),
+    (el) => el)
+  try { assert.equal(view.el.querySelector('.expandbtn'), null) }
+  finally { await view.unmount() }
+})
+
+test('zoomed-out card CSS keeps actions left-aligned and tier accents distinct', () => {
+  const css = readFileSync(path.join(__SRC_DIR__, 'styles.css'), 'utf8')
+  assert.match(css, /\.sq-actions\s*\{[^}]*justify-content:\s*flex-start/s)
+  assert.match(css, /\.sq\.prov-openai\.busy:not\(\.desk\)[^}]*\{[\s\S]*?--tier-accent/s)
+  assert.match(css, /\.sq\.prov-google\.busy:not\(\.desk\)[^}]*\{[\s\S]*?--tier-accent/s)
+  for (const tier of ['haiku', 'terra', 'luna', 'flash']) {
+    assert.match(css, new RegExp(String.raw`\.sq\.tier-${tier}\s*\{[^}]*--tier-accent`),
+      `${tier} retains its own top accent variable`)
+  }
+})

@@ -346,6 +346,14 @@ main {
 }
 .sq:hover .gearbtn { opacity: .8; visibility: visible; }
 .gearbtn:hover { opacity: 1 !important; color: var(--ink-strong); background: none; }
+.expandbtn {
+  position: relative; top: auto; right: auto; z-index: 3;
+  border: none; background: none; padding: 0 2px; font-size: 12px;
+  color: var(--dim); opacity: 0; visibility: hidden;
+  transition: opacity .15s, visibility .15s; line-height: 1;
+}
+.sq:hover .expandbtn { opacity: .8; visibility: visible; }
+.expandbtn:hover { opacity: 1 !important; color: var(--ink-strong); background: none; }
 /* ✉ on every card — same interface as the eye's; always visible while mail waits */
 .mailbtn {
   position: relative; top: auto; right: auto; z-index: 3;
@@ -506,15 +514,10 @@ button.badge.audience-fold.alert {
     0 0 0 1px color-mix(in srgb, var(--accent) 25%, transparent),
     0 0 20px color-mix(in srgb, var(--provider-accent) 20%, transparent);
 }
-/* ---- mini LOD: the card IS the label. The head keeps only the tier chip and
-   status dots; the name fills the body large and wrapping (ellipsised 11px names
-   were unreadable at overview zoom, over an otherwise-empty square). */
-.sq.mini .sq-head .name { display: none; }
-.mini-name {
-  flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center;
-  text-align: center; font-family: var(--mono); font-weight: 600; font-size: 17px;
-  line-height: 1.25; color: var(--ink-strong); overflow: hidden;
-  overflow-wrap: anywhere; padding: 0 2px;
+/* ---- mini LOD: the card keeps the model/name in Row 1 and the status/action
+   rows compact; long names wrap inside the fixed card footprint. */
+.sq.mini .sq-title .name {
+  font-size: 15px; line-height: 1.15; overflow-wrap: anywhere;
 }
 /* Preserve a faint tier wash under the louder provider wash. The actual
    background is composed once below so neither channel erases the other. */
@@ -527,13 +530,13 @@ button.badge.audience-fold.alert {
    where a claude desk is terracotta — same geometry, recolored — and its
    busy ring follows. Keyed on `prov-openai` from cards.tsx, not on the tier
    classes, so a future codex tier joins the theme by joining the family. */
-.sq.tier-luna { border-top-color: color-mix(in srgb, var(--tier-luna) 55%, var(--line)); }
-.sq.tier-gpt-reserve { border-top-color: color-mix(in srgb, var(--tier-luna) 55%, var(--line)); }
-.sq.tier-terra { border-top-color: color-mix(in srgb, var(--tier-terra) 55%, var(--line)); }
-.sq.tier-sol { border-top-color: color-mix(in srgb, var(--tier-sol) 55%, var(--line)); }
-.sq.tier-astra { border-top-color: color-mix(in srgb, var(--tier-astra) 55%, var(--line)); }
-.sq.tier-flash { border-top-color: color-mix(in srgb, var(--tier-flash) 55%, var(--line)); }
-.sq.tier-pro { border-top-color: color-mix(in srgb, var(--tier-pro) 55%, var(--line)); }
+.sq.tier-luna { --tier-accent: var(--tier-luna); border-top-color: color-mix(in srgb, var(--tier-luna) 55%, var(--line)); }
+.sq.tier-gpt-reserve { --tier-accent: var(--tier-luna); border-top-color: color-mix(in srgb, var(--tier-luna) 55%, var(--line)); }
+.sq.tier-terra { --tier-accent: var(--tier-terra); border-top-color: color-mix(in srgb, var(--tier-terra) 55%, var(--line)); }
+.sq.tier-sol { --tier-accent: var(--tier-sol); border-top-color: color-mix(in srgb, var(--tier-sol) 55%, var(--line)); }
+.sq.tier-astra { --tier-accent: var(--tier-astra); border-top-color: color-mix(in srgb, var(--tier-astra) 55%, var(--line)); }
+.sq.tier-flash { --tier-accent: var(--tier-flash); border-top-color: color-mix(in srgb, var(--tier-flash) 55%, var(--line)); }
+.sq.tier-pro { --tier-accent: var(--tier-pro); border-top-color: color-mix(in srgb, var(--tier-pro) 55%, var(--line)); }
 .sq.mini.tier-luna { --mini-tier: var(--tier-luna); }
 .sq.mini.tier-gpt-reserve { --mini-tier: var(--tier-luna); }
 .sq.mini.tier-terra { --mini-tier: var(--tier-terra); }
@@ -560,6 +563,10 @@ button.badge.audience-fold.alert {
 }
 .sq.prov-openai.busy {
   border-color: color-mix(in srgb, var(--prov-openai) 55%, transparent);
+}
+.sq.prov-openai.busy:not(.desk), .sq.prov-google.busy:not(.desk) {
+  border-top-color: color-mix(
+    in srgb, var(--tier-accent, var(--provider-accent)) 55%, var(--line));
 }
 .sq.prov-openai.desk {
   border-color: var(--prov-openai);
@@ -660,15 +667,30 @@ button.badge.audience-fold.alert {
   animation: pulse 2.2s ease-in-out infinite;
 }
 
-/* tight head row (user ruling: long names must fit) — small margins, small
-   chrome, the context wheel pushed to the far right. */
-.sq-head { display: flex; align-items: center; gap: 4px; min-height: 19px; }
+/* Three deliberate zoomed-out rows: model/name, working + CLI/context
+   metadata, then left-aligned actions. */
+.sq-head { display: flex; flex-direction: column; align-items: stretch; gap: 3px; min-height: 0; }
+.sq-title { display: flex; align-items: center; gap: 4px; min-width: 0; min-height: 19px; }
+.sq-title .name { flex: 1; min-width: 0; }
+.sq-meta { display: flex; align-items: center; gap: 4px; min-width: 0; min-height: 16px; }
+.sq-workstate { display: flex; align-items: center; min-width: 0; flex: 1 1 auto; overflow: hidden; }
+.sq-workstate .actlabel { flex: 1 1 auto; }
+.sq-idle { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font: 600 10px/1 var(--mono); color: var(--dim); }
+.sq-idle.done { color: var(--ok); }
+.sq-idle.blocked { color: var(--bad); }
+.sq-status-dot { margin-left: 2px; }
+.sq-meta .proc-state { flex: none; }
+.sq-meta .ctxwheel { margin-left: auto; flex: none; width: 13px; height: 13px; }
 .sq-actions {
-  display: flex; align-items: center; justify-content: flex-end; gap: 4px;
+  display: flex; align-items: center; justify-content: flex-start; gap: 4px;
   min-height: 16px;
 }
 .sq-actions > button {
-  position: relative; top: auto; right: auto; width: 16px; height: 16px;
+  position: relative; top: auto; right: auto;
+  width: clamp(16px, calc(16px * var(--invzf, 1)), 24px);
+  height: clamp(16px, calc(16px * var(--invzf, 1)), 24px);
+  padding: 0; font-size: clamp(12px, calc(12px * var(--invzf, 1)), 18px);
   flex: none;
 }
 .sq-head .tier {
@@ -1458,10 +1480,10 @@ button.cc-name:hover {
                                whiter than the saturated credit-bar cyans */
 }
 .sq { border-top-width: 3px; }
-.sq.tier-haiku { border-top-color: color-mix(in srgb, var(--tier-haiku) 55%, var(--line)); }
-.sq.tier-sonnet { border-top-color: color-mix(in srgb, var(--tier-sonnet) 55%, var(--line)); }
-.sq.tier-opus { border-top-color: color-mix(in srgb, var(--tier-opus) 55%, var(--line)); }
-.sq.tier-fable { border-top-color: color-mix(in srgb, var(--tier-fable) 55%, var(--line)); }
+.sq.tier-haiku { --tier-accent: var(--tier-haiku); border-top-color: color-mix(in srgb, var(--tier-haiku) 55%, var(--line)); }
+.sq.tier-sonnet { --tier-accent: var(--tier-sonnet); border-top-color: color-mix(in srgb, var(--tier-sonnet) 55%, var(--line)); }
+.sq.tier-opus { --tier-accent: var(--tier-opus); border-top-color: color-mix(in srgb, var(--tier-opus) 55%, var(--line)); }
+.sq.tier-fable { --tier-accent: var(--tier-fable); border-top-color: color-mix(in srgb, var(--tier-fable) 55%, var(--line)); }
 .tier.t-haiku { color: var(--tier-haiku); border-color: color-mix(in srgb, var(--tier-haiku) 45%, var(--line)); }
 .tier.t-sonnet { color: var(--tier-sonnet); border-color: color-mix(in srgb, var(--tier-sonnet) 45%, var(--line)); }
 .tier.t-opus { color: var(--tier-opus); border-color: color-mix(in srgb, var(--tier-opus) 45%, var(--line)); }
@@ -1504,7 +1526,7 @@ button.cc-name:hover {
 .sq.bearer:not(.live) .name { color: var(--dim); }
 /* lifecycle wash beats the mini tier tint */
 .sq.mini.bearer:not(.live) { background: #262628; }
-.sq.mini.bearer:not(.live) .mini-name { color: var(--dim); }
+.sq.mini.bearer:not(.live) .sq-title .name { color: var(--dim); }
 /* permission border: dashed = cannot edit files (read-only agent); the tier
    edge stays solid — dashing it too read as noise, not as a channel */
 .sq.ro-agent { border-style: dashed; border-top-style: solid; }

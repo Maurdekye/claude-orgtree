@@ -10,7 +10,7 @@ import { createPortal } from 'react-dom'
 import type { ToastFn, TreePayload } from '../types'
 import { audienceAction, getCharters, saveKiosk, unstickNode } from '../api'
 import {
-  CheckIcon, CloseIcon, FocusIcon, FrozenIcon, LayersIcon,
+  CheckIcon, CloseIcon, FocusIcon, FullscreenIcon, FrozenIcon, LayersIcon,
   LockIcon, MailIcon, RetireIcon, SettingsIcon,
 } from '../icons'
 import {
@@ -1357,23 +1357,48 @@ export function NodeSquare({ node, pos, lod, focused: deskOpen, dragging, isDrop
           own compact chrome inside the counter-scaled panel (a world-scaled name
           and tier chip blow up to poster size at desk zoom) */}
       {!focused && <div className="sq-head">
-        <span className={'tier t-' + node.tier}>{TIER_LETTER[node.tier!] ?? '?'}</span>
-        {node.pending_switch &&
-          <span className="queued-mark" title={queuedSwitchTitle(node)}>
-            →{TIER_LETTER[node.pending_switch.tier] ?? '?'}</span>}
-        <span className="name" title={node.id}>{node.id}</span>
-        <ContextWheel occ={node.occupancy} cw={node.context_window}
-          est={node.occupancy_est} compactAt={compactAt} />
-        {live && <ProcessLifecycleMark warm={Boolean(node.proc_warm)}
-          live={node.proc_live} relaunch={node.proc_relaunch}
-          reason={node.proc_relaunch_reason} busy={node.busy} tier={node.tier} />}
-        {lod === 'mini' && node.last_status &&
-          <span className={'statusdot ' + node.last_status.status}
-            title={`${node.last_status.status} — ${node.last_status.summary ?? ''}`} />}
-        {node.busy && <Activity act={node.activity} dotOnly />}
-        {node.last_error && <span className="errdot" title={node.last_error ?? undefined} />}
+        {/* Zoomed-out cards have three deliberate rows: model/name, live
+            state plus CLI/context status, and actions. Keeping the title and
+            status groups separate prevents long names and status controls from
+            stealing the context wheel's hit area. */}
+        <div className="sq-title">
+          <span className={'tier t-' + node.tier}>{TIER_LETTER[node.tier!] ?? '?'}</span>
+          {node.pending_switch &&
+            <span className="queued-mark" title={queuedSwitchTitle(node)}>
+              →{TIER_LETTER[node.pending_switch.tier] ?? '?'}</span>}
+          <span className="name" title={node.id}>{node.id}</span>
+        </div>
+        <div className="sq-meta">
+          <div className="sq-workstate">
+            {node.busy
+              ? <>
+                <Activity act={node.activity} />
+                {node.last_status &&
+                  <span className={'sq-status-dot statusdot ' + node.last_status.status}
+                    aria-label={`${node.last_status.status}: ${node.last_status.summary}`}
+                    title={`${node.last_status.status}: ${node.last_status.summary}`} />}
+              </>
+              : <span className={'sq-idle ' + (node.last_status?.status ?? (live ? 'idle' : node.state))}
+                  title={node.last_status?.summary ?? undefined}>
+                {node.last_status?.status ?? (live ? 'idle' : node.state)}
+              </span>}
+          </div>
+          {live && <ProcessLifecycleMark warm={Boolean(node.proc_warm)}
+            live={node.proc_live} relaunch={node.proc_relaunch}
+            reason={node.proc_relaunch_reason} busy={node.busy} tier={node.tier} />}
+          <ContextWheel occ={node.occupancy} cw={node.context_window}
+            est={node.occupancy_est} compactAt={compactAt} />
+          {node.last_error && <span className="errdot" title={node.last_error ?? undefined} />}
+        </div>
       </div>}
       {!focused && <div className="sq-actions">
+        {onPin && !pinned &&
+          <button className="expandbtn" aria-label="Expand agent window"
+            title="Expand agent window"
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={(e) => { e.stopPropagation(); onPin() }}>
+            <FullscreenIcon fontSize="inherit" />
+          </button>}
         <button className={'mailbtn' + ((node.mail_pending ?? 0) > 0 ? ' has' : '')}
           onPointerDown={(e) => e.stopPropagation()}
           onClick={(e) => { e.stopPropagation(); onInbox() }}>
@@ -1399,8 +1424,6 @@ export function NodeSquare({ node, pos, lod, focused: deskOpen, dragging, isDrop
           onPointerDown={(e) => e.stopPropagation()}
           onClick={(e) => { e.stopPropagation(); onConfig() }}><SettingsIcon fontSize="inherit" /></button>
       </div>}
-      {!focused && lod === 'mini' && <div className="mini-name">{node.id}</div>}
-      {node.busy && !focused && lod !== 'mini' && <Activity act={node.activity} />}
       {!focused && lod !== 'mini' && (
         <div className="sq-badges">
           {/* no seat/free badges — the credit bar carries all of that */}
@@ -1426,9 +1449,6 @@ export function NodeSquare({ node, pos, lod, focused: deskOpen, dragging, isDrop
               title={`${node.bearer_state} bearer — where this agent's context `
                 + 'came from, not what it is doing; a rehired bearer works '
                 + 'like any other agent'}>{node.bearer_state}</span>}
-          {node.last_status &&
-            <span className={'statuschip ' + node.last_status.status}
-              title={node.last_status.summary}>{node.last_status.status}</span>}
           {/* FR-23 (user request 2026-08-09): the end of the most recent turn,
               glanceable on the CANVAS — the desk already had it, hover-gated,
               and that surfacing evidently wasn't enough or the request would
