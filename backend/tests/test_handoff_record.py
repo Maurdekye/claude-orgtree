@@ -65,6 +65,7 @@ dirs and this repository's worktree.
 import copy
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -285,6 +286,84 @@ elif MUTANT == "read_ignores_manifest":
     handoff.read_generation = _loose
 elif MUTANT == "flag_ignored":
     supervisor.handoff_flag_on = lambda: True
+
+
+# ── §12 mutants: the selection rule (spec: mail-ack-contract/selected-history-spec.md)
+# Each is a plausible weakening of `_select_history`, written out in full here
+# because a mutant that reached inside the shipped code through a test hook
+# would be testing the hook. `extract` looks the function up as a module
+# global, so replacing it here replaces the one the record is built with.
+def _mutated_select(*, by_line=False, radius=None, stop_at_first=False,
+                    text_only_budget=False, admit_calls=False,
+                    distance_only=False):
+    def sel(seq, *, anchors, quoted_elsewhere, omit):
+        def key(u):
+            k = handoff._ukey(u)
+            return (k[0], "", 0) if by_line else k
+        r = radius if radius is not None else handoff.SEL_RADIUS
+        quoted = {key(a.get("unit")) for a in anchors}
+        if not admit_calls:
+            quoted |= {key(p.get("unit")) for p in quoted_elsewhere}
+        at = {key(u): i for i, u in enumerate(seq)}
+        best = {}
+        for a in anchors:
+            i = at.get(key(a.get("unit")))
+            if i is None:
+                continue
+            for d in range(1, r + 1):
+                for j in (i - d, i + d):
+                    if 0 <= j < len(seq) and d < best.get(key(seq[j]), 1 << 30):
+                        best[key(seq[j])] = d
+        if distance_only:
+            cands = sorted(best.items(), key=lambda kv: kv[1])
+        else:
+            cands = sorted(best.items(),
+                           key=lambda kv: (kv[1], -kv[0][0],
+                                           handoff.SEL_KIND_ORDER.get(kv[0][1], 9),
+                                           kv[0][2]))
+        out, rows = [], 0
+        chars = len(handoff.SEL_HEADING) + 1
+        for k, d in cands:
+            if k in quoted:
+                continue
+            item = seq[at[k]]["item"]
+            e = {**{x: y for x, y in item.items() if x != "unit"},
+                 "unit": dict(item["unit"]), "distance": d}
+            if e["unit"].get("kind") == "tool_call":
+                e = {**e, "role": "assistant", "text": e.get("name", "tool"),
+                     "truncated": False}
+            cost = (len(e.get("text", "")) + 1 if text_only_budget
+                    else len(handoff.render_selected_row(e)) + 1)
+            if rows + 1 > handoff.SEL_ROWS:
+                omit("selected_rows_over_budget")
+                if stop_at_first:
+                    break
+                continue
+            if chars + cost > handoff.SEL_CHARS:
+                omit("selected_chars_over_budget")
+                if stop_at_first:
+                    break
+                continue
+            if e.get("truncated"):
+                omit("selected_truncated_row")
+            rows += 1
+            chars += cost
+            out.append(e)
+        return out
+    return sel
+
+
+_SELECT_MUTANTS = {
+    "select_dedupe_by_line": dict(by_line=True),
+    "select_radius_ignored": dict(radius=6),
+    "select_stop_at_first_oversize": dict(stop_at_first=True),
+    "select_budget_text_only": dict(text_only_budget=True),
+    "select_admits_calls": dict(admit_calls=True),
+    "select_order_distance_only": dict(distance_only=True),
+}
+if MUTANT in _SELECT_MUTANTS:
+    handoff._select_history = _mutated_select(**_SELECT_MUTANTS[MUTANT])
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # fixture: one transcript holding every excluded thing
@@ -1541,6 +1620,318 @@ def t10_cost():
 check("cost of a boundary on a large transcript is measured (not asserted as a bound)",
       t10_cost)
 
+# ── §12 selected history ───────────────────────────────────────────────────
+# The rule is specified in mail-ack-contract/selected-history-spec.md. Its own
+# fixture, because the §1 one is built to hold excluded forms rather than to
+# make a selection interesting: this one has more rows than the KEEP_* caps
+# admit, two text blocks on ONE line (so line-only identity would collide),
+# private and unknown forms sitting right beside anchors, and — for the budget
+# checks — one fat row nearer an anchor than a thin one.
+print("\n§12 selected history: radius, order, identity, budget, no re-admission")
+SEL_PRIVATE = "SELECTED-PRIVATE-REASONING must never be selected"
+SEL_UNKNOWN = "SELECTED-UNKNOWN-BLOCK must never be selected"
+SEL_SIDE = "SELECTED-SIDECHAIN-TEXT must never be selected"
+FAR = "FAR-ROW three units from every anchor"
+
+
+def sel_records(n=14, fat=0, fat_chars=0):
+    """n rounds of: user ask · assistant (thinking + two text blocks + a call)
+    · tool result. Round `fat` gets an oversized second text block."""
+    out = []
+    for i in range(1, n + 1):
+        out.append({"type": "user", "timestamp": "2026-09-05T00:00:00Z",
+                    "uuid": f"su{i}",
+                    "message": {"role": "user", "content": f"SEL-USER-{i} please do step {i}"}})
+        second = f"SEL-ASSIST-{i}-B second block"
+        if i == fat:
+            second = f"SEL-ASSIST-{i}-B " + ("x" * fat_chars)
+        out.append({"type": "assistant", "timestamp": "2026-09-05T00:00:00Z",
+                    "uuid": f"sa{i}",
+                    "message": {"id": f"sm{i}", "role": "assistant", "model": "x",
+                                "content": [
+                                    {"type": "thinking", "thinking": f"{SEL_PRIVATE} {i}",
+                                     "signature": "sig"},
+                                    {"type": "text", "text": f"SEL-ASSIST-{i}-A first block"},
+                                    {"type": "text", "text": second},
+                                    {"type": "server_tool_use", "id": f"sv{i}",
+                                     "name": "web_search",
+                                     "input": {"query": f"{SEL_UNKNOWN} {i}"}},
+                                    {"type": "tool_use", "id": f"st{i}", "name": "Bash",
+                                     "input": {"command": f"echo step {i}"}}]}})
+        out.append({"type": "assistant", "timestamp": "2026-09-05T00:00:00Z",
+                    "uuid": f"sx{i}", "isSidechain": True,
+                    "message": {"id": f"sn{i}", "role": "assistant", "model": "x",
+                                "content": [{"type": "text", "text": f"{SEL_SIDE} {i}"}]}})
+        out.append({"type": "user", "timestamp": "2026-09-05T00:00:00Z",
+                    "uuid": f"sr{i}",
+                    "message": {"role": "user", "content": [
+                        {"type": "tool_result", "tool_use_id": f"st{i}",
+                         "content": f"step {i} done"}]}})
+    return out
+
+
+def sel_lines(**kw):
+    return [json.dumps(r, ensure_ascii=False) + "\n" for r in sel_records(**kw)]
+
+
+def sel_build(lines):
+    return handoff.capture(nid="a1", node=NODE, lines=lines, views_all={},
+                           mailbox=[], mooted_ask=None, grants=[GRANT],
+                           boundary=BOUNDARY, at="2026-09-05T00:01:00Z")
+
+
+SEL_LINES = sel_lines()
+SEL_ART = sel_build(SEL_LINES)
+SEL_REC = SEL_ART["record"]
+
+
+def t12_not_vacuous():
+    """The anti-vacuity control for everything below: this fixture really does
+    drop rows the section can recover, and the section really recovers some."""
+    om = {o["kind"]: o["count"] for o in SEL_REC["omissions"]}
+    assert om.get("assistant_rows_not_quoted", 0) > 0, om
+    assert om.get("user_rows_not_quoted", 0) > 0, om
+    assert len(SEL_REC["selected_history"]) >= 6, SEL_REC["selected_history"]
+    assert handoff.verify(SEL_ART, SEL_LINES) == [], handoff.verify(SEL_ART, SEL_LINES)
+
+
+check("selection fixture is not vacuous: rows are dropped, and rows are selected",
+      t12_not_vacuous)
+
+
+def t12_same_line_units():
+    """Two text blocks on ONE line are two units. Line-only identity would
+    call them one row and drop the other."""
+    sel = SEL_REC["selected_history"]
+    both = [e for e in sel if e["unit"]["kind"] == "assistant_text"
+            and e["unit"]["index"] == 1]
+    assert both, "no second-block unit was selected at all"
+    lines_with_two = {e["unit"]["line"] for e in sel
+                      if e["unit"]["index"] == 1} & {
+        e["unit"]["line"] for e in sel if e["unit"]["index"] == 0}
+    assert lines_with_two, [e["unit"] for e in sel]
+    keys = [(e["unit"]["line"], e["unit"]["kind"], e["unit"]["index"]) for e in sel]
+    assert len(keys) == len(set(keys)), keys
+    # and the identity is carried by every quoted item, not only these
+    for it in (SEL_REC["instructions_received"] + SEL_REC["predecessor_said"]
+               + SEL_REC["predecessor_claims"] + SEL_REC["tool_pairs"]):
+        assert isinstance(it.get("unit"), dict), it
+
+
+check("two blocks on the same line keep their own identity (line, kind, index)",
+      t12_same_line_units)
+
+
+def t12_order_and_determinism():
+    """The §3 order is total, and it is recomputed here from the units alone —
+    not by calling the code that produced it."""
+    sel = SEL_REC["selected_history"]
+    want = sorted(sel, key=lambda e: (e["distance"], -e["unit"]["line"],
+                                      handoff.SEL_KIND_ORDER[e["unit"]["kind"]],
+                                      e["unit"]["index"]))
+    assert [e["unit"] for e in sel] == [e["unit"] for e in want], [e["unit"] for e in sel]
+    assert len({e["distance"] for e in sel}) > 1, "one distance only: the order is untested"
+    again = sel_build(SEL_LINES)
+    assert json.dumps(again["record"], sort_keys=True) == \
+        json.dumps(SEL_REC, sort_keys=True)
+
+
+check("selected history is in the specified order and rebuilds byte-identically",
+      t12_order_and_determinism)
+
+
+def t12_radius():
+    """A row three admitted units from every anchor is not selected. The
+    control: the same row IS selected when the radius is widened by hand."""
+    far = [e for e in SEL_REC["selected_history"] if e["distance"] > handoff.SEL_RADIUS]
+    assert not far, far
+    ds = {e["distance"] for e in SEL_REC["selected_history"]}
+    assert ds <= {1, 2} and ds, ds
+    old = handoff.SEL_RADIUS
+    try:
+        handoff.SEL_RADIUS = 4
+        wide = sel_build(SEL_LINES)["record"]["selected_history"]
+    finally:
+        handoff.SEL_RADIUS = old
+    assert {e["distance"] for e in wide} - {1, 2}, \
+        "widening the radius selected nothing new: the radius check is inert"
+
+
+check("no row outside the radius is selected (control: widening it selects more)",
+      t12_radius)
+
+
+def t12_never_a_second_copy():
+    """`tool_pairs` already publishes every call. A selected row is never a row
+    the record prints somewhere else."""
+    sel = SEL_REC["selected_history"]
+    elsewhere = {(it["unit"]["line"], it["unit"]["kind"], it["unit"]["index"])
+                 for it in (SEL_REC["instructions_received"] + SEL_REC["predecessor_said"]
+                            + SEL_REC["predecessor_claims"] + SEL_REC["tool_pairs"])}
+    assert elsewhere, "nothing is quoted elsewhere: this check would be free"
+    for e in sel:
+        k = (e["unit"]["line"], e["unit"]["kind"], e["unit"]["index"])
+        assert k not in elsewhere, k
+        assert e["unit"]["kind"] != "tool_call", e
+    md = handoff.render_md(SEL_ART)
+    assert md.count("SEL-ASSIST-1-A first block") <= 1, "row printed twice"
+
+
+check("a selected row is never a second copy of one printed elsewhere", t12_never_a_second_copy)
+
+
+def t12_no_readmission():
+    """Nothing the rules exclude can arrive through this door: the section is a
+    selection over units `extract` already admitted, and the private forms sit
+    directly beside the anchors here."""
+    section = handoff.render_selected(SEL_REC["selected_history"])
+    blob = json.dumps(SEL_REC["selected_history"], ensure_ascii=False)
+    for s in (SEL_PRIVATE, SEL_UNKNOWN, SEL_SIDE):
+        assert s not in section and s not in blob, s
+        assert s in "".join(SEL_LINES), f"{s} is not even in the fixture"
+    om = {o["kind"]: o["count"] for o in SEL_REC["omissions"]}
+    assert om.get("thinking_block", 0) >= 14 and om.get("sidechain_row", 0) >= 14, om
+    assert om.get("unrecognized_assistant_block:server_tool_use", 0) >= 14, om
+
+
+check("excluded forms beside an anchor are not re-admitted by the selection",
+      t12_no_readmission)
+
+
+def sel_costs(art):
+    """Rendered and text-only cost of each admitted row, in the order the
+    record has them — the two measures the budget could use."""
+    sel = art["record"]["selected_history"]
+    return ([len(handoff.render_selected_row(e)) + 1 for e in sel],
+            [len(e.get("text", "")) + 1 for e in sel], sel)
+
+
+def t12_rows_budget():
+    """The row budget binds, and CONSERVATION holds: every candidate that the
+    full-budget build admits is either admitted or counted when the budget is
+    smaller. The full build supplies the candidate count, so the expected
+    number is not read from the module's own bookkeeping."""
+    full = len(SEL_REC["selected_history"])
+    assert full > 6, full
+    old = handoff.SEL_ROWS
+    try:
+        handoff.SEL_ROWS = 6
+        art = sel_build(SEL_LINES)
+        rec = art["record"]
+        sel = rec["selected_history"]
+        om = {o["kind"]: o["count"] for o in rec["omissions"]}
+        assert len(sel) == 6, len(sel)
+        assert om.get("selected_rows_over_budget", 0) == full - 6, (om, full)
+        assert om.get("selected_chars_over_budget", 0) == 0, om
+        assert [e["unit"] for e in sel] == \
+            [e["unit"] for e in SEL_REC["selected_history"][:6]], "not the first 6 in order"
+        assert handoff.verify(art, SEL_LINES) == [], handoff.verify(art, SEL_LINES)
+        OBS.setdefault("selected", {})["rows_budget"] = {
+            "candidates": full, "kept": len(sel), "counted": om.get("selected_rows_over_budget")}
+    finally:
+        handoff.SEL_ROWS = old
+
+
+check("the row budget binds and every candidate it drops is counted (conservation)",
+      t12_rows_budget)
+
+
+def t12_chars_budget():
+    """The budget measures the RENDERED section — heading, labels, distance
+    markers and newlines included, not the quotation text alone. The budget is
+    chosen so that the two measures DISAGREE about the next row: rendered says
+    it does not fit, text-only says it does. If they cannot be made to
+    disagree the check says so instead of passing."""
+    r, t, sel = sel_costs(SEL_ART)
+    head = len(handoff.SEL_HEADING) + 1
+    k = 3
+    assert len(r) > k, len(r)
+    budget = head + sum(r[:k])                       # EXACTLY k rendered rows;
+    # no slack is left over, so a later smaller row cannot slip in either and
+    # the count below is unambiguous
+    assert head + sum(t[:k + 1]) <= budget, \
+        "INERT: text-only and rendered measures agree on this fixture"
+    old = handoff.SEL_CHARS
+    try:
+        handoff.SEL_CHARS = budget
+        art = sel_build(SEL_LINES)
+        rec = art["record"]
+        got = rec["selected_history"]
+        om = {o["kind"]: o["count"] for o in rec["omissions"]}
+        assert len(got) == k, (len(got), k)
+        assert len(handoff.render_selected(got)) <= budget
+        assert om.get("selected_chars_over_budget", 0) == len(sel) - k, (om, len(sel))
+        assert handoff.verify(art, SEL_LINES) == [], handoff.verify(art, SEL_LINES)
+        OBS.setdefault("selected", {})["chars_budget"] = {
+            "budget": budget, "kept": len(got), "rendered": len(handoff.render_selected(got)),
+            "text_only_would_have_kept": k + 1}
+    finally:
+        handoff.SEL_CHARS = old
+
+
+check("the character budget measures the rendered characters, labels included",
+      t12_chars_budget)
+
+
+def t12_skip_and_continue():
+    """One oversized row must not swallow the rest of the section. Which row to
+    fatten is DISCOVERED, not guessed: the plain build says which rows are
+    candidates, and the chosen one is required not to be last, so 'selection
+    continued past it' has something to continue to."""
+    plain = sel_build(sel_lines(n=14))["record"]["selected_history"]
+    rounds = [(i, int(m.group(1))) for i, e in enumerate(plain)
+              for m in [re.match(r"SEL-ASSIST-(\d+)-B", e.get("text", ""))] if m]
+    rounds = [(i, n) for i, n in rounds if i < len(plain) - 1]
+    assert rounds, "no non-final second-block candidate: the fixture does not bind"
+    _, fat_round = rounds[0]
+    lines = sel_lines(n=14, fat=fat_round, fat_chars=900)
+    ctrl = sel_build(lines)["record"]["selected_history"]
+    fat_at = [i for i, e in enumerate(ctrl)
+              if e["text"].startswith(f"SEL-ASSIST-{fat_round}-B")]
+    assert fat_at and fat_at[0] < len(ctrl) - 1, (fat_at, len(ctrl))
+    i = fat_at[0]
+    costs = [len(handoff.render_selected_row(e)) + 1 for e in ctrl]
+    budget = len(handoff.SEL_HEADING) + 1 + sum(costs) - costs[i]
+    old = handoff.SEL_CHARS
+    try:
+        handoff.SEL_CHARS = budget                   # everything but the fat row fits
+        art = sel_build(lines)
+        rec = art["record"]
+        sel = rec["selected_history"]
+        om = {o["kind"]: o["count"] for o in rec["omissions"]}
+        assert not [e for e in sel
+                    if e["text"].startswith(f"SEL-ASSIST-{fat_round}-B")], "fat row admitted"
+        assert [e["unit"] for e in sel] == \
+            [e["unit"] for e in ctrl[:i] + ctrl[i + 1:]], "rows after the fat one were lost"
+        assert om.get("selected_chars_over_budget", 0) == 1, om
+        assert handoff.verify(art, lines) == [], handoff.verify(art, lines)
+        OBS.setdefault("selected", {})["skip_and_continue"] = {
+            "fat_round": fat_round, "position": i, "kept": len(sel),
+            "of_candidates": len(ctrl)}
+    finally:
+        handoff.SEL_CHARS = old
+
+
+check("an oversized candidate is skipped and counted; selection continues past it",
+      t12_skip_and_continue)
+
+
+def t12_file_only():
+    """FILE ONLY: the section is rendered behind everything the prompt splices,
+    so a long one cannot push the instructions or the tool calls out of the
+    HANDOFF_HEAD-char head that `_handoff_block` takes."""
+    md = handoff.render_md(SEL_ART)
+    i_sel = md.index(handoff.SEL_HEADING)
+    for earlier in ("## Instructions received", "## What the predecessor said",
+                    "## Tool calls", "## Omitted (by rule)"):
+        assert md.index(earlier) < i_sel, earlier
+    assert md.index("## Instructions received") < supervisor.HANDOFF_HEAD
+
+
+check("the section is file-only: it renders after every section the prompt head shows",
+      t12_file_only)
+
+
 # ── §11 mutants ────────────────────────────────────────────────────────────
 MUTANTS = {
     "keep_thinking": "excluded content absent",
@@ -1558,6 +1949,12 @@ MUTANTS = {
     "nonatomic_publish": "leave NOTHING",
     "read_ignores_manifest": "refuses a manifest-less",
     "flag_ignored": "byte-identical to the pre-handoff baseline",
+    "select_dedupe_by_line": "same line keep their own",
+    "select_radius_ignored": "outside the radius",
+    "select_stop_at_first_oversize": "skipped and counted",
+    "select_budget_text_only": "rendered characters",
+    "select_admits_calls": "never a second copy",
+    "select_order_distance_only": "specified order",
 }
 
 if not MUTANT:

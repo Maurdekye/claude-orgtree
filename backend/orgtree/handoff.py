@@ -72,13 +72,21 @@ import shutil
 import uuid
 from typing import Any, Iterable
 
-V = 2
+V = 3
 KIND = "orgtree.handoff"
 CAP_TEXT = 1200       # chars quoted per user/assistant item
 CAP_RESULT = 400      # chars of a tool result excerpt
 CAP_CMD = 200
 KEEP_USER = 8         # last N human user rows (plus the first)
 KEEP_ASSISTANT = 6    # last N assistant final texts / claims
+# selected history (spec: mail-ack-contract/selected-history-spec.md)
+SEL_RADIUS = 2        # admitted units either side of a quoted one — a CHOICE
+SEL_ROWS = 24         # admitted rows, where a row is one admitted BLOCK
+SEL_CHARS = 20000     # RENDERED characters of the section, heading included
+SEL_HEADING = ("## Selected history (rows next to the quoted ones; nothing is "
+               "admitted here that the rules above do not already admit)")
+#: kinds of admitted unit, in the fixed order the §3 tiebreak uses
+SEL_KIND_ORDER = {"user_text": 0, "assistant_text": 1, "tool_call": 2}
 ARTIFACT_TOOLS = frozenset({"Write", "Edit", "MultiEdit", "NotebookEdit"})
 PATH_ARG_TOOLS = ARTIFACT_TOOLS | {"Read", "NotebookRead"}
 CLAIM_TOOLS = ("orgtree_status", "orgtree_message", "orgtree_send_notice", "orgtree_ask")
@@ -143,6 +151,91 @@ def _loads(line: str) -> dict[str, Any] | None:
     return rec if isinstance(rec, dict) else None
 
 
+# ------------------------------------------------------ selected history
+def _ukey(u: Any) -> tuple[int, str, int]:
+    u = u if isinstance(u, dict) else {}
+    return (int(u.get("line") or 0), str(u.get("kind") or ""),
+            int(u.get("index") or 0))
+
+
+def render_selected_row(e: dict[str, Any]) -> str:
+    """ONE renderer: the section's budget measures exactly what `render_md`
+    writes, because both call this. A second formatter is how a budget starts
+    lying about the thing it bounds."""
+    u = e.get("unit") or {}
+    return (f"- [{e.get('role')} · L{u.get('line')}#{u.get('index')} · d{e.get('distance')}"
+            f"{' · projected' if e.get('projected') else ''}] "
+            f"{e.get('text', '')}{' …[cut]' if e.get('truncated') else ''}")
+
+
+def render_selected(entries: list[dict[str, Any]]) -> str:
+    body = [render_selected_row(e) for e in entries] or ["- (none)"]
+    return SEL_HEADING + "\n" + "\n".join(body) + "\n"
+
+
+def _select_history(seq: list[dict[str, Any]], *, anchors: list[dict[str, Any]],
+                    quoted_elsewhere: list[dict[str, Any]],
+                    omit: Any) -> list[dict[str, Any]]:
+    """The rows NEXT TO the ones the record already quotes, bounded.
+
+    Selection only — over the units `extract` has already admitted. There is no
+    second pass over the raw transcript and no second admission rule, so no
+    thinking block, sidechain row, compaction summary, image or unrecognized
+    block form can arrive here: no code path in this function can reach one.
+
+    Tool calls are NOT candidates: `tool_pairs` already publishes every call
+    with its result, so admitting one here would print it twice. They still
+    consume radius, so the neighbourhood keeps its shape.
+
+    A neighbour that is already quoted — a call, or an adjacent anchor — is
+    skipped WITHOUT an omission count. I3 counts what the reader cannot see,
+    and by construction this exclusion set is read out of the record itself, so
+    everything it drops is on the page already. A count that fires on every
+    record in existence is noise, not signal; `verify` checks the same property
+    the other way round, by refusing a selected row that appears elsewhere.
+    """
+    quoted = {_ukey(a.get("unit")) for a in anchors}
+    quoted |= {_ukey(p.get("unit")) for p in quoted_elsewhere}
+    at = {_ukey(u): i for i, u in enumerate(seq)}
+    best: dict[tuple[int, str, int], int] = {}          # unit → best distance
+    for a in anchors:
+        i = at.get(_ukey(a.get("unit")))
+        if i is None:
+            continue
+        for d in range(1, SEL_RADIUS + 1):
+            for j in (i - d, i + d):
+                if 0 <= j < len(seq):
+                    k = _ukey(seq[j])
+                    if d < best.get(k, 1 << 30):
+                        best[k] = d
+    # §3 total order: distance, then recency, then (line, kind, index)
+    cands = sorted(best.items(),
+                   key=lambda kv: (kv[1], -kv[0][0],
+                                   SEL_KIND_ORDER.get(kv[0][1], 9), kv[0][2]))
+    out: list[dict[str, Any]] = []
+    rows = 0
+    chars = len(SEL_HEADING) + 1
+    for k, d in cands:
+        if k in quoted:
+            continue
+        item = seq[at[k]]["item"]
+        e = {**{x: y for x, y in item.items() if x != "unit"},
+             "unit": dict(item["unit"]), "distance": d}
+        cost = len(render_selected_row(e)) + 1
+        if rows + 1 > SEL_ROWS:
+            omit("selected_rows_over_budget")
+            continue
+        if chars + cost > SEL_CHARS:
+            omit("selected_chars_over_budget")
+            continue
+        if e.get("truncated"):
+            omit("selected_truncated_row")
+        rows += 1
+        chars += cost
+        out.append(e)
+    return out
+
+
 # ------------------------------------------------------------------ extract
 def extract(inputs: dict[str, Any], lines: list[str]) -> dict[str, Any]:
     """PURE bounded extraction: (captured inputs, transcript lines) → record.
@@ -173,6 +266,24 @@ def extract(inputs: dict[str, Any], lines: list[str]) -> dict[str, Any]:
     calls: dict[str, list[dict[str, Any]]] = {}
     order: list[dict[str, Any]] = []
     artifacts: dict[str, dict[str, Any]] = {}
+    # ⚠ A LINE IS NOT A UNIT. One assistant row can carry two `text` blocks and
+    # three `tool_use` blocks, and today all five items get the SAME `ref` —
+    # `ref` has no block position. Identity is therefore (line, kind, index),
+    # `index` being the ordinal among items of that kind from that same line;
+    # for a tool call it is also the occurrence index the pairing rule above
+    # already depends on. `seq` is every admitted unit in transcript order and
+    # is what selected history (§2 of the spec) counts its radius in.
+    seq: list[dict[str, Any]] = []
+    seq_n: dict[tuple[int, str], int] = {}      # O(1) index, never a rescan
+
+    def unit_of(line_no: int, kind: str, item: dict[str, Any]) -> dict[str, Any]:
+        idx = seq_n.get((line_no, kind), 0)
+        seq_n[(line_no, kind)] = idx + 1
+        u = {"line": line_no, "kind": kind, "index": idx}
+        item["unit"] = u
+        seq.append({**u, "item": item})
+        return u
+
     for i, line in enumerate(lines):
         rec = _loads(line)
         if rec is None:
@@ -251,6 +362,7 @@ def extract(inputs: dict[str, Any], lines: list[str]) -> dict[str, Any]:
             item: dict[str, Any] = {"role": "user", "text": q, "truncated": cut, "ref": ref}
             if vis is not None:
                 item["projected"] = {"raw_sha256": raw_sha, "visible_sha256": sha256(vis)}
+            unit_of(i + 1, "user_text", item)
             users.append(item)
             continue
         # assistant
@@ -272,7 +384,9 @@ def extract(inputs: dict[str, Any], lines: list[str]) -> dict[str, Any]:
                 s = str(b.get("text") or "")
                 if s.strip():
                     q, cut = _cap(s, CAP_TEXT)
-                    finals.append({"role": "assistant", "text": q, "truncated": cut, "ref": ref})
+                    it = {"role": "assistant", "text": q, "truncated": cut, "ref": ref}
+                    unit_of(i + 1, "assistant_text", it)
+                    finals.append(it)
                 continue
             if bt == "tool_use":
                 tid = str(b.get("id") or "")
@@ -280,12 +394,13 @@ def extract(inputs: dict[str, Any], lines: list[str]) -> dict[str, Any]:
                 inp = b.get("input") if isinstance(b.get("input"), dict) else {}
                 bare = name.removeprefix("mcp__orgtree__")
                 entry: dict[str, Any] = {"id": tid, "name": name, "ref": ref}
+                u = unit_of(i + 1, "tool_call", entry)
                 if bare in CLAIM_TOOLS:
                     claims.append({"role": "assistant", "tool": bare,
                                    "input": {k: _cap(str(v), CAP_TEXT)[0] for k, v in inp.items()
                                              if k in ("status", "summary", "to", "body",
                                                       "kind", "question")},
-                                   "ref": ref})
+                                   "ref": ref, "unit": u})
                 p = str(inp.get("file_path") or inp.get("notebook_path") or "")
                 if p and name in PATH_ARG_TOOLS:
                     inside = _under(p, grants)
@@ -330,6 +445,8 @@ def extract(inputs: dict[str, Any], lines: list[str]) -> dict[str, Any]:
     keep_claims = claims[-KEEP_ASSISTANT:]
     if len(keep_claims) < len(claims):
         om["claim_rows_not_quoted"] = len(claims) - len(keep_claims)
+    selected = _select_history(seq, anchors=keep_users + keep_finals + keep_claims,
+                               quoted_elsewhere=pairs, omit=omit)
     seat = inputs.get("seat") or {}
     return {
         "continuity": {"provider_context": "none", "cache": "unknown",
@@ -341,6 +458,7 @@ def extract(inputs: dict[str, Any], lines: list[str]) -> dict[str, Any]:
         "instructions_received": keep_users,
         "predecessor_said": keep_finals,
         "predecessor_claims": keep_claims,
+        "selected_history": selected,
         "tool_pairs": pairs,
         "artifacts": arts,
         "mail": {"pending": inputs.get("mailbox") or [],
@@ -636,7 +754,7 @@ def verify(art: dict[str, Any], lines: list[str], *,
     whichever anchors were supplied. Returns problems ([] = verified).
     See `anchors_ran` for what a given call could and could not check."""
     bad = list(_verify_core(art, lines))
-    if bad and bad[0] == "not a v2 handoff record":
+    if bad and bad[0] == f"not a v{V} handoff record":
         return bad
     inputs = art.get("inputs") or {}
     views = inputs.get("views") or {}
@@ -658,7 +776,7 @@ def _verify_core(art: dict[str, Any], lines: list[str]) -> list[str]:
     key and must never be answered from a memo."""
     bad: list[str] = []
     if not isinstance(art, dict) or art.get("kind") != KIND or art.get("v") != V:
-        return ["not a v2 handoff record"]
+        return [f"not a v{V} handoff record"]
     blob = json.dumps(art, ensure_ascii=False)
     # ⚠ THE KEY HASHES THE BYTES IN HAND, NEVER THE ONES THE ARTIFACT CLAIMS
     # (Astra review 2026-09-05 12:10Z, found in this code). Keying on
@@ -697,7 +815,7 @@ def _verify_core(art: dict[str, Any], lines: list[str]) -> list[str]:
         bad.append(f"I1 private reasoning FRAGMENT present ({LEAK_WINDOW}+ chars, "
                    f"not in any admissible text): {w[:24]!r}")
     quoted = (rec.get("instructions_received", []) + rec.get("predecessor_said", [])
-              + rec.get("predecessor_claims", []))
+              + rec.get("predecessor_claims", []) + rec.get("selected_history", []))
     views = inputs.get("views") or {}
     for it in quoted:
         ref = it.get("ref") or {}
@@ -731,6 +849,37 @@ def _verify_core(art: dict[str, Any], lines: list[str]) -> list[str]:
             body = json.dumps((src.get("message") or {}).get("content"), ensure_ascii=False)
             if it["text"] and json.dumps(it["text"], ensure_ascii=False)[1:-1] not in body:
                 bad.append(f"I2 quoted text not found in L{ln}")
+    # I6 selected history: bounded, never a second copy, in the stated order.
+    # Checked from the artifact itself, not by re-running the selector — a
+    # check that just calls the code it is checking cannot catch that code.
+    sel = rec.get("selected_history")
+    if not isinstance(sel, list):
+        bad.append("I6 selected_history missing")
+        sel = []
+    elsewhere = {_ukey(it.get("unit")) for it in
+                 (rec.get("instructions_received", []) + rec.get("predecessor_said", [])
+                  + rec.get("predecessor_claims", []) + rec.get("tool_pairs", []))}
+    seen: set[tuple[int, str, int]] = set()
+    order_key: list[tuple[Any, ...]] = []
+    for e in sel:
+        k = _ukey(e.get("unit"))
+        if k in elsewhere:
+            bad.append(f"I6 selected row is already quoted elsewhere: {k}")
+        if k in seen:
+            bad.append(f"I6 selected row appears twice: {k}")
+        seen.add(k)
+        d = e.get("distance")
+        if not isinstance(d, int) or not 1 <= d <= SEL_RADIUS:
+            bad.append(f"I6 selected row is outside radius {SEL_RADIUS}: {k} d={d}")
+        order_key.append((d if isinstance(d, int) else 1 << 30, -k[0],
+                          SEL_KIND_ORDER.get(k[1], 9), k[2]))
+    if order_key != sorted(order_key):
+        bad.append("I6 selected history is not in the specified order")
+    if len(sel) > SEL_ROWS:
+        bad.append(f"I6 selected history is {len(sel)} rows > {SEL_ROWS}")
+    if len(render_selected(sel)) > SEL_CHARS:
+        bad.append(f"I6 selected history renders {len(render_selected(sel))} "
+                   f"chars > {SEL_CHARS}")
     rc = _recount(lines)
     om = {o["kind"]: o["count"] for o in rec.get("omissions", [])
           if isinstance(o, dict)}
@@ -902,6 +1051,12 @@ def render_md(art: dict[str, Any]) -> str:
     out.append("\n## Omitted (by rule)")
     for o in rec["omissions"]:
         out.append(f"- {o['kind']}: {o['count']}" + (f" {o['ids']}" if o.get("ids") else ""))
+    # ⚠ LAST, DELIBERATELY. `supervisor._handoff_block` splices the HEAD of this
+    # file (HANDOFF_HEAD chars). A section that can be 20 000 chars long would,
+    # anywhere earlier, push the instructions, claims and tool calls out of the
+    # spliced head — the section is FILE-ONLY, so it sits behind everything the
+    # prompt shows.
+    out.append("\n" + render_selected(rec.get("selected_history") or []).rstrip("\n"))
     tr = inp["transcript"]
     out.append(f"\nSource: {tr['path']} ({tr['lines']} lines, sha256 {tr['sha256'][:12]}); "
                + (f"breadcrumbs.md {inp['breadcrumbs']['bytes']} bytes"

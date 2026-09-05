@@ -5215,7 +5215,11 @@ def _handoff_block(org: Org, nid: str) -> str:
             f"boundary. NOT memory, NOT a summary a model wrote, and NOT evidence "
             f"that any provider context carried over. Quoted lines keep their "
             f"author's role; a predecessor claim is a claim until you open its "
-            f"cited line in transcript.jsonl"
+            f"cited line in transcript.jsonl. THIS BLOCK IS NOT LINE-ADDRESSABLE: "
+            f"cite the file by its section and its L<n> markers, never by a line "
+            f"number counted here — counting inside this block is off by the "
+            f"length of this header (observed 2026-09-05: a successor cited five "
+            f"lines, every one of them one past the line that carried the fact)"
             + (f"; TRUNCATED to the first {HANDOFF_HEAD} chars — read the file "
                f"for the rest" if cut else "")
             + "]\n" + txt)
