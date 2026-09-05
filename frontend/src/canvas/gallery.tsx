@@ -112,18 +112,22 @@ export function DocGalleryModal({ slug, toast, close, onFocusAgent, onReply }: {
         openLightboxIfEligibleImage(e)
         e.stopPropagation()
       }}>
-        <h3><DocIcon fontSize="inherit" /> presented documents</h3>
-        {/* one control, not two views: the retired cards JOIN the list below
-            the active ones rather than replacing them. The count rides the
-            label so the archive is discoverable even while it is hidden —
-            which is doing real work here, because the default list is empty
-            whenever no currently-hired agent has presented anything. */}
-        <label className="checkline gallery-showretired">
-          <input type="checkbox" checked={showRetired}
-            onChange={(e) => setShowRetired(e.target.checked)} />
-          show retired agents
-          {retiredCt > 0 && <span className="dim"> · {retiredCt}</span>}
-        </label>
+        <div className="gallery-head">
+          <h3><DocIcon fontSize="inherit" /> presented documents</h3>
+          {/* one control, not two views: the retired cards JOIN the list
+              below the active ones rather than replacing them. The count
+              rides the label so the archive is discoverable even while it
+              is hidden — which is doing real work here, because the
+              default list is empty whenever no currently-hired agent has
+              presented anything. Inline with the header (user ruling,
+              accepted docket styling), not its own line below it. */}
+          <label className="checkline gallery-showretired">
+            <input type="checkbox" checked={showRetired}
+              onChange={(e) => setShowRetired(e.target.checked)} />
+            show retired agents
+            {retiredCt > 0 && <span className="dim"> · {retiredCt}</span>}
+          </label>
+        </div>
         <div className="mailpane">
           {all == null
             ? <div className="dim pad">loading…</div>
@@ -140,10 +144,11 @@ export function DocGalleryModal({ slug, toast, close, onFocusAgent, onReply }: {
                     {rows!.map((r) => (
                       <div key={r.id}
                         className={'mailrow doc-gallery-row'
-                          // the accent treatment unread mail wears (user:
-                          // "color-code the active agent cards with an orange
-                          // flare similar to how unread mails are color
-                          // coded") vs the slight grey for a retired one
+                          // `.active`/`.past` — styled in styles.css, scoped
+                          // to `.gallery-modal` only (accepted docket
+                          // styling supersedes the 2026-09-03 orange-flare
+                          // ruling: active rows read white, retired rows
+                          // read muted grey)
                           + (isHired(r) ? ' active' : ' past')
                           + (r.id === selId ? ' on' : '')
                           + (r.evicted ? ' evicted' : '')}
