@@ -1381,16 +1381,10 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
     // No capture and no stopPropagation: the press bubbles to the viewport,
     // which pans on move and opens the card on a still release.
     if (isMobile) return
-    // UX7 (user report): `.hsof-bridge` (cards.tsx) is a transparent,
-    // unconditionally `pointer-events: auto` strip laid OUTSIDE the card's
-    // own box to keep the side hire-chips reachable across the gap beside
-    // it (styles.css ".sq > .hsof-bridge"). It is a DOM child of `.sq`, so a
-    // press landing on it — which looks like open canvas beside the card,
-    // not the card itself — bubbled here and was captured as a node drag,
-    // silently detaching the card's whole subtree instead of panning the
-    // canvas underneath it. Excluded the same way `.cbar`/`.desk-body`
-    // already are: this only stops the bridge from STARTING a drag: it
-    // stays exactly as reachable for hover as before.
+    // UX7: `.hsof-bridge` is a DOM child of `.sq` positioned OUTSIDE the
+    // card's box with unconditional pointer-events, so a press on it (open
+    // canvas beside the card, visually) bubbled here and dragged the whole
+    // subtree. Excluded like `.cbar`/`.desk-body`; hover reach is unchanged.
     if ((e.target as Element).closest('button, input, textarea, select, .cbar, .desk-body, .hsof-bridge')) return
     if (mapRef.current.get(id)?.isBearerOf) {   // lineage cards are not org nodes
       e.stopPropagation()
