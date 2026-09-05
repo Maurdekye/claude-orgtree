@@ -3147,6 +3147,49 @@ main.solo { width: 100%; }
 .docket-modal .docket-mention .tier {
   width: 13px; height: 13px; font-size: 8px; border-radius: 3px;
   margin-right: 3px; vertical-align: baseline; position: relative; top: 1px;
+/* A CANONICAL REFERENCE — `@item:org/slug` and its family. Four outcomes, and
+   only one of them is a control.
+
+   ⚠ THE DOUBLED CLASS IS DELIBERATE AND IT IS NOT A TYPO. `.settings button`
+   (line ~2652) sets font-size 14px / padding 7px 15px / radius 6px, and these
+   chips render INSIDE `.settings` modals — the docket is one. A single
+   `.ref-chip` is (0,1,0) and loses to `.settings button`'s (0,1,1), which is
+   exactly the trap that once rendered a mid-sentence mention as a 35px
+   inline-BLOCK punching a hole through the line. `.ref-chip.ref-chip` is
+   (0,2,0) and wins wherever it appears, without scoping to one modal and
+   without depending on source order. Every property that rule sets is reset
+   here explicitly.
+
+   ⚠ AND THE THREE INERT OUTCOMES MUST NOT LOOK CLICKABLE. `ready` is
+   underlined with a pointer cursor; `pending`, `absent` and `foreign` get
+   neither, plus a `default` cursor, because a chip that invites a click and
+   does nothing is worse than one that explains itself. */
+.ref-chip.ref-chip {
+  font-family: var(--mono); font-size: 0.92em;
+  background: none; border: 0; border-radius: 0; padding: 0; margin: 0;
+  appearance: none; display: inline; text-align: left;
+  line-height: inherit; vertical-align: baseline;
+}
+button.ref-chip.ref-chip {
+  color: var(--accent); cursor: pointer;
+  text-decoration: underline; text-underline-offset: 2px;
+}
+button.ref-chip.ref-chip:hover { color: var(--ink-strong); }
+span.ref-chip.ref-chip {
+  color: var(--dim); cursor: default; text-decoration: none;
+  /* the token is long and technical — it may wrap mid-token rather than
+     shoving the paragraph sideways */
+  overflow-wrap: anywhere;
+}
+/* the one-word verdict after a failed reference. It is part of the chip, not
+   a tooltip: a title attribute alone would leave the failure invisible to
+   anyone reading rather than hovering. */
+.ref-chip .ref-why {
+  font-family: var(--sans, inherit); font-size: 0.85em; margin-left: 4px;
+  opacity: 0.75; font-style: italic;
+}
+.ref-chip.ref-absent .ref-why, .ref-chip.ref-foreign .ref-why {
+  color: var(--warn, var(--dim));
 }
 /* w2d5fab0a elements 1 and 2 — NESTED SUB-ITEMS AND THEIR SKELETON LINES.
    The indent and the lines are both driven by `--docket-depth`, set once on

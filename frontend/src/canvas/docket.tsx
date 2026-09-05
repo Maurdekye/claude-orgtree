@@ -34,8 +34,10 @@ import { AskCard } from './asks'
 import { AgentName } from './identity'
 import { MailReplyBox } from './mail'
 import { ago, useEsc, usePolled } from './shared'
-import { buildMentionIndex, WorkRefText } from './workrefs'
+import { buildMentionIndex } from './workrefs'
 import type { MentionIndex } from './workrefs'
+import { RefProse } from './reflinks'
+import type { RefWorld, ResolvedRef } from './reflinks'
 
 // `review` is the AGENT check, not the user's (user ruling 2026-09-05)
 const REVIEW_HELP ='Review by agents — a request for you rides the attention flag or a question'
@@ -535,6 +537,33 @@ export function DocketModal({ slug, toast, close, tree, onFocusAgent,
       allKnown.values(),
       [...facts].map(([id, f]) => [id, f.tier] as const)),
     [allKnown, facts])
+  // ---- and the CANONICAL references (`@item:org/slug`) in the same prose
+  //
+  // ⚠ A SEPARATE ITEM MAP, NOT `refIndex`. That one deliberately merges items
+  // and agents into one namespace where a colliding name resolves to the item
+  // — the right rule for a bare word. A canonical token has already said which
+  // kind it means, so asking the merged map would let the bare-name collision
+  // rule overrule an explicit `@agent:` token.
+  //
+  // ⚠ THE ITEM MAP IS AUTHORITATIVE HERE AND NOWHERE ELSE. This panel holds
+  // every item the org served — active, archived and backlogged — so it can
+  // say, truthfully, that a named item does not exist. Until the first
+  // response lands it says `loading` instead, which is NOT the same claim: an
+  // empty map would report every real reference as missing for as long as the
+  // fetch takes, which is exactly when the panel is being read.
+  //
+  // ⚠ AND `handles` IS DELIBERATELY SHORT. The docket can jump to an item and
+  // focus an agent. It owns no mail reader and no document reader, so those
+  // two are reported "not opened from this panel" — a fact about this panel —
+  // rather than judged against an index it does not have and reported missing.
+  const refWorld = useMemo<RefWorld>(() => ({
+    org: slug,
+    items: data
+      ? new Map([...allKnown.keys()].map((s) => [s, s]))
+      : 'loading',
+    agents: new Map([...facts.keys()].map((id) => [id, id])),
+    handles: new Set<'item' | 'agent'>(['item', 'agent']),
+  }), [slug, data, allKnown, facts])
   const [flash, setFlash] = useState<string | null>(null)
   const rows = useRef(new Map<string, HTMLDivElement>())
   // COLLAPSE IS OPT-IN. Everything starts expanded, because a docket that
@@ -573,6 +602,15 @@ export function DocketModal({ slug, toast, close, tree, onFocusAgent,
     setSel({ slug, id })
     setFlash(id)
   }, [allKnown, slug])
+
+  /** a canonical reference clicked. ONLY the two kinds `refWorld.handles`
+   *  admits can arrive here — anything else was rendered inert and never
+   *  became a button — but the switch is exhaustive anyway, because a silent
+   *  no-op is how a control ends up looking live and doing nothing. */
+  const openRef = useCallback((r: ResolvedRef) => {
+    if (r.ref.kind === 'item') goToItem(r.ref.id)
+    else if (r.ref.kind === 'agent') onFocusAgent?.(r.ref.id)
+  }, [goToItem, onFocusAgent])
 
   // the flash is a hint, not a state: it clears itself and never survives to
   // confuse the next visit
@@ -717,7 +755,8 @@ export function DocketModal({ slug, toast, close, tree, onFocusAgent,
                       ? <DocketPane key={cur.slug} slug={slug} item={cur} toast={toast}
                           asksById={asksById} onDismiss={onDismiss}
                           close={close} onFocusAgent={onFocusAgent} facts={facts}
-                          refIndex={refIndex} onGoToItem={goToItem} />
+                          refIndex={refIndex} onGoToItem={goToItem}
+                          refWorld={refWorld} onOpenRef={openRef} />
                       : <div className="dim pad mailer-none">select an item to view it</div>}
                   </div>
                 </div>
@@ -816,12 +855,15 @@ function DocketRow({ item, selected, onClick, onDismiss, facts, onFocusAgent,
   )
 }
 
-function DocketList({ heading, items, refIndex, onGoToItem, onGoToAgent, mark }: {
+function DocketList({ heading, items, refIndex, onGoToItem, onGoToAgent, mark,
+  refWorld, onOpenRef }: {
   heading: string
   items: string[]
   refIndex: MentionIndex
   onGoToItem?: (id: string) => void
   onGoToAgent?: (id: string) => void
+  refWorld: RefWorld
+  onOpenRef?: (r: ResolvedRef) => void
   /** w2d5fab0a element 4: the two progress lists get DIFFERENT bullets —
    *  a tick for what is finished, an arrow for what is still ahead. They sit
    *  one under the other and read as one wall of dots otherwise, and which
@@ -836,7 +878,8 @@ function DocketList({ heading, items, refIndex, onGoToItem, onGoToAgent, mark }:
         : <ul className={'docket-list-items mark-' + mark}>
             {items.map((t, i) => (
               <li key={i}>
-                <WorkRefText text={t} index={refIndex} onPick={onGoToItem}
+                <RefProse text={t} world={refWorld} onOpen={onOpenRef}
+                  index={refIndex} onPick={onGoToItem}
                   onFocusAgent={onGoToAgent} />
               </li>
             ))}
@@ -846,7 +889,7 @@ function DocketList({ heading, items, refIndex, onGoToItem, onGoToAgent, mark }:
 }
 
 function DocketPane({ slug, item, toast, asksById, onDismiss, close, onFocusAgent,
-  facts, refIndex, onGoToItem }: {
+  facts, refIndex, onGoToItem, refWorld, onOpenRef }: {
   slug: string
   item: WorkItem
   toast: ToastFn
@@ -857,6 +900,8 @@ function DocketPane({ slug, item, toast, asksById, onDismiss, close, onFocusAgen
   facts: Map<string, NodeFacts>
   refIndex: MentionIndex
   onGoToItem?: (id: string) => void
+  refWorld: RefWorld
+  onOpenRef?: (r: ResolvedRef) => void
 }) {
   const attention = item.effective_attention
   const label = attention ? 'Needs attention' : statusLabel(item.status)
@@ -914,8 +959,9 @@ function DocketPane({ slug, item, toast, asksById, onDismiss, close, onFocusAgen
         <div className="docket-list-heading dim">DESCRIPTION</div>
         {item.objective
           ? <div className="docket-desc-body">
-              <WorkRefText text={item.objective} index={refIndex}
-                onPick={onGoToItem} onFocusAgent={goToAgent} />
+              <RefProse text={item.objective} world={refWorld}
+                onOpen={onOpenRef} index={refIndex} onPick={onGoToItem}
+                onFocusAgent={goToAgent} />
             </div>
           : <div className="dim docket-list-empty">
               no description — this item predates the rule that every item
@@ -939,10 +985,12 @@ function DocketPane({ slug, item, toast, asksById, onDismiss, close, onFocusAgen
         </div>
       )}
       <DocketList heading="DONE SO FAR" items={item.done_so_far} mark="done"
-        refIndex={refIndex} onGoToItem={onGoToItem} onGoToAgent={goToAgent} />
+        refIndex={refIndex} onGoToItem={onGoToItem} onGoToAgent={goToAgent}
+        refWorld={refWorld} onOpenRef={onOpenRef} />
       <DocketList heading="WORKING ON / NEXT" items={item.working_on_next}
         mark="next" refIndex={refIndex} onGoToItem={onGoToItem}
-        onGoToAgent={goToAgent} />
+        onGoToAgent={goToAgent}
+        refWorld={refWorld} onOpenRef={onOpenRef} />
       {manualAttn && (
         <div className="docket-attention-box">
           <div className="docket-question-head">
@@ -952,8 +1000,9 @@ function DocketPane({ slug, item, toast, asksById, onDismiss, close, onFocusAgen
           </div>
           {/* the reason is written as several lines; a plain <div> ran them together */}
           <div className="docket-attention-body">
-            <WorkRefText text={manualAttn.reason} index={refIndex}
-              onPick={onGoToItem} onFocusAgent={goToAgent} />
+            <RefProse text={manualAttn.reason} world={refWorld}
+              onOpen={onOpenRef} index={refIndex} onPick={onGoToItem}
+              onFocusAgent={goToAgent} />
           </div>
         </div>
       )}

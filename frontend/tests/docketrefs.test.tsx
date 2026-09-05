@@ -602,3 +602,87 @@ test('§24 a token from ANOTHER org is parsed, and is not this org', () => {
   assert.equal(a?.id, b?.id)
   assert.notEqual(a?.org, b?.org)
 })
+
+
+// ------------------------------- §25-§27: the canonical token IN THE PANEL
+//
+// The unit suite (reflinks) decides what an outcome IS. These three prove the
+// docket actually renders one, that clicking it lands on the named item, and
+// that the panel does not overstate what it knows: a document reference is
+// real but not openable HERE, and saying "no document named d1 in this org"
+// would be a claim about the data caused by a limit of the panel.
+
+uiTest('§25 a canonical @item token in the description is a working link',
+  async (mount) => {
+    mockServer({
+      items: [
+        mkItem({ slug: 'the-source-item', title: 'Source',
+          objective: 'blocked behind @item:org1/the-target-item until Friday' }),
+        mkItem({ slug: 'the-target-item', title: 'Target' }),
+      ],
+      archived: [], backlogged: [],
+    })
+    const el = await mount(modal())
+    await flush()
+    // open the item whose prose carries the token
+    const src = rows(el).find((r) =>
+      r.querySelector('.l1 .mfrom')?.textContent === 'the-source-item')
+    await inAct(() => (src as HTMLElement).click())
+    await flush()
+
+    const chip = el.querySelector('.docket-desc button.ref-chip')
+    assert.ok(chip, 'the token rendered as a clickable reference')
+    // §9 of the corrections: a trustworthy label instead of the raw token
+    assert.equal(chip!.textContent, 'the-target-item')
+
+    await inAct(() => (chip as HTMLElement).click())
+    await flush()
+    const shown = el.querySelector('.docket-pane-sub .docket-slug-text')
+    assert.equal(shown?.textContent, 'the-target-item',
+      'clicking the reference selected the item it names')
+  })
+
+uiTest('§26 CONTROL — a token naming an item this org does not have is marked '
+  + 'unavailable, not quietly turned back into prose', async (mount) => {
+    mockServer({
+      items: [mkItem({ slug: 'the-source-item',
+        objective: 'see @item:org1/never-existed for the rest' })],
+      archived: [], backlogged: [],
+    })
+    const el = await mount(modal())
+    await flush()
+    await inAct(() => (rows(el)[0] as HTMLElement).click())
+    await flush()
+    const chip = el.querySelector('.docket-desc .ref-chip.ref-absent')
+    assert.ok(chip, 'the dead reference is rendered as unavailable')
+    assert.equal(el.querySelectorAll('.docket-desc button.ref-chip').length, 0,
+      'and it is not a button — a dead link must not look live')
+    // it shows what was WRITTEN, so whoever fixes it can see the token
+    assert.match(chip!.textContent!, /@item:org1\/never-existed/)
+  })
+
+uiTest('§27 CONTROL — a document reference is "not from here", which is NOT '
+  + 'the same claim as "does not exist"', async (mount) => {
+    // the docket owns no document reader. Judging @doc against the item index
+    // it does have would report a perfectly real document as missing.
+    mockServer({
+      items: [mkItem({ slug: 'the-source-item',
+        objective: 'the contract is @doc:org1/d1 and the item is '
+          + '@item:org1/never-existed' })],
+      archived: [], backlogged: [],
+    })
+    const el = await mount(modal())
+    await flush()
+    await inAct(() => (rows(el)[0] as HTMLElement).click())
+    await flush()
+    const doc = el.querySelector('.docket-desc .ref-chip.ref-doc')
+    const item = el.querySelector('.docket-desc .ref-chip.ref-item')
+    assert.ok(doc && item, 'both references rendered')
+    // ⚠ THE TWO MUST NOT AGREE. Same panel, same prose, two different truths:
+    // the item is genuinely absent, the document is merely not openable here.
+    assert.ok(doc!.classList.contains('ref-elsewhere'),
+      'a document is reported as not openable from this panel')
+    assert.ok(item!.classList.contains('ref-absent'),
+      'an item this org does not have is reported absent')
+    assert.doesNotMatch(doc!.getAttribute('title') ?? '', /no document named/)
+  })

@@ -123,12 +123,19 @@ const MUTANTS = [
   {
     name: 'both progress lists are handed over as the same kind',
     file: DOCKET, kills: 'different kinds of line',
+    // ⚠ THIS CALL SITE HAS NOW BEEN REPAIRED TWICE BY TWO PEOPLE, for two
+    // different reasons — a rename and two added props — and each repair
+    // alone leaves the mutant stale. If it ever reports SKIPPED, that is the
+    // harness telling the truth about a drifted target: repair it against
+    // the real call site, do not delete it.
     from: `      <DocketList heading="WORKING ON / NEXT" items={item.working_on_next}
         mark="next" refIndex={refIndex} onGoToItem={onGoToItem}
-        onGoToAgent={goToAgent} />`,
+        onGoToAgent={goToAgent}
+        refWorld={refWorld} onOpenRef={onOpenRef} />`,
     to: `      <DocketList heading="WORKING ON / NEXT" items={item.working_on_next}
         mark="done" refIndex={refIndex} onGoToItem={onGoToItem}
-        onGoToAgent={goToAgent} />`,
+        onGoToAgent={goToAgent}
+        refWorld={refWorld} onOpenRef={onOpenRef} />`,
   },
   {
     // the recovery pass for cycles is one word away from resurrecting every
@@ -261,6 +268,28 @@ const MUTANTS = [
 }
 
 /** The item's readable name.`,
+  // ------------------------- the canonical-reference wiring (§25-§27)
+  {
+    name: 'the panel claims it can open every kind, including ones it cannot',
+    file: DOCKET, kills: '§27 CONTROL',
+    from: `    handles: new Set<'item' | 'agent'>(['item', 'agent']),`,
+    to: `    handles: undefined,`,
+  },
+  {
+    // the `?? new Map()` shape, in the place it would really be written: an
+    // index that has not arrived, treated as one that arrived empty.
+    name: 'the item index stops being authoritative in this panel',
+    file: DOCKET, kills: '§25 a canonical',
+    from: `    items: data
+      ? new Map([...allKnown.keys()].map((s) => [s, s]))
+      : 'loading',`,
+    to: `    items: undefined,`,
+  },
+  {
+    name: 'clicking a reference no longer selects the item it names',
+    file: DOCKET, kills: '§25 a canonical',
+    from: `    if (r.ref.kind === 'item') goToItem(r.ref.id)`,
+    to: `    if (r.ref.kind === 'item') { /* no-op */ }`,
   },
 ]
 
