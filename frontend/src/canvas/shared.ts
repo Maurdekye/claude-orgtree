@@ -289,13 +289,12 @@ export const toolsNote = (tools: boolean | null | undefined): string =>
  *  the catalog is an OpenRouter fact and inventing one for another lane would
  *  be a claim no catalog made.
  *
- *  ⚠ AN OPENROUTER TIER THE REGISTRY HAS NEVER SEEN IS `unknown`, NOT SILENT.
- *  That is not a hypothetical: the registry holds the CURRENT favorites, and
- *  a node already running on a since-deselected favorite still appears in the
- *  config switch and the rehire select. Its row has no catalog metadata
- *  available at all, which is precisely what unknown means — returning ''
- *  there would render the same blank as a fully-supported Claude tier and
- *  quietly drop the disclosure exactly where a seat is being re-chosen. */
+ *  ⚠ AN OPENROUTER TIER THE REGISTRY DOES NOT CARRY IS `unknown`, NOT SILENT.
+ *  The registry holds the current favorites, so a tier missing from it has no
+ *  catalog metadata available at all — which is precisely what unknown means.
+ *  Returning '' would render the same blank as a fully-supported Claude tier.
+ *  This is a rule about the FORMATTER's answer and claims nothing about which
+ *  surfaces can reach it. */
 export const tierToolsNote = (tier: string): string => {
   if (!isOpenRouterTier(tier)) return ''
   const t = openrouterTier(tier)
