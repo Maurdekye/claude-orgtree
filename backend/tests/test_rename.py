@@ -674,7 +674,10 @@ def sec_work_identity() -> None:
     def _archived_items_too():
         org = org3()
         owned, _o = wire_work(org, "kid")
-        org.work_update("kid", owned, ["done"], [], status="review")
+        # entering review NAMES a reviewer since 2026-09-05; `boss` is the
+        # superior kid may ask, and it is the agent that accepts below
+        org.work_update("kid", owned, ["done"], [], status="review",
+                        reviewer="boss")
         org.work_accept("boss", owned)
         org.work_archive_now("boss", owned)
         org.rename(USER, "kid", "sprocket")

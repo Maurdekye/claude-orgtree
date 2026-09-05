@@ -229,8 +229,13 @@ def main():
                        props["urgent_reason"]["description"].lower()))
     # adding PARAMETERS must not have added a CARD — two suites assert the
     # catalogue size and both would go red together
-    check("the tool catalogue is still 31 cards (params, not a new card)",
-          lambda: (None if len(TOOLS) == 31
+    # ⚠ THE NUMBER DRIFTED WHILE NOBODY LOOKED: this said 31 while the
+    # catalogue was already 33 (orgtree_work landed 2026-09-05 without
+    # moving it), so the suite was red before orgtree_staff made it 34.
+    # The claim being made here is "urgent added PARAMETERS, not a card" —
+    # it is worth keeping, and it is worth being true.
+    check("the tool catalogue is 34 cards (urgent added params, not a card)",
+          lambda: (None if len(TOOLS) == 34
                    else (_ for _ in ()).throw(AssertionError(len(TOOLS)))))
 
     print(f"\n{PASS} checks passed")
