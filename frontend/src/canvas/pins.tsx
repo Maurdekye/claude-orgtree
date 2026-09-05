@@ -44,6 +44,7 @@ import type { CSSProperties, PointerEvent as ReactPointerEvent, RefObject } from
 import PushPinIcon from '@mui/icons-material/PushPin'
 import { CloseIcon } from '../icons'
 import { DeskChat } from './desk'
+import { AgentName } from './identity'
 import { providerOf, TIER_LETTER } from './shared'
 import type { CanvasNode, MailLinkFn, OpFn, WorkLinkFn } from './shared'
 import type { ToastFn } from '../types'
@@ -448,9 +449,17 @@ function PinWindow({ pin, node, vp, onUnpin, slug, op, toast, pub,
   // strand a window (render-time clamp; see PinLayer's resize tick)
   const rect = clampRect(live ?? pin.rect, vp)
 
+  // ⚠ CLICK-VS-DRAG FOR THE TITLE-BAR NAME. The name is a real button, so a
+  // press that turns into a drag and releases back over it would still fire a
+  // `click` and navigate away mid-drag. The title bar's own gesture already
+  // knows the difference — `moved`, at the same 3px threshold the reposition
+  // uses — so that verdict is recorded here and the button's handler consumes
+  // it. One source of truth for "was that a drag", not a second threshold.
+  const wasDrag = useRef(false)
   const cancel = () => {
     const g = gesture.current
     gesture.current = null
+    wasDrag.current = true      // an aborted gesture is not a click either
     if (g) { try { g.capture.releasePointerCapture(g.pointerId) } catch { /* gone */ } }
     setLive(null)
   }
@@ -514,6 +523,7 @@ function PinWindow({ pin, node, vp, onUnpin, slug, op, toast, pub,
     const g = gesture.current
     if (!g || e.pointerId !== g.pointerId) return
     const moved = g.moved || Math.hypot(e.clientX - g.sx, e.clientY - g.sy) >= 3
+    wasDrag.current = moved
     gesture.current = null
     try { e.currentTarget.releasePointerCapture(e.pointerId) } catch { /* already released */ }
     setLive(null)
@@ -556,8 +566,18 @@ function PinWindow({ pin, node, vp, onUnpin, slug, op, toast, pub,
         onPointerDown={(e) => begin(e, { kind: 'move', sx: e.clientX, sy: e.clientY, o: rect })}
         onPointerMove={move} onPointerUp={end} onPointerCancel={cancel} onLostPointerCapture={cancel}>
         <PushPinIcon fontSize="inherit" className="pinwin-glyph" />
-        <span className={'tier t-' + node.tier}>{TIER_LETTER[node.tier!] ?? '?'}</span>
-        <b className="pinwin-name">{node.id}</b>
+        {/* the name navigates like every other agent name (user rule
+            2026-09-05). It sits ON the drag handle, so the click is gated by
+            the gesture's own `moved` verdict: a press that became a drag
+            repositions the window and navigates nowhere. Keyboard activation
+            has no gesture, so it always navigates. */}
+        <AgentName id={node.id} tier={node.tier} nameClass="pinwin-name"
+          onFocus={(id) => {
+            const dragged = wasDrag.current
+            wasDrag.current = false
+            if (dragged) return
+            onJump?.(id)
+          }} />
         {state && <span className="pinwin-state" title={`this agent is ${state}; the window stays readable`}>{state}</span>}
         <span className="spacer" />
         <button className="pinwin-unpin" title={`unpin ${node.id} — minimise back to its desk`}

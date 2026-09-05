@@ -913,3 +913,56 @@ uiTest('snap preview wears the dragged window\'s provider class, not the root ac
     `preview classes "${preview.className}" lack the window's ${prov}`)
   await inAct(() => { title.dispatchEvent(pointer('pointerup', 451, 117)) })
 })
+
+// ---------------------------------------------------------------------------
+// §B12 THE TITLE-BAR NAME: a click navigates, a drag does not (user rule
+// 2026-09-05 — agent names are clickable everywhere except inside that agent's
+// own focused desk; the coordinator refused a blanket "pinned titles are
+// inert" exemption).
+//
+// ⚠ WHY THIS IS NOT JUST "does the button fire". The name sits ON the drag
+// handle. A press that becomes a drag and releases back over the name still
+// produces a `click` in a real browser, so a naive button would reposition the
+// window AND navigate away from it in one gesture. The discrimination reuses
+// the title bar's own `moved` verdict at its existing 3px threshold rather
+// than inventing a second one.
+uiTest('§B12 title-bar name: a click navigates, a drag repositions and does not',
+  async ({ mount }) => {
+    const { el, viewport } = await mountCanvas(mount, ['ceo', 'cto'])
+    await settle(2500)
+    await pinFromDesk(el, viewport, 'cto')
+    const win = pinWin(el, 'cto')!
+    const title = win.querySelector('.pinwin-title')!
+    const name = title.querySelector('button.cc-name.pinwin-name') as HTMLElement | null
+    assert.ok(name, 'the title-bar name is a navigation control')
+    assert.ok(title.querySelector('.tier'), 'and it carries the model chip')
+
+    // A DRAG that starts and ends on the name: the window must move, and the
+    // camera must not. `click` is dispatched after the pointer pair exactly as
+    // a browser does when press and release share a target.
+    const before = winRect(win)
+    const camBefore = cam(el)
+    await inAct(() => { name!.dispatchEvent(pointer('pointerdown', 200, 60)) })
+    await inAct(() => { name!.dispatchEvent(pointer('pointermove', 380, 240)) })
+    await inAct(() => { name!.dispatchEvent(pointer('pointerup', 380, 240)) })
+    await inAct(() => { name!.dispatchEvent(new window.MouseEvent('click', { bubbles: true })) })
+    await settle(1200)
+    const after = winRect(pinWin(el, 'cto')!)
+    assert.notDeepEqual(after, before,
+      'positive control: the drag must actually have moved the window, or the '
+      + 'assertion below is about a gesture that never happened')
+    assert.deepEqual(cam(el), camBefore,
+      'a DRAG on the title name navigated — the window moved and the camera '
+      + 'followed the click, which is the failure this gate exists to stop')
+
+    // A CLICK — press and release in the same place, under the threshold.
+    await inAct(() => { name!.dispatchEvent(pointer('pointerdown', 200, 60)) })
+    await inAct(() => { name!.dispatchEvent(pointer('pointerup', 201, 60)) })
+    await inAct(() => { name!.dispatchEvent(new window.MouseEvent('click', { bubbles: true })) })
+    await settle(1200)
+    assert.notDeepEqual(cam(el), camBefore,
+      'a CLICK on the title name did not navigate — the name is not a route '
+      + 'to its agent, which is the rule')
+    assert.deepEqual(winRect(pinWin(el, 'cto')!), after,
+      'and a click must not reposition the window')
+  })

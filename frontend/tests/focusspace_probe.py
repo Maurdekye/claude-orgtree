@@ -523,6 +523,14 @@ def run(html: pathlib.Path, verbose: bool = True) -> tuple[list[str], dict]:
         P.click_agent("cto")
         bare_cards = P.jump_cards()
         obs["bare_jump_cards"] = bare_cards
+        obs["g_diag"] = pg.evaluate("""() => ({
+          desks: document.querySelectorAll('.sq.desk').length,
+          deskOver: !!document.querySelector('.desk-over'),
+          eyeDesk: !!document.querySelector('.eye-desk'),
+          sqs: document.querySelectorAll('.sq').length,
+          names: [...document.querySelectorAll('.sq .name')].map(n => n.textContent),
+          space: document.querySelector('.space')?.style.transform ?? '',
+        })""")
         if not bare_cards:
             bad("§G no edge jump card rendered with NO pins at all — the "
                 "instrument below cannot see anything, so §H is vacuous")
@@ -582,6 +590,65 @@ def run(html: pathlib.Path, verbose: bool = True) -> tuple[list[str], dict]:
                 bad("§H no LEFT jump card — the side the tall pin covers is "
                     "the side this section exists to check, so its absence is "
                     "the bug, not a pass")
+
+        # ---- §I THE PINNED TITLE'S NAME: click navigates, drag does not.
+        # jsdom can show the LOGIC (pins.test.tsx §B12) but not the gesture:
+        # there is no pointer capture, no hit testing and no browser-synthesised
+        # `click` after a real press-move-release. This runs the actual mouse.
+        P.reset()
+        P.click_agent("cto")
+        P.set_pins([{"id": "cto", "x": 120, "y": 120, "w": 360, "h": 260}])
+        name = pg.query_selector(".pinwin .pinwin-title .cc-name.pinwin-name")
+        obs["pin_title_name"] = bool(name)
+        if not name:
+            bad("§I the pinned window's title has no name control — the rule "
+                "says an agent's name is a route to it everywhere except "
+                "inside its own focused desk")
+        else:
+            def win_rect() -> dict | None:
+                return P.box(".pinwin")
+
+            def camera() -> str:
+                return pg.evaluate(
+                    "() => document.querySelector('.space')?.style.transform ?? ''")
+
+            box = name.bounding_box()
+            cx, cy = box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
+            r0, cam0 = win_rect(), camera()
+
+            # a real DRAG that starts and ends on the name
+            pg.mouse.move(cx, cy)
+            pg.mouse.down()
+            pg.mouse.move(cx + 180, cy + 150, steps=8)
+            pg.mouse.up()
+            pg.wait_for_timeout(900)
+            r1, cam1 = win_rect(), camera()
+            obs["pin_drag"] = {"before": r0, "after": r1}
+            moved = r0 and r1 and (abs(r1["x"] - r0["x"]) > 5 or abs(r1["y"] - r0["y"]) > 5)
+            if not moved:
+                bad(f"§I positive control: dragging the title name did not move "
+                    f"the window ({r0} -> {r1}), so the next assertion is about "
+                    "a gesture that never happened")
+            elif cam1 != cam0:
+                bad("§I a DRAG on the title name also NAVIGATED — the window "
+                    f"moved and the camera went with it ({cam0!r} -> {cam1!r})")
+            else:
+                ok("§I dragging the title name repositions the window and "
+                   "navigates nowhere")
+
+            # a real CLICK, same element, no movement
+            name2 = pg.query_selector(".pinwin .pinwin-title .cc-name.pinwin-name")
+            if name2:
+                b2 = name2.bounding_box()
+                pg.mouse.click(b2["x"] + b2["width"] / 2, b2["y"] + b2["height"] / 2)
+                pg.wait_for_timeout(1200)
+                cam2 = camera()
+                obs["pin_click_cam"] = {"before": cam1, "after": cam2}
+                if cam2 == cam1:
+                    bad("§I a CLICK on the title name did not navigate — the "
+                        "name is not a route to its agent, which is the rule")
+                else:
+                    ok("§I clicking the title name navigates to that agent")
 
         ctx.close()
         b.close()

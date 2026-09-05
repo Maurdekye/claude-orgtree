@@ -5048,7 +5048,18 @@ label.set-row { cursor: pointer; }
 .pinwin-title .spacer { flex: 1; }
 .pinwin-title .tier { width: 15px; height: 15px; font-size: 9px; }
 .pinwin-glyph { font-size: 14px; color: var(--accent); }
-.pinwin-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+/* the title-bar name is a navigation control now (user rule 2026-09-05), so it
+   is a `.cc-name` too — which elsewhere is a `flex: 1 1 12ch` mono block. In a
+   window title it must stay the title's own bold label and give its width back
+   to the spacer, so the state chip and the unpin button keep their places. */
+.pinwin-name {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
+}
+.pinwin-title .cc-name.pinwin-name {
+  flex: 0 1 auto; font-family: inherit; font-size: inherit; font-weight: 700;
+  color: var(--ink-strong);
+}
+.pinwin-title .cc-name-jump.pinwin-name:hover { color: var(--accent); }
 .pinwin-state {
   font-size: 10px; color: var(--dim); border: 1px solid var(--line);
   border-radius: 3px; padding: 0 5px;
