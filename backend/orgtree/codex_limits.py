@@ -77,13 +77,21 @@ def account_namespace() -> str:
     return _account_namespace()[0]
 
 
-def _account_namespace() -> tuple[str, str]:
+def _account_namespace(home: str | None = None) -> tuple[str, str]:
     """(namespace, auth lane). See `account_namespace`. Refresh/access tokens
     and their timestamps are deliberately excluded: rotating credentials for
-    the same account is not an account change."""
-    home = os.environ.get("CODEX_HOME") or os.path.expanduser("~/.codex")
+    the same account is not an account change.
+
+    ``home`` is the effective CODEX_HOME of a captured process launch. When
+    supplied it is authoritative: an older record without account_id must not
+    fall through to `providers._codex_account()`, which reads the ambient
+    home and could attribute this launch to a different account.
+    """
+    ambient_home = os.environ.get("CODEX_HOME") or os.path.expanduser("~/.codex")
+    resolved_home = home if home is not None else ambient_home
     try:
-        with open(os.path.join(home, "auth.json"), encoding="utf-8") as f:
+        with open(os.path.join(resolved_home, "auth.json"),
+                  encoding="utf-8") as f:
             loaded: Any = json.load(f)
     except (OSError, json.JSONDecodeError):
         return "unobserved", "unobserved"
@@ -102,6 +110,13 @@ def _account_namespace() -> tuple[str, str]:
             {"account": account_id}, 16), "subscription")
     # Older auth records may omit account_id while the display identity is
     # still locally observable in the id-token claims.
+    # The status helper has no home parameter. It is safe only when it would
+    # read the same effective home as this resolver; otherwise unknown stays
+    # unknown instead of borrowing identity from ambient credentials.
+    same_as_ambient = (os.path.normcase(os.path.abspath(resolved_home))
+                       == os.path.normcase(os.path.abspath(ambient_home)))
+    if home is not None and not same_as_ambient:
+        return "codex-account-unobserved", "unobserved"
     status = providers._codex_account()  # pyright: ignore[reportPrivateUsage]
     email = status.get("email")
     if isinstance(email, str) and email:

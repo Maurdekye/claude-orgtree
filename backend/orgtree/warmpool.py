@@ -910,7 +910,9 @@ def native_startup_context_digest(org: Any, nid: str) -> str:
 _CODEX_DOC_NAMES = ("AGENTS.override.md", "AGENTS.md")
 
 
-def codex_startup_context_digest(org: Any, nid: str) -> str:
+def codex_startup_context_digest(
+        org: Any, nid: str, *, cwd: str | None = None,
+        codex_home: str | None = None) -> str:
     """Digest the instruction files a Codex app-server reads at session start.
 
     The Claude lane's counterpart is `native_startup_context_digest`; this is
@@ -927,9 +929,15 @@ def codex_startup_context_digest(org: Any, nid: str) -> str:
     """
     from . import supervisor as sup                 # noqa: PLC0415
 
-    cwd = os.path.abspath(sup.scratch_dir(org.d["slug"], nid))
+    # A supplied launch spec is authoritative. In particular, a caller may
+    # resolve CODEX_HOME/cwd and then the ambient environment may move before
+    # this projection is consumed. Re-reading ambient paths here used to hash
+    # files the captured app-server would not read.
+    cwd = os.path.abspath(
+        cwd if cwd is not None else sup.scratch_dir(org.d["slug"], nid))
     codex_home = os.path.abspath(
-        os.environ.get("CODEX_HOME") or os.path.expanduser("~/.codex"))
+        codex_home if codex_home is not None else
+        (os.environ.get("CODEX_HOME") or os.path.expanduser("~/.codex")))
     manifest: dict[str, str] = {}
 
     def add(path: str) -> None:
@@ -980,6 +988,7 @@ def identity_snapshot(org: Any, nid: str, *,
                       env: dict[str, str] | None = None,
                       overrides: dict[str, str] | None = None,
                       provider_spec: dict[str, Any] | None = None,
+                      codex_manifest: dict[str, Any] | None = None,
                       ) -> tuple[str, dict[str, str]]:
     """One combined identity hash plus independently verifiable components.
 
@@ -995,33 +1004,14 @@ def identity_snapshot(org: Any, nid: str, *,
     model = str(org.node(nid).get("model") or "")
     if model in providers.CODEX_TIERS:
         # Codex's process-scoped identity is not Claude's `_build_cmd`.
-        # In particular, external MCP servers are app-server argv and the
-        # managed identity is the AGENTS.md written before launch.  Hash the
-        # exact shared spawn spec so keeper and turn admission cannot disagree.
-        spec = provider_spec or sup._codex_process_spec(
-            org, nid, write_ident=False)
-        argv = (list(spec["argv_head"])
-                + list(spec["config_overrides"]) + ["app-server"])
-        # Codex reads instruction files at session start exactly as Claude
-        # does — a different SET of files, but the same staleness hazard, so
-        # the same treatment: fold their digest into the prompt component
-        # rather than inventing a fifth identity class.
-        native = codex_startup_context_digest(org, nid)
-        raw = {
-            "prompt": (prompt.encode("utf-8", "replace")
-                       + b"\x00codex-startup\x00" + native.encode("ascii")),
-            # The tier is a process replacement boundary by contract even
-            # though app-server also accepts a model per turn.
-            "argv": json.dumps([*argv, "<tier>", model],
-                               ensure_ascii=False).encode("utf-8", "replace"),
-            "cred": json.dumps({
-                "exe": str(spec.get("exe") or ""),
-                "codex_home": os.environ.get(
-                    "CODEX_HOME", os.path.expanduser("~/.codex")),
-            }, sort_keys=True, ensure_ascii=False).encode("utf-8", "replace"),
-            "envov": json.dumps(spec.get("env_extra") or {}, sort_keys=True,
-                                ensure_ascii=False).encode("utf-8", "replace"),
-        }
+        # External MCP servers are app-server argv and the managed identity is
+        # AGENTS.md written before launch. Resolve the whole manifest once so
+        # keeper, turn admission and cache recording cannot disagree.
+        manifest = codex_manifest or sup._codex_startup_manifest(
+            org, nid, write_ident=False, provider_spec=provider_spec)
+        # The projection keeps the stable four-component vocabulary; Codex's
+        # different native file set is folded into `prompt` there.
+        raw = sup._codex_process_identity_inputs(manifest, model)
         h = hashlib.sha256()
         for i, name in enumerate(IDENTITY_COMPONENTS):
             if i:
@@ -1928,16 +1918,27 @@ def _spawn_for(org: Any, nid: str, why: str) -> WarmProcess | None:
         if model in providers.CODEX_TIERS:
             from . import codexrun                  # noqa: PLC0415
 
-            spec = sup._codex_process_spec(org, nid, write_ident=True)
+            manifest = sup._codex_startup_manifest(
+                org, nid, write_ident=True)
+            spec = manifest["provider_spec"]
+            sup._codex_require_manifest_account_current(
+                manifest, "before prewarm launch")
             ih, components = identity_snapshot(
-                org, nid, provider_spec=spec)
+                org, nid, codex_manifest=manifest)
             _journal_proc("respawn-start", slug, nid, why, ih,
                           session_id=org.node(nid)["session_id"])
             client = codexrun.AppServerClient(
                 list(spec["argv_head"]), cwd=str(spec["cwd"]),
+                codex_home=str(spec["codex_home"]),
                 config_overrides=list(spec["config_overrides"]),
                 env_extra=dict(spec["env_extra"]))
             proc = client.proc
+            try:
+                sup._codex_require_manifest_account_current(
+                    manifest, "immediately after prewarm launch")
+            except Exception:
+                client.close()
+                raise
             sup._mcp_tool_count_begin(
                 slug, nid, proc, "codex", "mcpServerStatus/list",
                 "Codex app-server is initializing (prewarm)",

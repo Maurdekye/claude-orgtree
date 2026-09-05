@@ -6763,7 +6763,9 @@ def _cache_tool_surface_digest(org: Org, nid: str) -> str | None:
     return cachecontinuity.digest({"observed": observed})
 
 
-def _cache_semantic_inputs(org: Org, nid: str, provider: str) -> tuple[str, str]:
+def _cache_semantic_inputs(
+        org: Org, nid: str, provider: str,
+        codex_manifest: dict[str, Any] | None = None) -> tuple[str, str]:
     """Digests of normalized provider-visible tool and argv surfaces."""
     n = org.node(nid)
     scope = n.get("scope") or {}
@@ -6784,17 +6786,13 @@ def _cache_semantic_inputs(org: Org, nid: str, provider: str) -> tuple[str, str]
         }
         return cachecontinuity.digest(tools), cachecontinuity.digest(projection)
     if provider == "openai":
-        spec = _codex_process_spec(org, nid, write_ident=False)
-        tools = {
-            "grant": scope.get("tools") or {},
-            # unchanged input, now reached through the helper the Claude lane
-            # also uses (`_orgtree_tool_catalogue`) so the two cannot drift
-            "dynamic_tools": _orgtree_tool_catalogue(),
-            "mcp": spec.get("config_overrides") or [],
-        }
-        argv = {"head": spec.get("argv_head") or [],
-                "mcp": spec.get("config_overrides") or [],
-                "exe": spec.get("exe") or ""}
+        # Resolve once at the caller and project twice: the warm-process
+        # comparison and the cache comparison must describe the SAME launch,
+        # not two auth/spec reads that merely happened close together.
+        manifest = codex_manifest or _codex_startup_manifest(
+            org, nid, write_ident=False)
+        tools = manifest["cache_tools"]
+        argv = manifest["cache_argv"]
         return cachecontinuity.digest(tools), cachecontinuity.digest(argv)
     chosen, unavailable = antigravity_mcp_grant(org, nid)
     _t = scope.get("tools") or {}
@@ -6927,7 +6925,8 @@ def _cache_openrouter_spawn_env(org: Org, tier: str, nid: str
         return {}
 
 
-def _cache_codex_account_namespace() -> tuple[str, str]:
+def _cache_codex_account_namespace(
+        codex_home: str | None = None) -> tuple[str, str]:
     """Private stable Codex account evidence plus observable auth lane.
 
     ONE implementation, in `codex_limits._account_namespace` (item 12 moved
@@ -6937,7 +6936,8 @@ def _cache_codex_account_namespace() -> tuple[str, str]:
     login``; the provider's own stable account id is hashed when present, or
     the API key only as a digest. Refresh/access tokens are excluded.
     """
-    return codex_limits._account_namespace()  # pyright: ignore[reportPrivateUsage]
+    return codex_limits._account_namespace(  # pyright: ignore[reportPrivateUsage]
+        codex_home)
 
 
 def _cache_antigravity_account_namespace() -> str:
@@ -6985,6 +6985,7 @@ def _cache_snapshot(org: Org, nid: str, *, now: float | None = None,
                     env: dict[str, str] | None = None,
                     account_override: str | None = None,
                     lane_override: str | None = None,
+                    codex_manifest: dict[str, Any] | None = None,
                     include_history: bool = True) -> dict[str, Any]:
     """Exact local prefix/namespace evidence for the next ordinary request.
 
@@ -7024,9 +7025,15 @@ def _cache_snapshot(org: Org, nid: str, *, now: float | None = None,
         account = account or resolved_account
         lane = lane or resolved_lane
     elif provider == "openai":
-        resolved_account, resolved_lane = _cache_codex_account_namespace()
-        account = account or resolved_account
-        lane = lane or resolved_lane
+        # Cache rendering stays read-only: the default resolver never writes
+        # the managed AGENTS.md. A real launch passes the manifest it already
+        # captured with write_ident=True, so the request record cannot be
+        # attributed by re-reading auth after the process was chosen.
+        codex_manifest = codex_manifest or _codex_startup_manifest(
+            org, nid, write_ident=False,
+            account_override=account_override, lane_override=lane_override)
+        account = str(codex_manifest["account"])
+        lane = str(codex_manifest["lane"])
         # THE MODEL THAT WOULD GO OUT is the ROUTE's, not the tier's (item
         # 12): a luna node's next request is `gpt-reserve` while reserve is
         # granted and `gpt-5.6-luna` when it is out, and flipping between
@@ -7036,11 +7043,11 @@ def _cache_snapshot(org: Org, nid: str, *, now: float | None = None,
         # an unreadable board prefers reserve exactly as the turn would.
         try:
             _rt = codex_route.resolve(
-                tier, login_kind=str(providers.codex_status().get("kind")
-                                     or "") or None,
+                tier, login_kind=str(codex_manifest["provider_spec"].get(
+                    "login_kind") or "") or None,
                 board=codex_limits.snapshot(now),
                 marks=cast("dict[str, Any] | None", n.get("codex_routes")),
-                account=resolved_account,
+                account=account,
                 direct_model=providers.CODEX_MODELS.get(tier)
                 or org.model_for(nid), now=now,
                 prefer_reserve=org.prefer_reserve_for(nid))
@@ -7054,17 +7061,27 @@ def _cache_snapshot(org: Org, nid: str, *, now: float | None = None,
         account = account or _cache_antigravity_account_namespace()
         lane = lane or "provider_unsupported"
     claude_harness = provider in _NATIVE_CLAUDEMD_PROVIDERS
-    system = cachecontinuity.digest(identity_prompt(org, nid))
-    tools_digest, argv_digest = _cache_semantic_inputs(org, nid, provider)
-    startup = (warmpool.native_startup_context_digest(org, nid)
-               if claude_harness
-               else cachecontinuity.digest({"managed_identity": system,
-                                            "provider": provider}))
-    env_digest = cachecontinuity.digest(
-        _cache_claude_env_projection(resolved_env) if claude_harness else
-        {"provider": provider,
-         "codex_home": os.environ.get("CODEX_HOME", "") if provider == "openai"
-         else ""})
+    if provider == "openai":
+        assert codex_manifest is not None
+        system = cachecontinuity.digest(codex_manifest["identity"])
+        tools_digest, argv_digest = _cache_semantic_inputs(
+            org, nid, provider, codex_manifest)
+        # The native files are provider-visible startup input. The old
+        # synthetic {managed_identity, provider} value is the C2 defect: a
+        # global/override file edit could move the process hash and leave this
+        # component byte-identical.
+        startup = str(codex_manifest["startup_digest"])
+        env_digest = cachecontinuity.digest(codex_manifest["cache_env"])
+    else:
+        system = cachecontinuity.digest(identity_prompt(org, nid))
+        tools_digest, argv_digest = _cache_semantic_inputs(org, nid, provider)
+        startup = (warmpool.native_startup_context_digest(org, nid)
+                   if claude_harness
+                   else cachecontinuity.digest({"managed_identity": system,
+                                                "provider": provider}))
+        env_digest = cachecontinuity.digest(
+            _cache_claude_env_projection(resolved_env) if claude_harness else
+            {"provider": provider, "codex_home": ""})
     lineage = cachecontinuity.digest({
         "generation": n.get("generation", 0),
         "predecessor": n.get("predecessor"),
@@ -7347,9 +7364,11 @@ def _cache_record_forecast(org: Org, nid: str, current: dict[str, Any],
 
 
 def _cache_forecast_now(org: Org, nid: str, *, now: float | None = None,
-                        env: dict[str, str] | None = None
+                        env: dict[str, str] | None = None,
+                        codex_manifest: dict[str, Any] | None = None,
                         ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
-    current = _cache_snapshot(org, nid, now=now, env=env)
+    current = _cache_snapshot(org, nid, now=now, env=env,
+                              codex_manifest=codex_manifest)
     forecast, safe = _cache_record_forecast(org, nid, current, now)
     return forecast, safe, current
 
@@ -8908,7 +8927,179 @@ def _codex_process_spec(org: Org, nid: str, *,
                       **_codex_git_trust_env(org.node(nid)["scope"])},
         "port": port,
         "exe": exe,
+        "login_kind": str(cstat.get("kind") or ""),
+        # Capture the resolved home beside the executable. Re-reading the
+        # ambient variable after launch could describe a different login
+        # tree than the process actually inherited.
+        "codex_home": (os.environ.get("CODEX_HOME")
+                       or os.path.expanduser("~/.codex")),
+        "cache_codex_home": os.environ.get("CODEX_HOME", ""),
     }
+
+
+def _codex_startup_manifest(
+        org: Org, nid: str, *, write_ident: bool = False,
+        provider_spec: dict[str, Any] | None = None,
+        account_override: str | None = None,
+        lane_override: str | None = None) -> dict[str, Any]:
+    """Resolve ONE Codex launch into process and cache semantic inputs.
+
+    This is the C2/C3 join. Callers may project the result differently â€” a
+    local process-reuse boundary is not a provider cache guarantee â€” but they
+    do not independently re-read the executable, auth lane, account, native
+    files, scope or tool configuration for the same launch.
+
+    The raw manifest is in-memory only. Persisted process journals receive
+    short component hashes; cache rows receive digests and private account
+    namespace. No credential or full inherited environment enters it.
+
+    ``write_ident=False`` is observational. A real spawn uses True, which
+    writes the managed AGENTS.md *before* native discovery is digested. That
+    ordering means the manifest describes bytes the new process will read,
+    rather than a tampered file the normal managed-file generation is about to
+    replace. AGENTS.override.md is not managed and remains visible to discovery.
+
+    Partial account/lane overrides are explicit: the local resolver is called
+    once only for whichever half is absent, then the supplied half wins. Tests
+    use this to prove a captured launch is not re-attributed after auth moves.
+    """
+    spec_raw = provider_spec or _codex_process_spec(
+        org, nid, write_ident=write_ident)
+    # Freeze every mutable JSON-shaped input now. A caller changing the Org
+    # after resolution must not silently mutate what this launch means.
+    spec = {
+        "argv_head": list(spec_raw.get("argv_head") or []),
+        "cwd": str(spec_raw.get("cwd") or scratch_dir(org.d["slug"], nid)),
+        "identity": str(spec_raw.get("identity") or identity_prompt(org, nid)),
+        "config_overrides": list(spec_raw.get("config_overrides") or []),
+        "env_extra": dict(spec_raw.get("env_extra") or {}),
+        "port": str(spec_raw.get("port") or os.environ.get(
+            "ORGTREE_PORT", "7360")),
+        "exe": str(spec_raw.get("exe") or ""),
+        "login_kind": str(spec_raw.get("login_kind") or ""),
+        "codex_home": str(spec_raw.get("codex_home") or os.environ.get(
+            "CODEX_HOME") or os.path.expanduser("~/.codex")),
+        "cache_codex_home": str(spec_raw.get("cache_codex_home")
+                                if spec_raw.get("cache_codex_home") is not None
+                                else os.environ.get("CODEX_HOME", "")),
+    }
+    # AppServerClient applies env_extra AFTER its codex_home argument. Keep
+    # the manifest and the launch on that same precedence rule even for a
+    # supplied spec: an explicit env override is the path the child receives.
+    if "CODEX_HOME" in spec["env_extra"]:
+        spec["codex_home"] = str(spec["env_extra"]["CODEX_HOME"])
+    if account_override is None or lane_override is None:
+        resolved_account, resolved_lane = _cache_codex_account_namespace(
+            spec["codex_home"])
+    else:
+        # Both halves were captured by the caller: do not touch current auth.
+        resolved_account, resolved_lane = "unobserved", "unobserved"
+    account = (str(account_override) if account_override is not None
+               else str(resolved_account))
+    lane = (str(lane_override) if lane_override is not None
+            else str(resolved_lane))
+    scope = org.node(nid).get("scope") or {}
+    # Freeze the exact payload CodexTurn puts on thread/start AND
+    # thread/resume. `_orgtree_tool_catalogue()` is the source catalogue, not
+    # itself the wire shape: app-server requires the explicit function type.
+    dynamic_tools = [{
+        "type": "function",
+        "name": tool["name"],
+        "description": tool["description"],
+        "inputSchema": tool["inputSchema"],
+    } for tool in _orgtree_tool_catalogue()]
+    cache_tools = {
+        "grant": json.loads(json.dumps(scope.get("tools") or {})),
+        # The actual transformed dynamicTools payload is provider-visible
+        # thread input, although it is not app-server launch argv.
+        "dynamic_tools": json.loads(json.dumps(dynamic_tools)),
+        "mcp": list(spec["config_overrides"]),
+    }
+    return {
+        "version": 1,
+        "identity": spec["identity"],
+        "startup_digest": warmpool.codex_startup_context_digest(
+            org, nid, cwd=spec["cwd"], codex_home=spec["codex_home"]),
+        "provider_spec": spec,
+        "account": account,
+        "lane": lane,
+        # Keep the cache projection byte-compatible except for the intentionally
+        # corrected startup component. Ports/PIDs and full inherited env are
+        # absent; raw credentials never enter this object.
+        "cache_tools": cache_tools,
+        "cache_argv": {
+            "head": list(spec["argv_head"]),
+            "mcp": list(spec["config_overrides"]),
+            "exe": spec["exe"],
+        },
+        "cache_env": {
+            "provider": "openai",
+            # Preserve the prior cache meaning (explicit override intent),
+            # while process identity below uses the fully resolved path.
+            "codex_home": spec["cache_codex_home"],
+        },
+    }
+
+
+def _codex_process_identity_inputs(
+        manifest: Mapping[str, Any], tier: str) -> dict[str, bytes]:
+    """Raw process-only projection consumed by ``warmpool``.
+
+    These bytes are never persisted. The stable four-component vocabulary is
+    retained for existing lifecycle telemetry. Account/lane belong in the
+    process credential component because an app-server launched under the old
+    login must not be claimed after a login switch.
+    """
+    spec = cast("Mapping[str, Any]", manifest["provider_spec"])
+    argv = (list(cast("list[Any]", spec.get("argv_head") or []))
+            + list(cast("list[Any]", spec.get("config_overrides") or []))
+            + ["app-server"])
+    prompt = str(manifest["identity"]).encode("utf-8", "replace")
+    native = str(manifest["startup_digest"]).encode("ascii")
+    return {
+        "prompt": prompt + b"\x00codex-startup\x00" + native,
+        "argv": json.dumps([*argv, "<tier>", tier], ensure_ascii=False)
+                    .encode("utf-8", "replace"),
+        "cred": json.dumps({
+            "exe": str(spec.get("exe") or ""),
+            "codex_home": str(spec.get("codex_home") or ""),
+            "account": str(manifest.get("account") or "unobserved"),
+            "lane": str(manifest.get("lane") or "unobserved"),
+        }, sort_keys=True, ensure_ascii=False).encode("utf-8", "replace"),
+        "envov": json.dumps(spec.get("env_extra") or {}, sort_keys=True,
+                            ensure_ascii=False).encode("utf-8", "replace"),
+    }
+
+
+def _codex_manifest_account_current(
+        manifest: Mapping[str, Any]) -> tuple[bool, str, str]:
+    """Compare a captured launch with current local account evidence.
+
+    This freezes no credential. It re-runs the private account/lane
+    projection immediately around process admission. A change before a cold
+    launch or warm claim rejects that admission; a change observed after a
+    turn makes account attribution ambiguous and invalidates its cache
+    receipt. There remains an unavoidable external race between any local
+    observation and the CLI's own credential read, so equality is
+    compatibility evidence, never proof of the remote serving account.
+    """
+    spec = cast("Mapping[str, Any]", manifest.get("provider_spec") or {})
+    current_account, current_lane = _cache_codex_account_namespace(
+        str(spec.get("codex_home") or "") or None)
+    expected_account = str(manifest.get("account") or "unobserved")
+    expected_lane = str(manifest.get("lane") or "unobserved")
+    return (current_account == expected_account and current_lane == expected_lane,
+            current_account, current_lane)
+
+
+def _codex_require_manifest_account_current(
+        manifest: Mapping[str, Any], where: str) -> None:
+    same, _account, _lane = _codex_manifest_account_current(manifest)
+    if not same:
+        raise RuntimeError(
+            "turn not started: the local Codex account/login lane changed "
+            f"after startup resolution ({where}); retry on the newly "
+            "resolved login")
 
 
 def _codex_git_trust_env(sc: Mapping[str, Any]) -> dict[str, str]:
@@ -9152,23 +9343,28 @@ def _codex_account_namespace() -> str:
 
 
 def _codex_resolve_route(org: Org, nid: str, tier: str, *,
-                         selection: str = "preflight") -> codex_route.Route:
+                         selection: str = "preflight",
+                         account: str | None = None,
+                         login_kind: str | None = None) -> codex_route.Route:
     """PREFLIGHT route for this node's next turn. Reads the board ONCE
     (`codex_limits.fetch` is cached 30 s and the usage panel keeps it warm;
     a cold cache costs one app-server read, at turn start, never per
     render) and hands the decision to the pure resolver."""
     n = org.node(nid)
-    status = providers.codex_status()
-    login_kind = str(status.get("kind") or "") or None
+    resolved_login_kind = (str(providers.codex_status().get("kind") or "")
+                           if login_kind is None else str(login_kind)) or None
     try:
         codex_limits.fetch()
     except Exception:                                      # noqa: BLE001
         pass                 # the snapshot below reports whatever it has
     board = codex_limits.snapshot()
     return codex_route.resolve(
-        tier, login_kind=login_kind, board=board,
+        tier, login_kind=resolved_login_kind, board=board,
         marks=cast("dict[str, Any] | None", n.get("codex_routes")),
-        account=_codex_account_namespace(),
+        # A turn passes the account captured with its startup manifest. An
+        # idle preview has no launch capture and uses current local evidence.
+        account=(account if account is not None
+                 else _codex_account_namespace()),
         direct_model=providers.CODEX_MODELS.get(tier) or org.model_for(nid),
         selection=selection,
         # the per-agent "Prefer reserve" checkbox (absent = on)
@@ -9234,7 +9430,8 @@ def _codex_route_persist(slug: str, nid: str, rec: dict[str, Any],
 def _codex_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
                text: str, toks: list[str],
                images: list[dict[str, Any]] | None = None,
-               turn_view: str = ""
+               turn_view: str = "",
+               startup_manifest: dict[str, Any] | None = None,
                ) -> tuple[dict[str, Any], int]:
     """One codex turn behind the provider seam, WITH the reserve-first
     fallback around it (item 12). `_codex_leg_attempt` is one attempt.
@@ -9268,15 +9465,17 @@ def _codex_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
         print(f"[orgtree] {slug}/{nid}: {why}")
 
     try:
-        return _codex_leg_attempt(slug, nid, org, st, text, toks, images,
-                                  turn_view)
+        return _codex_leg_attempt(
+            slug, nid, org, st, text, toks, images, turn_view,
+            startup_manifest=startup_manifest)
     except _CodexRouteRejected as rj:
         _note(rj, retrying=True)
         notify(slug, nid, "route_switched")
         try:
             return _codex_leg_attempt(slug, nid, org, st, text, [], images,
                                       turn_view, route=rj.other,
-                                      journal_sid=rj.journal_sid)
+                                      journal_sid=rj.journal_sid,
+                                      startup_manifest=startup_manifest)
         except _CodexRouteRejected as rj2:
             _note(rj2, retrying=False)
             board = codex_limits.snapshot()
@@ -9298,6 +9497,7 @@ def _codex_leg_attempt(slug: str, nid: str, org: Org, st: dict[str, Any],
                        turn_view: str = "",
                        route: codex_route.Route | None = None,
                        journal_sid: str | None = None,
+                       startup_manifest: dict[str, Any] | None = None,
                        ) -> tuple[dict[str, Any], int]:
     """One codex turn behind the provider seam (FR-15 M1b).
 
@@ -9322,19 +9522,26 @@ def _codex_leg_attempt(slug: str, nid: str, org: Org, st: dict[str, Any],
     enforces authority identically for both providers. Mid-turn mail rides a
     poller on the SAME steer store the claude hook drains.
     """
-    from . import codexrun, mcptool     # noqa: PLC0415 — codex lane only
+    from . import codexrun              # noqa: PLC0415 — codex lane only
     import urllib.error                 # noqa: PLC0415
     import urllib.request               # noqa: PLC0415
 
     n = org.node(nid)
     tier = str(n.get("model") or "")
-    process_spec = _codex_process_spec(org, nid, write_ident=True)
+    startup_manifest = startup_manifest or _codex_startup_manifest(
+        org, nid, write_ident=True)
+    process_spec = cast("dict[str, Any]", startup_manifest["provider_spec"])
+    # First gate: never choose a route or inspect the warm pool using a
+    # manifest whose local login evidence has already moved.
+    _codex_require_manifest_account_current(
+        startup_manifest, "before route/process admission")
     tools_sc = n["scope"].get("tools", {})
     cwd = str(process_spec["cwd"])
-    # identity through codex's two doors: developerInstructions carries it on
-    # a NEW thread, and AGENTS.md in the scratch cwd (honored verbatim,
-    # Appendix C.6) re-asserts it on every turn of a RESUMED thread — the
-    # same regenerate-per-spawn self-healing as .orgtree-identity.md.
+    # Identity through Codex's two distinct doors. Managed AGENTS.md is a
+    # process-start project instruction; developerInstructions is sent on
+    # BOTH thread/start and thread/resume (codexrun.CodexTurn.start). Equal
+    # text does not make either carrier redundant, so the manifest supplies
+    # one resolved value to both and preserves both delivery paths.
     ident = str(process_spec["identity"])
     # resume ONLY a session id this leg itself harvested (`codex_thread`
     # equals it exactly then): a fresh hire's session_id is a MINTED uuid no
@@ -9345,9 +9552,11 @@ def _codex_leg_attempt(slug: str, nid: str, org: Org, st: dict[str, Any],
                   if not n.get("session_unrun")
                   and str(n.get("session_id") or "")
                   == str(n.get("codex_thread") or "") else None)
-    dyn = [{"type": "function", "name": t["name"],
-            "description": t["description"], "inputSchema": t["inputSchema"]}
-           for t in mcptool.available_tools()]
+    # Use the exact catalogue captured with the cache/process manifest. C4
+    # will later stabilize that catalogue; C2 fingerprints and delivers the
+    # actual definitions today rather than normalizing them away here.
+    dyn = json.loads(json.dumps(
+        startup_manifest["cache_tools"]["dynamic_tools"]))
     mcp_overrides = list(process_spec["config_overrides"])
     port = str(process_spec["port"])
 
@@ -9977,7 +10186,9 @@ def _codex_leg_attempt(slug: str, nid: str, org: Org, st: dict[str, Any],
     # not-live on every exit below. `route_box` hands the route to the
     # event hook above (defined before the route exists) for the mid-turn
     # reroute stamp.
-    route = route or _codex_resolve_route(org, nid, tier)
+    route = route or _codex_resolve_route(
+        org, nid, tier, account=str(startup_manifest["account"]),
+        login_kind=str(process_spec["login_kind"]))
     codex_model = route["model"]
     with route_lock:
         route_box["route"] = route
@@ -9994,7 +10205,7 @@ def _codex_leg_attempt(slug: str, nid: str, org: Org, st: dict[str, Any],
     if elig_ok and warm_on:
         try:
             turn_hash, turn_components = warmpool.identity_snapshot(
-                org, nid, provider_spec=process_spec)
+                org, nid, codex_manifest=startup_manifest)
         except Exception:                              # noqa: BLE001
             turn_hash = None
     admit_reason = (elig_why or "not-eligible") if not elig_ok else (
@@ -10010,6 +10221,18 @@ def _codex_leg_attempt(slug: str, nid: str, org: Org, st: dict[str, Any],
             # collides with it.
             warmpool.discard(candidate, "provider-lane")
             admit_reason = "provider-lane"
+
+    # Second gate closes the work between route resolution and the actual
+    # claim/spawn seam. A claimed warm process is destroyed rather than
+    # returned under an account identity that is no longer current.
+    try:
+        _codex_require_manifest_account_current(
+            startup_manifest, "at warm claim/cold launch")
+    except Exception:
+        _codex_route_stamp(st, route, live=False)
+        if wp_turn is not None:
+            warmpool.discard(wp_turn, "account-changed-before-claim")
+        raise
 
     late_tool_rids: set[Any] = set()
 
@@ -10046,6 +10269,7 @@ def _codex_leg_attempt(slug: str, nid: str, org: Org, st: dict[str, Any],
         # measured superset of orgtree's low…max (Appendix B.3) — pass-through
         effort=org.effective_effort(nid),
         thread_id=resume_tid,
+        codex_home=str(process_spec["codex_home"]),
         # a security boundary — read `_codex_sandbox` before touching this
         sandbox=_codex_sandbox(n["scope"]),
         dynamic_tools=dyn, developer_instructions=ident,
@@ -10056,6 +10280,20 @@ def _codex_leg_attempt(slug: str, nid: str, org: Org, st: dict[str, Any],
         env_extra=dict(process_spec["env_extra"]),
         usage_baseline=(n.get("codex_usage_total") if resume_tid else None),
         client=wp_turn.client if wp_turn is not None else None)
+    # A cold child may race the last gate while it starts and reads auth.json.
+    # Recheck immediately after construction. This is still not a remote
+    # account receipt, but it catches a local login replacement at the seam
+    # without freezing/copying any credential into the child.
+    try:
+        _codex_require_manifest_account_current(
+            startup_manifest, "immediately after process admission")
+    except Exception:
+        _codex_route_stamp(st, route, live=False)
+        if wp_turn is not None:
+            warmpool.discard(wp_turn, "account-changed-during-claim")
+        else:
+            turn.close()
+        raise
     mcp_client = turn.client
     mcp_owner = turn.client.proc
     _mcp_tool_count_begin(
@@ -10549,6 +10787,20 @@ def _codex_leg_attempt(slug: str, nid: str, org: Org, st: dict[str, Any],
         if not parked:
             warmpool._set_proc_lifecycle(slug, nid, live=False, owner=turn)
             _mcp_tool_count_end(slug, nid, turn.client.proc)
+    # Last local observation: if auth moved while the process ran, neither
+    # the selected account nor the now-current account is authoritative for
+    # this provider turn. Keep the turn/output, but namespace the route as
+    # ambiguous and tell the caller to drop the cache receipt.
+    _account_same, _current_account, _current_lane = \
+        _codex_manifest_account_current(startup_manifest)
+    account_ambiguous = not _account_same
+    if account_ambiguous:
+        route = cast("codex_route.Route", dict(route))
+        route["account"] = "codex-account-ambiguous"
+        route["reason"] = (str(route.get("reason") or "")
+                           + "; local auth changed during turn").lstrip("; ")
+        res_raw["_codex_account_ambiguous"] = True
+
     with dlock:
         draft_timer = dstate.get("timer")
         if draft_timer:
@@ -10570,12 +10822,20 @@ def _codex_leg_attempt(slug: str, nid: str, org: Org, st: dict[str, Any],
     # destination folds nothing: an unnamed window from a pool this code
     # cannot name would land in the plan bucket by default, which is
     # exactly the inference the receipt says was not made. And the fold
-    # carries the account the turn RAN AS (captured on the route at
-    # preflight), so a board that meanwhile became another login's refuses
-    # it rather than being poisoned by it (parent review 2026-09-05).
+    # carries the account captured at preflight only while repeated local
+    # checks still agree. If local auth moved during the turn, the origin is
+    # ambiguous and NOTHING is folded; a synthetic namespace must not seed an
+    # otherwise empty board (parent reviews 2026-09-05).
     _served = codex_route.served_pool(route, res_raw.get("rerouted"))
     _folded = 0
-    if _served is not None:
+    if account_ambiguous:
+        # No synthetic namespace turns unattributable provider data into
+        # valid board evidence. Preserve any existing account boards exactly;
+        # the next complete read under a stable login will refresh them.
+        if _snaps or res_raw.get("rate_limits"):
+            print(f"[orgtree] {slug}/{nid}: rate-limit notification not "
+                  "folded — local Codex auth changed during the turn")
+    elif _served is not None:
         for _snap in (list(_snaps.values()) if isinstance(_snaps, dict)
                       else [res_raw.get("rate_limits")]):
             if codex_limits.observe(_snap, pool_hint=_served,
@@ -10619,7 +10879,8 @@ def _codex_leg_attempt(slug: str, nid: str, org: Org, st: dict[str, Any],
             reported_model=res_raw.get("reported_model"),
             rerouted=res_raw.get("rerouted"))
         other = codex_route.other_route(route)
-        if fcls["redrive"] and other is not None:
+        if (fcls["redrive"] and other is not None
+                and not account_ambiguous):
             # a terminal rejection with nothing run, on a routed tier, BY
             # THE POOL WE SENT TO: the wrapper records it (durable row,
             # scoped mark) and — on the FIRST attempt only — tries the other
@@ -10710,6 +10971,8 @@ def _codex_leg_attempt(slug: str, nid: str, org: Org, st: dict[str, Any],
             "cache_creation_input_tokens": 0,
         },
     }
+    if account_ambiguous:
+        res["_codex_account_ambiguous"] = True
     if isinstance(tu, dict):
         session_total = tu.get("sessionTotal") or tu.get("total")
         if isinstance(session_total, dict):
@@ -11408,6 +11671,7 @@ def _run_one_turn(slug: str, nid: str,
     # generation's completion, so a stale process cannot bless a successor.
     cache_attempt: dict[str, Any] | None = None
     cache_pre_env: dict[str, str] | None = None
+    cache_codex_manifest: dict[str, Any] | None = None
     cache_forecast_event: dict[str, Any] | None = None
     # a mail POINTER whose box empties between `_run_turn`'s gate and the drain
     # below is dropped HERE instead of launched (see the drop site). The flag
@@ -11502,14 +11766,23 @@ def _run_one_turn(slug: str, nid: str,
                 if not is_cmd:
                     try:
                         _tier0 = str(org.node(nid).get("model") or "")
-                        if providers.provider_of(_tier0) == "claude":
+                        _provider0 = providers.provider_of(_tier0)
+                        if _provider0 == "claude":
                             # Reuse this exact resolved environment at launch;
                             # forecast and request cannot race two account reads.
                             cache_pre_env = spawn_env(
                                 org, tier=_tier0, nid=nid)
+                        elif _provider0 == "openai":
+                            # Real-turn resolution writes the managed file
+                            # before hashing native discovery. This exact
+                            # captured manifest then flows to warm admission,
+                            # wire delivery and the cache attempt.
+                            cache_codex_manifest = _codex_startup_manifest(
+                                org, nid, write_ident=True)
                         _forecast0, cache_forecast_event, _current0 = \
                             _cache_forecast_now(
-                                org, nid, env=cache_pre_env)
+                                org, nid, env=cache_pre_env,
+                                codex_manifest=cache_codex_manifest)
                         cache_attempt = _cache_persistable(_current0)
                     except Exception as exc:                    # noqa: BLE001
                         # Prediction is protective telemetry, never an
@@ -11541,9 +11814,20 @@ def _run_one_turn(slug: str, nid: str,
                                 # cannot inherit the predecessor's receipt.
                                 org.node(nid).pop("cache_continuity", None)
                                 try:
+                                    if providers.provider_of(
+                                            str(org.node(nid).get("model")
+                                                or "")) == "openai":
+                                        # Cheap compaction minted a successor
+                                        # generation and identity. Resolve it
+                                        # once; never carry the predecessor's
+                                        # raw launch capture across the swap.
+                                        cache_codex_manifest = \
+                                            _codex_startup_manifest(
+                                                org, nid, write_ident=True)
                                     (_forecast1, cache_forecast_event,
                                      _current1) = _cache_forecast_now(
-                                         org, nid, env=cache_pre_env)
+                                         org, nid, env=cache_pre_env,
+                                         codex_manifest=cache_codex_manifest)
                                     cache_attempt = _cache_persistable(_current1)
                                 except Exception:               # noqa: BLE001
                                     cache_forecast_event = None
@@ -11717,7 +12001,14 @@ def _run_one_turn(slug: str, nid: str,
                 # any claude machinery — and rejoins through the success tail
                 # + the SHARED finally via the control raise below.
                 res, codex_occ = _codex_leg(
-                    slug, nid, org, st, text, toks, turn_images, turn_view)
+                    slug, nid, org, st, text, toks, turn_images, turn_view,
+                    startup_manifest=cache_codex_manifest)
+                if res.get("_codex_account_ambiguous"):
+                    # The provider turn is real, but no local observation can
+                    # authoritatively attach it to either side of a login
+                    # change. Preserve output/cost while recording no cache
+                    # compatibility receipt for the captured old account.
+                    cache_attempt = None
                 st["last_error"] = None
                 st["turns_run"] += 1
                 st["account_switches"] = 0
