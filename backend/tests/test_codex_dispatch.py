@@ -22,6 +22,7 @@ reporting "nothing found" must first prove it can find something.
 import base64
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import threading
@@ -767,6 +768,181 @@ def main() -> int:
         org.d.pop("headless")
     check("gate: connected passes; signed-out, kiosk and headless-"
           "subscription refuse, naming the remedy; claude ungated", t8)
+
+    print("§8 the process-lifecycle record: whose liveness it describes, and "
+          "clearing it on every exit the turn ends by")
+    # THE CONTROL COMES FIRST, because "cleared" is free without it: a node
+    # that never raised the flag reads False too. It also pins WHOSE liveness
+    # the record is — the running turn's while the turn runs, the POOLED
+    # process's after a park, since that process really does live on.
+    from orgtree import codexrun                              # noqa: PLC0415
+
+    def watch_owner(slug_: str, nid_: str, seen: dict):
+        """Wrap CodexTurn.wait so the record can be read mid-turn."""
+        orig = codexrun.CodexTurn.wait
+
+        def watching(self, *a, **kw):
+            st_ = supervisor.state(slug_, nid_)
+            seen["live"] = bool(st_.get("proc_live"))
+            seen["owner_is_this_turn"] = (
+                st_.get("proc_lifecycle_owner") is self)
+            seen["turn"] = self
+            return orig(self, *a, **kw)
+
+        codexrun.CodexTurn.wait = watching
+        return orig
+
+    def t9():
+        s9, n9 = mkorg("lifecycle-park")
+        warmpool.keeper_pass_now()
+        seen: dict = {}
+        orig = watch_owner(s9, n9, seen)
+        try:
+            run_turn(s9, n9, "an ordinary warm turn")
+        finally:
+            codexrun.CodexTurn.wait = orig
+        eq((seen.get("live"), seen.get("owner_is_this_turn")), (True, True),
+           "while the turn runs the record is live and owned by THAT turn")
+        with warmpool._pool_lock:
+            pooled = warmpool._pool.get((s9, n9))
+        assert pooled is not None, \
+            "the fixture did not park — the ownership check below is vacuous"
+        st9 = supervisor.state(s9, n9)
+        eq((bool(st9.get("proc_live")),
+            st9.get("proc_lifecycle_owner") is pooled, pooled.alive()),
+           (True, True, True),
+           "a parked process keeps the record, owns it, and is still alive")
+        warmpool.kill_org(s9, "suite-teardown")
+    check("the record is raised for the owning turn and handed to the pooled "
+          "process at a park", t9)
+
+    def teardown_raises(label: str, *, warm: bool, plant: str,
+                        undead: bool = False,
+                        kill_first: bool = True) -> tuple[dict, dict]:
+        """One turn whose teardown raises where the leg says it can.
+
+        Returns (the node's lifecycle record afterwards, what the plant saw).
+        `undead`: the process does not die with the close, so the record must
+        NOT be cleared — an exit that did not happen must not be published.
+        `kill_first` False: the plant raises BEFORE the process is killed,
+        which is what `unbind()` or `boundary_check()` raising looks like —
+        the app-server is still running when the teardown gives up.
+        """
+        os.environ["ORGTREE_WARM"] = "1" if warm else "0"
+        s, n = mkorg(label)
+        if warm:
+            warmpool.keeper_pass_now()
+            assert warmpool.is_warm(s, n), "fixture has no warm process"
+        else:
+            assert not warmpool.is_warm(s, n), "fixture is warm, not cold"
+        seen: dict = {"fired": 0, "closes": 0}
+        orig_wait = watch_owner(s, n, seen)
+        orig_close = codexrun.AppServerClient.close
+        orig_discard = warmpool.discard
+        orig_boundary = warmpool.boundary_check
+
+        class Undead:
+            """A tree that will not die: killed, and still not reaped."""
+            def __init__(self, pid): self.pid = pid
+            def poll(self): return None
+            def kill(self): return None
+            def wait(self, timeout=None):
+                raise subprocess.TimeoutExpired("codex", timeout or 0)
+
+        def counting_close(self, *a, **kw):
+            # counted on EVERY case, because "did the teardown close the
+            # app-server it failed to kill" is the one observation that does
+            # not race the fake CLI's own exit
+            seen["closes"] += 1
+            if plant != "close":
+                return orig_close(self, *a, **kw)
+            seen["fired"] += 1
+            orig_close(self, *a, **kw)     # really tear the real tree down
+            if undead:
+                self.proc = Undead(self.proc.pid)
+            raise RuntimeError("planted: close() raised")
+
+        def raising_discard(wp, reason):
+            seen["fired"] += 1
+            if kill_first:
+                orig_discard(wp, reason)   # really kill it
+            raise RuntimeError("planted: discard() raised")
+
+        codexrun.AppServerClient.close = counting_close
+        if plant != "close":
+            warmpool.discard = raising_discard
+        if warm:
+            # a triple `boundary_check` really returns (`want_hash is None`),
+            # so the warm process takes the discard path instead of parking
+            warmpool.boundary_check = (
+                lambda slug_, nid_, want, wp=None: (False, None,
+                                                    "stdin-closed"))
+        try:
+            run_turn(s, n, "a turn whose teardown raises")
+        finally:
+            codexrun.CodexTurn.wait = orig_wait
+            codexrun.AppServerClient.close = orig_close
+            warmpool.discard = orig_discard
+            warmpool.boundary_check = orig_boundary
+            os.environ["ORGTREE_WARM"] = "1"
+        st_ = supervisor.state(s, n)
+        return ({"live": bool(st_.get("proc_live")),
+                 "owner": st_.get("proc_lifecycle_owner")}, seen)
+
+    # MEASURED on fd8a507 before the fix (probe_codex_lifecycle.py, retained
+    # as evidence/codex-lifecycle-before-fd8a507.json): both of these left
+    # `proc_live` True with the finished CodexTurn still owning the record —
+    # `_run_one_turn` swallows the exception, so the node then sat idle
+    # showing a live process until it next ran.
+    def t10():
+        rec, seen = teardown_raises("lifecycle-cold", warm=False,
+                                    plant="close")
+        assert seen["fired"], "the planted close() never ran"
+        eq((rec["live"], rec["owner"]), (False, None),
+           "cold turn, close() raised on the way out")
+    check("the record clears when the cold client's close() raises", t10)
+
+    def t11():
+        rec, seen = teardown_raises("lifecycle-warm", warm=True,
+                                    plant="discard")
+        assert seen["fired"], "the planted discard() never ran"
+        eq((rec["live"], rec["owner"]), (False, None),
+           "warm turn that could not park, discard() raised")
+    check("the record clears when a non-parking warm process's discard() "
+          "raises", t11)
+
+    # THE OTHER HALF OF TRUTHFUL, and the reason the clear is not
+    # unconditional: a teardown that failed to kill must keep the generation
+    # owned rather than publish an exit nobody observed — the same rule
+    # `_mcp_tool_count_end` applies to the tool surface.
+    def t12():
+        rec, seen = teardown_raises("lifecycle-undead", warm=False,
+                                    plant="close", undead=True)
+        assert seen["fired"], "the planted close() never ran"
+        eq((rec["live"], rec["owner"] is seen.get("turn")), (True, True),
+           "a process that outlived its teardown stays live and owned")
+    check("a process still running after the teardown keeps the record: no "
+          "exit is published that was not observed", t12)
+
+    # …and the other side of that coin: a teardown that gave up BEFORE it
+    # killed anything (what `unbind()` or `boundary_check()` raising looks
+    # like) leaves a whole app-server running. The exit is then made to
+    # happen rather than assumed, and only then published.
+    def t13():
+        rec, seen = teardown_raises("lifecycle-leak", warm=True,
+                                    plant="discard", kill_first=False)
+        assert seen["fired"], "the planted discard() never ran"
+        proc = seen["turn"].client.proc
+        # THE CLOSE COUNT IS THE DETERMINISTIC HALF. Whether an abandoned fake
+        # app-server has exited by the time this line runs is a race with the
+        # fixture; whether the teardown asked it to is not, and that is the
+        # behaviour being fixed. Measured: with the close dropped, this case
+        # sometimes still went green on the process state alone.
+        eq((seen["closes"], rec["live"], rec["owner"], proc.poll() is not None),
+           (1, False, None, True),
+           "warm turn whose teardown raised before killing anything")
+    check("a teardown that raised before killing does not leak the "
+          "app-server: it is closed, observed, and only then published", t13)
 
     warmpool.kill_org(slug, "suite-teardown")
     print()

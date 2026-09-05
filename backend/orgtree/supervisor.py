@@ -12096,38 +12096,69 @@ def _codex_leg_attempt(slug: str, nid: str, org: Org, st: dict[str, Any],
         # (outcome, reported model) is stamped by the paths below; this is
         # only the flip, on the one exit every path takes.
         _codex_route_stamp(st, route, live=False)
-        if wp_turn is not None:
-            turn.client.unbind()
-            keep, _bnd_lbl, keep_why = warmpool.boundary_check(
-                slug, nid, turn_hash, wp_turn)
-            status_now = str(res_raw.get("status") or "")
-            if (keep and status_now in (
-                    codexrun.STATUS_COMPLETED, codexrun.STATUS_INTERRUPTED)
-                    and wp_turn.alive()):
-                parked = warmpool.park_back(wp_turn, 0.0, 0)
+        try:
+            if wp_turn is not None:
+                turn.client.unbind()
+                keep, _bnd_lbl, keep_why = warmpool.boundary_check(
+                    slug, nid, turn_hash, wp_turn)
+                status_now = str(res_raw.get("status") or "")
+                if (keep and status_now in (
+                        codexrun.STATUS_COMPLETED, codexrun.STATUS_INTERRUPTED)
+                        and wp_turn.alive()):
+                    parked = warmpool.park_back(wp_turn, 0.0, 0)
+                if not parked:
+                    detail_now = codexrun.error_text(res_raw.get("error"))
+                    if keep_why:
+                        reason = keep_why
+                    elif ("usage_limit" in detail_now
+                          or "usage limit" in detail_now.lower()):
+                        reason = "limit-frozen"
+                    elif (status_now in ("", codexrun.STATUS_FAILED)
+                          and not detail_now
+                          and time.time() - t0 >= TURN_TIMEOUT):
+                        reason = "turn-timeout"
+                    else:
+                        reason = "stdin-closed"
+                    warmpool.discard(wp_turn, reason)
+            else:
+                # `wait` normally closed the cold client; this also covers a
+                # start/initialize exception before wait was reached.
+                turn.client.close()
+        finally:
+            # ⚠ THE TEARDOWN ABOVE IS THE SAME "can each raise" LIST the fold
+            # note names, and this record is the ONLY effective clear for a
+            # turn-owned generation: warmpool's own clears all carry
+            # `owner=wp`, and `_set_proc_lifecycle` refuses a clear whose
+            # token is not the current owner — which is this CodexTurn from
+            # the `adopt=True` above. MEASURED on fd8a507
+            # (probe_codex_lifecycle.py, evidence/codex-lifecycle-fd8a507
+            # .json): with `close()` raising on the cold path, and with
+            # `discard()` raising on a warm process that could not park,
+            # `proc_live` stayed True and `proc_lifecycle_owner` still held
+            # the finished turn after the turn ended — `_run_one_turn`
+            # swallows the exception, so the node sat idle showing a live
+            # process until it next ran. The controls in the same run (an
+            # unplanted cold turn, an unplanted non-parking warm turn) both
+            # cleared, so "cleared" is not free.
+            turn_mcp_count, turn_mcp_names = _mcp_tool_surface_for_owner(
+                slug, nid, turn.client.proc)
             if not parked:
-                detail_now = codexrun.error_text(res_raw.get("error"))
-                if keep_why:
-                    reason = keep_why
-                elif ("usage_limit" in detail_now
-                      or "usage limit" in detail_now.lower()):
-                    reason = "limit-frozen"
-                elif (status_now in ("", codexrun.STATUS_FAILED)
-                      and not detail_now
-                      and time.time() - t0 >= TURN_TIMEOUT):
-                    reason = "turn-timeout"
-                else:
-                    reason = "stdin-closed"
-                warmpool.discard(wp_turn, reason)
-        else:
-            # `wait` normally closed the cold client; this also covers a
-            # start/initialize exception before wait was reached.
-            turn.client.close()
-        turn_mcp_count, turn_mcp_names = _mcp_tool_surface_for_owner(
-            slug, nid, turn.client.proc)
-        if not parked:
-            warmpool._set_proc_lifecycle(slug, nid, live=False, owner=turn)
-            _mcp_tool_count_end(slug, nid, turn.client.proc)
+                # PARKED IS UNTOUCHED: that process is deliberately alive and
+                # the pool now owns its record. Otherwise a teardown that
+                # raised may have left the tree running, so close it again
+                # (`close` kills by pid and waits) and publish the exit only
+                # once `poll()` has observed one — an exit that did not happen
+                # must not be published, and `_mcp_tool_count_end` applies the
+                # same rule to the generation's tool surface.
+                if turn.client.proc.poll() is None:
+                    try:
+                        turn.client.close()
+                    except Exception:                        # noqa: BLE001
+                        pass
+                if turn.client.proc.poll() is not None:
+                    warmpool._set_proc_lifecycle(slug, nid, live=False,
+                                                 owner=turn)
+                _mcp_tool_count_end(slug, nid, turn.client.proc)
     # Last local observation: if auth moved while the process ran, neither
     # the selected account nor the now-current account is authoritative for
     # this provider turn. Keep the turn/output, but namespace the route as
