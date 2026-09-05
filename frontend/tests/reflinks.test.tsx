@@ -285,6 +285,32 @@ test('§10 RefChip renders each outcome under its own class', async () => {
   }
 })
 
+test('§10b a chip\'s only element child is its LAST one', async () => {
+  // ⚠ NOT COSMETIC, AND MEASURED ONE PANEL OVER. A container that punctuates
+  // its children with a generated `::after` paints that separator BETWEEN a
+  // component's own parts — checklist-evidence hit exactly this in the
+  // turn-mail header on 2026-09-05, where `AgentName`'s two spans got a `·`
+  // painted between the model chip and the name it belongs to. A RefChip is
+  // immune only as long as its verdict span is the last element inside it,
+  // which is a structural fact, so it is asserted rather than left to a page
+  // that happens not to punctuate. (refchip_probe measures the rendered half
+  // in a real browser; this is the half that needs no Edge.)
+  for (const w of [world({ items: new Map() }), world({ items: 'loading' }),
+    world()] as RefWorld[]) {
+    const r = decide(`@item:${HERE}/alpha`, w)
+    const view = await mountView(<RefChip r={r} onOpen={() => {}} />, (el) => el)
+    await flush()
+    const chip = view.el.querySelector('.ref-chip') as HTMLElement
+    assert.ok(chip.children.length <= 1,
+      `${r.outcome}: ${chip.children.length} element children`)
+    if (chip.children.length === 1) {
+      assert.ok(chip.lastElementChild!.classList.contains('ref-why'),
+        `${r.outcome}: the element inside the chip is not the verdict`)
+    }
+    await view.unmount()
+  }
+})
+
 test('§11 CONTROL — a kind this panel cannot open is "elsewhere", and that is '
   + 'a different claim from "absent"', () => {
   // The docket owns no document reader. If "I cannot open this" were folded

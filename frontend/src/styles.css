@@ -3156,6 +3156,7 @@ main.solo { width: 100%; }
 .docket-modal .docket-mention .tier {
   width: 13px; height: 13px; font-size: 8px; border-radius: 3px;
   margin-right: 3px; vertical-align: baseline; position: relative; top: 1px;
+}
 /* A CANONICAL REFERENCE — `@item:org/slug` and its family. Four outcomes, and
    only one of them is a control.
 
