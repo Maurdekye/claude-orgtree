@@ -4,9 +4,10 @@
 // user spec) — wears the same `.settings.wide`/`.mailer`/`.mailer-list`/
 // `.mailrow`/`.mailer-read` classes DocGalleryModal does, styled by its own
 // `.docket-modal` scope the way `.gallery-modal` styles its own rows. The
-// header follows the gallery's exactly: the <h3>, then the filter checkboxes
-// immediately beside it with NO spacer between — the grouping control sits on
-// its own strip below so the header does not crowd.
+// header follows the gallery's: the <h3> at the left and the filter checkboxes
+// pushed to the RIGHT END, which is where the gallery's space-between layout
+// puts its own — the grouping control sits on its own strip below so the header
+// does not crowd.
 //
 // THREE GROUPINGS, ONE INVARIANT (user 2026-09-05): no group / by status / by
 // agent. Whichever is chosen, the two filtered groups — backlog and archive —
@@ -357,12 +358,17 @@ export function DocketModal({ slug, toast, close, tree, onFocusAgent }: {
     <div className="overlay" onClick={(e) => { e.stopPropagation(); close() }}
       onPointerDown={(e) => e.stopPropagation()}>
       <div className="settings wide docket-modal" onClick={(e) => e.stopPropagation()}>
-        {/* the gallery's header shape exactly: heading, then the filters
-            immediately beside it — no spacer in between (user ruling
-            2026-09-05: "the same position as the presented-documents panel's
-            checkbox") */}
+        {/* THE FILTERS SIT AT THE RIGHT END, which is where the gallery's own
+            show-retired checkbox ends up: `.gallery-modal .gallery-head` uses
+            justify-content: space-between over two children, so its checkbox is
+            pushed to the far right rather than sitting beside its heading. The
+            user asked for that POSITION (2026-09-05, confirmed by Astra after a
+            measurement disproved the earlier "adjacent to the heading" reading),
+            so the spacer goes BEFORE the filters here. The close button is the
+            one thing further right, and the gallery has no equivalent. */}
         <div className="gallery-head docket-head">
           <h3><DocketIcon fontSize="inherit" /> Work docket</h3>
+          <span className="spacer" />
           <label className="checkline docket-showarchived"
             title="include archived and closed work items">
             <input type="checkbox" checked={showArchived}
@@ -377,7 +383,6 @@ export function DocketModal({ slug, toast, close, tree, onFocusAgent }: {
             Show backlogged
             {backlogCount > 0 && <span className="dim"> · {backlogCount}</span>}
           </label>
-          <span className="spacer" />
           <button className="chip-x" title="close" onClick={close}>
             <CloseIcon fontSize="inherit" />
           </button>
