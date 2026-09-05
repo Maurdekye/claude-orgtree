@@ -148,6 +148,30 @@ const main = async () => {
   await act(async () => { await flush(8) })
   const deskHtml = desk.last()
 
+  // ── the NODE'S OWN MAILBOX, opened the way a reader opens it ────────────
+  // A DIFFERENT CASCADE FROM THE ONE ABOVE, which is why it is a third
+  // surface and not a repeat: `InboxPanel`'s rows live under
+  // `.overlay > .settings`, these live in a `.desk-body`. The `.settings
+  // button` reset proven for one says nothing about the other, and the probe
+  // said so in writing until now ("a node's own mailbox lives in a
+  // `.desk-body` instead and is not measured here").
+  // The tab is CLICKED, not set: `view` is DeskChat's own state and there is
+  // no prop for it, so reaching this markup any other way would be reaching a
+  // component the reader cannot get to.
+  const box = await mountView(
+    createElement(DeskChat, {
+      node: nd, map, op: () => Promise.resolve({}), slug: 'org1',
+      toast: () => {}, pub: false, bare: true, onJump: () => {},
+    } as never),
+    (el: HTMLElement) => el)
+  await act(async () => { await flush(8) })
+  const tab = [...box.el.querySelectorAll('.cc-tabs button')]
+    .find((b) => (b.textContent ?? '').trim().startsWith('inbox'))
+  if (!tab) throw new Error('the desk has no inbox tab to open — the fixture '
+    + 'is wrong, and every measurement downstream would be of nothing')
+  await act(async () => { (tab as HTMLElement).click(); await flush(8) })
+  const boxHtml = box.el.innerHTML
+
   // ⚠ FAIL LOUD IF THE MARKUP IS NOT THE THING UNDER TEST. Without this the
   // dump could be a "loading…" placeholder, or either surface could have
   // stopped drawing an identity at all, and the probe downstream would
@@ -165,8 +189,17 @@ const main = async () => {
     // the mid-turn rows: two of them, and exactly ONE wearing an identity
     ['desk', 'live-mail-head', 2],
     ['desk', 'msg user live', 2],
+    // the desk's OWN mailbox: the tab really opened and the rows are there.
+    // ⚠ NO `cc-name-jump` COUNT HERE, and that is deliberate: the desk HEADER
+    // draws this agent's own name as one, so a page-wide count is satisfied
+    // whether or not a single name in the MAILBOX is a route. Measured: with
+    // the wiring deleted, `boxHtml` still held 1. The list-scoped check below
+    // is the one that caught it.
+    ['box', 'mailwrap', 1],
+    ['box', 'mailrow', 4],
+    ['box', 'tier t-opus', 1],
   ]
-  const src: Record<string, string> = { inbox: inboxHtml, desk: deskHtml }
+  const src: Record<string, string> = { inbox: inboxHtml, desk: deskHtml, box: boxHtml }
   for (const [which, cls, n] of want) {
     const got = (src[which]!.match(new RegExp(cls, 'g')) ?? []).length
     if (got < n) {
@@ -184,6 +217,19 @@ const main = async () => {
     throw new Error('the LIST section carries no chip/jump — the pane\'s copy '
       + 'would have satisfied the counts above and proved nothing')
   }
+  // …and the same demand of the desk's mailbox, plus its own control: the row
+  // for a sender this tree does NOT hold must be a name and not a route, or
+  // "the unknown name is not a button" downstream is measuring a page where
+  // nothing is a button.
+  const boxList = boxHtml.slice(boxHtml.indexOf('mailer-list'),
+    boxHtml.indexOf('mailer-read'))
+  if (!boxList.includes('tier t-opus') || !boxList.includes('cc-name-jump')) {
+    throw new Error('the desk mailbox\'s LIST section carries no chip/jump')
+  }
+  if (!boxList.includes('nobody-here')) {
+    throw new Error('the desk mailbox has no unvouched-for sender in its list '
+      + '— the height and hit comparisons would have no control row')
+  }
 
   const dest = process.argv.slice(2).find((a) => !a.startsWith('--'))
   if (!dest) throw new Error('usage: mailsender.dump <out.html>')
@@ -191,7 +237,12 @@ const main = async () => {
   // same engine, under the same sheet, in one run
   // (`bare` DeskChat renders its own `.desk-body` wrapper, so nothing is
   // added around it here — the cascade the card sees is its own.)
-  const html = `<div class="viewport">${inboxHtml}${deskHtml}</div>`
+  // …and the desk's own mailbox beside them, fenced in `.deskbox` so the
+  // probe's existing row checks keep measuring the rows they always measured
+  // (both surfaces draw `.mailrow`, and an unscoped query would silently
+  // start answering about the wrong one).
+  const html = `<div class="viewport">${inboxHtml}${deskHtml}`
+    + `<div class="deskbox">${boxHtml}</div></div>`
   writeFileSync(dest, html)
   console.log(`dumped ${html.length} bytes`)
 }

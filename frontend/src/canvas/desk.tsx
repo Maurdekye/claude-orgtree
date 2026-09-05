@@ -2079,9 +2079,17 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
       {view === 'history' && <HistoryView slug={slug} nid={node.id} />}
       {view === 'files' && <FilesView slug={slug} nid={node.id} />}
       {view === 'progress' && <ProgressView model={progress} />}
+      {/* the mailbox is a name surface too (user request 2026-09-05: the inbox
+          was named explicitly). `onJump` is the SAME callback NavChip and the
+          header already use here, so no new route is invented — and it is
+          passed through undefined when this desk has none, which makes the row
+          omit the control rather than draw a dead one. `hasAgent` still decides
+          WHICH names route; `tierOf` is a separate fact, so a real agent whose
+          model is unknown navigates without a chip. */}
       {view === 'inbox' && <InboxView slug={slug} nid={node.id} tier={node.tier}
         tierOf={(id) => map.get(id)?.tier}
         hasAgent={(id) => map.has(id)}
+        onFocusAgent={onJump}
         onRetract={(m) => retractMail(slug, node.id, m.id)
           .then(() => refresh(true))
           // rethrow: InboxView's optimistic hide rolls back on rejection

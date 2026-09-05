@@ -314,6 +314,50 @@ const MUTANTS = [
     from: `                tierOf={tierOf} hasAgent={hasAgent}\n                waitLabel="awaiting next turn"`,
     to: `                tierOf={tierOf}\n                waitLabel="awaiting next turn"`,
   },
+  // ─────────────────────────── the DESK's own inbox tab (§12.5-§12.7)
+  {
+    name: 'the desk inbox goes back to supplying no focus handler — the state '
+      + 'the old §12.5 pinned as if it were a rule',
+    // ⚠ NOT 'THE CLICK ARRIVES': with the handler gone there is no button to
+    // click, so the assertion that fires first is the one requiring the button.
+    file: DESK, kills: 'and the name is a route',
+    from: `        hasAgent={(id) => map.has(id)}\n        onFocusAgent={onJump}`,
+    to: `        hasAgent={(id) => map.has(id)}`,
+  },
+  {
+    name: 'the desk inbox draws the control but wires it to a stub — present, '
+      + 'plausible and inert',
+    file: DESK, kills: 'THE CLICK ARRIVES',
+    from: `        onFocusAgent={onJump}`,
+    to: `        onFocusAgent={() => {}}`,
+  },
+  {
+    name: 'the desk inbox always claims a route, even on a desk that has '
+      + 'nowhere to send you',
+    file: DESK, kills: 'no handler, no claimed route anywhere in the mailbox',
+    from: `        onFocusAgent={onJump}`,
+    to: `        onFocusAgent={(id: string) => onJump?.(id)}`,
+  },
+  {
+    name: 'the desk inbox routes every name to the DESK instead of the sender',
+    file: DESK, kills: 'with the SENDER',
+    from: `        onFocusAgent={onJump}`,
+    to: `        onFocusAgent={onJump ? () => onJump(node.id) : undefined}`,
+  },
+  {
+    name: 'InboxView accepts the focus handler and forwards nothing to the '
+      + 'INBOX folder (the sent folder still would)',
+    file: MAIL, kills: 'and the name is a route',
+    from: `                onFocusAgent={onFocusAgent}\n                onRetract={onRetract`,
+    to: `                onRetract={onRetract`,
+  },
+  {
+    name: 'the name click bubbles to the row again, so navigating away also '
+      + 'deselects the mail you were reading',
+    file: IDENT, kills: 'the mail you were reading is STILL selected',
+    from: `        onClick={(e) => { e.stopPropagation(); onFocus(id, e) }}>`,
+    to: `        onClick={(e) => { onFocus(id, e) }}>`,
+  },
 ]
 
 const norm = (s) => s.replace(/\r\n/g, '\n')

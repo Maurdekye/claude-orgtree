@@ -46,8 +46,11 @@
 //     correct code for a branch nothing currently renders. Its DURABLE twin —
 //     the steered_log row (`role:'user'`, `steered`, `truncated`) drawn by
 //     `Msg` — IS reachable, and §11.1-11.6/§11.10 are about that one.
-//  B. desk.tsx's own inbox-tab call site is verified BY READING only — see
-//     §12.5, which records why and what would have to change.
+//  B. (WITHDRAWN 2026-09-05.) This used to record that desk.tsx's own inbox-tab
+//     call site was verified by READING only, because it passed no focus
+//     handler. It now passes the desk's `onJump`, and §12.5-§12.7 mount the real
+//     DeskChat, open the tab and click — with a no-handler control and a
+//     missing-node control. The old §12.5 pinned the gap as if it were a rule.
 //  C. The pre-existing case "truncated, but the envelope is whole" still shows
 //     no cut note (§11.4 pins it as it is; this change did not add one).
 //
@@ -1302,13 +1305,22 @@ test('§12.4 …and it is WIRED: NodeInboxModal carries the tree down to the row
       'CONTROL BROKEN: a route appeared with no resolver')
   })
 
-test('§12.5 …and so does the DESK\'s own inbox tab', async (t: TestContext) => {
-  // the second wiring site. `hasAgent` sits beside `tierOf` at BOTH top-level
-  // call sites, and a one-line omission at either is invisible to every test
-  // that mounts MailList itself. This drives the real DeskChat.
+// ⚠ §12.5-§12.7 REPLACE A TEST THAT PINNED A MISSING FEATURE. The old §12.5
+// asserted "no name in the desk's inbox claims a desk", which was TRUE of the
+// build and false as a rule: the tab passed `tierOf`/`hasAgent` and no focus
+// handler at all. The user's request named the mail inbox, and the desk already
+// holds `onJump` (its header and NavChip use it), so the inbox now passes that
+// same callback. These three drive the REAL DeskChat — mount, open the tab,
+// click — because the whole failure mode here is a one-line omission at a call
+// site that no MailList-level test can see.
+//
+// The tree ON SCREEN for these: the desk itself, `peer-known` (model known),
+// `peer-notier` (a real agent whose model is unknown — it must still navigate)
+// and NOT `peer-gone`, which is the missing-node control.
+async function deskInbox(t: TestContext, opts: { onJump?: (id: string) => void }) {
   useFakeClock()
   const s = new FakeServer()
-  const tr = installFetch(s)
+  installFetch(s)
   const inner = (globalThis as { fetch: typeof fetch }).fetch
   ;(globalThis as unknown as { fetch: typeof fetch }).fetch = ((
     url: string, init?: unknown,
@@ -1319,14 +1331,15 @@ test('§12.5 …and so does the DESK\'s own inbox tab', async (t: TestContext) =
     })
     : (inner as (u: string, i?: unknown) => Promise<unknown>)(url, init))
   ) as unknown as typeof fetch
-  void tr
   const nd = node(`ms${++_n}`, { tier: 'opus' })
   const map = new Map<string, CanvasNode>([
-    [nd.id, nd], ['peer-known', node('peer-known', { tier: 'sonnet' })],
+    [nd.id, nd],
+    ['peer-known', node('peer-known', { tier: 'sonnet' })],
+    ['peer-notier', node('peer-notier', { tier: null })],
   ])
   const v = await mountView(
     <DeskChat node={nd} map={map} op={op} slug="org" toast={noop} pub={false}
-      bare onJump={noop} />, (host) => host)
+      bare onJump={opts.onJump} />, (host) => host)
   t.after(async () => {
     try { await v.unmount() } catch { /* gone */ }
     ;(globalThis as { fetch?: typeof fetch }).fetch = inner
@@ -1337,19 +1350,81 @@ test('§12.5 …and so does the DESK\'s own inbox tab', async (t: TestContext) =
   assert.ok(tab, 'positive control: the desk has an inbox tab to open')
   await inAct(() => { tab!.click() })
   await flush(); await flush()
-  assert.ok(q(v.el, '.mailer-list .mailrow').length >= 2,
-    'positive control: the inbox rendered its rows, so a missing jump below '
-    + 'would be about the wiring and not about an empty list')
-  assert.equal(q(rowNamed(v.el, 'peer-known'), '.tier').length, 1,
-    'positive control: `tierOf` IS wired here, so the chip proves the desk '
-    + 'hands its tree down and this list is reading it')
-  // scoped to the mailbox: the desk HEADER draws this agent's own name as a
-  // jump, and counting that would answer a question about the header
-  assert.equal(q(v.el, '.mailwrap button.cc-name-jump').length, 0,
-    'and no name here claims a desk, because this call site supplies no focus '
-    + 'handler - see the header: a route appearing means someone added one '
-    + 'and must honour hasAgent with it')
+  assert.ok(q(v.el, '.mailer-list .mailrow').length >= 3,
+    'positive control: the inbox rendered its rows, so anything missing below '
+    + 'is about the wiring and not about an empty list')
+  return v.el
+}
+// the desk HEADER draws this agent's own name as a jump, so every count here is
+// scoped to `.mailwrap` — otherwise the header would answer for the mailbox.
+const boxJumps = (el: HTMLElement) => q(el, '.mailwrap button.cc-name-jump')
+
+test('§12.5 the DESK inbox tab: a sender name is a real route, and clicking it '
+  + 'reaches the desk\'s own onJump', async (t: TestContext) => {
+  const jumped: string[] = []
+  const el = await deskInbox(t, { onJump: (id) => { jumped.push(id) } })
+  const known = rowNamed(el, 'peer-known')
+  assert.equal(q(known, '.tier').length, 1,
+    '`tierOf` is wired: the sender wears its OWN model, not the desk\'s')
+  const jump = q(known, 'button.cc-name-jump')
+  assert.equal(jump.length, 1, 'and the name is a route')
+  await inAct(() => { jump[0]!.click() })
+  assert.deepEqual(jumped, ['peer-known'],
+    'THE CLICK ARRIVES: the inbox is calling the same onJump the header and '
+    + 'NavChip use, with the SENDER\'s id')
+  // known-unknown-tier: existence is the route test, tier is only the chip
+  const notier = rowNamed(el, 'peer-notier')
+  assert.equal(q(notier, 'button.cc-name-jump').length, 1,
+    'a real agent whose model is unknown still navigates')
+  absent(notier, '.tier', 'it just has no chip to show')
+  // MISSING-NODE CONTROL: same list, same handler, one name the tree lacks
+  const gone = rowNamed(el, 'peer-gone')
+  assert.ok(txt(gone).includes('peer-gone'), 'the missing name stays readable')
+  absent(gone, 'button.cc-name-jump',
+    'and claims no desk — `hasAgent` still decides, the handler does not')
 })
+
+test('§12.6 CONTROL: the same desk with NO onJump draws no route in the inbox',
+  async (t: TestContext) => {
+    // the anti-vacuity pair for §12.5. One prop differs. A desk that is not a
+    // navigation surface (no `onJump` reaches it) must omit the control rather
+    // than draw a dead one — and if this ever counts a jump, §12.5 is passing
+    // on something that always draws one.
+    const el = await deskInbox(t, {})
+    assert.equal(q(rowNamed(el, 'peer-known'), '.tier').length, 1,
+      'positive control: the chip is a SEPARATE fact and still shows, so the '
+      + 'tree is still being handed down and this is not an unwired mount')
+    assert.equal(boxJumps(el).length, 0,
+      'no handler, no claimed route anywhere in the mailbox')
+  })
+
+test('§12.7 the desk inbox: the row BODY still selects, and the name does not',
+  async (t: TestContext) => {
+    // the row is a click target inside a click target (see the header note).
+    // Wiring a handler into the inbox is exactly what could make the sender
+    // button select-or-deselect the mail as a side effect.
+    const jumped: string[] = []
+    const el = await deskInbox(t, { onJump: (id) => { jumped.push(id) } })
+    await inAct(() => { rowNamed(el, 'peer-known').click() })
+    await flush()
+    const row = rowNamed(el, 'peer-known')
+    assert.ok(row.classList.contains('on'), 'the row body SELECTED the mail')
+    const pane = el.querySelector('.mailer-read') as HTMLElement | null
+    assert.ok(pane, 'positive control: selecting opened the reading pane')
+    assert.deepEqual(jumped, [], 'and selecting is not navigating')
+    // the READING PANE's sender is a route here too (the user asked for both)
+    const paneJump = q(pane!, 'button.cc-name-jump')
+    assert.equal(paneJump.length, 1, 'the pane names the sender as a route')
+    await inAct(() => { paneJump[0]!.click() })
+    assert.deepEqual(jumped, ['peer-known'], 'and it reaches the same onJump')
+    // …and the ROW's name navigates without disturbing the selection
+    await inAct(() => { q(rowNamed(el, 'peer-known'), 'button.cc-name-jump')[0]!.click() })
+    await flush()
+    assert.deepEqual(jumped, ['peer-known', 'peer-known'], 'the row name routes')
+    assert.ok(rowNamed(el, 'peer-known').classList.contains('on'),
+      'and the mail you were reading is STILL selected — the name click does '
+      + 'not bubble to the row (a missing stopPropagation would toggle it off)')
+  })
 
 uiTest('§11.10 an unreadable block in the MIDDLE refuses the whole envelope',
   async ({ mount }) => {

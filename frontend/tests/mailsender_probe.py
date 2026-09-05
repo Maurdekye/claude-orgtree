@@ -65,6 +65,30 @@ WHAT IT CHECKS
                   button, and carries no button chrome. This is the check the
                   PRE-SERIES sheet fires for the live row.
 
+THE THIRD SURFACE — THE NODE'S OWN MAILBOX (added 2026-09-05, when the desk's
+inbox tab was finally given the desk's `onJump`). It is not a repeat of checks
+1-5: those rows live under `.overlay > .settings`, these live in a
+`.desk-body`, and a reset proven for one cascade is not proven for the other.
+The dump reaches this markup by CLICKING the tab, because `view` is DeskChat's
+own state and there is no prop for it.
+
+ 12. boxroute   — the sender is a <button> and a sender the tree does NOT hold
+                  is a <span>. Read off the TAG, in the engine.
+ 13. boxchrome/ — no button chrome survived into the desk row, and the name
+     boxtype/     keeps its line's type; the chip did not grow the row and
+     boxheight/   sits inside the row's first line.
+     boxchip
+ 14. boxhit     — the pointer at the centre of the name finds the name, and
+                  the preview line does not.
+
+⚠ THE HIT TEST RUNS IN A SECOND PASS. The user's inbox is a `position: fixed`
+overlay, and this page carries both mailboxes at once, so the modal is painted
+over the desk under it — the first run of check 14 reported the desk's sender
+as unreachable and named the MODAL's list as the thing on top. That is an
+artifact of stacking two screens that are never on screen together. The overlay
+is removed and the hit measured again, last, after everything else; both passes
+report which row they picked and the probe fails if they picked different ones.
+
 THE CONTROL. `--css <a sheet without these rules>` must FAIL, and
 `--expect-fail` makes that the passing outcome:
 
@@ -96,12 +120,30 @@ box out of its line WITHOUT changing layout, which is the only way to make the
     python tests/mailsender_probe.py /tmp/ms.html --break-chip --expect-fail
     python tests/mailsender_probe.py /tmp/ms.html --poke-chip --expect-fail
 
-WHAT NONE OF THESE COVER, said plainly: check 5 (the hit test) has no control
-sheet that breaks it — no CSS in this repo covers the name — so it is watched
-only through its own anti-vacuity clause (the row's preview line must NOT hit
-the name). And a `.settings button` reset is proven for the USER's inbox
-cascade, which is the one the dump renders; a node's own mailbox lives in a
-`.desk-body` instead and is not measured here.
+TWO MORE, added with the third surface — and the first of them closes a gap
+this file used to declare rather than fix ("check 5 has no control sheet that
+breaks it"):
+
+    python tests/mailsender_probe.py /tmp/ms.html --cover-rows  --expect-fail
+    python tests/mailsender_probe.py /tmp/ms.html --chrome-desk --expect-fail
+
+`--cover-rows` lays a row-sized pseudo-element over every row: it fires BOTH
+hit tests (5 and 14) and nothing else. `--chrome-desk` gives the desk's mailbox
+the button chrome the user's inbox gets from `.settings button`, which is the
+only thing that fires check 13 — the pre-series sheet does not, because nothing
+in this repo has ever styled a button in the `.desk-body` cascade.
+
+WHAT NONE OF THESE COVER, said plainly. Check 12 (boxroute) has no control
+here: with the wiring deleted the DUMP refuses to write a page at all (its
+list-scoped fixture assertion), so the failure lands one step upstream — run
+`git stash`-free: delete `onFocusAgent={onJump}` in desk.tsx and rebuild the
+dump; observed 2026-09-05, "the desk mailbox's LIST section carries no
+chip/jump". Its second half (an unvouched-for name must NOT be a button) is
+covered by the jsdom mutant "the desk inbox always claims a route", not here.
+Measured checks fired by each control, so nothing is claimed twice:
+  pre-series sheet → 1,2,3,7,8,9,10,11 and boxtype/boxheight
+  --break-chip     → 1, 9, boxheight        --poke-chip → 4, 6, 10, boxchip
+  --cover-rows     → 5, 14                  --chrome-desk → 13
 """
 import argparse
 import pathlib
@@ -132,7 +174,12 @@ MEASURE = """
       lineHeight: s.lineHeight,
     }
   }
+  // ⚠ SCOPED AWAY FROM `.deskbox`. The page now carries TWO mailboxes — the
+  // user's (in a `.settings` overlay) and the node's own (in a `.desk-body`)
+  // — and both draw `.mailrow`. An unscoped query here would quietly start
+  // answering about whichever came first in the document.
   const rows = [...document.querySelectorAll('.mailrow')]
+    .filter((r) => !r.closest('.deskbox'))
   // the row whose sender is an agent (it has a chip) and the row whose sender
   // is a sentinel (it has none) — the pair the height comparison rests on
   const chipRow = rows.find((r) => r.querySelector('.mfrom .tier'))
@@ -201,11 +248,45 @@ MEASURE = """
   // name against something on the same row rather than a number chosen here
   const liveBody = liveChipRow && liveChipRow.querySelector('.live-mail .md')
 
+  // ── the NODE'S OWN MAILBOX, opened at the desk ──────────────────────────
+  // A DIFFERENT CASCADE, which is the whole reason it is measured separately:
+  // these rows sit in a `.desk-body`, not in an `.overlay > .settings`, so the
+  // button reset proven for the rows above is not proven for these.
+  const bRows = [...document.querySelectorAll('.deskbox .mailrow')]
+  // ⚠ a DELIVERED row on both sides of the comparison: an unread row carries
+  // `.unread` and its own weight, and comparing it against a read one would
+  // measure that instead of the chip.
+  const bChipRow = bRows.find((r) => r.querySelector('.mfrom .tier')
+    && !r.classList.contains('unread'))
+  const bPlainRow = bRows.find((r) => {
+    const f = r.querySelector('.mfrom')
+    return f && f.textContent.trim() === 'nobody-here'
+  })
+  const bName = bChipRow && bChipRow.querySelector('.mfrom .cc-name')
+  const bChip = bChipRow && bChipRow.querySelector('.mfrom .tier')
+  const bL1 = bChipRow && bChipRow.querySelector('.l1')
+  const bL2 = bChipRow && bChipRow.querySelector('.l2')
+  const bTime = bChipRow && bChipRow.querySelector('.mtime')
+  const bPlainName = bPlainRow && bPlainRow.querySelector('.mfrom .cc-name')
+
   // the separator the header's own rule paints after a span
   const after = (el) => (el
     ? getComputedStyle(el, '::after').content : null)
 
   return {
+    boxChipRow: box(bChipRow), boxPlainRow: box(bPlainRow),
+    boxName: box(bName), boxChip: box(bChip), boxL1: box(bL1),
+    boxTime: box(bTime), boxPlainName: box(bPlainName),
+    // ⚠ TAG, NOT CLASS. `.cc-name` is drawn on a <span> when there is no
+    // route and on a <button> when there is, so the tag is the fact that
+    // says whether this surface offers navigation at all.
+    boxNameTag: bName ? bName.tagName.toLowerCase() : null,
+    boxPlainTag: bPlainName ? bPlainName.tagName.toLowerCase() : null,
+    // ⚠ the sender this pass measured, so the SECOND pass (the hit test, which
+    // has to run after the overlay comes off) can be checked against it — two
+    // copies of a row-picking rule are two chances to drift onto two rows
+    boxRowFrom: bChipRow ? bChipRow.querySelector('.mfrom').textContent.trim() : null,
+    boxL2: box(bL2),
     liveChipRow: box(liveChipRow), livePlainRow: box(livePlainRow),
     liveHead: box(liveHead), liveName: box(liveName), liveChip: box(liveChip),
     liveBody: box(liveBody),
@@ -216,6 +297,45 @@ MEASURE = """
     cardMeta: box(cardMeta),
     hitName: hit(rowName), hitBody: hit(rowL2),
     afterChip: after(cardChip), afterName: after(cardName),
+  }
+}
+"""
+
+# ⚠ A SECOND PASS, AND WHY IT HAS TO BE ONE. This page carries BOTH mailboxes
+# so they can be measured under one sheet in one engine — but the user's inbox
+# is a `position: fixed` `.overlay`, so in this page (and only in this page) it
+# is painted over the desk beneath it. The first run of this check reported the
+# desk's sender as unreachable and named `div.mailer-list` as the thing on top:
+# the MODAL's list, not the desk's. That is an artifact of stacking two screens
+# that are never on screen together, not a finding about the desk — so the
+# overlay comes off and the hit test runs again on what is left.
+#
+# It runs LAST because it mutates the page: every measurement above, and the
+# full-page screenshot, happen while the page is still whole.
+HIT_DESKBOX = """
+() => {
+  document.querySelectorAll('.overlay').forEach((o) => o.remove())
+  const rows = [...document.querySelectorAll('.deskbox .mailrow')]
+  const row = rows.find((r) => r.querySelector('.mfrom .tier')
+    && !r.classList.contains('unread'))
+  const name = row && row.querySelector('.mfrom .cc-name')
+  const l2 = row && row.querySelector('.l2')
+  const hit = (el) => {
+    if (!el) return null
+    const r = el.getBoundingClientRect()
+    const t = document.elementFromPoint(r.left + r.width / 2,
+                                        r.top + r.height / 2)
+    if (!t) return { none: true }
+    return {
+      tag: t.tagName.toLowerCase(),
+      cls: t.className && t.className.baseVal === undefined ? String(t.className) : '',
+      inName: Boolean(name && (t === name || name.contains(t))),
+      inRow: Boolean(row && (t === row || row.contains(t))),
+    }
+  }
+  return {
+    boxHitName: hit(name), boxHitBody: hit(l2),
+    boxHitFrom: row ? row.querySelector('.mfrom').textContent.trim() : null,
   }
 }
 """
@@ -234,6 +354,14 @@ def main() -> int:
                     help="shove both chips out of their line boxes without "
                          "changing layout: the control for the 'pokes out' "
                          "halves of checks 4 and 6, which must FAIL")
+    ap.add_argument("--chrome-desk", action="store_true",
+                    help="give the DESK's mailbox the button chrome the "
+                         "user's inbox has: the control for check 13, which "
+                         "must FAIL")
+    ap.add_argument("--cover-rows", action="store_true",
+                    help="lay a transparent sheet over every mail row: the "
+                         "control for the two HIT tests (5 and 14), which "
+                         "must FAIL")
     a = ap.parse_args()
 
     css = pathlib.Path(a.css).resolve().read_text(encoding="utf-8")
@@ -259,6 +387,35 @@ def main() -> int:
   position: relative; top: 16px;
 }
 """
+    if a.chrome_desk:
+        # ⚠ CHECK 13 IS NOT FIRED BY THE PRE-SERIES SHEET, because nothing in
+        # this repo ever gave the `.desk-body` cascade button chrome — so
+        # without this the check would pass on every sheet it has ever seen
+        # and would have been watched only in the abstract. This is the
+        # regression it exists for, written out: a button rule that reaches
+        # the node's own mailbox the way `.settings button` reaches the
+        # user's.
+        # ⚠ AND IT HAS TO OUTRANK THE RESET. The first version of this control
+        # was `.desk-body .mailrow button.cc-name` (0,3,1) and LOST to
+        # `.mailrow .l1 .mfrom .cc-name` (0,4,0), so the probe reported that
+        # the control sheet proved nothing — correctly. Five classes win.
+        css += """
+.desk-body .mailrow .l1 .mfrom .cc-name {
+  font-size: 14px; padding: 7px 15px; border-radius: 6px;
+}
+"""
+    if a.cover_rows:
+        # ⚠ THE HIT TESTS HAD NO CONTROL SHEET AND THIS FILE SAID SO. Nothing
+        # in the repo's own CSS covers a mail row, so checks 5 and 14 were
+        # watched only through their anti-vacuity clauses — and a check nobody
+        # has seen fail is not a check. A row-sized pseudo-element paints over
+        # its own row's contents without moving anything, which is exactly the
+        # regression these two exist to catch (an overlay, a stretched ::after,
+        # a full-bleed link) and cannot be caught by looking at the markup.
+        css += """
+.mailrow { position: relative; }
+.mailrow::after { content: ''; position: absolute; inset: 0; }
+"""
     body = pathlib.Path(a.html).resolve().read_text(encoding="utf-8")
     page = (f"<!doctype html><meta charset=utf-8><style>{css}</style>"
             f"<body class='dark'>{body}</body>")
@@ -279,15 +436,13 @@ def main() -> int:
             # this probe is about
             pg.screenshot(path=a.shot, full_page=True)
             print("wrote", a.shot)
-            # …and the transcript card on its own: the inbox modal sits over
-            # the desk, so the full page shows the ROW surface and hides the
-            # CARD one, and a screenshot that shows only half the work is a
-            # screenshot that invites the wrong conclusion
-            # (the modal is painted OVER the card, and an element screenshot
-            # captures the page region — not the element — so it has to go.
-            # Done after every measurement, never before.)
-            pg.evaluate("() => document.querySelectorAll('.overlay')"
-                        ".forEach((o) => o.remove())")
+        # THE SECOND PASS — it removes the fixed inbox overlay, so it runs
+        # after every measurement above and after the full-page shot. The
+        # transcript-card and live-row shots below WANT the overlay gone (the
+        # modal is painted over the desk and an element screenshot captures
+        # the page region, not the element), which is why they come after.
+        m.update(pg.evaluate(HIT_DESKBOX))
+        if a.shot:
             card = pg.query_selector(".turn-mail")
             if card:
                 p2 = pathlib.Path(a.shot).with_name(
@@ -303,6 +458,13 @@ def main() -> int:
                     pathlib.Path(a.shot).stem + "-live.png")
                 live.screenshot(path=str(p3))
                 print("wrote", p3)
+            # …and the node's OWN mailbox, the surface this pass added
+            dbox = pg.query_selector(".deskbox .mailwrap")
+            if dbox:
+                p4 = pathlib.Path(a.shot).with_name(
+                    pathlib.Path(a.shot).stem + "-deskbox.png")
+                dbox.screenshot(path=str(p4))
+                print("wrote", p4)
         ctx.close()
         b.close()
 
@@ -486,6 +648,72 @@ def main() -> int:
     if ln["radius"] > 0.01:
         fails.append(f"livetype: the live sender has a {ln['radius']}px corner "
                      "radius — it is drawn as a button")
+
+    # ── the NODE'S OWN MAILBOX, at the desk ─────────────────────────────────
+    bc, bp = m["boxChipRow"], m["boxPlainRow"]
+    bn, bh, b1, bt = m["boxName"], m["boxChip"], m["boxL1"], m["boxTime"]
+    print(f"  desk box row: h={bc['h']:.1f} (w/o chip {bp['h']:.1f})  "
+          f"l1 h={b1['h']:.1f}")
+    print(f"  desk box name: <{m['boxNameTag']}> {bn['size']}px "
+          f"{bn['family'][:26]!r} pad={bn['padTop']}/{bn['padRight']}/"
+          f"{bn['padBottom']}/{bn['padLeft']} radius={bn['radius']}  "
+          f"chip {bh['w']:.1f}x{bh['h']:.1f}")
+    print(f"  desk box hit : {m['boxHitName']}")
+    print(f"  desk box ctl : {m['boxHitBody']}")
+
+    # 12. boxroute — the sender name IS the control, and the unvouched-for one
+    #     is NOT. Read off the TAG, in the engine, on the markup the reader
+    #     gets by clicking the tab. This is what the whole wiring is for.
+    if m["boxNameTag"] != "button":
+        fails.append(f"boxroute: the desk mailbox draws its sender as a "
+                     f"<{m['boxNameTag']}> — there is no route to click")
+    if m["boxPlainTag"] != "span":
+        fails.append(f"boxroute: a sender this tree does NOT hold is drawn as "
+                     f"a <{m['boxPlainTag']}> — the check above would pass on "
+                     "a surface that makes a button of every name")
+
+    # 13. boxchrome/boxtype — the `.desk-body` cascade is not the `.settings`
+    #     one, so this reset is a SEPARATE fact from check 2's.
+    for side in ("padTop", "padRight", "padBottom", "padLeft"):
+        if bn[side] > 0.01:
+            fails.append(f"boxchrome: the desk mailbox's name carries "
+                         f"{side}={bn[side]}px of button chrome")
+    if bn["radius"] > 0.01:
+        fails.append(f"boxchrome: the desk mailbox's name has a "
+                     f"{bn['radius']}px corner radius")
+    if abs(bn["size"] - bt["size"]) > 0.01:
+        fails.append(f"boxtype: the name is {bn['size']}px where the timestamp "
+                     f"on the same line is {bt['size']}px")
+    if bn["family"] != bt["family"]:
+        fails.append(f"boxtype: the name is in {bn['family'][:30]!r} and the "
+                     f"rest of its line in {bt['family'][:30]!r}")
+    if bc["h"] > bp["h"] + 0.5:
+        fails.append(f"boxheight: the desk mailbox row WITH a chip is "
+                     f"{bc['h']:.1f}px where the same row without one is "
+                     f"{bp['h']:.1f}px")
+    if bh["top"] < b1["top"] - 0.5 or bh["bottom"] > b1["bottom"] + 0.5:
+        fails.append("boxchip: the chip pokes out of the row's first line "
+                     f"(chip {bh['top']:.1f}..{bh['bottom']:.1f}, line "
+                     f"{b1['top']:.1f}..{b1['bottom']:.1f})")
+
+    # 14. boxhit — THE POINTER FINDS THE NAME AT THE DESK, and does not find
+    #     it everywhere. `--cover-rows` is this check's control.
+    # ⚠ FIRST: the two passes must have picked the SAME row. They each carry a
+    # copy of the rule, and two copies can drift onto two different rows —
+    # after which this check would be about a row nothing else measured.
+    if m["boxRowFrom"] != m["boxHitFrom"]:
+        fails.append(f"boxhit: the two passes measured different rows "
+                     f"({m['boxRowFrom']!r} then {m['boxHitFrom']!r}) — the "
+                     "row-picking rules have drifted apart")
+    bhn, bhb = m["boxHitName"], m["boxHitBody"]
+    if not bhn or not bhn.get("inName"):
+        fails.append("boxhit: the point at the centre of the desk mailbox's "
+                     f"sender is not the name — elementFromPoint found {bhn}")
+    if bhb and bhb.get("inName"):
+        fails.append("boxhit: the row's preview line ALSO hits the name")
+    if bhb and not bhb.get("inRow"):
+        fails.append("boxhit: the control point does not even land in the row "
+                     f"— the instrument is measuring the wrong place ({bhb})")
 
     for f in fails:
         print("  FAIL", f)
