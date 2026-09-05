@@ -1023,7 +1023,36 @@ def search(q: str, offset: int = 0, limit: int = PAGE_DEFAULT,
 
 
 def find(model_id: str) -> ModelCard | None:
+    """The card for MODEL_ID, FETCHING the catalog if that is what it takes.
+    For a user action that can afford to wait (adopting a favorite). Callers
+    on the turn path or a tree projection want `cached_card` instead."""
     for c in catalog():
+        if c["id"] == model_id:
+            return c
+    return None
+
+
+def cached_card(model_id: str) -> ModelCard | None:
+    """The card for MODEL_ID from the in-memory catalog ONLY — never a disk
+    read, never a fetch, no TTL refresh, no exception.
+
+    ⚠ THIS EXISTS BECAUSE "THE CATALOG IS WARM" IS NOT "THE CATALOG IS
+    LOCAL" (review finding, 2026-09-05). `find` goes through `catalog`,
+    which returns the memory copy only while it is YOUNGER than
+    CATALOG_TTL; past that it re-reads disk and, when the disk copy is
+    stale or missing, calls `refresh_catalog` — an HTTP request, and on a
+    dead network an OpenRouterError raised at the call site. A
+    `_catalog_mem["cards"] is not None` guard in front of `find` does not
+    prevent any of that: it only proves the process fetched once, an hour
+    ago. This reads the snapshot under the lock and answers from it or not
+    at all, so a caller that must not block and must not raise gets a plain
+    None instead."""
+    with _LOCK:
+        cards = _catalog_mem.get("cards")
+        snapshot = list(cards) if cards is not None else None
+    if snapshot is None:
+        return None
+    for c in snapshot:
         if c["id"] == model_id:
             return c
     return None
@@ -1281,11 +1310,14 @@ def context_for(tier: str, models: Mapping[str, Any] | None = None) -> int | Non
          LOCAL catalog card for that model id;
       3. None.
 
-    ⚠ NO NETWORK, EVER. Step 2 consults the catalog only when it is ALREADY
-    in memory (`cost_detail`'s precedent, same guard): this runs on the turn
-    path and on every tree projection, and a fetch there would put an HTTP
-    call behind a context bar. A cold process therefore answers None rather
-    than reaching out, and None is honest.
+    ⚠ NO NETWORK, EVER. Step 2 goes through `cached_card`, which reads the
+    in-memory catalog snapshot and nothing else: this runs on the turn path
+    and on every tree projection, and a fetch there would put an HTTP call
+    behind a context bar. A cold process — or a warm one whose catalog has
+    aged past its TTL — therefore answers None rather than reaching out,
+    and None is honest. (An earlier draft guarded `find` with
+    `_catalog_mem["cards"] is not None`; that guard is not enough, see
+    `cached_card`.)
 
     ⚠ AND IT NEVER INVENTS A SIZE. No default window, no "probably 200k".
     A model the local catalog does not carry stays unknown, which is what
@@ -1299,9 +1331,7 @@ def context_for(tier: str, models: Mapping[str, Any] | None = None) -> int | Non
     mid = (models or {}).get(tier)
     if not isinstance(mid, str) or not mid:
         return None
-    if _catalog_mem.get("cards") is None:
-        return None
-    card = find(mid)
+    card = cached_card(mid)
     return (card["context"] or None) if card is not None else None
 
 
@@ -1326,7 +1356,11 @@ def cost_detail(model_id: str, inp: int, cached: int, out: int,
             rec = dict(f)
             break
     if rec is None:
-        c = find(model_id) if _catalog_mem.get("cards") is not None else None
+        # ⚠ LOCAL ONLY. This is per-turn accounting: it must not block on
+        # HTTP and must not raise when openrouter.ai is unreachable. The old
+        # `find(...) if _catalog_mem["cards"] is not None` guard did both
+        # once the warm copy aged past CATALOG_TTL — see `cached_card`.
+        c = cached_card(model_id)
         if c is None:
             used = [("prompt", inp), ("cache_read", cached),
                     ("cache_write", cache_write), ("completion", out)]

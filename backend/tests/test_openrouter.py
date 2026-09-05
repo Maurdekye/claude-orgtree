@@ -13,6 +13,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 from typing import Any
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -1399,6 +1400,101 @@ def main():
     check("a DESELECTED OpenRouter tier a node still sits on keeps its known "
           "context window, while genuinely unknown metadata stays unknown "
           "(audit C-1)", deselected_tier_keeps_its_window)
+
+    def local_only_reads_never_fetch():
+        """⚠ "THE CATALOG IS IN MEMORY" IS NOT "THE CATALOG IS LOCAL"
+        (review finding, 2026-09-05). `catalog()` returns the memory copy
+        only while it is YOUNGER than CATALOG_TTL; past that it re-reads
+        disk, and with the disk copy stale or missing it calls
+        `refresh_catalog()` — an HTTP request behind a context bar, and an
+        OpenRouterError raised into per-turn accounting when openrouter.ai
+        is unreachable. A `_catalog_mem["cards"] is not None` guard in front
+        of `find()` prevents none of that: it only proves the process
+        fetched once, an hour ago.
+
+        The first C-1 fix carried exactly that guard, and its no-network
+        check exercised the COLD case only — where the guard short-circuits
+        and `find()` is never called at all. It could not have caught this.
+        `cost_detail` carried the same guard and was cited as its precedent.
+
+        So this case puts the catalog in the state the old check skipped:
+        WARM BUT EXPIRED with no usable disk copy, the exact state where
+        `find()` fetches. `_http_get` is a trap that counts AND raises, and
+        the trap is proved live by firing it on `find()` first.
+        """
+        MODEL = "anthropic/claude-sonnet-5"
+        models = {TIER: MODEL}
+        orr.remove_favorite(MODEL)      # deselected: forces the doc→catalog step
+        trap = {"n": 0}
+        real_get, real_path = orr._http_get, orr._catalog_path
+
+        def trapping_get(url, headers):
+            trap["n"] += 1
+            raise AssertionError(f"a local-only read reached the network: {url}")
+
+        def warm_but_expired(disk):
+            """Cards in memory, aged past the TTL; DISK is 'missing' or 'stale'."""
+            with orr._LOCK:
+                orr._catalog_mem["at"] = time.time() - orr.CATALOG_TTL - 1.0
+            p = os.path.join(os.environ["ORGTREE_DATA"], f"{disk}-catalog.json")
+            if disk == "stale":
+                with open(p, "w", encoding="utf-8") as fh:
+                    json.dump(CATALOG, fh)
+                aged = time.time() - orr.CATALOG_TTL - 60.0
+                os.utime(p, (aged, aged))
+            orr._catalog_path, orr._http_get = (lambda: p), trapping_get
+        try:
+            for disk in ("missing", "stale"):
+                warm_but_expired(disk)
+                # POSITIVE CONTROL FOR THE TRAP: in exactly this state the
+                # old route DOES fetch. If this does not fire, everything
+                # below is inert and proves nothing about the network.
+                trap["n"], fetched = 0, False
+                try:
+                    orr.find(MODEL)
+                except AssertionError:
+                    fetched = True
+                eq((fetched, trap["n"]), (True, 1),
+                   f"[{disk} disk] the armed trap catches find()'s fetch")
+                # THE CHECK: the local-only route answers, and answers RIGHT.
+                # A silent None here would satisfy "no network" while losing
+                # the window all over again, so the value is asserted too.
+                trap["n"] = 0
+                eq(orr.cached_card(MODEL)["context"], 1000000,
+                   f"[{disk} disk] cached_card answers from the snapshot")
+                eq(supervisor.tier_context(TIER, models), 1000000,
+                   f"[{disk} disk] a deselected tier keeps its window")
+                eq(supervisor.context_window({"model": TIER,
+                                              "context_window": 200000}, models),
+                   1000000, f"[{disk} disk] and the node accessor agrees")
+                eq(orr.cost_detail(MODEL, 1000000, 0, 0)["source"],
+                   "catalog-snapshot",
+                   f"[{disk} disk] cost_detail still prices a non-favorite")
+                eq(orr.cost(MODEL, 1000000, 0, 0), 2.0,
+                   f"[{disk} disk] …at the catalog's own price, not zero")
+                eq(trap["n"], 0,
+                   f"[{disk} disk] and NOTHING reached the network")
+            # …and with the catalog genuinely absent both answer UNKNOWN
+            # rather than fetching. Unknown, never invented, never blocking.
+            with orr._LOCK:
+                orr._catalog_mem["cards"] = None
+            trap["n"] = 0
+            eq(orr.cached_card(MODEL), None, "cold: no card")
+            eq(supervisor.tier_context(TIER, models), None,
+               "cold: the window is unknown")
+            d = orr.cost_detail(MODEL, 1000000, 0, 0)
+            eq((d["source"], d["amount"], d["unknown_fields"]),
+               ("unpriced", 0.0, ["prompt"]),
+               "cold: unpriced, and the row says which component it cannot price")
+            eq(trap["n"], 0, "cold: still no network")
+        finally:
+            orr._http_get, orr._catalog_path = real_get, real_path
+            orr._catalog_mem.update({"cards": None, "at": 0.0})
+            orr.catalog()               # back to the banked (fresh) disk copy
+            orr.add_favorite(MODEL)
+    check("the context and cost reads are LOCAL-ONLY: a warm-but-expired "
+          "catalog with no usable disk copy still answers, and never fetches",
+          local_only_reads_never_fetch)
     r3 = client.delete("/api/openrouter/key").json()
     check("DELETE /api/openrouter/key: gone, and the gate now names the missing key",
           lambda: (eq(r3["key_set"], False, "key_set"),
