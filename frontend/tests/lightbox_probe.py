@@ -637,6 +637,33 @@ def run(shot: str | None) -> int:
                   "own rule)", pg.evaluate(LB) is None)
             check("...and the reader itself is unaffected either way",
                   pg.locator(".doc-reader").count() > 0)
+            pg.locator(".doc-reader .chip-x").first.click()
+            pg.wait_for_timeout(150)
+
+            # ============================== 6. gallery: the SAME fix site,
+            # a DIFFERENT surface (gallery.tsx's DocPane, not docs.tsx's
+            # DocReader) — same stopPropagation-around-.md pattern, same fix
+            print("\n  == gallery: the same document's image, via the "
+                  "toolbar gallery instead of the canvas doc chip ==")
+            pg.locator(".doc-bell").first.click()
+            pg.wait_for_selector(".gallery-modal", timeout=10000)
+            pg.locator('.doc-gallery-row[title*="Work docket"]').first.click()
+            pg.wait_for_selector(".mailer-body.md img", timeout=10000)
+            gallery_img = pg.locator(".mailer-body.md img").first
+            gesture_click(pg, gallery_img)
+            lb = pg.evaluate(LB)
+            check("GALLERY: clicking the document's image in the gallery "
+                  "reading pane opens the lightbox", bool(lb and lb["present"]),
+                  f"lb={lb}")
+            check("GALLERY: the gallery modal is still open (the click did "
+                  "not ALSO close it via its own backdrop)",
+                  pg.locator(".gallery-modal").count() > 0)
+            if lb and lb["present"]:
+                pg.keyboard.press("Escape")
+                pg.wait_for_timeout(150)
+                check("GALLERY: Escape closes the lightbox, not the gallery",
+                      pg.evaluate(LB) is None
+                      and pg.locator(".gallery-modal").count() > 0)
 
             if shot:
                 pg.screenshot(path=shot)

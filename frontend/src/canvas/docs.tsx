@@ -98,15 +98,10 @@ export function DocReader({ slug, docId, toast, close }: {
     <div className="overlay" onClick={close}
       onPointerDown={(e) => e.stopPropagation()}>
       <div className="settings doc-reader" onClick={(e) => {
-        // user report: an image here showed the zoom-in cursor but did
-        // nothing on click. lightbox.ts opens the viewer from a
-        // document-level listener that only ever sees a BUBBLED click —
-        // and this div stops every click from bubbling past it (so the
-        // surrounding `.overlay`'s backdrop-close below doesn't fire for
-        // clicks inside the reader). That stopPropagation is still needed
-        // for everything else in here; an eligible image is handled
-        // directly, right here, instead of being let through to bubble
-        // (which would also reach `.overlay` and close the reader).
+        // an eligible image opens directly here rather than relying on the
+        // click bubbling past this stopPropagation, which everything else
+        // in the reader still needs (it keeps `.overlay`'s backdrop-close
+        // from firing for clicks inside).
         openLightboxIfEligibleImage(e)
         e.stopPropagation()
       }}>

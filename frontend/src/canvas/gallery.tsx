@@ -27,6 +27,7 @@ import { addPending } from '../convo'
 import type { ToastFn } from '../types'
 import { CloseIcon, DocIcon } from '../icons'
 import { dismissDoc, useDoc } from './docs'
+import { openLightboxIfEligibleImage } from './lightbox'
 import { fmtFull } from '../timefmt'
 import { MailReplyBox } from './mail'
 import { ago, md, TIER_LETTER, tierLabel, useEsc, usePolled } from './shared'
@@ -103,7 +104,14 @@ export function DocGalleryModal({ slug, toast, close, onFocusAgent, onReply }: {
   return (
     <div className="overlay" onClick={(e) => { e.stopPropagation(); close() }}
       onPointerDown={(e) => e.stopPropagation()}>
-      <div className="settings wide gallery-modal" onClick={(e) => e.stopPropagation()}>
+      <div className="settings wide gallery-modal" onClick={(e) => {
+        // same fix as DocReader (docs.tsx) — an eligible image is opened
+        // directly here instead of relying on the click to bubble past
+        // this stopPropagation (which every other click in the modal
+        // still needs, to keep the backdrop above from closing it)
+        openLightboxIfEligibleImage(e)
+        e.stopPropagation()
+      }}>
         <h3><DocIcon fontSize="inherit" /> presented documents</h3>
         {/* one control, not two views: the retired cards JOIN the list below
             the active ones rather than replacing them. The count rides the
