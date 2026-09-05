@@ -236,11 +236,22 @@ always are.
 
 Claude's startup component covers the native startup instruction manifest
 (managed and user CLAUDE files/imports, unscoped rules, and the loaded memory
-prefix). Codex and Antigravity currently cover Orgtree's managed startup identity
-and their normalized process/tool surfaces; provider-native global/project
-instruction discovery is not exposed authoritatively on those lanes. Their
-positive cached-input counts remain useful receipts. Antigravity and Codex API-key
-time remain unknown; Codex subscription is the one explicit estimated lane.
+prefix). Codex's startup component fingerprints the native startup file set
+that the pinned CLI probe established (`codex debug prompt-input` against
+codex 0.150.1): `$CODEX_HOME/AGENTS.md`, the cwd's `AGENTS.override.md` or
+`AGENTS.md`, and ancestors' up to a `.git` root — hashed by
+`warmpool.codex_startup_context_digest` at the effective `CODEX_HOME` and cwd
+of the launch, not re-read from the ambient environment. That is a measured
+set for one pinned binary, not an authoritative statement of everything any
+current CLI reads; a non-default `project_doc_fallback_filenames` is not
+covered. `supervisor._codex_startup_manifest` resolves it once per launch
+together with the account/lane, argv and tool catalogue, so the process-reuse
+decision and the cache row describe the same launch. Antigravity still covers
+only Orgtree's managed startup identity and its normalized process/tool
+surfaces; provider-native instruction discovery is not exposed authoritatively
+on that lane. Their positive cached-input counts remain useful receipts.
+Antigravity and Codex API-key time remain unknown; Codex subscription is the
+one explicit estimated lane.
 
 Positive provider usage is the only expiry-refresh evidence. For Claude,
 subscription-auth receipts derive a 3,600-second TTL and API-key receipts a

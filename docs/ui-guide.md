@@ -339,10 +339,19 @@ when something is wrong), the fable-limit chip, and ▶ resume when agents are
 frozen by a usage limit. The resume button is **red** while the reported
 reset time is still ahead (pressing it would just re-hit the limit) and
 returns to normal once the time passes. The inline **auto** toggle beside it
-arms unattended recovery: all frozen agents restart on their own one minute
-after the latest reported reset time (it stays on for the org until toggled
-off; freezes whose error carried no parseable reset time still need the
-manual button). On the right sits the **killswitch**: unlatch the 🔒, then press the
+arms unattended recovery: while it is on, each limit-frozen agent restarts on
+its own one minute after the latest *observed* active reset for its lane — an
+observed deadline, not a promise that capacity is back (it stays on for the
+org until toggled off). A limit freeze whose error carried no parseable reset
+is labelled "unknown — probing again in ~5 min" (or "capacity recheck …" once
+a recheck time is stamped) and, with auto-resume on and the usual
+consent gates satisfied (an auth freeze is never retried; a run of limits
+only the agent's own answer reported stops self-waking after a few tries),
+is re-tried automatically after a floor of about five minutes; the
+floor is a minimum between attempts and probes are claimed one at a time per
+provider account and pool across the machine, so it is not a guaranteed
+per-node cadence. The manual button still wakes any of them early. On the
+right sits the **killswitch**: unlatch the 🔒, then press the
 red ⏹ STOP ALL — every active agent is interrupted at once and pending
 queues are cleared (undelivered mail stays safe in their mailboxes). The
 latch re-closes by itself after a few seconds if unused.

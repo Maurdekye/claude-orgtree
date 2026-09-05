@@ -260,9 +260,11 @@ The single most delicate step. The shape that works:
   Agent-side `orgtree_rehire` is not another door: its schema has no `tier`
   override. The incumbent provider stays ungated — a detection bug must not brick
   existing orgs.
-- The MCP server's cards are DEPENDENCY-FREE (hand-written enums): grow the
-  hire + switch tier enums and the seat prose by hand; its test asserts
-  enum == ledger.TIERS and then follows automatically.
+- The MCP server's hire/switch `tier` arguments are plain strings (no enum)
+  whose description points at `orgtree_list_tiers`; the backend rechecks
+  availability, scope and credits at the door. Grow the seat PROSE in the
+  `orgtree_hire` / `orgtree_switch_model` cards by hand; `test_mcptool.py`
+  asserts the two cards carry no `enum` and name `orgtree_list_tiers`.
 - Drift guards updated DELIBERATELY, not discovered: `chiptips.test.tsx`
   (regex-scrapes ledger's TIERS literal AND the frontend `tree.tiers ?? {…}`
   fallback in OrgCanvas — update both sides), `test_ledger_authority`
@@ -371,8 +373,10 @@ self-hosted LiteLLM all speak the same recipe):
   catalog's own price (floor of $/M input, min 1), snapshot at selection.
   Two consequences drove most of the work: the ledger's add-only load hook
   merges the dynamic tables into every org doc (a deselected favorite keeps
-  its row — nodes on it keep their seat price), and the MCP hire/switch
-  cards grow their `tier` enum at `tools/list` time. Letter and colour are
+  its row — nodes on it keep their seat price), and agents discover the
+  runtime `or-…` ids through `orgtree_list_tiers` (the hire/switch cards
+  themselves are static; a listed tier is still re-gated at hire time).
+  Letter and colour are
   CANONICAL from the model id (vendor hue, price-band lightness, OKLCH) and
   ride the providers payload; the frontend injects a generated `<style>`
   block with the same selector shapes the static tiers use, so no render
