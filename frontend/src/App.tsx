@@ -1952,11 +1952,15 @@ export function InboxPanel({ slug, tree, toast, refresh, close, jumpTo, onFocusA
 // Global DEFAULT org settings (user spec, root page): every newly created
 // org is born with these values — the same knobs as a single org's settings
 // panel, saved once in <data>/defaults.json.
-function DefaultsPanel({ toast, close }: { toast: ToastFn; close: () => void }) {
+export function DefaultsPanel({ toast, close }: { toast: ToastFn; close: () => void }) {
   useEsc(close)
   // Partial: the error fallback seeds {} and every read has its own default
   const [d, setD] = useState<Partial<DefaultsPayload> | null>(null)
   useEffect(() => { getDefaults().then(setD).catch(() => setD({})) }, [])
+  const provPayload = usePolled(getProviders, [], 60000)
+  const autopsyGroups = useMemo(
+    () => availableAutopsyModels(provPayload, d?.fable_filter_model ?? 'opus'),
+    [provPayload, d?.fable_filter_model])
   if (d == null) {
     return (
       <div className="overlay" onClick={close}>
@@ -1965,10 +1969,6 @@ function DefaultsPanel({ toast, close }: { toast: ToastFn; close: () => void }) 
     )
   }
   const set = (k: string, v: unknown) => setD({ ...d, [k]: v })
-  const provPayload = usePolled(getProviders, [], 60000)
-  const autopsyGroups = useMemo(
-    () => availableAutopsyModels(provPayload, d.fable_filter_model ?? 'opus'),
-    [provPayload, d.fable_filter_model])
   return (
     <div className="overlay" onClick={close}>
       <div className="settings" onClick={(e) => e.stopPropagation()}>
