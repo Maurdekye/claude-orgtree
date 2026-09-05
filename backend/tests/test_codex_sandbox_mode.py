@@ -187,7 +187,8 @@ def child_env(slug: str, nid: str, keys: list[str]) -> dict:
         return json.load(f)
 
 
-def mkorg(label: str, *, edit: bool, pm: str, bash: bool = True) -> tuple[str, str]:
+def mkorg(label: str, *, edit: bool, pm: str, bash: bool = True,
+          web: bool = False) -> tuple[str, str]:
     """One org, one codex-tier node carrying the scope under test.
 
     `permission_mode` is set through the real `set_scope` door (which clamps
@@ -196,7 +197,7 @@ def mkorg(label: str, *, edit: bool, pm: str, bash: bool = True) -> tuple[str, s
     """
     org = store.create_org(f"zz codexsbx {label}")
     nid = org.hire(USER, None, "sol", 0, "cx", add_dirs=[],
-                   tools={"bash": bash, "web": False, "edit": edit,
+                   tools={"bash": bash, "web": web, "edit": edit,
                           "subagents": False, "mcp": []},
                    org_visibility="team",
                    charter="a codex sandbox-mode test agent")["node"]
@@ -765,6 +766,82 @@ def main() -> int:
     check("a claude-tier node is NOT given the codex sandbox text",
           lambda: eq("elevated permission" in c_guide, False,
                      "codex-only guidance leaking to the claude lane"))
+
+    print("§11b bash=off TAKES THE SHELL TOOL AWAY, it does not just say so")
+    # Until 2026-09-05 the codex lane's `bash` switch reached the runtime as
+    # PROSE ONLY — one sentence of developer instructions, nothing else, and
+    # the approval callback where the switch is read never sees a command
+    # that runs INSIDE the sandbox. The launch now carries
+    # `-c features.shell_tool=false`, which was measured (against a local
+    # stub Responses endpoint, probe_tool_surface.py) to remove BOTH
+    # `exec_command` and `write_stdin` from the tools the CLI offers.
+    #
+    # WHAT IS ASSERTED HERE is the argv contract at the two places it must
+    # hold: the computed spec, and the argv the SPAWNED PROCESS actually
+    # received. The tool array itself is not visible to this suite — that
+    # measurement lives in the probe, and its limitation is recorded in
+    # `_codex_tool_config`.
+    nb_slug, nb_nid = mkorg("noshell", edit=True, pm="default",
+                            bash=False, web=True)
+    yb_slug, yb_nid = mkorg("withshell", edit=True, pm="default",
+                            bash=True, web=True)
+    nw_slug, nw_nid = mkorg("noweb", edit=True, pm="default",
+                            bash=True, web=False)
+
+    def spec_cfg(slug, nid):
+        org = store.load_org(slug)
+        return list(supervisor._codex_process_spec(
+            org, nid, write_ident=False)["config_overrides"])
+
+    check("a bash=off codex seat launches with the shell tool disabled",
+          lambda: eq(spec_cfg(nb_slug, nb_nid),
+                     ["-c", "features.shell_tool=false"],
+                     "config overrides for a bash=off seat"))
+    check("…and a WEB=off seat launches with web search disabled",
+          lambda: eq(spec_cfg(nw_slug, nw_nid),
+                     ["-c", 'web_search="disabled"'],
+                     "config overrides for a web=off seat"))
+    check("…and a seat with BOTH switches on is untouched",
+          lambda: eq(spec_cfg(yb_slug, yb_nid), [],
+                     "config overrides for a bash+web seat"))
+
+    def child_argv(slug, nid):
+        """The argv the spawned CLI really got. A dict production computed is
+        not evidence that anything reached the process."""
+        path = os.path.join(tempfile.mkdtemp(prefix="codexsbx-argv-"),
+                            "argv.json")
+        os.environ["FAKECODEX_ARGVPROBE_PATH"] = path
+        try:
+            st = supervisor.state(slug, nid)
+            with supervisor._state_lock:
+                st["busy"] = True
+            supervisor._run_one_turn(
+                slug, nid, {"text": "argv probe", "view": "argv probe"})
+        finally:
+            os.environ.pop("FAKECODEX_ARGVPROBE_PATH", None)
+        # empty counts as never written: `open(..., "w")` creates the file
+        # before anything is dumped into it, so existence alone would let a
+        # broken probe read as a result
+        if not os.path.exists(path) or os.path.getsize(path) == 0:
+            raise AssertionError("fakecodex never wrote the argv probe — the "
+                                 "turn did not reach the child, so this check "
+                                 "is vacuous")
+        with open(path, encoding="utf-8") as fh:
+            return json.load(fh)
+
+    off_argv = child_argv(nb_slug, nb_nid)
+    on_argv = child_argv(yb_slug, yb_nid)
+    check("the flag reaches the SPAWNED process, not just the spec",
+          lambda: eq(("features.shell_tool=false" in off_argv,
+                      "features.shell_tool=false" in on_argv),
+                     (True, False),
+                     f"argv of the child (off={off_argv[-4:]}, "
+                     f"on={on_argv[-4:]})"))
+    # the switch must not be read as "no tools at all" — this is scoped to the
+    # CLI's own shell tools, and the MCP grant is a separate door
+    check("…and disabling the shell does not disturb the MCP overrides",
+          lambda: eq([a for a in off_argv if "mcp_servers" in str(a)], [],
+                     "no mcp override on a node with no servers granted"))
 
     print("§12 a READ-ONLY codex seat is told the retry route is closed to it")
     # §11's guidance is now a promise only a write-enabled seat can keep. Told

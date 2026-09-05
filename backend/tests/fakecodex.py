@@ -137,6 +137,10 @@ Env probe: whatever FAKECODEX_ENVPROBE names (comma-separated env keys) is
 written as JSON to <cwd>/envprobe.json at turn start — how the suite proves
 credential hygiene without the impostor ever seeing a real credential.
 
+Argv probe: FAKECODEX_ARGVPROBE_PATH names a file that receives this
+process's argv at startup — how the suite proves a launch config override
+reached the spawned CLI, not just the dict production computed.
+
 Sandbox probe: FAKECODEX_SANDBOXPROBE names a file that collects one JSON
 line per thread/start and thread/resume recording the `sandbox` the client
 sent — how test_codex_sandbox_mode.py proves the OS privilege level on the
@@ -152,6 +156,18 @@ import time
 
 SCENARIO = os.environ.get("FAKECODEX_SCENARIO", "tool")
 TURN_COUNT = 0
+
+# Argv probe: FAKECODEX_ARGVPROBE_PATH names a file that receives this
+# process's own argv as JSON at startup — how the suite proves a launch
+# CONFIG OVERRIDE (`-c key=value`) actually reached the spawned CLI rather
+# than merely appearing in a dict production computed.
+_argv_probe = os.environ.get("FAKECODEX_ARGVPROBE_PATH")
+if _argv_probe:
+    try:
+        with open(_argv_probe, "w", encoding="utf-8") as _f:
+            json.dump(sys.argv, _f)
+    except OSError:
+        pass
 
 # ── the measured usage-limit ending (D-209) ──────────────────────────────────
 # Transcribed from the Codex CLI's OWN rollout for the incident that started

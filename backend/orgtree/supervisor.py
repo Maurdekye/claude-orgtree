@@ -10083,6 +10083,52 @@ def _antigravity_image_note(blocks: list[dict[str, Any]]) -> str:
             "with view_file to see it.]")
 
 
+def _codex_tool_config(sc: Mapping[str, Any]) -> list[str]:
+    """Launch config that takes a TOOL AWAY from a codex seat whose orgtree
+    switch is off.
+
+    MEASURED (2026-09-05, probe_tool_surface{,2}.py): with the real CLI
+    pointed at a local stub Responses endpoint, the request it builds offers
+    `exec_command`, `write_stdin`, `web_search`, `view_image`, the goal tools,
+    `request_user_input` and `multi_agent_v1`. Against that baseline:
+
+      bash off → `-c features.shell_tool=false`
+                 removes BOTH `exec_command` and `write_stdin`, nothing else.
+                 `features.unified_exec=false` removes NOTHING, so it is not
+                 sent.
+      web off  → `-c web_search="disabled"`   (the TOP-LEVEL key)
+                 removes `web_search`. The `tools.web_search` forms —
+                 `false`, `{mode="disabled"}`, `{enabled=false}` — all parse
+                 without complaint and remove nothing, so none of them is the
+                 knob.
+
+    ⚠ WHAT THIS DOES AND DOES NOT CLAIM. It removes the CLI's own shell tools
+    from the offered surface. It is NOT a claim that no execution is possible
+    by any other route: a granted MCP server that runs commands is still a
+    granted MCP server, and the ledger's mcp list is what governs that.
+    Nor is it a claim about approvals — the approval policy only governs
+    escalation OUTSIDE the sandbox, so it never saw a sandboxed command.
+
+    ⚠ CACHE COST, and it is not free. Removing a tool changes the tools array
+    the model is sent, which is part of the cached prefix — so the FIRST turn
+    of every existing seat with one of these switches off re-establishes its
+    prefix. Only those seats: a seat with both switches on sends byte-identical
+    arguments and an unchanged tool list.
+
+    LIMIT: the tool list was observed against a CUSTOM endpoint. The array is
+    built by the CLI before the request leaves, so the construction is the one
+    production uses, but a provider-specific difference on OpenAI's own
+    endpoint would not have been visible.
+    """
+    tools = sc.get("tools", {})
+    out: list[str] = []
+    if not tools.get("bash", True):
+        out += ["-c", "features.shell_tool=false"]
+    if not tools.get("web", True):
+        out += ["-c", 'web_search="disabled"']
+    return out
+
+
 def _codex_process_spec(org: Org, nid: str, *,
                         write_ident: bool = True) -> dict[str, Any]:
     """The exact process-scoped inputs for one Codex app-server.
@@ -10121,7 +10167,8 @@ def _codex_process_spec(org: Org, nid: str, *,
         "argv_head": providers.codex_argv(exe),
         "cwd": cwd,
         "identity": ident,
-        "config_overrides": codexrun.mcp_config_overrides(mcp_chosen),
+        "config_overrides": (codexrun.mcp_config_overrides(mcp_chosen)
+                             + _codex_tool_config(org.node(nid)["scope"])),
         "env_extra": {"ORGTREE_ORG": slug, "ORGTREE_NODE": nid,
                       "ORGTREE_PORT": port,
                       **_codex_git_trust_env(org.node(nid)["scope"])},
