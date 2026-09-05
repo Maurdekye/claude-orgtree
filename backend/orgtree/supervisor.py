@@ -13191,6 +13191,17 @@ def _run_one_turn(slug: str, nid: str,
     # whether anything has already booked them (see the result branch and the
     # failure path's _charge_reported_spend)
     turn_paid = 0.0
+    # a cost the PROVIDER reported, if a build ever reports one — see
+    # `_native_turn_cost`, which says why this is None on every turn the
+    # pinned CLI serves. `None` is "nothing reported"; 0.0 is an amount.
+    turn_native: float | None = None
+    # ⚠ these two are RE-initialised inside the claude leg below, but the
+    # failure handler at the bottom reads them for `_charge_reported_spend`
+    # and a codex/antigravity turn raises before that leg ever runs — an
+    # unbound local there turned a provider limit into a crash (caught by
+    # provider-limit-freeze, 2026-09-05).
+    turn_out = 0
+    last_cache_usage: dict[str, Any] = {}
     # Like cost, runtime inventory must survive cold-process teardown long
     # enough for the authoritative success boundary to snapshot it.
     turn_mcp_count: int | None = None
@@ -13781,7 +13792,7 @@ def _run_one_turn(slug: str, nid: str,
                                 # (per-message point-in-time usage — see the
                                 # max() site; №24 was about the result event)
             turn_out = 0        # cumulative output tokens (killed-turn accounting)
-            last_cache_usage: dict[str, Any] = {}
+            last_cache_usage = {}
             dbuf, dlast = "", time.time()   # token-stream delta batcher (~8 Hz)
             think_t0, think_buf = 0.0, ""   # the in-progress thought
             # concurrently running subagents, for the desk header's task count:
@@ -14291,6 +14302,10 @@ def _run_one_turn(slug: str, nid: str,
                             # event is process/turn cumulative and cannot prove
                             # which prefix was read.
                             last_cache_usage = dict(u)
+                            _nat = _native_turn_cost(ev)
+                            if _nat is not None:
+                                turn_native = (_nat if turn_native is None
+                                               else max(turn_native, _nat))
                         # ⚠ `_prompt_tokens`, not three `u.get(k, 0)` adds:
                         # a default does not fire on a key that is PRESENT and
                         # null, and this line died on exactly that when the
@@ -14424,6 +14439,10 @@ def _run_one_turn(slug: str, nid: str,
                         raw_cost_high = max(raw_cost_high, _rawc)
                         turn_paid = max(turn_paid,
                                         max(0.0, _rawc - warm_cost_base))
+                        _nat = _native_turn_cost(ev)
+                        if _nat is not None:
+                            turn_native = (_nat if turn_native is None
+                                           else max(turn_native, _nat))
                     elif ev.get("type") == "result" \
                             and not ev.get("parent_tool_use_id"):
                         # TWO guards, because a `result` event is not
@@ -14469,6 +14488,10 @@ def _run_one_turn(slug: str, nid: str,
                         raw_cost_high = max(raw_cost_high, _rawc)
                         turn_paid = max(turn_paid,
                                         max(0.0, _rawc - warm_cost_base))
+                        _nat = _native_turn_cost(ev)
+                        if _nat is not None:
+                            turn_native = (_nat if turn_native is None
+                                           else max(turn_native, _nat))
                         budget_t0[0] = time.monotonic()   # fresh ceiling per message
                         if run_tasks:      # message boundary: nothing tracked survives it
                             run_tasks.clear()
@@ -16077,7 +16100,10 @@ def _run_one_turn(slug: str, nid: str,
         # the timeout path already charged the turn (`_charge_killed_turn`),
         # which is the one other route that books a turn that raised.
         if not paid_booked:
-            _charge_reported_spend(slug, nid, turn_paid, billed_on_key)
+            _charge_reported_spend(slug, nid, turn_paid, billed_on_key,
+                                   native=turn_native,
+                                   usage=last_cache_usage,
+                                   out_tokens=turn_out)
         st["last_error"] = str(e) or type(e).__name__
         # the durable half — the banner above is in-memory and now clears at
         # the next turn's START (see turn_started below); this row is what
@@ -17123,8 +17149,111 @@ def _charge_killed_turn(slug: str, nid: str, out_toks: int,
         pass          # accounting must never turn a killed turn into a crash
 
 
+def _consumed_anything(usage: Mapping[str, Any] | None,
+                       out_tokens: int) -> bool:
+    """Did this turn demonstrably use tokens? Evidence, not assumption.
+
+    The point of asking is the case with no dollar figure at all: a turn that
+    consumed and could not be priced leaves a node's lifetime total less
+    trustworthy than it looks, and that must be recorded. A turn with nothing
+    observed — a spawn that never reached the model — has no such evidence and
+    must not be marked, or the flag would become a permanent decoration
+    nothing ever clears."""
+    if out_tokens > 0:
+        return True
+    for value in (usage or {}).values():
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            continue
+        if value > 0:
+            return True
+    return False
+
+
+def _failure_cost_source(
+        org: Org, nid: str, paid: float, *,
+        native: float | None, usage: Mapping[str, Any] | None,
+        out_tokens: int) -> tuple[float, str, bool, list[str]]:
+    """WHICH NUMBER a failed OpenRouter turn is charged, and where it came
+    from — amount, `cost_source`, completeness, unresolved fields.
+
+    THE LADDER, in order, with what each rung actually knows:
+
+    1. NATIVE — a cost the provider itself reported (`_native_turn_cost`).
+       It OUTRANKS the rungs below and a valid zero is an amount rather than a
+       miss — but it is INCOMPLETE, sourced `provider-native-unscoped`, with
+       `scope` unresolved. ⚠ WHY NOT COMPLETE (coordinator, 2026-09-05): a
+       field's existence establishes neither its provenance nor what it
+       covers. Nobody has observed such a field on this lane, so we do not
+       know whether it would be PER-REQUEST — in which case taking the largest
+       one seen UNDER-counts a multi-message turn — or PROCESS-CUMULATIVE, in
+       which case it needs a warm baseline subtracted the way
+       `total_cost_usd` does and taking it raw OVER-counts a warm
+       continuation. Calling it complete would be inventing a turn-scope
+       contract for a field nobody has seen. If a build ever documents one,
+       THAT contract can be implemented and labelled separately; until then
+       this rung books the number and says outright that its scope is unknown.
+    2. CATALOGUE — the favourite's snapshot prices applied to the tokens this
+       turn is known to have consumed. INCOMPLETE by construction here, and
+       for a reason worth stating: a failed turn has no result event, so the
+       usage is a PARTIAL RECEIPT — the last top-level message's own
+       point-in-time counts, plus the turn's cumulative output. A turn that
+       died after several messages is therefore UNDER-counted on input, which
+       is the recoverable direction. `usage` is always among the unresolved
+       fields for that reason, on top of whatever prices were missing.
+    3. THE CLI'S FIGURE — `total_cost_usd`, INCOMPLETE. The CLI prices a
+       non-Anthropic model off its own default table and is measured wrong by
+       an order of magnitude on this lane (a $0.004 turn booked as $0.134), so
+       the money books but never presents as a measurement.
+
+    ⚠ NO `costBasis` RUNG. A failed turn rarely has `modelUsage` at all, and
+    even when it does, `costBasis` describes THE MOST RECENT REQUEST for one
+    model — not the turn — and `list` names Claude Code's own built-in list
+    prices, which is not proof that the turn's total equals the gateway's
+    invoice (coordinator, 2026-09-05). One matched row saying `list` may not
+    promote a whole turn to complete, and a turn whose rows disagree, or whose
+    key never matched, has told us less still.
+
+    Returning an amount of 0.0 with `complete` False means "nothing worth
+    booking was established" — the caller books nothing rather than writing a
+    confident zero."""
+    if native is not None:
+        return native, "provider-native-unscoped", False, ["scope"]
+    _u = dict(usage or {})
+
+    def _count(key: str) -> tuple[int, bool]:
+        value = _u.get(key)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return 0, False
+        if isinstance(value, float) and not (
+                _math.isfinite(value) and value.is_integer()):
+            return 0, False
+        return (int(value), True) if value >= 0 else (0, False)
+
+    _inp, _inp_ok = _count("input_tokens")
+    _cached, _ = _count("cache_read_input_tokens")
+    _write, _ = _count("cache_creation_input_tokens")
+    _out_last, _ = _count("output_tokens")
+    _out = max(out_tokens, _out_last)
+    if _inp_ok or _out:
+        detail = openrouter.cost_detail(
+            org.model_for(nid), _inp, _cached, _out, _write)
+        # ⚠ "usage" is ALWAYS unresolved on this path — see the docstring.
+        # Without it a catalogue amount computed from one message's counts
+        # would present exactly like the success path's, which reads the
+        # turn-cumulative receipt.
+        unknown = list(dict.fromkeys([*detail["unknown_fields"], "usage"]))
+        if detail["amount"] > 0.0:
+            return detail["amount"], detail["source"], False, unknown
+    if paid > 0:
+        return paid, "claude-cli", False, ["prompt", "completion"]
+    return 0.0, "", False, []
+
+
 def _charge_reported_spend(slug: str, nid: str, paid: float,
-                           on_key: bool = False) -> None:
+                           on_key: bool = False, *,
+                           native: float | None = None,
+                           usage: Mapping[str, Any] | None = None,
+                           out_tokens: int = 0) -> None:
     """Book dollars the CLI REPORTED on a turn that then failed to complete.
 
     `_after_turn` books the cost and only runs on the success path, so a turn
@@ -17135,23 +17264,72 @@ def _charge_reported_spend(slug: str, nid: str, paid: float,
     The sibling of `_charge_killed_turn`, and the same rule — a turn's spend
     is a fact about the API, not about how orgtree's bookkeeping ended.
 
-    Unlike that one this is not an estimate: `paid` is the CLI's own
-    `total_cost_usd`. The ring entry is marked `killed` so the desk shows the
-    turn did not complete, without pretending the money was not spent."""
-    if paid <= 0:
-        return
+    `paid` is the CLI's own `total_cost_usd`. The ring entry is marked
+    `killed` so the desk shows the turn did not complete, without pretending
+    the money was not spent.
+
+    ⚠ WHERE THE NUMBER CAME FROM IS PART OF THE RECORD (2026-09-05). This
+    used to book `paid` with no provenance at all — no source, no
+    completeness, and no `cost_usd_unknown` — so a failed OpenRouter turn
+    charged the CLI's default-table guess, measured wrong by an order of
+    magnitude on that lane, in the same shape as a figure the provider
+    reported. The lane now runs `_failure_cost_source`, and whatever it
+    answers is stamped on the entry; anything short of a COMPLETE amount also
+    raises the node's `cost_usd_unknown`, which is what carries the doubt into
+    the node and org lifetime totals.
+
+    ⚠ AND WHEN NO ROW CAN BE BOOKED AT ALL, THE DOUBT IS STILL RECORDED
+    (coordinator, 2026-09-05). A failed turn on this lane whose model has no
+    price and whose CLI figure is zero establishes no dollar amount — but it
+    is KNOWN to have consumed tokens, and returning quietly left the node's
+    existing lifetime total reading as though it were complete. The uncertainty
+    is now persisted even though no cost row is written, which is the whole
+    claim of this function: nothing is invented, and nothing pretends to be
+    known. A turn with no observed consumption at all raises nothing, because
+    there is no evidence to record.
+
+    Every other lane is byte-for-byte unchanged: `paid`, no stamps, no flag."""
     try:
         with store.DOC_LOCK:
             o2 = store.load_org(slug)
             if nid not in o2.nodes:
                 return
             n = o2.node(nid)
-            n["cost_usd"] = round(float(n.get("cost_usd") or 0.0) + paid, 6)
-            if on_key:
-                _bank_api_cost(o2, paid)
+            or_lane = openrouter.is_tier(str(n.get("model") or ""))
+            source, complete, unknown = "", True, []
+            if or_lane:
+                paid, source, complete, unknown = _failure_cost_source(
+                    o2, nid, paid, native=native, usage=usage,
+                    out_tokens=out_tokens)
+            # ⚠ `<= 0` and not `== 0`: a zero WITH a source is an amount and
+            # still books its (zero-dollar) entry, because "this cost nothing"
+            # is knowledge the desk should show. A zero with NO source is the
+            # other thing — nothing was established — and books nothing.
+            if paid <= 0 and not source:
+                # …but silence is not the same as certainty. If the turn is
+                # KNOWN to have consumed tokens and this lane could not price
+                # them, the node's lifetime total is now less trustworthy than
+                # it looks, and that is recorded without inventing a dollar.
+                if or_lane and _consumed_anything(usage, out_tokens):
+                    n["cost_usd_unknown"] = True
+                    store.save_org(o2)
+                return
+            if paid > 0:
+                n["cost_usd"] = round(
+                    float(n.get("cost_usd") or 0.0) + paid, 6)
+                if on_key:
+                    _bank_api_cost(o2, paid)
             ring = n.setdefault("turns", [])
             paid_entry: TurnStat = {"at": now_iso(), "cost": round(paid, 6),
                                     "ms": None, "denials": 0, "killed": True}
+            if source:
+                paid_entry["cost_source"] = source
+                paid_entry["cost_complete"] = complete
+                if not complete:
+                    paid_entry["estimated"] = True
+                    if unknown:
+                        paid_entry["cost_unknown_fields"] = list(unknown)
+                    n["cost_usd_unknown"] = True
             _stamp_ran_as(paid_entry, slug, nid)
             ring.append(paid_entry)
             del ring[:-20]
@@ -17201,11 +17379,51 @@ def _log_turn_error(slug: str, nid: str, text: str) -> None:
 
 
 def _reported_cost(value: Any) -> float | None:
-    """A provider amount safe to treat as complete; bool is not a dollar."""
+    """A provider amount safe to treat as complete; bool is not a dollar.
+
+    ⚠ ZERO IS AN AMOUNT. A provider that reports 0.0 has told us the request
+    cost nothing — a free model is the ordinary case on this gateway — and
+    that is knowledge, not absence. Only `None` means "nothing was reported",
+    so callers must test `is None` and never truthiness."""
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
     out = float(value)
     return out if _math.isfinite(out) and out >= 0 else None
+
+
+def _native_turn_cost(ev: Mapping[str, Any]) -> float | None:
+    """A cost the PROVIDER itself put on this event, or None.
+
+    ⚠ HYPOTHETICAL COMPATIBILITY, and measured to be so (2026-09-05). The
+    pinned CLI's `usage` object is defined with exactly eleven fields —
+    input_tokens, output_tokens, cache_creation_input_tokens,
+    cache_read_input_tokens, server_tool_use, service_tier, cache_creation,
+    inference_geo, speed, iterations, output_tokens_details — and NONE of them
+    is a cost; the result event carries `total_cost_usd`, `usage` and
+    `modelUsage` but no bare `cost` either. Read out of the 2.1.258 binary and
+    confirmed independently against a captured transcript whose 560 assistant
+    records carry those same eleven keys.
+
+    ⚠ AND IT IS NOT BELIEVED AS A TURN TOTAL. The caller takes the largest
+    value seen across the turn's events, which is a guess about a field whose
+    scope nobody has observed: per-request it under-counts, process-cumulative
+    it over-counts a warm continuation (no baseline is subtracted here, unlike
+    `total_cost_usd`). `_failure_cost_source` therefore books it INCOMPLETE
+    with `scope` unresolved rather than inventing a contract for it.
+
+    So this returns None on every turn this build serves. It exists because a
+    build that DID report a provider figure would then be recorded rather than
+    thrown away, and because the alternative — asking for a native cost at the
+    charging site and quietly falling through — is the shape that hides
+    exactly this kind of fact. ⚠ Do not read a green check over this helper as
+    evidence that a native cost was ever observed."""
+    for holder in (ev, ev.get("usage"), (ev.get("message") or {}).get("usage")
+                   if isinstance(ev.get("message"), dict) else None):
+        if isinstance(holder, dict):
+            found = _reported_cost(cast("dict[str, Any]", holder).get("cost"))
+            if found is not None:
+                return found
+    return None
 
 
 def _after_turn(slug: str, nid: str, org: Org, res: dict[str, Any],
@@ -17226,9 +17444,20 @@ def _after_turn(slug: str, nid: str, org: Org, res: dict[str, Any],
     _mu_probe: dict[str, Any] | None = None     # audit C-2, set on the OR lane
     # THE OPENROUTER LANE'S COST (2026-09-02, measured on 2.1.258). The CLI
     # canonicalizes an `anthropic/…` id (modelUsage.canonicalModel) and
-    # prices it at LIST (`costBasis: "list"`) — exactly OpenRouter's
-    # pass-through rate — so its own `total_cost_usd` is right for Anthropic
-    # models and is kept. For any OTHER vendor the CLI still reports a
+    # prices it at LIST (`costBasis: "list"`) and its own `total_cost_usd` is
+    # KEPT for those models. ⚠ WHAT THAT DOES AND DOES NOT ESTABLISH,
+    # corrected 2026-09-05 after reading the CLI's own schema text: `list`
+    # names CLAUDE CODE'S BUILT-IN LIST PRICES, and `costBasis` describes THE
+    # MOST RECENT REQUEST for that one model — not the turn. So it is not
+    # proof that the turn's total equals the gateway's invoice: a turn whose
+    # rows disagree, or whose basis changed between requests, or whose key
+    # never matched (see the C-2 probe below), has told us less than the
+    # branch's shape suggests. This was written here as "exactly OpenRouter's
+    # pass-through rate", which overstated it. The behaviour is UNCHANGED and
+    # out of this unit's scope (failure-path provenance); what is corrected is
+    # the claim, and `test_openrouter_failcost` pins today's behaviour under a
+    # name that says it is a known limit rather than an endorsement.
+    # For any OTHER vendor the CLI still reports a
     # figure, but with `costBasis: "unknown"` and WRONG by an order of
     # magnitude (measured: a $0.004 gpt-5.6-luna tool turn booked as $0.134,
     # a gemini-3.5-flash one 25× over) — a default-table guess, not a price.
