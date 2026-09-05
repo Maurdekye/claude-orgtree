@@ -560,7 +560,12 @@ def main() -> int:
     real_leg = supervisor._codex_leg
     seen7: dict = {}
 
-    def forgetful_leg(s, n, org, st, text, toks, images=None, turn_view=""):
+    # **_: the real `_codex_leg` keeps gaining keyword arguments (`startup_manifest`,
+    # then `view_spans`), and each time this double's fixed signature turned the
+    # whole suite red with a TypeError that says nothing about mail ordering.
+    # A double should stand in for the seam it replaces, not pin the seam's
+    # incidental arity — what this test is about is the two carriers below.
+    def forgetful_leg(s, n, org, st, text, toks, images=None, turn_view="", **_):
         if toks:
             supervisor._confirm_delivered(s, n, toks)   # like a real leg
         with supervisor._state_lock:

@@ -2668,7 +2668,8 @@ def _prompt_view_path(slug: str, session_id: str) -> str:
 
 
 def _record_prompt_view(slug: str, session_id: str, raw: str, visible: str,
-                        at: str | None = None) -> None:
+                        at: str | None = None,
+                        spans: list[dict[str, Any]] | None = None) -> None:
     """Durably pair a raw provider user event with its human projection.
 
     Best effort and fail-open for turn admission: losing display metadata may
@@ -2676,13 +2677,22 @@ def _record_prompt_view(slug: str, session_id: str, raw: str, visible: str,
     """
     if not session_id:
         return
-    row = {
+    row: dict[str, Any] = {
         "v": 1,
         "sha256": hashlib.sha256(raw.encode("utf-8")).hexdigest(),
         "chars": len(raw),
         "visible": visible,
         "at": at or now_iso(),
     }
+    if spans is not None:
+        # v2 — the row now STATES the origin of its own bytes. `spans` is
+        # meaningful only against this exact `visible`, so the hash of it
+        # rides along: a later transformation that rewrites the projection
+        # without recomputing spans is then detectable instead of silently
+        # applying stale offsets to different words.
+        row["v"] = 2
+        row["spans"] = spans
+        row["vsha256"] = hashlib.sha256(visible.encode("utf-8")).hexdigest()
     try:
         path = _prompt_view_path(slug, session_id)
         with _view_journal_lock:
@@ -2691,6 +2701,60 @@ def _record_prompt_view(slug: str, session_id: str, raw: str, visible: str,
                 f.write(json.dumps(row, ensure_ascii=False) + "\n")
     except (OSError, TypeError, ValueError) as e:
         print(f"[orgtree] {slug}: prompt-view journal write failed: {e!r}")
+
+
+def _prompt_view_spans(row: dict[str, Any]) -> list[dict[str, Any]] | None:
+    """The VALIDATED generated spans of a sidecar row, or None for 'unknown'.
+
+    ⚠ THE WHOLE POINT OF THIS FUNCTION IS THE DIFFERENCE BETWEEN None AND [].
+
+      · None  — this row does not say. Every v1 row (everything written before
+                spans existed) answers None, and so does any v2 row whose
+                spans no longer bind to its `visible`. A caller must treat
+                None as "origin unknown, change nothing". Reading it as "no
+                envelope here" would silently claim provenance for the entire
+                historical corpus and rebuild the exact defect that got the
+                read-time historical conversion withdrawn: a guard that reads
+                correctly, runs, reports success and means nothing.
+      · []    — this row DOES say, and says the view carried no generated
+                envelope. Every character is authored. That is a positive
+                fact a caller may act on.
+
+    Validation is deliberately total rather than best-effort, because a
+    half-trusted span is worse than none: the hash must match the exact
+    `visible` the offsets were measured against, every range must be sane and
+    inside the string, and ranges must not overlap. Anything else answers
+    None — an unreadable claim of origin is not a weaker claim of origin.
+    """
+    if not isinstance(row, dict) or row.get("v") != 2:
+        return None
+    visible = row.get("visible")
+    spans = row.get("spans")
+    if not isinstance(visible, str) or not isinstance(spans, list):
+        return None
+    want = row.get("vsha256")
+    if (not isinstance(want, str)
+            or hashlib.sha256(visible.encode("utf-8")).hexdigest() != want):
+        return None                      # measured against a different string
+    out: list[dict[str, Any]] = []
+    end_of_previous = 0
+    for span in spans:                   # pyright: ignore[reportUnknownVariableType]
+        if not isinstance(span, dict):
+            return None
+        start, end = span.get("start"), span.get("end")
+        if (isinstance(start, bool) or isinstance(end, bool)
+                or not isinstance(start, int) or not isinstance(end, int)):
+            return None
+        if not 0 <= start <= end <= len(visible) or start < end_of_previous:
+            return None                  # out of bounds, inverted or overlapping
+        end_of_previous = end
+        ids = span.get("mail_ids")
+        out.append({
+            "kind": str(span.get("kind") or ""),
+            "start": start, "end": end,
+            "mail_ids": [str(i) for i in ids] if isinstance(ids, list) else [],
+        })
+    return out
 
 
 def _copy_prompt_views(slug: str, old_sid: str, new_sid: str) -> bool:
@@ -6596,9 +6660,53 @@ def _phantom_log(slug: str, nid: str, where: str) -> None:
           f"mailbox was already drained (no phantom wake)")
 
 
+def _human_view_spans(human_mail: list[MailEntry], base_view: str,
+                      slug: str, nid: str, inline: bool
+                      ) -> tuple[str, list[dict[str, Any]]]:
+    """THE human projection AND the exact provenance of its generated bytes.
+
+    Both composition sites (the turn-start path in `_run_one_turn` and the
+    steer/boundary path in `_envelope`) build the same string the same way,
+    so they build it HERE — a second copy is how the two would drift, exactly
+    as the turn-start feed once drifted from the envelope's attachment lines.
+
+    Returns (view, spans). A span says which characters this process GENERATED
+    and from which durable mail rows, recorded at the only moment it is known
+    for certain. Nothing detects anything: the formatter reports what it just
+    produced. That is the whole difference from the withdrawn historical
+    conversion, which had to guess origin from shape and therefore could not
+    tell an authored quotation from a generated envelope.
+
+    ⚠ OFFSETS ARE CHARACTER OFFSETS INTO `view`, THE HUMAN STRING — they are
+    NOT offsets into the raw provider text, and they are NOT comparable to the
+    sidecar row's `chars`, which is `len(raw)`. The two strings differ by the
+    whole machine envelope. A reader that applies these spans to `raw` will
+    corrupt authored words; `_prompt_view_spans` binds them to a hash of the
+    exact `visible` string to make that mistake detectable rather than silent.
+
+    An empty list is a POSITIVE statement: this view was composed and carried
+    no generated envelope. That is not the same as 'we do not know', which is
+    the absence of the field entirely (a v1 row). See `_prompt_view_spans`.
+    """
+    bits: list[str] = []
+    spans: list[dict[str, Any]] = []
+    if human_mail:
+        env = _mail_block(human_mail, slug, nid, inline=inline, human=True)[0]
+        # the envelope is always the FIRST bit, so its span starts at 0; the
+        # separator below is generated too but carries no instant, and a span
+        # that claimed it would not survive the 'no base_view' case
+        spans.append({"kind": "mail_envelope", "start": 0, "end": len(env),
+                      "mail_ids": [str(m.get("id") or "") for m in human_mail]})
+        bits.append(env)
+    if base_view:
+        bits.append(base_view)
+    return "\n\n".join(bits), spans
+
+
 def _envelope(slug: str, nid: str, text: str,
               via: str = "steer", *, base_view: str = "",
-              view_out: list[str] | None = None
+              view_out: list[str] | None = None,
+              spans_out: list[list[dict[str, Any]]] | None = None
               ) -> tuple[str, str | None, list[dict[str, Any]]]:
     """Drain notices + mail atomically and prepend them (№27 envelope, §7.4).
     Safe to call repeatedly — a second call finds nothing new. Returns the
@@ -6641,13 +6749,11 @@ def _envelope(slug: str, nid: str, text: str,
         # Pending org notices and model_only mail are machine context. Genuine
         # mail keeps the same formatter/body/attachment semantics as before.
         human_mail = [m for m in (mail or []) if not m.get("model_only")]
-        human_bits: list[str] = []
-        if human_mail:
-            human_bits.append(_mail_block(
-                human_mail, slug, nid, inline=(via == "turn"), human=True)[0])
-        if base_view:
-            human_bits.append(base_view)
-        view_out.append("\n\n".join(human_bits))
+        view, spans = _human_view_spans(
+            human_mail, base_view, slug, nid, inline=(via == "turn"))
+        view_out.append(view)
+        if spans_out is not None:
+            spans_out.append(spans)
     return ((("\n\n".join(prelude) + "\n\n" + text) if prelude else text),
             tok, imgs)
 
@@ -10271,6 +10377,7 @@ def _codex_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
                text: str, toks: list[str],
                images: list[dict[str, Any]] | None = None,
                turn_view: str = "",
+               view_spans: list[dict[str, Any]] | None = None,
                startup_manifest: dict[str, Any] | None = None,
                ) -> tuple[dict[str, Any], int]:
     """One codex turn behind the provider seam, WITH the reserve-first
@@ -10307,13 +10414,14 @@ def _codex_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
     try:
         return _codex_leg_attempt(
             slug, nid, org, st, text, toks, images, turn_view,
-            startup_manifest=startup_manifest)
+            view_spans=view_spans, startup_manifest=startup_manifest)
     except _CodexRouteRejected as rj:
         _note(rj, retrying=True)
         notify(slug, nid, "route_switched")
         try:
             return _codex_leg_attempt(slug, nid, org, st, text, [], images,
-                                      turn_view, route=rj.other,
+                                      turn_view, view_spans=view_spans,
+                                      route=rj.other,
                                       journal_sid=rj.journal_sid,
                                       startup_manifest=startup_manifest)
         except _CodexRouteRejected as rj2:
@@ -10336,6 +10444,7 @@ def _codex_leg_attempt(slug: str, nid: str, org: Org, st: dict[str, Any],
                        text: str, toks: list[str],
                        images: list[dict[str, Any]] | None = None,
                        turn_view: str = "",
+                       view_spans: list[dict[str, Any]] | None = None,
                        route: codex_route.Route | None = None,
                        journal_sid: str | None = None,
                        startup_manifest: dict[str, Any] | None = None,
@@ -11215,7 +11324,7 @@ def _codex_leg_attempt(slug: str, nid: str, org: Org, st: dict[str, Any],
                 pending_recs = list(jstate["pending"])
                 jstate["pending"].clear()
                 _record_prompt_view(slug, jstate["sid"], text, turn_view,
-                                    at=_iso_ts(t0))
+                                    at=_iso_ts(t0), spans=view_spans)
                 _codex_journal(slug, jstate["sid"], [
                     {"type": "user", "timestamp": _iso_ts(t0),
                      "message": {"role": "user", "content": text}},
@@ -11846,7 +11955,8 @@ def _codex_leg_attempt(slug: str, nid: str, org: Org, st: dict[str, Any],
 def _antigravity_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
                      text: str, toks: list[str],
                      images: list[dict[str, Any]] | None = None,
-                     turn_view: str = ""
+                     turn_view: str = "",
+                     view_spans: list[dict[str, Any]] | None = None
                      ) -> tuple[dict[str, Any], int]:
     """One antigravity turn behind the provider seam (D-186, re-walked for
     the Antigravity CLI) — the `_codex_leg` contract exactly: runs inside
@@ -12205,7 +12315,7 @@ def _antigravity_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
                 pending_recs = list(jstate["pending"])
                 jstate["pending"].clear()
                 _record_prompt_view(slug, jstate["sid"], text, turn_view,
-                                    at=_iso_ts(t0))
+                                    at=_iso_ts(t0), spans=view_spans)
                 _codex_journal(slug, jstate["sid"], [
                     {"type": "user", "timestamp": _iso_ts(t0),
                      "message": {"role": "user", "content": text}},
@@ -12508,6 +12618,11 @@ def _run_one_turn(slug: str, nid: str,
     toks: list[str] = []
     is_cmd = False
     turn_view = ""
+    # the generated spans of `turn_view`, recorded at composition (D-229+).
+    # [] is the POSITIVE "nothing generated" — this turn composed a view and
+    # no envelope went into it. It is never None here: every path below
+    # composes, so 'unknown' can only describe a row written before v2.
+    view_spans: list[dict[str, Any]] = []
     # the session this turn actually launched on — NOT whatever the node
     # points at when the turn ends (a cheap-compact can land mid-turn)
     ran_sid: str | None = None
@@ -12731,10 +12846,10 @@ def _run_one_turn(slug: str, nid: str,
                 prelude.append(mtext)
                 human_mail = [m for m in mail if not m.get("model_only")]
                 if human_mail:
-                    human_text = _mail_block(
-                        human_mail, slug, nid, inline=True, human=True)[0]
-                    turn_view = (human_text + "\n\n" + turn_view
-                                 if turn_view else human_text)
+                    # same composer as the steer path, so the two cannot word
+                    # the view — or its provenance — differently
+                    turn_view, view_spans = _human_view_spans(
+                        human_mail, turn_view, slug, nid, inline=True)
             if prelude:
                 text = "\n\n".join(prelude) + "\n\n" + text
             elif is_ping and not is_cmd and not toks:
@@ -12860,6 +12975,7 @@ def _run_one_turn(slug: str, nid: str,
                 # + the SHARED finally via the control raise below.
                 res, codex_occ = _codex_leg(
                     slug, nid, org, st, text, toks, turn_images, turn_view,
+                    view_spans=view_spans,
                     startup_manifest=cache_codex_manifest)
                 if res.get("_codex_account_ambiguous"):
                     # The provider turn is real, but no local observation can
@@ -12883,7 +12999,8 @@ def _run_one_turn(slug: str, nid: str,
                 # the same seam one provider over (D-186): identical tail,
                 # its own control raise, the SHARED finally owns the queue.
                 res, agy_occ = _antigravity_leg(
-                    slug, nid, org, st, text, toks, turn_images, turn_view)
+                    slug, nid, org, st, text, toks, turn_images, turn_view,
+                    view_spans=view_spans)
                 st["last_error"] = None
                 st["turns_run"] += 1
                 st["account_switches"] = 0
@@ -13233,7 +13350,8 @@ def _run_one_turn(slug: str, nid: str,
                         cold_mcp_lines = _start_cold_mcp_pump(proc)
                     _mcp_gate_terminal(_mcp_wait_for_surface(
                         org, nid, proc, "claude", turn_mcp_fingerprint))
-                    _record_prompt_view(slug, sid, text, turn_view)
+                    _record_prompt_view(slug, sid, text, turn_view,
+                                        spans=view_spans)
                     proc.stdin.write(_user_event(text, turn_images))   # pyright: ignore[reportOptionalMemberAccess]
                     proc.stdin.flush()                # pyright: ignore[reportOptionalMemberAccess]
                 except (OSError, ValueError):
@@ -13984,6 +14102,10 @@ def _run_one_turn(slug: str, nid: str,
                             nping = _carrier_is_ping(nxt)
                             ntoks, nimgs, ncmd, nusage_org = [], [], False, None
                             nview = ""
+                            # a slash command and a bare carrier both compose
+                            # a view with nothing generated in it: [] is the
+                            # positive "no envelope", never "unknown"
+                            nspans: list[dict[str, Any]] = []
                             if isinstance(nxt, dict):   # journaled/cmd
                                 ncmd = bool(nxt.get("cmd"))
                                 nview = str(nxt.get("view") or "")
@@ -13992,10 +14114,13 @@ def _run_one_turn(slug: str, nid: str,
                                 nview = str(nxt)
                             if not ncmd:      # a slash command goes verbatim
                                 nviews: list[str] = []
+                                nspans_out: list[list[dict[str, Any]]] = []
                                 nxt, ntok, nimgs = _envelope(
                                     slug, nid, nxt, via="turn",
-                                    base_view=nview, view_out=nviews)
+                                    base_view=nview, view_out=nviews,
+                                    spans_out=nspans_out)
                                 nview = nviews[0] if nviews else nview
+                                nspans = nspans_out[0] if nspans_out else []
                                 if ntok:
                                     ntoks.append(ntok)
                                 elif nping and not ntoks:
@@ -14086,7 +14211,8 @@ def _run_one_turn(slug: str, nid: str,
                                         nusage_org, nid, pending=env_pending)
                                         + "\n\n" + nxt)
                                 _record_prompt_view(slug, ran_sid or sid,
-                                                    str(nxt), nview)
+                                                    str(nxt), nview,
+                                                    spans=nspans)
                                 proc.stdin.write(_user_event(nxt, nimgs))   # pyright: ignore[reportOptionalMemberAccess]
                                 proc.stdin.flush()                   # pyright: ignore[reportOptionalMemberAccess]
                                 # C1 again: confirmed by the next consuming
