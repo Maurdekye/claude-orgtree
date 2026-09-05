@@ -972,6 +972,28 @@ def main() -> int:
     check("an ambiguous late reply in limbo leaves the entry in limbo, unknown",
           lambda: eq((res16e[0], st16e["steer_limbo"] == [e16e], e16e["state"]) if res16e else None,
                      ("still-unknown", True, "unknown"), "transition"))
+    # ATOMIC OWNERSHIP (review_codex_late_refusal.py): a late REFUSAL must
+    # leave limbo and enter the queue in ONE transition — the single lock
+    # take the caller holds. Observed from outside that call there is no
+    # instant at which the carrier is in neither (the D-229 strand).
+    e16f = {"carriers": [A], "state": "unknown", "late": None, "reason": ""}
+    st16f: dict = {"queue": [X], "steer_limbo": [e16f]}
+    res16f = tr(st16f, e16f, codexrun.SteerOutcome("rejected", "late")) if tr else None
+    check("a late REFUSAL in limbo: the transition ITSELF moves the carrier limbo→queue "
+          "(owned throughout; the caller holds one lock across it)",
+          lambda: eq((res16f[0], st16f["steer_limbo"], [c["text"] for c in st16f["queue"]],
+                      e16f["state"]) if res16f else None,
+                     ("limbo", [], ["X", "A"], "rejected"), "transition"))
+    import ast as _ast
+    import inspect as _inspect
+    _src = _inspect.getsource(supervisor._codex_leg)
+    _fn = next((n for n in _ast.walk(_ast.parse(_src)) if isinstance(n, _ast.FunctionDef)
+                and n.name == "_late_steer"), None)
+    _requeues = [n for n in _ast.walk(_fn) if isinstance(n, _ast.Call)
+                 and isinstance(n.func, _ast.Attribute) and n.func.attr == "extend"] if _fn else None
+    check("…and the late-reply caller contains NO second requeue of its own "
+          "(structural pin: no `.extend` call in _late_steer)",
+          lambda: eq((_fn is not None, _requeues), (True, []), "caller requeues"))
 
     tool_srv.shutdown()
     print(f"\n{PASS} passed, {len(FAIL)} failed")

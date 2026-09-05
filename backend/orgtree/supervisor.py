@@ -10084,8 +10084,8 @@ def _codex_leg_attempt(slug: str, nid: str, org: Org, st: dict[str, Any],
                         text=f"{n} mid-turn message(s) acknowledged LATE by "
                              f"the turn — delivered mid-task after all")
                 else:
-                    with _state_lock:
-                        st["queue"].extend(carriers)
+                    # already requeued BY THE TRANSITION, in the same lock
+                    # take that left limbo — never a second one here
                     _note_steer_attempt(slug, nid, toks,
                                         codexrun.STEER_REJECTED, reason)
                     _steer_fold_log(slug, nid, n, "steer late-refusal",
@@ -19204,6 +19204,14 @@ def _steer_late_transition(st: dict[str, Any], entry: dict[str, Any],
         if entry in limbo:
             limbo.remove(entry)
         entry["state"] = word
+        if word == codexrun.STEER_REJECTED:
+            # ⚠ ONE TRANSITION: leaving limbo and entering the queue happen
+            # under the SAME lock take. Split across two, the turn-end fold
+            # could run in the gap and see limbo=0, queue=0 — nothing owed,
+            # node idle — and the requeue would land after the only driver
+            # had gone: the D-229 strand, one layer down (review 2026-09-05,
+            # review_codex_late_refusal.py). The caller must NOT requeue.
+            st.setdefault("queue", []).extend(carriers)
         return "limbo", reclaimed, escaped
     # redelivered
     if word != codexrun.STEER_ACCEPTED:
