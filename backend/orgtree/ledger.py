@@ -6915,6 +6915,23 @@ class Org:
         for doc in self.d.get("documents", []):
             if doc.get("node") in renamed:
                 doc["node"] = renamed[doc["node"]]
+        # Work items, CURRENT-identity fields only. `owner`, `last_updater`
+        # and `participants` say who holds an item NOW, and every authority
+        # path reads them: `_work_can_manage` compares the actor to the owner
+        # and its ancestor fallback requires the anchor to still BE a node, so
+        # `work_list` stops listing the item and `work_update`/`assign` refuse;
+        # `work_reply_target` refuses outright when the last updater is not in
+        # `nodes`, and a user reply on the item then reaches nobody. Left
+        # un-re-keyed, a rename silently makes an agent's own docket
+        # unreadable to it while the user's view (actor == USER) still shows
+        # it — measured on the live document 2026-09-05, three items.
+        #
+        # `created_by`, `history[].by`/`from`, `evidence[].by`, the delivery
+        # claims and `accepted.by` are AUTHORED HISTORY and keep the old name,
+        # for the same ruling that leaves mail bodies and the event log alone.
+        # Nothing here touches `rev`, `updated_at`, `docket_at` or `history`:
+        # an identity re-key is not a docket update and must not look like one.
+        self._rekey_work_identity(renamed)
         # the display title (set at hire from the raw name) follows the
         # identity — tree() ships it beside the id, so a stale title would
         # show exactly the name the rename was meant to replace
@@ -6932,6 +6949,189 @@ class Org:
         _ = n
         return {"node": new, "was": nid, "renamed": renamed,
                 "warnings": warnings}
+
+    #: the work-item fields that name WHO HOLDS AN ITEM NOW. Everything else
+    #: on an item that carries a node id records who did something THEN, and
+    #: is authored history: `created_by`, `history[].by`, `history[].from`,
+    #: `evidence[].by`, `delivery.*.claimed_by`, `accepted.by`.
+    WORK_IDENTITY_FIELDS: tuple[str, ...] = ("owner", "last_updater")
+
+    @staticmethod
+    def _work_ref(it: WorkItem) -> str:
+        """How a work item is NAMED in anything a person reads — its
+        human-readable slug, falling back to the opaque id only for an item
+        old enough to predate slugs (user ruling 2026-09-05: the slug is the
+        docket's identity)."""
+        return str(it.get("slug") or it.get("id") or "")
+
+    def _rekey_work_identity(self, renamed: dict[str, str],
+                             only: list[WorkItem] | None = None
+                             ) -> list[tuple[str, str]]:
+        """Move CURRENT work-item ownership onto the new ids in `renamed`.
+
+        `only` bounds it to particular items (the repair path) BY OBJECT, not
+        by any id — so it keeps working through the docket's slug migration;
+        None means every item (the rename path). Returns (item ref, field) per
+        move so a caller can report exactly what it did. `rev`, `updated_at`,
+        `docket_at` and `history` are deliberately untouched — this is an
+        identity re-key, not a docket update."""
+        moved: list[tuple[str, str]] = []
+        for key in ("work_items", "work_items_archive"):
+            for it in self.d.get(key) or []:
+                if only is not None and not any(x is it for x in only):
+                    continue
+                wid = self._work_ref(it)
+                for f in self.WORK_IDENTITY_FIELDS:
+                    a = it.get(f)
+                    if isinstance(a, dict) and a.get("node") in renamed:
+                        a["node"] = renamed[str(a["node"])]
+                        moved.append((wid, f))
+                ps = it.get("participants")
+                if isinstance(ps, list) and any(
+                        isinstance(p, str) and p in renamed for p in ps):
+                    it["participants"] = [
+                        renamed[p] if isinstance(p, str) and p in renamed else p
+                        for p in ps]
+                    moved.append((wid, "participants"))
+        return moved
+
+    def _work_identity_holders(self, it: WorkItem, old: str) -> list[str]:
+        """Which CURRENT-identity fields on this item still name `old` (or one
+        of its lineage generations)."""
+        def _is_old(v: Any) -> bool:
+            return isinstance(v, str) and (v == old or v.startswith(old + "@"))
+        found = [f for f in self.WORK_IDENTITY_FIELDS
+                 if isinstance(it.get(f), dict) and _is_old(it[f].get("node"))]
+        if any(_is_old(p) for p in (it.get("participants") or [])):
+            found.append("participants")
+        return found
+
+    def repair_rename_identity(self, actor: str, rename_at: str,
+                               documents: list[str] | None = None,
+                               work_items: list[str] | None = None
+                               ) -> dict[str, Any]:
+        """Finish a rename that happened BEFORE the re-key covered a record.
+
+        Not a node-rekey facility: it cannot be pointed at an arbitrary pair of
+        names. The old and new ids are read out of ONE logged `rename` event,
+        named by its exact `at` stamp, and the records to move are given
+        explicitly by id — an allowlist, not a pattern. Every named record must
+        still hold the OLD id (the old-value check) or the whole call is
+        refused before anything is written (§4.7, validate-all-then-mutate), so
+        a stale plan can never half-apply.
+
+        Authority is the narrowest that can do the job: the user, or the
+        RENAMED IDENTITY ITSELF. An item whose owner is a name that no longer
+        exists cannot be repaired through `work_assign` — `_work_can_manage`
+        refuses precisely because of the damage being repaired — so the agent
+        that the rename was applied to may put its own records back on its own
+        id, and nobody else may.
+
+        What moves: `documents[].node`, and the CURRENT-identity work-item
+        fields (`owner`, `last_updater`, `participants`). What does NOT: every
+        authored-history field on an item, `rev`/`updated_at`/`docket_at`, the
+        event log, mail bodies and sender fields. The repair adds no docket
+        history entry — inventing an actor for work the agent did not do would
+        corrupt the very record this preserves; the org event log carries the
+        one `rename_repair` line instead."""
+        want_docs = [str(x) for x in (documents or [])]
+        want_work = [str(x) for x in (work_items or [])]
+        if not want_docs and not want_work:
+            raise LedgerError(
+                "name the records to repair — this operation takes an explicit "
+                "allowlist of document and work-item ids, never a pattern")
+
+        at = str(rename_at or "").strip()
+        hits = [e for e in (self.d.get("events") or [])
+                if e.get("op") == "rename" and e.get("at") == at]
+        if len(hits) != 1:
+            raise LedgerError(
+                f"expected exactly one logged rename at {at!r}; found "
+                f"{len(hits)}. This operation only completes a rename the "
+                f"event log actually records")
+        detail = hits[0].get("detail") or {}
+        old, new = str(detail.get("node") or ""), str(detail.get("new") or "")
+        if not old or not new:
+            raise LedgerError(f"the rename event at {at!r} names no node")
+        if actor != USER and actor != new:
+            raise LedgerError(
+                f"only the user or {new!r} itself may repair the records that "
+                f"rename left behind")
+        n = self.nodes.get(new)
+        if n is None or n.get("state") != "live":
+            raise LedgerError(f"{new!r} is not a live node in this org")
+        if old in self.nodes or any(k.startswith(old + "@") for k in self.nodes):
+            raise LedgerError(
+                f"{old!r} still exists in this org — these records are not "
+                f"orphaned by that rename, and moving them would take records "
+                f"away from a node that is still there")
+
+        # ---- validate every named record BEFORE touching one of them
+        docs_by_id = {str(d.get("id")): d for d in self.d.get("documents") or []}
+        renamed: dict[str, str] = {}
+
+        def _map(v: str) -> None:
+            """`old@g -> new@g`, exactly as rename builds its own map."""
+            if v == old or v.startswith(old + "@"):
+                renamed[v] = new + v[len(old):]
+
+        for did in want_docs:
+            d = docs_by_id.get(did)
+            if d is None:
+                raise LedgerError(f"no document {did!r} in this org")
+            node = str(d.get("node") or "")
+            if not (node == old or node.startswith(old + "@")):
+                raise LedgerError(
+                    f"document {did!r} is owned by {node!r}, not {old!r} — "
+                    f"refusing the whole repair rather than guessing")
+            _map(node)
+
+        # items are named the way the docket names them — `_work_find` takes a
+        # slug or an id, so this keeps working through the slug migration and
+        # hardcodes neither
+        targets: list[WorkItem] = []
+        fields: dict[str, list[str]] = {}
+        for wid in want_work:
+            try:
+                it, _arch = self._work_find(wid)
+            except LedgerError:
+                raise LedgerError(f"no work item {wid!r} in this org") from None
+            if any(x is it for x in targets):
+                continue
+            targets.append(it)
+            held = self._work_identity_holders(it, old)
+            if not held:
+                raise LedgerError(
+                    f"work item {wid!r} holds no current-identity field naming "
+                    f"{old!r} — it is already repaired, or it was never "
+                    f"affected. Refusing the whole repair")
+            fields[self._work_ref(it)] = held
+            for f in self.WORK_IDENTITY_FIELDS:
+                a = it.get(f)
+                if isinstance(a, dict) and isinstance(a.get("node"), str):
+                    _map(str(a["node"]))
+            for p in it.get("participants") or []:
+                if isinstance(p, str):
+                    _map(p)
+
+        # ---- mutate (nothing below may raise)
+        for did in want_docs:
+            docs_by_id[did]["node"] = renamed[str(docs_by_id[did]["node"])]
+        moved = self._rekey_work_identity(renamed, only=targets)
+        warnings = [
+            f"repaired {len(want_docs)} document(s) and {len(moved)} work-item "
+            f"field(s) from {old!r} to {new!r}. Authored history is unchanged: "
+            f"created_by, history, evidence, delivery claims, the event log, "
+            f"mail bodies and sender fields still say {old!r}, and no item's "
+            f"rev, updated_at or docket_at moved."]
+        self._log("rename_repair", actor,
+                  {"at": at, "node": old, "new": new,
+                   "documents": want_docs,
+                   "work_items": [f"{w}.{f}" for w, f in moved]}, warnings)
+        return {"old": old, "new": new, "rename_at": at,
+                "documents": want_docs,
+                "work_items": [{"item": w, "field": f} for w, f in moved],
+                "planned_fields": fields, "warnings": warnings}
 
     def credit_headroom(self, nid: str) -> tuple[int | None, str]:
         """How many MORE credits this node could be granted, and which cap

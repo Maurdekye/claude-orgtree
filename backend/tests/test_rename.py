@@ -21,6 +21,9 @@ is still there, untouched.
     §4  what deliberately does NOT change, and what the caller is told
     §5  supervisor.rename_node — busy refusal, the two directory moves,
         in-memory turn state, and the rollback when the doc write fails
+    §6  work items — current ownership follows, authored history does not
+    §7  repair_rename_identity — finishing a rename that already happened,
+        for the records a rename before the re-key left stranded
 
 Hermetic: a throwaway ORGTREE_DATA and HOME, no port, no Docker, no CLI.
 
@@ -556,6 +559,286 @@ def sec_history() -> None:
           _title_follows)
 
 
+# ===================================================================== §6
+# Work items were the last per-node structure a rename did not carry, and the
+# damage is silent in the worst way: `_work_can_manage` compares the actor to
+# the item's owner and its ancestor fallback needs that anchor to still BE a
+# node, so the agent's own items stop appearing in its `work_list` while the
+# user's view (actor == USER short-circuits) still shows them. Measured on the
+# live document 2026-09-05: two items owned by a renamed root, three whose
+# last updater was, and a user reply on any of them reached nobody.
+def wire_work(org, nid: str = "kid") -> tuple[str, str]:
+    """One item OWNED by `nid` and one merely AUTHORED by it. Returns their
+    slugs — the docket's own identity (user ruling 2026-09-05); nothing here
+    joins on the opaque id."""
+    a = org.work_create(nid, "owned by the renamed node", "problem; solution",
+                        owner=nid, participants=["grandkid"])
+    # `work_create` writes NO history entry (measured), so without this update
+    # the "history keeps the old name" check below would pass vacuously on an
+    # empty list. The update is what puts `nid` into history[].by.
+    org.work_update(nid, a["slug"], ["did a thing"], ["next thing"])
+    b = org.work_create(nid, "authored then handed over", "problem; solution",
+                        owner="grandkid")
+    org.work_update("grandkid", b["slug"], ["did a thing"], ["next thing"])
+    return str(a["slug"]), str(b["slug"])
+
+
+def item(org, ref: str):
+    it, _arch = org._work_find(ref)
+    return it
+
+
+def sec_work_identity() -> None:
+    print("\n§6  work items — current ownership follows, authored history does not")
+
+    def _owner_and_participants_follow():
+        org = org3()
+        owned, _other = wire_work(org, "kid")
+        org.rename(USER, "kid", "sprocket")
+        it = item(org, owned)
+        assert it["owner"]["node"] == "sprocket", it["owner"]
+        assert it["last_updater"]["node"] == "sprocket", it["last_updater"]
+        org.hire("boss", "boss", "haiku", 1, "extra", **spec())
+        it2 = org.work_create("boss", "with a participant", "p; s",
+                              owner="boss", participants=["extra"])
+        org.rename(USER, "extra", "renamed-participant")
+        assert item(org, it2["slug"])["participants"] == ["renamed-participant"]
+    check("owner, last_updater and participants follow the rename",
+          _owner_and_participants_follow)
+
+    def _authorship_does_not_move():
+        org = org3()
+        owned, other = wire_work(org, "kid")
+        org.rename(USER, "kid", "sprocket")
+        for ref in (owned, other):
+            it = item(org, ref)
+            assert it["created_by"]["node"] == "kid", \
+                f"created_by is authorship and must keep the old name: {it['created_by']}"
+        hist = [h["by"]["node"] for h in item(org, owned)["history"]
+                if isinstance(h.get("by"), dict)]
+        assert hist, "fixture is vacuous — no history entry to check"
+        assert "kid" in hist and "sprocket" not in hist, \
+            f"history[].by records who acted THEN, not who they are now: {hist}"
+        other_it = item(org, other)
+        assert other_it["owner"]["node"] == "grandkid", \
+            "an item owned by somebody else must not move"
+        assert other_it["last_updater"]["node"] == "grandkid"
+    check("created_by and history keep the old name; other owners are untouched",
+          _authorship_does_not_move)
+
+    def _no_docket_update_side_effects():
+        org = org3()
+        owned, _o = wire_work(org, "kid")
+        it = item(org, owned)
+        before = (it["rev"], it["updated_at"], it["docket_at"],
+                  len(it["history"]))
+        org.rename(USER, "kid", "sprocket")
+        it = item(org, owned)
+        assert (it["rev"], it["updated_at"], it["docket_at"],
+                len(it["history"])) == before, \
+            "a re-key is not a docket update — rev/timestamps/history must not move"
+    check("the re-key moves no revision, timestamp or history entry",
+          _no_docket_update_side_effects)
+
+    def _the_symptom_itself():
+        """The behaviour, not the field: the renamed agent can still SEE and
+        MANAGE its own item. This is what the field checks are for."""
+        org = org3()
+        owned, _o = wire_work(org, "kid")
+        org.rename(USER, "kid", "sprocket")
+        lists = org.work_list("sprocket", include_archived=True,
+                              include_backlogged=True)
+        refs = {r.get("slug") for v in lists.values() if isinstance(v, list)
+                for r in v if isinstance(r, dict)}
+        assert owned in refs, f"the renamed agent cannot see its own item: {refs}"
+        assert org._work_can_manage("sprocket", item(org, owned))
+        assert org._work_owner_state(item(org, owned)) == (True, "live")
+        assert org.work_reply_target(owned)["node"] == "sprocket", \
+            "a user reply on the item must reach the renamed agent"
+    check("the renamed agent can list, manage and be replied to on its own item",
+          _the_symptom_itself)
+
+    def _archived_items_too():
+        org = org3()
+        owned, _o = wire_work(org, "kid")
+        org.work_update("kid", owned, ["done"], [], status="review")
+        org.work_accept("boss", owned)
+        org.work_archive_now("boss", owned)
+        org.rename(USER, "kid", "sprocket")
+        it = item(org, owned)
+        assert it["owner"]["node"] == "sprocket", \
+            "an archived item is still filed under its owner and must follow"
+        assert it["accepted"]["by"]["node"] == "boss", it["accepted"]
+    check("archived items re-key too (they are still owned)", _archived_items_too)
+
+
+# ===================================================================== §7
+def sec_repair() -> None:
+    print("\n§7  repair_rename_identity — finishing a rename that already happened")
+
+    def rig():
+        """A rename whose re-key MISSED the records, exactly as the pre-fix
+        code left them: rename first, then plant the stale references."""
+        org = org3()
+        owned, _o = wire_work(org, "kid")
+        org.rename(USER, "kid", "sprocket")
+        at = [e["at"] for e in org.d["events"] if e.get("op") == "rename"][-1]
+        it = item(org, owned)
+        it["owner"] = {"node": "kid", "generation": 0}
+        it["last_updater"] = {"node": "kid", "generation": 0}
+        org.d.setdefault("documents", []).extend([
+            {"id": "d-stranded", "node": "kid", "title": "t", "body": "b", "at": "t"},
+            {"id": "d-other", "node": "grandkid", "title": "t", "body": "b", "at": "t"},
+        ])
+        return org, at, owned
+
+    def _repairs_both_kinds():
+        org, at, owned = rig()
+        r = org.repair_rename_identity(USER, at, documents=["d-stranded"],
+                                       work_items=[owned])
+        docs = {d["id"]: d["node"] for d in org.d["documents"]}
+        assert docs == {"d-stranded": "sprocket", "d-other": "grandkid"}, docs
+        it = item(org, owned)
+        assert it["owner"]["node"] == "sprocket" \
+            and it["last_updater"]["node"] == "sprocket", it
+        assert r["old"] == "kid" and r["new"] == "sprocket", r
+        assert {w["field"] for w in r["work_items"]} == {"owner", "last_updater"}
+    check("it moves the named documents and the named work-item fields",
+          _repairs_both_kinds)
+
+    def _named_by_slug():
+        org, at, owned = rig()
+        assert not owned.startswith("w"), f"expected a readable slug, got {owned!r}"
+        org.repair_rename_identity(USER, at, work_items=[owned])
+        assert item(org, owned)["owner"]["node"] == "sprocket"
+    check("work items are named by their readable slug, never a hardcoded id",
+          _named_by_slug)
+
+    def _renamed_agent_may_repair_itself():
+        org, at, owned = rig()
+        org.repair_rename_identity("sprocket", at, work_items=[owned])
+        assert item(org, owned)["owner"]["node"] == "sprocket"
+    check("the renamed identity may repair its own stranded records",
+          _renamed_agent_may_repair_itself)
+
+    def _nobody_else_may():
+        org, at, owned = rig()
+        for who in ("boss", "grandkid"):
+            expect_error(lambda w=who: org.repair_rename_identity(
+                w, at, work_items=[owned]), "only the user")
+        assert item(org, owned)["owner"]["node"] == "kid", \
+            "a refused repair must change nothing"
+    check("no other agent may — not even the superior that did the rename",
+          _nobody_else_may)
+
+    def _authorship_preserved():
+        org, at, owned = rig()
+        before = item(org, owned)
+        keep = (before["created_by"]["node"], before["rev"],
+                before["updated_at"], before["docket_at"], len(before["history"]))
+        org.repair_rename_identity(USER, at, work_items=[owned])
+        it = item(org, owned)
+        assert (it["created_by"]["node"], it["rev"], it["updated_at"],
+                it["docket_at"], len(it["history"])) == keep, \
+            "the repair must not touch authorship, revisions or timestamps"
+    check("authorship, rev, timestamps and history are untouched",
+          _authorship_preserved)
+
+    def _needs_a_real_logged_rename():
+        org, _at, owned = rig()
+        expect_error(lambda: org.repair_rename_identity(
+            USER, "2020-01-01T00:00:00.000Z", work_items=[owned]),
+            "exactly one logged rename")
+        assert item(org, owned)["owner"]["node"] == "kid"
+    check("a stamp that names no logged rename is refused",
+          _needs_a_real_logged_rename)
+
+    def _not_a_general_rekey():
+        """The old and new names are NOT arguments — they come out of the
+        event. There is no way to point this at an arbitrary pair."""
+        org, at, owned = rig()
+        import inspect
+        params = set(inspect.signature(org.repair_rename_identity).parameters)
+        assert not ({"old", "new", "node", "to"} & params), params
+        assert params == {"actor", "rename_at", "documents", "work_items"}, params
+    check("it takes no old/new node arguments at all", _not_a_general_rekey)
+
+    def _old_value_check():
+        org, at, owned = rig()
+        item(org, owned)["owner"] = {"node": "grandkid", "generation": 0}
+        item(org, owned)["last_updater"] = {"node": "grandkid", "generation": 0}
+        expect_error(lambda: org.repair_rename_identity(
+            USER, at, work_items=[owned]), "no current-identity field")
+        expect_error(lambda: org.repair_rename_identity(
+            USER, at, documents=["d-other"]), "not 'kid'")
+        assert {d["id"]: d["node"] for d in org.d["documents"]}["d-other"] \
+            == "grandkid", "a refused repair writes nothing"
+    check("a record that does not still hold the old id is refused",
+          _old_value_check)
+
+    def _all_or_nothing():
+        org, at, owned = rig()
+        expect_error(lambda: org.repair_rename_identity(
+            USER, at, documents=["d-stranded", "d-other"]), "not 'kid'")
+        assert {d["id"]: d["node"] for d in org.d["documents"]}["d-stranded"] \
+            == "kid", "one bad id in the allowlist must abort the whole repair"
+    check("one unrepairable id aborts the whole call (validate, then mutate)",
+          _all_or_nothing)
+
+    def _unknown_ids():
+        org, at, _o = rig()
+        expect_error(lambda: org.repair_rename_identity(
+            USER, at, documents=["d-nope"]), "no document")
+        expect_error(lambda: org.repair_rename_identity(
+            USER, at, work_items=["not-an-item"]), "no work item")
+    check("unknown document and work-item references are refused", _unknown_ids)
+
+    def _empty_allowlist():
+        org, at, _o = rig()
+        expect_error(lambda: org.repair_rename_identity(USER, at),
+                     "explicit allowlist")
+    check("an empty allowlist is refused — it never repairs 'everything'",
+          _empty_allowlist)
+
+    def _old_name_still_live():
+        """If the old id is still a node, these are not orphans and moving
+        them would take records off a live agent."""
+        org, at, owned = rig()
+        org.hire("boss", "boss", "haiku", 1, "kid", **spec())
+        expect_error(lambda: org.repair_rename_identity(
+            USER, at, work_items=[owned]), "still exists")
+        assert item(org, owned)["owner"]["node"] == "kid"
+    check("a re-used old name blocks the repair", _old_name_still_live)
+
+    def _destination_must_be_live():
+        org, at, owned = rig()
+        org.retire("boss", "sprocket")
+        expect_error(lambda: org.repair_rename_identity(
+            USER, at, work_items=[owned]), "not a live node")
+    check("a retired destination is refused", _destination_must_be_live)
+
+    def _second_run_refuses():
+        org, at, owned = rig()
+        org.repair_rename_identity(USER, at, work_items=[owned])
+        expect_error(lambda: org.repair_rename_identity(
+            USER, at, work_items=[owned]), "already repaired")
+    check("re-running the same repair is refused, not silently re-applied",
+          _second_run_refuses)
+
+    def _logged_once():
+        org, at, owned = rig()
+        org.repair_rename_identity(USER, at, documents=["d-stranded"],
+                                   work_items=[owned])
+        ev = [e for e in org.d["events"] if e.get("op") == "rename_repair"]
+        assert len(ev) == 1, ev
+        d = ev[0]["detail"]
+        assert d["node"] == "kid" and d["new"] == "sprocket" and d["at"] == at, d
+        assert d["documents"] == ["d-stranded"], d
+        assert sorted(d["work_items"]) == sorted(
+            [f"{owned}.owner", f"{owned}.last_updater"]), d
+    check("one event records the repair, naming what moved", _logged_once)
+
+
 # ===================================================================== §5
 def sec_supervisor() -> None:
     print("\n§5  supervisor.rename_node — the two directory moves and the state")
@@ -847,6 +1130,8 @@ def main() -> int:
     sec_name()
     sec_rekey()
     sec_history()
+    sec_work_identity()
+    sec_repair()
     sec_supervisor()
 
     print()

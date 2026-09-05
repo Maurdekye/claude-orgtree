@@ -673,6 +673,9 @@ FROZEN = [
     ("GET", "/api/extern/p1/messages", "the extern peer read"),
     ("GET", "/api/extern/p1/wait", "the extern peer wait"),
     ("POST", f"/api/orgs/{K}/nodes/{NID}/steer", "the steer-queue drain"),
+    # the rename repair reads its ACTOR off the wire, so the matrix is what
+    # stops a visitor claiming to be the user and rewriting ownership
+    ("POST", f"/api/orgs/{K}/repair-rename", "the rename repair"),
     ("POST", f"/api/orgs/{K}/disk/resize", "disk resize"),
     ("POST", f"/api/orgs/{K}/disk/resize/apply", "disk resize apply"),
     ("GET", f"/api/orgs/{K}/sweep-legacy", "the legacy-sweep preview"),

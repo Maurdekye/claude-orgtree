@@ -491,6 +491,13 @@ def _public_denied(method: str, rest: str, slug: str) -> tuple[int, str] | None:
         # status, but a kiosk token must never be able to use it as a DoS or
         # process-spawn surface.
         or rest.endswith("/process")
+        # The rename repair takes the ACTOR off the wire (that is how the
+        # renamed agent, not only the user, can put its own stranded records
+        # back), so the ledger's authority check is the whole bound and this
+        # matrix is what keeps a share-token holder from simply claiming to
+        # be the user. It rewrites ownership of documents and work items:
+        # admin-only, like every other repair surface.
+        or rest.endswith("/repair-rename")
         or rest == "/api/fs"                                 # filesystem browse
         or (method == "PUT" and rest.endswith("/orgmd"))     # org.md edits
         # rewrites the whole docket and writes a JSON export to disk — an
@@ -3771,6 +3778,52 @@ async def document_dismiss(slug: str, did: str) -> dict[str, Any]:
         store.save_org(org)
     await hub.changed(slug)
     return {"ok": True, "node": r["node"]}
+
+
+class RenameRepair(Body):
+    """The allowlist for one bounded rename repair. `rename_at` names the
+    logged event; `documents` and `work_items` name the records to move, work
+    items by SLUG or id (`_work_find` takes either, so this survives the
+    docket's slug migration). `actor` is the identity the ledger checks — the
+    default is the user, who owns this route."""
+    rename_at: str
+    documents: list[str] = []
+    work_items: list[str] = []
+    actor: str = USER
+
+
+@app.post("/api/orgs/{slug}/repair-rename")
+async def repair_rename(slug: str, body: RenameRepair) -> dict[str, Any]:
+    """Finish a rename for records that a rename before the re-key covered
+    left stranded under the old id (presented documents, and the CURRENT
+    ownership fields of work items).
+
+    This is the SUPPORTED route because it is the only one that runs inside
+    the process holding `store.DOC_LOCK`: the canonical load → mutate → save
+    cycle, so a concurrent API op cannot lose the repair (or have its own
+    write lost by it). An out-of-process script cannot take that lock —
+    `DOC_LOCK` is a `threading.RLock` — and a compare-and-swap on the stored
+    row only protects the instant of the write, not against a backend that
+    loaded the document earlier and saves later.
+
+    Deliberately NOT a general rekey: the old and new ids come from ONE logged
+    `rename` event named by its exact stamp, the records come from an explicit
+    allowlist, every one of them is checked to still hold the old id before
+    anything is written, and the ledger admits only the user or the renamed
+    identity itself. There is no MCP tool for it — adding one would change the
+    tool definitions in every agent's prompt, and this is a repair, not a
+    routine capability."""
+    with store.DOC_LOCK:
+        try:
+            org = store.load_org(slug)
+            r = org.repair_rename_identity(
+                body.actor, body.rename_at,
+                documents=body.documents, work_items=body.work_items)
+        except LedgerError as e:
+            raise HTTPException(422, str(e))
+        store.save_org(org)
+    await hub.changed(slug)
+    return {"ok": True, **r}
 
 
 # ---------------------------------------------------------------- the docket
