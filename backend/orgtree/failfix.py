@@ -1,35 +1,14 @@
 # pyright: strict
-"""Redacted failure fixtures (docs/failure-fixtures.md).
+"""Redacted failure fixtures — contract in docs/failure-fixtures.md.
 
-A failed turn used to leave a 400-character sentence. This module writes, at
-the supervisor's existing recording sites and nowhere else, a BOUNDED,
-ALLOWLIST-CAPTURED record of the failure boundary — enough to re-run the
-CLASSIFIERS offline, never enough to reconstruct a prompt, a mail body, a
-file, an error sentence or a credential.
-
-Invariants (Astra's amendments, 2026-09-05T19:52Z):
-  · NO PROSE. Free text never enters a fixture. From each text input only
-    RECOGNISED DIAGNOSTIC TAGS are kept (`tags_of`: the classifiers' own
-    phrase vocabularies, errno spellings, HTTP status numbers, exit codes,
-    JSON-RPC codes, the CLI's typed error codes, a few fixed diagnoses) plus
-    the input's LENGTH. An error that echoes a confidential sentence with no
-    key-shaped pattern in it is therefore dropped, not scrubbed.
-  · EVERY STRING LEAF IS VALIDATED against a closed vocabulary or a strict
-    pattern (`_vocab`, `_version`); anything else becomes "other" or None.
-  · NO IDENTITY. The fixture carries no org, node, account, host or path;
-    its place on disk (<ORGTREE_DATA>/failfix/<org>/<node>/) is the only
-    correlation, and that directory is the operator's own data root.
-  · OBSERVED ≠ INFERRED. `observed` is what the boundary saw (started,
-    boundary, exit code, typed status…); `recorded` is what the site
-    DECIDED; `phase` is an inference from `observed` with "unknown" allowed.
-    `replay` recomputes the predicates from the tags and reports DRIFT
-    against `recorded` — it does not claim which branch the supervisor
-    would take, because that also depends on state the fixture does not
-    hold (the retry counter, the lane's policy, a manual pause).
-  · BOUNDED. ≤ CAP_BYTES per fixture, ≤ RING per node, never in the org
-    document. FAIL-OPEN: `record` never raises and never changes a turn.
-  · PURE. Imports nothing that touches storage, a provider or a process;
-    `replay` takes its predicates as arguments (`failclass` supplies them).
+  · ALLOWLIST: a field not built here does not exist; no prose — text inputs
+    become per-predicate FEATURES from finite vocabularies, plus a length.
+  · EVERY STRING LEAF is a closed vocabulary member or "other"/None.
+  · TYPED EVIDENCE IS PRESERVED, never coerced: statuses go through the
+    supervisor's own strict predicate (failclass._strict_http_status).
+  · observed (facts) / recorded (the site's decision) / phase (inference,
+    "unknown" allowed) are separate fields.
+  · Bounded (CAP_BYTES, RING), never in the org document, fail-open, pure.
 """
 from __future__ import annotations
 
@@ -40,17 +19,18 @@ import re
 import time
 from typing import Any, Callable, Mapping, cast
 
-SCHEMA = 2
-_SEQ = itertools.count(1)       # per-process; `next` is atomic under the GIL
-CAP_BYTES = 4096
+from . import failclass
+
+SCHEMA = 3
+CAP_BYTES = 8192            # three maximal feature sets fit (suite §1 bound)
 RING = 40
 TEXT_FIELDS = ("err_blob", "stderr_tail", "result_detail")
+_SEQ = itertools.count(1)       # per-process; `next` is atomic under the GIL
 
 # --------------------------------------------------------------- vocabularies
-# ⚠ THESE ARE THE CLASSIFIERS' OWN PHRASES (failclass.py). The suite asserts
-# every literal a predicate searches for is listed here, and that a predicate
-# answers the same on a blob and on that blob's tags — so a phrase added to a
-# predicate without being added here fails the suite rather than the field.
+# The three predicate vocabularies are the classifiers' OWN phrases
+# (failclass.py); the suite asserts that by AST and asserts
+# predicate(blob) == predicate(blob_of(features_of(blob))).
 LIMIT_WORDS = ("limit", "usage", "weekly", "reached", "exceeded", "quota",
                "hit your", "resets", "session", "exceed", "account",
                "rate limit")
@@ -61,8 +41,8 @@ NET_WORDS = ("econnrefused", "econnreset", "etimedout", "econnaborted",
              "getaddrinfo", "dns lookup failed")
 FILTER_WORDS = ("content filter", "filtering policy", "content policy",
                 "blocked by content", "output blocked", "flagged by")
-# the CLI's typed API-error vocabulary (supervisor `_AUTH_ERROR_CODES` and the
-# list read out of the 2.1.258 binary), plus provider machine tags
+# the CLI's typed API-error vocabulary (read out of the 2.1.258 binary,
+# supervisor `_AUTH_ERROR_CODES` and siblings) and provider machine tags
 CODE_WORDS = ("authentication_failed", "oauth_org_not_allowed",
               "account_on_hold", "billing_error", "rate_limit",
               "model_not_found", "invalid_request", "server_error",
@@ -74,64 +54,83 @@ DIAG_WORDS = ("the cli exited", "without writing anything to stderr",
               "unknown option", "no conversation found", "turn killed",
               "per-message ceiling", "enospc", "enomem", "eacces", "eperm",
               "api status")
+# the options orgtree passes to the claude CLI (supervisor argv literals):
+# an `unknown option` diagnosis names one of these, or "other"
+CLI_OPTIONS = frozenset({
+    "--add-dir", "--settings", "--resume", "--model", "--fork-session",
+    "--strict-mcp-config", "--output-format", "--mcp-config",
+    "--disallowed-tools", "--allowedTools", "--verbose", "--session-id",
+    "--permission-mode", "--version", "--max-turns", "--input-format",
+    "--include-partial-messages", "--effort", "--debug-to-stderr",
+    "--append-system-prompt-file", "--print", "--continue"})
+FEATURE_VOCAB: dict[str, tuple[str, ...]] = {
+    "limit": LIMIT_WORDS, "net": NET_WORDS, "filter": FILTER_WORDS,
+    "code": CODE_WORDS, "diag": DIAG_WORDS}
 VOCAB = LIMIT_WORDS + NET_WORDS + FILTER_WORDS + CODE_WORDS + DIAG_WORDS
+NUM_MAX = 8                                    # per numeric feature list
 _STATUS_RE = re.compile(r"(?<![\d.])([45]\d\d)(?![\d.])")
 _EXIT_RE = re.compile(r"the cli exited (\d{1,3})")
 _RPC_RE = re.compile(r"(-32\d{3})")
-_OPTION_RE = re.compile(r"unknown option '?(--[a-z][a-z0-9-]{0,24})")
-TAG_MAX = 24
+_OPTION_RE = re.compile(r"unknown option '?(--[A-Za-z][A-Za-z0-9-]{0,40})")
 
 STREAM_CODES = frozenset(CODE_WORDS[:10])
 TERMINAL_REASONS = frozenset({"api_error", "max_turns", "error", "success",
                               "interrupted", "cancelled", "aborted"})
 CODEX_STATUS = frozenset({"completed", "failed", "interrupted", "in_progress"})
 CODEX_POOLS = frozenset({"direct", "reserve", "<sent>"})
+# codex_route._CODE_KIND keys (normalised machine tags) and KIND_* values
+CODEX_ERROR_CODES = frozenset({
+    "usagelimitexceeded", "ratelimitexceeded", "unauthorized",
+    "contextwindowexceeded", "sessionbudgetexceeded", "serveroverloaded",
+    "httpconnectionfailed", "responsestreamconnectionfailed",
+    "responsestreamdisconnected", "responsetoomanyfailedattempts"})
+CODEX_KINDS = frozenset({"usage-limit", "rate-limit", "auth", "context",
+                         "budget", "overloaded", "connection",
+                         "usage-limit-prose", "other", "unknown"})
 LANES = frozenset({"claude", "openrouter", "codex"})
 SITES = frozenset({"terminal", "exhausted", "codex"})
 PHASES = ("admission", "stream", "result-error", "teardown", "unknown")
 _VERSION_RE = re.compile(r"^\d{1,3}\.\d{1,3}\.\d{1,4}$")
+_AT_RE = re.compile(r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
 
 
-def tags_of(text: Any) -> list[str]:
-    """The recognised diagnostic tags in a text, in vocabulary order, then
-    the numbers (status/exit/rpc/option). Nothing else survives."""
+def features_of(text: Any) -> dict[str, list[Any]]:
+    """Per-predicate features of a text: for each vocabulary, the phrases
+    present (bounded by the vocabulary itself, so nothing later in the list
+    can be dropped), and up to NUM_MAX typed numbers each for status, exit,
+    rpc and option (an option outside CLI_OPTIONS is "other")."""
     b = str(text or "").lower()
+    out: dict[str, list[Any]] = {k: [] for k in FEATURE_VOCAB}
+    out.update({"status": [], "exit": [], "rpc": [], "option": []})
     if not b:
-        return []
-    out: list[str] = [w for w in VOCAB if w in b]
-    out += [f"status:{m}" for m in dict.fromkeys(_STATUS_RE.findall(b))]
-    out += [f"exit:{m}" for m in dict.fromkeys(_EXIT_RE.findall(b))]
-    out += [f"rpc:{m}" for m in dict.fromkeys(_RPC_RE.findall(b))]
-    out += [f"option:{m}" for m in dict.fromkeys(_OPTION_RE.findall(b))]
-    return out[:TAG_MAX]
+        return out
+    for k, words in FEATURE_VOCAB.items():
+        out[k] = [w for w in words if w in b]
+    out["status"] = [int(m) for m in dict.fromkeys(_STATUS_RE.findall(b))][:NUM_MAX]
+    out["exit"] = [int(m) for m in dict.fromkeys(_EXIT_RE.findall(b))][:NUM_MAX]
+    out["rpc"] = [int(m) for m in dict.fromkeys(_RPC_RE.findall(b))][:NUM_MAX]
+    out["option"] = [(m if m in CLI_OPTIONS else "other")
+                     for m in dict.fromkeys(_OPTION_RE.findall(str(text or "")))][:NUM_MAX]
+    return out
 
 
-def blob_of(tags: list[str]) -> str:
-    """The synthetic classifier input a tag list stands for: the phrases,
-    space-joined; the numeric tags rendered as the words they were read
-    from. The suite proves predicate(blob) == predicate(blob_of(tags_of(blob)))
-    on the corpus."""
+def blob_of(f: Mapping[str, Any]) -> str:
+    """The classifier input a feature set stands for."""
     words: list[str] = []
-    for t in tags:
-        if t.startswith("status:"):
-            words.append(f"api status {t[7:]}")
-        elif t.startswith("exit:"):
-            words.append(f"the cli exited {t[5:]}")
-        elif t.startswith("rpc:"):
-            words.append(t[4:])
-        elif t.startswith("option:"):
-            words.append(f"unknown option '{t[7:]}'")
-        else:
-            words.append(t)
+    for k in FEATURE_VOCAB:
+        words += [str(w) for w in (f.get(k) or [])]
+    words += [f"api status {s}" for s in (f.get("status") or [])]
+    words += [f"the cli exited {e}" for e in (f.get("exit") or [])]
+    words += [str(r) for r in (f.get("rpc") or [])]
+    words += [f"unknown option '{o}'" for o in (f.get("option") or [])]
     return " ".join(words)
 
 
-def _vocab(value: Any, allowed: frozenset[str], other: str | None = "other"
-           ) -> str | None:
+def _vocab(value: Any, allowed: frozenset[str]) -> str | None:
     if value is None or value == "":
         return None
-    v = str(value).strip().lower()[:32]
-    return v if v in allowed else other
+    v = str(value).strip().lower()[:48]
+    return v if v in allowed else "other"
 
 
 def _version(value: Any) -> str | None:
@@ -139,25 +138,14 @@ def _version(value: Any) -> str | None:
     return v if _VERSION_RE.match(v) else None
 
 
-_CODEWORD_RE = re.compile(r"^[a-z][a-z0-9_]{0,39}$")
-
-
-def _codeword(value: Any) -> str | None:
-    """A machine code word (`usage_limit_reached`, `server_error`…): a strict
-    identifier or "other" — never a sentence."""
-    if value is None or value == "":
-        return None
-    v = str(value).strip().lower()
-    return v if _CODEWORD_RE.match(v) else "other"
-
-
 def _int_or_none(value: Any) -> int | None:
-    if isinstance(value, bool):
-        return None
-    try:
-        return None if value is None else int(value)
-    except (TypeError, ValueError):
-        return None
+    """Counts and codes: an int (not a bool) or None — no string coercion."""
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _status(value: Any) -> int | None:
+    """Typed HTTP evidence through the supervisor's own strict predicate."""
+    return failclass._strict_http_status(value)
 
 
 def ran_as_sentinel(ran_as: Any) -> str:
@@ -171,31 +159,29 @@ def ran_as_sentinel(ran_as: Any) -> str:
 
 
 def phase_of(obs: Mapping[str, Any], codex: Mapping[str, Any] | None) -> str:
-    """Where the turn died, ONLY where the observed facts establish it.
+    """Where the turn died, only where the observed facts establish it.
 
-    admission     nothing was observed before a typed 401/402/429 (claude
-                  lanes), or the provider's terminal rejection with nothing
-                  run (codex, from its own recorded rejection flag)
+    admission     claude lanes: nothing was output, the result boundary was
+                  reached and it carried a typed 401/402/429 refusal;
+                  codex: the provider's own recorded rejection (which the
+                  classifier grants only with nothing run)
     stream        output began and no result boundary was ever reached
-    result-error  the result boundary was reached and it carried the error
-                  (is_error / a typed status): the provider answered after
-                  output began
-    teardown      the boundary was reached clean and the process still
-                  exited nonzero
-    unknown       everything else — including "no output" with no typed
-                  status, which does NOT prove nothing ran."""
+    result-error  the boundary was reached carrying the error after output
+    teardown      the boundary was reached clean; the process exited nonzero
+    unknown       everything else — no output does not prove nothing ran;
+                  an RPC error alone does not prove admission; a late
+                  timeout is not teardown."""
     if codex is not None:
         if codex.get("rejected_recorded"):
             return "admission"
-        items = int(codex.get("items_seen") or 0)
-        if codex.get("rpc_code") is not None and items == 0:
-            return "admission"
-        if items and codex.get("status") in (None, "other"):
+        if int(codex.get("items_seen") or 0) and codex.get("status") is None:
             return "stream"
         return "unknown"
     typed = obs.get("api_error_status") or obs.get("stream_status")
     if not obs.get("started"):
-        return "admission" if typed in (401, 402, 429) else "unknown"
+        if obs.get("boundary") and obs.get("is_error") and typed in (401, 402, 429):
+            return "admission"
+        return "unknown"
     if not obs.get("boundary"):
         return "stream"
     if obs.get("is_error") or typed is not None:
@@ -206,9 +192,8 @@ def phase_of(obs: Mapping[str, Any], codex: Mapping[str, Any] | None) -> str:
 
 
 def verdict_of(cl: Mapping[str, Any]) -> str:
-    """The predicate-level class, in the supervisor's precedence: filtered,
-    then limit, then net, else none. NOT the branch taken — that also reads
-    the retry counter, the lane policy and a manual pause."""
+    """The predicate-level class in the supervisor's precedence — NOT the
+    branch taken, which also reads the retry counter, lane policy, pause."""
     if cl.get("filtered"):
         return "filtered"
     if cl.get("limit"):
@@ -226,58 +211,55 @@ def build(*, lane: str, site: str, observed: Mapping[str, Any],
           codex: Mapping[str, Any] | None = None, ran_as: Any = "",
           cli: Mapping[str, Any] | None = None,
           at: str | None = None) -> dict[str, Any]:
-    """The fixture, from the boundary's facts. ALLOWLIST: only the keys read
-    here exist in the output; every string leaf is validated."""
     obs: dict[str, Any] = {
         "exit_code": _int_or_none(observed.get("exit_code")),
         "parked": bool(observed.get("parked")),
         "exit_only": bool(observed.get("exit_only")),
         "started": bool(observed.get("started")),
         "boundary": bool(observed.get("boundary")),
-        "errors_n": int(_int_or_none(observed.get("errors_n")) or 0),
-        "is_error": bool(observed.get("is_error")),
-        "api_error_status": _int_or_none(observed.get("api_error_status")),
-        "stream_status": _int_or_none(observed.get("stream_status")),
+        "errors_n": _int_or_none(observed.get("errors_n")) or 0,
+        "is_error": observed.get("is_error") is True,
+        "api_error_status": _status(observed.get("api_error_status")),
+        "stream_status": _status(observed.get("stream_status")),
         "stream_code": _vocab(observed.get("stream_code"), STREAM_CODES),
         "terminal_reason": _vocab(observed.get("terminal_reason"),
                                   TERMINAL_REASONS),
-        "run": int(_int_or_none(observed.get("run")) or 0),
+        "run": _int_or_none(observed.get("run")) or 0,
         "exhausted": bool(observed.get("exhausted")),
     }
-    tags: dict[str, list[str]] = {k: tags_of(text.get(k)) for k in TEXT_FIELDS}
+    feats: dict[str, dict[str, list[Any]]] = {
+        k: features_of(text.get(k)) for k in TEXT_FIELDS}
     lens: dict[str, int] = {k: len(str(text.get(k) or "")) for k in TEXT_FIELDS}
     rec: dict[str, Any] = {
-        "limit": bool(recorded.get("limit")),
-        "net": bool(recorded.get("net")),
-        "filtered": bool(recorded.get("filtered")),
-        "typed": _int_or_none(recorded.get("typed")),
+        "limit": recorded.get("limit") is True,
+        "net": recorded.get("net") is True,
+        "filtered": recorded.get("filtered") is True,
+        "typed": _status(recorded.get("typed")),
     }
     rec["verdict"] = verdict_of(rec)
     cx: dict[str, Any] | None = None
     if codex is not None:
-        # an INPUT projection of codex_route.classify_failure — never its
-        # outputs, except the one recorded decision kept apart by name
         cx = {
             "status": _vocab(codex.get("status"), CODEX_STATUS),
             "rpc_code": _int_or_none(codex.get("rpc_code")),
-            "error_code": _codeword(codex.get("error_code")),
-            "items_seen": int(_int_or_none(codex.get("items_seen")) or 0),
-            "had_usage": bool(codex.get("had_usage")),
-            "text_len": int(_int_or_none(codex.get("text_len")) or 0),
+            "error_code": _vocab(codex.get("error_code"), CODEX_ERROR_CODES),
+            "items_seen": _int_or_none(codex.get("items_seen")) or 0,
+            "had_usage": codex.get("had_usage") is True,
+            "text_len": _int_or_none(codex.get("text_len")) or 0,
             "pool": _vocab(codex.get("pool"), CODEX_POOLS),
             "served": _vocab(codex.get("served"), CODEX_POOLS),
-            "usage_prose": bool(codex.get("usage_prose")),
+            "usage_prose": codex.get("usage_prose") is True,
             "now": _int_or_none(codex.get("now")),
-            "kind_recorded": _codeword(codex.get("kind_recorded")),
-            "rejected_recorded": bool(codex.get("rejected_recorded")),
+            "kind_recorded": _vocab(codex.get("kind_recorded"), CODEX_KINDS),
+            "rejected_recorded": codex.get("rejected_recorded") is True,
         }
     fx: dict[str, Any] = {
         "schema": SCHEMA,
         "lane": _vocab(lane, LANES) or "other",
         "site": _vocab(site, SITES) or "other",
-        "at": at if at and re.match(r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$", str(at))
-        else time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "observed": obs, "tags": tags, "lens": lens, "recorded": rec,
+        "at": (str(at) if at and _AT_RE.match(str(at))
+               else time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())),
+        "observed": obs, "features": feats, "lens": lens, "recorded": rec,
         "codex": cx, "ran_as": ran_as_sentinel(ran_as),
         "cli": {"exit": _int_or_none((cli or {}).get("exit")),
                 "version": _version((cli or {}).get("version"))},
@@ -294,17 +276,14 @@ def fixture_dir(root: str, org: str, node: str) -> str:
 
 
 def write(root: str, org: str, node: str, fx: Mapping[str, Any]) -> str | None:
-    """One fixture into the node's ring; the oldest beyond RING is evicted.
-    Returns the path, or None when nothing could be written — never raises
-    (the caller is a failure path already)."""
+    """One fixture into the node's ring (oldest beyond RING evicted). Returns
+    the path, or None — never raises."""
     try:
         blob = json.dumps(fx, ensure_ascii=False, indent=1)
         if len(blob.encode("utf-8")) > CAP_BYTES:
             return None
         d = fixture_dir(root, org, node)
         os.makedirs(d, exist_ok=True)
-        # ms stamp + a per-process counter: two failures in one millisecond
-        # (the suite's ring check) must not share a name
         stamp = int(time.time() * 1000)
         seq = next(_SEQ) % 10000
         name = (f"{stamp:013d}-{seq:04d}-{fx.get('phase')}-"
@@ -326,8 +305,8 @@ def write(root: str, org: str, node: str, fx: Mapping[str, Any]) -> str | None:
 
 
 def record(root: str, org: str, node: str, **kw: Any) -> str | None:
-    """build + write, fail-open. The ONE entry point production calls; `org`
-    and `node` place the file and never enter it."""
+    """build + write, fail-open — the one entry point production calls.
+    `org`/`node` place the file and never enter it."""
     try:
         return write(root, org, node, build(**kw))
     except Exception:                                        # noqa: BLE001
@@ -357,20 +336,13 @@ Predicates = Mapping[str, Callable[..., Any]]
 
 
 def replay(fx: Mapping[str, Any], predicates: Predicates) -> dict[str, Any]:
-    """Re-run the classifiers on the fixture's tags and observed facts.
-
-    `predicates`: limit(blob), net(blob), filtered(blob),
-    died_in_flight(exit_only=, started=, boundary=), typed(res, stream_err)
-    — the pure functions in `failclass`. Returns
-      {"recomputed": {limit, net, filtered, typed, verdict},
-       "recorded": the fixture's own, "phase": re-inferred,
-       "drift": [every name whose recomputed value differs from the recorded]}
-    Codex outputs are NOT recomputed here (their classifier is not yet behind
-    a pure boundary); the projection is carried for a later milestone."""
+    """Re-run the predicates on the fixture's features and observed facts.
+    Returns recomputed / recorded / phase / drift (names whose recomputed
+    value differs from the recorded). Codex outputs are not recomputed."""
     obs = cast("Mapping[str, Any]", fx.get("observed") or {})
-    tags = cast("Mapping[str, list[str]]", fx.get("tags") or {})
+    feats = cast("Mapping[str, Any]", fx.get("features") or {})
     rec = cast("Mapping[str, Any]", fx.get("recorded") or {})
-    blob = blob_of(list(tags.get("err_blob") or []))
+    blob = blob_of(cast("Mapping[str, Any]", feats.get("err_blob") or {}))
     typed: int | None = None
     if fx.get("lane") == "openrouter":
         res = {"is_error": bool(obs.get("is_error")),

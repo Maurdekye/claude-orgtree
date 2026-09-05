@@ -915,8 +915,10 @@ def _failfix_record(slug: str, nid: str, *, site: str, lane: str,
                       "boundary": boundary,
                       "errors_n": len(res.get("errors") or []),
                       "is_error": res.get("is_error") is True,
-                      "api_error_status": res.get("api_error_status"),
-                      "stream_status": stream_err.get("status"),
+                      # typed evidence under either spelling, strict int only
+                      "api_error_status": _typed_status_field(dict(res)),
+                      "stream_status": _strict_http_status(
+                          stream_err.get("status")),
                       "stream_code": stream_err.get("code"),
                       "terminal_reason": res.get("terminal_reason"),
                       "run": run, "exhausted": exhausted},

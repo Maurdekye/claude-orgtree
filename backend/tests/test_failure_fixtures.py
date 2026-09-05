@@ -1,23 +1,24 @@
 """Redacted failure fixtures (backend/orgtree/failfix.py, failclass.py,
 tools/replay_failure.py, docs/failure-fixtures.md).
 
-    §1  tags — canary sentences vanish from EVERY capture field; recognised
-        diagnostic tags survive; the tag vocabulary IS the predicates'
-        vocabulary (AST), and a predicate answers the same on a blob and on
-        that blob's tags (the replay equivalence, over a corpus)
-    §2  every string leaf is validated; phase is evidence, with unknown
-    §3  bounds — the ring, the byte cap, an unwritable root, malformed input
-    §4  REAL failures through the fake CLI (test_limit_freeze's rig):
-        died-in-flight, is_error 401 with canaries and secrets in the result,
-        died-with-stderr → fixtures on disk with the right observed facts,
-        phase and recorded verdict; replay through failclass recomputes the
-        same verdict with no drift; an edited fixture drifts (positive control)
-    §5  the replay tool as a subprocess, --assert both ways
-    §6  purity — failclass' sources are byte-identical to the supervisor's;
-        the tool runs under an import hook that refuses storage / provider /
-        process modules and file writes, with a control proving the hook bites
+    §1  features — canaries (sentences AND identifier-shaped) vanish from
+        EVERY capture field; diagnostic controls survive; the vocabulary IS
+        the predicates' (AST); predicate(blob) == predicate(blob_of(features))
+        over a corpus AND on the maximal mixed input; the bound is the
+        vocabulary itself
+    §2  validated leaves — closed vocabularies; typed evidence preserved
+        strictly, never coerced; phase from established facts only
+    §3  bounds — the ring, the byte cap (maximal input), unwritable root,
+        malformed input
+    §4  CAPTURE through the real helper (supervisor._failfix_record): the
+        camelCase status spelling is typed evidence, a digit string is not,
+        and neither drifts on replay
+    §5  REAL failures through the fake CLI (test_limit_freeze's rig)
+    §6  the replay tool as a subprocess, --assert both ways, under a purity
+        import hook with a biting control
+    §7  failclass' sources are byte-identical to the supervisor's
 
-§4 and §5 spawn `node` for the stand-in CLI; declared INERT when it is absent.
+§5 and §6 spawn `node` for the stand-in CLI; declared INERT when absent.
 
     python backend/tests/test_failure_fixtures.py
 """
@@ -79,25 +80,28 @@ PURE_FNS = ("_strict_http_status", "_typed_status_field", "_typed_api_status",
             "_looks_like_usage_limit", "_looks_like_connection_failure",
             "_died_in_flight", "_looks_like_filtered")
 
-# canaries: arbitrary confidential-looking sentences with NO key/path shape
+# canaries: confidential-looking SENTENCES with no key/path shape …
 CANARIES = ("the quarterly numbers are down twelve percent",
             "ZEBRA-OTTER-7731 said the merger closes friday",
             "patient initials JD, room 4, dosage doubled")
+# … and IDENTIFIER-shaped ones, which a shape filter would let through
+IDENT_CANARIES = ("privateclientname", "internalpassword", "zebraotter7731",
+                  "acme_corp_prod", "--privateclientname")
 SECRETS = ("sk-ant-api03-PLANTEDSECRET0123456789abcdef",
            "Bearer PLANTEDBEARER.token", r"C:\Users\planted\notes.txt",
            "planted.user@example.com", "https://planted.example.com/x?k=1")
-# nonsecret diagnostic controls, and the tag each must produce
-CONTROLS = (("Error: ECONNRESET while reading", "econnreset"),
-            ("socket hang up", "socket hang up"),
-            ("You've hit your limit · resets 1:40pm", "hit your"),
-            ("API status 401 · Invalid API key", "status:401"),
-            ("the CLI exited 1 without writing anything to stderr", "exit:1"),
-            ("error: unknown option '--effort'", "option:--effort"),
-            ("turn/steer: {\"code\": -32000}", "rpc:-32000"),
-            ("usageLimitExceeded", "usagelimitexceeded"),
-            ("blocked by content filtering policy", "content filter"),
-            ("ENOSPC: no space left on device", "enospc"))
-CORPUS = [c for c, _ in CONTROLS] + list(CANARIES) + [
+# nonsecret diagnostic controls → (feature list, member)
+CONTROLS = (("Error: ECONNRESET while reading", "net", "econnreset"),
+            ("socket hang up", "net", "socket hang up"),
+            ("You've hit your limit · resets 1:40pm", "limit", "hit your"),
+            ("API status 401 · Invalid API key", "status", 401),
+            ("the CLI exited 1 without writing anything to stderr", "exit", 1),
+            ("error: unknown option '--effort'", "option", "--effort"),
+            ("turn/steer: {\"code\": -32000}", "rpc", -32000),
+            ("usageLimitExceeded", "code", "usagelimitexceeded"),
+            ("blocked by content filtering policy", "filter", "content filter"),
+            ("ENOSPC: no space left on device", "diag", "enospc"))
+CORPUS = [c for c, _, _ in CONTROLS] + list(CANARIES) + list(IDENT_CANARIES) + [
     "You've hit your usage limit for this account", "rate limit exceeded",
     "Weekly limit reached — resets Monday", "limit", "usage", "quota exceeded",
     "fetch failed: getaddrinfo ENOTFOUND api.anthropic.com",
@@ -109,57 +113,82 @@ CORPUS = [c for c, _ in CONTROLS] + list(CANARIES) + [
     "limit exceed account", "exceed rate limit", "session limit",
     "hello world", "Invalid API key · Please run /login",
 ]
+# the MAXIMAL mixed input: every vocabulary phrase, and more numbers than fit
+MAXIMAL = (" · ".join(failfix.VOCAB)
+           + " " + " ".join(f"API status {s}" for s in range(400, 420))
+           + " " + " ".join(f"the CLI exited {e}" for e in range(1, 12))
+           + " " + " ".join(f"-32{n:03d}" for n in range(0, 12))
+           + " " + " ".join(f"unknown option '{o}'"
+                            for o in sorted(failfix.CLI_OPTIONS))
+           + " " + CANARIES[0] + " " + IDENT_CANARIES[0])
 
 
-def sec_tags() -> None:
-    print("\n§1  tags")
+def _every_leaf(o, out: list) -> list:
+    if isinstance(o, dict):
+        for k, v in o.items():
+            out.append(str(k))
+            _every_leaf(v, out)
+    elif isinstance(o, list):
+        for v in o:
+            _every_leaf(v, out)
+    else:
+        out.append(str(o))
+    return out
+
+
+def _assert_no_canary(fx: dict, extra: tuple[str, ...] = ()) -> None:
+    leaves = " ".join(_every_leaf(fx, [])).lower()
+    for canary in CANARIES:
+        for word in canary.lower().split():
+            if len(word) >= 5:
+                assert word not in leaves, (canary, word)
+    for ident in IDENT_CANARIES + extra:
+        assert ident.lower().lstrip("-") not in leaves, (ident, leaves[:400])
+
+
+def sec_features() -> None:
+    print("\n§1  features")
 
     def _canaries_vanish_everywhere() -> None:
-        for canary in CANARIES:
+        for canary in CANARIES + IDENT_CANARIES:
             fx = failfix.build(
                 lane="claude", site="terminal",
                 observed={"stream_code": canary, "terminal_reason": canary,
                           "started": True},
-                text={"err_blob": f"turn failed: {canary} ECONNRESET",
+                text={"err_blob": f"unknown option '{canary}' ECONNRESET {canary}",
                       "stderr_tail": canary, "result_detail": canary},
-                recorded={"net": True}, codex={"status": canary, "pool": canary,
-                                                "served": canary,
-                                                "error_code": canary,
-                                                "kind_recorded": canary},
+                recorded={"net": True},
+                codex={"status": canary, "pool": canary, "served": canary,
+                       "error_code": canary, "kind_recorded": canary},
                 ran_as=canary, cli={"version": canary}, at=canary)
-            js = json.dumps(fx).lower()
-            for word in canary.lower().split():
-                if len(word) >= 5:
-                    assert word not in js, (canary, word, js)
-            assert "econnreset" in fx["tags"]["err_blob"]
+            _assert_no_canary(fx)
+            assert "econnreset" in fx["features"]["err_blob"]["net"]
+            assert fx["features"]["err_blob"]["option"] in ([], ["other"]), fx["features"]
             assert fx["lens"]["stderr_tail"] == len(canary)
-    check("canary sentences vanish from every capture field (text, stream "
-          "code, terminal reason, codex status/pool/code, ran_as, version, "
-          "at); the errno beside one survives; lengths are kept",
+    check("sentence AND identifier canaries vanish from every leaf (text, "
+          "stream code, terminal reason, codex status/pool/error_code/kind, "
+          "option, ran_as, version, at); the errno beside one survives",
           _canaries_vanish_everywhere)
 
     def _secrets_vanish() -> None:
         for s in SECRETS:
-            tags = failfix.tags_of(f"turn failed: {s} / then ECONNRESET")
-            assert "econnreset" in tags
-            assert not any("planted" in t for t in tags), (s, tags)
-            assert not any(s.lower() in t for t in tags), (s, tags)
-    check("key / bearer / path / email / url never become a tag",
+            f = failfix.features_of(f"turn failed: {s} / then ECONNRESET")
+            leaves = " ".join(_every_leaf(f, [])).lower()
+            assert "econnreset" in leaves and "planted" not in leaves, (s, f)
+    check("key / bearer / path / email / url never become a feature",
           _secrets_vanish)
 
-    def _controls_tagged() -> None:
-        for text, tag in CONTROLS:
-            assert tag in failfix.tags_of(text), (text, failfix.tags_of(text))
-    check("nonsecret diagnostic controls each produce their tag",
-          _controls_tagged)
+    def _controls() -> None:
+        for text, key, member in CONTROLS:
+            assert member in failfix.features_of(text)[key], (text, failfix.features_of(text))
+    check("nonsecret diagnostic controls each produce their feature",
+          _controls)
 
     def _vocab_is_the_predicates() -> None:
-        """every literal a predicate searches for is in the tag vocabulary"""
         src = open(os.path.join(HERE, "..", "orgtree", "failclass.py"),
                    encoding="utf-8").read()
-        tree = ast.parse(src)
         found: set[str] = set()
-        for n in tree.body:
+        for n in ast.parse(src).body:
             if isinstance(n, ast.FunctionDef) and n.name.startswith("_looks_like"):
                 for c in ast.walk(n):
                     if isinstance(c, ast.Constant) and isinstance(c.value, str) \
@@ -168,78 +197,133 @@ def sec_tags() -> None:
                         found.add(c.value)
         missing = sorted(found - set(failfix.VOCAB))
         assert not missing, f"predicate phrases missing from VOCAB: {missing}"
-        assert len(found) >= 30, len(found)      # the AST walk found the lists
-    check("the tag vocabulary contains every phrase the predicates search for "
-          "(AST over failclass), and the walk found them",
-          _vocab_is_the_predicates)
+        assert len(found) >= 30, len(found)
+    check("the vocabulary contains every phrase the predicates search for "
+          "(AST over failclass)", _vocab_is_the_predicates)
 
-    def _replay_equivalence() -> None:
-        """predicate(blob) == predicate(blob_of(tags_of(blob))) — the
-        property replay rests on"""
+    def _equivalence() -> None:
         agree = 0
-        for blob in CORPUS:
-            tb = failfix.blob_of(failfix.tags_of(blob))
+        for blob in CORPUS + [MAXIMAL]:
+            tb = failfix.blob_of(failfix.features_of(blob))
             for name in ("limit", "net", "filtered"):
-                p = PREDICATES[name]
-                assert p(blob) == p(tb), (name, blob, tb)
+                assert PREDICATES[name](blob) == PREDICATES[name](tb), (name, blob[:80])
                 agree += 1
-        assert agree == 3 * len(CORPUS)
-        assert any(PREDICATES["limit"](b) for b in CORPUS)      # not vacuous
-        assert any(PREDICATES["net"](b) for b in CORPUS)
-        assert any(PREDICATES["filtered"](b) for b in CORPUS)
-    check(f"replay equivalence · limit/net/filtered agree on {len(CORPUS)} "
-          "blobs and their tag reconstructions; each predicate fires on some",
-          _replay_equivalence)
+        assert agree == 3 * (len(CORPUS) + 1)
+        for name in ("limit", "net", "filtered"):
+            assert any(PREDICATES[name](b) for b in CORPUS)
+    check(f"replay equivalence over {len(CORPUS)} blobs and the maximal mixed "
+          "input; each predicate fires on some", _equivalence)
+
+    def _bound_is_the_vocabulary() -> None:
+        f = failfix.features_of(MAXIMAL)
+        for key, words in failfix.FEATURE_VOCAB.items():
+            assert f[key] == list(words), (key, f[key])     # ALL present, in order
+        assert len(f["status"]) == failfix.NUM_MAX and f["status"][0] == 400
+        assert len(f["exit"]) == failfix.NUM_MAX and len(f["rpc"]) == failfix.NUM_MAX
+        assert len(f["option"]) == failfix.NUM_MAX and "other" not in f["option"]
+        assert failfix.features_of("unknown option '--privateclientname'")["option"] == ["other"]
+        fx = failfix.build(lane="claude", site="terminal", observed={},
+                           text={k: MAXIMAL for k in failfix.TEXT_FIELDS},
+                           recorded={})
+        assert len(json.dumps(fx, indent=1).encode()) <= failfix.CAP_BYTES, \
+            len(json.dumps(fx, indent=1).encode())
+        _assert_no_canary(fx)
+    check("bound · on the maximal mixed input every vocabulary phrase is "
+          "present (nothing later dropped), numbers cap at NUM_MAX, an "
+          "unknown option is 'other', and three maximal inputs fit the cap",
+          _bound_is_the_vocabulary)
 
 
 def sec_leaves() -> None:
-    print("\n§2  validated leaves, and phase as evidence")
+    print("\n§2  validated leaves, typed evidence, phase")
 
     def _leaves() -> None:
         fx = failfix.build(lane="Nonsense", site="?", observed={
             "stream_code": "authentication_failed", "terminal_reason": "api_error",
-            "exit_code": "7", "api_error_status": True},
-            text={}, recorded={"typed": "401"}, cli={"version": "2.1.258"},
+            "exit_code": 7, "api_error_status": 401},
+            text={}, recorded={"typed": 401}, cli={"version": "2.1.258"},
             codex={"status": "failed", "pool": "reserve", "served": "<sent>",
-                   "error_code": "usage_limit_reached", "rpc_code": "-32000",
-                   "kind_recorded": "usage limit (prose)"})
+                   "error_code": "usagelimitexceeded", "rpc_code": -32000,
+                   "kind_recorded": "usage-limit"})
         assert fx["lane"] == "other" and fx["site"] == "other"
         o = fx["observed"]
         assert o["stream_code"] == "authentication_failed"
         assert o["terminal_reason"] == "api_error" and o["exit_code"] == 7
-        assert o["api_error_status"] is None, "a bool is not a status"
         assert fx["recorded"]["typed"] == 401 and fx["cli"]["version"] == "2.1.258"
         c = fx["codex"]
         assert c["status"] == "failed" and c["pool"] == "reserve"
-        assert c["error_code"] == "usage_limit_reached" and c["rpc_code"] == -32000
-        assert c["kind_recorded"] == "other", c
+        assert c["error_code"] == "usagelimitexceeded" and c["rpc_code"] == -32000
+        assert c["kind_recorded"] == "usage-limit", c
         bad = failfix.build(lane="claude", site="terminal", observed={
-            "stream_code": "Please run claude auth login", "terminal_reason": "x y"},
-            text={}, recorded={}, cli={"version": "v2 (built by planted)"})
+            "stream_code": "Please run claude auth login", "terminal_reason": "x y",
+            "exit_code": "7"},
+            text={}, recorded={}, cli={"version": "v2 (built by planted)"},
+            codex={"error_code": "privateclientname",
+                   "kind_recorded": "internalpassword", "rpc_code": "-32000"})
         assert bad["observed"]["stream_code"] == "other"
         assert bad["observed"]["terminal_reason"] == "other"
+        assert bad["observed"]["exit_code"] is None, "a digit string is not an int"
         assert bad["cli"]["version"] is None
+        assert bad["codex"]["error_code"] == "other", bad["codex"]
+        assert bad["codex"]["kind_recorded"] == "other", bad["codex"]
+        assert bad["codex"]["rpc_code"] is None
         assert failfix.ran_as_sentinel("0f3c-some-account-uuid") == "account"
-    check("every string leaf is a closed vocabulary or a strict pattern; a "
-          "sentence becomes 'other' or None; ran_as is a sentinel, not a hash",
+    check("closed vocabularies: known codes/kinds/reasons pass, identifier-"
+          "shaped unknowns become 'other', digit strings are not ints",
           _leaves)
+
+    def _typed_strict() -> None:
+        """the fixture never turns invalid evidence into valid evidence"""
+        for bad in ("401", True, 401.0, 399, 600, None):
+            fx = failfix.build(lane="claude", site="terminal",
+                               observed={"api_error_status": bad,
+                                         "stream_status": bad},
+                               text={}, recorded={"typed": bad})
+            assert fx["observed"]["api_error_status"] is None, bad
+            assert fx["observed"]["stream_status"] is None, bad
+            assert fx["recorded"]["typed"] is None, bad
+        fx = failfix.build(lane="openrouter", site="terminal",
+                           observed={"api_error_status": 401, "is_error": True},
+                           text={}, recorded={"limit": True, "typed": 401})
+        assert fx["observed"]["api_error_status"] == 401
+        assert failfix.replay(fx, PREDICATES)["drift"] == []
+        # Astra's counterexample: '401' with the predicate saying None
+        fx2 = failfix.build(lane="openrouter", site="terminal",
+                            observed={"api_error_status": "401", "is_error": True},
+                            text={}, recorded={"typed": failclass._typed_api_status(
+                                {"is_error": True, "api_error_status": "401"}, {})})
+        assert fx2["observed"]["api_error_status"] is None
+        assert fx2["recorded"]["typed"] is None
+        assert failfix.replay(fx2, PREDICATES)["drift"] == [], failfix.replay(fx2, PREDICATES)
+    check("typed evidence: '401'/True/401.0/399/600 → None everywhere; int "
+          "401 kept; neither drifts on replay (the coercion counterexample)",
+          _typed_strict)
 
     def _phase() -> None:
         ph = failfix.phase_of
-        assert ph({"started": False}, None) == "unknown"          # no output ≠ nothing ran
-        assert ph({"started": False, "api_error_status": 401}, None) == "admission"
+        assert ph({"started": False}, None) == "unknown"
+        assert ph({"started": False, "api_error_status": 401}, None) == "unknown", \
+            "a typed status with no boundary does not establish admission"
+        assert ph({"started": False, "boundary": True, "is_error": True,
+                   "api_error_status": 401}, None) == "admission"
+        assert ph({"started": False, "boundary": True, "is_error": True,
+                   "api_error_status": 500}, None) == "unknown"
         assert ph({"started": True, "boundary": False}, None) == "stream"
         assert ph({"started": True, "boundary": True, "is_error": True}, None) == "result-error"
         assert ph({"started": True, "boundary": True, "stream_status": 429}, None) == "result-error"
         assert ph({"started": True, "boundary": True, "exit_code": 1}, None) == "teardown"
         assert ph({"started": True, "boundary": True, "exit_code": 0}, None) == "unknown"
         assert ph({}, {"rejected_recorded": True}) == "admission"
-        assert ph({}, {"rpc_code": -32000, "items_seen": 0}) == "admission"
+        # Astra's counterexample: an RPC error with usage and text observed
+        assert ph({}, {"rpc_code": -32000, "items_seen": 0, "had_usage": True,
+                       "text_len": 10, "status": "failed"}) == "unknown"
+        assert ph({}, {"rpc_code": -32000, "items_seen": 0}) == "unknown"
         assert ph({}, {"status": None, "items_seen": 3}) == "stream"
         assert ph({}, {"status": "failed", "items_seen": 3}) == "unknown"
-        assert ph({}, {"status": None, "items_seen": 0}) == "unknown"     # a late timeout
-    check("phase: admission/teardown only on evidence; unknown otherwise; "
-          "result-error when the boundary carried the error", _phase)
+        assert ph({}, {"status": None, "items_seen": 0}) == "unknown"
+    check("phase: admission only from a refusing boundary (claude) or the "
+          "recorded rejection (codex); an RPC error alone, a typed status "
+          "with no boundary, a late timeout → unknown", _phase)
 
     def _allowlist() -> None:
         fx = failfix.build(lane="claude", site="terminal",
@@ -248,11 +332,10 @@ def sec_leaves() -> None:
                            recorded={"net": True, "extra": "SECRET"})
         js = json.dumps(fx)
         assert "THE PROMPT" not in js and "MAIL BODY" not in js and "SECRET" not in js
-        assert set(fx) == {"schema", "lane", "site", "at", "observed", "tags",
+        assert set(fx) == {"schema", "lane", "site", "at", "observed", "features",
                            "lens", "recorded", "codex", "ran_as", "cli", "phase"}
-        assert "org" not in fx and "node" not in fx
-    check("allowlist · unknown keys do not exist; no org, node, host or path "
-          "in the fixture", _allowlist)
+    check("allowlist · unknown keys do not exist; no org, node, host or path",
+          _allowlist)
 
 
 def sec_bounds() -> None:
@@ -261,25 +344,12 @@ def sec_bounds() -> None:
 
     def _ring() -> None:
         for i in range(failfix.RING + 1):
-            p = failfix.record(root, "o", "n", lane="claude", site="terminal",
-                               observed={"run": i}, text={}, recorded={},
-                               at=f"2026-09-05T00:00:{i % 60:02d}Z")
-            assert p, i
+            assert failfix.record(root, "o", "n", lane="claude", site="terminal",
+                                  observed={"run": i}, text={}, recorded={}), i
         names = failfix.list_fixtures(root, "o", "n")
         assert len(names) == failfix.RING, len(names)
         assert failfix.load(names[0])["observed"]["run"] == 1, "oldest not evicted"
     check(f"ring · the {failfix.RING + 1}th fixture evicts the oldest", _ring)
-
-    def _cap() -> None:
-        big = ("ECONNRESET " * 3000) + ("E" * 20_000)
-        fx = failfix.build(lane="claude", site="terminal", observed={},
-                           text={"err_blob": big, "stderr_tail": big,
-                                 "result_detail": big}, recorded={})
-        assert len(json.dumps(fx, indent=1).encode()) <= failfix.CAP_BYTES
-        assert fx["lens"]["err_blob"] == len(big)
-        assert len(fx["tags"]["err_blob"]) <= failfix.TAG_MAX
-    check("cap · a 50 KB blob yields a bounded tag list and its length; the "
-          "fixture stays under the byte cap", _cap)
 
     def _unwritable() -> None:
         blocked = os.path.join(root, "blocked")
@@ -288,14 +358,58 @@ def sec_bounds() -> None:
             f.write("a file where the directory should be")
         assert failfix.record(blocked, "o", "n", lane="claude", site="terminal",
                               observed={}, text={}, recorded={}) is None
-    check("fail-open · an unwritable root records nothing and raises nothing",
+    check("fail-open · an unwritable root records nothing, raises nothing",
           _unwritable)
 
     def _bad_input() -> None:
         assert failfix.record(root, "o", "n", lane="claude", site="terminal",
                               observed=None, text=None, recorded=None) is None  # type: ignore[arg-type]
-    check("fail-open · malformed inputs record nothing and raise nothing",
+    check("fail-open · malformed inputs record nothing, raise nothing",
           _bad_input)
+
+
+def sec_capture() -> None:
+    print("\n§4  capture through the real helper")
+    slug, nid = rig.probe_org()
+
+    def _one(res: dict, stream: dict) -> dict:
+        # the site's own class choice: a typed status decides exclusively,
+        # prose only when there is none (supervisor, 2026-09-05 OpenRouter rule)
+        blob = "Invalid API key " + IDENT_CANARIES[0]
+        typed = supervisor._typed_api_status(res, stream)
+        limit = (typed in (401, 402, 429) if typed is not None
+                 else supervisor._looks_like_usage_limit(blob))
+        net = (typed >= 500 if typed is not None
+               else supervisor._looks_like_connection_failure(blob))
+        supervisor._failfix_record(
+            slug, nid, site="terminal", lane="openrouter",
+            err_blob=blob, err="",
+            res=res, stream_err=stream, exit_code=1, parked=False,
+            exit_only=False, started=False, boundary=True, run=0,
+            exhausted=False, limit=limit, net=net,
+            typed=typed, ran_as="openrouter")
+        names = failfix.list_fixtures(store.DATA_ROOT, slug, nid)
+        fixture(bool(names), "the helper wrote no fixture")
+        return failfix.load(names[-1])
+
+    def _camel() -> None:
+        fx = _one({"is_error": True, "apiErrorStatus": 401, "result": "Invalid API key"}, {})
+        assert fx["observed"]["api_error_status"] == 401, fx["observed"]
+        assert fx["recorded"]["typed"] == 401 and fx["phase"] == "admission"
+        assert failfix.replay(fx, PREDICATES)["drift"] == []
+        _assert_no_canary(fx)
+    check("capture · the CLI's camelCase status is typed evidence: 401, "
+          "phase admission, no drift", _camel)
+
+    def _digits() -> None:
+        fx = _one({"is_error": True, "api_error_status": "401",
+                   "result": "Invalid API key"}, {"status": "503"})
+        assert fx["observed"]["api_error_status"] is None, fx["observed"]
+        assert fx["observed"]["stream_status"] is None
+        assert fx["recorded"]["typed"] is None and fx["phase"] == "unknown"
+        assert failfix.replay(fx, PREDICATES)["drift"] == []
+    check("capture · a digit-string status is NOT evidence: None, phase "
+          "unknown, no drift (never coerced into a refusal)", _digits)
 
 
 def _last_fixture(slug: str, nid: str) -> dict:
@@ -305,7 +419,7 @@ def _last_fixture(slug: str, nid: str) -> dict:
 
 
 def sec_real() -> dict:
-    print("\n§4  real failures through the fake CLI")
+    print("\n§5  real failures through the fake CLI")
     got: dict = {}
 
     slug, nid = rig.probe_org()
@@ -321,26 +435,22 @@ def sec_real() -> dict:
         assert fx["lane"] == "claude" and fx["site"] == "terminal", fx
         assert o["started"] and not o["boundary"] and o["exit_only"], o
         assert o["exit_code"] == 1 and o["run"] == 1 and not o["exhausted"], o
-        assert fx["phase"] == "stream", fx["phase"]
-        assert fx["recorded"]["verdict"] == "net", fx["recorded"]
-        assert "exit:1" in fx["tags"]["err_blob"], fx["tags"]
-        assert "quarterly" not in json.dumps(fx) and "hello" not in json.dumps(fx)
-    check("died-in-flight · fixture: site terminal, started, no boundary, "
-          "exit_only, run 1, phase stream, recorded verdict net; the message "
-          "is not in it", _died)
+        assert fx["phase"] == "stream" and fx["recorded"]["verdict"] == "net"
+        assert 1 in fx["features"]["err_blob"]["exit"], fx["features"]
+        _assert_no_canary(fx, ("hello",))
+    check("died-in-flight · site terminal, started, no boundary, exit_only, "
+          "run 1, phase stream, verdict net; the message is not in it", _died)
 
     def _replay_same() -> None:
         fixture(bool(got), "no fixture from the died-in-flight check")
         out = failfix.replay(got, PREDICATES)
-        assert out["drift"] == [], out
-        assert out["recomputed"]["verdict"] == "net" == out["recorded"]["verdict"]
-    check("replay · failclass recomputes verdict net from the fixture, no "
-          "drift, recorded and recomputed reported apart", _replay_same)
+        assert out["drift"] == [] and out["recomputed"]["verdict"] == "net", out
+    check("replay · failclass recomputes verdict net, no drift", _replay_same)
 
     def _drift_control() -> None:
         fixture(bool(got), "no fixture from the died-in-flight check")
         bad = copy.deepcopy(got)
-        bad["observed"]["boundary"] = True         # a straggler, not a casualty
+        bad["observed"]["boundary"] = True
         out = failfix.replay(bad, PREDICATES)
         assert "verdict" in out["drift"] and out["recomputed"]["verdict"] == "none", out
         assert "phase" in out["drift"] and out["phase"] == "teardown", out
@@ -349,8 +459,8 @@ def sec_real() -> dict:
 
     slug2, nid2 = rig.probe_org()
     planted = ("Invalid API key " + SECRETS[0] + " for " + SECRETS[3] + " at "
-               + SECRETS[4] + " " + SECRETS[1] + " cfg " + SECRETS[2]
-               + " · " + CANARIES[1])
+               + SECRETS[4] + " " + SECRETS[1] + " cfg " + SECRETS[2] + " · "
+               + CANARIES[1] + " unknown option '" + IDENT_CANARIES[4] + "'")
     rig.set_mode("iserror", limit_text=planted, api_error_status=401)
     rig.run_turn(slug2, nid2, "second " + CANARIES[2])
     got2: dict = {}
@@ -358,24 +468,21 @@ def sec_real() -> dict:
     def _redacted_401() -> None:
         fx = _last_fixture(slug2, nid2)
         got2.update(fx)
-        js = json.dumps(fx).lower()
+        leaves = " ".join(_every_leaf(fx, [])).lower()
         for s in SECRETS:
-            assert s.lower() not in js and "planted" not in js, (s, js)
-        for canary in CANARIES:
-            for word in canary.lower().split():
-                if len(word) >= 5:
-                    assert word not in js, (canary, word)
+            assert s.lower() not in leaves and "planted" not in leaves, s
+        _assert_no_canary(fx)
         o = fx["observed"]
         assert o["api_error_status"] == 401 and o["is_error"] and o["boundary"], o
-        assert "status:401" in fx["tags"]["result_detail"], fx["tags"]
-        assert "invalid api key" in fx["tags"]["err_blob"], fx["tags"]
+        assert 401 in fx["features"]["result_detail"]["status"], fx["features"]
+        assert "invalid api key" in fx["features"]["err_blob"]["code"], fx["features"]
+        assert fx["features"]["err_blob"]["option"] == ["other"], fx["features"]
         assert fx["lens"]["err_blob"] == len(planted), fx["lens"]
-        assert fx["recorded"]["verdict"] == "none", fx["recorded"]
-        assert fx["phase"] == "result-error", fx["phase"]
+        assert fx["recorded"]["verdict"] == "none" and fx["phase"] == "result-error"
         assert not rig.node(slug2, nid2).get("frozen")
-    check("is_error 401 · secrets and canaries absent; status 401, is_error, "
-          "boundary, tag invalid api key, length kept; verdict none; phase "
-          "result-error; not frozen", _redacted_401)
+    check("is_error 401 · secrets, sentence and identifier canaries absent; "
+          "status 401, is_error, boundary, code feature, option 'other', "
+          "length; verdict none; phase result-error; not frozen", _redacted_401)
 
     def _replay_401() -> None:
         fixture(bool(got2), "no fixture from the 401 check")
@@ -391,13 +498,12 @@ def sec_real() -> dict:
         fx = _last_fixture(slug3, nid3)
         o = fx["observed"]
         assert o["started"] and not o["boundary"] and not o["exit_only"], o
-        assert "enospc" in fx["tags"]["err_blob"], fx["tags"]
+        assert "enospc" in fx["features"]["err_blob"]["diag"], fx["features"]
         assert fx["recorded"]["verdict"] == "none" and fx["phase"] == "stream"
         assert failfix.replay(fx, PREDICATES)["drift"] == []
         assert not rig.node(slug3, nid3).get("frozen"), "must stay terminal"
-    check("died-with-stderr · same death WITH evidence: not exit_only, tag "
-          "enospc, verdict none (terminal), phase stream, replay agrees",
-          _with_stderr)
+    check("died-with-stderr · not exit_only, diag enospc, verdict none, "
+          "phase stream, replay agrees, stays terminal", _with_stderr)
 
     def _log_row_untouched() -> None:
         rows = (store.load_org(slug2).d.get("turn_error_log") or {}).get(nid2) or []
@@ -428,12 +534,12 @@ HOOK = textwrap.dedent('''
 
 
 def sec_tool(got: dict) -> None:
-    print("\n§5  the replay tool")
+    print("\n§6  the replay tool")
     tool = os.path.join(HERE, "..", "..", "tools", "replay_failure.py")
     names = failfix.list_fixtures(store.DATA_ROOT, got["_slug"], got["_nid"])
     fixture(bool(names), "no fixture on disk for the tool")
     env = dict(os.environ)
-    env.pop("ORGTREE_DATA", None)        # the tool must not need one
+    env.pop("ORGTREE_DATA", None)
 
     def _run(*args: str) -> subprocess.CompletedProcess:
         return subprocess.run([sys.executable, *args], capture_output=True,
@@ -444,8 +550,7 @@ def sec_tool(got: dict) -> None:
         assert p.returncode == 0, (p.returncode, p.stdout[-800:], p.stderr[-800:])
         out = json.loads(p.stdout.strip().splitlines()[-1])
         assert out["drift"] == [] and out["recomputed"]["verdict"] == "net", out
-    check("tool · --assert exits 0; recomputed verdict printed beside the "
-          "recorded one", _ok)
+    check("tool · --assert exits 0; recomputed beside recorded", _ok)
 
     def _drift() -> None:
         bad = failfix.load(names[-1])
@@ -454,10 +559,8 @@ def sec_tool(got: dict) -> None:
         with open(bp, "w", encoding="utf-8") as f:
             json.dump(bad, f)
         p = _run(tool, bp, "--assert")
-        assert p.returncode == 1, (p.returncode, p.stdout[-800:], p.stderr[-800:])
-        assert '"verdict"' in p.stdout
-    check("tool · positive control: a fixture whose recorded verdict is wrong "
-          "exits 1", _drift)
+        assert p.returncode == 1 and '"verdict"' in p.stdout, (p.returncode, p.stdout[-400:])
+    check("tool · positive control: a wrong recorded verdict exits 1", _drift)
 
     def _pure_under_hook() -> None:
         runner = os.path.join(tempfile.mkdtemp(prefix="failfix-pure-"), "run.py")
@@ -473,19 +576,15 @@ def sec_tool(got: dict) -> None:
         p = _run(runner)
         assert p.returncode == 0, (p.returncode, p.stdout[-800:], p.stderr[-1200:])
         assert "PURITY" not in p.stderr
-        mods = {"orgtree.store", "orgtree.supervisor", "orgtree.ledger"}
-        assert not (set(p.stdout.split()) & mods)
     check("purity · the tool completes under an import hook that refuses "
-          "storage/provider/process modules and a write-refusing open()",
-          _pure_under_hook)
+          "storage/provider/process modules and writes", _pure_under_hook)
 
     def _hook_bites() -> None:
-        """the control: the same hook DOES stop an import of orgtree.store"""
-        runner = os.path.join(tempfile.mkdtemp(prefix="failfix-pure-"), "ctl.py")
-        backend = os.path.join(HERE, "..")
-        with open(runner, "w", encoding="utf-8") as f:
+        d = tempfile.mkdtemp(prefix="failfix-pure-")
+        r1 = os.path.join(d, "ctl.py")
+        with open(r1, "w", encoding="utf-8") as f:
             f.write(HOOK + textwrap.dedent(f'''
-                sys.path.insert(0, {backend!r})
+                sys.path.insert(0, {os.path.join(HERE, "..")!r})
                 import os; os.environ["ORGTREE_DATA"] = {store.DATA_ROOT!r}
                 try:
                     from orgtree import store
@@ -493,46 +592,43 @@ def sec_tool(got: dict) -> None:
                     print("REFUSED", e); raise SystemExit(3)
                 print("IMPORTED"); raise SystemExit(0)
                 '''))
-        p = _run(runner)
+        p = _run(r1)
         assert p.returncode == 3 and "REFUSED" in p.stdout, (p.returncode, p.stdout, p.stderr[-600:])
-        runner2 = runner + "2.py"
-        with open(runner2, "w", encoding="utf-8") as f:
+        r2 = os.path.join(d, "ctl2.py")
+        with open(r2, "w", encoding="utf-8") as f:
             f.write(HOOK + textwrap.dedent(f'''
                 try:
-                    open({os.path.join(tempfile.gettempdir(), "failfix-ctl.txt")!r}, "w")
+                    open({os.path.join(d, "x.txt")!r}, "w")
                 except PermissionError as e:
                     print("REFUSED", e); raise SystemExit(3)
                 print("WROTE"); raise SystemExit(0)
                 '''))
-        p = _run(runner2)
+        p = _run(r2)
         assert p.returncode == 3 and "REFUSED" in p.stdout, (p.returncode, p.stdout)
-    check("purity control · the hook refuses `orgtree.store` and a file "
-          "write when asked to", _hook_bites)
+    check("purity control · the hook refuses `orgtree.store` and a write",
+          _hook_bites)
 
 
 def sec_identity() -> None:
-    print("\n§6  failclass is the supervisor's code")
+    print("\n§7  failclass is the supervisor's code")
 
     def _same_source() -> None:
-        sup = open(os.path.join(HERE, "..", "orgtree", "supervisor.py"),
-                   encoding="utf-8").read()
-        fc = open(os.path.join(HERE, "..", "orgtree", "failclass.py"),
-                  encoding="utf-8").read()
-        st, ft = ast.parse(sup), ast.parse(fc)
-        sf = {n.name: ast.get_source_segment(sup, n) for n in st.body
+        sup = open(os.path.join(HERE, "..", "orgtree", "supervisor.py"), encoding="utf-8").read()
+        fc = open(os.path.join(HERE, "..", "orgtree", "failclass.py"), encoding="utf-8").read()
+        sf = {n.name: ast.get_source_segment(sup, n) for n in ast.parse(sup).body
               if isinstance(n, ast.FunctionDef)}
-        ff = {n.name: ast.get_source_segment(fc, n) for n in ft.body
+        ff = {n.name: ast.get_source_segment(fc, n) for n in ast.parse(fc).body
               if isinstance(n, ast.FunctionDef)}
         for name in PURE_FNS:
             assert name in sf and name in ff, name
             assert sf[name] == ff[name], f"{name} differs from supervisor.py"
         assert set(ff) == set(PURE_FNS), set(ff) ^ set(PURE_FNS)
         assert supervisor._STATUS_KEYS == failclass._STATUS_KEYS
-    check("every failclass function is byte-identical to the supervisor's, "
-          "and nothing else is in failclass", _same_source)
+    check("every failclass function is byte-identical to the supervisor's",
+          _same_source)
 
     def _same_answers() -> None:
-        for blob in CORPUS:
+        for blob in CORPUS + [MAXIMAL]:
             for name in ("_looks_like_usage_limit", "_looks_like_connection_failure",
                          "_looks_like_filtered"):
                 assert getattr(supervisor, name)(blob) == getattr(failclass, name)(blob)
@@ -542,24 +638,26 @@ def sec_identity() -> None:
                     assert supervisor._died_in_flight(exit_only=eo, started=s, boundary=b) \
                         == failclass._died_in_flight(exit_only=eo, started=s, boundary=b)
         for res, se in (({"is_error": True, "api_error_status": 401}, {}),
+                        ({"is_error": True, "apiErrorStatus": 402}, {}),
                         ({"is_error": False, "api_error_status": 401}, {"status": 503}),
                         ({}, {"status": "401"}), ({}, {"status": True})):
             assert supervisor._typed_api_status(res, se) == failclass._typed_api_status(res, se)
-    check("both copies answer identically over the corpus and the shape grid",
-          _same_answers)
+    check("both copies answer identically over the corpus, the maximal input "
+          "and the shape grid", _same_answers)
 
 
 def main() -> int:
-    sec_tags()
+    sec_features()
     sec_leaves()
     sec_bounds()
+    sec_capture()
     sec_identity()
     if shutil.which("node"):
         got = sec_real()
         if got.get("_slug"):
             sec_tool(got)
     else:
-        NOTES.append("INERT: `node` is not on PATH — §4 and §5 (real failures "
+        NOTES.append("INERT: `node` is not on PATH — §5 and §6 (real failures "
                      "through the fake CLI, the tool) DID NOT RUN")
     for n in NOTES:
         print(f"\n  ! {n}")
