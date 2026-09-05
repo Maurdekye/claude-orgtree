@@ -101,28 +101,117 @@ const MUTANTS = [
   {
     name: "the card drops the '@' clause and a sentinel becomes an agent",
     file: DESK, kills: 'draws no model chip',
-    from: `  const agent = mail.from && !mail.from.startsWith('@')`,
-    to: `  const agent = mail.from`,
+    from: `  const agent = from && !from.startsWith('@') ? dir?.resolve(from) : undefined`,
+    to: `  const agent = from ? dir?.resolve(from) : undefined`,
   },
   {
     name: 'the card offers a jump even when this surface IS the destination',
     file: DESK, kills: 'the destination IS this surface',
-    from: `              why={chipWhy} atDestination={atDest}`,
-    to: `              why={chipWhy}`,
+    from: `    why={why} atDestination={atDest}`,
+    to: `    why={why}`,
   },
   {
     name: 'the card renders a jump button whether or not the directory can '
       + 'navigate',
     file: DESK, kills: 'but nothing claims to navigate',
-    from: `              onFocus={dir?.onFocus ? (id) => dir.onFocus!(id) : undefined} />`,
-    to: `              onFocus={(id) => dir?.onFocus?.(id)} />`,
+    from: `    onFocus={dir?.onFocus ? (id) => dir.onFocus!(id) : undefined} />`,
+    to: `    onFocus={(id) => dir?.onFocus?.(id)} />`,
   },
   {
     name: 'the chip stops scoping its claim to the CURRENT model, so a '
       + 'historical mail reads as attributed',
     file: DESK, kills: 'the tooltip scopes the claim to the current model',
-    from: `              why={chipWhy} atDestination={atDest}`,
-    to: `              atDestination={atDest}`,
+    from: `    why={why} atDestination={atDest}`,
+    to: `    atDestination={atDest}`,
+  },
+  // ─────────────────────────── the destination is the SURFACE's, not the id's
+  {
+    name: 'the desk stops declaring a destination at all, so a self-mail on '
+      + 'the focused desk offers a trip to the desk you are on',
+    file: DESK, kills: 'the destination IS this surface',
+    from: `  const destination = bare ? null : node.id`,
+    to: `  const destination = null`,
+  },
+  {
+    name: 'the desk calls itself the destination even as a switchboard panel '
+      + '— the `mail.from === nid` mistake, re-made one level up',
+    file: DESK, kills: 'a panel is nobody',
+    from: `  const destination = bare ? null : node.id`,
+    to: `  const destination = node.id`,
+  },
+  {
+    name: 'the lineage modal declares the bearer it is READING to be the '
+      + 'destination — exactly the old `mail.from === nid` behaviour',
+    file: DESK, kills: 'the name clicks even though it names the bearer',
+    from: `                      <AgentDirectoryProvider value={lineageDir}>`,
+    to: `                      <AgentDirectoryProvider value={{ ...lineageDir, destination: b.id }}>`,
+  },
+  // ─────────────────── the facts must stay CURRENT on an unchanged transcript
+  {
+    name: 'THE DIRECTORY GOES BACK TO A REF WITH NOTHING TO NOTIFY ON — the '
+      + 'value never changes, so a memo\'d card keeps yesterday\'s model',
+    file: DESK, kills: 'the chip followed the switch',
+    from: `  }), [canJump, destination, facts])`,
+    to: `  }), [canJump, destination])`,
+  },
+  {
+    name: 'the signature stops covering the TIER, so a model switch is the '
+      + 'one change that still cannot reach the screen',
+    file: IDENT, kills: 'the chip followed the switch',
+    from: `  for (const [id, n] of map) s += id + '\\u0000' + (n?.tier ?? '') + '\\u0001'`,
+    to: `  for (const [id] of map) s += id + '\\u0001'`,
+  },
+  {
+    name: 'the lineage modal keeps the same stale-value shape, so an archived '
+      + 'transcript is the one place the facts still freeze',
+    file: DESK, kills: 'follows a switch',
+    from: `  }), [canFocus, lineageFacts])`,
+    to: `  }), [canFocus])`,
+  },
+  // ──────────────────────────────────── mail that arrives MID-TURN (§9)
+  {
+    name: 'the live steered row goes back to a bold name with no identity',
+    file: DESK, kills: 'the sender wears its model chip',
+    from: `  const { mail, rest: tail } = splitTurnMail(rest)`,
+    to: `  const { rest: tail } = splitTurnMail(rest); const mail = []`,
+  },
+  {
+    name: 'the live row is dressed as the SETTLED card, telling the reader a '
+      + 'message that is still arriving has landed in the transcript',
+    file: DESK, kills: 'must not be dressed as one that has landed',
+    from: `        <div className="live-mail" key={i}>`,
+    to: `        <div className="turn-mail" key={i}>`,
+  },
+  {
+    name: 'an envelope the parser could not read is SWALLOWED by the live row '
+      + 'instead of falling back to its text',
+    file: DESK, kills: 'the body survived',
+    from: `    return <div className="msg user live md"
+      dangerouslySetInnerHTML={md(stripEnvelope(rest), fb)} />`,
+    to: `    return <div className="msg user live md" />`,
+  },
+  {
+    name: 'the provider is not mounted (again) — named here against the '
+      + 'HANDOVER check, so §9.4 is not resting on §1.1 having run',
+    file: DESK, kills: 'the identity survived the handover',
+    from: `    <AgentDirectoryProvider value={agentDir}>`,
+    to: `    <>`,
+    also: { from: `    </AgentDirectoryProvider>\n  )`, to: `    </>\n  )` },
+  },
+  // ─────────────────────────────────────── SenderChip's phantom jump (§10)
+  {
+    name: 'SenderChip goes back to treating any non-@ spelling as one of ours '
+      + '— a jump button that focuses an agent that does not exist',
+    file: APP, kills: 'nothing claims to take you to a desk that does not exist',
+    from: `  if (!n) return <b>{id}</b>`,
+    to: `  if (!n && id.startsWith('@')) return <b>{id}</b>`,
+  },
+  {
+    name: 'SenderChip\'s jump loses its type, so nesting it in a form makes '
+      + 'the name a submit button',
+    file: APP, kills: 'an untyped button inside a form defaults to submit',
+    from: `      <button type="button" className="cc-name cc-name-jump" title={\`focus \${id}'s desk\`}`,
+    to: `      <button className="cc-name cc-name-jump" title={\`focus \${id}'s desk\`}`,
   },
   // ──────────────────────────── the archived transcript reader (§7)
   {
@@ -143,8 +232,8 @@ const MUTANTS = [
   {
     name: "an unknown current model is back-filled from the desk's own tier",
     file: DESK, kills: 'an unknown model is an answer, never back-filled',
-    from: `          ? <AgentName id={mail.from} tier={agent.tier} nameClass="turn-mail-from"`,
-    to: `          ? <AgentName id={mail.from} tier={agent.tier ?? 'opus'} nameClass="turn-mail-from"`,
+    from: `  return <AgentName id={from} tier={agent.tier} nameClass={nameClass}`,
+    to: `  return <AgentName id={from} tier={agent.tier ?? 'opus'} nameClass={nameClass}`,
   },
 ]
 

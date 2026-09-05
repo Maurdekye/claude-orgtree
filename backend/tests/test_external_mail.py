@@ -45,6 +45,7 @@ See the DEAD_HUB block below, and §1's guard over every rig in this directory.
     §9  externtool.py driven as a real MCP server against a real uvicorn
     §10 authorization — the ledger authorizes, the transports deliver
     §11 failure paths
+    §12 the namespace boundary the desk identity rule rests on
 
 TWO KINDS OF FLAG.
 
@@ -2675,6 +2676,107 @@ def s11_failures():
              "delivery (supervisor.py ~2570).")
 
 
+# =========================================================================== §12
+def s12_namespace_boundary():
+    """THE INVARIANT THE UI RESTS ON, driven rather than asserted in prose.
+
+    The desk transcript decides whether a mail sender is one of THIS org's
+    agents — whether it wears that agent's model chip and clicks through to its
+    desk — from two independent facts (frontend `MailFrom`, canvas/desk.tsx):
+
+      NAMESPACE   an id starting '@' is a sentinel or an outside party, never
+                  one of ours
+      EXISTENCE   the id resolves to a node in the tree on screen
+
+    NAMESPACE is a claim about THIS boundary: that every route which writes an
+    outside party's name into an AGENT's mailbox — `Org.post_external_mail`,
+    the one place a non-agent `from` is minted, whose only caller is
+    `deliver_org_inbox` — namespaces it first. If a fourth inbound route ever
+    lands an un-prefixed outside name in a mailbox, the frontend's rule becomes
+    wrong and these checks are what says so.
+
+    ⚠ ANTI-VACUITY. "Every from starts with '@'" would also be true of an org
+    whose agents were all named '@…', and the frontend rule would then be
+    useless rather than sound. So the last check here requires ORDINARY
+    agent-to-agent mail to arrive BARE — the discrimination is the point.
+
+    ⚠ AND THE NEGATIVE CONTROL IS A FILE, not a claim: strip the namespace at
+    any ONE of the four call sites and this section must go red on that
+    route's own check. `python backend/tests/nscontrol_external_mail.py`
+    (4/4 killed, measured 2026-09-05). Run it in a worktree — it edits the
+    package in place and restores the exact bytes."""
+    print("\n§12 the namespace boundary the desk's identity rule rests on")
+    mkorg("nsb", ("ceo",))
+    reset_spies()
+
+    @t("the @mcp: route: an outside chat's name reaches the AGENT MAILBOX "
+       "namespaced, not just the org-inbox log")
+    def _():
+        st, _j = call("POST", "/api/extern/ceo/send", {"org": "nsb", "body": "knock"})
+        assert st == 200, st
+        box = mailbox("nsb", "ceo")
+        assert box, "positive control: the mail actually reached the mailbox"
+        # ⚠ THE PEER SPELLS ITSELF EXACTLY LIKE THIS ORG'S OWN TOP-LEVEL AGENT.
+        # That is the whole test: without the namespace the recipient — and the
+        # desk rendering it — could not tell this apart from mail from `ceo`.
+        assert box[-1]["from"] == "@mcp:ceo", box[-1]["from"]
+
+    @t("the @org: route: another org's name arrives namespaced too")
+    def _():
+        mkorg("nsb2", ("ceo",))
+        assert supervisor.interorg_send("nsb2", "nsb", "from next door") is None
+        assert mailbox("nsb", "ceo")[-1]["from"] == "@org:nsb2"
+
+    @t("the @org: route again, from the org-inbox COMPOSER — a second call "
+       "site, and a namespace is only an invariant if every site keeps it")
+    def _():
+        mkorg("nsb3", ("ceo",))
+        st, j = call("POST", "/api/orgs/nsb3/org_inbox/send",
+                     {"to": "@org:nsb", "body": "composed next door"})
+        assert st == 200, (st, j)
+        assert not j.get("warnings"), j
+        assert mailbox("nsb", "ceo")[-1]["from"] == "@org:nsb3"
+
+    @t("the @net: route: an inbound hub message is namespaced by the daemon "
+       "that delivers it")
+    def _():
+        from orgtree import net
+        # driven through net.py's real inbound handler, not a literal of mine.
+        # The hub sender is spelled exactly like our own agent again.
+        net._deliver_inbound("nsb", "hub-x", [
+            {"id": "n-1", "from": "ceo", "body": "over the wire", "sent_at": ""}])
+        assert mailbox("nsb", "ceo")[-1]["from"] == "@net:ceo"
+
+    @t("the @mcp: peer id cannot smuggle a namespace of its own past the "
+       "validator (and a good one still passes)")
+    def _():
+        from fastapi import HTTPException
+        assert api._extern_peer("probe") == "@mcp:probe"      # positive control
+        for bad in ("@ceo", "mcp:ceo", "a b", "x" * 65, ""):
+            try:
+                api._extern_peer(bad)
+            except HTTPException as e:
+                assert e.status_code == 422, (bad, e.status_code)
+            else:
+                raise AssertionError(f"{bad!r} was accepted as a peer id")
+
+    @t("…and ORDINARY agent-to-agent mail arrives BARE — so the '@' test "
+       "discriminates instead of being true of everything")
+    def _():
+        o = load("nsb")
+        o.hire(USER, "ceo", "haiku", 10, "worker")
+        o.post_mail("worker", "ceo", "an inside word")
+        store.save_org(o)
+        frm = mailbox("nsb", "ceo")[-1]["from"]
+        assert frm == "worker", frm
+        assert not frm.startswith("@"), frm
+
+    note("a NEW inbound route must namespace its sender before "
+         "`post_external_mail` — §12 drives the four call sites that exist "
+         "today (@mcp:, @org: from interorg_send AND from the composer, "
+         "@net:), and the desk transcript's identity rule (frontend "
+         "canvas/desk.tsx `MailFrom`) is wrong the day one does not.")
+
 # ================================================================== the runner
 def main():
     print("external-mail suite  ·  data root:", DATA)
@@ -2694,6 +2796,7 @@ def main():
         print("\n§9 externtool.py — SKIPPED")
     s10_authorization()
     s11_failures()
+    s12_namespace_boundary()
 
     if NOTES:
         print("\nOPEN FINDINGS (pinned, not fixed here — they live outside this "

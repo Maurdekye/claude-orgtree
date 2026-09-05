@@ -50,6 +50,20 @@ WHAT IT CHECKS
                   the header's declared 11.5px and to the plain metadata spans
                   beside it (10.5px), and must match neither the 12.5px
                   `.cc-name` default nor the 14px `.settings button`.
+  9. liveheight — the MID-TURN steered row is no taller with an identity than
+                  without. The dump carries two live rows with the same body
+                  and the same length; only the chip differs.
+                  ⚠ THE UNRESOLVED SENDER HAD TO BE GIVEN THE SAME TYPE for
+                  this to mean anything. Left at the body's 14px sans, the
+                  row WITHOUT a chip measured TALLER (54.6 vs 53.1) and the
+                  comparison passed for a reason that was not the chip — a
+                  vacuous pass, found by running this and reading the numbers.
+                  `.live-mail-head b` now matches `.live-mail-head .cc-name`.
+ 10. livechip    — that chip fits inside the attribution line and comes first.
+ 11. livetype    — the live sender is the sheet's declared 13px mono, not
+                  `.cc-name`'s 12.5px flexible column header and not a 14px
+                  button, and carries no button chrome. This is the check the
+                  PRE-SERIES sheet fires for the live row.
 
 THE CONTROL. `--css <a sheet without these rules>` must FAIL, and
 `--expect-fail` makes that the passing outcome:
@@ -71,13 +85,13 @@ claim.
 ⚠ AND TWO MORE CONTROLS, because the sheet control above does NOT exercise
 every check and a check nobody has watched fail is not a check.
 
-`--break-chip` grows both chips. It fires check 1 (the row grows with the
-chip) — and, measured, NOTHING ELSE: a grown chip grows the line with it, so
-"the chip is inside its line" stays true the whole time.
+`--break-chip` grows every chip. It fires checks 1 and 9 (the row and the live
+row grow with the chip) — and, measured, NOTHING ELSE: a grown chip grows the
+line with it, so "the chip is inside its line" stays true the whole time.
 
 `--poke-chip` therefore exists as well: relative positioning moves the chip's
 box out of its line WITHOUT changing layout, which is the only way to make the
-"pokes out" halves of checks 4 and 6 fire. Both must FAIL:
+"pokes out" halves of checks 4, 6 and 10 fire. Both must FAIL:
 
     python tests/mailsender_probe.py /tmp/ms.html --break-chip --expect-fail
     python tests/mailsender_probe.py /tmp/ms.html --poke-chip --expect-fail
@@ -122,11 +136,17 @@ MEASURE = """
   // the row whose sender is an agent (it has a chip) and the row whose sender
   // is a sentinel (it has none) — the pair the height comparison rests on
   const chipRow = rows.find((r) => r.querySelector('.mfrom .tier'))
-  // ⚠ THE CONTROL ROW IS A ROW WITH AN IDENTITY AND NO CHIP — same two lines,
-  // same type, differing in exactly the thing under test. NOT the system
-  // notice, which is deliberately one line shorter and a size smaller.
-  const plainRow = rows.find((r) => r.querySelector('.mfrom .cc-name')
-    && !r.querySelector('.mfrom .tier'))
+  // ⚠ THE CONTROL ROW IS A ROW NAMING A SENDER THIS TREE DOES NOT HOLD —
+  // same two lines, same type, differing in exactly the thing under test. NOT
+  // the system notice, which is deliberately one line shorter and a size
+  // smaller. Selected BY NAME because that is the only thing that stays true
+  // of it: `SenderChip` now draws such a name as a bare `<b>` with no chip,
+  // no route and no `.cc-name` at all (an unknown name is not one of ours),
+  // so a structural selector for it would be a selector for the @system row.
+  const plainRow = rows.find((r) => {
+    const f = r.querySelector('.mfrom')
+    return f && f.textContent.trim() === 'nobody-here'
+  })
   const rowName = chipRow && chipRow.querySelector('.mfrom .cc-name')
   const rowChip = chipRow && chipRow.querySelector('.mfrom .tier')
   const rowL1 = chipRow && chipRow.querySelector('.l1')
@@ -167,11 +187,28 @@ MEASURE = """
       inRow: Boolean(chipRow && (t === chipRow || chipRow.contains(t))),
     }
   }
+  // ── the LIVE steered rows: mail that arrived mid-turn ───────────────────
+  // The dump carries two, identical but for whether the tree vouches for the
+  // sender — so the height comparison is a comparison, not a number.
+  const lives = [...document.querySelectorAll('.msg.user.live')]
+  const liveChipRow = lives.find((r) => r.querySelector('.live-mail-head .tier'))
+  const livePlainRow = lives.find((r) => r.querySelector('.live-mail-head')
+    && !r.querySelector('.live-mail-head .tier'))
+  const liveHead = liveChipRow && liveChipRow.querySelector('.live-mail-head')
+  const liveName = liveChipRow && liveChipRow.querySelector('.live-mail-head .cc-name')
+  const liveChip = liveChipRow && liveChipRow.querySelector('.live-mail-head .tier')
+  // the body markdown under the head — the row's own type, to measure the
+  // name against something on the same row rather than a number chosen here
+  const liveBody = liveChipRow && liveChipRow.querySelector('.live-mail .md')
+
   // the separator the header's own rule paints after a span
   const after = (el) => (el
     ? getComputedStyle(el, '::after').content : null)
 
   return {
+    liveChipRow: box(liveChipRow), livePlainRow: box(livePlainRow),
+    liveHead: box(liveHead), liveName: box(liveName), liveChip: box(liveChip),
+    liveBody: box(liveBody),
     rowChipRow: box(chipRow), rowPlainRow: box(plainRow),
     rowName: box(rowName), rowChip: box(rowChip), rowL1: box(rowL1),
     rowPlainName: box(plainName), rowText: box(rowText), rowTime: box(rowTime),
@@ -203,7 +240,8 @@ def main() -> int:
     if a.break_chip:
         css += """
 .mailrow .l1 .mfrom .tier, .mailrow .l1 .mfrom .sender .tier,
-.desk-body .turn-mail-head .tier, .turn-mail-head .tier {
+.desk-body .turn-mail-head .tier, .turn-mail-head .tier,
+.desk-body .live-mail-head .tier, .live-mail-head .tier {
   width: 34px; height: 34px; font-size: 20px;
 }
 """
@@ -216,7 +254,8 @@ def main() -> int:
         # while the line stays where it was.
         css += """
 .mailrow .l1 .mfrom .tier, .mailrow .l1 .mfrom .sender .tier,
-.desk-body .turn-mail-head .tier, .turn-mail-head .tier {
+.desk-body .turn-mail-head .tier, .turn-mail-head .tier,
+.desk-body .live-mail-head .tier, .live-mail-head .tier {
   position: relative; top: 16px;
 }
 """
@@ -255,6 +294,15 @@ def main() -> int:
                     pathlib.Path(a.shot).stem + "-card.png")
                 card.screenshot(path=str(p2))
                 print("wrote", p2)
+            # …and the MID-TURN rows, which are the point of the second pass:
+            # the settled card and the still-arriving row look different on
+            # purpose, and a picture of only one of them hides that
+            live = pg.query_selector(".msg.user.live")
+            if live:
+                p3 = pathlib.Path(a.shot).with_name(
+                    pathlib.Path(a.shot).stem + "-live.png")
+                live.screenshot(path=str(p3))
+                print("wrote", p3)
         ctx.close()
         b.close()
 
@@ -390,6 +438,54 @@ def main() -> int:
         if cn[side] > 0.01:
             fails.append(f"cardtype: the card's name carries {side}="
                          f"{cn[side]}px of button chrome")
+
+    # ── the LIVE steered row ────────────────────────────────────────────────
+    lr, lp = m["liveChipRow"], m["livePlainRow"]
+    lh, ln, lc, lb = m["liveHead"], m["liveName"], m["liveChip"], m["liveBody"]
+    print(f"  live w/ chip: h={lr['h']:.1f}  head h={lh['h']:.1f}")
+    print(f"  live w/o    : h={lp['h']:.1f}")
+    print(f"  live name   : {ln['size']}px {ln['family'][:26]!r} w={ln['weight']} "
+          f"pad={ln['padTop']}/{ln['padRight']}/{ln['padBottom']}/{ln['padLeft']} "
+          f"radius={ln['radius']}  chip {lc['w']:.1f}x{lc['h']:.1f}  "
+          f"body {lb['size']}px")
+
+    # 9. liveheight — the identity did not grow the mid-turn row. Same
+    #    envelope, same body, same length; the ONE difference is the chip.
+    if lr["h"] > lp["h"] + 0.5:
+        fails.append(f"liveheight: the live row WITH a chip is {lr['h']:.1f}px "
+                     f"where the same row without one is {lp['h']:.1f}px — the "
+                     "chip is setting the height of a row that is still "
+                     "streaming")
+
+    # 10. livechip — inside its own line, and before the name
+    if lc["h"] > lh["h"] + 0.5:
+        fails.append(f"livechip: the chip is {lc['h']:.1f}px in a "
+                     f"{lh['h']:.1f}px attribution line")
+    if lc["top"] < lh["top"] - 0.5 or lc["bottom"] > lh["bottom"] + 0.5:
+        fails.append("livechip: the chip pokes out of the live row's "
+                     f"attribution line (chip {lc['top']:.1f}..{lc['bottom']:.1f}"
+                     f", line {lh['top']:.1f}..{lh['bottom']:.1f})")
+    if lc["x"] >= ln["x"]:
+        fails.append("livechip: the chip is not before the name it belongs to")
+
+    # 11. livetype — the sheet's declared 13px mono, NOT `.cc-name`'s 12.5px
+    #     flexible column header and NOT a 14px button. This is the check the
+    #     PRE-SERIES sheet fires: without `.live-mail-head .cc-name` the name
+    #     falls back to the switchboard default.
+    if abs(ln["size"] - 13.0) > 0.01:
+        fails.append(f"livetype: the live sender is {ln['size']}px — the sheet "
+                     "declares 13px; 12.5px is `.cc-name`'s switchboard "
+                     "default and 14px is a button's")
+    if ln["size"] >= lb["size"] + 0.5:
+        fails.append(f"livetype: the sender is {ln['size']}px against a "
+                     f"{lb['size']}px body — it is louder than the message")
+    for side in ("padTop", "padRight", "padBottom", "padLeft"):
+        if ln[side] > 0.01:
+            fails.append(f"livetype: the live sender carries {side}="
+                         f"{ln[side]}px of button chrome")
+    if ln["radius"] > 0.01:
+        fails.append(f"livetype: the live sender has a {ln['radius']}px corner "
+                     "radius — it is drawn as a button")
 
     for f in fails:
         print("  FAIL", f)

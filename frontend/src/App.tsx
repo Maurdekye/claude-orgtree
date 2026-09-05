@@ -1832,22 +1832,28 @@ export function SenderChip({ id, nodes, onFocusAgent }: {
   if (id === SYSTEM || id === 'system') return <b className="dim">system</b>
   if (id === USER) return <b>you</b>
   const n = nodes.get(id)
-  const isAgent = Boolean(n || (!id.startsWith('@') && id !== 'system'))
-  if (!n && !isAgent) return <b>{id}</b>
+  // ⚠ ONLY AN ESTABLISHED LOCAL NODE NAVIGATES. This used to accept any name
+  // that merely did not start with '@' — so an unknown spelling (a since-
+  // retired agent, an id from an archived envelope, a peer this tree does not
+  // hold) was drawn as a jump button that focused nothing. The name stays
+  // readable, verbatim; what it loses is a route that was never there.
+  if (!n) return <b>{id}</b>
   const chip = (
     <span className={'sender ' + (n?.state ?? '')} title={n ? `${tierLabel(n.tier)} · ${n.state}` : id}>
       {n && <span className={'tier t-' + n.tier}>{TIER_LETTER[n.tier] ?? '?'}</span>}
       <b>{id}</b>
     </span>
   )
-  if (onFocusAgent && isAgent) {
+  if (onFocusAgent) {
     return (
       /* ⚠ stopPropagation is load-bearing since this chip moved into the mail
          LIST ROW as well as the reading pane: the row's own onClick toggles
          selection, so without it clicking a sender's name would jump AND
          select (or, on the open mail, deselect the thing you were reading).
-         `AgentName` stops it for the same reason; the two must not drift. */
-      <button className="cc-name cc-name-jump" title={`focus ${id}'s desk`}
+         `AgentName` stops it for the same reason; the two must not drift.
+         type="button" for the same reason `AgentName` carries one — this is
+         rendered inside forms, where the default submit would be wrong. */
+      <button type="button" className="cc-name cc-name-jump" title={`focus ${id}'s desk`}
         onClick={(e) => { e.stopPropagation(); onFocusAgent(id) }}>
         {chip}
       </button>

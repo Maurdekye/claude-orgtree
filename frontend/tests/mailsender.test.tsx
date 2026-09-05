@@ -226,8 +226,10 @@ test('§1.4 a desk with nowhere to jump renders a name that does not click — '
     'but there is no button: an inert control is worse than no control')
 })
 
-test('§1.5 mail an agent sent to ITSELF does not offer a trip to the desk you '
-  + 'are already on', async (t: TestContext) => {
+/** a desk showing a mail this very agent sent to ITSELF. `bare` is the
+ *  destination test the desk header already uses: a switchboard panel or a
+ *  pinned window is NOBODY's focused desk. */
+async function selfMailDesk(t: TestContext, bare: boolean): Promise<HTMLElement> {
   const SL = 'org'
   const ND = `ms${++_n}`
   useFakeClock()
@@ -237,18 +239,39 @@ test('§1.5 mail an agent sent to ITSELF does not offer a trip to the desk you '
   s.userMsg(envelope(ND, 'yourself'))
   const v = await mountView(
     <DeskChat node={nd} map={new Map([[nd.id, nd]])} op={op} slug={SL}
-      toast={noop} pub={false} bare onJump={noop} />, (host) => host)
+      toast={noop} pub={false} bare={bare} onJump={noop} />, (host) => host)
   t.after(async () => {
     try { await v.unmount() } catch { /* gone */ }
     resetConvos(); realClock()
   })
   await refreshConvo(SL, ND, { force: true })
   await flush()
-  const h = head(v.el)
+  return v.el
+}
+
+test('§1.5 a self-mail on the FOCUSED desk does not offer a trip to the desk '
+  + 'you are already on', async (t: TestContext) => {
+  const h = head(await selfMailDesk(t, false))
   assert.equal(q(h, '.tier').length, 1,
     'positive control: it is still an identified agent, chip and all')
   absent(h, 'button.cc-name-jump',
     'but the destination IS this surface, so the name is plain text')
+})
+
+test('§1.6 …and the SAME self-mail in a switchboard panel DOES navigate — the '
+  + 'exemption is keyed on the destination, not on the id matching',
+async (t: TestContext) => {
+  // ⚠ THIS PAIR IS THE WHOLE POINT OF ITEM 3. The two mounts differ in ONE
+  // prop — `bare` — and the envelope, the tree and the handler are identical.
+  // A card that decided from `mail.from === nid` cannot tell them apart, so
+  // it goes inert in both and this test fails. `bare` is the same test the
+  // desk HEADER has used since 2026-08-17 (`atDestination={!bare}`): a panel
+  // and a pinned window show this agent's own name and both must still
+  // navigate, because the click takes you somewhere you are not.
+  const h = head(await selfMailDesk(t, true))
+  assert.equal(q(h, '.tier').length, 1, 'positive control: still identified')
+  assert.equal(q(h, 'button.cc-name-jump').length, 1,
+    'a panel is nobody’s focused desk, so its own self-mail still clicks')
 })
 
 // ═══════════════════════════════════════════════════════════════════ §2
@@ -627,4 +650,312 @@ uiTest('§7.2 …and the same panel with no tree behind it draws a plain name',
     assert.ok(txt(h!).includes('peer-one'), 'and still names the sender')
     absent(h!, '.tier', 'but with no tree to ask, there is no chip')
     absent(h!, 'button.cc-name-jump', 'and nowhere to go')
+  })
+
+uiTest('§7.3 a sender that matches the BEARER whose transcript this is still '
+  + 'navigates — a modal is nobody’s focused desk', async ({ mount }) => {
+    // ⚠ THE COLLISION IS REAL, not contrived: a rehired knowledge bearer is a
+    // live node in the tree under exactly this id (`agent-a@1`), so reading
+    // generation 1's transcript CAN show a mail from `agent-a@1`. The card
+    // used to compare the sender against the `nid` it was handed — which here
+    // is the bearer — and went inert, stranding the reader in a modal with a
+    // name that would not click. The destination is supplied by the surface,
+    // and this surface is not anybody's desk.
+    serveTranscript('agent-a@1')
+    const jumped: string[] = []
+    const closed: number[] = []
+    const { el } = await mount(
+      <LineagePanel node={bearerNode()} slug="org"
+        op={() => Promise.resolve({} as OpResult)}
+        map={new Map<string, CanvasNode>([
+          ['agent-a@1', node('agent-a@1', { tier: 'sonnet' })]])}
+        onFocusAgent={(id) => { jumped.push(id) }}
+        close={() => { closed.push(1) }} />)
+    const read = q(el, 'button').find((b) => txt(b).trim() === 'read')
+    await inAct(() => { read!.click() })
+    await flush()
+    const h = el.querySelector('.lin-read .turn-mail-head') as HTMLElement | null
+    assert.ok(h, 'positive control: the archived transcript rendered a mail CARD')
+    assert.equal(q(h!, '.tier').length, 1, 'positive control: it is identified')
+    const jump = q(h!, 'button.cc-name-jump')
+    assert.equal(jump.length, 1,
+      'and the name clicks even though it names the bearer being read')
+    await inAct(() => { jump[0]!.click() })
+    assert.deepEqual(jumped, ['agent-a@1'], 'it navigated to that bearer')
+    assert.equal(closed.length, 1, 'closing the modal first, as every modal does')
+  })
+
+// ═══════════════════════════════════════════════════════════════════ §8
+// THE FACTS MUST STAY CURRENT ON A TRANSCRIPT THAT NEVER CHANGES.
+//
+// This is the section that fails on the shape the first pass shipped: the
+// directory read the tree through a ref and memoised its context value on
+// `canJump` alone. A ref write notifies nobody, and `Msg` is `memo`'d on its
+// message object — so with the SAME transcript rows, a model switch, a
+// retirement and a re-hire all failed to reach the screen. The card kept
+// yesterday's chip and a link to an agent that had gone, indefinitely.
+//
+// ⚠ EVERY STEP HERE RE-RENDERS THE SAME MOUNTED ROOT WITH THE SAME MESSAGE
+// DATA. Only the tree changes. Mounting a second desk would test a fresh
+// component, which is the opposite of the question.
+// ═══════════════════════════════════════════════════════════════════ §8
+
+test('§8.1 a tier change, a disappearance and a return all reach a mail card '
+  + 'whose transcript never moved', async (t: TestContext) => {
+  const SL = 'org'
+  const ND = `ms${++_n}`
+  useFakeClock()
+  const s = new FakeServer()
+  installFetch(s)
+  const nd = node(ND, { tier: 'opus' })
+  s.userMsg(envelope('peer-one'))
+  const treeWith = (tier: string | null) => {
+    const m = new Map<string, CanvasNode>([[nd.id, nd]])
+    if (tier !== null) m.set('peer-one', node('peer-one', { tier }))
+    return m
+  }
+  const deskAt = (map: Map<string, CanvasNode>) => (
+    <DeskChat node={nd} map={map} op={op} slug={SL} toast={noop} pub={false}
+      bare onJump={noop} />)
+  const v = await mountView(deskAt(treeWith('sonnet')), (host) => host)
+  t.after(async () => {
+    try { await v.unmount() } catch { /* gone */ }
+    resetConvos(); realClock()
+  })
+  await refreshConvo(SL, ND, { force: true })
+  await flush()
+  const chipClass = () => {
+    const c = q(head(v.el), '.tier')
+    return c.length ? c[0]!.className : '(none)'
+  }
+  assert.ok(chipClass().includes('t-sonnet'),
+    `positive control: the card starts on the sender's real model — ${chipClass()}`)
+  const seqs = s.messages.map((m) => m.seq).join(',')
+
+  // 1. THE MODEL CHANGES. Nothing about the transcript does.
+  await v.render(deskAt(treeWith('opus')))
+  assert.equal(s.messages.map((m) => m.seq).join(','), seqs,
+    'control: the transcript rows are unchanged — nothing was refetched')
+  assert.ok(chipClass().includes('t-opus'),
+    `the chip followed the switch: ${chipClass()}`)
+
+  // 2. THE SENDER LEAVES THE TREE. Eligibility is withdrawn, not just the chip.
+  await v.render(deskAt(treeWith(null)))
+  const h2 = head(v.el)
+  assert.ok(txt(h2).includes('peer-one'), 'the name is still shown, verbatim')
+  absent(h2, '.tier', 'a tree that no longer holds it vouches for nothing')
+  absent(h2, 'button.cc-name-jump', 'and the route goes with it')
+
+  // 3. AND IT COMES BACK. The withdrawal above is not a one-way latch.
+  await v.render(deskAt(treeWith('fable')))
+  assert.ok(chipClass().includes('t-fable'),
+    `re-hired at a new model, the card says so: ${chipClass()}`)
+  assert.equal(q(head(v.el), 'button.cc-name-jump').length, 1,
+    'and the route is restored')
+})
+
+test('§8.2 …and the same three steps reach an ARCHIVED transcript in the '
+  + 'lineage modal, which builds its directory the same way',
+async (t: TestContext) => {
+  useFakeClock()
+  serveTranscript('peer-one')
+  const treeWith = (tier: string | null) =>
+    (tier === null ? new Map<string, CanvasNode>()
+      : new Map<string, CanvasNode>([['peer-one', node('peer-one', { tier })]]))
+  const panel = (map: Map<string, CanvasNode>) => (
+    <LineagePanel node={bearerNode()} slug="org"
+      op={() => Promise.resolve({} as OpResult)} map={map}
+      onFocusAgent={noop} close={noop} />)
+  const v = await mountView(panel(treeWith('sonnet')), (host) => host)
+  t.after(async () => {
+    try { await v.unmount() } catch { /* gone */ }
+    resetConvos(); realClock()
+  })
+  await flush()
+  const read = q(v.el, 'button').find((b) => txt(b).trim() === 'read')
+  assert.ok(read, 'positive control: there is a transcript to read')
+  await inAct(() => { read!.click() })
+  await flush()
+  const hd = () => {
+    const h = v.el.querySelector('.lin-read .turn-mail-head') as HTMLElement | null
+    assert.ok(h, 'positive control: the archived transcript still shows a card')
+    return h!
+  }
+  const chipClass = () => {
+    const c = q(hd(), '.tier')
+    return c.length ? c[0]!.className : '(none)'
+  }
+  assert.ok(chipClass().includes('t-sonnet'), `starts right: ${chipClass()}`)
+  await v.render(panel(treeWith('opus')))
+  assert.ok(chipClass().includes('t-opus'), `follows a switch: ${chipClass()}`)
+  await v.render(panel(treeWith(null)))
+  absent(hd(), '.tier', 'and a departure withdraws the chip')
+  absent(hd(), 'button.cc-name-jump', 'and the route')
+  await v.render(panel(treeWith('fable')))
+  assert.ok(chipClass().includes('t-fable'), `and a return restores it: ${chipClass()}`)
+})
+
+// ═══════════════════════════════════════════════════════════════════ §9
+// MAIL THAT ARRIVES MID-TURN — the LIVE steered row, before the transcript
+// catches up. The user's ruling ("inline in the transcript too") covers this
+// row: it was a bold name with no chip and no route.
+//
+// ⚠ THE TWO HALVES ARE EQUALLY LOAD-BEARING. It must identify its sender,
+// AND it must still look like a message that is still arriving: a live row
+// dressed as the settled card tells the reader the message has landed in the
+// transcript when it has not.
+// ═══════════════════════════════════════════════════════════════════ §9
+
+async function liveDesk(t: TestContext, opts: {
+  from: string; others?: CanvasNode[]; text?: string;
+}): Promise<{ el: HTMLElement; settle: () => Promise<void> }> {
+  const SL = 'org'
+  const ND = `ms${++_n}`
+  useFakeClock()
+  const s = new FakeServer()
+  installFetch(s)
+  const nd = node(ND, { tier: 'opus' })
+  const map = new Map<string, CanvasNode>([[nd.id, nd]])
+  for (const o of opts.others ?? []) map.set(o.id, o)
+  const text = opts.text ?? envelope(opts.from)
+  s.busy = true
+  s.liveRow('steered', text)
+  const v = await mountView(
+    <DeskChat node={nd} map={map} op={op} slug={SL} toast={noop} pub={false}
+      bare onJump={noop} />, (host) => host)
+  t.after(async () => {
+    try { await v.unmount() } catch { /* gone */ }
+    resetConvos(); realClock()
+  })
+  await refreshConvo(SL, ND, { force: true })
+  await flush()
+  return {
+    el: v.el,
+    // what the server does moments later: the live row retires and the same
+    // text lands in the durable transcript
+    settle: async () => {
+      s.live = []
+      s.userMsg(text)
+      await refreshConvo(SL, ND, { force: true })
+      await flush()
+    },
+  }
+}
+
+const liveRowOf = (el: HTMLElement) => {
+  const r = q(el, '.msg.user.live')
+  assert.equal(r.length, 1,
+    'positive control: exactly one LIVE user row is on screen')
+  return r[0]!
+}
+
+test('§9.1 a mid-turn mail identifies its sender — and is still a live row, '
+  + 'not a settled card', async (t: TestContext) => {
+  const { el } = await liveDesk(t, {
+    from: 'peer-one', others: [node('peer-one', { tier: 'sonnet' })],
+  })
+  const r = liveRowOf(el)
+  assert.equal(q(r, '.tier').length, 1, 'the sender wears its model chip')
+  assert.ok(q(r, '.tier')[0]!.classList.contains('t-sonnet'), 'the right model')
+  assert.equal(q(r, 'button.cc-name-jump').length, 1,
+    'and its name is a route to its desk')
+  assert.ok(txt(r).includes('a word about the build'), 'the body is still there')
+  // ⚠ THE OTHER HALF: it has NOT been promoted to the settled card.
+  absent(el, '.turn-mail',
+    'a message still arriving must not be dressed as one that has landed')
+  assert.ok(!txt(r).includes('[MAIL'),
+    `and the envelope chrome is still hidden: ${JSON.stringify(txt(r).slice(0, 80))}`)
+  assert.ok(!txt(r).includes('(orgtree)'), 'including the drive nudge')
+})
+
+test('§9.2 …and a mid-turn mail from a name this tree does not hold gets '
+  + 'neither chip nor route', async (t: TestContext) => {
+  // the anti-vacuity pair for §9.1: same envelope, same row, one fact changed
+  const { el } = await liveDesk(t, { from: 'outsider' })
+  const r = liveRowOf(el)
+  assert.ok(txt(r).includes('outsider'), 'the name is still shown, verbatim')
+  absent(r, '.tier', 'no chip for a name this tree cannot vouch for')
+  absent(r, 'button.cc-name-jump', 'and no route')
+})
+
+test('§9.3 an envelope shape the parser does not recognise still renders its '
+  + 'text — a live row must never swallow one', async (t: TestContext) => {
+  // `splitTurnMail` refuses an unfamiliar block rather than guessing; the
+  // live row inherits that refusal and falls back to the previous rendering.
+  const odd = '[MAIL — 1 message(s)]\nFROM-THE-FUTURE peer-one\nbody text here\n[END MAIL]'
+  const { el } = await liveDesk(t, {
+    from: 'peer-one', others: [node('peer-one', { tier: 'sonnet' })], text: odd,
+  })
+  const r = liveRowOf(el)
+  assert.ok(txt(r).includes('body text here'), 'the body survived')
+  assert.ok(txt(r).includes('FROM-THE-FUTURE'),
+    `and so did the line the parser could not read: ${JSON.stringify(txt(r))}`)
+  absent(r, '.tier', 'nothing is identified from a shape we did not parse')
+})
+
+test('§9.4 the handover to the stored transcript loses nothing and duplicates '
+  + 'nothing — same sender, same body, once', async (t: TestContext) => {
+  const { el, settle } = await liveDesk(t, {
+    from: 'peer-one', others: [node('peer-one', { tier: 'sonnet' })],
+  })
+  const count = (hay: string, needle: string) => hay.split(needle).length - 1
+  assert.equal(count(txt(el), 'a word about the build'), 1,
+    'positive control: the body is on screen exactly once while live')
+  assert.equal(q(el, '.turn-mail').length, 0, 'and not yet as a settled card')
+  await settle()
+  assert.equal(q(el, '.msg.user.live').length, 0, 'the live row retired')
+  const cards = q(el, '.turn-mail-head')
+  assert.equal(cards.length, 1, 'and exactly one settled card took its place')
+  assert.equal(count(txt(el), 'a word about the build'), 1,
+    'the body appears ONCE across the whole desk — no duplicate, no loss')
+  assert.equal(q(cards[0]!, '.tier').length, 1,
+    'the identity survived the handover: the chip is still there')
+  assert.ok(q(cards[0]!, '.tier')[0]!.classList.contains('t-sonnet'),
+    'and it is the same model')
+  assert.equal(q(cards[0]!, 'button.cc-name-jump').length, 1,
+    'and so is the route')
+})
+
+// ═══════════════════════════════════════════════════════════════════ §10
+// THE PHANTOM JUMP. `SenderChip` used to treat any name that merely did not
+// start with '@' as one of ours — so an unknown spelling was drawn as a
+// button that focused nothing at all.
+// ═══════════════════════════════════════════════════════════════════ §10
+
+uiTest('§10.1 SenderChip offers no route to a name the tree does not hold, '
+  + 'and does offer one to a name it does', async ({ mount }) => {
+    const nodes = new Map<string, TreeNode>([
+      ['peer-one', { id: 'peer-one', tier: 'sonnet', state: 'live' } as TreeNode],
+    ])
+    const { el } = await mount(
+      <div>
+        <span className="known">
+          <SenderChip id="peer-one" nodes={nodes} onFocusAgent={noop} /></span>
+        <span className="unknown">
+          <SenderChip id="ghost-agent" nodes={nodes} onFocusAgent={noop} /></span>
+      </div>)
+    const known = el.querySelector('.known') as HTMLElement
+    const unknown = el.querySelector('.unknown') as HTMLElement
+    // ⚠ THE POSITIVE CONTROL IS IN THE SAME MOUNT, one fact apart: identical
+    // props, identical handler, and the only difference is membership.
+    assert.equal(q(known, 'button.cc-name-jump').length, 1,
+      'control: an agent the tree holds still gets its route')
+    assert.equal(q(known, '.tier').length, 1, 'control: …and its model chip')
+    assert.ok(txt(unknown).includes('ghost-agent'),
+      'the unknown name is still readable, verbatim')
+    absent(unknown, 'button.cc-name-jump',
+      'but nothing claims to take you to a desk that does not exist')
+  })
+
+uiTest('§10.2 …and its navigation button declares type="button", so it cannot '
+  + 'submit a form it is nested in', async ({ mount }) => {
+    const nodes = new Map<string, TreeNode>([
+      ['peer-one', { id: 'peer-one', tier: 'sonnet', state: 'live' } as TreeNode],
+    ])
+    const { el } = await mount(
+      <SenderChip id="peer-one" nodes={nodes} onFocusAgent={noop} />)
+    const b = q(el, 'button.cc-name-jump')
+    assert.equal(b.length, 1, 'positive control: there is a button to judge')
+    assert.equal(b[0]!.getAttribute('type'), 'button',
+      'an untyped button inside a form defaults to submit')
   })

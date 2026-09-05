@@ -41,7 +41,7 @@ import { ConfirmModal } from './modals'
 import { InboxView, RetiredFold } from './mail'
 import { AskCard } from './asks'
 import { deriveProgress, ProgressChip, ProgressView } from './progress'
-import { AgentDirectoryProvider, AgentName, useAgentDirectory } from './identity'
+import { AgentDirectoryProvider, AgentName, agentFactsSig, useAgentDirectory } from './identity'
 import type { AgentDirectory } from './identity'
 import { isMobile } from '../mobile'
 import { fmtFull, fmtShort, fmtStamp, localizeFreezeUntil } from '../timefmt'
@@ -1552,11 +1552,18 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
   )
   // THE DESK'S OWN TREE, handed to the transcript's mail cards.
   //
-  // Read through refs so the context VALUE is stable: `map` and `onJump` are
-  // rebuilt by the canvas on most renders, and a fresh value here would
-  // re-render every consumer on every render — the exact cost the memo'd,
-  // windowed message list exists to avoid. The refs keep the lookup current
-  // without churning the value.
+  // The lookup reads a ref so a rebuilt-but-identical `map` — the canvas makes
+  // a fresh one on most renders — does not churn the context value and
+  // re-render every memo'd row in the windowed list.
+  //
+  // ⚠ BUT A REF WRITE NOTIFIES NOBODY, so the value is memoised on
+  // `agentFactsSig`: the ids the tree holds and the tier of each. That is the
+  // difference between a directory that is merely current when something else
+  // happens to re-render, and one where a model switch, a retirement or a new
+  // hire actually reaches a transcript that has not otherwise changed. Same
+  // facts → same string → same value → no churn; changed facts → new value →
+  // the consumers re-render. (Found in review: without this, a mail card kept
+  // showing yesterday's model and a link to an agent that had gone.)
   //
   // ⚠ `onFocus` IS OMITTED, NOT STUBBED, WHEN THERE IS NOWHERE TO GO. A
   // surface without `onJump` (there are such call sites) must render a name
@@ -1565,10 +1572,17 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
   const mapRef = useRef(map); mapRef.current = map
   const jumpRef = useRef(onJump); jumpRef.current = onJump
   const canJump = Boolean(onJump)
+  // ⚠ THE SAME DESTINATION TEST THE HEADER USES, and the same reason it is
+  // `!bare` and never an id comparison: a switchboard panel or a pinned window
+  // is NOBODY's focused desk, so even this agent's own self-mail must still
+  // navigate there. Only the focused desk itself is a destination.
+  const destination = bare ? null : node.id
+  const facts = agentFactsSig(map)
   const agentDir = useMemo<AgentDirectory>(() => ({
     resolve: (id: string) => mapRef.current.get(id),
     onFocus: canJump ? (id: string) => jumpRef.current?.(id) : undefined,
-  }), [canJump])
+    destination,
+  }), [canJump, destination, facts])
   const content = (
     <AgentDirectoryProvider value={agentDir}>
       <div className="cc-head">
@@ -1978,11 +1992,8 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
               : f.kind === 'tool'
                 ? <div key={f.n ?? 'f' + i} className="msg live tools"><DotIcon fontSize="inherit" className="tooldot" /> {f.text}</div>
                 : f.kind === 'steered'
-                  // notices are split off here too: the live row would
-                  // otherwise flash raw [ORG NOTICES] chrome for the second
-                  // before the transcript refresh renders them as a card
-                  ? <div key={f.n ?? 'f' + i} className="msg user live md"
-                      dangerouslySetInnerHTML={md(stripEnvelope(splitNotices(f.text).rest), fileBase(slug, node.id))} />
+                  ? <LiveSteerRow key={f.n ?? 'f' + i} text={f.text}
+                      slug={slug} nid={node.id} />
                   : <div key={f.n ?? 'f' + i} className="msg assistant live">
                       <div className="md" dangerouslySetInnerHTML={md(f.text, fileBase(slug, node.id))} />
                       {/* the live copy is capped at 2000 chars server-side —
@@ -2361,16 +2372,27 @@ export function LineagePanel({ node, op, slug, presence = ALL_PRESENT,
   // otherwise glide to a desk sitting behind this overlay, which is the same
   // rule every other modal here follows. And `onFocus` is OMITTED when the
   // caller gave no route: a button that runs nothing is worse than none.
+  //
+  // ⚠ NO `destination`. A modal is not any agent's focused desk, so EVERY
+  // resolved name here navigates — including a mail this very bearer sent to
+  // itself, because clicking it closes the modal and takes you somewhere you
+  // are not. (Before this it compared the sender against the bearer id and
+  // went inert, which is the mistake the AgentName contract already names.)
+  //
+  // ⚠ And the value is memoised on `agentFactsSig`, not on the refs, for the
+  // reason spelled out at DeskChatInner's copy: a ref write reaches no
+  // consumer, and these mail cards can sit on screen unchanged for minutes.
   const mapRef = useRef(map); mapRef.current = map
   const focusRef = useRef(onFocusAgent); focusRef.current = onFocusAgent
   const closeRef = useRef(close); closeRef.current = close
   const canFocus = Boolean(onFocusAgent)
+  const lineageFacts = agentFactsSig(map)
   const lineageDir = useMemo<AgentDirectory>(() => ({
     resolve: (id: string) => mapRef.current?.get(id),
     onFocus: canFocus
       ? (id: string) => { closeRef.current(); focusRef.current?.(id) }
       : undefined,
-  }), [canFocus])
+  }), [canFocus, lineageFacts])
   // retiring a knowledge bearer asks too (user bug 2026-08-09) — every other
   // seat-freeing button in the app confirms, and this one drops a whole
   // consultable generation off the end of the lineage
@@ -2507,10 +2529,8 @@ export function LineagePanel({ node, op, slug, presence = ALL_PRESENT,
                       // the SAME identity facts the live desk supplies: an
                       // archived generation's mail cards would otherwise be
                       // the one place a sender fell back to a bare name.
-                      // ⚠ `nid` is the BEARER's id, so a mail the bearer sent
-                      // to itself still reads as its own desk and does not
-                      // offer a click — which is right, and comes free from
-                      // the card's own destination test.
+                      // ⚠ `nid` here is the BEARER, used for file links only.
+                      // It is NOT a destination — see `lineageDir`.
                       <AgentDirectoryProvider value={lineageDir}>
                         {readChat.messages.slice(-80).map((m, i) => (
                           <Msg key={i} m={m} slug={slug} nid={b.id} />))}
@@ -2607,47 +2627,60 @@ export const splitTurnMail = (text: string | null | undefined) => {
   return { mail, rest: value.slice(matched[0].length) }
 }
 
-function TurnMailCard({ mail, slug, nid }: { mail: TurnMail; slug: string; nid: string }) {
-  const { rest: body, files } = parseAttachedFiles(mail.body)
-  const fb = fileBase(slug, nid)
-  // user ruling 2026-09-05, reiterated: an agent sender wears its model chip
-  // and clicks through to its desk in the INLINE TRANSCRIPT too, not only in
-  // the mailbox. The facts come from the desk's own tree via context — see
-  // AgentDirectory for why context and not a prop through memo'd `Msg`.
+/** A mail sender's identity: its model chip and the route to its desk, or the
+ *  plain name when this surface cannot vouch for it.
+ *
+ *  User ruling 2026-09-05, reiterated: an agent sender wears its model card
+ *  and takes you to its desk in the INLINE TRANSCRIPT too, not only in the
+ *  mailbox. The facts arrive by context — see `AgentDirectory` for why
+ *  context and not a prop threaded through memo'd `Msg`.
+ *
+ *  ⚠ ELIGIBILITY IS TWO INDEPENDENT FACTS, and neither is the name matching:
+ *
+ *   · NAMESPACE. Every party from outside this org is minted with an `@ns:`
+ *     prefix at the boundary — `@mcp:<peer>` (api.py `_extern_peer`, whose
+ *     peer id is `[A-Za-z0-9._-]{1,64}` and so cannot smuggle one in),
+ *     `@org:<slug>` (api.py interorg) and `@net:<from>` (net.py inbound),
+ *     which are the three call sites of `post_external_mail` — plus the
+ *     `@user`/`@system` sentinels. So the '@' test excludes an outside party
+ *     BY ORIGIN, not by anything about how it spells itself.
+ *   · EXISTENCE. `dir.resolve` must return a node the tree on screen holds.
+ *
+ *  A bare name that resolves is therefore one of ours because the boundary
+ *  gave it no other way in — not because the string matched. `test_external
+ *  _mail.py §5` is the check on that boundary; if it ever ships an
+ *  un-prefixed external sender, this rule is wrong and that test fails. */
+function MailFrom({ from, nameClass }: { from: string; nameClass?: string }) {
   const dir = useAgentDirectory()
-  // ⚠ WHO IS ELIGIBLE, and every clause is doing work:
-  //  · '@'-prefixed is a SENTINEL, not a name — @user, @system, and every
-  //    outside peer (@mcp:/@org:/@net:, the only three shapes the backend
-  //    ever mints for one). No chip, no jump, nothing inferred.
-  //  · `dir.resolve` must return the agent. A name that does not resolve in
-  //    the tree on screen is not ours, so an outside party spelling itself
-  //    exactly like one of our agents cannot borrow our model chip or a
-  //    route into our tree — the name matching is not the evidence.
-  const agent = mail.from && !mail.from.startsWith('@')
-    ? dir?.resolve(mail.from) : undefined
-  // this card is IN that agent's own desk when it sent the mail to itself
-  // (relationship "yourself"), and the click would then go nowhere — the
-  // destination is the surface you are already on
-  const atDest = mail.from === nid
+  const agent = from && !from.startsWith('@') ? dir?.resolve(from) : undefined
+  // keyed on DESTINATION, supplied by the surface — never `from === nid`.
+  // A pinned window and a switchboard panel show an agent's own self-mail
+  // and must still navigate; only its focused desk is where the click
+  // would go nowhere.
+  const atDest = Boolean(dir?.destination) && dir!.destination === from
+  if (!agent) return <b>{from}</b>
   // ⚠ THE CHIP IS THE SENDER'S CURRENT MODEL AND SAYS SO. The envelope
   // records no generation, so it cannot mean "the model that wrote this" the
   // way a docket actor line's does — same ruling and the same sentence as a
   // prose mention (workrefs.tsx). An unknown current tier draws NO chip
   // rather than a guess; TierChip already refuses a null.
-  const chipWhy = !agent ? undefined
-    : (agent.tier ? `${mail.from} — current model, ${agent.tier}.`
-      : `${mail.from} — current model not known.`)
+  const why = (agent.tier ? `${from} — current model, ${agent.tier}.`
+    : `${from} — current model not known.`)
     + (atDest ? ' This is its own desk.'
       : dir?.onFocus ? ' Go to its desk.' : '')
+  return <AgentName id={from} tier={agent.tier} nameClass={nameClass}
+    why={why} atDestination={atDest}
+    onFocus={dir?.onFocus ? (id) => dir.onFocus!(id) : undefined} />
+}
+
+function TurnMailCard({ mail, slug, nid }: { mail: TurnMail; slug: string; nid: string }) {
+  const { rest: body, files } = parseAttachedFiles(mail.body)
+  const fb = fileBase(slug, nid)
   return (
     <section className={'turn-mail' + (mail.passive ? ' passive' : '')
       + (mail.from === USER ? ' from-user' : '')}>
       <header className="turn-mail-head">
-        {agent
-          ? <AgentName id={mail.from} tier={agent.tier} nameClass="turn-mail-from"
-              why={chipWhy} atDestination={atDest}
-              onFocus={dir?.onFocus ? (id) => dir.onFocus!(id) : undefined} />
-          : <b>{mail.from}</b>}
+        <MailFrom from={mail.from} nameClass="turn-mail-from" />
         <span>{mail.relationship}</span>
         <span>{mail.kind}</span>
         <time>{fmtFull(mail.at)}</time>
@@ -2667,6 +2700,53 @@ function TurnMailCard({ mail, slug, nid }: { mail: TurnMail; slug: string; nid: 
         </div>
       )}
     </section>
+  )
+}
+
+/** MAIL THAT ARRIVED MID-TURN, drawn while the turn is still running.
+ *
+ *  ⚠ IT MUST GO ON LOOKING LIVE. This row is the streaming stand-in for a
+ *  message the transcript has not caught up with; a `TurnMailCard` replaces
+ *  it a moment later. Dressing it as that card would tell the reader the
+ *  message had settled into the transcript when it has not — so it keeps
+ *  `.msg.user.live` and only the SENDER is upgraded, from the bold name
+ *  `stripEnvelope` used to leave behind to the same identity the settled card
+ *  will show (user ruling 2026-09-05: inline in the transcript too).
+ *
+ *  ⚠ IT PARSES WITH `splitTurnMail`, the settled card's own parser, so the
+ *  two cannot drift on who the sender is or where the body starts. An
+ *  envelope shape that parser does not recognise falls back to EXACTLY the
+ *  previous rendering rather than dropping text — `splitTurnMail` refuses the
+ *  same way, and a live row that swallowed an unfamiliar envelope would be
+ *  the silent-loss failure.
+ *
+ *  Attachments stay as the [ATTACHED FILE] lines the envelope carries, which
+ *  is what this row already showed; the settled card turns them into chips.
+ *  That is a deliberate difference, not an oversight: the files are on the
+ *  agent's disk, and the card arrives with the transcript. */
+function LiveSteerRow({ text, slug, nid }: { text: string; slug: string; nid: string }) {
+  // notices are split off here too: the live row would otherwise flash raw
+  // [ORG NOTICES] chrome for the second before the transcript refresh
+  // renders them as a card
+  const rest = splitNotices(text).rest
+  const { mail, rest: tail } = splitTurnMail(rest)
+  const fb = fileBase(slug, nid)
+  if (!mail.length) {
+    return <div className="msg user live md"
+      dangerouslySetInnerHTML={md(stripEnvelope(rest), fb)} />
+  }
+  const after = stripEnvelope(tail)
+  return (
+    <div className="msg user live">
+      {mail.map((m, i) => (
+        <div className="live-mail" key={i}>
+          <div className="live-mail-head"><MailFrom from={m.from} /></div>
+          {m.body.trim() && <div className="md"
+            dangerouslySetInnerHTML={md(m.body.trim(), fb)} />}
+        </div>
+      ))}
+      {after && <div className="md" dangerouslySetInnerHTML={md(after, fb)} />}
+    </div>
   )
 }
 

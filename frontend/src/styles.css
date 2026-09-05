@@ -1363,6 +1363,40 @@ button.cc-name:hover {
 .desk-body .turn-mail-head .tier {
   width: 14px; height: 14px; font-size: 8.5px; border-radius: 3px;
 }
+/* THE LIVE STEERED ROW — mail that arrived MID-TURN, still streaming, before
+   the transcript refresh replaces it with a settled `.turn-mail` card.
+   ⚠ IT DELIBERATELY DOES NOT LOOK LIKE THAT CARD. No card background, no
+   border, no metadata strip: it stays the `.msg.user.live` bubble it has
+   always been, because dressing it as the settled card would tell the reader
+   the message had landed in the transcript when it has not. All that changes
+   is the sender — the bold `**name**` stripEnvelope left behind is now a real
+   identity (user ruling 2026-09-05, "inline in the transcript too"). */
+.live-mail + .live-mail { margin-top: 7px; }
+.live-mail-head { display: flex; align-items: center; gap: 5px; }
+/* the same three corrections `.turn-mail-head .cc-name` needs, for the same
+   reason: the switchboard's `.cc-name` is a flexible, wrapping 12.5px column
+   header, and all three are wrong on a one-line attribution. */
+.live-mail-head .cc-name,
+/* ⚠ AND THE UNRESOLVED NAME GETS THE SAME TYPE, which is not decoration. A
+   sender this tree cannot vouch for renders as a bare `<b>`; left at the
+   body's 14px sans it made a TALLER attribution line than the identified one,
+   and the probe's "the chip did not grow the row" comparison then passed for
+   a reason that had nothing to do with the chip. Same type both sides, and
+   the chip is the only difference left. (`.turn-mail-head b` does this for
+   the settled card already.) */
+.live-mail-head b {
+  font-family: var(--mono); font-size: 13px; font-weight: 700;
+  color: var(--ink); min-width: 0; flex: none;
+  white-space: nowrap; overflow-wrap: normal;
+}
+.live-mail-head button.cc-name:hover { color: var(--accent); text-decoration: underline; }
+/* the row's line box is 14px × 1.45 ≈ 20.3px; the desk's default 16px chip
+   fits inside it, but only just, and this line has no metadata to hide a
+   grown one behind. 15px keeps a visible gap. (`.desk-body .tier` is (0,2,0),
+   so this needs three — a live row is always inside a desk body.) */
+.desk-body .live-mail-head .tier {
+  width: 15px; height: 15px; font-size: 9px; border-radius: 3px;
+}
 .turn-mail-passive { font-style: italic; }
 /* The metadata header is emphatic; the arbitrary agent-authored markdown body
    is not. Its own **bold** remains meaningful and is the only bold it gets. */

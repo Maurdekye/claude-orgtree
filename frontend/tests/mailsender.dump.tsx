@@ -73,6 +73,13 @@ const ENVELOPE =
   + 'pick up the two missed sender surfaces now.\n'
   + '[END MAIL]\n\n(orgtree) You have new mail above.'
 
+/** the same envelope as it arrives MID-TURN, before the transcript has it */
+const LIVE_ENVELOPE = (from: string) =>
+  '[MAIL — 1 message(s)]\n'
+  + `FROM ${from} (your superior) · request · 2026-09-05T10:05:00Z\n`
+  + 'a message that arrived while the turn was still running.\n'
+  + '[END MAIL]\n\n(orgtree) You have new mail above.'
+
 ;(globalThis as unknown as Record<string, unknown>).fetch = (url: string) => {
   const ok = (payload: unknown) => Promise.resolve({
     ok: true, status: 200, headers: new Headers(),
@@ -84,8 +91,18 @@ const ENVELOPE =
   if (u.includes('/chat')) {
     return ok({
       messages: [{ role: 'user', text: ENVELOPE, seq: 1, ts: AT }],
-      busy: false, responding: false, queued: 0, last_error: null,
-      occupancy: 1000, live: [], pending_mail: [],
+      busy: true, responding: false, queued: 0, last_error: null,
+      occupancy: 1000, pending_mail: [],
+      // ⚠ THE LIVE STEERED ROWS — mail that arrived MID-TURN, which the desk
+      // draws before the transcript catches up. TWO of them, differing in
+      // exactly one fact: `coordinator-astra` is in the tree below and wears a
+      // chip, `nobody-here` is not and draws a bare name. Same body, same
+      // length, so "the chip did not make the row taller" is a comparison and
+      // not an assertion about a number somebody chose.
+      live: [
+        { kind: 'steered', n: 1, text: LIVE_ENVELOPE('coordinator-astra') },
+        { kind: 'steered', n: 2, text: LIVE_ENVELOPE('nobody-here') },
+      ],
       draft_epoch: 'boot0:0', instance: 'inst-0',
     })
   }
@@ -145,6 +162,9 @@ const main = async () => {
     ['desk', 'turn-mail-head', 1],
     ['desk', 'turn-mail-from', 1],
     ['desk', 'tier t-opus', 1],
+    // the mid-turn rows: two of them, and exactly ONE wearing an identity
+    ['desk', 'live-mail-head', 2],
+    ['desk', 'msg user live', 2],
   ]
   const src: Record<string, string> = { inbox: inboxHtml, desk: deskHtml }
   for (const [which, cls, n] of want) {

@@ -117,13 +117,49 @@ export function AgentName({
  *  must not draw a chip or a jump for a name it cannot vouch for. */
 export interface AgentDirectory {
   /** The agent, or `undefined` when this id is NOT an agent of the tree on
-   *  screen. ⚠ THIS IS THE WHOLE PROVENANCE TEST. A name that does not
-   *  resolve here gets no chip and no navigation, so an outside party that
-   *  spells itself exactly like one of our agents cannot borrow either. */
+   *  screen. This establishes EXISTENCE — the tree currently holds a node by
+   *  that name — and nothing else. It is half of the eligibility test; the
+   *  other half is the namespace (see `mailFromEligible` in desk.tsx). */
   resolve: (id: string) => { tier?: string | null } | undefined
   /** focus that agent's desk. Omit it and resolved names still wear their
    *  chip but do not click — the honest state for a read-only surface. */
   onFocus?: (id: string) => void
+  /** ⚠ THE AGENT WHOSE FOCUSED DESK THIS SURFACE **IS** — the one id whose
+   *  jump would land you where you already are. `null`/omitted means this
+   *  surface is nobody's focused desk (a switchboard panel, a pinned window,
+   *  a modal), and there every name navigates, including the surface's own.
+   *
+   *  Same contract as `AgentName.atDestination`, and for the same reason:
+   *  keyed on DESTINATION, supplied by the surface. Comparing a message's
+   *  sender against "whose transcript is this" is the mistake — a pinned
+   *  window shows that agent's own self-mail and clicking it must still
+   *  take you to the desk you are not on. */
+  destination?: string | null
+}
+
+/** A stable summary of everything `resolve` can answer with: which ids the
+ *  directory holds, and the tier of each.
+ *
+ *  ⚠ THIS EXISTS BECAUSE A REF IS NOT REACTIVE. The directory reads the tree
+ *  through refs so its context VALUE can stay stable across the canvas's
+ *  frequent re-renders — but a ref write notifies nobody, and the consumers
+ *  are `memo`'d rows inside a windowed list that will not re-render on their
+ *  own. Memoising the value on this signature is what makes a model change,
+ *  an agent's retirement or a new hire actually reach the screen: same facts
+ *  → same string → same value → no churn; changed facts → new value → the
+ *  consumers re-render.
+ *
+ *  O(n) in the tree per render of the providing surface, which is far less
+ *  than the surface itself costs. Do not "optimise" it into a ref. */
+export function agentFactsSig(
+  map: Map<string, { tier?: string | null }> | null | undefined,
+): string {
+  if (!map) return ''
+  let s = ''
+  // the two separators cannot occur in an agent id, so no two distinct
+  // trees can collide by concatenation
+  for (const [id, n] of map) s += id + '\u0000' + (n?.tier ?? '') + '\u0001'
+  return s
 }
 
 const AgentDirectoryCtx = createContext<AgentDirectory | null>(null)
