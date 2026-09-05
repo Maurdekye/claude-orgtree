@@ -774,3 +774,52 @@ uiTest('§B11 the sweep never fires in the org-switch window (tree.slug ≠ slug
   assert.equal(stored().length, 0, 'a genuinely empty org sweeps the pin')
   assert.ok(toasts.some((t) => /cto is gone/.test(t.join(' '))))
 })
+
+// ------------------------------------------------------------- 2026-09-05
+// Two defects seen by LOOKING at the deployed build (8a9a4ad) in a real Edge,
+// not by any suite: the clamp measured the viewport's BORDER box while windows
+// live in its PADDING box, and the snap preview drew in the root accent.
+
+uiTest('clamp measures the padding box: a bordered viewport keeps the flush window inside the border', async ({ mount }) => {
+  const rig = await mountCanvas(mount, ['ceo', 'cto'])
+  const size = { w: 1300, h: 850 }
+  Object.defineProperty(rig.viewport, 'getBoundingClientRect', { configurable: true,
+    value: () => ({ x: 0, y: 0, top: 0, left: 0, right: size.w, bottom: size.h,
+      width: size.w, height: size.h, toJSON: () => ({}) }) })
+  // POSITIVE CONTROL first: with no border the padding box IS the border box,
+  // so an overhanging window lands exactly at the measured edge
+  rig.viewport.style.border = '0px solid red'
+  await inAct(() => { addPin('mine', 'cto', { x: 1200, y: 800, w: 320, h: 240 }) })
+  await flush()
+  let r = winRect(pinWin(rig.el, 'cto')!)
+  assert.deepEqual([r.x + r.w, r.y + r.h], [1300, 850], 'control: borderless viewport clamps to its full size')
+  // the real viewport has a 1px border (styles.css .viewport): the window must
+  // stop 1px short on each side or overflow:hidden eats its own border line
+  rig.viewport.style.border = '1px solid red'
+  await inAct(() => { window.dispatchEvent(new window.Event('resize')) })
+  await flush()
+  r = winRect(pinWin(rig.el, 'cto')!)
+  assert.deepEqual([r.x + r.w, r.y + r.h], [1298, 848],
+    `bordered viewport: right/bottom must be 1298/848, got ${r.x + r.w}/${r.y + r.h}`)
+  // and a resize gesture commits the same bound
+  const se = pinWin(rig.el, 'cto')!.querySelector('.pinwin-rs.se') as HTMLElement
+  await inAct(() => { se.dispatchEvent(pointer('pointerdown', 1290, 840)) })
+  await inAct(() => { se.dispatchEvent(pointer('pointermove', 2000, 2000)) })
+  await inAct(() => { se.dispatchEvent(pointer('pointerup', 2000, 2000)) })
+  const stored = readPins('mine').find((p) => p.id === 'cto')!.rect
+  assert.deepEqual([stored.x + stored.w, stored.y + stored.h], [1298, 848], 'persisted resize respects the padding box')
+})
+
+uiTest('snap preview wears the dragged window\'s provider class, not the root accent', async ({ mount }) => {
+  const { el, title } = await mosaicRig(mount)
+  await inAct(() => { title.dispatchEvent(pointer('pointerdown', 700, 412)) })
+  await inAct(() => { title.dispatchEvent(pointer('pointermove', 451, 117)) })
+  const preview = el.querySelector('.pin-snap-preview') as HTMLElement
+  assert.ok(preview, 'snap preview is visible before release')
+  const win = pinWin(el, 'cto')!
+  const prov = [...win.classList].find((c) => c.startsWith('prov-'))
+  assert.ok(prov, 'the window itself carries a prov-* class')
+  assert.ok(preview.classList.contains(prov!),
+    `preview classes "${preview.className}" lack the window's ${prov}`)
+  await inAct(() => { title.dispatchEvent(pointer('pointerup', 451, 117)) })
+})

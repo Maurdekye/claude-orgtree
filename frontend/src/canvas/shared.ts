@@ -11,7 +11,7 @@ import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 // listener — loaded here because every .md surface renders through this module
 import './lightbox'
 import { onLiveBump } from '../livebus'
-import { localizeStamps } from '../timefmt'
+import { fmtFull, localizeStamps } from '../timefmt'
 import type { DependencyList } from 'react'
 import type {
   ActivityInfo, AskInfo, CacheForecast, CodexRouteInfo, DirGrant, MailEntry, NodeState,
@@ -1311,7 +1311,7 @@ export function primedRestartChip(
     return {
       label: 'restart in progress...',
       title: [
-        `triggered at ${pr.triggered_at ?? '?'}; deploy has started`,
+        `triggered at ${fmtFull(pr.triggered_at) || '?'}; deploy has started`,
         cutsUs
           ? 'this backend is shutting down; every org on this machine will restart'
           : 'the mail hub container is rebuilding; agents here are NOT restarted',
@@ -1326,7 +1326,7 @@ export function primedRestartChip(
       ? (pr.target === 'both' ? 'restart primed (+ mail hub)' : 'restart primed')
       : 'mail hub restart primed',
     title: [
-      `armed by ${pr.by_org ?? '?'}/${pr.by_node ?? '?'} at ${pr.at ?? '?'}`
+      `armed by ${pr.by_org ?? '?'}/${pr.by_node ?? '?'} at ${fmtFull(pr.at) || '?'}`
         + (pr.reason ? ` — ${pr.reason}` : ''),
       cutsUs
         ? 'every org on this machine restarts, including this one'

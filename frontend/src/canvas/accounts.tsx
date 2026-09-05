@@ -44,7 +44,7 @@ import {
   fmtCredits, TIER_LETTER,
   TIERS, useCrowdPiles, useDeskDpi, useEsc, useStartView, useStartZoom,
 } from './shared'
-import { fmtWhen } from '../timefmt'
+import { fmtFull, fmtWhen } from '../timefmt'
 import type { StartView } from './shared'
 
 // small local copies of the usage-modal label helpers (App.tsx owns the
@@ -614,7 +614,7 @@ export function AccountsPanel({ toast, close }: {
                         + 'identity not resolved yet'}
                       title={[
                         k.registered_at
-                          ? `registered: ${k.registered_at} (lower bound on survival)`
+                          ? `registered: ${fmtFull(k.registered_at)} (lower bound on survival)`
                           : 'registered before provenance recording existed',
                         k.mint_config_dir
                           ? `operator supplied mint config: ${k.mint_config_dir}`
@@ -633,7 +633,7 @@ export function AccountsPanel({ toast, close }: {
                   </div>
                   <div className="acct-provenance">
                     <span>{k.registered_at
-                      ? `registered ${k.registered_at}`
+                      ? `registered ${fmtFull(k.registered_at)}`
                       : 'registered before provenance recording'}</span>
                     {k.mint_config_dir && <span>mint config: {k.mint_config_dir}</span>}
                     {k.registered_from_config_dir &&
