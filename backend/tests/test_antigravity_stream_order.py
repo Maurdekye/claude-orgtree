@@ -265,13 +265,15 @@ class GateLock:
 
 
 def protocol_env(gate: "GateLock", rows: list, *, tool_open=None,
-                 flush_draft=None, journal_records=None):
-    """The leg's ACTUAL event door, admitted body, claim and sweep, executed
-    over a controlled namespace. Only the pause points are fakes."""
+                 flush_draft=None, journal_records=None, commit_text=None):
+    """The leg's ACTUAL event door, admitted body, claim, sweep and text
+    drain, executed over a controlled namespace. Only the pause points are
+    fakes."""
     fns = _leg_functions(["_d", "_item_id", "_committed", "_mark_committed",
                           "_claim_tool", "_unavailable_result",
-                          "_tool_identity", "_on_event",
-                          "_on_event_admitted", "_commit_unfinished_tools"])
+                          "_tool_identity", "_on_event", "_journal_records",
+                          "_on_event_admitted", "_commit_unfinished_tools",
+                          "_commit_unfinished_text"])
     import ast
     from typing import Any, cast
     logged: list = []
@@ -281,16 +283,21 @@ def protocol_env(gate: "GateLock", rows: list, *, tool_open=None,
         jstate={"sid": "seam", "pending": [], "held": [],
                 "text_open": {}, "text_order": [], "item_ids": set(),
                 "tool_open": dict(tool_open or {}), "agent_items": 0,
-                "inflight": 0, "finalized": False, "swept": False},
+                "inflight": 0, "finalized": False, "swept": False,
+                "text_drained": False},
         turn_token="seamtoken", model_id="seam", slug="seam", nid="seam",
         now_iso=supervisor.now_iso, _tool_arg=supervisor._tool_arg,
-        _journal_records=journal_records or (lambda recs: rows.extend(recs)),
+        # the SINK is `_journal_locked` (what `_codex_journal` would be):
+        # `_journal_records` is the leg's own, so every caller takes `jlock`
+        # exactly where production does, and a pause point inside the sink
+        # is a pause point inside whatever lock the caller is holding
+        _journal_locked=journal_records or (lambda recs: rows.extend(recs)),
         _log_turn_error=lambda s, n, text: logged.append(text),
         _visible_stream=lambda payload: None,
         _visible_live_row=lambda payload: None,
         _flush_draft=flush_draft or (lambda: None),
         _queue_delta=lambda body: None,
-        _commit_text=lambda *a: None)
+        _commit_text=commit_text or (lambda *a: None))
     exec(compile(ast.Module(body=fns, type_ignores=[]),
                  "<antigravity-leg-bodies>", "exec"), env)
     env["_logged"] = logged
@@ -304,6 +311,12 @@ def step_msg(state, output=None, index=3):
     return {"event": "step_update", "step_update": {
         "step_type": "tool", "state": state, "step_index": index,
         "tool_name": "run_command", "tool_info": info}}
+
+
+def text_msg(delta, state="ACTIVE", index=2):
+    return {"event": "step_update", "step_update": {
+        "step_type": "agent_response", "state": state, "step_index": index,
+        "text_delta": delta}}
 
 
 def rows_shape(rows):
@@ -1300,6 +1313,127 @@ def main() -> int:
                       dict(env_n["jstate"]["tool_open"])),
                      ([("tool_use", UID)], False, {UID: "run_command"}),
                      f"{rows_n}"))
+
+    print("§16 a step is visible to a closer only once its call is PUBLISHED: "
+          "registration and the journal write are one lock take")
+    # Astra's second gate, MEASURED at b22c1a5 (probe_late_active.py phase
+    # `publish`): with the row written after the take was released, a
+    # callback held between the two for longer than the drain let the sweep
+    # find the id open, expire, and answer a call that was not on disk —
+    # tool_result BEFORE tool_use. §12's version of this hold releases inside
+    # the drain, so only a hold PAST it reaches the defect.
+    rows_q: list = []
+    entered_q = threading.Event()
+    release_q = threading.Event()
+
+    def sink_q(recs):
+        if rows_shape(recs)[:1] == [("tool_use", UID)]:
+            entered_q.set()
+            release_q.wait(20.0)
+        rows_q.extend(recs)
+
+    env_q = protocol_env(GateLock(), rows_q, journal_records=sink_q)
+    wire_q = threading.Thread(
+        target=lambda: env_q["_on_event"](step_msg("ACTIVE")),
+        name="wire", daemon=True)
+    sweep_q = threading.Thread(target=env_q["_commit_unfinished_tools"],
+                               name="sweep", daemon=True)
+    wire_q.start()
+    reached_q = entered_q.wait(5)
+    sweep_q.start()
+    sweep_q.join(6.5)                  # longer than the 5s drain
+    sweep_ran_unpublished = not sweep_q.is_alive()
+    rows_while_unpublished = rows_shape(rows_q)
+    release_q.set()
+    wire_q.join(10)
+    sweep_q.join(10)
+    check("anti-vacuity: the callback really was held between registering the "
+          "step and publishing its call, for longer than the drain",
+          lambda: eq((reached_q, wire_q.is_alive(), sweep_q.is_alive()),
+                     (True, False, False),
+                     f"reached {reached_q}"))
+    check("the sweep could not close the step while its call was unpublished "
+          "— it wrote nothing and had not finished",
+          lambda: eq((sweep_ran_unpublished, rows_while_unpublished),
+                     (False, []), f"{rows_while_unpublished}"))
+    check("…and once published the close follows it: call, then result, "
+          "nothing left open",
+          lambda: eq((rows_shape(rows_q), dict(env_q["jstate"]["tool_open"])),
+                     ([("tool_use", UID), ("tool_result", UNAV)], {}),
+                     f"{rows_q}"))
+    # The hold above is INSIDE the journal write, so it pauses under whatever
+    # lock the caller holds and the sweep is blocked either way — it does not
+    # discriminate (the `publish_outside_the_take` mutant passed it). The
+    # window is BETWEEN the wire's lock takes, so the gate goes there: the
+    # wire is stopped before its 5th blocking acquisition and the sweep is
+    # run to completion while it stands there. Split takes → the sweep finds
+    # the id open, expires, and writes the result with no call on disk.
+    rows_r: list = []
+    gate_r = GateLock("wire", 5)
+    env_r = protocol_env(gate_r, rows_r)
+    wire_r = threading.Thread(
+        target=lambda: env_r["_on_event"](step_msg("ACTIVE")),
+        name="wire", daemon=True)
+    wire_r.start()
+    fired_r = gate_r.reached.wait(5)
+    sweep_r = threading.Thread(target=env_r["_commit_unfinished_tools"],
+                               name="sweep", daemon=True)
+    sweep_r.start()
+    sweep_r.join(9)
+    rows_paused_r = rows_shape(rows_r)
+    gate_r.go.set()
+    wire_r.join(10)
+    check("with the wire stopped between lock takes and the whole sweep run "
+          "at that point, no result exists that its call does not precede",
+          lambda: eq((fired_r, not sweep_r.is_alive(),
+                      rows_paused_r[:1] in ([], [("tool_use", UID)]),
+                      rows_shape(rows_r)),
+                     (True, True, True,
+                      [("tool_use", UID), ("tool_result", UNAV)]),
+                     f"paused {rows_paused_r} final {rows_shape(rows_r)}"))
+    # anti-vacuity for that gate: it fires on a take this env really makes
+    rows_g: list = []
+    gate_g = GateLock("wire", 5)
+    env_g = protocol_env(gate_g, rows_g)
+    probe_g = threading.Thread(
+        target=lambda: (env_g["_on_event"](step_msg("ACTIVE")),
+                        env_g["_on_event"](step_msg("DONE", output="x"))),
+        name="wire", daemon=True)
+    probe_g.start()
+    fired_g = gate_g.reached.wait(5)
+    gate_g.go.set()
+    probe_g.join(10)
+    check("anti-vacuity: that same gate index is a real, reachable lock take "
+          "on this path — it stopped the wire and released cleanly",
+          lambda: eq((fired_g, probe_g.is_alive(), rows_shape(rows_g)),
+                     (True, False, [("tool_use", UID), ("tool_result", "x")]),
+                     f"{rows_g}"))
+
+    print("§17 the same finalization scope on the TEXT side: a delta that "
+          "arrives after the end-of-turn drain commits itself")
+    # MEASURED at b22c1a5 (probe_late_active.py phase `text`): the drain took
+    # its snapshot, the delta then landed in `text_open`, and nothing ever
+    # committed it — the text was on the desk and never on disk.
+    committed_t: list = []
+    env_t = protocol_env(GateLock(), [],
+                         commit_text=lambda iid, body, ts:
+                         committed_t.append((iid, body)))
+    env_t["_on_event_admitted"](text_msg("control text", index=1))
+    flag_before = env_t["jstate"]["text_drained"]
+    env_t["_commit_unfinished_text"]()
+    after_control = list(committed_t)
+    env_t["_on_event_admitted"](text_msg("late text", index=2))
+    check("positive control: a delta the drain CAN see is committed by it, "
+          "and the flag is down until the drain runs",
+          lambda: eq((flag_before, after_control, env_t["jstate"]["text_drained"]),
+                     (False, [("agy-seamtoken-1", "control text")], True),
+                     f"{after_control}"))
+    check("a delta arriving after that drain becomes its own durable block "
+          "instead of sitting in a buffer nothing will empty",
+          lambda: eq((committed_t[len(after_control):],
+                      dict(env_t["jstate"]["text_open"])),
+                     ([("agy-seamtoken-2", "late text")], {}),
+                     f"{committed_t}"))
 
     print()
     for label, tb in FAIL:

@@ -12462,13 +12462,13 @@ def _antigravity_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
         # nothing would ever close. `drained` is the condition the sweep
         # waits on; it shares `jlock`.
         #
-        # `swept` is the SECOND half of that protocol and covers the case the
-        # drain cannot: the wait is bounded, so an admitted callback can still
-        # be short of registration when it expires. `swept` is set in the SAME
-        # `jlock` take that snapshots the open ids, so a registration either
-        # sees it False and lands in that snapshot, or sees it True and knows
-        # the sweep will never answer it — and closes itself.
-        "inflight": 0, "finalized": False, "swept": False}
+        # The wait is bounded, so a callback can still be mid-body when it
+        # expires: `swept` and `text_drained` are raised in the SAME `jlock`
+        # take as the sweep's and the text drain's snapshots. An event that
+        # sees either flag knows nothing will come back for its step, and
+        # commits (tools: call + unknown-outcome result) itself.
+        "inflight": 0, "finalized": False, "swept": False,
+        "text_drained": False}
     emit_lock = threading.Lock()
     drained = threading.Condition(jlock)
 
@@ -12578,16 +12578,22 @@ def _antigravity_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
         if fire:
             _flush_draft()
 
+    def _journal_locked(recs: list[dict[str, Any]]) -> None:
+        """`_journal_records` with `jlock` ALREADY HELD — for the one caller
+        that must change `jstate` and publish the matching row without a gap
+        (the tool registration)."""
+        sid = str(jstate["sid"] or "")
+        if not sid:
+            jstate["pending"].extend(recs)
+            return
+        _codex_journal(slug, sid, recs)
+
     def _journal_records(recs: list[dict[str, Any]]) -> None:
         """Serialize reader-thread step events with the turn thread's start /
         usage records. Before the conversation id is final, events wait in
         memory; `_open_journal` writes the user row first, then this queue."""
         with jlock:
-            sid = str(jstate["sid"] or "")
-            if not sid:
-                jstate["pending"].extend(recs)
-                return
-            _codex_journal(slug, sid, recs)
+            _journal_locked(recs)
 
     # the version pin (or the tier default) is the BASE id; the effort is a
     # separate flag on this wire, and the CLI refuses the two combined
@@ -12675,10 +12681,19 @@ def _antigravity_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
             delta = step.get("text_delta")
             if isinstance(delta, str) and delta:
                 _queue_delta(delta)
+                # same finalization scope as the tool side: `text_drained` is
+                # set with the end-of-turn drain's snapshot, so parking a
+                # delta after it would keep text nothing will ever commit —
+                # MEASURED (probe_late_active.py, phase `text`). Past that
+                # point the delta becomes its own durable block instead.
                 with jlock:
-                    if iid not in jstate["text_open"]:
-                        jstate["text_order"].append(iid)
-                    jstate["text_open"].setdefault(iid, []).append(delta)
+                    late_text = bool(jstate["text_drained"])
+                    if not late_text:
+                        if iid not in jstate["text_open"]:
+                            jstate["text_order"].append(iid)
+                        jstate["text_open"].setdefault(iid, []).append(delta)
+                if late_text:
+                    _commit_text(iid, delta, now_iso())
             if state_ not in ("DONE", "ERROR"):
                 return
             # the step is complete: its text is a block in chronological
@@ -12697,42 +12712,36 @@ def _antigravity_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
                 if iid in jstate["tool_open"]:
                     return
             _flush_draft()
-            # REGISTRATION, and the second half of the finalization protocol.
-            # `_flush_draft` above emits to the desk, so this callback can be
-            # here for longer than the sweep's bounded drain — MEASURED, held
-            # here past the 5s wait: the sweep expired, snapshotted an empty
-            # `tool_open`, closed nothing, and the row below then dangled
-            # exactly as it did before this unit existed (Astra's root
-            # concern on 9490cd7; probe_late_active.py, 1 use / 0 results).
-            # `swept` and that snapshot are set under ONE `jlock` take, so
-            # this take decides which of the two closers owns the step: not
-            # swept → into the snapshot, the sweep closes it; swept → the
-            # sweep is past looking, so claim the id here and write the call
-            # and its unknown-outcome result together, as ONE journal write
-            # (one `_codex_journal` take: the pair cannot be split by another
-            # writer, and the call still precedes its result).
-            with jlock:
-                late = bool(jstate["swept"])
-                if late:
-                    cast("set[str]", jstate["item_ids"]).add(iid)
-                else:
-                    jstate["tool_open"][iid] = name
             use_rec = {
                 "type": "assistant", "timestamp": now_iso(),
                 "message": {"id": iid, "role": "assistant",
                             "model": model_id,
                             "content": [{"type": "tool_use", "id": iid,
                                          "name": name, "input": inp}]}}
+            # INVARIANT (one `jlock` take, `_flush_draft` already done):
+            # a step is visible to a closer ONLY once its `tool_use` row is
+            # journaled — registering and publishing in separate takes let
+            # the sweep answer a call not yet on disk (result before use).
+            # The same take reads `swept`, which the sweep sets with its
+            # snapshot, and so decides the owner: not swept → the sweep's
+            # snapshot will hold this id and close it; swept → the sweep is
+            # past looking, so this callback claims the id and writes the
+            # call and its unknown-outcome result as one journal write.
+            with jlock:
+                late = bool(jstate["swept"])
+                if late:
+                    cast("set[str]", jstate["item_ids"]).add(iid)
+                    _journal_locked([use_rec, _unavailable_result(iid)])
+                else:
+                    jstate["tool_open"][iid] = name
+                    _journal_locked([use_rec])
             if late:
-                # a DONE for this step that was admitted before finalization
-                # and is still behind us finds the id committed and writes
-                # nothing: one result per call, and this one is honest about
-                # not knowing the outcome. The desk redraws from disk (the
-                # turn is over; a live chip would arrive after its own row).
-                _journal_records([use_rec, _unavailable_result(iid)])
+                # a DONE admitted before finalization and still behind this
+                # finds the id committed and writes nothing: one result per
+                # call. The desk redraws from disk — the turn is over, so a
+                # live chip would arrive after its own row.
                 _visible_stream({"kind": "journal", "text": ""})
                 return
-            _journal_records([use_rec])
             _visible_live_row({"kind": "tool", "id": iid,
                                "text": name + ((" · " + _tool_arg(name, inp))
                                                if _tool_arg(name, inp)
@@ -12786,9 +12795,14 @@ def _antigravity_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
         still open: what it streamed was on the desk, so it is kept — under
         the step's own id, never joined with a completed block. This is the
         interrupted-turn behaviour this leg always had (its streamed text
-        was journaled), now also true of a failed turn."""
+        was journaled), now also true of a failed turn.
+
+        `text_drained` is raised with the snapshot, in ONE take: a delta
+        arriving after it commits itself, because this drain will not run
+        again (the tool sweep's `swept`, same shape, same reason)."""
         with jlock:
             order = list(jstate["text_order"])
+            jstate["text_drained"] = True
         for iid in order:
             if _committed(iid):
                 continue
@@ -12830,12 +12844,10 @@ def _antigravity_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
             wait the sweep saw no open id and the row dangled, or wrote its
             result BEFORE the call it answers (Astra's seam, 2026-09-05);
           · an ACTIVE arriving after finalization: refused at the door;
-          · an ACTIVE admitted but STILL not registered when the bounded wait
-            expires: `swept` is set with the snapshot below, so that
-            registration sees the sweep is past looking and writes its own
-            call and unknown-outcome result together (Astra's root concern on
-            9490cd7 — MEASURED before the flag: the sweep closed nothing and
-            the row dangled again).
+          · an ACTIVE admitted but still not registered when the bounded wait
+            EXPIRES: it reads `swept` (raised with the snapshot below) and
+            closes itself. Registration publishes the `tool_use` in that same
+            take, so an id in the snapshot is always already on disk.
         The wait is BOUNDED (the reader's remaining work after the process is
         gone is the tail of one callback; `wait()` gives its join the same
         5s), holds no lock while waiting, and on expiry proceeds anyway —
@@ -12853,12 +12865,7 @@ def _antigravity_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
                 drained.wait(remaining)
             still_inflight = int(jstate["inflight"])
             open_ids = list(cast("dict[str, Any]", jstate["tool_open"]))
-            # ONE take with the snapshot, and this is why: from here on the
-            # ids below are the only ones this sweep will ever close, so a
-            # registration that does not make it into `open_ids` must know
-            # to close itself (see the ACTIVE path). Setting it in a second
-            # take leaves the gap the drain was bounded into.
-            jstate["swept"] = True
+            jstate["swept"] = True     # with the snapshot, never a 2nd take
         if still_inflight:
             _log_turn_error(
                 slug, nid, "the turn ended while the Antigravity CLI's last "
