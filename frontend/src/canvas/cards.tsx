@@ -1101,7 +1101,8 @@ export function DraftNode({ pos, draft, map, seats, maxTop, defaultTop, kioskRem
           <div className="df-foot">
             <span className="spacer" />
             <button onClick={onCancel}><CloseIcon fontSize="inherit" /> cancel</button>
-            <button className="primary" disabled={!ok} onClick={hire}>
+            <button className="primary" disabled={!ok} onClick={hire}
+              title={ok ? undefined : 'give the agent a name first'}>
               <CheckIcon fontSize="inherit" /> hire</button>
           </div>
         </div>

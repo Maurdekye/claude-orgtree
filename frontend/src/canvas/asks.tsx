@@ -32,6 +32,28 @@ const OTHER = '\0other'          // sentinel — no label can collide with it
 const isSubmitKey = (e: KeyboardEvent): boolean =>
   e.key === 'Enter' && (e.ctrlKey || e.metaKey)
 
+/** WHY THE CREDIT STEPPER IS AT ITS END. Both bounds are real rules with real
+ *  numbers, and a dead button shows neither: the floor is what the asking
+ *  agent has already handed down to its own reports (grant − free), which
+ *  cannot be taken back from this card, and the ceiling is the org's
+ *  "top-level grant cap" — the setting's own words — which the stepper honours
+ *  wherever the asking node sits. One pair of helpers serves both credit
+ *  cards, so the two cannot drift into describing the same rule differently.
+ *  Each returns undefined while the button is live: a title on an enabled
+ *  control would be a tooltip explaining a limit the user has not hit. */
+export const stepDownWhy = (g: number, committed: number): string | undefined => {
+  if (g > committed) return undefined
+  return committed > 0
+    ? `${committed} credit${committed === 1 ? ' is' : 's are'} already committed `
+      + "to this agent's own reports — take those back first to offer less"
+    : 'a grant cannot go below zero'
+}
+
+export const stepUpWhy = (g: number, maxTop?: number): string | undefined =>
+  (maxTop != null && g >= maxTop
+    ? `the offer stops at this org's top-level grant cap of ${maxTop}`
+    : undefined)
+
 export function AskCard({ ask, slug, toast, seat = 0, committed = 0, maxTop,
   segments = [], pxc }: {
   ask: AskInfo
@@ -268,10 +290,12 @@ function BatchAsk({ ask, slug, toast, seat, committed, maxTop, segments,
               zoom={1} pxc={pxcV} />
             {isMobile && <div className="ask-step">
               <button type="button" disabled={d.credits.g <= committed}
+                title={stepDownWhy(d.credits.g, committed)}
                 onClick={() => patch({ credits: { mode: 'grant',
                   g: Math.max(committed, d.credits.g - 1) } })}>−</button>
               <b>{d.credits.g}</b>
               <button type="button" disabled={maxTop != null && d.credits.g >= maxTop}
+                title={stepUpWhy(d.credits.g, maxTop)}
                 onClick={() => patch({ credits: { mode: 'grant',
                   g: maxTop ? Math.min(maxTop, d.credits.g + 1) : d.credits.g + 1 } })}>＋</button>
             </div>}
@@ -600,10 +624,12 @@ function CreditAsk({ ask, slug, toast, seat, committed, maxTop, segments,
               offer the drag would; the bar stays the read-only gauge. */}
           {isMobile && <div className="ask-step">
             <button type="button" disabled={g <= committed}
+              title={stepDownWhy(g, committed)}
               onClick={() => { const v = Math.max(committed, g - 1)
                 gRef.current = v; setG(v); preview() }}>−</button>
             <b>{g}</b>
             <button type="button" disabled={maxTop != null && g >= maxTop}
+              title={stepUpWhy(g, maxTop)}
               onClick={() => { const v = maxTop ? Math.min(maxTop, g + 1) : g + 1
                 gRef.current = v; setG(v); preview() }}>＋</button>
           </div>}

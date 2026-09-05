@@ -81,7 +81,13 @@ export function FolderPickerHost() {
         <div className="row">
           <span className="dim mono picker-sel">{cur?.path || ''}</span>
           <span className="spacer" />
+          {/* the two ways this button is dead read identically on screen —
+              the path readout beside it is empty in both — so say which. */}
           <button className="primary" disabled={!cur?.path}
+            title={cur?.path ? undefined
+              : cur ? 'this is the drive list, not a folder — open a drive to '
+                + 'choose a folder inside it'
+                : 'still reading the folder list'}
             onClick={() => finish(cur?.path ?? null)}>select this folder</button>
           <button onClick={() => finish(null)}>cancel</button>
         </div>
