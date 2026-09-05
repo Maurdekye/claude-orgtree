@@ -1542,6 +1542,11 @@ def org_tree(slug: str, request: Request) -> dict[str, Any]:
                 "prefer": _rt.get("prefer"),
                 "outcome": _rt.get("outcome"),
                 "reported_model": _rt.get("reported_model"),
+                # the server's `model/rerouted`, when it sent one, and the
+                # pool that answer attributes the turn to (None = unknown);
+                # the label already follows both, this is for the tooltip
+                "rerouted": _rt.get("rerouted"),
+                "served_pool": _rt.get("served_pool"),
                 "live": _live, "at": _rt.get("at"),
                 "label": codex_route.route_label(_rt_view, live=_live)}
         else:

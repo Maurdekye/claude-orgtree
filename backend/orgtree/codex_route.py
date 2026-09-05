@@ -63,7 +63,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import time
-from typing import Any, Final, TypedDict
+from typing import Any, Final, TypedDict, cast
 
 #: the two models a routed tier can go out as. Read from `ledger.MODELS` by
 #: name so a rename upstream is a one-line data correction there.
@@ -84,12 +84,20 @@ LEGACY_RESERVE_TIER: Final = "gpt-reserve"
 RESERVE_MODEL: Final[str] = _MODELS[LEGACY_RESERVE_TIER]      # "gpt-reserve"
 DIRECT_LUNA_MODEL: Final[str] = _MODELS[ROUTED_TIER]          # "gpt-5.6-luna"
 
+#: HOW LONG A FACT ABOUT ONE WINDOW IS GOOD FOR. `codex_limits` binds its
+#: `MAX_EVIDENCE_AGE` to this, and the resolver applies it PER WINDOW (parent
+#: review 2026-09-05): a board whose plan bucket was refreshed a second ago
+#: while its reserve bucket was last seen twenty minutes ago is fresh about
+#: the plan and stale about reserve, and a global "the board was touched
+#: recently" flag cannot say that. `pool_capacity` drops windows older than
+#: this; a pool left with nothing fresh is `stale`, which never excludes.
+EVIDENCE_MAX_AGE: Final = 900.0
+
 #: how long a node's rejection mark stands when the provider gave no reset:
 #: long enough not to burn a rejected request every turn, short enough that a
-#: grant OpenAI hands back is noticed the same quarter-hour. Mirrors
-#: `codex_limits.MAX_EVIDENCE_AGE` deliberately — it is the same "how long is
-#: a fact about this account good for" question.
-MARK_PROBE_FLOOR: Final = 900.0
+#: grant OpenAI hands back is noticed the same quarter-hour. The same "how
+#: long is a fact about this account good for" question as the evidence age.
+MARK_PROBE_FLOOR: Final = EVIDENCE_MAX_AGE
 
 #: kinds `classify_failure` answers with. Only REJECTED_USAGE may re-drive.
 KIND_USAGE_LIMIT: Final = "usage-limit"
@@ -122,11 +130,12 @@ class Route(TypedDict):
 
 
 class PoolCapacity(TypedDict):
-    state: str              # "usable" | "exhausted" | "absent" | "unknown"
+    state: str              # "usable" | "exhausted" | "absent" | "stale"
     percent: float | None
     reset_ts: float | None  # LATEST exhausted reset for the pool, None = unknown
     reset_unknown: bool     # an exhausted window carried no resetsAt
-    observed_at: float | None  # when THIS pool's buckets were last observed
+    observed_at: float | None  # when THIS pool's windows were last observed
+    stale_windows: int      # windows dropped as older than the evidence age
 
 
 def _iso(epoch: float | None) -> str | None:
@@ -175,7 +184,16 @@ def pool_of_snapshot(snapshot: dict[str, Any]) -> str | None:
     return None
 
 
-def pool_capacity(limits: list[dict[str, Any]], pool: str) -> PoolCapacity:
+def _window_age(window: dict[str, Any], now: float) -> float | None:
+    seen = window.get("observed_at")
+    if isinstance(seen, (int, float)):
+        return max(0.0, now - float(seen))
+    return None
+
+
+def pool_capacity(limits: list[dict[str, Any]], pool: str, *,
+                  now: float | None = None,
+                  max_age: float = EVIDENCE_MAX_AGE) -> PoolCapacity:
     """Capacity of one pool from a NORMALIZED board.
 
     Exhausted when ANY of its windows is at 100% or flagged active — a pool
@@ -184,17 +202,45 @@ def pool_capacity(limits: list[dict[str, Any]], pool: str) -> PoolCapacity:
     must clear before the pool serves again), and it is `None` with
     `reset_unknown=True` when an exhausted window carried no reset: an unknown
     reset is a re-probe time, not a recovery.
+
+    ⚠ EVIDENCE AGES PER WINDOW. With `now`, a window whose own observation
+    (`observed_at`, one per bucket+slot in `codex_limits`) is older than
+    `max_age` is DROPPED before any of the above is judged: it is not
+    exhausted, not usable, just old. A pool whose every window is old is
+    `stale` — distinct from `absent` (no bucket at all, which on a complete
+    board means no grant) and never an exclusion. A window with no
+    observation time is judged as it is (a hand-built board carries its
+    own `stale` flag). Without `now`, nothing is aged — the historical
+    reading, kept for callers that pass a board they already aged.
     """
     mine = [w for w in limits if pool_of_window(w) == pool]
     if not mine:
         return {"state": "absent", "percent": None, "reset_ts": None,
-                "reset_unknown": False, "observed_at": None}
+                "reset_unknown": False, "observed_at": None,
+                "stale_windows": 0}
     seen = [float(w["observed_at"]) for w in mine
+            if isinstance(w.get("observed_at"), (int, float))]
+    observed_at = max(seen) if seen else None
+    fresh: list[dict[str, Any]] = []
+    dropped = 0
+    for w in mine:
+        age = _window_age(w, now) if now is not None else None
+        if age is not None and age > max_age:
+            dropped += 1
+            continue
+        fresh.append(w)
+    if not fresh:
+        return {"state": "stale", "percent": None, "reset_ts": None,
+                "reset_unknown": False, "observed_at": observed_at,
+                "stale_windows": dropped}
+    # from here on `observed_at` is the FRESH windows' latest sighting: the
+    # time a verdict below rests on, which is what a mark is compared to
+    seen = [float(w["observed_at"]) for w in fresh
             if isinstance(w.get("observed_at"), (int, float))]
     observed_at = max(seen) if seen else None
     worst = 0.0
     exhausted: list[dict[str, Any]] = []
-    for w in mine:
+    for w in fresh:
         try:
             pct = float(w.get("percent") or 0.0)
         except (TypeError, ValueError):
@@ -204,13 +250,15 @@ def pool_capacity(limits: list[dict[str, Any]], pool: str) -> PoolCapacity:
             exhausted.append(w)
     if not exhausted:
         return {"state": "usable", "percent": worst, "reset_ts": None,
-                "reset_unknown": False, "observed_at": observed_at}
+                "reset_unknown": False, "observed_at": observed_at,
+                "stale_windows": dropped}
     resets = [_epoch(w.get("resets_at")) for w in exhausted]
     known = [r for r in resets if r is not None]
     unknown = len(known) != len(resets)
     return {"state": "exhausted", "percent": worst,
             "reset_ts": (max(known) if known and not unknown else None),
-            "reset_unknown": unknown, "observed_at": observed_at}
+            "reset_unknown": unknown, "observed_at": observed_at,
+            "stale_windows": dropped}
 
 
 def snapshots_pool_reset(snapshots: Any, pool: str,
@@ -398,6 +446,16 @@ def _pool_view(pool: str, *, login_kind: str | None, board: dict[str, Any],
     ⚠ A BOARD FROM ANOTHER ACCOUNT IS NO EVIDENCE. `codex_limits` stamps
     the board with the account it read; if that is not the account this
     decision is being made for, the board is treated as absent.
+
+    ⚠ FRESHNESS IS THIS POOL'S, NOT THE BOARD'S (parent review 2026-09-05,
+    reproduced: a plan-only notification at T+1000 s made the board "not
+    stale" while reserve's exhausted window was still the T reading, and
+    reserve stayed excluded on 1000-second-old evidence). The board's own
+    `stale` flag is one input — it is the age of the LAST touch, and a
+    board nobody touched for the evidence age is stale in every pool — but
+    a board that is fresh overall is then aged window by window
+    (`pool_capacity(now=…)`), and a pool whose windows are all old is
+    `stale`: unknown, never an exclusion, the turn is the probe.
     """
     if pool == RESERVE_POOL and login_kind == "api-key":
         return {"excluded": True, "reason": "login-kind", "evidence": "login",
@@ -410,8 +468,14 @@ def _pool_view(pool: str, *, login_kind: str | None, board: dict[str, Any],
         fresh = False                       # someone else's pools
     if fresh:
         limits = [w for w in (board.get("limits") or []) if isinstance(w, dict)]
-        cap = pool_capacity(limits, pool)
-        if cap["state"] == "usable":
+        cap = pool_capacity(limits, pool, now=now)
+        if cap["state"] == "stale":
+            # the bucket exists but nothing fresh is known about it; the
+            # node's own mark (below) is the only remaining evidence
+            if not live_mark:
+                return {"excluded": False, "reason": "stale",
+                        "evidence": "board", "reset_ts": None}
+        elif cap["state"] == "usable":
             newer = (live_mark and (cap["observed_at"] is None
                                     or _mark_at(mark) is None
                                     or cap["observed_at"] <= _mark_at(mark)))
@@ -498,8 +562,9 @@ def resolve(tier: str, *, login_kind: str | None, board: dict[str, Any],
         # plan-first case; unknown evidence prefers the preferred pool too
         reason = ("granted" if first == RESERVE_POOL and v1["reason"] == "usable"
                   else "preferred" if v1["reason"] == "usable"
-                  else ("board-stale" if board.get("available")
-                        and board.get("stale") else "board-unknown"))
+                  else ("board-stale" if v1["reason"] == "stale"
+                        or (board.get("available") and board.get("stale"))
+                        else "board-unknown"))
         return _route_for(tier, first, account, reason=reason,
                           evidence=v1["evidence"], board_age=board_age,
                           selection=selection, prefer=prefer,
@@ -604,8 +669,15 @@ class FailureClass(TypedDict):
     kind: str
     code: str
     rejected: bool          # explicit terminal rejection with nothing run
-    pool_state: str         # "exhausted" | "no-grant" | "unexplained" | "n/a"
-    reset_ts: float | None  # the rejected pool's latest reset, if known
+    attributed: str | None  # the pool the rejection is EVIDENCE ABOUT:
+                            # the sent pool, or the reroute destination's,
+                            # or None when the destination is unrecognised
+    redrive: bool           # rejected AND the pool that rejected is the one
+                            # we sent to — the only case a retry on the
+                            # other pool is a different request
+    pool_state: str         # "exhausted" | "no-grant" | "unexplained"
+                            # | "unattributed" | "n/a"
+    reset_ts: float | None  # the attributed pool's latest reset, if known
     why: str
 
 
@@ -613,7 +685,8 @@ def classify_failure(*, status: str | None, error: Any, snapshots: Any,
                      items_seen: int, token_usage: Any, agent_text: str,
                      pool: str, board: dict[str, Any] | None,
                      usage_prose: bool = False,
-                     served: str | None = "<sent>") -> FailureClass:
+                     served: str | None = "<sent>",
+                     now: float | None = None) -> FailureClass:
     """What kind of failure this was, and whether the request may be re-sent
     on the other pool.
 
@@ -623,11 +696,25 @@ def classify_failure(*, status: str | None, error: Any, snapshots: Any,
     failure, a usage-limit read out of PROSE with no machine tag — is not a
     rejection this code will act on by replaying.
 
+    ⚠ `served` / `attributed` / `redrive` (parent review 2026-09-05). `pool`
+    is the pool the turn was SENT to; `served` is the pool that answered —
+    the same one unless the server said `model/rerouted` (`served_pool`).
+    A rejection is evidence about the pool that ANSWERED, so `pool_state`
+    and `reset_ts` describe `attributed = served`, and a rejection after a
+    reroute is never booked against the pool we chose. And it may be
+    re-driven on the other pool ONLY when the pool that rejected is the one
+    we sent to: after a reserve→direct reroute, "the other pool" is direct
+    — the pool that just rejected — and re-sending there is the same
+    request to the same wall. With an unrecognised destination
+    (`served=None`) nothing is attributed to any pool and nothing is
+    re-driven: an unobserved destination is not inferred.
+
     `pool_state` explains a rejection from evidence, in order: the turn's own
-    snapshots showing the pool exhausted; else a fresh COMPLETE board
-    (exhausted / absent = no-grant); else "unexplained" — still a rejection,
-    but marked with the probe floor rather than a provider reset.
+    snapshots showing the attributed pool exhausted; else a fresh COMPLETE
+    board (exhausted / absent = no-grant); else "unexplained" — still a
+    rejection, but marked with the probe floor rather than a provider reset.
     """
+    now = time.time() if now is None else now
     code = _error_code(error)
     if status is None or status == "":
         kind = KIND_UNKNOWN
@@ -649,37 +736,45 @@ def classify_failure(*, status: str | None, error: Any, snapshots: Any,
     # the usage-limit machine tag, and nothing observed to have run
     rejected = (status == "failed" and kind == KIND_USAGE_LIMIT
                 and nothing_ran)
+    # the pool the answer is EVIDENCE ABOUT: the one that served the turn
+    attributed: str | None = pool if served == "<sent>" else served
+    redrive = rejected and attributed == pool
     pool_state = "n/a"
     reset_ts: float | None = None
     why = ""
-    if kind == KIND_USAGE_LIMIT:
+    if kind == KIND_USAGE_LIMIT and attributed is None:
+        pool_state = "unattributed"
+        why = (f"sent to {pool}, but the provider rerouted to a model this "
+               "code does not know; the rejection is attributed to no pool")
+    elif kind == KIND_USAGE_LIMIT:
         # the turn's own unnamed notification describes the pool that
-        # SERVED it — the sent pool unless the server rerouted (`served`;
-        # measured, see `snapshots_pool_reset`). `served=None` (an
-        # unrecognised reroute) attributes nothing to the sent pool.
-        sent = pool if served == "<sent>" else served
-        ex, snap_reset = ((False, None) if sent is None else
-                          snapshots_pool_reset(snapshots, pool, sent_pool=sent))
+        # SERVED it (measured, see `snapshots_pool_reset`)
+        ex, snap_reset = snapshots_pool_reset(snapshots, attributed,
+                                              sent_pool=attributed)
         if ex:
             pool_state, reset_ts = "exhausted", snap_reset
-            why = f"{pool} pool exhausted (turn's own rate-limit snapshot)"
+            why = f"{attributed} pool exhausted (turn's own rate-limit snapshot)"
         elif board and board.get("available") and not board.get("stale"):
             limits = [w for w in (board.get("limits") or [])
                       if isinstance(w, dict)]
-            cap = pool_capacity(limits, pool)
+            cap = pool_capacity(limits, attributed, now=now)
             if cap["state"] == "exhausted":
                 pool_state, reset_ts = "exhausted", cap["reset_ts"]
-                why = f"{pool} pool exhausted (account board)"
+                why = f"{attributed} pool exhausted (account board)"
             elif cap["state"] == "absent" and board.get("complete"):
                 pool_state = "no-grant"
-                why = (f"{pool} pool is not granted to this account "
+                why = (f"{attributed} pool is not granted to this account "
                        f"(absent from a complete board read)")
             else:
                 pool_state = "unexplained"
-                why = f"{pool} rejected the request; the board does not say why"
+                why = f"{attributed} rejected the request; the board does not say why"
         else:
             pool_state = "unexplained"
-            why = f"{pool} rejected the request; no fresh board to explain it"
+            why = f"{attributed} rejected the request; no fresh board to explain it"
+        if attributed != pool:
+            why = (f"sent to {pool}, rerouted by the provider to {attributed}: "
+                   + why + " — not re-driven (the other pool is the one that "
+                   "rejected)")
         if not nothing_ran:
             why += " — but the turn had already produced output, so it is not replayed"
     elif kind == KIND_UNKNOWN:
@@ -691,20 +786,44 @@ def classify_failure(*, status: str | None, error: Any, snapshots: Any,
     elif kind == KIND_RATE_LIMIT:
         why = "transient rate limit — not pool exhaustion; no route change"
     return {"kind": kind, "code": code, "rejected": rejected,
+            "attributed": attributed, "redrive": redrive,
             "pool_state": pool_state, "reset_ts": reset_ts, "why": why}
 
 
-def route_label(route: Route | None, *, live: bool) -> str | None:
+def route_label(route: Route | None, *, live: bool,
+                rerouted: Any = "<record>") -> str | None:
     """The header token text (user spec 2026-09-04: a token on the header's
     second row when Luna RUNS ON RESERVE; must reflect the actual route and
     must say when it describes the LAST turn rather than a live one).
 
     Nothing (None) for tiers that do not route and for a direct Luna with no
     reserve story to tell — the token carries news or it is absent.
+
+    ⚠ A KNOWN REROUTE CHANGES THE TOKEN (parent review 2026-09-05). The
+    token is about where the turn RAN, and when the server reported
+    `model/rerouted` the selected pool is not where it ran. `rerouted` is
+    read off the record (the shape `_codex_route_stamp` writes) unless
+    passed; a reroute onto the reserve model wears "reserve", one off
+    reserve onto the direct model wears "direct · rerouted off reserve",
+    and one onto a model this code does not know wears "rerouted · pool
+    unknown" — the destination is not inferred. The selected route stays
+    in the record beside it; the token never claims billing.
     """
     if not route or route.get("requested") != ROUTED_TIER:
         return None
     prefix = "" if live else "last: "
+    record = cast("dict[str, Any]", route)      # the stamp's superset shape
+    rr = record.get("rerouted") if rerouted == "<record>" else rerouted
+    if isinstance(rr, dict):
+        served = served_pool(route, rr)
+        if served is None:
+            return prefix + "rerouted · pool unknown"
+        if served == RESERVE_POOL:
+            return prefix + ("reserve · rerouted" if route.get("route") != "reserve"
+                             else "reserve")
+        if route.get("route") == "reserve":
+            return prefix + "direct · rerouted off reserve"
+        # sent direct, served direct (a reroute between direct models)
     if route.get("route") == "reserve":
         return prefix + "reserve"
     reason = str(route.get("reason") or "")

@@ -64,6 +64,12 @@ scenarios selected by FAKECODEX_SCENARIO:
     reserve_disconnect  on `gpt-reserve` the turn fails with the schema's
                object-form `{"responseStreamDisconnected": {...}}` tag —
                an UNKNOWN outcome that must never be replayed
+    reroute_direct / reroute_then_wall / reroute_unknown_then_wall  a
+               `gpt-reserve` turn gets the schema's `model/rerouted`
+               notification (onto `gpt-5.6-luna`, or onto a model no pool
+               is known for) and then completes / meets the PLAN wall —
+               see the note in `run_turn`; no live reroute has been
+               observed, only the schema shape
 
 Board probe: FAKECODEX_BOARD shapes `account/rateLimits/read` (the COMPLETE
 board): "default" (no reserve bucket — the withdrawn-grant shape),
@@ -273,6 +279,29 @@ def run_turn(thread_id, turn_id, dyn_tools, model=None):
             "threadId": thread_id, "turnId": turn_id,
             "itemId": iid, "delta": text})
         item_event("completed", {**base, "text": text})
+
+    # item 12, parent review 2026-09-05: the server REROUTES a reserve turn.
+    # `model/rerouted` is the 0.153.3 schema's notification {fromModel,
+    # toModel, reason, threadId, turnId}; its shape is read from the schema,
+    # its timing (before any item) is this fixture's choice — no live
+    # reroute has been observed. Three endings:
+    #   reroute_direct          → onto gpt-5.6-luna, then completes normally
+    #   reroute_then_wall       → onto gpt-5.6-luna, then the PLAN wall
+    #   reroute_unknown_then_wall → onto a model no pool is known for, then
+    #                             a wall — attribution must stay unknown
+    if SCENARIO.startswith("reroute") and model == RESERVE_MODEL:
+        to = ("gpt-9-mystery" if SCENARIO == "reroute_unknown_then_wall"
+              else DIRECT_LUNA_MODEL)
+        notify("model/rerouted", {
+            "threadId": thread_id, "turnId": turn_id,
+            "fromModel": RESERVE_MODEL, "toModel": to,
+            "reason": "fake: reserve pool unavailable for this request"})
+        if SCENARIO in ("reroute_then_wall", "reroute_unknown_then_wall"):
+            # the wall of the pool that SERVED: the plan's reset, under the
+            # unnamed id, exactly as a direct turn's wall arrives
+            _pool_wall(thread_id, turn_id, DIRECT_LUNA_MODEL)
+            return
+        model = DIRECT_LUNA_MODEL          # served direct; complete below
 
     # item 12: is THIS attempt's model the one the scenario walls? Decided
     # up front because a walled request meets the wall FIRST — no preamble

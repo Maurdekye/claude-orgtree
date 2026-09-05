@@ -1221,6 +1221,14 @@ export interface CodexRouteInfo {
   prefer: 'reserve' | 'plan' | null
   outcome: string | null
   reported_model: string | null
+  /** the server's own `model/rerouted` for this turn, when it sent one —
+   *  the one case the pool that RAN differs from `pool` (the one selected).
+   *  `served_pool` is the destination's pool, or null when the destination
+   *  is a model no pool is known for; the backend's `label` already follows
+   *  both, these are for the tooltip */
+  rerouted?: { fromModel: string | null; toModel: string | null
+    reason: string | null } | null
+  served_pool?: 'reserve' | 'plan' | null
   live: boolean
   at: string | null
   label: string | null

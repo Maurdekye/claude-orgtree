@@ -153,12 +153,25 @@ export function RouteBadge({ route }: { route?: CodexRouteInfo | null }) {
   const reported = route.reported_model
     ? `; provider reported ${route.reported_model}`
     : '; provider reported nothing'
+  // a KNOWN reroute: the server said it served another model than the one
+  // sent; the pool that ran is the destination's, or unknown — said so,
+  // never inferred (parent review 2026-09-05)
+  const rerouted = route.rerouted
+    ? `; the provider rerouted it to ${route.rerouted.toModel ?? '?'}`
+      + (route.served_pool ? ` (the ${route.served_pool} pool)` : ' (no known pool)')
+    : ''
   const when = route.live ? 'this turn' : `last turn${route.at ? ` (${ago(route.at)})` : ''}`
+  // the class names the pool that RAN when known, the selected one otherwise
+  const ran = route.rerouted
+    ? (route.served_pool === 'reserve' ? 'reserve'
+      : route.served_pool === 'plan' ? 'direct' : 'unknown')
+    : route.route
   return (
-    <span className={'badge route-' + route.route + (route.live ? ' live' : '')}
+    <span className={'badge route-' + ran + (route.live ? ' live' : '')}
+      data-route-live={route.live ? '1' : '0'}
       title={`${when} was sent as ${route.model} on the ${route.route} pool `
         + `(${route.reason}${route.selection === 'retry' ? ', after the other pool rejected it' : ''})`
-        + reported + ' — the next turn re-resolves'}>
+        + rerouted + reported + ' — the next turn re-resolves'}>
       {route.label}</span>
   )
 }

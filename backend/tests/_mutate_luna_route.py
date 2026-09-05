@@ -187,10 +187,77 @@ MUTANTS = [
 
     ("M19 — a sparse notification re-observes EVERY bucket",
      LIMITS,
-     "        _observed[limit_id] = now\n",
+     "        slots = _observed.setdefault(limit_id, {})\n",
      "        for _k in _snapshots:  # MUTANT\n"
-     "            _observed[_k] = now\n",
-     "a plan update looks like fresh reserve evidence and clears a reserve mark (§13)"),
+     "            _observed[_k] = {\"primary\": now, \"secondary\": now}\n"
+     "        slots = _observed.setdefault(limit_id, {})\n",
+     "a plan update looks like fresh reserve evidence and clears a reserve mark (§13, §14)"),
+
+    ("M23 — a notification re-stamps a slot it did NOT carry",
+     LIMITS,
+     '            if isinstance(snap.get(slot), dict):\n'
+     "                slots[slot] = now\n",
+     "            if True:  # MUTANT\n"
+     "                slots[slot] = now\n",
+     "a primary-only update makes the retained secondary look fresh (§14)"),
+
+    ("M24 — the resolver never ages a window",
+     ROUTE,
+     "        if age is not None and age > max_age:\n",
+     "        if False:  # MUTANT\n",
+     "1000-second-old reserve exhaustion stays binding under plan-only updates (§14)"),
+
+    ("M25 — a notification from ANOTHER account merges into this board",
+     LIMITS,
+     "        if board_acct is not None and str(board_acct) != origin:\n",
+     "        if False:  # MUTANT\n",
+     "a B-login turn's reserve reading sends A's luna to reserve (§15)"),
+
+    ("M26 — a full read whose login moved mid-read is cached anyway",
+     LIMITS,
+     "            if acct_before != acct_after or acct_before != acct:\n",
+     "            if False:  # MUTANT\n",
+     "a board stamped B carries A's numbers (§15)"),
+
+    ("M27 — the supervisor folds under the login as of delivery, not the route's",
+     SUP,
+     '            if codex_limits.observe(_snap, pool_hint=_served,\n'
+     '                                    account=route["account"]):\n',
+     "            if codex_limits.observe(_snap, pool_hint=_served,  # MUTANT\n"
+     "                                    account=None):\n",
+     "the handoff loses the captured account (§15 handoff)"),
+
+    ("M28 — the token ignores a known reroute",
+     ROUTE,
+     "    if isinstance(rr, dict):\n",
+     "    if False:  # MUTANT\n",
+     "a reserve turn the server served direct still wears 'reserve' (§16)"),
+
+    ("M29 — a rejection after a reroute is re-driven on the pool that rejected",
+     SUP,
+     '        if fcls["redrive"] and other is not None:\n',
+     '        if fcls["rejected"] and other is not None:  # MUTANT\n',
+     "reserve→direct reroute + direct wall marks reserve and re-sends direct (§16)"),
+
+    ("M30 — an unknown reroute destination's notification is folded as the plan's",
+     SUP,
+     "    if _served is not None:\n"
+     "        for _snap in (list(_snaps.values()) if isinstance(_snaps, dict)\n",
+     "    if True:  # MUTANT\n"
+     "        for _snap in (list(_snaps.values()) if isinstance(_snaps, dict)\n",
+     "an unobserved destination is inferred to be the plan (§16 unknown)"),
+
+    ("M31 — the mid-turn reroute stamp drops the reroute",
+     SUP,
+     "                _codex_route_stamp(st, _r, live=True, rerouted=rr)\n",
+     "                _codex_route_stamp(st, _r, live=True, rerouted=None)  # MUTANT\n",
+     "row 2 keeps saying reserve while the server serves direct (§16 live stamp)"),
+
+    ("M32 — a rejection is attributed to the pool SENT, whatever served",
+     ROUTE,
+     '    attributed: str | None = pool if served == "<sent>" else served\n',
+     "    attributed: str | None = pool  # MUTANT\n",
+     "a rerouted wall is booked against reserve and re-driven (§4, §16)"),
 ]
 
 #: mutants that must SURVIVE rather than die (the noop control)

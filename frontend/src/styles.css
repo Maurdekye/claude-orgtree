@@ -4137,6 +4137,9 @@ html.mobile .md table { display: block; overflow-x: auto; max-width: 100%; }
   border-color: color-mix(in srgb, var(--tier-luna) 60%, transparent); }
 .badge.route-direct { white-space: nowrap; }
 .badge.route-direct.live { color: var(--ink); }
+/* a reroute onto a model no pool is known for: the label says "pool
+   unknown" and the token wears no pool colour at all */
+.badge.route-unknown { white-space: nowrap; }
 /* the "Prefer reserve" checkbox row (gear + draft modal) */
 .prefer-reserve { display: inline-flex; align-items: center; gap: 4px;
   margin: 2px 0 0 22px; font-size: 12.5px; cursor: pointer; }

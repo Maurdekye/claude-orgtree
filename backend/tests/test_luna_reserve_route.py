@@ -617,13 +617,17 @@ def main() -> int:
             status="failed", error={"message": "m", "codexErrorInfo": "usageLimitExceeded"},
             snapshots=unnamed, items_seen=0, token_usage=None, agent_text="",
             pool=RES, board=None, served=PLAN)
-        assert c2["pool_state"] != "exhausted", c2
+        # the wall is the PLAN's (the pool that served), never reserve's
+        eq((c2["attributed"], c2["pool_state"], c2["redrive"]), (PLAN, "exhausted", False),
+           "attributed to the serving pool; not re-driven")
         c3 = codex_route.classify_failure(
             status="failed", error={"message": "m", "codexErrorInfo": "usageLimitExceeded"},
             snapshots=unnamed, items_seen=0, token_usage=None, agent_text="",
             pool=RES, board=None, served=None)
-        eq(c3["pool_state"], "unexplained", "unknown serving pool: nothing attributed")
+        eq((c3["pool_state"], c3["attributed"]), ("unattributed", None),
+           "unknown serving pool: nothing attributed")
         assert c3["rejected"], "…but the terminal rejection itself still stands"
+        assert not c3["redrive"], "…and it is not re-driven"
     check("§4 model/rerouted overrides the sent-pool attribution; an unknown "
           "destination attributes nothing", t_reroute_overrides)
 
@@ -1118,6 +1122,390 @@ def main() -> int:
     check("§13 the cached board is stamped with its account, re-read when the "
           "login moves, observed per bucket, and ignored for another account",
           t_board_account_binding)
+
+    # ───────────────────────────────────────────────────────────────────────
+    print("§14 evidence ages PER WINDOW, not per board (parent review, reproduced)")
+    from unittest.mock import patch
+
+    T = 1_000_000.0
+    A_ACCT, B_ACCT = "codex-chatgpt:acct-A", "codex-chatgpt:acct-B"
+
+    def win(pct, resets_in=10_000):
+        return {"usedPercent": pct, "windowDurationMins": 10080,
+                "resetsAt": T + resets_in}
+
+    def at(t, acct=A_ACCT):
+        """Run `codex_limits` with its clock at `t` and its login as `acct`."""
+        return (patch.object(codex_limits, "account_namespace", return_value=acct),
+                patch.object(codex_limits.time, "time", return_value=t))
+
+    def observe_at(t, snap, pool, acct=A_ACCT, origin=None):
+        p1, p2 = at(t, acct)
+        with p1, p2:
+            return codex_limits.observe(snap, pool_hint=pool, account=origin)
+
+    def res_at(t, acct=A_ACCT, prefer=True):
+        return codex_route.resolve("luna", login_kind="chatgpt",
+                                   board=codex_limits.snapshot(now=t), marks={},
+                                   account=acct, now=t, prefer_reserve=prefer)
+
+    def t_per_pool_age():
+        # THE PARENT'S PROBE, run against the real cache and resolver:
+        # reserve exhausted at T, the plan patched at T+1000 — the board is
+        # "fresh" by its last touch while reserve's numbers are 1000 s old
+        codex_limits.invalidate()
+        observe_at(T, {"limitId": "reserve-id", "limitName": R, "secondary": win(100)}, RES)
+        observe_at(T, {"limitId": "codex", "secondary": win(10)}, PLAN)
+        eq(res_at(T)["route"], "direct", "fresh exhaustion control: direct")
+        # still inside the evidence age: the exhaustion binds
+        observe_at(T + 100, {"limitId": "codex", "secondary": win(10)}, PLAN)
+        eq(res_at(T + 100)["route"], "direct", "at T+100 reserve's reading still binds")
+        # past it: a plan-only notification must NOT keep reserve excluded
+        observe_at(T + 1000, {"limitId": "codex", "secondary": win(11)}, PLAN)
+        b = codex_limits.snapshot(now=T + 1000)
+        eq(b["stale"], False, "the board as a whole was touched a moment ago")
+        lim = b["limits"]
+        eq(codex_route.pool_capacity(lim, RES, now=T + 1000)["state"], "stale",
+           "reserve's only window is 1000 s old → stale, not exhausted")
+        eq(codex_route.pool_capacity(lim, PLAN, now=T + 1000)["state"], "usable", "plan fresh")
+        r = res_at(T + 1000)
+        eq((r["route"], r["reason"]), ("reserve", "board-stale"),
+           "stale reserve evidence decides nothing: reserve is re-probed")
+        # the same board WITHOUT aging (the historical reading) still says
+        # exhausted — so the aging is what changed the answer
+        eq(codex_route.pool_capacity(lim, RES)["state"], "exhausted", "un-aged control")
+        # a fresh reserve reading restores the exclusion
+        observe_at(T + 1001, {"limitId": "reserve-id", "limitName": R,
+                              "secondary": win(100)}, RES)
+        eq(res_at(T + 1001)["route"], "direct", "fresh exhaustion again → direct")
+        codex_limits.invalidate()
+    check("§14 ⚠ a plan-only notification cannot keep 1000-second-old reserve "
+          "exhaustion binding: per-pool age, reserve re-probed", t_per_pool_age)
+
+    def t_slot_age():
+        # a notification carrying ONLY `primary` retains the bucket's old
+        # `secondary` (`_merge_sparse`) — and must retain its AGE too
+        codex_limits.invalidate()
+        observe_at(T, {"limitId": "reserve-id", "limitName": R,
+                       "primary": win(20, 3600), "secondary": win(100)}, RES)
+        observe_at(T + 1000, {"limitId": "reserve-id", "limitName": R,
+                              "primary": win(21, 3600)}, RES)
+        b = codex_limits.snapshot(now=T + 1000)
+        seen = {round(w["percent"]): w["observed_at"]
+                for w in b["limits"] if w.get("model") == R}
+        eq(seen.get(21), T + 1000, "the carried primary is observed now")
+        eq(seen.get(100), T, "the RETAINED secondary keeps its original observation time")
+        cap = codex_route.pool_capacity(b["limits"], RES, now=T + 1000)
+        eq((cap["state"], cap["stale_windows"]), ("usable", 1),
+           "the stale secondary is dropped; the fresh primary has room")
+        eq(res_at(T + 1000)["route"], "reserve", "…so reserve is tried")
+        # control: with BOTH slots carried, the 100% secondary binds
+        observe_at(T + 1000, {"limitId": "reserve-id", "limitName": R,
+                              "primary": win(21, 3600), "secondary": win(100)}, RES)
+        eq(res_at(T + 1000)["route"], "direct", "both slots fresh → exhausted binds")
+        codex_limits.invalidate()
+    check("§14 a primary-only notification leaves the retained secondary's "
+          "observation age alone (per slot, not per bucket)", t_slot_age)
+
+    def t_full_read_slots():
+        # a full read stamps every slot it carries — the existing §13 shape
+        scenario("tool", "reserve-ok")
+        codex_limits.fetch(force=True)
+        b = codex_limits.snapshot()
+        assert all(isinstance(w.get("observed_at"), float) for w in b["limits"]), b["limits"]
+        assert len({w["observed_at"] for w in b["limits"]}) == 1, "one read, one stamp"
+        codex_limits.invalidate()
+    check("§14 a full read stamps every window it carries at once", t_full_read_slots)
+
+    # ───────────────────────────────────────────────────────────────────────
+    print("§15 a notification carries the account it ran as (parent review, reproduced)")
+
+    def t_foreign_refused():
+        codex_limits.invalidate()
+        observe_at(T, {"limitId": "reserve-id", "limitName": R, "secondary": win(100)}, RES)
+        observe_at(T, {"limitId": "codex", "secondary": win(10)}, PLAN)
+        eq(codex_limits.snapshot()["account"], A_ACCT, "board stamped A")
+        eq(res_at(T)["route"], "direct", "A: reserve exhausted → direct")
+        # THE PARENT'S PROBE: the login moves to B and B's turn reports a
+        # positive reserve window while the board is still A's
+        ok = observe_at(T + 1, {"limitId": "reserve-id", "limitName": R,
+                                "secondary": win(5)}, RES, acct=B_ACCT, origin=B_ACCT)
+        eq(ok, False, "a B notification is REFUSED by an A board")
+        eq(codex_limits.refusals()["foreign"], 1, "…and counted")
+        eq(codex_limits.snapshot()["account"], A_ACCT, "the board is still A's")
+        eq(res_at(T + 1)["route"], "direct", "A still routes direct (not poisoned)")
+        # the origin defaults to the namespace AS OF NOW when not captured:
+        # the same B notification without a captured origin is still B's
+        ok2 = observe_at(T + 1, {"limitId": "reserve-id", "limitName": R,
+                                 "secondary": win(5)}, RES, acct=B_ACCT)
+        eq(ok2, False, "uncaptured origin falls back to the current login (B) → refused")
+        # control: an A notification merges
+        ok3 = observe_at(T + 2, {"limitId": "reserve-id", "limitName": R,
+                                 "secondary": win(5)}, RES, origin=A_ACCT)
+        eq(ok3, True, "A's own positive reading merges")
+        eq(res_at(T + 2)["route"], "reserve", "…and moves A's route")
+        codex_limits.invalidate()
+    check("§15 ⚠ a B-account notification cannot poison a board stamped A; "
+          "A's own merges", t_foreign_refused)
+
+    def t_late_a_after_b_fetch():
+        # the other order: B's FULL read replaced the board, then an A turn
+        # that outlived the login change delivers its last notification
+        scenario("tool", "reserve-ok")
+        codex_limits.invalidate()
+        with open(os.path.join(CODEX_HOME, "auth.json"), "w", encoding="utf-8") as f:
+            f.write('{"tokens": {"account_id": "acct-B-login"}}')
+        try:
+            codex_limits.fetch(force=True)
+            b_acct = codex_limits.account_namespace()
+            b = codex_limits.snapshot()
+            eq(b["account"], b_acct, "B's complete board")
+            assert b["complete"], b
+            plan_before = sorted(w["percent"] for w in b["limits"] if w.get("model") is None)
+            late = codex_limits.observe(
+                {"limitId": "codex", "limitName": None,
+                 "primary": {"usedPercent": 100, "resetsAt": time.time() + 4000}},
+                pool_hint=RES, account="codex-chatgpt:the-old-login")
+            eq(late, False, "an old A result after B's full fetch is refused")
+            after = codex_limits.snapshot()
+            eq(sorted(w["percent"] for w in after["limits"] if w.get("model") is None),
+               plan_before, "B's plan bucket untouched")
+            eq(codex_route.pool_capacity(after["limits"], RES, now=time.time())["state"],
+               "usable", "B's reserve bucket untouched (reserve-ok board)")
+        finally:
+            with open(os.path.join(CODEX_HOME, "auth.json"), "w", encoding="utf-8") as f:
+                f.write('{"tokens": {"account_id": "acct-luna-test"}}')
+            codex_limits.invalidate()
+    check("§15 an A turn's late notification after B's full read is refused",
+          t_late_a_after_b_fetch)
+
+    def t_fetch_race():
+        # the login moves WHILE the full read is in flight: the answer is
+        # one account's numbers and the stamp would be the other's — served
+        # once, cached never
+        scenario("tool", "reserve-ok")
+        codex_limits.invalidate()
+        with patch.object(codex_limits, "account_namespace",
+                          side_effect=[A_ACCT, A_ACCT, B_ACCT]):
+            got = codex_limits.fetch(force=True)
+        assert got.get("available"), got
+        assert "changed during" in str(got.get("error") or ""), got
+        eq(codex_limits.snapshot()["available"], False, "nothing cached")
+        eq(codex_limits.refusals()["race"], 1, "counted as a race")
+        # control: a stable login caches
+        codex_limits.invalidate()
+        with patch.object(codex_limits, "account_namespace",
+                          side_effect=[A_ACCT, A_ACCT, A_ACCT]):
+            codex_limits.fetch(force=True)
+        b = codex_limits.snapshot()
+        eq((b["available"], b["account"], b["complete"]), (True, A_ACCT, True),
+           "stable login: cached, stamped, complete")
+        codex_limits.invalidate()
+    check("§15 a full read whose login moved mid-read is served uncached and "
+          "stamps nothing", t_fetch_race)
+
+    def t_handoff_carries_account():
+        # THE SUPERVISOR HANDOFF: the fold after a real (fake-wire) turn
+        # carries the account captured on the route at preflight, not the
+        # namespace as of delivery
+        seen: list[dict] = []
+        real_observe = codex_limits.observe
+
+        def rec_observe(snap, pool_hint=None, account=None):
+            seen.append({"pool_hint": pool_hint, "account": account})
+            return real_observe(snap, pool_hint=pool_hint, account=account)
+        scenario("tool", "reserve-ok")
+        s, n_ = mkorg("handoff")
+        with patch.object(codex_limits, "observe", rec_observe):
+            run_turn(s, n_, "hi")
+        assert seen, "the turn folded nothing"
+        acct = node_doc(s, n_)["codex_route_last"]["account"]
+        assert acct and acct == supervisor._codex_account_namespace(), acct
+        eq({x["account"] for x in seen}, {acct}, "every fold names the route's account")
+        eq({x["pool_hint"] for x in seen}, {RES}, "…and the served pool")
+        # the board the turn left is stamped with that account; a B-login
+        # notification landing on it now is refused, the route unmoved
+        eq(codex_limits.snapshot()["account"], acct, "board stamped by the turn")
+        before = supervisor._codex_resolve_route(store.load_org(s), n_, "luna")
+        with open(os.path.join(CODEX_HOME, "auth.json"), "w", encoding="utf-8") as f:
+            f.write('{"tokens": {"account_id": "acct-B-login"}}')
+        try:
+            b_acct = codex_limits.account_namespace()
+            assert b_acct != acct
+            ok = codex_limits.observe(
+                {"limitId": "codex", "limitName": None,
+                 "primary": {"usedPercent": 100, "resetsAt": time.time() + 4000}},
+                pool_hint=RES, account=b_acct)
+            eq(ok, False, "B's wall is refused by the A board the turn left")
+            eq(codex_limits.snapshot()["account"], acct, "still A's board")
+            eq(codex_route.pool_capacity(codex_limits.snapshot()["limits"], RES,
+                                         now=time.time())["state"], "usable",
+               "A's reserve still has room on A's board")
+        finally:
+            with open(os.path.join(CODEX_HOME, "auth.json"), "w", encoding="utf-8") as f:
+                f.write('{"tokens": {"account_id": "acct-luna-test"}}')
+        eq(before["route"], "reserve", "A's preflight was reserve")
+        codex_limits.invalidate()
+    check("§15 the supervisor folds a turn's notifications under the account "
+          "captured on its route; the board it leaves refuses another login's",
+          t_handoff_carries_account)
+
+    # ───────────────────────────────────────────────────────────────────────
+    print("§16 a known reroute changes the token, the attribution and the retry")
+
+    def t_label_reroute():
+        r = resolve(board([W(R, 8)]))                          # sent reserve
+        rr_direct = {"fromModel": R, "toModel": D, "reason": "x"}
+        rr_unknown = {"fromModel": R, "toModel": "gpt-9-mystery", "reason": "x"}
+        eq(codex_route.route_label(r, live=True, rerouted=rr_direct),
+           "direct · rerouted off reserve", "reserve sent, direct served: says so")
+        eq(codex_route.route_label(r, live=False, rerouted=rr_direct),
+           "last: direct · rerouted off reserve", "…and last")
+        eq(codex_route.route_label(r, live=False, rerouted=rr_unknown),
+           "last: rerouted · pool unknown", "unknown destination: not inferred")
+        eq(codex_route.route_label(r, live=True, rerouted=None), "reserve", "no reroute")
+        d = resolve(board([W(R, 100, ISO(NOW + 5))]))          # sent direct
+        eq(codex_route.route_label(d, live=True, rerouted={"fromModel": D, "toModel": R}),
+           "reserve · rerouted", "direct sent, reserve served: reserve, marked rerouted")
+        # the record shape the stamp writes carries `rerouted` itself
+        rec = {**r, "rerouted": rr_direct}
+        eq(codex_route.route_label(rec, live=False), "last: direct · rerouted off reserve",
+           "read off the record")
+    check("§16 route_label follows a KNOWN reroute and refuses to name an "
+          "unknown one", t_label_reroute)
+
+    def t_classify_reroute():
+        usage = {"message": "m", "codexErrorInfo": "usageLimitExceeded"}
+        unnamed = {"codex": {"limitId": "codex", "limitName": None,
+                             "primary": {"usedPercent": 100, "resetsAt": NOW + 2000}}}
+        # sent reserve, served reserve: the classic re-drive
+        c = codex_route.classify_failure(
+            status="failed", error=usage, snapshots=unnamed, items_seen=0,
+            token_usage=None, agent_text="", pool=RES, board=None, now=NOW)
+        eq((c["rejected"], c["redrive"], c["attributed"], c["pool_state"], c["reset_ts"]),
+           (True, True, RES, "exhausted", NOW + 2000), "same pool: re-drive, reserve's wall")
+        # sent reserve, served PLAN (known reroute): the wall is the plan's,
+        # nothing is booked against reserve, and there is no re-drive —
+        # "the other pool" is the one that just rejected
+        c2 = codex_route.classify_failure(
+            status="failed", error=usage, snapshots=unnamed, items_seen=0,
+            token_usage=None, agent_text="", pool=RES, board=None, served=PLAN, now=NOW)
+        eq((c2["rejected"], c2["redrive"], c2["attributed"], c2["pool_state"], c2["reset_ts"]),
+           (True, False, PLAN, "exhausted", NOW + 2000), "rerouted: plan's wall, no re-drive")
+        assert "rerouted" in c2["why"], c2["why"]
+        # unknown destination: attributed to nothing, no re-drive
+        c3 = codex_route.classify_failure(
+            status="failed", error=usage, snapshots=unnamed, items_seen=0,
+            token_usage=None, agent_text="", pool=RES, board=None, served=None, now=NOW)
+        eq((c3["rejected"], c3["redrive"], c3["attributed"], c3["pool_state"], c3["reset_ts"]),
+           (True, False, None, "unattributed", None), "unknown: nothing attributed")
+    check("§16 classify_failure attributes a rejection to the pool that SERVED "
+          "and re-drives only when that is the pool sent to", t_classify_reroute)
+
+    stamps: list[dict] = []
+    real_stamp = supervisor._codex_route_stamp
+
+    def rec_stamp(st_, route_, **kw):
+        rec = real_stamp(st_, route_, **kw)
+        stamps.append(dict(rec))
+        return rec
+
+    def t_reroute_completes():
+        probe_r = scenario("reroute_direct", "reserve-ok")
+        s, n_ = mkorg("reroute-ok")
+        stamps.clear()
+        folds: list[dict] = []
+        real_observe = codex_limits.observe
+
+        def rec_observe(snap, pool_hint=None, account=None):
+            folds.append({"pool_hint": pool_hint})
+            return real_observe(snap, pool_hint=pool_hint, account=account)
+        with patch.object(supervisor, "_codex_route_stamp", rec_stamp), \
+                patch.object(codex_limits, "observe", rec_observe):
+            run_turn(s, n_, "go")
+        eq(turn_models(probe_r), [R], "ONE attempt, sent as reserve")
+        eq(supervisor.state(s, n_)["turns_run"], 1, "completed")
+        # the LIVE stamp moved the moment the server said rerouted — before
+        # the turn ended — and its label already tells the truth
+        live_rr = [x for x in stamps if x["live"] and x.get("rerouted")]
+        assert live_rr, [(x["live"], x.get("rerouted")) for x in stamps]
+        eq(live_rr[0]["served_pool"], PLAN, "live stamp: served pool is the plan")
+        eq(codex_route.route_label(live_rr[0], live=True), "direct · rerouted off reserve",
+           "row 2 WHILE the turn runs")
+        eq(stamps[0].get("rerouted"), None, "the preflight stamp had no reroute yet")
+        # the receipt: selected reserve, served plan, both kept apart
+        last = node_doc(s, n_)["codex_route_last"]
+        eq((last["route"], last["pool"], last["served_pool"], last["rerouted"]["toModel"]),
+           ("reserve", RES, PLAN, D), "selected reserve, served plan")
+        eq(codex_route.route_label(last, live=False), "last: direct · rerouted off reserve",
+           "the not-live token says where it RAN")
+        # the notification was folded into the PLAN bucket
+        eq({f["pool_hint"] for f in folds}, {PLAN}, "folded as the plan's")
+        # …and the tree serves the same words
+        from fastapi.testclient import TestClient
+        from orgtree import api
+        nodes = tree_nodes(TestClient(api.app).get(f"/api/orgs/{s}").json())
+        cr = nodes[n_]["codex_route"]
+        eq((cr["label"], cr["served_pool"], cr["rerouted"]["toModel"], cr["route"]),
+           ("last: direct · rerouted off reserve", PLAN, D, "reserve"), "tree payload")
+    check("§16 a completed turn the server rerouted reserve→direct: live stamp "
+          "mid-turn, receipt keeps selected apart from served, token says direct",
+          t_reroute_completes)
+
+    def t_reroute_then_wall():
+        probe_w = scenario("reroute_then_wall", "reserve-ok")
+        s, n_ = mkorg("reroute-wall")
+        t0 = time.time()
+        stamps.clear()
+        with patch.object(supervisor, "_codex_route_stamp", rec_stamp):
+            run_turn(s, n_, "go")
+        eq(turn_models(probe_w), [R], "⚠ ONE attempt: no re-drive onto the pool that rejected")
+        st = supervisor.state(s, n_)
+        eq(st["turns_run"], 0, "not completed")
+        n = node_doc(s, n_)
+        routes = n.get("codex_routes") or {}
+        assert RES not in routes, f"reserve must NOT be marked for a wall the plan raised: {routes}"
+        assert not any("route switched" in r["text"] for r in err_rows(s, n_)), err_rows(s, n_)
+        fz = n.get("frozen")
+        assert isinstance(fz, dict) and fz.get("limit"), "the ordinary limit freeze"
+        # timed from the pool that SERVED (the plan's reset), not reserve's
+        assert abs(float(fz["until_ts"]) - (t0 + fakecodex.PLAN_RESET_IN)) < 120, fz
+        last = n["codex_route_last"]
+        eq((last["route"], last["served_pool"], last["outcome"]),
+           ("reserve", PLAN, codex_route.KIND_USAGE_LIMIT), "receipt")
+        eq(codex_route.route_label(last, live=False), "last: direct · rerouted off reserve",
+           "token")
+        assert "rerouted" in (st["last_error"] or ""), st["last_error"]
+    check("§16 a wall AFTER a known reroute: no retry, no reserve mark, freeze "
+          "timed from the serving pool", t_reroute_then_wall)
+
+    def t_reroute_unknown():
+        probe_u = scenario("reroute_unknown_then_wall", "reserve-ok")
+        codex_limits.fetch(force=True)
+        before = codex_limits.snapshot()
+        plan_before = sorted(w["percent"] for w in before["limits"] if w.get("model") is None)
+        s, n_ = mkorg("reroute-unknown")
+        folds: list[dict] = []
+        real_observe = codex_limits.observe
+
+        def rec_observe(snap, pool_hint=None, account=None):
+            folds.append({"pool_hint": pool_hint})
+            return real_observe(snap, pool_hint=pool_hint, account=account)
+        with patch.object(codex_limits, "observe", rec_observe):
+            run_turn(s, n_, "go")
+        eq(turn_models(probe_u), [R], "one attempt")
+        eq(folds, [], "⚠ nothing folded: the destination names no pool")
+        after = codex_limits.snapshot()
+        eq(sorted(w["percent"] for w in after["limits"] if w.get("model") is None),
+           plan_before, "the plan bucket did not take the wall by default")
+        n = node_doc(s, n_)
+        assert "codex_routes" not in n, n.get("codex_routes")
+        last = n["codex_route_last"]
+        eq((last["served_pool"], last["rerouted"]["toModel"]), (None, "gpt-9-mystery"), "receipt")
+        eq(codex_route.route_label(last, live=False), "last: rerouted · pool unknown", "token")
+        codex_limits.invalidate()
+    check("§16 a wall after a reroute onto an UNKNOWN model: nothing folded, "
+          "nothing marked, token says unknown", t_reroute_unknown)
 
     print()
     if FAIL:

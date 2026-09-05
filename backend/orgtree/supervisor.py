@@ -9092,9 +9092,13 @@ def _codex_route_stamp(st: dict[str, Any], route: codex_route.Route, *,
     rec["reported_model"] = reported_model
     rec["rerouted"] = rerouted
     # which pool the turn's usage is ATTRIBUTED to: the selected pool, or
-    # the reroute destination's, or unknown — never "proven billing"
+    # the reroute destination's, or unknown — never "proven billing". Known
+    # the moment the server reports a reroute (a LIVE stamp then, so the
+    # header's token follows the turn while it runs — parent review
+    # 2026-09-05), else at the end of the turn.
     rec["served_pool"] = (codex_route.served_pool(route, rerouted)
-                          if outcome is not None else None)
+                          if outcome is not None or rerouted is not None
+                          else None)
     with _state_lock:
         st["codex_route"] = rec
     return rec
@@ -9627,6 +9631,11 @@ def _codex_leg_attempt(slug: str, nid: str, org: Org, st: dict[str, Any],
     mcp_client: Any | None = None
     mcp_owner: Any | None = None
     mcp_refresh_lock = threading.Lock()
+    # the route this attempt is sent as, and any `model/rerouted` the server
+    # reported for it — shared between the event hook (reader thread) and
+    # the turn body (see THE ROUTE below)
+    route_box: dict[str, Any] = {}
+    route_lock = threading.Lock()
 
     def _refresh_codex_mcp() -> None:
         client, owner = mcp_client, mcp_owner
@@ -9659,6 +9668,20 @@ def _codex_leg_attempt(slug: str, nid: str, org: Org, st: dict[str, Any],
                       "mcpServer/event/stream/notification"):
             threading.Thread(target=_refresh_codex_mcp, daemon=True,
                              name=f"codexmcp-{slug}-{nid}").start()
+        if method == "model/rerouted":
+            # the server's own word, MID-TURN, that it is serving a
+            # different model than the one sent: the live route stamp
+            # follows it now (header row 2 while the turn runs), not at
+            # the end of the turn (parent review 2026-09-05). Selected
+            # route kept; `served_pool` is the destination's or None.
+            p = msg.get("params") or {}
+            rr = {k: p.get(k) for k in ("fromModel", "toModel", "reason",
+                                        "turnId")}
+            with route_lock:
+                route_box["rerouted"] = rr
+                _r = route_box.get("route")
+            if _r is not None:
+                _codex_route_stamp(st, _r, live=True, rerouted=rr)
         _on_item(msg)
 
     # ── THE ROUTE (item 12): which pool this turn is SENT to ──────────────
@@ -9667,9 +9690,13 @@ def _codex_leg_attempt(slug: str, nid: str, org: Org, st: dict[str, Any],
     # (`codex_route.resolve`); for every other codex tier it is the tier's
     # own model, exactly as before. Stamped LIVE on the node state here so
     # the header can say "reserve" while the turn runs, and flipped to
-    # not-live on every exit below.
+    # not-live on every exit below. `route_box` hands the route to the
+    # event hook above (defined before the route exists) for the mid-turn
+    # reroute stamp.
     route = route or _codex_resolve_route(org, nid, tier)
     codex_model = route["model"]
+    with route_lock:
+        route_box["route"] = route
     _codex_route_stamp(st, route, live=True)
 
     # D-201, Codex lane: the keeper owns an uninitialized app-server at boot;
@@ -10018,11 +10045,25 @@ def _codex_leg_attempt(slug: str, nid: str, org: Org, st: dict[str, Any],
     # attributed to the pool that SERVED this turn: the one it was sent to,
     # unless the server reported `model/rerouted` (then the destination
     # model decides, or nothing does) — the notification itself carries no
-    # pool name (measured 2026-09-05, `codex_limits.observe`)
+    # pool name (measured 2026-09-05, `codex_limits.observe`). An UNKNOWN
+    # destination folds nothing: an unnamed window from a pool this code
+    # cannot name would land in the plan bucket by default, which is
+    # exactly the inference the receipt says was not made. And the fold
+    # carries the account the turn RAN AS (captured on the route at
+    # preflight), so a board that meanwhile became another login's refuses
+    # it rather than being poisoned by it (parent review 2026-09-05).
     _served = codex_route.served_pool(route, res_raw.get("rerouted"))
-    for _snap in (list(_snaps.values()) if isinstance(_snaps, dict)
-                  else [res_raw.get("rate_limits")]):
-        codex_limits.observe(_snap, pool_hint=_served)
+    _folded = 0
+    if _served is not None:
+        for _snap in (list(_snaps.values()) if isinstance(_snaps, dict)
+                      else [res_raw.get("rate_limits")]):
+            if codex_limits.observe(_snap, pool_hint=_served,
+                                    account=route["account"]):
+                _folded += 1
+    elif _snaps or res_raw.get("rate_limits"):
+        print(f"[orgtree] {slug}/{nid}: rate-limit notification not folded "
+              f"— the provider rerouted to {str((res_raw.get('rerouted') or {}).get('toModel'))!r}, "
+              "a model no pool is known for")
     status = str(res_raw.get("status") or codexrun.STATUS_FAILED)
     if status == codexrun.STATUS_FAILED:
         # the CLI's own account of the failure. ⚠ NOT the stderr tail: for a
@@ -10057,29 +10098,36 @@ def _codex_leg_attempt(slug: str, nid: str, org: Org, st: dict[str, Any],
             reported_model=res_raw.get("reported_model"),
             rerouted=res_raw.get("rerouted"))
         other = codex_route.other_route(route)
-        if fcls["rejected"] and other is not None:
-            # a terminal rejection with nothing run, on a routed tier: the
-            # wrapper records it (durable row, scoped mark) and — on the
-            # FIRST attempt only — tries the other pool once; a rejected
-            # retry means both pools are out and it freezes instead. NOT
-            # reached for a lost stream, a timeout, an auth failure, a 429
-            # or a turn that produced anything: those keep the receipt
-            # below and take the ordinary failure path.
+        if fcls["redrive"] and other is not None:
+            # a terminal rejection with nothing run, on a routed tier, BY
+            # THE POOL WE SENT TO: the wrapper records it (durable row,
+            # scoped mark) and — on the FIRST attempt only — tries the other
+            # pool once; a rejected retry means both pools are out and it
+            # freezes instead. NOT reached for a lost stream, a timeout, an
+            # auth failure, a 429, a turn that produced anything, or a
+            # rejection AFTER A REROUTE (the pool that rejected is then the
+            # "other" pool, or no pool at all — `classify_failure`): those
+            # keep the receipt below and take the ordinary failure path.
             with jlock:
                 _jsid = str(jstate["sid"] or "")
             raise _CodexRouteRejected(route, fcls, blob, _jsid, other)
         # every other failure: the receipt is persisted (no mark — nothing
-        # here is evidence about a POOL), then the ordinary path
+        # here is evidence about a POOL the node chose; a rerouted
+        # rejection's wall is already on the shared board, attributed to
+        # the pool that served), then the ordinary path
         _codex_route_persist(slug, nid, _frec)
         if tier == codex_route.ROUTED_TIER:
             # a routed node's wall is timed per POOL: the latest exhausted
             # reset of the pool it was on, not the soonest window anywhere
             # on the board (audit F2). None when unknown → the caller's
-            # probe floor, honestly short.
+            # probe floor, honestly short. With no known served pool the
+            # turn's own snapshots describe no pool this code can name.
             _limits = [w for w in (codex_limits.snapshot().get("limits") or [])
                        if isinstance(w, dict)]
             _reset = codex_route.node_wake_epoch(
-                _limits, res_raw.get("rate_limit_snapshots"),
+                _limits,
+                res_raw.get("rate_limit_snapshots") if _served is not None
+                else None,
                 sent_pool=_served)
         else:
             _reset = codexrun.limit_reset_epoch(

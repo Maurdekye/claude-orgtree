@@ -21,11 +21,13 @@ import threading
 import time
 from typing import Any, Final
 
-from . import cachecontinuity, codexrun, providers
+from . import cachecontinuity, codex_route, codexrun, providers
 
 CACHE_TTL: Final = 30.0
 FETCH_TIMEOUT: Final = 15.0
-MAX_EVIDENCE_AGE: Final = 900.0
+#: ONE evidence age — the resolver ages windows by the same number the
+#: glow/snapshot calls a board stale by
+MAX_EVIDENCE_AGE: Final = codex_route.EVIDENCE_MAX_AGE
 
 _lock = threading.Lock()
 _fetch_lock = threading.Lock()
@@ -48,12 +50,22 @@ _cache: dict[str, Any] = {"at": 0.0, "data": None, "complete_at": 0.0,
 # Full snapshots by limit id.  Rolling notifications are sparse, so they merge
 # into this board rather than replacing it and accidentally erasing a window.
 _snapshots: dict[str, dict[str, Any]] = {}
-#: WHEN EACH BUCKET WAS LAST OBSERVED, by limit id. A sparse notification
-#: refreshes the bucket it names and no other, so "how fresh is the evidence
-#: about THIS pool" is answerable per pool — which is what lets a positive
-#: observation outrank a node's rejection mark only when it is genuinely
-#: newer than the rejection (a full read stamps every bucket it carries).
-_observed: dict[str, float] = {}
+#: WHEN EACH WINDOW WAS LAST OBSERVED, by limit id THEN slot (`primary` /
+#: `secondary`). A sparse notification refreshes the slots it CARRIES and no
+#: other — a notification that brings a new `primary` and retains the
+#: bucket's old `secondary` (`_merge_sparse`) leaves the secondary's age
+#: where it was — so "how fresh is the evidence about THIS window" is
+#: answerable per window. That is what lets `codex_route` age evidence per
+#: pool (parent review 2026-09-05: a plan-only notification used to refresh
+#: the whole board's `stale` flag while reserve's own numbers were >900 s
+#: old) and lets a positive observation outrank a node's rejection mark only
+#: when it is genuinely newer than the rejection. A full read stamps every
+#: slot it carries.
+_observed: dict[str, dict[str, float]] = {}
+#: notifications REFUSED because they belonged to another account than the
+#: board (see `observe`); a counter so a test can prove the refusal happened
+#: rather than infer it from an unchanged board
+_refused: dict[str, int] = {"foreign": 0, "race": 0}
 
 
 def account_namespace() -> str:
@@ -168,13 +180,14 @@ def _snapshots_of(raw: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _normalize(raw: dict[str, Any],
-               observed: dict[str, float] | None = None) -> dict[str, Any]:
+               observed: dict[str, dict[str, float]] | None = None
+               ) -> dict[str, Any]:
     snapshots = _snapshots_of(raw)
     limits: list[dict[str, Any]] = []
     plan: str | None = None
     for snapshot in snapshots:
         limit_id = str(snapshot.get("limitId") or "codex")
-        seen_at = (observed or {}).get(limit_id)
+        seen_slots = (observed or {}).get(limit_id) or {}
         limit_name_raw = snapshot.get("limitName")
         limit_name = (str(limit_name_raw).strip()
                       if limit_name_raw is not None else "")
@@ -202,9 +215,9 @@ def _normalize(raw: dict[str, Any],
                 "model": limit_name or None,
                 "label": ((limit_name + " · ") if limit_name else "")
                          + _duration(duration),
-                # when THIS bucket was last observed (epoch); None on a
-                # board normalized without the observation ledger
-                "observed_at": seen_at,
+                # when THIS window (bucket + slot) was last observed
+                # (epoch); None on a board normalized without the ledger
+                "observed_at": seen_slots.get(slot),
             })
     return {"available": bool(limits), "limits": limits, "plan": plan}
 
@@ -262,20 +275,39 @@ def fetch(force: bool = False) -> dict[str, Any]:
                 providers.codex_argv(exe),
                 codex_home=str(status.get("codex_home") or "") or None)
             client.initialize()
+            # ⚠ THE ACCOUNT IS CAPTURED ON BOTH SIDES OF THE READ. The
+            # app-server answers for whoever auth.json named when IT
+            # started; if `codex login` moved the namespace while the read
+            # was in flight, the answer is one account's numbers and the
+            # stamp would be the other's — a board that lies about whose it
+            # is. Such a read is served once, uncached, and stamps nothing
+            # (parent review 2026-09-05, "completion race").
+            acct_before = account_namespace()
             raw = client.request("account/rateLimits/read", {}, FETCH_TIMEOUT)
             _now = time.time()
+            acct_after = account_namespace()
+            if acct_before != acct_after or acct_before != acct:
+                with _lock:
+                    _refused["race"] += 1
+                data = _normalize(raw, None)
+                data["error"] = ("Codex account changed during the usage "
+                                 "read; not cached")
+                return _account(dict(data))
             with _lock:
                 _snapshots.clear()
                 _observed.clear()
                 for snapshot in _snapshots_of(raw):
                     limit_id = str(snapshot.get("limitId") or "codex")
                     _snapshots[limit_id] = dict(snapshot)
-                    _observed[limit_id] = _now      # a full read sees every bucket
+                    # a full read sees every window it carries
+                    _observed[limit_id] = {
+                        slot: _now for slot in ("primary", "secondary")
+                        if isinstance(snapshot.get(slot), dict)}
                 data = _normalize(raw, _observed)
                 if not data["available"]:
                     data["error"] = "Codex reported no usage-limit windows"
                 _cache.update(at=_now, data=data, complete_at=_now,
-                              account=acct)
+                              account=acct_after)
             return _account(dict(data))
         except Exception as e:  # noqa: BLE001 — protocol failures degrade the panel
             with _lock:
@@ -308,8 +340,25 @@ def _merge_sparse(old: dict[str, Any], new: dict[str, Any]) -> dict[str, Any]:
 RESERVE_LIMIT_NAME: Final = "gpt-reserve"
 
 
-def observe(snapshot: Any, pool_hint: str | None = None) -> None:
+def observe(snapshot: Any, pool_hint: str | None = None,
+            account: str | None = None) -> bool:
     """Fold a turn's sparse `account/rateLimits/updated` notification.
+    → True when merged, False when refused (see `account`).
+
+    ⚠ `account` — THE ACCOUNT THE TURN RAN AS, captured by the caller when
+    the turn STARTED (`supervisor._codex_leg_attempt` carries it on the
+    route), not read here at delivery time. A turn's app-server answers for
+    the login it was spawned under, and a turn can outlive a `codex login`
+    as someone else: by the time its last notification lands, the board may
+    describe account B while the notification is A's numbers. Merging it
+    would make B's board say what A's pools look like — and the other way
+    round, a B notification landing on a board still stamped A would send
+    A's next luna to a pool A does not have (parent review 2026-09-05,
+    reproduced). So: a board stamped with a DIFFERENT account than the
+    notification's origin REFUSES the merge (`_refused["foreign"]`), a
+    board stamped with no account yet adopts the origin, and a board of the
+    same account merges. `None` falls back to the namespace as of now —
+    right only for a caller with no captured origin.
 
     ⚠ `pool_hint` — WHICH POOL THE TURN WAS SENT TO, from the route. MEASURED
     2026-09-05T01:20Z (codex-cli 0.153.0, live control, two turns on one
@@ -324,7 +373,8 @@ def observe(snapshot: Any, pool_hint: str | None = None) -> None:
     with reserve's. A named notification is filed by its name regardless.
     """
     if not isinstance(snapshot, dict):
-        return
+        return False
+    origin = account or account_namespace()
     snap: dict[str, Any] = dict(snapshot)
     limit_id = str(snap.get("limitId") or "codex")
     if pool_hint == "reserve" and not str(snap.get("limitName") or "").strip():
@@ -340,18 +390,35 @@ def observe(snapshot: Any, pool_hint: str | None = None) -> None:
         snap["limitId"] = limit_id
     now = time.time()
     with _lock:
+        board_acct = _cache.get("account")
+        if board_acct is not None and str(board_acct) != origin:
+            _refused["foreign"] += 1          # another login's numbers
+            return False
         _snapshots[limit_id] = _merge_sparse(_snapshots.get(limit_id, {}), snap)
-        # ONLY the bucket this notification names is observed now; the
-        # others keep the time they were last seen (see `_observed`)
-        _observed[limit_id] = now
+        # ONLY the windows this notification CARRIES are observed now; a
+        # retained slot and every other bucket keep the time they were
+        # last seen (see `_observed`)
+        slots = _observed.setdefault(limit_id, {})
+        for slot in ("primary", "secondary"):
+            if isinstance(snap.get(slot), dict):
+                slots[slot] = now
         ordered = list(_snapshots.values())
         if not ordered:
-            return
+            return False
         raw = {"rateLimits": _snapshots.get("codex", ordered[0]),
                "rateLimitsByLimitId": dict(_snapshots)}
         _cache.update(at=now, data=_normalize(raw, _observed))
-        if _cache.get("account") is None:
-            _cache["account"] = account_namespace()
+        if board_acct is None:
+            _cache["account"] = origin
+    return True
+
+
+def refusals() -> dict[str, int]:
+    """How many notifications / reads were refused as another account's
+    (`foreign`) or as ambiguous about their account (`race`). Cumulative
+    per process; cleared by `invalidate`."""
+    with _lock:
+        return dict(_refused)
 
 
 def peek() -> dict[str, Any]:
@@ -454,3 +521,4 @@ def invalidate() -> None:
         _cache.update(at=0.0, data=None, complete_at=0.0, account=None)
         _snapshots.clear()
         _observed.clear()
+        _refused.update(foreign=0, race=0)
