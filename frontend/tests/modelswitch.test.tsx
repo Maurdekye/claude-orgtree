@@ -128,15 +128,15 @@ configTest('an OpenRouter tier is named by its model, never by its or- slug (use
     } finally { setOpenRouterTiers([]) }
   })
 
-configTest('a withdrawn reserve grant REMOVES gpt-reserve from the switch',
-  async (mount) => {
-    // user ruling 2026-09-02, the same verdict the hire chips take
+configTest('gpt-reserve is REMOVED from the switch whatever the grant says '
+  + '(legacy token, item 12)', async (mount) => {
+    // user ruling 2026-09-02 removed it while withdrawn; item 12 (2026-09-04)
+    // retired the token: a luna spends reserve first by itself
     const { el } = await mount({
-      provider: provider({ reserve_hire_enabled: false,
-                           reserve_reason: 'grant withdrawn' }),
+      provider: provider({ reserve_hire_enabled: true, reserve_reason: null }),
     })
     assert.equal(option(el, 'gpt-reserve'), undefined,
-      'a withdrawn reserve grant is not listed, not listed-disabled')
+      'the legacy token is not listed, not listed-disabled — even with a live grant')
     // the leg that must hold: its siblings are untouched
     for (const t of ['luna', 'terra', 'sol']) {
       assert.equal(option(el, t)?.disabled, false, `${t} stays switchable`)
@@ -147,7 +147,8 @@ configTest('…but a node ALREADY on gpt-reserve still sees its own tier',
   async (mount) => {
     // `node.tier` is the `keep` that survives every hide rule here. Without
     // it the select would silently read as some other model — the switch
-    // would look like a change nobody asked for.
+    // would look like a change nobody asked for. Moving it to luna is the
+    // offered way off the token.
     const { el } = await mount({
       node: { ...node(), tier: 'gpt-reserve' } as CanvasNode,
       provider: provider({ reserve_hire_enabled: false,
@@ -168,7 +169,6 @@ configTest('the switch lists every provider family with its ledger seats',
     assert.deepEqual(options(el).map((o) => [o.value, o.textContent?.trim()]), [
       ['haiku', 'haiku · seat 1'], ['sonnet', 'sonnet · seat 2'],
       ['opus', 'opus · seat 5'], ['fable', 'fable · seat 10'],
-      ['gpt-reserve', 'gpt-reserve · seat 0.2'],
       ['luna', 'luna · seat 0.2'], ['terra', 'terra · seat 2'],
       ['sol', 'sol · seat 5'],
       ['flash', 'flash · seat 1'], ['pro', 'pro · seat 2'],
@@ -210,10 +210,11 @@ configTest('disconnected Codex tiers stay visible and explain why disabled',
       reason: 'not signed in — run `codex login` on this machine',
       status: { installed: true, connected: false, kind: null },
     }) })
-    for (const tier of ['gpt-reserve', 'luna', 'terra', 'sol']) {
+    for (const tier of ['luna', 'terra', 'sol']) {
       assert.equal(option(el, tier).disabled, true)
       assert.match(option(el, tier).textContent ?? '', /not signed in/)
     }
+    assert.equal(option(el, 'gpt-reserve'), undefined, 'legacy: never listed')
     assert.equal(option(el, 'haiku').disabled, false)
   })
 
@@ -222,8 +223,8 @@ configTest('kiosk policy and seat cap disable options instead of hiding them',
     const { el } = await mount({ tree: tree({
       kiosk: { max_tier: 'sonnet' } as TreePayload['kiosk'],
     }) })
-    assert.equal(options(el).length, 10)   // 4 claude + 4 codex + 2 antigravity
-    for (const tier of ['gpt-reserve', 'luna', 'terra', 'sol', 'flash', 'pro']) {
+    assert.equal(options(el).length, 9)   // 4 claude + 3 codex + 2 antigravity
+    for (const tier of ['luna', 'terra', 'sol', 'flash', 'pro']) {
       assert.equal(option(el, tier).disabled, true)
       assert.match(option(el, tier).textContent ?? '', /unavailable in kiosk orgs/)
     }

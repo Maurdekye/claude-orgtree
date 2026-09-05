@@ -58,6 +58,10 @@ test('①  no useState is seeded from server data, except where documented',
       /canvas\/modals\.tsx:\d+ const \[tools, setTools\]/,
       /canvas\/modals\.tsx:\d+ const \[vis, setVis\] = useState\(base\.org_visibility\)/,
       /canvas\/modals\.tsx:\d+ const \[effort, setEffort\] = useState\(base\.effort/,
+      // item 12: the draft's "Prefer reserve" box — the same one-time
+      // proposal for an agent not yet hired (the gear's copy for an
+      // EXISTING node goes through the edit buffer, not useState)
+      /canvas\/modals\.tsx:\d+ const \[preferReserve, setPreferReserve\] = useState\(base\.prefer_reserve/,
       // the hire draft's credit slider — same thing, for a node not yet hired
       /canvas\/cards\.tsx:\d+ const \[grant, setGrant\] = useState\(\(\) => \{/,
     ]

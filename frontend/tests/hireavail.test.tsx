@@ -18,7 +18,7 @@ import { installFetch, FakeServer, mountView } from './harness'
 import test from 'node:test'
 import type { TestContext } from 'node:test'
 import assert from 'node:assert/strict'
-import { codexTierOffer, familyOffer, reserveOffer } from '../src/canvas/shared'
+import { codexTierOffer, familyOffer, LEGACY_CODEX_TIERS } from '../src/canvas/shared'
 import type { HireState } from '../src/canvas/shared'
 
 const noop = () => {}
@@ -61,42 +61,29 @@ test('familyOffer: hiding is reserved for a POSITIVELY absent CLI', () => {
   assert.notEqual(familyOffer(signedOut), 'hide')
 })
 
-// gpt-reserve's own gate: OpenAI grants and withdraws the reserve pool per
-// account, so a Codex CLI that is `familyOffer`-'offer' for sol/terra/luna can
-// be missing reserve alone.
+// gpt-reserve is a LEGACY token (user ruling 2026-09-04, item 12): reserve is
+// the pool a `luna` hire spends first, not a tier to pick. `codexTierOffer`
+// answers 'hide' for it under EVERY provider state — offered, signed out,
+// absent, no payload — so no hire surface can render it, greyed or lit.
 
-test('reserveOffer: an offered family with reserve explicitly off HIDES it —'
-  + ' user ruling 2026-09-02, "remove it entirely", not grey it out',
-  () => {
-    assert.equal(reserveOffer(
-      { enabled: true, installed: true, reason: null,
-        reserveEnabled: false, reserveReason: 'api key' }), 'hide')
-  })
-
-test('reserveOffer: a family that is ITSELF disabled keeps reserve disabled'
-  + ' beside its siblings — only the reserve-specific darkness hides', () => {
-  // the boundary of the ruling. A signed-out Codex CLI disables all four
-  // tiers with one actionable reason (`codex login`); that is not the lone
-  // stray chip the user asked to be removed, and erasing a whole family the
-  // machine HAS would be the D-199 bug again.
-  assert.equal(reserveOffer(
-    { enabled: false, installed: true, reason: 'not signed in',
-      reserveEnabled: false, reserveReason: 'not signed in' }), 'disable')
+test('a legacy token is hidden whatever the Codex family is doing', () => {
+  assert.ok(LEGACY_CODEX_TIERS.includes('gpt-reserve'), 'the legacy set names it')
+  const states: (HireState | null)[] = [
+    null,
+    { enabled: true, installed: true, reason: null },
+    { enabled: true, installed: true, reason: null, offeredTiers: ['gpt-reserve', 'luna'] },
+    { enabled: false, installed: true, reason: 'not signed in' },
+    { enabled: false, installed: false, reason: 'not installed' },
+  ]
+  for (const h of states) {
+    assert.equal(codexTierOffer(h, 'gpt-reserve'), 'hide', JSON.stringify(h))
+  }
 })
 
-test('reserveOffer: an offered family with no opinion on reserve OFFERS —'
-  + ' an old backend must not brick the reserve chip', () => {
-  assert.equal(reserveOffer(
-    { enabled: true, installed: true, reason: null }), 'offer')
-})
-
-test('reserveOffer: never LOOSENS what familyOffer already decided', () => {
-  const signedOut: HireState =
-    { enabled: false, installed: true, reason: 'run `codex login`' }
-  assert.equal(reserveOffer(signedOut), 'disable')
-  const absent: HireState =
-    { enabled: false, installed: false, reason: 'not installed' }
-  assert.equal(reserveOffer(absent), 'hide')
+test('…and never takes luna with it — the leg that must hold', () => {
+  assert.equal(codexTierOffer({ enabled: true, installed: true, reason: null }, 'luna'), 'offer')
+  assert.equal(codexTierOffer({ enabled: false, installed: true, reason: 'x' }, 'luna'), 'disable')
+  assert.equal(codexTierOffer(null, 'luna'), 'offer')
 })
 
 // --------------------------------------------------------- §2 the surfaces
@@ -122,7 +109,7 @@ const SIGNED_OUT = state({ installed: true, reason: 'not signed in — run x' })
 const ABSENT = state({ reason: 'not installed — npm i -g y' })
 
 const CLAUDE = ['haiku', 'sonnet', 'opus', 'fable']
-const CODEX = ['gpt-reserve', 'luna', 'terra', 'sol']
+const CODEX = ['luna', 'terra', 'sol']
 const ASTRA = 'astra'
 const ANTIGRAVITY = ['flash', 'pro']
 
@@ -207,24 +194,25 @@ surfaceTest('Astra token stays absent until the provider payload offers it',
     const lit = await mount({ claudeHire: ABSENT,
       codexHire: state({ enabled: true, installed: true,
         offeredTiers: [...CODEX, ASTRA] }), antigravityHire: ABSENT })
-    // Five Codex tiers legitimately trigger the far-zoom compact tray; open
-    // it before checking the actual token rather than mistaking the tray for
-    // a missing offer.
+    // Enough Codex tiers can trigger the far-zoom compact tray; open it
+    // (when it rendered) before checking the actual token rather than
+    // mistaking the tray for a missing offer. With the legacy reserve
+    // token gone (item 12) four Codex tiers may fit without a tray.
     const { act } = await import('react')
-    await act(async () => lit.querySelector<HTMLButtonElement>(
-      '.hsof:not(.side) .hire-expand')!.click())
+    const expand = lit.querySelector<HTMLButtonElement>('.hsof:not(.side) .hire-expand')
+    if (expand) await act(async () => expand.click())
     assert.equal(tokens(lit, '.hsof:not(.side)')[ASTRA], false)
   })
 
-surfaceTest('gpt-reserve is REMOVED, not greyed, when its grant is gone — '
-  + 'its siblings keep hiring', async (mount) => {
+surfaceTest('gpt-reserve is REMOVED from the chips whatever the family says '
+  + '(legacy token, item 12) — its siblings keep hiring', async (mount) => {
   // User ruling 2026-09-02: "dont just grey out the reserve token. remove it
-  // entirely." There is nothing the user can do about a withdrawn grant, so a
-  // permanently disabled chip explaining that on every card is pure noise.
+  // entirely." Item 12 (2026-09-04) went further: it is not a tier at all.
+  // A luna hire spends reserve first by itself. The chip never renders.
   const el = await mount({
     claudeHire: ABSENT, antigravityHire: ABSENT,
     codexHire: state({ enabled: true, installed: true,
-                       reserveEnabled: false, reserveReason: 'api key' }),
+                       offeredTiers: ['gpt-reserve', 'luna', 'terra', 'sol'] }),
   })
   const got = tokens(el, '.hsof')
   assert.equal(got['gpt-reserve'], undefined,
@@ -239,19 +227,18 @@ surfaceTest('gpt-reserve is REMOVED, not greyed, when its grant is gone — '
   }
 })
 
-surfaceTest('…but a Codex family that is itself unavailable still shows all '
-  + 'four, disabled — the ruling removes a stray chip, not a whole harness',
+surfaceTest('…but a Codex family that is itself unavailable still shows its '
+  + 'three live tiers, disabled — the ruling removes a token, not a harness',
   async (mount) => {
     const el = await mount({
       claudeHire: ABSENT, antigravityHire: ABSENT,
-      codexHire: state({ installed: true, reason: 'not signed in — run x',
-                         reserveEnabled: false,
-                         reserveReason: 'not signed in — run x' }),
+      codexHire: state({ installed: true, reason: 'not signed in — run x' }),
     })
     const got = tokens(el, '.hsof')
     for (const t of CODEX) {
       assert.equal(got[t], true, `${t} stays visible-but-disabled here`)
     }
+    assert.equal(got['gpt-reserve'], undefined, 'the legacy token is absent here too')
   })
 
 surfaceTest('the mirror: claude set up, codex not', async (mount) => {

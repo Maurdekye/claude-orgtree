@@ -81,17 +81,17 @@ test('the full three-provider set collapses only after its rendered width stops 
     await inAct(() => { expand.click() })
     assert.equal(report.classList.contains('is-expanded'), true)
     const offered = [...report.querySelectorAll('.hs-fam button')]
-    assert.equal(offered.length, 10,
+    assert.equal(offered.length, 9,
       'opening renders the exact current provider/tier list, not a compact-only subset')
     assert.equal(new Set(offered.map((b) => b.className)).size, offered.length,
       'opening does not duplicate a tier while it reveals families')
     const codexRow = [...report.querySelectorAll<HTMLElement>('.hs-fam')]
-      .find((row) => row.querySelector('.t-gpt-reserve'))
+      .find((row) => row.querySelector('.t-luna'))
     assert.ok(codexRow, 'the Codex spawn row is present')
     assert.deepEqual(
       [...codexRow.querySelectorAll('button')].map((b) => b.className),
-      ['t-gpt-reserve', 't-luna', 't-terra', 't-sol'],
-      'the reserve spawn token is leftmost in the Codex row')
+      ['t-luna', 't-terra', 't-sol'],
+      'luna is leftmost in the Codex row; the legacy reserve token is gone (item 12)')
 
     await inAct(() => { expand.click() })
     assert.equal(report.classList.contains('is-expanded'), false,
@@ -119,7 +119,9 @@ test('a reduced provider set keeps direct buttons until its own row stops fittin
     })
     t.after(() => view.unmount())
     assert.equal(view.el.querySelectorAll('.hsof.hire-compact').length, 0)
-    assert.equal(view.el.querySelectorAll('.hsof:not(.side) .t-gpt-reserve').length, 1)
+    assert.equal(view.el.querySelectorAll('.hsof:not(.side) .t-luna').length, 1)
+    assert.equal(view.el.querySelectorAll('.hsof:not(.side) .t-gpt-reserve').length, 0,
+      'the legacy reserve token never renders as a hire chip (item 12)')
   })
 
 test('a no-harness row is never replaced with a needless compact arrow',

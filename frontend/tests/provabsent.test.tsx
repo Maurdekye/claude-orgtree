@@ -41,7 +41,7 @@ import type {
 const noop = () => {}
 
 const CLAUDE = ['haiku', 'sonnet', 'opus', 'fable']
-const CODEX = ['gpt-reserve', 'luna', 'terra', 'sol']
+const CODEX = ['luna', 'terra', 'sol']
 const ANTIGRAVITY = ['flash', 'pro']
 
 // ------------------------------------------------------- provider fixtures
