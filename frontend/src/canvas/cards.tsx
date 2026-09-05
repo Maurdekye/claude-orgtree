@@ -392,7 +392,14 @@ export function EyeDesk({ map, op, slug, toast, pip,
                   minimizes (or raises the pinned window). Two controls, not
                   one hit target — the name used to sit inside the toggle. */}
               <span className="eye-tab-id">
-                <AgentName id={a.id} tier={a.tier} onFocus={onJump} />
+                {/* the id alone: `AgentName` calls back with (id, event), and
+                    every `onJump` here is declared one-argument (mail.tsx's
+                    defaultIdentity records what the whole-callback handoff
+                    cost). This tab's own `onJump` is wrapped at its source in
+                    OrgCanvas, so nothing is corrupted today — the wrapper is
+                    what keeps that true if the source ever passes centerOn. */}
+                <AgentName id={a.id} tier={a.tier}
+                  onFocus={onJump ? (id: string) => onJump(id) : undefined} />
               </span>
               <button className="eye-tab-main" type="button"
                 title={isPinned(a.id)

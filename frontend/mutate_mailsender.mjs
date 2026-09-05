@@ -290,15 +290,15 @@ const MUTANTS = [
   {
     name: 'MailList ignores the existence resolver — the phantom jump returns',
     file: MAIL, kills: 'no resolver, no claimed route',
-    from: `      onFocus={hasAgent?.(id) ? onFocusAgent : undefined} />`,
-    to: `      onFocus={onFocusAgent} />`,
+    from: `      onFocus={hasAgent?.(id) && focus ? (aid: string) => focus(aid) : undefined} />`,
+    to: `      onFocus={(aid: string) => focus?.(aid)} />`,
   },
   {
     name: 'existence is decided by TIER truthiness, so a real agent whose '
       + 'model is unknown is stranded',
     file: MAIL, kills: 'A REAL AGENT WITH AN UNKNOWN MODEL STILL NAVIGATES',
-    from: `      onFocus={hasAgent?.(id) ? onFocusAgent : undefined} />`,
-    to: `      onFocus={tierOf?.(id) ? onFocusAgent : undefined} />`,
+    from: `      onFocus={hasAgent?.(id) && focus ? (aid: string) => focus(aid) : undefined} />`,
+    to: `      onFocus={tierOf?.(id) && focus ? (aid: string) => focus(aid) : undefined} />`,
   },
   {
     name: 'NodeInboxModal accepts the resolver and forwards nothing',
@@ -351,6 +351,30 @@ const MUTANTS = [
     from: `                onFocusAgent={onFocusAgent}\n                onRetract={onRetract`,
     to: `                onRetract={onRetract`,
   },
+  // ───────────────────── THE ARITY LEAK (2026-09-05, measured deployed)
+  {
+    // ⚠ THIS IS THE SHIPPED DEFECT, PUT BACK. `AgentName` calls
+    // `onFocus(id, event)`; handing `onFocusAgent` over whole delivered the
+    // click event to `centerOn(id, z)` as the ZOOM, and the desk inbox
+    // navigated nowhere. It survived a green suite because every spy recorded
+    // argument one and threw the rest away. Two checks must see it now: the
+    // recorder (exact argument list) and the real camera.
+    name: 'the mail row hands its focus callback over WHOLE again — the click '
+      + 'event arrives as the zoom',
+    file: MAIL, kills: 'clicking the sender did not open that agent\'s desk',
+    from: `      onFocus={hasAgent?.(id) && focus ? (aid: string) => focus(aid) : undefined} />`,
+    to: `      onFocus={hasAgent?.(id) ? onFocusAgent : undefined} />`,
+  },
+  {
+    // …and the SAME mutant against the component-level check, so the two
+    // instruments are known to be independently able to see it. Named
+    // separately because "the camera moved" and "the boundary called with one
+    // argument" are different claims and a future edit could keep one.
+    name: 'the same whole-callback handoff, judged by the ARGUMENT LIST',
+    file: MAIL, kills: 'THE CLICK ARRIVES',
+    from: `      onFocus={hasAgent?.(id) && focus ? (aid: string) => focus(aid) : undefined} />`,
+    to: `      onFocus={hasAgent?.(id) ? (aid: string, e: unknown) => focus?.(aid as never, e as never) : undefined} />`,
+  },
   {
     name: 'the name click bubbles to the row again, so navigating away also '
       + 'deselects the mail you were reading',
@@ -362,14 +386,26 @@ const MUTANTS = [
 
 const norm = (s) => s.replace(/\r\n/g, '\n')
 
+// BOTH SUITES, and the second one is not optional. `mailsender` mounts
+// components and watches what they CALL; `mailnav` drives the real OrgCanvas
+// and watches where the CAMERA GOES. The arity defect of 2026-09-05 was
+// invisible to the first and obvious to the second, so a harness that ran only
+// the first would still be reporting a clean sweep over a broken build.
+const SUITES = ['mailsender', 'mailnav']
+
 function runSuite() {
-  try {
-    execFileSync(process.execPath, ['tests/run.mjs', 'mailsender'],
-      { stdio: 'pipe', encoding: 'utf8' })
-    return { failed: false, out: '' }
-  } catch (e) {
-    return { failed: true, out: String(e.stdout ?? '') + String(e.stderr ?? '') }
+  let failed = false
+  let out = ''
+  for (const s of SUITES) {
+    try {
+      execFileSync(process.execPath, ['tests/run.mjs', s],
+        { stdio: 'pipe', encoding: 'utf8' })
+    } catch (e) {
+      failed = true
+      out += String(e.stdout ?? '') + String(e.stderr ?? '')
+    }
   }
+  return { failed, out }
 }
 
 console.log('baseline — mailsender must be GREEN before anything is mutated')

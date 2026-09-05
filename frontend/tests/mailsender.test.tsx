@@ -79,6 +79,47 @@ import type { ChatMessage, OpResult, OrgInboxEntry, TreeNode, TreePayload } from
 
 const noop = () => {}
 const op = () => Promise.resolve({} as OpResult)
+
+/** ⚠ RECORDS EVERY ARGUMENT, NOT JUST THE FIRST — and this file is the reason
+ *  that matters. `AgentName` invokes `onFocus(id, event)`, because pins.tsx
+ *  has to tell a pointer activation from a keyboard one. The real navigator is
+ *  `centerOn(id, z = null)`. Every spy here used to push argument ONE and
+ *  ignore the rest, so a boundary that handed the callback over whole — and
+ *  therefore delivered the CLICK EVENT AS THE ZOOM — recorded exactly the same
+ *  thing as a correct one. The suite was green and the deployed UI was broken;
+ *  coordinator-astra measured it in a hydrated browser at 392767b, where
+ *  clicking a sender in the desk inbox lost the focused desk entirely.
+ *
+ *  So the contract is asserted on `nav.calls`, and it is EXACTLY [[senderId]]:
+ *  one call, one argument, that argument the sender. A second argument is a
+ *  failure whatever it contains.
+ *
+ *  ⚠ AND A SPY IS STILL NOT A NAVIGATOR. Even this only proves what the
+ *  boundary CALLS. mailnav.test.tsx drives the real <OrgCanvas> and asks where
+ *  the camera actually went; that is the file that reproduced the defect.
+ *
+ *  ⚠ EVERY ARGUMENT IS REDUCED TO A STRING BEFORE IT IS STORED, and that is
+ *  not tidiness. The extra argument this exists to catch is a DOM EVENT, and
+ *  `assert.deepEqual` on one walks the whole jsdom object — the same failure
+ *  this file's `absent` helper documents (node dies with "Array buffer
+ *  allocation failed" and the message never prints). Measured here: the first
+ *  cut stored raw arguments and the mutant that leaks the event went red with
+ *  NO readable assertion at all. A leaked event now records as `<MouseEvent>`,
+ *  so the diff is two short string arrays and the failure says what arrived. */
+const describeArg = (v: unknown): string => {
+  if (typeof v === 'string') return v
+  if (v === null) return '<null>'
+  if (v === undefined) return '<undefined>'
+  if (typeof v === 'object') {
+    const n = (v as { constructor?: { name?: string } }).constructor?.name
+    return `<${n ?? 'object'}>`
+  }
+  return `<${typeof v}: ${String(v)}>`
+}
+function recorder() {
+  const calls: string[][] = []
+  return { calls, fn: (...args: unknown[]) => { calls.push(args.map(describeArg)) } }
+}
 const q = (el: HTMLElement, sel: string) => [...el.querySelectorAll(sel)] as HTMLElement[]
 const txt = (el: HTMLElement) => el.textContent ?? ''
 
@@ -173,11 +214,11 @@ const head = (el: HTMLElement) => {
 test('§1.1 a mail from an agent of this tree wears its model chip and goes to '
   + 'its desk — through the real DeskChat, not a hand-built provider',
 async (t: TestContext) => {
-  const jumped: string[] = []
+  const nav = recorder()
   const el = await desk(t, {
     from: 'peer-one',
     others: [node('peer-one', { tier: 'sonnet' })],
-    onJump: (id) => { jumped.push(id) },
+    onJump: nav.fn,
   })
   const h = head(el)
   const chip = q(h, '.tier')
@@ -193,7 +234,7 @@ async (t: TestContext) => {
   assert.ok(tip.includes('current model'),
     `the tooltip scopes the claim to the current model — got ${JSON.stringify(tip)}`)
   await inAct(() => { jump[0]!.click() })
-  assert.deepEqual(jumped, ['peer-one'], 'clicking it focuses that agent')
+  assert.deepEqual(nav.calls, [['peer-one']], 'clicking it focuses that agent')
 })
 
 test('§1.2 …and the same mail from a name the tree does NOT hold gets neither '
@@ -378,18 +419,18 @@ const mfrom = (el: HTMLElement, i = 0) => {
 
 uiTest('§3.1 the LIST ROW carries the model chip and the click-to-desk, not '
   + 'only the reading pane', async ({ mount }) => {
-    const jumped: string[] = []
+    const nav = recorder()
     const { el } = await mount(
       <MailList delivered={[row()]} tierOf={(id) => (id === 'peer-one' ? 'sonnet' : null)}
         hasAgent={(id) => id === 'peer-one'}
-        onFocusAgent={(id) => { jumped.push(id) }} />)
+        onFocusAgent={nav.fn} />)
     const f = mfrom(el)
     assert.equal(q(f, '.tier').length, 1, 'the row names the sender with its model')
     assert.ok(q(f, '.tier')[0]!.classList.contains('t-sonnet'), 'the right model')
     const jump = q(f, 'button.cc-name-jump')
     assert.equal(jump.length, 1, 'and the name is a jump')
     await inAct(() => { jump[0]!.click() })
-    assert.deepEqual(jumped, ['peer-one'], 'which focuses that agent')
+    assert.deepEqual(nav.calls, [['peer-one']], 'which focuses that agent')
   })
 
 uiTest('§3.2 …and the identical row with no facts supplied stays bare — so '
@@ -425,14 +466,14 @@ const selected = (el: HTMLElement) => q(el, '.mailer-none').length === 0
 
 uiTest('§4.1 clicking the sender NAVIGATES without selecting the mail, and '
   + 'clicking the row still selects it', async ({ mount }) => {
-    const jumped: string[] = []
+    const nav = recorder()
     const { el } = await mount(
       <MailList delivered={[row()]} tierOf={() => 'sonnet'} hasAgent={() => true}
-        onFocusAgent={(id) => { jumped.push(id) }} />)
+        onFocusAgent={nav.fn} />)
     assert.equal(selected(el), false,
       'the box opens with nothing selected (user spec 2026-08-05)')
     await inAct(() => { q(mfrom(el), 'button.cc-name-jump')[0]!.click() })
-    assert.deepEqual(jumped, ['peer-one'], 'the name navigated')
+    assert.deepEqual(nav.calls, [['peer-one']], 'the name navigated')
     assert.equal(selected(el), false,
       'and the row did NOT also select — the bubble was stopped')
     // ⚠ THE POSITIVE CONTROL FOR THE INSTRUMENT ITSELF. If `selected()` could
@@ -449,14 +490,14 @@ uiTest('§4.2 …and clicking the sender of the mail you are READING does not '
     // the second half of the same bug: `.mailrow`\'s onClick TOGGLES, so an
     // unstopped click on the selected row would deselect and empty the pane
     // out from under the reader.
-    const jumped: string[] = []
+    const nav = recorder()
     const { el } = await mount(
       <MailList delivered={[row()]} tierOf={() => 'sonnet'} hasAgent={() => true}
-        onFocusAgent={(id) => { jumped.push(id) }} />)
+        onFocusAgent={nav.fn} />)
     await inAct(() => { (rowsOf(el)[0]!.querySelector('.l2') as HTMLElement).click() })
     assert.equal(selected(el), true, 'positive control: it is open')
     await inAct(() => { q(mfrom(el), 'button.cc-name-jump')[0]!.click() })
-    assert.deepEqual(jumped, ['peer-one'], 'the name navigated')
+    assert.deepEqual(nav.calls, [['peer-one']], 'the name navigated')
     assert.equal(selected(el), true, 'and the mail stayed open')
   })
 
@@ -552,11 +593,11 @@ uiTest('§5.3 a list that DECLARES its counterparty plain text keeps a plain '
     // about. The fixture supplies `tierOf` and `onFocusAgent` DELIBERATELY:
     // they are exactly what a well-meaning future edit would add to the org
     // inbox, and they are what makes the wrong default draw a chip here.
-    const jumped: string[] = []
+    const nav = recorder()
     const { el } = await mount(
       <MailList delivered={[row()]}
         sender={(id: string) => <b>{id}</b>}
-        tierOf={() => 'opus'} onFocusAgent={(id) => { jumped.push(id) }} />)
+        tierOf={() => 'opus'} onFocusAgent={nav.fn} />)
     const f = mfrom(el)
     assert.ok(txt(f).includes('peer-one'),
       'positive control: the row does name the party')
@@ -566,7 +607,7 @@ uiTest('§5.3 a list that DECLARES its counterparty plain text keeps a plain '
     // props with the declaration removed do draw both.
     const c = await mount(
       <MailList delivered={[row()]} hasAgent={() => true}
-        tierOf={() => 'opus'} onFocusAgent={(id) => { jumped.push(id) }} />)
+        tierOf={() => 'opus'} onFocusAgent={nav.fn} />)
     assert.equal(q(mfrom(c.el), '.tier').length, 1,
       'control: without the plain-text declaration the very same props DO '
       + 'draw a chip — so the assertions above are not free')
@@ -586,18 +627,18 @@ uiTest('§6.1 SenderChip in a LIST ROW: chip, jump, and the row does not select 
     const nodes = new Map<string, TreeNode>([
       ['peer-one', { id: 'peer-one', tier: 'sonnet', state: 'live' } as TreeNode],
     ])
-    const jumped: string[] = []
+    const nav = recorder()
     const { el } = await mount(
       <MailList delivered={[row()]}
         sender={(id: string) => <SenderChip id={id} nodes={nodes}
-          onFocusAgent={(a) => { jumped.push(a) }} />} />)
+          onFocusAgent={nav.fn} />} />)
     const f = mfrom(el)
     assert.equal(q(f, '.tier').length, 1, 'the row carries the model chip')
     const jump = q(f, 'button.cc-name-jump')
     assert.equal(jump.length, 1, 'and the name is a jump')
     assert.equal(selected(el), false, 'nothing selected yet')
     await inAct(() => { jump[0]!.click() })
-    assert.deepEqual(jumped, ['peer-one'], 'the name navigated')
+    assert.deepEqual(nav.calls, [['peer-one']], 'the name navigated')
     assert.equal(selected(el), false,
       'and did NOT also select the mail — SenderChip stops the bubble too')
     await inAct(() => { (rowsOf(el)[0]!.querySelector('.l2') as HTMLElement).click() })
@@ -632,13 +673,13 @@ function serveTranscript(from: string) {
 uiTest('§7.1 a mail card inside an archived generation carries the same chip '
   + 'and the same route as one in the live desk', async ({ mount }) => {
     serveTranscript('peer-one')
-    const jumped: string[] = []
+    const nav = recorder()
     const closed: number[] = []
     const { el } = await mount(
       <LineagePanel node={bearerNode()} slug="org"
         op={() => Promise.resolve({} as OpResult)}
         map={new Map<string, CanvasNode>([['peer-one', node('peer-one', { tier: 'sonnet' })]])}
-        onFocusAgent={(id) => { jumped.push(id) }}
+        onFocusAgent={nav.fn}
         close={() => { closed.push(1) }} />)
     const read = q(el, 'button').find((b) => txt(b).trim() === 'read')
     assert.ok(read, 'positive control: the panel offers a transcript to read')
@@ -652,7 +693,7 @@ uiTest('§7.1 a mail card inside an archived generation carries the same chip '
     await inAct(() => { jump[0]!.click() })
     // ⚠ A MODAL MUST CLOSE BEFORE IT NAVIGATES, or the camera glides to a desk
     // sitting behind this overlay. Every other modal here does the same.
-    assert.deepEqual(jumped, ['peer-one'], 'the click focused that agent')
+    assert.deepEqual(nav.calls, [['peer-one']], 'the click focused that agent')
     assert.equal(closed.length, 1, 'and closed the panel first')
   })
 
@@ -684,14 +725,14 @@ uiTest('§7.3 a sender that matches the BEARER whose transcript this is still '
     // name that would not click. The destination is supplied by the surface,
     // and this surface is not anybody's desk.
     serveTranscript('agent-a@1')
-    const jumped: string[] = []
+    const nav = recorder()
     const closed: number[] = []
     const { el } = await mount(
       <LineagePanel node={bearerNode()} slug="org"
         op={() => Promise.resolve({} as OpResult)}
         map={new Map<string, CanvasNode>([
           ['agent-a@1', node('agent-a@1', { tier: 'sonnet' })]])}
-        onFocusAgent={(id) => { jumped.push(id) }}
+        onFocusAgent={nav.fn}
         close={() => { closed.push(1) }} />)
     const read = q(el, 'button').find((b) => txt(b).trim() === 'read')
     await inAct(() => { read!.click() })
@@ -703,7 +744,7 @@ uiTest('§7.3 a sender that matches the BEARER whose transcript this is still '
     assert.equal(jump.length, 1,
       'and the name clicks even though it names the bearer being read')
     await inAct(() => { jump[0]!.click() })
-    assert.deepEqual(jumped, ['agent-a@1'], 'it navigated to that bearer')
+    assert.deepEqual(nav.calls, [['agent-a@1']], 'it navigated to that bearer')
     assert.equal(closed.length, 1, 'closing the modal first, as every modal does')
   })
 
@@ -1361,15 +1402,15 @@ const boxJumps = (el: HTMLElement) => q(el, '.mailwrap button.cc-name-jump')
 
 test('§12.5 the DESK inbox tab: a sender name is a real route, and clicking it '
   + 'reaches the desk\'s own onJump', async (t: TestContext) => {
-  const jumped: string[] = []
-  const el = await deskInbox(t, { onJump: (id) => { jumped.push(id) } })
+  const nav = recorder()
+  const el = await deskInbox(t, { onJump: nav.fn })
   const known = rowNamed(el, 'peer-known')
   assert.equal(q(known, '.tier').length, 1,
     '`tierOf` is wired: the sender wears its OWN model, not the desk\'s')
   const jump = q(known, 'button.cc-name-jump')
   assert.equal(jump.length, 1, 'and the name is a route')
   await inAct(() => { jump[0]!.click() })
-  assert.deepEqual(jumped, ['peer-known'],
+  assert.deepEqual(nav.calls, [['peer-known']],
     'THE CLICK ARRIVES: the inbox is calling the same onJump the header and '
     + 'NavChip use, with the SENDER\'s id')
   // known-unknown-tier: existence is the route test, tier is only the chip
@@ -1403,24 +1444,27 @@ test('§12.7 the desk inbox: the row BODY still selects, and the name does not',
     // the row is a click target inside a click target (see the header note).
     // Wiring a handler into the inbox is exactly what could make the sender
     // button select-or-deselect the mail as a side effect.
-    const jumped: string[] = []
-    const el = await deskInbox(t, { onJump: (id) => { jumped.push(id) } })
+    const nav = recorder()
+    const el = await deskInbox(t, { onJump: nav.fn })
     await inAct(() => { rowNamed(el, 'peer-known').click() })
     await flush()
     const row = rowNamed(el, 'peer-known')
     assert.ok(row.classList.contains('on'), 'the row body SELECTED the mail')
     const pane = el.querySelector('.mailer-read') as HTMLElement | null
     assert.ok(pane, 'positive control: selecting opened the reading pane')
-    assert.deepEqual(jumped, [], 'and selecting is not navigating')
+    assert.deepEqual(nav.calls, [], 'and selecting is not navigating')
     // the READING PANE's sender is a route here too (the user asked for both)
     const paneJump = q(pane!, 'button.cc-name-jump')
     assert.equal(paneJump.length, 1, 'the pane names the sender as a route')
     await inAct(() => { paneJump[0]!.click() })
-    assert.deepEqual(jumped, ['peer-known'], 'and it reaches the same onJump')
+    assert.deepEqual(nav.calls, [['peer-known']], 'and it reaches the same onJump')
     // …and the ROW's name navigates without disturbing the selection
     await inAct(() => { q(rowNamed(el, 'peer-known'), 'button.cc-name-jump')[0]!.click() })
     await flush()
-    assert.deepEqual(jumped, ['peer-known', 'peer-known'], 'the row name routes')
+    // TWO CALLS OF ONE ARGUMENT — not one call of two. That distinction is the
+    // whole point of recording argument lists instead of a flat id log.
+    assert.deepEqual(nav.calls, [['peer-known'], ['peer-known']],
+      'the row name routes, with the sender and nothing else')
     assert.ok(rowNamed(el, 'peer-known').classList.contains('on'),
       'and the mail you were reading is STILL selected — the name click does '
       + 'not bubble to the row (a missing stopPropagation would toggle it off)')

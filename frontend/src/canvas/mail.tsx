@@ -152,8 +152,21 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, rowS
     // …and neither is a name this tree does not hold: a since-retired agent or
     // an id off an archived envelope was drawn as a jump that focused nothing.
     // No resolver = the caller cannot vouch for the id, so no jump is offered.
+    // ⚠ CALLED WITH THE ID ALONE, NEVER HANDED OVER WHOLE. `AgentName` invokes
+    // `onFocus(id, event)` because pins.tsx has to tell a pointer activation
+    // from a keyboard one. `onFocusAgent` is declared `(agentId: string) =>
+    // void`, and the value behind it at the desk is `centerOn(id, z = null)` —
+    // so passing the function straight through delivered the CLICK EVENT AS
+    // THE ZOOM, and navigation landed nowhere. TypeScript cannot see it: a
+    // one-argument function is assignable to a two-argument slot, and a
+    // trailing optional parameter makes centerOn assignable to the
+    // one-argument declaration, so two legal steps compose into a call nobody
+    // declared. Measured in a hydrated browser by coordinator-astra at
+    // 392767b, and reproduced on the real camera by mailnav.test.tsx §1.
+    // Omitted, not stubbed, when there is nowhere to go.
+    const focus = onFocusAgent
     return <AgentName id={id} tier={tierOf?.(id)}
-      onFocus={hasAgent?.(id) ? onFocusAgent : undefined} />
+      onFocus={hasAgent?.(id) && focus ? (aid: string) => focus(aid) : undefined} />
   }
   const S: (id: string, m: MailRow) => ReactNode = sender ?? defaultIdentity
   // user ruling 2026-09-05, reiterated: the model chip and the click-to-desk

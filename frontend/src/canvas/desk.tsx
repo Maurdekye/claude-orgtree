@@ -1579,10 +1579,18 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
               desk, somewhere you are not. Only the focused desk itself
               (`bare === false`) is where the click would be a no-op.
               (user feature 2026-08-17; the tab strip's ⌖ button stays.) */}
+          {/* ⚠ `onFocus` GETS THE ID ALONE — see mail.tsx's defaultIdentity for
+              what handing the callback over whole costs. No reachable path
+              corrupts here today: a pinned window's header names the PINNED
+              agent, and centerOn short-circuits to showPin before it ever
+              reads the zoom, while the switchboard panel and the mobile sheet
+              wrap at their own source. That is precisely why the bare handoff
+              would be a quiet trap for the next caller to pass centerOn
+              straight in. */}
           <AgentName id={node.id} tier={node.tier} atDestination={!bare}
             why={bare ? undefined
               : (node.charter || '').split('\n')[0] || node.id}
-            onFocus={onJump} />
+            onFocus={onJump ? (id: string) => onJump(id) : undefined} />
           {node.pending_switch &&
             <span className="queued-mark" title={queuedSwitchTitle(node)}>
               →{TIER_LETTER[node.pending_switch.tier] ?? '?'}</span>}

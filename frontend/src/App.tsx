@@ -1913,8 +1913,12 @@ export function InboxPanel({ slug, tree, toast, refresh, close, jumpTo, onFocusA
   const audBadge = (g: string, dim = false) => (
     <span key={g} className={'badge aud-badge ' + (dim ? 'dim' : 'free')}>
       <HearingIcon fontSize="inherit" />
+      {/* the id alone — `AgentName` calls back with (id, event) and
+          `onFocusAgent` is declared one-argument. Wrapped at its source here
+          today, so nothing is corrupted; mail.tsx's defaultIdentity records
+          what the bare handoff cost when the source was `centerOn`. */}
       <AgentName id={g} tier={nodes.get(g)?.tier}
-        onFocus={onFocusAgent} />
+        onFocus={onFocusAgent ? (id: string) => onFocusAgent(id) : undefined} />
       <button className="chip-x" title="rescind" type="button"
         onClick={() => act('revoke', g)}><CloseIcon fontSize="inherit" /></button>
     </span>
