@@ -449,17 +449,26 @@ function PinWindow({ pin, node, vp, onUnpin, slug, op, toast, pub,
   // strand a window (render-time clamp; see PinLayer's resize tick)
   const rect = clampRect(live ?? pin.rect, vp)
 
-  // ⚠ CLICK-VS-DRAG FOR THE TITLE-BAR NAME. The name is a real button, so a
-  // press that turns into a drag and releases back over it would still fire a
-  // `click` and navigate away mid-drag. The title bar's own gesture already
-  // knows the difference — `moved`, at the same 3px threshold the reposition
-  // uses — so that verdict is recorded here and the button's handler consumes
-  // it. One source of truth for "was that a drag", not a second threshold.
-  const wasDrag = useRef(false)
+  // ⚠ CLICK-VS-DRAG FOR THE TITLE-BAR NAME, AND WHY THE OBVIOUS VERSION DOES
+  // NOT WORK. The name is a real button sitting ON the drag handle. A gated
+  // onClick is not enough: the title bar takes POINTER CAPTURE on pointerdown
+  // and calls preventDefault, so the browser's `click` is retargeted to the
+  // title (or suppressed) and the button's own handler never runs — measured
+  // in Edge, where the drag half passed and the click half did nothing.
+  //
+  // So the MOUSE path is driven from the gesture, which already knows the
+  // difference at the same 3px threshold the reposition uses: a release that
+  // did not move, from a press that started on the name, navigates. The
+  // BUTTON stays for the keyboard, where there is no gesture at all —
+  // `swallowClick` exists so a pointer-driven interaction cannot navigate
+  // twice, and it is consumed rather than left set, so the next keyboard
+  // activation is not eaten by it.
+  const nameDown = useRef(false)
+  const swallowClick = useRef(false)
   const cancel = () => {
     const g = gesture.current
     gesture.current = null
-    wasDrag.current = true      // an aborted gesture is not a click either
+    swallowClick.current = true   // an aborted gesture is not a click either
     if (g) { try { g.capture.releasePointerCapture(g.pointerId) } catch { /* gone */ } }
     setLive(null)
   }
@@ -523,11 +532,18 @@ function PinWindow({ pin, node, vp, onUnpin, slug, op, toast, pub,
     const g = gesture.current
     if (!g || e.pointerId !== g.pointerId) return
     const moved = g.moved || Math.hypot(e.clientX - g.sx, e.clientY - g.sy) >= 3
-    wasDrag.current = moved
+    const onName = nameDown.current
+    nameDown.current = false
+    swallowClick.current = true
     gesture.current = null
     try { e.currentTarget.releasePointerCapture(e.pointerId) } catch { /* already released */ }
     setLive(null)
-    if (!moved) return // a title-bar click raises, never repositions or detaches
+    if (!moved) {
+      // a title-bar click raises, never repositions or detaches — and on the
+      // NAME it also navigates, which is the rule everywhere else
+      if (onName) onJump?.(pin.id)
+      return
+    }
     // Recompute at release. A target may have moved/closed since the preview,
     // and the last pointermove may not contain the pointerup coordinates.
     const final = gestureRect(g, e)
@@ -563,7 +579,11 @@ function PinWindow({ pin, node, vp, onUnpin, slug, op, toast, pub,
       onPointerDown={(e) => { e.stopPropagation(); raisePin(slug, pin.id) }}>
       <div className="pinwin-title"
         title="Drag to move; release near an edge to snap. Hold Shift for free placement. Escape cancels."
-        onPointerDown={(e) => begin(e, { kind: 'move', sx: e.clientX, sy: e.clientY, o: rect })}
+        onPointerDown={(e) => {
+          nameDown.current = Boolean(
+            (e.target as HTMLElement).closest?.('.pinwin-name'))
+          begin(e, { kind: 'move', sx: e.clientX, sy: e.clientY, o: rect })
+        }}
         onPointerMove={move} onPointerUp={end} onPointerCancel={cancel} onLostPointerCapture={cancel}>
         <PushPinIcon fontSize="inherit" className="pinwin-glyph" />
         {/* the name navigates like every other agent name (user rule
@@ -573,9 +593,7 @@ function PinWindow({ pin, node, vp, onUnpin, slug, op, toast, pub,
             has no gesture, so it always navigates. */}
         <AgentName id={node.id} tier={node.tier} nameClass="pinwin-name"
           onFocus={(id) => {
-            const dragged = wasDrag.current
-            wasDrag.current = false
-            if (dragged) return
+            if (swallowClick.current) { swallowClick.current = false; return }
             onJump?.(id)
           }} />
         {state && <span className="pinwin-state" title={`this agent is ${state}; the window stays readable`}>{state}</span>}

@@ -258,12 +258,22 @@ class Page:
         card), so dispatching directly models a real route rather than
         inventing one. §A/§B use a REAL mouse click, where the card is visible
         and fidelity is worth more."""
+        # ⚠ THE CARD'S NAME, NOT THE CARD'S GEOMETRIC CENTRE. Clicking the
+        # centre was a safe proxy for "click the card" until `.sq-actions`
+        # moved into the middle of it: measured 2026-09-05, a click at the
+        # exact centre lands on `BUTTON.retirebtn` inside `.sq-actions` and
+        # opens the RETIRE CONFIRMATION instead of focusing — and whether it
+        # does depends on the fit camera, which varies with whatever ran
+        # before, so §A passed and §B/§G failed in the same run off the same
+        # code. That is a fragile rig, not a product regression, and this is
+        # the fix: aim at the affordance a reader actually aims at.
         js = """
         (name) => {
           const c = [...document.querySelectorAll('.sq')].find(
             (e) => e.querySelector('.name')?.textContent?.trim() === name);
           if (!c) return false;
-          const r = c.getBoundingClientRect();
+          const n = c.querySelector('.name') ?? c;
+          const r = n.getBoundingClientRect();
           return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
         }
         """
@@ -523,14 +533,6 @@ def run(html: pathlib.Path, verbose: bool = True) -> tuple[list[str], dict]:
         P.click_agent("cto")
         bare_cards = P.jump_cards()
         obs["bare_jump_cards"] = bare_cards
-        obs["g_diag"] = pg.evaluate("""() => ({
-          desks: document.querySelectorAll('.sq.desk').length,
-          deskOver: !!document.querySelector('.desk-over'),
-          eyeDesk: !!document.querySelector('.eye-desk'),
-          sqs: document.querySelectorAll('.sq').length,
-          names: [...document.querySelectorAll('.sq .name')].map(n => n.textContent),
-          space: document.querySelector('.space')?.style.transform ?? '',
-        })""")
         if not bare_cards:
             bad("§G no edge jump card rendered with NO pins at all — the "
                 "instrument below cannot see anything, so §H is vacuous")
