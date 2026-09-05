@@ -49,6 +49,13 @@ export interface OrgCanvasProps {
   /** focus an agent's desk on the canvas (camera centerOn / mobile sheet) */
   focusAgent?: string | null
   onFocusAgentHandled?: () => void
+  /** open one message, from a panel that owns no mailbox — the docket's
+   *  `@mail:` references (2026-09-05). The three boxes live on THIS side, and
+   *  the router below already knows which is which, so the shell hands the
+   *  pointer down rather than growing a second copy of that routing table.
+   *  Consumed once, exactly like `focusAgent`. */
+  openMailAt?: { id: string; to: string } | null
+  onOpenMailHandled?: () => void
 }
 
 /** has this spring arrived? Both the spring loop (which snaps to the target on
@@ -106,7 +113,8 @@ const migrateClientNodeState = (slug: string, from: string, to: string): void =>
 }
 
 export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox, onWorkItem,
-  onAccounts, focusAgent, onFocusAgentHandled }: OrgCanvasProps) {
+  onAccounts, focusAgent, onFocusAgentHandled, openMailAt,
+  onOpenMailHandled }: OrgCanvasProps) {
   const [draft, setDraft] = useState<DraftState | null>(null)
   const [configId, setConfigId] = useState<string | null>(null)
   const [lineageId, setLineageId] = useState<string | null>(null)
@@ -262,6 +270,14 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox, onWorkItem,
     }
   }
   const openMail = useCallback<MailLinkFn>((m) => openMailRef.current?.(m), [])
+  // a pointer handed down from the shell (the docket's `@mail:` references).
+  // It goes through the SAME router as a chat chip's mail link — one routing
+  // table, so a box that opens from one surface opens from the other.
+  useEffect(() => {
+    if (!openMailAt) return
+    openMailRef.current?.(openMailAt)
+    onOpenMailHandled?.()
+  }, [openMailAt, onOpenMailHandled])
   // THE DOCKET LIVES IN APP, so a work link is handed straight up rather than
   // half-handled here. The canvas owns the inbox modals and genuinely routes
   // mail; it owns nothing of the docket and should not pretend to.

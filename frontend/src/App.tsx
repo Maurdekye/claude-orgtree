@@ -31,6 +31,7 @@ import { AgentName } from './canvas/identity'
 import { AccountsPanel, UsageBars } from './canvas/accounts'
 import { DocGalleryModal } from './canvas/gallery'
 import { DocketModal, DocketToolbarButton } from './canvas/docket'
+import { mailRefTarget } from './canvas/reflinks'
 import {
   SetBlock, SetGroup, SetRow, SettingsTabPanel, SettingsTabs, SetToggle,
   useVisitedTabs,
@@ -256,6 +257,11 @@ export default function App() {
   // some earlier link pointed at — the panel consumes it and clears it.
   const [docketJump, setDocketJump] = useState<string | null>(null)
   const [focusAgent, setFocusAgent] = useState<string | null>(null)
+  // a `@mail:` reference clicked in the docket. The docket owns no mailbox;
+  // the canvas owns the router that knows which of the three a pointer belongs
+  // to, so this is handed DOWN to it rather than re-decided here. One-shot,
+  // like `focusAgent` above.
+  const [mailJump, setMailJump] = useState<{ id: string; to: string } | null>(null)
   // the usage button GLOWS once a lane nears its wall (user feature
   // 2026-08-19), so a freeze stops being the first notice. It rides
   // /api/usage/peek — the CACHE-ONLY readout — because this poll runs whether
@@ -968,6 +974,8 @@ export default function App() {
                 mailEvt={mailEvt}
                 focusAgent={focusAgent}
                 onFocusAgentHandled={() => setFocusAgent(null)}
+                openMailAt={mailJump}
+                onOpenMailHandled={() => setMailJump(null)}
                 onAccounts={BASE ? undefined : () => setShowAccounts(true)}
                 onInbox={(jump: unknown) => {
                   setInboxJump(typeof jump === 'string' ? jump : null)
@@ -1038,6 +1046,15 @@ export default function App() {
           onFocusAgent={(id) => {
             setShowDocket(false)
             setFocusAgent(id)
+          }}
+          onOpenMail={(r) => {
+            // the mailbox opens BEHIND where the docket is, so the docket
+            // closes with it — the same move the agent link above makes, for
+            // the same reason: leaving it up would cover what the user just
+            // asked to read.
+            setShowDocket(false)
+            setDocketJump(null)
+            setMailJump(mailRefTarget(r))
           }}
           close={() => { setDocketJump(null); setShowDocket(false) }} />
       )}

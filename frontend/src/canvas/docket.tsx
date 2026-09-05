@@ -598,6 +598,15 @@ export function DocketModal({ slug, toast, close, tree, onFocusAgent,
         ? new Map([...allKnown.keys()].map((s) => [s, s]))
         : 'loading',
       agents: new Map([...facts.keys()].map((id) => [id, id])),
+      // ⚠ A NODE'S INBOX IS ONLY REAL IF THE NODE IS. The user's box and the
+      // org's box always exist; a NODE box named after somebody this org has
+      // never had (or who was dissolved out of the tree) does not, and the
+      // route below would have looked it up, found nothing and returned
+      // silently — the live-looking control again, one layer down. The tree
+      // this panel was handed is the same tree the canvas routes against, so
+      // asking it here is the same question, asked before the click.
+      mail: (r) => (r.box !== 'node' ? 'ready'
+        : facts.has(String(r.node ?? '')) ? 'ready' : 'absent'),
       handles,
     }
   }, [slug, data, allKnown, facts, onOpenMail])

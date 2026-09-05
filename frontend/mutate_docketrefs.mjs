@@ -22,6 +22,7 @@ import { readFileSync, writeFileSync } from 'node:fs'
 
 const DOCKET = 'src/canvas/docket.tsx'
 const REFS = 'src/canvas/workrefs.tsx'
+const REFLINKS = 'src/canvas/reflinks.tsx'
 
 const MUTANTS = [
   // ------------------------------------------------ the list is named by slug
@@ -329,6 +330,31 @@ const MUTANTS = [
     file: DOCKET, kills: '§27 CONTROL',
     from: `    if (onOpenMail) handles.add('mail')`,
     to: `    handles.add('mail')`,
+  },
+  {
+    name: 'a node mailbox is assumed to exist because the token names one',
+    file: DOCKET, kills: '§32b CONTROL',
+    from: `      mail: (r) => (r.box !== 'node' ? 'ready'
+        : facts.has(String(r.node ?? '')) ? 'ready' : 'absent'),`,
+    to: `      mail: () => 'ready',`,
+  },
+  {
+    // the other direction, which the §32b assertions alone would not notice:
+    // refusing EVERY mailbox also makes "the ghost one is refused" true
+    name: 'no mailbox is ever addressable',
+    file: DOCKET, kills: '§32 a mail reference',
+    from: `      mail: (r) => (r.box !== 'node' ? 'ready'
+        : facts.has(String(r.node ?? '')) ? 'ready' : 'absent'),`,
+    to: `      mail: () => 'absent',`,
+  },
+  {
+    // ⚠ THE WORDING IS THE FEATURE HERE. "not opened from here" sends someone
+    // hunting for the panel that would work; there is no such panel.
+    name: 'a mailbox that does not exist is described as one this panel cannot open',
+    file: REFLINKS, kills: '§32b CONTROL',
+    from: `          : outcome === 'absent' ? \`\${where} does not exist in this org\`
+            : \`\${where} cannot be opened from here\` }`,
+    to: `          : \`\${where} cannot be opened from here\` }`,
   },
   {
     name: 'the mail arm drops the click on the floor',

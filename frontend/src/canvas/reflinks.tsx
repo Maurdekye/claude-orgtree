@@ -119,10 +119,17 @@ export function resolveRef(ref: TypedRef, world: RefWorld): ResolvedRef {
   if (ref.kind === 'mail') {
     const outcome = world.mail ? world.mail(ref) : 'ready'
     const where = boxWord(ref)
+    // ⚠ `absent` AND `elsewhere` ARE DIFFERENT SENTENCES, and mail is where
+    // the difference bites: "this org has no such mailbox" is a fact about the
+    // ORG, while "not opened from here" is a fact about the PANEL. A surface
+    // that can address every box it knows of still reports the box it has
+    // never heard of as absent, and saying "cannot be opened from here" there
+    // would send someone looking for a panel that would work.
     return { ref, token, outcome, label: `mail in ${where}`,
       why: outcome === 'ready' ? `open this mail in ${where}`
         : outcome === 'pending' ? `still finding ${where}`
-          : `${where} cannot be opened from here` }
+          : outcome === 'absent' ? `${where} does not exist in this org`
+            : `${where} cannot be opened from here` }
   }
   const index = ref.kind === 'item' ? world.items
     : ref.kind === 'doc' ? world.docs : world.agents
@@ -144,6 +151,21 @@ export function refToken(ref: TypedRef): string {
     return `@mail:${ref.org}/node/${ref.node}/${ref.id}`
   }
   return `@mail:${ref.org}/${ref.box}/${ref.id}`
+}
+
+/** A mail reference as the app's EXISTING mail router understands it
+ *  (`MailLinkFn`: the shape a chat chip's mail pointer already uses).
+ *
+ *  ⚠ ONE TRANSLATION, IN ONE PLACE, BECAUSE THE ROUTER'S VOCABULARY IS NOT
+ *  THE TOKEN'S. `user_inbox` is a literal the router tests for, the org inbox
+ *  is recognised by a LEADING `@`, and anything else is read as a node id — so
+ *  an org box handed over as the bare slug would be routed to a node with the
+ *  org's name, and on the day one exists it would open the wrong mailbox.
+ *  Pure, so that mapping is pinned without mounting anything. */
+export function mailRefTarget(ref: TypedRef): { id: string; to: string } {
+  if (ref.box === 'user') return { id: ref.id, to: 'user_inbox' }
+  if (ref.box === 'org') return { id: ref.id, to: `@org:${ref.org}` }
+  return { id: ref.id, to: String(ref.node ?? '') }
 }
 
 export interface RefRun {

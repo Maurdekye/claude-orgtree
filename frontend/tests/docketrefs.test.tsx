@@ -140,8 +140,11 @@ const mkItem = (o: Partial<WorkItem>): WorkItem => ({
   ...o,
 } as unknown as WorkItem)
 
-const mkTree = (): TreePayload => ({
-  slug: 'org1', name: 'Org 1', epoch: 1, rev: 1, roots: [],
+/** `roots` matters for more than the model chips now: a node MAILBOX is only
+ *  addressable if the node is in this tree, so a fixture that wants a live
+ *  node-inbox reference has to put the node here. */
+const mkTree = (roots: unknown[] = []): TreePayload => ({
+  slug: 'org1', name: 'Org 1', epoch: 1, rev: 1, roots,
   work_items_summary: { attention: 0, active: 0 },
   user_inbox_count: 0, user_inbox_urgent_count: 0, asks: [], asks_open: 0,
 } as unknown as TreePayload)
@@ -900,7 +903,9 @@ uiTest('§32 a mail reference is opened by the caller that owns a mailbox, and '
     })
     const el = await mount(
       <DocketModal slug="org1" toast={() => {}} close={() => {}}
-        tree={mkTree()} onOpenMail={(r) => opened.push(r)} />)
+        tree={mkTree([{ id: 'agent1', tier: 'sonnet', state: 'live',
+          generation: 1, parent: null, children: [] }])}
+        onOpenMail={(r) => opened.push(r)} />)
     await flush()
     await inAct(() => (rows(el)[0] as HTMLElement).click())
     await flush()
@@ -911,4 +916,44 @@ uiTest('§32 a mail reference is opened by the caller that owns a mailbox, and '
     // the PARSED reference, not the token: the caller has to know which box
     assert.deepEqual(opened, [
       { kind: 'mail', org: 'org1', box: 'node', node: 'agent1', id: 'm7' }])
+  })
+
+uiTest('§32b CONTROL — a node inbox for somebody this org does not have is '
+  + 'unavailable, and the route is never called', async (mount) => {
+    // ⚠ THE ROUTER WOULD HAVE NO-OPPED. It looks the node up on the canvas and
+    // returns silently when it is not there, so a chip offered for a dissolved
+    // or foreign agent is a control that looks live and does nothing. The
+    // panel already holds the tree, so it answers BEFORE the click.
+    const opened: unknown[] = []
+    mockServer({
+      items: [mkItem({ slug: 'the-source-item',
+        objective: 'as agreed in @mail:org1/node/never-hired/m7 '
+          + 'and in @mail:org1/user/m8' })],
+      archived: [], backlogged: [],
+    })
+    const el = await mount(
+      <DocketModal slug="org1" toast={() => {}} close={() => {}}
+        tree={mkTree([{ id: 'agent1', tier: 'sonnet', state: 'live',
+          generation: 1, parent: null, children: [] }])}
+        onOpenMail={(r) => opened.push(r)} />)
+    await flush()
+    await inAct(() => (rows(el)[0] as HTMLElement).click())
+    await flush()
+    const chips = [...el.querySelectorAll('.docket-desc .ref-chip.ref-mail')]
+    assert.equal(chips.length, 2, 'both mail references rendered')
+    const [ghost, user] = chips as HTMLElement[]
+    assert.ok(ghost!.classList.contains('ref-absent'),
+      "a mailbox belonging to nobody is reported as not existing")
+    assert.equal(ghost!.tagName, 'SPAN', 'and it is not clickable')
+    assert.match(ghost!.getAttribute('title') ?? '', /does not exist in this org/)
+    // ⚠ NOT "not opened from this panel" — that would send someone hunting for
+    // the panel that could open it. There is no such panel; there is no box.
+    assert.doesNotMatch(ghost!.getAttribute('title') ?? '', /from here/)
+    // POSITIVE HALF — the user's box in the SAME prose is still live, so this
+    // does not pass by mail references having stopped working altogether
+    assert.equal(user!.tagName, 'BUTTON')
+    await inAct(() => user!.click())
+    await flush()
+    assert.deepEqual(opened,
+      [{ kind: 'mail', org: 'org1', box: 'user', id: 'm8' }])
   })
