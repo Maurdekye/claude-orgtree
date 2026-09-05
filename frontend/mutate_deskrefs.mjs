@@ -24,6 +24,7 @@ import { readFileSync, writeFileSync } from 'node:fs'
 const DESK = 'src/canvas/desk.tsx'
 const LINKS = 'src/canvas/reflinks.tsx'
 const PROG = 'src/canvas/progress.tsx'
+const MAIL = 'src/canvas/mail.tsx'
 
 const MUTANTS = [
   {
@@ -182,6 +183,25 @@ const MUTANTS = [
     file: DESK, suite: 'progress', kills: '§5c the REAL desk',
     from: `      {view === 'progress' && <ProgressView model={progress} refs={deskRefs} />}`,
     to: `      {view === 'progress' && <ProgressView model={progress} />}`,
+  },
+  {
+    // ⚠ THE PRESENT-PLAUSIBLE-AND-INERT PROP, restored. `MailList` still
+    // ACCEPTS a world; the panel above it simply stops handing one over, and
+    // every mailbox on screen renders references as dead text while every
+    // check of the prop itself stays green.
+    name: 'the inbox panel accepts a world and forwards none',
+    file: MAIL, kills: '§10 a reference in a mail body',
+    from: `                tierOf={tierOf} hasAgent={hasAgent} refs={refs}
+                waitLabel="awaiting next turn" jumpTo={jumpTo}`,
+    to: `                tierOf={tierOf} hasAgent={hasAgent}
+                waitLabel="awaiting next turn" jumpTo={jumpTo}`,
+  },
+  {
+    // the modal follows the reference and stays on top of it
+    name: 'the node inbox modal follows a reference without closing',
+    file: MAIL, kills: '§10c the node inbox MODAL closes',
+    from: `            onOpen: refs.onOpen && ((r: ResolvedRef) => { close(); refs.onOpen!(r) }),`,
+    to: `            onOpen: refs.onOpen,`,
   },
   {
     // AND THE CONTROL'S OWN CONTROL. If the world never changed at all, §9's

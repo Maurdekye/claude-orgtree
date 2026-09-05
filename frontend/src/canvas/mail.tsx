@@ -633,10 +633,15 @@ interface InboxViewProps {
   tierOf?: (id: string) => string | null | undefined
   /** does the tree hold a node by this id? Same contract as MailList's. */
   hasAgent?: (id: string) => boolean
+  /** canonical references in the READING PANE's mail bodies. Forwarded
+   *  verbatim to `MailList`, which owns the rendering — this panel adds no
+   *  judgement of its own, because a second opinion about the same token is
+   *  exactly what one shared world exists to prevent. */
+  refs?: { world: RefWorld; onOpen?: (r: ResolvedRef) => void }
 }
 
 export function InboxView({ slug, nid, onRetract, jumpTo, tier, onFocusAgent,
-  tierOf, hasAgent }: InboxViewProps) {
+  tierOf, hasAgent, refs }: InboxViewProps) {
   const [folder, setFolder] = useState('inbox')
   // G5: was a fetch keyed on the `pulse` prop, which meant it refreshed on turn
   // events and on nothing else — and a mail DELIVERY is not a turn event, so
@@ -682,7 +687,7 @@ export function InboxView({ slug, nid, onRetract, jumpTo, tier, onFocusAgent,
           ? <div className="dim pad">loading…</div>
           : folder === 'inbox'
             ? <MailList pending={pending} delivered={box.delivered}
-                tierOf={tierOf} hasAgent={hasAgent}
+                tierOf={tierOf} hasAgent={hasAgent} refs={refs}
                 waitLabel="awaiting next turn" jumpTo={jumpTo}
                 fileHref={(p) => fileUrl(slug, nid, p)}
                 mdBase={() => fileBase(slug, nid)}
@@ -702,7 +707,7 @@ export function InboxView({ slug, nid, onRetract, jumpTo, tier, onFocusAgent,
             // outbox/ on send (api.py routes them through _agent_send_file),
             // so the same scratch-keyed href serves the Sent folder too
             : <MailList delivered={box.sent ?? []} outgoing jumpTo={jumpTo}
-                tierOf={tierOf} hasAgent={hasAgent}
+                tierOf={tierOf} hasAgent={hasAgent} refs={refs}
                 onFocusAgent={onFocusAgent}
                 fileHref={(p) => fileUrl(slug, nid, p)}
                 mdBase={() => fileBase(slug, nid)} />}
@@ -784,17 +789,28 @@ interface NodeInboxModalProps {
   onFocusAgent?: (agentId: string) => void
   tierOf?: (id: string) => string | null | undefined
   hasAgent?: (id: string) => boolean
+  refs?: { world: RefWorld; onOpen?: (r: ResolvedRef) => void }
 }
 
 export function NodeInboxModal({ node, slug, close, jumpTo, onFocusAgent,
-  tierOf, hasAgent }: NodeInboxModalProps) {
+  tierOf, hasAgent, refs }: NodeInboxModalProps) {
   useEsc(close)
   return (
     <div className="overlay" onClick={close} onPointerDown={(e) => e.stopPropagation()}>
       <div className="settings wide" onClick={(e) => e.stopPropagation()}>
         <h3><MailIcon fontSize="inherit" /> {node.id} <span className="dim">· inbox</span></h3>
+        {/* ⚠ A REFERENCE CLOSES THIS MODAL ON THE WAY OUT, exactly as the name
+            beside it already does. Everything a token can open — an item, a
+            document, another mailbox, an agent's desk — is UNDER this
+            overlay, so following one without closing would look like a click
+            that did nothing. The world itself is untouched: only the handler
+            is wrapped, and with one argument. */}
         <InboxView slug={slug} nid={node.id} jumpTo={jumpTo} tier={node.tier}
           tierOf={tierOf} hasAgent={hasAgent}
+          refs={refs && {
+            world: refs.world,
+            onOpen: refs.onOpen && ((r: ResolvedRef) => { close(); refs.onOpen!(r) }),
+          }}
           onFocusAgent={onFocusAgent ? (id) => { close(); onFocusAgent(id) } : undefined} />
         <div className="row">
           <button className="primary" onClick={close}>close</button>

@@ -19,6 +19,7 @@
 //   §8  the user's own undelivered bubble carries chips too
 //   §8b …and the optimistic ghost, which is a SECOND call site
 //   §9  identity stability — the claim the perf comment makes, measured
+//   §10 the MAILBOX panels forward a world at all (they did not, once)
 //
 // ⚠ §4 IS A REGRESSION CHECK, not a nicety. `onJump` is `centerOn(id, z)` and
 // `focusView` reads `z ?? fit`, so ANY non-null second argument defeats the
@@ -47,13 +48,14 @@
 // Run:  cd frontend && node tests/run.mjs deskrefs
 //       cd frontend && node mutate_deskrefs.mjs
 
-import { FakeServer, flush, inAct, installFetch, mountView, realClock, useFakeClock } from './harness'
+import { advance, FakeServer, flush, inAct, installFetch, mountView, realClock, useFakeClock } from './harness'
 import { useState } from 'react'
 import test from 'node:test'
 import type { TestContext } from 'node:test'
 import assert from 'node:assert/strict'
 import { addPending, refreshConvo, resetConvos } from '../src/convo'
 import { DeskChat } from '../src/canvas/desk'
+import { InboxView, NodeInboxModal } from '../src/canvas/mail'
 import { useRefRoutes } from '../src/canvas/reflinks'
 import type { CanvasNode } from '../src/canvas/shared'
 import type { OpResult } from '../src/types'
@@ -350,4 +352,101 @@ test('§9 the refs value keeps its identity while the answers are unchanged, '
   await inAct(async () => { setAgents!(new Map([['a', 1], ['b', 2]])) })
   assert.notEqual(seen[seen.length - 1], seen[0],
     'control: a real change to who exists DOES produce a new world')
+})
+
+// ═══════════════════════════════════════════════════════════════════ §10
+// THE MAILBOX PANELS. `MailList` has taken a `refs` prop since the mail-body
+// work, but for a while nothing above it forwarded one — the classic present,
+// plausible and inert prop: every check of the prop itself passed, and no
+// mailbox on screen rendered a single reference. These mount the REAL
+// InboxView and the REAL NodeInboxModal and require a chip in the reading
+// pane, with a control that the same mount WITHOUT a world renders none.
+
+const INBOX_REF = {
+  delivered: [{
+    id: 'm1', from: 'peer-one', to: 'me', at: '2026-09-05T09:00:00.000Z',
+    kind: 'message', body: 'settled in @item:org/sort-selector', read: true,
+  }],
+  pending: [], sent: [],
+}
+
+function stubInbox() {
+  const had = (globalThis as { fetch?: typeof fetch }).fetch
+  ;(globalThis as unknown as { fetch: typeof fetch }).fetch = ((url: string) => {
+    const body = String(url).includes('/inbox') ? INBOX_REF : {}
+    return Promise.resolve({
+      ok: true, status: 200, headers: new Headers(),
+      json: () => Promise.resolve(body),
+    })
+  }) as unknown as typeof fetch
+  return () => { (globalThis as { fetch?: typeof fetch }).fetch = had }
+}
+
+const inboxWorld = {
+  org: 'org',
+  agents: new Map([['peer-one', 'peer-one']]),
+  handles: new Set(['item', 'agent', 'doc', 'mail']),
+} as unknown as NonNullable<Parameters<typeof InboxView>[0]['refs']>['world']
+
+/** ⚠ THE READING PANE IS WHERE A BODY IS, so a mail must be SELECTED before
+ *  there is any prose to carry a reference. Without this the check reports
+ *  "no chip" for a reason that has nothing to do with the wiring. */
+async function openFirstMail(el: HTMLElement) {
+  await flush(); await advance(200, 16); await flush()
+  const row = el.querySelector('.mailer-list .mailrow') as HTMLElement | null
+  assert.ok(row, 'positive control: the fake inbox produced a mail row at all')
+  await inAct(async () => { row!.click() })
+  await flush()
+}
+
+test('§10 a reference in a mail body is live in the node inbox panel',
+async (t: TestContext) => {
+  useFakeClock()
+  const restore = stubInbox()
+  const opened: unknown[][] = []
+  const v = await mountView(
+    <InboxView slug="org" nid="me" tier={null}
+      refs={{ world: inboxWorld, onOpen: (...a: unknown[]) => { opened.push(a) } }} />,
+    (host) => host)
+  t.after(async () => { try { await v.unmount() } catch { /* gone */ } ; restore(); realClock() })
+  await openFirstMail(v.el)
+  const c = chip(v.el, '@item:org/sort-selector')
+  assert.equal(c.tagName, 'BUTTON')
+  await inAct(async () => { c.click() })
+  assert.equal(opened.length, 1, 'the chip in a mail body is a real control')
+  assert.equal((opened[0][0] as { ref: { id: string } }).ref.id, 'sort-selector')
+})
+
+test('§10b CONTROL — the same panel with no world renders the token as text',
+async (t: TestContext) => {
+  useFakeClock()
+  const restore = stubInbox()
+  const v = await mountView(<InboxView slug="org" nid="me" tier={null} />, (host) => host)
+  t.after(async () => { try { await v.unmount() } catch { /* gone */ } ; restore(); realClock() })
+  await openFirstMail(v.el)
+  assert.equal(q(v.el, '[data-ref-token]').length, 0,
+    'no world ⇒ no chip; the panel judges nothing on its own')
+  assert.match(v.el.querySelector('.mailer-read')?.textContent ?? '',
+    /@item:org\/sort-selector/, 'and the token is still on screen, as written')
+})
+
+test('§10c the node inbox MODAL closes on its way to what a reference names',
+async (t: TestContext) => {
+  useFakeClock()
+  const restore = stubInbox()
+  const opened: unknown[][] = []
+  let closed = 0
+  const v = await mountView(
+    <NodeInboxModal node={node('me')} slug="org" jumpTo={null}
+      close={() => { closed += 1 }}
+      refs={{ world: inboxWorld, onOpen: (...a: unknown[]) => { opened.push(a) } }} />,
+    (host) => host)
+  t.after(async () => { try { await v.unmount() } catch { /* gone */ } ; restore(); realClock() })
+  await openFirstMail(v.el)
+  await inAct(async () => { chip(v.el, '@item:org/sort-selector').click() })
+  assert.equal(opened.length, 1, 'the route still ran')
+  assert.equal(opened[0].length, 1, 'and with exactly one argument')
+  assert.equal(closed, 1,
+    'everything a token can open lives UNDER this overlay — following one '
+    + 'without closing looks like a click that did nothing')
 })

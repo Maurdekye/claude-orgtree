@@ -23,9 +23,9 @@ import type {
 } from './shared'
 import { Activity, ContextWheel, DeskChat, DestinationBusy, LineagePanel, ProcessLifecycleMark } from './desk'
 import { DocReader } from './docs'
-import { mailRefTarget } from './reflinks'
-import type { RefWorld, ResolvedRef } from './reflinks'
-import type { RefKind } from './workrefs'
+import { mailRefTarget, useRefRoutes } from './reflinks'
+import type { ResolvedRef } from './reflinks'
+import type { TypedRef } from './workrefs'
 import { NodeInboxModal, OrgInboxModal } from './mail'
 import { NodeConfig, PilePicker, UserConfig, WatchdogPanel } from './modals'
 import { DraftNode, NodeSquare, UserNode } from './cards'
@@ -1244,7 +1244,7 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox, onWorkItem,
   const centerRef = useRef<typeof centerOn | null>(null)
   centerRef.current = centerOn
 
-  // ---- canonical references written INSIDE a presented document
+  // ---- canonical references, wherever the canvas renders prose
   //
   // The canvas is the one surface that can reach all four destinations: it
   // holds the mail router, the document reader and the camera, and the shell
@@ -1255,27 +1255,34 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox, onWorkItem,
   // ⚠ NO ITEM OR DOCUMENT INDEX. The canvas holds neither list; the docket
   // states an item it does not have and the reader reports a document it
   // cannot fetch. Agents and node mailboxes it CAN answer for, from `map`.
-  const docRefs = useMemo(() => {
-    const handles = new Set<RefKind>(['agent', 'doc', 'mail'])
-    if (onWorkItem) handles.add('item')
-    const world: RefWorld = {
-      org: slug,
-      agents: new Map([...map.keys()].map((id) => [id, id])),
-      mail: (r) => (r.box !== 'node' ? 'ready'
-        : map.has(String(r.node ?? '')) ? 'ready' : 'absent'),
-      handles,
-    }
-    return { world, onOpen: (r: ResolvedRef) => {
-      // a document opening another document SWAPS the reader; everything
-      // else lives behind it, so the reader closes first or the click looks
-      // like it did nothing
+  //
+  // ⚠ THIS USED TO BUILD THE WORLD INLINE — a third hand-rolled copy of a
+  // decision the shell and the desk already shared, and the kind of drift
+  // nobody sees, because one surface quietly calling a real item missing
+  // looks exactly like a real missing item. It is the shared builder now.
+  //
+  // ⚠ AND `centerRef`, NOT `centerOn`. The camera takes (id, zoom) and reads
+  // `zoom ?? fit`, so anything non-null in the second argument becomes the
+  // zoom; every route here is written to pass exactly one.
+  const canvasRefs = useRefRoutes(slug, map, {
+    onOpenItem: onWorkItem ? (s: string) => onWorkItem(s) : undefined,
+    onFocusAgent: (id: string) => { centerRef.current?.(id) },
+    onOpenDoc: (id: string) => setDocView(id),
+    onOpenMail: (r: TypedRef) => { openMailRef.current?.(mailRefTarget(r)) },
+  })
+  // the DOCUMENT READER's own copy: same world, same routes, plus the one
+  // thing that belongs to the reader rather than to the canvas — a document
+  // opening another document SWAPS the reader, while everything else lives
+  // BEHIND it, so the reader closes first or the click looks like it did
+  // nothing.
+  const docRefs = useMemo(() => ({
+    world: canvasRefs.world,
+    onOpen: (r: ResolvedRef) => {
       if (r.ref.kind === 'doc') { setDocView(r.ref.id); return }
       setDocView(null)
-      if (r.ref.kind === 'item') onWorkItem?.(r.ref.id)
-      else if (r.ref.kind === 'agent') centerRef.current?.(r.ref.id)
-      else if (r.ref.kind === 'mail') openMailRef.current?.(mailRefTarget(r.ref))
-    } }
-  }, [slug, map, onWorkItem])
+      canvasRefs.onOpen(r)
+    },
+  }), [canvasRefs])
 
   useEffect(() => {
     if (!focusAgent) return
@@ -2796,6 +2803,7 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox, onWorkItem,
         <MaybePortal><NodeInboxModal node={map.get(inboxId)!} slug={slug}
           tierOf={(id) => map.get(id)?.tier}
           hasAgent={(id) => map.has(id)}
+          refs={canvasRefs}
           jumpTo={nodeInboxJump}
           onFocusAgent={centerOn}
           close={() => { setInboxId(null); setNodeInboxJump(null) }} /></MaybePortal>
