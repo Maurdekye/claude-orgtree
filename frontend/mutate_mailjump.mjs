@@ -95,7 +95,7 @@ const MUTANTS = [
     // ⚠ THE WRONG-TARGET FAILURE, in the reading pane: a row left over from an
     // earlier lookup rendered as the message just asked for.
     name: 'a stale row is rendered whatever message it is',
-    file: MAIL, kills: 'an answer belongs to the request that asked for it',
+    file: MAIL, kills: '§7f a lookup that answers with the wrong message',
     from: `  const foundOutside = ask && !ask.asking && ask.row
     && keyOf(ask.row) === jumpTo ? ask.row : null`,
     to: `  const foundOutside = ask && !ask.asking ? ask.row : null`,
@@ -115,7 +115,7 @@ const MUTANTS = [
     // the notice rendered for EVERY empty pane, which would make §3 and §4
     // pass while the panel cried wolf on an ordinary unselected mailbox.
     name: 'the not-here notice shows whenever nothing is selected',
-    file: MAIL, kills: '§5 CONTROL',
+    file: MAIL, kills: '§7d CONTROL',
     from: `  const outsideWindow = Boolean(jumpTo)
     && !all.some((m) => keyOf(m) === jumpTo)`,
     to: `  const outsideWindow = true`,
@@ -227,11 +227,11 @@ const MUTANTS = [
     // returns early on the latch, leaving the question dropped in silence.
     name: 'a repoll underneath the question throws the answer away',
     file: MAIL, kills: '§14 an answer that arrives after a repoll',
-    from: `    askKey.current = req
-    setJumpAsk('asking')`,
-    to: `    askKey.current = req
-    setJumpAsk('asking')
-    cancelOnRepoll = () => { askKey.current = null }`,
+    from: `    setJumpAsk('asking')
+    Promise.resolve(nodeLookup(jumpTo))`,
+    to: `    setJumpAsk('asking')
+    cancelOnRepoll = () => { askKey.current = null }
+    Promise.resolve(nodeLookup(jumpTo))`,
     // the cancel is installed as the effect's cleanup, which is exactly what
     // the previous code did — the poll's next `box` then runs it
     also: {
@@ -246,6 +246,43 @@ const MUTANTS = [
       to: `    return () => cancelOnRepoll?.()
   }, [jumpTo, jumpSeq, box, nodeLookup, askAgain])`,
     },
+  },
+  {
+    // ⚠ ASTRA'S SUPERSESSION CASE. The claim on the in-flight answer staked
+    // AFTER the branches that handle a target already in a loaded list — so
+    // such a target, which needs no question of its own, left the previous
+    // question live to answer over the top of it.
+    name: 'the claim is staked after the branches that return',
+    file: MAIL, kills: '§15 an older question, answered late',
+    from: `    askKey.current = req
+    setJumpAsk(null)
+    if (!jumpTo || !box) return`,
+    to: `    setJumpAsk(null)
+    if (!jumpTo || !box) return`,
+    also: {
+      from: `    setJumpAsk('asking')
+    Promise.resolve(nodeLookup(jumpTo))`,
+      to: `    askKey.current = req
+    setJumpAsk('asking')
+    Promise.resolve(nodeLookup(jumpTo))`,
+    },
+  },
+  {
+    // the overcorrection: invalidating on every effect RUN rather than on a
+    // new REQUEST kills the answer to a question nothing superseded
+    name: 'the claim is restaked on every run, so a repoll supersedes itself',
+    file: MAIL, kills: '§11b CONTROL',
+    from: `    if (foldedJump.current === req) return`,
+    to: ``,
+  },
+  {
+    // a failed or in-flight outcome outliving the request that produced it:
+    // the notice is then attached to a message it was never about
+    name: "a request's outcome outlives the request",
+    file: MAIL, kills: '§15c an outcome belongs to the request',
+    from: `    askKey.current = req
+    setJumpAsk(null)`,
+    to: `    askKey.current = req`,
   },
 ]
 
@@ -295,13 +332,25 @@ for (const m of MUTANTS) {
   try {
     writeFileSync(m.file, Buffer.from(mutated.replace(/\n/g, '\r\n'), 'utf8'))
     const r = runSuite()
-    const named = r.out.includes(m.kills)
+    // ⚠ THE NAME MUST APPEAR ON A FAILING LINE. `out` holds the whole run,
+    // passing checks included, so a bare `includes(kills)` is true for almost
+    // every mutant and attributes the kill to whichever check was named —
+    // WRONG CHECK could then never fire. node:test marks failures with '✖'.
+    const named = r.out.split('\n')
+      .some((l) => l.trimStart().startsWith('✖') && l.includes(m.kills))
     if (r.failed && named) {
       console.log(`killed — ${m.name}`)
     } else if (r.failed) {
       console.error(`WRONG CHECK — ${m.name}`)
       console.error(`  the suite went red but "${m.kills}" is not among the failures`)
-      console.error(r.out.slice(0, 900))
+      // ⚠ NAME WHAT DID FAIL. Without this the only way to correct a `kills`
+      // is to re-apply the mutant by hand, which is how a misattribution
+      // survives a reader's attention in the first place.
+      for (const l of [...new Set(r.out.split('\n')
+        .filter((x) => x.trimStart().startsWith('✖'))
+        .map((x) => x.trim().replace(/\s*\([\d.]+ms\)$/, '')))]) {
+        console.error(`    ${l}`)
+      }
       survived++
     } else {
       console.error(`SURVIVED    — ${m.name}`)

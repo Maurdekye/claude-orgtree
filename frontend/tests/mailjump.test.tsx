@@ -418,7 +418,10 @@ function stubBox(onLookup?: () => void) {
     if (u.includes('/mail/node/')) {
       onLookup?.()
       body = { found: true, mail: OUTSIDE }
-    } else if (u.includes('/inbox')) body = NODE_BOX
+    // ⚠ A FRESH OBJECT PER POLL, as the real fetch returns. Handing back the
+    // SAME object made `usePolled` bail out of its own setState, so the panel
+    // effect never re-ran and every "under a repoll" claim below was free.
+    } else if (u.includes('/inbox')) body = { ...NODE_BOX }
     return Promise.resolve({
       ok: true, status: 200, headers: new Headers(),
       json: () => Promise.resolve(body),
@@ -707,5 +710,119 @@ async (mount) => {
       'a poll tick underneath the question threw the answer away')
     assert.match(pane(el), /OLDER RECEIVED/,
       'the message it found never reached the screen')
+  } finally { restore(); realClock() }
+})
+
+// ───────────── §15 a superseded question may not answer over its successor
+//
+// ⚠ EXECUTED BY ASTRA AGAINST 85054be. A request supersedes the previous one
+// whatever it turns out to need — including a target already in a loaded list,
+// which needs no question of its own. The claim on the in-flight answer was
+// staked AFTER the branches that handle those targets, so the older question
+// stayed live and moved the reader off the newer one when it came back.
+//
+// ⚠ AND THE PAIRED CONTROL BELOW IS THE POINT: the invalidation must be per
+// REQUEST, not per effect run. A repoll re-runs the same effect with the same
+// request, and killing the answer there is §14 all over again.
+
+/** every lookup deferred, each recorded so a check can answer them ALL. One
+ *  click makes two (panel then list): answering only the last hides this. */
+function stubDeferred() {
+  const open: (() => void)[] = []
+  const restore = stubAsk(() => new Promise((res) => {
+    open.push(() => res({
+      ok: true, status: 200, headers: new Headers(),
+      json: () => Promise.resolve({ found: true, mail: OUTSIDE }),
+    }))
+  }))
+  return { open, restore }
+}
+
+uiTest('§15 an older question, answered late, does not move the reader off a '
+  + 'newer target that was already loaded', async (mount) => {
+  useFakeClock()
+  const { open, restore } = stubDeferred()
+  try {
+    // a reference to a message in NEITHER list: the panel asks, and waits
+    const { el, render } = await mount(
+      <InboxView slug="org" nid="me" tier={null} jumpTo="older-received" jumpSeq={1} />)
+    await settle(el)
+    assert.ok(open.length, 'positive control: the older question is in flight')
+    // …then a NEW reference to a message the Sent list is already holding.
+    // It needs no question, so nothing below stakes a fresh claim.
+    await render(
+      <InboxView slug="org" nid="me" tier={null} jumpTo="sent-1" jumpSeq={2} />)
+    await settle(el)
+    assert.deepEqual(folderNow(el), ['sent'],
+      'positive control: the newer reference opened the folder holding it')
+    // ⚠ ALL of them, not merely the last: the panel's and the list's
+    const late = open.splice(0)
+    await inAct(() => { late.forEach((f) => f()) })
+    await settle(el)
+    assert.deepEqual(folderNow(el), ['sent'],
+      'the superseded question answered over the top of a newer request')
+    assert.match(pane(el), /SENT CONTROL/,
+      'the reader was left looking for a message they had stopped asking for')
+  } finally { restore(); realClock() }
+})
+
+uiTest('§15b CONTROL — the same request re-delivered under a repoll is not '
+  + 'superseded by itself', async (mount) => {
+  useFakeClock()
+  const { open, restore } = stubDeferred()
+  try {
+    const { el, render } = await mount(
+      <InboxView slug="org" nid="me" tier={null} jumpTo="received-1" jumpSeq={1} />)
+    await settle(el)
+    await toSent(el)
+    await render(
+      <InboxView slug="org" nid="me" tier={null} jumpTo="older-received" jumpSeq={2} />)
+    await settle(el)
+    assert.ok(open.length, 'positive control: the question is in flight')
+    // the SAME request re-delivered, and the poll ticking underneath it
+    await render(
+      <InboxView slug="org" nid="me" tier={null} jumpTo="older-received" jumpSeq={2} />)
+    await advance(6000, 16); await settle(el)
+    const late = open.splice(0)
+    await inAct(() => { late.forEach((f) => f()) })
+    await settle(el)
+    assert.deepEqual(folderNow(el), ['inbox'],
+      'an invalidation that fires per effect run, not per request, throws away '
+      + 'the answer to a question nothing superseded')
+  } finally { restore(); realClock() }
+})
+
+uiTest('§15c an outcome belongs to the request that produced it, and does not '
+  + 'outlive it', async (mount) => {
+  useFakeClock()
+  const restore = stubAsk(() => Promise.reject(new Error('network failed')))
+  try {
+    const { el, render } = await mount(
+      <InboxView slug="org" nid="me" tier={null} jumpTo="received-1" jumpSeq={1} />)
+    await settle(el)
+    await toSent(el)
+    // a reference in neither list, whose question FAILS while they read Sent
+    await render(
+      <InboxView slug="org" nid="me" tier={null} jumpTo="missing-one" jumpSeq={2} />)
+    await settle(el)
+    assert.match(el.querySelector('.mailer-nojump')?.textContent ?? '',
+      /Could not check/, 'positive control: the failure was reported')
+    // …then a reference the inbox is already holding. It needs no question,
+    // so nothing new is asked and nothing new answers.
+    await render(
+      <InboxView slug="org" nid="me" tier={null} jumpTo="received-1" jumpSeq={3} />)
+    await settle(el)
+    assert.deepEqual(folderNow(el), ['inbox'], 'positive control: it opened')
+    // the reader goes back to Sent by hand, where that message is not
+    const back = [...el.querySelectorAll('.mail-folders button')]
+      .find((b) => b.textContent === 'sent') as HTMLButtonElement
+    await inAct(() => { back.click() })
+    await settle(el)
+    const note = el.querySelector('.mailer-nojump')?.textContent ?? ''
+    assert.doesNotMatch(note, /Could not check/,
+      'the previous request’s failure was still on screen, attached to a '
+      + 'message that is sitting in the inbox')
+    assert.match(note, /not in this folder/,
+      'and the honest answer for this folder was not given')
   } finally { restore(); realClock() }
 })

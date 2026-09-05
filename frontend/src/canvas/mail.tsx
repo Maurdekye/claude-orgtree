@@ -67,10 +67,10 @@ export interface MailListProps {
    *  message belongs — this list only knows it was not in its own window. */
   onFound?: (m: MailRow) => void
   /** the FOLDER OWNER's question about `jumpTo`, for a list that has no
-   *  `lookup` of its own and so is not the one asking. Without it such a list
-   *  reports the only thing it can know unaided — "not in this folder" — while
-   *  the question is still open or has failed, which is a claim about the
-   *  message made from a network state. Set with `onAskRetry`, never alone. */
+   *  `lookup` of its own and so is not the one asking. Such a list can only
+   *  say "not in this folder", which is an answer about the message and is
+   *  not one to give while the question is open or has failed. Set with
+   *  `onAskRetry`; never with `lookup`, which makes this list the asker. */
   askState?: 'asking' | 'failed' | null
   /** re-ask the OWNER's question: the retry the failure notice offers */
   onAskRetry?: () => void
@@ -351,11 +351,10 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, rowS
     e.currentTarget.querySelectorAll('.mailrow')[next]
       ?.scrollIntoView({ block: 'nearest' })
   }
-  // ⚠ AN EMPTY WINDOW IS A FACT ABOUT THE FOLDER, NOT ABOUT A MESSAGE. This
-  // sentence used to sit above every jump outcome, so a reference followed
-  // into a folder whose window happens to be empty was answered with a remark
-  // about the folder — hiding a message the lookup had FOUND, a question still
-  // in flight, and a real absence alike. With no jump, it still says this.
+  // ⚠ AN EMPTY WINDOW IS A FACT ABOUT THE FOLDER, NOT ABOUT A MESSAGE — so it
+  // cannot stand as the answer to a reference. An explicit jump renders its
+  // own outcome below (found, still asking, or absent) even with nothing in
+  // the window; with no jump, this is the whole of what there is to say.
   if (!all.length && !jumpTo) return <div className="dim pad">no mail yet</div>
   return (
     <div className="mailer" tabIndex={-1} onKeyDown={onKey}>
@@ -769,40 +768,41 @@ export function InboxView({ slug, nid, onRetract, jumpTo, jumpSeq, tier, onFocus
   // time the poll returned. `box` is in the deps because the answer is not
   // knowable until it has loaded, and the panel mounts before that.
   const foldedJump = useRef<string | null>(null)
-  // ⚠ THE PANEL'S QUESTION IS THE PANEL'S TO REPORT. The list it is asking on
-  // behalf of may be one with no `lookup` of its own (Sent), and such a list
-  // can only say "not in this folder" — a claim about the message, made while
-  // the question is still in flight or after it FAILED.
-  // ⚠ NOT KEYED ON THE REQUEST. Every path out of the effect below writes it —
-  // found in a loaded list, asked, answered, failed — so it always describes
-  // the latest request; and the one path that does NOT run (no `box` yet)
-  // renders "loading…" in place of any list that could read it.
+  // the panel's own question about `jumpTo`, for the folder that has no
+  // `lookup` and so is not the one asking. Not keyed on the request: every
+  // path through the effect writes it, and the one path that does not run
+  // (no `box`) renders "loading…" over any list that could read it.
   const [jumpAsk, setJumpAsk] = useState<'asking' | 'failed' | null>(null)
   // a deliberate retry, as in the list: nothing re-asks on its own
   const [askAgain, setAskAgain] = useState(0)
-  // ⚠ A REQUEST IS SUPERSEDED ONLY BY A NEWER REQUEST. Held in a ref, not in
-  // the effect's closure: `box` is in the deps and the poll replaces it every
-  // few seconds, so an effect-scoped cancel killed any answer slower than one
-  // poll tick — and the re-run then returned early on the latch below, so the
-  // question was dropped with nothing said. Unmount clears it.
+  // ⚠ THE LIVE REQUEST, AND THE ONLY THING ALLOWED TO ANSWER. In a ref rather
+  // than the effect's closure: `box` is in the deps and the poll replaces it
+  // every few seconds, so an effect-scoped cancel abandons any answer slower
+  // than one tick. Superseded by a NEWER REQUEST or by unmount, never by a
+  // re-run of the same one.
   const askKey = useRef<string | null>(null)
   useEffect(() => () => { askKey.current = null }, [])
   useEffect(() => {
     // a retry is a new attempt at the same request: it must pass the latch
     const req = jumpKey(jumpTo, jumpSeq) + '#' + askAgain
-    if (!jumpTo || !box || foldedJump.current === req) return
+    if (foldedJump.current === req) return
+    // ⚠ THE CLAIM IS STAKED BEFORE ANYTHING IS DECIDED ABOUT THE NEW REQUEST,
+    // because the branches below RETURN. A target already in a loaded list
+    // needs no question of its own, and staking the claim after those returns
+    // leaves the previous question live to answer over the top of it.
+    askKey.current = req
+    setJumpAsk(null)
+    if (!jumpTo || !box) return
     foldedJump.current = req
     const here = (rows: MailRow[] | undefined) =>
       (rows ?? []).some((m) => m.id === jumpTo)
-    const at = (f: string) => { setFolder(f); setJumpAsk(null) }
-    if (here(box.delivered) || here(box.pending)) { at('inbox'); return }
-    if (here(box.sent)) { at('sent'); return }
+    if (here(box.delivered) || here(box.pending)) { setFolder('inbox'); return }
+    if (here(box.sent)) { setFolder('sent'); return }
     // ⚠ IN NEITHER LOADED LIST: THE PANEL ASKS, not the list. A list knows
     // only that the id is missing from ITS window, so the Sent list would ask
     // for a message the inbox list is holding and pull the reader out of the
     // folder they chose. The answer's folder is decided here:
     // `@mail:org/node/<nid>/<id>` names that node's RECEIVED mail.
-    askKey.current = req
     setJumpAsk('asking')
     Promise.resolve(nodeLookup(jumpTo))
       .then((m) => {
