@@ -10574,7 +10574,7 @@ class Org:
             status = status or "in_progress"
             if status in self.WORK_CLOSED:
                 raise LedgerError("reopen needs an open status "
-                                  "(open|in_progress|blocked|review)")
+                                  "(open|in_progress|blocked|waiting|review)")
             if phys:
                 self._work_archive().remove(it)
                 self.d.setdefault("work_items", []).append(it)

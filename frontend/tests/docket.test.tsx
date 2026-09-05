@@ -4,6 +4,8 @@ import { flush, inAct, mountView, realClock, useFakeClock } from './harness'
 import test from 'node:test'
 import type { TestContext } from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import path from 'node:path'
 import { DocketModal, DocketToolbarButton } from '../src/canvas/docket'
 import { InboxPanel, SenderChip } from '../src/App'
 import { NodeInboxModal, OrgInboxModal } from '../src/canvas/mail'
@@ -1523,3 +1525,127 @@ uiTest('§34 the attention reason keeps every line the user is asked to read',
     await flush()
     assert.equal(pane(el)?.querySelector('.docket-attention-box'), null)
   })
+
+
+uiTest('§35 a Waiting item has its own group, below what somebody can act on today', async (mount) => {
+  mockWorkItems([
+    mkItem({ title: 'Blocked One', status: 'blocked' }),
+    mkItem({ title: 'Moving One', status: 'in_progress' }),
+    mkItem({ title: 'Reviewed One', status: 'review' }),
+    mkItem({ title: 'Open One', status: 'open' }),
+    mkItem({ title: 'Waiting One', status: 'waiting',
+      waiting_reason: 'the nightly build finishes; the watchdog mails me' }),
+  ], [], undefined, [
+    mkItem({ title: 'Backlog One', status: 'backlogged' }),
+  ])
+  forgetGroupChoice()
+  const { el } = await mount(docketModal())
+  await flush()
+  await inAct(() => showBacklogBox(el).click())
+  await flush()
+  await chooseGroup(el, 'status')
+
+  // the whole point of the order: waiting sits below every state somebody can
+  // act on today and above the backlog. An unknown status would fall into
+  // "Other closed" instead, which is what this pins down.
+  assert.deepEqual(headings(el), ['Blocked', 'In progress', 'Agent review',
+    'Open', 'Waiting on an event', 'Backlogged — not yet approached'])
+  assert.deepEqual(titles(el), ['Blocked One', 'Moving One', 'Reviewed One',
+    'Open One', 'Waiting One', 'Backlog One'])
+
+  // it is ACTIVE work: it is in the main list, and the toolbar counts it
+  const waiting = rows(el)[4]!
+  assert.ok(waiting.querySelector('.docket-status.status-waiting'),
+    'the status word carries its own class, as every other status does')
+  assert.equal(waiting.querySelector('.docket-status')?.textContent, 'Waiting')
+  assert.ok(waiting.querySelector('.docket-dot.status-waiting'),
+    'and so does the dot, or it cannot be coloured')
+})
+
+uiTest('§36 the pane explains the state the item is IN, never a leftover one', async (mount) => {
+  const REASON = 'the nightly build finishes; the build watchdog mails me'
+  const BLOCK = 'the vendor has not sent the key; their support can send it'
+  mockWorkItems([
+    // ⚠ BOTH fields populated on purpose. The backend clears the one that does
+    // not belong, so this shape should never reach the pane — which is exactly
+    // why the pane must choose by STATUS and not by "whichever field is set".
+    // Choosing by populated field passes every test that plants only one.
+    mkItem({ title: 'Waiting Both', status: 'waiting',
+      waiting_reason: REASON, blocked_reason: BLOCK }),
+    mkItem({ title: 'Blocked Both', status: 'blocked',
+      waiting_reason: REASON, blocked_reason: BLOCK }),
+    mkItem({ title: 'Moving Both', status: 'in_progress',
+      waiting_reason: REASON, blocked_reason: BLOCK }),
+    mkItem({ title: 'Waiting Silent', status: 'waiting' }),
+  ])
+  forgetGroupChoice()
+  const { el } = await mount(docketModal())
+  await flush()
+  // BY TITLE, never by index: the grouping mode is a PERSISTED preference,
+  // so an index here silently follows whatever the previous test chose
+  const rowFor = (t: string) => rows(el)[titles(el).indexOf(t)] as HTMLElement
+  const stateBox = () => [...(pane(el)?.querySelectorAll('.docket-desc') ?? [])]
+    .find((d) => /BLOCKED BECAUSE|WAITING FOR/.test(d.textContent ?? ''))
+
+  await inAct(() => rowFor('Waiting Both').click())
+  await flush()
+  assert.match(stateBox()?.textContent ?? '', /WAITING FOR/)
+  assert.match(stateBox()?.textContent ?? '', /build watchdog mails me/)
+  assert.ok(!(stateBox()?.textContent ?? '').includes(BLOCK),
+    'the stale blocked reason is not rendered beside a waiting item')
+
+  await inAct(() => rowFor('Blocked Both').click())
+  await flush()
+  assert.match(stateBox()?.textContent ?? '', /BLOCKED BECAUSE/)
+  assert.match(stateBox()?.textContent ?? '', /their support can send it/)
+  assert.ok(!(stateBox()?.textContent ?? '').includes(REASON),
+    'and the stale waiting reason is not rendered beside a blocked item')
+
+  // CONTROL: a state that owes nothing draws no box at all, so the two
+  // assertions above are about the choice and not about a box always present
+  await inAct(() => rowFor('Moving Both').click())
+  await flush()
+  assert.equal(stateBox(), undefined)
+
+  // an item that entered the state before the rule says so rather than
+  // rendering an empty heading
+  await inAct(() => rowFor('Waiting Silent').click())
+  await flush()
+  assert.match(stateBox()?.textContent ?? '', /WAITING FOR/)
+  assert.match(stateBox()?.textContent ?? '', /before the rule/)
+})
+
+
+// ------------------------------------------------------- the status palette
+// jsdom loads no stylesheet, so the rule is read back from the file the app
+// ships — the same way agentstray.test.tsx checks the tray's height.
+declare const __SRC_DIR__: string
+const DOCKET_CSS = readFileSync(path.join(__SRC_DIR__, 'styles.css'), 'utf8')
+
+/** the palette token a selector paints with, or null if it has no rule */
+const paintOf = (selector: string, prop: string): string | null => {
+  const esc = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const m = new RegExp(esc + String.raw`\s*\{([^}]*)\}`).exec(DOCKET_CSS)
+  if (!m) return null
+  return new RegExp(prop + String.raw`:\s*var\((--[\w-]+)\)`).exec(m[1]!)?.[1] ?? null
+}
+
+test('§37 every agent-settable status is painted, and no two share a colour', () => {
+  // the property is not "waiting has a rule" but "waiting can be told apart":
+  // a rule that reuses --ink would render it identically to `open`, which is
+  // what the status word and the dot are there to prevent
+  const STATUSES = ['open', 'in_progress', 'blocked', 'waiting', 'review',
+    'backlogged']
+  const words = new Map<string, string>()
+  for (const st of STATUSES) {
+    const word = paintOf(`.docket-status.status-${st}`, 'color')
+    assert.ok(word, `no colour for the status word of "${st}"`)
+    assert.ok(paintOf(`.docket-row .l1 .docket-dot.status-${st}`, 'background')
+      // `open` is the resting state and its dot deliberately inherits --line
+      || st === 'open', `no colour for the status dot of "${st}"`)
+    const clash = [...words].find(([, v]) => v === word)
+    assert.ok(!clash, `"${st}" and "${clash?.[0]}" both paint with ${word} — `
+      + 'two states the user cannot tell apart')
+    words.set(st, word!)
+  }
+})

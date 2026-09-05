@@ -854,8 +854,51 @@ def one_wake_carries_both_kinds_of_work() -> None:
         park(slug)
 
 
+def a_retired_reviewer_says_so_in_the_row() -> None:
+    """The row the OWNER reads when the reviewer it named has been retired.
+
+    The resolver hands the item back (that is checked at the ledger level);
+    what is checked HERE is the sentence, because the sentence is the whole
+    point of handing it back. Without it the row reads exactly like an
+    ordinary owned item and the owner is nudged about somebody else's dead
+    review with no way to tell what it wants.
+    """
+    slug, _nid = fixture("zz-rem-staleroles", peers=("peer",))
+    calls: list[tuple[str, str, str]] = []
+    try:
+        wid = add_item(slug, "Charlie awaits agent review", status="review",
+                       reviewer="peer")
+        own = add_item(slug, "Alpha is mine", status="in_progress")
+        # CONTROL, while the reviewer is still live: it is the REVIEWER's row,
+        # the owner is not told about it, and the wording is the live one
+        stamp(slug, "peer", BASE)
+        fire(slug, DUE, calls, nid="peer")
+        assert f"- {wid} (review — awaiting YOUR review): " \
+            in reminders(slug, "peer")[0]["body"]
+        assert wid not in reminders(slug, "agent")[0]["body"]
+
+        ledger_do(slug, lambda org: org.retire(USER, "peer"))
+        park(slug)
+        # PAST THE COOLDOWN: the first sweep stamped `docket_reminder_at`, and
+        # that stamp is part of the idle anchor, so a second wake needs another
+        # whole interval — firing at DUE + 1 would test the rate limit instead
+        fire(slug, DUE + S.IDLE_DOCKET_REMINDER_AFTER_S + 1, calls)
+        body = reminders(slug, "agent")[-1]["body"]
+        assert f"- {wid} (review — its named reviewer is no longer live: " \
+            f"name another, do not review your own work): " in body, body
+        # and the ordinary row beside it is untouched: the suffix belongs to
+        # the role, not to the reminder
+        assert f"- {own} (in_progress): Alpha is mine" in body, body
+    finally:
+        park(slug, "peer")
+        park(slug)
+
+
 check("a review item is gated by the REVIEWER's idle clock",
       the_reviewer_clock_decides_a_review_item)
+check("a retired reviewer's row TELLS THE OWNER SO, in words "
+      "(control: the live wording, on the reviewer's own row)",
+      a_retired_reviewer_says_so_in_the_row)
 check("an idle owner is not woken for an item under somebody else's review "
       "(control: its own work still fires)", the_owners_clock_does_not_decide_it)
 check("own work and a review arrive in one wake, each row saying which",

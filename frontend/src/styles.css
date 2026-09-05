@@ -2956,6 +2956,13 @@ main.solo { width: 100%; }
 .docket-status.status-in_progress { color: var(--work); }
 .docket-status.status-blocked { color: var(--bad); }
 .docket-status.status-review { color: var(--review); }
+/* `waiting` takes --warn, the band that already marks PENDING things. Not
+   because waiting is a fault — it is healthy work — but because every other
+   declared token is either taken by another docket status (--work, --bad,
+   --review, --backlog, --ok, --dim) or too near one to tell apart, and a
+   status you cannot distinguish from `open` is not styled at all. Amber sits
+   clear of sky, red, violet, teal, green and grey. */
+.docket-status.status-waiting { color: var(--warn); }
 .docket-status.status-backlogged { color: var(--backlog); }
 .docket-status.status-done { color: var(--ok); }
 .docket-status.status-superseded, .docket-status.status-dropped { color: var(--dim); }
@@ -2993,6 +3000,7 @@ main.solo { width: 100%; }
 .docket-row .l1 .docket-dot.status-in_progress { background: var(--work); }
 .docket-row .l1 .docket-dot.status-blocked { background: var(--bad); }
 .docket-row .l1 .docket-dot.status-review { background: var(--review); }
+.docket-row .l1 .docket-dot.status-waiting { background: var(--warn); }
 .docket-row .l1 .docket-dot.status-backlogged { background: var(--backlog); }
 .docket-row .l1 .docket-dot.status-done { background: var(--ok); }
 .docket-row .l1 .docket-dot.status-superseded,

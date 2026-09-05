@@ -91,9 +91,13 @@ The rules are the same for both, and they are three separate rules:
   No other status requires anything.
 * **Already** in the state, field not supplied: left alone. Items written
   before this requirement stay editable rather than becoming un-updatable.
-* A **blank** string is refused, never stored: blanking used to erase the field
-  silently, and erasing required information without a word is the failure the
-  requirement exists to stop.
+* A **blank** string is refused, never stored, **while the item is in that
+  state**: blanking used to erase the field silently, and erasing required
+  information without a word is the failure the requirement exists to stop.
+  A blank sent for the *other* state — a `waiting_reason` on a blocked item —
+  is ignored along with the field itself, which is cleared for every state it
+  does not belong to anyway. The refusal guards a live reason; it is not a
+  validation of the argument in the abstract.
 
 The field is cleared whenever the item leaves the state, so a reason never
 survives the state it describes. The user's own dismissal of an attention flag
