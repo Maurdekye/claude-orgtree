@@ -1066,9 +1066,8 @@ def render_md(art: dict[str, Any], *, include_selected: bool = True) -> str:
     out.append("\n## Omitted (by rule)")
     for o in rec["omissions"]:
         out.append(f"- {o['kind']}: {o['count']}" + (f" {o['ids']}" if o.get("ids") else ""))
-    # FILE ONLY. Last, so a long section costs a long record nothing before the
-    # HANDOFF_HEAD cut — and absent entirely when this render is the prompt's,
-    # because position alone does not keep a SHORT record's section out of it.
+    # FILE ONLY: the prompt's render leaves this out entirely (see
+    # `prompt_projection`); its position in the file is a reading order.
     if include_selected:
         out.append("\n" + render_selected(rec.get("selected_history") or []).rstrip("\n"))
     tr = inp["transcript"]
