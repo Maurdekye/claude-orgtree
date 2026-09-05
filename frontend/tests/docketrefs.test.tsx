@@ -146,12 +146,26 @@ const mkTree = (): TreePayload => ({
   user_inbox_count: 0, user_inbox_urgent_count: 0, asks: [], asks_open: 0,
 } as unknown as TreePayload)
 
-interface Served { items: WorkItem[]; archived: WorkItem[]; backlogged: WorkItem[] }
+/** what the document endpoint does for one id. `'never'` is the IN-FLIGHT
+ *  case — a promise that never settles — which is the only way to hold the
+ *  reader in its loading state long enough to assert on it. */
+type DocReply = { title: string; node: string; body: string; at: string }
+  | { error: string } | 'never'
+
+interface Served {
+  items: WorkItem[]; archived: WorkItem[]; backlogged: WorkItem[]
+  /** id → reply. An id that is not here 404s, which is what the real backend
+   *  does for a document this org does not have. */
+  docs?: Record<string, DocReply>
+}
 
 /** records every work-items URL, so "was the group even asked for" is a fact
- *  this suite can assert rather than assume */
+ *  this suite can assert rather than assume — and every DOCUMENT url, so
+ *  "it fetched the id the token named" is a fact too, rather than "a reader
+ *  appeared". */
 function mockServer(s: Served) {
   const urls: string[] = []
+  const docUrls: string[] = []
   ;(globalThis as unknown as { fetch: typeof fetch }).fetch =
     ((url: string) => {
       const path = String(url)
@@ -159,6 +173,21 @@ function mockServer(s: Served) {
         ok: true, status: 200, headers: new Headers(),
         json: () => Promise.resolve(payload),
       })
+      if (path.includes('/documents/')) {
+        docUrls.push(path)
+        const id = path.split('/').pop() as string
+        const reply = s.docs?.[id]
+        if (reply === 'never') return new Promise(() => {})
+        if (!reply || 'error' in reply) {
+          return Promise.resolve({
+            ok: false, status: 404, headers: new Headers(),
+            statusText: 'Not Found',
+            json: () => Promise.resolve({
+              detail: reply ? reply.error : 'no such document' }),
+          })
+        }
+        return ok({ id, ...reply })
+      }
       if (path.includes('/work-items')) {
         urls.push(path)
         return ok({
@@ -174,7 +203,7 @@ function mockServer(s: Served) {
       }
       return ok({})
     }) as unknown as typeof fetch
-  return urls
+  return Object.assign(urls, { docUrls })
 }
 
 function uiTest(name: string, body: (mount: (v: React.ReactElement)
@@ -661,13 +690,17 @@ uiTest('§26 CONTROL — a token naming an item this org does not have is marked
     assert.match(chip!.textContent!, /@item:org1\/never-existed/)
   })
 
-uiTest('§27 CONTROL — a document reference is "not from here", which is NOT '
-  + 'the same claim as "does not exist"', async (mount) => {
-    // the docket owns no document reader. Judging @doc against the item index
-    // it does have would report a perfectly real document as missing.
+uiTest('§27 CONTROL — a mail reference with nowhere to open it is "not from '
+  + 'here", which is NOT the same claim as "does not exist"', async (mount) => {
+    // ⚠ THIS USED TO BE THE @doc CASE. Documents now open here (§28), so the
+    // check moved to the kind that still has no opener rather than being
+    // deleted: the DISTINCTION is the thing worth guarding, not the example.
+    // Mounted WITHOUT `onOpenMail`, so nothing here could open a mailbox, and
+    // judging the token against the item index would report a real message as
+    // missing.
     mockServer({
       items: [mkItem({ slug: 'the-source-item',
-        objective: 'the contract is @doc:org1/d1 and the item is '
+        objective: 'as agreed in @mail:org1/user/m1 and the item is '
           + '@item:org1/never-existed' })],
       archived: [], backlogged: [],
     })
@@ -675,14 +708,207 @@ uiTest('§27 CONTROL — a document reference is "not from here", which is NOT '
     await flush()
     await inAct(() => (rows(el)[0] as HTMLElement).click())
     await flush()
-    const doc = el.querySelector('.docket-desc .ref-chip.ref-doc')
+    const mail = el.querySelector('.docket-desc .ref-chip.ref-mail')
     const item = el.querySelector('.docket-desc .ref-chip.ref-item')
-    assert.ok(doc && item, 'both references rendered')
+    assert.ok(mail && item, 'both references rendered')
     // ⚠ THE TWO MUST NOT AGREE. Same panel, same prose, two different truths:
-    // the item is genuinely absent, the document is merely not openable here.
-    assert.ok(doc!.classList.contains('ref-elsewhere'),
-      'a document is reported as not openable from this panel')
+    // the item is genuinely absent, the message is merely not openable here.
+    assert.ok(mail!.classList.contains('ref-elsewhere'),
+      'a mail reference is reported as not openable from this panel')
     assert.ok(item!.classList.contains('ref-absent'),
       'an item this org does not have is reported absent')
-    assert.doesNotMatch(doc!.getAttribute('title') ?? '', /no document named/)
+    assert.doesNotMatch(mail!.getAttribute('title') ?? '', /no mail named/)
+  })
+
+// ------------------------------- §28-§32: the openers the panel now owns
+//
+// `elsewhere` was always an interim answer, not the destination (Astra
+// 2026-09-05): a reference the reader cannot follow is half a feature. Two
+// kinds got openers, and they got them in DIFFERENT WAYS, which is the part
+// worth reading. The document reader is rendered by this panel, so `doc` is
+// handled unconditionally. Mail is not — the three mailboxes are three other
+// panels — so `mail` is handled only when a caller hands down the route, and
+// the chip follows the callback rather than a hard-coded list.
+
+uiTest('§28 a @doc token opens the reader, on the id the token named',
+  async (mount) => {
+    const served = mockServer({
+      items: [mkItem({ slug: 'the-source-item',
+        objective: 'the contract is @doc:org1/d1' })],
+      archived: [], backlogged: [],
+      docs: { d1: { title: 'The contract', node: 'agent1',
+        body: 'body of the contract', at: '2026-09-05T09:00:00.000Z' } },
+    })
+    const el = await mount(modal())
+    await flush()
+    await inAct(() => (rows(el)[0] as HTMLElement).click())
+    await flush()
+    const chip = el.querySelector('.docket-desc button.ref-chip.ref-doc')
+    assert.ok(chip, 'the document token is a live control, not an inert chip')
+    assert.equal(el.querySelector('.doc-reader'), null,
+      'and nothing is open before it is clicked')
+
+    await inAct(() => (chip as HTMLElement).click())
+    await flush()
+    const reader = el.querySelector('.doc-reader')
+    assert.ok(reader, 'clicking the reference opened the document reader')
+    assert.match(reader!.textContent ?? '', /The contract/)
+    assert.match(reader!.querySelector('.doc-reader-body')?.textContent ?? '',
+      /body of the contract/)
+    // ⚠ THE EXACT GET, NOT "a reader appeared". One request, for THAT id —
+    // the whole reason this panel may open documents without holding a list
+    // of them is that the fetch itself is the lookup.
+    assert.deepEqual(served.docUrls.map((u) => u.split('/').pop()), ['d1'])
+  })
+
+uiTest('§29 CONTROL — a document this org does not have is reported BY THE '
+  + 'READER, and the docket still never calls it absent', async (mount) => {
+    const served = mockServer({
+      items: [mkItem({ slug: 'the-source-item',
+        objective: 'the contract is @doc:org1/gone' })],
+      archived: [], backlogged: [],
+      docs: {},   // every id 404s
+    })
+    const el = await mount(modal())
+    await flush()
+    await inAct(() => (rows(el)[0] as HTMLElement).click())
+    await flush()
+    const chip = el.querySelector('.docket-desc button.ref-chip.ref-doc')
+    // the chip is live BEFORE the fetch, and that is correct: this panel holds
+    // no document list, so the only honest way to find out is to ask
+    assert.ok(chip, 'the reference is offered')
+    await inAct(() => (chip as HTMLElement).click())
+    await flush()
+    assert.ok(el.querySelector('.doc-reader'), 'the reader opened')
+    assert.match(el.querySelector('.doc-reader .ask-warn')?.textContent ?? '',
+      /could not load the document/,
+      'the failure is stated where the user asked the question')
+    assert.deepEqual(served.docUrls.map((u) => u.split('/').pop()), ['gone'])
+    // ⚠ AND THE CHIP DID NOT CHANGE ITS STORY. A panel that flipped the
+    // reference to "unavailable" after a failed read would be claiming the
+    // authority it deliberately does not have — the document is missing to
+    // THIS fetch, which the reader says, in the reader.
+    assert.equal(el.querySelector('.docket-desc .ref-chip.ref-absent'), null)
+  })
+
+uiTest('§30 CONTROL — while the fetch is in flight the reader says nothing '
+  + 'about whether the document exists', async (mount) => {
+    mockServer({
+      items: [mkItem({ slug: 'the-source-item',
+        objective: 'the contract is @doc:org1/slow' })],
+      archived: [], backlogged: [],
+      docs: { slow: 'never' },
+    })
+    const el = await mount(modal())
+    await flush()
+    await inAct(() => (rows(el)[0] as HTMLElement).click())
+    await flush()
+    await inAct(() => (el.querySelector(
+      '.docket-desc button.ref-chip.ref-doc') as HTMLElement).click())
+    await flush()
+    // ⚠ THE POSITIVE HALF FIRST, or this passes for the boring reason: the
+    // reader must be MOUNTED. "No error message" is free if nothing is open.
+    assert.ok(el.querySelector('.doc-reader'), 'the reader is open')
+    assert.equal(el.querySelector('.doc-reader .ask-warn'), null,
+      'a pending read is not a missing document')
+    assert.equal(el.querySelector('.doc-reader .doc-reader-body'), null,
+      'and no body is claimed either')
+  })
+
+uiTest('§31 Escape closes the reader and LEAVES THE DOCKET OPEN', async (mount) => {
+    let closed = 0
+    mockServer({
+      items: [mkItem({ slug: 'the-source-item',
+        objective: 'the contract is @doc:org1/d1' })],
+      archived: [], backlogged: [],
+      docs: { d1: { title: 'The contract', node: 'agent1', body: 'b',
+        at: '2026-09-05T09:00:00.000Z' } },
+    })
+    const el = await mount(
+      <DocketModal slug="org1" toast={() => {}} close={() => { closed += 1 }}
+        tree={mkTree()} />)
+    await flush()
+    await inAct(() => (rows(el)[0] as HTMLElement).click())
+    await flush()
+    await inAct(() => (el.querySelector(
+      '.docket-desc button.ref-chip.ref-doc') as HTMLElement).click())
+    await flush()
+    assert.ok(el.querySelector('.doc-reader'), 'the reader is open')
+
+    await inAct(() => {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+    })
+    await flush()
+    assert.equal(el.querySelector('.doc-reader'), null, 'the reader closed')
+    assert.equal(closed, 0,
+      'and the panel the user was reading from is still there')
+
+    // ⚠ THE CONTROL: the docket's own Escape is still armed. Without this the
+    // assertion above passes just as well for a handler that was torn off and
+    // never restored.
+    await inAct(() => {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+    })
+    await flush()
+    assert.equal(closed, 1, 'a second Escape closes the docket')
+  })
+
+uiTest('§31b clicking the READER\'S backdrop closes the reader and leaves the '
+  + 'docket open', async (mount) => {
+    // ⚠ THE SAME FAILURE AS §31, THROUGH THE OTHER EXIT. The docket's own
+    // backdrop closes it on click, so a reader rendered INSIDE that backdrop
+    // hands every dismissal straight up to it: one click, two panels gone.
+    let closed = 0
+    mockServer({
+      items: [mkItem({ slug: 'the-source-item',
+        objective: 'the contract is @doc:org1/d1' })],
+      archived: [], backlogged: [],
+      docs: { d1: { title: 'The contract', node: 'agent1', body: 'b',
+        at: '2026-09-05T09:00:00.000Z' } },
+    })
+    const el = await mount(
+      <DocketModal slug="org1" toast={() => {}} close={() => { closed += 1 }}
+        tree={mkTree()} />)
+    await flush()
+    await inAct(() => (rows(el)[0] as HTMLElement).click())
+    await flush()
+    await inAct(() => (el.querySelector(
+      '.docket-desc button.ref-chip.ref-doc') as HTMLElement).click())
+    await flush()
+    const back = el.querySelector('.doc-reader')?.parentElement
+    assert.ok(back?.classList.contains('overlay'), 'the reader has a backdrop')
+
+    await inAct(() => (back as HTMLElement).click())
+    await flush()
+    assert.equal(el.querySelector('.doc-reader'), null, 'the reader closed')
+    assert.equal(closed, 0, 'and the docket did not close with it')
+
+    // CONTROL — the docket's own backdrop still closes the docket, so the
+    // assertion above is not passing because backdrop dismissal broke.
+    await inAct(() => (el.querySelector('.overlay') as HTMLElement).click())
+    await flush()
+    assert.equal(closed, 1, 'the docket backdrop still closes the docket')
+  })
+
+uiTest('§32 a mail reference is opened by the caller that owns a mailbox, and '
+  + 'only when one is wired up', async (mount) => {
+    const opened: unknown[] = []
+    mockServer({
+      items: [mkItem({ slug: 'the-source-item',
+        objective: 'as agreed in @mail:org1/node/agent1/m7' })],
+      archived: [], backlogged: [],
+    })
+    const el = await mount(
+      <DocketModal slug="org1" toast={() => {}} close={() => {}}
+        tree={mkTree()} onOpenMail={(r) => opened.push(r)} />)
+    await flush()
+    await inAct(() => (rows(el)[0] as HTMLElement).click())
+    await flush()
+    const chip = el.querySelector('.docket-desc button.ref-chip.ref-mail')
+    assert.ok(chip, 'with a route wired up the reference is a live control')
+    await inAct(() => (chip as HTMLElement).click())
+    await flush()
+    // the PARSED reference, not the token: the caller has to know which box
+    assert.deepEqual(opened, [
+      { kind: 'mail', org: 'org1', box: 'node', node: 'agent1', id: 'm7' }])
   })

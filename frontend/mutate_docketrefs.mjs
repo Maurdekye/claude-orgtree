@@ -274,24 +274,98 @@ const MUTANTS = [
   {
     name: 'the panel claims it can open every kind, including ones it cannot',
     file: DOCKET, kills: '§27 CONTROL',
-    from: `    handles: new Set<'item' | 'agent'>(['item', 'agent']),`,
-    to: `    handles: undefined,`,
+    from: `      handles,
+    }
+  }, [slug, data, allKnown, facts, onOpenMail])`,
+    to: `      handles: undefined,
+    }
+  }, [slug, data, allKnown, facts, onOpenMail])`,
   },
   {
     // the `?? new Map()` shape, in the place it would really be written: an
     // index that has not arrived, treated as one that arrived empty.
     name: 'the item index stops being authoritative in this panel',
     file: DOCKET, kills: '§25 a canonical',
-    from: `    items: data
-      ? new Map([...allKnown.keys()].map((s) => [s, s]))
-      : 'loading',`,
-    to: `    items: undefined,`,
+    from: `      items: data
+        ? new Map([...allKnown.keys()].map((s) => [s, s]))
+        : 'loading',`,
+    to: `      items: undefined,`,
   },
   {
     name: 'clicking a reference no longer selects the item it names',
     file: DOCKET, kills: '§25 a canonical',
     from: `    if (r.ref.kind === 'item') goToItem(r.ref.id)`,
     to: `    if (r.ref.kind === 'item') { /* no-op */ }`,
+  },
+
+  // ------------------------- the openers this panel gained (§28-§32)
+  {
+    name: 'the document arm of a reference click quietly does nothing',
+    file: DOCKET, kills: '§28 a @doc token',
+    from: `    else if (r.ref.kind === 'doc') setDocView(r.ref.id)`,
+    to: `    else if (r.ref.kind === 'doc') { /* no-op */ }`,
+  },
+  {
+    // THE ONE THE "a reader appeared" ASSERTION WOULD HAVE MISSED. §28 uses
+    // the id `d1`, so a reader hard-wired to `d1` satisfies it; §29 asks for
+    // `gone` and checks WHICH id was fetched, which is why that assertion is
+    // on the request and not on the chrome.
+    name: 'the reader opens a fixed document instead of the one named',
+    file: DOCKET, kills: '§29 CONTROL',
+    from: `    else if (r.ref.kind === 'doc') setDocView(r.ref.id)`,
+    to: `    else if (r.ref.kind === 'doc') setDocView('d1')`,
+  },
+  {
+    // the panel holds no document list; inventing an empty one turns every
+    // real document into "no document named … in this org"
+    name: 'the panel judges documents against a list it does not have',
+    file: DOCKET, kills: '§28 a @doc token',
+    from: `      agents: new Map([...facts.keys()].map((id) => [id, id])),`,
+    to: `      agents: new Map([...facts.keys()].map((id) => [id, id])),
+      docs: new Map(),`,
+  },
+  {
+    name: 'mail is advertised as openable whether or not a route was wired up',
+    file: DOCKET, kills: '§27 CONTROL',
+    from: `    if (onOpenMail) handles.add('mail')`,
+    to: `    handles.add('mail')`,
+  },
+  {
+    name: 'the mail arm drops the click on the floor',
+    file: DOCKET, kills: '§32 a mail reference',
+    from: `    else if (r.ref.kind === 'mail') onOpenMail?.(r.ref)`,
+    to: `    else if (r.ref.kind === 'mail') { /* no-op */ }`,
+  },
+  {
+    name: 'Escape closes the docket out from under the open reader',
+    file: DOCKET, kills: '§31 Escape closes the reader',
+    from: `  const escClose = useCallback(() => { if (!docView) close() }, [docView, close])`,
+    to: `  const escClose = useCallback(() => { close() }, [docView, close])`,
+  },
+  {
+    // the placement is the whole guard: inside the docket's backdrop, one
+    // click on the reader's backdrop dismisses both panels
+    name: 'the reader is rendered inside the docket\'s own backdrop',
+    file: DOCKET, kills: '§31b clicking',
+    from: `      </div>
+    </div>
+    {/* ⚠ A SIBLING, NOT A CHILD. Nested inside the docket's own \`.overlay\`,
+        a click on the reader's backdrop would bubble into the docket's
+        backdrop handler and close BOTH. As siblings the reader is simply the
+        later element at the same z-index, so it paints on top and keeps its
+        clicks to itself. */}
+    {docView && (
+      <DocReader slug={slug} docId={docView} toast={toast}
+        close={() => setDocView(null)} />
+    )}
+    </>`,
+    to: `      </div>
+      {docView && (
+        <DocReader slug={slug} docId={docView} toast={toast}
+          close={() => setDocView(null)} />
+      )}
+    </div>
+    </>`,
   },
 ]
 

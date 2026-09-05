@@ -31,6 +31,7 @@ import {
 } from '../api'
 import { CloseIcon, DocketIcon } from '../icons'
 import { AskCard } from './asks'
+import { DocReader } from './docs'
 import { AgentName } from './identity'
 import { MailReplyBox } from './mail'
 import { ago, useEsc, usePolled } from './shared'
@@ -38,6 +39,7 @@ import { buildMentionIndex } from './workrefs'
 import type { MentionIndex } from './workrefs'
 import { RefProse } from './reflinks'
 import type { RefWorld, ResolvedRef } from './reflinks'
+import type { RefKind, TypedRef } from './workrefs'
 
 // `review` is the AGENT check, not the user's (user ruling 2026-09-05)
 const REVIEW_HELP ='Review by agents — a request for you rides the attention flag or a question'
@@ -420,7 +422,7 @@ export function buildSections(mode: DocketGroupMode, active: WorkItem[],
 }
 
 export function DocketModal({ slug, toast, close, tree, onFocusAgent,
-  jumpTo, onJumpHandled }: {
+  jumpTo, onJumpHandled, onOpenMail }: {
   slug: string
   toast: ToastFn
   close: () => void
@@ -434,8 +436,31 @@ export function DocketModal({ slug, toast, close, tree, onFocusAgent,
    *  acted on (user 2026-09-05). Consumed once — see the effect below. */
   jumpTo?: string | null
   onJumpHandled?: () => void
+  /** open a mail reference somewhere that actually owns a mailbox. The docket
+   *  does not: the three boxes (the user's, the org's, a node's) are three
+   *  different panels, and only the shell above this one can route between
+   *  them.
+   *
+   *  ⚠ IT IS OPTIONAL, AND `handles` FOLLOWS IT. Absent, a mail token renders
+   *  "not from here" — which stays TRUE, because nothing here would open it.
+   *  Advertising mail unconditionally and then dropping the click on the floor
+   *  is the live-looking control that does nothing. */
+  onOpenMail?: (ref: TypedRef) => void
 }) {
-  useEsc(close)
+  // ⚠ ONE DOCUMENT READER, OPENED BY REFERENCE. A `@doc:` token in an item's
+  // prose used to say "not opened from this panel", which was honest but was
+  // never the destination — a reference the user cannot follow is half a
+  // feature (Astra 2026-09-05). The reader is `DocReader`, the same one the
+  // canvas chips open, so the fetch is the EXACT get by id: it distinguishes
+  // "still loading" from "no such document" by itself, which is precisely the
+  // judgement this panel cannot make on its own (it holds no document list).
+  const [docView, setDocView] = useState<string | null>(null)
+  // ⚠ ESCAPE BELONGS TO THE TOP-MOST THING ON SCREEN. Both listeners sit on
+  // `window`, so an unguarded Escape with the reader open closes the reader
+  // AND the docket underneath it — the user asked to back out of a document
+  // and lost the panel they were reading from.
+  const escClose = useCallback(() => { if (!docView) close() }, [docView, close])
+  useEsc(escClose)
   const [showArchived, setShowArchived] = useState(false)
   const [showBacklog, setShowBacklog] = useState(false)
   const [groupMode, setGroupMode] = useState<DocketGroupMode>(readGroupMode)
@@ -552,18 +577,30 @@ export function DocketModal({ slug, toast, close, tree, onFocusAgent,
   // empty map would report every real reference as missing for as long as the
   // fetch takes, which is exactly when the panel is being read.
   //
-  // ⚠ AND `handles` IS DELIBERATELY SHORT. The docket can jump to an item and
-  // focus an agent. It owns no mail reader and no document reader, so those
-  // two are reported "not opened from this panel" — a fact about this panel —
-  // rather than judged against an index it does not have and reported missing.
-  const refWorld = useMemo<RefWorld>(() => ({
-    org: slug,
-    items: data
-      ? new Map([...allKnown.keys()].map((s) => [s, s]))
-      : 'loading',
-    agents: new Map([...facts.keys()].map((id) => [id, id])),
-    handles: new Set<'item' | 'agent'>(['item', 'agent']),
-  }), [slug, data, allKnown, facts])
+  // ⚠ `handles` IS DERIVED FROM WHAT IS WIRED UP, NOT DECLARED. Items and
+  // agents are always openable here; a document is openable because this
+  // component now renders its own reader; mail is openable ONLY when a caller
+  // handed down `onOpenMail`. Written as a literal list it would drift the
+  // moment one of those callbacks was dropped from a call site, and the chip
+  // would keep advertising an opener that no longer exists.
+  //
+  // ⚠ AND `docs` STAYS UNSET ON PURPOSE. This panel holds no document list, so
+  // it must not judge one: `undefined` means "do not judge — the destination
+  // will", and the destination is the reader below, which reports "could not
+  // load the document: …" from the exact GET. An empty Map here would call
+  // every real document missing.
+  const refWorld = useMemo<RefWorld>(() => {
+    const handles = new Set<RefKind>(['item', 'agent', 'doc'])
+    if (onOpenMail) handles.add('mail')
+    return {
+      org: slug,
+      items: data
+        ? new Map([...allKnown.keys()].map((s) => [s, s]))
+        : 'loading',
+      agents: new Map([...facts.keys()].map((id) => [id, id])),
+      handles,
+    }
+  }, [slug, data, allKnown, facts, onOpenMail])
   const [flash, setFlash] = useState<string | null>(null)
   const rows = useRef(new Map<string, HTMLDivElement>())
   // COLLAPSE IS OPT-IN. Everything starts expanded, because a docket that
@@ -603,14 +640,19 @@ export function DocketModal({ slug, toast, close, tree, onFocusAgent,
     setFlash(id)
   }, [allKnown, slug])
 
-  /** a canonical reference clicked. ONLY the two kinds `refWorld.handles`
-   *  admits can arrive here — anything else was rendered inert and never
-   *  became a button — but the switch is exhaustive anyway, because a silent
-   *  no-op is how a control ends up looking live and doing nothing. */
+  /** a canonical reference clicked. ONLY the kinds `refWorld.handles` admits
+   *  can arrive here — anything else was rendered inert and never became a
+   *  button — but the switch is exhaustive anyway, because a silent no-op is
+   *  how a control ends up looking live and doing nothing.
+   *
+   *  ⚠ THE `mail` ARM IS GUARDED BY THE SAME CALLBACK THAT PUT `mail` IN
+   *  `handles`, so the two cannot disagree: no callback, no chip, no arm. */
   const openRef = useCallback((r: ResolvedRef) => {
     if (r.ref.kind === 'item') goToItem(r.ref.id)
     else if (r.ref.kind === 'agent') onFocusAgent?.(r.ref.id)
-  }, [goToItem, onFocusAgent])
+    else if (r.ref.kind === 'doc') setDocView(r.ref.id)
+    else if (r.ref.kind === 'mail') onOpenMail?.(r.ref)
+  }, [goToItem, onFocusAgent, onOpenMail])
 
   // the flash is a hint, not a state: it clears itself and never survives to
   // confuse the next visit
@@ -660,6 +702,7 @@ export function DocketModal({ slug, toast, close, tree, onFocusAgent,
   const pickGroup = (m: DocketGroupMode) => { setGroupMode(m); writeGroupMode(m) }
 
   return (
+    <>
     <div className="overlay" onClick={(e) => { e.stopPropagation(); close() }}
       onPointerDown={(e) => e.stopPropagation()}>
       <div className="settings wide docket-modal" onClick={(e) => e.stopPropagation()}>
@@ -765,6 +808,16 @@ export function DocketModal({ slug, toast, close, tree, onFocusAgent,
         <div className="docket-foot dim">Done items archive after 1 hour without an update.</div>
       </div>
     </div>
+    {/* ⚠ A SIBLING, NOT A CHILD. Nested inside the docket's own `.overlay`,
+        a click on the reader's backdrop would bubble into the docket's
+        backdrop handler and close BOTH. As siblings the reader is simply the
+        later element at the same z-index, so it paints on top and keeps its
+        clicks to itself. */}
+    {docView && (
+      <DocReader slug={slug} docId={docView} toast={toast}
+        close={() => setDocView(null)} />
+    )}
+    </>
   )
 }
 
