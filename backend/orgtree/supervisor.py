@@ -8655,32 +8655,39 @@ def _codex_journal(slug: str, sid: str, recs: list[dict[str, Any]]) -> None:
 _CODEX_PLAN_STATUS: Final = {"pending": "pending", "inProgress": "in_progress",
                              "completed": "completed"}
 
-#: generous — real steps are one-line phrases — but explicit rather than
-#: unbounded: a runaway or hostile step string must not become an unbounded
-#: journal line. Review finding (2026-09-05): this used to cut silently;
-#: `_codex_plan_steps` now says so on the step itself instead.
-_PLAN_STEP_CAP: Final = 2000
+def _codex_plan_steps(raw: list[Any]) -> list[dict[str, str]] | None:
+    """Normalize an ALREADY-LIST-CHECKED `turn/plan/updated` `plan` array
+    (the caller, `_apply_plan`, has confirmed `raw` really is a list — see
+    its own docstring for why that check cannot live here) — or `None` if
+    ANY element in it is not a valid step.
 
+    ⚠ REJECT THE WHOLE ARRAY ON ONE BAD ELEMENT; DO NOT DROP JUST THAT ONE
+    (review finding, 2026-09-05). The first cut here silently skipped a
+    non-dict entry (`continue`), so `plan: [null]` — a well-typed OUTER
+    array, per `_apply_plan`'s own `isinstance(raw_plan, list)` check, with
+    one garbled element — degraded to `[]` and landed as the model's own
+    explicit CLEAR. That is the exact conflation `_apply_plan`'s docstring
+    already rejects for a missing `plan` field entirely; one bad element
+    deep inside a technically-a-list value is the same kind of malformed
+    notification, not a checklist the model chose to empty. Text is kept
+    WHOLE, uncapped — no measured reason has ever required a length limit
+    here, and inventing one just to guard against a hypothetical is exactly
+    the kind of self-inflicted defect this codebase's other comments warn
+    about elsewhere.
 
-def _codex_plan_steps(raw: list[Any]) -> list[dict[str, Any]]:
-    """Normalize an ALREADY-VALIDATED `turn/plan/updated` `plan` array (the
-    caller, `_apply_plan`, has confirmed `raw` really is a list — see its own
-    docstring for why that check cannot live here). Each step degrades
-    field-by-field rather than being dropped: an unrecognized status is still
-    a step the operator should see (same posture as `_occ_record`), and an
-    over-long one is kept, just flagged — never silently cut with no trace."""
-    out: list[dict[str, Any]] = []
+    Status is the one field that still degrades PER-ELEMENT rather than
+    failing the whole array: an unrecognized status is still a real step
+    the operator should see (same posture as `_occ_record`), and conflating
+    "a status this schema version does not define yet" with "this
+    notification is garbled" would be exactly backwards — deliberately kept
+    distinct from the whole-snapshot rejection above."""
+    out: list[dict[str, str]] = []
     for s in raw:
-        if not isinstance(s, dict):
-            continue
-        text = str(s.get("step") or "")
-        step: dict[str, Any] = {
-            "step": text[:_PLAN_STEP_CAP],
-            "status": _CODEX_PLAN_STATUS.get(str(s.get("status") or ""),
-                                             "pending")}
-        if len(text) > _PLAN_STEP_CAP:
-            step["truncated"] = True
-        out.append(step)
+        if not isinstance(s, dict) or not isinstance(s.get("step"), str):
+            return None
+        out.append({"step": s["step"],
+                    "status": _CODEX_PLAN_STATUS.get(
+                        str(s.get("status") or ""), "pending")})
     return out
 
 
@@ -9729,18 +9736,26 @@ def _codex_leg_attempt(slug: str, nid: str, org: Org, st: dict[str, Any],
         model cleared its checklist" with "this notification is garbled",
         when the acceptance criteria draws that line as the whole point of
         the clearing case. Both a missing identity and a malformed `plan`
-        now leave the snapshot untouched, same as a wrong thread/turn."""
+        now leave the snapshot untouched, same as a wrong thread/turn — and
+        so does a `plan` array that IS a list but has even one malformed
+        element inside it (`[null]`, `[{"status": "pending"}]` with no
+        `step`): `_codex_plan_steps` returns `None` rather than silently
+        dropping just the bad entry, for the identical reason — surviving
+        elements are not evidence the model meant to clear the rest."""
         raw_plan = params.get("plan")
         if (not event_thread or event_thread != turn.thread_id
                 or not event_turn or event_turn != turn.turn_id
                 or not isinstance(raw_plan, list)):
+            return
+        steps = _codex_plan_steps(raw_plan)
+        if steps is None:
             return
         snapshot = {
             "threadId": turn.thread_id or "", "turnId": turn.turn_id or "",
             "explanation": (params.get("explanation")
                             if isinstance(params.get("explanation"), str)
                             else None),
-            "plan": _codex_plan_steps(raw_plan)}
+            "plan": steps}
         if jstate.get("last_plan") == snapshot:
             # identical consecutive snapshot: nothing the operator would see
             # has changed, so nothing durable is worth adding — the schema

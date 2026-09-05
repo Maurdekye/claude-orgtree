@@ -107,8 +107,13 @@ scenarios selected by FAKECODEX_SCENARIO:
     plan_null_plan (FR-17) a real snapshot, then one with valid ids but
                `plan: null` — malformed, required-field-missing, and must
                NOT read as the model's own explicit `[]` clear
-    plan_long_step (FR-17) a step text past the 2000-char cap — must be
-               flagged `truncated`, never silently cut with no trace
+    plan_long_step (FR-17) a very long step text — must be preserved whole,
+               not cut to an invented, unmeasured limit
+    plan_mixed_shape (FR-17) a real snapshot, then ones whose outer `plan`
+               array is well-typed but has one malformed element (`null`,
+               or a step missing its `step` key) beside real ones — the
+               WHOLE notification must be rejected, not degraded to "the
+               valid elements survived and the rest silently vanished"
     plan_failed_turn / plan_interrupted_turn (FR-17) a checklist with an
                unfinished step, then the turn ends badly — nothing about
                that ending may mark the step done
@@ -469,11 +474,28 @@ def run_turn(thread_id, turn_id, dyn_tools, model=None):
             "threadId": thread_id, "turnId": turn_id, "explanation": None,
             "plan": None})
     elif SCENARIO == "plan_long_step":
-        # a step text past the cap — must be flagged, not silently cut with
-        # no trace (review finding, 2026-09-05)
+        # a step text with no established length reason to cut it — the
+        # first cut here DID cut it, silently; review finding (2026-09-05)
+        # is that a runner must preserve it whole rather than invent a
+        # limit nothing has measured a need for
         notify("turn/plan/updated", {
             "threadId": thread_id, "turnId": turn_id, "explanation": None,
             "plan": [{"step": "x" * 2500, "status": "pending"}]})
+    elif SCENARIO == "plan_mixed_shape":
+        # a real snapshot, then one whose OUTER array is well-typed but
+        # carries one malformed element (`null`) alongside real ones — the
+        # whole notification must be rejected, not degraded to "the valid
+        # elements survived" (review finding, 2026-09-05: `[null]` alone
+        # degraded to `[]` and landed as an explicit clear)
+        notify("turn/plan/updated", {
+            "threadId": thread_id, "turnId": turn_id, "explanation": None,
+            "plan": [{"step": "real", "status": "pending"}]})
+        notify("turn/plan/updated", {
+            "threadId": thread_id, "turnId": turn_id, "explanation": None,
+            "plan": [{"step": "still valid", "status": "pending"}, None]})
+        notify("turn/plan/updated", {
+            "threadId": thread_id, "turnId": turn_id, "explanation": None,
+            "plan": [{"status": "pending"}]})   # no "step" key at all
     else:
         agent_message("msg-working", "working… ")
     if SCENARIO == "tool" and dyn_tools:

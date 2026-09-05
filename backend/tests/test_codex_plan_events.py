@@ -336,24 +336,34 @@ def main() -> int:
                      and r.get("threadId") == "fake-thread-plan-updated"],
                      [rec.get("plan") for rec in recs], "live vs journal plan payloads"))
 
-    print("§8b an over-long step is capped but the cut is FLAGGED, never "
-          "silent (review finding, 2026-09-05)")
+    print("§8b a long step's text is preserved WHOLE — no invented, "
+          "unmeasured cap (review finding, 2026-09-05)")
     scenario("plan_long_step", "fake-thread-plan-longstep")
     slug8b, nid8b = mkorg("longstep")
-    run_turn(slug8b, nid8b, "one step, too long")
+    run_turn(slug8b, nid8b, "one step, very long")
     recs8b = plan_records(slug8b)
-    check("the over-long snapshot was journaled",
+    check("the long snapshot was journaled",
           lambda: eq(len(recs8b) > 0, True, "any codex_plan_updated record"))
     step8b = (recs8b[0].get("plan") or [{}])[0]
-    check("the step text is capped at 2000 chars, not left unbounded",
-          lambda: eq(len(step8b.get("step") or ""), 2000, "capped length"))
-    check("…and the cut is EXPLICITLY marked, not silent",
-          lambda: eq(step8b.get("truncated"), True, "truncated flag"))
-    # a normal turn's steps (§1's "a"/"b") never carry the flag at all — the
-    # marker names an ACTUAL cut, not a permanent property of every step
-    check("a step well under the cap carries no truncated flag at all",
-          lambda: eq("truncated" in (recs[0].get("plan") or [{}])[0], False,
-                     "truncated flag absent on a short step"))
+    check("its full 2500-character text survives untouched",
+          lambda: eq(step8b.get("step"), "x" * 2500, "step text"))
+    check("no truncation marker is invented for it either",
+          lambda: eq("truncated" in step8b, False, "no truncated key"))
+
+    print("§8c a `plan` array that is a list but has ONE malformed element "
+          "is rejected WHOLE, not degraded to its valid elements (review "
+          "finding, 2026-09-05)")
+    scenario("plan_mixed_shape", "fake-thread-plan-mixedshape")
+    slug8c, nid8c = mkorg("mixedshape")
+    run_turn(slug8c, nid8c, "one real plan, two mixed-shape impostors")
+    recs8c = plan_records(slug8c)
+    check("both malformed notifications ([null] alongside a real step, and "
+          "a step object missing its own `step` key) were rejected whole — "
+          "only the ONE fully-valid snapshot ever landed",
+          lambda: eq(len(recs8c), 1, "codex_plan_updated records"))
+    check("the surviving snapshot is the original real one, not the "
+          "'still valid' entry that arrived alongside the null",
+          lambda: eq(steps_of(recs8c[0]), [("real", "pending")], "steps"))
 
     print("§9 anti-vacuity: duplicate identical snapshots do not bloat the "
           "journal")
