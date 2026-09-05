@@ -43,7 +43,7 @@ from typing import Any, Final, Protocol, cast
 
 from . import (accounts, appsettings, cachecontinuity, clipin, codex_limits,
                codex_route, deployment, envelope, handoff, imgblock,
-               limits, localtime, net, openrouter, providers,
+               limits, localtime, net, openrouter, opreceipts, providers,
                sandbox as sbx, store,
                tokens, turnusage, warmpool)
 from .ledger import (EXTERN, SYSTEM, USER, LedgerError, Org, expand_mcp,
@@ -13170,6 +13170,14 @@ def _run_one_turn(slug: str, nid: str,
     same lock that a concurrent `send_message` takes — so there is no window
     where the queue is non-empty and nobody owns it)."""
     st = state(slug, nid)
+    # WHEN THIS ATTEMPT BEGAN, on this process's wall clock — the lower bound
+    # the retry banner filters operation receipts by (Phase 2 of w71d69aac,
+    # see `_receipts_into_replay`). Taken HERE, before the slot wait and before
+    # any lock, so nothing this attempt files through /api/agent can carry an
+    # earlier `at`: the receipt's stamp is minted by this same process. ⚠ NEVER
+    # `frozen.at` — that is when the turn DIED, which is later than everything
+    # it did, so filtering by it would hide exactly the receipts that matter.
+    attempt_started_ms = int(time.time() * 1000)
     follow: str | dict[str, Any] | None = None
     # a dict carrier is an already-enveloped text still owing its delivery
     # journal a confirmation (a steer/boundary leftover re-queued for a turn)
@@ -15860,9 +15868,19 @@ def _run_one_turn(slug: str, nid: str,
                             n2 = o2.node(nid)
                             run = int(n2.get("net_fail_run") or 0) + 1
                             n2["net_fail_run"] = run
+                            # the ORIGIN of this failure run: the wall-clock
+                            # start of its FIRST attempt, kept through attempts
+                            # 2..N and popped with the counter. Attempt 3's
+                            # banner must list what attempt 1 committed — the
+                            # agent never read attempt 2's banner, because
+                            # attempt 2 died. Never `fz["at"]` (see the stamp).
+                            if run == 1 or "net_fail_since_ms" not in n2:
+                                n2["net_fail_since_ms"] = attempt_started_ms
                             if run <= NET_RETRY_MAX:
                                 fz = _ensure_frozen(n2)
                                 fz["connection"] = True
+                                fz["receipts_since_ms"] = int(
+                                    n2["net_fail_since_ms"])
                                 delay = min(300.0, 30.0 * (2 ** (run - 1)))
                                 fz["until_ts"] = time.time() + delay
                                 # ⚠ a STATEMENT OF FACT, not a promise. This
@@ -15930,8 +15948,11 @@ def _run_one_turn(slug: str, nid: str,
                                         f"edit proves only that you meant to "
                                         f"make it. Trust the DISK, not the "
                                         f"transcript.\n\n"
-                                        f"The message that turn was handling "
-                                        f"follows.\n\n"
+                                        # ONE constant for the closing sentence:
+                                        # `resume_frozen` splices the receipt
+                                        # list in front of it, so the insertion
+                                        # point is a definition, not a guess
+                                        + RETRY_BANNER_TAIL + "\n\n"
                                         + text[-8000:], turn_view[-8000:])
                             store.save_org(o2)
                     if 0 < run <= NET_RETRY_MAX:
@@ -17584,6 +17605,7 @@ def _after_turn(slug: str, nid: str, org: Org, res: dict[str, Any],
             # counter is CONSECUTIVE by design (user report 2026-08-06) — and
             # likewise any run of self-reported limits
             n.pop("net_fail_run", None)
+            n.pop("net_fail_since_ms", None)     # the run's origin goes with it
             n.pop("untrusted_limit_run", None)
             # …and any run of PROVIDER WALLS. This is what re-arms the limit
             # alert (`_limit_announce`): one turn that actually works means
@@ -19575,6 +19597,114 @@ def _ensure_frozen(n: NodeDoc) -> FrozenInfo:
     return fz
 
 
+# ---- Phase 2 of w71d69aac: what the dying turn COMMITTED, in the retry banner
+#
+# The net-retry banner tells the agent to check what its dead turn already
+# did. Operation receipts (opreceipts) can NAME the org operations that turn
+# committed, and the three helpers below put that list into the banner —
+# under the rules codex-delivery set for the sibling `_mark_redelivery`: at
+# most ONE paragraph, exactly once, in the replay TEXT only, never in `view`,
+# never in the document. Full contract: the luna-reserve scratch's
+# evidence/retry-receipts-contract.md.
+
+#: the banner's fixed closing sentence. ONE constant for the banner and the
+#: splice, so the insertion point is a definition rather than a guess.
+RETRY_BANNER_TAIL = "The message that turn was handling follows."
+#: the paragraph's brackets — fixed, so an earlier paragraph can be found and
+#: REPLACED: a carrier that died again is nested inside the new banner by the
+#: freeze branch's `+ text[-8000:]`, and two paragraphs describing one run is
+#: the failure to design out. The fresh one is a superset (same origin, read
+#: later).
+RECEIPTS_HEAD = "(orgtree) OPERATION RECEIPTS —"
+RECEIPTS_TAIL = "[end of operation receipts]"
+RECEIPTS_MAX_ROWS = 12
+_RECEIPTS_BLOCK = re.compile(re.escape(RECEIPTS_HEAD) + r".*?"
+                             + re.escape(RECEIPTS_TAIL) + r"\n*", re.S)
+
+
+def render_turn_receipts(rows: list[dict[str, Any]], since_ms: int) -> str:
+    """The paragraph, or "" when there is nothing to list.
+
+    ⚠ EMPTY RENDERS NOTHING. A paragraph whose only content is a disclaimer
+    is present, plausible and inert — and the banner it would sit in already
+    tells the agent to check its real state. The paragraph exists to carry
+    ROWS, and it says what a row proves (the document transaction committed)
+    and what the log does not record (anything that is not a receipted
+    orgtree call), because a list read as "everything that happened" is the
+    opposite of the point."""
+    if not rows:
+        return ""
+    since = _dtm.datetime.fromtimestamp(
+        int(since_ms) / 1000, _dtm.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    lines: list[str] = []
+    for r in rows[:RECEIPTS_MAX_ROWS]:
+        at = str(r.get("at") or "")
+        # the ledger stamp is `YYYY-MM-DDTHH:MM:SS.mmmZ`; show the time part
+        t = (at[11:23] + "Z") if len(at) >= 24 else at
+        tg = cast("dict[str, Any]", r.get("targets") or {})
+        tgs = " ".join(f"{k}={v}" for k, v in tg.items())
+        lines.append(f"  · {t} {r.get('tool')}" + (f" {tgs}" if tgs else "")
+                     + f" (receipt {r.get('id')})")
+    more = len(rows) - RECEIPTS_MAX_ROWS
+    if more > 0:
+        lines.append(f"  · …and {more} more")
+    return (f"{RECEIPTS_HEAD} the receipt log shows this seat COMMITTED these "
+            f"org operations after {since}, when the first attempt of this "
+            f"retry run began. Each one's document transaction committed; "
+            f"whether the delivery or drive after it happened is unknown. The "
+            f"log records ONLY receipted orgtree tool calls — files, git, "
+            f"shell commands and any unreceipted call are unrecorded here, "
+            f"not absent. Do not issue these again:\n"
+            + "\n".join(lines) + f"\n{RECEIPTS_TAIL}")
+
+
+def splice_turn_receipts(text: str, para: str) -> str:
+    """Put `para` into a retry banner EXACTLY ONCE, in front of its closing
+    sentence. Any earlier bracketed paragraph — nested from a previous attempt
+    — is removed first. Text that is not a banner (no closing sentence) is
+    returned unchanged: nothing is guessed about a shape this was not written
+    for. An empty `para` changes nothing."""
+    if not para:
+        return text
+    stripped = _RECEIPTS_BLOCK.sub("", text)
+    i = stripped.find(RETRY_BANNER_TAIL)
+    if i < 0:
+        return text
+    return stripped[:i] + para + "\n\n" + stripped[i:]
+
+
+def _receipts_into_replay(org: Org, nid: str, fz: FrozenInfo) -> list[str]:
+    """`resume_frozen`'s replay texts for this record, with the receipt list
+    spliced into the retry banner when there is one to splice.
+
+    Runs INSIDE resume's DOC_LOCK on the document as loaded, and that timing
+    is the point: a keyed request that was on the wire when the CLI died is
+    queued behind the freeze branch's own lock and commits AFTER the freeze
+    record is written, so a list rendered at freeze time would miss exactly
+    the receipts this exists to show. At resume — thirty seconds later at the
+    least, under the same lock — it is there.
+
+    Connection-kind records only, and only those carrying a bound. Never
+    raises: this runs on ▶, and a bookkeeping error must not block a resume;
+    the suite's positive control is what keeps that from hiding a broken
+    splice. `resume_views` is not touched — the human projection stays what
+    the agent was shown."""
+    texts = [str(t) for t in (fz.get("resume_texts") or [])]
+    since = fz.get("receipts_since_ms")
+    if not fz.get("connection") or not since:
+        return texts
+    try:
+        rows = opreceipts.applied_since(cast("dict[str, Any]", org.d), nid,
+                                        int(since))
+        para = render_turn_receipts(rows, int(since))
+    except Exception:                                            # noqa: BLE001
+        return texts
+    if not para:
+        return texts
+    return [splice_turn_receipts(t, para) if RETRY_BANNER_TAIL in t else t
+            for t in texts]
+
+
 def _append_resume(fz: FrozenInfo, raw: str, view: str = "") -> None:
     """Append raw replay text and its human projection positionally."""
     texts = fz.setdefault("resume_texts", [])
@@ -20396,7 +20526,7 @@ def resume_frozen(slug: str, only: Iterable[str] | None = None,
                 except LedgerError:
                     pass          # an optimization, never a gate (D-114)
             n.pop("frozen", None)
-            resumed.append((nid, fz.get("resume_texts") or [],
+            resumed.append((nid, _receipts_into_replay(org, nid, fz),
                             fz.get("resume_views") or [], _limit_resume,
                             _frozen_at, _frozen_sid,
                             str(org.node(nid).get("model") or "")))

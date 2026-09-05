@@ -147,6 +147,10 @@ class FrozenInfo(TypedDict, total=False):
     until: str | None
     until_ts: float | None
     error: str | None
+    # connection kind only: a copy of the node's `net_fail_since_ms` at freeze
+    # time. `resume_frozen` lists the operation receipts this seat filed at or
+    # after it inside the retry banner (Phase 2 of w71d69aac).
+    receipts_since_ms: int
     # `limit` is the usage-limit kind flag, and it exists to be a POSITIVE
     # marker. The pre-№41 retag in Org.__init__ matches on shape — error, no
     # until, no resume_texts, no kind flag True — and a genuine usage-limit
@@ -382,6 +386,12 @@ class NodeDoc(TypedDict):
     # consecutive network-classified turn failures (user report 2026-08-06);
     # reset by any completed turn, capped at NET_RETRY_MAX then manual
     net_fail_run: NotRequired[int]
+    # when the FIRST attempt of the current network-failure run began (ms,
+    # this process's wall clock, stamped at `_run_one_turn` entry). Kept across
+    # the run's later attempts and popped with `net_fail_run`. It is the lower
+    # bound the retry banner filters operation receipts by — never `frozen.at`,
+    # which is when the turn DIED (Phase 2 of w71d69aac).
+    net_fail_since_ms: NotRequired[int]
     # consecutive TERMINAL turn failures — the ones nothing retries: a turn
     # killed by the watchdog or the budget, a CLI that died before the model
     # spoke, an exit carrying a real error. Cleared by any completed turn,

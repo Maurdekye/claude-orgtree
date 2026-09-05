@@ -215,6 +215,41 @@ server's own complaints about a malformed wrapper also name the verb, and
 treating one of those as "this build has no receipts" would turn a client bug
 into the duplicate the feature exists to prevent.
 
+## The retry banner names what the dead turn committed
+
+When a turn dies part-way (the CLI drops mid-response) the supervisor freezes
+the seat and replays the message with a banner: "whatever that turn had
+already done was not undone — check your real state". Receipts let that
+banner say WHICH org operations the turn committed, as one paragraph inside
+it (`supervisor.resume_frozen`, `opreceipts.applied_since`).
+
+- **The bound is the attempt's start, never its death.** `_run_one_turn`
+  stamps its own entry time on the process's wall clock. A receipt's `at` is
+  minted by the same process, so nothing the attempt filed can be earlier.
+  `frozen.at` is when the turn DIED — later than everything it did — and is
+  never used. The stamp of the run's FIRST attempt is kept on the node
+  (`net_fail_since_ms`) through the later attempts and popped by a completed
+  turn, so attempt 3's banner still lists what attempt 1 committed.
+- **Rendered at resume, not at freeze.** A keyed request that was on the wire
+  when the CLI died is queued behind the freeze branch's own document lock
+  and commits after the freeze record. Resume reads the log at least thirty
+  seconds later, under the same lock, and sees it.
+- **What is listed:** this node's `applied` rows filed at or after the
+  bound, any generation (a cheap-compact can land mid-turn), fenced rows
+  excluded, at most twelve with the remainder counted.
+- **Nothing is rendered when there is nothing to list.** A paragraph whose
+  only content is a disclaimer is present, plausible and inert.
+- **Exactly one paragraph, text only.** It is bracketed by fixed markers; a
+  paragraph nested from a previous attempt is removed before the fresh one is
+  inserted in front of the banner's fixed closing sentence. The human
+  projection (`resume_views`) and the document are never touched. No extra
+  turn is spent.
+
+The paragraph says what a row proves (the document transaction committed;
+delivery or drive after it is unknown) and what the log does not record
+(files, git, shell, any unreceipted call). It never says nothing else
+happened. Suite: `backend/tests/test_retry_receipts.py`.
+
 ## Cost
 
 `op_receipts` is a lazy row-backed section (`store.LIST_LOGS`), so a call

@@ -101,6 +101,7 @@ misjudged anything. Nothing else in this module infers coverage from a time.
 """
 from __future__ import annotations
 
+import datetime as _dt
 import hashlib
 import json
 import re
@@ -685,3 +686,57 @@ def row(*, op_id: str, node: str, generation: int, key: str, mint_ms: int,
             "observed": "unknown",
         }
     return r
+
+
+# ------------------------------------------------ reading back, for the agent
+#
+# Phase 2 of w71d69aac: the net-retry banner (supervisor.resume_frozen) names
+# the operations a dying turn had already committed. These two are the whole
+# read API it uses. Both are pure; neither creates the section.
+
+
+def at_ms(row: dict[str, Any]) -> int | None:
+    """The row's filing time — `at`, minted by `ledger.now()` on the server's
+    clock when the receipt was appended — in ms, or None when it does not
+    parse. ⚠ NOT `mint_ms`: that is the CLIENT's clock at key mint, and the
+    bound it is compared with is a server stamp (`_run_one_turn` entry), so
+    the comparison has to be server clock against server clock."""
+    s = str(row.get("at") or "")
+    try:
+        d = _dt.datetime.strptime(s, "%Y-%m-%dT%H:%M:%S.%fZ")
+    except ValueError:
+        try:
+            d = _dt.datetime.fromisoformat(s.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if d.tzinfo is None:
+        d = d.replace(tzinfo=_dt.timezone.utc)
+    return int(d.timestamp() * 1000)
+
+
+def applied_since(d: dict[str, Any], node: str, since_ms: int
+                  ) -> list[dict[str, Any]]:
+    """The receipts this node COMMITTED at or after `since_ms`, in filing
+    order.
+
+      · `outcome == "applied"` only. A fenced row records that a lookup found
+        the key UNRECORDED — a call that did not apply is not something the
+        agent must avoid repeating.
+      · GENERATION IS NOT A FILTER. A cheap-compact can land mid-turn and bump
+        the seat's generation without ending the turn; the seat that filed
+        the row is the seat being told about it.
+      · a row whose `at` does not parse is left out — rows drop out
+        conservatively, none are ever invented — and a clock stepped backwards
+        between the bound and the filing hides a row the same way.
+
+    Does not materialise the section when the document has never carried a
+    receipt (`_log(create=False)`)."""
+    out: list[dict[str, Any]] = []
+    for r in _log(d, create=False):
+        if r.get("node") != node or r.get("outcome") != "applied":
+            continue
+        ms = at_ms(r)
+        if ms is None or ms < int(since_ms):
+            continue
+        out.append(r)
+    return out
