@@ -19668,22 +19668,29 @@ def _retry_replay(org: Org, nid: str, fz: FrozenInfo
     is read here, not at freeze. Never raises (this runs on ▶); the suite's
     positive control keeps that from hiding a broken compose."""
     texts = [str(t) for t in (fz.get("resume_texts") or [])]
-    retry = cast("dict[str, Any]", fz.get("retry") or {})
-    since = fz.get("receipts_since_ms")
-    idx = int(retry.get("index", -1)) if retry else -1
-    payload = str(retry.get("payload") or "") if retry else ""
-    if idx < 0 or idx >= len(texts) or not fz.get("connection") or not since:
-        return texts, idx if 0 <= idx < len(texts) else -1, payload
     try:
+        # the stored parts are STRUCTURAL metadata and are guarded like the
+        # rest: a malformed record replays its texts unchanged, with nothing
+        # attached, rather than blocking the resume
+        retry = fz.get("retry")
+        if not isinstance(retry, dict):
+            return texts, -1, ""
+        idx = int(cast("Any", retry.get("index", -1)))
+        payload = str(retry.get("payload") or "")
+        head = str(retry.get("head") or "")
+        since = fz.get("receipts_since_ms")
+        if idx < 0 or idx >= len(texts):
+            return texts, -1, ""
+        if not fz.get("connection") or not since:
+            return texts, idx, payload
         rows = opreceipts.applied_since(cast("dict[str, Any]", org.d), nid,
                                         int(since))
         para = render_turn_receipts(rows, int(since))
         if para:
-            texts[idx] = compose_retry_banner(str(retry.get("head") or ""),
-                                              para, payload)
+            texts[idx] = compose_retry_banner(head, para, payload)
+        return texts, idx, payload
     except Exception:                                            # noqa: BLE001
-        pass
-    return texts, idx, payload
+        return [str(t) for t in (fz.get("resume_texts") or [])], -1, ""
 
 
 def _append_resume(fz: FrozenInfo, raw: str, view: str = "") -> None:

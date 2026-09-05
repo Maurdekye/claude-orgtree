@@ -249,8 +249,10 @@ _RESULT_FIELDS: dict[str, tuple[str, ...]] = {
     "orgtree_reallocate": ("node", "delta", "grant"),
     "orgtree_switch_model": ("node", "tier", "queued"),
     "orgtree_status": ("recorded", "reported_to", "delivered"),
-    "orgtree_work": ("created", "updated", "assigned", "id", "slug", "rev",
-                     "status"),
+    # `item` and `ref` are the canonical identity every docket mutation
+    # carries (api._work_mutate sets them before the receipt is filed)
+    "orgtree_work": ("created", "updated", "assigned", "id", "slug", "item",
+                     "ref", "rev", "status"),
     "orgtree_ask": ("id", "routed", "deferred"),
     "orgtree_request_scope": ("id", "routed", "deferred"),
     "orgtree_request_credits": ("id", "routed", "deferred"),
@@ -593,17 +595,26 @@ def admit(d: dict[str, Any], node: str, generation: int, key: str, tool: str,
                                   f"receipt horizon is {HORIZON_MS // 1000}s"}
     row = find(d, node, key)
     if row is not None:
-        if row.get("outcome") == "fenced":
+        # classified BEFORE any claim about it, whatever its outcome or
+        # generation: a key identifies one call, and a different call under
+        # it is a conflict, not a fence and not a replay (`matches` compares
+        # at the row's own subject and generation)
+        state = classify(row, tool, args)
+        if state == "conflict":
+            return CONFLICT, {"row": row, "reason": "key_reused",
+                              "detail": f"this key already identifies "
+                                        f"{row.get('tool')} at {row.get('at')}"}
+        if state == "fenced":
             # a lookup already fenced this key: the caller was told the
             # operation had not been recorded, so it must never apply now
             return REFUSE, {"reason": "fenced", "row": row,
+                            "row_state": state,
                             "detail": "this key was fenced by a lookup at "
                                       f"{row.get('at')} — it can no longer be "
                                       "admitted; issue a fresh key"}
         if int(row.get("gen") or 0) != int(generation):
             # used by an EARLIER INCARNATION of this seat: never execute,
             # never replay another incarnation's result as this one's
-            state = classify(row, tool, args)
             return REFUSE, {"reason": "foreign_generation", "row": row,
                             "row_state": state,
                             "detail": f"this key was used at generation "
@@ -611,12 +622,6 @@ def admit(d: dict[str, Any], node: str, generation: int, key: str, tool: str,
                                       f"at generation {generation}, so it "
                                       f"will not be run now. "
                                       + _ROW_DETAIL[state]}
-        # compared at the row's own subject and generation (`matches`): a
-        # rename re-keys the row without touching the print it was minted with
-        if not matches(row, tool, args):
-            return CONFLICT, {"row": row, "reason": "key_reused",
-                              "detail": f"this key already identifies "
-                                        f"{row.get('tool')} at {row.get('at')}"}
         return REPLAY, {"row": row}
     ahead = schema_ahead(d)
     if ahead:

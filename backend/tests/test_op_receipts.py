@@ -789,6 +789,38 @@ check("a fenced key still identifies ONE operation — a different one conflicts
       _a_fenced_key_still_identifies_ONE_operation)
 
 
+def _admission_classifies_a_fenced_row_too():
+    """⚠ ASTRA, 2026-09-05T16:09Z (final review of 3aa3cae). The lookup
+    classified a row before claiming anything about it; ADMISSION still took
+    the fenced branch on the row's outcome alone, so a keyed call with
+    DIFFERENT arguments under a fenced key was told "fenced — issue a fresh
+    key" about a call the fence never covered. Same rule as the lookup: a
+    different call under a key is a conflict, whatever the row's outcome."""
+    slug = fresh_org()
+    key = k()
+    first = lookup(slug, "mid", key, "orgtree_message", to="boss", body="a")
+    assert first["state"] == "not_applied", first
+    st, js = call(slug, "mid", "orgtree_message", key=key, to="boss",
+                  body="DIFFERENT")
+    assert st == 409, (st, js)
+    assert "conflict" in str(js).lower() and "fenced by a lookup" not in str(js), js
+    assert len(rows(slug)) == 1 and rows(slug)[0]["outcome"] == "fenced"
+    assert not [d for d in DRIVEN if d[0] == slug], "the conflicting call ran"
+    # positive controls: the SAME call is still fenced; an APPLIED row with
+    # different arguments still conflicts
+    st, js = call(slug, "mid", "orgtree_message", key=key, to="boss", body="a")
+    assert st == 422 and "fenced" in str(js) and "fresh key" in str(js), (st, js)
+    key2 = k()
+    st, _ = call(slug, "mid", "orgtree_message", key=key2, to="boss", body="a")
+    assert st == 200
+    st, js = call(slug, "mid", "orgtree_message", key=key2, to="boss", body="b")
+    assert st == 409, (st, js)
+
+
+check("admission classifies a FENCED row before claiming it is fenced — a "
+      "different call conflicts", _admission_classifies_a_fenced_row_too)
+
+
 def _pre_transaction_never_says_not_applied():
     """`orgtree_retire` waits for the target's turn boundary BEFORE the
     transaction. A missing receipt cannot speak for that wait, so the answer
@@ -1716,12 +1748,20 @@ def _targets_keep_docket_and_present_identity():
     assert st == 200, (st, js)
     row = rows(slug)[-1]
     assert row["result"].get("slug") and row["result"].get("created"), row
+    # the canonical identity the integrated result carries — `item` and the
+    # ready-to-paste `ref` — is on the row, taken from the RESULT the door
+    # returned (never composed here)
+    assert js.get("item") and str(js.get("ref") or "").startswith("@item:"), js
+    assert row["result"].get("item") == js["item"], row["result"]
+    assert row["result"].get("ref") == js["ref"], row["result"]
     assert "objective" not in json.dumps(row) and "problem first" not in json.dumps(row)
     st, js = call(slug, "boss", "orgtree_work", key=k(), action="update",
-                  id=str(js["slug"]), done_so_far=["x"], working_on_next=["y"])
+                  slug=str(js["slug"]), done_so_far=["x"], working_on_next=["y"])
     assert st == 200, (st, js)
-    assert rows(slug)[-1]["targets"].get("id") == js.get("slug") or \
-        rows(slug)[-1]["targets"].get("id"), rows(slug)[-1]
+    row = rows(slug)[-1]
+    assert row["targets"].get("slug") == js.get("item"), row
+    assert row["result"].get("item") == js["item"] and \
+        row["result"].get("ref") == js["ref"], row["result"]
     st, js = call(slug, "boss", "orgtree_present", key=k(), title="T",
                   body="a body that must not be stored")
     assert st == 200, (st, js)

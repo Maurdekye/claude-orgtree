@@ -440,9 +440,51 @@ def sec_resume_compose() -> None:
           _legacy_record_untouched)
 
 
+def sec_malformed_retry() -> None:
+    """⚠ ASTRA, 2026-09-05T16:09Z. `_retry_replay` promised never to raise,
+    and read `retry["index"]` OUTSIDE its try: a record whose stored parts
+    were malformed raised on ▶ and blocked the resume. Structural metadata is
+    guarded like the rest — the texts replay unchanged with nothing attached."""
+    print("\n§2b  _retry_replay — malformed stored parts never block a resume")
+    org = type("O", (), {"d": {}})()
+    row = mkrow("owner", 1_000_001, to="boss")
+    org.d = {opreceipts.SECTION: [row]}
+    good = {"resume_texts": ["banner"], "connection": True,
+            "receipts_since_ms": 1_000_000,
+            "retry": {"index": 0, "head": "HEAD\n", "payload": "PAYLOAD"}}
+
+    def _positive() -> None:
+        texts, idx, payload = supervisor._retry_replay(org, "owner", good)
+        assert idx == 0 and payload == "PAYLOAD", (idx, payload)
+        assert row["id"] in texts[0] and texts[0].endswith("PAYLOAD"), texts
+    check("control · a well-formed record recomposes the banner", _positive)
+
+    def _malformed() -> None:
+        for bad in ({"index": "invalid"}, {"index": 99}, {"index": -1},
+                    "not a dict", ["nor a list"], {"index": 0, "payload": {}}):
+            fz = dict(good, retry=bad)
+            texts, idx, payload = supervisor._retry_replay(org, "owner", fz)
+            if bad == {"index": 0, "payload": {}}:
+                continue                # a non-string payload is coerced
+            assert texts == ["banner"], (bad, texts)
+            assert idx == -1 and payload == "", (bad, idx, payload)
+    check("malformed · index not an int / out of range / retry not a dict: "
+          "texts unchanged, no banner index, no payload — and no exception",
+          _malformed)
+
+    def _astra_shape() -> None:
+        fz = {"resume_texts": ["keep this"], "connection": True,
+              "retry": {"index": "invalid"}, "receipts_since_ms": 1}
+        assert supervisor._retry_replay(org, "owner", fz) == (
+            ["keep this"], -1, "")
+    check("malformed · the exact counterexample record replays unchanged",
+          _astra_shape)
+
+
 def main() -> int:
     sec_applied_since()
     sec_render()
+    sec_malformed_retry()
     if shutil.which("node"):
         sec_freeze_bound()
         sec_resume_compose()
