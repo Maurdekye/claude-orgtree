@@ -4288,9 +4288,14 @@ def _work_mutate_action(org: Org, nid: str, a: dict[str, Any],
             # the explicit assignment target. Absent, the update claims the
             # item for its author (ledger.work_update); present, it WINS —
             # there is no transient assign-to-author in between.
-            owner=_s("owner"))
+            owner=_s("owner"),
+            # named by the update that ENTERS review, and required there
+            reviewer=_s("reviewer"))
     if act == "assign":
         return org.work_assign(nid, wid, str(a.get("owner") or ""))
+    if act == "review":
+        return org.work_review_decide(nid, wid, str(a.get("decision") or ""),
+                                      _s("note"))
     if act == "participants":
         return org.work_participants(nid, wid, add=_work_list_arg(a, "add"),
                                      remove=_work_list_arg(a, "remove"))
@@ -4324,8 +4329,8 @@ def _work_mutate_action(org: Org, nid: str, a: dict[str, Any],
     if act == "supersede":
         return org.work_supersede(nid, wid, str(a.get("by") or ""))
     raise LedgerError(
-        "action must be list|get|create|update|assign|participants|evidence|"
-        "claim|verify|check|accept|archive|supersede|move")
+        "action must be list|get|create|update|assign|review|participants|"
+        "evidence|claim|verify|check|accept|archive|supersede|move")
 
 
 class AskAnswer(Body):
@@ -6959,11 +6964,18 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
                 # after the save. A deferred (archived) recipient reads it on
                 # rehire and is not driven — the same rule ordinary mail
                 # follows.
-                _notified = str(result.get("notified") or "")
-                if _notified and not result.get("deferred"):
-                    mail_notify(body.org, body.node, _notified)
-                    if _notified not in drive:
-                        drive.append(_notified)
+                #
+                # ⚠ EVERY AGENT THE CALL MAILED, not just the first: one
+                # update can hand the item over AND ask somebody else to review
+                # it, and driving one of the two leaves the other with mail it
+                # will not read until something unrelated wakes it.
+                _told = [str(x) for x in (result.get("notified_nodes")
+                                          or [result.get("notified")]) if x]
+                for _n in _told:
+                    mail_notify(body.org, body.node, _n)
+                    # a deferred (archived) recipient reads it on rehire
+                    if not result.get("deferred") and _n not in drive:
+                        drive.append(_n)
             elif body.tool == "orgtree_withdraw_ask":
                 result = org.withdraw_ask(body.node)
             elif body.tool in ("orgtree_self_restart", "orgtree_self_update"):

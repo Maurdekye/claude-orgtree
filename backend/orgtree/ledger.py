@@ -9827,15 +9827,30 @@ class Org:
             and self.is_ancestor(actor, cast(str, anchor))
 
     def _work_can_read(self, actor: str, it: WorkItem) -> bool:
-        """Manage right, or explicit participant membership — the narrow
+        """Manage right, explicit participant membership — the narrow
         collaboration path (Astra 2026-09-05): a participant may read, post
-        status updates and evidence, and attach questions; nothing else."""
+        status updates and evidence, and attach questions; nothing else — or
+        being the item's NAMED REVIEWER, which is narrower still: read,
+        evidence and the review decision, and no status update at all (a status
+        update claims the item, and reviewing is not owning)."""
         return self._work_can_manage(actor, it) \
-            or actor in (it.get("participants") or [])
+            or actor in (it.get("participants") or []) \
+            or actor == self._work_actor_node(it.get("reviewer"))
 
     def _work_can_accept(self, actor: str, it: WorkItem) -> bool:
-        """The user, or a strict ancestor of the owner — never the owner."""
+        """The user, a strict ancestor of the owner, or the item's NAMED
+        REVIEWER — never the owner.
+
+        The reviewer joined this set on the user's ruling (2026-09-05 21:26):
+        a named reviewer's approval completes the item, with no separate
+        superior acceptance behind it. The owner is still excluded, and since
+        reviewer≠owner is enforced both when the reviewer is named and again
+        when it decides, the exclusion cannot be walked around by naming
+        yourself."""
         if actor == USER:
+            return True
+        if actor == self._work_actor_node(it.get("reviewer")) \
+                and actor != self._work_actor_node(it.get("owner")):
             return True
         anchor = self._work_actor_node(it.get("owner")) \
             or self._work_actor_node(it.get("created_by"))
@@ -10051,7 +10066,7 @@ class Org:
             "slug": it.get("slug"),
             **{k: it.get(k) for k in (
                 "rev", "kind", "title", "objective", "status",
-                "owner", "created_by", "at", "updated_at", "done_so_far",
+                "owner", "reviewer", "created_by", "at", "updated_at", "done_so_far",
                 "working_on_next", "docket_at", "last_updater",
                 "manual_attention", "acceptance", "evidence",
                 "accepted")},
@@ -10492,6 +10507,10 @@ class Org:
             "objective": obj,
             "status": status, "blocked_reason": None, "waiting_reason": None,
             "owner": (cast(WorkActor, self._work_actor(own)) if own else None),
+            # named only when the item ENTERS review, never at creation: a
+            # reviewer for work that has not been done yet is a name nobody
+            # chose for a reason
+            "reviewer": None,
             "participants": parts,
             "created_by": self._work_actor(actor), "at": stamp,
             "updated_at": stamp,
@@ -10592,7 +10611,8 @@ class Org:
                     title: str | None = None, objective: str | None = None,
                     reopen: bool = False,
                     waiting_reason: str | None = None,
-                    owner: str | None = None) -> dict[str, Any]:
+                    owner: str | None = None,
+                    reviewer: str | None = None) -> dict[str, Any]:
         """THE docket status update. Always carries both lists (either may be
         empty, not both — Astra ruling 2026-09-05, no status-only bypass),
         moves `docket_at` and `last_updater`, and restates the manual flag:
@@ -10629,6 +10649,21 @@ class Org:
         self._work_sweep()
         it, phys = self._work_get_for(actor, wid)
         pre_manage = self._work_can_manage(actor, it)
+        # the status this update FOUND. The reviewer rule keys on entering
+        # review, and the status field is rewritten further down — read from
+        # the item there and "entering" would be true of nothing.
+        prev_status = str(it.get("status") or "")
+        if actor != USER and not pre_manage \
+                and actor not in (it.get("participants") or []):
+            # a REVIEWER-ONLY actor: it can read this item because it was named
+            # to review it, and that is the whole of its standing. A status
+            # update would claim the item (below), which is exactly the
+            # ownership a review is not (user ruling 2026-09-05 21:26).
+            raise LedgerError(
+                f"you are {wid}'s REVIEWER, not a collaborator on it — a "
+                f"status update would claim the item, and reviewing is not "
+                f"owning. Record your verdict with action 'review' "
+                f"(decision approve|changes), or add `evidence`")
         done = self._work_norm_list(done_so_far, "done_so_far")
         nxt = self._work_norm_list(working_on_next, "working_on_next")
         if not done and not nxt:
@@ -10771,6 +10806,9 @@ class Org:
                               "your update already claims it for you")
         if not tgt and actor != USER:
             tgt = actor
+        # ---- the REVIEWER, named by the update that enters review
+        rev_notify = self._work_name_reviewer(actor, it, reviewer, status,
+                                              prev_status, pre_manage, tgt)
         assigned: dict[str, Any] | None = None
         if tgt and tgt != self._work_actor_node(it.get("owner")):
             # ⚠ ONLY WHEN IT ACTUALLY CHANGES HANDS. The overwhelmingly common
@@ -10782,8 +10820,17 @@ class Org:
                 "update" if tgt == actor else "update+assign")
         return {"updated": wid, "rev": it["rev"], "status": it["status"],
                 "owner": it.get("owner"),
+                "reviewer": it.get("reviewer"),
                 "assigned_to": (str(tgt) if assigned else None),
                 "notified": (assigned or {}).get("notified"),
+                "reviewer_notified": rev_notify,
+                # ⚠ EVERY AGENT THIS CALL MAILED, as a list. One update can
+                # hand the item to somebody AND ask somebody else to review it,
+                # and a single `notified` field would have driven one of the
+                # two and silently left the other holding unread mail.
+                "notified_nodes": [n for n in
+                                   ((assigned or {}).get("notified"), rev_notify)
+                                   if n],
                 "manual_attention": bool(it.get("manual_attention")),
                 "note": ("the standing attention flag was CLEARED by this "
                          "update (pass attention=true to keep one)"
@@ -10856,6 +10903,88 @@ class Org:
             f"\nRead it in full with orgtree_work get slug={it['slug']}, and "
             f"`update` it at the next meaningful boundary — your update is what "
             f"the user reads.", "request")
+
+    def _work_name_reviewer(self, actor: str, it: WorkItem,
+                            reviewer: str | None, status: str | None,
+                            prev_status: str, pre_manage: bool,
+                            owner_after: str) -> str | None:
+        """Name (or re-name) the item's REVIEWER as part of an update, and tell
+        them. Returns the node mailed, or None.
+
+        TWO RULES DECIDE WHETHER A NAME IS NEEDED AT ALL:
+        · entering `review` REQUIRES one (user ruling 2026-09-05: a review
+          request names the responsible reviewing agent). An item already at
+          review keeps the reviewer it has;
+        · nothing else may name one — a reviewer on work that is not under
+          review is a name with no meaning attached.
+
+        ⚠ EXISTING `review` RECORDS ARE NOT BACK-FILLED. An item that was
+        already at review when this shipped keeps `reviewer: null` and stays
+        legal; the root assigns those explicitly. Inventing a reviewer for them
+        — the last accepter, the owner's superior — would put a name nobody
+        chose in the one slot whose whole job is saying who chose to be
+        answerable for the check."""
+        want = str(reviewer or "").strip()
+        entering = (status == "review" and prev_status != "review")
+        if not want:
+            if entering and not self._work_actor_node(it.get("reviewer")):
+                raise LedgerError(
+                    "a review request names its reviewer: pass `reviewer` with "
+                    "the agent that will check this work. It is not ownership "
+                    "— the reviewer gets read, evidence and the review "
+                    "decision, and you keep the item")
+            return None
+        if not entering and prev_status != "review":
+            raise LedgerError(
+                "a reviewer is named on the update that puts the item at "
+                "status review — name one when you ask for the review, not "
+                "before")
+        if not pre_manage and owner_after != actor:
+            raise LedgerError("naming a reviewer is an owner-level act (owner, "
+                              "creator, their superiors, the user)")
+        self.node(want)
+        # SELF-REVIEW IS PROHIBITED (user ruling 2026-09-05 21:26), and it is
+        # measured against the owner this update LEAVES BEHIND, not the one it
+        # found: an update that claims the item and names its author as
+        # reviewer in the same breath is exactly the case being refused.
+        if want == (owner_after or self._work_actor_node(it.get("owner"))):
+            raise LedgerError(
+                "the owner cannot review its own work — name somebody else "
+                "(self-review is prohibited)")
+        # WHO MAY BE NAMED: somebody you could ask directly — yourself, an
+        # agent in your subtree, or your own superior. The subtree half is the
+        # assignment rule; the superior half is here because asking the agent
+        # above you to check your work is the ordinary review in this org, and
+        # a rule that refused it would leave the common case unreachable
+        # (flagged to Astra as the one place this is wider than "subtree").
+        if actor != USER and want != actor and not self.is_ancestor(actor, want) \
+                and str(self.node(actor).get("parent") or "") != want:
+            raise LedgerError(
+                f"you may ask yourself, an agent in your subtree, or your own "
+                f"superior to review this — {want!r} is none of those")
+        prev = self._work_actor_node(it.get("reviewer"))
+        it["reviewer"] = cast(WorkActor, self._work_actor(want))
+        self._work_hist(it, actor, "reviewer", {"from": prev, "to": it["reviewer"]})
+        if want == actor:
+            return None                 # naming yourself mails nobody
+        self.post_mail(
+            actor, want,
+            f"[DOCKET REVIEW REQUEST · {it['slug']} "
+            f"\"{str(it.get('title') or '')[:80]}\"] "
+            f"You are named as the REVIEWER of this docket item. THIS IS NOT "
+            f"OWNERSHIP: {self._work_actor_node(it.get('owner')) or 'its owner'} "
+            f"keeps the work and the responsibility for delivering it. You "
+            f"hold exactly three things — read it, add `evidence`, and record "
+            f"ONE decision with orgtree_work action='review': `approve` (the "
+            f"check passed — that COMPLETES the item) or `changes` (it goes "
+            f"back to the owner as in_progress, and your note is what they act "
+            f"on). Until you decide, the next action on this item is yours."
+            f"\nRequested by {'the user' if actor == USER else actor}."
+            f"\nDescription: {str(it.get('objective') or '(none recorded)')[:600]}"
+            f"\nWhat the owner says is done: "
+            f"{'; '.join(it.get('done_so_far') or []) or '(nothing recorded)'}",
+            "request")
+        return want
 
     def work_assign(self, actor: str, wid: str, owner: str,
                     notify: bool = True) -> dict[str, Any]:
@@ -11014,9 +11143,10 @@ class Org:
 
     def work_accept(self, actor: str, wid: str,
                     note: str | None = None) -> dict[str, Any]:
-        """→ done. The user or a strict ancestor of the owner; never the
-        owner. Starts the one-hour archive clock (a docket event) but leaves
-        `last_updater` alone — replies still reach the agent who did the work.
+        """→ done. The user, a strict ancestor of the owner, or the item's
+        NAMED REVIEWER; never the owner. Starts the one-hour archive clock (a
+        docket event) but leaves `last_updater` alone — replies still reach the
+        agent who did the work.
 
         ANY open status is acceptable, not just `review`. `review` means review
         BY AGENTS (user ruling 2026-09-05); an item that was only ever waiting
@@ -11028,8 +11158,20 @@ class Org:
         it, _ = self._work_get_for(actor, wid)
         if not self._work_can_accept(actor, it):
             raise LedgerError(
-                "acceptance belongs to the user or a superior of the owner — "
-                "an owner asserts `review` (the AGENT check) and waits")
+                "acceptance belongs to the user, a superior of the owner or "
+                "the item's named reviewer — an owner asserts `review` (the "
+                "AGENT check) and waits")
+        return self._work_accept_core(actor, it, note, "accept")
+
+    def _work_accept_core(self, actor: str, it: WorkItem, note: str | None,
+                          op: str) -> dict[str, Any]:
+        """→ done, once the authority question has been answered by the caller.
+
+        Shared by `accept` and by a named reviewer's APPROVAL, because the user
+        ruled (2026-09-05 21:26) that a reviewer's approval completes the item
+        — there is no second acceptance round behind it. One body means the two
+        routes cannot drift into completing an item differently."""
+        wid = str(it["slug"])
         if it.get("status") in self.WORK_CLOSED:
             raise LedgerError(f"{wid} is already {it.get('status')}")
         frm = it.get("status")
@@ -11038,13 +11180,121 @@ class Org:
         it["blocked_reason"] = None
         it["waiting_reason"] = None
         it["accepted"] = {"at": now(), "by": self._work_actor(actor),
-                          "note": (str(note).strip()[:500] if note else None)}
-        self._work_hist(it, actor, "accept", {"from": frm})
+                          "note": (str(note).strip()[:500] if note else None),
+                          "via": op}
+        self._work_hist(it, actor, op, {"from": frm})
         it["docket_at"] = now()
-        self._log("work_accept", actor, {"item": wid}, [])
+        self._log("work_accept", actor, {"item": wid, "via": op}, [])
         return {"accepted": wid, "rev": it["rev"],
                 "status": "done — archives automatically once its last docket "
                           "update is over an hour old (records are kept)"}
+
+    # ---- REVIEW. User rulings 2026-09-05 21:22/21:26, relayed by Astra.
+    #
+    # The reviewer is a SECOND named agent on the item and it is NOT a second
+    # owner: the owner keeps delivery responsibility throughout, and the
+    # reviewer holds exactly read, evidence and the review decision. What the
+    # reviewer role really carries is the ANSWER TO "who acts next" — while an
+    # item is under review the next action is the reviewer's, and when changes
+    # are requested it hands straight back to the owner.
+    def work_review_decide(self, actor: str, wid: str, decision: str,
+                           note: str | None = None) -> dict[str, Any]:
+        """The named reviewer's verdict: `approve` (→ done) or `changes`
+        (→ in_progress, and the OWNER is told what to do next).
+
+        ⚠ REVIEWER ≠ OWNER IS CHECKED HERE TOO, not only when the reviewer was
+        named. Ownership moves — an update claims the item — so an agent named
+        as reviewer yesterday can be the owner today, and a check made only at
+        naming time would let exactly the self-review the user prohibited
+        happen through the back door.
+
+        ⚠ THE OWNER IS PASSED THROUGH EXPLICITLY on the status change, so a
+        review decision never claims the item for the reviewer. That is the
+        whole reason this is its own verb rather than an ordinary update."""
+        self._work_require_live_agent_or_user(actor)
+        self._work_sweep()
+        it, _ = self._work_get_for(actor, wid)
+        dec = str(decision or "").strip().lower()
+        if dec not in ("approve", "changes"):
+            raise LedgerError("decision must be 'approve' (the review passed — "
+                              "the item is done) or 'changes' (send it back to "
+                              "the owner as in_progress)")
+        rev_node = self._work_actor_node(it.get("reviewer"))
+        own = self._work_actor_node(it.get("owner"))
+        if actor != USER and actor != rev_node \
+                and not self._work_can_accept(actor, it):
+            who = (f"reviewed by {rev_node}" if rev_node else
+                   "not under review by anybody — a reviewer is named by the "
+                   "update that puts an item at status review")
+            raise LedgerError(
+                f"{wid} is {who}, and a review decision belongs to that "
+                f"reviewer, a superior of the owner, or the user")
+        if actor != USER and actor == own:
+            # the self-review prohibition, stated where it can actually fire
+            raise LedgerError(
+                "you own this item, so you cannot review it — self-review is "
+                "prohibited (user ruling 2026-09-05). Ask the reviewer, your "
+                "superior or the user")
+        if it.get("status") in self.WORK_CLOSED:
+            raise LedgerError(f"{wid} is already {it.get('status')}")
+        if dec == "approve":
+            out = self._work_accept_core(actor, it, note, "review_approve")
+            out["decision"] = "approve"
+            out["notified"] = self._work_tell_owner(
+                actor, it, own,
+                f"REVIEW PASSED — {'the user' if actor == USER else actor} "
+                f"approved this item and it is now DONE. Nothing further is "
+                f"needed on it."
+                + (f"\nReviewer's note: {str(note)[:500]}" if note else ""))
+            return out
+        frm = it.get("status")
+        it["status"] = "in_progress"
+        it["blocked_reason"] = None
+        self._work_hist(it, actor, "review_changes",
+                        {"from": frm, "note": (str(note)[:200] if note else None)})
+        it["docket_at"] = now()
+        self._log("work_review", actor, {"item": wid, "decision": dec}, [])
+        return {"reviewed": wid, "decision": "changes", "rev": it["rev"],
+                "status": it["status"],
+                "notified": self._work_tell_owner(
+                    actor, it, own,
+                    f"CHANGES REQUESTED by "
+                    f"{'the user' if actor == USER else actor} — the item is "
+                    f"back with you as in_progress and the next action is "
+                    f"yours."
+                    + (f"\nWhat the reviewer asked for: {str(note)[:500]}"
+                       if note else
+                       "\nThe reviewer left no note; ask them what they want "
+                       "changed rather than guessing."))}
+
+    def _work_tell_owner(self, actor: str, it: WorkItem, own: str | None,
+                         what: str) -> str | None:
+        """Tell the OWNER what a review decided. Returns the node mailed.
+
+        ⚠ IT FALLS BACK TO THE DOCKET'S OWN VOICE RATHER THAN GOING UNSENT.
+        A reviewer is named from the NAMER's reach, so it can legitimately end
+        up somewhere the ordinary §7.2 addressing rules do not let it write to
+        the owner directly (a report of your superior's other report, say). The
+        decision has already been recorded at that point, and an owner who is
+        never told its work was sent back — or accepted — is the failure this
+        whole feature exists to prevent. So the notice goes out under the
+        docket's name instead, SAYING SO, and the sender is never silently
+        misrepresented as the reviewer."""
+        if not own or own == actor or own == USER:
+            return None
+        head = (f"[DOCKET REVIEW · {it['slug']} "
+                f"\"{str(it.get('title') or '')[:80]}\"] ")
+        try:
+            self.post_mail(actor, own, head + what, "request")
+        except LedgerError:
+            self.post_mail(
+                USER, own,
+                head + what
+                + f"\n(This notice comes from the docket itself: "
+                  f"{actor} is the item's reviewer but cannot address you "
+                  f"directly under the mail rules. Reply to your own superior "
+                  f"if you need to reach them.)", "request")
+        return own
 
     def work_archive_now(self, actor: str, wid: str) -> dict[str, Any]:
         """Explicit archive of a CLOSED item, ahead of the sweep."""

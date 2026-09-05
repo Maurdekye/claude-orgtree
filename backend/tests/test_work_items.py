@@ -14,10 +14,13 @@ Sections:
     §4  archive — the exact-hour edge, derived vs physical, attention holds
     §5  questions — two askers on one item, answer one, withdraw, refusal
     §6  manual attention — set/clear/dismiss CAS/blocked/exact repeat
-    §7  reply routing — last updater, exactly; failures are explicit
+    §7  reply routing — the ASSIGNMENT, exactly; failures are explicit
     §8  delivery — claim/verify three-valued, rev revalidation
     §9  caps — evidence refusal, history fold, active cap
     §10 the standing instructions reach the identity prompt (every lane)
+    §13 assignment — notifying, claiming, the administrative preserve
+    §14 one-call staffing — hire/rehire with an item, orgtree_staff, failure
+    §15 review — naming, the two decisions, what a reviewer may not do
 
     python backend/tests/test_work_items.py
 """
@@ -59,6 +62,12 @@ def _fake_send(slug, nid, text, command=False, wake=True, **kw):
 
 supervisor.send_message = _fake_send
 api.supervisor.send_message = _fake_send
+# §14 hires and rehires through the REAL dispatch, and the provider-admission
+# gate in front of it asks whether a provider CLI is signed in ON THIS MACHINE
+# — a fact about the operator's laptop, not about the docket. Stubbed here so
+# this suite's answer does not depend on who is logged in; the gate keeps its
+# own checks in test_app_settings.py and test_antigravity_dispatch.py.
+api.provider_hire_gate = lambda *a, **k: None
 
 client = TestClient(api.app)
 PASSED = 0
@@ -247,18 +256,31 @@ def participants_collaborate_narrowly():
     ok(slug, "boss", "participants", slug=wid, add=["peer"])
     it = get_item(slug, wid)
     assert it["participants"] == ["peer"]
-    # a participant may read, update, add evidence
+    # a participant may read, add evidence — and before it has updated, it
+    # holds nothing else: no assign, no accept, no participant edits
     assert work(slug, "peer", "get", slug=wid)[0] == 200
-    ok(slug, "peer", "update", slug=wid, done_so_far=["peer helped"], working_on_next=[])
     ok(slug, "peer", "evidence", slug=wid, kind="note", ref="peer's note")
-    assert get_item(slug, wid)["last_updater"]["node"] == "peer"
-    # …but may not assign, accept, archive, supersede, or edit participants
     refused(slug, "peer", "assign", slug=wid, owner="peer")
     refused(slug, "peer", "accept", slug=wid)
     refused(slug, "peer", "participants", slug=wid, remove=["peer"])
     # removal takes the right away again
     ok(slug, "boss", "participants", slug=wid, remove=["peer"])
     assert work(slug, "peer", "get", slug=wid)[0] == 422
+    # ⚠ AND THE UPDATE ITSELF IS THE CLAIM (user ruling 2026-09-05 21:02,
+    # reaffirmed 21:15: being allowed to update IS the claim mechanism, and it
+    # applies to participants too). A participant that posts a status becomes
+    # the item's assignment — which is ownership — so it is no longer a
+    # participant and its later calls are owner-level calls.
+    ok(slug, "boss", "participants", slug=wid, add=["peer"])
+    ok(slug, "peer", "update", slug=wid, done_so_far=["peer helped"], working_on_next=[])
+    it = get_item(slug, wid)
+    assert it["owner"]["node"] == "peer", "the update did not claim the item"
+    assert it["last_updater"]["node"] == "peer"
+    assert it["participants"] == [], "the new owner is not also a participant"
+    ok(slug, "peer", "assign", slug=wid, owner="peer")      # owner-level, now legal
+    # …and the claim mailed nobody: an agent claiming its own item is not
+    # notified of itself (no self-notification loop)
+    assert not store.load_org(slug).d.get("mail", {}).get("peer")
 
 
 check("participants get read + update + evidence + nothing else; membership is explicit and revocable",
@@ -268,7 +290,11 @@ check("participants get read + update + evidence + nothing else; membership is e
 def acceptance_authority():
     slug = fresh_org()
     wid = create(slug, node="worker")
-    ok(slug, "worker", "update", slug=wid, status="review", done_so_far=["all of it"], working_on_next=[])
+    # entering review NAMES the reviewer (user ruling 2026-09-05 21:22) — here
+    # the worker asks the agent above it, which is the ordinary review in this
+    # tree. §12 covers the reviewer rules themselves.
+    ok(slug, "worker", "update", slug=wid, status="review", reviewer="mid",
+       done_so_far=["all of it"], working_on_next=[])
     assert "review" in refused(slug, "worker", "update", slug=wid, status="done",
                                done_so_far=["x"], working_on_next=[])
     assert "superior" in refused(slug, "worker", "accept", slug=wid)          # the owner, never
@@ -353,10 +379,12 @@ def participants_cannot_close_claim_or_check():
     """Astra review 2026-09-05 (reproduced red: participant `dropped` 200, `claim` 200)."""
     slug = fresh_org()
     wid = create(slug, node="boss", participants=["peer"], acceptance=["works"])
-    ok(slug, "peer", "update", slug=wid, status="blocked",                                          # positive
-       blocked_reason="the vendor's key has not arrived; their support can send it",
-       done_so_far=["p"], working_on_next=[])
     ok(slug, "peer", "evidence", slug=wid, kind="link", ref="http://x")                              # positive
+    # ⚠ THE CLAIMING CALL IS JUDGED ON THE AUTHORITY IT ARRIVED WITH. An
+    # update claims the item (user ruling 2026-09-05 21:15) — but the claim
+    # takes effect at the END of the call, so a participant's update may not
+    # ALSO drop, retitle or reopen in the same breath. Read the authority from
+    # the post-update state instead and this whole set turns into 200s.
     assert "owner-level" in refused(slug, "peer", "update", slug=wid, status="dropped",
                                     done_so_far=["p"], working_on_next=[])
     assert "owner-level" in refused(slug, "peer", "claim", slug=wid, stage="implemented")
@@ -366,12 +394,44 @@ def participants_cannot_close_claim_or_check():
     ok(slug, "boss", "claim", slug=wid, stage="committed", ref="abc1234")
     assert "owner-level" in refused(slug, "peer", "verify", slug=wid, stage="committed")
     it = get_item(slug, wid)
-    assert it["status"] == "blocked" and it["title"] == "ship the thing"
+    assert it["status"] == "open" and it["title"] == "ship the thing", \
+        "a refused update wrote something anyway"
+    assert it["owner"]["node"] == "boss", "a REFUSED update must not claim the item"
+    # ⚠ THE ORDERING IS THE GUARD, so it gets its own assertion: a participant
+    # that has ALREADY claimed an item by updating it may drop and retitle it
+    # (it is the owner), and one that is claiming it in THIS call may not. Read
+    # the authority from the post-claim state — "may update, therefore may
+    # manage" — and the two cases collapse into one, which is the escalation.
+    ok(slug, "peer", "update", slug=wid, done_so_far=["p"], working_on_next=[])
+    assert get_item(slug, wid)["owner"]["node"] == "peer"
+    ok(slug, "peer", "update", slug=wid, title="mine now",
+       done_so_far=["p"], working_on_next=[])
+    ok(slug, "boss", "update", slug=wid, title="ship the thing", owner="peer",
+       done_so_far=["p"], working_on_next=[])
     assert it["delivery"]["implemented"] is None and it["acceptance"][0]["checked"] is None
-    # the same calls by the owner succeed (the refusals are about WHO, not WHAT)
+    # the plain update is allowed, and it claims: from here peer IS the owner,
+    # so the same calls succeed — the refusals above were about WHO, not WHAT
+    ok(slug, "peer", "update", slug=wid, status="blocked", done_so_far=["p"], working_on_next=[])
+    assert get_item(slug, wid)["owner"]["node"] == "peer"
+    ok(slug, "peer", "claim", slug=wid, stage="implemented")
+    ok(slug, "peer", "check", slug=wid, index=0, evidence_ref="x")
+    # the creator can still act on it, and THE ADMINISTRATIVE UPDATE keeps the
+    # work where it is: `owner` naming the agent that already holds the item
+    # (Astra ruling 2026-09-05 21:18) — a superior closing out somebody else's
+    # item does not take it over on the way past.
     ok(slug, "boss", "check", slug=wid, index=0, evidence_ref="x")
-    ok(slug, "boss", "update", slug=wid, status="dropped", done_so_far=["p"], working_on_next=[])
-    assert "owner-level" in refused(slug, "peer", "update", slug=wid, reopen=True,
+    before = len([h for h in get_item(slug, wid)["history"] if h["op"] == "assign"])
+    ok(slug, "boss", "update", slug=wid, status="dropped", owner="peer",
+       done_so_far=["p"], working_on_next=[])
+    it = get_item(slug, wid)
+    assert it["owner"]["node"] == "peer", "the administrative update took the item"
+    assert len([h for h in it["history"] if h["op"] == "assign"]) == before, \
+        "naming the current owner filed an assignment that changed nothing"
+    # a participant still cannot reopen a closed item
+    wid2 = create(slug, node="boss", title="closed one", participants=["stranger"])
+    ok(slug, "boss", "update", slug=wid2, status="dropped",
+       done_so_far=["p"], working_on_next=[])
+    assert "owner-level" in refused(slug, "stranger", "update", slug=wid2, reopen=True,
                                     done_so_far=["p"], working_on_next=[])
 
 
@@ -498,7 +558,8 @@ print("§4 archive")
 def exact_hour_edge():
     slug = fresh_org()
     wid = create(slug)
-    ok(slug, "boss", "update", slug=wid, status="review", done_so_far=["done"], working_on_next=[])
+    ok(slug, "boss", "update", slug=wid, status="review", reviewer="mid",
+       done_so_far=["done"], working_on_next=[])
     client.post(f"/api/orgs/{slug}/work-items/{wid}/accept", json={})
     org = store.load_org(slug)
     it, _ = org._work_find(wid)
@@ -767,48 +828,76 @@ check("dismissing the manual flag leaves pending questions untouched and the ite
 print("§7 reply routing")
 
 
-def reply_goes_to_the_last_updater_exactly():
+def reply_goes_to_the_assignment_exactly():
+    """User ruling 2026-09-05 (via Astra 21:15): the reply goes to the
+    ASSIGNMENT — the owner — and there is no second route behind it.
+
+    Measured on the live document that day: 26 of 39 items had an owner
+    different from their last updater, and in 25 of those the last updater was
+    the coordinator. Under the old rule the user's reply on nearly every
+    finished item reached the coordinator instead of the agent holding it,
+    which is the shape this section now pins in the other direction."""
     slug = fresh_org()
     wid = create(slug, node="boss", title="Reply target", participants=["peer"])
     ok(slug, "peer", "update", slug=wid, done_so_far=["peer did it"], working_on_next=[])
-    # owner change, a question from boss, and a dismissal do not touch the recipient
+    assert get_item(slug, wid)["owner"]["node"] == "peer", "the update did not claim it"
+    # an explicit reassignment MOVES the recipient — that is the point of it —
+    # while a question attach and a dismissal leave it alone
     ok(slug, "boss", "assign", slug=wid, owner="mid")
-    assert get_item(slug, wid)["last_updater"]["node"] == "peer", "assignment stamped the updater"
     agent(slug, "boss", "orgtree_ask", question="q?", work_item=wid)
-    assert get_item(slug, wid)["last_updater"]["node"] == "peer", "a question attach stamped the updater"
-    ok(slug, "peer", "update", slug=wid, attention=True, attention_reason="r", done_so_far=["x"], working_on_next=[])
+    ok(slug, "mid", "update", slug=wid, attention=True, attention_reason="r",
+       done_so_far=["x"], working_on_next=[])
     client.post(f"/api/orgs/{slug}/work-items/{wid}/dismiss-attention", json={"set_rev": 1})
-    assert get_item(slug, wid)["last_updater"]["node"] == "peer"
+    it = get_item(slug, wid)
+    assert it["owner"]["node"] == "mid" and it["last_updater"]["node"] == "mid"
     r = client.post(f"/api/orgs/{slug}/work-items/{wid}/reply", json={"body": "please also do Y"})
     assert r.status_code == 200, r.text
     js = r.json()
-    assert js["to"] == "peer" and js["deferred"] is False and js["accepted"] is True
-    mail = store.load_org(slug).d["mail"]["peer"][-1]
+    assert js["to"] == "mid" and js["deferred"] is False and js["accepted"] is True
+    mail = store.load_org(slug).d["mail"]["mid"][-1]
     assert mail["from"] == USER and mail["body"].startswith(f'[DOCKET REPLY · {wid} "Reply target"]'), mail["body"]
     assert "please also do Y" in mail["body"]
-    assert DRIVEN[-1][1] == "peer" and DRIVEN[-1][3] is True, "the recipient is driven"
+    assert DRIVEN[-1][1] == "mid" and DRIVEN[-1][3] is True, "the recipient is driven"
     assert client.post(f"/api/orgs/{slug}/work-items/{wid}/reply", json={"body": "  "}).status_code == 422
-    # no updater yet → explicit 422, nobody chosen instead
+    # ⚠ THE LAST UPDATER IS NOT A FALLBACK. An unowned item has nobody to
+    # reply to, and the failure is shown rather than a substitute chosen —
+    # even when an agent HAS written a status on it.
     org = store.load_org(slug)
-    org.work_create(USER, "user-made", "the user made this; it has no updater",
-                    owner="mid")     # owned, but no agent ever updated it
+    org.work_create(USER, "user-made", "the user made this; nobody owns it")
     store.save_org(org)
     wid_u = [x["slug"] for x in listing(slug)["items"] if x["title"] == "user-made"][0]
+    assert get_item(slug, wid_u)["owner"] is None
     r = client.post(f"/api/orgs/{slug}/work-items/{wid_u}/reply", json={"body": "hi"})
-    assert r.status_code == 422 and "nobody to reply to" in r.text, \
-        "the owner is NOT a fallback recipient — the failure is shown instead"
-    assert not store.load_org(slug).d.get("mail", {}).get("mid"), "nothing was mailed to the owner"
+    assert r.status_code == 422 and "no assignment" in r.text, r.text
+    assert not store.load_org(slug).d.get("mail", {}).get("boss"), \
+        "an unowned item mailed somebody anyway"
+    # ⚠ AND THE CASE THE FALLBACK WOULD HAVE CAUGHT: an item with a last
+    # updater and NO owner. It is unreachable through the tools now (an
+    # update claims the item), so it is built in the document directly —
+    # without it, a reintroduced `owner or last_updater` fallback passes every
+    # other check in this file (measured: that mutant survived until this
+    # block existed).
+    org = store.load_org(slug)
+    it, _ = org._work_find(wid_u)
+    it["owner"] = None
+    it["last_updater"] = {"node": "peer", "generation": 0}
+    store.save_org(org)
+    n_mail = len(store.load_org(slug).d.get("mail", {}).get("peer") or [])
+    r = client.post(f"/api/orgs/{slug}/work-items/{wid_u}/reply", json={"body": "hi"})
+    assert r.status_code == 422 and "no assignment" in r.text, \
+        "the last updater is being used as a fallback recipient"
+    assert len(store.load_org(slug).d.get("mail", {}).get("peer") or []) == n_mail
     # an archived recipient: the mail is deferred, the response says so, no reroute
     org = store.load_org(slug)
-    org.retire(USER, "peer")
+    org.retire(USER, "mid")
     store.save_org(org)
     r = client.post(f"/api/orgs/{slug}/work-items/{wid}/reply", json={"body": "still you"})
-    assert r.status_code == 200 and r.json() == {**r.json(), "to": "peer", "deferred": True, "node_state": "archived"}
+    assert r.status_code == 200 and r.json() == {**r.json(), "to": "mid", "deferred": True, "node_state": "archived"}
     assert client.post(f"/api/orgs/{slug}/work-items/w0000dead/reply", json={"body": "x"}).status_code == 404
 
 
-check("the general reply reaches the last updater exactly; every failure is explicit, never a substitute",
-      reply_goes_to_the_last_updater_exactly)
+check("the general reply reaches the ASSIGNMENT exactly; every failure is explicit, never a substitute",
+      reply_goes_to_the_assignment_exactly)
 
 
 # ============================================================ §8 delivery
@@ -1063,7 +1152,13 @@ def doctrine_rides_the_identity_prompt_on_every_lane():
         p = supervisor.identity_prompt(org, nid)
         assert "THE DOCKET" in p and "orgtree_work" in p, nid
         assert "done_so_far" in p and "working_on_next" in p
-        assert "LAST UPDATER" in p and "reopen=true" in p and "exact repeat" in p
+        # §7 was rewritten when assignment became ownership: the reply goes to
+        # the ASSIGNMENT, an update claims the item, and the administrative
+        # `owner` argument is how a superior keeps it where it is
+        assert "ASSIGNMENT IS OWNERSHIP" in p and "reopen=true" in p \
+            and "exact repeat" in p
+        assert "LAST UPDATER" not in p, \
+            "the doctrine still teaches the retired last-updater reply route"
         assert "work_item" in p, "the ask linkage must be taught, not just present in the card"
     # the same string is what every lane renders (source-level: the claude identity
     # file, the codex AGENTS.md and the antigravity developer_instructions all call it)
@@ -1624,7 +1719,7 @@ def sub_items_are_independent_items_in_a_tree():
     # ⚠ NESTING IS NOT A LIFECYCLE EDGE. Accepting the parent must not touch
     # the child, and vice versa — a parent is completed explicitly, after the
     # whole outcome is delivered.
-    ok(slug, "boss", "update", slug=child, status="review",
+    ok(slug, "boss", "update", slug=child, status="review", reviewer="mid",
        done_so_far=["done"], working_on_next=[])
     assert get_item(slug, parent)["status"] != "review", \
         "the parent's status followed its child's"
@@ -2403,6 +2498,407 @@ def a_legacy_dismissal_derives_the_same_way():
 check("a legacy dismissal counts only when it moved the value",
       a_legacy_dismissal_derives_the_same_way)
 
+# ========================================================== §15 assignment
+print("§15 assignment")
+
+
+#: the tool switches an agent hire must state explicitly (the ledger refuses a
+#: hire with defaults). Nothing here turns anything ON — §15 is about the
+#: docket half of a hire, not about what the seat may touch.
+HIRE_TOOLS = {"bash": False, "web": False, "edit": False,
+              "subagents": False, "mcp": []}
+
+
+def call(org, caller, tool, args):
+    """`agent()` with the arguments as a DICT. A rehire's own argument is
+    called `node`, which is also the name of `agent()`'s caller parameter —
+    passing it as a kwarg collides with the helper rather than with anything
+    in the product."""
+    r = client.post("/api/agent", json={"org": org, "node": caller,
+                                        "tool": tool, "args": args})
+    return r.status_code, (r.json() if r.headers.get("content-type", "").startswith("application/json") else r.text)
+
+
+def mailbox(slug, nid):
+    return store.load_org(slug).d.get("mail", {}).get(nid) or []
+
+
+def assignment_notifies_the_agent_that_acquired_the_item():
+    """User request 2026-09-05 20:46: the gap was that `assign` set a field,
+    told nobody, and left the reply going somewhere else."""
+    slug = fresh_org()
+    wid = create(slug, node="boss", title="Hand it over")
+    n = len(DRIVEN)
+    r = ok(slug, "boss", "assign", slug=wid, owner="mid")
+    assert r["notified"] == "mid", r
+    m = mailbox(slug, "mid")[-1]
+    assert m["from"] == "boss" and m["body"].startswith(
+        f'[DOCKET ASSIGNMENT · {wid} "Hand it over"]'), m["body"]
+    assert "OWNERSHIP" in m["body"] and "management rights" in m["body"]
+    # …the description and the current status ride along, so the agent can act
+    # without a second lookup
+    assert "the thing is not shipped" in m["body"] and "read the spec" in m["body"]
+    # and it is WOKEN — before it has ever written an update on the item
+    assert len(DRIVEN) == n + 1 and DRIVEN[-1][1] == "mid" and DRIVEN[-1][3] is True, \
+        "the assignee was not driven"
+    assert get_item(slug, wid)["owner"]["node"] == "mid"
+
+
+check("assign tells the agent it now holds the item, and wakes it",
+      assignment_notifies_the_agent_that_acquired_the_item)
+
+
+def creating_an_item_for_somebody_else_tells_them():
+    slug = fresh_org()
+    r = ok(slug, "boss", "create", title="For mid", objective="mid must do this",
+           owner="mid", done_so_far=[], working_on_next=["start"])
+    assert r["notified"] == "mid" and r["owner"]["node"] == "mid"
+    assert mailbox(slug, "mid")[-1]["body"].startswith("[DOCKET ASSIGNMENT")
+    # keeping an item you created mails NOBODY — no self-notification loop
+    n = len(mailbox(slug, "boss"))
+    r2 = ok(slug, "boss", "create", title="Mine", objective="I will do this")
+    assert r2["notified"] is None and len(mailbox(slug, "boss")) == n
+
+
+check("creating an item FOR another agent notifies it; keeping your own notifies nobody",
+      creating_an_item_for_somebody_else_tells_them)
+
+
+def an_update_claims_the_item_and_an_explicit_owner_wins():
+    """User ruling 21:02 + Astra 21:15/21:18: the claim is uniform, and the
+    explicit `owner` argument is how an administrative update preserves the
+    agent already holding the work."""
+    slug = fresh_org()
+    wid = create(slug, node="worker")
+    ok(slug, "worker", "update", slug=wid, done_so_far=["a"], working_on_next=[])
+    assert get_item(slug, wid)["owner"]["node"] == "worker"
+    # a SUPERIOR's ordinary update takes it — no ancestor exception (Astra
+    # 21:18 explicitly refused one)
+    ok(slug, "boss", "update", slug=wid, done_so_far=["boss looked"], working_on_next=[])
+    assert get_item(slug, wid)["owner"]["node"] == "boss", \
+        "the uniform claim did not fire for a superior"
+    # …and the administrative form gives it back and KEEPS it there
+    n = len(mailbox(slug, "worker"))
+    ok(slug, "boss", "assign", slug=wid, owner="worker")
+    assert len(mailbox(slug, "worker")) == n + 1, "the handover was silent"
+    ok(slug, "boss", "update", slug=wid, owner="worker",
+       done_so_far=["boss summarised"], working_on_next=[])
+    it = get_item(slug, wid)
+    assert it["owner"]["node"] == "worker", "the administrative update took the item"
+    assert it["last_updater"]["node"] == "boss", "history lost who actually wrote it"
+    assert len(mailbox(slug, "worker")) == n + 1, \
+        "naming the current owner mailed them again for nothing"
+    # an explicit target that is NOT yours to assign to is refused outright
+    assert "neither" in refused(slug, "worker", "update", slug=wid, owner="peer",
+                                done_so_far=["x"], working_on_next=[])
+    # …and a participant may claim, but may not hand the item to a third party
+    ok(slug, "boss", "participants", slug=wid, add=["stranger"])
+    assert "someone else" in refused(slug, "stranger", "update", slug=wid, owner="mid",
+                                     done_so_far=["x"], working_on_next=[])
+    assert get_item(slug, wid)["owner"]["node"] == "worker", "a refused update still moved it"
+
+
+check("an authorized update claims the item; an explicit owner wins and preserves it",
+      an_update_claims_the_item_and_an_explicit_owner_wins)
+
+
+def the_user_never_claims_and_never_owns():
+    slug = fresh_org()
+    wid = create(slug, node="mid")
+    org = store.load_org(slug)
+    org.work_update(USER, wid, ["the user wrote this"], [])
+    store.save_org(org)
+    it = get_item(slug, wid)
+    assert it["owner"]["node"] == "mid", "a user update claimed the item"
+    assert it["last_updater"]["node"] == "mid", \
+        "the user became the last updater (that field is for agents)"
+
+
+check("the user's own update never claims the item and never becomes an updater",
+      the_user_never_claims_and_never_owns)
+
+
+# ==================================================== §16 one-call staffing
+print("§16 one-call staffing")
+
+
+def hire_can_carry_the_item_and_the_assignment_starts_it():
+    slug = fresh_org()
+    wid = create(slug, node="boss", title="Needs a body")
+    n = len(DRIVEN)
+    st, r = agent(slug, "boss", "orgtree_hire", name="fresh", tier="haiku", grant=0,
+                  charter="do the thing", add_dirs=[], tools=HIRE_TOOLS, org_visibility="full",
+                  work_item=wid)
+    assert st == 200, r
+    nid = r["node"]
+    assert r["assigned_item"] == wid and f"work_item:{wid}" in r["applied"], r
+    assert r["started"] is True, "the assignment notification did not start the seat"
+    assert get_item(slug, wid)["owner"]["node"] == nid
+    assert mailbox(slug, nid)[-1]["body"].startswith("[DOCKET ASSIGNMENT")
+    # ONE first turn, and it happens AFTER the save — the seat can never wake
+    # into a document that does not yet say it owns the item
+    woke = [d for d in DRIVEN[n:] if d[1] == nid]
+    assert len(woke) == 1, [d[1] for d in DRIVEN[n:]]
+    assert store.load_org(slug)._work_find(wid)[0]["owner"]["node"] == nid
+
+
+check("orgtree_hire takes a work_item: the seat is hired, assigned, told, and running",
+      hire_can_carry_the_item_and_the_assignment_starts_it)
+
+
+def hire_with_item_and_kickoff_still_runs_one_turn():
+    slug = fresh_org()
+    wid = create(slug, node="boss")
+    n = len(DRIVEN)
+    st, r = agent(slug, "boss", "orgtree_hire", name="both", tier="haiku", grant=0,
+                  charter="c", add_dirs=[], tools=HIRE_TOOLS, org_visibility="full",
+                  work_item=wid, kickoff="start now")
+    assert st == 200, r
+    assert len([d for d in DRIVEN[n:] if d[1] == r["node"]]) == 1, "two first turns"
+    box = mailbox(slug, r["node"])
+    assert [m["body"][:20] for m in box] == ["[DOCKET ASSIGNMENT ·", "start now"], \
+        "the kickoff must land last, after the assignment"
+
+
+check("a hire carrying both an item and a kickoff still runs exactly one first turn",
+      hire_with_item_and_kickoff_still_runs_one_turn)
+
+
+def staff_creates_the_item_the_seat_and_the_assignment():
+    slug = fresh_org()
+    n = len(DRIVEN)
+    st, r = agent(slug, "boss", "orgtree_staff",
+                  title="Staffed work", objective="nobody is on this; put somebody on it",
+                  working_on_next=["begin"],
+                  name="staffed", tier="haiku", grant=0, charter="do it",
+                  add_dirs=[], tools=HIRE_TOOLS, org_visibility="full")
+    assert st == 200, r
+    nid, item = r["node"], r["item"]
+    assert r["created"] == item and r["assigned_to"] == nid and r["started"] is True
+    it = get_item(slug, item)
+    assert it["owner"]["node"] == nid and it["created_by"]["node"] == "boss"
+    # ⚠ ONE assignment in the history, to the agent that holds it — the item
+    # never belonged to its author for a moment on the way
+    assert [h["op"] for h in it["history"]] == [], "creation should file no history rows"
+    assert it["owner"]["node"] == nid
+    assert len([d for d in DRIVEN[n:] if d[1] == nid]) == 1
+    assert mailbox(slug, nid)[-1]["body"].startswith("[DOCKET ASSIGNMENT")
+
+
+check("orgtree_staff creates the item, hires the seat, assigns it, and starts it — once",
+      staff_creates_the_item_the_seat_and_the_assignment)
+
+
+def staff_can_update_an_existing_item_and_rehire():
+    slug = fresh_org()
+    wid = create(slug, node="boss", title="Old work")
+    st, r = agent(slug, "boss", "orgtree_staff", action="update", slug=wid,
+                  done_so_far=["the earlier attempt"], working_on_next=["resume"],
+                  status="in_progress",
+                  name="second", tier="haiku", grant=0, charter="resume it",
+                  add_dirs=[], tools=HIRE_TOOLS, org_visibility="full")
+    assert st == 200, r
+    assert r["updated"] == wid and r["assigned_to"] == r["node"]
+    it = get_item(slug, wid)
+    assert it["owner"]["node"] == r["node"] and it["status"] == "in_progress"
+    assert it["done_so_far"] == ["the earlier attempt"]
+    # …and the rehire half, on an agent that was retired
+    org = store.load_org(slug)
+    org.retire(USER, "worker")
+    store.save_org(org)
+    st, r2 = call(slug, "boss", "orgtree_staff",
+                  {"staff_mode": "rehire", "node": "worker", "action": "update",
+                   "slug": wid, "done_so_far": ["x"],
+                   "working_on_next": ["worker takes it back"]})
+    assert st == 200, r2
+    assert r2["node"] == "worker" and get_item(slug, wid)["owner"]["node"] == "worker"
+
+
+check("orgtree_staff updates an existing item, and rehires as well as hires",
+      staff_can_update_an_existing_item_and_rehire)
+
+
+def staff_refuses_whole_leaving_no_seat_no_item_no_mail_no_wake():
+    """All-or-nothing, and the failure must be provable rather than asserted:
+    a blank objective is refused by the DOCKET half, which runs AFTER the seat
+    is created — so if the transaction did not cover both, a seat would be
+    left behind."""
+    slug = fresh_org()
+    before_nodes = set(store.load_org(slug).nodes)
+    before_items = {x["slug"] for x in listing(slug, archived=True)["items"]}
+    n = len(DRIVEN)
+    st, r = agent(slug, "boss", "orgtree_staff", title="No description",
+                  objective="   ",
+                  name="ghost", tier="haiku", grant=0, charter="c",
+                  add_dirs=[], tools=HIRE_TOOLS, org_visibility="full")
+    assert st == 422, (st, r)
+    org = store.load_org(slug)
+    assert set(org.nodes) == before_nodes, "a seat survived a refused staff call"
+    assert {x["slug"] for x in listing(slug, archived=True)["items"]} == before_items
+    assert not org.d.get("mail", {}).get("ghost"), "mail for a seat that does not exist"
+    assert len(DRIVEN) == n, "a refused call woke somebody"
+    # POSITIVE CONTROL: the same call with a description succeeds, so the
+    # refusal above is the objective guard and not a broken argument list
+    st2, r2 = agent(slug, "boss", "orgtree_staff", title="No description",
+                    objective="there is nobody on this; hire one",
+                    name="ghost", tier="haiku", grant=0, charter="c",
+                    add_dirs=[], tools=HIRE_TOOLS, org_visibility="full")
+    assert st2 == 200, r2
+
+
+check("a refused orgtree_staff leaves no seat, no item, no mail and no wake",
+      staff_refuses_whole_leaving_no_seat_no_item_no_mail_no_wake)
+
+
+def staff_mode_and_the_parent_collision():
+    slug = fresh_org()
+    parent = create(slug, node="boss", title="Parent work")
+    # `parent` names the parent ITEM here — never the seat's destination
+    st, r = agent(slug, "boss", "orgtree_staff", title="Child work",
+                  objective="the parent needs a sub-item somebody owns",
+                  parent=parent, target="mid",
+                  name="nested", tier="haiku", grant=0, charter="c",
+                  add_dirs=[], tools=HIRE_TOOLS, org_visibility="full")
+    assert st == 200, r
+    assert get_item(slug, r["item"])["parent"] == parent
+    assert store.load_org(slug).node(r["node"])["parent"] == "mid", \
+        "the seat did not go to `target`"
+    # the two modes are checked, not guessed
+    assert "does not take `node`" in str(call(
+        slug, "boss", "orgtree_staff",
+        {"staff_mode": "hire", "node": "worker", "title": "x", "objective": "y"})[1])
+    assert "needs `node`" in str(call(
+        slug, "boss", "orgtree_staff",
+        {"staff_mode": "rehire", "title": "x", "objective": "y"})[1])
+
+
+check("staff's `parent` is the parent ITEM, and hire/rehire modes are checked not guessed",
+      staff_mode_and_the_parent_collision)
+
+
+# ============================================================== §17 review
+print("§17 review")
+
+
+def entering_review_names_a_reviewer():
+    slug = fresh_org()
+    wid = create(slug, node="worker")
+    assert "names its reviewer" in refused(slug, "worker", "update", slug=wid,
+                                           status="review", done_so_far=["all"],
+                                           working_on_next=[])
+    assert get_item(slug, wid)["status"] == "open", "the refused update still moved it"
+    # the owner cannot name itself
+    assert "cannot review its own work" in refused(
+        slug, "worker", "update", slug=wid, status="review", reviewer="worker",
+        done_so_far=["all"], working_on_next=[])
+    # …and names somebody it can actually ask: its own superior here
+    n = len(DRIVEN)
+    r = ok(slug, "worker", "update", slug=wid, status="review", reviewer="mid",
+           done_so_far=["all"], working_on_next=[])
+    assert r["reviewer_notified"] == "mid" and r["reviewer"]["node"] == "mid"
+    m = mailbox(slug, "mid")[-1]
+    assert m["body"].startswith(f'[DOCKET REVIEW REQUEST · {wid}')
+    assert "NOT OWNERSHIP" in m["body"] and "worker" in m["body"]
+    assert len([d for d in DRIVEN[n:] if d[1] == "mid"]) == 1, "the reviewer was not woken"
+    assert get_item(slug, wid)["owner"]["node"] == "worker", "the review moved the item"
+    # a reviewer on work that is NOT entering review is refused
+    wid2 = create(slug, node="worker")
+    assert "puts the item at status review" in refused(
+        slug, "worker", "update", slug=wid2, reviewer="mid",
+        done_so_far=["x"], working_on_next=[])
+    # an item that was ALREADY at review keeps a null reviewer — nothing is
+    # invented for records that predate the field (Astra 21:22)
+    org = store.load_org(slug)
+    it, _ = org._work_find(wid2)
+    it["status"] = "review"
+    it.pop("reviewer", None)
+    store.save_org(org)
+    assert get_item(slug, wid2)["reviewer"] is None
+
+
+check("entering review names a reviewer, tells it, and leaves the item with its owner",
+      entering_review_names_a_reviewer)
+
+
+def the_reviewer_may_read_and_decide_and_nothing_else():
+    slug = fresh_org()
+    wid = create(slug, node="worker")
+    assert work(slug, "peer", "get", slug=wid)[0] == 422, "control: peer cannot read it"
+    org = store.load_org(slug)          # boss names an unrelated top-level peer
+    org.work_update(USER, wid, ["done"], [], status="review", reviewer="peer")
+    store.save_org(org)
+    assert work(slug, "peer", "get", slug=wid)[0] == 200, "naming did not grant read"
+    ok(slug, "peer", "evidence", slug=wid, kind="note", ref="I read it")
+    # …but a status update would CLAIM the item, so it is refused by name
+    assert "REVIEWER, not a collaborator" in refused(
+        slug, "peer", "update", slug=wid, done_so_far=["mine now"], working_on_next=[])
+    assert get_item(slug, wid)["owner"]["node"] == "worker"
+    for act, kw in (("assign", {"owner": "peer"}),
+                    ("participants", {"add": ["stranger"]}),
+                    ("claim", {"stage": "implemented"}),
+                    ("archive", {})):
+        assert refused(slug, "peer", act, slug=wid, **kw)
+
+
+check("a named reviewer gets read, evidence and the decision — and no ownership",
+      the_reviewer_may_read_and_decide_and_nothing_else)
+
+
+def the_two_review_decisions():
+    slug = fresh_org()
+    wid = create(slug, node="worker", title="Under review")
+    ok(slug, "worker", "update", slug=wid, status="review", reviewer="mid",
+       done_so_far=["all"], working_on_next=[])
+    n = len(DRIVEN)
+    r = ok(slug, "mid", "review", slug=wid, decision="changes",
+           note="the guard has no negative control")
+    it = get_item(slug, wid)
+    assert r["decision"] == "changes" and it["status"] == "in_progress"
+    assert it["owner"]["node"] == "worker", "a review decision claimed the item"
+    m = mailbox(slug, "worker")[-1]
+    assert "CHANGES REQUESTED" in m["body"] and "negative control" in m["body"]
+    assert len([d for d in DRIVEN[n:] if d[1] == "worker"]) == 1, "the owner was not woken"
+    # …and approval COMPLETES the item (user ruling 21:26), with no second
+    # acceptance round behind it
+    ok(slug, "worker", "update", slug=wid, status="review", reviewer="mid",
+       done_so_far=["fixed"], working_on_next=[])
+    r2 = ok(slug, "mid", "review", slug=wid, decision="approve", note="good now")
+    it = get_item(slug, wid)
+    assert it["status"] == "done" and it["accepted"]["by"]["node"] == "mid"
+    assert it["accepted"]["via"] == "review_approve" and it["owner"]["node"] == "worker"
+    assert "REVIEW PASSED" in mailbox(slug, "worker")[-1]["body"]
+    assert "already done" in refused(slug, "mid", "review", slug=wid, decision="approve")
+
+
+check("changes returns the item to its owner; approval completes it",
+      the_two_review_decisions)
+
+
+def self_review_is_checked_again_when_the_decision_is_made():
+    """⚠ THE CHECK AT NAMING TIME IS NOT ENOUGH: ownership moves, and an
+    update claims it. Astra 21:26 asked for the re-check explicitly."""
+    slug = fresh_org()
+    wid = create(slug, node="worker")
+    ok(slug, "worker", "update", slug=wid, status="review", reviewer="mid",
+       done_so_far=["all"], working_on_next=[])
+    # mid now takes the item over with an ordinary update — it is the owner
+    # AND the named reviewer, which is the self-review the user prohibited
+    ok(slug, "mid", "update", slug=wid, done_so_far=["mid took it"], working_on_next=[])
+    it = get_item(slug, wid)
+    assert it["owner"]["node"] == "mid" and it["reviewer"]["node"] == "mid"
+    assert "cannot review it" in refused(slug, "mid", "review", slug=wid,
+                                         decision="approve")
+    assert "cannot review it" in refused(slug, "mid", "review", slug=wid,
+                                         decision="changes")
+    assert get_item(slug, wid)["status"] != "done"
+    # POSITIVE CONTROL: the same call from the superior above the new owner
+    # still works, so the refusal is the self-review rule and not a dead verb
+    ok(slug, "boss", "review", slug=wid, decision="approve")
+    assert get_item(slug, wid)["status"] == "done"
+
+
+check("self-review is re-checked at decision time, not only when the reviewer was named",
+      self_review_is_checked_again_when_the_decision_is_made)
 
 
 # ---------------------------------------------------------------- summary

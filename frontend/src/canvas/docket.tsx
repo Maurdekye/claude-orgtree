@@ -947,6 +947,108 @@ export function DocketModal({ slug, toast, close, tree, onFocusAgent,
   )
 }
 
+/** THE AGENT'S OWN DOCKET — the desk tab (user ruling 2026-09-05 21:07: the
+ *  Progress tab's contents are replaced entirely by the items assigned to this
+ *  agent).
+ *
+ *  IT IS THE SAME DOCKET, FILTERED. Every row, every detail pane, the status
+ *  vocabulary, the nesting, the reply box and the attention handling are the
+ *  modal's own components called with a shorter list — so a rule added to the
+ *  docket (a new status, a new column, a new pointer) appears here without
+ *  anyone remembering to copy it, and the two can never disagree about what an
+ *  item looks like. `docket-modal` rides the wrapper for exactly that reason:
+ *  the row styling is scoped to that class, and reusing the class is what
+ *  "reuse the layout" means here. It is not inside a modal, and does not
+ *  pretend to be — no header, no filter checkboxes, no grouping control.
+ *
+ *  THE FILTER IS ASSIGNMENT, at ANY generation of the name. An item assigned
+ *  to `worker` before a cheap compaction is still assigned to `worker`; the
+ *  generation is what the row's chip reasons about, never what decides whether
+ *  the work is yours. */
+export function AgentDocketView({ slug, nid, facts, toast, onFocusAgent }: {
+  slug: string
+  nid: string
+  facts: Map<string, NodeFacts>
+  toast: ToastFn
+  onFocusAgent?: (agentId: string) => void
+}) {
+  const [bump, setBump] = useState(0)
+  const [selId, setSelId] = useState<string | null>(null)
+  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(
+    () => new Set<string>())
+  // the SAME endpoint the panel polls, at the same interval, with both extra
+  // groups asked for: an agent's finished and not-yet-started work is still
+  // its work, and hiding it here would make the tab disagree with the docket
+  // about what this agent holds.
+  const data = usePolled(() => getWorkItems(slug, true, true),
+                         [slug], 5000, `${bump}-${nid}`)
+  const mine = useMemo(() => {
+    const all = [...(data?.items ?? []), ...(data?.backlogged ?? []),
+                 ...(data?.archived ?? [])]
+    return all.filter((it) => it.owner?.node === nid)
+  }, [data, nid])
+  const byName = useMemo(
+    () => new Map(mine.map((it) => [it.slug, it])), [mine])
+  const refIndex = useMemo(
+    () => buildMentionIndex(byName.values(),
+                            [...facts].map(([id, f]) => [id, f.tier] as const)),
+    [byName, facts])
+  const cur = byName.get(selId ?? '')
+  const toggleFold = useCallback((name: string) => {
+    setCollapsed((c) => {
+      const next = new Set(c)
+      if (!next.delete(name)) next.add(name)
+      return next
+    })
+  }, [])
+  const onDismiss = (item: WorkItem) => {
+    if (!item.manual_attention) return
+    dismissWorkItemAttention(slug, item.slug, item.manual_attention.set_rev)
+      .then(() => {
+        toast([`dismissed the attention flag on “${item.title}”`])
+        setBump((n) => n + 1)
+      })
+      .catch((e: Error) => toast([`error: ${e.message}`]))
+  }
+  return (
+    <div className="msgs docket-modal docket-agent">
+      {!data
+        ? <div className="dim pad">loading…</div>
+        : mine.length === 0
+          ? <div className="dim pad">
+              no docket items are assigned to {nid} — assignment is ownership,
+              so this is everything it is responsible for
+            </div>
+          : (
+            <div className="mailer">
+              <div className="mailer-list">
+                {nestRows(mine, collapsed).map((row) => (
+                  <DocketRow key={row.item.slug} item={row.item}
+                    selected={row.item.slug === selId}
+                    depth={row.depth} kids={row.kids}
+                    folded={collapsed.has(row.item.slug)}
+                    onFold={() => toggleFold(row.item.slug)}
+                    onClick={() => setSelId(
+                      row.item.slug === selId ? null : row.item.slug)}
+                    onDismiss={onDismiss} facts={facts}
+                    onFocusAgent={onFocusAgent} />
+                ))}
+              </div>
+              <div className="mailer-read">
+                {cur
+                  ? <DocketPane key={cur.slug} slug={slug} item={cur} toast={toast}
+                      asksById={new Map()} onDismiss={onDismiss}
+                      close={() => setSelId(null)} onFocusAgent={onFocusAgent}
+                      facts={facts} refIndex={refIndex}
+                      onGoToItem={(id) => { if (byName.has(id)) setSelId(id) }} />
+                  : <div className="dim pad mailer-none">select an item to view it</div>}
+              </div>
+            </div>
+          )}
+    </div>
+  )
+}
+
 function DocketRow({ item, selected, onClick, onDismiss, facts, onFocusAgent,
   close, flash, rowRef, depth = 0, kids = 0, folded = false, onFold }: {
   item: WorkItem
@@ -1019,9 +1121,15 @@ function DocketRow({ item, selected, onClick, onDismiss, facts, onFocusAgent,
           title={attention ? undefined : statusHelp(item.status)}>
           {label}
         </span>
+        {/* THE ASSIGNMENT, where the last updater used to be (user ruling
+            2026-09-05: assignment is ownership, and it is what the docket
+            names). An unowned item says so in words rather than leaving the
+            slot blank, because an empty slot reads as "loading". */}
         <span className="docket-updater">
-          <ActorName actor={item.last_updater} facts={facts}
-            onFocusAgent={onFocusAgent} close={close} />
+          {item.owner
+            ? <ActorName actor={item.owner} facts={facts}
+                onFocusAgent={onFocusAgent} close={close} />
+            : <span className="dim">{UNASSIGNED}</span>}
         </span>
         {canDismiss && (
           <button className="badge docket-dismiss" title="clear this manually-raised flag"
@@ -1086,8 +1194,14 @@ function DocketPane({ slug, item, toast, asksById, onDismiss, close, onFocusAgen
   const label = attention ? 'Needs attention' : statusLabel(item.status)
   const canDismiss = item.attention_sources.includes('manual')
   // a stable local so narrowing survives into the reply closure below
-  // (TS does not narrow a property access across a nested arrow function)
-  const lastUpdater = item.last_updater
+  // (TS does not narrow a property access across a nested arrow function).
+  //
+  // ⚠ THE ASSIGNMENT, NOT THE LAST UPDATER. The backend routes the reply to
+  // the item's owner and to nobody else (ledger.work_reply_target), so this
+  // is the same fact read from the same field — a pane that offered to reply
+  // to the last updater while the mail went to the owner would be a label
+  // contradicting its own button.
+  const assignee = item.owner
   const manualAttn = item.manual_attention
   // the state's own information, chosen BY THE CURRENT STATUS rather than by
   // whichever field happens to be populated: a stale value must never be
@@ -1122,10 +1236,14 @@ function DocketPane({ slug, item, toast, asksById, onDismiss, close, onFocusAgen
         </span>
         <SlugText item={item} />
         {' · Updated ' + ago(item.docket_at ?? item.at)}
-        {lastUpdater?.node && (
+        {/* ASSIGNED TO, not "updated by": the docket names who HOLDS the item.
+            Who wrote the latest status is history and stays in the history
+            rows, where it is one entry among the others rather than the line
+            the eye lands on. */}
+        {assignee?.node && (
           <>
-            {' by '}
-            <ActorName actor={lastUpdater} facts={facts}
+            {' · Assigned to '}
+            <ActorName actor={assignee} facts={facts}
               onFocusAgent={onFocusAgent} close={close} />
           </>
         )}
@@ -1214,21 +1332,21 @@ function DocketPane({ slug, item, toast, asksById, onDismiss, close, onFocusAgen
           </div>
         )
       })}
-      {lastUpdater ? (
+      {assignee ? (
         <>
           <div className="dim docket-reply-label">
             Reply to{' '}
-            <ActorName actor={lastUpdater} facts={facts}
+            <ActorName actor={assignee} facts={facts}
               onFocusAgent={onFocusAgent} close={close} />
-            {' · last updated this item'}
+            {' · assigned to this item'}
           </div>
-          <MailReplyBox target={lastUpdater.node}
+          <MailReplyBox target={assignee.node}
             onSend={(text) => replyWorkItem(slug, item.slug, text)
               .then((r) => {
                 if (r.deferred) {
-                  toast([`${lastUpdater.node} is archived — the reply waits for rehire`])
+                  toast([`${assignee.node} is archived — the reply waits for rehire`])
                 } else {
-                  toast([`sent to ${lastUpdater.node}`])
+                  toast([`sent to ${assignee.node}`])
                 }
               })
               .catch((e: Error) => {
@@ -1237,7 +1355,9 @@ function DocketPane({ slug, item, toast, asksById, onDismiss, close, onFocusAgen
               })} />
         </>
       ) : (
-        <div className="dim docket-reply-label">no status update yet — nothing to reply to</div>
+        <div className="dim docket-reply-label">
+          nobody is assigned to this item — there is nobody to reply to
+        </div>
       )}
     </>
   )
