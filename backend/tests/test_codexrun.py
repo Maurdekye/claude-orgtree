@@ -124,8 +124,10 @@ def main():
         FAKE, cwd=tmp, model=None, effort=None, thread_id=None,
         env_extra={"FAKECODEX_SCENARIO": "steer"})
     turn2.start("long thing")
+    # audit D3: the outcome is a three-way word, truthy only when accepted
+    out2 = turn2.steer("new orders")
     check("steer is accepted while the turn runs",
-          lambda: eq(turn2.steer("new orders"), True, "steer ack"))
+          lambda: eq((str(out2), bool(out2)), ("accepted", True), "steer ack"))
     res2 = turn2.wait(timeout=20)
     check("…and the steered text reached the turn",
           lambda: eq("STEERED[new orders]" in res2["agent_text"], True,

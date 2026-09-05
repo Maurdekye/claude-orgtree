@@ -22,6 +22,25 @@ scenarios selected by FAKECODEX_SCENARIO:
                The refusal must leave NOTHING claimed: no durable steered row,
                no confirmed journal batch, and the whole carrier back on the
                queue so the NEXT turn delivers it exactly once
+    slow_tool_then_steer (audit D2) the model calls the first dynamic tool
+               and, WHILE that call is unanswered, a helper thread waits for a
+               turn/steer and acknowledges it at once, emitting STEERED[…]
+               first. The ack is therefore on the pipe behind the tool call:
+               a client that answers tools on its reader thread cannot see
+               it until the tool returns. Completes after the tool answers
+    steer_ack_late (audit D3) the turn accepts a turn/steer — emits
+               STEERED[…] immediately — but delays the JSON-RPC ack by
+               FAKECODEX_ACK_DELAY_S (default 2.0) before completing. The
+               provider ACCEPTED; only the acknowledgement is late. A client
+               that reads its own timeout as a refusal re-delivers the text
+    steer_ack_never (audit D3) accepts a turn/steer the same way, emits
+               STEERED[…], NEVER acks it, and completes FAKECODEX_STALL_S
+               (default 1.0) later — the outcome is unknowable from the wire
+    tool_inflight_at_end the model calls the first dynamic tool and the turn
+               completes WITHOUT waiting for the answer. The impostor keeps
+               listening and writes the late answer (if any) to
+               FAKECODEX_LATEPROBE — a turn boundary must not lose a tool
+               result a worker is still producing
     delta_pause emits one short agent-message delta, then pauses long enough
                 to prove the client's time-based live flush actually fires
     replay     the same `item/completed` is sent TWICE for one message and
@@ -162,10 +181,14 @@ def reply_error(rid, message, code=-32602):
           "error": {"code": code, "message": message}})
 
 
+_id_lock = threading.Lock()
+
+
 def server_request(method, params, timeout=10.0):
     global _next_server_id
-    rid = _next_server_id
-    _next_server_id += 1
+    with _id_lock:                   # tool_flood issues these concurrently
+        rid = _next_server_id
+        _next_server_id += 1
     send({"jsonrpc": "2.0", "id": rid, "method": method, "params": params})
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -425,6 +448,139 @@ def run_turn(thread_id, turn_id, dyn_tools, model=None):
             reply_error(st["id"], "no such active turn: fake-turn-0001")
             return
         agent_message("msg-nosteer", "no steer arrived")
+    elif SCENARIO == "slow_tool_then_steer":
+        # ── audit D2 ── the steer ack sits BEHIND an unanswered tool call.
+        # The helper thread is the app-server's own concurrency: a real
+        # server keeps reading stdin and answering while a tool is pending.
+        tool = (dyn_tools[0].get("name", "tool0") if dyn_tools else "tool0")
+        steered = []
+
+        def _ack_steer():
+            st = wait_request("turn/steer", timeout=20.0)
+            if st:
+                text = "".join(str(p.get("text", ""))
+                               for p in (st.get("params", {}).get("input") or []))
+                agent_message("msg-steer", f"STEERED[{text}]")
+                reply(st["id"], {"turnId": turn_id})
+                steered.append(text)
+        helper = threading.Thread(target=_ack_steer, daemon=True)
+        helper.start()
+        tool_item = {"id": "c-slow", "type": "dynamicToolCall",
+                     "tool": tool, "arguments": {"message": "slow"},
+                     "status": "inProgress", "success": None,
+                     "contentItems": None, "durationMs": None,
+                     "namespace": None}
+        item_event("started", tool_item)
+        ans = server_request("item/tool/call", {
+            "threadId": thread_id, "turnId": turn_id, "callId": "c-slow",
+            "tool": tool, "arguments": {"message": "slow"}}, timeout=60.0)
+        items = ((ans or {}).get("result") or {}).get("contentItems") or []
+        text = items[0].get("text", "") if items else "NO ANSWER"
+        item_event("completed", {**tool_item, "status": "completed",
+                                  "success": True, "contentItems": items})
+        helper.join(timeout=0.5)
+        agent_message("msg-tool", f"tool said: {text}; steered={len(steered)}")
+    elif SCENARIO in ("steer_ack_late", "steer_ack_never"):
+        # ── audit D3 ── ACCEPTED, but the acknowledgement is late or lost.
+        st = wait_request("turn/steer")
+        if st:
+            text = "".join(str(p.get("text", ""))
+                           for p in (st.get("params", {}).get("input") or []))
+            # the provider has the text: this is what "accepted" means
+            agent_message("msg-steer", f"STEERED[{text}]")
+            if SCENARIO == "steer_ack_late":
+                time.sleep(float(os.environ.get("FAKECODEX_ACK_DELAY_S", "2.0")))
+                reply(st["id"], {"turnId": turn_id})
+            else:
+                # never acked; the turn ends on its own clock — or on a
+                # turn/interrupt, the way a real one does (C.3)
+                irr = wait_request("turn/interrupt", timeout=float(
+                    os.environ.get("FAKECODEX_STALL_S", "1.0")))
+                if irr:
+                    reply(irr["id"], {})
+                    notify("turn/completed", {
+                        "threadId": thread_id,
+                        "turn": {"id": turn_id, "status": "interrupted",
+                                 "error": None}})
+                    return
+        else:
+            agent_message("msg-nosteer", "no steer arrived")
+    elif SCENARIO == "steer_ack_after_end":
+        # accepts, COMPLETES THE TURN, and only then (FAKECODEX_ACK_DELAY_S
+        # later) acks — the reply lands after the client's turn-end decision.
+        # Only a parked (warm) process can still deliver it.
+        st = wait_request("turn/steer")
+        if st:
+            text = "".join(str(p.get("text", ""))
+                           for p in (st.get("params", {}).get("input") or []))
+            agent_message("msg-steer", f"STEERED[{text}]")
+            notify("turn/completed", {
+                "threadId": thread_id,
+                "turn": {"id": turn_id, "status": "completed", "error": None}})
+            time.sleep(float(os.environ.get("FAKECODEX_ACK_DELAY_S", "2.0")))
+            reply(st["id"], {"turnId": turn_id})
+            return
+        agent_message("msg-nosteer", "no steer arrived")
+    elif SCENARIO == "tool_replay_id":
+        # the SAME server request id twice (a reconnecting server replaying
+        # its outstanding request): the tool must run ONCE and both copies
+        # must be answered — the second from the record.
+        tool = (dyn_tools[0].get("name", "tool0") if dyn_tools else "tool0")
+        params = {"threadId": thread_id, "turnId": turn_id, "callId": "c-dup",
+                  "tool": tool, "arguments": {"message": "dup"}}
+        rid = _next_server_id
+        ans = server_request("item/tool/call", params)
+        send({"jsonrpc": "2.0", "id": rid, "method": "item/tool/call",
+              "params": params})                      # the replay, same id
+        deadline = time.time() + 5.0
+        again = None
+        while time.time() < deadline and again is None:
+            again = _responses.pop(rid, None)
+            time.sleep(0.01)
+        t1 = (((ans or {}).get("result") or {}).get("contentItems") or [{}])[0].get("text")
+        t2 = (((again or {}).get("result") or {}).get("contentItems") or [{}])[0].get("text")
+        agent_message("msg-dup", f"first={t1!r} replay={t2!r}")
+    elif SCENARIO == "tool_flood":
+        # more concurrent tool calls than the client's workers + queue: the
+        # overflow must be answered AT ONCE with an explicit overload while
+        # the reader keeps acknowledging a steer sent in the middle of it.
+        tool = (dyn_tools[0].get("name", "tool0") if dyn_tools else "tool0")
+        n = int(os.environ.get("FAKECODEX_FLOOD_N", "25"))
+        answers = [None] * n
+
+        def _one(i):
+            answers[i] = server_request("item/tool/call", {
+                "threadId": thread_id, "turnId": turn_id, "callId": f"c-f{i}",
+                "tool": tool, "arguments": {"message": f"flood-{i}"}},
+                timeout=30.0)
+        ths = [threading.Thread(target=_one, args=(i,), daemon=True)
+               for i in range(n)]
+        for t in ths:
+            t.start()
+        st = wait_request("turn/steer", timeout=10.0)
+        steer_at = time.time()
+        if st:
+            reply(st["id"], {"turnId": turn_id})
+        for t in ths:
+            t.join(35)
+        texts = [(((a or {}).get("result") or {}).get("contentItems") or [{}])[0].get("text")
+                 for a in answers]
+        overload = sum(1 for t in texts if t and "overload" in t)
+        ran = sum(1 for t in texts if t and t.startswith("ran"))
+        agent_message("msg-flood", f"flood: n={n} ran={ran} overload={overload} "
+                                   f"unanswered={texts.count(None)} "
+                                   f"steer={'acked' if st else 'none'}")
+    elif SCENARIO == "tool_inflight_at_end":
+        # ── a tool call the turn does not wait for ──
+        # (the late answer, if any, is recorded by main()'s response branch
+        # into FAKECODEX_LATEPROBE the instant it is read)
+        tool = (dyn_tools[0].get("name", "tool0") if dyn_tools else "tool0")
+        threading.Thread(target=server_request, args=(
+            "item/tool/call", {"threadId": thread_id, "turnId": turn_id,
+                               "callId": "c-inflight", "tool": tool,
+                               "arguments": {"message": "inflight"}}),
+            kwargs={"timeout": 8.0}, daemon=True).start()
+        time.sleep(0.05)      # the request is on the wire before the end
     elif SCENARIO == "stall":
         # no tool call, no steer wait: the turn simply takes this long. The
         # supervisor's pump polls on its own clock, so whether it sees a
@@ -618,6 +774,12 @@ def main():
         if "method" not in msg:            # a response to OUR server-request
             if "id" in msg:
                 _responses[int(msg["id"])] = msg
+                late_probe = os.environ.get("FAKECODEX_LATEPROBE")
+                if late_probe:
+                    # written HERE, on the reader, not from a watcher thread:
+                    # the client may kill this process right after answering
+                    with open(late_probe, "a", encoding="utf-8") as f:
+                        f.write(json.dumps(msg) + "\n")
             continue
         _requests.append(msg)
         method, rid = msg["method"], msg.get("id")

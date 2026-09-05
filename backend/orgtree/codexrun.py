@@ -42,6 +42,7 @@ import re
 import subprocess
 import threading
 import time
+from collections import deque
 from collections.abc import Callable
 from typing import Any, Final, cast
 
@@ -173,6 +174,102 @@ class CodexServerError(RuntimeError):
     """The app-server refused or never answered a protocol request."""
 
 
+class CodexRequestError(CodexServerError):
+    """The server ANSWERED, with a JSON-RPC error. `code` and `message` are
+    the server's own; whether they mean "not applied" is `steer`'s question,
+    not this class's (audit D3)."""
+
+    def __init__(self, method: str, code: int | None, message: str) -> None:
+        super().__init__(f"{method}: {json.dumps({'code': code, 'message': message})[:400]}")
+        self.method = method
+        self.code = code
+        self.message = message
+
+
+class CodexRequestTimeout(CodexServerError):
+    """No answer inside the caller's ceiling. The request may have been
+    applied — the reply is merely LATE or lost, and `AppServerClient` keeps
+    listening for it (`request(on_late=…)`)."""
+
+
+class CodexServerGone(CodexServerError):
+    """The app-server process exited while a request was outstanding."""
+
+
+# ── audit D2: bounded tool workers ───────────────────────────────────────────
+#: how many server requests (tool calls, approvals) may EXECUTE at once per
+#: app-server. The reader thread never executes one; it only admits them.
+CODEX_TOOL_WORKERS: Final = 4
+#: how many admitted requests may WAIT for a worker. Beyond this the reader
+#: answers at once with an explicit overload (tool: failure text; approval:
+#: decline) rather than growing an unbounded queue — the server's own
+#: parallelism is the normal bound, this is the belt.
+CODEX_TOOL_QUEUE: Final = 16
+#: how long `CodexTurn.wait` gives in-flight workers after the turn ends
+#: before returning without them. NOT proof they stopped: whatever finishes
+#: later still reaches the owning turn through its `on_late_tool_result`.
+TOOL_DRAIN_S: Final = 2.0
+
+# ── audit D3: three-way steer outcome ────────────────────────────────────────
+#: the client-side ceiling on a `turn/steer` acknowledgement. Module-level
+#: (not Final) so a test can shorten it; a timeout is UNKNOWN, never refusal.
+STEER_TIMEOUT = 30.0
+STEER_ACCEPTED: Final = "accepted"
+STEER_REJECTED: Final = "rejected"
+STEER_UNKNOWN: Final = "unknown"
+
+#: JSON-RPC codes that mean the request was NEVER APPLIED (parse, invalid
+#: request, unknown method, invalid params): an authoritative refusal. Any
+#: other error code (internal, server-defined) is only a refusal when its
+#: message names the turn precondition; otherwise the outcome is unknown.
+_NEVER_APPLIED_CODES: Final = frozenset({-32700, -32600, -32601, -32602})
+_GUARD_TEXT: Final = re.compile(
+    r"active turn|expectedTurnId|no such turn|turn (?:is )?(?:not|no longer) "
+    r"(?:active|running|in progress)|turn .*(?:ended|finished|completed)",
+    re.IGNORECASE)
+
+
+class SteerOutcome(str):
+    """One of accepted / rejected / unknown, with the reason beside it.
+
+    A `str`, so `outcome == "unknown"` reads naturally and it serialises into
+    receipts as-is. Its TRUTHINESS is `accepted` only: a legacy boolean caller
+    cannot mistake an unknown for an acceptance. ⚠ That does not make such a
+    caller CORRECT — a caller that retries on falsy would still replay an
+    unknown as if refused. Every retry site must read all three values
+    (`supervisor._codex_leg`'s pump does; there is no other codex caller)."""
+
+    reason: str
+
+    def __new__(cls, value: str, reason: str = "") -> "SteerOutcome":
+        if value not in (STEER_ACCEPTED, STEER_REJECTED, STEER_UNKNOWN):
+            raise ValueError(f"not a steer outcome: {value!r}")
+        out = str.__new__(cls, value)
+        out.reason = reason
+        return out
+
+    def __bool__(self) -> bool:
+        return str.__eq__(self, STEER_ACCEPTED)
+
+    def __repr__(self) -> str:
+        return f"SteerOutcome({str.__repr__(self)}, reason={self.reason!r})"
+
+
+def classify_steer_error(code: int | None, message: str) -> SteerOutcome:
+    """A JSON-RPC error on `turn/steer` → rejected or unknown (audit D3).
+
+    Rejected only when the error AUTHORITATIVELY means the input was not
+    appended: a never-applied code, or a message naming the expectedTurnId
+    precondition (schema: "The request fails when it does not match the
+    currently active turn"). An internal or server-defined error with any
+    other text could in principle follow the append, so it stays unknown."""
+    msg = str(message or "")
+    if code in _NEVER_APPLIED_CODES or _GUARD_TEXT.search(msg):
+        return SteerOutcome(STEER_REJECTED, f"server error {code}: {msg[:200]}")
+    return SteerOutcome(STEER_UNKNOWN,
+                        f"ambiguous server error {code}: {msg[:200]}")
+
+
 def _dyn_tool(name: str, description: str,
               input_schema: dict[str, Any]) -> dict[str, Any]:
     """One orgtree tool card as a DynamicToolSpec function entry."""
@@ -264,11 +361,26 @@ def mcp_config_overrides(servers: dict[str, Any]) -> list[str]:
 class AppServerClient:
     """One `codex app-server` child process spoken to over stdio NDJSON.
 
-    Threading model: a reader thread pumps stdout; server->client REQUESTS
-    (tool calls, approvals) are answered synchronously on that thread via the
-    caller's hooks, so a slow tool handler backpressures the model exactly
-    like a slow MCP server would. Notifications append to an internal list
-    AND stream to `on_event` as they arrive.
+    Threading model (audit D2, 2026-09-05): a reader thread pumps stdout and
+    NEVER runs caller code that can block. Server->client REQUESTS (tool
+    calls, approvals) are ADMITTED by the reader into a bounded job queue and
+    answered by up to `CODEX_TOOL_WORKERS` worker threads through the caller's
+    hooks; the reader keeps consuming responses and notifications meanwhile,
+    so a `turn/steer` acknowledgement sitting behind a 60 s tool call is read
+    when it arrives, not when the tool returns. It used to answer them inline
+    on the reader — a slow tool blocked every acknowledgement and the steer
+    timed out with its reply already on the pipe (protocol_probes.py,
+    `blocked_protocol_reader`). Notifications append to an internal list AND
+    stream to `on_event` as they arrive, synchronously, in wire order —
+    `on_event` must stay short.
+
+    OWNERSHIP of a dispatched request: every job carries the client's binding
+    `epoch` (bumped by bind/unbind/close) and the server's request id. A tool
+    runs AT MOST ONCE per request id (a replayed id is answered from the
+    record). A job that starts after its epoch ended is not executed. A result
+    finishing after its epoch ended is never written to the wire under the
+    new binding: it is retained and handed to the ORIGINAL binding's
+    `on_tool_result`, exactly once, for that turn to journal.
     """
 
     def __init__(self, argv_head: list[str], *, codex_home: str | None = None,
@@ -321,8 +433,25 @@ class AppServerClient:
         self._lock = threading.Lock()
         self._next_id = 1
         self._responses: dict[int, dict[str, Any]] = {}
+        #: request ids whose waiter gave up (timeout): a LATE reply is routed
+        #: to the registered resolver instead of rotting in `_responses`.
+        self._late: dict[int, Callable[[dict[str, Any]], None] | None] = {}
         self.notifications: list[dict[str, Any]] = []
         self.stderr_tail: list[str] = []
+        # ── audit D2: admission + bounded workers ──
+        self.on_tool_result: Callable[[dict[str, Any]], None] | None = None
+        self._epoch = 0
+        self._closed = False
+        self._jobs_cv = threading.Condition()
+        self._jobs: deque[dict[str, Any]] = deque()
+        self._workers: list[threading.Thread] = []
+        self._idle_workers = 0
+        self._inflight = 0
+        #: request id → record, for every admitted server request this
+        #: process ever saw: the at-most-once table and the late-result home.
+        self._dispatched: dict[Any, dict[str, Any]] = {}
+        #: explicit overload answers the reader gave (a count, for receipts)
+        self.overloaded = 0
         self._reader = threading.Thread(target=self._pump, daemon=True)
         self._reader.start()
         threading.Thread(target=self._pump_err, daemon=True).start()
@@ -347,10 +476,23 @@ class AppServerClient:
                 except json.JSONDecodeError:
                     continue
                 if "id" in msg and ("result" in msg or "error" in msg):
+                    resolver: Callable[[dict[str, Any]], None] | None = None
+                    late = False
                     with self._lock:
-                        self._responses[int(msg["id"])] = msg
+                        rid = int(msg["id"])
+                        if rid in self._late:
+                            # the waiter gave up: route, never store (D3)
+                            resolver = self._late.pop(rid)
+                            late = True
+                        else:
+                            self._responses[rid] = msg
+                    if late and resolver is not None:
+                        try:
+                            resolver(msg)
+                        except Exception:
+                            pass   # a resolver must never kill the reader
                 elif "id" in msg and "method" in msg:
-                    self._answer_server_request(msg)
+                    self._admit(msg)      # never executed HERE (audit D2)
                 else:
                     self.notifications.append(msg)
                     if self.on_event:
@@ -365,36 +507,192 @@ class AppServerClient:
                 except Exception:
                     pass
 
-    def _answer_server_request(self, msg: dict[str, Any]) -> None:
+    # ── server requests: admit on the reader, execute on a worker (D2) ──
+
+    @staticmethod
+    def _tool_reply(rid: Any, ok: bool, text: str) -> dict[str, Any]:
+        return {"jsonrpc": "2.0", "id": rid, "result": {
+            "success": ok,
+            "contentItems": [{"type": "inputText", "text": text}]}}
+
+    def _admit(self, msg: dict[str, Any]) -> None:
+        """Reader-thread half of a server request: bound admission, never
+        execution. Answers at once — from the record for a replayed id, with
+        an explicit overload when the queue is full, with a refusal for a
+        method nobody handles — and otherwise queues a job stamped with the
+        CURRENT binding (epoch + hooks + result sink)."""
         method = str(msg.get("method", ""))
         params: dict[str, Any] = msg.get("params") or {}
         rid = msg["id"]
-        if method == "item/tool/call" and self.tool_dispatch is not None:
-            tool = str(params.get("tool", ""))
-            args = params.get("arguments")
-            try:
-                text = self.tool_dispatch(
-                    tool, args if isinstance(args, dict) else {})
-                ok = True
-            except Exception as e:   # a tool error is an ANSWER, not a hang
-                text, ok = f"tool {tool} failed: {e}", False
-            self._send({"jsonrpc": "2.0", "id": rid, "result": {
-                "success": ok,
-                "contentItems": [{"type": "inputText", "text": text}]}})
+        is_tool = method == "item/tool/call" and self.tool_dispatch is not None
+        is_approval = "requestApproval" in method
+        if not (is_tool or is_approval):
+            # anything unexpected: refuse loudly rather than hang the server.
+            self._send_quiet({"jsonrpc": "2.0", "id": rid, "error": {
+                "code": -32601, "message": f"orgtree declines: {method}"}})
             return
-        if "requestApproval" in method:
-            decision = "decline"
-            if self.approval_decide is not None:
+        with self._jobs_cv:
+            rec = self._dispatched.get(rid)
+            if rec is not None:
+                # AT MOST ONCE per request id: a replayed request is answered
+                # from the record when done, and otherwise by the job already
+                # running it — never by a second execution.
+                rec["replays"] = int(rec.get("replays") or 0) + 1
+                answer = rec.get("answer") if rec.get("done") else None
+                if answer is not None and rec["epoch"] == self._epoch:
+                    self._send_quiet(answer)
+                return
+            tool = str(params.get("tool", "")) if is_tool else ""
+            rec = {"rid": rid, "method": method, "tool": tool,
+                   "call_id": str(params.get("callId") or ""),
+                   "epoch": self._epoch, "admitted_at": time.time(),
+                   "started_at": None, "finished_at": None, "done": False,
+                   "ok": None, "text": None, "answer": None,
+                   "wire": None, "skipped": False, "replays": 0}
+            if len(self._jobs) >= CODEX_TOOL_QUEUE:
+                # EXPLICIT OVERLOAD: the reader must not block and the queue
+                # must not grow without bound. A tool gets a failure answer it
+                # can retry; an approval fails CLOSED.
+                self.overloaded += 1
+                rec.update(done=True, skipped=True, ok=False,
+                           finished_at=time.time(),
+                           text=(f"orgtree: tool worker overload "
+                                 f"({self._inflight} running, "
+                                 f"{len(self._jobs)} queued); retry"))
+                rec["answer"] = (
+                    self._tool_reply(rid, False, str(rec["text"])) if is_tool
+                    else {"jsonrpc": "2.0", "id": rid,
+                          "result": {"decision": "decline"}})
+                rec["wire"] = self._send_quiet(rec["answer"])
+                self._dispatched[rid] = rec
+                return
+            self._dispatched[rid] = rec
+            job = {"rec": rec, "params": params, "epoch": self._epoch,
+                   "tool_dispatch": self.tool_dispatch,
+                   "approval_decide": self.approval_decide,
+                   "on_result": self.on_tool_result}
+            self._jobs.append(job)
+            if self._idle_workers == 0 and \
+                    len(self._workers) < CODEX_TOOL_WORKERS:
+                t = threading.Thread(target=self._worker, daemon=True,
+                                     name=f"codextool-{self.proc.pid}")
+                self._workers.append(t)
+                t.start()
+            self._jobs_cv.notify()
+
+    def _worker(self) -> None:
+        while True:
+            with self._jobs_cv:
+                while not self._jobs:
+                    if self._closed:
+                        return
+                    self._idle_workers += 1
+                    self._jobs_cv.wait()
+                    self._idle_workers -= 1
+                job = self._jobs.popleft()
+                self._inflight += 1
+                rec = job["rec"]
+                rec["started_at"] = time.time()
+                stale = job["epoch"] != self._epoch
+            try:
+                self._run_job(job, stale)
+            finally:
+                with self._jobs_cv:
+                    self._inflight -= 1
+                    self._jobs_cv.notify_all()
+
+    def _run_job(self, job: dict[str, Any], stale: bool) -> None:
+        rec: dict[str, Any] = job["rec"]
+        params: dict[str, Any] = job["params"]
+        rid = rec["rid"]
+        method = str(rec["method"])
+        answer: dict[str, Any]
+        if stale:
+            # its turn ended before it ran: NOT executed. Stated, not silent.
+            rec.update(skipped=True, ok=False,
+                       text="orgtree: the turn ended before this tool ran")
+            answer = (self._tool_reply(rid, False, str(rec["text"]))
+                      if method == "item/tool/call" else
+                      {"jsonrpc": "2.0", "id": rid,
+                       "result": {"decision": "decline"}})
+        elif method == "item/tool/call":
+            tool = str(rec["tool"])
+            args = params.get("arguments")
+            dispatch = job["tool_dispatch"]
+            if dispatch is None:
+                text, ok = f"orgtree: no tool dispatcher bound for {tool}", False
+            else:
                 try:
-                    decision = self.approval_decide(method, params)
+                    text = dispatch(tool, args if isinstance(args, dict) else {})
+                    ok = True
+                except Exception as e:   # a tool error is an ANSWER, not a hang
+                    text, ok = f"tool {tool} failed: {e}", False
+            rec.update(ok=ok, text=text)
+            answer = self._tool_reply(rid, ok, text)
+        else:
+            decision = "decline"
+            decide = job["approval_decide"]
+            if decide is not None:
+                try:
+                    decision = decide(method, params)
                 except Exception:
                     decision = "decline"   # fail CLOSED, loudly in the turn
-            self._send({"jsonrpc": "2.0", "id": rid,
-                        "result": {"decision": decision}})
-            return
-        # anything unexpected: refuse loudly rather than hang the server.
-        self._send({"jsonrpc": "2.0", "id": rid, "error": {
-            "code": -32601, "message": f"orgtree declines: {method}"}})
+            rec.update(ok=True, text=decision)
+            answer = {"jsonrpc": "2.0", "id": rid,
+                      "result": {"decision": decision}}
+        rec["answer"] = answer
+        rec["finished_at"] = time.time()
+        # ⚠ THE WIRE IS THE ORIGINAL BINDING'S. A result finishing under a
+        # later epoch is retained for its owner and never written under the
+        # new turn's binding — pipe-open is not ownership.
+        with self._jobs_cv:
+            same_epoch = job["epoch"] == self._epoch
+        rec["wire"] = self._send_quiet(answer) if same_epoch else False
+        rec["done"] = True
+        sink = job["on_result"]
+        if sink is not None:
+            try:
+                sink(dict(rec))          # exactly once, to the ORIGINAL owner
+            except Exception:
+                pass
+
+    def _send_quiet(self, obj: dict[str, Any]) -> bool:
+        """`_send` that reports a dead pipe instead of raising: a worker or
+        the reader answering a server request has nobody to raise to."""
+        try:
+            self._send(obj)
+            return True
+        except (OSError, ValueError, AttributeError):
+            return False
+
+    def inflight_tools(self) -> int:
+        """Admitted server requests not yet finished (running + queued)."""
+        with self._jobs_cv:
+            return self._inflight + len(self._jobs)
+
+    def drain_tools(self, timeout: float) -> int:
+        """Wait up to `timeout` for admitted requests to finish; return how
+        many are still unfinished. Zero is proof of quiet; a positive count
+        is a fact the caller reports, not a failure it hides."""
+        deadline = time.time() + timeout
+        with self._jobs_cv:
+            while self._inflight or self._jobs:
+                left = deadline - time.time()
+                if left <= 0:
+                    break
+                self._jobs_cv.wait(left)
+            return self._inflight + len(self._jobs)
+
+    def tool_records(self, epoch: int | None = None) -> list[dict[str, Any]]:
+        """Copies of the dispatch records (this binding's by default)."""
+        with self._jobs_cv:
+            want = self._epoch if epoch is None else epoch
+            return [dict(r) for r in self._dispatched.values()
+                    if r["epoch"] == want]
+
+    @property
+    def epoch(self) -> int:
+        return self._epoch
 
     def _send(self, obj: dict[str, Any]) -> None:
         stdin = self.proc.stdin
@@ -408,8 +706,35 @@ class AppServerClient:
     def notify(self, method: str, params: dict[str, Any]) -> None:
         self._send({"jsonrpc": "2.0", "method": method, "params": params})
 
+    @staticmethod
+    def _raise_for(method: str, resp: dict[str, Any]) -> dict[str, Any]:
+        err = resp.get("error")
+        if err:
+            code: int | None = None
+            message = ""
+            if isinstance(err, dict):
+                e: dict[str, Any] = err
+                try:
+                    code = int(e.get("code")) if e.get("code") is not None else None
+                except (TypeError, ValueError):
+                    code = None
+                message = str(e.get("message") or "")
+            else:
+                message = str(err)
+            raise CodexRequestError(method, code, message)
+        result: dict[str, Any] = resp.get("result") or {}
+        return result
+
     def request(self, method: str, params: dict[str, Any],
-                timeout: float = REQUEST_TIMEOUT) -> dict[str, Any]:
+                timeout: float = REQUEST_TIMEOUT, *,
+                on_late: Callable[[dict[str, Any]], None] | None = None
+                ) -> dict[str, Any]:
+        """One JSON-RPC exchange. Raises `CodexRequestError` on a server
+        error, `CodexServerGone` on process exit, `CodexRequestTimeout` after
+        `timeout` — and in that last case REGISTERS `on_late` (or a discard)
+        under the request id, so the reply, if it ever comes, is routed to it
+        on the reader thread instead of leaking into `_responses` (D3).
+        `on_late` gets the raw response message; keep it short."""
         with self._lock:
             rid = self._next_id
             self._next_id += 1
@@ -420,17 +745,17 @@ class AppServerClient:
             with self._lock:
                 if rid in self._responses:
                     resp = self._responses.pop(rid)
-                    if "error" in resp and resp["error"]:
-                        raise CodexServerError(
-                            f"{method}: {json.dumps(resp['error'])[:400]}")
-                    result: dict[str, Any] = resp.get("result") or {}
-                    return result
+                    return self._raise_for(method, resp)
             if self.proc.poll() is not None:
-                raise CodexServerError(
+                raise CodexServerGone(
                     f"{method}: app-server exited rc={self.proc.returncode}; "
                     f"stderr tail: {' | '.join(self.stderr_tail[-3:])[:400]}")
             time.sleep(0.02)
-        raise CodexServerError(f"{method}: no answer in {timeout:.0f}s")
+        with self._lock:
+            if rid in self._responses:          # landed on the last tick
+                return self._raise_for(method, self._responses.pop(rid))
+            self._late[rid] = on_late
+        raise CodexRequestTimeout(f"{method}: no answer in {timeout:.0f}s")
 
     def initialize(self, timeout: float = 60.0) -> dict[str, Any]:
         with self._initialize_lock:
@@ -483,17 +808,30 @@ class AppServerClient:
              on_event: Callable[[dict[str, Any]], None] | None = None,
              tool_dispatch: Callable[[str, dict[str, Any]], str] | None = None,
              approval_decide: Callable[[str, dict[str, Any]], str] | None = None,
+             on_tool_result: Callable[[dict[str, Any]], None] | None = None,
              ) -> None:
-        """Attach one turn's callbacks to a parked app-server client."""
-        self.on_event = on_event
-        self.tool_dispatch = tool_dispatch
-        self.approval_decide = approval_decide
+        """Attach one turn's callbacks to a parked app-server client.
+
+        Opens a NEW BINDING EPOCH: requests admitted from here on belong to
+        this turn; anything still running from the previous binding finishes
+        as the previous binding's (retained, handed to ITS sink) and cannot
+        be written to the wire under this one."""
+        with self._jobs_cv:
+            self._epoch += 1
+            self.on_event = on_event
+            self.tool_dispatch = tool_dispatch
+            self.approval_decide = approval_decide
+            self.on_tool_result = on_tool_result
 
     def unbind(self) -> None:
-        """Drop references to the completed turn while the process parks."""
-        self.on_event = None
-        self.tool_dispatch = None
-        self.approval_decide = None
+        """Drop references to the completed turn while the process parks —
+        and end its binding epoch (see `bind`)."""
+        with self._jobs_cv:
+            self._epoch += 1
+            self.on_event = None
+            self.tool_dispatch = None
+            self.approval_decide = None
+            self.on_tool_result = None
 
     def close(self) -> None:
         """Tear the app-server down — the WHOLE process tree, and wait for it.
@@ -507,7 +845,14 @@ class AppServerClient:
         failed turns). Kill by pid through the OS so the tree goes, then
         `wait()` so the next turn does not spawn into a lock the dying tree
         still holds (the same rapid-kill→spawn contention the module docstring
-        warns about)."""
+        warns about).
+
+        Ends the binding epoch first (D2): a worker still running finishes as
+        the closed binding's — retained, handed to its sink, never sent."""
+        with self._jobs_cv:
+            self._epoch += 1
+            self._closed = True
+            self._jobs_cv.notify_all()
         if os.name == "nt":
             try:
                 subprocess.run(
@@ -699,7 +1044,9 @@ class CodexTurn:
                  env_extra: dict[str, str] | None = None,
                  config_overrides: list[str] | None = None,
                  usage_baseline: dict[str, Any] | None = None,
-                 client: AppServerClient | None = None) -> None:
+                 client: AppServerClient | None = None,
+                 on_late_tool_result: Callable[[dict[str, Any]], None] | None = None,
+                 ) -> None:
         self._caller_on_event = on_event
         self.cwd = cwd
         self.model = model
@@ -751,9 +1098,41 @@ class CodexTurn:
         self.client = client or AppServerClient(
             argv_head, codex_home=codex_home, cwd=cwd,
             env_extra=env_extra, config_overrides=config_overrides)
+        # ── audit D2/D3 bookkeeping, owned by this turn ──
+        #: dispatch records that finished AFTER this turn ended (or never
+        #: reached the wire): the server emits no `item/completed` for them,
+        #: so the caller journals them from here — once each, keyed by rid.
+        self.late_tool_results: list[dict[str, Any]] = []
+        self._late_rids: set[Any] = set()
+        self._late_lock = threading.Lock()
+        self._caller_on_late_tool_result = on_late_tool_result
+        #: every steer this turn sent, in order, with its outcome — including
+        #: an UNKNOWN later resolved by a late reply (`resolved` appended).
+        self.steer_log: list[dict[str, Any]] = []
         self.client.bind(on_event=self._observe,
                          tool_dispatch=tool_dispatch,
-                         approval_decide=approval_decide)
+                         approval_decide=approval_decide,
+                         on_tool_result=self._tool_result)
+
+    def _tool_result(self, rec: dict[str, Any]) -> None:
+        """The client's per-request sink (captured at admission, so a record
+        reaches the turn that OWNED the request even after rebind). A result
+        the server will not report — finished after the turn ended, or never
+        written to the wire — is kept and forwarded; a normal one is not,
+        because `item/completed` carries it."""
+        late = self._done.is_set() or not rec.get("wire")
+        if not late:
+            return
+        with self._late_lock:
+            if rec["rid"] in self._late_rids:
+                return
+            self._late_rids.add(rec["rid"])
+            self.late_tool_results.append(rec)
+        if self._caller_on_late_tool_result is not None:
+            try:
+                self._caller_on_late_tool_result(rec)
+            except Exception:                              # noqa: BLE001
+                pass         # a journaling fault never reaches the worker
 
     # ── event fold (M2: raw notifications → normalized fields) ───────────
 
@@ -963,19 +1342,62 @@ class CodexTurn:
                 "warmpool.discard(); see supervisor._codex_leg's finally.")
         self.client.close()
 
-    def steer(self, text: str) -> bool:
-        """Mid-turn input (C.2). False = the guard refused (turn already
-        over) — the caller falls back to queueing for the next turn."""
+    def steer(self, text: str, timeout: float | None = None,
+              on_late: Callable[[SteerOutcome], None] | None = None
+              ) -> SteerOutcome:
+        """Mid-turn input (C.2) → accepted / rejected / UNKNOWN (audit D3).
+
+        rejected: the server answered that the input was NOT appended (the
+            expectedTurnId guard; see `classify_steer_error`). The caller may
+            re-deliver: nothing reached the model.
+        accepted: the server answered `turnId`. The text is in the turn.
+        unknown:  no answer inside `timeout` (default `STEER_TIMEOUT`), the
+            process died, the pipe broke, or an ambiguous server error. The
+            text MAY be in the turn. This used to be returned as False and
+            re-delivered as if refused — the audit's duplicate. Now the id
+            stays registered: if the reply comes later, `on_late(outcome)` is
+            called ON ITS OWN THREAD with the resolved accepted/rejected, and
+            the entry in `steer_log` gains `resolved`.
+        """
         if not (self.thread_id and self.turn_id):
-            return False
+            return SteerOutcome(STEER_REJECTED, "no active turn to steer")
+        entry: dict[str, Any] = {"at": time.time(), "chars": len(text),
+                                 "outcome": None, "reason": ""}
+        self.steer_log.append(entry)
+
+        def _late(resp: dict[str, Any]) -> None:
+            try:
+                AppServerClient._raise_for("turn/steer", resp)
+                resolved = SteerOutcome(STEER_ACCEPTED, "late acknowledgement")
+            except CodexRequestError as e:
+                resolved = classify_steer_error(e.code, e.message)
+                resolved = SteerOutcome(str(resolved),
+                                        "late " + resolved.reason)
+            entry["resolved"] = str(resolved)
+            entry["resolved_reason"] = resolved.reason
+            if on_late is not None:
+                # off the reader thread: the caller commits a doc write here
+                threading.Thread(target=on_late, args=(resolved,),
+                                 daemon=True, name="codexsteer-late").start()
+
         try:
             self.client.request("turn/steer", {
                 "threadId": self.thread_id,
                 "expectedTurnId": self.turn_id,
-                "input": [{"type": "text", "text": text}]}, 30)
-            return True
-        except CodexServerError:
-            return False
+                "input": [{"type": "text", "text": text}]},
+                STEER_TIMEOUT if timeout is None else timeout, on_late=_late)
+            out = SteerOutcome(STEER_ACCEPTED, "acknowledged")
+        except CodexRequestError as e:
+            out = classify_steer_error(e.code, e.message)
+        except CodexRequestTimeout as e:
+            out = SteerOutcome(STEER_UNKNOWN, str(e))
+        except CodexServerError as e:          # process gone, and the rest
+            out = SteerOutcome(STEER_UNKNOWN, str(e))
+        except (OSError, ValueError) as e:     # the pipe itself
+            out = SteerOutcome(STEER_UNKNOWN, f"wire: {type(e).__name__}: {e}")
+        entry["outcome"] = str(out)
+        entry["reason"] = out.reason
+        return out
 
     def interrupt(self) -> bool:
         if not (self.thread_id and self.turn_id):
@@ -998,6 +1420,12 @@ class CodexTurn:
         finished = self._done.wait(timeout) if timeout else self._done.wait()
         if not finished and self.status is None:
             self.status = STATUS_FAILED
+        # ── D2: give in-flight tool workers a bounded moment ──
+        # Whatever finishes inside it is answered on the wire under this
+        # binding and reported below; whatever does not is COUNTED here and
+        # still reaches `_tool_result` (retained, sink) when it ends — the
+        # deadline is a courtesy, not the proof that work stopped.
+        inflight = self.client.drain_tools(TOOL_DRAIN_S)
         if close_client:
             self.client.close()
         usage, usage_reset = _turn_usage(
@@ -1020,4 +1448,12 @@ class CodexTurn:
             # the provider-reported side of the route receipt (see __init__)
             "reported_model": self.reported_model,
             "rerouted": dict(self.rerouted) if self.rerouted else None,
+            # D2: tool results the server will not report (finished after the
+            # turn ended, or never reached the wire), and how many were still
+            # running when this returned. `late_tool_results` may still GROW
+            # after this dict is built — the sink appends as workers end.
+            "late_tool_results": list(self.late_tool_results),
+            "inflight_tools": inflight,
+            # D3: every steer this turn sent and how it went, for receipts.
+            "steer_log": [dict(e) for e in self.steer_log],
         }
