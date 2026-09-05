@@ -577,7 +577,10 @@ test('§4 DeskChat: the fifth tab is the agent\'s OWN DOCKET, and the chip count
   // vocabulary and the assignment column come with it
   assert.match(panel!.querySelector('.mailrow.docket-row .l2')?.textContent ?? '',
     /In progress/)
-  assert.equal(panel!.querySelector('.mailrow.docket-row .l2 .docket-updater')?.textContent,
+  // the NAME, not the whole column: the column also carries the model chip
+  // (a single letter) since the docket learned to show an owner's current
+  // identity, so reading the column's text would compare 'Sagent'
+  assert.equal(panel!.querySelector('.mailrow.docket-row .l2 .docket-actor-name')?.textContent,
     'agent')
   // and selecting one opens the docket's own detail pane
   await act(async () => { (panel!.querySelector('.mailrow.docket-row') as HTMLElement).click() })
@@ -729,15 +732,32 @@ async () => {
   } finally { await lit.unmount() }
 })
 
-test('§5c the REAL desk hands the progress card its references', async (t) => {
+test('§5c the REAL desk hands its docket card a reference world', async (t) => {
+  // ⚠ THIS CHECK CHANGED SURFACE, and the reason is worth reading. It used to
+  // open the desk's PROGRESS panel and prove the desk handed that card its
+  // references. The user replaced the fifth tab's contents with the agent's
+  // own docket (2026-09-05 21:07), so the panel it opened is no longer on the
+  // desk at all — and a check whose subject is gone must move to the surface
+  // that took its place, not be deleted and not be left red. The claim is the
+  // same one: a reference written by an AGENT renders as a live chip on the
+  // real desk, and clicking it does what the surface says it does.
+  //
+  // What is DIFFERENT, deliberately: the docket tab routes an item reference
+  // INTERNALLY (it selects the row) rather than through `onWorkLink`, because
+  // the tab already holds the item. `onWorkLink` is still passed and must stay
+  // untouched — a tab that quietly navigated the whole canvas away would be
+  // the surprising behaviour.
   resetConvos()
   useFakeClock()
   const server = new FakeServer()
   installFetch(server)
-  server.busy = true
-  server.userMsg('plan the work')
-  const n = node({ id: 'agent', busy: true, inflight_at: new Date().toISOString(), proc_live: true })
   const opened: string[] = []
+  server.workItems = [
+    workRow({ slug: 'sort-selector', title: 'The sort selector' }),
+    workRow({ slug: 'desk-refs', title: 'Desk references',
+      objective: 'the checklist is dead text; land @item:org/sort-selector' }),
+  ]
+  const n = node({ id: 'agent' })
   const view = await mountView(
     <DeskChat node={n} map={new Map([['agent', n]])} op={op} slug="org" toast={noop}
       pub={false} bare onJump={noop}
@@ -745,20 +765,23 @@ test('§5c the REAL desk hands the progress card its references', async (t) => {
     (el) => el)
   t.after(async () => { await view.unmount(); resetConvos(); realClock() })
   await flush()
-  server.live.push({ kind: 'tool', text: 'TodoWrite', id: 'toolu_r',
-    todos: [{ content: 'land @item:org/sort-selector', status: 'in_progress' }] })
-  await advance(3000)
-  await flush()
   const { act } = await import('react')
   const chip = view.el.querySelector<HTMLButtonElement>('.cc-head-meta .progress-chip')
-  assert.ok(chip, 'positive control: the progress chip is there to click')
+  assert.ok(chip, 'positive control: the docket chip is there to click')
   await act(async () => { chip!.click() })
-  assert.ok(view.el.querySelector('.msgs.progress'), 'the progress panel opened')
-  const refChip = view.el.querySelector<HTMLButtonElement>('.msgs.progress .ref-chip')
-  assert.ok(refChip, 'the checklist item reference is dead text — the desk did not '
-    + 'hand the card its world')
+  assert.ok(view.el.querySelector('.docket-agent'), 'the docket tab opened')
+  const rows = [...view.el.querySelectorAll<HTMLElement>('.docket-agent .mailrow.docket-row')]
+  const refs = rows.find((r) => r.querySelector('.l1 .mfrom')?.textContent === 'desk-refs')!
+  await act(async () => { refs.click() })
+  const refChip = view.el.querySelector<HTMLButtonElement>('.docket-agent .mailer-read .ref-chip')
+  assert.ok(refChip, 'the item reference is dead text — the desk did not hand '
+    + 'the card its world')
   assert.equal(refChip!.textContent, 'sort-selector')
   await act(async () => { refChip!.click() })
-  assert.deepEqual(opened, ['sort-selector'],
-    'and it routes through the docket route the desk itself was given')
+  assert.equal(
+    view.el.querySelector('.docket-agent .mailer-read .docket-pane-head b')?.textContent,
+    'The sort selector',
+    'the reference did not select the item it names')
+  assert.deepEqual(opened, [],
+    'the tab holds the item — it must not navigate the whole canvas away')
 })

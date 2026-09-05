@@ -1010,6 +1010,31 @@ export function AgentDocketView({ slug, nid, mine, facts, toast, onFocusAgent,
                             [...facts].map(([id, f]) => [id, f.tier] as const)),
     [byName, facts])
   const cur = byName.get(selId ?? '')
+  /** THE REFERENCE WORLD OF THIS TAB, and it is deliberately smaller than the
+   *  Work panel's. It admits only what this surface can actually open:
+   *  · `item` — but only the rows this tab holds, so a mention of an item the
+   *    agent is not answerable for renders as identity and not as a control
+   *    that would select nothing;
+   *  · `agent` — the desk's own jump, the same callback the header uses.
+   *  `doc` and `mail` are LEFT OUT because this tab has no document reader and
+   *  no mailbox: a kind in `handles` with nothing behind it is the live-looking
+   *  control that does nothing, which this codebase keeps refusing.
+   *
+   *  `destination` is this desk's own agent, so a reference to the agent whose
+   *  desk you are already reading is identity rather than a jump back to here. */
+  const refWorld = useMemo<RefWorld>(() => ({
+    org: slug,
+    items: mine === null ? 'loading'
+      : new Map([...byName.keys()].map((s) => [s, s])),
+    agents: new Map([...facts.keys()].map((id) => [id, id])),
+    destination: nid,
+    tierOf: (id) => facts.get(id)?.tier ?? null,
+    handles: new Set<RefKind>(['item', 'agent']),
+  }), [slug, nid, mine, byName, facts])
+  const openRef = useCallback((r: ResolvedRef) => {
+    if (r.ref.kind === 'item') setSelId(r.ref.id)
+    else if (r.ref.kind === 'agent') onFocusAgent?.(r.ref.id)
+  }, [onFocusAgent])
   const toggleFold = useCallback((name: string) => {
     setCollapsed((c) => {
       const next = new Set(c)
@@ -1056,7 +1081,8 @@ export function AgentDocketView({ slug, nid, mine, facts, toast, onFocusAgent,
                       asksById={new Map()} onDismiss={onDismiss}
                       close={() => setSelId(null)} onFocusAgent={onFocusAgent}
                       facts={facts} refIndex={refIndex}
-                      onGoToItem={(id) => { if (byName.has(id)) setSelId(id) }} />
+                      onGoToItem={(id) => { if (byName.has(id)) setSelId(id) }}
+                      refWorld={refWorld} onOpenRef={openRef} />
                   : <div className="dim pad mailer-none">select an item to view it</div>}
               </div>
             </div>

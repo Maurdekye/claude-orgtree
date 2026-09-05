@@ -411,7 +411,9 @@ def participants_cannot_close_claim_or_check():
     assert it["delivery"]["implemented"] is None and it["acceptance"][0]["checked"] is None
     # the plain update is allowed, and it claims: from here peer IS the owner,
     # so the same calls succeed — the refusals above were about WHO, not WHAT
-    ok(slug, "peer", "update", slug=wid, status="blocked", done_so_far=["p"], working_on_next=[])
+    ok(slug, "peer", "update", slug=wid, status="blocked",
+       blocked_reason="the vendor's key has not arrived; their support can send it",
+       done_so_far=["p"], working_on_next=[])
     assert get_item(slug, wid)["owner"]["node"] == "peer"
     ok(slug, "peer", "claim", slug=wid, stage="implemented")
     ok(slug, "peer", "check", slug=wid, index=0, evidence_ref="x")
@@ -2284,7 +2286,9 @@ def accept_reopen_and_dismissal_all_count_as_transitions():
     only watched `update` would sit still through all of them."""
     slug = fresh_org()
     wid = create(slug, node="boss", owner="mid")
-    ok(slug, "mid", "update", slug=wid, status="review",
+    # entering review names its reviewer (2026-09-05); `boss` is mid's own
+    # superior, and the agent that accepts two lines below
+    ok(slug, "mid", "update", slug=wid, status="review", reviewer="boss",
        done_so_far=["built it"], working_on_next=["await acceptance"])
     at_review = _status_at(slug, wid)
 
