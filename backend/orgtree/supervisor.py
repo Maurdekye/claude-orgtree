@@ -5417,6 +5417,59 @@ def _envelope_state_block(org: Org, nid: str, now: float,
         return org_state_block(org, nid)
 
 
+#: The docket's standing operating instructions (docket-final-spec.md §standing
+#: instructions, user requirement 2026-09-05). Rides `identity_prompt`, which is
+#: the ONE string every lane is built from — the claude identity file, the codex
+#: AGENTS.md and the antigravity developer instructions all render it — so this
+#: reaches every provider through the same managed path, not a repo doc some
+#: lanes never read. Stable doctrine, never telemetry: a changed prefix once, on
+#: deployment, then fixed bytes.
+#: ⚠ test_mcptool's recital pin matches tool verbs as SUBSTRINGS: keep the bare
+#: words m-o-v-e (so also "remove"), r-e-n-a-m-e and s-w-a-p out of this text.
+DOCKET_DOCTRINE = (
+    "THE DOCKET (user ruling 2026-09-05) is this organization's durable record "
+    "of substantive work — the user reads it instead of reconstructing progress "
+    "from transcripts, so keep it true. Use orgtree_work. (1) At the start of an "
+    "assignment `list` the items you may read and continue the existing item "
+    "for the same work instead of creating a duplicate. (2) `create` an item "
+    "for substantive new work — short concrete title, intended outcome, owner "
+    "= you or a subordinate, collaborators as `participants` — and keep the "
+    "SAME item id through reviews, handoffs and agent replacement; `assign` "
+    "when responsibility passes. (3) `update` at meaningful boundaries only — "
+    "progress that changes the next step, a blocker, a review request, a "
+    "delivery, a pause or a handoff; never after every tool call. EVERY update "
+    "carries both lists, `done_so_far` and `working_on_next`, as individual "
+    "entries (either may be empty; both empty is refused). They are your latest "
+    "COMPLETE summary, not a fragment that depends on older text; keep them "
+    "scannable and put detail in `evidence`. (4) Use honest statuses — "
+    "open|in_progress|blocked|review; `done` only through `accept` by your "
+    "superior or the user, so assert `review` and wait — and keep implemented, "
+    "committed, pushed, deployed and running-build claims distinct: `claim` "
+    "records a stage, `verify` checks committed/pushed/in_build against git, "
+    "and inclusion in the running build is never proof that the feature "
+    "works. Record evidence and remaining limits; never assert verification "
+    "you did not perform. (5) A question to the user about an item is ATTACHED "
+    "to it — orgtree_ask with `work_item` (per question in a batch). Read the "
+    "item's pending questions first and do not ask what another agent already "
+    "asked; another agent's answer is not your authorization; withdraw yours "
+    "the moment it is settled or moot, because a stale question keeps the item "
+    "in the user's attention. (6) Set `attention: true` with `attention_reason` "
+    "only for a concrete reason the user must see that is not a question. A "
+    "later update without it clears the flag. If the user DISMISSES the flag "
+    "the item becomes blocked: respect that, and do not raise the same reason "
+    "again without material new information (an exact repeat is refused). "
+    "(7) A user reply on an item reaches its LAST UPDATER as item-linked mail — "
+    "act on it and update the item if it changes the work; answers to "
+    "questions reach their asker; attaching a question or a user dismissal "
+    "never changes who last updated. (8) Finished items archive by themselves "
+    "an hour after their last update, records kept; when real work resumes, "
+    "`update` the existing item with reopen=true rather than creating another. "
+    "Before a pause, retirement, provider stop or handoff leave an accurate "
+    "latest update — what is complete, what remains, where the work and "
+    "evidence live — and never mark incomplete work done because your turn or "
+    "capacity is ending. ")
+
+
 def identity_prompt(org: Org, nid: str, include_archived: bool = False) -> str:
     """№29: the STABLE identity — who this agent is, who it answers to, what it
     may touch, and how the tools work. Regenerated every turn, but by design it
@@ -5904,6 +5957,7 @@ def identity_prompt(org: Org, nid: str, include_archived: bool = False) -> str:
         f"break there; send the file or name the path instead.) Images the "
         f"user attaches to their messages display back to them the same "
         f"way. "
+        + DOCKET_DOCTRINE
         + ("WATCHDOGS: never burn turns polling for a condition — a build "
            "or deploy finishing, an error appearing in a log, a file "
            "landing, a service going down. Keep a WATCHDOG instead "

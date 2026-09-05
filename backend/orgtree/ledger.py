@@ -37,7 +37,7 @@ from typing import Any, Final, Literal, cast
 from . import clipin, deployment
 from .schema import (AudienceGrant, DirGrant, FrozenInfo, MailEntry, NodeDoc,
                      NoticeEntry, OrgDoc, OrgInboxEntry, ToolGrant,
-                     UserMailEntry)
+                     UserMailEntry, WorkActor, WorkItem, WorkStage)
 
 # §3.1 — derived from published API pricing: a seat is the API $ per M INPUT
 # tokens at the STANDING price. Promos never set seats — the sonnet-intro
@@ -7130,7 +7130,8 @@ class Org:
 
     def _norm_question_batch(self, question: str, options: list[Any] | None,
                              multi: bool, header: str | None,
-                             questions: list[Any] | None
+                             questions: list[Any] | None,
+                             work_item: str | None = None
                              ) -> list[dict[str, Any]]:
         """FR-04: both ask forms normalize to ONE batch shape — a list of 1–4
         `{question, options?, multi?, header?}` entries. The single form is a
@@ -7163,6 +7164,10 @@ class Org:
                 h = str(qd.get("header") or "").strip()[:24]
                 if h:
                     e["header"] = h
+                # docket linkage is PER TAB: one batch may ask about two items
+                w = str(qd.get("work_item") or work_item or "").strip()
+                if w:
+                    e["work_item"] = w
                 batch.append(e)
             return batch
         q = str(question or "").strip()
@@ -7171,15 +7176,18 @@ class Org:
         q, options = self._recover_leaked_ask(q, options)
         opts = self._norm_options(options)
         hdr = str(header or "").strip()[:24]
+        w = str(work_item or "").strip()
         return [{"question": q,
                  **({"options": opts} if opts else {}),
                  **({"multi": True} if multi else {}),
-                 **({"header": hdr} if hdr else {})}]
+                 **({"header": hdr} if hdr else {}),
+                 **({"work_item": w} if w else {})}]
 
     def ask_user(self, nid: str, question: str = "",
                  options: list[Any] | None = None,
                  multi: bool = False, header: str | None = None,
-                 questions: list[Any] | None = None) -> dict[str, Any]:
+                 questions: list[Any] | None = None,
+                 work_item: str | None = None) -> dict[str, Any]:
         """A structured question to the user (F-04, user-ruled 2026-08-04):
         ALWAYS parks — no blocking wait. The question becomes an interactive
         card on the agent's desk AND in the user's inbox; the answer arrives
@@ -7208,7 +7216,16 @@ class Org:
                 "kind=question, or record the blocker with "
                 "orgtree_status(blocked, …)")
         batch = self._norm_question_batch(question, options, multi, header,
-                                          questions)
+                                          questions, work_item)
+        # DOCKET LINKAGE (docket-final-spec.md): a tab may attach to a work
+        # item the asker may READ (owner / creator / their superiors / a
+        # listed participant). Checked before anything records, and the
+        # linkage is the ask store's own field - the item never holds a
+        # question list, so a resolved, withdrawn or mooted request stops
+        # counting the moment the ask store says so.
+        for qd in batch:
+            if qd.get("work_item"):
+                qd["work_item"] = self.work_attach_check(nid, str(qd["work_item"]))
         # the entry mirrors batch[0] at top level (the single-question shape
         # every existing surface reads) AND carries the full batch
         first = batch[0]
@@ -7220,6 +7237,10 @@ class Org:
                 p = str(qd.get("question"))
                 if qd.get("header"):
                     p = f"[{qd['header']}] {p}"
+                if qd.get("work_item"):
+                    # routed mail is not a user card: the linkage rides the
+                    # text so the superior can find the item
+                    p = f"(docket item {qd['work_item']}) {p}"
                 o = cast("list[dict[str, Any]]", qd.get("options") or [])
                 if o:
                     p += "\nOptions: " + " · ".join(x["label"] for x in o) \
@@ -7262,6 +7283,8 @@ class Org:
                     f"only what still matters, or wait for the user's submit")
             first0 = merged[0]
             entry["questions"] = merged
+            entry["work_items"] = sorted({str(x["work_item"]) for x in merged
+                                          if x.get("work_item")})
             entry["question"] = first0["question"]
             for k in ("options", "multi", "header"):
                 if first0.get(k):
@@ -7287,6 +7310,8 @@ class Org:
             **({"header": first["header"]} if first.get("header") else {})}
         aid = "q" + uuid.uuid4().hex[:8]
         asks.append({"id": aid, "node": nid, "kind": "question", **mirror,
+                     "work_items": sorted({str(x["work_item"]) for x in batch
+                                           if x.get("work_item")}),
                      "rev": 1, "status": "open"})
         self._prune_asks()
         self._log("ask", nid, {"id": aid}, [])
@@ -8990,6 +9015,11 @@ class Org:
             "sandboxed": bool((self.d.get("kiosk") or {}).get("sandbox")
                              or (self.d.get("sandbox") or {}).get("enabled")),
             "audience_requests": self.d.get("audience_requests", []),
+            # the docket toolbar badge (docket-final-spec.md): two counts over
+            # the FULL item set, always present - the modal fetches the list
+            # from GET /api/orgs/{slug}/work-items when it opens
+            "work_items_summary": {k: v for k, v in self.work_counts().items()
+                                   if k in ("attention", "active")},
             # the org inbox panel (user spec): hidden until the org receives
             # its first outside mail OR an inbox audience is granted
             "org_inbox": {
@@ -9035,3 +9065,866 @@ class Org:
                         for h in self.d.get("net_hubs") or [])),
             },
         }
+
+    # ================================================================ docket
+    # Durable work items (docs/work-items.md, docket-final-spec.md). Nothing
+    # here lives on a node: an item survives retirement, compaction and
+    # reassignment. Two doc-blob lists, `work_items` (active) and
+    # `work_items_archive`; an old document without them is an empty docket.
+    #
+    # Two clocks, on purpose. `updated_at` moves on ANY mutation; `docket_at`
+    # moves only on a DOCKET UPDATE — an agent's status update (the two
+    # lists), creation, acceptance, reopen, supersede. The row age the user
+    # sees and the one-hour auto-archive both run on `docket_at`, so a
+    # question attachment, a delivery claim or a user dismissal never resets
+    # the "last heard from" clock and never keeps a finished item young.
+    #
+    # Archive is DERIVED on read (`_work_archived`), not a stored boolean:
+    # a stored flag is exactly the durable-flag-nothing-clears defect the
+    # team charter names. The physical move is a sweep at the start of every
+    # docket mutation. An item that holds attention (a pending attached
+    # question or a manual flag) is never archived, even if the list already
+    # holds it — the badge must open onto a visible row (Astra 2026-09-05).
+    WORK_ACTIVE_MAX: Final = 200
+    WORK_EVIDENCE_MAX: Final = 50
+    WORK_HISTORY_MAX: Final = 100
+    WORK_LIST_ENTRY_MAX: Final = 40          # entries per docket list
+    WORK_ARCHIVE_AFTER_S: Final = 3600       # strictly greater than → archived
+    WORK_STATUSES: Final = ("open", "in_progress", "blocked", "review",
+                            "done", "superseded", "dropped")
+    WORK_AGENT_STATUSES: Final = ("open", "in_progress", "blocked", "review",
+                                  "dropped")
+    WORK_CLOSED: Final = ("done", "superseded", "dropped")
+    WORK_EVIDENCE_KINDS: Final = ("note", "link", "file", "commit", "log")
+
+    def _work_active(self) -> list[WorkItem]:
+        return cast("list[WorkItem]", self.d.get("work_items") or [])
+
+    def _work_archive(self) -> list[WorkItem]:
+        return cast("list[WorkItem]", self.d.get("work_items_archive") or [])
+
+    def _work_actor(self, actor: str) -> WorkActor | str:
+        """A node AT ITS GENERATION, or the literal user."""
+        if actor == USER or actor not in self.nodes:
+            return actor          # the user, or a system actor ("orgtree")
+        n = self.node(actor)
+        return {"node": actor, "generation": int(n.get("generation") or 0)}
+
+    @staticmethod
+    def _work_actor_node(a: Any) -> str | None:
+        if isinstance(a, dict):
+            return str(cast("dict[str, Any]", a).get("node") or "") or None
+        return None
+
+    def _work_find(self, wid: str) -> tuple[WorkItem, bool]:
+        """(item, physically_archived). Raises when the id is unknown."""
+        for it in self._work_active():
+            if it["id"] == wid:
+                return it, False
+        for it in self._work_archive():
+            if it["id"] == wid:
+                return it, True
+        raise LedgerError(f"no work item {wid!r}")
+
+    # ---- authority. Explicit, never org-wide: nothing in an item is public.
+    def _work_can_manage(self, actor: str, it: WorkItem) -> bool:
+        """Owner-level right: the user, the owner node, the creator node, or
+        a strict ancestor of the owner (of the creator while unowned)."""
+        if actor == USER:
+            return True
+        owner = self._work_actor_node(it.get("owner"))
+        creator = self._work_actor_node(it.get("created_by"))
+        if actor in (owner, creator):
+            return True
+        anchor = owner or creator
+        return bool(anchor) and anchor in self.nodes \
+            and self.is_ancestor(actor, cast(str, anchor))
+
+    def _work_can_read(self, actor: str, it: WorkItem) -> bool:
+        """Manage right, or explicit participant membership — the narrow
+        collaboration path (Astra 2026-09-05): a participant may read, post
+        status updates and evidence, and attach questions; nothing else."""
+        return self._work_can_manage(actor, it) \
+            or actor in (it.get("participants") or [])
+
+    def _work_can_accept(self, actor: str, it: WorkItem) -> bool:
+        """The user, or a strict ancestor of the owner — never the owner."""
+        if actor == USER:
+            return True
+        anchor = self._work_actor_node(it.get("owner")) \
+            or self._work_actor_node(it.get("created_by"))
+        return bool(anchor) and actor != anchor and anchor in self.nodes \
+            and self.is_ancestor(actor, cast(str, anchor))
+
+    def _work_get_for(self, actor: str, wid: str) -> tuple[WorkItem, bool]:
+        """The item, or ONE refusal for both "no such item" and "not yours"
+        — a distinct message would confirm a hidden id exists."""
+        try:
+            it, arch = self._work_find(str(wid or "").strip())
+        except LedgerError:
+            it = None            # type: ignore[assignment]
+            arch = False
+        if it is None or not self._work_can_read(actor, it):
+            raise LedgerError(
+                f"no work item {str(wid)[:20]!r} that you may read — it does "
+                f"not exist, or you are neither its owner, its creator, a "
+                f"superior of those, nor a listed participant")
+        return it, arch
+
+    # ---- derived state
+    def _work_questions(self, wid: str) -> list[dict[str, Any]]:
+        """OPEN asks with at least one tab attached to `wid` — one entry per
+        asker, read from the ask store itself so a withdrawn, answered,
+        dismissed or mooted request drops out by itself. Nothing is cached."""
+        out: list[dict[str, Any]] = []
+        for a in self.d.get("asks", []):
+            if a.get("status") != "open":
+                continue
+            tabs = [{"index": i, **{k: q[k] for k in
+                                    ("question", "header", "options", "multi")
+                                    if k in q}}
+                    for i, q in enumerate(cast("list[dict[str, Any]]",
+                                               a.get("questions") or []))
+                    if q.get("work_item") == wid]
+            if tabs:
+                out.append({"ask_id": a["id"], "node": a["node"],
+                            "rev": int(a.get("rev") or 1),
+                            "at": a.get("at"), "tabs": tabs})
+        return out
+
+    def _work_attention(self, it: WorkItem) -> list[str]:
+        src: list[str] = []
+        if it.get("manual_attention"):
+            src.append("manual")
+        if self._work_questions(it["id"]):
+            src.append("question")
+        return src
+
+    @staticmethod
+    def _work_age_s(it: WorkItem, now_ts: float) -> float | None:
+        stamp = it.get("docket_at") or it.get("updated_at")
+        if not stamp:
+            return None
+        try:
+            dt = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return now_ts - dt.timestamp()
+
+    def _work_eligible(self, it: WorkItem, now_ts: float) -> bool:
+        """Done, and the docket update is STRICTLY older than one hour."""
+        if it.get("status") != "done":
+            return False
+        age = self._work_age_s(it, now_ts)
+        return age is not None and age > self.WORK_ARCHIVE_AFTER_S
+
+    def _work_archived(self, it: WorkItem, physically: bool,
+                       now_ts: float) -> bool:
+        if self._work_attention(it):
+            return False
+        return physically or self._work_eligible(it, now_ts)
+
+    def _work_sweep(self, now_ts: float | None = None) -> list[str]:
+        """Physically move eligible, attention-free done items into the
+        archive. Called at the head of every docket mutation; a read never
+        writes. Returns the moved ids (logged, never silent)."""
+        now_ts = _time.time() if now_ts is None else now_ts
+        active = self._work_active()
+        moved: list[str] = []
+        for it in list(active):
+            if self._work_eligible(it, now_ts) and not self._work_attention(it):
+                active.remove(it)
+                it["archived_at"] = now()
+                self.d.setdefault("work_items_archive", []).append(it)
+                moved.append(it["id"])
+        if moved:
+            self._log("work_archived", "orgtree",
+                      {"ids": moved, "why": "done for over an hour"}, [])
+        return moved
+
+    def _work_owner_state(self, it: WorkItem) -> tuple[bool, str | None]:
+        o = it.get("owner")
+        if not isinstance(o, dict):
+            return False, None
+        n = self.nodes.get(str(o.get("node")))
+        if n is None:
+            return False, "missing"
+        if n.get("state") != "live":
+            return False, "retired"
+        if int(n.get("generation") or 0) != int(o.get("generation") or 0):
+            return False, "generation moved"
+        return True, "live"
+
+    def _work_view(self, it: WorkItem, physically: bool, viewer: str,
+                   now_ts: float) -> dict[str, Any]:
+        """The wire shape (evidence/docket-wire-contract-v3.md). Dependencies
+        outside the viewer's read set come back `{id, visible: false}` only."""
+        cur, ostate = self._work_owner_state(it)
+        sources = self._work_attention(it)
+        deps: list[dict[str, Any]] = []
+        for did in it.get("dependencies") or []:
+            try:
+                d, _ = self._work_find(did)
+            except LedgerError:
+                deps.append({"id": did, "visible": False})
+                continue
+            if self._work_can_read(viewer, d):
+                deps.append({"id": did, "visible": True, "title": d["title"],
+                             "status": d["status"]})
+            else:
+                deps.append({"id": did, "visible": False})
+        return {
+            **{k: it.get(k) for k in (
+                "id", "rev", "kind", "title", "objective", "status",
+                "owner", "created_by", "at", "updated_at", "done_so_far",
+                "working_on_next", "docket_at", "last_updater",
+                "manual_attention", "acceptance", "evidence", "delivery",
+                "accepted", "superseded_by", "history")},
+            "blocked_reason": it.get("blocked_reason"),
+            "participants": list(it.get("participants") or []),
+            "dismissals": list(it.get("dismissals") or []),
+            "archived": self._work_archived(it, physically, now_ts),
+            "archived_at": it.get("archived_at"),
+            "owner_current": cur, "owner_state": ostate,
+            "questions": self._work_questions(it["id"]),
+            "superseded_by_visible": self._work_pointer_visible(
+                it.get("superseded_by"), viewer),
+            "effective_attention": bool(sources),
+            "attention_sources": sources,
+            "dependencies": deps,
+        }
+
+    def _work_pointer_visible(self, wid: Any, viewer: str) -> bool | None:
+        """May `viewer` read the item a pointer names? None when no pointer.
+        The id itself is served (it carries no title/status/owner); this says
+        whether `get` would answer."""
+        if not wid:
+            return None
+        try:
+            t, _ = self._work_find(str(wid))
+        except LedgerError:
+            return False
+        return self._work_can_read(viewer, t)
+
+    def work_counts(self, now_ts: float | None = None) -> dict[str, int]:
+        """The toolbar badge's two numbers (+ the archive size), over the
+        FULL item set. `attention` counts items, never questions."""
+        now_ts = _time.time() if now_ts is None else now_ts
+        attention = active = archived = 0
+        for it, phys in ([(i, False) for i in self._work_active()]
+                         + [(i, True) for i in self._work_archive()]):
+            if self._work_attention(it):
+                attention += 1
+            if self._work_archived(it, phys, now_ts):
+                archived += 1
+            elif it.get("status") not in self.WORK_CLOSED:
+                active += 1
+        return {"attention": attention, "active": active, "archived": archived}
+
+    def work_list(self, viewer: str, include_archived: bool = False,
+                  now_ts: float | None = None) -> dict[str, Any]:
+        """Every item the viewer may read, split by the DERIVED archive rule,
+        newest docket update first within each group. Counts are over the
+        viewer's READABLE set - an agent must not learn from a number that a
+        hidden item exists (Astra review 2026-09-05); the user's counts are
+        the org's."""
+        now_ts = _time.time() if now_ts is None else now_ts
+        items: list[dict[str, Any]] = []
+        arch: list[dict[str, Any]] = []
+        for it, phys in ([(i, False) for i in self._work_active()]
+                         + [(i, True) for i in self._work_archive()]):
+            if not self._work_can_read(viewer, it):
+                continue
+            v = self._work_view(it, phys, viewer, now_ts)
+            (arch if v["archived"] else items).append(v)
+
+        def key(v: dict[str, Any]) -> str:
+            return str(v.get("docket_at") or v.get("updated_at") or "")
+        items.sort(key=key, reverse=True)
+        arch.sort(key=key, reverse=True)
+        counts = (self.work_counts(now_ts) if viewer == USER else {
+            "attention": sum(1 for v in items + arch if v["effective_attention"]),
+            "active": sum(1 for v in items
+                          if v["status"] not in self.WORK_CLOSED),
+            "archived": len(arch)})
+        out: dict[str, Any] = {"items": items, "counts": counts, "now": now()}
+        if include_archived:
+            out["archived"] = arch
+        return out
+
+    def work_get(self, viewer: str, wid: str,
+                 now_ts: float | None = None) -> dict[str, Any]:
+        it, phys = self._work_get_for(viewer, wid)
+        return self._work_view(it, phys, viewer,
+                               _time.time() if now_ts is None else now_ts)
+
+    # ---- mutation plumbing
+    def _work_hist(self, it: WorkItem, actor: str, op: str,
+                   detail: dict[str, Any]) -> None:
+        """Append a history row and bump rev/updated_at. Past the cap the
+        OLDEST rows fold into one disclosure row kept at the head — a count
+        and a span, so the omission is visible, never silent."""
+        hist = it.setdefault("history", [])
+        hist.append({"at": now(), "by": self._work_actor(actor), "op": op,
+                     **detail})
+        if len(hist) > self.WORK_HISTORY_MAX:
+            head = hist[0] if hist and hist[0].get("kind") == "folded" else None
+            keep_from = len(hist) - self.WORK_HISTORY_MAX + 1
+            folded = hist[(1 if head else 0):keep_from]
+            if folded:
+                row = head or {"kind": "folded", "count": 0,
+                               "first_at": folded[0]["at"], "last_at": ""}
+                row["count"] = int(row.get("count") or 0) + len(folded)
+                row["last_at"] = folded[-1]["at"]
+                row["note"] = ("older history rows summarised — a lossy "
+                               "omission by count, not a deletion of the item")
+                it["history"] = [row] + hist[keep_from:]
+        it["rev"] = int(it.get("rev") or 0) + 1
+        it["updated_at"] = now()
+
+    def _work_stamp_docket(self, it: WorkItem, actor: str) -> None:
+        """A DOCKET UPDATE: the row's clock and, for an agent, the reply
+        recipient. The user is never `last_updater` — replies go to agents."""
+        it["docket_at"] = now()
+        if actor != USER:
+            it["last_updater"] = cast(WorkActor, self._work_actor(actor))
+
+    @staticmethod
+    def _work_norm_list(raw: Any, name: str) -> list[str]:
+        """Individual nonblank strings — never a prose string to be parsed."""
+        if raw is None:
+            return []
+        if isinstance(raw, str):
+            raise LedgerError(
+                f"{name} must be a LIST of individual entries, not a string "
+                f"(each entry is one completed thing / one next step)")
+        if not isinstance(raw, list):
+            raise LedgerError(f"{name} must be a list of strings")
+        out: list[str] = []
+        for x in cast("list[Any]", raw):
+            if isinstance(x, (dict, list)):
+                raise LedgerError(f"{name} entries must be plain strings")
+            s = str(x if x is not None else "").strip()
+            if s:
+                out.append(s[:500])
+        if len(out) > Org.WORK_LIST_ENTRY_MAX:
+            raise LedgerError(f"{name} carries {len(out)} entries — keep the "
+                              f"displayed lists scannable (max "
+                              f"{Org.WORK_LIST_ENTRY_MAX}); detail belongs in "
+                              f"evidence")
+        return out
+
+    def _work_require_live_agent_or_user(self, actor: str) -> None:
+        if actor != USER:
+            self._require_live(actor)
+
+    # ---- the verbs
+    def work_create(self, actor: str, title: str, objective: str = "",
+                    kind: str = "code", owner: str | None = None,
+                    participants: list[Any] | None = None,
+                    acceptance: list[Any] | None = None,
+                    dependencies: list[Any] | None = None,
+                    done_so_far: Any = None, working_on_next: Any = None,
+                    status: str = "open") -> dict[str, Any]:
+        self._work_require_live_agent_or_user(actor)
+        self._work_sweep()
+        t = str(title or "").strip()[:200]
+        if not t:
+            raise LedgerError("a work item needs a title")
+        if kind not in ("code", "non-code"):
+            raise LedgerError("kind must be code|non-code")
+        if status not in self.WORK_AGENT_STATUSES or status == "dropped":
+            raise LedgerError("a new item starts open|in_progress|blocked|review")
+        active = self.d.setdefault("work_items", [])
+        if len(active) >= self.WORK_ACTIVE_MAX:
+            raise LedgerError(
+                f"the active docket holds {len(active)} items (cap "
+                f"{self.WORK_ACTIVE_MAX}) — nothing is deleted for you: "
+                f"finish and accept items so they archive, or `archive` a "
+                f"closed one explicitly")
+        own = str(owner or (actor if actor != USER else "") or "").strip() or None
+        if own is not None:
+            self.node(own)
+            if actor != USER and own != actor and not self.is_ancestor(actor, own):
+                raise LedgerError(
+                    f"you may own an item yourself or assign it to a "
+                    f"subordinate — {own!r} is neither")
+        parts: list[str] = []
+        for p in participants or []:
+            pid = str(p or "").strip()
+            if pid and pid != own:
+                self.node(pid)
+                if pid not in parts:
+                    parts.append(pid)
+        acc = [{"text": str(a).strip()[:300], "checked": None}
+               for a in (acceptance or []) if str(a or "").strip()]
+        deps: list[str] = []
+        for d in dependencies or []:
+            did = str(d or "").strip()
+            if did:
+                self._work_find(did)        # must exist (active or archived)
+                deps.append(did)
+        done = self._work_norm_list(done_so_far, "done_so_far")
+        nxt = self._work_norm_list(working_on_next, "working_on_next")
+        if (done_so_far is not None or working_on_next is not None) \
+                and not done and not nxt:
+            raise LedgerError("a docket update needs at least one entry in "
+                              "done_so_far or working_on_next")
+        from . import workitems       # noqa: PLC0415  (sandbox->store->ledger cycle)
+        wid = "w" + uuid.uuid4().hex[:8]
+        stamp = now()
+        it: WorkItem = {
+            "id": wid, "rev": 1, "kind": kind, "title": t,
+            "objective": str(objective or "").strip()[:2000],
+            "status": status, "blocked_reason": None,
+            "owner": (cast(WorkActor, self._work_actor(own)) if own else None),
+            "participants": parts,
+            "created_by": self._work_actor(actor), "at": stamp,
+            "updated_at": stamp,
+            "done_so_far": done, "working_on_next": nxt,
+            "docket_at": stamp,
+            "last_updater": (cast(WorkActor, self._work_actor(actor))
+                             if actor != USER else None),
+            "manual_attention": None, "manual_attention_rev": 0,
+            "dismissals": [], "archived_at": None,
+            "acceptance": acc, "dependencies": deps, "evidence": [],
+            "delivery": ({s: None for s in workitems.STAGES}
+                         if kind == "code" else None),
+            "accepted": None, "history": [], "superseded_by": None,
+        }
+        active.append(it)
+        self._log("work_create", actor, {"id": wid, "title": t[:60]}, [])
+        return {"created": wid, "rev": 1,
+                "status": f"work item {wid} created — use this id in every "
+                          f"later update, question and handoff"}
+
+    def work_update(self, actor: str, wid: str, done_so_far: Any,
+                    working_on_next: Any, status: str | None = None,
+                    attention: bool | None = None,
+                    attention_reason: str | None = None,
+                    blocked_reason: str | None = None,
+                    title: str | None = None, objective: str | None = None,
+                    reopen: bool = False) -> dict[str, Any]:
+        """THE docket status update. Always carries both lists (either may be
+        empty, not both — Astra ruling 2026-09-05, no status-only bypass),
+        moves `docket_at` and `last_updater`, and restates the manual flag:
+        an update that does not pass attention=true CLEARS a standing flag,
+        because the latest update is the complete current statement."""
+        self._work_require_live_agent_or_user(actor)
+        self._work_sweep()
+        it, phys = self._work_get_for(actor, wid)
+        done = self._work_norm_list(done_so_far, "done_so_far")
+        nxt = self._work_norm_list(working_on_next, "working_on_next")
+        if not done and not nxt:
+            raise LedgerError(
+                "a docket update needs at least one entry in done_so_far or "
+                "working_on_next — both empty says nothing the user can read")
+        now_ts = _time.time()
+        if self._work_archived(it, phys, now_ts) and not reopen:
+            raise LedgerError(
+                f"{wid} is ARCHIVED (done for over an hour). If real work "
+                f"resumes, pass reopen=true with the new status; do not "
+                f"create a duplicate item")
+        if status is not None:
+            if status not in self.WORK_AGENT_STATUSES:
+                if status == "done":
+                    raise LedgerError(
+                        "assert `review`; acceptance belongs to your superior "
+                        "or the user (orgtree_work accept)")
+                raise LedgerError(
+                    f"status must be one of {'|'.join(self.WORK_AGENT_STATUSES)}")
+        # a participant's grant is NARROW: status updates and evidence. Closing
+        # the item, resuming it or rewriting what it is are owner-level acts.
+        if not self._work_can_manage(actor, it):
+            if status == "dropped":
+                raise LedgerError("dropping an item is an owner-level act (owner, "
+                                  "creator, their superiors, the user) - a "
+                                  "participant reports, it does not close")
+            if reopen:
+                raise LedgerError("reopening an item is an owner-level act - ask "
+                                  "the owner or a superior")
+            if title is not None or objective is not None:
+                raise LedgerError("only the owner, the creator, their superiors "
+                                  "or the user may retitle or re-scope an item")
+        if attention is True and not str(attention_reason or "").strip():
+            raise LedgerError("attention=true needs a nonblank attention_reason "
+                              "— the concrete thing the user must see")
+        if reopen:
+            if it.get("status") not in self.WORK_CLOSED and not phys:
+                pass                      # nothing to reopen; harmless
+            status = status or "in_progress"
+            if status in self.WORK_CLOSED:
+                raise LedgerError("reopen needs an open status "
+                                  "(open|in_progress|blocked|review)")
+            if phys:
+                self._work_archive().remove(it)
+                self.d.setdefault("work_items", []).append(it)
+            it["archived_at"] = None
+            # the earlier acceptance described a completion that no longer
+            # stands; history keeps who accepted what and when
+            self._work_hist(it, actor, "reopen",
+                            {"from": it.get("status"),
+                             "accepted_was": it.get("accepted")})
+            it["accepted"] = None
+        changes: dict[str, Any] = {}
+        if status is not None and status != it.get("status"):
+            changes["status"] = {"from": it.get("status"), "to": status}
+            it["status"] = status
+        if it.get("status") == "blocked":
+            if blocked_reason is not None:
+                it["blocked_reason"] = str(blocked_reason).strip()[:500] or None
+        else:
+            it["blocked_reason"] = None
+        if title is not None and str(title).strip():
+            changes["title"] = {"from": it.get("title"), "to": str(title).strip()[:200]}
+            it["title"] = str(title).strip()[:200]
+        if objective is not None:
+            it["objective"] = str(objective).strip()[:2000]
+        it["done_so_far"] = done
+        it["working_on_next"] = nxt
+        # the manual flag is restated by every update
+        prev = it.get("manual_attention")
+        if attention is True:
+            reason = str(attention_reason or "").strip()[:500]
+            last = (it.get("dismissals") or [])[-1:]
+            if last and " ".join(str(last[0].get("reason") or "").lower().split()) \
+                    == " ".join(reason.lower().split()):
+                raise LedgerError(
+                    f"the user DISMISSED exactly this reason at {last[0]['at']} "
+                    f"— the same string is an exact repeat and is refused. "
+                    f"Re-raise only with material new information, stated "
+                    f"in the reason (doctrine; the backend checks the exact "
+                    f"repeat only)")
+            it["manual_attention_rev"] = int(it.get("manual_attention_rev") or 0) + 1
+            it["manual_attention"] = {"reason": reason, "at": now(),
+                                      "by": self._work_actor(actor),
+                                      "set_rev": it["manual_attention_rev"]}
+            changes["manual_attention"] = {"set_rev": it["manual_attention_rev"]}
+        elif prev:
+            it["manual_attention"] = None
+            changes["manual_attention"] = {"cleared_set_rev": prev.get("set_rev"),
+                                           "by": "status update"}
+        self._work_hist(it, actor, "update",
+                        {"changes": changes, "done": len(done), "next": len(nxt)})
+        self._work_stamp_docket(it, actor)
+        self._log("work_update", actor,
+                  {"id": wid, **({"status": status} if status else {})}, [])
+        return {"updated": wid, "rev": it["rev"], "status": it["status"],
+                "manual_attention": bool(it.get("manual_attention")),
+                "note": ("the standing attention flag was CLEARED by this "
+                         "update (pass attention=true to keep one)"
+                         if prev and attention is not True else None)}
+
+    def work_assign(self, actor: str, wid: str, owner: str) -> dict[str, Any]:
+        """Explicit reassignment. Never a docket update: the reply recipient
+        stays whoever last wrote the status."""
+        self._work_require_live_agent_or_user(actor)
+        self._work_sweep()
+        it, _ = self._work_get_for(actor, wid)
+        if not self._work_can_manage(actor, it):
+            raise LedgerError("only the owner, the creator, their superiors or "
+                              "the user may reassign an item")
+        own = str(owner or "").strip()
+        self.node(own)
+        if actor != USER and own != actor and not self.is_ancestor(actor, own):
+            raise LedgerError(f"you may assign an item to yourself or a "
+                              f"subordinate — {own!r} is neither")
+        frm = it.get("owner")
+        it["owner"] = cast(WorkActor, self._work_actor(own))
+        parts = [p for p in (it.get("participants") or []) if p != own]
+        it["participants"] = parts
+        self._work_hist(it, actor, "assign", {"from": frm, "to": it["owner"]})
+        self._log("work_assign", actor, {"id": wid, "to": own}, [])
+        return {"assigned": wid, "owner": it["owner"], "rev": it["rev"]}
+
+    def work_participants(self, actor: str, wid: str,
+                          add: list[Any] | None = None,
+                          remove: list[Any] | None = None) -> dict[str, Any]:
+        self._work_require_live_agent_or_user(actor)
+        self._work_sweep()
+        it, _ = self._work_get_for(actor, wid)
+        if not self._work_can_manage(actor, it):
+            raise LedgerError("only the owner, the creator, their superiors or "
+                              "the user may change participants")
+        parts = list(it.get("participants") or [])
+        owner = self._work_actor_node(it.get("owner"))
+        for p in add or []:
+            pid = str(p or "").strip()
+            if pid and pid != owner:
+                self.node(pid)
+                if pid not in parts:
+                    parts.append(pid)
+        for p in remove or []:
+            pid = str(p or "").strip()
+            if pid in parts:
+                parts.remove(pid)
+        it["participants"] = parts
+        self._work_hist(it, actor, "participants", {"now": parts})
+        return {"participants": parts, "rev": it["rev"]}
+
+    def work_evidence(self, actor: str, wid: str, kind: str, ref: str,
+                      note: str | None = None) -> dict[str, Any]:
+        self._work_require_live_agent_or_user(actor)
+        self._work_sweep()
+        it, _ = self._work_get_for(actor, wid)
+        if kind not in self.WORK_EVIDENCE_KINDS:
+            raise LedgerError(f"evidence kind must be one of "
+                              f"{'|'.join(self.WORK_EVIDENCE_KINDS)}")
+        r = str(ref or "").strip()[:500]
+        if not r:
+            raise LedgerError("evidence needs a ref (path, url, sha, log name)")
+        ev = it.setdefault("evidence", [])
+        if len(ev) >= self.WORK_EVIDENCE_MAX:
+            raise LedgerError(
+                f"this item already holds {len(ev)} evidence rows (cap "
+                f"{self.WORK_EVIDENCE_MAX}); nothing is truncated — consolidate "
+                f"into a file and reference that")
+        ev.append({"at": now(), "by": self._work_actor(actor), "kind": kind,
+                   "ref": r, **({"note": str(note).strip()[:500]} if note else {})})
+        self._work_hist(it, actor, "evidence", {"kind": kind})
+        return {"evidence": len(ev), "rev": it["rev"]}
+
+    def work_claim(self, actor: str, wid: str, stage: str,
+                   ref: str | None = None, note: str | None = None
+                   ) -> dict[str, Any]:
+        """A delivery CLAIM. Verification fields are never caller-writable:
+        a verifiable stage is recorded `unverified` until `verify` runs."""
+        from . import workitems       # noqa: PLC0415
+        self._work_require_live_agent_or_user(actor)
+        self._work_sweep()
+        it, _ = self._work_get_for(actor, wid)
+        if not self._work_can_manage(actor, it):
+            raise LedgerError("delivery claims are an owner-level act (owner, "
+                              "creator, their superiors, the user) - a "
+                              "participant records `evidence` instead")
+        if it.get("delivery") is None:
+            raise LedgerError("non-code item: delivery stages do not apply")
+        if stage not in workitems.STAGES:
+            raise LedgerError(f"stage must be one of {'|'.join(workitems.STAGES)}")
+        st: WorkStage = {"claimed_at": now(),
+                         "claimed_by": self._work_actor(actor),
+                         "ref": None, "note": (str(note).strip()[:500] if note else None),
+                         "verified": None, "method": "self-report", "detail": "",
+                         "resolved_oid": None, "target": "", "ref_as_of": "",
+                         "fetched_at": None, "observed_at": ""}
+        if stage in workitems.VERIFIABLE:
+            st["ref"] = workitems.validate_sha(ref)   # raises ShaError (ValueError)
+            st["method"] = "unverified"
+            st["detail"] = "claimed; run `verify` to check it against git"
+        elif ref:
+            st["ref"] = str(ref).strip()[:500]
+        cast("dict[str, Any]", it["delivery"])[stage] = st
+        self._work_hist(it, actor, "claim", {"stage": stage})
+        return {"claimed": stage, "rev": it["rev"],
+                "verifiable": stage in workitems.VERIFIABLE}
+
+    def work_verify_capture(self, actor: str, wid: str, stage: str
+                            ) -> dict[str, Any]:
+        """Under the lock: what to verify. The git call runs OUTSIDE the lock;
+        `work_verify_commit` writes only if the item is unchanged."""
+        from . import workitems       # noqa: PLC0415
+        self._work_require_live_agent_or_user(actor)
+        it, _ = self._work_get_for(actor, wid)
+        if not self._work_can_manage(actor, it):
+            raise LedgerError("verifying a delivery claim is an owner-level act")
+        if stage not in workitems.VERIFIABLE:
+            raise LedgerError(f"{stage!r} is a claim, not a verifiable stage "
+                              f"({'|'.join(sorted(workitems.VERIFIABLE))})")
+        d = it.get("delivery")
+        st = cast("dict[str, Any] | None", (d or {}).get(stage)) if d else None
+        if not st or not st.get("ref"):
+            raise LedgerError(f"no {stage} claim with a sha on {wid} — claim first")
+        return {"wid": wid, "rev": int(it["rev"]), "stage": stage,
+                "sha": str(st["ref"])}
+
+    def work_verify_commit(self, wid: str, stage: str, rev: int,
+                           result: Mapping[str, Any]) -> dict[str, Any]:
+        it, _ = self._work_find(wid)
+        if int(it["rev"]) != int(rev):
+            return {"stale": True, "rev": it["rev"],
+                    "status": "the item changed while git was consulted — "
+                              "nothing written; re-run verify"}
+        d = cast("dict[str, Any]", it["delivery"])
+        st = cast("dict[str, Any]", d.get(stage) or {})
+        st.update({k: result.get(k) for k in (
+            "verified", "method", "detail", "resolved_oid", "target",
+            "ref_as_of", "fetched_at", "observed_at")})
+        d[stage] = st
+        self._work_hist(it, "orgtree", "verify",
+                        {"stage": stage, "verified": st.get("verified")})
+        return {"stale": False, "rev": it["rev"], "stage": stage,
+                "verified": st.get("verified"), "detail": st.get("detail")}
+
+    def work_check(self, actor: str, wid: str, index: int,
+                   evidence_ref: str, note: str | None = None) -> dict[str, Any]:
+        """Mark ONE acceptance condition checked — acceptance evidence,
+        distinct from delivery stages and never inferred from them."""
+        self._work_require_live_agent_or_user(actor)
+        self._work_sweep()
+        it, _ = self._work_get_for(actor, wid)
+        if not self._work_can_manage(actor, it):
+            raise LedgerError("checking an acceptance condition is an owner-level "
+                              "act - a participant records `evidence` instead")
+        acc = it.get("acceptance") or []
+        if not 0 <= int(index) < len(acc):
+            raise LedgerError(f"acceptance index {index} out of range "
+                              f"(0..{len(acc) - 1})")
+        r = str(evidence_ref or "").strip()[:500]
+        if not r:
+            raise LedgerError("checking a condition needs an evidence_ref")
+        acc[int(index)]["checked"] = {"at": now(), "by": self._work_actor(actor),
+                                      "evidence_ref": r,
+                                      "note": (str(note).strip()[:500] if note else None)}
+        self._work_hist(it, actor, "check", {"index": int(index)})
+        return {"checked": int(index), "rev": it["rev"]}
+
+    def work_accept(self, actor: str, wid: str,
+                    note: str | None = None) -> dict[str, Any]:
+        """→ done. The user or a strict ancestor of the owner; never the
+        owner. Starts the one-hour archive clock (a docket event) but leaves
+        `last_updater` alone — replies still reach the agent who did the work."""
+        self._work_require_live_agent_or_user(actor)
+        self._work_sweep()
+        it, _ = self._work_get_for(actor, wid)
+        if not self._work_can_accept(actor, it):
+            raise LedgerError(
+                "acceptance belongs to the user or a superior of the owner — "
+                "an owner asserts `review` and waits")
+        if it.get("status") in self.WORK_CLOSED:
+            raise LedgerError(f"{wid} is already {it.get('status')}")
+        frm = it.get("status")
+        it["status"] = "done"
+        it["blocked_reason"] = None
+        it["accepted"] = {"at": now(), "by": self._work_actor(actor),
+                          "note": (str(note).strip()[:500] if note else None)}
+        self._work_hist(it, actor, "accept", {"from": frm})
+        it["docket_at"] = now()
+        self._log("work_accept", actor, {"id": wid}, [])
+        return {"accepted": wid, "rev": it["rev"],
+                "status": "done — archives automatically once its last docket "
+                          "update is over an hour old (records are kept)"}
+
+    def work_archive_now(self, actor: str, wid: str) -> dict[str, Any]:
+        """Explicit archive of a CLOSED item, ahead of the sweep."""
+        self._work_require_live_agent_or_user(actor)
+        self._work_sweep()
+        it, phys = self._work_get_for(actor, wid)
+        if phys:
+            return {"archived": wid, "already": True}
+        if not self._work_can_manage(actor, it):
+            raise LedgerError("only the owner, the creator, their superiors or "
+                              "the user may archive an item")
+        if it.get("status") not in self.WORK_CLOSED:
+            raise LedgerError(f"only done|superseded|dropped items archive — "
+                              f"{wid} is {it.get('status')}")
+        if self._work_attention(it):
+            raise LedgerError(f"{wid} still holds attention (a pending question "
+                              f"or a manual flag) — it stays visible until that "
+                              f"clears")
+        self._work_active().remove(it)
+        it["archived_at"] = now()
+        self.d.setdefault("work_items_archive", []).append(it)
+        self._work_hist(it, actor, "archive", {})
+        self._log("work_archived", actor, {"ids": [wid], "why": "explicit"}, [])
+        return {"archived": wid, "rev": it["rev"]}
+
+    def work_supersede(self, actor: str, wid: str, by: str) -> dict[str, Any]:
+        self._work_require_live_agent_or_user(actor)
+        self._work_sweep()
+        it, _ = self._work_get_for(actor, wid)
+        if not self._work_can_manage(actor, it):
+            raise LedgerError("only the owner, the creator, their superiors or "
+                              "the user may supersede an item")
+        other, _ = self._work_get_for(actor, by)
+        if not self._work_can_manage(actor, other):
+            raise LedgerError(f"you may read {other['id']} but not manage it - "
+                              f"the replacing item needs the same owner-level right")
+        if other["id"] == it["id"]:
+            raise LedgerError("an item cannot supersede itself")
+        if it.get("status") == "superseded":
+            raise LedgerError(f"{wid} is already superseded by "
+                              f"{it.get('superseded_by')} - supersede that one")
+        if other.get("status") in self.WORK_CLOSED:
+            raise LedgerError(f"{other['id']} is {other.get('status')} - a "
+                              f"replacement must be open work")
+        # a chain that leads back here would make both items unreachable
+        seen = {it["id"]}
+        cur: str | None = other["id"]
+        while cur and cur not in seen:
+            seen.add(cur)
+            try:
+                nxt, _ = self._work_find(cur)
+            except LedgerError:
+                break
+            cur = nxt.get("superseded_by")
+        if cur == it["id"]:
+            raise LedgerError("that would close a supersede cycle")
+        frm = it.get("status")
+        it["status"] = "superseded"
+        it["superseded_by"] = other["id"]
+        it["manual_attention"] = None
+        self._work_hist(it, actor, "supersede", {"from": frm, "by": other["id"]})
+        self._work_stamp_docket(it, actor)
+        return {"superseded": wid, "by": other["id"], "rev": it["rev"]}
+
+    # ---- the user's two controls
+    def work_dismiss_attention(self, wid: str, set_rev: int) -> dict[str, Any]:
+        """The list's Dismiss on a MANUAL flag: CAS on the flag revision it
+        was shown for, clears it, sets the work Blocked immediately, records
+        the dismissal. Lists, last updater, docket clock and every pending
+        question are untouched — pending questions keep the item orange."""
+        it, phys = self._work_find(wid)
+        cur = it.get("manual_attention")
+        if not cur:
+            raise LedgerError(f"{wid} has no manual attention flag to dismiss "
+                              f"(already cleared or dismissed — re-read the item)")
+        if int(cur.get("set_rev") or 0) != int(set_rev):
+            raise LedgerError(
+                f"the flag changed after it rendered (dismiss against revision "
+                f"{set_rev}, flag at {cur.get('set_rev')}) — re-read the "
+                f"reason and dismiss what it shows now")
+        it.setdefault("dismissals", []).append(
+            {"at": now(), "by": USER, "set_rev": int(cur["set_rev"]),
+             "reason": cur.get("reason")})
+        it["manual_attention"] = None
+        frm = it.get("status")
+        it["status"] = "blocked"
+        it["blocked_reason"] = f"attention flag dismissed by the user ({cur.get('reason')})"[:500]
+        if phys:
+            # a dismissed flag on an archived item leaves it blocked, which is
+            # open work — it comes back to the active list
+            self._work_archive().remove(it)
+            it["archived_at"] = None
+            self.d.setdefault("work_items", []).append(it)
+        self._work_hist(it, USER, "dismiss_attention",
+                        {"set_rev": int(cur["set_rev"]), "from": frm})
+        self._log("work_dismiss", USER, {"id": wid, "set_rev": int(cur["set_rev"])}, [])
+        notify = self._work_actor_node(it.get("last_updater")) \
+            or self._work_actor_node(it.get("owner"))
+        return {"dismissed": wid, "rev": it["rev"], "status": "blocked",
+                "pending_questions": len(self._work_questions(wid)),
+                "notify": notify if notify in self.nodes else None,
+                "reason": cur.get("reason")}
+
+    def work_reply_target(self, wid: str) -> dict[str, Any]:
+        """Who a general reply goes to: the LAST UPDATER, exactly. Nobody is
+        chosen in their place — the caller shows the failure instead."""
+        it, _ = self._work_find(wid)
+        lu = self._work_actor_node(it.get("last_updater"))
+        if not lu:
+            raise LedgerError(
+                f"no agent has written a docket status update on {wid} yet — "
+                f"there is nobody to reply to (message the owner directly)")
+        if lu not in self.nodes:
+            raise LedgerError(
+                f"the last updater {lu!r} no longer exists in this org — the "
+                f"reply was not sent")
+        return {"node": lu, "state": self.nodes[lu].get("state"),
+                "title": it["title"]}
+
+    def work_attach_check(self, nid: str, wid: str) -> str:
+        """May `nid` attach a question to `wid`? Read right; returns the id."""
+        it, _ = self._work_get_for(nid, wid)
+        return it["id"]

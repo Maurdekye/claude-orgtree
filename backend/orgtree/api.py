@@ -74,6 +74,7 @@ from pydantic import BaseModel, model_validator
 from . import crashreports
 from . import deployment
 from . import frozen_install
+from . import workitems
 from . import ledger as ledger_mod
 from . import (accounts, antigravity_limits, appsettings, bridgeauth,
                codex_limits, codex_route, limits, net,
@@ -3710,6 +3711,244 @@ async def document_dismiss(slug: str, did: str) -> dict[str, Any]:
     return {"ok": True, "node": r["node"]}
 
 
+# ---------------------------------------------------------------- the docket
+# Work items (docs/work-items.md, docket-final-spec.md). The user-side surface
+# is deliberately small: read, reply to the last updater, dismiss a manual
+# flag, accept. Everything else is the agent tool `orgtree_work` below.
+
+class WorkReply(Body):
+    body: str
+
+
+class WorkDismiss(Body):
+    # the flag revision the Dismiss button was rendered for (CAS — a delayed
+    # click must not clear a NEWER reason the user never read)
+    set_rev: int
+
+
+class WorkAccept(Body):
+    note: str | None = None
+
+
+@app.get("/api/orgs/{slug}/work-items")
+def work_items_list(slug: str, archived: int = 0) -> dict[str, Any]:
+    """Every item, split by the DERIVED archive rule, newest docket update
+    first; `counts` over the full set for the toolbar badge. `?archived=1`
+    adds the archived group (the modal's Show-archived checkbox). Read-only:
+    the physical archive sweep runs on the next docket write, never here."""
+    try:
+        org = store.load_org(slug)
+    except LedgerError as e:
+        raise HTTPException(404, str(e))
+    return org.work_list(USER, include_archived=bool(archived))
+
+
+@app.get("/api/orgs/{slug}/work-items/{wid}")
+def work_item_get(slug: str, wid: str) -> dict[str, Any]:
+    try:
+        org = store.load_org(slug)
+        return {"item": org.work_get(USER, wid)}
+    except LedgerError as e:
+        raise HTTPException(404, str(e))
+
+
+@app.post("/api/orgs/{slug}/work-items/{wid}/reply")
+def work_item_reply(slug: str, wid: str, body: WorkReply) -> dict[str, Any]:
+    """The general reply box: mail to the LAST UPDATER, exactly — the agent
+    that authored the latest docket status update. Owner changes, question
+    attachments and dismissals never move that recipient, and when it cannot
+    be reached the failure is returned rather than a substitute chosen."""
+    text = str(body.body or "").strip()
+    if not text:
+        raise HTTPException(422, "empty reply")
+    with store.DOC_LOCK:
+        try:
+            org = store.load_org(slug)
+        except LedgerError as e:
+            raise HTTPException(404, str(e))
+        try:
+            org._work_find(wid)
+        except LedgerError as e:
+            raise HTTPException(404, str(e))
+        try:
+            tgt = org.work_reply_target(wid)
+            nid = str(tgt["node"])
+            mail = (f"[DOCKET REPLY · {wid} \"{str(tgt['title'])[:80]}\"] "
+                    f"(the user replied on this docket item — treat it as "
+                    f"item-linked mail and update the item if it changes the "
+                    f"work)\n{text}")
+            r = org.post_mail(USER, nid, mail)
+            org.user_deep_reach(nid, text.splitlines()[0][:160])
+            store.save_org(org)
+        except LedgerError as e:
+            raise HTTPException(422, str(e))
+    mail_notify(slug, USER, nid)
+    if r.get("deferred"):
+        # archived recipient: the mail waits in its inbox for a rehire — the
+        # UI says so; nobody else is picked
+        return {"accepted": True, "to": nid, "deferred": True,
+                "node_state": tgt.get("state")}
+    sent = supervisor.send_message(
+        slug, nid,
+        "(orgtree) The mail above is the user's reply on a docket item you "
+        "last updated — act on it now.", mail_ping=True)
+    return {"accepted": True, "to": nid, "deferred": False,
+            "node_state": tgt.get("state"),
+            "delivery": supervisor.delivery_note(slug, nid, sent)}
+
+
+@app.post("/api/orgs/{slug}/work-items/{wid}/dismiss-attention")
+def work_item_dismiss(slug: str, wid: str, body: WorkDismiss) -> dict[str, Any]:
+    """Dismiss a MANUAL attention flag: clears it, sets the work Blocked,
+    records the dismissal; pending questions are untouched (they keep the
+    item orange). 409 on a stale `set_rev` or an already-cleared flag."""
+    with store.DOC_LOCK:
+        try:
+            org = store.load_org(slug)
+            org._work_find(wid)
+        except LedgerError as e:
+            raise HTTPException(404, str(e))
+        try:
+            r = org.work_dismiss_attention(wid, int(body.set_rev))
+        except LedgerError as e:
+            raise HTTPException(409, str(e))
+        notify = r.get("notify")
+        if notify:
+            # passive: the flag's author learns the user saw and dismissed it,
+            # and that the work now stands Blocked — without spending a turn
+            try:
+                org.post_mail(USER, str(notify),
+                              f"[DOCKET · {wid}] The user DISMISSED your "
+                              f"attention flag (\"{str(r.get('reason') or '')[:200]}\") "
+                              f"— the item is now BLOCKED. Do not re-raise the "
+                              f"same reason without material new information; "
+                              f"{r.get('pending_questions')} question(s) on "
+                              f"the item are still pending.", kind="status")
+            except LedgerError:
+                notify = None
+        store.save_org(org)
+    if notify:
+        supervisor.send_message(
+            slug, str(notify),
+            "(orgtree) A notice arrived in your mail above — informational, "
+            "no reply expected. Note it and continue your current task.",
+            wake=False, mail_ping=True)
+    return {k: v for k, v in r.items() if k != "notify"}
+
+
+@app.post("/api/orgs/{slug}/work-items/{wid}/accept")
+def work_item_accept(slug: str, wid: str, body: WorkAccept) -> dict[str, Any]:
+    """The user accepts an item as done (the same rule the tool enforces
+    for a superior: never the owner)."""
+    with store.DOC_LOCK:
+        try:
+            org = store.load_org(slug)
+            org._work_find(wid)
+        except LedgerError as e:
+            raise HTTPException(404, str(e))
+        try:
+            r = org.work_accept(USER, wid, body.note)
+        except LedgerError as e:
+            raise HTTPException(422, str(e))
+        store.save_org(org)
+    return r
+
+
+def _work_list_arg(a: dict[str, Any], key: str) -> list[Any] | None:
+    """A list argument off the free-form wire; a scalar is refused (a
+    docket list is individual entries, never a paragraph)."""
+    v = a.get(key)
+    if v is None:
+        return None
+    if isinstance(v, list):
+        return cast("list[Any]", v)
+    raise LedgerError(f"{key} must be a list")
+
+
+def _work_read_call(body: AgentCall, a: dict[str, Any]) -> dict[str, Any]:
+    """`orgtree_work` list|get|verify — the read-shaped actions, outside the
+    doc lock like every other read tool. `verify` is the one that talks to
+    git: capture under the lock, evaluate outside it, write back only if the
+    item's rev is unchanged (docs/work-items.md §locking)."""
+    act = str(a.get("action") or "")
+    try:
+        if act == "verify":
+            with store.DOC_LOCK:
+                org = store.load_org(body.org)
+                cap = org.work_verify_capture(body.node, str(a.get("id") or ""),
+                                              str(a.get("stage") or ""))
+            res = workitems.evaluate(cap["stage"], cap["sha"])
+            with store.DOC_LOCK:
+                org = store.load_org(body.org)
+                r = org.work_verify_commit(cap["wid"], cap["stage"], cap["rev"], res)
+                if not r.get("stale"):
+                    store.save_org(org)
+            return r
+        org = store.load_org(body.org)
+        org._require_live(body.node)
+        if act == "list":
+            return org.work_list(body.node,
+                                 include_archived=_arg_flag(a, "include_archived"))
+        return {"item": org.work_get(body.node, str(a.get("id") or ""))}
+    except LedgerError as e:
+        raise HTTPException(422, str(e))
+
+
+def _work_mutate(org: Org, nid: str, a: dict[str, Any]) -> dict[str, Any]:
+    """`orgtree_work` mutating actions, under the caller's DOC_LOCK."""
+    act = str(a.get("action") or "")
+    wid = str(a.get("id") or "")
+
+    def _s(key: str) -> str | None:
+        v = a.get(key)
+        return None if v is None else str(v)
+    if act == "create":
+        return org.work_create(
+            nid, str(a.get("title") or ""), str(a.get("objective") or ""),
+            kind=str(a.get("kind") or "code"), owner=_s("owner"),
+            participants=_work_list_arg(a, "participants"),
+            acceptance=_work_list_arg(a, "acceptance"),
+            dependencies=_work_list_arg(a, "dependencies"),
+            done_so_far=a.get("done_so_far"),
+            working_on_next=a.get("working_on_next"),
+            status=str(a.get("status") or "open"))
+    if act == "update":
+        return org.work_update(
+            nid, wid, a.get("done_so_far"), a.get("working_on_next"),
+            status=_s("status"),
+            attention=(True if _arg_flag(a, "attention") else None),
+            attention_reason=_s("attention_reason"),
+            blocked_reason=_s("blocked_reason"),
+            title=_s("title"), objective=_s("objective"),
+            reopen=_arg_flag(a, "reopen"))
+    if act == "assign":
+        return org.work_assign(nid, wid, str(a.get("owner") or ""))
+    if act == "participants":
+        return org.work_participants(nid, wid, add=_work_list_arg(a, "add"),
+                                     remove=_work_list_arg(a, "remove"))
+    if act == "evidence":
+        return org.work_evidence(nid, wid, str(a.get("kind") or "note"),
+                                 str(a.get("ref") or ""), _s("note"))
+    if act == "claim":
+        try:
+            return org.work_claim(nid, wid, str(a.get("stage") or ""),
+                                  _s("ref"), _s("note"))
+        except workitems.ShaError as e:
+            raise LedgerError(str(e))
+    if act == "check":
+        return org.work_check(nid, wid, _arg_int(a, "index", -1),
+                              str(a.get("evidence_ref") or ""), _s("note"))
+    if act == "accept":
+        return org.work_accept(nid, wid, _s("note"))
+    if act == "archive":
+        return org.work_archive_now(nid, wid)
+    if act == "supersede":
+        return org.work_supersede(nid, wid, str(a.get("by") or ""))
+    raise LedgerError(
+        "action must be list|get|create|update|assign|participants|evidence|"
+        "claim|verify|check|accept|archive|supersede")
+
+
 class AskAnswer(Body):
     # single card: the picked labels. FR-04 batch card: ONE item per tab,
     # positionally — a string, or a list for a multi tab's picks
@@ -5072,6 +5311,10 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
             return {"error": f"no such path in {target}'s scratch: {rel!r}"}
         except LedgerError as e:
             raise HTTPException(422, str(e))
+    if body.tool == "orgtree_work" \
+            and str(a.get("action") or "") in ("list", "get", "verify"):
+        # list/get read the doc; verify sequences lock -> git -> lock itself
+        return _work_read_call(body, a)
     result: dict[str, Any]
     # rename orchestrates its own DOC_LOCK + filesystem moves — it must run
     # OUTSIDE the block below (the lock is not reentrant)
@@ -5449,7 +5692,15 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
                                       options=a.get("options"),
                                       multi=bool(a.get("multi")),
                                       header=a.get("header"),
-                                      questions=a.get("questions"))
+                                      questions=a.get("questions"),
+                                      # docket linkage (per tab; this is the
+                                      # single form's)
+                                      work_item=(str(a["work_item"])
+                                                 if a.get("work_item") else None))
+            elif body.tool == "orgtree_work":
+                # the docket's mutating actions; list/get/verify returned
+                # above, outside the lock
+                result = _work_mutate(org, body.node, a)
             elif body.tool == "orgtree_withdraw_ask":
                 result = org.withdraw_ask(body.node)
             elif body.tool in ("orgtree_self_restart", "orgtree_self_update"):

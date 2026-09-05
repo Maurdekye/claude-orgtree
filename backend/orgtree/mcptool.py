@@ -244,6 +244,13 @@ TOOLS: list[dict[str, Any]] = [
                 },
                 "multi": {"type": "boolean",
                           "description": "several options may be selected"},
+                "work_item": {"type": "string",
+                              "description": "docket item id this question is "
+                                             "about (orgtree_work). It shows "
+                                             "inside that item and holds it in "
+                                             "the user's attention until "
+                                             "answered or withdrawn; you need "
+                                             "read right on the item"},
                 "questions": {
                     "type": "array", "minItems": 1, "maxItems": 4,
                     "description": "batch form — 1-4 questions asked as ONE "
@@ -261,10 +268,96 @@ TOOLS: list[dict[str, Any]] = [
                                         "description": {"type": "string"},
                                     }, "required": ["label"]}},
                         "multi": {"type": "boolean"},
+                        "work_item": {"type": "string",
+                                      "description": "docket item this tab is "
+                                                     "about (per tab — one "
+                                                     "batch may cover two "
+                                                     "items)"},
                     }, "required": ["question"]},
                 },
             },
             "required": [],
+        },
+    },
+    {
+        "name": "orgtree_work",
+        "description": (
+            "THE DOCKET — the organization's durable record of substantive "
+            "work, read by the user in a Work panel. Items survive "
+            "retirement, compaction and reassignment. Actions: `list` (the "
+            "items you may read; include_archived for finished ones), `get` "
+            "(one item in full), `create` (title, objective, kind "
+            "code|non-code, owner = you or a subordinate, participants, "
+            "acceptance conditions, optional first done_so_far/"
+            "working_on_next), `update` (THE status update: ALWAYS carries "
+            "done_so_far AND working_on_next as lists of individual entries "
+            "— either may be empty, both empty is refused — plus optional "
+            "status open|in_progress|blocked|review|dropped, blocked_reason, "
+            "attention:true + attention_reason for a concrete reason the user "
+            "must see, reopen:true to resume an archived item), `assign` "
+            "(owner), `participants` (add/remove collaborators: they may "
+            "read, update, add evidence and attach questions), `evidence` "
+            "(kind note|link|file|commit|log, ref, note — cap 50, refused "
+            "not truncated), `claim` (a delivery stage implemented|committed|"
+            "pushed|deployed|in_build with a sha for the git-checkable ones), "
+            "`verify` (checks a committed/pushed/in_build claim against THIS "
+            "repository's git — object exists / ancestor of the local "
+            "origin/main tracking ref / ancestor of the booted commit; three-"
+            "valued, never a functional check), `check` (mark acceptance "
+            "condition `index` met with evidence_ref), `accept` (→ done; "
+            "the user or a superior of the owner, never the owner — assert "
+            "`review` and wait), `archive` (a closed item, early), "
+            "`supersede` (by another item). Authority: owner, creator, "
+            "their superiors, the user, and listed participants; nothing is "
+            "org-public. Done items archive by themselves an hour after "
+            "their last update, records kept. A later update without "
+            "attention:true CLEARS a standing attention flag; a user "
+            "dismissal makes the item blocked and an exact repeat of the "
+            "dismissed reason is refused. The user's replies on an item go "
+            "to its LAST UPDATER; question answers go to their asker "
+            "(attach questions with orgtree_ask work_item)."),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string",
+                           "enum": ["list", "get", "create", "update", "assign",
+                                    "participants", "evidence", "claim",
+                                    "verify", "check", "accept", "archive",
+                                    "supersede"]},
+                "id": {"type": "string", "description": "work item id (every action but list/create)"},
+                "include_archived": {"type": "boolean", "description": "list: include archived items"},
+                "title": {"type": "string", "description": "create/update: short concrete title"},
+                "objective": {"type": "string", "description": "create/update: the intended outcome"},
+                "kind": {"type": "string", "description": "create: code|non-code · evidence: note|link|file|commit|log"},
+                "owner": {"type": "string", "description": "create/assign: owner node (you or a subordinate)"},
+                "participants": {"type": "array", "items": {"type": "string"},
+                                 "description": "create: collaborator node ids"},
+                "add": {"type": "array", "items": {"type": "string"}, "description": "participants: node ids to add"},
+                "remove": {"type": "array", "items": {"type": "string"}, "description": "participants: node ids to drop"},
+                "acceptance": {"type": "array", "items": {"type": "string"},
+                               "description": "create: acceptance conditions"},
+                "dependencies": {"type": "array", "items": {"type": "string"},
+                                 "description": "create: ids of items this one depends on"},
+                "done_so_far": {"type": "array", "items": {"type": "string"},
+                                "description": "update (required) / create: what is complete — individual entries"},
+                "working_on_next": {"type": "array", "items": {"type": "string"},
+                                    "description": "update (required) / create: what you are doing now and the next steps"},
+                "status": {"type": "string",
+                           "description": "create/update: open|in_progress|blocked|review|dropped (done only via accept)"},
+                "blocked_reason": {"type": "string", "description": "update: why, when status is blocked"},
+                "attention": {"type": "boolean",
+                              "description": "update: raise the manual attention flag (needs attention_reason)"},
+                "attention_reason": {"type": "string", "description": "update: the concrete reason the user must see"},
+                "reopen": {"type": "boolean", "description": "update: resume an archived/closed item"},
+                "stage": {"type": "string",
+                          "description": "claim/verify: implemented|committed|pushed|deployed|in_build"},
+                "ref": {"type": "string", "description": "claim: lowercase hex sha (git stages) or a note · evidence: path/url/sha/log"},
+                "note": {"type": "string", "description": "claim/evidence/check/accept: free text"},
+                "index": {"type": "integer", "description": "check: acceptance condition index (0-based)"},
+                "evidence_ref": {"type": "string", "description": "check: what shows the condition is met"},
+                "by": {"type": "string", "description": "supersede: the replacing item id"},
+            },
+            "required": ["action"],
         },
     },
     {

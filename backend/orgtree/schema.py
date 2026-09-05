@@ -551,9 +551,22 @@ class WorkItem(TypedDict):
     status: str                     # open | in_progress | blocked | review | done | superseded | dropped
     blocked_reason: NotRequired[str | None]
     owner: WorkActor | None         # identity + generation at assignment
+    participants: list[str]         # collaborator node ids: read + status update + evidence + attach a question
     created_by: WorkActor | str
     at: str
-    updated_at: str
+    updated_at: str                 # ANY mutation (never the row's age — see docket_at)
+    # ---- the docket status (docket-final-spec.md): the latest two lists, who
+    # wrote them and when. `docket_at` is the clock the UI row and the
+    # one-hour auto-archive run on; a question attachment, a user dismissal or
+    # a delivery claim moves `updated_at` but NOT this.
+    done_so_far: list[str]
+    working_on_next: list[str]
+    docket_at: str | None
+    last_updater: WorkActor | None  # author of the latest STATUS UPDATE — the general reply recipient
+    manual_attention: dict[str, Any] | None   # {reason, at, by, set_rev} — set_rev is the dismiss CAS stamp
+    manual_attention_rev: int       # monotonic; every (re)set of the flag mints the next set_rev
+    dismissals: list[dict[str, Any]]          # {at, by: "user", set_rev, reason} — every user dismissal, kept
+    archived_at: str | None         # instant of the physical move into work_items_archive
     acceptance: list[WorkAcceptance]
     dependencies: list[str]         # work item ids in this org (active or archived)
     evidence: list[dict[str, Any]]  # {at, by, kind: note|link|file|commit|log, ref, note?} — cap by refusal, never truncated
@@ -643,11 +656,13 @@ class OrgDoc(TypedDict):
     # supervisor.start_watchdog_engine
     watchdogs: NotRequired[list[dict[str, Any]]]
     documents: NotRequired[list[dict[str, Any]]]  # FR-03 presented documents {id, node, title, body, at} — newest 10/node, 100/org
-    # Durable work items (docs/work-items.md). Both are `doc` blobs under
-    # SQLite and plain keys under JSON — no DDL, no migration marker. The
+    # Durable work items — the docket (docs/work-items.md). Both are `doc`
+    # blobs under SQLite and plain keys under JSON — no DDL, no migration
+    # marker; an old document without them reads as an empty docket. The
     # active list is capped by REFUSING creation (Org.WORK_ACTIVE_MAX); the
-    # archive is unbounded and only ever written by an explicit archive
-    # action. Nothing in either list is deleted automatically.
+    # archive is unbounded and written only by the archive sweep (done items
+    # whose docket update is over an hour old) or an explicit archive action.
+    # Nothing in either list is deleted automatically.
     work_items: NotRequired[list[WorkItem]]
     work_items_archive: NotRequired[list[WorkItem]]
     org_inbox: NotRequired[list[OrgInboxEntry]]

@@ -404,7 +404,8 @@ def _():
     # +orgtree_swap +orgtree_self_subjugate (D-224, 2026-09-02)
     # +orgtree_interrupt (⏸ in isolation, 2026-09-03)
     # +orgtree_restart_wake (2026-09-04)
-    assert len(tools) == 32, [x["name"] for x in tools]
+    # +orgtree_work (the docket, 2026-09-05)
+    assert len(tools) == 33, [x["name"] for x in tools]
     for c in tools:
         assert c["name"].startswith("orgtree_"), c
         assert len(c["description"]) > 20, c
@@ -573,7 +574,7 @@ def _():
     # +orgtree_swap +orgtree_self_subjugate (D-224, seat exchange, 2026-09-02)
     # +orgtree_interrupt (⏸ in isolation, 2026-09-03)
     # +orgtree_restart_wake (2026-09-04)
-    assert len(CARDS) == 32, len(CARDS)
+    assert len(CARDS) == 33, len(CARDS)   # +orgtree_work (2026-09-05)
 
 
 @t("☠ the deprecated self_update alias is dispatchable but NOT advertised")

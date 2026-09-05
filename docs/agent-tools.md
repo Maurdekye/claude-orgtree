@@ -23,6 +23,7 @@ the MCP catalog in `backend/orgtree/mcptool.py`.
 | `orgtree_reallocate` | Move grant credits between a report and its parent. |
 | `orgtree_rename` | Rename a descendant and move its identity, mailbox, and working folder with it. |
 | `orgtree_status` | Report `working`, `idle`, `done`, or `blocked`; `done` and `blocked` notify the superior. |
+| `orgtree_work` | The docket: create, update (both lists, every time), assign, add participants, claim/verify delivery stages, record evidence, accept, archive, supersede durable work items. See [work-items.md](work-items.md). |
 
 ## Communication and audiences
 
@@ -30,7 +31,7 @@ the MCP catalog in `backend/orgtree/mcptool.py`.
 |---|---|
 | `orgtree_message` | Send mail to reachable agents, the user when permitted, or an external recipient. It also sends attachments to the user or `@net:` recipients. |
 | `orgtree_send_notice` | Send in-organization FYI mail without waking an idle recipient. |
-| `orgtree_ask` | Put a structured question card in the user's inbox; it remains open until answered, dismissed, or withdrawn. |
+| `orgtree_ask` | Put a structured question card in the user's inbox; it remains open until answered, dismissed, or withdrawn. `work_item` (per question) attaches it to a docket item. |
 | `orgtree_withdraw_ask` | Withdraw the caller's open question/credit/scope request batch when it is no longer needed. |
 | `orgtree_request_credits` | Ask the user for a new total credit grant. |
 | `orgtree_request_scope` | Ask the user for folder, tool, MCP, or permission-mode access that no superior can grant. |
