@@ -777,6 +777,15 @@ export interface LiveRow {
    *  a backend from before the live-wire fix, which the progress panel
    *  renders as "updating…" rather than as a list. */
   todos?: { content: string; status: string }[]
+  /** FR-17: a Codex `turn/plan/updated` snapshot (supervisor._apply_plan) —
+   *  present only on a 'plan' row. `plan` is deliberately the same shape as
+   *  `todos` above once mapped through progress.tsx's status vocabulary;
+   *  kept as its own field so a Codex checklist is never mistaken for a
+   *  fabricated Claude TodoWrite call. */
+  plan?: { step: string; status: string }[]
+  explanation?: string | null
+  threadId?: string
+  turnId?: string
 }
 
 // the canvas exposes its inverse-zoom to CSS; React's CSSProperties has no

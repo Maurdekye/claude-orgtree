@@ -841,6 +841,16 @@ export interface ChatMessage {
   /** the DISPLAY copy was capped (steered-log per-row cap); the delivery
    *  itself was whole — the desk renders a marker saying so */
   truncated?: boolean
+  /** FR-17: a Codex `turn/plan/updated` snapshot (supervisor.py read_chat's
+   *  `codex_plan_updated` branch) — the durable twin of a live 'plan' row,
+   *  same substrate as a Claude TodoWrite tool chip (an ordinary transcript
+   *  record), never a fabricated one. */
+  codexPlan?: {
+    steps: { step: string; status: string }[]
+    explanation: string | null
+    threadId: string
+    turnId: string
+  }
   [k: string]: unknown
 }
 
@@ -894,6 +904,11 @@ export interface LiveRowPayload {
   truncated?: boolean
   /** FR-2: a TodoWrite row's checklist (supervisor._todo_live_extra) */
   todos?: { content: string; status: string }[]
+  /** FR-17: a Codex 'plan' row's checklist (supervisor._apply_plan) */
+  plan?: { step: string; status: string }[]
+  explanation?: string | null
+  threadId?: string
+  turnId?: string
 }
 
 export interface ChatPayload {
@@ -940,6 +955,12 @@ export interface ChatPayload {
    *  `mail_stranded`. */
   prompts_withheld?: number
   pending_mail: PendingMail[]
+  /** FR-17: the currently-running Codex turn's real id, when one is running
+   *  (supervisor.py read_chat) — null/absent otherwise, including right
+   *  after a backend restart (state() resets). The progress panel prefers
+   *  this identity comparison over a timestamp guess for "is this checklist
+   *  from an earlier turn". */
+  codex_turn_id?: string | null
 }
 
 // ------------------------------------------------------------------ inboxes

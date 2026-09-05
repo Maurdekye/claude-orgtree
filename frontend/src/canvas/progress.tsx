@@ -22,8 +22,22 @@
 //   2. the transcript — the newest TodoWrite chip's rendered `☑ ◐ ☐` block
 //      (supervisor._todo_glyphs; ≤ one poll behind, possibly an earlier turn)
 //   3. neither → a sentence saying so, and which of the two it looked in.
-// Codex and Antigravity have no todo source orgtree handles today, and the
-// panel SAYS that rather than showing a Claude-shaped emptiness.
+// Antigravity has no todo/plan source orgtree knows of, and the panel SAYS
+// that rather than showing a Claude-shaped emptiness.
+//
+// FR-17 (2026-09-05): Codex's native `turn/plan/updated` checklist now runs
+// through the SAME model and the SAME rendering, one step behind Claude's:
+//   1. the live tail — a `plan` row (supervisor._apply_plan; live, now)
+//   2. the transcript — the newest `codexPlan` record (supervisor.read_chat's
+//      `codex_plan_updated` branch; ≤ one poll behind, possibly an earlier
+//      turn)
+//   3. neither → a sentence saying so.
+// It is kept as its OWN `source` on the verdict rather than folded into
+// Claude's TodoWrite path: Codex's plan carries an optional `explanation`
+// Claude's never does, has no per-step id at all (a whole-list snapshot
+// every time, never a merge), and must never read as a fabricated TodoWrite
+// call. `earlierTurn` prefers the real turnId Codex hands back over a
+// timestamp guess (ChatPayload.codex_turn_id) — see `codexEarlierTurn`.
 
 import { useCallback, useState } from 'react'
 import type { ReactNode } from 'react'
@@ -58,6 +72,14 @@ export interface TodoVerdict {
   earlierTurn: boolean
   /** ALWAYS non-empty: what is shown, or exactly why nothing is */
   note: string
+  /** which provider's checklist this is — absent on Claude/OpenRouter (the
+   *  original, unlabeled source); 'codex-plan' names FR-17's source
+   *  explicitly, so it is never mistaken for a fabricated TodoWrite call */
+  source?: 'codex-plan'
+  /** FR-17: `turn/plan/updated`'s own optional prose, alongside the steps —
+   *  Claude's TodoWrite has no equivalent field, so this is always absent
+   *  there */
+  explanation?: string | null
 }
 
 export interface SubagentVerdict {
@@ -157,6 +179,61 @@ function durableTodo(messages: ChatMessage[]): { items: TodoItem[]; ts: string |
   return null
 }
 
+function liveCodexPlan(row: LiveRow): TodoItem[] | null {
+  const raw = row.plan
+  if (!Array.isArray(raw)) return null
+  return raw.map((s) => {
+    const status = String(s?.status ?? 'pending')
+    return {
+      content: String(s?.step ?? ''),
+      status: status === 'completed' ? 'completed' : status === 'in_progress' ? 'in_progress' : 'pending',
+    }
+  })
+}
+
+interface DurableCodexPlan { items: TodoItem[]; explanation: string | null; turnId: string; ts: string | null }
+
+/** the newest `codexPlan` record in the transcript window, walking backwards
+ *  — the exact structural analog of `durableTodo` above, one field-name off */
+function durableCodexPlan(messages: ChatMessage[]): DurableCodexPlan | null {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const p = messages[i]?.codexPlan
+    if (!p) continue
+    return {
+      items: (p.steps ?? []).map((s) => {
+        const status = String(s?.status ?? 'pending')
+        return {
+          content: String(s?.step ?? ''),
+          status: (status === 'completed' ? 'completed' : status === 'in_progress' ? 'in_progress' : 'pending') as TodoStatus,
+        }
+      }),
+      explanation: p.explanation ?? null,
+      turnId: p.turnId || '',
+      ts: messages[i]?.ts ?? null,
+    }
+  }
+  return null
+}
+
+/** FR-17: prefer Codex's OWN turnId (ChatPayload.codex_turn_id, set the
+ *  instant `turn/start` answers — see supervisor.py) over a timestamp guess.
+ *  Only busy AND only when a turn is actually recorded as running: idle, or
+ *  right after a restart wipes `codex_turn_id` back to null (state() is
+ *  in-memory only), there is no "current turn" to be earlier than, so the
+ *  last known checklist is simply the last known checklist, not "previous".
+ *  Falls back to Claude's own timestamp rule (strict less-than: an EQUAL
+ *  timestamp is never mislabeled earlier) only when identity is unavailable
+ *  for this specific record (an older backend that never wrote a turnId). */
+function codexEarlierTurn(node: CanvasNode, convo: Convo, turnId: string, ts: string | null): boolean {
+  if (!node.busy) return false
+  const current = convo.chat?.codex_turn_id
+  if (current) {
+    if (turnId) return turnId !== current
+    // this record predates the field (older backend) — timestamp fallback below
+  }
+  return Boolean(node.inflight_at && ts && ts < node.inflight_at)
+}
+
 const count = (items: TodoItem[]) => ({
   done: items.filter((t) => t.status === 'completed').length,
   doing: items.find((t) => t.status === 'in_progress') ?? null,
@@ -174,10 +251,49 @@ function describeList(items: TodoItem[], at: string | null, prefix: string): str
 function deriveTodo(node: CanvasNode, convo: Convo, lane: ProviderId): TodoVerdict {
   const none: TodoVerdict = { supply: 'none-in-window', items: null, at: null, earlierTurn: false, note: '' }
   if (lane === 'openai') {
-    return { ...none, supply: 'lane-cannot',
-      note: 'Codex agents do not report a todo list to orgtree yet — the CLI emits a '
-        + 'turn/plan/updated notification, and orgtree does not handle it. '
-        + 'Nothing here means "no plan"; it means orgtree cannot see one.' }
+    const codexNone: TodoVerdict = { ...none, source: 'codex-plan' }
+    if (!convo.loaded) {
+      return { ...codexNone, supply: 'loading',
+        note: 'loading the transcript… (cannot say yet whether Codex has reported a checklist)' }
+    }
+    const msgs = convo.chat?.messages ?? []
+    const durable = durableCodexPlan(msgs)
+    // 1. the live tail, newest 'plan' row
+    for (let i = convo.live.length - 1; i >= 0; i -= 1) {
+      const r = convo.live[i]
+      if (!r || r.kind !== 'plan') continue
+      const at = r.at ?? null
+      const items = liveCodexPlan(r)
+      const explanation = r.explanation ?? null
+      if (items) {
+        return { supply: 'live', items, at, earlierTurn: false, source: 'codex-plan', explanation,
+          note: describeList(items, at, 'live, this turn: ') + (explanation ? ` · ${explanation}` : '') }
+      }
+      // the row exists but carries no `plan` — malformed/older payload.
+      // Same degrade Claude's TodoWrite path uses: show the previous
+      // checklist labeled as previous rather than nothing at all.
+      return { supply: 'updating', items: durable?.items ?? null, at: durable?.ts ?? null,
+        earlierTurn: false, source: 'codex-plan',
+        note: 'Codex is updating its checklist now — no contents on the live row yet'
+          + (durable ? '. Below is the PREVIOUS checklist, not the new one.' : '. No earlier checklist to show.') }
+    }
+    // 2. the transcript
+    if (durable) {
+      const earlier = codexEarlierTurn(node, convo, durable.turnId, durable.ts)
+      return { supply: 'durable', items: durable.items, at: durable.ts, earlierTurn: earlier,
+        source: 'codex-plan', explanation: durable.explanation,
+        note: describeList(durable.items, durable.ts, earlier
+          ? 'from an EARLIER turn — the running turn has not updated its checklist yet: '
+          : "from Codex's own turn checklist: ") + (durable.explanation ? ` · ${durable.explanation}` : '') }
+    }
+    // 3. neither
+    if (!msgs.length) {
+      return { ...codexNone, note: 'no transcript yet — this agent has not taken a turn, so there is no checklist to show.' }
+    }
+    return { ...codexNone,
+      note: `no Codex checklist in the loaded transcript window (last ${msgs.length} message${msgs.length === 1 ? '' : 's'})`
+        + (node.busy ? ' or on the live wire this turn.' : '.')
+        + ' Codex has not sent a turn/plan/updated there; an older one may exist further back, or this turn simply has not used one yet.' }
   }
   if (lane === 'google') {
     return { ...none, supply: 'lane-cannot',
@@ -336,10 +452,16 @@ const GLYPH: Record<TodoStatus, string> = { completed: '☑', in_progress: '◐'
 
 function TodoSection({ v, historical }: { v: TodoVerdict; historical: boolean }) {
   const dimmed = v.supply === 'updating' || v.earlierTurn || historical
+  // ⚠ the label names the SOURCE, not just "todo list" — a Codex checklist
+  // must never read as a Claude TodoWrite call it never made.
+  const label = v.source === 'codex-plan' ? "Codex's plan checklist" : 'todo list'
   return (
     <section className={`progress-sec progress-todo supply-${v.supply}`}>
-      <h4>todo list <span className="dim">· {v.supply === 'live' ? 'live' : v.supply === 'durable' ? 'transcript' : v.supply}</span></h4>
+      <h4>{label} <span className="dim">· {v.supply === 'live' ? 'live' : v.supply === 'durable' ? 'transcript' : v.supply}</span></h4>
       <div className="progress-note">{v.note}</div>
+      {v.explanation && (
+        <div className="progress-note progress-plan-explanation">{v.explanation}</div>
+      )}
       {v.items && v.items.length > 0 && (
         <ul className={'todo-items' + (dimmed ? ' previous' : '') + (historical ? ' historical' : '')}>
           {v.items.map((t, i) => (

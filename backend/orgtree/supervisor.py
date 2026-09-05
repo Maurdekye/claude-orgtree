@@ -8646,6 +8646,27 @@ def _codex_journal(slug: str, sid: str, recs: list[dict[str, Any]]) -> None:
         print(f"[orgtree] {slug}: codex journal write failed: {e!r}")
 
 
+#: FR-17: `turn/plan/updated`'s own `TurnPlanStepStatus` → the desk's
+#: existing TodoStatus vocabulary (progress.tsx / `_todo_items`'s Claude
+#: side), so ONE checklist renderer serves both providers. `inProgress` is
+#: codex's own camelCase spelling; any value this schema does not define
+#: degrades to `pending` rather than being dropped — an unrecognized status
+#: is still a step the operator should see, same posture as `_occ_record`.
+_CODEX_PLAN_STATUS: Final = {"pending": "pending", "inProgress": "in_progress",
+                             "completed": "completed"}
+
+
+def _codex_plan_steps(raw: Any) -> list[dict[str, str]]:
+    """Normalize `turn/plan/updated`'s `plan` array. A non-list (missing,
+    null, wrong type) is an empty checklist, not a crash."""
+    if not isinstance(raw, list):
+        return []
+    return [{"step": str(s.get("step") or "")[:2000],
+             "status": _CODEX_PLAN_STATUS.get(str(s.get("status") or ""),
+                                              "pending")}
+            for s in raw if isinstance(s, dict)]
+
+
 def _codex_tool_item(item: dict[str, Any]) -> tuple[str, dict[str, Any]] | None:
     """Translate an app-server ThreadItem into the existing transcript tool
     vocabulary. The app-server reports *all* Codex work through item lifecycle
@@ -9333,7 +9354,14 @@ def _codex_leg_attempt(slug: str, nid: str, org: Org, st: dict[str, Any],
         # route classifier reads to say "nothing ran". Distinct from
         # `agent_items` (completed agent messages only).
         "item_events": 0,
-        "tool_ids": set(), "item_ids": set()}
+        "tool_ids": set(), "item_ids": set(),
+        # FR-17 (turn/plan/updated): events observed before `turn.turn_id`
+        # itself is known (see `_on_plan`'s docstring for the measured race)
+        # wait here, in arrival order, rather than being guessed at.
+        "plan_pending": [],
+        # the last snapshot actually WRITTEN, pre-timestamp — so an
+        # unchanged repeat notification costs nothing durable.
+        "last_plan": None}
 
     # ── THE ORDERING BARRIER (D-221) ────────────────────────────────────────
     # INVARIANT: no assistant output for a turn may become VISIBLE before that
@@ -9652,6 +9680,90 @@ def _codex_leg_attempt(slug: str, nid: str, org: Org, st: dict[str, Any],
             _mcp_tool_count_names(
                 slug, nid, owner, names, "codex", "mcpServerStatus/list")
 
+    def _apply_plan(event_thread: str, event_turn: str,
+                    params: dict[str, Any]) -> None:
+        """Write one VALIDATED `turn/plan/updated` snapshot, durable + live.
+
+        Called only once this turn's own thread/turn ids are both resolved —
+        `_on_plan` buffers anything earlier (see its docstring) and drains
+        into here, in arrival order, the moment they are. threadId/turnId are
+        read and CHECKED, not assumed, exactly like the compact-fork loop's
+        `event_thread` guard a few hundred lines up this file: a snapshot for
+        a different thread, or a different (stale/foreign) turn on the SAME
+        thread, is discarded — the current snapshot is left standing, not
+        overwritten by something that was never this turn's to report."""
+        if event_thread and event_thread != turn.thread_id:
+            return
+        if event_turn and event_turn != turn.turn_id:
+            return
+        snapshot = {
+            "threadId": turn.thread_id or "", "turnId": turn.turn_id or "",
+            "explanation": (params.get("explanation")
+                            if isinstance(params.get("explanation"), str)
+                            else None),
+            "plan": _codex_plan_steps(params.get("plan"))}
+        with jlock:
+            if jstate.get("last_plan") == snapshot:
+                # identical consecutive snapshot: nothing the operator would
+                # see has changed, so nothing durable is worth adding — the
+                # schema has no per-step id, so a naive per-event append
+                # would let an unattended turn's untouched checklist rack up
+                # one journal line per notification for no visible reason.
+                return
+            jstate["last_plan"] = snapshot
+        ts = now_iso()
+        _journal_records([{"type": "codex_plan_updated", "timestamp": ts,
+                           **snapshot}])
+        # "text" rides along even though the panel reads the structured
+        # fields: every OTHER live row carries it (LiveRow.text is not
+        # optional on the frontend), and a generic live-tail consumer that
+        # has not heard of "plan" yet still gets something legible.
+        _visible_live_row({"kind": "plan", "text": "checklist updated",
+                           "at": ts, **snapshot})
+
+    def _drain_plan_pending() -> None:
+        if turn.turn_id is None:
+            return
+        with jlock:
+            pending = cast("list[tuple[str, str, dict[str, Any]]]",
+                           jstate["plan_pending"])
+            if not pending:
+                return
+            batch = list(pending)
+            jstate["plan_pending"] = []
+        for event_thread, event_turn, params in batch:
+            _apply_plan(event_thread, event_turn, params)
+
+    def _on_plan(msg: dict[str, Any]) -> None:
+        """`turn/plan/updated` (FR-17): the ONLY event this turn's checklist
+        ever changes on. Nothing here is ever inferred from `turn/completed`,
+        `turn/failed` or an interruption, so a turn that ends badly cannot
+        mark its own steps done by omission — the checklist just stops
+        updating, honestly, at whatever it last said.
+
+        ⚠ THE RACE (measured the same way as D-221, in `codexrun.CodexTurn.
+        start`'s own docstring a few hundred lines up): `AppServerClient._pump`
+        dispatches notifications on the READER thread while the turn thread
+        is still inside `turn/start`'s `request()` poll loop, so `item/started`
+        and `item/agentMessage/delta` are BOTH observed before that call
+        returns, on every measured run. This notification can arrive in that
+        same window — before `turn.turn_id` is set on the Python object.
+        Rejecting an early, legitimate plan update on that technicality would
+        silently drop real data; buffering it until the turn's own id is
+        known, THEN re-checking it against that id, is what tells a
+        genuinely early event apart from a genuinely wrong one."""
+        raw_params = msg.get("params")
+        params: dict[str, Any] = (raw_params if isinstance(raw_params, dict)
+                                  else {})
+        event_thread = str(params.get("threadId") or "")
+        event_turn = str(params.get("turnId") or "")
+        if turn.turn_id is None:
+            with jlock:
+                cast("list[Any]", jstate["plan_pending"]).append(
+                    (event_thread, event_turn, params))
+            return
+        _apply_plan(event_thread, event_turn, params)
+
     def _on_event(msg: dict[str, Any]) -> None:
         # M2 normalization: deltas are the sub-second draft; authoritative
         # item lifecycle events above are the durable, correctly separated
@@ -9682,6 +9794,11 @@ def _codex_leg_attempt(slug: str, nid: str, org: Org, st: dict[str, Any],
                 _r = route_box.get("route")
             if _r is not None:
                 _codex_route_stamp(st, _r, live=True, rerouted=rr)
+        # opportunistic: the moment ANY event notices turn.turn_id has
+        # resolved, flush whatever plan updates arrived too early to check
+        _drain_plan_pending()
+        if method == "turn/plan/updated":
+            _on_plan(msg)
         _on_item(msg)
 
     # ── THE ROUTE (item 12): which pool this turn is SENT to ──────────────
@@ -9869,6 +9986,13 @@ def _codex_leg_attempt(slug: str, nid: str, org: Org, st: dict[str, Any],
         # the only point early enough (THE ORDERING BARRIER, above).
         tid = turn.start(text, _codex_image_inputs(images or []),
                          on_thread=_open_journal)
+        # FR-17: the desk's "is this checklist from the turn that's actually
+        # running" question wants the real id, not a timestamp guess — best
+        # effort, in-memory (st resets on restart, same as every other
+        # process-bound fact `state()` holds; see its own docstring).
+        with _state_lock:
+            st["codex_turn_id"] = turn.turn_id
+        _drain_plan_pending()
         _refresh_codex_mcp()
         if wp_turn is not None and tid:
             # A fresh Codex thread replaces the hire's minted placeholder.
@@ -21928,13 +22052,14 @@ def _sweep_live(slug: str, nid: str, msgs: list[dict[str, Any]]) -> list[dict[st
         # forward, so the counted text budget is spent oldest-first. `stale`
         # ORs in per kind: a stale thought's own record is provably written
         # (in-order transcript), so it no longer needs a covered successor.
-        cov = [stale(r) if r.get("kind") == "thought"
+        cov = [stale(r) if r.get("kind") in ("thought", "plan")
                else (covered(r, budget) or stale(r))
                for r in rows]
-        # backward, so each thought can see whether anything after it landed
+        # backward, so each thought/plan row can see whether anything after
+        # it landed
         later = False
         for i in range(len(rows) - 1, -1, -1):
-            if rows[i].get("kind") == "thought":
+            if rows[i].get("kind") in ("thought", "plan"):
                 cov[i] = cov[i] or later
             elif cov[i]:
                 later = True
@@ -22297,7 +22422,13 @@ def read_chat(org: Org, nid: str, last: int | None = None, *,
            # and shrugged for haiku. orgtree now PASSES --effort on every
            # turn, so Org.effective_effort is the answer and nothing has to be
            # observed. Derive, don't store — and better, cause.)
-           "init": st.get("init")}
+           "init": st.get("init"),
+           # FR-17: the currently-running codex turn's real id, when one is
+           # running — None on every other lane, when idle, and always right
+           # after a restart (state() resets; see its own docstring). The
+           # panel prefers this identity comparison over a timestamp guess
+           # and falls back to the timestamp only when this is absent.
+           "codex_turn_id": st.get("codex_turn_id")}
     tpath = transcript_path(n["session_id"], _transcript_root(org))
     if not tpath:
         return out
@@ -22343,6 +22474,23 @@ def read_chat(org: Org, nid: str, last: int | None = None, *,
         # same rule as every other reader of this fact
         _occ_record(fill, rec)
         t = rec.get("type")
+        if t == "codex_plan_updated":
+            # FR-17: the durable substrate is exactly Claude's TodoWrite
+            # pattern — an ordinary transcript record, replayed here — so a
+            # reconnect or backend restart reconstructs the last checklist
+            # the same way it already reconstructs the last TodoWrite call,
+            # no separate store to keep in sync with this one.
+            raw_steps = rec.get("plan")
+            msgs.append({
+                "role": "assistant", "text": "", "ts": rec.get("timestamp"),
+                "codexPlan": {
+                    "steps": raw_steps if isinstance(raw_steps, list) else [],
+                    "explanation": (rec.get("explanation")
+                                    if isinstance(rec.get("explanation"), str)
+                                    else None),
+                    "threadId": str(rec.get("threadId") or ""),
+                    "turnId": str(rec.get("turnId") or "")}})
+            continue
         if t == "system":
             if rec.get("subtype") == "compact_boundary":
                 meta = rec.get("compactMetadata")

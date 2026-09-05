@@ -2,33 +2,58 @@
 //
 // THE ONE PROPERTY THIS SUITE EXISTS TO HOLD: the panel never renders EMPTY.
 // When it has no data it says WHICH kind of nothing — "no todo list in the
-// loaded transcript window", "Codex agents do not report a todo list to
-// orgtree yet" — because an empty checklist teaches the operator that the
-// agent is doing nothing, when the truth is that we do not know.
+// loaded transcript window", "Antigravity agents have no todo or plan source
+// orgtree knows of" — because an empty checklist teaches the operator that
+// the agent is doing nothing, when the truth is that we do not know.
+//
+// FR-17 (2026-09-05): Codex's native `turn/plan/updated` checklist now runs
+// through this SAME panel, as its OWN labelled source (`source: 'codex-plan'`)
+// — never folded into or mistaken for Claude's TodoWrite path. Antigravity is
+// the only lane still `lane-cannot`.
 //
 // §1 is the lane × state truth table over `deriveProgress`, asserting the
 //    VERDICT and NON-EMPTY COPY in every cell. A cell that merely rendered
-//    "nothing" would pass a snapshot test while the feature is broken; here
-//    each cell asserts the specific sentence, and the Codex/Antigravity cells
-//    assert `lane-cannot` by name (the coordinator's explicit requirement).
+//    "nothing" would pass a snapshot test while the feature is broken; the
+//    Codex cells additionally prove Claude-shaped fixtures (TodoWrite rows/
+//    chips) are NEVER read as a Codex plan (anti-fabrication) and Antigravity
+//    still asserts `lane-cannot` by name.
+// §1e is Codex's OWN dedicated matrix, on its OWN wire shape (a 'plan' live
+//    row / a `codexPlan` transcript record): live, durable, all three
+//    statuses, the live-no-body degrade, explicit clearing vs never-observed,
+//    successive snapshots (newest wins), and prior-turn labelling — real
+//    turnId identity preferred, timestamp fallback only when identity is
+//    unavailable, an equal timestamp never mislabelled, and idle/restarted
+//    state never labelled "previous" for want of anything to be after.
 // §2 pins the `☑ ◐ ☐` glyph parser to the three glyphs supervisor._todo_glyphs
 //    emits — change one there and THIS is what goes red.
 // §3 mounts ProgressView and reads the DOM: the note is present in every
-//    state, the checklist only when there are items, and the "previous list"
-//    marker whenever what is shown is not current.
+//    state, the checklist only when there are items, the "previous list"
+//    marker whenever what is shown is not current, and a Codex section's own
+//    header names Codex on screen.
 // §4 mounts the real DeskChat against the fake server: the fifth tab exists,
 //    the header chip is there, clicking either shows the panel, and the panel
 //    is fed by the SAME conversation store as the chat (a live TodoWrite row
-//    pushed on the server reaches the panel after one poll).
+//    pushed on the server reaches the panel after one poll). §4b repeats the
+//    live-wire proof on a Codex node with a live 'plan' row, through the
+//    identical wiring.
 //
 // ANTI-VACUITY, per behavioural claim (verified red while writing — see the
 // commit message for the mutations run):
 //   · §1 non-empty copy: `note: ''` in any deriveTodo branch → red
-//   · §1 lane-cannot: routing Codex through the Claude path → red
+//   · §1 anti-fabrication: making the openai branch fall through to the
+//     Claude TodoWrite path → red (a Claude-shaped fixture would then show
+//     items/supply='live'|'durable')
+//   · §1e successive snapshots: reading the FIRST matching message instead
+//     of walking backward from the newest → red
+//   · §1e identity-preferred labelling: dropping the `current` check and
+//     falling straight to the timestamp rule → red (the "identity says
+//     CURRENT despite an earlier timestamp" case flips)
 //   · §2 glyphs: a glyph swap in parseTodoResult → red
 //   · §4 wiring: removing the `view === 'progress'` branch → red
 //   · §4 live feed: dropping `todos` from the live row → the panel's supply
 //     becomes 'updating' and the §4 items assertion goes red
+//   · §4b Codex live feed: dropping `plan` from a 'plan' live row, or
+//     routing 'plan' rows through Claude's TodoWrite matcher → red
 //
 // Run:  cd frontend && node tests/run.mjs progress
 
@@ -59,10 +84,12 @@ function node(over: Partial<CanvasNode> = {}): CanvasNode {
   }
 }
 
-function convo(over: Partial<Convo> = {}, messages: ChatMessage[] = []): Convo {
+function convo(over: Partial<Convo> = {}, messages: ChatMessage[] = [],
+               codexTurnId?: string | null): Convo {
   const chat: ChatPayload = {
     busy: false, queued: 0, responding: false, last_error: null, occupancy: null,
     messages, live: [], mail_pending: 0, pending_mail: [],
+    ...(codexTurnId !== undefined ? { codex_turn_id: codexTurnId } : {}),
   } as unknown as ChatPayload
   return {
     chat, live: [], pending: [], draft: '', thinking: '', thinkSecs: null,
@@ -80,6 +107,31 @@ function todoMsg(result = GLYPHS, ts = '2026-09-04T20:00:00.000Z'): ChatMessage 
 const liveTodoRow = (todos?: LiveRow['todos']): LiveRow =>
   ({ kind: 'tool', text: 'TodoWrite', id: 'toolu_live', at: '2026-09-04T20:30:00.000Z',
     ...(todos ? { todos } : {}) })
+
+// FR-17: Codex's native fixtures, structurally parallel to the two above but
+// on their OWN wire shape (a 'plan' live row / a `codexPlan` transcript
+// record) — never the Claude shape, so a test built on these cannot pass by
+// accident through code that actually reads TodoWrite.
+// already in the NORMALIZED vocabulary — supervisor._codex_plan_steps maps
+// codex's own camelCase 'inProgress' to 'in_progress' on the backend, once,
+// before either the journal or the live wire ever sees it (Astra's guard:
+// no redundant normalization / no second, divergent mapping on this side).
+const PLAN_STEPS = [
+  { step: 'read the plan', status: 'completed' },
+  { step: 'write the panel', status: 'in_progress' },
+  { step: 'land it', status: 'pending' },
+]
+
+function planMsg(steps = PLAN_STEPS, ts = '2026-09-04T20:00:00.000Z',
+                 explanation: string | null = null, turnId = 'turn-1'): ChatMessage {
+  return { role: 'assistant', text: '', ts, seq: 1,
+    codexPlan: { steps, explanation, threadId: 'thread-1', turnId } }
+}
+
+const livePlanRow = (steps?: LiveRow['plan'], explanation: string | null = null,
+                     turnId = 'turn-1'): LiveRow =>
+  ({ kind: 'plan', text: 'checklist updated', at: '2026-09-04T20:30:00.000Z',
+    threadId: 'thread-1', turnId, explanation, ...(steps ? { plan: steps } : {}) })
 
 const items = (m: ProgressModel) => (m.todo.items ?? []).map((t) => [t.status, t.content])
 
@@ -110,16 +162,30 @@ test('§1 deriveProgress: every cell of the lane × state table carries a verdic
       assert.ok(m.processNote.trim(), `${cell}: process note is empty`)
       assert.ok(m.chip.trim(), `${cell}: chip text is empty`)
       assert.equal(m.chipTitle, m.todo.note, `${cell}: chip tooltip is not the todo note`)
-      if (lane === 'codex' || lane === 'antigravity') {
-        // ⚠ the coordinator's explicit requirement: a Codex node with NO data
-        // must say the lane cannot supply it — not "no todos", which reads as
-        // "nothing to do". Named, in words, whatever the state.
+      if (lane === 'antigravity') {
+        // Antigravity still has no source orgtree knows of at all — unchanged.
         assert.equal(m.todo.supply, 'lane-cannot', `${cell}: supply`)
         assert.equal(m.todo.items, null, `${cell}: a lane that cannot supply must show no list`)
-        assert.match(m.todo.note, lane === 'codex' ? /Codex/ : /Antigravity/, `${cell}: note names the lane`)
+        assert.match(m.todo.note, /Antigravity/, `${cell}: note names the lane`)
         assert.match(m.todo.note, /cannot see/, `${cell}: note says orgtree cannot see, not that there is none`)
         assert.equal(m.chip, 'todo n/a', `${cell}: chip`)
-        if (lane === 'codex') assert.match(m.todo.note, /turn\/plan\/updated/, 'the Codex sentence names the unhandled notification')
+        continue
+      }
+      if (lane === 'codex') {
+        // FR-17 supersedes the old "Codex cannot" pin: it is never
+        // 'lane-cannot' again, and it is ALWAYS its own labelled source.
+        assert.notEqual(m.todo.supply, 'lane-cannot', `${cell}: supply must not be lane-cannot`)
+        assert.equal(m.todo.source, 'codex-plan', `${cell}: source is always labelled`)
+        // ⚠ ANTI-FABRICATION: every fixture in `states` is Claude-shaped (a
+        // TodoWrite tool row / tools chip) — none of it is a Codex 'plan' row
+        // or a `codexPlan` transcript record. If Codex ever picked any of it
+        // up as its own checklist, this is exactly where it would show: an
+        // `items` list or a 'live'/'durable'/'updating' supply born from data
+        // that was never turn/plan/updated. It must not.
+        assert.ok(['none-in-window', 'loading'].includes(m.todo.supply),
+          `${cell}: Claude-shaped fixtures must never read as a Codex plan (got ${m.todo.supply})`)
+        assert.equal(m.todo.items, null, `${cell}: no items from data that was never turn/plan/updated`)
+        assert.doesNotMatch(m.todo.note, /TodoWrite/, `${cell}: never speaks in Claude's tool name`)
         continue
       }
       // Claude and OpenRouter run the same CLI: identical verdicts
@@ -207,6 +273,89 @@ test('§1c deriveProgress: a CLEARED list is a list, not an absence', () => {
   assert.match(durable.todo.note, /cleared/)
 })
 
+// -------------------------------------------- §1e FR-17: Codex's own source
+
+test('§1e deriveProgress (Codex): live, durable, all three statuses, explanation preserved', () => {
+  const live = deriveProgress(node({ tier: 'luna', busy: true }),
+    convo({ live: [livePlanRow(PLAN_STEPS, 'because the plan changed')] }))
+  assert.equal(live.todo.supply, 'live')
+  assert.equal(live.todo.source, 'codex-plan')
+  assert.deepEqual(items(live), [['completed', 'read the plan'], ['in_progress', 'write the panel'], ['pending', 'land it']])
+  assert.equal(live.todo.explanation, 'because the plan changed')
+  assert.match(live.todo.note, /^live, this turn: 1\/3 done · now: write the panel/)
+  assert.match(live.todo.note, /because the plan changed/)
+  assert.equal(live.chip, '◐ 1/3')
+
+  const durable = deriveProgress(node({ tier: 'luna' }), convo({}, [planMsg()]))
+  assert.equal(durable.todo.supply, 'durable')
+  assert.equal(durable.todo.earlierTurn, false)
+  assert.deepEqual(items(durable), [['completed', 'read the plan'], ['in_progress', 'write the panel'], ['pending', 'land it']])
+  assert.match(durable.todo.note, /Codex's own turn checklist/)
+})
+
+test('§1e deriveProgress (Codex): a live plan row with no contents degrades like a live TodoWrite row does', () => {
+  const m = deriveProgress(node({ tier: 'luna', busy: true }),
+    convo({ live: [livePlanRow(undefined)] }, [planMsg()]))
+  assert.equal(m.todo.supply, 'updating')
+  assert.match(m.todo.note, /updating its checklist now/)
+  assert.match(m.todo.note, /PREVIOUS checklist/)
+  assert.equal(items(m).length, 3)
+})
+
+test('§1e deriveProgress (Codex): an explicit empty plan is CLEARED, not absent — distinct from never having observed one', () => {
+  const cleared = deriveProgress(node({ tier: 'luna', busy: true }), convo({ live: [livePlanRow([])] }))
+  assert.equal(cleared.todo.supply, 'live')
+  assert.deepEqual(cleared.todo.items, [])
+  assert.match(cleared.todo.note, /cleared its todo list/)
+  assert.equal(cleared.chip, 'todo cleared')
+  const neverObserved = deriveProgress(node({ tier: 'luna' }), convo({}, []))
+  assert.equal(neverObserved.todo.items, null, 'no event at all must never render as an empty (cleared) list')
+  assert.match(neverObserved.todo.note, /no transcript yet/)
+})
+
+test('§1e deriveProgress (Codex): successive snapshots — the newest durable one wins, not the first', () => {
+  const m = deriveProgress(node({ tier: 'luna' }), convo({}, [
+    planMsg([{ step: 'a', status: 'pending' }], '2026-09-04T20:00:00.000Z'),
+    planMsg([{ step: 'a', status: 'completed' }], '2026-09-04T20:05:00.000Z'),
+  ]))
+  assert.deepEqual(items(m), [['completed', 'a']])
+})
+
+test('§1e deriveProgress (Codex): prior-turn labelling prefers REAL turn identity over a timestamp guess', () => {
+  // identity says CURRENT even though the timestamp alone would look earlier
+  // than inflight_at — identity wins, so it must NOT be marked previous
+  const currentByIdentity = deriveProgress(
+    node({ tier: 'luna', busy: true, inflight_at: '2026-09-04T20:10:00.000Z' }),
+    convo({}, [planMsg(PLAN_STEPS, '2026-09-04T20:00:00.000Z', null, 'turn-9')], 'turn-9'))
+  assert.equal(currentByIdentity.todo.earlierTurn, false)
+  assert.doesNotMatch(currentByIdentity.chip, /prev/)
+  // identity says EARLIER (a different, known turnId) even though the
+  // timestamp alone would look current
+  const earlierByIdentity = deriveProgress(
+    node({ tier: 'luna', busy: true, inflight_at: '2026-09-04T19:00:00.000Z' }),
+    convo({}, [planMsg(PLAN_STEPS, '2026-09-04T20:00:00.000Z', null, 'turn-8')], 'turn-9'))
+  assert.equal(earlierByIdentity.todo.earlierTurn, true)
+  assert.match(earlierByIdentity.todo.note, /EARLIER turn/)
+  assert.match(earlierByIdentity.chip, /\(prev\)/)
+  // no identity available anywhere (older-backend record, codex_turn_id
+  // absent) — falls back to Claude's own strict-less-than timestamp rule,
+  // and an EQUAL timestamp must not be mislabelled as earlier
+  const equalTs = deriveProgress(
+    node({ tier: 'luna', busy: true, inflight_at: '2026-09-04T20:10:00.000Z' }),
+    convo({}, [planMsg(PLAN_STEPS, '2026-09-04T20:10:00.000Z', null, '')]))
+  assert.equal(equalTs.todo.earlierTurn, false, 'an equal timestamp is not earlier')
+  const strictlyEarlier = deriveProgress(
+    node({ tier: 'luna', busy: true, inflight_at: '2026-09-04T20:10:00.000Z' }),
+    convo({}, [planMsg(PLAN_STEPS, '2026-09-04T20:00:00.000Z', null, '')]))
+  assert.equal(strictlyEarlier.todo.earlierTurn, true)
+  // idle (not busy) — nothing is "the running turn", so the last known
+  // checklist is just the last known checklist, never labelled previous,
+  // even with an identity mismatch or a restart that wiped codex_turn_id
+  const idle = deriveProgress(node({ tier: 'luna', busy: false }),
+    convo({}, [planMsg(PLAN_STEPS, '2026-09-04T20:00:00.000Z', null, 'turn-8')], null))
+  assert.equal(idle.todo.earlierTurn, false)
+})
+
 test('§1d deriveProgress: subagents, reported status and activity', () => {
   // bg_tasks had NO frontend type before FR-2 — a fixture with only `tasks`
   // would leave it undefined and render 0 forever (the plan's named trap)
@@ -272,7 +421,8 @@ test('§2 parseTodoResult pins the three glyphs supervisor._todo_glyphs emits', 
 
 test('§3 ProgressView: a sentence in every state; a checklist only with items; "previous" when not current', async () => {
   const cases: [string, ProgressModel, { items: number; previous: boolean; noteRe: RegExp }][] = [
-    ['codex', deriveProgress(node({ tier: 'luna' }), convo()), { items: 0, previous: false, noteRe: /Codex agents do not report/ }],
+    ['codex none', deriveProgress(node({ tier: 'luna' }), convo()), { items: 0, previous: false, noteRe: /no transcript yet/ }],
+    ['codex live', deriveProgress(node({ tier: 'luna', busy: true }), convo({ live: [livePlanRow(PLAN_STEPS)] })), { items: 3, previous: false, noteRe: /live, this turn/ }],
     ['antigravity', deriveProgress(node({ tier: 'pro' }), convo()), { items: 0, previous: false, noteRe: /Antigravity/ }],
     ['none', deriveProgress(node(), convo({}, [{ role: 'user', text: 'x', seq: 0 }])), { items: 0, previous: false, noteRe: /no todo list in the loaded transcript window/ }],
     ['loading', deriveProgress(node(), convo({ loaded: false, chat: null })), { items: 0, previous: false, noteRe: /loading the transcript/ }],
@@ -293,6 +443,10 @@ test('§3 ProgressView: a sentence in every state; a checklist only with items; 
       assert.equal(Boolean(todo!.querySelector('.todo-items.previous')), want.previous, `${name}: previous marker`)
       // the invariant, stated as DOM: no items ⇒ a sentence is on screen
       if (!want.items) assert.ok(note.trim().length > 10, `${name}: empty list AND empty note`)
+      // FR-17: a Codex checklist's section header names its source, on screen
+      if (name.startsWith('codex')) {
+        assert.match(todo!.querySelector('h4')?.textContent ?? '', /Codex/, `${name}: header names Codex`)
+      }
       // the whole panel always has the lane + process line
       assert.match(view.el.querySelector('.progress-state')?.textContent ?? '', /·/, `${name}: state line`)
       // every other section is a sentence too, whether open or folded
@@ -401,4 +555,33 @@ test('§4 DeskChat: fifth tab + header chip open the panel, fed by the shared co
   const progTab = [...view.el.querySelectorAll<HTMLButtonElement>('.cc-tabs button')].find((b) => b.textContent === 'progress')!
   await act(async () => { progTab.click() })
   assert.ok(view.el.querySelector('.msgs.progress'))
+})
+
+test('§4b DeskChat (Codex): a live turn/plan/updated row reaches the SAME panel through the SAME wiring', async (t) => {
+  resetConvos()
+  useFakeClock()
+  const server = new FakeServer()
+  installFetch(server)
+  server.busy = true
+  server.userMsg('plan the work')
+  const n = node({ id: 'agent', tier: 'luna', busy: true, inflight_at: new Date().toISOString(), proc_live: true })
+  const view = await mountView(
+    <DeskChat node={n} map={new Map([['agent', n]])} op={op} slug="prog" toast={noop} pub={false} bare onJump={noop} />,
+    (el) => el)
+  t.after(async () => { await view.unmount(); resetConvos(); realClock() })
+  await flush()
+  const chip = view.el.querySelector<HTMLButtonElement>('.cc-head-meta .progress-chip')
+  assert.ok(chip, 'no progress chip in the metadata row')
+  assert.notEqual(chip!.textContent, 'todo n/a', 'a Codex node must not show the old lane-cannot chip')
+  server.live.push({ kind: 'plan', text: 'checklist updated', threadId: 'thread-1', turnId: 'turn-1',
+    explanation: null, plan: [{ step: 'first', status: 'completed' }, { step: 'second', status: 'in_progress' }] })
+  await advance(3000)
+  await flush()
+  const { act } = await import('react')
+  await act(async () => { chip!.click() })
+  const rows = [...view.el.querySelectorAll('.msgs.progress .todo-item')]
+  assert.deepEqual(rows.map((r) => r.textContent), ['☑first', '◐second'],
+    'the live turn/plan/updated row did not reach the panel through the conversation store')
+  assert.match(view.el.querySelector('.msgs.progress h4')?.textContent ?? '', /Codex/)
+  assert.equal(view.el.querySelector('.cc-head-meta .progress-chip')?.textContent, '◐ 1/2')
 })

@@ -89,6 +89,21 @@ scenarios selected by FAKECODEX_SCENARIO:
                is known for) and then completes / meets the PLAN wall —
                see the note in `run_turn`; no live reroute has been
                observed, only the schema shape
+    plan_updated (FR-17) three successive `turn/plan/updated` notifications
+               on one turn: pending → in_progress → a two-step list with an
+               explanation — only the LAST should be what a caller shows
+    plan_cleared (FR-17) a real checklist, then an EXPLICIT empty one — the
+               "cleared" case, distinct from a notification never arriving
+    plan_wrong_ids (FR-17) one legitimate snapshot, then one on a foreign
+               thread and one on a foreign turn of the real thread — both
+               must be discarded, and must not overwrite the legitimate one
+    plan_early (FR-17) the checklist notification goes out from inside
+               `turn/start`'s own handler, before that request's reply is
+               sent — the measured turn_id race a correct runner must
+               buffer through rather than drop (see supervisor._on_plan)
+    plan_failed_turn / plan_interrupted_turn (FR-17) a checklist with an
+               unfinished step, then the turn ends badly — nothing about
+               that ending may mark the step done
 
 Board probe: FAKECODEX_BOARD shapes `account/rateLimits/read` (the COMPLETE
 board): "default" (no reserve bucket — the withdrawn-grant shape),
@@ -374,6 +389,53 @@ def run_turn(thread_id, turn_id, dyn_tools, model=None):
         # beyond that so the test cannot pass via the item/completed flush.
         time.sleep(0.45)
         item_event("completed", {**base, "text": "short live fragment"})
+    elif SCENARIO == "plan_updated":
+        # FR-17: successive snapshots on the SAME turn — pending →
+        # in_progress → a two-step list carrying an explanation. Only the
+        # LAST one should be what a caller ends up showing.
+        def _plan(steps, explanation=None):
+            notify("turn/plan/updated", {
+                "threadId": thread_id, "turnId": turn_id,
+                "explanation": explanation, "plan": steps})
+        _plan([{"step": "a", "status": "pending"}])
+        _plan([{"step": "a", "status": "inProgress"}])
+        _plan([{"step": "a", "status": "completed"},
+               {"step": "b", "status": "pending"}], "steady progress")
+    elif SCENARIO == "plan_cleared":
+        # a real checklist, then an EXPLICIT empty one — "cleared", not "the
+        # notification never arrived" (that distinction is the whole point)
+        notify("turn/plan/updated", {
+            "threadId": thread_id, "turnId": turn_id, "explanation": None,
+            "plan": [{"step": "a", "status": "pending"}]})
+        notify("turn/plan/updated", {
+            "threadId": thread_id, "turnId": turn_id, "explanation": None,
+            "plan": []})
+    elif SCENARIO == "plan_wrong_ids":
+        # ONE legitimate snapshot, then two that are not this turn's to
+        # report — a foreign thread, and a foreign turn on the REAL thread.
+        # Both must be discarded: the legitimate snapshot must survive them,
+        # not be overwritten by whichever arrived last.
+        notify("turn/plan/updated", {
+            "threadId": thread_id, "turnId": turn_id, "explanation": None,
+            "plan": [{"step": "real", "status": "pending"}]})
+        notify("turn/plan/updated", {
+            "threadId": "fake-thread-elsewhere", "turnId": turn_id,
+            "explanation": None,
+            "plan": [{"step": "WRONG THREAD", "status": "completed"}]})
+        notify("turn/plan/updated", {
+            "threadId": thread_id, "turnId": "fake-turn-elsewhere",
+            "explanation": None,
+            "plan": [{"step": "WRONG TURN", "status": "completed"}]})
+    elif SCENARIO == "plan_early":
+        # THE RACE (see supervisor._on_plan's docstring): this notification
+        # goes out from inside `turn/start`'s own handler, before that
+        # request's reply is even sent — the caller cannot possibly have
+        # `turn.turn_id` set yet. A runner that rejects on that technicality
+        # drops real data instead of buffering it.
+        notify("turn/plan/updated", {
+            "threadId": thread_id, "turnId": turn_id, "explanation": None,
+            "plan": [{"step": "early", "status": "pending"}]})
+        agent_message("msg-early-plan", "done")
     else:
         agent_message("msg-working", "working… ")
     if SCENARIO == "tool" and dyn_tools:
@@ -678,6 +740,26 @@ def run_turn(thread_id, turn_id, dyn_tools, model=None):
                      "error": {"message": "the sandbox denied a write",
                                "codexErrorInfo": "sandbox_error"}}})
         return
+    elif SCENARIO in ("plan_failed_turn", "plan_interrupted_turn"):
+        # FR-17: a checklist with an unfinished step, then the turn ends
+        # badly. Nothing about that ending may mark the step done — the
+        # checklist just stops updating, honestly, at whatever it last said.
+        notify("turn/plan/updated", {
+            "threadId": thread_id, "turnId": turn_id, "explanation": None,
+            "plan": [{"step": "not done yet", "status": "inProgress"}]})
+        if SCENARIO == "plan_failed_turn":
+            notify("turn/completed", {
+                "threadId": thread_id,
+                "turn": {"id": turn_id, "status": "failed",
+                         "error": {"message": "planted failure — FR-17's "
+                                              "checklist-survives-failure "
+                                              "control"}}})
+        else:
+            notify("turn/completed", {
+                "threadId": thread_id,
+                "turn": {"id": turn_id, "status": "interrupted",
+                         "error": None}})
+        return
     elif SCENARIO == "interrupt":
         irr = wait_request("turn/interrupt")
         if irr:
@@ -917,7 +999,7 @@ def main():
             turn_id = "fake-turn-0001"
             turn_model = params.get("model")
             _model_probe(method, turn_model)
-            if SCENARIO == "early_stream":
+            if SCENARIO in ("early_stream", "plan_early"):
                 # the whole turn on the wire BEFORE the reply — see the
                 # scenario note at the top of this file
                 run_turn(thread_id, turn_id, dyn_tools, turn_model)
