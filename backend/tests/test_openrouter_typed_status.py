@@ -35,7 +35,7 @@ WHAT WAS MEASURED, AND WHAT THIS RIG REPRODUCES
     §6  coherence: an error retried past does not classify; the latest one does
     §7  the Claude lane is byte-for-byte unchanged (controls)
 
-Anti-vacuity: `tests/_mutate_or_typed.py` breaks the shipped code ten ways
+Anti-vacuity: `tests/_mutate_or_typed.py` breaks the shipped code eleven ways
 and requires a NAMED check here to go red for each.
 """
 from __future__ import annotations
@@ -88,6 +88,11 @@ PH_403_LIMIT = 'API Error: 403 PLACEHOLDER forbidden: key usage limit policy'
 PH_503_LIMIT = 'API Error: 503 PLACEHOLDER upstream usage limit reached, try later'
 PH_429_NOLIMIT = 'API Error: 429 PLACEHOLDER too many requests'
 PH_401 = 'API Error: 401 PLACEHOLDER no auth credentials found'
+#: an engine-authored error with NO typed status and no predicate wording —
+#: no "limit", none of the connection spellings, so the prose path leaves it
+#: terminal. The point of the fixture is the ABSENCE of a number.
+PH_UNTYPED_TERMINAL = ('API Error: PLACEHOLDER upstream returned an '
+                       'unreadable response')
 
 
 def check(label: str, fn) -> None:
@@ -327,11 +332,21 @@ def sec_reader() -> None:
         supervisor._note_synthetic_status(into, {"apiErrorStatus": 401}, "first")
         supervisor._note_synthetic_status(into, {"apiErrorStatus": 402}, "second")
         assert (into["status"], into["status_text"]) == (402, "second"), into
+        # a MALFORMED number on a LATER engine error is not coerced (the slot
+        # never becomes 500) AND does not leave the earlier one standing: that
+        # event is the state the turn is in now, so 402 is stale.
         supervisor._note_synthetic_status(into, {"apiErrorStatus": "500"}, "junk")
-        assert into["status"] == 402, "a non-int status moved the slot"
-        supervisor._clear_synthetic_status(into)
-        assert "status" not in into and "status_text" not in into
-    check("reader · the synthetic slot is LATEST-wins, moves as a pair, and clears", _latest_wins_and_clears)
+        assert "status" not in into and "status_text" not in into, (
+            f"a later UNTYPED engine error left a stale typed status: {into}")
+        # …and it retires only the typed pair — the prose slots that carry the
+        # durable narrative are not this function's business
+        keep: dict[str, Any] = {"code": "billing_error", "text": "keep me"}
+        supervisor._note_synthetic_status(keep, {}, "no number here")
+        assert keep == {"code": "billing_error", "text": "keep me"}, keep
+        supervisor._note_synthetic_status(keep, {"apiErrorStatus": 429}, "x")
+        supervisor._clear_synthetic_status(keep)
+        assert keep == {"code": "billing_error", "text": "keep me"}, keep
+    check("reader · the synthetic slot is LATEST-wins — a later untyped error retires it", _latest_wins_and_clears)
 
 
 # ══════════════════════════════════════════════════════════════════════ §2
@@ -676,12 +691,35 @@ def _sec_coherence_body() -> None:
         assert fz.get("until_ts"), "…and it was parked without a probe horizon"
     check("coherence · consecutive 401 → 402 is the 402 (latest), not a stale auth park", _consecutive_401_402)
 
+    # …and the same rule when the LATEST engine error carries NO number. It is
+    # still the state the turn is in, so the earlier 401 is stale — the turn
+    # must fall back to the prose predicates reading THIS sentence, not be
+    # parked as auth on a status the CLI had already moved past. (Astra found
+    # `_note_synthetic_status` returning early without clearing, 2026-09-05.)
+    slug, boss, nid = team()
+    steps(synthetic(PH_401, 401, "authentication_failed"),
+          synthetic(PH_UNTYPED_TERMINAL, None), err_result(PH_UNTYPED_TERMINAL))
+    raised = run(slug, nid)
+
+    def _typed_then_untyped():
+        fz = dict(node(slug, nid).get("frozen") or {})
+        assert not fz, (
+            f"a typed 401 followed by an UNTYPED engine error parked the turn "
+            f"on the stale status: {fz}")
+        assert raised, "the untyped failure was not recorded at all"
+        assert "PLACEHOLDER no auth credentials" not in " ".join(rows(slug, nid)), (
+            f"the durable row carries the RETIRED 401's sentence: {rows(slug, nid)}")
+        assert supervisor.state(slug, nid).get("turns_run", 0) == 0
+    check("coherence · typed 401 → UNTYPED engine error is terminal on the later error, not an auth park", _typed_then_untyped)
+
     slug, boss, nid = team()
     steps(synthetic(REAL_402, None), clean_result(""))
     raised = run(slug, nid)
 
     def _no_status_unchanged():
-        assert raised is None and not node(slug, nid).get("frozen")             and not rows(slug, nid)             and supervisor.state(slug, nid).get("turns_run") == 1, (
+        assert (raised is None and not node(slug, nid).get("frozen")
+                and not rows(slug, nid)
+                and supervisor.state(slug, nid).get("turns_run") == 1), (
             "a synthetic record with NO status changed behaviour — the "
             "adoption is gated on a number the model cannot emit")
     check("coherence · a synthetic error with no status is exactly yesterday's behaviour (control)", _no_status_unchanged)
@@ -704,7 +742,9 @@ def _sec_claude_body() -> None:
     raised = run(slug, nid)
 
     def _claude_synthetic_402_untouched():
-        assert raised is None and not node(slug, nid).get("frozen")             and not rows(slug, nid)             and supervisor.state(slug, nid).get("turns_run") == 1, (
+        assert (raised is None and not node(slug, nid).get("frozen")
+                and not rows(slug, nid)
+                and supervisor.state(slug, nid).get("turns_run") == 1), (
             "the OR-only adoption reached a CLAUDE turn")
     check("claude · the same synthetic 402 + clean result on a haiku node is untouched (scope)", _claude_synthetic_402_untouched)
 

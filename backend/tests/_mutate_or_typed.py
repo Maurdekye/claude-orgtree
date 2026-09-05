@@ -52,6 +52,12 @@ R.MUTANTS[:] = [
      "                        elif False:\n                            # a REAL top-level assistant message: any API",
      "coherence · synthetic 402 → real output → EMPTY result is a COMPLETED turn (the clearing)"),
 
+    ("an UNTYPED latest engine error leaves the earlier status standing",
+     SUP,
+     "    _clear_synthetic_status(into)\n    status = _strict_http_status(ev.get(\"apiErrorStatus\"))",
+     "    status = _strict_http_status(ev.get(\"apiErrorStatus\"))",
+     "coherence · typed 401 → UNTYPED engine error is terminal on the later error, not an auth park"),
+
     ("the synthetic slot is FIRST-wins (a stale 401 parks a 402 as auth)",
      SUP,
      "    into[\"status\"] = status\n    into[\"status_text\"] = text.strip()[:300]",

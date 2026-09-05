@@ -689,7 +689,19 @@ def _note_synthetic_status(into: dict[str, Any], ev: dict[str, Any],
     (`status` and `status_text`) move together so the number can never sit
     beside another error's sentence. `_clear_synthetic_status` retires them
     when a real assistant message follows — an error that was retried past is
-    resolved and must not classify the turn."""
+    resolved and must not classify the turn.
+
+    ⚠ AN UNTYPED ENGINE ERROR IS ALSO THE LATEST ONE. This event is the state
+    the turn is in NOW, so an earlier event's number is stale the moment it
+    arrives — even when this one carries no number of its own. Returning
+    early without clearing left a typed 401 standing in front of a later,
+    untyped failure, and the turn was classified (and parked) as auth on a
+    status that belonged to an error the CLI had already moved past (Astra,
+    2026-09-05). Clearing FIRST is what makes the fallback honest: with no
+    number the prose predicates read the LATEST sentence, which is exactly
+    what every non-OpenRouter turn does. Nothing here invents a status from
+    prose — an untyped error stays untyped."""
+    _clear_synthetic_status(into)
     status = _strict_http_status(ev.get("apiErrorStatus"))
     if status is None:
         msg = ev.get("message")
@@ -14335,9 +14347,10 @@ def _run_one_turn(slug: str, nid: str,
             # predicates the sites below used to call inline.
             if _or_typed is None:
                 _limit_class = _looks_like_usage_limit(err_blob)
-                _net_class = _looks_like_connection_failure(err_blob)                     or _died_in_flight(exit_only=exit_only,
-                                       started=saw_agent_out[0],
-                                       boundary=saw_result[0])
+                _net_class = (_looks_like_connection_failure(err_blob)
+                              or _died_in_flight(exit_only=exit_only,
+                                                 started=saw_agent_out[0],
+                                                 boundary=saw_result[0]))
             else:
                 _limit_class = _or_typed in (401, 402, 429)
                 _net_class = _or_typed >= 500
