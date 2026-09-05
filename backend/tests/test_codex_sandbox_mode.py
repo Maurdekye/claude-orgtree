@@ -693,6 +693,36 @@ def main() -> int:
           lambda: eq(_git_ok(d2, trust), True,
                      "git log on the granted dir as a repo"))
 
+    # DRIVE-ROOT GRANTS ARE REAL (seats here hold C:\, D:\, E:\), and a root
+    # is the one path that already ends in a separator, so appending "/*"
+    # gives "C://*".
+    # ⚠ HONEST LABEL: git 2.52 ACCEPTS that doubled slash — measured in
+    # isolation, trusting only "C://*" matched a repo on the drive. So the
+    # first check below is HYGIENE on the emitted string, not a behaviour
+    # difference, and it is a shape check on purpose. The behaviour check
+    # after it is the one that proves the root form works at all; it passes
+    # under both spellings, and saying otherwise would be a false claim.
+    # Nothing is created at a drive root — the repo under test is the same
+    # temp repo, which lives on C:.
+    drive = os.path.splitdrive(nested)[0] + "\\"          # "C:\"
+    r_slug, r_nid = mkorg_dirs("driveroot", [drive])
+    rtrust = git_trust(r_slug, r_nid)
+    rvals = sorted(v for k, v in rtrust.items()
+                   if k.startswith("GIT_CONFIG_VALUE_"))
+    check("a drive-root grant emits C:/ and C:/*, never C://*",
+          lambda: eq(rvals, sorted([drive.replace("\\", "/"),
+                                    drive.replace("\\", "/") + "*"]),
+                     "drive-root safe.directory values"))
+    check("…and real git accepts that root pattern for a repo on the drive",
+          lambda: eq(_git_ok(nested, rtrust), True,
+                     "git log under a drive-root grant's trust env"))
+    # the negative for the root form: another drive's root must not carry it
+    other = "E:\\" if not nested.upper().startswith("E:") else "C:\\"
+    o_slug, o_nid = mkorg_dirs("otherdrive", [other])
+    check("…and a grant on a DIFFERENT drive root does not trust it",
+          lambda: eq(_git_ok(nested, git_trust(o_slug, o_nid)), False,
+                     f"git log with only {other} trusted"))
+
     # an operator who set their own GIT_CONFIG_* must not have it silently
     # dropped — the node's entries append above the inherited count
     os.environ["GIT_CONFIG_COUNT"] = "1"

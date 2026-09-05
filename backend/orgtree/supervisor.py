@@ -10149,7 +10149,14 @@ def _codex_git_trust_env(sc: Mapping[str, Any]) -> dict[str, str]:
         g = p.replace("\\", "/")
         if g.endswith("/") and not g.endswith(":/"):
             g = g[:-1]
-        values += [g, g + "/*"]
+        # the descendants pattern is built separately rather than by
+        # appending "/*": a DRIVE-ROOT grant ("C:\") already ends in its
+        # separator, and the naive concatenation emits "C://*". git 2.52
+        # accepts that doubled slash (measured — it matched a repo on the
+        # drive), so this is hygiene, NOT a repair of a broken case: the
+        # emitted value is what a human reads in a bug report and what
+        # another git build has to agree to tolerate.
+        values += [g, g + "*" if g.endswith("/") else g + "/*"]
     env = {"GIT_CONFIG_COUNT": str(base + len(values))}
     for i, v in enumerate(values):
         env[f"GIT_CONFIG_KEY_{base + i}"] = "safe.directory"
