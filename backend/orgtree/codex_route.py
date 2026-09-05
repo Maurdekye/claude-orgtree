@@ -62,6 +62,7 @@ board, spawning anything, and writing the node belong to the callers
 from __future__ import annotations
 
 import datetime as _dt
+import math
 import time
 from typing import Any, Final, TypedDict, cast
 
@@ -333,6 +334,48 @@ def node_wake_epoch(limits: list[dict[str, Any]], snapshots: Any,
         if known:
             candidates.append(max(known))
     return min(candidates) if candidates else None
+
+
+def failure_schedule(route: Route, board: dict[str, Any], snapshots: Any,
+                     served_pool: str | None, *,
+                     now: float | None = None) -> tuple[float | None, str]:
+    """Return the routed failure's deadline and its honest schedule kind.
+
+    A single served pool recovers only after the latest exhausted constraint
+    in that pool.  Luna can use either pool, so its earlier per-pool deadline
+    is only a time to probe the alternatives.  Cached evidence is usable only
+    for the account captured by the route; an unknown account/pool fails to a
+    probe instead of borrowing another namespace's board.
+    """
+    now = time.time() if now is None else now
+    pool = served_pool or None
+    account = str(route.get("account") or "")
+    age = board.get("age")
+    board_ok = (bool(account) and bool(pool)
+                and board.get("account") == account
+                and not bool(board.get("stale"))
+                and isinstance(age, (int, float))
+                and not isinstance(age, bool) and math.isfinite(float(age))
+                and 0 <= float(age) <= EVIDENCE_MAX_AGE)
+    limits = ([cast("dict[str, Any]", value)
+               for value in cast("list[Any]", board.get("limits") or [])
+               if isinstance(value, dict)] if board_ok else [])
+    if route.get("requested") == ROUTED_TIER:
+        if not pool:
+            return None, "probe"
+        wake = node_wake_epoch(limits, snapshots, sent_pool=pool)
+        return wake, "probe"
+    if not pool:
+        return None, "probe"
+    cap = pool_capacity(limits, pool, now=now) if board_ok else None
+    exhausted, snap = snapshots_pool_reset(snapshots, pool, sent_pool=pool)
+    candidates = [value for value in (
+        cap.get("reset_ts") if cap else None, snap if exhausted else None)
+        if isinstance(value, (int, float))]
+    unknown = bool(cap and cap.get("reset_unknown")) or (exhausted and snap is None)
+    if unknown or not candidates:
+        return None, "probe"
+    return max(candidates), "observed-deadline"
 
 
 # ── the decision ────────────────────────────────────────────────────────────

@@ -253,6 +253,11 @@ def main() -> int:
         eq(fz.get("limit"), True, "positively marked a LIMIT freeze")
         eq(fz.get("reset_src"), "provider",
            "timed from the app-server's own resetsAt")
+        eq((fz.get("provider"), fz.get("resource_pool"),
+            fz.get("schedule_kind")),
+           ("openai", "plan", "observed-deadline"),
+           "captured provider/pool and deadline kind")
+        assert fz.get("account"), "the served account namespace was lost"
         want = t_start + fakecodex.LIMIT_RESET_IN
         assert abs(float(fz["until_ts"]) - want) < 120, (fz["until_ts"], want)
         # ⚠ never {error, no until}: ledger's pre-№41 migration re-tags that
@@ -373,6 +378,10 @@ def main() -> int:
         # the CLI names its reset as a duration ("Resets in 165h21m54s");
         # the leg parses it into the machine reset the freeze thaws on
         eq(fz.get("reset_src"), "provider", "the CLI's own reset, parsed")
+        eq((fz.get("provider"), fz.get("account"),
+            fz.get("resource_pool"), fz.get("schedule_kind")),
+           ("google", "antigravity", "pro", "observed-deadline"),
+           "the serving namespace and deadline kind")
         want = time.time() + 165 * 3600 + 21 * 60 + 54
         assert abs(float(fz.get("until_ts") or 0) - want) < 60,             f"until_ts {fz.get('until_ts')} vs ~{want} (probe floor = +300)"
         replay = fz.get("resume_texts") or []

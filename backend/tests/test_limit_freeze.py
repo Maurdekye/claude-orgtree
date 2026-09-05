@@ -55,6 +55,7 @@ no network. §2 spawns `node` (the stand-in) — skipped with a note if absent.
 from __future__ import annotations
 
 import ast
+import datetime as dt
 import json
 import re
 import os
@@ -2252,8 +2253,8 @@ def _sec_reset_timing_body() -> None:
         else (_ for _ in ()).throw(AssertionError("a passed reset is ready"))))
 
     def _the_toggle_gates_the_limit_kind():
-        j = _code.find("def start_auto_resume_loop(")
-        fixture(j > 0, "the resume loop moved — re-read this check")
+        j = _code.find("def _auto_resume_org(")
+        fixture(j > 0, "the resume dispatch moved — re-read this check")
         body = _code[j:_code.find("\ndef ", j + 1)]
         k = body.find('org.d.get("auto_resume")')
         fixture(k > 0, "the toggle read moved — re-read this check")
@@ -2557,8 +2558,8 @@ def _sec_reset_timing_body() -> None:
     # record carrying BOTH kinds waits on the toggle, and a key-lane freeze
     # must not be woken by it either.
     def _the_toggle_off_filter_is_narrow():
-        j = _code.find("def start_auto_resume_loop(")
-        fixture(j > 0, "the resume loop moved — re-read this check")
+        j = _code.find("def _auto_resume_org(")
+        fixture(j > 0, "the resume dispatch moved — re-read this check")
         body = _code[j:_code.find("\ndef ", j + 1)]
         k = body.find("_resumable(org.node(nid))")
         fixture(k > 0, "the toggle-off filter moved — re-read this check")
@@ -4669,6 +4670,257 @@ def sec_parked_alert() -> None:
           _top_level_goes_to_the_user)
 
 
+def sec_f2_reset_accounting() -> None:
+    print("\n§12 F2 — billing clocks and recovery/probe ownership stay separate")
+    now = time.time()
+    iso = lambda value: dt.datetime.fromtimestamp(  # noqa: E731
+        value, dt.timezone.utc).isoformat()
+    board = {"available": True, "limits": [
+        {"kind": "session", "is_active": True,
+         "resets_at": iso(now + 3600), "model": None},
+        {"kind": "weekly_all", "is_active": True,
+         "resets_at": iso(now + 7 * 86400), "model": None},
+        {"kind": "weekly_scoped", "is_active": True,
+         "resets_at": iso(now + 5 * 86400), "model": "Fable"},
+    ]}
+
+    def _recovery_projection() -> None:
+        hso = limits.recovery_deadline("haiku", board, 0.0, now=now)
+        fable = limits.recovery_deadline("fable", board, 0.0, now=now)
+        fixture(hso is not None and fable is not None, "projection inert")
+        assert abs(hso - (now + 7 * 86400)) < 1, hso
+        assert abs(fable - (now + 5 * 86400)) < 1, fable
+        broken = {**board, "limits": [*board["limits"],
+                  {"kind": "weekly_all", "is_active": True,
+                   "resets_at": None, "model": None}]}
+        assert limits.recovery_deadline("haiku", broken, 0.0, now=now) is None
+        assert limits.recovery_deadline(
+            "haiku", board, limits.MAX_EVIDENCE_AGE + 1, now=now) is None
+    check("F2 recovery · H/S/O waits for session+weekly, Fable only for its "
+          "scoped pool; malformed/stale evidence fails closed",
+          _recovery_projection)
+
+    def _claim_lifecycle() -> None:
+        supervisor._limit_probes.clear()
+        supervisor._limit_probe_last.clear()
+        slug, nid = probe_org()
+        with store.DOC_LOCK:
+            org = store.load_org(slug)
+            org.d["auto_resume"] = False
+            org.node(nid)["frozen"] = {
+                "limit": True, "until_ts": now - 120, "reset_src": "probe",
+                "schedule_kind": "probe", "provider": "claude",
+                "account": "primary", "resource_pool": "haiku+sonnet+opus",
+                "at": supervisor.now_iso(), "error": "limit"}
+            store.save_org(org)
+        supervisor._auto_resume_org(slug, now)
+        fixture(not supervisor._limit_probes, "toggle-off path claimed a probe")
+
+        with store.DOC_LOCK:
+            org = store.load_org(slug)
+            org.d["auto_resume"] = True
+            store.save_org(org)
+        real_resume = supervisor.resume_frozen
+        try:
+            supervisor.resume_frozen = lambda *a, **k: (_ for _ in ()).throw(
+                RuntimeError("before launch"))
+            supervisor._auto_resume_org(slug, now)
+        finally:
+            supervisor.resume_frozen = real_resume
+        lease = next(iter(supervisor._limit_probes.values()))
+        assert lease.get("token") is None, lease
+        assert float(lease["not_before"]) > now, lease
+
+        # Retry through the actual consent -> claim -> resume path. Hold the
+        # worker at dispatch so the carrier can be inspected, then fail setup
+        # before `_run_one_turn`: the outer worker must release that carrier's
+        # immutable token without erasing the backoff.
+        lease["not_before"] = now
+        dispatched = []
+        real_thread = supervisor.threading.Thread
+
+        class HeldThread:
+            def __init__(self, *, target, args, daemon):
+                self.target, self.args, self.daemon = target, args, daemon
+
+            def start(self):
+                dispatched.append((self.target, self.args))
+
+        try:
+            supervisor.threading.Thread = HeldThread
+            supervisor._auto_resume_org(slug, now)
+        finally:
+            supervisor.threading.Thread = real_thread
+        fixture(len(dispatched) == 1, f"probe was not dispatched: {dispatched}")
+        target, args = dispatched[0]
+        carrier_token = args[2].get("_limit_probe_token")
+        fixture(bool(carrier_token), f"dispatch lost its token: {args[2]!r}")
+        real_cancel = supervisor._cancel_working_cache
+        try:
+            supervisor._cancel_working_cache = lambda *_a, **_k: (_ for _ in ()).throw(
+                RuntimeError("pre-turn failure"))
+            try:
+                target(*args)
+            except RuntimeError:
+                pass
+        finally:
+            supervisor._cancel_working_cache = real_cancel
+        lease = next(iter(supervisor._limit_probes.values()))
+        assert lease.get("token") is None and lease["not_before"] > now
+
+        node_doc = store.load_org(slug).node(nid)
+        fz = {"limit": True, "schedule_kind": "probe",
+              "provider": "claude", "account": "primary",
+              "resource_pool": "haiku+sonnet+opus"}
+        key = supervisor._limit_probe_key(node_doc, fz)
+        lease["not_before"] = now
+        claimed_during_setup = []
+
+        def claim_then_fail(*_args, **_kwargs):
+            claimed_during_setup.extend(supervisor._claim_limit_probes(
+                [(slug, nid, node_doc, fz)], now))
+            raise RuntimeError("ordinary worker failed after a new claim")
+
+        try:
+            supervisor._cancel_working_cache = claim_then_fail
+            try:
+                supervisor._run_turn(slug, nid, "ordinary earlier work")
+            except RuntimeError:
+                pass
+        finally:
+            supervisor._cancel_working_cache = real_cancel
+        fixture(len(claimed_during_setup) == 1,
+                "ordinary-worker race did not create a claim")
+        assert supervisor._limit_probes[key]["token"] == \
+            claimed_during_setup[0][2], (
+                "a no-token worker adopted and released a newer claim")
+        supervisor._release_limit_probe(
+            slug, nid, token=claimed_during_setup[0][2])
+        lease = supervisor._limit_probes[key]
+        lease["not_before"] = now
+        claim = supervisor._claim_limit_probes([(slug, nid, node_doc, fz)], now)
+        fixture(len(claim) == 1, f"no successor claim: {claim}")
+        old = claim[0][2]
+        later = now + supervisor.TURN_TIMEOUT + supervisor.PROBE_FLOOR + 1
+        # Expire T1 through the real claim path and create T2.
+        successor_claim = supervisor._claim_limit_probes(
+            [(slug, nid, node_doc, fz)], later)
+        fixture(len(successor_claim) == 1, "successor was not claimed")
+        successor = successor_claim[0][2]
+        set_mode("plain")
+        st = supervisor.state(slug, nid)
+        with supervisor._state_lock:
+            st["busy"] = True
+        # The actual stale turn finalizer carries T1. It must not consult the
+        # mutable runtime (which now names T2) and release the successor.
+        supervisor._run_one_turn(slug, nid, "stale probe turn",
+                                 probe_token=old)
+        assert supervisor._limit_probes[key]["token"] == successor, (
+            supervisor._limit_probes[key], successor)
+        supervisor._limit_probes.clear()
+        supervisor._limit_probe_last.clear()
+        with supervisor._state_lock:
+            st.pop("limit_probe_token", None)
+            st.pop("limit_probe_key", None)
+
+        # A dropped pointer that launches no provider also releases the exact
+        # active generation while retaining its failed-probe backoff.
+        first = supervisor._claim_limit_probes(
+            [(slug, nid, node_doc, fz)], later + 2)
+        fixture(len(first) == 1, "dropped-carrier probe was not claimed")
+        dropped_token = first[0][2]
+        turns_before = supervisor.state(slug, nid).get("turns_run", 0)
+        supervisor._run_turn(
+            slug, nid,
+            {"ping": True, "text": "mail pointer",
+             "_limit_probe_token": dropped_token})
+        lease = supervisor._limit_probes[key]
+        assert lease.get("token") is None, lease
+        assert supervisor.state(slug, nid).get("turns_run", 0) == turns_before
+
+        lease["not_before"] = later + 2
+        queued = supervisor._claim_limit_probes(
+            [(slug, nid, node_doc, fz)], later + 2)
+        fixture(len(queued) == 1, "queued-pointer probe was not claimed")
+        queued_token = queued[0][2]
+        with supervisor._state_lock:
+            st["busy"] = True
+            st["queue"].append({
+                "ping": True, "text": "queued mail pointer",
+                "_limit_probe_token": queued_token})
+        # This worker starts with ordinary work and owns no probe. The queued
+        # carrier must release its own generation whether it is dropped at the
+        # warm boundary or handed back to `_run_turn` after process exit.
+        supervisor._run_turn(slug, nid, "ordinary work before queued probe")
+        lease = supervisor._limit_probes[key]
+        assert lease.get("token") is None, lease
+        supervisor._limit_probes.clear()
+        supervisor._limit_probe_last.clear()
+        with supervisor._state_lock:
+            st.pop("limit_probe_token", None)
+            st.pop("limit_probe_key", None)
+
+        # Two orgs share one account/pool. A slow active owner blocks its peer;
+        # after failure/backoff the deterministic first org yields one pass so
+        # the later org is not permanently starved. A distinct account remains
+        # independently claimable.
+        fake = {"model": "terra"}
+        fz_a = {"limit": True, "schedule_kind": "probe",
+                "provider": "openai", "account": "acct-A",
+                "resource_pool": "plan"}
+        route_key = supervisor._limit_probe_key(fake, fz_a)
+        stale_time = now - supervisor._LIMIT_PROBE_WAITER_TTL - 1
+        stale = supervisor._claim_limit_probes(
+            [("org-stale", "n", fake, fz_a)], stale_time)
+        fixture(stale, "stale-waiter control did not register")
+        supervisor._release_limit_probe(
+            "org-stale", "n", token=stale[0][2])
+        counts = {"org-a": 0, "org-b": 0, "org-c": 0}
+        for tick in range(9):
+            tick_now = now + tick * (supervisor.PROBE_FLOOR + 1)
+            for claim_slug, claim_nodes in (
+                    ("org-a", ("n1", "n2")), ("org-b", ("n",)),
+                    ("org-c", ("n",))):
+                claims = supervisor._claim_limit_probes(
+                    [(claim_slug, claim_nid, fake, fz_a)
+                     for claim_nid in claim_nodes], tick_now)
+                for owner_slug, owner_nid, token in claims:
+                    counts[owner_slug] += 1
+                    supervisor._release_limit_probe(
+                        owner_slug, owner_nid, token=token)
+        fixture(set(counts.values()) == {3},
+                f"three-org round robin was not fair: {counts}")
+        assert "org-stale" not in supervisor._limit_probes[route_key]["waiters"], (
+            "an org that stopped presenting an eligible node stayed queued")
+        fz_c = {**fz_a, "account": "acct-C"}
+        assert supervisor._claim_limit_probes(
+            [("org-c", "n", fake, fz_c)], now), "distinct account blocked"
+        supervisor._limit_probes.clear()
+        supervisor._limit_probe_last.clear()
+
+        slug2, nid2 = probe_org()
+        n2 = store.load_org(slug2).node(nid2)
+        fz2 = {"limit": True, "schedule_kind": "probe",
+               "provider": "claude", "account": "primary",
+               "resource_pool": "haiku+sonnet+opus"}
+        key2 = supervisor._limit_probe_key(n2, fz2)
+        success_claim = supervisor._claim_limit_probes(
+            [(slug2, nid2, n2, fz2)], now)
+        fixture(success_claim, "success probe not claimed")
+        set_mode("plain")
+        st2 = supervisor.state(slug2, nid2)
+        with supervisor._state_lock:
+            st2["busy"] = True
+        supervisor._run_one_turn(
+            slug2, nid2, "successful capacity observation",
+            probe_token=success_claim[0][2])
+        assert key2 not in supervisor._limit_probes, (
+            "a successful provider turn did not clear failed-probe backoff")
+    check("F2 probes · real scheduler applies consent before claim; a launch "
+          "exception releases active ownership with backoff, and stale turns "
+          "cannot release successor tokens", _claim_lifecycle)
+
+
 _once: list = [None]
 
 
@@ -4693,6 +4945,7 @@ def main() -> None:
     sec_abandoned()           # the terminal bucket, made loud
     sec_limit_alert()         # …and the usage limit, made loud to the MANAGER
     sec_parked_alert()        # …and the two freezes that never wake at all
+    sec_f2_reset_accounting()
 
     print(f"\n{'═' * 70}\n{PASS} checks passed, {len(FAIL)} failed, "
           f"{len(GAPS)} gaps")

@@ -38,6 +38,7 @@ import threading
 import time
 import uuid
 from collections.abc import Callable, Iterable, Mapping
+from functools import wraps
 from typing import Any, Final, cast
 
 from . import (accounts, appsettings, cachecontinuity, clipin, codex_limits,
@@ -4017,6 +4018,18 @@ def _limit_reset_ts(blob: str, allow_fetch: bool = False,
         return None, ""
 
 
+def _claude_recovery_deadline(tier: str, *, subscription: bool,
+                              trusted: bool, blob: str) -> float | None:
+    """Cache-only latest constraint for the served host subscription."""
+    if not subscription or not trusted or limits.is_rate_limit(blob):
+        return None
+    try:
+        return limits.recovery_deadline(
+            tier, limits.cached(), limits.cache_age())
+    except Exception:                                           # noqa: BLE001
+        return None
+
+
 def _fable_lock_ts(blob: str, rts: float | None, rsrc: str,
                    trusted: bool = True,
                    now: float | None = None) -> float | None:
@@ -4094,7 +4107,9 @@ def _refresh_freeze_reset(slug: str, nid: str, blob: str,
                           stamped_ts: float | None,
                           stamped_win: float | None,
                           subscription: bool = True,
-                          trusted: bool = True) -> bool:
+                          trusted: bool = True,
+                          tier: str = "",
+                          stamped_kind: str | None = None) -> bool:
     """Correct a freeze's reset time with a FETCHED readout — the pass that
     runs off the document lock (user report 2026-08-18: the usage endpoint
     routinely takes over a second, and a freeze must not hold the lock, or
@@ -4109,7 +4124,7 @@ def _refresh_freeze_reset(slug: str, nid: str, blob: str,
     stamped. Anything else — the node resumed, a later freeze re-stamped it,
     the user cleared the window or turned the fallback off — means the record
     is no longer ours to move, and the pass does nothing."""
-    ts, src = None, ""
+    billing_ts, billing_src = None, ""
     # a key-billed freeze never consults the readout, so every attempt would
     # return the same prose answer — the retry loop would just sleep
     # REREAD_BACKOFF*(1+2) seconds in a live thread (redteam 2026-08-18)
@@ -4122,14 +4137,28 @@ def _refresh_freeze_reset(slug: str, nid: str, blob: str,
             # one-shot and degraded silently to "stamp from cache")
             time.sleep(REREAD_BACKOFF * attempt)
         try:
-            ts, src = _limit_reset_ts(blob, allow_fetch=True,
-                                      subscription=subscription,
-                                      trusted=trusted)
+            billing_ts, billing_src = _limit_reset_ts(
+                blob, allow_fetch=True, subscription=subscription,
+                trusted=trusted)
         except Exception as e:                                # noqa: BLE001
             print(f"[orgtree] {slug}/{nid}: usage re-read failed: {e}")
-        if ts:
+        if billing_ts:
             break
-    if not ts or (stamped_ts and abs(ts - stamped_ts) <= 60.0):
+    recovery_ts = _claude_recovery_deadline(
+        tier, subscription=subscription, trusted=trusted, blob=blob)
+    ts = recovery_ts or billing_ts
+    src = "usage:constraints" if recovery_ts else billing_src
+    schedule_kind = ("observed-deadline" if recovery_ts or src == "text"
+                     else "probe")
+    freeze_moved = bool(ts and (not stamped_ts
+                        or abs(ts - stamped_ts) > 60.0
+                        or (stamped_kind is not None
+                            and schedule_kind != stamped_kind)))
+    window_target = (_fallback_window_until(billing_ts, trusted=trusted)
+                     if billing_ts and stamped_win is not None else None)
+    window_moved = bool(window_target is not None and stamped_win is not None
+                        and abs(window_target - stamped_win) > 60.0)
+    if not freeze_moved and not window_moved:
         return False
     wrote = False
     with store.DOC_LOCK:
@@ -4140,10 +4169,15 @@ def _refresh_freeze_reset(slug: str, nid: str, blob: str,
         if nid not in o.nodes:
             return False
         fz = o.node(nid).get("frozen")
-        if fz and fz.get("limit") and fz.get("until_ts") == stamped_ts:
+        if (freeze_moved and fz and fz.get("limit")
+                and fz.get("until_ts") == stamped_ts
+                and (stamped_kind is None
+                     or fz.get("schedule_kind") == stamped_kind)):
             fz["until_ts"] = ts
-            fz["until"] = _reset_label(ts)
+            fz["until"] = (("capacity recheck " if schedule_kind == "probe"
+                            else "") + _reset_label(ts))
             fz["reset_src"] = src
+            fz["schedule_kind"] = schedule_kind
             wrote = True
         # ⚠ the window is owned SEPARATELY from the freeze. Resuming the node
         # is the likeliest thing to happen in the second this pass takes, and
@@ -4152,15 +4186,16 @@ def _refresh_freeze_reset(slug: str, nid: str, blob: str,
         if (stamped_win is not None and o.d.get("api_fallback")
                 and float(o.d.get("api_fallback_until") or 0) == stamped_win):
             o.d["api_fallback_until"] = _fallback_window_until(
-                ts, trusted=trusted)
+                billing_ts, trusted=trusted)
             wrote = True
         if not wrote:
             return False
         store.save_org(o)
     # the canonical instant, not `_reset_label`'s token: this is a server log
     # correlated across machines, and nothing localises it
-    print(f"[orgtree] {slug}/{nid}: freeze reset corrected to "
-          f"{localtime.to_iso(ts)} ({src})")
+    if freeze_moved and ts:
+        print(f"[orgtree] {slug}/{nid}: freeze reset corrected to "
+              f"{localtime.to_iso(ts)} ({src}, {schedule_kind})")
     return True
 
 
@@ -4168,13 +4203,15 @@ def _spawn_reset_refresh(slug: str, nid: str, blob: str,
                          stamped_ts: float | None,
                          stamped_win: float | None,
                          subscription: bool = True,
-                         trusted: bool = True) -> None:
+                         trusted: bool = True,
+                         tier: str = "",
+                         stamped_kind: str | None = None) -> None:
     """`_refresh_freeze_reset` on its own thread — the freeze path calls this
     the moment it lets go of the document lock."""
     threading.Thread(
         target=_refresh_freeze_reset, daemon=True,
         args=(slug, nid, blob, stamped_ts, stamped_win, subscription,
-              trusted),
+              trusted, tier, stamped_kind),
         name=f"usage-reset-{slug}-{nid}").start()
 
 
@@ -6361,6 +6398,14 @@ def _carrier_owes_mail(carrier: Any) -> bool:
     message. Named once, here, so the two sites cannot drift apart again.
     Repro: tests/test_stuck_mail_pointer_drop.py D1."""
     return isinstance(carrier, dict) and bool(carrier.get("toks"))
+
+
+def _carrier_limit_probe_token(carrier: Any) -> str | None:
+    """Return the immutable automatic-probe generation riding a carrier."""
+    if not isinstance(carrier, dict):
+        return None
+    token = carrier.get("_limit_probe_token")
+    return str(token) if token else None
 
 
 def _drop_ping(slug: str, nid: str) -> str | dict[str, Any] | None:
@@ -9113,6 +9158,24 @@ def _apply_pending_switch_locked(o2: Org, slug: str, nid: str) -> bool:
     return True
 
 
+def _limit_probe_worker(
+        fn: Callable[[str, str, str | dict[str, Any]], None]
+        ) -> Callable[[str, str, str | dict[str, Any]], None]:
+    """Make the complete worker, including setup, own its probe generation."""
+    @wraps(fn)
+    def worker(slug: str, nid: str, text: str | dict[str, Any]) -> None:
+        probe_token = _carrier_limit_probe_token(text)
+        try:
+            fn(slug, nid, text)
+        finally:
+            # Setup before `_run_one_turn` can fail (cache cancellation,
+            # activity bookkeeping, or the deploy gate). The worker, not the
+            # inner provider body, is therefore the outer ownership boundary.
+            _release_limit_probe(slug, nid, token=probe_token)
+    return worker
+
+
+@_limit_probe_worker
 def _run_turn(slug: str, nid: str, text: str | dict[str, Any]) -> None:
     """Run a turn, then keep running whatever the queue has, until it is empty.
 
@@ -9148,18 +9211,26 @@ def _run_turn(slug: str, nid: str, text: str | dict[str, Any]) -> None:
     _hold_for_deploy(slug, nid)
     nxt: str | dict[str, Any] | None = text
     while nxt is not None:
+        carrier_probe_token = _carrier_limit_probe_token(nxt)
         # DO NOT WAKE AT ALL, rather than wake quietly: a mail pointer whose
         # box is already empty is dropped BEFORE the CLI is launched, so it
         # costs nothing. Checked here — outside `_run_one_turn` — on purpose:
         # the turn body is one long try whose `finally` owns the queue handoff,
         # and an early return from inside it would report None to this loop
         # while that finally had already popped the next carrier, stranding it.
-        if _carrier_is_ping(nxt) and not _carrier_owes_mail(nxt) \
-                and not _has_deliverable(slug, nid):
-            _phantom_log(slug, nid, "turn start")
-            nxt = _drop_ping(slug, nid)
-            continue
-        nxt = _run_one_turn(slug, nid, nxt)
+        try:
+            if _carrier_is_ping(nxt) and not _carrier_owes_mail(nxt) \
+                    and not _has_deliverable(slug, nid):
+                _phantom_log(slug, nid, "turn start")
+                nxt = _drop_ping(slug, nid)
+                continue
+            nxt = _run_one_turn(slug, nid, nxt,
+                                probe_token=carrier_probe_token)
+        finally:
+            # A queued carrier is not owned by the worker's first-carrier
+            # decorator. Cover its drop and every exception before or inside
+            # `_run_one_turn`; an inner success has already removed the token.
+            _release_limit_probe(slug, nid, token=carrier_probe_token)
 
 
 def spend_unrun_pardon(slug: str, nid: str, sid: str | None) -> bool:
@@ -9287,10 +9358,16 @@ class _ProviderTurnFailed(RuntimeError):
     log for every routine usage limit."""
 
     def __init__(self, message: str, blob: str = "",
-                 reset_ts: float | None = None) -> None:
+                 reset_ts: float | None = None, *,
+                 schedule_kind: str = "probe", provider: str = "",
+                 account: str = "", resource_pool: str = "") -> None:
         super().__init__(message)
         self.blob = blob or message
         self.reset_ts = reset_ts
+        self.schedule_kind = schedule_kind
+        self.provider = provider
+        self.account = account
+        self.resource_pool = resource_pool
 
 
 def _iso_ts(t: float) -> str:
@@ -10079,16 +10156,17 @@ def _codex_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
         except _CodexRouteRejected as rj2:
             _note(rj2, retrying=False)
             board = codex_limits.snapshot()
-            limits = [w for w in (board.get("limits") or [])
-                      if isinstance(w, dict)]
-            wake = codex_route.node_wake_epoch(limits, None)
+            wake, _kind = codex_route.failure_schedule(
+                rj2.route, board, None, str(rj2.route.get("pool") or ""))
             raise _ProviderTurnFailed(
                 "turn failed: both Luna routes refused the request — "
                 f"reserve ({rj.cls['why']}); direct ({rj2.cls['why']})"
                 if rj.route["route"] == "reserve" else
                 "turn failed: both Luna routes refused the request — "
                 f"direct ({rj.cls['why']}); reserve ({rj2.cls['why']})",
-                blob=rj2.blob, reset_ts=wake) from rj2
+                blob=rj2.blob, reset_ts=wake, schedule_kind="probe",
+                provider="openai", account=str(rj2.route.get("account") or ""),
+                resource_pool="reserve+plan") from rj2
 
 
 def _codex_leg_attempt(slug: str, nid: str, org: Org, st: dict[str, Any],
@@ -11498,22 +11576,9 @@ def _codex_leg_attempt(slug: str, nid: str, org: Org, st: dict[str, Any],
         # rejection's wall is already on the shared board, attributed to
         # the pool that served), then the ordinary path
         _codex_route_persist(slug, nid, _frec)
-        if tier == codex_route.ROUTED_TIER:
-            # a routed node's wall is timed per POOL: the latest exhausted
-            # reset of the pool it was on, not the soonest window anywhere
-            # on the board (audit F2). None when unknown → the caller's
-            # probe floor, honestly short. With no known served pool the
-            # turn's own snapshots describe no pool this code can name.
-            _limits = [w for w in (codex_limits.snapshot().get("limits") or [])
-                       if isinstance(w, dict)]
-            _reset = codex_route.node_wake_epoch(
-                _limits,
-                res_raw.get("rate_limit_snapshots") if _served is not None
-                else None,
-                sent_pool=_served)
-        else:
-            _reset = codexrun.limit_reset_epoch(
-                res_raw.get("rate_limit_snapshots"))
+        _board = codex_limits.snapshot()
+        _reset, _schedule_kind = codex_route.failure_schedule(
+            route, _board, res_raw.get("rate_limit_snapshots"), _served)
         raise _ProviderTurnFailed(
             "turn failed: " + (detail or "the codex app-server reported a "
                                "failed turn")
@@ -11521,7 +11586,10 @@ def _codex_leg_attempt(slug: str, nid: str, org: Org, st: dict[str, Any],
             + (f" [{route['route']} route: {fcls['why']}]"
                if fcls["kind"] == codex_route.KIND_USAGE_LIMIT
                and fcls["why"] else ""),
-            blob=blob, reset_ts=_reset)
+            blob=blob, reset_ts=_reset, schedule_kind=_schedule_kind,
+            provider="openai", account=str(route.get("account") or ""),
+            resource_pool=("reserve+plan" if tier == codex_route.ROUTED_TIER
+                           else str(_served or route.get("pool") or "")))
     # "interrupted" is a COMPLETED turn (C.3) — same as claude's ⏸
     tu = res_raw.get("token_usage")
     # The item lifecycle already journaled the conversation in real time.
@@ -12164,7 +12232,10 @@ def _antigravity_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
             "turn failed: the Antigravity CLI reported an error"
             + (f" — {detail}" if detail else "")
             + (f" — {tail}" if tail else ""),
-            blob=blob, reset_ts=reset_ts)
+            blob=blob, reset_ts=reset_ts,
+            schedule_kind=("observed-deadline" if reset_ts else "probe"),
+            provider="google", account=antigravity_limits.ACCOUNT,
+            resource_pool=tier)
     if status == antigravityrun.STATUS_COMPLETED:
         # D-209's standing fold, this lane's shape: the wire carries no
         # window telemetry, so a completed turn IS the observation — the
@@ -12237,8 +12308,18 @@ def _antigravity_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
     return res, providers.antigravity_occupancy(tu)
 
 
+def _turn_observed_success(res: dict[str, Any], st: dict[str, Any]) -> bool:
+    """Did a provider turn finish successfully enough to prove admission?"""
+    return (
+        not res.get("is_error") and not st.get("interrupted")
+        and str(res.get("status") or "").lower() not in (
+            "failed", "error", "interrupted", "cancelled", "aborted"))
+
+
 def _run_one_turn(slug: str, nid: str,
-                  text: str | dict[str, Any]) -> str | dict[str, Any] | None:
+                  text: str | dict[str, Any], *,
+                  probe_token: str | None = None
+                  ) -> str | dict[str, Any] | None:
     """One turn. Returns the next queued item for the caller to run, or None
     when the node went idle (`busy` is cleared here in that case, under the
     same lock that a concurrent `send_message` takes — so there is no window
@@ -12613,8 +12694,13 @@ def _run_one_turn(slug: str, nid: str,
                 st["turns_run"] += 1
                 st["account_switches"] = 0
                 paid_booked = True     # _after_turn books `res`'s cost itself
+                probe_success = _turn_observed_success(res, st)
                 _after_turn(slug, nid, org, res, st, codex_occ, on_key=False,
                             cache_attempt=cache_attempt)
+                if probe_success and probe_token:
+                    if _release_limit_probe(slug, nid, success=True,
+                                            token=probe_token):
+                        probe_token = None
                 raise _CodexTurnDone
             if _turn_tier in providers.ANTIGRAVITY_TIERS:
                 # the same seam one provider over (D-186): identical tail,
@@ -12625,8 +12711,13 @@ def _run_one_turn(slug: str, nid: str,
                 st["turns_run"] += 1
                 st["account_switches"] = 0
                 paid_booked = True     # _after_turn books `res`'s cost itself
+                probe_success = _turn_observed_success(res, st)
                 _after_turn(slug, nid, org, res, st, agy_occ, on_key=False,
                             cache_attempt=cache_attempt)
+                if probe_success and probe_token:
+                    if _release_limit_probe(slug, nid, success=True,
+                                            token=probe_token):
+                        probe_token = None
                 raise _AntigravityTurnDone
             sandbox_name = None
             if sbx.is_sandboxed(org):
@@ -13691,6 +13782,9 @@ def _run_one_turn(slug: str, nid: str,
                                 st["responding"] = True
                                 st["boundary_at"] = time.time()  # D-236
                                 st["boundary_polls"] = 0
+                            nprobe_token = _carrier_limit_probe_token(nxt)
+                            if nprobe_token:
+                                probe_token = nprobe_token
                             nping = _carrier_is_ping(nxt)
                             ntoks, nimgs, ncmd, nusage_org = [], [], False, None
                             nview = ""
@@ -13724,6 +13818,10 @@ def _run_one_turn(slug: str, nid: str,
                                     # suite catching real delivery loss, not a
                                     # fixture quirk.
                                     _phantom_log(slug, nid, "result boundary")
+                                    _release_limit_probe(
+                                        slug, nid, token=nprobe_token)
+                                    if nprobe_token == probe_token:
+                                        probe_token = None
                                     with _state_lock:
                                         st["responding"] = False
                                         # …and the store folds in the SAME
@@ -14159,13 +14257,18 @@ def _run_one_turn(slug: str, nid: str,
                         # (redteam 2026-08-18) in a new costume. Nothing
                         # parseable ⇒ the 5-minute probe floor, honestly
                         # short so capacity is re-asked soon.
+                        _sub_for_mark = subscription_lane(
+                            billed_key, str(st.get("ran_as") or ""))
                         _rts, _ = _limit_reset_ts(
                             err_blob,
-                            subscription=(_served == accounts.PRIMARY
-                                          and not billed_key),
+                            subscription=_sub_for_mark,
                             trusted=_trusted)
+                        _recovery = _claude_recovery_deadline(
+                            _tier, subscription=_sub_for_mark,
+                            trusted=_trusted, blob=err_blob)
                         accounts.record_limit(
-                            _served, _tier, _rts or time.time() + PROBE_FLOOR)
+                            _served, _tier,
+                            _recovery or _rts or time.time() + PROBE_FLOOR)
                         _nxt = accounts.resolve(_tier)
                         # the answer the resolver gave AT FREEZE TIME, kept
                         # for the record below (D-156). False here means
@@ -14211,6 +14314,9 @@ def _run_one_turn(slug: str, nid: str,
                     # kept so the org-wide ▶ resume replays it verbatim
                     _stamped_ts: float | None = None
                     _stamped_win: float | None = None
+                    _stamped_kind: str | None = None
+                    _billing_ts: float | None = None
+                    _billing_src = ""
                     _billed_key = False
                     # ⚠ ONE call, TWO consumers — the stamp below and the
                     # off-lock correction pass at the end of this block.
@@ -14302,9 +14408,33 @@ def _run_one_turn(slug: str, nid: str,
                             # served this turn — a key row's wall is another
                             # account's quota (machine-local routing,
                             # 2026-08-25)
-                            _rts, _rsrc = _limit_reset_ts(
+                            _billing_ts, _billing_src = _limit_reset_ts(
                                 err_blob, subscription=_sub_lane,
                                 trusted=_trusted_blob)
+                            _recovery_ts = _claude_recovery_deadline(
+                                str(o2.node(nid).get("model") or ""),
+                                subscription=_sub_lane,
+                                trusted=_trusted_blob, blob=err_blob)
+                            _rts = _recovery_ts or _billing_ts
+                            _rsrc = ("usage:constraints" if _recovery_ts
+                                     else _billing_src)
+                            fz["schedule_kind"] = (
+                                "observed-deadline" if _recovery_ts
+                                or _billing_src == "text" else "probe")
+                            _freeze_tier = str(o2.node(nid).get("model") or "")
+                            _freeze_provider = providers.provider_of(_freeze_tier)
+                            fz["provider"] = _freeze_provider
+                            if _freeze_provider == openrouter.PROVIDER_ID:
+                                fz["account"] = _cache_openrouter_namespace(env)[0]
+                                fz["resource_pool"] = _freeze_tier
+                            else:
+                                fz["account"] = (
+                                    accounts.PRIMARY if _sub_lane else
+                                    str(st.get("ran_as") or ""))
+                                fz["resource_pool"] = (
+                                    accounts.FABLE
+                                    if _freeze_tier == accounts.FABLE else
+                                    "+".join(accounts.POOLED))
                             # an INHERITED timestamp (a re-freeze on a node
                             # whose old record survived) is the one number
                             # here that no band has seen — keep it only while
@@ -14326,6 +14456,10 @@ def _run_one_turn(slug: str, nid: str,
                                 # re-tags the record if it does not:
                                 # _reset_label's docstring)
                                 fz["until"] = _reset_label(_uts)
+                            if (_uts and fz.get("schedule_kind") == "probe"
+                                    and fz.get("reset_src") != "text"):
+                                fz["until"] = (
+                                    "capacity recheck " + _reset_label(_uts))
                             if not fz.get("until_ts"):
                                 # no reset marker at all (rate-limit-class
                                 # text): a transient limit must not need a
@@ -14339,6 +14473,7 @@ def _run_one_turn(slug: str, nid: str,
                                                "in ~5 min")
                                 fz["reset_src"] = "probe"
                             _stamped_ts = fz.get("until_ts")
+                            _stamped_kind = str(fz.get("schedule_kind") or "")
                             # the untrusted RUN counter, mirroring the
                             # connection kind's `net_fail_run` (a completed
                             # turn clears it, so it counts CONSECUTIVE
@@ -14479,7 +14614,8 @@ def _run_one_turn(slug: str, nid: str,
                                 o2.fable_limit_hit(
                                     nid, err_blob,
                                     until_ts=_fable_lock_ts(
-                                        err_blob, _rts, _rsrc, _trusted_blob))
+                                        err_blob, _billing_ts, _billing_src,
+                                        _trusted_blob))
                             # api_fallback (user feature 2026-08-17): the org
                             # holds a key for exactly this moment — open the
                             # window so the resume timer wakes the node on its
@@ -14564,7 +14700,8 @@ def _run_one_turn(slug: str, nid: str,
                                 # wall it just hit (redteam 2026-08-18)
                                 fz["on_fallback"] = on_fallback_key
                                 _stamped_win = _fallback_window_until(
-                                    fz.get("until_ts"), trusted=_trusted_blob)
+                                    _billing_ts or fz.get("until_ts"),
+                                    trusted=_trusted_blob)
                                 o2.d["api_fallback_until"] = _stamped_win
                                 o2.d["api_fallback_since"] = time.time()
                             store.save_org(o2)
@@ -14594,7 +14731,8 @@ def _run_one_turn(slug: str, nid: str,
                         # back off-lock. Pass the shared name, never a copy.
                         _spawn_reset_refresh(slug, nid, err_blob,
                                              _stamped_ts, _stamped_win,
-                                             _sub_lane, _trusted_blob)
+                                             _sub_lane, _trusted_blob,
+                                             _tier, _stamped_kind)
                     notify(slug, nid, "frozen")
                     # ⚠ …and `notify` is an SSE EVENT, not a message. It paints
                     # a badge on a canvas nobody is necessarily looking at,
@@ -14874,9 +15012,14 @@ def _run_one_turn(slug: str, nid: str,
             if last_cache_usage:
                 res["_cache_usage"] = last_cache_usage
             paid_booked = True     # _after_turn books `res`'s cost itself
+            probe_success = _turn_observed_success(res, st)
             _after_turn(slug, nid, org, res, st, turn_occ,
                         on_key=on_fallback_key,
                         cache_attempt=cache_attempt)
+            if probe_success and probe_token:
+                if _release_limit_probe(slug, nid, success=True,
+                                        token=probe_token):
+                    probe_token = None
     except _CodexTurnDone:
         pass    # the codex leg booked its turn; only the shared finally runs
     except _AntigravityTurnDone:
@@ -14918,7 +15061,10 @@ def _run_one_turn(slug: str, nid: str,
                 and _looks_like_usage_limit(e.blob):
             freeze_provider_limit(slug, nid, e.blob, e.reset_ts,
                                   replay=None if is_cmd else text,
-                                  replay_view=turn_view)
+                                  replay_view=turn_view,
+                                  schedule_kind=e.schedule_kind,
+                                  provider=e.provider, account=e.account,
+                                  resource_pool=e.resource_pool)
         # …and the traceback to the backend log, but ONLY for a raiser the turn
         # machinery does not already explain. Every expected failure arrives as
         # a RuntimeError this function itself raised with a written message
@@ -15032,6 +15178,7 @@ def _run_one_turn(slug: str, nid: str,
         # killed it, outran a prompt change), the keeper re-checks NOW —
         # "respawn the instant the turn completes", not at the next poll
         warmpool.poke()
+        _release_limit_probe(slug, nid, token=probe_token)
     return follow
 
 
@@ -16091,10 +16238,7 @@ def _after_turn(slug: str, nid: str, org: Org, res: dict[str, Any],
         # Preserve every other provider's established parsing contract. The
         # strict validation above belongs only to OpenRouter precedence.
         cost = float(res.get("total_cost_usd") or 0.0)
-    mcp_success = (
-        not res.get("is_error") and not st.get("interrupted")
-        and str(res.get("status") or "").lower() not in (
-            "failed", "error", "interrupted", "cancelled", "aborted"))
+    mcp_success = _turn_observed_success(res, st)
     mcp_value = res.get("_mcp_tool_count")
     mcp_snapshot = (int(mcp_value)
                     if isinstance(mcp_value, int)
@@ -18155,7 +18299,10 @@ def _provider_limit_until(blob: str, reset_ts: float | None,
 def freeze_provider_limit(slug: str, nid: str, blob: str,
                           reset_ts: float | None = None,
                           replay: str | None = None,
-                          replay_view: str = "") -> bool:
+                          replay_view: str = "", *,
+                          schedule_kind: str = "probe",
+                          provider: str = "", account: str = "",
+                          resource_pool: str = "") -> bool:
     """A codex/antigravity turn hit a usage limit: park the agent the way the claude
     lane parks one (D-209). Returns True if a freeze was written.
 
@@ -18190,6 +18337,9 @@ def freeze_provider_limit(slug: str, nid: str, blob: str,
     freeze, after which ▶ skips the node for good. `limit = True` and a label
     derived from the timestamp are what keep the record out of it."""
     ts, src = _provider_limit_until(blob, reset_ts)
+    effective_kind = (schedule_kind if src == "provider" and
+                      schedule_kind in ("probe", "observed-deadline")
+                      else "observed-deadline" if src == "text" else "probe")
     tier = ""
     try:
         with store.DOC_LOCK:
@@ -18208,9 +18358,15 @@ def freeze_provider_limit(slug: str, nid: str, blob: str,
             fz.pop("pool", None)       # this freeze never asked a resolver
             fz.pop("on_fallback", None)  # no key lane serves these providers
             fz["until_ts"] = ts
-            fz["until"] = (_reset_label(ts) if src != "probe"
-                           else "unknown — probing again in ~5 min")
+            fz["until"] = (
+                "unknown — probing again in ~5 min" if src == "probe" else
+                "capacity recheck " + _reset_label(ts)
+                if effective_kind == "probe" else _reset_label(ts))
             fz["reset_src"] = src
+            fz["schedule_kind"] = effective_kind
+            fz["provider"] = provider or providers.provider_of(tier)
+            fz["account"] = account
+            fz["resource_pool"] = resource_pool
             fz["error"] = blob[:300]
             if replay:
                 # replay only what the provider actually CONSUMED. Both legs
@@ -18938,6 +19094,12 @@ def resume_frozen(slug: str, only: Iterable[str] | None = None,
             except (TypeError, ValueError):
                 pass
         with _state_lock:
+            probe_token = str(st.get("limit_probe_token") or "") or None
+            if probe_token:
+                # The generation belongs to this replay, not permanently to
+                # the mutable node runtime. It may wait behind an existing
+                # worker, so carry it through that queue boundary explicitly.
+                carriers[0]["_limit_probe_token"] = probe_token
             origin = st.pop("limit_cache_origin", None)
             if limit_resume and claude_resume:
                 origin = origin if isinstance(origin, dict) else {}
@@ -19069,6 +19231,133 @@ def interorg_send(src_slug: str, dst_slug: str, body: str) -> str | None:
 
 
 _auto_resume_started = False
+
+# Machine-wide automatic probe ownership.  The lock protects only this small
+# in-memory table; no document, provider or UI work runs beneath it.  Restart
+# intentionally clears the table and therefore permits one fresh probe.
+_limit_probe_lock = threading.Lock()
+_limit_probes: dict[tuple[str, str, str], dict[str, Any]] = {}
+_limit_probe_last: dict[tuple[str, str, str], tuple[str, str]] = {}
+_LIMIT_PROBE_WAITER_TTL = PROBE_FLOOR + 60.0
+
+
+def _limit_probe_key(n: NodeDoc, fz: FrozenInfo) -> tuple[str, str, str]:
+    tier = str(n.get("model") or "")
+    provider = str(fz.get("provider") or providers.provider_of(tier) or
+                   "unknown-provider")
+    # A missing legacy account is ONE conservative namespace, not an invented
+    # per-node identity that would allow simultaneous probes of the same wall.
+    account = str(fz.get("account") or "unknown-account")
+    pool = str(fz.get("resource_pool") or "")
+    if not pool:
+        if provider == "claude":
+            pool = (accounts.FABLE if tier == accounts.FABLE
+                    else "+".join(accounts.POOLED))
+        elif provider == "openai":
+            pool = (codex_route.RESERVE_POOL
+                    if tier == codex_route.RESERVE_MODEL
+                    else codex_route.PLAN_POOL)
+        else:
+            pool = tier or "unknown-pool"
+    return provider, account, pool
+
+
+def _claim_limit_probes(candidates: list[tuple[str, str, NodeDoc, FrozenInfo]],
+                        now: float | None = None
+                        ) -> list[tuple[str, str, str]]:
+    """Claim at most one due automatic probe per serving namespace."""
+    now = time.time() if now is None else now
+    grouped: dict[tuple[str, str, str], list[tuple[str, str]]] = {}
+    for slug, nid, node, fz in candidates:
+        grouped.setdefault(_limit_probe_key(node, fz), []).append((slug, nid))
+    claimed: list[tuple[str, str, str]] = []
+    token_keys: dict[str, tuple[str, str, str]] = {}
+    with _limit_probe_lock:
+        for key in sorted(grouped):
+            old = _limit_probes.setdefault(key, {
+                "token": None, "owner": None, "not_before": 0.0,
+                "expires": 0.0, "waiters": {}})
+            waiters = old.setdefault("waiters", {})
+            for slug, _nid in grouped[key]:
+                waiters[slug] = now
+            for waiting_slug, seen_at in list(waiters.items()):
+                if now - float(seen_at) > _LIMIT_PROBE_WAITER_TTL:
+                    waiters.pop(waiting_slug, None)
+            if (old and old.get("token")
+                    and now < float(old.get("expires") or 0)):
+                continue
+            if old and now < float(old.get("not_before") or 0):
+                continue
+            choices = sorted(grouped[key])
+            last = _limit_probe_last.get(key)
+            # Calls arrive in deterministic org order. Remember recently due
+            # orgs and advance a real round-robin cursor across that set; a
+            # skip-last rule alternates A's two nodes and can starve B/C.
+            waiting_orgs = sorted(waiters)
+            if last is None or last[0] not in waiting_orgs:
+                wanted_org = waiting_orgs[0]
+            else:
+                pos = waiting_orgs.index(last[0])
+                wanted_org = waiting_orgs[(pos + 1) % len(waiting_orgs)]
+            current = [value for value in choices
+                       if value[0] == wanted_org]
+            if not current:
+                continue
+            pick = next((value for value in current if value != last),
+                        current[0])
+            token = uuid.uuid4().hex
+            _limit_probes[key] = {
+                "token": token, "owner": pick,
+                "not_before": now + PROBE_FLOOR,
+                "expires": now + TURN_TIMEOUT + PROBE_FLOOR,
+                "waiters": waiters,
+            }
+            _limit_probe_last[key] = pick
+            token_keys[token] = key
+            claimed.append((*pick, token))
+    for slug, nid, token in claimed:
+        st = state(slug, nid)
+        with _state_lock:
+            st["limit_probe_token"] = token
+            st["limit_probe_key"] = token_keys[token]
+    return claimed
+
+
+def _release_limit_probe(slug: str, nid: str, *, success: bool = False,
+                         token: str | None = None) -> bool:
+    """Release this exact probe generation; stale turns cannot release heirs."""
+    # None means this worker/carrier owns no probe. Never reinterpret absence
+    # by reading mutable node state: a new claim can appear while an ordinary
+    # older worker is unwinding.
+    if token is None:
+        return False
+    st = state(slug, nid)
+    with _state_lock:
+        owned_token = str(st.get("limit_probe_token") or "")
+        if token == owned_token:
+            st.pop("limit_probe_token", None)
+            st.pop("limit_probe_key", None)
+    if not token:
+        return False
+    with _limit_probe_lock:
+        # Resolve the generation by its immutable token. The runtime's key is
+        # mutable and may already describe a successor by the time a stale
+        # worker unwinds; consulting it here recreates the very ABA race the
+        # token is meant to prevent.
+        match = next(((key, lease) for key, lease in _limit_probes.items()
+                      if lease.get("token") == token
+                      and lease.get("owner") == (slug, nid)), None)
+        if match is None:
+            return False
+        key, lease = match
+        if success:
+            _limit_probes.pop(key, None)
+            _limit_probe_last.pop(key, None)
+        else:
+            lease["token"] = None
+            lease["owner"] = None
+            lease["expires"] = 0.0
+        return True
 
 
 def auto_resume_ready(org: Org, now: float | None = None) -> set[str]:
@@ -19251,72 +19540,62 @@ def start_auto_resume_loop() -> None:
             time.sleep(30)
             try:
                 for o in store.list_orgs():
-                    slug = o["slug"]
-                    with store.DOC_LOCK:
-                        org = store.load_org(slug)
-                        if org.d.get("spend_frozen"):
-                            continue
-                        # (a timed fable_lock needs no entry here any more: the
-                        # nodes it holds read as limit_locked, so they are not
-                        # ready until the ledger's load hook releases the lock,
-                        # and then they wake on their own until_ts. FABLE-2 put
-                        # the lock in the old org-wide max() to schedule a wake
-                        # for it; a 30-second tick already provides that.)
-                        ready = auto_resume_ready(org)
-                        if not org.d.get("auto_resume"):
-                            # D-122 (user ruling 2026-08-14): a network
-                            # interruption ALWAYS retries itself, toggle or no
-                            # toggle. auto_resume governs the freezes where
-                            # restarting spends against a limit — that one is
-                            # opt-in; a connection drop interrupted work the
-                            # user had already set in motion, and waking from
-                            # it restores their intent rather than overriding
-                            # it. Only PURE connection records pass: one that
-                            # also carries `limit` waits for the toggle like
-                            # any other limit freeze.
-                            fb = api_fallback_active(org)
-                            ready = {nid for nid in ready
-                                     if (fz := _resumable(org.node(nid)))
-                                     is not None
-                                     and ((fz.get("connection")
-                                           and not fz.get("limit"))
-                                          # api_fallback is its own consent:
-                                          # the option was turned on exactly
-                                          # so limits do not park the org
-                                          or (fb and fz.get("limit")
-                                              and not fz.get("on_fallback")))}
-                            # ⚠ AND THE ACCOUNT LANE IS NOT HERE, DELIBERATELY
-                            # (D-156). `auto_resume_ready` will now offer a
-                            # node whose account pool has capacity again, and
-                            # with the toggle OFF this filter drops it — so
-                            # for a default-configured org (the toggle ships
-                            # off; api.py forces it on only for headless) the
-                            # pool-readiness path changes NOTHING VISIBLE.
-                            # That is stated rather than quietly true: whether
-                            # configuring a second account is itself consent
-                            # to wake a parked node — the claim api_fallback
-                            # makes for itself two lines up — is the user's
-                            # call, not ours, and it is with them. If the
-                            # answer is yes this becomes one more clause here
-                            # and nothing else moves.
-                    if not ready:
-                        continue
-                    with store.DOC_LOCK:
-                        org = store.load_org(slug)
-                        org.d["auto_resume_last"] = time.time()
-                        store.save_org(org)
-                        arc = bool(org.d.get("auto_resume_compact"))
-                    try:
-                        # auto_resume_compact (2026-08-17): the timer's wakes
-                        # cheap-compact limit-frozen nodes first — connection
-                        # records pass through untouched (guarded inside)
-                        resume_frozen(slug, only=ready, cheap_first=arc)
-                    except RuntimeError:
-                        pass
+                    _auto_resume_org(str(o["slug"]))
             except Exception:
                 pass    # the timer must survive anything — next tick retries
 
     threading.Thread(target=loop, daemon=True).start()
+
+
+def _auto_resume_org(slug: str, now: float | None = None) -> bool:
+    """Run one org's real consent -> claim -> resume scheduler path."""
+    now = time.time() if now is None else now
+    with store.DOC_LOCK:
+        org = store.load_org(slug)
+        if org.d.get("spend_frozen"):
+            return True
+        ready = auto_resume_ready(org, now)
+        if not org.d.get("auto_resume"):
+            fb = api_fallback_active(org)
+            ready = {nid for nid in ready
+                     if (fz := _resumable(org.node(nid))) is not None
+                     and ((fz.get("connection") and not fz.get("limit"))
+                          or (fb and fz.get("limit")
+                              and not fz.get("on_fallback")))}
+        arc = bool(org.d.get("auto_resume_compact"))
+        probe: list[tuple[str, str, NodeDoc, FrozenInfo]] = []
+        direct: set[str] = set()
+        for nid in ready:
+            fz = _resumable(org.node(nid))
+            if fz is None:
+                continue
+            schedule = str(fz.get("schedule_kind") or
+                           fz.get("reset_src") or "")
+            if fz.get("limit") and schedule == "probe":
+                probe.append((slug, nid, org.node(nid), fz))
+            else:
+                direct.add(nid)
+    resumed: list[str] = []
+    try:
+        if direct:
+            resumed.extend(resume_frozen(slug, only=direct, cheap_first=arc))
+    except RuntimeError:
+        pass
+    for _slug, nid, token in _claim_limit_probes(probe, now):
+        try:
+            got = resume_frozen(slug, only={nid}, cheap_first=arc)
+            if nid in got:
+                resumed.append(nid)
+            else:
+                _release_limit_probe(slug, nid, token=token)
+        except Exception:                                      # noqa: BLE001
+            _release_limit_probe(slug, nid, token=token)
+    if resumed:
+        with store.DOC_LOCK:
+            org = store.load_org(slug)
+            org.d["auto_resume_last"] = now
+            store.save_org(org)
+    return True
 
 
 _self_restart_at = [0.0]       # machine-wide one-at-a-time guard

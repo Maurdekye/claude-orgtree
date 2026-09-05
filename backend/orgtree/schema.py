@@ -130,6 +130,15 @@ class FrozenInfo(TypedDict, total=False):
     # live 2026-08-04 by the turn-lifecycle suite. Setting this flag takes the
     # retag's `not any(v is True …)` guard out of the picture by construction.
     limit: bool
+    # Non-secret serving namespace captured by the failed turn.  These fields
+    # keep automatic probes scoped to one provider account and resource pool;
+    # old records omit them and are grouped conservatively as unknown.
+    provider: str
+    account: str
+    resource_pool: str
+    # `observed-deadline` is the latest observed active constraint, not a
+    # promise of capacity. `probe` is explicitly only a time to re-check.
+    schedule_kind: str
     # where `until_ts` came from (user ruling 2026-08-18): "text" (parsed out
     # of the CLI's error prose), "usage:<lane>" (looked up in the account's
     # own usage readout — see limits.reset_for), "probe" (nothing could

@@ -455,6 +455,32 @@ def main() -> int:
     check("§3 node_wake_epoch: min over pools of (max over that pool's "
           "exhausted resets), never the board's soonest window", t_wake)
 
+    def t_failure_schedule():
+        board = {"available": True, "account": "acct-A", "age": 0.0,
+                 "stale": False,
+                 "limits": [W(None, 100, ISO(NOW + 1000)),
+                            W(None, 100, ISO(NOW + 7000)),
+                            W(R, 100, ISO(NOW + 3000))]}
+        direct = codex_route.direct_route(
+            "terra", "gpt-5.6-terra", "acct-A", reason="test",
+            evidence="synthetic")
+        eq(codex_route.failure_schedule(direct, board, None, PLAN, now=NOW),
+           (NOW + 7000, "observed-deadline"),
+           "single pool waits for every exhausted constraint")
+        luna = codex_route._route_for(  # pyright: ignore[reportPrivateUsage]
+            "luna", RES, "acct-A", reason="test", evidence="synthetic")
+        eq(codex_route.failure_schedule(luna, board, None, RES, now=NOW),
+           (NOW + 3000, "probe"),
+           "earlier alternative-pool reset is only a probe")
+        foreign = {**board, "account": "acct-B"}
+        eq(codex_route.failure_schedule(direct, foreign, None, PLAN, now=NOW),
+           (None, "probe"), "another account's board is not recovery")
+        eq(codex_route.failure_schedule(direct, board, None, None, now=NOW),
+           (None, "probe"), "unknown served pool is not attributed")
+    check("§3 F2 failure schedule: one pool uses its latest constraint; Luna's "
+          "alternative is a probe; cross-account/unknown evidence fails closed",
+          t_failure_schedule)
+
     # ───────────────────────────────────────────────────────────────────────
     print("§4 the failure classifier — what may be re-sent")
 

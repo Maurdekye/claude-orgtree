@@ -33,11 +33,13 @@ import datetime as _dt
 import email.utils as _eut
 import http.client
 import json
+import math
 import re
 import threading
 import time
 import urllib.error
 import urllib.request
+from collections.abc import Mapping
 from typing import Any, cast
 
 from . import subproxy
@@ -729,6 +731,56 @@ def _candidate(lim: dict[str, Any], now: float) -> float | None:
             str(lim.get("kind") or "")):
         return None
     return ts
+
+
+def recovery_deadline(tier: str, data: Mapping[str, Any] | None,
+                      evidence_age: float | None, *,
+                      now: float | None = None) -> float | None:
+    """Latest active HOST-subscription constraint applicable to ``tier``.
+
+    This is deliberately separate from :func:`reset_for`.  ``reset_for`` is
+    the short, conservative key-billing bound; this answer is the first time
+    every observed active constraint could have cleared.  It is cache-only
+    and fail-closed: an absent, stale or malformed applicable reset is not
+    evidence of recovery.
+
+    Haiku/Sonnet/Opus share ``session`` + ``weekly_all`` and their matching
+    scoped lane.  Fable has its own ``session`` + Fable-scoped pool; the
+    unrelated all-model weekly lane must not park it.  This is only a latest
+    observed deadline, never a promise that capacity will exist then.
+    """
+    now = time.time() if now is None else now
+    if tier not in (*("haiku", "sonnet", "opus"), "fable"):
+        return None
+    if (not isinstance(data, Mapping) or not data.get("available")
+            or not isinstance(evidence_age, (int, float))
+            or isinstance(evidence_age, bool)
+            or not math.isfinite(float(evidence_age))
+            or evidence_age < 0 or evidence_age > MAX_EVIDENCE_AGE):
+        return None
+    raw = data.get("limits")
+    if not isinstance(raw, list):
+        return None
+    applicable: list[dict[str, Any]] = []
+    for value in raw:
+        if not isinstance(value, dict) or not bool(value.get("is_active")):
+            continue
+        kind = str(value.get("kind") or "")
+        model = str(value.get("model") or "").lower()
+        if kind == "session":
+            applicable.append(value)
+        elif tier == "fable":
+            if kind == "weekly_scoped" and "fable" in model:
+                applicable.append(value)
+        elif kind == "weekly_all" or (
+                kind == "weekly_scoped" and tier in model):
+            applicable.append(value)
+    if not applicable:
+        return None
+    resets = [_candidate(value, now) for value in applicable]
+    if any(value is None for value in resets):
+        return None
+    return max(cast("list[float]", resets))
 
 
 def reset_for(blob: str, now: float | None = None,
