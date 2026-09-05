@@ -347,7 +347,11 @@ class Window(TypedDict):
     the wall at the far end belongs to the same limit as the reset at the near
     end. `boundary` says how much of that is actually known.
     """
-    limit: str                 # the metric the CLI named ON THE CLOSING WALL
+    # the metric the CLI named ON THE CLOSING WALL, EMPTY when it named
+    # none. ⚠ No default here: a filled-in metric would manufacture agreement
+    # at a boundary out of a fallback. The reading fallback lives in
+    # `estimate`, where it is displayed and never compared.
+    limit: str
     tier: str
     started_at: float | None   # when the interval opened, if we can tell
     start_kind: str            # how we know: "reset" | "boot" | "unknown"
@@ -466,7 +470,9 @@ def windows(events: list[dict[str, Any]] | None = None) -> list[Window]:
         resets = _number(row.get("resets_at"))
         closing = {"account_ns": account,
                    "tier": str(row.get("tier") or ""),
-                   "limit": str(row.get("label") or "individual quota")}
+                   # ⚠ EMPTY WHEN UNRECORDED. Defaulting it here would let two
+                   # rows that never named a metric read as agreeing on one.
+                   "limit": str(row.get("label") or "")}
         # ⚠ ONLY A RESET IS A DEFENSIBLE NEAR END. A boot marks when orgtree
         # began WATCHING and can fall anywhere inside a window already
         # running, so timing from it measures a fraction and reports it as the
@@ -631,7 +637,9 @@ def estimate(events: list[dict[str, Any]] | None = None,
         # "observation", not "estimate": one window that was measured, not a
         # figure averaged over several assumed to describe the same thing
         "kind": "observation",
-        "limit": chosen["limit"],
+        # the reading fallback, applied HERE and only here: the comparison
+        # above ran on what was actually recorded
+        "limit": chosen["limit"] or "individual quota",
         "tier": chosen["tier"],
         "account_ns": chosen["account_ns"],
         "samples": 1,

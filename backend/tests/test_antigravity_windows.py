@@ -28,6 +28,10 @@ WHAT THE SUITE PINS, and why each one can fail:
  · an identity MISSING at one end is recorded as unknown and the interval is
    kept - not knowing is not the same as knowing they differ - but the answer
    must say `limit_continuity: unknown` rather than certify continuity;
+ · and a metric that was never recorded is not INVENTED: the reading fallback
+   ("individual quota") is applied where the answer is displayed and never
+   where two identities are compared, or two rows that named nothing would
+   read as agreeing on the same thing;
  · the countdown decides nothing in either direction: the same duration on a
    different tier is still a different thing, and two different durations are
    not proof of two limits;
@@ -196,6 +200,14 @@ def test_a_boot_gap_is_recorded_not_hidden() -> None:
     check(ws[1]["reset_to_wall"] is True,
           "the interval is still usable - a restart does not by itself mean "
           "receipts are missing, it means a wall could have passed unseen")
+
+
+def bare_wall(at: float, seconds: float, tier: str = "flash",
+              wall_id: str = "u") -> dict[str, object]:
+    """A wall row that named NO metric - `_window_event` writes no `label`
+    when there is no message to read one out of."""
+    return agy._window_event("wall", at, tier=tier, resets_at=at + seconds,
+                             wall_id=wall_id)
 
 
 def own(event: dict[str, object], account: str = "acct") -> dict[str, object]:
@@ -465,6 +477,48 @@ def test_an_unrecorded_identity_is_unknown_not_certified() -> None:
 
 
 
+def test_a_metric_that_was_never_recorded_is_not_invented() -> None:
+    print("no default metric in an identity")
+    t0 = 1_788_000_000.0
+    # A wall does not always name a metric. Filling the gap with the common
+    # value would manufacture agreement at a boundary out of a fallback.
+    bare_open = own(bare_wall(t0, 12_048, wall_id="u1"))
+    labelled_close = own(wall_event(t0 + 12_648, SHORT_WALL, wall_id="u2"))
+    ws = agy.windows([bare_open, labelled_close])
+    check(ws[1]["opened_by"].get("limit") == "",
+          f"the unrecorded metric stays EMPTY in the identity: "
+          f"{ws[1]['opened_by']!r}")
+    check(ws[1]["reset_to_wall"] is True and ws[1]["boundary"] == "unknown",
+          f"so the boundary is unknown, not consistent: {ws[1]['boundary']}")
+    # the same hole at the CLOSING end, which is where the reading fallback is
+    labelled_open = own(wall_event(t0, SHORT_WALL, wall_id="u3"))
+    bare_close = own(bare_wall(float(labelled_open["resets_at"]) + 600,
+                               12_048, wall_id="u4"))
+    ws2 = agy.windows([labelled_open, bare_close])
+    check(ws2[1]["limit"] == "",
+          f"the interval carries what was recorded, not a default: "
+          f"{ws2[1]['limit']!r}")
+    check(ws2[1]["boundary"] == "unknown",
+          f"and its boundary is unknown too: {ws2[1]['boundary']}")
+    out = agy.estimate([labelled_open, bare_close],
+                       tokens_between=lambda s, e: 40_000)
+    check(out["limit_continuity"] == "unknown",
+          f"the answer says the two ends are not known to be one limit: "
+          f"{out.get('limit_continuity')}")
+    check(out["limit"] == "individual quota",
+          f"CONTROL: the DISPLAY still names a metric - the fallback is for "
+          f"reading, never for comparing: {out.get('limit')}")
+    # CONTROL: the metric recorded at BOTH ends, and it reads consistent
+    closer = own(wall_event(float(labelled_open["resets_at"]) + 600,
+                            SHORT_WALL, wall_id="u5"))
+    ok = agy.estimate([labelled_open, closer],
+                      tokens_between=lambda s, e: 40_000)
+    check(ok["limit_continuity"] == "consistent",
+          f"CONTROL: recorded at both ends and agreeing: "
+          f"{ok.get('limit_continuity')}")
+
+
+
 for fn in (test_the_journal_keeps_what_the_standing_throws_away,
            test_a_clear_with_nothing_standing_is_not_an_observation,
            test_the_record_is_bounded,
@@ -477,6 +531,7 @@ for fn in (test_the_journal_keeps_what_the_standing_throws_away,
            test_a_window_does_not_survive_an_account_change,
            test_one_limits_reset_does_not_open_another_limits_window,
            test_an_unrecorded_identity_is_unknown_not_certified,
+           test_a_metric_that_was_never_recorded_is_not_invented,
            test_no_number_without_a_reset_started_interval,
            test_one_measurable_interval_is_reported_as_one_sample,
            test_more_windows_never_raise_the_confidence):
