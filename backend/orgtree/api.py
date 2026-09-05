@@ -2812,11 +2812,19 @@ def _providers_payload() -> dict[str, Any]:
 _TIER_DISCOVERY_FIELDS = (
     "tier", "provider", "seat", "model", "letter", "color", "accent",
     "name", "label", "vendor", "prompt", "completion", "context",
-    "price_unknown", "price_source",
+    "price_unknown", "price_source", "tools",
 )
 _TIER_DISCOVERY_NUMBERS = frozenset({
     "seat", "prompt", "completion", "context",
 })
+#: Fields whose only legitimate values are `True`, `False` and `None`.
+#: ⚠ THEY NEED THEIR OWN BRANCH. The default arm below admits `str` or `None`
+#: and rejects everything else, so simply naming `tools` in the tuple above
+#: would make every OpenRouter tier a "malformed tier" and take the whole
+#: discovery document down with it. Identity checks, not truthiness: `0`/`1`
+#: are not this field's values, and `1 == True` would let an int through a
+#: `value in (True, False)` test.
+_TIER_DISCOVERY_TRISTATE = frozenset({"tools"})
 
 
 def _tier_discovery_payload() -> dict[str, Any]:
@@ -2871,6 +2879,10 @@ def _tier_discovery_payload() -> dict[str, Any]:
                         raise RuntimeError(
                             "provider discovery returned a malformed tier")
                     value = list(dict.fromkeys(value))
+                elif key in _TIER_DISCOVERY_TRISTATE:
+                    if not (value is True or value is False or value is None):
+                        raise RuntimeError(
+                            "provider discovery returned a malformed tier")
                 elif key == "price_source":
                     if value not in (
                             "openrouter-catalog", "legacy-catalog-snapshot"):

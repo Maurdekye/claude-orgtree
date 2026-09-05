@@ -113,7 +113,17 @@ class ModelCard(TypedDict):
     price_unknown: list[str]
     price_source: str
     context: int
-    tools: bool
+    #: THREE-STATE, and the third state is the point. `True`/`False` are the
+    #: catalog's own DECLARATION about tool support; `None` is "the catalog
+    #: entry declared nothing we can read" — a missing, null, scalar or
+    #: malformed `supported_parameters`, or a favorite recorded before this
+    #: field existed. Conflating unknown with `False` would state a capability
+    #: gap the catalog never claimed, and conflating it with `True` (what the
+    #: legacy reader did until 2026-09-05) states support nothing declared.
+    #: ⚠ A DECLARATION, NEVER AN OBSERVATION: no turn, tool call or refusal on
+    #: any OpenRouter model is behind this value. Every surface that prints it
+    #: says `(catalog)` for exactly that reason.
+    tools: bool | None
     free: bool
     #: the catalog's own release timestamp (unix seconds), 0 if absent. The
     #: ONE honest recency signal the catalog carries — see `sort_key`.
@@ -639,6 +649,50 @@ def _per_m(v: Any) -> float:
     return _price_per_m(v)[0]
 
 
+def _declared_tools(params: Any) -> bool | None:
+    """The catalog's tool DECLARATION, or None when it declared nothing.
+
+    ⚠ A VALID LIST OF STRINGS OR NOTHING. `supported_parameters` is a list of
+    parameter names; anything else — absent, null, a scalar, a bool, a list
+    with a non-string in it — is a shape this function cannot read, and an
+    unreadable declaration is `unknown`, never `False`. "The catalog said the
+    model does not take tools" and "the catalog said nothing we understand"
+    are different facts and the UI prints them differently.
+
+    ⚠ A LITERAL BOOL IS NOT A PARAMETER LIST. `True` is not "supports
+    everything" here; it is a malformed `supported_parameters`, and reading it
+    as a declaration would invent one. Normalized `tools` FIELDS are the only
+    place a bool is meaningful — see `_stored_tools`.
+    """
+    if not isinstance(params, list):
+        return None
+    items = cast("list[Any]", params)
+    if not all(isinstance(p, str) for p in items):
+        return None
+    return "tools" in items
+
+
+def _stored_tools(value: Any) -> bool | None:
+    """A normalized `tools` field read back off a saved record.
+
+    IDENTITY, not truthiness. `0`, `1`, `"true"`, `""` and every other
+    near-miss are shapes this field never legitimately holds, so they read as
+    unknown rather than being coerced into a declaration the record does not
+    carry. `is True` / `is False` also keeps `1 == True` from smuggling an
+    integer in as support.
+
+    ⚠ A RECORD WITH NO KEY IS UNKNOWN. Until 2026-09-05 this defaulted to
+    `True`, so every favorite adopted before the field existed claimed tool
+    support that was never declared for it. Old rows are NOT rewritten: they
+    stay exactly as saved and simply read as unknown.
+    """
+    if value is True:
+        return True
+    if value is False:
+        return False
+    return None
+
+
 def card_of(m: dict[str, Any]) -> ModelCard | None:
     """Normalize one raw catalog entry; None for entries the harnesses cannot
     run (batch variants, non-text output, unpriced)."""
@@ -669,8 +723,7 @@ def card_of(m: dict[str, Any]) -> ModelCard | None:
             ("prompt", prompt_known), ("completion", completion_known),
             ("cache_read", cache_read_known),
             ("cache_write", cache_write_known)) if not known]
-    params = m.get("supported_parameters")
-    tools = isinstance(params, list) and "tools" in params
+    tools = _declared_tools(m.get("supported_parameters"))
     try:
         ctx = int(m.get("context_length") or 0)
     except (TypeError, ValueError):
@@ -691,7 +744,7 @@ def card_of(m: dict[str, Any]) -> ModelCard | None:
         "price_unknown": price_unknown,
         "price_source": "openrouter-catalog",
         "context": ctx,
-        "tools": bool(tools),
+        "tools": tools,
         "created": created,
         "free": mid.endswith(":free") or (
             prompt_known and completion_known
@@ -954,7 +1007,10 @@ def favorites() -> list[Favorite]:
                 "price_unknown": price_unknown,
                 "price_source": price_source,
                 "context": int(f.get("context") or 0),
-                "tools": bool(f.get("tools", True)),
+                # three-state: a record with no snapshot reads UNKNOWN, not as
+                # a claim of support (`_stored_tools`). The saved row is never
+                # rewritten to say so; it simply reads as unknown.
+                "tools": _stored_tools(f.get("tools")),
                 # 0 for a favorite adopted before the field was snapshotted —
                 # only the CATALOG is ever sorted by recency, never this list
                 "created": int(f.get("created") or 0),
@@ -1330,4 +1386,8 @@ def tier_infos() -> list[dict[str, Any]]:
         "price_unknown": f["price_unknown"],
         "price_source": f["price_source"],
         "context": f["context"],
+        # the catalog's tool DECLARATION, three-state (`ModelCard.tools`).
+        # It reached the picker and stopped there until 2026-09-05, so no
+        # hire or switch surface could show what the picker already knew.
+        "tools": f["tools"],
     } for f in favorites()]

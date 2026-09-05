@@ -18,7 +18,7 @@ import { pickFolder } from '../picker'
 import {
   CloseIcon, DeleteIcon, FolderIcon, LayersIcon, SettingsIcon,
 } from '../icons'
-import { ago, ALL_PRESENT, anyTierSeat, codexTierOffer, CODEX_TIERS, ANTIGRAVITY_TIERS, fmtCredits, hireOf, isOpenRouterTier, MODEL_VERSIONS, openrouterTierIds, pileOrder, PROVIDER_LABEL, providerOf, TIER_LETTER, tierLabel, TIERS, tierShown, USER, useEsc } from './shared'
+import { ago, ALL_PRESENT, anyTierSeat, codexTierOffer, CODEX_TIERS, ANTIGRAVITY_TIERS, fmtCredits, hireOf, isOpenRouterTier, MODEL_VERSIONS, openrouterTierIds, pileOrder, PROVIDER_LABEL, providerOf, TIER_LETTER, tierLabel, tierToolsNote, TIERS, tierShown, USER, useEsc } from './shared'
 import type { ProviderPresence } from './shared'
 import type { CanvasNode, DraftScope, DraftState, OpFn, Pile } from './shared'
 import { ProcessLifecycleMark } from './desk'
@@ -900,9 +900,14 @@ export function NodeConfig({ node, map, tree, slug, op, toast, codexProvider,
         && t !== node.tier))
   const modelOption = (t: string) => {
     const why = unavailable(t)
+    // the OpenRouter catalog's tool declaration, from the ONE formatter
+    // (`tierToolsNote`, '' for every static tier). A switch is a decision
+    // about what an agent will be able to do, so it is made where the
+    // decision is made rather than only back in the catalog picker.
+    const tools = tierToolsNote(t)
     return (
       <option key={t} value={t} disabled={!!why}>
-        {tierLabel(t)} · seat {fmtCredits(tierSeat(t))}{why ? ` — ${why}` : ''}
+        {tierLabel(t)} · seat {fmtCredits(tierSeat(t))}{tools ? ` · ${tools}` : ''}{why ? ` — ${why}` : ''}
       </option>
     )
   }

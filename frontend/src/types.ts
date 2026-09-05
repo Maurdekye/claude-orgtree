@@ -1103,6 +1103,11 @@ export interface ProviderTier {
   price_unknown?: string[]
   price_source?: string
   context?: number
+  /** the OpenRouter catalog's tool DECLARATION for this tier's model:
+   *  true/false as declared, null when the catalog entry declared nothing
+   *  readable, absent from an older backend. Never an observation - see
+   *  `toolsNote`, which is the one place this is turned into words. */
+  tools?: boolean | null
 }
 /** GET /api/openrouter — the API-backed lane's credit standing. Every field
  *  is what `GET /api/v1/key` said, or null when it said nothing. */
@@ -1145,7 +1150,9 @@ export interface OpenRouterModel {
   price_unknown?: string[]
   price_source?: string
   context: number
-  tools: boolean
+  /** three-state, as the catalog declared it (see `ProviderTier.tools`);
+   *  null is 'declared nothing readable', NOT 'declared no support' */
+  tools: boolean | null
   free: boolean
   /** release date, unix seconds; 0 when the catalog did not carry one */
   created: number

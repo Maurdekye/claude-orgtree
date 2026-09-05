@@ -43,7 +43,7 @@ import type {
   OpenRouterDoc, OpenRouterModel, OpenRouterModelsPage, OpenRouterSort,
   ProviderInfo, ProviderTier,
 } from '../types'
-import { fmtCredits, isDarkTierColor, modelLabel, setOpenRouterTiers } from './shared'
+import { fmtCredits, isDarkTierColor, modelLabel, setOpenRouterTiers, toolsNote } from './shared'
 import { fmtHm, fmtMonth } from '../timefmt'
 
 type ToastFn = (lines: string[]) => void
@@ -133,6 +133,7 @@ const tierTitle = (t: ProviderTier): string =>
   + `${knownPerM(t.completion, t.price_unknown, 'completion')} out per 1M`
   + `${t.price_unknown?.length ? ' · incomplete catalog pricing' : ''}`
   + ` · seat ${fmtCredits(t.seat)}`
+  + ` · ${toolsNote(t.tools)}`
 
 /** the whole section: head (label, switch), key row, favorites row, picker */
 export function OpenRouterSection({ provider, headRight, toast, pickerOpen,
@@ -464,6 +465,12 @@ export function ModelPicker({ doc, busy, onToggle, onClose }: {
               {cont && <div className="orr-vendor">{m.vendor} <span className="dim">· continued</span></div>}
               <button type="button"
                 className={'orr-row' + (on ? ' on' : '')}
+                /* the dim line below prints the note only where it is
+                   news (declared-tool-less, or unknown), keeping the
+                   density the user asked for across ~425 rows; the
+                   tooltip states it for ALL THREE so a row with no
+                   visible note is never ambiguous about which it is. */
+                title={toolsNote(m.tools)}
                 aria-pressed={on} disabled={busy}
                 onClick={() => onToggle(m, !on)}>
                 {/* the card drops to the 26px size the favorites row uses:
@@ -482,7 +489,11 @@ export function ModelPicker({ doc, busy, onToggle, onClose }: {
                         sort the user cannot check is a recency sort the user
                         has to take on faith */}
                     {sort === 'recency' && m.created ? ` · ${released(m.created)}` : ''}
-                    {!m.tools ? ' · no tool use' : ''}
+                    {/* was `!m.tools ? ' · no tool use' : ''}`, which printed
+                        the SAME thing for a model the catalog declared
+                        tool-less and one it said nothing readable about.
+                        Three states, one shared formatter. */}
+                    {m.tools === true ? '' : ` · ${toolsNote(m.tools)}`}
                   </span>
                 </span>
                 {/* ONE line, was three. The price cell was the tallest thing

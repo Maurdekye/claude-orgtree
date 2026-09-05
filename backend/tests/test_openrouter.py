@@ -928,9 +928,106 @@ def main():
                    eq(sorted(orr.tier_infos()[0]),
                        sorted(["tier", "provider", "seat", "model", "letter", "color",
                                "accent", "name", "label", "vendor", "prompt", "completion",
-                               "price_unknown", "price_source", "context"]),
+                               "price_unknown", "price_source", "context", "tools"]),
                       "keys"),
                    no_secret(orr.tier_infos(), "tier_infos")))
+
+    print("§5b the tool declaration: three states, catalog-sourced")
+
+    # ⚠ EVERY VALUE HERE IS A CATALOG DECLARATION, NEVER AN OBSERVATION.
+    # Nothing in this section runs a turn, a tool call or a refusal against
+    # any model; `tools` says what openrouter.ai's catalog declared, and the
+    # surfaces that print it say `(catalog)` for exactly that reason.
+
+    def declared_states():
+        # a list that NAMES tools, and one that names other parameters and
+        # not tools: the two ends, and the positive control for the third
+        eq(orr.card_of({"id": "v/a", "pricing": {"prompt": "0.000001"},
+                        "supported_parameters": ["tools", "temperature"]})["tools"],
+           True, "declared support")
+        eq(orr.card_of({"id": "v/b", "pricing": {"prompt": "0.000001"},
+                        "supported_parameters": ["temperature"]})["tools"],
+           False, "declared NO support")
+        # …and every shape that declares nothing readable is UNKNOWN, which is
+        # a different answer from "declared no support" directly above
+        for label, entry in (
+                ("key absent", {}),
+                ("null", {"supported_parameters": None}),
+                ("scalar string", {"supported_parameters": "tools"}),
+                ("scalar int", {"supported_parameters": 1}),
+                # ⚠ a literal bool is a MALFORMED parameter list, not a
+                # declaration: True must not read as "supports everything"
+                ("literal True", {"supported_parameters": True}),
+                ("literal False", {"supported_parameters": False}),
+                ("mixed list", {"supported_parameters": ["tools", 7]}),
+                ("dict", {"supported_parameters": {"tools": True}})):
+            got = orr.card_of({"id": "v/c", "pricing": {"prompt": "0.000001"},
+                               **entry})["tools"]
+            eq(got, None, f"unknown from {label}")
+        # an EMPTY list is a real declaration — the catalog listed its
+        # parameters and tools was not among them
+        eq(orr.card_of({"id": "v/d", "pricing": {"prompt": "0.000001"},
+                        "supported_parameters": []})["tools"],
+           False, "empty list is a declaration, not silence")
+    check("card_of reads the declaration, and an unreadable one is unknown "
+          "rather than 'not supported'", declared_states)
+
+    def stored_states():
+        # the READ-BACK path: identity, never truthiness. A near-miss value is
+        # a shape this field never legitimately holds, so it reads unknown
+        # instead of being coerced into a declaration the record lacks.
+        for value, want, label in ((True, True, "True"), (False, False, "False"),
+                                   (None, None, "null"), (1, None, "int 1"),
+                                   (0, None, "int 0"), ("true", None, "str"),
+                                   ("", None, "empty str"), ([], None, "list")):
+            eq(orr._stored_tools(value), want, f"stored {label}")
+    check("a normalized tools field is read by identity: 0/1/strings are "
+          "unknown, never a declaration", stored_states)
+
+    def legacy_favorite_stays_unknown():
+        # a favorite adopted BEFORE the field existed. Until 2026-09-05 this
+        # defaulted to True and claimed support nothing ever declared.
+        doc = orr._load_state()
+        before = json.dumps(doc["favorites"][0], sort_keys=True)
+        doc["favorites"][0].pop("tools", None)
+        orr._save_state(doc)
+        orr._state_cache["doc"] = None
+        eq(orr.favorites()[0]["tools"], None, "no snapshot reads unknown")
+        eq(orr.tier_infos()[0]["tools"], None, "…and reaches the hire surface")
+        # ⚠ THE OLD ROW IS NOT REWRITTEN. Reading it must not persist a
+        # verdict the record never carried.
+        again = orr._load_state()
+        eq("tools" in again["favorites"][0], False, "stored row untouched")
+        # positive control: a record that DID snapshot the field still reports
+        # exactly what it snapshotted, so "unknown" above is the missing key
+        # and not a reader that answers unknown for everything
+        again["favorites"][0]["tools"] = False
+        orr._save_state(again)
+        orr._state_cache["doc"] = None
+        eq(orr.favorites()[0]["tools"], False, "snapshotted False survives")
+        again["favorites"][0]["tools"] = True
+        orr._save_state(again)
+        orr._state_cache["doc"] = None
+        eq(orr.favorites()[0]["tools"], True, "snapshotted True survives")
+        assert before                          # the row existed to begin with
+    check("a favorite with no tools snapshot reads unknown, and the saved row "
+          "is left exactly as it was", legacy_favorite_stays_unknown)
+
+    def textonly_is_still_admitted():
+        # ⚠ THE ANTI-BAN CONTROL. This unit discloses a capability; it must
+        # never become admission control. A model the catalog declares WITHOUT
+        # tool support is still favoritable and its tier is still hireable.
+        fav = orr.add_favorite("someone/llama-4-scout:free")
+        eq(fav["tools"], False, "the text-only model's declaration")
+        eq(orr.tier_id("someone/llama-4-scout:free") in orr.tiers(), True,
+           "it became a hireable tier")
+        from orgtree import providers                      # noqa: PLC0415
+        eq(providers.tier_availability(fav["tier"])[0], True,
+           "and the hire path still offers it")
+        orr.remove_favorite("someone/llama-4-scout:free")
+    check("a model declaring NO tool support is still favoritable and still "
+          "hireable — disclosure, never admission control",
+          textonly_is_still_admitted)
 
     print("§6 failure honesty")
     orr.set_key("sk-or-v1-wrongkey-000000000000")

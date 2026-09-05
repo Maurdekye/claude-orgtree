@@ -263,6 +263,36 @@ export const tierLabel = (tier: string): string => {
   const m = tierModels[tier]
   return m ? modelLabel(m) : tier.slice(OPENROUTER_PREFIX.length)
 }
+/* ── THE TOOL DECLARATION, IN ONE VOICE ───────────────────────────────────
+ * The OpenRouter catalog says whether a model declares tool support, and
+ * until 2026-09-05 that reached the picker and stopped there: the favorites
+ * strip, the hire sheet and both switch selects never carried it, so every
+ * decision after the first was made without it.
+ *
+ * ⚠ ONE FORMATTER, because four surfaces print this and four surfaces that
+ * each wrote their own phrase would come to disagree — the `tierLabel`
+ * lesson one screen up. Every caller renders this string verbatim.
+ *
+ * ⚠ THREE STATES, AND `(catalog)` ON ALL THREE. `undefined`/`null` is
+ * "the catalog declared nothing readable", which is NOT "declared no
+ * support" — the picker's old `!m.tools` test collapsed them and printed a
+ * capability gap the catalog never claimed. And the suffix is on every
+ * state, not just the unknown one, because the SOURCE is the same in all
+ * three: this is what openrouter.ai's catalog declares about the model. It
+ * is not an observation. Nothing here has run a turn, a tool call or a
+ * refusal against the model, so no wording may imply that it has. */
+export const toolsNote = (tools: boolean | null | undefined): string =>
+  tools === true ? 'Tools: supported (catalog)'
+    : tools === false ? 'Tools: not supported (catalog)'
+      : 'Tools: unknown (catalog)'
+/** the same note for a TIER, or '' for a tier this registry cannot describe.
+ *  Static Claude/Codex/Antigravity tiers return '' — the catalog is an
+ *  OpenRouter fact and inventing one for another lane would be a claim. */
+export const tierToolsNote = (tier: string): string => {
+  if (!isOpenRouterTier(tier)) return ''
+  const t = openrouterTier(tier)
+  return t ? toolsNote(t.tools) : ''
+}
 /** seat for ANY tier the static tables or the registry know */
 export const anyTierSeat = (tier: string): number =>
   TIER_SEAT[tier] ?? CODEX_TIER_SEAT[tier] ?? ANTIGRAVITY_TIER_SEAT[tier]
