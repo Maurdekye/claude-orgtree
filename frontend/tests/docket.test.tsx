@@ -180,9 +180,12 @@ const docketModal = (extra?: Partial<{
   tree: TreePayload
   toast: (lines: string[]) => void
   slug: string
+  jumpTo: string | null
+  jumpSeq: number
 }>) => (
   <DocketModal slug={extra?.slug ?? 'org1'} toast={extra?.toast ?? noop}
-    close={extra?.close ?? noop}
+    close={extra?.close ?? noop} jumpTo={extra?.jumpTo ?? null}
+    jumpSeq={extra?.jumpSeq}
     tree={extra?.tree ?? mkTree()} onFocusAgent={extra?.onFocusAgent} />
 )
 
@@ -1816,4 +1819,61 @@ async (mount) => {
   assert.deepEqual(titles(el), ['moved-yesterday', 'from-an-older-build'],
     'a row with no status clock must fall back to its CREATION — falling back '
     + 'to the edit clock would date a state change that never happened')
+})
+
+// ───────────────────────────────────── §8 a second click is a second request
+//
+// ⚠ ASTRA, 2026-09-05: the latches compared the target id and nothing else, so
+// once a reference had been followed, following it AGAIN did nothing — for the
+// rest of the session — even after the reader had deliberately moved to
+// something else in between. The latch has to stay (without it every poll
+// re-runs the jump and drags the reader back), so the request carries its own
+// identity and the latch compares that.
+
+uiTest('§8 following the SAME reference twice works the second time',
+async (mount) => {
+  mockWorkItems([
+    mkItem({ slug: 'first-item', title: 'first-item' }),
+    mkItem({ slug: 'second-item', title: 'second-item' }),
+  ])
+  const { el, render: re } = await mount(docketModal())
+  await flush()
+  // the first click on `first-item`
+  await re(docketModal({ jumpTo: 'first-item', jumpSeq: 1 }))
+  await flush()
+  assert.match(pane(el)?.textContent ?? '', /first-item/,
+    'positive control: the first jump landed')
+  // the reader then chooses something else by hand
+  const rows2 = rows(el)
+  const other = rows2.find((r) => (r.textContent ?? '').includes('second-item'))!
+  await inAct(() => { (other as HTMLElement).click() })
+  await flush()
+  assert.match(pane(el)?.textContent ?? '', /second-item/,
+    'positive control: the manual selection moved the pane')
+  // …and clicks the SAME reference again. A new request, not a repeat.
+  await re(docketModal({ jumpTo: 'first-item', jumpSeq: 2 }))
+  await flush()
+  assert.match(pane(el)?.textContent ?? '', /first-item/,
+    'the second click on the same reference did nothing')
+})
+
+uiTest('§8b CONTROL — an unrelated repoll does NOT re-run the jump',
+async (mount) => {
+  mockWorkItems([
+    mkItem({ slug: 'first-item', title: 'first-item' }),
+    mkItem({ slug: 'second-item', title: 'second-item' }),
+  ])
+  const { el, render } = await mount(docketModal({ jumpTo: 'first-item', jumpSeq: 1 }))
+  await flush()
+  assert.match(pane(el)?.textContent ?? '', /first-item/)
+  const other = rows(el).find((r) => (r.textContent ?? '').includes('second-item'))!
+  await inAct(() => { (other as HTMLElement).click() })
+  await flush()
+  assert.match(pane(el)?.textContent ?? '', /second-item/)
+  // the same request, re-delivered by a re-render — the reader must be left
+  // exactly where they went
+  await render(docketModal({ jumpTo: 'first-item', jumpSeq: 1 }))
+  await flush()
+  assert.match(pane(el)?.textContent ?? '', /second-item/,
+    'an unchanged request re-ran and dragged the reader back')
 })

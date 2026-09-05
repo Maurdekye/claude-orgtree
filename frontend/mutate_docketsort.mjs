@@ -32,6 +32,27 @@ const DOCKET = 'src/canvas/docket.tsx'
 
 const MUTANTS = [
   {
+    // ⚠ ASTRA'S BLOCKER 8, restored: the latch compares the TARGET, so a second
+    // deliberate click on the same reference is refused for the rest of the
+    // session once the reader has moved away.
+    name: 'the jump latch compares the target instead of the request',
+    kills: 'following the SAME reference twice works the second time',
+    from: `    const key = jumpKey(jumpTo, jumpSeq)
+    if (!jumpTo || !data || doneJump.current === key) return
+    doneJump.current = key`,
+    to: `    const key = jumpTo
+    if (!jumpTo || !data || doneJump.current === key) return
+    doneJump.current = key`,
+  },
+  {
+    // the opposite error: no latch at all, so every poll re-runs the jump and
+    // drags the reader back to a row they deliberately left
+    name: 'the jump has no latch, so every repoll re-runs it',
+    kills: 'an unrelated repoll does NOT re-run the jump',
+    from: `    if (!jumpTo || !data || doneJump.current === key) return`,
+    to: `    if (!jumpTo || !data) return`,
+  },
+  {
     // THE SELECTOR THAT DOES NOTHING. It renders, it remembers your choice,
     // the caption even changes — and every mode shows the same list.
     name: 'the selector is decorative: every mode keeps the server order',

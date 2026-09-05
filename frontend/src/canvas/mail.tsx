@@ -18,7 +18,8 @@ import {
   MailIcon, PublicIcon,
 } from '../icons'
 import {
-  EXTERN, fmtCredits, isSystemNotice, md, pileNotices, providerOf, USER, useEsc, usePolled,
+  EXTERN, fmtCredits, isSystemNotice, jumpKey, md, pileNotices, providerOf, USER,
+  useEsc, usePolled,
 } from './shared'
 import type { CanvasNode, MailRow } from './shared'
 import { AgentName } from './identity'
@@ -55,6 +56,9 @@ export interface MailListProps {
   onReply?: (m: MailRow, text: string) => void
   onRetract?: (m: MailRow) => void
   jumpTo?: string | null
+  /** the REQUEST's identity: a repeat click on the same target is a new
+   *  request, an unrelated repoll is not (`jumpKey`) */
+  jumpSeq?: number | null
   /** FR-21: the mail rides along so a call site whose files live under the
    *  SENDER's scratch (the user inbox — each row a different agent's outbox)
    *  can key the URL on `m.from`; fixed-node call sites ignore it. Returning
@@ -96,7 +100,7 @@ export interface MailListProps {
 const MAIL_WINDOW = 40
 
 export function MailList({ pending = [], delivered = [], waitLabel, sender, rowSender,
-  outgoing, onRead, onReply, onRetract, jumpTo, fileHref, mdBase, renderBody, rowMark,
+  outgoing, onRead, onReply, onRetract, jumpTo, jumpSeq, fileHref, mdBase, renderBody, rowMark,
   onFocusAgent, tierOf, hasAgent, refs }: MailListProps) {
   // ONE order, by send time, always — never grouped, never re-grouped.
   //
@@ -142,16 +146,21 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, rowS
   // never ran again and the latch was already spent. Holding the id makes a
   // second click on a different reference move the selection and scroll again,
   // and a repeat click on the SAME one stay put.
-  const jumpedRef = useRef<string | null>(jumpTo ?? null)
+  // ⚠ THE LATCH IS ON THE REQUEST, NOT ON THE TARGET. Comparing ids alone
+  // refused a second deliberate click on the same message forever, once the
+  // reader had selected something else in between. The latch still exists,
+  // or every poll drags them back to a row they moved away from.
+  const jumpedRef = useRef<string | null>(jumpKey(jumpTo, jumpSeq))
   // scrolling is tracked SEPARATELY from selecting. They are handled in
   // different places — an effect and a row ref — and a single latch shared
   // between them means whichever fires first spends it for the other.
   const scrolledRef = useRef<string | null>(null)
   useEffect(() => {
-    if (!jumpTo || jumpTo === jumpedRef.current) return
-    jumpedRef.current = jumpTo
+    const key = jumpKey(jumpTo, jumpSeq)
+    if (!jumpTo || key === jumpedRef.current) return
+    jumpedRef.current = key
     setSelId(jumpTo)
-  }, [jumpTo])
+  }, [jumpTo, jumpSeq])
   // №26: hunting an hour-old message decayed your unread set click by click —
   // a plain client-side filter over sender+body, no index, no server
   const [q, setQ] = useState('')
@@ -315,8 +324,8 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, rowS
               // a jump aimed at a folded member lands on the row that now
               // carries it, not on nothing
               if (el && jumpTo && g.some((x) => keyOf(x) === jumpTo)
-                && scrolledRef.current !== jumpTo) {
-                scrolledRef.current = jumpTo
+                && scrolledRef.current !== jumpKey(jumpTo, jumpSeq)) {
+                scrolledRef.current = jumpKey(jumpTo, jumpSeq)
                 el.scrollIntoView({ block: 'center' })
               }
             }}
@@ -625,6 +634,9 @@ interface InboxViewProps {
    *  mail on the server but invisible here until remount */
   onRetract?: (m: MailRow) => Promise<unknown> | void
   jumpTo?: string | null
+  /** the REQUEST's identity: a repeat click on the same target is a new
+   *  request, an unrelated repoll is not (`jumpKey`) */
+  jumpSeq?: number | null
   /** the inbox owner's tier: its unread count wears that agent's provider */
   tier?: string | null
   onFocusAgent?: (agentId: string) => void
@@ -640,7 +652,7 @@ interface InboxViewProps {
   refs?: { world: RefWorld; onOpen?: (r: ResolvedRef) => void }
 }
 
-export function InboxView({ slug, nid, onRetract, jumpTo, tier, onFocusAgent,
+export function InboxView({ slug, nid, onRetract, jumpTo, jumpSeq, tier, onFocusAgent,
   tierOf, hasAgent, refs }: InboxViewProps) {
   const [folder, setFolder] = useState('inbox')
   // G5: was a fetch keyed on the `pulse` prop, which meant it refreshed on turn
@@ -665,8 +677,9 @@ export function InboxView({ slug, nid, onRetract, jumpTo, tier, onFocusAgent,
   // knowable until it has loaded, and the panel mounts before that.
   const foldedJump = useRef<string | null>(null)
   useEffect(() => {
-    if (!jumpTo || !box || foldedJump.current === jumpTo) return
-    foldedJump.current = jumpTo
+    const key = jumpKey(jumpTo, jumpSeq)
+    if (!jumpTo || !box || foldedJump.current === key) return
+    foldedJump.current = key
     const here = (rows: MailRow[] | undefined) =>
       (rows ?? []).some((m) => m.id === jumpTo)
     if (here(box.delivered) || here(box.pending)) setFolder('inbox')
@@ -688,7 +701,7 @@ export function InboxView({ slug, nid, onRetract, jumpTo, tier, onFocusAgent,
           : folder === 'inbox'
             ? <MailList pending={pending} delivered={box.delivered}
                 tierOf={tierOf} hasAgent={hasAgent} refs={refs}
-                waitLabel="awaiting next turn" jumpTo={jumpTo}
+                waitLabel="awaiting next turn" jumpTo={jumpTo} jumpSeq={jumpSeq}
                 fileHref={(p) => fileUrl(slug, nid, p)}
                 mdBase={() => fileBase(slug, nid)}
                 onFocusAgent={onFocusAgent}
@@ -707,7 +720,7 @@ export function InboxView({ slug, nid, onRetract, jumpTo, tier, onFocusAgent,
             // outbox/ on send (api.py routes them through _agent_send_file),
             // so the same scratch-keyed href serves the Sent folder too
             : <MailList delivered={box.sent ?? []} outgoing jumpTo={jumpTo}
-                tierOf={tierOf} hasAgent={hasAgent} refs={refs}
+                jumpSeq={jumpSeq} tierOf={tierOf} hasAgent={hasAgent} refs={refs}
                 onFocusAgent={onFocusAgent}
                 fileHref={(p) => fileUrl(slug, nid, p)}
                 mdBase={() => fileBase(slug, nid)} />}
@@ -786,13 +799,16 @@ interface NodeInboxModalProps {
   slug: string
   close: () => void
   jumpTo?: string | null
+  /** the REQUEST's identity: a repeat click on the same target is a new
+   *  request, an unrelated repoll is not (`jumpKey`) */
+  jumpSeq?: number | null
   onFocusAgent?: (agentId: string) => void
   tierOf?: (id: string) => string | null | undefined
   hasAgent?: (id: string) => boolean
   refs?: { world: RefWorld; onOpen?: (r: ResolvedRef) => void }
 }
 
-export function NodeInboxModal({ node, slug, close, jumpTo, onFocusAgent,
+export function NodeInboxModal({ node, slug, close, jumpTo, jumpSeq, onFocusAgent,
   tierOf, hasAgent, refs }: NodeInboxModalProps) {
   useEsc(close)
   return (
@@ -805,7 +821,8 @@ export function NodeInboxModal({ node, slug, close, jumpTo, onFocusAgent,
             overlay, so following one without closing would look like a click
             that did nothing. The world itself is untouched: only the handler
             is wrapped, and with one argument. */}
-        <InboxView slug={slug} nid={node.id} jumpTo={jumpTo} tier={node.tier}
+        <InboxView slug={slug} nid={node.id} jumpTo={jumpTo} jumpSeq={jumpSeq}
+          tier={node.tier}
           tierOf={tierOf} hasAgent={hasAgent}
           refs={refs && {
             world: refs.world,
@@ -831,6 +848,9 @@ interface OrgInboxModalProps {
   toast: ToastFn
   close: () => void
   jumpTo?: string | null
+  /** the REQUEST's identity: a repeat click on the same target is a new
+   *  request, an unrelated repoll is not (`jumpKey`) */
+  jumpSeq?: number | null
   onFocusAgent?: (agentId: string) => void
 }
 

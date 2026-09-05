@@ -13,7 +13,7 @@ import {
   FullscreenIcon, PublicIcon, RemoveIcon, ViewListIcon,
 } from '../icons'
 import {
-  ago, ALL_TIER_SEAT, anyTierSeat, attentionPip, codexTierOffer, CODEX_TIER_LETTER, CODEX_TIER_SEAT, CODEX_TIERS, DOG_H, DOG_W, DRAFT, ease, edgeJumpPlacement, type EJForm, EXTERN, fallbackActive, familyOffer, flatten, fmtCredits, ANTIGRAVITY_TIER_LETTER, ANTIGRAVITY_TIER_SEAT, ANTIGRAVITY_TIERS, hireOf, INBOX, INBOX_H, layout, NODE_H, NODE_W, noteTierModels, openrouterTierIds, orgPxc, presenceOf, segD, setOpenRouterTiers,
+  ago, ALL_TIER_SEAT, anyTierSeat, attentionPip, codexTierOffer, CODEX_TIER_LETTER, CODEX_TIER_SEAT, CODEX_TIERS, DOG_H, DOG_W, DRAFT, ease, edgeJumpPlacement, type EJForm, EXTERN, fallbackActive, familyOffer, flatten, fmtCredits, ANTIGRAVITY_TIER_LETTER, ANTIGRAVITY_TIER_SEAT, ANTIGRAVITY_TIERS, hireOf, INBOX, INBOX_H, jumpTo, layout, NODE_H, NODE_W, noteTierModels, openrouterTierIds, orgPxc, presenceOf, segD, setOpenRouterTiers,
   providerOf, queuedSwitchTitle, savedView, saveView, segPoint, sizeOf, smooth, SPRING_C, SPRING_K, startView, startZoomOn, TIER_LETTER, TIER_SEAT, tierCapabilityNotes, tierLabel, TIERS, useCrowdPiles, usePolled, USER, USER_H,
   USER_W, withDraftTree, Z_DESK, Z_MAX, Z_MINI,
 } from './shared'
@@ -57,7 +57,7 @@ export interface OrgCanvasProps {
    *  the router below already knows which is which, so the shell hands the
    *  pointer down rather than growing a second copy of that routing table.
    *  Consumed once, exactly like `focusAgent`. */
-  openMailAt?: { id: string; to: string } | null
+  openMailAt?: { id: string; to: string; seq?: number } | null
   onOpenMailHandled?: () => void
   /** open one presented document, from a panel that owns no reader — the
    *  same one-shot route as `openMailAt`. The reader here IS the exact GET,
@@ -139,7 +139,10 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox, onWorkItem,
   // inline mail links (user spec 2026-07-31): a chat's send chip opens the
   // box that HOLDS the mail, selected on it — user inbox, a node's inbox, or
   // the org inbox for outbound. Jump ids clear when the modal closes.
-  const [nodeInboxJump, setNodeInboxJump] = useState<string | null>(null)
+  // the REQUEST, not the target: two clicks on the same message are two
+  // requests, and the panel's latch compares the request (`jumpKey`)
+  const [nodeInboxJump, setNodeInboxJump] =
+    useState<{ id: string; seq: number } | null>(null)
   const [oiJump, setOiJump] = useState<string | null>(null)
   const [dogView, setDogView] = useState<string | null>(null)  // FR-18 panel
   // ---- mobile wave (D-123/D-125) ----
@@ -275,7 +278,8 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox, onWorkItem,
     } else if (String(m.to).startsWith('@')) {
       setOiJump(m.id); setOiOpen(true)
     } else if (map.has(m.to)) {
-      setNodeInboxJump(m.id); setInboxId(m.to)
+      setNodeInboxJump({ id: String(m.id), seq: jumpTo(String(m.id)).seq })
+      setInboxId(m.to)
     }
   }
   const openMail = useCallback<MailLinkFn>((m) => openMailRef.current?.(m), [])
@@ -2835,7 +2839,7 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox, onWorkItem,
           tierOf={(id) => map.get(id)?.tier}
           hasAgent={(id) => map.has(id)}
           refs={canvasRefs}
-          jumpTo={nodeInboxJump}
+          jumpTo={nodeInboxJump?.id ?? null} jumpSeq={nodeInboxJump?.seq}
           onFocusAgent={centerOn}
           close={() => { setInboxId(null); setNodeInboxJump(null) }} /></MaybePortal>
       )}

@@ -34,7 +34,7 @@ import { AskCard } from './asks'
 import { DocReader } from './docs'
 import { AgentName } from './identity'
 import { MailReplyBox } from './mail'
-import { ago, useEsc, usePolled } from './shared'
+import { ago, jumpKey, useEsc, usePolled } from './shared'
 import { buildMentionIndex } from './workrefs'
 import type { MentionIndex } from './workrefs'
 import { RefProse } from './reflinks'
@@ -485,7 +485,7 @@ export function buildSections(mode: DocketGroupMode, active: WorkItem[],
 }
 
 export function DocketModal({ slug, toast, close, tree, onFocusAgent,
-  jumpTo, onJumpHandled, onOpenMail }: {
+  jumpTo, jumpSeq, onJumpHandled, onOpenMail }: {
   slug: string
   toast: ToastFn
   close: () => void
@@ -498,6 +498,9 @@ export function DocketModal({ slug, toast, close, tree, onFocusAgent,
   /** open AT this item: a tool chip's docket link names the item a work write
    *  acted on (user 2026-09-05). Consumed once — see the effect below. */
   jumpTo?: string | null
+  /** the REQUEST's own identity, so a repeat click on the same target is a
+   *  new request while an unrelated repoll is not (`jumpKey`) */
+  jumpSeq?: number | null
   onJumpHandled?: () => void
   /** open a mail reference somewhere that actually owns a mailbox. The docket
    *  does not: the three boxes (the user's, the org's, a node's) are three
@@ -773,15 +776,21 @@ export function DocketModal({ slug, toast, close, tree, onFocusAgent,
   // cannot see was indistinguishable from a misclick. Naming the id is safe
   // here in a way naming a mail's subject is not: the id is what the reader
   // just clicked, so it discloses nothing they did not already have.
+  // ⚠ THE LATCH IS ON THE REQUEST, NOT ON THE TARGET. Comparing ids alone
+  // meant a second deliberate click on the same reference — after the reader
+  // had selected something else — was refused as already handled, forever.
+  // The latch still exists, because without it every poll re-runs the jump and
+  // drags the reader back to a row they had moved away from.
   const doneJump = useRef<string | null>(null)
   const [missedJump, setMissedJump] = useState<string | null>(null)
   useEffect(() => {
-    if (!jumpTo || !data || doneJump.current === jumpTo) return
-    doneJump.current = jumpTo
+    const key = jumpKey(jumpTo, jumpSeq)
+    if (!jumpTo || !data || doneJump.current === key) return
+    doneJump.current = key
     if (allKnown.has(jumpTo)) { setMissedJump(null); goToItem(jumpTo) }
     else setMissedJump(jumpTo)
     onJumpHandled?.()
-  }, [jumpTo, data, allKnown, goToItem, onJumpHandled])
+  }, [jumpTo, jumpSeq, data, allKnown, goToItem, onJumpHandled])
 
   const onDismiss = (item: WorkItem) => {
     if (!item.manual_attention) return

@@ -25,7 +25,7 @@ import {
 } from './icons'
 import { DirList } from './forms'
 import { FolderPickerHost } from './picker'
-import { activeDocCount, ALL_TIERS, attentionPip, availableAutopsyModels, deskDpi, fallbackActive, fmtCredits, formatCount, freezeKind, isOpenRouterTier, orgPxc, presenceOfPayload, primedRestartChip, setDeskDpi, TIER_LETTER, tierLabel, unicodeLength, usePolled } from './canvas/shared'
+import { activeDocCount, ALL_TIERS, attentionPip, availableAutopsyModels, deskDpi, fallbackActive, fmtCredits, formatCount, freezeKind, isOpenRouterTier, jumpTo, orgPxc, presenceOfPayload, primedRestartChip, setDeskDpi, TIER_LETTER, tierLabel, unicodeLength, usePolled } from './canvas/shared'
 import { AskCard } from './canvas/asks'
 import { AgentName } from './canvas/identity'
 import { AccountsPanel, UsageBars } from './canvas/accounts'
@@ -47,7 +47,7 @@ import type {
   AntigravityEstimate as AgyEstimate,
   ToastUndo, TreeFrozen, TreeNode, TreePayload, UsageLimit, UsagePeek,
 } from './types'
-import type { MailRow, ProviderPresence } from './canvas/shared'
+import type { JumpReq, MailRow, ProviderPresence } from './canvas/shared'
 
 /** the cost chip's hover split: how much of the org total was billed to the
  *  api_fallback key vs the subscription. '' when the org has never used (and
@@ -256,13 +256,16 @@ export default function App() {
   // a docket link from a tool chip: open the panel AT one item. Held as a
   // one-shot so re-opening the docket later does not silently re-select what
   // some earlier link pointed at — the panel consumes it and clears it.
-  const [docketJump, setDocketJump] = useState<string | null>(null)
+  // ⚠ A REQUEST, NOT A TARGET. Two clicks on the same reference are two
+  // requests, and the panel's latch compares the request — see `jumpTo`
+  // in shared.ts.
+  const [docketJump, setDocketJump] = useState<JumpReq | null>(null)
   const [focusAgent, setFocusAgent] = useState<string | null>(null)
   // a `@mail:` reference clicked in the docket. The docket owns no mailbox;
   // the canvas owns the router that knows which of the three a pointer belongs
   // to, so this is handed DOWN to it rather than re-decided here. One-shot,
   // like `focusAgent` above.
-  const [mailJump, setMailJump] = useState<{ id: string; to: string } | null>(null)
+  const [mailJump, setMailJump] = useState<{ id: string; to: string; seq: number } | null>(null)
   // and a `@doc:` reference. The canvas owns the document reader (it opens
   // from the node chips), so this travels the same way the mail pointer does
   // rather than growing a second reader up here.
@@ -277,11 +280,11 @@ export default function App() {
   // reports what it finds.
   const galleryRefs = useShellRefs(slug ?? '', tree ?? null, {
     onOpenItem: (item) => {
-      setShowGallery(false); setDocketJump(item); setShowDocket(true)
+      setShowGallery(false); setDocketJump(jumpTo(item)); setShowDocket(true)
     },
     onFocusAgent: (id) => { setShowGallery(false); setFocusAgent(id) },
     onOpenDoc: (id) => { setShowGallery(false); setDocJump(id) },
-    onOpenMail: (r) => { setShowGallery(false); setMailJump(mailRefTarget(r)) },
+    onOpenMail: (r) => { setShowGallery(false); setMailJump({ ...mailRefTarget(r), seq: jumpTo(r.id).seq }) },
   })
   // the usage button GLOWS once a lane nears its wall (user feature
   // 2026-08-19), so a freeze stops being the first notice. It rides
@@ -1005,7 +1008,7 @@ export default function App() {
                   setShowInbox(true)
                 }}
                 onWorkItem={(item: string) => {
-                  setDocketJump(item)
+                  setDocketJump(jumpTo(item))
                   setShowDocket(true)
                 }} />
               {/* hard-full is a STATE, not an event: the alert persists (and
@@ -1037,14 +1040,14 @@ export default function App() {
                     // same `.overlay` layer and would otherwise open BEHIND
                     // the mail the reader clicked from.
                     setShowInbox(false); setInboxJump(null)
-                    setDocketJump(item); setShowDocket(true)
+                    setDocketJump(jumpTo(item)); setShowDocket(true)
                   }}
                   onOpenDoc={(id) => {
                     setShowInbox(false); setInboxJump(null); setDocJump(id)
                   }}
                   onOpenMail={(r) => {
                     setShowInbox(false); setInboxJump(null)
-                    setMailJump(mailRefTarget(r))
+                    setMailJump({ ...mailRefTarget(r), seq: jumpTo(r.id).seq })
                   }}
                   close={() => {
                     setShowInbox(false); setInboxJump(null); refreshTree(slug)
@@ -1080,7 +1083,7 @@ export default function App() {
       )}
       {showDocket && slug && tree && (
         <DocketModal slug={slug} toast={toast} tree={tree}
-          jumpTo={docketJump}
+          jumpTo={docketJump?.id ?? null} jumpSeq={docketJump?.seq}
           onJumpHandled={() => setDocketJump(null)}
           onFocusAgent={(id) => {
             setShowDocket(false)
@@ -1093,7 +1096,7 @@ export default function App() {
             // asked to read.
             setShowDocket(false)
             setDocketJump(null)
-            setMailJump(mailRefTarget(r))
+            setMailJump({ ...mailRefTarget(r), seq: jumpTo(r.id).seq })
           }}
           close={() => { setDocketJump(null); setShowDocket(false) }} />
       )}
