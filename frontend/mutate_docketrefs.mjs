@@ -268,6 +268,8 @@ const MUTANTS = [
 }
 
 /** The item's readable name.`,
+  },
+
   // ------------------------- the canonical-reference wiring (§25-§27)
   {
     name: 'the panel claims it can open every kind, including ones it cannot',

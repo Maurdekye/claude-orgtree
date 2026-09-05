@@ -28,7 +28,9 @@ import assert from 'node:assert/strict'
 import { RefChip, RefProse, TypedRefText, refToken, resolveRef, splitTypedRefs }
   from '../src/canvas/reflinks'
 import type { RefWorld } from '../src/canvas/reflinks'
-import { REF_TOKEN_RE, parseRef } from '../src/canvas/workrefs'
+import { REF_TOKEN_RE, buildMentionIndex, parseRef }
+  from '../src/canvas/workrefs'
+import type { WorkItem } from '../src/types'
 
 const HERE = 'orgtree'
 const world = (o: Partial<RefWorld> = {}): RefWorld => ({ org: HERE, ...o })
@@ -315,31 +317,44 @@ test('§11b the handles check runs before the index, so a kind this panel '
 
 test('§12 CONTROL — an explicit @agent token is NOT eaten by an item that '
   + 'happens to share the name', async () => {
-  // ⚠ THE ORG REALLY HAS THESE COLLISIONS. An agent named `checklist-evidence`
-  // works on an item that could easily be called the same thing, and the bare
-  // mention index resolves such a name to the ITEM. That rule is right for a
-  // bare word — but a writer who typed `@agent:orgtree/checklist-evidence`
-  // said which one they meant, and a bare-mention rule must not overrule them.
+  // ⚠ THE ORG REALLY HAS THIS COLLISION. An agent named `checklist-evidence`
+  // works on items that could easily carry the same name, and the shared
+  // mention index resolves such a bare word to the ITEM — deliberately, and
+  // that rule is right for a bare word. It must not overrule a writer who
+  // typed `@agent:orgtree/checklist-evidence` and thereby said which they
+  // meant.
   //
   // What keeps it true is the ORDER inside RefProse: canonical tokens are cut
   // out first, so the bare matcher only ever sees the text BETWEEN them and
   // can never reach inside one. (Its boundary rules would also decline a slug
-  // preceded by `/` — but that is a second, independent rule agreeing by
-  // luck, and this must not depend on it.)
+  // preceded by `/` — a second, independent rule agreeing by luck, which this
+  // must not depend on.)
+  //
+  // ⚠ AND THE INDEX IS THE REAL ONE, built by `buildMentionIndex` with the
+  // name registered as BOTH an item and an agent. A hand-rolled Map would let
+  // this pass without the collision ever existing — which is the failure mode
+  // that once let a "leak" control of mine pass for days.
   const NAME = 'checklist-evidence'
+  const index = buildMentionIndex(
+    [{ slug: NAME } as WorkItem], [[NAME, 'opus'] as const])
+  assert.equal(index.get(NAME)?.kind, 'item',
+    'the fixture must really collide, with the item winning the bare word')
+
   const picked: string[] = []
+  const focused: string[] = []
   const opened: string[] = []
   const view = await mountView(
     <RefProse text={`ask @agent:${HERE}/${NAME} about ${NAME}`}
       world={world()} onOpen={(r) => opened.push(r.ref.kind)}
-      slugIndex={new Map([[NAME, NAME]])} onPick={(n) => picked.push(n)} />,
+      index={index} onPick={(n) => picked.push(n)}
+      onFocusAgent={(id) => focused.push(id)} />,
     (el) => el)
   await flush()
 
   const agent = view.el.querySelector('button.ref-chip.ref-agent')
   assert.ok(agent, 'the explicit token rendered as an agent reference')
   // ⚠ AND IT IS WHOLE. A bare match inside the token would have split it,
-  // leaving a stray `@agent:orgtree/` next to a separate item link.
+  // leaving a stray `@agent:orgtree/` beside a separate item link.
   assert.ok(!view.el.textContent!.includes(`@agent:${HERE}/`),
     'the token was consumed as one unit, not cut in half')
 
@@ -348,11 +363,12 @@ test('§12 CONTROL — an explicit @agent token is NOT eaten by an item that '
   assert.deepEqual(picked, [], 'and never the item that shares the name')
 
   // CONTROL: the BARE occurrence of the same word, later in the same string,
-  // still links as the item. If it did not, this check would be passing
-  // because the item index was inert rather than because ordering works.
+  // still links — as the ITEM, per the collision rule. Without this the check
+  // above could be passing because the index was inert.
   const bare = view.el.querySelectorAll('button.docket-ref')
-  assert.equal(bare.length, 1, 'the bare mention is still an item link')
+  assert.equal(bare.length, 1, 'the bare mention is still a link')
   await inAct(() => (bare[0] as HTMLElement).click())
-  assert.deepEqual(picked, [NAME])
+  assert.deepEqual(picked, [NAME], 'and the bare word went to the item')
+  assert.deepEqual(focused, [], 'the bare word did not go to the agent')
   await view.unmount()
 })

@@ -169,8 +169,9 @@ const MUTANTS = [
     // true for the boring reason.
     name: 'bare mentions stop linking, so §12 could pass for the wrong reason',
     file: F, kills: '§12 CONTROL',
-    from: `        : (slugIndex && slugIndex.size
-          ? <WorkRefText key={i} text={p.text} index={slugIndex} onPick={onPick} />
+    from: `        : (index && index.size
+          ? <WorkRefText key={i} text={p.text} index={index} onPick={onPick}
+              onFocusAgent={onFocusAgent} />
           : <span key={i}>{p.text}</span>)))}`,
     to: `        : <span key={i}>{p.text}</span>))}`,
   },
