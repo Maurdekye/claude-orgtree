@@ -111,6 +111,19 @@ def gap(label, why, fn) -> None:
     print(f"  ok {PASS:3d}  {label}  ← FIXED: promote this out of gap()")
 
 
+INERT: list[tuple[str, str]] = []
+
+
+def inert(label, why) -> None:
+    """A check whose PRECONDITION no longer exists in this tree — it must say
+    so out loud, not pass quietly. (Both of these guard a shape the docket's
+    slug-only migration removes: with no opaque id left, an item can neither
+    be named twice by two different references nor be named at all without a
+    slug. The guard stays; the check that exercised it cannot run.)"""
+    INERT.append((label, why))
+    print(f"  ⚑ INERT  {label}")
+
+
 def expect_error(fn, needle="") -> None:
     try:
         fn()
@@ -847,24 +860,34 @@ def sec_repair() -> None:
     check("a duplicate in the allowlist refuses, and writes nothing at all",
           _duplicate_ids_refuse_and_write_nothing)
 
-    def _two_references_to_one_item_refuse():
-        org, at, owned = rig()
-        it = item(org, owned)
-        expect_error(lambda: org.repair_rename_identity(
-            USER, at, work_items=[owned, str(it["id"])]), "already in the allowlist")
-        assert item(org, owned)["owner"]["node"] == "kid"
-    check("two references naming ONE item are a duplicate too",
-          _two_references_to_one_item_refuse)
+    _LABEL_ALIAS = "two references naming ONE item are a duplicate too"
+    _org, _at, _owned = rig()
+    if "id" not in item(_org, _owned):
+        inert(_LABEL_ALIAS,
+              "items carry no opaque id in this tree, so there is no second "
+              "way to name one — the object-identity guard cannot be reached")
+        inert("an item with no slug is refused — the docket is named by slug",
+              "every item carries a slug in this tree, and an item without one "
+              "could not be named at all")
+    else:
+        def _two_references_to_one_item_refuse():
+            org, at, owned = rig()
+            it = item(org, owned)
+            expect_error(lambda: org.repair_rename_identity(
+                USER, at, work_items=[owned, str(it["id"])]),
+                "already in the allowlist")
+            assert item(org, owned)["owner"]["node"] == "kid"
+        check(_LABEL_ALIAS, _two_references_to_one_item_refuse)
 
-    def _an_item_without_a_slug_is_refused():
-        org, at, owned = rig()
-        it = item(org, owned)
-        wid = str(it["id"])
-        it.pop("slug", None)
-        expect_error(lambda: org.repair_rename_identity(
-            USER, at, work_items=[wid]), "identified by slug")
-    check("an item with no slug is refused — the docket is named by slug",
-          _an_item_without_a_slug_is_refused)
+        def _an_item_without_a_slug_is_refused():
+            org, at, owned = rig()
+            it = item(org, owned)
+            wid = str(it["id"])
+            it.pop("slug", None)
+            expect_error(lambda: org.repair_rename_identity(
+                USER, at, work_items=[wid]), "identified by slug")
+        check("an item with no slug is refused — the docket is named by slug",
+              _an_item_without_a_slug_is_refused)
 
     def _a_reused_name_after_deletion_is_refused():
         """THE ONE A MATCHING NAME CANNOT ANSWER. Rename kid→sprocket, delete
@@ -873,8 +896,13 @@ def sec_repair() -> None:
         org, at, owned = rig()
         org.delete(USER, "sprocket")
         org.hire("boss", "boss", "haiku", 1, "sprocket", **spec())
+        # backdate the impostor so the creation-ordering check CANNOT fire:
+        # otherwise which guard catches this depends on whether the hire
+        # landed in the same millisecond as the rename, and the check drifts
+        # between two correct refusals run to run (measured: it did).
+        org.nodes["sprocket"]["created"] = "2000-01-01T00:00:00.000Z"
         expect_error(lambda: org.repair_rename_identity(
-            USER, at, work_items=[owned]), "identity chain")
+            USER, at, work_items=[owned]), "re-bound")
         assert item(org, owned)["owner"]["node"] == "kid"
     check("a name re-used by a NEW hire after deletion is refused",
           _a_reused_name_after_deletion_is_refused)
@@ -1261,12 +1289,19 @@ def main() -> int:
         for label, why, detail in GAPS:
             print(f"  ⚑ {label}\n      why: {why}\n      saw: {detail}")
         print()
+    if INERT:
+        print("INERT in this tree (precondition gone — NOT passes):")
+        for label, why in INERT:
+            print(f"  ⚑ {label}\n      why: {why}")
+        print()
     if FAIL:
         for label, tb in FAIL:
             print(f"\n✗ {label}\n{tb}")
-        print(f"rename: {PASS} passed · {len(FAIL)} FAILED · {len(GAPS)} gaps")
+        print(f"rename: {PASS} passed · {len(FAIL)} FAILED · {len(GAPS)} gaps"
+              + (f" · {len(INERT)} inert" if INERT else ""))
         return 1
-    print(f"rename: all {PASS} checks passed · {len(GAPS)} known gaps")
+    print(f"rename: all {PASS} checks passed · {len(GAPS)} known gaps"
+          + (f" · {len(INERT)} inert" if INERT else ""))
     return 0
 
 
