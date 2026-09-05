@@ -109,6 +109,69 @@ function writeGroupMode(m: DocketGroupMode): void {
 // `filter` and first-appearance bucketing both preserve relative order — so a
 // group can never contradict the order the server chose, and there is no
 // second copy of the comparator to drift out of step with it.
+//
+// ⚠ THE SORT SELECTOR DOES NOT WEAKEN THAT. `Updated` — the default, and what
+// the docket has always shown — RETURNS THE SERVER'S ARRAY UNTOUCHED: there is
+// still no client comparator on that path, so it cannot disagree with the
+// server about anything. The two new orders are questions the server does not
+// answer, so `sortItems` answers them here, with the SAME tie-break rule the
+// server uses (the readable name, descending) — because the failure this
+// prevents is not a wrong order, it is two rows trading places between two
+// five-second polls while the reader's cursor is on one of them.
+
+export type DocketSortMode = 'updated' | 'created' | 'status'
+const SORT_MODES: { value: DocketSortMode; label: string; why: string }[] = [
+  { value: 'updated', label: 'Last updated', why: 'most recently updated first' },
+  { value: 'created', label: 'Newest first', why: 'most recently created first' },
+  { value: 'status', label: 'Status changed', why: 'most recent status change first' },
+]
+const SORT_KEY = 'orgtree.docket.sort'
+
+export function readSortMode(): DocketSortMode {
+  try {
+    const v = window.localStorage.getItem(SORT_KEY)
+    if (v === 'updated' || v === 'created' || v === 'status') return v
+  } catch { /* storage disabled or unavailable — fall back to the default */ }
+  return 'updated'
+}
+
+function writeSortMode(m: DocketSortMode): void {
+  try { window.localStorage.setItem(SORT_KEY, m) } catch { /* ignore */ }
+}
+
+/** The clock each mode reads.
+ *
+ *  ⚠ `status_at` IS SERVED FOR EVERY ITEM, including ones written before the
+ *  field existed — the server derives those from retained history and falls
+ *  back to their creation, never to a clock that moves for edits. So the
+ *  fallback chain here is for a payload from an OLDER BACKEND, not for an
+ *  older item, and it deliberately ends at `at`: falling through to
+ *  `updated_at` would let a retitle read as a state change, which is the
+ *  exact lie the durable field was added to remove. */
+function sortStamp(it: WorkItem, mode: DocketSortMode): string {
+  if (mode === 'created') return String(it.at ?? '')
+  if (mode === 'status') return String(it.status_at ?? it.at ?? '')
+  return String(it.docket_at ?? it.updated_at ?? '')
+}
+
+/** One section's items in the chosen order, newest first.
+ *
+ *  ⚠ `updated` RETURNS THE INPUT ARRAY ITSELF. Not a copy, not a re-sort of an
+ *  already-sorted list: the server's order IS this mode, and re-deriving it
+ *  here would be a second comparator that agrees today and drifts later.
+ *  ⚠ AND THE OTHERS ARE TOTAL. Same tie-break as `ledger.work_list` — the
+ *  readable name, descending — so equal stamps cannot shuffle between polls. */
+export function sortItems(items: WorkItem[], mode: DocketSortMode): WorkItem[] {
+  if (mode === 'updated') return items
+  return [...items].sort((a, b) => {
+    const sa = sortStamp(a, mode)
+    const sb = sortStamp(b, mode)
+    if (sa !== sb) return sa < sb ? 1 : -1
+    const na = String(a.slug ?? '')
+    const nb = String(b.slug ?? '')
+    return na < nb ? 1 : na > nb ? -1 : 0
+  })
+}
 
 /** What we may honestly say about the agent an item points at. A node keeps
  *  its identity across session generations: when the node is live, the
@@ -464,6 +527,7 @@ export function DocketModal({ slug, toast, close, tree, onFocusAgent,
   const [showArchived, setShowArchived] = useState(false)
   const [showBacklog, setShowBacklog] = useState(false)
   const [groupMode, setGroupMode] = useState<DocketGroupMode>(readGroupMode)
+  const [sortMode, setSortMode] = useState<DocketSortMode>(readSortMode)
   const [bump, setBump] = useState(0)
   // ⚠ EVERYTHING REMEMBERED IS SCOPED TO THE ORG IT CAME FROM. This panel can
   // be handed a different `slug` while mounted; without the tag, the previous
@@ -519,9 +583,18 @@ export function DocketModal({ slug, toast, close, tree, onFocusAgent,
   const backlogCount = data?.counts?.backlogged ?? backlogCache.length
 
   const ownerName = useCallback((it: WorkItem) => it.owner?.node ?? UNASSIGNED, [])
+  // ⚠ SORTED BEFORE GROUPING, and that ordering is load-bearing. Both
+  // `buildSections` and `nestRows` PRESERVE the order they are handed —
+  // filtering, first-appearance bucketing and re-parenting all do — so sorting
+  // the flat lists here puts siblings in the chosen order inside their parent
+  // and inside their group, without either of those two ever growing a
+  // comparator of its own.
   const sections = useMemo(
-    () => buildSections(groupMode, active, backlog, archived, ownerName),
-    [groupMode, active, backlog, archived, ownerName])
+    () => buildSections(groupMode,
+                        sortItems(active, sortMode),
+                        sortItems(backlog, sortMode),
+                        sortItems(archived, sortMode), ownerName),
+    [groupMode, sortMode, active, backlog, archived, ownerName])
   const rowCount = sections.reduce((n, s) => n + s.items.length, 0)
 
   // selection BY ID, not index — the list repolls under the user (G5)
@@ -723,6 +796,7 @@ export function DocketModal({ slug, toast, close, tree, onFocusAgent,
   }
 
   const pickGroup = (m: DocketGroupMode) => { setGroupMode(m); writeGroupMode(m) }
+  const pickSort = (m: DocketSortMode) => { setSortMode(m); writeSortMode(m) }
 
   return (
     <>
@@ -767,10 +841,19 @@ export function DocketModal({ slug, toast, close, tree, onFocusAgent,
             {GROUP_MODES.map((g) =>
               <option key={g.value} value={g.value}>{g.label}</option>)}
           </select>
+          <label className="dim" htmlFor="docket-sort">Sort</label>
+          <select id="docket-sort" className="docket-group-select" value={sortMode}
+            onChange={(e) => pickSort(e.target.value as DocketSortMode)}>
+            {SORT_MODES.map((s) =>
+              <option key={s.value} value={s.value}>{s.label}</option>)}
+          </select>
+          {/* ⚠ THE CAPTION READS THE MODE. It used to be the literal sentence
+              "most recently updated first", which was true of the only order
+              there was; leaving it there while adding two more would have made
+              the panel state an order it was not in. */}
           <span className="dim docket-sort-why">
-            {groupMode === 'none'
-              ? 'most recently updated first'
-              : 'newest first inside each group'}
+            {SORT_MODES.find((s) => s.value === sortMode)?.why ?? SORT_MODES[0]!.why}
+            {groupMode !== 'none' && ', inside each group'}
           </span>
         </div>
         <div className="mailpane">

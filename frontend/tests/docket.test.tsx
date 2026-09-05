@@ -1643,4 +1643,177 @@ test('§37 Waiting is painted, word and dot, and not with Open’s colour', () =
   assert.notEqual(paintOf('.docket-status.status-waiting', 'color'),
     paintOf('.docket-status.status-open', 'color'),
     'Waiting and Open declare the same colour again')
+// ───────────────────────────────────────────────────────── §37 the sort selector
+//
+// The docket could only be read in one order, and that order answers only one
+// of the three questions asked of it. These drive the REAL <select> the way a
+// user does and read the resulting row order off the DOM.
+//
+// ⚠ EVERY FIXTURE HERE PUTS THE THREE CLOCKS IN DIFFERENT ORDERS ON PURPOSE.
+// With `at`, `docket_at` and `status_at` agreeing, every mode produces the
+// same list and all three checks pass against a selector that does nothing.
+
+const forgetSortChoice = () => window.localStorage.removeItem('orgtree.docket.sort')
+const sortSelect = (el: HTMLElement) =>
+  el.querySelector('#docket-sort') as HTMLSelectElement
+async function chooseSort(el: HTMLElement, value: string) {
+  const sel = sortSelect(el)
+  await inAct(() => {
+    sel.value = value
+    sel.dispatchEvent(new window.Event('change', { bubbles: true }))
+  })
+  await flush()
+}
+
+/** three items whose three clocks DISAGREE, so each mode has its own answer */
+const SORT_FIXTURE = [
+  mkItem({ slug: 'oldest-made-newest-moved', title: 'oldest-made-newest-moved',
+           at: '2026-09-01T00:00:00.000Z',
+           docket_at: '2026-09-05T03:00:00.000Z',
+           status_at: '2026-09-05T09:00:00.000Z' }),
+  mkItem({ slug: 'newest-made-oldest-moved', title: 'newest-made-oldest-moved',
+           at: '2026-09-04T00:00:00.000Z',
+           docket_at: '2026-09-05T02:00:00.000Z',
+           status_at: '2026-09-02T00:00:00.000Z' }),
+  mkItem({ slug: 'middle-of-everything', title: 'middle-of-everything',
+           at: '2026-09-02T00:00:00.000Z',
+           docket_at: '2026-09-05T01:00:00.000Z',
+           status_at: '2026-09-03T00:00:00.000Z' }),
+]
+
+uiTest('§37 three orders, and Updated is still the default', async (mount) => {
+  forgetGroupChoice(); forgetSortChoice()
+  // the server hands them back in ITS order (newest docket update first)
+  mockWorkItems([SORT_FIXTURE[0]!, SORT_FIXTURE[1]!, SORT_FIXTURE[2]!])
+  const { el } = await mount(docketModal())
+  await flush()
+  assert.equal(sortSelect(el).value, 'updated', 'the default changed')
+  assert.deepEqual(titles(el),
+    ['oldest-made-newest-moved', 'newest-made-oldest-moved', 'middle-of-everything'],
+    "the default must be the SERVER's order, untouched")
+  assert.match(el.querySelector('.docket-sort-why')?.textContent ?? '',
+    /most recently updated first/)
+
+  await chooseSort(el, 'created')
+  assert.deepEqual(titles(el),
+    ['newest-made-oldest-moved', 'middle-of-everything', 'oldest-made-newest-moved'],
+    'newest CREATED first')
+  assert.match(el.querySelector('.docket-sort-why')?.textContent ?? '',
+    /most recently created first/, 'the caption still claims the old order')
+
+  await chooseSort(el, 'status')
+  assert.deepEqual(titles(el),
+    ['oldest-made-newest-moved', 'middle-of-everything', 'newest-made-oldest-moved'],
+    'most recent STATUS CHANGE first')
+  assert.match(el.querySelector('.docket-sort-why')?.textContent ?? '',
+    /most recent status change first/)
+})
+
+uiTest('§37b a progress-only update does not advance status order', async (mount) => {
+  forgetGroupChoice(); forgetSortChoice()
+  // `noted` was updated a minute ago but has not changed state in days;
+  // `moved` really did transition, earlier today.
+  const noted = mkItem({ slug: 'only-a-note', title: 'only-a-note',
+                         at: '2026-09-01T00:00:00.000Z',
+                         docket_at: '2026-09-05T11:59:00.000Z',
+                         status_at: '2026-09-01T00:00:00.000Z' })
+  const moved = mkItem({ slug: 'really-moved', title: 'really-moved',
+                         at: '2026-09-01T00:00:00.000Z',
+                         docket_at: '2026-09-05T08:00:00.000Z',
+                         status_at: '2026-09-05T08:00:00.000Z' })
+  mockWorkItems([noted, moved])
+  const { el } = await mount(docketModal())
+  await flush()
+  assert.deepEqual(titles(el), ['only-a-note', 'really-moved'],
+    'control: by UPDATE the note is on top, which is the whole problem')
+  await chooseSort(el, 'status')
+  assert.deepEqual(titles(el), ['really-moved', 'only-a-note'],
+    'a progress note is not a state change, and must not outrank one')
+})
+
+uiTest('§37c ties break deterministically, and repeat across re-renders',
+async (mount) => {
+  forgetGroupChoice(); forgetSortChoice()
+  // ⚠ THE STORED ORDER IS THE OPPOSITE of a working tie-break's answer, so a
+  // build with no tie-break is wrong every run rather than one time in six.
+  const tied = ['a-tie', 'b-tie', 'c-tie'].map((n) => mkItem({
+    slug: n, title: n, at: '2026-09-03T00:00:00.000Z',
+    docket_at: '2026-09-03T00:00:00.000Z', status_at: '2026-09-03T00:00:00.000Z',
+  }))
+  mockWorkItems(tied)
+  const { el } = await mount(docketModal())
+  await flush()
+  await chooseSort(el, 'created')
+  const first = titles(el)
+  assert.deepEqual(first, ['c-tie', 'b-tie', 'a-tie'],
+    'equal stamps must fall back to the readable name, as the server does')
+  await chooseSort(el, 'status')
+  await chooseSort(el, 'created')
+  assert.deepEqual(titles(el), first, 'the same list must come back the same')
+})
+
+uiTest('§37d sorting orders SIBLINGS inside their parent, not the whole tree flat',
+async (mount) => {
+  forgetGroupChoice(); forgetSortChoice()
+  const parent = mkItem({ slug: 'the-parent', title: 'the-parent',
+                          at: '2026-09-01T00:00:00.000Z',
+                          docket_at: '2026-09-05T00:00:00.000Z',
+                          status_at: '2026-09-01T00:00:00.000Z' })
+  // the OLDER child is served first; by creation the newer one must lead —
+  // but both must stay under their parent
+  const kid1 = mkItem({ slug: 'child-older', title: 'child-older',
+                        parent: 'the-parent', at: '2026-09-02T00:00:00.000Z',
+                        docket_at: '2026-09-04T00:00:00.000Z',
+                        status_at: '2026-09-02T00:00:00.000Z' })
+  const kid2 = mkItem({ slug: 'child-newer', title: 'child-newer',
+                        parent: 'the-parent', at: '2026-09-03T00:00:00.000Z',
+                        docket_at: '2026-09-03T00:00:00.000Z',
+                        status_at: '2026-09-03T00:00:00.000Z' })
+  mockWorkItems([parent, kid1, kid2])
+  const { el } = await mount(docketModal())
+  await flush()
+  assert.deepEqual(titles(el), ['the-parent', 'child-older', 'child-newer'],
+    'control: the served order nests the older child first')
+  await chooseSort(el, 'created')
+  assert.deepEqual(titles(el), ['the-parent', 'child-newer', 'child-older'],
+    'the children reordered under the parent — and the parent did not move, '
+    + 'and neither child was promoted out of the nesting')
+  const depths = rows(el).map((r) => r.className.includes('docket-child'))
+  assert.deepEqual(depths.slice(1), [true, true],
+    'both rows are still CHILDREN — sorting flattened the tree')
+})
+
+uiTest('§37e an item from an older backend sorts by CREATION, never by its edit clock',
+async (mount) => {
+  forgetGroupChoice(); forgetSortChoice()
+  // ⚠ THE PAYLOAD WITHOUT THE FIELD. The server derives `status_at` for every
+  // item it serves, so this models an older BACKEND, not an older item — and
+  // it is the only shape that reaches the client-side fallback at all. Its
+  // edit clock is deliberately the NEWEST thing in the fixture, so a fallback
+  // to `updated_at` would put it on top; its creation is the OLDEST, so the
+  // honest answer puts it last. The two answers cannot be confused.
+  const legacy = mkItem({
+    slug: 'from-an-older-build', title: 'from-an-older-build',
+    at: '2026-09-01T00:00:00.000Z',
+    updated_at: '2026-09-05T23:00:00.000Z',
+    docket_at: '2026-09-05T23:00:00.000Z',
+  })
+  delete (legacy as { status_at?: string | null }).status_at
+  const recent = mkItem({
+    slug: 'moved-yesterday', title: 'moved-yesterday',
+    at: '2026-09-02T00:00:00.000Z',
+    updated_at: '2026-09-04T00:00:00.000Z',
+    docket_at: '2026-09-04T00:00:00.000Z',
+    status_at: '2026-09-04T00:00:00.000Z',
+  })
+  mockWorkItems([legacy, recent])
+  const { el } = await mount(docketModal())
+  await flush()
+  assert.deepEqual(titles(el), ['from-an-older-build', 'moved-yesterday'],
+    'control: by UPDATE the legacy row leads, so a fallback to that clock '
+    + 'would be invisible here')
+  await chooseSort(el, 'status')
+  assert.deepEqual(titles(el), ['moved-yesterday', 'from-an-older-build'],
+    'a row with no status clock must fall back to its CREATION — falling back '
+    + 'to the edit clock would date a state change that never happened')
 })

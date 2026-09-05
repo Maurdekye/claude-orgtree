@@ -1911,6 +1911,13 @@ export interface WorkItem {
    *  both read THIS, not `updated_at` (any mutation moves that). Null
    *  before the item's first status update. */
   docket_at: string | null
+  /** when the STATUS VALUE last changed — the third clock, and the only one
+   *  that answers "what has actually moved?". A progress note, a retitle or
+   *  an attention flag advances the other two without a state changing.
+   *  Served for every item: the server derives it for items written before
+   *  the field existed, from retained history, falling back to creation.
+   *  Optional only because an older BACKEND may not send it at all. */
+  status_at?: string | null
   /** author of the latest status update — the docket general-reply
    *  recipient. Owner changes, attached questions and dismissals never
    *  replace it. Null before any status update (reply is refused). */
