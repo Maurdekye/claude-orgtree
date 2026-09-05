@@ -4419,7 +4419,8 @@ class Org:
                 f'"{target}" is not a live descendant of "{nid}" — '
                 f"subjugation reaches only into that seat's own subtree; for "
                 f"two unrelated agents use the pairwise swap (D-224)")
-        out = self.swap_seats(actor, nid, target, _op="subjugate")
+        out = self.swap_seats(actor, nid, target, _op="subjugate",
+                              _self_subjugation=actor == nid)
         if actor == nid:
             new_sup = self.node(nid)["parent"]
             disp = f'"{new_sup}"' if new_sup else "the top level"
@@ -4430,7 +4431,8 @@ class Org:
         return out
 
     def swap_seats(self, actor: str, a: str, b: str,
-                   _op: str = "swap_seats") -> dict[str, Any]:
+                   _op: str = "swap_seats", *,
+                   _self_subjugation: bool = False) -> dict[str, Any]:
         """D-224 ②: two agents EXCHANGE SEATS — a pure relabeling of two
         positions in the tree (user spec 2026-09-02: the swap tool carries
         exactly this one semantics; "swap positions, each keeping its own
@@ -4472,11 +4474,13 @@ class Org:
         self._require_live(b)
         p_a, p_b = n_a["parent"], n_b["parent"]
         direct = p_b == a
-        if (p_a is None or p_b is None) and actor != USER:
-            # promote()'s §7.4 gate on THIS route too (the D-014 lesson: one
-            # end state, one gate): the top level is the privileged class —
-            # unbidden user mail, org voice, extern recipients — and only
-            # the user decides who occupies a top seat.
+        # The dedicated self-subjugation route may hand over the caller's
+        # OWN top seat to its live descendant (user ruling 2026-09-05).
+        # Ordinary swaps still require the user; the private marker is never
+        # read from API arguments, and cannot authorize raising its actor.
+        voluntary = (_self_subjugation and actor == a and nested
+                     and p_a is None)
+        if (p_a is None or p_b is None) and actor != USER and not voluntary:
             raise LedgerError(
                 "only the user reseats the top level (§7.4) — ask the user "
                 "to perform this swap")

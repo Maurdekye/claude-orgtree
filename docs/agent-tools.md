@@ -18,6 +18,7 @@ the MCP catalog in `backend/orgtree/mcptool.py`.
 | `orgtree_rehire` | Restore an archived node, optionally renaming, re-scoping, granting audiences, and giving it a kickoff in one call. A recoverable bearer must stay with its original provider; use `orgtree_switch_model` after rehire to change providers. |
 | `orgtree_cheap_compact` | Replace an idle report with a fresh same-tier report that can read the predecessor's folder, avoiding a costly cold compaction. |
 | `orgtree_move` | Re-parent a node within the caller's reachable subtree. |
+| `orgtree_self_subjugate` | Voluntarily exchange your own seat with a live descendant, including when you are top-level. Your replacement takes the seat's reports, grant and scope; your identity and session stay with you. Ordinary swaps involving top-level seats remain user-only. |
 | `orgtree_dissolve` | Retire a node and all descendants. |
 | `orgtree_reallocate` | Move grant credits between a report and its parent. |
 | `orgtree_rename` | Rename a descendant and move its identity, mailbox, and working folder with it. |

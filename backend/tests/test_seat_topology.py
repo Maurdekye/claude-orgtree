@@ -429,20 +429,53 @@ def _():
     eq(fingerprint(org), fp)
 
 
-@t("§7.4: only the user reseats the top level — from either side")
+@t("§7.4: ordinary top-level swaps stay user-only — from either side")
 def _():
     org = Org.create("topgate")
     org.hire(USER, None, "opus", 40, "t1")
     org.hire(USER, None, "opus", 20, "t2")
     org.hire("t1", "t1", "opus", 6, "kid", **spec())
     fp = fingerprint(org)
-    expect_error(lambda: org.subjugate("t1", "t1", "kid"), "only the user")
     expect_error(lambda: org.swap_seats("t1", "t1", "kid"), "only the user")
+    expect_error(lambda: org.swap_seats("t1", "kid", "t1"), "only the user")
     eq(fingerprint(org), fp, "the refused top-level swap changed nothing")
     org.subjugate(USER, "t1", "kid")             # the user may
     eq(org.nodes["kid"]["parent"], None)
     eq(org.nodes["t1"]["parent"], "kid")
     assert_sound(org, "after a user-performed top-level exchange")
+
+
+@t("a top-level coordinator voluntarily hands its own seat to a live report")
+def _():
+    org = team_org()
+    grants = {k: n["grant"] for k, n in org.nodes.items()}
+    sessions = {k: n.get("session_id") for k, n in org.nodes.items()}
+    r = org.subjugate("boss", "boss", "lead")
+    eq(org.nodes["lead"]["parent"], None)
+    eq(org.nodes["boss"]["parent"], "lead")
+    eq(org.nodes["lead"]["grant"], grants["boss"])
+    eq(org.nodes["boss"]["grant"], grants["lead"])
+    eq({k: n.get("session_id") for k, n in org.nodes.items()}, sessions)
+    true("next_step" in r)
+    assert_sound(org, "after voluntary top-level handoff")
+
+
+@t("a deep top-level handoff retains upward communication and rejects other chains")
+def _():
+    org = team_org()
+    org.hire(USER, None, "opus", 10, "other")
+    before = fingerprint(org)
+    expect_error(lambda: org.subjugate("boss", "boss", "other"), "not a live descendant")
+    expect_error(lambda: org.subjugate("lead", "boss", "w1"), "authority")
+    expect_error(lambda: org.subjugate("boss", "boss", "boss"), "second party")
+    eq(fingerprint(org), before)
+    r = org.subjugate("boss", "boss", "w1")
+    eq(org.nodes["w1"]["parent"], None)
+    eq(org.nodes["boss"]["parent"], "lead")
+    true(r["audience_retained"])
+    true(org._has_audience("boss", "w1"))
+    eq(org.nodes["other"]["parent"], None)
+    assert_sound(org, "after deep voluntary handoff")
 
 
 @t("a top-level grant cap is respected on the way through (D-014)")
@@ -453,7 +486,7 @@ def _():
     org.hire("t1", "t1", "haiku", 20, "kid", **spec())
     # the grant VALUE rides the seat, so the top seat still holds 40 after —
     # the exchange cannot inflate it, and the cap is therefore untouchable
-    org.subjugate(USER, "t1", "kid")
+    org.subjugate("t1", "t1", "kid")
     eq(org.nodes["kid"]["grant"], 40, "the seat's grant, unchanged in value")
     true(org.nodes["kid"]["grant"] <= org.d["max_top_grant"])
     assert_sound(org, "after a capped top-level exchange")
@@ -1139,6 +1172,35 @@ def _():
     eq(org.nodes["mid"]["parent"], kid_was, "each took the other's slot")
     eq(org.nodes["kid"]["parent"], mid_was)
     assert_sound(org, "after an API self-subjugation")
+
+
+@t("HTTP top-level self-handoff works, but plain swap and upward/cross-chain requests do not")
+def _():
+    org = store.create_org("top-level handoff API")
+    org.hire(USER, None, "opus", 40, "leader")
+    org.hire(USER, "leader", "opus", 10, "replacement")
+    org.hire(USER, None, "opus", 5, "other")
+    store.save_org(org)
+    slug = org.d["slug"]
+    before = fingerprint(org)
+    for actor, tool, args in (
+        ("leader", "orgtree_swap", {"a": "leader", "b": "replacement", "_self_subjugation": True}),
+        ("replacement", "orgtree_self_subjugate", {"target": "leader"}),
+        ("leader", "orgtree_self_subjugate", {"target": "other"}),
+        ("leader", "orgtree_self_subjugate", {"target": "leader"}),
+    ):
+        r = CLIENT.post("/api/agent", json={"org": slug, "node": actor,
+            "tool": tool, "args": args})
+        eq(r.status_code, 422, (actor, tool, r.text))
+        eq(fingerprint(store.load_org(slug)), before, "refusal mutated the tree")
+    r = CLIENT.post("/api/agent", json={"org": slug, "node": "leader",
+        "tool": "orgtree_self_subjugate", "args": {"target": "replacement"}})
+    eq(r.status_code, 200, r.text)
+    org = store.load_org(slug)
+    eq(org.nodes["replacement"]["parent"], None)
+    eq(org.nodes["leader"]["parent"], "replacement")
+    eq(org.nodes["other"]["parent"], None)
+    assert_sound(org, "HTTP top-level voluntary handoff")
 
 
 print(f"\nALL {PASS} CHECKS PASS")

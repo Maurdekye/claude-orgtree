@@ -1222,8 +1222,10 @@ TOOLS: list[dict[str, Any]] = [
             "HAND-OVER PATTERN: hire a replacement (same tier, your full "
             "scope, a successor charter), self-subjugate to it, transfer "
             "loose ends, then orgtree_retire yourself (self-retire needs "
-            "you to be a leaf). Top-level agents: only the user may reseat "
-            "the top level — use orgtree_ask."),
+            "you to be a leaf). A top-level agent may voluntarily hand its "
+            "OWN seat to its live descendant through this tool. Ordinary "
+            "top-level swaps remain user-only; this cannot raise you or "
+            "replace another chain's coordinator."),
         "inputSchema": {"type": "object",
                         "properties": {"target": {"type": "string"}},
                         "required": ["target"]},
