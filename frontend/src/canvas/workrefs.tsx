@@ -18,7 +18,7 @@
 //     input exactly — whitespace included, since these surfaces render with
 //     `white-space: pre-wrap`.
 
-import { Fragment, useMemo } from 'react'
+import { useMemo } from 'react'
 import type { ReactNode } from 'react'
 import type { WorkItem } from '../types'
 import { AgentName } from './identity'
@@ -34,29 +34,31 @@ import { AgentName } from './identity'
  *  can forget. Prose is full of words that look like names and are not. */
 export type RefIndex<T> = Map<string, T>
 
-/** What a name in docket prose turns out to be. The panel's writing talks
- *  about two kinds of name — the docket's own items, and this org's agents —
- *  and ONE index holds both kinds, because two indexes would mean scanning the
- *  same sentence twice with two sets of boundary rules and two chances for a
- *  short name to win inside a long one. */
+/** What a name in prose turns out to be: an item, or an agent and the model
+ *  that agent runs under NOW. One index holds both kinds — two would mean two
+ *  scans with two sets of boundary rules, free to drift. */
 export type MentionRef =
   | { kind: 'item'; slug: string }
-  | { kind: 'agent'; id: string }
+  | { kind: 'agent'; id: string; tier?: string | null }
 
-/** The docket's own index: every item this org served and every agent it
- *  currently has, by name. */
 export type MentionIndex = RefIndex<MentionRef>
 
-/** ⚠ ITEMS WIN A COLLISION. An item named exactly like an agent is one name
- *  with two meanings, and this panel is the docket: the reader following it is
- *  after the item. The order of these two loops IS that rule — agents first,
- *  items second, so an item overwrites the agent entry. */
-export function buildMentionIndex(items: Iterable<WorkItem>,
-                                  agentIds?: Iterable<string>): MentionIndex {
+/** ⚠ ITEMS WIN A COLLISION: the loop order IS the rule. In the docket a name
+ *  that is both an item and an agent is the item.
+ *
+ *  ⚠ THE TIER COMES FROM THE CALLER'S FACTS, never from a lookup here. A name
+ *  absent from `agents` gets no entry, and an agent whose tier is unknown gets
+ *  an entry with no tier — neither is filled in with a plausible answer. */
+export function buildMentionIndex(
+  items: Iterable<WorkItem>,
+  agents?: Iterable<readonly [string, string | null | undefined]>,
+): MentionIndex {
   const out: MentionIndex = new Map()
-  // an empty name would compile into the alternation as an empty branch,
-  // which matches at every position and spins the scanner forever
-  for (const id of agentIds ?? []) if (id) out.set(id, { kind: 'agent', id })
+  // an empty name would compile into the alternation as an empty branch, which
+  // matches at every position and spins the scanner forever
+  for (const [id, tier] of agents ?? []) {
+    if (id) out.set(id, { kind: 'agent', id, tier })
+  }
   for (const it of items) if (it?.slug) out.set(it.slug, { kind: 'item', slug: it.slug })
   return out
 }
@@ -147,20 +149,15 @@ export function RefText<T>({ text, index, render }: {
 }
 
 /** The docket's rendering of a mention: an underlined name that goes there.
- *
  *  An ITEM mention selects that item; an AGENT mention goes to that agent's
- *  desk, drawn by the shared `AgentName` so a name is one component
- *  everywhere.
+ *  desk, drawn by the shared `AgentName`.
  *
- *  ⚠ AN AGENT MENTION WEARS NO MODEL CHIP, and that is an abstention, not an
- *  oversight. Everywhere else in this panel the chip says "this is the model
- *  that did this" — an actor line carries the generation the update was
- *  written under, so the attribution is recorded. Prose carries no generation
- *  at all: a name in a sentence written weeks ago may not be the agent that
- *  now answers to it. Rather than let one glyph mean "who did it" in a row and
- *  "who would answer now" in a paragraph, the mention claims nothing about the
- *  model and only offers the jump — which does go to whoever holds the name
- *  now, and says so in its title. */
+ *  ⚠ A MENTION'S CHIP IS THE DESTINATION'S CURRENT MODEL, AND SAYS SO. This is
+ *  navigation, not authorship: prose records no generation, so the chip cannot
+ *  mean "the model that wrote this" the way an actor line's does. It means
+ *  "the model you will reach", the tooltip says `current model`, and an agent
+ *  whose current tier is unknown gets no chip rather than a guess.
+ *  (Astra ruling 2026-09-05, over this author's proposal to show none.) */
 export function WorkRefText({ text, index, onPick, onFocusAgent }: {
   text: string
   index: MentionIndex
@@ -172,10 +169,14 @@ export function WorkRefText({ text, index, onPick, onFocusAgent }: {
       if (ref.kind === 'agent') {
         return onFocusAgent
           ? (
-            <Fragment key={key}>
-              <AgentName id={ref.id} nameClass="docket-ref docket-ref-agent"
+            <span key={key} className="docket-mention">
+              <AgentName id={ref.id} tier={ref.tier}
+                nameClass="docket-ref docket-ref-agent"
+                why={ref.tier
+                  ? `${ref.id} — current model, ${ref.tier}. Go to its desk.`
+                  : `${ref.id} — current model not known. Go to its desk.`}
                 onFocus={(id) => onFocusAgent(id)} />
-            </Fragment>
+            </span>
           )
           : <span key={key}>{shown}</span>
       }

@@ -41,7 +41,8 @@ const ITEMS: WorkItem[] = [
     // one agent mention and one item mention IN THE SAME SENTENCE, so the two
     // kinds of mention are measured against each other and against the prose
     objective: 'coordinator-astra asked for this; it follows on from '
-      + 'explain-unavailable-actions and nothing else.',
+      + 'explain-unavailable-actions, and tierless-agent has no model on '
+      + 'record.',
     done_so_far: ['handed the switchboard tab to coordinator-astra'],
   }),
   mkItem({ slug: 'explain-unavailable-actions', title: 'Explain them' }),
@@ -56,6 +57,9 @@ const TREE: TreePayload = {
     children: [{
       id: 'checklist-evidence', tier: 'fable', generation: 2, state: 'live',
       children: [],
+    }, {
+      // live and reachable, model unknown: it links and wears no chip
+      id: 'tierless-agent', generation: 1, state: 'live', children: [],
     }],
   }],
   work_items_summary: { attention: 0, active: ITEMS.length },
@@ -115,6 +119,8 @@ const main = async () => {
     ['docket-group-name', 1],
     ['docket-ref-agent', 2],         // description + the progress entry
     ['docket-actor-name', 2],        // the row actor and the pane actor
+    ['docket-mention', 3],           // two known agents + the tierless one
+    ['tier t-opus', 1],              // a mention's CURRENT-model chip
   ]
   for (const [cls, n] of want) {
     const got = (html.match(new RegExp(cls, 'g')) ?? []).length

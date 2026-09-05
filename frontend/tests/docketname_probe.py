@@ -34,17 +34,35 @@ WHAT IT CHECKS
   5. prosesame — the agent mention and the item mention beside it are the same
                  size and sit on the same line, so one sentence does not carry
                  two kinds of typography.
+  6. prosechip — the model chip a mention wears (Astra ruling 2026-09-05: the
+                 CURRENT model of the desk the name goes to) sits INSIDE the
+                 line it is written on. The panel's 16px row chip would set the
+                 paragraph's line height instead; this is the check that says
+                 which of those two happened.
 
 THE CONTROL. `--css <sheet without these rules>` must FAIL, and
 `--expect-fail` makes that the passing outcome:
 
-    git show HEAD:frontend/src/styles.css > /tmp/old.css
-    python tests/docketname_probe.py /tmp/docketname.html --css /tmp/old.css --expect-fail
+    git show 9e328e8:frontend/src/styles.css > /tmp/pre.css
+    python tests/docketname_probe.py /tmp/docketname.html --css /tmp/pre.css --expect-fail
+
+⚠ NAME THE PRE-SERIES COMMIT, NOT `HEAD`. Once this work is committed `HEAD`
+IS the new sheet, and the control then passes and says the probe proves
+nothing — which is what it did to this author, once. 9e328e8 is the commit
+these two surfaces were built on.
 
 Pairing today's markup with the previous sheet is sound HERE precisely because
 the markup change is what the old sheet mishandles: the old sheet still styles
 `.cc-name` and `.docket-ref`, so it shows what those rules do to these elements
-without the three-class resets — which is the whole claim.
+without the three-class resets — which is the whole claim. Measured, it fails
+on seven counts.
+
+⚠ THAT CONTROL DOES NOT EXERCISE CHECK 6: the old sheet's 16px chip still fits
+inside an 18.8px line, so the chip check would pass either way and would be an
+assertion nobody had ever seen fail. `--break-chip` is its own control — it
+appends one rule that grows the chip past the line and must FAIL:
+
+    python tests/docketname_probe.py /tmp/docketname.html --break-chip --expect-fail
 """
 import argparse
 import pathlib
@@ -84,7 +102,10 @@ MEASURE = """
   const proseItem = desc && [...desc.querySelectorAll('.docket-ref')]
     .find((e) => !e.classList.contains('docket-ref-agent'))
   const proseText = desc && [...desc.querySelectorAll('span')]
-    .find((e) => (e.textContent ?? '').trim().length > 5)
+    .find((e) => !e.classList.contains('docket-mention')
+      && (e.textContent ?? '').trim().length > 5)
+  const proseMention = desc && one('.docket-mention', desc)
+  const proseChip = desc && one('.docket-mention .tier', desc)
   return {
     head: box(agentHead),
     headName: box(agentHead && one('.docket-group-name', agentHead)),
@@ -95,6 +116,8 @@ MEASURE = """
     proseAgent: box(proseAgent),
     proseItem: box(proseItem),
     proseText: box(proseText),
+    proseMention: box(proseMention),
+    proseChip: box(proseChip),
   }
 }
 """
@@ -110,9 +133,16 @@ def main() -> int:
     ap.add_argument("--css", default=str(DEFAULT_CSS))
     ap.add_argument("--shot")
     ap.add_argument("--expect-fail", action="store_true")
+    ap.add_argument("--break-chip", action="store_true",
+                    help="grow the in-prose chip past the line: check 6's own "
+                         "control, which must FAIL")
     a = ap.parse_args()
 
     css = pathlib.Path(a.css).resolve().read_text(encoding="utf-8")
+    if a.break_chip:
+        css += """
+.docket-modal .docket-mention .tier { width: 30px; height: 30px; font-size: 18px; }
+"""
     body = pathlib.Path(a.html).resolve().read_text(encoding="utf-8")
     page = (f"<!doctype html><meta charset=utf-8><style>{css}</style>"
             f"<body class='dark'>{body}</body>")
@@ -223,6 +253,27 @@ def main() -> int:
     if not near(pa["mid"], pi["mid"], 1.0):
         fails.append("prosesame: the two mentions do not sit on the same line "
                      f"(agent {pa['mid']:.1f}, item {pi['mid']:.1f})")
+
+    # 6. prosechip — the chip is inside the line, not setting its height
+    pc, pm = m["proseChip"], m["proseMention"]
+    line = float(pt["lineHeight"].rstrip("px")) if pt["lineHeight"].endswith("px")         else pt["h"]
+    print(f"  prose chip  : {pc['w']:.1f}x{pc['h']:.1f} in a {line:.1f}px line; "
+          f"mention h={pm['h']:.1f} vs item {pi['h']:.1f}")
+    if pc["h"] > line:
+        fails.append(f"prosechip: the chip is {pc['h']:.1f}px tall in a "
+                     f"{line:.1f}px line — it sets the paragraph's line height")
+    # the whole mention, chip included, must still be a line of text. The item
+    # mention beside it is the shipped, reviewed reference; 2px is the room the
+    # chip's border takes, measured, not guessed.
+    if pm["h"] > pi["h"] + 2:
+        fails.append(f"prosechip: the mention with its chip is {pm['h']:.1f}px "
+                     f"where the plain item mention is {pi['h']:.1f}px")
+    if pc["mid"] < pt["mid"] - line / 2 or pc["mid"] > pt["mid"] + line / 2:
+        fails.append("prosechip: the chip's centre is outside the line band of "
+                     f"the prose (chip {pc['mid']:.1f}, text {pt['mid']:.1f} "
+                     f"± {line / 2:.1f})")
+    if pc["x"] >= m["proseAgent"]["x"]:
+        fails.append("prosechip: the chip is not before the name it belongs to")
 
     for f in fails:
         print("  FAIL", f)

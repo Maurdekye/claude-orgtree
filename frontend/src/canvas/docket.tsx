@@ -175,10 +175,8 @@ function ActorName({ actor, facts, onFocusAgent, close }: {
 
 /** The by-agent grouping's heading: the agent itself, not a word about it.
  *
- *  ⚠ THE HEADING'S OWN TYPOGRAPHY IS KEPT. `.cc-name` is a 12.5px mono block
- *  elsewhere and this heading is 10.5px uppercase and letterspaced; the
- *  stylesheet hands the name back the heading's font so this is a chip and a
- *  click being added, not the heading being restyled. */
+ *  ⚠ THE HEADING KEEPS ITS OWN TYPOGRAPHY — the stylesheet hands `.cc-name`
+ *  the heading's font back, so this adds a chip and a click, not a restyle. */
 function GroupAgentHead({ agent, items, facts, onFocusAgent, close }: {
   agent: string
   items: WorkItem[]
@@ -197,9 +195,8 @@ function GroupAgentHead({ agent, items, facts, onFocusAgent, close }: {
   )
 }
 
-/** The item's readable name. Falls back to the opaque id for an item written
- *  before slugs existed — the server refuses to mint one on a read, so there
- *  is genuinely nothing else to show. */
+/** The item's readable name. The slug IS the name — there is no other
+ *  identifier and no fallback; the server never serves an item without one. */
 export const itemName = (item: WorkItem): string => item.slug
 
 /** The name in the DETAIL pane: plain selectable text, no control.
@@ -255,16 +252,13 @@ export interface Section {
   agent?: string
 }
 
-/** The identity a GROUP HEADING may claim. The heading names one agent, but a
- *  group can hold items whose owner records disagree about which generation of
- *  that name owns them — an item assigned before a rehire and one assigned
- *  after are both "owned by foo".
+/** The identity a GROUP HEADING may claim.
  *
- *  ⚠ SO THE CHIP IS SHOWN ONLY WHEN EVERY OWNER IN THE GROUP ATTRIBUTES THE
- *  SAME MODEL. One disagreement and the heading claims nothing, because there
- *  is no single honest answer for the group as a whole — the per-row actors
- *  underneath still each say their own. This is the same abstention `actorFit`
- *  makes for one actor, applied to a set. */
+ *  ⚠ THE CHIP APPEARS ONLY WHEN EVERY OWNER IN THE GROUP ATTRIBUTES THE SAME
+ *  MODEL. One heading names one agent, but its group can hold items owned by
+ *  different generations of that name, which ran under different models; on
+ *  disagreement the heading claims nothing and its title says so. `actorFit`'s
+ *  abstention for one actor, applied to a set. */
 export function groupIdentity(items: WorkItem[], facts: Map<string, NodeFacts>):
   { tier?: string; why: string | null } {
   const seen = new Map<string, { fit: ActorFit; tier?: string }>()
@@ -272,8 +266,7 @@ export function groupIdentity(items: WorkItem[], facts: Map<string, NodeFacts>):
     const r = actorFit(it.owner, facts)
     seen.set(r.fit + '/' + (r.tier ?? ''), r)
   }
-  // no items is not a disagreement — an empty group has nothing to attribute
-  // and nothing to explain (it also never reaches the screen)
+  // an empty group is not a disagreement (and never reaches the screen)
   if (seen.size === 0) return { why: null }
   const only = seen.size === 1 ? [...seen.values()][0] : undefined
   if (!only) {
@@ -388,9 +381,8 @@ export function buildSections(mode: DocketGroupMode, active: WorkItem[],
     // come out in order of their most recent activity WITHOUT a second sort —
     // and therefore without a second chance to disagree with the server.
     for (const [who, items] of groups) {
-      // `agent` carries the id SEPARATELY from the heading text, so the
-      // renderer never has to guess whether a heading is a name — `Unassigned`
-      // is a word and every other group head here is an agent.
+      // the id travels SEPARATELY from the heading text, so the renderer
+      // never guesses whether a heading is a name: `Unassigned` is a word
       if (who !== UNASSIGNED) {
         out.push({ key: 'ag:' + who, heading: who, items, agent: who })
       }
@@ -520,18 +512,20 @@ export function DocketModal({ slug, toast, close, tree, onFocusAgent,
 
   // ---- names in prose become links to the item or the agent they name
   //
-  // The index is built from `allKnown` and from the tree this panel was handed,
-  // which are exactly the items and the agents this org served to this viewer.
-  // That is what keeps a link same-org by construction rather than by a check
-  // someone could forget: a name from another org is in neither, so it is never
-  // marked as a mention.
+  // Built from `allKnown` and from the tree this panel was handed — exactly
+  // what this org served this viewer — so a name from another org is in
+  // neither map and is never marked. Same-org by construction, not by a check
+  // somebody can forget.
   //
-  // ⚠ AGENTS COME FROM `facts`, i.e. from the LIVE TREE, so only a name that
-  // still resolves to somebody can link. An agent that has been dissolved out
-  // of the tree leaves prose about it as prose — there is nowhere to go, and a
-  // link that lands nowhere is worse than a word.
+  // ⚠ AGENTS COME FROM `facts`, THE LIVE TREE: only a name that still resolves
+  // to somebody links, and the tier it carries is that agent's CURRENT model,
+  // which is what a mention navigates to. An agent dissolved out of the tree
+  // leaves prose as prose.
   const refIndex = useMemo(
-    () => buildMentionIndex(allKnown.values(), facts.keys()), [allKnown, facts])
+    () => buildMentionIndex(
+      allKnown.values(),
+      [...facts].map(([id, f]) => [id, f.tier] as const)),
+    [allKnown, facts])
   const [flash, setFlash] = useState<string | null>(null)
   const rows = useRef(new Map<string, HTMLDivElement>())
   // COLLAPSE IS OPT-IN. Everything starts expanded, because a docket that
@@ -679,11 +673,9 @@ export function DocketModal({ slug, toast, close, tree, onFocusAgent,
                         className={'docket-section' + (s.tone ? ' tone-' + s.tone : '')}>
                         {s.heading && (
                           <div className="docket-group-head">
-                            {/* an agent's group head IS that agent: its model
-                                chip and a jump to its desk, drawn by the same
-                                component every other name uses. A status,
-                                the backlog, the archive and `Unassigned` are
-                                words and stay plain spans. */}
+                            {/* an agent's head IS that agent; a status, the
+                                backlog, the archive and `Unassigned` are
+                                words and stay plain spans */}
                             {s.agent
                               ? <GroupAgentHead agent={s.agent} items={s.items}
                                   facts={facts} onFocusAgent={onFocusAgent}
@@ -863,8 +855,7 @@ function DocketPane({ slug, item, toast, asksById, onDismiss, close, onFocusAgen
   // (TS does not narrow a property access across a nested arrow function)
   const lastUpdater = item.last_updater
   const manualAttn = item.manual_attention
-  // an agent named in prose goes to its desk exactly as an actor line does —
-  // the panel closes first, or the desk it focuses opens behind this modal
+  // as an actor line does: close first, or the desk opens behind this modal
   const goToAgent = onFocusAgent
     ? (id: string) => { close(); onFocusAgent(id) }
     : undefined

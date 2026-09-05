@@ -3025,14 +3025,24 @@ main.solo { width: 100%; }
 /* AN AGENT MENTIONED IN PROSE reads as the same kind of mention — it is a
    `.cc-name` from the shared identity component, so it needs the same three-
    class reset to beat `.docket-modal button.cc-name` (0,2,1) and keep the
-   0.92em size the sentence around it was measured against. It carries no
-   model chip: see the note on WorkRefText for why prose may not claim one. */
+   0.92em size the sentence around it was measured against. */
 .docket-modal .cc-name.docket-ref.docket-ref-agent {
   font-size: 0.92em; font-weight: inherit; color: var(--accent);
   min-width: 0; flex: none; display: inline;
 }
 .docket-modal .cc-name.docket-ref.docket-ref-agent:hover {
   color: var(--ink-strong);
+}
+/* ITS MODEL CHIP, MID-SENTENCE (Astra ruling 2026-09-05: a chip beside every
+   agent name; in prose it is the CURRENT model of the desk the name goes to,
+   and the tooltip says so). The panel's 16px row chip would set the line
+   height of the paragraph it sits in, so it is smaller here and aligned to the
+   text rather than to a flex row. `.docket-mention` is inline, so the sentence
+   still wraps between the chip and the name as one run of words. */
+.docket-modal .docket-mention { display: inline; white-space: nowrap; }
+.docket-modal .docket-mention .tier {
+  width: 13px; height: 13px; font-size: 8px; border-radius: 3px;
+  margin-right: 3px; vertical-align: baseline; position: relative; top: 1px;
 }
 /* w2d5fab0a elements 1 and 2 — NESTED SUB-ITEMS AND THEIR SKELETON LINES.
    The indent and the lines are both driven by `--docket-depth`, set once on

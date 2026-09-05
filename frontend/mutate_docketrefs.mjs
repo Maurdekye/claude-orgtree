@@ -201,18 +201,42 @@ const MUTANTS = [
   {
     name: 'an agent wins a name the docket also serves as an item',
     file: REFS, kills: 'won a name the docket also has as an item',
-    from: `  for (const id of agentIds ?? []) if (id) out.set(id, { kind: 'agent', id })
+    from: `  for (const [id, tier] of agents ?? []) {
+    if (id) out.set(id, { kind: 'agent', id, tier })
+  }
   for (const it of items) if (it?.slug) out.set(it.slug, { kind: 'item', slug: it.slug })`,
     to: `  for (const it of items) if (it?.slug) out.set(it.slug, { kind: 'item', slug: it.slug })
-  for (const id of agentIds ?? []) if (id) out.set(id, { kind: 'agent', id })`,
+  for (const [id, tier] of agents ?? []) {
+    if (id) out.set(id, { kind: 'agent', id, tier })
+  }`,
   },
   {
-    // the abstention this feature is built on: prose records no generation, so
-    // it may claim no model
-    name: 'a name in prose is given a model badge',
-    file: REFS, kills: 'given a model it does not record',
-    from: `              <AgentName id={ref.id} nameClass="docket-ref docket-ref-agent"`,
-    to: `              <AgentName id={ref.id} tier="fable" nameClass="docket-ref docket-ref-agent"`,
+    name: 'a mention loses the chip for the desk it goes to',
+    file: REFS, kills: "does not wear the destination's current model",
+    from: `              <AgentName id={ref.id} tier={ref.tier}`,
+    to: `              <AgentName id={ref.id}`,
+  },
+  {
+    // THE GUESS THE RULING FORBIDS: an agent whose current model is unknown
+    // must wear no chip, not a plausible one
+    name: 'an unknown current model is back-filled with a plausible one',
+    file: REFS, kills: 'was given one anyway',
+    from: `              <AgentName id={ref.id} tier={ref.tier}`,
+    to: `              <AgentName id={ref.id} tier={ref.tier ?? 'opus'}`,
+  },
+  {
+    name: 'the tier is looked up in the renderer instead of coming from facts',
+    file: DOCKET, kills: 'was given one anyway',
+    from: `      [...facts].map(([id, f]) => [id, f.tier] as const)),`,
+    to: `      [...facts].map(([id]) => [id, 'opus'] as const)),`,
+  },
+  {
+    name: 'the mention stops saying WHICH model claim its chip is making',
+    file: REFS, kills: 'which model claim it is making',
+    from: `                why={ref.tier
+                  ? \`\${ref.id} — current model, \${ref.tier}. Go to its desk.\`
+                  : \`\${ref.id} — current model not known. Go to its desk.\`}`,
+    to: `                why={null}`,
   },
   {
     name: 'a jump from prose leaves the docket open over the desk',

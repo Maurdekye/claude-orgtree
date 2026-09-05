@@ -11,11 +11,12 @@
 //     carries its own positive control: the same fixture with the generations
 //     agreeing MUST show the chip, or "no chip" would be free.
 //
-//  2. PROSE MAY INVENT AN IDENTITY. A name in a sentence carries no
-//     generation, so no model may be attributed to it at all — and only a name
-//     that still resolves in this org's tree may be turned into a link. §N5
-//     and §N7 hold both halves, each with a control that proves the check
-//     could have fired.
+//  2. PROSE MAY INVENT AN IDENTITY. Only a name that still resolves in this
+//     org's tree may link at all, and the chip it wears is the CURRENT model
+//     of the desk it goes to — never a guess when that model is unknown.
+//     (Astra ruling 2026-09-05: a chip beside every agent name; in prose it is
+//     navigation, not authorship, and the tooltip says `current model`.) §N5
+//     and §N7 hold both halves, each with a control that could have fired.
 //
 // Run: cd frontend && node tests/run.mjs docketname
 
@@ -55,6 +56,11 @@ const mkTree = (): TreePayload => ({
     children: [{
       id: 'checklist-evidence', tier: 'fable', generation: 2, state: 'live',
       children: [],
+    }, {
+      // a live, reachable agent whose model this app does not know. It links
+      // and it wears NO chip — the case that keeps §N7's chip from being
+      // decoration applied to everything that matches.
+      id: 'tierless-agent', generation: 1, state: 'live', children: [],
     }],
   }],
   work_items_summary: { attention: 0, active: 0 },
@@ -264,9 +270,12 @@ uiTest('§N5 an agent named in prose is a jump; a name this org lacks is words',
     assert.equal(links.length, 1,
       'exactly one of the two names is an agent this org has')
     assert.equal(links[0]!.textContent, 'coordinator-astra')
-    // ⚠ THE SENTENCE IS UNCHANGED. A linkifier that eats or reorders the words
-    // around its match has broken the thing it decorated.
-    assert.equal(desc(el)?.textContent,
+    // ⚠ THE SENTENCE IS UNCHANGED. A linkifier that eats or reorders the
+    // words around its match has broken the thing it decorated. The chips are
+    // stripped first: a chip is a glyph the panel adds, not prose.
+    const clone = desc(el)!.cloneNode(true) as HTMLElement
+    for (const chip of [...clone.querySelectorAll('.tier')]) chip.remove()
+    assert.equal(clone.textContent,
       'coordinator-astra asked, and ghost-agent never existed.')
     await inAct(() => (links[0] as HTMLElement).click())
     await flush()
@@ -302,11 +311,11 @@ uiTest('§N6 an ITEM named exactly like an agent is still the item',
       'the mention did not select the item it names')
   })
 
-uiTest('§N7 prose claims NO model, in a fixture where chips do render',
+uiTest('§N7 a prose mention wears the CURRENT model of the desk it goes to',
   async (mount) => {
     mockServer([mkItem({
       slug: 'first-item',
-      objective: 'coordinator-astra asked for it.',
+      objective: 'coordinator-astra asked, and tierless-agent agreed.',
       done_so_far: ['handed to coordinator-astra'],
     })])
     const el = await mount(
@@ -314,17 +323,41 @@ uiTest('§N7 prose claims NO model, in a fixture where chips do render',
         tree={mkTree()} onFocusAgent={() => {}} />)
     await flush()
     await openFirst(el)
-    // THE CONTROL FIRST: this pane DOES draw chips — the actor line names the
-    // updater with the model its generation ran under. So the assertion below
-    // is about prose, not about a fixture that could never have shown one.
+
+    const mention = (id: string) =>
+      [...(desc(el)?.querySelectorAll('.docket-mention') ?? [])]
+        .find((m) => m.textContent?.includes(id)) as HTMLElement | undefined
+
+    // 1. THE KNOWN AGENT: the chip is the model its desk runs under NOW, and
+    // the tooltip says which claim that is — this is navigation, not the
+    // authorship an actor line records.
+    const known = mention('coordinator-astra')
+    assert.ok(known, 'the known agent did not become a mention at all')
+    assert.equal(known!.querySelector('.tier')?.textContent, 'O',
+      "the mention does not wear the destination's current model")
+    assert.match(
+      known!.querySelector('.cc-name')?.getAttribute('title') ?? '',
+      /current model/,
+      'the chip does not say which model claim it is making')
+
+    // 2. THE CONTROL: an agent that is just as live and just as reachable, but
+    // whose model this app does not know, wears NO chip. Without this the
+    // check above passes for a chip drawn on everything that matched.
+    const unknown = mention('tierless-agent')
+    assert.ok(unknown, 'the tierless agent did not become a mention')
+    assert.ok(unknown!.querySelector('button.cc-name'),
+      'the tierless agent lost its jump along with its chip')
+    absent(unknown!.querySelector('.tier'),
+      'an agent with no known model was given one anyway')
+
+    // 3. and the ACTOR line is untouched by any of this: its chip is still the
+    // recorded-generation claim, which is a different claim entirely.
     assert.equal(
       pane(el)?.querySelector('.docket-actor .tier')?.textContent, 'F',
-      'the actor line has no chip either — this test cannot tell prose apart')
-    absent(desc(el)?.querySelector('.tier'),
-      'a name in prose was given a model it does not record')
+      'the actor line stopped attributing the model it recorded')
+
+    // 4. the same rules inside a progress entry, not only the description
     const list = pane(el)?.querySelector('.docket-list-items')
-    assert.ok(list?.querySelector('.docket-ref-agent'),
-      'the progress entry did not linkify at all')
-    absent(list?.querySelector('.tier'),
-      'a name in a progress entry was given a model')
+    assert.equal(list?.querySelector('.docket-mention .tier')?.textContent, 'O',
+      'a progress entry did not get the same treatment as the description')
   })
