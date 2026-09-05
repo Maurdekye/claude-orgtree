@@ -3998,6 +3998,24 @@ def work_item_accept(slug: str, wid: str, body: WorkAccept) -> dict[str, Any]:
     return r
 
 
+def _work_ref(a: dict[str, Any]) -> str:
+    """The item a work action names. ONE argument, `slug`, because an item has
+    one identity.
+
+    ⚠ A CALL STILL USING `id` IS REFUSED BY NAME, NOT IGNORED. Reading `slug`
+    and nothing else would leave an old caller sending `id=git-review-workspace`
+    with an empty reference and the useless message "no work item ''". This is
+    not an alias — nothing is resolved from `id`, and a caller passing both is
+    told to stop rather than quietly served."""
+    if a.get("id") is not None and a.get("slug") is None:
+        raise LedgerError(
+            "`orgtree_work` takes the item's readable name as `slug` now, not "
+            "`id` — items have one identity and it is the readable one. If "
+            "what you are holding is an old `w########`, it will not resolve "
+            "either: run `list` and use the name shown")
+    return str(a.get("slug") or "")
+
+
 def _work_list_arg(a: dict[str, Any], key: str) -> list[Any] | None:
     """A list argument off the free-form wire; a scalar is refused (a
     docket list is individual entries, never a paragraph)."""
@@ -4019,7 +4037,7 @@ def _work_read_call(body: AgentCall, a: dict[str, Any]) -> dict[str, Any]:
         if act == "verify":
             with store.DOC_LOCK:
                 org = store.load_org(body.org)
-                cap = org.work_verify_capture(body.node, str(a.get("id") or ""),
+                cap = org.work_verify_capture(body.node, _work_ref(a),
                                               str(a.get("stage") or ""))
             res = workitems.evaluate(cap["stage"], cap["sha"])
             with store.DOC_LOCK:
@@ -4036,7 +4054,7 @@ def _work_read_call(body: AgentCall, a: dict[str, Any]) -> dict[str, Any]:
                 body.node,
                 include_archived=_arg_flag(a, "include_archived"),
                 include_backlogged=_arg_flag(a, "include_backlogged"))
-        return {"item": org.work_get(body.node, str(a.get("id") or ""))}
+        return {"item": org.work_get(body.node, _work_ref(a))}
     except LedgerError as e:
         raise HTTPException(422, str(e))
 
@@ -4044,7 +4062,7 @@ def _work_read_call(body: AgentCall, a: dict[str, Any]) -> dict[str, Any]:
 def _work_mutate(org: Org, nid: str, a: dict[str, Any]) -> dict[str, Any]:
     """`orgtree_work` mutating actions, under the caller's DOC_LOCK."""
     act = str(a.get("action") or "")
-    wid = str(a.get("id") or "")
+    wid = _work_ref(a)
 
     def _s(key: str) -> str | None:
         v = a.get(key)

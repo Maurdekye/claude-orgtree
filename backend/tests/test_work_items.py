@@ -95,29 +95,32 @@ def fresh_org():
     return org.d["slug"]
 
 
-def agent(slug, node, tool, **args):
-    r = client.post("/api/agent", json={"org": slug, "node": node,
+def agent(org, node, tool, **args):
+    # ⚠ the first parameter is the ORG's slug and the tool argument is the
+    # ITEM's slug. They are both called "slug" in the product, so the helper
+    # renames its own parameter rather than shadowing the kwarg.
+    r = client.post("/api/agent", json={"org": org, "node": node,
                                         "tool": tool, "args": args})
     return r.status_code, (r.json() if r.headers.get("content-type", "").startswith("application/json") else r.text)
 
 
-def work(slug, node, action, **args):
-    return agent(slug, node, "orgtree_work", action=action, **args)
+def work(org, node, action, **args):
+    return agent(org, node, "orgtree_work", action=action, **args)
 
 
-def ok(slug, node, action, **args):
-    st, js = work(slug, node, action, **args)
+def ok(org, node, action, **args):
+    st, js = work(org, node, action, **args)
     assert st == 200, (action, st, js)
     return js
 
 
-def refused(slug, node, action, **args):
-    st, js = work(slug, node, action, **args)
+def refused(org, node, action, **args):
+    st, js = work(org, node, action, **args)
     assert st == 422, (action, "should have been refused", st, js)
     return str(js.get("detail") if isinstance(js, dict) else js)
 
 
-def create(slug, node="boss", **kw):
+def create(org, node="boss", **kw):
     kw.setdefault("title", "ship the thing")
     # the description is MANDATORY since 2026-09-05 (user): problem first,
     # then the proposed solution. §11 proves the guard; every other section
@@ -125,7 +128,7 @@ def create(slug, node="boss", **kw):
     kw.setdefault("objective", "the thing is not shipped; ship it")
     kw.setdefault("done_so_far", ["read the spec"])
     kw.setdefault("working_on_next", ["write it"])
-    return ok(slug, node, "create", **kw)["created"]
+    return ok(org, node, "create", **kw)["created"]
 
 
 def get_item(slug, wid, expect=200):
@@ -203,7 +206,7 @@ def non_code_has_no_delivery():
     slug = fresh_org()
     wid = create(slug, kind="non-code")
     assert get_item(slug, wid)["delivery"] is None
-    assert "non-code" in refused(slug, "boss", "claim", id=wid, stage="implemented")
+    assert "non-code" in refused(slug, "boss", "claim", slug=wid, stage="implemented")
 
 
 check("a non-code item carries no delivery stages and refuses a claim", non_code_has_no_delivery)
@@ -218,10 +221,10 @@ def hidden_ids_and_readers():
     wid = create(slug, node="worker", title="worker's item")
     # ancestors read; the unrelated peer and stranger do not
     for who in ("worker", "mid", "boss"):
-        st, js = work(slug, who, "get", id=wid)
+        st, js = work(slug, who, "get", slug=wid)
         assert st == 200 and js["item"]["slug"] == wid, (who, st, js)
-    st_real, js_real = work(slug, "peer", "get", id=wid)
-    st_fake, js_fake = work(slug, "peer", "get", id="w00000000")
+    st_real, js_real = work(slug, "peer", "get", slug=wid)
+    st_fake, js_fake = work(slug, "peer", "get", slug="w00000000")
     assert st_real == 422 and st_fake == 422
     assert js_real["detail"].replace(wid, "X")[:60] == js_fake["detail"].replace("w00000000", "X")[:60], \
         "a hidden id must be refused with the SAME message as a nonexistent one"
@@ -238,24 +241,24 @@ check("owner, creator and their superiors read; unrelated agents get one indisti
 def participants_collaborate_narrowly():
     slug = fresh_org()
     wid = create(slug, node="boss")
-    refused(slug, "peer", "update", id=wid, done_so_far=["x"], working_on_next=[])
+    refused(slug, "peer", "update", slug=wid, done_so_far=["x"], working_on_next=[])
     # only owner-level actors may add participants
-    refused(slug, "peer", "participants", id=wid, add=["peer"])
-    ok(slug, "boss", "participants", id=wid, add=["peer"])
+    refused(slug, "peer", "participants", slug=wid, add=["peer"])
+    ok(slug, "boss", "participants", slug=wid, add=["peer"])
     it = get_item(slug, wid)
     assert it["participants"] == ["peer"]
     # a participant may read, update, add evidence
-    assert work(slug, "peer", "get", id=wid)[0] == 200
-    ok(slug, "peer", "update", id=wid, done_so_far=["peer helped"], working_on_next=[])
-    ok(slug, "peer", "evidence", id=wid, kind="note", ref="peer's note")
+    assert work(slug, "peer", "get", slug=wid)[0] == 200
+    ok(slug, "peer", "update", slug=wid, done_so_far=["peer helped"], working_on_next=[])
+    ok(slug, "peer", "evidence", slug=wid, kind="note", ref="peer's note")
     assert get_item(slug, wid)["last_updater"]["node"] == "peer"
     # …but may not assign, accept, archive, supersede, or edit participants
-    refused(slug, "peer", "assign", id=wid, owner="peer")
-    refused(slug, "peer", "accept", id=wid)
-    refused(slug, "peer", "participants", id=wid, remove=["peer"])
+    refused(slug, "peer", "assign", slug=wid, owner="peer")
+    refused(slug, "peer", "accept", slug=wid)
+    refused(slug, "peer", "participants", slug=wid, remove=["peer"])
     # removal takes the right away again
-    ok(slug, "boss", "participants", id=wid, remove=["peer"])
-    assert work(slug, "peer", "get", id=wid)[0] == 422
+    ok(slug, "boss", "participants", slug=wid, remove=["peer"])
+    assert work(slug, "peer", "get", slug=wid)[0] == 422
 
 
 check("participants get read + update + evidence + nothing else; membership is explicit and revocable",
@@ -265,17 +268,17 @@ check("participants get read + update + evidence + nothing else; membership is e
 def acceptance_authority():
     slug = fresh_org()
     wid = create(slug, node="worker")
-    ok(slug, "worker", "update", id=wid, status="review", done_so_far=["all of it"], working_on_next=[])
-    assert "review" in refused(slug, "worker", "update", id=wid, status="done",
+    ok(slug, "worker", "update", slug=wid, status="review", done_so_far=["all of it"], working_on_next=[])
+    assert "review" in refused(slug, "worker", "update", slug=wid, status="done",
                                done_so_far=["x"], working_on_next=[])
-    assert "superior" in refused(slug, "worker", "accept", id=wid)          # the owner, never
-    refused(slug, "peer", "accept", id=wid)                                  # unrelated
-    r = ok(slug, "mid", "accept", id=wid, note="looks right")                # a strict ancestor
+    assert "superior" in refused(slug, "worker", "accept", slug=wid)          # the owner, never
+    refused(slug, "peer", "accept", slug=wid)                                  # unrelated
+    r = ok(slug, "mid", "accept", slug=wid, note="looks right")                # a strict ancestor
     assert r["accepted"] == wid
     it = get_item(slug, wid)
     assert it["status"] == "done" and it["accepted"]["by"] == {"node": "mid", "generation": 0}
     assert it["last_updater"]["node"] == "worker", "acceptance must not steal the reply recipient"
-    assert "already done" in refused(slug, "boss", "accept", id=wid)
+    assert "already done" in refused(slug, "boss", "accept", slug=wid)
     # the user's route
     wid2 = create(slug, node="boss")
     r = client.post(f"/api/orgs/{slug}/work-items/{wid2}/accept", json={"note": "ok"})
@@ -289,14 +292,14 @@ check("done is reached only through accept, by a strict ancestor or the user —
 def assignment_rules():
     slug = fresh_org()
     wid = create(slug, node="boss")
-    assert "subordinate" in refused(slug, "boss", "assign", id=wid, owner="peer")
-    ok(slug, "boss", "assign", id=wid, owner="worker")
+    assert "subordinate" in refused(slug, "boss", "assign", slug=wid, owner="peer")
+    ok(slug, "boss", "assign", slug=wid, owner="worker")
     it = get_item(slug, wid)
     assert it["owner"]["node"] == "worker" and it["last_updater"]["node"] == "boss", \
         "assignment is not a docket update"
     # the new owner and its chain read; the old owner stays as creator
-    assert work(slug, "worker", "get", id=wid)[0] == 200
-    assert work(slug, "boss", "get", id=wid)[0] == 200
+    assert work(slug, "worker", "get", slug=wid)[0] == 200
+    assert work(slug, "boss", "get", slug=wid)[0] == 200
     # DEPENDENCY MASKING, and it got STRICTER when the opaque id was retired.
     # It used to serve {id, visible:false} — safe, because an opaque id says
     # nothing. The name is derived from the TITLE, so serving it here would
@@ -304,9 +307,9 @@ def assignment_rules():
     # now anonymous: it exists, it is not yours, and that is all.
     other = create(slug, node="peer", title="peer secret")
     wid3 = create(slug, node="boss", dependencies=[other])
-    dep = ok(slug, "boss", "get", id=wid3)["item"]["dependencies"][0]
+    dep = ok(slug, "boss", "get", slug=wid3)["item"]["dependencies"][0]
     assert dep == {"visible": False}, dep
-    assert other not in json.dumps(ok(slug, "boss", "get", id=wid3)),         "the hidden dependency's NAME reached a viewer who may not read it"
+    assert other not in json.dumps(ok(slug, "boss", "get", slug=wid3)),         "the hidden dependency's NAME reached a viewer who may not read it"
     dep_u = get_item(slug, wid3)["dependencies"][0]
     assert dep_u["visible"] is True and dep_u["title"] == "peer secret"
 
@@ -326,7 +329,7 @@ def hidden_items_do_not_leak_through_counts():
                                 "backlogged": 0}
     # a hidden owner adds an item, flags it, and gets a question attached
     hidden = create(slug, node="boss", title="boss secret")
-    ok(slug, "boss", "update", id=hidden, attention=True, attention_reason="see me",
+    ok(slug, "boss", "update", slug=hidden, attention=True, attention_reason="see me",
        done_so_far=["x"], working_on_next=[])
     agent(slug, "boss", "orgtree_ask", question="q", work_item=hidden)
     after = ok(slug, "peer", "list", include_archived=True)
@@ -337,7 +340,7 @@ def hidden_items_do_not_leak_through_counts():
                                        "backlogged": 0}
     assert client.get(f"/api/orgs/{slug}").json()["work_items_summary"] == {"attention": 1, "active": 2}
     # positive control: an item the outsider CAN read moves its counts
-    ok(slug, "boss", "participants", id=hidden, add=["peer"])
+    ok(slug, "boss", "participants", slug=hidden, add=["peer"])
     assert ok(slug, "peer", "list")["counts"] == {"attention": 1, "active": 2,
                                                   "archived": 0, "backlogged": 0}
 
@@ -350,23 +353,23 @@ def participants_cannot_close_claim_or_check():
     """Astra review 2026-09-05 (reproduced red: participant `dropped` 200, `claim` 200)."""
     slug = fresh_org()
     wid = create(slug, node="boss", participants=["peer"], acceptance=["works"])
-    ok(slug, "peer", "update", id=wid, status="blocked", done_so_far=["p"], working_on_next=[])   # positive
-    ok(slug, "peer", "evidence", id=wid, kind="link", ref="http://x")                              # positive
-    assert "owner-level" in refused(slug, "peer", "update", id=wid, status="dropped",
+    ok(slug, "peer", "update", slug=wid, status="blocked", done_so_far=["p"], working_on_next=[])   # positive
+    ok(slug, "peer", "evidence", slug=wid, kind="link", ref="http://x")                              # positive
+    assert "owner-level" in refused(slug, "peer", "update", slug=wid, status="dropped",
                                     done_so_far=["p"], working_on_next=[])
-    assert "owner-level" in refused(slug, "peer", "claim", id=wid, stage="implemented")
-    assert "owner-level" in refused(slug, "peer", "check", id=wid, index=0, evidence_ref="x")
-    assert "retitle" in refused(slug, "peer", "update", id=wid, title="mine now",
+    assert "owner-level" in refused(slug, "peer", "claim", slug=wid, stage="implemented")
+    assert "owner-level" in refused(slug, "peer", "check", slug=wid, index=0, evidence_ref="x")
+    assert "retitle" in refused(slug, "peer", "update", slug=wid, title="mine now",
                                 done_so_far=["p"], working_on_next=[])
-    ok(slug, "boss", "claim", id=wid, stage="committed", ref="abc1234")
-    assert "owner-level" in refused(slug, "peer", "verify", id=wid, stage="committed")
+    ok(slug, "boss", "claim", slug=wid, stage="committed", ref="abc1234")
+    assert "owner-level" in refused(slug, "peer", "verify", slug=wid, stage="committed")
     it = get_item(slug, wid)
     assert it["status"] == "blocked" and it["title"] == "ship the thing"
     assert it["delivery"]["implemented"] is None and it["acceptance"][0]["checked"] is None
     # the same calls by the owner succeed (the refusals are about WHO, not WHAT)
-    ok(slug, "boss", "check", id=wid, index=0, evidence_ref="x")
-    ok(slug, "boss", "update", id=wid, status="dropped", done_so_far=["p"], working_on_next=[])
-    assert "owner-level" in refused(slug, "peer", "update", id=wid, reopen=True,
+    ok(slug, "boss", "check", slug=wid, index=0, evidence_ref="x")
+    ok(slug, "boss", "update", slug=wid, status="dropped", done_so_far=["p"], working_on_next=[])
+    assert "owner-level" in refused(slug, "peer", "update", slug=wid, reopen=True,
                                     done_so_far=["p"], working_on_next=[])
 
 
@@ -376,29 +379,35 @@ check("a participant may update and add evidence, but not drop, reopen, retitle,
 
 def supersede_is_honest():
     slug = fresh_org()
-    a = create(slug, node="boss", title="A")
-    b = create(slug, node="boss", title="B")
+    # ⚠ DISTINCTIVE TITLES ON PURPOSE. The names below are searched for across
+    # the WHOLE payload to prove a hidden item's name does not leak, and a
+    # one-character name ("a", "b") matches inside unrelated strings — "boss"
+    # contains "b" — so the leak control fired on five innocent fields and said
+    # nothing true. A control that cannot tell a hit from a coincidence is not
+    # a control.
+    a = create(slug, node="boss", title="alpha superseded item")
+    b = create(slug, node="boss", title="beta replacement item")
     hidden = create(slug, node="peer", title="peer's")
-    ok(slug, "peer", "participants", id=hidden, add=["boss"])       # boss may READ it, not manage it
-    assert "not manage" in refused(slug, "boss", "supersede", id=a, by=hidden)
-    ok(slug, "boss", "supersede", id=a, by=b)
-    assert "already superseded" in refused(slug, "boss", "supersede", id=a, by=b)
-    assert "cycle" in refused(slug, "boss", "supersede", id=b, by=a) or \
-        "superseded" in refused(slug, "boss", "supersede", id=b, by=a)
+    ok(slug, "peer", "participants", slug=hidden, add=["boss"])       # boss may READ it, not manage it
+    assert "not manage" in refused(slug, "boss", "supersede", slug=a, by=hidden)
+    ok(slug, "boss", "supersede", slug=a, by=b)
+    assert "already superseded" in refused(slug, "boss", "supersede", slug=a, by=b)
+    assert "cycle" in refused(slug, "boss", "supersede", slug=b, by=a) or \
+        "superseded" in refused(slug, "boss", "supersede", slug=b, by=a)
     c = create(slug, node="boss", title="C")
-    ok(slug, "boss", "update", id=c, status="dropped", done_so_far=["no"], working_on_next=[])
-    assert "open work" in refused(slug, "boss", "supersede", id=b, by=c)
+    ok(slug, "boss", "update", slug=c, status="dropped", done_so_far=["no"], working_on_next=[])
+    assert "open work" in refused(slug, "boss", "supersede", slug=b, by=c)
     # SAME RULE AS `dependencies`, for the same reason: the pointer is a
     # title-derived name now, so a viewer who may not open it is not told what
     # it is called — only that it is there.
     v = get_item(slug, a)
     assert v["superseded_by"] == b and v["superseded_by_visible"] is True
-    ok(slug, "boss", "participants", id=a, add=["peer"])
-    pv = ok(slug, "peer", "get", id=a)["item"]
+    ok(slug, "boss", "participants", slug=a, add=["peer"])
+    pv = ok(slug, "peer", "get", slug=a)["item"]
     assert pv["superseded_by"] is None and pv["superseded_by_visible"] is False
     hit = [k for k, v in pv.items() if b in json.dumps(v)]
     assert not hit,         f"the superseding item's NAME reached a viewer who may not read it, in {hit}"
-    assert work(slug, "peer", "get", id=b)[0] == 422
+    assert work(slug, "peer", "get", slug=b)[0] == 422
 
 
 check("supersede needs owner-level right on both items, refuses re-supersede, closed targets and cycles; pointer visibility is explicit",
@@ -410,7 +419,7 @@ def reopen_clears_the_stale_acceptance():
     wid = create(slug)
     client.post(f"/api/orgs/{slug}/work-items/{wid}/accept", json={"note": "v1 accepted"})
     assert get_item(slug, wid)["accepted"]["note"] == "v1 accepted"
-    ok(slug, "boss", "update", id=wid, reopen=True, done_so_far=["v1"], working_on_next=["v2"])
+    ok(slug, "boss", "update", slug=wid, reopen=True, done_so_far=["v1"], working_on_next=["v2"])
     it = get_item(slug, wid)
     assert it["accepted"] is None and it["status"] == "in_progress"
     assert any(h.get("op") == "reopen" and h.get("accepted_was", {}).get("note") == "v1 accepted"
@@ -432,19 +441,19 @@ def both_lists_always_and_never_both_empty():
                 {"done_so_far": [], "working_on_next": [None, ""]},
                 {"status": "in_progress"},                        # no lists at all
                 {"attention": True, "attention_reason": "look"}):  # flag-only
-        st, js = work(slug, "boss", "update", id=wid, **bad)
+        st, js = work(slug, "boss", "update", slug=wid, **bad)
         assert st == 422, (bad, st, js)
         assert "done_so_far" in js["detail"], js["detail"]
-    st, js = work(slug, "boss", "update", id=wid, done_so_far="a paragraph", working_on_next=[])
+    st, js = work(slug, "boss", "update", slug=wid, done_so_far="a paragraph", working_on_next=[])
     assert st == 422 and "LIST" in js["detail"], js
     before = get_item(slug, wid)
     assert before["rev"] == 1, "refused updates must write nothing"
     # either list alone is fine; blank entries are dropped, not counted
-    ok(slug, "boss", "update", id=wid, done_so_far=["", " one ", ""], working_on_next=[])
+    ok(slug, "boss", "update", slug=wid, done_so_far=["", " one ", ""], working_on_next=[])
     it = get_item(slug, wid)
     assert it["done_so_far"] == ["one"] and it["working_on_next"] == []
     assert it["rev"] == 2 and it["docket_at"] > before["docket_at"]
-    ok(slug, "boss", "update", id=wid, done_so_far=[], working_on_next=["two"], status="blocked",
+    ok(slug, "boss", "update", slug=wid, done_so_far=[], working_on_next=["two"], status="blocked",
        blocked_reason="waiting on peer")
     it = get_item(slug, wid)
     assert it["status"] == "blocked" and it["blocked_reason"] == "waiting on peer"
@@ -466,11 +475,11 @@ def dropped_and_superseded():
     slug = fresh_org()
     a = create(slug, title="A")
     b = create(slug, title="B")
-    ok(slug, "boss", "supersede", id=a, by=b)
+    ok(slug, "boss", "supersede", slug=a, by=b)
     it = get_item(slug, a)
     assert it["status"] == "superseded" and it["superseded_by"] == b
-    assert "itself" in refused(slug, "boss", "supersede", id=b, by=b)
-    ok(slug, "boss", "update", id=b, status="dropped", done_so_far=["nothing"], working_on_next=[])
+    assert "itself" in refused(slug, "boss", "supersede", slug=b, by=b)
+    ok(slug, "boss", "update", slug=b, status="dropped", done_so_far=["nothing"], working_on_next=[])
     js = listing(slug)
     assert js["counts"]["active"] == 0, js["counts"]
     assert {x["slug"] for x in js["items"]} == {a, b}, "closed-but-not-done items stay listed (only done ages out)"
@@ -487,7 +496,7 @@ print("§4 archive")
 def exact_hour_edge():
     slug = fresh_org()
     wid = create(slug)
-    ok(slug, "boss", "update", id=wid, status="review", done_so_far=["done"], working_on_next=[])
+    ok(slug, "boss", "update", slug=wid, status="review", done_so_far=["done"], working_on_next=[])
     client.post(f"/api/orgs/{slug}/work-items/{wid}/accept", json={})
     org = store.load_org(slug)
     it, _ = org._work_find(wid)
@@ -521,7 +530,7 @@ def physical_move_on_next_write_and_reopen():
     js = listing(slug, archived=True)
     assert [x["slug"] for x in js["archived"]] == [wid] and js["items"] == []
     # an update on an archived item is refused without reopen…
-    msg = refused(slug, "boss", "update", id=wid, done_so_far=["more"], working_on_next=[])
+    msg = refused(slug, "boss", "update", slug=wid, done_so_far=["more"], working_on_next=[])
     assert "reopen" in msg
     # a refused call writes nothing (the sweep it ran was discarded with the doc)…
     org = store.load_org(slug)
@@ -534,7 +543,7 @@ def physical_move_on_next_write_and_reopen():
     assert phys and it["archived_at"], "the sweep at the head of a mutation moves eligible items"
     assert get_item(slug, wid)["archived"] is True, "archived ids still resolve on the user route"
     # reopen brings it back, open, with the new lists
-    ok(slug, "boss", "update", id=wid, reopen=True, done_so_far=["more"], working_on_next=["again"])
+    ok(slug, "boss", "update", slug=wid, reopen=True, done_so_far=["more"], working_on_next=["again"])
     it = get_item(slug, wid)
     assert it["archived"] is False and it["archived_at"] is None and it["status"] == "in_progress"
     org = store.load_org(slug)
@@ -542,10 +551,10 @@ def physical_move_on_next_write_and_reopen():
     assert not phys
     assert listing(slug)["counts"]["active"] == 2      # the reopened one + "unrelated write"
     # explicit archive of a closed item, early
-    ok(slug, "boss", "update", id=wid, status="dropped", done_so_far=["no"], working_on_next=[])
-    ok(slug, "boss", "archive", id=wid)
+    ok(slug, "boss", "update", slug=wid, status="dropped", done_so_far=["no"], working_on_next=[])
+    ok(slug, "boss", "archive", slug=wid)
     assert listing(slug, archived=True)["archived"][0]["slug"] == wid
-    assert "done|superseded|dropped" in refused(slug, "boss", "archive", id=create(slug))
+    assert "done|superseded|dropped" in refused(slug, "boss", "archive", slug=create(slug))
 
 
 check("the physical move happens on the next write, records kept; reopen returns the item",
@@ -673,9 +682,9 @@ print("§6 manual attention")
 def flag_set_clear_dismiss():
     slug = fresh_org()
     wid = create(slug)
-    assert "attention_reason" in refused(slug, "boss", "update", id=wid, attention=True,
+    assert "attention_reason" in refused(slug, "boss", "update", slug=wid, attention=True,
                                          done_so_far=["x"], working_on_next=[])
-    r = ok(slug, "boss", "update", id=wid, attention=True, attention_reason="Need the API key",
+    r = ok(slug, "boss", "update", slug=wid, attention=True, attention_reason="Need the API key",
            done_so_far=["built"], working_on_next=["deploy"])
     assert r["manual_attention"] is True
     it = get_item(slug, wid)
@@ -683,13 +692,13 @@ def flag_set_clear_dismiss():
     assert it["effective_attention"] and it["attention_sources"] == ["manual"]
     assert listing(slug)["counts"]["attention"] == 1
     # an ordinary update CLEARS it, and says so
-    r = ok(slug, "boss", "update", id=wid, done_so_far=["built", "got key"], working_on_next=["deploy"])
+    r = ok(slug, "boss", "update", slug=wid, done_so_far=["built", "got key"], working_on_next=["deploy"])
     assert "CLEARED" in (r.get("note") or "")
     it = get_item(slug, wid)
     assert it["manual_attention"] is None and it["effective_attention"] is False
     assert any(h.get("op") == "update" and "cleared_set_rev" in str(h.get("changes")) for h in it["history"])
     # re-raise mints set_rev 2
-    ok(slug, "boss", "update", id=wid, attention=True, attention_reason="Prod is down",
+    ok(slug, "boss", "update", slug=wid, attention=True, attention_reason="Prod is down",
        done_so_far=["built"], working_on_next=["fix"])
     it = get_item(slug, wid)
     assert it["manual_attention"]["set_rev"] == 2
@@ -714,10 +723,10 @@ def flag_set_clear_dismiss():
     # a second dismiss: nothing to dismiss → 409
     assert client.post(f"/api/orgs/{slug}/work-items/{wid}/dismiss-attention", json={"set_rev": 2}).status_code == 409
     # exact repeat of the dismissed reason is refused (case/whitespace-insensitive); a different one is not
-    msg = refused(slug, "boss", "update", id=wid, attention=True, attention_reason="  prod IS down ",
+    msg = refused(slug, "boss", "update", slug=wid, attention=True, attention_reason="  prod IS down ",
                   done_so_far=["built"], working_on_next=["fix"])
     assert "exact repeat" in msg
-    ok(slug, "boss", "update", id=wid, attention=True, attention_reason="Prod is down: disk full since 10:00",
+    ok(slug, "boss", "update", slug=wid, attention=True, attention_reason="Prod is down: disk full since 10:00",
        done_so_far=["built"], working_on_next=["fix"])
     assert get_item(slug, wid)["manual_attention"]["set_rev"] == 3
 
@@ -729,10 +738,10 @@ check("flag: set needs a reason; an ordinary update clears it; dismiss is CAS, s
 def dismiss_keeps_pending_questions_orange():
     slug = fresh_org()
     wid = create(slug)
-    ok(slug, "boss", "update", id=wid, attention=True, attention_reason="decide X",
+    ok(slug, "boss", "update", slug=wid, attention=True, attention_reason="decide X",
        done_so_far=["a"], working_on_next=["b"])
     agent(slug, "peer", "orgtree_ask", question="unrelated")          # peer has no right: not attached
-    ok(slug, "boss", "participants", id=wid, add=["peer"])
+    ok(slug, "boss", "participants", slug=wid, add=["peer"])
     st, js = agent(slug, "peer", "orgtree_ask", question="peer: which?", work_item=wid)
     assert st == 200 and "appended" in js["status"]
     it = get_item(slug, wid)
@@ -759,13 +768,13 @@ print("§7 reply routing")
 def reply_goes_to_the_last_updater_exactly():
     slug = fresh_org()
     wid = create(slug, node="boss", title="Reply target", participants=["peer"])
-    ok(slug, "peer", "update", id=wid, done_so_far=["peer did it"], working_on_next=[])
+    ok(slug, "peer", "update", slug=wid, done_so_far=["peer did it"], working_on_next=[])
     # owner change, a question from boss, and a dismissal do not touch the recipient
-    ok(slug, "boss", "assign", id=wid, owner="mid")
+    ok(slug, "boss", "assign", slug=wid, owner="mid")
     assert get_item(slug, wid)["last_updater"]["node"] == "peer", "assignment stamped the updater"
     agent(slug, "boss", "orgtree_ask", question="q?", work_item=wid)
     assert get_item(slug, wid)["last_updater"]["node"] == "peer", "a question attach stamped the updater"
-    ok(slug, "peer", "update", id=wid, attention=True, attention_reason="r", done_so_far=["x"], working_on_next=[])
+    ok(slug, "peer", "update", slug=wid, attention=True, attention_reason="r", done_so_far=["x"], working_on_next=[])
     client.post(f"/api/orgs/{slug}/work-items/{wid}/dismiss-attention", json={"set_rev": 1})
     assert get_item(slug, wid)["last_updater"]["node"] == "peer"
     r = client.post(f"/api/orgs/{slug}/work-items/{wid}/reply", json={"body": "please also do Y"})
@@ -807,14 +816,14 @@ print("§8 delivery")
 def claim_and_verify_three_valued():
     slug = fresh_org()
     wid = create(slug)
-    assert "hex sha" in refused(slug, "boss", "claim", id=wid, stage="committed", ref="main")
-    assert "stage" in refused(slug, "boss", "claim", id=wid, stage="shipped", ref="abc1234")
-    ok(slug, "boss", "claim", id=wid, stage="implemented", note="in my worktree")
-    r = ok(slug, "boss", "claim", id=wid, stage="committed", ref="abc1234")
+    assert "hex sha" in refused(slug, "boss", "claim", slug=wid, stage="committed", ref="main")
+    assert "stage" in refused(slug, "boss", "claim", slug=wid, stage="shipped", ref="abc1234")
+    ok(slug, "boss", "claim", slug=wid, stage="implemented", note="in my worktree")
+    r = ok(slug, "boss", "claim", slug=wid, stage="committed", ref="abc1234")
     assert r["verifiable"] is True
     st = get_item(slug, wid)["delivery"]["committed"]
     assert st["method"] == "unverified" and st["verified"] is None and st["ref"] == "abc1234"
-    assert "verifiable" in refused(slug, "boss", "verify", id=wid, stage="implemented")
+    assert "verifiable" in refused(slug, "boss", "verify", slug=wid, stage="implemented")
     calls: list[list[str]] = []
 
     def unknown_sha(argv):
@@ -822,7 +831,7 @@ def claim_and_verify_three_valued():
         return 1, ""
     workitems.set_runner_for_tests(unknown_sha)
     try:
-        r = ok(slug, "boss", "verify", id=wid, stage="committed")
+        r = ok(slug, "boss", "verify", slug=wid, stage="committed")
         assert r["verified"] is None and "does not resolve" in r["detail"], r
         assert calls and calls[0][:3] == ["rev-parse", "--verify", "--quiet"], calls
         st = get_item(slug, wid)["delivery"]["committed"]
@@ -833,19 +842,19 @@ def claim_and_verify_three_valued():
                 return 0, "abc1234" + "0" * 33
             return 0, ""
         workitems.set_runner_for_tests(resolves)
-        r = ok(slug, "boss", "verify", id=wid, stage="committed")
+        r = ok(slug, "boss", "verify", slug=wid, stage="committed")
         assert r["verified"] is True
         st = get_item(slug, wid)["delivery"]["committed"]
         assert st["resolved_oid"] == "abc1234" + "0" * 33 and "not a statement about main" in st["detail"]
         # pushed: the tracking ref is read first; ancestry False is a real answer, None is not
-        ok(slug, "boss", "claim", id=wid, stage="pushed", ref="abc1234")
+        ok(slug, "boss", "claim", slug=wid, stage="pushed", ref="abc1234")
 
         def not_ancestor(argv):
             if argv[0] == "rev-parse":
                 return 0, ("f" * 40) if argv[-1] == workitems.REMOTE_REF else ("abc1234" + "0" * 33)
             return 1, ""                                  # merge-base: not an ancestor
         workitems.set_runner_for_tests(not_ancestor)
-        r = ok(slug, "boss", "verify", id=wid, stage="pushed")
+        r = ok(slug, "boss", "verify", slug=wid, stage="pushed")
         assert r["verified"] is False and "fetch time unknown" in r["detail"], r
         st = get_item(slug, wid)["delivery"]["pushed"]
         assert st["target"] == "f" * 40 and st["ref_as_of"] == "local tracking ref"
@@ -864,7 +873,7 @@ check("claim records; verify is three-valued through git (unknown / true / false
 def verify_writes_nothing_after_a_concurrent_mutation():
     slug = fresh_org()
     wid = create(slug)
-    ok(slug, "boss", "claim", id=wid, stage="committed", ref="abc1234")
+    ok(slug, "boss", "claim", slug=wid, stage="committed", ref="abc1234")
     org = store.load_org(slug)
     cap = org.work_verify_capture("boss", wid, "committed")
     # the item changes while git is (would be) running
@@ -887,9 +896,9 @@ check("verify revalidates the item rev: a concurrent mutation makes it write not
 def acceptance_checks_are_separate_evidence():
     slug = fresh_org()
     wid = create(slug, acceptance=["renders", "saves"])
-    assert "out of range" in refused(slug, "boss", "check", id=wid, index=2, evidence_ref="x")
-    assert "evidence_ref" in refused(slug, "boss", "check", id=wid, index=0, evidence_ref="")
-    ok(slug, "boss", "check", id=wid, index=1, evidence_ref="tests/x.log")
+    assert "out of range" in refused(slug, "boss", "check", slug=wid, index=2, evidence_ref="x")
+    assert "evidence_ref" in refused(slug, "boss", "check", slug=wid, index=0, evidence_ref="")
+    ok(slug, "boss", "check", slug=wid, index=1, evidence_ref="tests/x.log")
     acc = get_item(slug, wid)["acceptance"]
     assert acc[0]["checked"] is None and acc[1]["checked"]["evidence_ref"] == "tests/x.log"
 
@@ -918,8 +927,8 @@ def in_build_receipt_is_marked_against_the_current_boot():
     try:
         restart_wake._boot_info_cache = {"commit": sha_a, "commit_short": sha_a[:7],
                                          "branch": None, "dirty": False}
-        ok(slug, "boss", "claim", id=wid, stage="in_build", ref=sha_a[:12])
-        r = ok(slug, "boss", "verify", id=wid, stage="in_build")
+        ok(slug, "boss", "claim", slug=wid, stage="in_build", ref=sha_a[:12])
+        r = ok(slug, "boss", "verify", slug=wid, stage="in_build")
         assert r["verified"] is True, r
         st = get_item(slug, wid)["delivery"]["in_build"]
         assert st["target"] == sha_a and st["evaluated_against_current_build"] is True
@@ -943,13 +952,13 @@ def in_build_receipt_is_marked_against_the_current_boot():
         assert st["evaluated_against_current_build"] is True and st["verified_current"] is True
         assert len(calls) == n_calls, "reads ran git"
         # the marker is in_build-only; other stages say None
-        ok(slug, "boss", "claim", id=wid, stage="committed", ref=sha_a[:12])
-        ok(slug, "boss", "verify", id=wid, stage="committed")
+        ok(slug, "boss", "claim", slug=wid, stage="committed", ref=sha_a[:12])
+        ok(slug, "boss", "verify", slug=wid, stage="committed")
         d = get_item(slug, wid)["delivery"]
         assert d["committed"]["verified"] is True and d["committed"]["evaluated_against_current_build"] is None
         assert d["implemented"] is None
         # …and the tool's own get shows the same derived fields
-        assert ok(slug, "boss", "get", id=wid)["item"]["delivery"]["in_build"]["evaluated_against_current_build"] is True
+        assert ok(slug, "boss", "get", slug=wid)["item"]["delivery"]["in_build"]["evaluated_against_current_build"] is True
     finally:
         workitems.set_runner_for_tests(None)
         restart_wake._boot_info_cache = saved
@@ -963,22 +972,22 @@ def leaving_done_needs_reopen_even_before_archive():
     slug = fresh_org()
     wid = create(slug)
     client.post(f"/api/orgs/{slug}/work-items/{wid}/accept", json={"note": "accepted v1"})
-    msg = refused(slug, "boss", "update", id=wid, status="in_progress",
+    msg = refused(slug, "boss", "update", slug=wid, status="in_progress",
                   done_so_far=["more"], working_on_next=["v2"])
     assert "reopen=true" in msg
     it = get_item(slug, wid)
     assert it["status"] == "done" and it["accepted"]["note"] == "accepted v1", "the refusal changed nothing"
     # evidence on a finished item is still allowed without resuming it
-    ok(slug, "boss", "evidence", id=wid, kind="note", ref="post-mortem")
-    ok(slug, "boss", "update", id=wid, reopen=True, done_so_far=["more"], working_on_next=["v2"])
+    ok(slug, "boss", "evidence", slug=wid, kind="note", ref="post-mortem")
+    ok(slug, "boss", "update", slug=wid, reopen=True, done_so_far=["more"], working_on_next=["v2"])
     it = get_item(slug, wid)
     assert it["status"] == "in_progress" and it["accepted"] is None
     # a superseded item resumed by reopen drops its pointer (kept in history)
     a = create(slug, title="A2")
     b = create(slug, title="B2")
-    ok(slug, "boss", "supersede", id=a, by=b)
-    refused(slug, "boss", "update", id=a, status="open", done_so_far=["x"], working_on_next=[])
-    ok(slug, "boss", "update", id=a, reopen=True, status="open", done_so_far=["x"], working_on_next=[])
+    ok(slug, "boss", "supersede", slug=a, by=b)
+    refused(slug, "boss", "update", slug=a, status="open", done_so_far=["x"], working_on_next=[])
+    ok(slug, "boss", "update", slug=a, reopen=True, status="open", done_so_far=["x"], working_on_next=[])
     v = get_item(slug, a)
     assert v["status"] == "open" and v["superseded_by"] is None
     assert any(h.get("op") == "reopen" and h.get("superseded_by_was") == b for h in v["history"])
@@ -996,12 +1005,12 @@ def evidence_cap_refuses_never_truncates():
     slug = fresh_org()
     wid = create(slug)
     for i in range(50):
-        ok(slug, "boss", "evidence", id=wid, kind="note", ref=f"n{i}")
-    msg = refused(slug, "boss", "evidence", id=wid, kind="note", ref="n50")
+        ok(slug, "boss", "evidence", slug=wid, kind="note", ref=f"n{i}")
+    msg = refused(slug, "boss", "evidence", slug=wid, kind="note", ref="n50")
     assert "50" in msg and "truncated" in msg
     ev = get_item(slug, wid)["evidence"]
     assert len(ev) == 50 and ev[0]["ref"] == "n0" and ev[-1]["ref"] == "n49"
-    assert "kind" in refused(slug, "boss", "evidence", id=wid, kind="rumour", ref="x")
+    assert "kind" in refused(slug, "boss", "evidence", slug=wid, kind="rumour", ref="x")
 
 
 check("the 51st evidence row is refused with the earlier 50 intact", evidence_cap_refuses_never_truncates)
@@ -1067,7 +1076,7 @@ def doctrine_rides_the_identity_prompt_on_every_lane():
     assert acts == {"list", "get", "create", "update", "assign", "participants", "evidence",
                     "claim", "verify", "check", "accept", "archive", "supersede"}
     for a in sorted(acts - {"list", "get", "verify", "create"}):
-        st, js = work(slug, "boss", a, id="w00000000")
+        st, js = work(slug, "boss", a, slug="w00000000")
         assert st == 422, (a, st, js)       # every action is dispatched (unknown id, not unknown action)
         assert "action must be" not in js["detail"], (a, js)
     ask = next(t for t in mcptool.TOOLS if t["name"] == "orgtree_ask")
@@ -1101,7 +1110,7 @@ print("§11 backlog and description")
 def backlog_is_its_own_group_and_out_of_the_active_count():
     slug = fresh_org()
     live = create(slug, title="under way")
-    ok(slug, "boss", "update", id=live, done_so_far=["started"],
+    ok(slug, "boss", "update", slug=live, done_so_far=["started"],
        working_on_next=["finish"], status="in_progress")
     back = create(slug, title="not started", status="backlogged")
 
@@ -1122,7 +1131,7 @@ def backlog_is_its_own_group_and_out_of_the_active_count():
     assert [x["slug"] for x in js2["items"]] == [live], \
         "revealing the backlog APPENDS a group; it never re-sorts the main list"
     # POSITIVE CONTROL for the whole check: the same item as `open` IS active
-    ok(slug, "boss", "update", id=back, done_so_far=[], working_on_next=["go"],
+    ok(slug, "boss", "update", slug=back, done_so_far=[], working_on_next=["go"],
        status="open")
     js3 = listing(slug)
     assert js3["counts"]["active"] == 2 and js3["counts"]["backlogged"] == 0, js3["counts"]
@@ -1140,7 +1149,7 @@ def backlogged_with_attention_stays_findable():
     flight."""
     slug = fresh_org()
     wid = create(slug, title="parked but flagged", status="backlogged")
-    ok(slug, "boss", "update", id=wid, done_so_far=[], working_on_next=["ask"],
+    ok(slug, "boss", "update", slug=wid, done_so_far=[], working_on_next=["ask"],
        attention=True, attention_reason="needs a decision before anyone starts")
 
     js = listing(slug)
@@ -1155,7 +1164,7 @@ def backlogged_with_attention_stays_findable():
     assert r.json()["backlogged"] == [], \
         "it is in the main list, so it must not ALSO be in the backlog group"
     # NEGATIVE CONTROL: clear the flag and it drops back out of sight
-    ok(slug, "boss", "update", id=wid, done_so_far=[], working_on_next=["wait"])
+    ok(slug, "boss", "update", slug=wid, done_so_far=[], working_on_next=["wait"])
     js2 = listing(slug)
     assert js2["items"] == [] and js2["counts"]["backlogged"] == 1, js2["counts"]
 
@@ -1229,11 +1238,11 @@ def the_description_is_mandatory_and_cannot_be_erased():
                            "require the problem first, then the solution")
     assert get_item(slug, wid)["objective"].startswith("agents create items")
     # it may be rewritten
-    ok(slug, "boss", "update", id=wid, done_so_far=[], working_on_next=["x"],
+    ok(slug, "boss", "update", slug=wid, done_so_far=[], working_on_next=["x"],
        objective="the problem restated; the new solution")
     assert get_item(slug, wid)["objective"] == "the problem restated; the new solution"
     # but not emptied — otherwise the create guard is trivially bypassable
-    d2 = refused(slug, "boss", "update", id=wid, done_so_far=[],
+    d2 = refused(slug, "boss", "update", slug=wid, done_so_far=[],
                  working_on_next=["x"], objective="  ")
     assert "emptied" in d2, d2
     assert get_item(slug, wid)["objective"] == "the problem restated; the new solution"
@@ -1282,7 +1291,7 @@ def a_slug_is_derived_unique_and_stable():
     assert get_item(slug, c)["slug"] == "git-review-workspace-3"
     assert len({get_item(slug, x)["slug"] for x in (a, b, c)}) == 3
     # STABLE: renaming the item does not re-point a name people have copied
-    ok(slug, "boss", "update", id=a, done_so_far=[], working_on_next=["x"],
+    ok(slug, "boss", "update", slug=a, done_so_far=[], working_on_next=["x"],
        title="Something else entirely")
     after = get_item(slug, a)
     assert after["title"] == "Something else entirely"
@@ -1304,11 +1313,11 @@ def a_slug_works_wherever_an_id_does():
     s = get_item(slug, wid)["slug"]
     assert s == "reply-routing-check"
     # every agent action that takes an id takes the slug and hits the SAME item
-    ok(slug, "boss", "update", id=s, done_so_far=["by slug"],
+    ok(slug, "boss", "update", slug=s, done_so_far=["by slug"],
        working_on_next=["more"], status="in_progress")
     assert get_item(slug, wid)["done_so_far"] == ["by slug"]
-    assert ok(slug, "boss", "get", id=s)["item"]["slug"] == wid
-    ok(slug, "boss", "evidence", id=s, kind="note", ref="notes.md",
+    assert ok(slug, "boss", "get", slug=s)["item"]["slug"] == wid
+    ok(slug, "boss", "evidence", slug=s, kind="note", ref="notes.md",
        note="found by name")
     assert len(get_item(slug, wid)["evidence"]) == 1
     # a dependency GIVEN as a slug is STORED as the opaque id
@@ -1323,8 +1332,8 @@ def a_slug_works_wherever_an_id_does():
         "an ask attached by slug must reach the item, not vanish"
     # AUTHORITY IS UNCHANGED: a stranger naming the slug is refused exactly as
     # it is when naming the id, and the refusal does not confirm either exists
-    d1 = refused(slug, "stranger", "get", id=s)
-    d2 = refused(slug, "stranger", "get", id=wid)
+    d1 = refused(slug, "stranger", "get", slug=s)
+    d2 = refused(slug, "stranger", "get", slug=wid)
     assert "may read" in d1 and "may read" in d2, (d1, d2)
 
 
@@ -1342,8 +1351,8 @@ def a_name_collision_is_resolved_not_lost():
     first = create(slug, title="victim")
     second = create(slug, title="victim")
     assert first != second, "two items collapsed onto one name"
-    assert ok(slug, "boss", "get", id=first)["item"]["slug"] == first
-    assert ok(slug, "boss", "get", id=second)["item"]["slug"] == second
+    assert ok(slug, "boss", "get", slug=first)["item"]["slug"] == first
+    assert ok(slug, "boss", "get", slug=second)["item"]["slug"] == second
 
     # ...and the same holds once a name has moved into the ARCHIVE, where it
     # lives on and must still not be reused
@@ -1352,10 +1361,10 @@ def a_name_collision_is_resolved_not_lost():
     it["status"] = "done"
     store.save_org(org)
     backdate(slug, first, 7200)
-    ok(slug, "boss", "update", id=second, done_so_far=["sweep"], working_on_next=[])
+    ok(slug, "boss", "update", slug=second, done_so_far=["sweep"], working_on_next=[])
     third = create(slug, title="victim")
     assert third not in (first, second), f"reused a taken name: {third!r}"
-    assert ok(slug, "boss", "get", id=third)["item"]["slug"] == third
+    assert ok(slug, "boss", "get", slug=third)["item"]["slug"] == third
 
 
 check("a name collision is resolved into a reachable second name, archive included",
@@ -1377,13 +1386,13 @@ def a_name_shaped_like_an_old_id_still_resolves():
     assert victim == "w1234abcd",         f"the fixture is pointless unless the name really looks like an id: {victim!r}"
 
     # it resolves, on every route, exactly as any other name does
-    assert ok(slug, "boss", "get", id="w1234abcd")["item"]["slug"] == victim
-    assert ok(slug, "boss", "update", id="w1234abcd",
+    assert ok(slug, "boss", "get", slug="w1234abcd")["item"]["slug"] == victim
+    assert ok(slug, "boss", "update", slug="w1234abcd",
               done_so_far=["still reachable"], working_on_next=[])["updated"] == victim
 
     # ...while a reference of the same SHAPE that names nothing is refused, and
     # says why rather than reporting a bare miss
-    st, js = work(slug, "boss", "get", id="wdeadbeef")
+    st, js = work(slug, "boss", "get", slug="wdeadbeef")
     assert st != 200, js
     detail = str(js.get("detail") or js)
     assert "retired" in detail and "readable slug" in detail, detail
@@ -1394,54 +1403,178 @@ check("a name that looks like an old opaque id still resolves; only a name "
       a_name_shaped_like_an_old_id_still_resolves)
 
 
-def old_items_are_backfilled_by_a_WRITE_and_never_by_a_READ():
+def _forge_legacy_doc(slug, pairs):
+    """Rewrite a fresh org into the shape a PRE-MIGRATION document has: every
+    item carries an opaque `id`, and an item may have no slug at all, which is
+    how one that predates slugs is really stored. `pairs` is
+    [(current_name, keep_slug)]. Returns {current_name: old_id}."""
+    org = store.load_org(slug)
+    old = {}
+    for i, (name, keep) in enumerate(pairs):
+        it, _ = org._work_find(name)
+        wid = "w%08x" % (0xdead0000 + i)
+        it["id"] = wid          # type: ignore[typeddict-unknown-key]
+        old[name] = wid
+        if not keep:
+            del it["slug"]      # type: ignore[misc]
+    store.save_org(org)
+    return old
+
+
+def a_legacy_document_converts_once_and_only_once():
+    """THE MIGRATION, end to end, on a forged pre-migration document.
+
+    What is pinned here is not "it renames things" — it is the four properties
+    that make a one-way identity change safe to run on somebody's real data: a
+    read never serves a half-converted document, existing names are preserved
+    rather than reassigned, pointers follow, and a second run does nothing."""
     slug = fresh_org()
-    wid = create(slug, title="Already named")
-    # forge the pre-slug document: strip the field the way an old doc has it
+    keep = create(slug, title="Keeps its name")
+    lost = create(slug, title="Predates slugs")
+    dep = create(slug, title="Depends on the other two")
+    old = _forge_legacy_doc(slug, [(keep, True), (lost, False), (dep, True)])
+
+    # the dependency pointers as an old document stored them: by id
     org = store.load_org(slug)
-    it, _ = org._work_find(wid)
-    del it["slug"]
+    it, _ = org._work_find(dep)      # by its NAME — old ids never resolve
+    it["dependencies"] = [old[keep], old[lost]]
     store.save_org(org)
 
-    # READ PATH: serves null, and writes NOTHING back
-    assert get_item(slug, wid)["slug"] is None
-    assert listing(slug)["items"][0]["slug"] is None
-    client.get(f"/api/orgs/{slug}")
-    reloaded, _ = store.load_org(slug)._work_find(wid)
-    assert "slug" not in reloaded, \
-        "a GET rewrote the document — reads must never persist a backfill"
+    # (1) A READ REFUSES rather than serving two kinds of name
+    r = client.get("/api/orgs/%s/work-items" % slug)
+    assert r.status_code == 409, (r.status_code, r.text)
+    assert "readable name" in r.text, r.text
+    st, js = work(slug, "boss", "list")
+    assert st != 200 and "readable name" in str(js), js
 
-    # WRITE PATH: the next docket mutation names it, and it stays named
-    ok(slug, "boss", "update", id=wid, done_so_far=["touched"], working_on_next=[])
-    assert get_item(slug, wid)["slug"] == "already-named"
-    named, _ = store.load_org(slug)._work_find(wid)
-    assert named["slug"] == "already-named"
-    # the backfill respects names already taken — no duplicates come out of it
+    # (2) THE CONVERSION
+    r = client.post("/api/orgs/%s/migrate-work-identity" % slug)
+    assert r.status_code == 200, r.text
+    rep = r.json()
+    assert rep["already"] is False and rep["items"] == 3, rep
+    assert rep["dangling"] == [], rep
+
+    doc = store.load_org(slug)
+    names = {str(x["slug"]) for x in doc._work_all()}
+    assert keep in names, "an EXISTING name was not preserved"
+    assert "predates-slugs" in names, "a missing name was not minted from the title"
+    assert all("id" not in x for x in doc._work_all()), "an opaque key survived"
+
+    # (3) POINTERS FOLLOW. The dependency named two items by id; both now name
+    #     them by the name those items actually carry.
+    it, _ = doc._work_find(dep)
+    assert it["dependencies"] == [keep, "predates-slugs"], it["dependencies"]
+    listed = get_item(slug, dep)["dependencies"]
+    assert [d["visible"] for d in listed] == [True, True], listed
+
+    # (4) THE OLD ID IS DEAD, and says so rather than reporting a bare miss
+    st, js = work(slug, "boss", "get", slug=old[keep])
+    assert st != 200, js
+    assert "retired" in str(js) and "readable slug" in str(js), js
+
+    # (5) A SECOND PASS IS A NO-OP — not "harmless", literally nothing
+    before = json.dumps(store.load_org(slug).d, sort_keys=True, default=str)
+    r2 = client.post("/api/orgs/%s/migrate-work-identity" % slug)
+    assert r2.status_code == 200 and r2.json() == {"already": True}, r2.text
+    after = json.dumps(store.load_org(slug).d, sort_keys=True, default=str)
+    assert before == after, "a second migration pass rewrote the document"
+
+
+check("a legacy document converts once: reads refuse first, existing names "
+      "survive, pointers follow, old ids die loudly, and a second pass is a no-op",
+      a_legacy_document_converts_once_and_only_once)
+
+
+def a_refused_migration_leaves_the_stored_document_untouched():
+    """FAIL BEFORE SAVE. Two items already carrying the same name is refused
+    rather than resolved — either answer (rename one, or let one shadow the
+    other) silently breaks a reference somebody has written down. What this
+    check is really for is the ATOMICITY claim: the transform edits memory
+    only and the caller saves, so a refusal must leave storage untouched."""
+    slug = fresh_org()
+    a = create(slug, title="Twin")
+    b = create(slug, title="Twin")           # -> twin-2
+    assert a != b
+    _forge_legacy_doc(slug, [(a, True), (b, True)])
+    # force the collision an old document could genuinely contain
     org = store.load_org(slug)
-    other = create(slug, title="Already named")     # -> already-named-2
-    org = store.load_org(slug)
-    it2, _ = org._work_find(other)
-    del it2["slug"]
+    it, _ = org._work_find(b)
+    it["slug"] = a
     store.save_org(org)
-    ok(slug, "boss", "update", id=wid, done_so_far=["again"], working_on_next=[])
-    slugs = [x["slug"] for x in listing(slug)["items"]]
-    assert len(slugs) == len(set(slugs)), slugs
-    assert None not in slugs, slugs
+
+    before = json.dumps(store.load_org(slug).d, sort_keys=True, default=str)
+    r = client.post("/api/orgs/%s/migrate-work-identity" % slug)
+    assert r.status_code == 422, (r.status_code, r.text)
+    assert "already carry the slug" in r.text, r.text
+    after = json.dumps(store.load_org(slug).d, sort_keys=True, default=str)
+    assert before == after, "a REFUSED migration still wrote to the document"
+
+    # POSITIVE CONTROL: the same document converts once the collision is gone,
+    # so the refusal above is about the collision and not about the fixture
+    org = store.load_org(slug)
+    target = None
+    for x in org._work_all():
+        if x.get("slug") == a:
+            target = x if target is not None else target or None
+    seen = False
+    for x in org._work_all():
+        if x.get("slug") == a:
+            if seen:
+                x["slug"] = "twin-2"
+            seen = True
+    store.save_org(org)
+    r = client.post("/api/orgs/%s/migrate-work-identity" % slug)
+    assert r.status_code == 200 and r.json()["already"] is False, r.text
 
 
-check("items predating slugs are named by the next WRITE, never by a read, and never collide",
-      old_items_are_backfilled_by_a_WRITE_and_never_by_a_READ)
+check("a refused migration leaves the stored document byte-identical, and the "
+      "same document converts once the collision is gone",
+      a_refused_migration_leaves_the_stored_document_untouched)
+
+
+def the_backup_is_written_before_the_first_migrating_save():
+    """The rollback route is a JSON export of the document AS IT STOOD. It has
+    to be taken from committed state BEFORE the converting save, or it is a
+    backup of the very thing you would be undoing."""
+    slug = fresh_org()
+    wid = create(slug, title="Backed up")
+    old = _forge_legacy_doc(slug, [(wid, True)])
+
+    exports = os.path.join(store.DATA_ROOT, "exports")
+    before = set(os.listdir(exports)) if os.path.isdir(exports) else set()
+    r = client.post("/api/orgs/%s/migrate-work-identity" % slug)
+    assert r.status_code == 200, r.text
+    made = sorted(set(os.listdir(exports)) - before)
+    assert len(made) == 1, made
+    with open(os.path.join(exports, made[0]), encoding="utf-8") as fh:
+        dump = json.load(fh)
+    saved = (dump.get("work_items") or []) + (dump.get("work_items_archive") or [])
+    assert [x.get("id") for x in saved] == [old[wid]], \
+        "the backup does not hold the PRE-migration shape"
+    assert "work_identity" not in dump, \
+        "the backup was taken after the conversion, not before it"
+
+
+check("the pre-migration backup holds the document as it stood, not as it "
+      "became", the_backup_is_written_before_the_first_migrating_save)
 
 
 def agents_are_told_to_use_the_slug():
     slug = fresh_org()
     org = store.load_org(slug)
     p = supervisor.identity_prompt(org, "worker")
-    assert "SLUG" in p and "w3becbb30" in p, \
-        "agents are never told to prefer the readable name in what the user reads"
+    assert "SLUG" in p and "git-review-workspace" in p, \
+        "agents are never told the readable name IS the identity"
+    assert "retired" in p and "w########" in p, \
+        "agents are not warned that an id carried from an older context is dead"
     card = next(t for t in mcptool.TOOLS if t["name"] == "orgtree_work")
-    assert "slug" in card["inputSchema"]["properties"]["id"]["description"]
-    # create hands the name straight back, in the id field and in the words
+    props = card["inputSchema"]["properties"]
+    # THE ARGUMENT IS `slug`, AND THERE IS NO `id` TO FALL BACK ON. A card
+    # offering both would put the retired identity back in front of every
+    # agent that reads the catalogue.
+    assert "id" not in props, "the retired `id` argument is still on the card"
+    assert "readable name" in props["slug"]["description"], props["slug"]
+    # create hands the name straight back, in the payload and in the words
     js = ok(slug, "boss", "create", title="Name me back",
             objective="agents cannot cite an item they were not told the name of; return it")
     assert js["slug"] == "name-me-back", js

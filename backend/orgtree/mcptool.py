@@ -245,7 +245,7 @@ TOOLS: list[dict[str, Any]] = [
                 "multi": {"type": "boolean",
                           "description": "several options may be selected"},
                 "work_item": {"type": "string",
-                              "description": "docket item id this question is "
+                              "description": "docket item NAME this question is "
                                              "about (orgtree_work). It shows "
                                              "inside that item and holds it in "
                                              "the user's attention until "
@@ -323,11 +323,14 @@ TOOLS: list[dict[str, Any]] = [
             "APPROACHED OR APPROVED: it is kept out of the toolbar's active "
             "count and hidden behind its own toggle, so use it only for work "
             "genuinely not started — do not reclassify open work that is "
-            "authorised or under way. Every item also has a HUMAN-READABLE "
-            "SLUG from its title (`git-review-workspace`), returned by create/"
-            "list/get and accepted anywhere the opaque id is: use the slug in "
-            "mail, reports and anything the user reads, and note it is fixed "
-            "at creation, so it does not follow a later title change. The "
+            "authorised or under way. AN ITEM IS IDENTIFIED SOLELY BY ITS "
+            "READABLE SLUG (`git-review-workspace`), derived from its title "
+            "and returned by create/list/get — pass it as `slug`. There is no "
+            "other identifier: the old opaque `w########` ids are retired and "
+            "are NOT translated, so a reference you are carrying from an "
+            "older context will be refused rather than resolved. A slug is "
+            "fixed at creation and does not follow a later title change, so a "
+            "name already written down keeps working. The "
             "user's replies on an item go "
             "to its LAST UPDATER; question answers go to their asker "
             "(attach questions with orgtree_ask work_item)."),
@@ -339,7 +342,7 @@ TOOLS: list[dict[str, Any]] = [
                                     "participants", "evidence", "claim",
                                     "verify", "check", "accept", "archive",
                                     "supersede"]},
-                "id": {"type": "string", "description": "work item slug or opaque id (every action but list/create)"},
+                "slug": {"type": "string", "description": "the work item's readable name, e.g. git-review-workspace (every action but list/create). Items have no other identifier"},
                 "include_archived": {"type": "boolean", "description": "list: include archived items"},
                 "include_backlogged": {"type": "boolean", "description": "list: include backlogged (not yet started) items"},
                 "title": {"type": "string", "description": "create/update: short concrete title"},
@@ -353,7 +356,7 @@ TOOLS: list[dict[str, Any]] = [
                 "acceptance": {"type": "array", "items": {"type": "string"},
                                "description": "create: acceptance conditions"},
                 "dependencies": {"type": "array", "items": {"type": "string"},
-                                 "description": "create: ids of items this one depends on"},
+                                 "description": "create: names of items this one depends on"},
                 "done_so_far": {"type": "array", "items": {"type": "string"},
                                 "description": "update (required) / create: what is complete — individual entries"},
                 "working_on_next": {"type": "array", "items": {"type": "string"},
@@ -371,7 +374,7 @@ TOOLS: list[dict[str, Any]] = [
                 "note": {"type": "string", "description": "claim/evidence/check/accept: free text"},
                 "index": {"type": "integer", "description": "check: acceptance condition index (0-based)"},
                 "evidence_ref": {"type": "string", "description": "check: what shows the condition is met"},
-                "by": {"type": "string", "description": "supersede: the replacing item id"},
+                "by": {"type": "string", "description": "supersede: the replacing item's name"},
             },
             "required": ["action"],
         },
