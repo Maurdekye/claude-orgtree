@@ -20362,16 +20362,40 @@ def scan_steer_records(slug: str, nid: str) -> dict[str, int]:
         # RAM (a restart rereads from the claim-time offset once)
         with _state_lock:
             cursors: dict[str, int] = dict(st.get("steer_scan_pos") or {})
+        # A VALID owner match wins over any later copy of the same marker
+        # under another toolUseID (review 2026-09-05: last-occurrence-wins
+        # refused the real row); mismatches are counted only when no valid
+        # row exists for that delivery.
         hits: dict[str, str] = {}
+        mismatched: set[str] = set()
+        new_pos: dict[str, int] = {}
         for did, att in pending.items():
             pos: list[int] = []
             for found_id, tool in _read_steer_records(att, cursors.get(did), pos):
-                if found_id == did:
+                if found_id != did:
+                    continue
+                if tool == att.get("tool_use_id"):
                     hits[did] = tool
+                else:
+                    mismatched.add(did)
             if pos:
-                cursors[did] = pos[0]
-        with _state_lock:
-            st["steer_scan_pos"] = {k: v for k, v in cursors.items() if k in pending}
+                new_pos[did] = pos[0]
+        for did in mismatched - set(hits):
+            out["owner-mismatch"] = out.get("owner-mismatch", 0) + 1
+
+        def _adopt(ids: Iterable[str]) -> None:
+            # the cursor moves past a row only once nothing in it is still
+            # needed: attempts with no hit at once, attempts with a hit only
+            # after the durable save succeeded (review 2026-09-05: a cursor
+            # advanced before a failed save skipped the record for good)
+            with _state_lock:
+                cur = dict(st.get("steer_scan_pos") or {})
+                for k in ids:
+                    if k in new_pos:
+                        cur[k] = new_pos[k]
+                st["steer_scan_pos"] = {k: v for k, v in cur.items() if k in pending}
+
+        _adopt(k for k in pending if k not in hits)
         if not hits:
             return out
         announce: list[tuple[str, dict[str, Any]]] = []
@@ -20385,15 +20409,13 @@ def scan_steer_records(slug: str, nid: str) -> dict[str, int]:
                 att = atts.get(did)
                 if att is None or att.get("recorded_at"):
                     continue
-                if tool != att.get("tool_use_id"):
-                    out["owner-mismatch"] = out.get("owner-mismatch", 0) + 1
-                    continue
                 net_ids, row = _apply_steer_record(org, nid, did, att, now_iso())
                 announce.append((did, {"att": att, "net_ids": net_ids, "row": row}))
                 changed = True
             if changed:
                 _trim_steer_attempts(org, nid)
                 store.save_org(org)
+        _adopt(hits)             # durable now: the rows may be left behind
         for did, info in announce:
             ctoks = {str(t) for t in info["att"].get("toks") or []}
             with _state_lock:
@@ -20428,12 +20450,33 @@ def _reconcile_steer_records(org: Org) -> int:
         for did, att in list(atts.items()):
             if not _attempt_open(att):
                 continue
-            tool = dict(_read_steer_records(att)).get(did)
-            if tool is None or tool != att.get("tool_use_id"):
+            # any VALID owner match, whatever else the transcript holds
+            if not any(f == did and tool == att.get("tool_use_id")
+                       for f, tool in _read_steer_records(att)):
                 continue
             _apply_steer_record(org, nid, did, att, now_iso())
             n += 1
     return n
+
+
+def steer_receipt_text(e: Mapping[str, Any]) -> str:
+    """The ONE sentence a steered row wears, from its durable evidence (D1).
+    Never says more than the record supports: a legacy handoff is not a
+    recorded delivery, and neither is proof the model acted on it."""
+    level = str(e.get("level") or "")
+    if level == "recorded":
+        base = "delivered mid-task — recorded by the CLI"
+    elif level == "accepted":
+        base = "delivered mid-task — accepted by the provider"
+    elif level == "handoff":
+        base = "delivered mid-task — handed to the hook (legacy hook, receipt unconfirmed)"
+    else:
+        base = "delivered mid-task (older row, evidence not recorded)"
+    if e.get("confirmed_duplicate"):
+        base += " · delivered twice (both recorded)"
+    elif e.get("retried"):
+        base += " · after a retry — an earlier attempt may also have arrived"
+    return base
 
 
 def _steer_uncertain_count(carriers: Iterable[Any]) -> int:
@@ -23707,6 +23750,15 @@ def read_chat(org: Org, nid: str, last: int | None = None, *,
         else:
             row = {"role": "user", "text": e.get("text") or "", "tools": [],
                    "ts": e.get("at"), "steered": True,
+                   # D1: WHAT THIS ROW RESTS ON, said on the row. `level` is
+                   # the evidence (recorded / accepted / handoff / older row
+                   # with none), and the two flags admit a retry and a
+                   # confirmed second record; `receipt` is the one sentence
+                   # the desk shows, built here so every reader says the same
+                   "level": e.get("level") or "unknown",
+                   "retried": bool(e.get("retried")),
+                   "confirmed_duplicate": bool(e.get("confirmed_duplicate")),
+                   "receipt": steer_receipt_text(e),
                    # the display copy was cut (per-row cap at log time) — the
                    # DELIVERY was whole; the client says so instead of leaving
                    # a silently missing tail (user report 2026-08-17)

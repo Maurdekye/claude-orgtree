@@ -2426,6 +2426,11 @@ export const pendTag = (m: PendingMail): string =>
     ? '⚠ stuck — no turn owns this message; report it (an orgtree restart re-presents it)'
     : m.stage === 'queued'
       ? 'queued — delivers at the next turn boundary…'
+    // D1: past the steer store — the hook has it, the CLI's record decides
+    : m.stage === 'claimed'
+      ? 'handed to the hook — awaiting its receipt…'
+    : m.stage === 'acked'
+      ? 'received by the hook — awaiting the CLI’s record…'
       : m.stage === 'turn' || (!m.stage && m.via === 'turn')
         ? 'delivering…'
         : 'delivering mid-task…'
@@ -2689,6 +2694,9 @@ export const Msg = memo(function Msg({ m, slug, nid, onMailLink }: {
           reads as complete (user report 2026-08-17) */}
       {m.truncated && <div className="trunc-note">
         ✂ shown truncated — the agent received the full message</div>}
+      {/* D1: a steered row says what its delivery rests on (server-built
+          sentence: recorded / accepted / legacy handoff, retry, duplicate) */}
+      {m.steered && m.receipt && <div className="trunc-note">{m.receipt}</div>}
       {m.oracle && <div className="tools"><SparkIcon fontSize="inherit" /> oracle exchange — not retained by the node</div>}
     </div>
   )

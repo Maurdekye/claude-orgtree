@@ -354,6 +354,31 @@ elif MUTANT == "no_row_linkage":
                 r["confirmed_duplicate"] = len(r["recorded_ids"]) >= 2
         return net_ids, row
     supervisor._apply_steer_record = _no_link
+elif MUTANT == "cursor_before_save":
+    _real_scan_read = supervisor._read_steer_records
+
+    def _eager(att, start=None, pos_out=None):
+        # the v1 bug: the RAM cursor is adopted as soon as the row is read,
+        # before any durable save -- written straight into every node state
+        # holding this attempt, which is what the old scan did in effect
+        found = _real_scan_read(att, start, pos_out)
+        if pos_out:
+            with supervisor._state_lock:
+                for key, stt in supervisor._state.items():
+                    for did, _t in found:
+                        stt.setdefault("steer_scan_pos", {})[did] = pos_out[0]
+        return found
+    supervisor._read_steer_records = _eager
+elif MUTANT == "last_owner_wins":
+    _real_scan_read = supervisor._read_steer_records
+
+    def _last(att, start=None, pos_out=None):
+        found = _real_scan_read(att, start, pos_out)
+        last = {}
+        for d, t in found:
+            last[d] = t
+        return list(last.items())
+    supervisor._read_steer_records = _last
 elif MUTANT == "record_any_owner":
     _real_read = supervisor._read_steer_records
 
@@ -791,6 +816,15 @@ EVIDENCE["sections"]["legacy"] = {"response": legacy, "doc": d13}
 check("legacy fetch still delivers (an old hook keeps working)", lambda: truthy(legacy.get("messages") and legacy.get("legacy"), legacy))
 check("CONTRACT: its row is labelled level=handoff, not recorded",
       lambda: eq([r.get("level") for r in d13["steered"]], ["handoff"], d13["steered"]))
+# the desk's one-sentence receipt is built server-side from the same fields
+check("UI: receipt wording distinguishes legacy handoff / recorded / retry / confirmed duplicate",
+      lambda: eq((supervisor.steer_receipt_text(d13["steered"][0]).startswith("delivered mid-task — handed to the hook (legacy"),
+                  supervisor.steer_receipt_text({"level": "recorded"}),
+                  supervisor.steer_receipt_text({"level": "recorded", "retried": True}).endswith("may also have arrived"),
+                  supervisor.steer_receipt_text({"level": "recorded", "retried": True, "confirmed_duplicate": True}).endswith("delivered twice (both recorded)"),
+                  supervisor.steer_receipt_text({})),
+                 (True, "delivered mid-task — recorded by the CLI", True, True,
+                  "delivered mid-task (older row, evidence not recorded)"), "receipt texts"))
 belt(slug, nid)
 
 # ── §14 retention boundary ─────────────────────────────────────────────────
@@ -827,6 +861,52 @@ check("CONTRACT: open attempts per batch are capped; older ones resolve as super
                                                         supervisor.STEER_ATTEMPTS_PER_BATCH + 3), atts and {"open": open_n, "sup": superseded}))
 check("CONTRACT: once the mail left by the turn path, no attempt stays open (nothing left to scan for)",
       lambda: eq((open_after, elsewhere > 0), (0, True), {"open": open_after, "elsewhere": elsewhere}))
+
+# ── §15 the scan cursor must not outrun the durable save ───────────────────
+print("\n§15 a save failure after a valid row is read: the next scan still records it")
+slug, nid = mkorg("cursor")
+responding(slug, nid)
+post_user_mail(slug, nid, MARK + " cursor")
+r15 = run_hook(PROXY, slug, nid, "toolu_cur_1", "sess-cur")        # printed, recorded, acked
+_real_save = store.save_org
+calls = {"n": 0}
+
+
+def _fail_once(org):
+    calls["n"] += 1
+    if calls["n"] == 1:
+        raise OSError("synthetic write failure")
+    return _real_save(org)
+
+
+store.save_org = _fail_once
+first = supervisor.scan_steer_records(slug, nid)
+store.save_org = _real_save
+second = supervisor.scan_steer_records(slug, nid)
+d15 = doc(slug, nid)
+EVIDENCE["sections"]["cursor"] = {"failed_save_scan": first, "retry_scan": second, "save_calls": calls["n"], "doc": d15}
+check("instrument: the first scan really hit the failing save", lambda: eq((first, calls["n"] >= 1), ({}, True), {"first": first, "calls": calls}))
+check("CONTRACT: the retry scan records it (the cursor did not skip the row)",
+      lambda: eq((second.get("recorded"), [r.get("level") for r in d15["steered"]]), (1, ["recorded"]), {"second": second, "doc": d15}))
+belt(slug, nid)
+
+# ── §16 a valid owner row followed by the same marker under another tool ───
+print("\n§16 valid owner-A row, then the same marker under owner-B: the valid row wins")
+slug, nid = mkorg("owner2")
+responding(slug, nid)
+post_user_mail(slug, nid, MARK + " owner2")
+r16 = run_hook(PROXY, slug, nid, "toolu_o2_A", "sess-o2", record=False)
+with open(transcript_for("sess-o2"), "a", encoding="utf-8") as f:
+    for tool in ("toolu_o2_A", "toolu_o2_B"):
+        f.write(json.dumps({"type": "attachment", "attachment": {"type": "hook_additional_context",
+                "hookEvent": "PostToolUse", "toolUseID": tool, "content": r16["context"]}}) + "\n")
+s16 = supervisor.scan_steer_records(slug, nid)
+d16 = doc(slug, nid)
+EVIDENCE["sections"]["owner_order"] = {"scan": s16, "doc": d16}
+check("CONTRACT: recorded once under the valid owner, no owner-mismatch reported",
+      lambda: eq((s16.get("recorded"), s16.get("owner-mismatch"), [r.get("level") for r in d16["steered"]]),
+                 (1, None, ["recorded"]), {"scan": s16, "doc": d16}))
+belt(slug, nid)
 
 # ── §4 hook latency on this machine (a measurement, not a bound) ───────────
 print("\n§4 hook round trip on this machine, idle, N=10 (fetch with mail present)")

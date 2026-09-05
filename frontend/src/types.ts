@@ -838,6 +838,14 @@ export interface ChatMessage {
   oracle?: boolean
   /** interleaved from the durable steered log (supervisor.py:2951) */
   steered?: boolean
+  /** D1: the evidence a steered row rests on — `recorded` (the CLI's own
+   *  transcript holds the hook context), `accepted` (a provider accepted
+   *  turn/steer), `handoff` (legacy hook fetch, receipt unconfirmed) — and
+   *  the one sentence the server built from it. Rendered verbatim. */
+  level?: 'recorded' | 'accepted' | 'handoff' | 'unknown'
+  retried?: boolean
+  confirmed_duplicate?: boolean
+  receipt?: string
   /** the DISPLAY copy was capped (steered-log per-row cap); the delivery
    *  itself was whole — the desk renders a marker saying so */
   truncated?: boolean
@@ -885,7 +893,7 @@ export interface PendingMail {
    *  next boundary or as the next turn; `stranded` — NO turn owns it and the
    *  node is idle, which the backend now prevents and the desk must never
    *  present as an ordinary "delivering…". Absent on a plain mailbox row. */
-  stage?: 'turn' | 'steer' | 'queued' | 'stranded'
+  stage?: 'turn' | 'steer' | 'queued' | 'stranded' | 'claimed' | 'acked'
   attachments?: MailAttachment[]
 }
 
