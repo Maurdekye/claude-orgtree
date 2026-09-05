@@ -276,8 +276,15 @@ uiTest('§3 GUARD: a click on a CONTROL in the switchboard does not re-centre',
     await panAway(viewport)
     const panned = cam(host)
 
-    const btn = host.querySelector('.eye-desk button')
-    assert.ok(btn, 'no button inside the switchboard to test the guard with')
+    // ⚠ NOT `.eye-desk button` ANY MORE, and the reason matters. The first
+    // button in the switchboard is now the tab's NAME, which navigates by
+    // design (user rule 2026-09-05) — so it moves the camera on purpose and
+    // is the one control this guard must not be tested with. The panel toggle
+    // beside it is a genuine non-navigating control and is what the guard is
+    // actually about.
+    const btn = host.querySelector('.eye-tab-main')
+    assert.ok(btn, 'no panel-toggle control inside the switchboard')
+    const openBefore = host.querySelectorAll('.eye-panel').length
     await inAct(() => { btn.dispatchEvent(clickEv()) })
     await flush()
     await advance(1200)
@@ -285,6 +292,11 @@ uiTest('§3 GUARD: a click on a CONTROL in the switchboard does not re-centre',
     assert.ok(same(cam(host), panned),
       `a click on a switchboard CONTROL moved the camera from ${show(panned)} `
       + `to ${show(cam(host))} — the handler is stealing clicks meant for it`)
+    // POSITIVE CONTROL: without it "the camera did not move" is equally
+    // satisfied by a click that reached nothing at all.
+    assert.notEqual(host.querySelectorAll('.eye-panel').length, openBefore,
+      'CONTROL BROKEN: the panel toggle did nothing, so the assertion above '
+      + 'proves only that a dead click moves no camera')
   })
 
 // (There was a §4 here — "the re-centre leaves the switchboard open" — and it

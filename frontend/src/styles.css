@@ -3547,11 +3547,31 @@ svg.MuiSvgIcon-root {
   border-color: color-mix(in srgb, var(--accent) 55%, var(--line));
   background: var(--accent-soft);
 }
+/* THE NAME IS ITS OWN CONTROL (user rule 2026-09-05). It used to live inside
+   `.eye-tab-main`, so clicking the agent's name minimized a chat instead of
+   going to the agent. The tab now holds two controls side by side: the name
+   (navigates) and the panel toggle (opens / minimizes, or raises the pinned
+   window). Same two actions, no longer sharing one hit target. */
+.eye-tab-id {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 4px 4px 4px 9px; font-size: 13px;
+}
+.eye-tab-id .cc-name {
+  /* `.cc-name` is a flex:1 12ch block elsewhere; in a tab strip it is a label
+     that must size to its text or every tab grows to the widest name */
+  flex: none; min-width: 0; font-size: 13px; color: var(--dim);
+}
+.eye-tab.on .eye-tab-id .cc-name, .eye-tab.pinned .eye-tab-id .cc-name {
+  color: var(--ink-strong);
+}
+.eye-tab-id .cc-name-jump:hover { color: var(--accent); }
 .eye-tab-main {
   display: inline-flex; align-items: center; gap: 6px;
   background: none; border: none; color: var(--dim);
-  font-size: 13px; padding: 4px 9px;
+  font-size: 13px; padding: 4px 9px 4px 4px;
+  border-left: 1px solid var(--line-soft);
 }
+.eye-tab-panel-glyph { font-size: 12px; opacity: .75; }
 .eye-tab.on .eye-tab-main { color: var(--ink-strong); }
 /* PINNED: the chat is live in a pinned window, so this tab raises that window
    instead of opening a second copy (user ruling 2026-09-05). Dashed, so it

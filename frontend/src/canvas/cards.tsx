@@ -28,6 +28,7 @@ import {
 } from './desk'
 import { DocChips } from './docs'
 import { isMobile } from '../mobile'
+import { AgentName } from './identity'
 import { PinnedPlaceholder } from './pins'
 import { ConfirmModal, DraftScopeModal } from './modals'
 
@@ -387,27 +388,36 @@ export function EyeDesk({ map, op, slug, toast, pip,
           {agents.map((a) => (
             <span key={a.id} className={'eye-tab'
               + (isPinned(a.id) ? ' pinned' : minned.has(a.id) ? '' : ' on')}>
-              <button className="eye-tab-main"
+              {/* ⚠ THE NAME NAVIGATES; THE PANEL CONTROL IS A SEPARATE BUTTON
+                  (user rule 2026-09-05: agent names are clickable everywhere
+                  except inside that agent's own focused desk). The name used
+                  to sit INSIDE the minimize button, so clicking it minimized a
+                  chat instead of going to the agent, and the only route was
+                  the ⌖ beside it — an arrow that does not contain the name and
+                  so does not make the name a link. Same two actions as before,
+                  just no longer sharing one hit target. */}
+              <span className="eye-tab-id">
+                <AgentName id={a.id} tier={a.tier} onFocus={onJump} />
+              </span>
+              <button className="eye-tab-main" type="button"
                 title={isPinned(a.id)
                   ? 'this chat is open in a pinned window — click to raise it'
                   : minned.has(a.id) ? 'open this chat' : 'minimize this chat'}
                 onClick={() => isPinned(a.id) ? onShowPin?.(a.id) : toggle(a.id)}>
                 {isPinned(a.id) && <PinIcon fontSize="inherit" />}
-                <span className={'tier t-' + a.tier}>{TIER_LETTER[a.tier!] ?? '?'}</span>
-                {a.id}
                 {a.busy && <DestinationBusy tier={a.tier} />}
                 {/* the unread count wears the TAB AGENT's provider — the same
                     hue as its working spinner beside it, never a global tint */}
                 {(a.mail_pending ?? 0) > 0 &&
                   <b className={'eye-count prov-' + providerOf(a.tier ?? '')}>
                     {a.mail_pending}</b>}
+                {/* the panel control needs a glyph of its own, or it is an
+                    empty box whenever the agent is idle with no mail. One
+                    stable glyph: the tab's own `.on` styling already says
+                    whether the panel is showing. */}
+                {!isPinned(a.id) &&
+                  <FullscreenIcon className="eye-tab-panel-glyph" fontSize="inherit" />}
               </button>
-              {/* jump straight to the agent's own node — same glide as
-                  clicking its card (user spec) */}
-              <button className="eye-tab-x eye-tab-jump"
-                title="jump to this agent's node"
-                onClick={() => onJump?.(a.id)}>
-                <FocusIcon fontSize="inherit" /></button>
               {/* ✕ only on audience-granted lines; closing RESCINDS the grant
                   (user spec) — top-level lines have no ✕, they are intrinsic */}
               {a.parent !== USER && a.audiences_held?.includes(USER) &&

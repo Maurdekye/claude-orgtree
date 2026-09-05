@@ -68,6 +68,14 @@ const settle = (ms: number) => advance(ms, 16)
  *  and switchboard panel alike. The number the user's ruling caps at one. */
 const desksFor = (el: HTMLElement, id: string) =>
   [...el.querySelectorAll('.desk-body .cc-name')]
+    // ⚠ NOT the tab strip. Since the switchboard tab's name became its own
+    // navigation control it is a `.cc-name` too, and it sits inside the
+    // switchboard's `.desk-body` — but a tab is a label and a link, not a
+    // mounted chat. Counting it would report two chats for every open agent
+    // and this suite would fail while nothing was wrong. The check that this
+    // exclusion did not blind the counter is §B's mutant: restore the old
+    // `open` filter and §B still reports the real duplicate.
+    .filter((n) => !n.closest('.eye-tab-id'))
     .filter((n) => (n.textContent ?? '').trim() === id).length
 /** the same count, restricted to the SWITCHBOARD's own panel row */
 const panelsFor = (el: HTMLElement, id: string) =>
@@ -75,7 +83,7 @@ const panelsFor = (el: HTMLElement, id: string) =>
     .filter((n) => (n.textContent ?? '').trim() === id).length
 const tabFor = (el: HTMLElement, id: string): HTMLElement => {
   const tab = [...el.querySelectorAll('.eye-tab')].find((t) =>
-    (t.querySelector('.eye-tab-main')?.textContent ?? '').includes(id))
+    (t.querySelector('.eye-tab-id')?.textContent ?? '').includes(id))
   assert.ok(tab, `no switchboard tab for "${id}"`)
   return tab as HTMLElement
 }
@@ -272,4 +280,40 @@ uiTest('§E every line pinned: the empty state names the right absence',
     for (const id of AGENTS) {
       assert.ok(tabFor(el, id).className.includes('pinned'))
     }
+  })
+
+uiTest('§F the tab NAME navigates; the panel toggle beside it does not',
+  async ({ mount }) => {
+    // user rule 2026-09-05: an agent's name is clickable everywhere except
+    // inside that agent's own focused desk. The switchboard tab used to put
+    // the name INSIDE the minimize button, so clicking the name minimized a
+    // chat; the only route to the agent was a ⌖ arrow that does not contain
+    // the name, which is not the name being a link.
+    const { el } = await switchboard(mount)
+    const xf = () => (el.querySelector('.space') as HTMLElement).style.transform
+
+    const id = tabFor(el, 'cto').querySelector('.eye-tab-id')
+    assert.ok(id, 'the tab renders the name as its own element')
+    const link = id!.querySelector('button.cc-name.cc-name-jump')
+    assert.ok(link, 'and that name is a navigation control, not plain text')
+    assert.equal(link!.textContent, 'cto')
+    assert.ok(id!.querySelector('.tier'),
+      'the model chip sits with the name, as it does on every other surface')
+
+    // the PANEL TOGGLE must not navigate — same two actions as before, just
+    // no longer sharing one hit target
+    const before = xf()
+    await inAct(() => { (tabMain(el, 'cto')).click() })
+    await flush()
+    assert.equal(xf(), before, 'the panel toggle moved the camera')
+    assert.equal(panelsFor(el, 'cto'), 0, 'and it did minimize the panel')
+
+    // the NAME does navigate. ⚠ POSITIVE CONTROL FOR THE ASSERTION ABOVE: if
+    // this one does not move the camera either, then "the toggle did not
+    // navigate" is a statement about a broken rig, not about the toggle.
+    await inAct(() => { (link as HTMLElement).click() })
+    await settle(1500)
+    assert.notEqual(xf(), before,
+      'clicking the agent NAME did not move the camera — the name is not a '
+      + 'route to the agent, which is the whole rule')
   })
