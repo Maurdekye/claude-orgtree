@@ -1205,10 +1205,16 @@ const fmtTokens = (n: number): string =>
  *  ⚠ NEVER A BAR AND NEVER A PERCENTAGE. A percentage implies a denominator,
  *  and the denominator is exactly the thing nobody can read here: the account
  *  ceiling is published nowhere orgtree can reach. So this prints a token
- *  count, how many windows it came from, and the two qualifications that must
- *  travel with it — that it is an inference from walls that were actually hit,
- *  and that it is a LOWER bound, since the same Google account is spendable in
- *  the Antigravity IDE where orgtree observes nothing.
+ *  count and the three qualifications that must travel with it — that it is an
+ *  inference from walls that were actually hit rather than a reported limit,
+ *  that it is a LOWER bound since the same Google account is spendable in the
+ *  Antigravity IDE where orgtree observes nothing, and that it is ONE window
+ *  whose comparability to any other is unknown.
+ *
+ *  ⚠ IT IS ONE OBSERVATION, AND MUST NOT READ AS SEVERAL AGREEING. Other
+ *  recorded windows are named as a count, never merged into a range: nothing
+ *  recorded can prove two walls share a ceiling, so a range across them would
+ *  be an assumption wearing the clothes of a measurement.
  *
  *  With no complete window it prints the REASON and no number. A section that
  *  quietly rendered nothing would look identical to one whose estimate was
@@ -1228,22 +1234,22 @@ export function AntigravityEstimateNote(
   if (!e) return null
   const cov = est.coverage ?? {}
   const unsummable = cov.unsummable_receipts ?? 0
-  const spread = e.tokens_lowest !== e.tokens_highest
+  const others = est.other_windows?.defensible ?? 0
   return (
     <div className="agy-est" data-testid="agy-estimate"
-         title={[est.basis, est.warning, unsummable ? cov.unsummable_note : '']
+         title={[est.basis, est.warning, est.comparability_note,
+                 unsummable ? cov.unsummable_note : '']
            .filter(Boolean).join('\n\n')}>
-      <span className="agy-est-n">
-        ~{fmtTokens(e.tokens_latest)} tokens
-        {spread && ` (${fmtTokens(e.tokens_lowest)}–`
-          + `${fmtTokens(e.tokens_highest)} across windows)`}
-      </span>
-      <span className="dim"> spent before the last {est.limit ?? 'quota'} wall
-        {' · '}{est.samples} observed window{est.samples === 1 ? '' : 's'}
-        {' · '}{est.confidence}</span>
+      <span className="agy-est-n">~{fmtTokens(e.tokens)} tokens</span>
+      <span className="dim"> spent in ONE observed {est.limit ?? 'quota'}
+        {' '}window{' · '}{est.confidence}</span>
       <div className="dim agy-est-why">
         inferred from walls orgtree hit, not a reported limit — a LOWER bound,
-        so any budget left reads high
+        so any budget left reads high; comparability to any other window is
+        UNKNOWN, so this is not corroborated
+        {others > 0 && `; ${others} other recorded window`
+          + `${others === 1 ? ' is' : 's are'} counted but never combined `
+          + `with it`}
         {unsummable > 0 && `; ${unsummable} older receipt`
           + `${unsummable === 1 ? '' : 's'} could not be counted`}
         {(cov.windows_with_unobserved_gaps ?? 0) > 0

@@ -16,8 +16,15 @@ WHAT THE SUITE PINS, and why each one can fail:
    "append-only" cannot quietly mean "grows forever";
  · no secrets - the signed-in address must NOT appear, and the namespace hash
    must still change when the account changes (a constant would "not leak" too);
- · two different limits are NOT averaged together - the 165h and 3h20m windows
-   measured on one real account are the fixture;
+ · windows are NEVER averaged together, and the answer says outright that
+   comparability is UNKNOWN: nothing recorded here can prove two walls came
+   from one ceiling, so repetition is not corroboration;
+ · a BOOT is not a window start - it marks when orgtree began watching, which
+   can fall anywhere inside a window already running;
+ · a window does not survive an ACCOUNT change;
+ · the countdown decides nothing in either direction: the same duration on a
+   different tier is still a different thing, and two different durations are
+   not proof of two limits;
  · with no complete window there is NO NUMBER, only a reason;
  · one complete window DOES produce a number, labelled `experimental` with
    samples=1 - a first sample is the only number anyone has, and suppressing
@@ -180,22 +187,116 @@ def test_a_boot_gap_is_recorded_not_hidden() -> None:
           "receipts are missing, it means a wall could have passed unseen")
 
 
-def test_two_different_limits_are_not_averaged() -> None:
-    print("distinct limits")
+def own(event: dict[str, object], account: str = "acct") -> dict[str, object]:
+    """Stamp an event with an account handle the test controls."""
+    event["account_ns"] = account
+    return event
+
+
+def test_windows_are_never_averaged_together() -> None:
+    print("no averaging")
     t0 = 1_788_000_000.0
-    a1 = wall_event(t0, SHORT_WALL, wall_id="s1")
-    a2 = wall_event(float(a1["resets_at"]) + 60, SHORT_WALL, wall_id="s2")
-    b1 = wall_event(float(a2["resets_at"]) + 60, LONG_WALL, wall_id="l1")
-    ws = agy.windows([a1, a2, b1])
-    short, long_ = ws[1], ws[2]
-    check(not agy._comparable(short, long_),
-          f"a 3h20m window and a 165h window are NOT the same limit "
-          f"({short['reset_seconds']}s vs {long_['reset_seconds']}s)")
-    check(agy._comparable(ws[1], ws[1]), "CONTROL: a window matches itself")
-    out = agy.estimate([a1, a2, b1], tokens_between=lambda s, e: 1000)
-    check(out["samples"] == 1,
-          f"the estimate uses only the comparable group, not all three "
-          f"closed windows: samples={out['samples']}")
+    a1 = own(wall_event(t0, SHORT_WALL, wall_id="s1"))
+    a2 = own(wall_event(float(a1["resets_at"]) + 60, SHORT_WALL, wall_id="s2"))
+    b1 = own(wall_event(float(a2["resets_at"]) + 60, LONG_WALL, wall_id="l1"))
+    seen: list[tuple[float, float]] = []
+
+    def receipts(start: float, end: float) -> int:
+        seen.append((start, end))
+        return 45_000
+
+    out = agy.estimate([a1, a2, b1], tokens_between=receipts)
+    check(len(seen) == 1,
+          f"three walls, two defensible windows, and exactly ONE of them is "
+          f"measured: {len(seen)} call(s)")
+    check(seen == [(float(a2["resets_at"]), float(b1["at"]))],
+          f"and it is the LATEST one, over its own interval: {seen}")
+    check(out["samples"] == 1 and out["estimate"] == {"tokens": 45_000},
+          f"one observation, its own number, no mean of anything: {out['estimate']}")
+    check(out["comparability"] == "unknown",
+          f"and it says outright that nothing proves these the same limit: "
+          f"{out.get('comparability')}")
+    check(out["other_windows"]["defensible"] == 1,
+          f"the other defensible window is COUNTED, not folded in: "
+          f"{out['other_windows']}")
+
+
+def test_the_countdown_decides_nothing_in_either_direction() -> None:
+    print("countdown is not identity")
+    t0 = 1_788_000_000.0
+    # the SAME countdown on two tiers: identical durations, different things
+    same_a = agy.windows([own(wall_event(t0, SHORT_WALL, tier="flash",
+                                         wall_id="a"))])[0]
+    same_b = agy.windows([own(wall_event(t0, SHORT_WALL, tier="pro",
+                                         wall_id="b"))])[0]
+    check(same_a["reset_seconds"] == same_b["reset_seconds"],
+          "CONTROL: the two really do carry the same countdown")
+    check(agy._differs(same_a, same_b) == "tier",
+          f"an identical countdown on a different tier is still a "
+          f"demonstrably different thing: {agy._differs(same_a, same_b)!r}")
+    # and two DIFFERENT countdowns are not proof of two limits
+    diff_a = agy.windows([own(wall_event(t0, SHORT_WALL, wall_id="c"))])[0]
+    diff_b = agy.windows([own(wall_event(t0, LONG_WALL, wall_id="d"))])[0]
+    check(agy._differs(diff_a, diff_b) is None,
+          f"3h20m against 165h is not PROOF of two limits either - the CLI "
+          f"prints time REMAINING, and None here means UNKNOWN, never 'the "
+          f"same' ({diff_a['reset_seconds']}s vs {diff_b['reset_seconds']}s)")
+    check(not hasattr(agy, "_comparable"),
+          "and the predicate that called countdown similarity 'the same "
+          "limit' is GONE, not merely left unused")
+
+
+def test_a_boot_is_not_a_window_start() -> None:
+    print("boot mid-window")
+    t0 = 1_788_000_000.0
+    # the account was refilled at t0; orgtree only began watching at t0+3000,
+    # five sixths of the way into a window that was already running
+    boot = own({"v": 1, "kind": "boot", "at": t0 + 3000})
+    wall = own(wall_event(t0 + 3600, SHORT_WALL, wall_id="w1"))
+    ws = agy.windows([boot, wall])
+    check(ws[0]["start_kind"] == "boot" and ws[0]["started_at"] == t0 + 3000,
+          f"the boot start is still RECORDED: {ws[0]['start_kind']}")
+    check(ws[0]["complete"] is False,
+          "but it is not a defensible start - no account is refilled because "
+          "a process started, and timing from it would measure a fraction of "
+          "a window and report it as the whole")
+    out = agy.estimate([boot, wall], tokens_between=lambda s, e: 40_000)
+    check(out["available"] is False and out["estimate"] is None,
+          f"so there is NO number: {out.get('reason')!r}")
+    check("boot" in str(out.get("reason") or ""),
+          "and the refusal names the boot rather than reporting nothing seen")
+    # CONTROL: the same wall, opened by a reset the PROVIDER named, does count
+    prior = own(wall_event(t0 - 20_000, SHORT_WALL, wall_id="w0"))
+    wall2 = own(wall_event(float(prior["resets_at"]) + 600, SHORT_WALL,
+                           wall_id="w2"))
+    ok = agy.estimate([prior, wall2], tokens_between=lambda s, e: 40_000)
+    check(ok["available"] is True and ok["estimate"] == {"tokens": 40_000},
+          f"CONTROL: a reset-started window DOES yield a number: {ok.get('estimate')}")
+
+
+def test_a_window_does_not_survive_an_account_change() -> None:
+    print("account switch")
+    t0 = 1_788_000_000.0
+    first = own(wall_event(t0, SHORT_WALL, wall_id="w1"), "aaaaaaaaaaaa")
+    second = own(wall_event(float(first["resets_at"]) + 3600, SHORT_WALL,
+                            wall_id="w2"), "bbbbbbbbbbbb")
+    ws = agy.windows([first, second])
+    check(ws[1]["complete"] is False,
+          "one account's wall is not timed from ANOTHER account's refill - "
+          "the receipts in between belong to neither window")
+    out = agy.estimate([first, second], tokens_between=lambda s, e: 40_000)
+    check(out["available"] is False,
+          f"so there is no number to report: {out.get('reason')!r}")
+    # CONTROL: the very same events on ONE account do close a window
+    same = own(dict(second), "aaaaaaaaaaaa")
+    ws2 = agy.windows([first, same])
+    check(ws2[1]["complete"] is True,
+          "CONTROL: identical events, one account - the window closes")
+    # and an UNKNOWN handle is not evidence of a different account
+    unknown = own(dict(second), "")
+    ws3 = agy.windows([first, unknown])
+    check(ws3[1]["complete"] is True,
+          "an empty handle means 'could not tell', not 'someone else'")
 
 
 # ----------------------------------------------------------------- estimate
@@ -229,7 +330,7 @@ def test_one_complete_window_is_reported_as_one_sample() -> None:
           f"one complete window yields a number, as ONE sample: {out['samples']}")
     check(out["confidence"] == "experimental",
           f"labelled experimental, not presented as a limit: {out['confidence']}")
-    check(out["estimate"]["tokens_latest"] == 41_000,
+    check(out["estimate"] == {"tokens": 41_000},
           f"the number is the measured spend: {out['estimate']}")
     check(seen == [(reset1, reset1 + 7200)],
           f"measured over exactly the window, not some other interval: {seen}")
@@ -240,31 +341,37 @@ def test_one_complete_window_is_reported_as_one_sample() -> None:
           "and says plainly that the provider reported nothing")
     # CONTROL: the number must follow the receipts, not be decoration
     out2 = agy.estimate([first, second], tokens_between=lambda s, e: 82_000)
-    check(out2["estimate"]["tokens_latest"] == 82_000,
+    check(out2["estimate"] == {"tokens": 82_000},
           f"CONTROL: different receipts, different estimate: {out2['estimate']}")
+    check(out["comparability"] == "unknown",
+          "and every answer states that comparability is unknown")
 
 
-def test_more_samples_raise_confidence_and_spread_lowers_it() -> None:
-    print("confidence")
+def test_more_windows_never_raise_the_confidence() -> None:
+    print("confidence does not accrue")
     t = 1_788_000_000.0
-    evs = []
+    evs: list[dict[str, object]] = []
     for i in range(4):
-        e = wall_event(t, SHORT_WALL, wall_id=f"w{i}")
+        e = own(wall_event(t, SHORT_WALL, wall_id=f"w{i}"))
         evs.append(e)
         t = float(e["resets_at"]) + 3600
-    steady = agy.estimate(evs, tokens_between=lambda s, e: 40_000)
-    check(steady["samples"] == 3,
-          f"three complete windows out of four walls: {steady['samples']}")
-    check(steady["confidence"] == "indicative",
-          f"consistent samples read as indicative: {steady['confidence']}")
-    vals = iter([10_000, 90_000, 45_000])
-    noisy = agy.estimate(evs, tokens_between=lambda s, e: next(vals))
-    check(noisy["confidence"] == "low",
-          f"CONTROL: widely spread samples are NOT indicative: "
-          f"{noisy['confidence']}")
-    check(noisy["estimate"]["tokens_lowest"] == 10_000
-          and noisy["estimate"]["tokens_highest"] == 90_000,
-          f"and the spread itself is reported: {noisy['estimate']}")
+    out = agy.estimate(evs, tokens_between=lambda s, e: 40_000)
+    check(out["samples"] == 1,
+          f"four walls, three defensible windows, ONE reported observation: "
+          f"{out['samples']}")
+    check(out["other_windows"]["defensible"] == 2,
+          f"the rest are counted, never combined: {out['other_windows']}")
+    check(out["confidence"] == "experimental",
+          f"seeing the same thing repeatedly is not corroboration while "
+          f"comparability is unknown: {out['confidence']}")
+    check(out["comparability"] == "unknown",
+          "and the answer says so rather than leaving it to a sample count")
+    # CONTROL: the label is not a constant - it drops for the one reason it may
+    partial = agy.estimate(evs, tokens_between=lambda s, e: {
+        "tokens": 40_000, "unsummable_receipts": 3})
+    check(partial["confidence"] == "low",
+          f"CONTROL: a window measured only IN PART still drops to low: "
+          f"{partial['confidence']}")
 
 
 for fn in (test_the_journal_keeps_what_the_standing_throws_away,
@@ -273,10 +380,13 @@ for fn in (test_the_journal_keeps_what_the_standing_throws_away,
            test_no_secrets_but_still_identifying,
            test_windows_close_on_walls_and_open_on_resets,
            test_a_boot_gap_is_recorded_not_hidden,
-           test_two_different_limits_are_not_averaged,
+           test_windows_are_never_averaged_together,
+           test_the_countdown_decides_nothing_in_either_direction,
+           test_a_boot_is_not_a_window_start,
+           test_a_window_does_not_survive_an_account_change,
            test_no_number_without_a_complete_window,
            test_one_complete_window_is_reported_as_one_sample,
-           test_more_samples_raise_confidence_and_spread_lowers_it):
+           test_more_windows_never_raise_the_confidence):
     fn()
 
 print()

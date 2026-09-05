@@ -199,17 +199,19 @@ def forget_memory() -> None:
 # same account" or "the account changed under us", not enough to leak who it
 # is into a file that gets pasted into bug reports.
 #
-# ⚠ NO ASSUMPTION OF ONE CEILING. Two different windows have already been
-# measured on one account (165h21m54s on 2026-09-03, 3h20m48s on 2026-09-04),
-# so a record that folded them together would be measuring nothing. Each event
-# stores its own observed reset DURATION and label; deciding which windows are
-# comparable is a read-time judgement (`_comparable`), revisable without a
-# migration, rather than a bucket guessed at write time.
+# ⚠ NO ASSUMPTION OF ONE CEILING, AND NO ASSUMPTION OF TWO. Three different
+# countdowns have now been observed on one account (165h21m54s on 2026-09-03,
+# 3h20m48s on 2026-09-04, 3h36m14s on 2026-09-05). That is not evidence of
+# three limits, or of two, or of one. The CLI states the time REMAINING until
+# a reset, not the length of the window: two hits on the SAME limit print
+# different durations whenever they land at different points in it, and two
+# hits on DIFFERENT limits can print the same one. So each event stores its
+# countdown as evidence and nothing here ever reads a countdown as proof that
+# two observations share a ceiling. What this record can establish is
+# DIFFERENCE - a different account, tier or named metric - and `_differs` says
+# only that; the absence of a difference stays UNKNOWN.
 MAX_EVENTS: Final = 400
 MAX_EVENT_BYTES: Final = 262144
-#: two observations belong to the same limit when their named metric matches
-#: and their reset durations are within this factor of each other.
-COMPARABLE_RATIO: Final = 0.25
 
 
 def _events_path() -> str:
@@ -356,22 +358,26 @@ class Window(TypedDict):
     complete: bool             # a start we can defend AND a wall
 
 
-def _comparable(a: Window, b: Window) -> bool:
-    """Do these two windows describe the SAME limit?
+def _differs(a: Window, b: Window) -> str | None:
+    """The first way these two observations are DEMONSTRABLY about different
+    things, or None.
 
-    Same named metric, and reset durations within COMPARABLE_RATIO. Two
-    different limits have already been measured on one account (165h and
-    3h20m), so folding them together would average two unrelated things into
-    a number that describes neither.
+    ⚠ None means UNKNOWN, NOT "the same", and no caller may read it as
+    licence to average. Nothing this lane records can establish that two walls
+    came from one ceiling: the provider names no limit identity, and the
+    countdown it prints is time REMAINING, which moves with when the wall was
+    hit. The countdown is therefore not consulted here in either direction -
+    neither to call two observations the same limit nor to call them different
+    ones.
     """
+    if a["account_ns"] and b["account_ns"] \
+            and a["account_ns"] != b["account_ns"]:
+        return "account"
+    if a["tier"] and b["tier"] and a["tier"] != b["tier"]:
+        return "tier"
     if a["limit"] != b["limit"]:
-        return False
-    x, y = a["reset_seconds"], b["reset_seconds"]
-    if x is None or y is None:
-        return x is None and y is None
-    if x <= 0 or y <= 0:
-        return False
-    return abs(x - y) / max(x, y) <= COMPARABLE_RATIO
+        return "metric"
+    return None
 
 
 def windows(events: list[dict[str, Any]] | None = None) -> list[Window]:
@@ -389,12 +395,23 @@ def windows(events: list[dict[str, Any]] | None = None) -> list[Window]:
     out: list[Window] = []
     open_from: float | None = None          # when the current window began
     open_kind = "unknown"
+    open_account = ""                       # whose window it is
     last_seen: float | None = None          # last moment we were observing
     gap = 0.0
     for row in rows:
         at = _number(row.get("at"))
         if at is None:
             continue
+        account = str(row.get("account_ns") or "")
+        # ⚠ A WINDOW DOES NOT SURVIVE AN ACCOUNT CHANGE. A reset instant is a
+        # statement about the account that was signed in when the CLI named
+        # it; carrying it across a switch would time one account's spending
+        # from another account's refill, and the receipts counted in between
+        # would belong to neither window. An EMPTY handle is "we could not
+        # tell", which is not evidence of a DIFFERENT account, so it does not
+        # break the window by itself.
+        if open_account and account and account != open_account:
+            open_from, open_kind, open_account, gap = None, "unknown", "", 0.0
         kind = str(row.get("kind") or "")
         if kind == "boot":
             # time between the last thing we saw and this boot is time we were
@@ -405,6 +422,7 @@ def windows(events: list[dict[str, Any]] | None = None) -> list[Window]:
                 gap += max(0.0, at - last_seen)
             if open_from is None:
                 open_from, open_kind = at, "boot"
+                open_account = account or open_account
             last_seen = at
             continue
         last_seen = at
@@ -422,11 +440,20 @@ def windows(events: list[dict[str, Any]] | None = None) -> list[Window]:
             "wall_id": str(row.get("wall_id") or ""),
             "account_ns": str(row.get("account_ns") or ""),
             "gap_before_s": round(gap, 3),
-            "complete": open_from is not None and open_from < at,
+            # ⚠ ONLY A RESET IS A DEFENSIBLE START. A boot marks when orgtree
+            # began WATCHING, and that can fall anywhere inside a window that
+            # was already running - no account is refilled because a process
+            # started. Timing from it would measure part of a window and
+            # report it as the whole, i.e. a spend that is too low presented
+            # as a measurement. Such a window is still RECORDED, with its
+            # boot start and its `start_kind`, and is NOT complete.
+            "complete": (open_kind == "reset" and open_from is not None
+                         and open_from < at),
         })
         # the NEXT window opens when this wall lifts, which is the one moment
         # this lane states outright
         open_from, open_kind, gap = resets, "reset", 0.0
+        open_account = account or open_account
     return out
 
 
@@ -467,85 +494,99 @@ def estimate(events: list[dict[str, Any]] | None = None,
     that also says what it could NOT count, and that shortfall is carried into
     `coverage` and caps the confidence (see `_receipt`).
 
-    The return always says how many samples it had. With no complete sample it
-    returns a refusal with a reason, NOT a number: one wall on its own tells
-    you a wall exists, not what it costs, and printing the first figure that
-    can be computed is how an inference becomes a ceiling nobody checks.
+    ⚠ ONE OBSERVATION, NEVER AN AVERAGE. This reports the LATEST window whose
+    start the provider itself named, and only that one. Combining several
+    would assert that they describe the same ceiling, which nothing recorded
+    here can establish (see `_differs`), and an average of two unrelated
+    limits describes neither. `comparability` says "unknown" on every answer
+    so that no reader has to infer it from a sample count.
+
+    With no defensible window it returns a refusal with a reason, NOT a
+    number: one wall on its own tells you a wall exists, not what it costs,
+    and printing the first figure that can be computed is how an inference
+    becomes a ceiling nobody checks.
     """
     now = time.time() if now is None else now
-    closed = [w for w in windows(events) if w["complete"]]
-    if not closed:
-        return {"available": False, "samples": 0,
-                "reason": ("no complete observed window yet — an estimate "
-                           "needs a window with a start we can defend and a "
-                           "wall that closed it"),
-                "estimate": None}
+    recorded = windows(events)
+    defensible = [w for w in recorded if w["complete"]]
+    if not defensible:
+        why = ("no defensible observed window yet: a window needs a START the "
+               "provider itself named - the previous wall's reset - and a "
+               "wall that closed it")
+        boots = [w for w in recorded if w["start_kind"] == "boot"]
+        if boots:
+            why += (f"; {len(boots)} recorded window(s) begin only at a boot, "
+                    "which marks when orgtree began watching and can fall "
+                    "anywhere inside a window already running")
+        return {"available": False, "samples": 0, "reason": why,
+                "comparability": "unknown", "estimate": None}
     if tokens_between is None:
-        return {"available": False, "samples": len(closed),
+        return {"available": False, "samples": len(defensible),
                 "reason": "no token receipts were supplied to measure with",
-                "estimate": None}
-    # group by limit: never average two different ceilings together
-    groups: list[list[Window]] = []
-    for w in closed:
-        for g in groups:
-            if _comparable(g[0], w):
-                g.append(w)
-                break
-        else:
-            groups.append([w])
-    groups.sort(key=lambda g: (-len(g), -g[-1]["walled_at"]))
-    best = groups[0]
-    measured: list[dict[str, Any]] = []
-    for w in best:
-        start, end = w["started_at"], w["walled_at"]
-        if start is None:
-            continue
+                "comparability": "unknown", "estimate": None}
+    # ⚠ THE LATEST DEFENSIBLE WINDOW, AND ONLY IT. The previous version
+    # grouped windows by "comparable" and averaged each group, which asserted
+    # that the members shared a ceiling. Nothing recorded here can establish
+    # that (`_differs`), so the grouping was an assumption wearing the clothes
+    # of a measurement. One window, measured, labelled as one.
+    chosen = defensible[-1]
+    start, end = chosen["started_at"], chosen["walled_at"]
+    receipt: dict[str, Any] | None = None
+    if start is not None:
         try:
             receipt = _receipt(tokens_between(start, end))
         except Exception:                                    # noqa: BLE001
-            continue
-        if receipt is None:
-            continue
-        unsummable = int(_number(receipt.get("unsummable_receipts")) or 0)
-        measured.append({"tokens": int(receipt["tokens"]),
-                         "receipts": int(_number(receipt.get("receipts")) or 0),
-                         "unsummable_receipts": unsummable,
-                         "walled_at": w["walled_at"],
-                         "gap_before_s": w["gap_before_s"],
-                         "covered": w["gap_before_s"] <= 0.0,
-                         # a window holding receipts we could not add up is
-                         # measured IN PART, and the difference between a
-                         # number and a number that lies is saying so
-                         "partial": unsummable > 0})
-    if not measured:
-        return {"available": False, "samples": len(best),
-                "reason": "no receipts could be read for the observed windows",
-                "estimate": None}
-    values = [m["tokens"] for m in measured]
-    n = len(values)
-    lo, hi = min(values), max(values)
-    spread = (hi - lo) / hi if hi > 0 else 0.0
-    # one sample is worth reporting AS ONE SAMPLE. It is not worthless — it is
-    # the only number anyone has — but it is an observation, not a limit, and
-    # the label says which.
-    partial = [m for m in measured if m["partial"]]
-    # a window that could only be measured IN PART is not worth more than the
-    # weakest label, however many such windows there are
-    confidence = ("low" if partial
-                  else "experimental" if n == 1
-                  else "low" if spread > 0.4 else "indicative")
+            receipt = None
+    if receipt is None:
+        return {"available": False, "samples": 1,
+                "reason": "no receipts could be read for the observed window",
+                "comparability": "unknown", "estimate": None}
+    unsummable = int(_number(receipt.get("unsummable_receipts")) or 0)
+    receipts_read = int(_number(receipt.get("receipts")) or 0)
+    others = defensible[:-1]
+    different = [w for w in others if _differs(chosen, w)]
+    measured = [{"tokens": int(receipt["tokens"]),
+                 "receipts": receipts_read,
+                 "unsummable_receipts": unsummable,
+                 "walled_at": chosen["walled_at"],
+                 "gap_before_s": chosen["gap_before_s"],
+                 "covered": chosen["gap_before_s"] <= 0.0,
+                 # a window holding receipts we could not add up is measured
+                 # IN PART, and the difference between a number and a number
+                 # that lies is saying so
+                 "partial": unsummable > 0}]
     uncovered = [m for m in measured if not m["covered"]]
+    partial = [m for m in measured if m["partial"]]
     return {
         "available": True,
-        "kind": "estimate",
-        "limit": best[0]["limit"],
-        "tier": best[0]["tier"],
-        "samples": n,
-        "confidence": confidence,
-        "estimate": {"tokens_lowest": lo, "tokens_highest": hi,
-                     "tokens_latest": values[-1]},
-        "reset_seconds": best[0]["reset_seconds"],
+        # "observation", not "estimate": one window that was measured, not a
+        # figure averaged over several assumed to describe the same thing
+        "kind": "observation",
+        "limit": chosen["limit"],
+        "tier": chosen["tier"],
+        "account_ns": chosen["account_ns"],
+        "samples": 1,
+        # a window measured only in part cannot read as a clean observation
+        "confidence": "low" if partial else "experimental",
+        # stated on every answer, so nobody has to infer it from a count
+        "comparability": "unknown",
+        "estimate": {"tokens": int(receipt["tokens"])},
+        "reset_seconds": chosen["reset_seconds"],
         "observations": measured,
+        "other_windows": {
+            "defensible": len(others),
+            "demonstrably_different": len(different),
+            "note": ("other recorded windows are NOT combined with this one: "
+                     "a different account, tier or named metric proves some "
+                     "of them different, and nothing proves any of them the "
+                     "same, so none of them corroborates this number"),
+        },
+        "comparability_note": (
+            "the CLI states the time REMAINING until a reset, not the "
+            "window's length, so two observations of one limit routinely "
+            "print different durations and two observations of different "
+            "limits can print the same one; countdown similarity is never "
+            "read here as evidence that two windows share a ceiling"),
         # said on the face of it, every time, in the caller's words if it likes
         "basis": ("tokens ORGTREE spent between the window opening and the "
                   "wall; the provider publishes no usage readout, so this is "

@@ -1518,16 +1518,26 @@ export interface AntigravityEstimate {
   available: boolean
   /** why there is no number — present exactly when `available` is false */
   reason?: string
+  /** always 1 on an available answer: one measured window, never a mean. */
   samples: number
-  confidence?: 'experimental' | 'low' | 'indicative'
+  confidence?: 'experimental' | 'low'
+  /** always 'unknown'. Nothing this lane records can prove two walls came
+   *  from one ceiling - the provider names no limit identity, and the
+   *  countdown it prints is time REMAINING, which moves with when the wall
+   *  was hit. Carried as a field so a reader never has to infer corroboration
+   *  from a sample count. */
+  comparability?: 'unknown'
   /** the metric the CLI named on the wall, e.g. "individual quota" */
   limit?: string
   tier?: string
-  estimate?: {
-    tokens_lowest: number
-    tokens_highest: number
-    tokens_latest: number
-  } | null
+  estimate?: { tokens: number } | null
+  /** the other recorded windows, COUNTED and never combined with this one */
+  other_windows?: {
+    defensible?: number
+    demonstrably_different?: number
+    note?: string
+  }
+  comparability_note?: string
   /** what the number is an inference FROM; shown, not buried */
   basis?: string
   /** that it is a LOWER bound, because IDE usage is unobservable */

@@ -44,12 +44,15 @@ const QUIET: AccountUsage = {
     + 'when a turn hits one, with its reset',
 }
 
-// a measured window: one complete sample, every receipt in it countable
+// ONE measured window, every receipt in it countable. `comparability` is
+// 'unknown' on every answer this lane can produce.
 const MEASURED: AntigravityEstimate = {
   available: true, samples: 1, confidence: 'experimental',
-  limit: 'individual quota', tier: 'flash',
-  estimate: { tokens_lowest: 267_127_077, tokens_highest: 267_127_077,
-              tokens_latest: 267_127_077 },
+  comparability: 'unknown', limit: 'individual quota', tier: 'flash',
+  estimate: { tokens: 267_127_077 },
+  other_windows: { defensible: 0, demonstrably_different: 0 },
+  comparability_note: 'the CLI states the time REMAINING until a reset, not '
+    + 'the window length',
   basis: 'tokens ORGTREE spent between the window opening and the wall; the '
     + 'provider publishes no usage readout, so this is an inference from '
     + 'observed walls, not a reported limit',
@@ -139,10 +142,33 @@ test('an estimate never renders as a bar and always carries its two caveats',
     // a percentage would imply a denominator, and the ceiling is unreadable
     assert.equal(view.el.querySelectorAll('.usage-track').length, 0)
     assert.ok(!/%/.test(text), `no percentage: ${text}`)
-    assert.match(text, /1 observed window\b/)
+    assert.match(text, /ONE observed individual quota window/)
     assert.match(text, /experimental/)
     assert.match(text, /not a reported limit/)
     assert.match(text, /LOWER bound/)
+    assert.match(text, /comparability to any other window is UNKNOWN/)
+  })
+
+test('other recorded windows are counted, never merged into a range',
+  async () => {
+    const withOthers: AntigravityEstimate = {
+      ...MEASURED,
+      other_windows: { defensible: 2, demonstrably_different: 1 },
+    }
+    const view = await mountView(
+      <AntigravityEstimateNote est={withOthers} />, (el) => el)
+    await inAct(async () => { await flush(2) })
+    const text = view.el.textContent ?? ''
+    assert.match(text, /2 other recorded windows are counted but never combined/)
+    // exactly ONE token figure: a range would assert the windows agree
+    assert.equal((text.match(/tokens/g) ?? []).length, 1)
+    assert.ok(!/across windows/.test(text), `no range: ${text}`)
+    // CONTROL: with no others, the clause is absent rather than showing zero
+    const alone = await mountView(
+      <AntigravityEstimateNote est={MEASURED} />, (el) => el)
+    await inAct(async () => { await flush(2) })
+    assert.ok(!/other recorded window/.test(alone.el.textContent ?? ''),
+      'a lone observation must not print an empty "0 others" clause')
   })
 
 test('receipts that could not be counted are said out loud, and cap the '

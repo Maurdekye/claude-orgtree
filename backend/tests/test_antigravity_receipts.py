@@ -270,9 +270,11 @@ def test_the_estimate_reads_real_receipts() -> None:
     want = sum(MODERN_A) + sum(MODERN_B)
     check(out["available"] is True and out["samples"] == 1,
           f"one complete window, measured from the journals: {out}")
-    check(out["estimate"]["tokens_latest"] == want,
+    check(out["estimate"] == {"tokens": want},
           f"the number is the real receipts, not an injected one: "
-          f"{out['estimate']['tokens_latest']} vs {want}")
+          f"{out['estimate']} vs {want}")
+    check(out["comparability"] == "unknown",
+          "and it still says nothing proves this window comparable to another")
     check(out["confidence"] == "experimental",
           f"CONTROL: a fully measured single window is 'experimental': "
           f"{out['confidence']}")
@@ -299,9 +301,8 @@ def test_a_partly_measured_window_cannot_read_as_a_good_sample() -> None:
         receipt(opened + 60, *MODERN_A, turn="a"),
         receipt(opened + 90, *LEGACY_A, per_turn=False, turn="old")])
     out = agy.estimate([first, second], rec.tokens_between)
-    check(out["estimate"]["tokens_latest"] == sum(MODERN_A),
-          f"the number counts only what could be counted: "
-          f"{out['estimate']['tokens_latest']}")
+    check(out["estimate"] == {"tokens": sum(MODERN_A)},
+          f"the number counts only what could be counted: {out['estimate']}")
     check(out["coverage"]["unsummable_receipts"] == 1
           and out["coverage"]["windows_partly_measured"] == 1,
           f"the shortfall is reported, not swallowed: {out['coverage']}")
@@ -323,7 +324,7 @@ def test_an_injected_number_still_works() -> None:
                                                       opened + 3600),
                                wall_id="w2")
     out = agy.estimate([first, second], lambda s, e: 4242)
-    check(out["estimate"]["tokens_latest"] == 4242,
+    check(out["estimate"] == {"tokens": 4242},
           f"a bare number is still a whole answer: {out['estimate']}")
     check(out["coverage"]["windows_partly_measured"] == 0,
           "and claims full coverage, which is what a bare number means")
