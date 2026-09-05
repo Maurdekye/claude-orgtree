@@ -1440,6 +1440,52 @@ def _():
         api._providers_payload = old
 
 
+@t("list_tiers serves the tool declaration as true/false/null over a real "
+   "agent request, and refuses any other value")
+def _():
+    """The OpenRouter tool declaration, as an AGENT actually receives it.
+
+    ⚠ THROUGH THE GATEWAY, NOT THE HELPER. `_tier_discovery_payload` has its
+    own unit checks; this one goes through `POST /api/agent` with a live
+    caller so the JSON an agent reads is what is asserted — a helper test
+    cannot see the response serializer, the caller validation, or the 503
+    the malformed arm must produce.
+
+    ⚠ THREE STATES, AND `null` IS ONE OF THEM. `tools` is what openrouter.ai's
+    CATALOG declared: true, false, or null when the entry declared nothing
+    readable. It is never an observation of a turn. The default value arm of
+    the projection admits str-or-None, so this field needs its own branch and
+    a bool would otherwise take the whole document down as malformed.
+    """
+    old = api._providers_payload
+    fixture = lambda tools: {"providers": [{                      # noqa: E731
+        "id": "openrouter", "label": "OpenRouter", "hire_enabled": True,
+        "reason": None,
+        "tiers": [{"tier": "or-fixture", "provider": "openrouter",
+                   "model": "vendor/fixture", "seat": 1.0,
+                   "tools": tools}]}]}
+    try:
+        for declared in (True, False, None):
+            api._providers_payload = lambda d=declared: fixture(d)
+            r = ag(NID, "orgtree_list_tiers")
+            ok200(r, f"tools={declared!r} over the gateway")
+            row = r.json["providers"][0]["tiers"][0]
+            assert row["tools"] is declared, (declared, row)
+            # present-as-null, never dropped: an absent key would make
+            # "the catalog said nothing" indistinguishable from "the
+            # projection forgot this tier"
+            assert "tools" in row, row
+        # …and every other value is a malformed tier, sanitized to a 503.
+        # Identity, not membership: `1 == True`, so a `value in (True, False)`
+        # test would serve an integer as a declaration.
+        for bad in (1, 0, 1.0, "true", "", [], {}, "secret"):
+            api._providers_payload = lambda b=bad: fixture(b)
+            r = ag(NID, "orgtree_list_tiers")
+            assert r.status == 503 and "secret" not in r.text, (bad, r)
+    finally:
+        api._providers_payload = old
+
+
 @t("unknown tool → 422 with the name echoed")
 def _():
     r = ag(NID, "orgtree_nope")

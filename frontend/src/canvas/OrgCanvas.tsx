@@ -2539,7 +2539,11 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
  *  is a full-screen form — and it carries PLACEMENT, so the F-03 side-hire
  *  and FR-25 splice semantics survive: below (report), left/right (coworker
  *  ordering), above (new superior — the anchor moves under the hire). */
-function HireSheet({ anchor, seats, codexHire, antigravityHire, claudeHire, openrouterHire,
+// exported for the rendered-surface tests, the same way `NodeConfig`,
+// `LineagePanel` and `UsageModal` are: a hire is CHOSEN here, so the
+// capability note this sheet draws needs a control that mounts the real
+// component rather than a helper standing in for it.
+export function HireSheet({ anchor, seats, codexHire, antigravityHire, claudeHire, openrouterHire,
   defaultGrant,
   onHire, onSettings,
   onClose }: {

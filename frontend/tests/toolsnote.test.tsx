@@ -67,8 +67,10 @@ test('tierToolsNote answers for a known OpenRouter tier and stays silent elsewhe
   for (const t of ['sonnet', 'opus', 'luna', 'flash']) {
     assert.equal(tierToolsNote(t), '')
   }
-  // a tier the registry has never seen is unknown-by-absence, not a claim
-  assert.equal(tierToolsNote('or-never-seen'), '')
+  // an OpenRouter tier the registry has never seen: NO CATALOG METADATA
+  // IS AVAILABLE, which is exactly what unknown means. Silence here
+  // would render the same blank as a fully-supported Claude tier.
+  assert.equal(tierToolsNote('or-never-seen'), UNKNOWN)
   setOpenRouterTiers([])
 })
 

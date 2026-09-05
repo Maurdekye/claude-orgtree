@@ -285,13 +285,21 @@ export const toolsNote = (tools: boolean | null | undefined): string =>
   tools === true ? 'Tools: supported (catalog)'
     : tools === false ? 'Tools: not supported (catalog)'
       : 'Tools: unknown (catalog)'
-/** the same note for a TIER, or '' for a tier this registry cannot describe.
- *  Static Claude/Codex/Antigravity tiers return '' — the catalog is an
- *  OpenRouter fact and inventing one for another lane would be a claim. */
+/** the same note for a TIER. '' for a static Claude/Codex/Antigravity tier —
+ *  the catalog is an OpenRouter fact and inventing one for another lane would
+ *  be a claim no catalog made.
+ *
+ *  ⚠ AN OPENROUTER TIER THE REGISTRY HAS NEVER SEEN IS `unknown`, NOT SILENT.
+ *  That is not a hypothetical: the registry holds the CURRENT favorites, and
+ *  a node already running on a since-deselected favorite still appears in the
+ *  config switch and the rehire select. Its row has no catalog metadata
+ *  available at all, which is precisely what unknown means — returning ''
+ *  there would render the same blank as a fully-supported Claude tier and
+ *  quietly drop the disclosure exactly where a seat is being re-chosen. */
 export const tierToolsNote = (tier: string): string => {
   if (!isOpenRouterTier(tier)) return ''
   const t = openrouterTier(tier)
-  return t ? toolsNote(t.tools) : ''
+  return toolsNote(t ? t.tools : null)
 }
 /** seat for ANY tier the static tables or the registry know */
 export const anyTierSeat = (tier: string): number =>
