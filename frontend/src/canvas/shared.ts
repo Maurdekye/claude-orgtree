@@ -222,7 +222,13 @@ export const setOpenRouterTiers = (tiers: ProviderTier[] | null | undefined): vo
   el.textContent = openrouterTierCss(orTiers)
 }
 export const openrouterTiers = (): ProviderTier[] => orTiers
-export const openrouterTierIds = (): string[] => orTiers.map((t) => t.tier)
+export const openrouterTierIds = (keep?: string | null): string[] => {
+  const ids = orTiers.map((t) => t.tier)
+  if (keep && isOpenRouterTier(keep) && !ids.includes(keep)) {
+    return [...ids, keep]
+  }
+  return ids
+}
 export const openrouterTier = (tier: string): ProviderTier | undefined =>
   orTiers.find((t) => t.tier === tier)
 

@@ -62,7 +62,7 @@ const provider = (id: string, tiers: ProviderTier[] = []): ProviderInfo => ({
   reason: null, status: { installed: true, connected: true },
 } as unknown as ProviderInfo)
 
-const hire = (id: string): HireState => hireOf(provider(id))
+const hire = (id: string): HireState | null => hireOf(provider(id))
 
 const treeFixture = (): TreePayload => ({
   slug: 'org', dirs: [],
@@ -165,19 +165,40 @@ test('the CONFIG model-switch states it for every offered OpenRouter tier',
   for (const re of [/Tools:/, /Image input:/, /Reasoning parameter:/]) {
     assert.doesNotMatch(byValue('haiku'), re)
   }
-  // ⚠ RECORDED, NOT ASSUMED. I expected a DESELECTED favorite that a node
-  // still runs on to appear here as its own truthful selected option, and it
-  // does NOT: `shownTiers` filters the family list, and the OpenRouter family
-  // IS `openrouterTierIds()` - the current registry - so `tierShown`'s `keep`
-  // has nothing to keep. The select therefore renders no option matching this
-  // node's own tier. That is pre-existing behaviour, unrelated to this change
-  // and untouched by it; it is pinned here so the next reader does not repeat
-  // my wrong assumption, and it is reported rather than fixed.
-  assert.equal(opts.find((o) => o.value === 'or-v-deselected'), undefined,
-    'a deselected favorite is not offered by the switch (recorded behaviour)')
-  // the registry-absent case is covered where it is reachable: the formatter
-  // itself, in toolsnote.test.tsx
+  // A DESELECTED favorite that a node still runs on remains visible in the
+  // model-switch dropdown as its truthful current model (w76fba70b), without
+  // bypassing admission for new hires or switches for other agents.
+  const deselectedOpt = opts.find((o) => o.value === 'or-v-deselected')
+  assert.ok(deselectedOpt, 'a deselected favorite is kept visible as the current model')
+  assert.equal(deselectedOpt.disabled, false, 'the node’s own deselected model is selectable (truthful no-op)')
+  assert.match(byValue('or-v-deselected'), /deselected/)
+  // ⚠ PRESENCE IS THE WEAKER CLAIM. An option can exist in the list while the
+  // select still displays something else — which is the very failure this fix
+  // is about: the control read as though the node were running on a model it is
+  // not. So assert what the control actually SHOWS (Astra review 2026-09-05).
+  const sel = view.el.querySelector<HTMLSelectElement>('.model-switch')
+  assert.ok(sel, 'the model switch is rendered')
+  assert.equal(sel.value, 'or-v-deselected',
+    'the switch DISPLAYS the node’s own deselected tier as the current value')
+  assert.equal(deselectedOpt.selected, true,
+    'and it is that option which is selected, not merely present')
   await view.unmount()
+
+  // CONTROL: for a node on another tier, the deselected favorite is NOT offered
+  const otherNode = nodeFixture('haiku')
+  const viewOther = await mountView(
+    <NodeConfig node={otherNode} map={new Map([[otherNode.id, otherNode]])} tree={treeFixture()}
+      slug="org" toast={noop}
+      op={(_x: OpRequest) => Promise.resolve({} as OpResult)}
+      openrouterProvider={provider('openrouter', OR_TIERS)}
+      close={noop} />,
+    (el) => el)
+  await inAct(async () => { await flush() })
+  const otherOpts = Array.from(
+    viewOther.el.querySelectorAll<HTMLOptionElement>('.model-switch option'))
+  assert.equal(otherOpts.find((o) => o.value === 'or-v-deselected'), undefined,
+    'a deselected favorite is not offered as a switch target for other agents')
+  await viewOther.unmount()
   setOpenRouterTiers([])
 })
 

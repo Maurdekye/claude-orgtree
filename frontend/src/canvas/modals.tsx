@@ -898,7 +898,10 @@ export function NodeConfig({ node, map, tree, slug, op, toast, codexProvider,
     if (t === node.tier) return null
     if (CODEX_TIERS.includes(t) && codexUnavailable) return codexUnavailable
     if (ANTIGRAVITY_TIERS.includes(t) && antigravityUnavailable) return antigravityUnavailable
-    if (isOpenRouterTier(t) && openrouterUnavailable) return openrouterUnavailable
+    if (isOpenRouterTier(t)) {
+      if (openrouterUnavailable) return openrouterUnavailable
+      if (!openrouterTierIds().includes(t)) return 'not among current favorites'
+    }
     const cap = tree.kiosk?.max_tier
     if (cap && tierSeat(t) > tierSeat(cap)) return `above kiosk cap (${cap})`
     return null
@@ -1143,7 +1146,8 @@ export function NodeConfig({ node, map, tree, slug, op, toast, codexProvider,
           {([['Claude', TIERS], ['Codex', CODEX_TIERS],
              ['Antigravity', ANTIGRAVITY_TIERS],
              // the OpenRouter favorites, from the registry the payload fills
-             ['OpenRouter', openrouterTierIds()]] as const)
+             // (preserving this node's own tier if it was since deselected — w76fba70b)
+             ['OpenRouter', openrouterTierIds(node.tier)]] as const)
             .map(([label, fam]) => [label, shownTiers(fam)] as const)
             .filter(([, fam]) => fam.length > 0)
             .map(([label, fam]) => (
