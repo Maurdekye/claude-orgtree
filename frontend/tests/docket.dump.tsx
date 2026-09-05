@@ -58,14 +58,14 @@ const ITEMS: WorkItem[] = [
     done_so_far: ['removed the boxed copy button from list and detail',
       'shared renderer used by working-status-nudges-every-twenty-minutes too'],
     working_on_next: ['the four approved elements of nested-docket-items'] }),
-  // SUB-ITEMS, so the indent and the skeleton lines are on screen to be
-  // measured — element 2 is a pure CSS claim and no DOM test can see it
-  mk({ slug: 'grouping-and-filters', title: 'Grouping and filters',
-    status: 'done', parent: 'clickable-docket-references-across-text-surfaces',
-    last_updater: { node: 'codex-checklist', generation: 5 } }),
-  mk({ slug: 'readable-item-names', title: 'Readable item names',
-    status: 'review', parent: 'clickable-docket-references-across-text-surfaces',
-    last_updater: { node: 'luna-reserve', generation: 1 } }),
+  // SUB-ITEMS, so the indent and the skeleton lines are on screen to be
+  // measured — element 2 is a pure CSS claim and no DOM test can see it
+  mk({ slug: 'grouping-and-filters', title: 'Grouping and filters',
+    status: 'done', parent: 'clickable-docket-references-across-text-surfaces',
+    last_updater: { node: 'codex-checklist', generation: 5 } }),
+  mk({ slug: 'readable-item-names', title: 'Readable item names',
+    status: 'review', parent: 'clickable-docket-references-across-text-surfaces',
+    last_updater: { node: 'luna-reserve', generation: 1 } }),
   mk({ slug: 'antigravity-usage-limit-estimation',
     title: 'Antigravity usage-limit estimation', status: 'blocked',
     blocked_reason: 'no authoritative window',
