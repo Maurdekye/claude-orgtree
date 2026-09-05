@@ -54,6 +54,10 @@ FAKEANTIGRAVITY_SCENARIO:
     interruptmidtool
                  a tool opens and the process then stalls until it is killed
                  (the `interrupt` shape with a tool left open) — the ⏸ path
+    draftthentool
+                 a text delta with no DONE, then a tool opens, then rc=1 —
+                 the tool's ACTIVE path must flush the draft first, a real
+                 emission a suite can hold the reader on before registration
 
 `--conversation <id>` is honoured as a RESUME: the init echoes that id and
 the first delta is "RESUMED:<id> " so a suite can tell resume from fresh.
@@ -329,6 +333,17 @@ def main_turn():
                          "parameters": {"CommandLine": "echo HOOK-CMD"}})
         _step(cid, 4, "ACTIVE", "agent_response",
               text_delta="partial words before death ")
+        _die(1)
+    if SCENARIO == "draftthentool":
+        # a text delta with NO DONE, then a tool opens, then the process is
+        # gone: the tool's ACTIVE path has to flush that draft first, which
+        # gives a suite a real emission to hold the reader on before the
+        # tool is registered (the held-callback control)
+        _step(cid, 2, "ACTIVE", "agent_response",
+              text_delta="thinking aloud before the tool ")
+        _step(cid, 3, "ACTIVE", "tool", tool_name="run_command",
+              tool_info={"name": "run_command",
+                         "parameters": {"CommandLine": "echo HELD"}})
         _die(1)
     if SCENARIO == "interruptmidtool":
         # the measured kill-mid-turn shape, with a tool left open: the step

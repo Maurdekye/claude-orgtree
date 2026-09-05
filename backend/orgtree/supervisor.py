@@ -12450,8 +12450,20 @@ def _antigravity_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
         # per-step text accumulation: step_index → [deltas…]; a step is
         # committed when its DONE arrives and never again (`item_ids`)
         "text_open": {}, "text_order": [], "item_ids": set(),
-        "tool_open": {}, "agent_items": 0}
+        "tool_open": {}, "agent_items": 0,
+        # THE FINALIZATION PROTOCOL (Astra's review of 517d1ae, 2026-09-05).
+        # `inflight` counts wire callbacks admitted into `_on_event` and not
+        # yet returned; `finalized` is set once by the end-of-turn sweep and
+        # never cleared — from then on `_on_event` admits nothing. The sweep
+        # waits (BOUNDED) for `inflight` to reach zero before it closes open
+        # ids, so a callback that had already passed its checks when the turn
+        # ended still registers and journals its `tool_use` BEFORE the close
+        # is written, and a callback arriving after cannot open a step that
+        # nothing would ever close. `drained` is the condition the sweep
+        # waits on; it shares `jlock`.
+        "inflight": 0, "finalized": False}
     emit_lock = threading.Lock()
+    drained = threading.Condition(jlock)
 
     def _item_id(step_index: Any) -> str:
         return f"agy-{turn_token}-{step_index}"
@@ -12606,6 +12618,25 @@ def _antigravity_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
         return name, params
 
     def _on_event(msg: dict[str, Any]) -> None:
+        """The reader thread's door. Admission is counted under `jlock` and
+        refused once the turn is finalized; the body runs with NO lock held
+        (it takes dlock → emit_lock → jlock itself, and holding any of them
+        across it would invert that order). The count is released in a
+        `finally`, so a body that raises still lets the sweep drain."""
+        with jlock:
+            if jstate["finalized"]:
+                # the sweep has run: a step opened now would never be closed,
+                # a delta appended now would never be committed
+                return
+            jstate["inflight"] += 1
+        try:
+            _on_event_admitted(msg)
+        finally:
+            with drained:
+                jstate["inflight"] -= 1
+                drained.notify_all()
+
+    def _on_event_admitted(msg: dict[str, Any]) -> None:
         if str(msg.get("event") or "") != "step_update":
             return
         step = _d(msg.get("step_update"))
@@ -12739,12 +12770,39 @@ def _antigravity_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
         because a failure to obtain a result is not a normal completion and
         must not read as one on the desk; the prose carries the rest.
 
-        Claimed through `_claim_tool`, so a DONE still in flight on the
-        reader thread either beat us here (and this writes nothing) or comes
-        after (and finds the step claimed, per the top-of-`_on_event`
-        `_committed` guard). Exactly one result row per tool id either way."""
-        with jlock:
+        ORDER WITH THE READER THREAD — three shapes, all pinned in the suite:
+          · a DONE in flight: `_claim_tool` gives the step to whichever of
+            the two arrives first; the other writes nothing;
+          · an ACTIVE already ADMITTED (past `_on_event`'s door) but not yet
+            registered or journaled when the turn ends: the sweep FINALIZES
+            (no further admissions) and then WAITS for the in-flight count
+            to reach zero, so that callback registers and writes its
+            `tool_use` first and the close below answers it — without the
+            wait the sweep saw no open id and the row dangled, or wrote its
+            result BEFORE the call it answers (Astra's seam, 2026-09-05);
+          · an ACTIVE arriving after finalization: refused at the door.
+        The wait is BOUNDED (the reader's remaining work after the process is
+        gone is the tail of one callback; `wait()` gives its join the same
+        5s), holds no lock while waiting, and on expiry proceeds anyway —
+        saying so in the conversation — because a possibly early close is
+        still better than a row that never closes. `close()` only kills the
+        tree and `wait()` only attempts a bounded join, so neither of those
+        establishes quiescence; this protocol is what does."""
+        with drained:
+            jstate["finalized"] = True
+            deadline = time.monotonic() + 5.0
+            while jstate["inflight"] > 0:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                drained.wait(remaining)
+            still_inflight = int(jstate["inflight"])
             open_ids = list(cast("dict[str, Any]", jstate["tool_open"]))
+        if still_inflight:
+            _log_turn_error(
+                slug, nid, "the turn ended while the Antigravity CLI's last "
+                "step event was still being recorded; a tool close written "
+                "below may precede the call it answers")
         for iid in open_ids:
             if _claim_tool(iid) is None:
                 continue           # the wire's own completion won the race

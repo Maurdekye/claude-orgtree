@@ -233,88 +233,136 @@ def _leg_functions(names):
 
 
 class GateLock:
-    """A `jlock` that pauses ONE named thread just before ONE chosen
+    """A `jlock` that pauses ONE named thread just before ONE chosen BLOCKING
     acquisition, so a two-thread interleaving can be pinned instead of hoped
-    for. The wait is BOUNDED: a gate that is never released must not hang the
-    suite, it must let the run finish and be judged on what it produced."""
+    for. Non-blocking probes (`acquire(False)`, which `Condition` uses to ask
+    whether it owns the lock) are not counted. The wait is BOUNDED: a gate
+    that is never released must not hang the suite, it must let the run
+    finish and be judged on what it produced."""
 
-    def __init__(self, thread_name, index):
+    def __init__(self, thread_name=None, index=0):
         self._inner = threading.Lock()
         self._name, self._index = thread_name, index
         self._count = 0
         self.reached = threading.Event()
-        self.release = threading.Event()
+        self.go = threading.Event()
 
-    def __enter__(self):
-        if threading.current_thread().name == self._name:
+    def acquire(self, blocking=True, timeout=-1):
+        if blocking and self._name                 and threading.current_thread().name == self._name:
             self._count += 1
             if self._count == self._index:
                 self.reached.set()
-                self.release.wait(5.0)
-        return self._inner.__enter__()
+                self.go.wait(8.0)
+        return self._inner.acquire(blocking, timeout)
+
+    def release(self):
+        self._inner.release()
+
+    __enter__ = acquire
 
     def __exit__(self, *a):
-        return self._inner.__exit__(*a)
+        self.release()
 
 
-def claim_seam(gate_thread: str):
-    """One open tool step, reached at the same moment by the wire's own
-    DONE (thread `wire`) and the end-of-turn sweep (thread `sweep`), using
-    the leg's ACTUAL bodies. `gate_thread` is the one held just before its
-    claim, which chooses WHICH of the two arrives second.
-
-    The contract either way: exactly ONE `tool_result` for that tool id."""
+def protocol_env(gate: "GateLock", rows: list, *, tool_open=None,
+                 flush_draft=None, journal_records=None):
+    """The leg's ACTUAL event door, admitted body, claim and sweep, executed
+    over a controlled namespace. Only the pause points are fakes."""
     fns = _leg_functions(["_d", "_item_id", "_committed", "_mark_committed",
                           "_claim_tool", "_tool_identity", "_on_event",
-                          "_commit_unfinished_tools"])
+                          "_on_event_admitted", "_commit_unfinished_tools"])
     import ast
     from typing import Any, cast
-    rows: list[dict] = []
-    iid = "agy-seamtoken-3"
-    gate = GateLock(gate_thread, 2)
+    logged: list = []
     env = dict(
-        cast=cast, Any=Any, jlock=gate,
+        cast=cast, Any=Any, time=time, jlock=gate,
+        drained=threading.Condition(gate),
         jstate={"sid": "seam", "pending": [], "held": [],
                 "text_open": {}, "text_order": [], "item_ids": set(),
-                "tool_open": {iid: "run_command"}, "agent_items": 0},
-        turn_token="seamtoken", model_id="seam",
+                "tool_open": dict(tool_open or {}), "agent_items": 0,
+                "inflight": 0, "finalized": False},
+        turn_token="seamtoken", model_id="seam", slug="seam", nid="seam",
         now_iso=supervisor.now_iso, _tool_arg=supervisor._tool_arg,
-        _journal_records=lambda recs: rows.extend(recs),
+        _journal_records=journal_records or (lambda recs: rows.extend(recs)),
+        _log_turn_error=lambda s, n, text: logged.append(text),
         _visible_stream=lambda payload: None,
         _visible_live_row=lambda payload: None,
-        _flush_draft=lambda: None,
+        _flush_draft=flush_draft or (lambda: None),
         _queue_delta=lambda body: None,
         _commit_text=lambda *a: None)
     exec(compile(ast.Module(body=fns, type_ignores=[]),
                  "<antigravity-leg-bodies>", "exec"), env)
+    env["_logged"] = logged
+    return env
 
-    done_msg = {"event": "step_update", "step_update": {
-        "step_type": "tool", "state": "DONE", "step_index": 3,
-        "tool_name": "run_command",
-        "tool_info": {"name": "run_command",
-                      "parameters": {"CommandLine": "echo x"},
-                      "output": "the tool DID report this"}}}
-    first = threading.Thread(target=lambda: env["_on_event"](done_msg),
-                             name="wire", daemon=True)
-    second = threading.Thread(target=env["_commit_unfinished_tools"],
-                              name="sweep", daemon=True)
-    lead, trail = ((first, second) if gate_thread == "wire"
-                   else (second, first))
-    lead.start()
-    reached = gate.reached.wait(5)
-    trail.start()
-    trail.join(10)
-    gate.release.set()
-    lead.join(10)
-    results = [b for r in rows
-               for b in ((r.get("message") or {}).get("content") or [])
-               if isinstance(b, dict) and b.get("type") == "tool_result"]
-    return {"gate_reached": reached,
-            "stuck": lead.is_alive() or trail.is_alive(),
-            "results": [{"id": b.get("tool_use_id"),
-                         "is_error": bool(b.get("is_error")),
-                         "body": str(b.get("content") or "")[:60]}
-                        for b in results]}
+
+def step_msg(state, output=None, index=3):
+    info = {"name": "run_command", "parameters": {"CommandLine": "echo x"}}
+    if output is not None:
+        info["output"] = output
+    return {"event": "step_update", "step_update": {
+        "step_type": "tool", "state": state, "step_index": index,
+        "tool_name": "run_command", "tool_info": info}}
+
+
+def rows_shape(rows):
+    out = []
+    for r in rows:
+        for b in ((r.get("message") or {}).get("content") or []):
+            if isinstance(b, dict) and b.get("type") in ("tool_use",
+                                                         "tool_result"):
+                out.append((b["type"], str(b.get("content") or
+                                          b.get("id") or "")[:38]))
+    return out
+
+
+def held_callback_seam(pause_at: str, msg: dict, *, tool_open=None):
+    """A wire callback ADMITTED and then held mid-body — at `_flush_draft`
+    (after its checks, before registration), inside `_journal_records`
+    (after registration, before the row lands) or at its `_committed` check
+    (a DONE, before its claim) — while the sweep runs on another thread.
+    Returns what the sweep did while the callback was held, and the rows
+    once both finished."""
+    rows: list = []
+    entered = threading.Event()
+    release = threading.Event()
+
+    def pause():
+        entered.set()
+        release.wait(8.0)
+
+    gate = GateLock("wire", 2) if pause_at == "committed" else GateLock()
+    if pause_at == "committed":
+        gate.reached = entered
+        gate.go = release
+
+    def journal(recs):
+        if pause_at == "journal" and rows_shape(recs)[:1] == [
+                ("tool_use", "agy-seamtoken-3")]:
+            pause()
+        rows.extend(recs)
+
+    env = protocol_env(gate, rows, tool_open=tool_open,
+                       flush_draft=pause if pause_at == "flush" else None,
+                       journal_records=journal)
+    wire = threading.Thread(target=lambda: env["_on_event"](msg),
+                            name="wire", daemon=True)
+    sweep = threading.Thread(target=env["_commit_unfinished_tools"],
+                             name="sweep", daemon=True)
+    wire.start()
+    reached = entered.wait(5)
+    sweep.start()
+    sweep.join(0.6)
+    sweep_waited = sweep.is_alive()
+    rows_while_held = rows_shape(rows)
+    release.set()
+    wire.join(10)
+    sweep.join(10)
+    return {"reached": reached, "sweep_waited": sweep_waited,
+            "rows_while_held": rows_while_held, "rows": rows_shape(rows),
+            "open_after": dict(env["jstate"]["tool_open"]),
+            "drain_timed_out": list(env["_logged"]),
+            "stuck": wire.is_alive() or sweep.is_alive()}
 
 
 SEEN: list[dict] = []
@@ -961,30 +1009,203 @@ def main() -> int:
                           if UNAVAILABLE in r["body"])), (1, [1], 1),
                      f"uses {uses_t} results {res_t}"))
 
-    print("§12 the wire's own completion and the end-of-turn sweep reach the "
-          "SAME open tool at the same moment — one result, never two")
-    # The fixture cases above cannot see this: in a single-threaded replay the
-    # sweep's snapshot never overlaps a completion in flight, so a sweep that
-    # ignored its claim, or a reader that claimed in two steps, passed them
-    # all. (Both shapes were ACCEPTED mutants before this section existed.)
-    for who, story in (("wire", "the sweep arrives second"),
-                       ("sweep", "the wire's DONE arrives second")):
-        seam = claim_seam(who)
-        check(f"anti-vacuity: the seam was reached and neither thread hung "
-              f"({story})",
-              lambda s=seam: eq((s["gate_reached"], s["stuck"]), (True, False),
-                                f"seam {s}"))
-        check(f"exactly one tool_result for the step, under its own id "
-              f"({story})",
-              lambda s=seam: eq((len(s["results"]),
-                                 [r["id"] for r in s["results"]]),
-                                (1, ["agy-seamtoken-3"]),
-                                f"results {s['results']}"))
-    check("when the wire's DONE wins, the durable row is the CLI's real "
-          "output — the sweep never overwrites a reported result",
-          lambda: truthy(any("DID report" in r["body"]
-                             for r in claim_seam("sweep")["results"]),
-                         "the reported output did not survive"))
+    print("§12 the finalization protocol: a callback already ADMITTED when "
+          "the turn ends finishes first; one arriving after is refused")
+    # Astra's seam on 517d1ae (2026-09-05): the claim covered DONE-vs-sweep
+    # only. An ACTIVE held after its checks but before registration let the
+    # sweep see nothing open and the row dangled; one held inside its journal
+    # write let the sweep answer a call not yet written (tool_result before
+    # tool_use). Neither `close()` (kill only) nor `wait()` (bounded join)
+    # establishes quiescence, so the sweep now finalizes and drains.
+    UID = "agy-seamtoken-3"
+    UNAV = "[orgtree: result unavailable] The turn"
+
+    # positive control: the protocol changes nothing for a normal step
+    rows0: list = []
+    env0 = protocol_env(GateLock(), rows0)
+    env0["_on_event"](step_msg("ACTIVE"))
+    env0["_on_event"](step_msg("DONE", output="the tool DID report this"))
+    check("positive control: ACTIVE then DONE through the door still journals "
+          "tool_use then the CLI's real result, inflight back to zero",
+          lambda: eq((rows_shape(rows0), env0["jstate"]["inflight"],
+                      env0["jstate"]["finalized"]),
+                     ([("tool_use", UID),
+                       ("tool_result", "the tool DID report this")],
+                      0, False), f"rows {rows0}"))
+
+    held_flush = held_callback_seam("flush", step_msg("ACTIVE"))
+    check("anti-vacuity: the ACTIVE was held after its checks, before "
+          "registration, and neither thread hung",
+          lambda: eq((held_flush["reached"], held_flush["stuck"]),
+                     (True, False), f"{held_flush}"))
+    check("the sweep WAITED for the admitted ACTIVE (still running, nothing "
+          "written, while the callback was held)",
+          lambda: eq((held_flush["sweep_waited"],
+                      held_flush["rows_while_held"]), (True, []),
+                     f"{held_flush}"))
+    check("…then closed it: tool_use before its result, nothing left open, "
+          "and the drain did not time out",
+          lambda: eq((held_flush["rows"], held_flush["open_after"],
+                      held_flush["drain_timed_out"]),
+                     ([("tool_use", UID), ("tool_result", UNAV)], {}, []),
+                     f"{held_flush}"))
+
+    held_journal = held_callback_seam("journal", step_msg("ACTIVE"))
+    check("an ACTIVE held INSIDE its journal write (registered, row not yet "
+          "landed): the sweep waited and the call precedes its close",
+          lambda: eq((held_journal["reached"], held_journal["sweep_waited"],
+                      held_journal["rows"], held_journal["open_after"],
+                      held_journal["drain_timed_out"]),
+                     (True, True, [("tool_use", UID), ("tool_result", UNAV)],
+                      {}, []), f"{held_journal}"))
+
+    held_done = held_callback_seam(
+        "committed", step_msg("DONE", output="the tool DID report this"),
+        tool_open={UID: "run_command"})
+    check("a DONE held before its claim: the sweep waited, the CLI's real "
+          "result is the one on disk, and there is exactly one row",
+          lambda: eq((held_done["reached"], held_done["sweep_waited"],
+                      held_done["rows"], held_done["open_after"]),
+                     (True, True, [("tool_result", "the tool DID report this")],
+                      {}), f"{held_done}"))
+
+    # after finalization the door is shut
+    rows_late: list = []
+    env_late = protocol_env(GateLock(), rows_late,
+                            tool_open={UID: "run_command"})
+    env_late["_commit_unfinished_tools"]()
+    closed_first = rows_shape(rows_late)
+    # a step the turn NEVER saw before finalization: the `_committed` guard
+    # cannot know it, so only the door stands between it and a tool_use row
+    # nothing would ever close (the `no_finalize_gate` mutant reopens this)
+    env_late["_on_event"](step_msg("ACTIVE", index=4))
+    env_late["_on_event"](step_msg("DONE", output="too late", index=4))
+    env_late["_on_event"](step_msg("ACTIVE"))
+    env_late["_on_event"](step_msg("DONE", output="too late"))
+    check("anti-vacuity: the sweep closed the open step before the late "
+          "events arrived",
+          lambda: eq(closed_first, [("tool_result", UNAV)], f"{closed_first}"))
+    check("an ACTIVE or DONE arriving AFTER finalization is refused at the "
+          "door: nothing registered, nothing journaled, inflight zero",
+          lambda: eq((rows_shape(rows_late), env_late["jstate"]["tool_open"],
+                      env_late["jstate"]["inflight"]),
+                     (closed_first, {}, 0), f"{rows_late}"))
+
+    print("§13 when the drain EXPIRES the sweep proceeds, says so, and the "
+          "atomic claim is what keeps the row count at one")
+    # The bounded wait is a promise not to hang; this is what happens past
+    # it. A DONE held at its claim for longer than the drain: the sweep goes
+    # ahead, closes the step and records that it may have run early; the
+    # late DONE then finds the step claimed and writes nothing. (The old
+    # split check/mark/pop would write a second, contradicting row here.)
+    rows_x: list = []
+    gate_x = GateLock("wire", 3)          # door, _committed, then the claim
+    env_x = protocol_env(gate_x, rows_x, tool_open={UID: "run_command"})
+    wire_x = threading.Thread(
+        target=lambda: env_x["_on_event"](step_msg("DONE", output="late")),
+        name="wire", daemon=True)
+    sweep_x = threading.Thread(target=env_x["_commit_unfinished_tools"],
+                               name="sweep", daemon=True)
+    wire_x.start()
+    reached_x = gate_x.reached.wait(5)
+    t_sweep = time.monotonic()
+    sweep_x.start()
+    sweep_x.join(9)
+    sweep_took = time.monotonic() - t_sweep
+    rows_at_expiry = rows_shape(rows_x)
+    gate_x.go.set()
+    wire_x.join(10)
+    check("anti-vacuity: the DONE was held at its claim past the drain, the "
+          "sweep finished on its own after ~5s and recorded the expiry",
+          lambda: eq((reached_x, not sweep_x.is_alive(), 4.5 < sweep_took < 9,
+                      len(env_x["_logged"])), (True, True, True, 1),
+                     f"took {sweep_took:.1f}s logged {env_x['_logged']}"))
+    check("the sweep closed the step at expiry; the late DONE then wrote "
+          "NOTHING — one row, not a contradicting pair",
+          lambda: eq((rows_at_expiry, rows_shape(rows_x), wire_x.is_alive()),
+                     ([("tool_result", UNAV)], [("tool_result", UNAV)], False),
+                     f"{rows_x}"))
+    # and the sweep honours a claim it LOST between snapshot and claim
+    rows_y: list = []
+    gate_y = GateLock("sweep", 2)         # finalize+snapshot, then the claim
+    env_y = protocol_env(gate_y, rows_y, tool_open={UID: "run_command"})
+    sweep_y = threading.Thread(target=env_y["_commit_unfinished_tools"],
+                               name="sweep", daemon=True)
+    sweep_y.start()
+    reached_y = gate_y.reached.wait(5)
+    taken = env_y["_claim_tool"](UID)     # someone else won it meanwhile
+    gate_y.go.set()
+    sweep_y.join(10)
+    check("a step claimed away between the sweep's snapshot and its own "
+          "claim is left alone — the sweep writes for what it WON, only",
+          lambda: eq((reached_y, taken, rows_shape(rows_y)),
+                     (True, "run_command", []), f"{rows_y}"))
+
+    print("§14 the whole leg, with the wire's callback really held while the "
+          "process dies: the close still answers the call")
+    # `draftthentool`: a text delta with no DONE sits in the draft buffer, so
+    # the tool's ACTIVE path flushes it — and THAT emission is where the
+    # reader is held, on the real code path, before the tool is registered.
+    # The process is already gone when we release; the sweep must have waited.
+    scenario("draftthentool", "agy-close-heldleg")
+    slug18, nid18 = mkorg("closeheldleg")
+    held_leg: dict = {"paused_on": None}
+    go = threading.Event()
+    _orig_stream = supervisor.stream
+
+    def holding_stream(slug_, nid_, payload):
+        if (slug_ == slug18 and payload.get("kind") == "delta"
+                and held_leg["paused_on"] is None):
+            held_leg["paused_on"] = threading.current_thread().name
+            go.wait(8.0)
+        _orig_stream(slug_, nid_, payload)
+
+    def releaser():
+        for _ in range(200):
+            # release only once the turn thread has torn down (responding
+            # cleared in the finally, before the sweep) and the process is
+            # gone: the sweep is now either waiting on the drain or has
+            # already run without it
+            if (held_leg["paused_on"] and TURNS
+                    and TURNS[-1].poll() is not None
+                    and not supervisor.state(slug18, nid18).get("responding")):
+                time.sleep(0.3)
+                held_leg["released_after_exit"] = True
+                go.set()
+                return
+            time.sleep(0.05)
+        held_leg["released_after_exit"] = False
+        go.set()
+
+    supervisor.stream = holding_stream
+    TURNS.clear()
+    rel = threading.Thread(target=releaser, daemon=True)
+    rel.start()
+    try:
+        run_turn(slug18, nid18, "hold the wire while you die")
+    finally:
+        supervisor.stream = _orig_stream
+        go.set()
+    rel.join(5)
+    uses_h, res_h = tool_rows(slug18)
+    order_h = [(k, v) for k, _, v in shape(journal_lines(slug18))
+               if k in ("text", "tool_use", "tool_result")]
+    check("anti-vacuity: the reader really was held on the draft flush "
+          "before registering the tool, and released only after the "
+          "process had exited and the turn had torn down",
+          lambda: eq((bool(held_leg["paused_on"]),
+                      held_leg.get("released_after_exit")), (True, True),
+                     f"{held_leg}"))
+    check("the tool opened by the held callback is registered, journaled AND "
+          "closed — one call, one generated result, in that order",
+          lambda: eq((len(uses_h), [(k, v[:18]) for k, v in order_h
+                                    if k != "text"]),
+                     (1, [("tool_use", "run_command"),
+                          ("tool_result", "[orgtree: result u")]),
+                     f"uses {uses_h} order {order_h}"))
+    check("the unfinished text block is still the last assistant block",
+          lambda: eq(order_h[-1][0] if order_h else None, "text",
+                     f"{order_h}"))
 
     print()
     for label, tb in FAIL:
