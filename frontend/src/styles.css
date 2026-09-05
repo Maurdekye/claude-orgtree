@@ -2850,6 +2850,34 @@ main.solo { width: 100%; }
 .docket-modal .mailrow.status-dropped { border-left: 3px solid var(--line-soft); }
 .docket-modal .mailrow.attention { border-left: 3px solid var(--accent); }
 
+/* w2d5fab0a element 3 — the small status dot that rides with the name.
+   The coloured left edge above already existed; the dot is the other half of
+   the approved element. Two readings of one fact on purpose: the 3px edge is
+   easy to lose against a selected row's tint and against the panel border,
+   while the dot sits where the eye already is. Same colour vocabulary as the
+   edge and the status word, so they can never disagree. */
+.docket-row .l1 .docket-dot {
+  width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0;
+  background: var(--line); align-self: center;
+}
+/* ⚠ THE DOT IS A THIRD CHILD, AND `.mailrow .l1` IS `space-between`. With two
+   children that put the name left and the time right; with three it CENTRES
+   the name between them, which is exactly what it did — caught in the browser
+   preview, not by any DOM test. The name is pinned left and the time pushed
+   right explicitly, so adding a fourth child later cannot repeat this. */
+.docket-row .l1 { justify-content: flex-start; }
+.docket-row .l1 .mfrom { min-width: 0; }
+.docket-row .l1 .mtime { margin-left: auto; }
+.docket-row .l1 .docket-dot.status-in_progress { background: var(--work); }
+.docket-row .l1 .docket-dot.status-blocked { background: var(--bad); }
+.docket-row .l1 .docket-dot.status-review { background: var(--review); }
+.docket-row .l1 .docket-dot.status-backlogged { background: var(--backlog); }
+.docket-row .l1 .docket-dot.status-done { background: var(--ok); }
+.docket-row .l1 .docket-dot.status-superseded,
+.docket-row .l1 .docket-dot.status-dropped { background: var(--line-soft); }
+/* attention outranks the status, exactly as the edge and the word do */
+.docket-row .l1 .docket-dot.attention { background: var(--accent); }
+
 .docket-modal .tier {
   width: 16px; height: 16px; display: inline-grid; place-items: center;
   border-radius: 3px; font-size: 9px; font-weight: 700; font-family: var(--mono);
@@ -2874,6 +2902,26 @@ main.solo { width: 100%; }
 .docket-list-empty { font-style: italic; }
 .docket-list-items { margin: 0; padding-left: 18px; }
 .docket-list-items li { margin: 2px 0; }
+/* w2d5fab0a element 4 — the two progress lists carry DIFFERENT bullets. They
+   sit one under the other and read as one wall of identical dots otherwise,
+   and which of the two a line is in is the most important thing about it: a
+   tick for what is finished, an arrow for what is still ahead. The marker is
+   drawn rather than typed, so it is never selected or copied with the text,
+   and it is coloured to match the status vocabulary the rest of the panel
+   already uses. */
+.docket-list-items.mark-done, .docket-list-items.mark-next {
+  list-style: none; padding-left: 20px;
+}
+.docket-list-items.mark-done li, .docket-list-items.mark-next li {
+  position: relative;
+}
+.docket-list-items.mark-done li::before,
+.docket-list-items.mark-next li::before {
+  position: absolute; left: -18px; width: 14px; text-align: center;
+  font-family: var(--mono); font-size: 11px; line-height: inherit;
+}
+.docket-list-items.mark-done li::before { content: '✓'; color: var(--ok); }
+.docket-list-items.mark-next li::before { content: '→'; color: var(--work); }
 .docket-attention-box, .docket-question-box {
   border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--line));
   background: color-mix(in srgb, var(--accent) 8%, var(--panel));

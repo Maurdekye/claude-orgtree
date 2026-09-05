@@ -26,10 +26,17 @@ from __future__ import annotations
 
 import argparse
 import pathlib
+import sys
 import subprocess
 import tempfile
 
 from playwright.sync_api import sync_playwright
+
+# the bullets ARE the finding for one of the controls below, so the report has
+# to be able to print them — a cp1252 console otherwise dies with
+# UnicodeEncodeError and the control looks like a crash instead of a catch
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 HERE = pathlib.Path(__file__).resolve().parent
 CSS = HERE.parent / "src" / "styles.css"
@@ -67,6 +74,16 @@ CONTROLS = {
     "blockref": """.docket-modal .docket-ref { display: block; padding: 7px 15px; }""",
     # the run-together sub-line: "In progressclickable-docket-references-…"
     "runtogether": """.docket-pane-sub .docket-slug-text { margin: 0; }""",
+    # w2d5fab0a element 3: a dot that says the same thing for every status is
+    # decoration, not an indicator — and it would still LOOK right
+    "onedot": """.docket-row .l1 .docket-dot { background: var(--work) !important; }""",
+    "nodot": """.docket-row .l1 .docket-dot { display: none; }""",
+    # w2d5fab0a element 4: two lists, one bullet — the exact wall of identical
+    # dots the element exists to break up
+    "samebullet": """.docket-list-items.mark-next li::before { content: '✓'; }""",
+    # the alignment the dot broke: three children under space-between
+    "centred": """.docket-row .l1 { justify-content: space-between; }
+.docket-row .l1 .mtime { margin-left: 0; }""",
 }
 
 # what a name may cost in chrome before it is a control again, and how much of
@@ -103,10 +120,25 @@ MEASURE = r"""
       bad.push(`${label}: the row name is padded like a chip`)
     }
 
+    // 1b. THE NAME STARTS AT THE LEFT. `.mailrow .l1` is `space-between`, so
+    //     the moment the row grew a third child the name floated to the middle
+    //     of the row. It still passed every DOM test — the name was present,
+    //     the time was present — and it looked obviously wrong in the preview.
+    const nb = name.getBoundingClientRect()
+    const rowLeft = r.getBoundingClientRect().left
+      + px(getComputedStyle(r).paddingLeft) + px(getComputedStyle(r).borderLeftWidth)
+    if (nb.left - rowLeft > 32) {
+      bad.push(`${label}: the row name starts `
+        + `${(nb.left - rowLeft).toFixed(0)}px in — it is not left-aligned`)
+    }
+
     // 2. nothing overflows the row horizontally
     const rb = r.getBoundingClientRect()
     for (const child of r.querySelectorAll('.l1 > *, .l2 > *')) {
       const cb = child.getBoundingClientRect()
+      // a hidden element has a zero rect at the origin, which would read as a
+      // spill and mask whatever actually went wrong with it
+      if (cb.width === 0 && cb.height === 0) continue
       if (cb.right > rb.right + 0.5 || cb.left < rb.left - 0.5) {
         bad.push(`${label}: ${child.className || child.tagName} spills outside the row`)
       }
@@ -168,6 +200,58 @@ MEASURE = r"""
         + `one: ${linked.join(', ')}`)
     }
   }
+  // 6. w2d5fab0a element 3 — the status dot. Checking that a dot EXISTS is
+  //    nearly free and nearly worthless; what makes it an indicator is that it
+  //    agrees with the coloured left edge on the same row. A dot painted one
+  //    colour for every status passes "a dot is present" and means nothing.
+  const seen = new Set()
+  for (const r of rows) {
+    const label = r.querySelector('.l1 .mfrom')?.textContent ?? '?'
+    const dot = r.querySelector('.l1 .docket-dot')
+    if (!dot) { bad.push(`${label}: no status dot`); continue }
+    const db = dot.getBoundingClientRect()
+    // HIDDEN COUNTS AS ABSENT. `querySelector` finds a display:none dot
+    // perfectly well, so "the element exists" is not the question.
+    if (db.width < 4 || db.height < 4) {
+      bad.push(`${label}: the status dot is `
+        + `${db.width.toFixed(1)}x${db.height.toFixed(1)} — hidden or collapsed`)
+      continue
+    }
+    const dcs = getComputedStyle(dot)
+    const edge = getComputedStyle(r).borderLeftColor
+    if (dcs.backgroundColor !== edge) {
+      bad.push(`${label}: the dot (${dcs.backgroundColor}) and the row edge `
+        + `(${edge}) disagree about the status`)
+    }
+    seen.add(dcs.backgroundColor)
+  }
+  // …and across a fixture holding five different statuses they cannot all be
+  // the same colour. This is what catches a dot that is merely decorative.
+  if (rows.length >= 4 && seen.size < 3) {
+    bad.push(`every status dot is one of only ${seen.size} colours across `
+      + `${rows.length} rows of differing status`)
+  }
+
+  // 7. w2d5fab0a element 4 — the two progress lists must not wear the same
+  //    bullet, and each must actually draw one
+  const done = document.querySelector('.docket-list-items.mark-done li')
+  const next = document.querySelector('.docket-list-items.mark-next li')
+  if (!done || !next) {
+    bad.push('one of the progress lists is missing — probe inert')
+  } else {
+    const dm = getComputedStyle(done, '::before')
+    const nm = getComputedStyle(next, '::before')
+    const empty = (c) => !c || c === 'none' || c === '""' || c === "''"
+    if (empty(dm.content)) bad.push('the completed list draws no bullet')
+    if (empty(nm.content)) bad.push('the next list draws no bullet')
+    if (dm.content === nm.content) {
+      bad.push(`both progress lists use the same bullet ${dm.content}`)
+    }
+    if (dm.color === nm.color) {
+      bad.push('both progress bullets are the same colour')
+    }
+  }
+
   return bad
 }
 """
@@ -211,6 +295,7 @@ def main() -> int:
             "  return { rows: document.querySelectorAll('.mailrow.docket-row').length,"
             "    refs: document.querySelectorAll('.docket-ref').length,"
             "    listW: list ? list.getBoundingClientRect().width : 0,"
+            "    dots: new Set([...document.querySelectorAll('.l1 .docket-dot')].map((e) => getComputedStyle(e).backgroundColor)).size,"
             "    minUpdater: w.length ? Math.min(...w) : 0 } }")
         if args.shot:
             page.screenshot(path=args.shot, full_page=True)
@@ -229,7 +314,9 @@ def main() -> int:
     print(f"OK — {facts['rows']} rows in a {facts['listW']:.0f}px list; every item "
           f"name is plain text with no chip and no control; nothing spills out of "
           f"its row; the narrowest last-updater name is {facts['minUpdater']:.0f}px "
-          f"and readable; {facts['refs']} mentions render inline in the detail pane")
+          f"and readable; {facts['refs']} mentions render inline in the detail pane; "
+          f"status dots agree with their row edges in {facts['dots']} distinct "
+          f"colours; the two progress lists draw different bullets")
     return 0
 
 

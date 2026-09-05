@@ -567,6 +567,13 @@ function DocketRow({ item, selected, onClick, onDismiss, facts, onFocusAgent,
     // title, so nothing is lost and the row stays one line of name.
     <div className={cls} title={item.title} onClick={onClick} ref={rowRef}>
       <div className="l1">
+        {/* w2d5fab0a element 3: the small status dot beside the coloured left
+            edge. Two readings of the same fact on purpose — the edge is easy
+            to lose against a selected row's tint, and the dot sits with the
+            name where the eye already is. It carries NO text, so the row's
+            accessible name is still the item's name and nothing else. */}
+        <span className={'docket-dot status-' + item.status
+          + (attention ? ' attention' : '')} aria-hidden="true" />
         <span className="mfrom docket-rowname">{itemName(item)}</span>
         <span className="mtime">{ago(item.docket_at ?? item.at)}</span>
       </div>
@@ -589,18 +596,23 @@ function DocketRow({ item, selected, onClick, onDismiss, facts, onFocusAgent,
   )
 }
 
-function DocketList({ heading, items, slugIndex, onGoToItem }: {
+function DocketList({ heading, items, slugIndex, onGoToItem, mark }: {
   heading: string
   items: string[]
   slugIndex: SlugIndex
   onGoToItem?: (id: string) => void
+  /** w2d5fab0a element 4: the two progress lists get DIFFERENT bullets —
+   *  a tick for what is finished, an arrow for what is still ahead. They sit
+   *  one under the other and read as one wall of dots otherwise, and which
+   *  list an entry is in is the single most important thing about it. */
+  mark: 'done' | 'next'
 }) {
   return (
     <div className="docket-list">
       <div className="docket-list-heading dim">{heading}</div>
       {items.length === 0
         ? <div className="dim docket-list-empty">None</div>
-        : <ul className="docket-list-items">
+        : <ul className={'docket-list-items mark-' + mark}>
             {items.map((t, i) => (
               <li key={i}>
                 <WorkRefText text={t} index={slugIndex} onPick={onGoToItem} />
@@ -674,10 +686,10 @@ function DocketPane({ slug, item, toast, asksById, onDismiss, close, onFocusAgen
               states its problem and proposed solution
             </div>}
       </div>
-      <DocketList heading="DONE SO FAR" items={item.done_so_far}
+      <DocketList heading="DONE SO FAR" items={item.done_so_far} mark="done"
         slugIndex={slugIndex} onGoToItem={onGoToItem} />
       <DocketList heading="WORKING ON / NEXT" items={item.working_on_next}
-        slugIndex={slugIndex} onGoToItem={onGoToItem} />
+        mark="next" slugIndex={slugIndex} onGoToItem={onGoToItem} />
       {manualAttn && (
         <div className="docket-attention-box">
           <div className="docket-question-head">

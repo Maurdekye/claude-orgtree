@@ -385,3 +385,58 @@ uiTest('§12 an item whose own name is null is never linked from anywhere',
     assert.equal(refs(el).length, 0,
       'an id was linked as if it were a name the server had minted')
   })
+
+// ------------------------------------- w2d5fab0a, the two elements that need
+// ------------------------------------- no parent relation to exist
+
+uiTest('§13 the status dot follows the status, and ATTENTION outranks it',
+  async (mount) => {
+    // ⚠ THE PRECEDENCE IS THE BEHAVIOUR, not the presence. A dot that simply
+    // echoes `status` looks right on every ordinary row and is wrong on the
+    // only row that matters: an item flagged for attention whose status is
+    // still `done` must read as attention, exactly as its left edge and its
+    // status word already do.
+    mockServer({
+      items: [
+        mkItem({ id: 'w1', slug: 'plain-blocked-item', title: 'Blocked',
+          status: 'blocked' }),
+        mkItem({ id: 'w2', slug: 'done-but-flagged', title: 'Flagged',
+          status: 'done', effective_attention: true,
+          attention_sources: ['manual'],
+          manual_attention: { reason: 'look at this', at: '2026-09-05T09:00:00.000Z',
+            by: { node: 'agent1', generation: 1 }, set_rev: 1 } }),
+      ],
+      archived: [], backlogged: [],
+    })
+    const el = await mount(modal())
+    await flush()
+    const dots = rows(el).map((r) => r.querySelector('.l1 .docket-dot')?.className)
+    assert.equal(dots[0], 'docket-dot status-blocked')
+    assert.ok(dots[1]?.includes('attention'),
+      'a flagged row reported its status where its flag should win')
+    // the dot carries no text: the row's readable content is still the name
+    assert.equal(rows(el)[0]?.querySelector('.l1 .docket-dot')?.textContent, '')
+  })
+
+uiTest('§14 the two progress lists are marked as different kinds of line',
+  async (mount) => {
+    // jsdom applies no stylesheet, so the BULLETS themselves are proven in the
+    // browser probe (docket_layout_probe.py, controls `samebullet`/`onedot`).
+    // What is checkable here is that the two lists are handed to the renderer
+    // as different kinds at all — if they are not, no stylesheet can tell them
+    // apart later.
+    mockServer({
+      items: [mkItem({ id: 'w1', slug: 'has-progress', title: 'Has progress',
+        done_so_far: ['finished this'], working_on_next: ['then this'] })],
+      archived: [], backlogged: [],
+    })
+    const el = await mount(modal())
+    await flush()
+    await openFirst(el)
+    const lists = [...(pane(el)?.querySelectorAll('.docket-list-items') ?? [])]
+    assert.equal(lists.length, 2)
+    assert.ok(lists[0]!.classList.contains('mark-done'))
+    assert.ok(lists[1]!.classList.contains('mark-next'))
+    assert.notEqual(lists[0]!.className, lists[1]!.className,
+      'both progress lists are the same kind, so nothing can distinguish them')
+  })
