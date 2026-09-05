@@ -5204,11 +5204,13 @@ def _handoff_block(org: Org, nid: str) -> str:
         return ""
     if not got:
         return ""
-    # FILE-ONLY sections are removed HERE, not arranged into place: a short
-    # record fits inside HANDOFF_HEAD whole, so "rendered last" would still be
-    # spliced (Astra review 2026-09-05). `prompt_md` returns the same bytes the
-    # prompt got before those sections existed.
-    txt = handoff.prompt_md(str(got.get(handoff.RECORD_MD) or "")).strip()
+    # FILE-ONLY sections never reach the prompt: `prompt_projection` re-renders
+    # the record from its own JSON with those sections off, rather than cutting
+    # the rendered file — quoted text can contain any line the file emits.
+    try:
+        txt = handoff.prompt_projection(got).strip()
+    except Exception:                                            # noqa: BLE001
+        return ""                        # see above: never raise on this path
     if not txt:
         return ""
     cut = len(txt) > HANDOFF_HEAD

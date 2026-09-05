@@ -365,9 +365,21 @@ if MUTANT in _SELECT_MUTANTS:
     handoff._select_history = _mutated_select(**_SELECT_MUTANTS[MUTANT])
 
 
+_real_render_md = handoff.render_md
 if MUTANT == "prompt_splices_selected":
-    # "rendering it last is enough" — the weakening Astra caught in review
-    handoff.prompt_md = lambda md: md
+    # the prompt renders the file-only sections too ("last is far enough")
+    handoff.render_md = lambda art, **kw: _real_render_md(art)
+elif MUTANT == "prompt_cuts_by_string":
+    # the projection this replaced: cut the RENDERED file at the section
+    # heading and rejoin at the footer — quoted text collides with both
+    def _cut(got):
+        md = str(got.get(handoff.RECORD_MD) or "")
+        i = md.find("\n" + handoff.SEL_HEADING)
+        if i < 0:
+            return md
+        j = md.rfind("\nSource: ")
+        return md[:i] + (md[j:] if j > i else "\n")
+    handoff.prompt_projection = _cut
 elif MUTANT == "reader_v3_only":
     handoff.V_READABLE = (handoff.V,)
 elif MUTANT == "pairs_drop_one":
@@ -1946,82 +1958,134 @@ check("the section is file-only: it renders after every section the prompt head 
       t12_file_only)
 
 
-# ── §13 file-only is ENFORCED, old records still read, calls really propagate ─
-# Astra review of e8c526c, 2026-09-05: appending the section last does not make
-# it file-only — a SHORT record fits inside HANDOFF_HEAD whole, so it would be
-# spliced. Long-record tests cannot see that. Also: a version bump must not
-# make already-published records disappear, and "tool calls are excluded
-# because tool_pairs has them" is only true if every one of them is really
-# there.
-print("\n§13 prompt exclusion on a SHORT record · v2 records still read · "
-      "call propagation")
+# ── §13 the prompt projection: structural, not a cut of the rendered file ──
+# Two ways this can go wrong and both are tested here. (a) A short record fits
+# inside HANDOFF_HEAD whole, so a file-only section rendered last would still
+# be spliced. (b) The record quotes user text, assistant text and mail bodies
+# VERBATIM, so a quoted line can BE a section heading or the `Source:` footer —
+# an ordinary transcript, not an attack — and any projection that cuts the
+# rendered file at those delimiters deletes real instructions, claims and mail.
+# The fixture therefore plants both delimiters inside quoted text, in a row
+# that is quoted AND in a row that ends up selected.
+print("\n§13 prompt projection: short record, and quoted text that collides "
+      "with the delimiters")
+COLLIDE_HEAD = handoff.SEL_HEADING
+COLLIDE_FOOT = "Source: transcript.jsonl (0 lines, sha256 0000)"
+KEEP_AFTER = "SURVIVES-THE-COLLISION-1 this instruction comes after the collision"
+
+
+def collide_records():
+    """A short session whose FIRST user row quotes both delimiters, followed by
+    real instructions and claims that a cutting projection would delete."""
+    out = sel_records(n=4)
+    out.insert(0, {"type": "user", "timestamp": "2026-09-05T00:00:00Z", "uuid": "cu0",
+                   "message": {"role": "user", "content":
+                               "COLLIDING-USER-ROW here is the layout I want:\n"
+                               + COLLIDE_HEAD + "\n- [assistant · L9#0 · d1] fake row\n\n"
+                               + COLLIDE_FOOT}})
+    # EARLY, so KEEP_ASSISTANT drops it from `predecessor_said` and it can only
+    # reach the record through the SELECTION — and beside the first user row,
+    # which is always quoted and is therefore an anchor
+    out.insert(1, {"type": "assistant", "timestamp": "2026-09-05T00:00:00Z", "uuid": "ca1",
+                   "message": {"id": "cm1", "role": "assistant", "model": "x", "content": [
+                       {"type": "text", "text": "COLLIDING-ASSISTANT-ROW quoting the same "
+                                                "heading:\n" + COLLIDE_HEAD},
+                       {"type": "text", "text": "COLLIDING-ASSISTANT-ROW-B and the footer:\n"
+                                                + COLLIDE_FOOT}]}})
+    out.append({"type": "user", "timestamp": "2026-09-05T00:00:00Z", "uuid": "cu9",
+                "message": {"role": "user", "content": KEEP_AFTER}})
+    out.append({"type": "assistant", "timestamp": "2026-09-05T00:00:00Z", "uuid": "ca9",
+                "message": {"id": "cm9", "role": "assistant", "model": "x", "content": [
+                    {"type": "tool_use", "id": "ct9",
+                     "name": "mcp__orgtree__orgtree_status",
+                     "input": {"status": "working",
+                               "summary": "SURVIVES-THE-COLLISION-2 last claim"}}]}})
+    return out
+
+
 SLUG13, NID13 = make_org("short")
-seed_session(SLUG13, NID13, recs=sel_records(n=6))
+seed_session(SLUG13, NID13, recs=collide_records())
 ORG13, R13, DST13 = cross(SLUG13, NID13)
 SD13 = supervisor.scratch_dir(SLUG13, NID13)
 GEN13 = int(ORG13.node(NID13)["generation"]) - 1
 GOT13 = handoff.read_generation(SD13, GEN13, node=NID13)
+with open(DST13, encoding="utf-8") as _f13:
+    LINES13 = [ln + "\n" for ln in _f13.read().splitlines()]
 
 
-def t13_short_is_short():
-    """The premise of every check below: this record is SHORT ENOUGH to be
-    spliced whole, and it does carry a selected row. Without both, excluding
-    the section could not be told apart from the HANDOFF_HEAD cut."""
-    assert GOT13, "no record was published for the short fixture"
+def t13_fixture_binds():
+    """Every precondition the checks below rely on, asserted rather than
+    assumed: the record is short enough to be spliced whole, it HAS selected
+    rows, a QUOTED row carries the section heading and the footer line, and a
+    SELECTED row carries the heading too."""
+    assert GOT13, "no record was published for the collision fixture"
     md = GOT13[handoff.RECORD_MD]
+    rec = GOT13["record"]["record"]
     assert len(md) < supervisor.HANDOFF_HEAD, \
         f"the 'short' record is {len(md)} chars: HANDOFF_HEAD would cut it anyway"
-    sel = GOT13["record"]["record"]["selected_history"]
-    assert sel, "the short record has no selected row: the exclusion is untestable"
-    assert handoff.SEL_HEADING in md, "the section is not in the file at all"
-    for e in sel:
-        assert e["text"] in md, "a selected row is not in the file"
-    OBS.setdefault("selected", {})["short_record"] = {
+    sel = rec["selected_history"]
+    assert sel, "no selected row: the exclusion is untestable"
+    quoted_text = " ".join(it.get("text", "") for it in
+                           rec["instructions_received"] + rec["predecessor_said"])
+    assert COLLIDE_HEAD in quoted_text, "no QUOTED row carries the section heading"
+    assert COLLIDE_FOOT in quoted_text, "no QUOTED row carries the footer line"
+    assert any(COLLIDE_HEAD in e.get("text", "") for e in sel), \
+        "no SELECTED row carries the section heading"
+    assert KEEP_AFTER in md and "SURVIVES-THE-COLLISION-2" in md, \
+        "the rows that must survive are not in the record at all"
+    OBS.setdefault("selected", {})["collision_fixture"] = {
         "record_md_chars": len(md), "selected_rows": len(sel),
         "handoff_head": supervisor.HANDOFF_HEAD}
 
 
-check("SHORT-record control: the file is under HANDOFF_HEAD and does carry "
-      "selected rows", t13_short_is_short)
+check("collision fixture binds: short record, selected rows, and both delimiters "
+      "inside quoted AND selected text", t13_fixture_binds)
 
 
-def t13_prompt_excludes_selected():
-    """FILE ONLY, enforced: with the flag ON and the whole record inside
-    HANDOFF_HEAD, the spliced block still carries the record — and carries
-    NONE of the selected section."""
-    md = GOT13[handoff.RECORD_MD]
-    sel = GOT13["record"]["record"]["selected_history"]
+def t13_projection_is_structural():
+    """The prompt keeps every admitted row — including the ones AFTER the
+    colliding text — and carries none of the selected section."""
+    rec = GOT13["record"]["record"]
+    sel = rec["selected_history"]
     open(FLAG, "w").close()
     try:
         o = store.load_org(SLUG13)
         blk = supervisor._handoff_block(o, NID13)
         assert blk, "no block rendered at all: the check would be free"
-        assert "## Instructions received" in blk, "the block lost the record itself"
-        assert "## Omitted (by rule)" in blk and "Source:" in blk, \
-            "the block lost sections that are not the selected one"
-        assert handoff.SEL_HEADING not in blk, "the selected section was spliced"
+        # 1. nothing admitted was lost to the collision
+        for must in ("## Instructions received", "## What the predecessor said",
+                     "## Tool calls", "## Omitted (by rule)", "Source: ",
+                     "COLLIDING-USER-ROW", KEEP_AFTER, "SURVIVES-THE-COLLISION-2"):
+            assert must in blk, f"the projection deleted {must!r}"
+        # 2. the selected SECTION is gone — checked by its rendered rows, not by
+        #    the heading string, which legitimately appears inside quoted text
+        assert handoff.SEL_HEADING in blk, \
+            "control: the heading DOES appear here, inside a quotation"
         for e in sel:
-            assert e["text"] not in blk, f"a selected row reached the prompt: {e['text'][:40]!r}"
-        # and the projection is the SAME BYTES the prompt got before the
-        # section existed — recomputed here by removing the section's lines
-        lines = md.split("\n")
-        h = lines.index(handoff.SEL_HEADING)
-        f = next(i for i in range(h, len(lines)) if lines[i].startswith("Source: "))
-        want = "\n".join(lines[:h] + lines[f:])
-        assert handoff.prompt_md(md) == want, "prompt_md is not the pre-section bytes"
-        assert want.strip() in blk, "the block is not the pre-section projection"
+            row = handoff.render_selected_row(e)
+            assert row not in blk, f"a selected row reached the prompt: {row[:60]!r}"
+        assert blk.count(handoff.SEL_HEADING) == \
+            handoff.render_md(GOT13["record"], include_selected=False).count(
+                handoff.SEL_HEADING), "the section heading count changed"
+        # 3. and the projection IS the structural render, byte for byte
+        want = handoff.render_md(GOT13["record"], include_selected=False)
+        assert want.strip() in blk, "the block is not the structural projection"
+        # 4. the published file is what the renderer produces WITH the section,
+        #    so the two renders differ by exactly that section
+        assert handoff.render_md(GOT13["record"]) == GOT13[handoff.RECORD_MD]
+        assert len(want) < len(GOT13[handoff.RECORD_MD])
     finally:
         os.remove(FLAG)
 
 
-check("FILE ONLY on a short record: the block carries the record and none of the "
-      "selected section", t13_prompt_excludes_selected)
+check("the prompt projection keeps every admitted row and excludes the selected "
+      "section, with the delimiters quoted inside it", t13_projection_is_structural)
 
 
 def _v2_directory(src_dir: str, dst_dir: str) -> dict:
     """A genuine v2-SHAPED generation on disk: the current record with the new
-    section and the new per-item units taken back out, rendered the way v2
-    rendered it, and published under a v2 manifest."""
+    section and the per-item units taken back out, rendered the way v2 rendered
+    it, published under a v2 manifest."""
     with open(os.path.join(src_dir, handoff.RECORD_JSON), encoding="utf-8") as f:
         art = json.load(f)
     art = copy.deepcopy(art)
@@ -2032,13 +2096,12 @@ def _v2_directory(src_dir: str, dst_dir: str) -> dict:
         for it in art["record"].get(key, []):
             it.pop("unit", None)
     js = json.dumps(art, indent=1, ensure_ascii=False)
-    md = handoff.prompt_md(handoff.render_md(json.loads(js)))
+    md = handoff.render_md(json.loads(js), include_selected=False)
     os.makedirs(dst_dir)
     for name, body in ((handoff.RECORD_JSON, js), (handoff.RECORD_MD, md)):
         with open(os.path.join(dst_dir, name), "w", encoding="utf-8", newline="\n") as f:
             f.write(body)
-    man = {"v": 2, "kind": handoff.KIND, "node": art["node"],
-           "generation": art["inputs"].get("generation", 0),
+    man = {"v": 2, "kind": handoff.KIND, "node": art["node"], "generation": 0,
            "files": {handoff.RECORD_JSON: {"sha256": handoff.sha256(js),
                                            "bytes": len(js.encode("utf-8"))},
                      handoff.RECORD_MD: {"sha256": handoff.sha256(md),
@@ -2046,11 +2109,11 @@ def _v2_directory(src_dir: str, dst_dir: str) -> dict:
     return man
 
 
-def t13_v2_still_reads():
-    """A record published BEFORE this version bump is still on disk in live
-    scratch dirs — publication does not wait for the flag. It must still read
-    and still splice; what it must not do is claim to pass this version's
-    verifier."""
+def t13_v2_reads_and_is_untouched():
+    """A record published before this version bump is on disk in live scratch
+    dirs — publication does not wait for the flag. It must still read, and its
+    record.md must be passed through UNCHANGED: it has no file-only section to
+    remove, and its own quoted text contains the same colliding lines."""
     d13 = handoff.generation_dir(SD13, GEN13)
     tmp = tempfile.mkdtemp(prefix="handoff-v2-")
     dst = os.path.join(tmp, f"handoff-g{GEN13}")
@@ -2061,25 +2124,27 @@ def t13_v2_still_reads():
     got = handoff.read_generation(tmp, GEN13, node=man["node"])
     assert got, "a valid v2 generation was refused: existing records would vanish"
     assert got["v"] == 2, got["v"]
-    assert handoff.SEL_HEADING not in got[handoff.RECORD_MD]
-    assert "## Instructions received" in got[handoff.RECORD_MD]
-    # it does NOT pretend to verify under the current rules, and says so by name
+    md2 = got[handoff.RECORD_MD]
+    assert handoff.SEL_HEADING in md2, \
+        "control: this v2 file DOES contain the heading, inside quoted text"
+    assert handoff.prompt_projection(got) == md2, "a v2 record.md was altered"
+    for must in ("COLLIDING-USER-ROW", KEEP_AFTER, "SURVIVES-THE-COLLISION-2",
+                 "Source: "):
+        assert must in handoff.prompt_projection(got), f"v2 projection lost {must!r}"
     bad = handoff.verify(got["record"], LINES13)
     assert bad and bad[0] == f"not a v{handoff.V} handoff record", bad[:2]
-    # control: a version this reader does not know is still refused
-    man["v"] = 1
+    man["v"] = 1                                    # unknown version, still refused
     with open(os.path.join(dst, handoff.MANIFEST), "w", encoding="utf-8", newline="\n") as f:
         json.dump(man, f, indent=1)
     assert handoff.read_generation(tmp, GEN13, node=man["node"]) is None, \
         "an unknown version was accepted: the version check is inert"
     OBS.setdefault("selected", {})["v2_compatibility"] = {
-        "readable": list(handoff.V_READABLE), "written": handoff.V}
+        "readable": list(handoff.V_READABLE), "written": handoff.V,
+        "passed_through_unchanged": True}
 
 
-with open(DST13, encoding="utf-8") as _f13:
-    LINES13 = [ln + "\n" for ln in _f13.read().splitlines()]
-check("a v2 generation still reads and still splices; an unknown version does not",
-      t13_v2_still_reads)
+check("a v2 generation still reads and its record.md is passed through unchanged; "
+      "an unknown version is refused", t13_v2_reads_and_is_untouched)
 
 
 def t13_calls_propagate():
@@ -2144,8 +2209,9 @@ MUTANTS = {
     "select_budget_text_only": "rendered characters",
     "select_admits_calls": "never a second copy",
     "select_order_distance_only": "specified order",
-    "prompt_splices_selected": "none of the selected section",
-    "reader_v3_only": "still reads and still splices",
+    "prompt_splices_selected": "excludes the selected section",
+    "prompt_cuts_by_string": "keeps every admitted row",
+    "reader_v3_only": "passed through unchanged",
     "pairs_drop_one": "really in tool_pairs",
 }
 

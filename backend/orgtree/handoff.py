@@ -73,15 +73,11 @@ import uuid
 from typing import Any, Iterable
 
 V = 3
-#: versions a READER accepts. Writing is always V; reading older records is a
-#: separate question and the answer is not "make them disappear" — records
-#: published before a shape change are already on disk in live scratch dirs
-#: (publication does not wait for the flag), they were verified when they were
-#: written, and the prompt path never re-verifies. So a v2 directory is still
-#: readable and still splices; what it cannot do is pass THIS version's
-#: `verify`, which rebuilds a v3 record and would differ. `read_generation`
-#: reports the version it read (`out["v"]`) so a caller that needs v3 can say
-#: so instead of guessing.
+#: versions a READER accepts; writing is always V. Records published before a
+#: shape change are on disk in live scratch dirs — publication does not wait for
+#: the flag — and a version bump must not make them vanish. An older record
+#: still reads and still splices; it cannot pass THIS version's `verify`, which
+#: rebuilds the current shape. `read_generation` reports which version it read.
 V_READABLE = (2, 3)
 KIND = "orgtree.handoff"
 CAP_TEXT = 1200       # chars quoted per user/assistant item
@@ -198,11 +194,10 @@ def _select_history(seq: list[dict[str, Any]], *, anchors: list[dict[str, Any]],
     consume radius, so the neighbourhood keeps its shape.
 
     A neighbour that is already quoted — a call, or an adjacent anchor — is
-    skipped WITHOUT an omission count. I3 counts what the reader cannot see,
-    and by construction this exclusion set is read out of the record itself, so
-    everything it drops is on the page already. A count that fires on every
-    record in existence is noise, not signal; `verify` checks the same property
-    the other way round, by refusing a selected row that appears elsewhere.
+    skipped WITHOUT an omission count: I3 counts what the reader cannot see,
+    and this exclusion set is read out of the record itself, so everything it
+    drops is on the page. `verify` checks the same property from the other
+    side, by refusing a selected row that appears elsewhere.
     """
     quoted = {_ukey(a.get("unit")) for a in anchors}
     quoted |= {_ukey(p.get("unit")) for p in quoted_elsewhere}
@@ -1018,7 +1013,11 @@ def read_generation(scratch: str, gen: int,
 
 
 # ------------------------------------------------------------------ render
-def render_md(art: dict[str, Any]) -> str:
+def render_md(art: dict[str, Any], *, include_selected: bool = True) -> str:
+    """The record as markdown. `include_selected=False` renders the FILE-ONLY
+    sections away — it is how the prompt projection is built, and it is a
+    different render, never a cut of this one: quoted text can contain any
+    line this file emits, including a section heading or the footer."""
     inp, rec = art["inputs"], art["record"]
     b = inp["boundary"]
     out = [f"# HANDOFF RECORD — {art['node']} ({b.get('reason')}: "
@@ -1067,11 +1066,11 @@ def render_md(art: dict[str, Any]) -> str:
     out.append("\n## Omitted (by rule)")
     for o in rec["omissions"]:
         out.append(f"- {o['kind']}: {o['count']}" + (f" {o['ids']}" if o.get("ids") else ""))
-    # ⚠ LAST, and REMOVED FROM THE PROMPT BY `prompt_md` — position alone is not
-    # file-only (Astra review 2026-09-05, on this diff): a SHORT record fits
-    # inside HANDOFF_HEAD entirely, so a section at the end is spliced like
-    # everything else. Being last only bounds what a LONG record loses.
-    out.append("\n" + render_selected(rec.get("selected_history") or []).rstrip("\n"))
+    # FILE ONLY. Last, so a long section costs a long record nothing before the
+    # HANDOFF_HEAD cut — and absent entirely when this render is the prompt's,
+    # because position alone does not keep a SHORT record's section out of it.
+    if include_selected:
+        out.append("\n" + render_selected(rec.get("selected_history") or []).rstrip("\n"))
     tr = inp["transcript"]
     out.append(f"\nSource: {tr['path']} ({tr['lines']} lines, sha256 {tr['sha256'][:12]}); "
                + (f"breadcrumbs.md {inp['breadcrumbs']['bytes']} bytes"
@@ -1082,20 +1081,19 @@ def render_md(art: dict[str, Any]) -> str:
     return "\n".join(out) + "\n"
 
 
-def prompt_md(md: str) -> str:
-    """record.md AS THE PROMPT SEES IT: the selected-history section removed,
-    whatever the record's length.
+def prompt_projection(got: dict[str, Any]) -> str:
+    """What the prompt may splice, from a `read_generation` result.
 
-    FILE ONLY has to be enforced, not arranged. Rendering the section last
-    bounds what a long record loses to the HANDOFF_HEAD cut, but a short record
-    fits under that cut whole, so the section would be spliced. This cut is by
-    the section's own heading and the footer that follows it, so the text the
-    prompt gets is BYTE-IDENTICAL to the text it got before the section
-    existed. A record without the section is returned unchanged."""
-    i = md.find("\n" + SEL_HEADING)
-    if i < 0:
-        return md
-    j = md.rfind("\nSource: ")            # the footer is the file's last line
-    if j <= i:
-        return md[:i] + "\n"
-    return md[:i] + md[j:]
+    ⚠ NEVER BY CUTTING THE RENDERED FILE. `render_md` writes user text,
+    assistant text, mail bodies and result excerpts VERBATIM, so a quoted line
+    can BE a section heading or the `Source:` footer — an ordinary transcript,
+    not an attack — and a delimiter search would then delete real instructions,
+    claims and mail from the prompt. A record of the CURRENT version is
+    RE-RENDERED from its own JSON with the file-only sections off. Any other
+    readable version is passed through unchanged: it was published before those
+    sections existed, so it has none to remove, and this code does not know its
+    shape well enough to re-render it."""
+    art = got.get("record")
+    if got.get("v") == V and isinstance(art, dict):
+        return render_md(art, include_selected=False)
+    return str(got.get(RECORD_MD) or "")
