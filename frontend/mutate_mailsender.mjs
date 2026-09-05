@@ -186,9 +186,12 @@ const MUTANTS = [
     name: 'an envelope the parser could not read is SWALLOWED by the live row '
       + 'instead of falling back to its text',
     file: DESK, kills: 'the body survived',
-    from: `    return <div className="msg user live md"
-      dangerouslySetInnerHTML={md(stripEnvelope(rest), fb)} />`,
-    to: `    return <div className="msg user live md" />`,
+    from: `    return <RefMdBody className="msg user live md"
+      world={refs?.world} onOpen={refs?.onOpen}
+      html={md(stripEnvelope(rest), fb)} />`,
+    to: `    return <RefMdBody className="msg user live md"
+      world={refs?.world} onOpen={refs?.onOpen}
+      html={{ __html: '' }} />`,
   },
   {
     name: 'the provider is not mounted (again) — named here against the '
@@ -278,8 +281,8 @@ const MUTANTS = [
   {
     name: 'the live feed stops handing the truncated flag to the row',
     file: DESK, kills: 'the sender wears its chip',
-    from: `                      truncated={f.truncated} slug={slug} nid={node.id} />`,
-    to: `                      slug={slug} nid={node.id} />`,
+    from: `                      truncated={f.truncated} slug={slug} nid={node.id}`,
+    to: `                      slug={slug} nid={node.id}`,
   },
   {
     name: 'the live row stops declaring its cut',
@@ -311,8 +314,8 @@ const MUTANTS = [
   {
     name: 'InboxView accepts the resolver and forwards nothing to its inbox list',
     file: MAIL, kills: 'the modal handed the tree down',
-    from: `                tierOf={tierOf} hasAgent={hasAgent}\n                waitLabel="awaiting next turn"`,
-    to: `                tierOf={tierOf}\n                waitLabel="awaiting next turn"`,
+    from: `                tierOf={tierOf} hasAgent={hasAgent} refs={refs}\n                waitLabel="awaiting next turn"`,
+    to: `                tierOf={tierOf} refs={refs}\n                waitLabel="awaiting next turn"`,
   },
   // ─────────────────────────── the DESK's own inbox tab (§12.5-§12.7)
   {
@@ -321,8 +324,8 @@ const MUTANTS = [
     // ⚠ NOT 'THE CLICK ARRIVES': with the handler gone there is no button to
     // click, so the assertion that fires first is the one requiring the button.
     file: DESK, kills: 'and the name is a route',
-    from: `        hasAgent={(id) => map.has(id)}\n        onFocusAgent={onJump}`,
-    to: `        hasAgent={(id) => map.has(id)}`,
+    from: `        refs={deskRefs}\n        onFocusAgent={onJump}`,
+    to: `        refs={deskRefs}`,
   },
   {
     name: 'the desk inbox draws the control but wires it to a stub — present, '
@@ -408,6 +411,47 @@ function runSuite() {
   return { failed, out }
 }
 
+/** node:test's end-of-run detail: everything from the summary marker on. Only
+ *  FAILING tests appear there, with their names and their assertion messages,
+ *  so a match inside it is still a match on a failure. */
+function failDetail(out) {
+  const i = out.indexOf('failing tests:')
+  return i < 0 ? '' : out.slice(i)
+}
+
+const attributed = (out, kills) => out.split('\n')
+  .some((l) => l.trimStart().startsWith('✖') && l.includes(kills))
+  || failDetail(out).includes(kills)
+
+// ⚠ THE ATTRIBUTION RULE MUST BE ABLE TO SAY NO. Widening it from "a ✖ line"
+// to "a ✖ line or the failure detail" is exactly the kind of change that
+// quietly turns a check into one that cannot fail, so it is checked here
+// against a sample of the shape node:test really prints — a passing check must
+// NOT count, a failing test name must, and a failing assertion message must.
+{
+  const sample = [
+    '✔ §2.1 A PASSING CHECK, whose text must never be credited (1ms)',
+    '✖ §3.1 A FAILING CHECK (2ms)',
+    'ℹ tests 2',
+    '✖ failing tests:',
+    'test at tests/x.test.tsx:1:1',
+    '✖ §3.1 A FAILING CHECK (2ms)',
+    "  AssertionError [ERR_ASSERTION]: AN ASSERTION MESSAGE FROM THE FAILURE",
+  ].join('\n')
+  const must = [
+    [false, 'A PASSING CHECK', 'a PASSING check is credited with the kill'],
+    [true, '§3.1 A FAILING CHECK', 'a failing TEST NAME is not seen'],
+    [true, 'AN ASSERTION MESSAGE FROM THE FAILURE',
+      'a failing ASSERTION MESSAGE is not seen'],
+  ]
+  for (const [want, k, why] of must) {
+    if (attributed(sample, k) !== want) {
+      console.error(`ATTRIBUTION RULE BROKEN — ${why}`)
+      process.exit(3)
+    }
+  }
+}
+
 console.log('baseline — mailsender must be GREEN before anything is mutated')
 {
   const r = runSuite()
@@ -446,12 +490,17 @@ for (const m of MUTANTS) {
   try {
     writeFileSync(m.file, Buffer.from(mutated.replace(/\n/g, '\r\n'), 'utf8'))
     const r = runSuite()
-    // ⚠ THE NAME MUST APPEAR ON A FAILING LINE. `out` holds the whole run,
-    // passing checks included, so a bare `includes(kills)` is true for almost
-    // every mutant and attributes the kill to whichever check was named —
-    // WRONG CHECK could then never fire. node:test marks failures with '✖'.
-    const named = r.out.split('\n')
-      .some((l) => l.trimStart().startsWith('✖') && l.includes(m.kills))
+    // ⚠ THE NAME MUST APPEAR IN A FAILURE, NOT MERELY IN THE OUTPUT. `out`
+    // holds the whole run, passing checks included, so a bare
+    // `includes(kills)` is true for almost every mutant and attributes the
+    // kill to whichever check was named — WRONG CHECK could then never fire.
+    // TWO PLACES COUNT, and only two: a '✖' line, which carries the TEST NAME,
+    // and node:test's end-of-run detail section, which carries each failing
+    // test's ASSERTION MESSAGE and nothing from a passing one. Most `kills`
+    // here are assertion messages — a sharper attribution than a test name,
+    // since one test holds several assertions — and a ✖-line-only rule cannot
+    // see them at all: it reported this whole harness as 0/48.
+    const named = attributed(r.out, m.kills)
     if (r.failed && named) {
       console.log(`killed — ${m.name}`)
     } else if (r.failed) {

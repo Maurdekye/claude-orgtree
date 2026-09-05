@@ -70,15 +70,17 @@ const MUTANTS = [
     // becomes ordinary text nobody can tell from a typo.
     name: 'an unresolved ref is dropped back to plain prose',
     file: F, kills: '§8 the rendered chip',
-    from: `    out.push({ text: m[0], ref: resolveRef(parsed, world) })`,
-    to: `    const rr = resolveRef(parsed, world)
-    out.push(rr.outcome === 'ready' ? { text: m[0], ref: rr } : { text: m[0] })`,
+    from: `    out.push({ text: hit.token, ref: resolveRef(hit.ref, world) })`,
+    to: `    const rr = resolveRef(hit.ref, world)
+    out.push(rr.outcome === 'ready' ? { text: hit.token, ref: rr } : { text: hit.token })`,
   },
   {
     name: 'a failed chip shows only the bare id, not what was written',
     file: F, kills: '§8 the rendered chip',
-    from: `      {r.outcome === 'ready' ? r.label : r.token}`,
-    to: `      {r.label}`,
+    from: `    <span className={cls} title={r.why}>
+      {r.token}`,
+    to: `    <span className={cls} title={r.why}>
+      {r.label}`,
   },
   {
     name: 'every outcome renders under one class, so absent and foreign agree',
@@ -87,10 +89,13 @@ const MUTANTS = [
     to: `  const cls = \`ref-chip ref-\${r.ref.kind} ref-ready\``,
   },
   {
+    // ⚠ `!r.atDestination` IS KEPT. Dropping it too would break a second,
+    // unrelated rule and the kill could be credited to the destination checks
+    // rather than to the outcome one this mutant is about.
     name: 'a non-ready ref is still a button, so a dead link looks live',
     file: F, kills: '§8 the rendered chip',
-    from: `  if (r.outcome === 'ready' && onOpen) {`,
-    to: `  if (onOpen) {`,
+    from: `  if (r.outcome === 'ready' && onOpen && !r.atDestination) {`,
+    to: `  if (onOpen && !r.atDestination) {`,
   },
 
   // ------------------------------------------------------ splitting contract
@@ -105,7 +110,7 @@ const MUTANTS = [
   {
     name: 'the text between tokens is dropped, so splitting stops being lossless',
     file: F, kills: '§6 splitting is lossless',
-    from: `    if (m.index > last) out.push({ text: s.slice(last, m.index) })`,
+    from: `    if (hit.index > last) out.push({ text: s.slice(last, hit.index) })`,
     to: ``,
   },
   // ⚠ AND A SECOND WITHDRAWN ONE: "swallow an unparseable token". It survived
@@ -230,6 +235,14 @@ function runSuite() {
   }
 }
 
+// ⚠ DID THE SUITE ACTUALLY RUN? A red run with no check lines and no summary
+// is not a result: the child crashed (seen here as a native stack trace, three
+// mutants in a row, all of which killed their named check when re-run alone).
+// Without this the harness reports a crash as WRONG CHECK and a clean 20/20
+// reads as 17/20 — a misattribution hunt for a defect that is not there.
+const ran = (out) => out.includes('ℹ tests ')
+  || out.split('\n').some((l) => /^\s*[✔✖] §/.test(l))
+
 console.log('baseline — the reflinks suite must be GREEN before anything is mutated')
 {
   const r = runSuite()
@@ -269,7 +282,11 @@ for (const m of MUTANTS) {
   if (stale) { survived++; continue }
   try {
     writeFileSync(m.file, Buffer.from(mutated.replace(/\n/g, '\r\n'), 'utf8'))
-    const r = runSuite()
+    let r = runSuite()
+    // one retry, and ONLY for a run that produced no test output at all. A
+    // mutant that genuinely fails to compile does that every time, so it is
+    // still reported rather than retried away.
+    if (r.failed && !ran(r.out)) r = runSuite()
     // ⚠ THE NAME MUST APPEAR ON A FAILING LINE. `out` holds the whole run,
     // passing checks included, so a bare `includes(kills)` is true for almost
     // every mutant and attributes the kill to whichever check was named —
@@ -278,16 +295,33 @@ for (const m of MUTANTS) {
       .some((l) => l.trimStart().startsWith('✖') && l.includes(m.kills))
     if (r.failed && named) {
       console.log(`killed — ${m.name}`)
+    } else if (r.failed && !ran(r.out)) {
+      console.error(`DID NOT RUN — ${m.name}`)
+      console.error('  the suite produced no checks at all, twice — the mutant '
+        + 'does not compile, so NOTHING was established here')
+      for (const l of r.out.split('\n').filter((x) => x.trim()).slice(-12)) {
+        console.error(`    | ${l}`)
+      }
+      survived++
     } else if (r.failed) {
       console.error(`WRONG CHECK — ${m.name}`)
       console.error(`  the suite went red but "${m.kills}" is not among the failures`)
       // ⚠ NAME WHAT DID FAIL. Without this the only way to correct a `kills`
       // is to re-apply the mutant by hand, which is how a misattribution
       // survives a reader's attention in the first place.
-      for (const l of [...new Set(r.out.split('\n')
+      const fails = [...new Set(r.out.split('\n')
         .filter((x) => x.trimStart().startsWith('✖'))
-        .map((x) => x.trim().replace(/\s*\([\d.]+ms\)$/, '')))]) {
-        console.error(`    ${l}`)
+        .map((x) => x.trim().replace(/\s*\([\d.]+ms\)$/, '')))]
+      for (const l of fails) console.error(`    ${l}`)
+      // ⚠ RED WITH NO NAMED FAILURE IS NOT A KILL EITHER — it usually means the
+      // mutant did not compile, so the suite never ran and NOTHING was
+      // established. Without the tail below that case is indistinguishable from
+      // a misattribution, and the only fix is to re-apply the mutant by hand.
+      if (!fails.length) {
+        console.error('    (no named failure — the suite did not run. tail:)')
+        for (const l of r.out.split('\n').filter((x) => x.trim()).slice(-12)) {
+          console.error(`    | ${l}`)
+        }
       }
       survived++
     } else {

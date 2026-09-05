@@ -131,7 +131,8 @@ const MUTANTS = [
   {
     // the destination rule applied to a name that does not resolve
     name: 'the destination is compared before the reference resolves',
-    file: REFLINKS, suite: 'reflinks', kills: 'the two renderers agree',
+    file: REFLINKS, suite: 'reflinks',
+    kills: '§11g the destination rule waits for the reference to resolve',
     from: `  const atDestination = ref.kind === 'agent' && outcome === 'ready'
     && !!world.destination && world.destination === ref.id`,
     to: `  const atDestination = ref.kind === 'agent'

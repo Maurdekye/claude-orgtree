@@ -62,7 +62,7 @@ const MUTANTS = [
   },
   {
     name: 'the standalone document reader stops deciding references',
-    file: DOCS, kills: '§28 a @doc token',
+    file: DOCS, kills: '§34 a reference INSIDE the opened document',
     from: `        {doc && <RefMdBody className="doc-reader-body md"
           html={md(doc.body, fileBase(slug, doc.node))}
           world={refs?.world} onOpen={refs?.onOpen} />}`,
@@ -75,8 +75,8 @@ const norm = (s) => s.replace(/\r\n/g, '\n')
 
 function runSuite() {
   try {
-    // BOTH suites: the gallery owns §13-§15, and the docket's §28 is what
-    // proves the standalone reader still renders its document at all
+    // BOTH suites: the gallery owns §13-§15, and the docket's §34 is what
+    // proves the standalone reader still decides references inside a document
     execFileSync(process.execPath, ['tests/run.mjs', 'gallery'],
       { stdio: 'pipe', encoding: 'utf8' })
     execFileSync(process.execPath, ['tests/run.mjs', 'docketrefs'],

@@ -1,6 +1,6 @@
 // docket.test.tsx — test suite for the native work docket and inbox navigation.
 import './harness'
-import { flush, inAct, mountView, realClock, useFakeClock } from './harness'
+import { advance, flush, inAct, mountView, realClock, useFakeClock } from './harness'
 import test from 'node:test'
 import type { TestContext } from 'node:test'
 import assert from 'node:assert/strict'
@@ -1859,21 +1859,35 @@ async (mount) => {
 
 uiTest('§8b CONTROL — an unrelated repoll does NOT re-run the jump',
 async (mount) => {
-  mockWorkItems([
-    mkItem({ slug: 'first-item', title: 'first-item' }),
-    mkItem({ slug: 'second-item', title: 'second-item' }),
-  ])
-  const { el, render } = await mount(docketModal({ jumpTo: 'first-item', jumpSeq: 1 }))
-  await flush()
-  assert.match(pane(el)?.textContent ?? '', /first-item/)
-  const other = rows(el).find((r) => (r.textContent ?? '').includes('second-item'))!
-  await inAct(() => { (other as HTMLElement).click() })
-  await flush()
-  assert.match(pane(el)?.textContent ?? '', /second-item/)
-  // the same request, re-delivered by a re-render — the reader must be left
-  // exactly where they went
-  await render(docketModal({ jumpTo: 'first-item', jumpSeq: 1 }))
-  await flush()
-  assert.match(pane(el)?.textContent ?? '', /second-item/,
-    'an unchanged request re-ran and dragged the reader back')
+  // ⚠ THE CLOCK IS MOCKED BECAUSE THE REPOLL IS THE WHOLE POINT. A re-render
+  // with the same props leaves every dep of the jump effect unchanged, so
+  // React skips it and this control passed WHETHER OR NOT THE LATCH EXISTED —
+  // it was the dependency array being checked, not the guard. Ticking the
+  // 5s poll gives `usePolled` a FRESH payload object, `data` changes identity,
+  // and the effect really does re-run. (Found by mutate_docketsort: removing
+  // the latch left this check green and took §4/§5 down instead.)
+  useFakeClock()
+  try {
+    mockWorkItems([
+      mkItem({ slug: 'first-item', title: 'first-item' }),
+      mkItem({ slug: 'second-item', title: 'second-item' }),
+    ])
+    const { el, render } = await mount(docketModal({ jumpTo: 'first-item', jumpSeq: 1 }))
+    await flush()
+    assert.match(pane(el)?.textContent ?? '', /first-item/,
+      'positive control: the request opened the item it names')
+    const other = rows(el).find((r) => (r.textContent ?? '').includes('second-item'))!
+    await inAct(() => { (other as HTMLElement).click() })
+    await flush()
+    assert.match(pane(el)?.textContent ?? '', /second-item/,
+      'positive control: the reader moved')
+    // the same request, re-delivered by a re-render, with the poll ticking
+    // underneath it — the reader must be left exactly where they went
+    await render(docketModal({ jumpTo: 'first-item', jumpSeq: 1 }))
+    await flush()
+    await advance(6000, 16)
+    await flush()
+    assert.match(pane(el)?.textContent ?? '', /second-item/,
+      'an unchanged request re-ran and dragged the reader back')
+  } finally { realClock() }
 })

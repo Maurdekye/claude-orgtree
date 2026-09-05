@@ -285,8 +285,11 @@ const MUTANTS = [
   {
     // the `?? new Map()` shape, in the place it would really be written: an
     // index that has not arrived, treated as one that arrived empty.
+    // ⚠ NOT §25. With no index a reference resolves READY by design — that is
+    // what keeps a surface holding no docket from marking every item missing —
+    // so §25's working link stays green. §26 is the check that can see it.
     name: 'the item index stops being authoritative in this panel',
-    file: DOCKET, kills: '§25 a canonical',
+    file: DOCKET, kills: '§26 CONTROL — a token naming an item this org does not have',
     from: `      items: data
         ? new Map([...allKnown.keys()].map((s) => [s, s]))
         : 'loading',`,
@@ -407,6 +410,47 @@ function runSuite() {
   }
 }
 
+/** node:test's end-of-run detail: everything from the summary marker on. Only
+ *  FAILING tests appear there, with their names and their assertion messages,
+ *  so a match inside it is still a match on a failure. */
+function failDetail(out) {
+  const i = out.indexOf('failing tests:')
+  return i < 0 ? '' : out.slice(i)
+}
+
+const attributed = (out, kills) => out.split('\n')
+  .some((l) => l.trimStart().startsWith('✖') && l.includes(kills))
+  || failDetail(out).includes(kills)
+
+// ⚠ THE ATTRIBUTION RULE MUST BE ABLE TO SAY NO. Widening it from "a ✖ line"
+// to "a ✖ line or the failure detail" is exactly the kind of change that
+// quietly turns a check into one that cannot fail, so it is checked here
+// against a sample of the shape node:test really prints — a passing check must
+// NOT count, a failing test name must, and a failing assertion message must.
+{
+  const sample = [
+    '✔ §2.1 A PASSING CHECK, whose text must never be credited (1ms)',
+    '✖ §3.1 A FAILING CHECK (2ms)',
+    'ℹ tests 2',
+    '✖ failing tests:',
+    'test at tests/x.test.tsx:1:1',
+    '✖ §3.1 A FAILING CHECK (2ms)',
+    "  AssertionError [ERR_ASSERTION]: AN ASSERTION MESSAGE FROM THE FAILURE",
+  ].join('\n')
+  const must = [
+    [false, 'A PASSING CHECK', 'a PASSING check is credited with the kill'],
+    [true, '§3.1 A FAILING CHECK', 'a failing TEST NAME is not seen'],
+    [true, 'AN ASSERTION MESSAGE FROM THE FAILURE',
+      'a failing ASSERTION MESSAGE is not seen'],
+  ]
+  for (const [want, k, why] of must) {
+    if (attributed(sample, k) !== want) {
+      console.error(`ATTRIBUTION RULE BROKEN — ${why}`)
+      process.exit(3)
+    }
+  }
+}
+
 console.log('baseline — the docket suites must be GREEN before anything is mutated')
 {
   const r = runSuite()
@@ -455,12 +499,7 @@ for (const m of MUTANTS) {
   try {
     writeFileSync(m.file, Buffer.from(mutated.replace(/\n/g, '\r\n'), 'utf8'))
     const r = runSuite()
-    // ⚠ THE NAME MUST APPEAR ON A FAILING LINE. `out` holds the whole run,
-    // passing checks included, so a bare `includes(kills)` is true for almost
-    // every mutant and attributes the kill to whichever check was named —
-    // WRONG CHECK could then never fire. node:test marks failures with '✖'.
-    const named = r.out.split('\n')
-      .some((l) => l.trimStart().startsWith('✖') && l.includes(m.kills))
+    const named = attributed(r.out, m.kills)
     if (r.failed && named) {
       console.log(`killed — ${m.name}`)
     } else if (r.failed) {
