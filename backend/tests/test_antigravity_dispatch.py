@@ -88,8 +88,13 @@ def eq(got, want, what):
 
 def mkorg(label: str, tier: str = "pro", **tools_over) -> tuple[str, str]:
     org = store.create_org(f"zz agydisp {label}")
-    tools = {"bash": True, "web": False, "edit": True,
-             "subagents": False, "mcp": []}
+    # FULL RIGHTS by default, so "a full-rights node carries no rights hook"
+    # (§4) stays a real check. `web`/`subagents` used to be off here and cost
+    # nothing, because this lane ignored them; since 2026-09-05 they narrow a
+    # node exactly like bash and edit, and a fixture that is quietly narrowed
+    # would make §4's control vacuous.
+    tools = {"bash": True, "web": True, "edit": True,
+             "subagents": True, "mcp": []}
     tools.update(tools_over)
     r = org.hire(USER, None, tier, 2, "ag", add_dirs=[], tools=tools,
                  org_visibility="team",
@@ -383,6 +388,83 @@ def main():
            "a hook denial is not a failed turn")
     check("bash-off writes the PreToolUse hook denying exactly the shell "
           "class, and a denied call leaves the turn completed", t5r)
+
+    # the same seam for the other two switches and for the plan seat, AT THE
+    # LEG — write_workspace is tested directly in test_antigravityrun §6b;
+    # what this pins is that the leg actually HANDS it all four, which is
+    # where `web`/`subagents` were dropped and where `plan` never arrived.
+    s5w, n5w = mkorg("webless", web=False)
+    s5s, n5s = mkorg("subless", subagents=False)
+    s5p, n5p = mkorg("planseat")
+    _org_p = store.load_org(s5p)
+    _org_p.d["nodes"][n5p]["scope"]["permission_mode"] = "plan"
+    store.save_org(_org_p)
+
+    def rights_source(slug: str, nid: str) -> str:
+        # a narrowed node that writes NO hook at all is the exact failure
+        # these three checks exist for, so say that instead of dying on a
+        # bare FileNotFoundError from open()
+        p = scratch_file(slug, nid, ".agents", "orgtree-rights.py")
+        assert os.path.exists(p), \
+            f"a narrowed node must carry a rights hook, none written: {p}"
+        return open(p, encoding="utf-8").read()
+
+    def t5w():
+        run_turn(s5w, n5w, "look something up")
+        rp = rights_source(s5w, n5w)
+        # measured names first: these two appear in real Antigravity turns
+        assert '"search_web"' in rp and '"read_url_content"' in rp, \
+            "the web class is denied for a web-off node"
+        assert '"run_command"' not in rp and '"write_to_file"' not in rp, \
+            "and nothing else is"
+    check("web-off reaches the leg's hook: the web class is denied, the "
+          "shell and edit classes are untouched", t5w)
+
+    def t5s():
+        run_turn(s5s, n5s, "delegate this")
+        rp = rights_source(s5s, n5s)
+        assert '"invoke_subagent"' in rp and '"manage_subagents"' in rp, \
+            "the subagent class is denied for a subagents-off node"
+        assert '"run_command"' not in rp and '"search_web"' not in rp \
+            and '"write_to_file"' not in rp, "and nothing else is"
+    check("subagents-off reaches the leg's hook: the subagent class is "
+          "denied, every other class is untouched", t5s)
+
+    def t5p():
+        run_turn(s5p, n5p, "plan something")
+        rp = rights_source(s5p, n5p)
+        # the plan seat loses the ability to change files — the same door
+        # `_codex_may_write` closes on the codex lane, with the edit switch
+        # still ON here — and on THIS lane the terminal goes with it, because
+        # a shell is a write tool the moment you redirect and this CLI has no
+        # verified read-only shell to hold one honest
+        assert '"write_to_file"' in rp and '"replace_file_content"' in rp, \
+            "a plan-mode node cannot write"
+        assert '"run_command"' in rp and '"send_command_input"' in rp, \
+            "…and cannot reach the same write through the shell"
+        assert '"search_web"' not in rp and '"view_file"' not in rp, \
+            "plan mode closes the write door and the shell, nothing wider"
+    check("permission_mode=plan reaches this lane at all: the edit class AND "
+          "the shell class are denied with the edit switch still on", t5p)
+
+    def t5pi():
+        # the seat is also TOLD, in the identity the leg writes for it: a
+        # terminal promised to a seat whose every shell call is denied is the
+        # failure the codex read-only prompt line was rewritten to avoid
+        ident = open(scratch_file(s5p, n5p, "AGENTS.md"),
+                     encoding="utf-8").read()
+        assert "Terminal: CLOSED for this seat" in ident, \
+            "the plan seat is told its terminal is shut"
+        assert "Terminal: Bash and PowerShell" not in ident, \
+            "and is NOT also promised one"
+        # the control: an ordinary writable node on this lane still gets the
+        # promise, so the line above is not simply missing everywhere
+        other = open(scratch_file(s5w, n5w, "AGENTS.md"),
+                     encoding="utf-8").read()
+        assert "Terminal: Bash and PowerShell" in other and \
+            "Terminal: CLOSED" not in other, "the writable seat keeps its shell"
+    check("the plan seat's identity says the terminal is closed, and a "
+          "writable seat on the same lane is still promised one", t5pi)
 
     print("§6 the planted faults the detectors must SEE")
     s6, n6 = mkorg("fault")

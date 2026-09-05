@@ -30,11 +30,21 @@ from orgtree import antigravityrun, providers                      # noqa: E402
 FAKE = os.path.join(os.path.dirname(__file__), "fakeantigravity.py")
 HEAD = [sys.executable, FAKE]
 PASS = 0
+FAIL: list[tuple[str, str]] = []
 
 
 def check(label, fn):
+    # catching, like the other two antigravity suites: a failure has to
+    # print a FAIL line and let the rest run, so a mutant run can tell a
+    # CHECK that fired from the suite dying on its own before any check
     global PASS
-    fn()
+    try:
+        fn()
+    except Exception:                                            # noqa: BLE001
+        import traceback
+        FAIL.append((label, traceback.format_exc()))
+        print(f"  FAIL     {label}")
+        return
     PASS += 1
     print(f"  ok {PASS:2d}  {label}")
 
@@ -302,6 +312,153 @@ def main():
             out[1]["decision"]), ("deny", True, "allow"), f"hook: {out}")
     check("the wrapper actually runs and answers deny/allow by tool class",
           hook_runs)
+    # §6b the other two switches. Until 2026-09-05 `web` and `subagents`
+    # reached this lane as nothing at all, while the (lane-independent)
+    # identity prompt told those nodes the capability was disabled — a wall
+    # in the prose and none on the wire. The check RUNS the wrapper for the
+    # two web tools this machine's own journals show real Antigravity turns
+    # calling (`search_web`, `read_url_content`), so it is a behaviour check,
+    # not a spelling check.
+    cwd6w = tempfile.mkdtemp(prefix="orgtree-agyweb-")
+    ws6w = antigravityrun.write_workspace(
+        cwd6w, identity="x", mcp_servers={},
+        rights={"bash": True, "edit": True, "web": False, "subagents": False})
+    hooks_w = json.load(open(os.path.join(cwd6w, ".agents", "hooks.json"),
+                             encoding="utf-8"))
+    cmd_w = hooks_w["orgtree-rights"]["PreToolUse"][0]["hooks"][0]["command"]
+
+    def decide(wrapper, name, args=None):
+        import subprocess
+        r = subprocess.run(
+            [wrapper] if os.name == "nt" else ["sh", wrapper],
+            input=json.dumps({"toolCall": {"name": name,
+                                           "args": dict(args or {})},
+                              "stepIdx": 1}).encode(),
+            capture_output=True, timeout=30,
+            cwd=os.path.dirname(wrapper))
+        return json.loads(r.stdout.decode())
+
+    def web_off_runs():
+        w = cmd_w.strip('"')
+        got = {n: decide(w, n)["decision"]
+               for n in ("search_web", "read_url_content", "open_browser_url",
+                         "browser_input", "invoke_subagent",
+                         "manage_subagents",
+                         # untouched classes: this node keeps its terminal,
+                         # its edits and its ordinary reads
+                         "run_command", "write_to_file", "view_file")}
+        eq(got, {"search_web": "deny", "read_url_content": "deny",
+                 "open_browser_url": "deny", "browser_input": "deny",
+                 "invoke_subagent": "deny", "manage_subagents": "deny",
+                 "run_command": "allow", "write_to_file": "allow",
+                 "view_file": "allow"}, f"decisions {got}")
+    check("a web-off, subagents-off node denies the web and subagent tools "
+          "for real through the wrapper, and keeps every other class",
+          web_off_runs)
+    check("…and the denied set is exactly those two classes, nothing wider",
+          lambda: eq(ws6w, {"hooks": True,
+                            "denied": sorted(set(antigravityrun.TOOLS_WEB) |
+                                             set(antigravityrun.TOOLS_SUBAGENT))},
+                     f"{ws6w}"))
+
+    def reason_names_the_switch():
+        w = cmd_w.strip('"')
+        web = decide(w, "search_web")["reason"]
+        sub = decide(w, "invoke_subagent")["reason"]
+        # `browser_subagent` is in BOTH classes: the first switch off supplies
+        # the reason, so it must not read as a subagent-only denial here
+        both = decide(w, "browser_subagent")["reason"]
+        eq((("web access" in web), ("subagents are off" in sub),
+            ("web access" in both)), (True, True, True),
+           f"web={web!r} sub={sub!r} both={both!r}")
+    check("each denial names the switch that closed it, and a tool in two "
+          "classes keeps the first one's reason",
+          reason_names_the_switch)
+
+    # §6c THE READ-ONLY SEAT'S TERMINAL, attacked. An edit-off seat used to
+    # keep `run_command`, which is a write tool the moment you redirect: the
+    # operator's own journal 9b9a1f71-5ef2-477b-8f3a-a14a414e2c11 (2026-09-04)
+    # has this hook DENYING `write_to_file` for a real edit-off node and 89
+    # successful `run_command` calls in the same session. Below, the SAME
+    # write is attempted through the shell against the real wrapper, and the
+    # control proves the attempt is not a straw man: the identical command,
+    # allowed for a writable seat, is RUN and does create the file.
+    # (What is not exercised here is the CLI obeying the wrapper — that is
+    # measured, in the journal denial cited above.)
+    cwd6r = tempfile.mkdtemp(prefix="orgtree-agyro-")
+    ws6r = antigravityrun.write_workspace(
+        cwd6r, identity="x", mcp_servers={},
+        rights={"bash": True, "edit": False, "web": True, "subagents": True})
+    cmd_r = json.load(open(os.path.join(cwd6r, ".agents", "hooks.json"),
+                           encoding="utf-8")
+                      )["orgtree-rights"]["PreToolUse"][0]["hooks"][0]["command"]
+    # a NARROWED BUT WRITABLE seat — a full-rights one carries no hook at all
+    cwd6c = tempfile.mkdtemp(prefix="orgtree-agyrw-")
+    antigravityrun.write_workspace(
+        cwd6c, identity="x", mcp_servers={},
+        rights={"bash": True, "edit": True, "web": False, "subagents": True})
+    cmd_c = json.load(open(os.path.join(cwd6c, ".agents", "hooks.json"),
+                           encoding="utf-8")
+                      )["orgtree-rights"]["PreToolUse"][0]["hooks"][0]["command"]
+
+    def _attack(cwd):
+        victim = os.path.join(cwd, "victim.txt")
+        line = (f'cmd /c echo pwned> "{victim}"' if os.name == "nt"
+                else f'echo pwned > "{victim}"')
+        return victim, line
+
+    def read_only_shell_is_shut():
+        import subprocess
+        w = cmd_r.strip('"')
+        victim, line = _attack(cwd6r)
+        got = decide(w, "run_command", {"CommandLine": line})
+        if got["decision"] != "deny":              # the CLI would now run it
+            subprocess.run(line, shell=True, timeout=30)
+        eq((got["decision"], os.path.exists(victim)), ("deny", False),
+           f"the shell write was {got} and victim exists="
+           f"{os.path.exists(victim)}")
+        # the reason has to say what closed it and what still works, or the
+        # seat retries the only tool it thinks it has
+        r = got["reason"]
+        assert "may not change files" in r and "view_file" in r, r
+
+    def writable_shell_still_writes():
+        import subprocess
+        w = cmd_c.strip('"')
+        victim, line = _attack(cwd6c)
+        got = decide(w, "run_command", {"CommandLine": line})
+        if got["decision"] != "deny":
+            subprocess.run(line, shell=True, timeout=30)
+        eq((got["decision"], os.path.exists(victim)), ("allow", True),
+           f"control: {got}, victim exists={os.path.exists(victim)}")
+    check("a read-only seat's shell write is DENIED at the wrapper and the "
+          "file never appears", read_only_shell_is_shut)
+    check("…and the control proves the attempt writes: the same command on a "
+          "narrowed but WRITABLE seat is allowed, runs, and creates the file",
+          writable_shell_still_writes)
+    check("an edit-off seat denies the edit class AND the shell class, and "
+          "nothing wider",
+          lambda: eq(ws6r, {"hooks": True,
+                            "denied": sorted(set(antigravityrun.TOOLS_EDIT) |
+                                             set(antigravityrun.TOOLS_BASH))},
+                     f"{ws6r}"))
+
+    def bash_off_reason_wins():
+        # both classes closed at once: the bash switch is the FIRST entry, so
+        # a bash-off seat is told the switch is off, not that it may not write
+        cwd6x = tempfile.mkdtemp(prefix="orgtree-agyboth-")
+        antigravityrun.write_workspace(
+            cwd6x, identity="x", mcp_servers={},
+            rights={"bash": False, "edit": False})
+        wx = json.load(open(os.path.join(cwd6x, ".agents", "hooks.json"),
+                            encoding="utf-8")
+                       )["orgtree-rights"]["PreToolUse"][0]["hooks"][0][
+                           "command"].strip('"')
+        r = decide(wx, "run_command")["reason"]
+        assert "bash is off" in r, r
+    check("a seat with BOTH switches off is told the shell switch is off, "
+          "not the write door", bash_off_reason_wins)
+
     ws6b = antigravityrun.write_workspace(
         cwd6, identity="x", mcp_servers={}, rights={"bash": True,
                                                      "edit": True})
@@ -339,8 +496,14 @@ def main():
               "s": {"command": "py", "args": ["-m", "x"],
                     "env": {"A": "1", "B": "2"}}}}, "spec"))
 
+    if FAIL:
+        print(f"\n{PASS} passed, {len(FAIL)} FAILED")
+        for label, tb in FAIL:
+            print(f"\n--- {label}\n{tb}")
+        return 1
     print(f"\n{PASS} checks passed")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

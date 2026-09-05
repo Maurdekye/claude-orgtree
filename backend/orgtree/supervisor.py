@@ -6040,13 +6040,30 @@ def identity_prompt(org: Org, nid: str, include_archived: bool = False) -> str:
                       "superior grants what they hold (ask by mail — "
                       "orgtree_retool is theirs); past that, "
                       "orgtree_request_scope asks the user directly. ")
-    if tools.get("bash", True):
+    # the antigravity leg denies the SHELL class for a seat that may not
+    # write, because that CLI has no verified read-only shell to hold one
+    # honest (see antigravityrun.write_workspace). Promising that seat a
+    # terminal is the same broken promise the codex read-only line was
+    # rewritten to avoid: it would ask, be denied, and retry.
+    agy_no_shell = (str(n.get("model") or "") in providers.ANTIGRAVITY_TIERS
+                    and not _codex_may_write(sc))
+    if tools.get("bash", True) and not agy_no_shell:
         # keep in step with _build_cmd's allowlist — promising a capability the
         # config drops is a bug class already hit once here. A Linux sandbox
         # has Bash only, so never offer PowerShell there.
         tool_line += ("Terminal: Bash. " if sbx.is_sandboxed(org) else
                       "Terminal: Bash and PowerShell are both available to "
                       "you; for a cmd command, run `cmd /c …` from either. ")
+    elif tools.get("bash", True):     # agy_no_shell: the switch is ON and
+        tool_line += (                # the seat still loses the terminal
+            "Terminal: CLOSED for this seat, and that is enforced, not "
+            "advisory — every shell call is denied before it runs. This is a "
+            "read-only seat (file editing is off, or you are on a plan-mode "
+            "seat), and on this provider a terminal cannot be held to reading "
+            "only, so it is closed rather than left open as a way around the "
+            "write door. Read with view_file, grep_search, list_dir and "
+            "find_by_name; when the work genuinely needs a write or a "
+            "command, raise it rather than looking for a way around. ")
     # D-182: the SAME grant `_build_cmd` spawns with — `"*"` is every
     # registered server, present and future, INTERSECTED WITH THE KIOSK
     # CEILING. This used to expand `"*"` straight against the registry and
@@ -12361,7 +12378,8 @@ def _antigravity_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
         # enforces this upstream, so this is a belt for a hand-edited doc
         raise RuntimeError("turn failed: antigravity agents cannot run in a "
                            "sandboxed kiosk org yet")
-    tools_sc = n["scope"].get("tools", {})
+    sc = cast("Mapping[str, Any]", n["scope"])
+    tools_sc = sc.get("tools", {})
     cwd = scratch_dir(slug, nid)
     ident = identity_prompt(org, nid)
     # resume ONLY a conversation id this leg itself harvested
@@ -12396,8 +12414,19 @@ def _antigravity_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
     # node is held to its scope by the PreToolUse hook the workspace writer
     # installs, keyed on the SAME capability switches the claude lane
     # enforces with --disallowed-tools
+    # — all FOUR switches, not two. `web` and `subagents` reached this lane
+    #   as nothing at all until 2026-09-05, while the identity prompt (which
+    #   is lane-independent) told those nodes the capability was disabled:
+    #   a wall in the prose and none on the wire.
+    # — `edit` also carries the plan-mode seat. `_codex_may_write` is the one
+    #   predicate for "may this node change files": the edit switch off, or
+    #   `permission_mode == "plan"`, closes the door. Deriving from it rather
+    #   than re-deciding here is what keeps the three lanes from disagreeing
+    #   about the most restrictive mode orgtree offers.
     rights = {"bash": bool(tools_sc.get("bash", True)),
-              "edit": bool(tools_sc.get("edit", True))}
+              "edit": _codex_may_write(sc),
+              "web": bool(tools_sc.get("web", True)),
+              "subagents": bool(tools_sc.get("subagents", True))}
     # identity through the CLI's door: AGENTS.md in the scratch cwd is a
     # directory rule injected on every turn, resumed or not (measured), so
     # rewriting it pre-spawn is the same regenerate-per-turn self-healing

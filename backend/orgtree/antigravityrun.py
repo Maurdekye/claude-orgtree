@@ -103,14 +103,44 @@ STATUS_COMPLETED: Final = "completed"
 STATUS_INTERRUPTED: Final = "interrupted"
 STATUS_FAILED: Final = "failed"
 
-#: the CLI's tool names that are SHELL-class and EDIT-class for the ⚙-rights
-#: seam — the same capability switches the claude lane enforces with
-#: --disallowed-tools. Names from the measured `init.tools` list (1.1.24).
-#: Browser automation and knowledge tools are neither: orgtree's scope has
-#: no switch for them, so they are left to the CLI's own policy.
+#: the CLI's tool names per capability class for the ⚙-rights seam — the same
+#: four switches the claude lane enforces with --disallowed-tools. SHELL and
+#: EDIT names come from the measured `init.tools` list (1.1.24).
 TOOLS_BASH: Final = ("run_command", "send_command_input", "notebook_execution")
 TOOLS_EDIT: Final = ("write_to_file", "replace_file_content",
                      "multi_replace_file_content", "sed_file", "notebook_edit")
+
+#: WEB-class. The claude lane's `web` switch drops WebSearch and WebFetch;
+#: this CLI's equivalent surface is larger because it drives a browser, and
+#: leaving it out meant a `web: off` node kept every one of these while its
+#: identity prompt told it web access was disabled (that prompt line is
+#: lane-independent). PROVENANCE, because it decides what is enforced:
+#: `search_web` and `read_url_content` are MEASURED — they appear in real
+#: Antigravity turns in this machine's own journals (27 and 20 calls across
+#: 21 sessions, read 2026-09-05). The rest are tool-name literals in the
+#: installed binary (1.1.26) and were NOT observed in those journals; they
+#: are included because opening or driving a page is the same capability,
+#: and a name that turns out not to exist costs nothing — a missing one
+#: costs the whole switch.
+TOOLS_WEB: Final = (
+    "search_web", "read_url_content", "open_browser_url",
+    "read_browser_page", "list_browser_pages", "click_browser_pixel",
+    "capture_browser_screenshot", "capture_browser_console_logs",
+    "execute_browser_javascript", "browser_input", "browser_press_key",
+    "browser_get_dom", "browser_click_element", "browser_select_option",
+    "browser_refresh_page", "browser_resize_window", "browser_scroll",
+    "browser_scroll_down", "browser_scroll_up", "browser_mouse_wheel",
+    "browser_mouse_down", "browser_mouse_up", "browser_move_mouse",
+    "browser_drag_pixel_to_pixel", "browser_list_network_requests",
+    "browser_get_network_request", "browser_subagent")
+
+#: SUBAGENT-class (the claude lane drops Task and Agent). Literals in the
+#: installed binary (1.1.26), NOT observed in this machine's journals —
+#: no agent on this lane has spawned one yet, which is not evidence that it
+#: cannot. `browser_subagent` is in both classes; whichever switch is off
+#: first supplies the reason.
+TOOLS_SUBAGENT: Final = ("invoke_subagent", "manage_subagents",
+                         "browser_subagent")
 
 #: the prefix a rights hook puts on its reason; the CLI reports a hook
 #: denial as "tool call denied by pre-tool hook: <reason>" (measured), so
@@ -249,14 +279,42 @@ def write_workspace(cwd: str, *, identity: str, mcp_servers: dict[str, Any],
         json.dump(mcp_config(mcp_servers), f, indent=1)
     sc = rights or {}
     deny: dict[str, str] = {}
-    if not sc.get("bash", True):
-        for t in TOOLS_BASH:
-            deny[t] = ("this agent has no shell rights (bash is off in its "
-                       "orgtree scope) — do not retry the command")
-    if not sc.get("edit", True):
-        for t in TOOLS_EDIT:
-            deny[t] = ("this agent has no file-editing rights (edit is off "
-                       "in its orgtree scope) — do not retry the write")
+    for switch, names, reason in (
+            ("bash", TOOLS_BASH,
+             "this agent has no shell rights (bash is off in its orgtree "
+             "scope) — do not retry the command"),
+            ("edit", TOOLS_EDIT,
+             "this agent has no file-editing rights (edit is off in its "
+             "orgtree scope, or it is on a plan-mode seat) — do not retry "
+             "the write"),
+            ("web", TOOLS_WEB,
+             "this agent has no web rights (web access is off in its "
+             "orgtree scope) — do not retry the fetch"),
+            ("subagents", TOOLS_SUBAGENT,
+             "this agent may not run subagents (subagents are off in its "
+             "orgtree scope) — do the work in this turn instead"),
+            # THE SHELL GOES WITH THE WRITE DOOR, keyed on the SAME `edit`
+            # right: `echo x > f` is a write, so leaving `run_command` open
+            # beside a denied `write_to_file` is a wall with a door in it.
+            # COST: that seat loses reads THROUGH the terminal too; the CLI's
+            # own read tools are not shell and stay open (view_file,
+            # grep_search, list_dir, find_by_name).
+            # The only enforcement here is this hook. `--sandbox` ("run in a
+            # sandbox with terminal restrictions enabled", 1.1.26) is
+            # UNVERIFIED — no turn has been run with it — so nothing relies
+            # on it, and the codex lane's sandbox-backed terminal has no
+            # equivalent on this one.
+            ("edit", TOOLS_BASH,
+             "this agent may not change files (edit is off in its orgtree "
+             "scope, or it is on a plan-mode seat), and this CLI has no "
+             "verified read-only shell — so the terminal is closed too. Read "
+             "with view_file, grep_search, list_dir and find_by_name")):
+        if not sc.get(switch, True):
+            for t in names:
+                # setdefault, not assignment: a name in two classes keeps the
+                # reason of the first switch that is off, and no class can
+                # silently overwrite another's denial
+                deny.setdefault(t, reason)
     hooks_path = os.path.join(cwd, _HOOKS_FILE)
     rights_py = os.path.join(cwd, _RIGHTS_PY)
     wrapper = os.path.join(cwd, _RIGHTS_WRAPPER)
