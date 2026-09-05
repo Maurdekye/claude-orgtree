@@ -164,6 +164,27 @@ MUTANTS = [
      "        if False:  # MUTANT\n",
      "after `codex login` the old account's pools are served as the new one's (§13)"),
 
+    ("M20 — an unnamed per-turn wall is filed under the PLAN whatever pool served it",
+     ROUTE,
+     "        snap_pool = (pool_of_snapshot(snap) if named or sent_pool is None\n"
+     "                     else sent_pool)\n",
+     "        snap_pool = pool_of_snapshot(snap)  # MUTANT\n",
+     "a reserve wall is read as a plan wall: wrong mark, wrong wake (§4, §7)"),
+
+    ("M21 — the shared board folds a reserve turn's notification into the plan bucket",
+     LIMITS,
+     '    if pool_hint == "reserve" and not str(snap.get("limitName") or "").strip():\n',
+     "    if False:  # MUTANT\n",
+     "after a reserve turn the plan bucket wears reserve's numbers (§4, §7 next turn)"),
+
+    ("M22 — a server reroute is ignored: the sent pool is always the served pool",
+     ROUTE,
+     "    if isinstance(rerouted, dict):\n"
+     '        to = str(rerouted.get("toModel") or "").strip()\n',
+     "    if False:  # MUTANT\n"
+     '        to = str(rerouted.get("toModel") or "").strip()\n',
+     "a rerouted turn's wall is charged to the pool it was merely sent to (§4)"),
+
     ("M19 — a sparse notification re-observes EVERY bucket",
      LIMITS,
      "        _observed[limit_id] = now\n",

@@ -302,14 +302,45 @@ def _merge_sparse(old: dict[str, Any], new: dict[str, Any]) -> dict[str, Any]:
     return merged
 
 
-def observe(snapshot: Any) -> None:
-    """Fold a turn's sparse `account/rateLimits/updated` notification."""
+#: the reserve pool's model name — the ONLY name a reserve bucket wears on a
+#: full board read (`limitName`), and the name `observe` gives an unnamed
+#: per-turn notification from a reserve turn. Mirrors ledger.MODELS.
+RESERVE_LIMIT_NAME: Final = "gpt-reserve"
+
+
+def observe(snapshot: Any, pool_hint: str | None = None) -> None:
+    """Fold a turn's sparse `account/rateLimits/updated` notification.
+
+    ⚠ `pool_hint` — WHICH POOL THE TURN WAS SENT TO, from the route. MEASURED
+    2026-09-05T01:20Z (codex-cli 0.153.0, live control, two turns on one
+    thread): the per-turn notification carries `limitId: "codex"` and NO
+    `limitName` whichever pool served the turn — the reserve turn's window
+    (27%, resetsAt = the reserve weekly's) and the direct turn's (36%,
+    resetsAt = the plan weekly's) both arrived under the same unnamed id.
+    Only the full `account/rateLimits/read` names the reserve bucket. So an
+    unnamed notification from a RESERVE turn is folded into the reserve
+    bucket (named, so `codex_route.pool_of_window` attributes it right) and
+    never into the plan bucket, where it would overwrite the plan's numbers
+    with reserve's. A named notification is filed by its name regardless.
+    """
     if not isinstance(snapshot, dict):
         return
-    limit_id = str(snapshot.get("limitId") or "codex")
+    snap: dict[str, Any] = dict(snapshot)
+    limit_id = str(snap.get("limitId") or "codex")
+    if pool_hint == "reserve" and not str(snap.get("limitName") or "").strip():
+        snap["limitName"] = RESERVE_LIMIT_NAME
+        with _lock:
+            existing = [k for k, v in _snapshots.items()
+                        if str(v.get("limitName") or "").strip()
+                        == RESERVE_LIMIT_NAME]
+        # the reserve bucket's own id when the board already has one
+        # (`base_model_inference` on the measured board — read, never
+        # hard-coded), else a key that cannot collide with the plan bucket
+        limit_id = existing[0] if existing else f"{limit_id}:{RESERVE_LIMIT_NAME}"
+        snap["limitId"] = limit_id
     now = time.time()
     with _lock:
-        _snapshots[limit_id] = _merge_sparse(_snapshots.get(limit_id, {}), snapshot)
+        _snapshots[limit_id] = _merge_sparse(_snapshots.get(limit_id, {}), snap)
         # ONLY the bucket this notification names is observed now; the
         # others keep the time they were last seen (see `_observed`)
         _observed[limit_id] = now

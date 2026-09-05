@@ -50,9 +50,9 @@ scenarios selected by FAKECODEX_SCENARIO:
                wall is POOL-SPECIFIC: a turn/start whose `model` is
                `gpt-reserve` (reserve_wall, both_wall) or `gpt-5.6-luna`
                (plan_wall, both_wall) ends as `usage_limit` does — the
-               pool's OWN bucket at 100% on the wire (`limitName:
-               "gpt-reserve"` for reserve, the unnamed `codex` bucket for
-               the plan, both shapes measured 2026-09-03), then
+               serving pool's window at 100% on the wire under the UNNAMED
+               `codex` id (measured 2026-09-05: a per-turn notification
+               never names the pool; only the full board read does), then
                turn/completed status "failed" with the 0.153.3 schema's
                camelCase tag `usageLimitExceeded` — and a turn on the other
                model completes normally. RESERVE_RESET_IN / PLAN_RESET_IN
@@ -219,9 +219,15 @@ def _pool_wall(thread_id, turn_id, model):
     """The pool-specific wall (item 12): the exhausted bucket of the pool
     `model` names, then the failed completion. Mirrors `usage_limit`."""
     if model == RESERVE_MODEL:
+        # ⚠ MEASURED 2026-09-05T01:20Z (live control, codex-cli 0.153.0): a
+        # RESERVE turn's notification carries `limitId: "codex"` and NO
+        # `limitName` — the reserve window's numbers under the generic id
+        # (27% / the reserve weekly's resetsAt on that run). The pool is
+        # told apart only by the numbers and by knowing which model the
+        # turn was sent as. A wall on reserve therefore looks like THIS:
         notify("account/rateLimits/updated", {
             "rateLimits": {
-                "limitId": "base_model_inference", "limitName": RESERVE_MODEL,
+                "limitId": "codex", "limitName": None,
                 "primary": {"usedPercent": 100.0,
                             "windowDurationMins": 10080,
                             "resetsAt": int(time.time()) + RESERVE_RESET_IN},

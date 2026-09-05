@@ -536,6 +536,97 @@ def main() -> int:
     check("§4 pool_state: exhausted from the turn's snapshot (latest reset), "
           "no-grant only from a complete board, else unexplained", t_pool_state)
 
+    def t_unnamed_attribution():
+        # MEASURED 2026-09-05T01:20Z (live control, codex-cli 0.153.0): a
+        # per-turn notification carries `limitId: "codex"` and NO limitName
+        # whichever pool served the turn. An unnamed bucket in a turn's own
+        # snapshots therefore describes the pool the turn was SENT to.
+        unnamed = {"codex": {"limitId": "codex", "limitName": None,
+                             "primary": {"usedPercent": 100, "resetsAt": NOW + 4000}}}
+        eq(codex_route.snapshots_pool_reset(unnamed, RES, sent_pool=RES),
+           (True, NOW + 4000), "sent to reserve: the unnamed wall is reserve's")
+        eq(codex_route.snapshots_pool_reset(unnamed, PLAN, sent_pool=RES),
+           (False, None), "…and not the plan's")
+        eq(codex_route.snapshots_pool_reset(unnamed, PLAN, sent_pool=PLAN),
+           (True, NOW + 4000), "sent to the plan: it is the plan's")
+        eq(codex_route.snapshots_pool_reset(unnamed, PLAN),
+           (True, NOW + 4000), "no sent pool (a full board read): unnamed = plan")
+        # a NAMED bucket is filed by its name whatever the turn was sent as
+        named = {"x": {"limitId": "x", "limitName": R,
+                       "primary": {"usedPercent": 100, "resetsAt": NOW + 9}}}
+        eq(codex_route.snapshots_pool_reset(named, RES, sent_pool=PLAN),
+           (True, NOW + 9), "a named reserve bucket is reserve's even on a plan turn")
+        # the classifier reads the sent pool: a reserve turn's unnamed wall
+        # is `exhausted` WITH the reserve reset
+        c = cls({"message": "m", "codexErrorInfo": "usageLimitExceeded"},
+                snaps=unnamed, pool=RES)
+        eq((c["pool_state"], c["reset_ts"]), ("exhausted", NOW + 4000), "classifier")
+        # …and the shared board folds it into the RESERVE bucket, leaving
+        # the plan bucket's numbers alone
+        scenario("tool", "reserve-ok")
+        codex_limits.fetch(force=True)
+        before = codex_limits.snapshot()
+        plan_before = [w["percent"] for w in before["limits"] if w.get("model") is None]
+        codex_limits.observe({"limitId": "codex", "limitName": None,
+                              "primary": {"usedPercent": 100,
+                                          "resetsAt": time.time() + 4000}},
+                             pool_hint=RES)
+        after = codex_limits.snapshot()
+        res_after = [w["percent"] for w in after["limits"] if w.get("model") == R]
+        plan_after = [w["percent"] for w in after["limits"] if w.get("model") is None]
+        eq(max(res_after), 100.0, "the reserve bucket took the wall")
+        eq(plan_after, plan_before, "the plan bucket is untouched")
+        eq(codex_route.pool_capacity(after["limits"], RES)["state"], "exhausted", "reserve out")
+        eq(codex_route.pool_capacity(after["limits"], PLAN)["state"], "usable", "plan usable")
+        # without the hint (a plan turn) the same notification is the plan's
+        codex_limits.fetch(force=True)
+        codex_limits.observe({"limitId": "codex", "limitName": None,
+                              "primary": {"usedPercent": 100,
+                                          "resetsAt": time.time() + 2000}},
+                             pool_hint=PLAN)
+        after2 = codex_limits.snapshot()
+        eq(codex_route.pool_capacity(after2["limits"], PLAN)["state"], "exhausted", "plan out")
+        eq(codex_route.pool_capacity(after2["limits"], RES)["state"], "usable", "reserve untouched")
+        codex_limits.invalidate()
+    check("§4 ⚠ an UNNAMED per-turn notification describes the pool the turn "
+          "was SENT to (measured 2026-09-05); named buckets keep their name",
+          t_unnamed_attribution)
+
+    def t_reroute_overrides():
+        # `model/rerouted` overrides the sent-pool assumption: the selected
+        # pool is never called the served pool when the server said it
+        # served something else
+        r = resolve(board([W(R, 8)]))          # sent to reserve
+        eq(codex_route.served_pool(r, None), RES, "no reroute: the sent pool")
+        eq(codex_route.served_pool(r, {"fromModel": R, "toModel": D}), PLAN,
+           "rerouted to the direct model: the plan pool served")
+        eq(codex_route.served_pool(r, {"fromModel": R, "toModel": "gpt-9-mystery"}), None,
+           "rerouted to an unknown model: attribution unknown")
+        eq(codex_route.served_pool(r, {"fromModel": R, "toModel": ""}), None, "empty: unknown")
+        d = resolve(board([W(R, 100, ISO(NOW + 5))]))   # sent direct
+        eq(codex_route.served_pool(d, {"fromModel": D, "toModel": R}), RES,
+           "a direct turn rerouted onto reserve: reserve served")
+        # the classifier follows: a reserve-sent turn whose wall arrived
+        # after a reroute onto the plan does NOT mark reserve exhausted
+        unnamed = {"codex": {"limitId": "codex", "limitName": None,
+                             "primary": {"usedPercent": 100, "resetsAt": NOW + 4000}}}
+        c = cls({"message": "m", "codexErrorInfo": "usageLimitExceeded"},
+                snaps=unnamed, pool=RES)
+        eq(c["pool_state"], "exhausted", "sent and served reserve: reserve exhausted")
+        c2 = codex_route.classify_failure(
+            status="failed", error={"message": "m", "codexErrorInfo": "usageLimitExceeded"},
+            snapshots=unnamed, items_seen=0, token_usage=None, agent_text="",
+            pool=RES, board=None, served=PLAN)
+        assert c2["pool_state"] != "exhausted", c2
+        c3 = codex_route.classify_failure(
+            status="failed", error={"message": "m", "codexErrorInfo": "usageLimitExceeded"},
+            snapshots=unnamed, items_seen=0, token_usage=None, agent_text="",
+            pool=RES, board=None, served=None)
+        eq(c3["pool_state"], "unexplained", "unknown serving pool: nothing attributed")
+        assert c3["rejected"], "…but the terminal rejection itself still stands"
+    check("§4 model/rerouted overrides the sent-pool attribution; an unknown "
+          "destination attributes nothing", t_reroute_overrides)
+
     # ───────────────────────────────────────────────────────────────────────
     print("§5 the header token label")
 

@@ -213,20 +213,34 @@ def pool_capacity(limits: list[dict[str, Any]], pool: str) -> PoolCapacity:
             "reset_unknown": unknown, "observed_at": observed_at}
 
 
-def snapshots_pool_reset(snapshots: Any, pool: str) -> tuple[bool, float | None]:
+def snapshots_pool_reset(snapshots: Any, pool: str,
+                         sent_pool: str | None = None) -> tuple[bool, float | None]:
     """From a turn's RAW rate-limit board (keyed by limitId): did this pool
     show an exhausted window, and when does the LATEST of them reset?
 
     → `(exhausted, reset_ts)`; `reset_ts` is None when unknown. Positive
     evidence only: a pool that does not appear here is simply not described
     by this turn's sparse notifications (see the module note on absence).
+
+    ⚠ `sent_pool` — the pool the turn was SENT to. MEASURED 2026-09-05 (live
+    control, codex-cli 0.153.0): a per-turn notification carries NO
+    `limitName` whichever pool served the turn, only that pool's window
+    under the generic `codex` id. So an UNNAMED bucket in a turn's own
+    snapshots describes `sent_pool`, not the plan pool. A named bucket is
+    still filed by its name. Without `sent_pool` the old rule (unnamed =
+    plan) applies, which is right for a full board read.
     """
     if not isinstance(snapshots, dict):
         return False, None
     exhausted = False
     resets: list[float | None] = []
     for snap in snapshots.values():
-        if not isinstance(snap, dict) or pool_of_snapshot(snap) != pool:
+        if not isinstance(snap, dict):
+            continue
+        named = bool(str(snap.get("limitName") or "").strip())
+        snap_pool = (pool_of_snapshot(snap) if named or sent_pool is None
+                     else sent_pool)
+        if snap_pool != pool:
             continue
         reached = bool(snap.get("rateLimitReachedType"))
         for slot in ("primary", "secondary"):
@@ -254,7 +268,7 @@ def snapshots_pool_reset(snapshots: Any, pool: str) -> tuple[bool, float | None]
 
 def node_wake_epoch(limits: list[dict[str, Any]], snapshots: Any,
                     pools: tuple[str, ...] = (RESERVE_POOL, PLAN_POOL),
-                    ) -> float | None:
+                    sent_pool: str | None = None) -> float | None:
     """When might a routed node serve again, given BOTH pools are out?
 
     Per pool: the latest applicable exhausted reset (board and the turn's own
@@ -266,7 +280,7 @@ def node_wake_epoch(limits: list[dict[str, Any]], snapshots: Any,
     candidates: list[float] = []
     for pool in pools:
         cap = pool_capacity(limits, pool)
-        _ex, snap_reset = snapshots_pool_reset(snapshots, pool)
+        _ex, snap_reset = snapshots_pool_reset(snapshots, pool, sent_pool=sent_pool)
         known = [t for t in (cap["reset_ts"], snap_reset) if t is not None]
         if known:
             candidates.append(max(known))
@@ -530,6 +544,27 @@ def other_route(route: Route) -> Route | None:
                          prefer=prefer)
 
 
+def served_pool(route: Route, rerouted: Any) -> str | None:
+    """The pool that SERVED a turn, for attributing its unnamed rate-limit
+    notification: the pool the turn was sent to — unless the server said
+    `model/rerouted`, in which case the destination model decides
+    (`gpt-reserve` → reserve; any other codex model → plan), and an
+    unrecognised destination decides nothing (None: the notification is
+    filed by its own id and the receipt says attribution is unknown). A
+    selected pool is never called a billing fact when the server reports
+    that it served something else."""
+    if isinstance(rerouted, dict):
+        to = str(rerouted.get("toModel") or "").strip()
+        if not to:
+            return None
+        if to == RESERVE_MODEL:
+            return RESERVE_POOL
+        if to in _MODELS.values():
+            return PLAN_POOL
+        return None
+    return route["pool"]
+
+
 # ── the failure classifier ──────────────────────────────────────────────────
 
 def _error_code(error: Any) -> str:
@@ -577,7 +612,8 @@ class FailureClass(TypedDict):
 def classify_failure(*, status: str | None, error: Any, snapshots: Any,
                      items_seen: int, token_usage: Any, agent_text: str,
                      pool: str, board: dict[str, Any] | None,
-                     usage_prose: bool = False) -> FailureClass:
+                     usage_prose: bool = False,
+                     served: str | None = "<sent>") -> FailureClass:
     """What kind of failure this was, and whether the request may be re-sent
     on the other pool.
 
@@ -617,7 +653,13 @@ def classify_failure(*, status: str | None, error: Any, snapshots: Any,
     reset_ts: float | None = None
     why = ""
     if kind == KIND_USAGE_LIMIT:
-        ex, snap_reset = snapshots_pool_reset(snapshots, pool)
+        # the turn's own unnamed notification describes the pool that
+        # SERVED it — the sent pool unless the server rerouted (`served`;
+        # measured, see `snapshots_pool_reset`). `served=None` (an
+        # unrecognised reroute) attributes nothing to the sent pool.
+        sent = pool if served == "<sent>" else served
+        ex, snap_reset = ((False, None) if sent is None else
+                          snapshots_pool_reset(snapshots, pool, sent_pool=sent))
         if ex:
             pool_state, reset_ts = "exhausted", snap_reset
             why = f"{pool} pool exhausted (turn's own rate-limit snapshot)"

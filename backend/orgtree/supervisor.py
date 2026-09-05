@@ -9091,6 +9091,10 @@ def _codex_route_stamp(st: dict[str, Any], route: codex_route.Route, *,
         rec["outcome"] = outcome
     rec["reported_model"] = reported_model
     rec["rerouted"] = rerouted
+    # which pool the turn's usage is ATTRIBUTED to: the selected pool, or
+    # the reroute destination's, or unknown — never "proven billing"
+    rec["served_pool"] = (codex_route.served_pool(route, rerouted)
+                          if outcome is not None else None)
     with _state_lock:
         st["codex_route"] = rec
     return rec
@@ -10011,9 +10015,14 @@ def _codex_leg_attempt(slug: str, nid: str, org: Org, st: dict[str, Any],
     # sparse and arrive per bucket, so every bucket is folded: `codex_limits`
     # merges them by limitId and a partial one cannot erase a window.
     _snaps = res_raw.get("rate_limit_snapshots")
+    # attributed to the pool that SERVED this turn: the one it was sent to,
+    # unless the server reported `model/rerouted` (then the destination
+    # model decides, or nothing does) — the notification itself carries no
+    # pool name (measured 2026-09-05, `codex_limits.observe`)
+    _served = codex_route.served_pool(route, res_raw.get("rerouted"))
     for _snap in (list(_snaps.values()) if isinstance(_snaps, dict)
                   else [res_raw.get("rate_limits")]):
-        codex_limits.observe(_snap)
+        codex_limits.observe(_snap, pool_hint=_served)
     status = str(res_raw.get("status") or codexrun.STATUS_FAILED)
     if status == codexrun.STATUS_FAILED:
         # the CLI's own account of the failure. ⚠ NOT the stderr tail: for a
@@ -10041,7 +10050,8 @@ def _codex_leg_attempt(slug: str, nid: str, org: Org, st: dict[str, Any],
             items_seen=_items_seen, token_usage=res_raw.get("token_usage"),
             agent_text=str(res_raw.get("agent_text") or ""),
             pool=route["pool"], board=codex_limits.snapshot(),
-            usage_prose=_looks_like_usage_limit(blob))
+            usage_prose=_looks_like_usage_limit(blob),
+            served=_served)
         _frec = _codex_route_stamp(
             st, route, live=False, outcome=fcls["kind"],
             reported_model=res_raw.get("reported_model"),
@@ -10069,7 +10079,8 @@ def _codex_leg_attempt(slug: str, nid: str, org: Org, st: dict[str, Any],
             _limits = [w for w in (codex_limits.snapshot().get("limits") or [])
                        if isinstance(w, dict)]
             _reset = codex_route.node_wake_epoch(
-                _limits, res_raw.get("rate_limit_snapshots"))
+                _limits, res_raw.get("rate_limit_snapshots"),
+                sent_pool=_served)
         else:
             _reset = codexrun.limit_reset_epoch(
                 res_raw.get("rate_limit_snapshots"))
