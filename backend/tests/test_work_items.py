@@ -1074,9 +1074,13 @@ def doctrine_rides_the_identity_prompt_on_every_lane():
     assert card["inputSchema"]["required"] == ["action"]
     acts = set(card["inputSchema"]["properties"]["action"]["enum"])
     assert acts == {"list", "get", "create", "update", "assign", "participants", "evidence",
-                    "claim", "verify", "check", "accept", "archive", "supersede"}
+                    "claim", "verify", "check", "accept", "archive", "supersede",
+                    "move"}
     for a in sorted(acts - {"list", "get", "verify", "create"}):
-        st, js = work(slug, "boss", a, slug="w00000000")
+        # `move` needs a destination to get as far as resolving the item; the
+        # probe is about DISPATCH (422, not "unknown action"), so give it one
+        extra = {"parent": ""} if a == "move" else {}
+        st, js = work(slug, "boss", a, slug="w00000000", **extra)
         assert st == 422, (a, st, js)       # every action is dispatched (unknown id, not unknown action)
         assert "action must be" not in js["detail"], (a, js)
     ask = next(t for t in mcptool.TOOLS if t["name"] == "orgtree_ask")
@@ -1595,6 +1599,140 @@ def a_write_that_skipped_the_conversion_is_refused_by_the_ledger():
 check("a docket write on an unconverted document is refused by the ledger, "
       "not left to each route to remember",
       a_write_that_skipped_the_conversion_is_refused_by_the_ledger)
+
+
+def sub_items_are_independent_items_in_a_tree():
+    """The parent relation, and the three things it deliberately is NOT.
+
+    The approved design says children stay independent: their own owner,
+    status, name and authority. So this pins the SHAPE (a tree, one parent,
+    no cycles) and then pins the absences, because "nesting quietly became a
+    permission edge" is the failure that would not look like a failure."""
+    slug = fresh_org()
+    parent = create(slug, title="Docket improvements")
+    child = create(slug, title="Grouping and filters", parent=parent)
+    assert get_item(slug, child)["parent"] == parent
+    assert get_item(slug, parent)["parent"] is None, "a root grew a parent"
+
+    # move to the top, and back under
+    assert ok(slug, "boss", "move", slug=child, parent="")["parent"] is None
+    assert get_item(slug, child)["parent"] is None
+    assert ok(slug, "boss", "move", slug=child, parent=parent)["parent"] == parent
+
+    # ⚠ NESTING IS NOT A LIFECYCLE EDGE. Accepting the parent must not touch
+    # the child, and vice versa — a parent is completed explicitly, after the
+    # whole outcome is delivered.
+    ok(slug, "boss", "update", slug=child, status="review",
+       done_so_far=["done"], working_on_next=[])
+    assert get_item(slug, parent)["status"] != "review", \
+        "the parent's status followed its child's"
+
+
+def a_move_needs_an_explicit_destination():
+    """⚠ ABSENT AND EMPTY ARE DIFFERENT. `parent: ""` says "put this at the
+    top"; omitting it is a caller that forgot, and promoting an item to the
+    top because a field was missing is a data change nobody asked for."""
+    slug = fresh_org()
+    parent = create(slug, title="Parent item")
+    child = create(slug, title="Child item", parent=parent)
+    assert "needs `parent`" in refused(slug, "boss", "move", slug=child)
+    assert get_item(slug, child)["parent"] == parent, \
+        "a move with no destination moved the item anyway"
+
+
+def a_cycle_is_refused_at_every_depth():
+    """A cycle makes every item on the ring unreachable from the top of the
+    list and hangs any renderer that walks the tree. Refused on write, at
+    depth, and including the one-item case."""
+    slug = fresh_org()
+    a = create(slug, title="Grandparent")
+    b = create(slug, title="Parent", parent=a)
+    c = create(slug, title="Child", parent=b)
+
+    assert "its own parent" in refused(slug, "boss", "move", slug=a, parent=a)
+    assert "own subtree" in refused(slug, "boss", "move", slug=a, parent=c), \
+        "a three-deep cycle was allowed"
+    assert "own subtree" in refused(slug, "boss", "move", slug=a, parent=b)
+    # POSITIVE CONTROL: a move that is NOT a cycle still works, so the refusals
+    # above are about the cycle and not about moving at all
+    d = create(slug, title="Elsewhere")
+    assert ok(slug, "boss", "move", slug=d, parent=c)["parent"] == c
+
+
+def a_bad_parent_refuses_the_creation_outright():
+    """Resolved BEFORE the item is appended: a create naming a parent that
+    does not exist must leave nothing behind, or the docket accumulates
+    stranded items from failed calls."""
+    slug = fresh_org()
+    before = len(listing(slug)["items"])
+    st, js = work(slug, "boss", "create", title="Orphan",
+                  objective="a problem; a solution", parent="no-such-item")
+    assert st != 200, js
+    assert len(listing(slug)["items"]) == before, \
+        "a refused create left a stranded item behind"
+
+
+def nesting_needs_manage_on_the_child_and_read_on_the_parent():
+    """READ on the parent is the bar, not manage: requiring manage would stop
+    a subordinate filing its own item under its coordinator's, which is the
+    ordinary case. Requiring nothing would let an agent attach work under an
+    item it cannot see."""
+    # the fixture's tree is boss > mid > worker, with `peer` top-level and
+    # unrelated — so the boss is NOT the peer's superior and holds nothing
+    # over the peer's items. That is what makes this a real test.
+    slug = fresh_org()
+    mine = create(slug, node="peer", title="Peer own work")
+    secret = create(slug, node="boss", title="Boss only work")
+    # peer cannot even read the boss's item, so it cannot nest under it — and
+    # the refusal is the same indistinguishable one a nonexistent name gets
+    msg = refused(slug, "peer", "move", slug=mine, parent=secret)
+    assert "may read" in msg, msg
+
+    # POSITIVE CONTROL, and the case the READ-not-MANAGE bar exists for: make
+    # the peer a PARTICIPANT on the boss's item. It may now read that item but
+    # still not manage it — and it manages its own — so the nesting succeeds.
+    ok(slug, "boss", "participants", slug=secret, add=["peer"])
+    assert ok(slug, "peer", "move", slug=mine, parent=secret)["parent"] == secret
+    # ...and it still cannot manage the parent, so this is read right and not
+    # something the move quietly granted
+    assert "owner-level" in refused(slug, "peer", "update", slug=secret,
+                                    status="dropped", done_so_far=["x"],
+                                    working_on_next=[])
+
+
+def a_parent_you_may_not_read_is_named_to_nobody():
+    """The disclosure rule, once more: a parent's name is derived from its
+    title, so a viewer who may not read the parent learns that one EXISTS —
+    the row must not read as top-level work — and nothing else."""
+    slug = fresh_org()
+    secret = create(slug, node="boss", title="Boss only parent")
+    child = create(slug, node="boss", title="Visible child", parent=secret)
+    ok(slug, "boss", "participants", slug=child, add=["peer"])
+
+    seen = ok(slug, "peer", "get", slug=child)["item"]
+    assert seen["parent"] is None, "the hidden parent's NAME reached a reader"
+    assert seen["parent_visible"] is False, \
+        "the reader cannot tell a parent exists at all, so the row reads as top-level"
+    hit = [k for k, v in seen.items() if secret in json.dumps(v)]
+    assert not hit, f"the hidden parent's name leaked through {hit}"
+
+    # POSITIVE CONTROL: the same field IS served to someone who may read it
+    full = get_item(slug, child)
+    assert full["parent"] == secret and full["parent_visible"] is True
+
+
+check("sub-items are independent items in a tree, and nesting is not a "
+      "lifecycle edge", sub_items_are_independent_items_in_a_tree)
+check("a move needs an explicit destination — absent is not empty",
+      a_move_needs_an_explicit_destination)
+check("a cycle is refused at every depth, and ordinary moves still work",
+      a_cycle_is_refused_at_every_depth)
+check("a create naming a parent that does not exist leaves nothing behind",
+      a_bad_parent_refuses_the_creation_outright)
+check("nesting needs manage on the child and read on the parent",
+      nesting_needs_manage_on_the_child_and_read_on_the_parent)
+check("a parent you may not read is named to nobody, but its existence is "
+      "still admitted", a_parent_you_may_not_read_is_named_to_nobody)
 
 
 def agents_are_told_to_use_the_slug():

@@ -611,7 +611,13 @@ class WorkItem(TypedDict):
     dismissals: list[dict[str, Any]]          # {at, by: "user", set_rev, reason} — every user dismissal, kept
     archived_at: str | None         # instant of the physical move into work_items_archive
     acceptance: list[WorkAcceptance]
-    dependencies: list[str]         # work item ids in this org (active or archived)
+    dependencies: list[str]         # work item NAMES in this org (active or archived)
+    # SUB-ITEMS (user 2026-09-05): the parent's NAME, or absent/None at the
+    # top. A tree, not a graph — one parent, cycles refused on write. A child
+    # is an independent item: its own owner, status, name and authority.
+    # Nesting says how work is ORGANISED; it is not a permission edge and not
+    # a lifecycle edge.
+    parent: NotRequired[str | None]
     evidence: list[dict[str, Any]]  # {at, by, kind: note|link|file|commit|log, ref, note?} — cap by refusal, never truncated
     delivery: dict[str, WorkStage | None] | None   # keys = workitems.STAGES
     accepted: dict[str, Any] | None  # {at, by, note} — set only by work_accept (user or an ancestor of the owner)

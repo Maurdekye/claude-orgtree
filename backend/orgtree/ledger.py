@@ -9408,6 +9408,8 @@ class Org:
             if it.get("superseded_by"):
                 it["superseded_by"] = repoint(
                     it["superseded_by"], "superseded_by", me)
+            if it.get("parent"):
+                it["parent"] = repoint(it["parent"], "parent", me)
 
         # stored question batches and their per-card roll-up, on the asks list
         # and on every node's live ask alike
@@ -9702,6 +9704,16 @@ class Org:
                 it.get("superseded_by")
                 if self._work_pointer_visible(it.get("superseded_by"), viewer)
                 else None),
+            # SAME DISCLOSURE RULE AGAIN: a parent's name is derived from its
+            # title. A viewer who may not read the parent is told a parent
+            # EXISTS — so the row does not silently read as top-level work —
+            # and not what it is called.
+            "parent": (
+                it.get("parent")
+                if self._work_pointer_visible(it.get("parent"), viewer)
+                else None),
+            "parent_visible": self._work_pointer_visible(
+                it.get("parent"), viewer),
             "delivery": self._work_delivery_view(it),
             "blocked_reason": it.get("blocked_reason"),
             "participants": list(it.get("participants") or []),
@@ -9717,10 +9729,17 @@ class Org:
             "dependencies": deps,
         }
 
-    #: history-row fields that NAME ANOTHER WORK ITEM. Since the name is
-    #: derived from the title, each one is a disclosure and is gated exactly
-    #: like `superseded_by` and `dependencies` are.
-    _WORK_HIST_POINTERS: Final = ("by",)
+    #: history-row fields that NAME ANOTHER WORK ITEM, PER OPERATION. Since
+    #: the name is derived from the title, each one is a disclosure and is
+    #: gated exactly like `superseded_by`, `parent` and `dependencies` are.
+    #:
+    #: ⚠ PER OPERATION, NOT A FLAT FIELD LIST. `from`/`to` name items on a
+    #: `move` row and name STATUSES on an update row — a flat list would try
+    #: to resolve "in_progress" as an item, fail, and redact a status nobody
+    #: was protecting. The narrow map is what keeps the redaction meaning what
+    #: it says.
+    _WORK_HIST_POINTERS: Final = {"supersede": ("by",),
+                                  "move": ("from", "to")}
 
     def _work_history_view(self, it: WorkItem,
                            viewer: str) -> list[dict[str, Any]]:
@@ -9739,7 +9758,7 @@ class Org:
                 out.append(row)
                 continue
             red = dict(cast("dict[str, Any]", row))
-            for f in self._WORK_HIST_POINTERS:
+            for f in self._WORK_HIST_POINTERS.get(str(red.get("op") or ""), ()):
                 if red.get(f) and not self._work_pointer_visible(red[f], viewer):
                     red[f] = None
             out.append(red)
@@ -9914,7 +9933,8 @@ class Org:
                     acceptance: list[Any] | None = None,
                     dependencies: list[Any] | None = None,
                     done_so_far: Any = None, working_on_next: Any = None,
-                    status: str = "open") -> dict[str, Any]:
+                    status: str = "open",
+                    parent: str | None = None) -> dict[str, Any]:
         self._work_require_live_agent_or_user(actor)
         self._work_sweep()
         t = str(title or "").strip()[:200]
@@ -10004,6 +10024,10 @@ class Org:
             "delivery": ({s: None for s in workitems.STAGES}
                          if kind == "code" else None),
             "accepted": None, "history": [], "superseded_by": None,
+            # resolved BEFORE the item is appended, so a bad parent refuses
+            # the creation outright instead of leaving a stranded item behind
+            "parent": (self._work_parent_check(actor, None, str(parent))
+                       if parent else None),
         }
         active.append(it)
         self._log("work_create", actor,
@@ -10364,6 +10388,67 @@ class Org:
         self._work_hist(it, actor, "archive", {})
         self._log("work_archived", actor, {"ids": [wid], "why": "explicit"}, [])
         return {"archived": wid, "rev": it["rev"]}
+
+    # ---- SUB-ITEMS (user 2026-09-05, four approved elements of the nested
+    # design). `parent` holds the PARENT'S NAME, like every other pointer
+    # here. It is a tree, not a graph: one parent, no cycles.
+    #
+    # ⚠ A CHILD IS AN INDEPENDENT ITEM, deliberately — its own owner, status,
+    # slug and authority, exactly as the approved design says. Nesting is a
+    # statement about how work is organised, NOT a permission edge and NOT a
+    # lifecycle edge: a parent is not completed by its children, does not
+    # inherit their attention, and archiving one does not archive the other.
+    def work_move(self, actor: str, wid: str,
+                  parent: str | None) -> dict[str, Any]:
+        """Put `wid` under `parent`, or at the top with `parent` None/empty."""
+        self._work_require_live_agent_or_user(actor)
+        self._work_sweep()
+        it, _ = self._work_get_for(actor, wid)
+        if not self._work_can_manage(actor, it):
+            raise LedgerError("only the owner, the creator, their superiors or "
+                              "the user may move an item")
+        ref = str(parent or "").strip()
+        if not ref:
+            was = it.get("parent")
+            it["parent"] = None                 # type: ignore[typeddict-unknown-key]
+            self._work_hist(it, actor, "move", {"from": was, "to": None})
+            self._work_stamp_docket(it, actor)
+            return {"moved": it["slug"], "parent": None, "rev": it["rev"]}
+        it["parent"] = self._work_parent_check(actor, it, ref)   # type: ignore[typeddict-unknown-key]
+        self._work_hist(it, actor, "move",
+                        {"from": None, "to": it.get("parent")})
+        self._work_stamp_docket(it, actor)
+        return {"moved": it["slug"], "parent": it.get("parent"),
+                "rev": it["rev"]}
+
+    def _work_parent_check(self, actor: str, child: WorkItem | None,
+                           ref: str) -> str:
+        """Resolve `ref` to a usable parent name, or refuse with a reason.
+
+        READ right on the parent is the bar, not manage. Requiring manage
+        would stop a subordinate filing its own item under its coordinator's,
+        which is the ordinary case this feature exists for; requiring nothing
+        would let an agent attach work under an item it cannot even see."""
+        parent, _ = self._work_get_for(actor, ref)      # read right, or refused
+        if child is not None and parent["slug"] == child["slug"]:
+            raise LedgerError("an item cannot be its own parent")
+        # ⚠ WALK UP FROM THE PROPOSED PARENT. A cycle would make every item on
+        # the ring unreachable from the top of the list and would hang any
+        # renderer that walks the tree. `seen` bounds it even if the stored
+        # document already contains one.
+        seen: set[str] = set()
+        cur: Any = parent.get("parent")
+        while cur and cur not in seen:
+            seen.add(str(cur))
+            if child is not None and str(cur) == child["slug"]:
+                raise LedgerError(
+                    f"that would put {child['slug']} inside its own subtree")
+            try:
+                nxt, _ = self._work_find(str(cur))
+            except LedgerError:
+                break
+            cur = nxt.get("parent")
+        return str(parent["slug"])
 
     def work_supersede(self, actor: str, wid: str, by: str) -> dict[str, Any]:
         self._work_require_live_agent_or_user(actor)

@@ -4097,7 +4097,8 @@ def _work_mutate_action(org: Org, nid: str, a: dict[str, Any],
             dependencies=_work_list_arg(a, "dependencies"),
             done_so_far=a.get("done_so_far"),
             working_on_next=a.get("working_on_next"),
-            status=str(a.get("status") or "open"))
+            status=str(a.get("status") or "open"),
+            parent=_s("parent"))
     if act == "update":
         return org.work_update(
             nid, wid, a.get("done_so_far"), a.get("working_on_next"),
@@ -4128,11 +4129,22 @@ def _work_mutate_action(org: Org, nid: str, a: dict[str, Any],
         return org.work_accept(nid, wid, _s("note"))
     if act == "archive":
         return org.work_archive_now(nid, wid)
+    if act == "move":
+        # ⚠ ABSENT AND EMPTY MEAN DIFFERENT THINGS HERE. `parent: ""` (or null)
+        # is an explicit "put this at the top"; omitting the argument entirely
+        # is a caller that forgot to say where, and silently promoting an item
+        # to the top because a field was missing would be a data change nobody
+        # asked for.
+        if "parent" not in a:
+            raise LedgerError(
+                "move needs `parent`: the name of the item to nest under, or "
+                "an empty string to move this item back to the top level")
+        return org.work_move(nid, wid, _s("parent"))
     if act == "supersede":
         return org.work_supersede(nid, wid, str(a.get("by") or ""))
     raise LedgerError(
         "action must be list|get|create|update|assign|participants|evidence|"
-        "claim|verify|check|accept|archive|supersede")
+        "claim|verify|check|accept|archive|supersede|move")
 
 
 class AskAnswer(Body):
