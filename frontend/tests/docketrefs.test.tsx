@@ -545,3 +545,62 @@ uiTest('§21 selecting a child OPENS ITS ANCESTORS, or the row is not there',
       'the ancestor stayed folded, so the selected row was never on screen')
     assert.match(pane(el)?.textContent ?? '', /The child/)
   })
+
+// ------------------------------------ the canonical token, on BOTH sides
+
+import { readFileSync } from 'node:fs'
+import path from 'node:path'
+import { parseRef, REF_TOKEN_RE } from '../src/canvas/workrefs'
+
+// ⚠ `__SRC_DIR__`, NOT `import.meta.url`: run.mjs bundles each suite into
+// node_modules/.orgtree-tests, so a URL relative to the module resolves next
+// to the BUNDLE and the fixture is not there. The runner defines this for
+// exactly that reason.
+declare const __SRC_DIR__: string
+
+/** generated from `backend/orgtree/refs.py` by
+ *  `backend/tools/gen_ref_fixture.py`, and asserted by the Python suite too */
+const FIXTURE = JSON.parse(readFileSync(
+  path.join(__SRC_DIR__, '..', 'tests', 'ref-tokens.json'), 'utf8')) as {
+    parse: Record<string, Record<string, string> | null>
+    prose: Record<string, [string, string][]>
+  }
+
+test('§22 THE TWO PARSERS AGREE, token for token', () => {
+  // ⚠ TWO PARSERS ARE TWO CHANCES TO DISAGREE, and a disagreement is a link
+  // that opens the wrong thing or nothing at all. The backend emits these and
+  // the browser resolves them, so neither may drift alone — the fixture is
+  // generated from the Python and both sides test against it.
+  const cases = Object.entries(FIXTURE.parse)
+  assert.ok(cases.length >= 20, 'the fixture is suspiciously small')
+  for (const [token, want] of cases) {
+    const got = parseRef(token)
+    if (want === null) {
+      assert.equal(got, null, `${JSON.stringify(token)} must not parse`)
+      continue
+    }
+    assert.deepEqual({ ...got }, { ...want },
+      `${JSON.stringify(token)} parsed differently from the backend`)
+  }
+  // the malformed half is the half that matters, so prove it is really there
+  assert.ok(cases.filter(([, w]) => w === null).length >= 8,
+    'the fixture has almost no malformed cases, so "never guessed" is untested')
+})
+
+test('§23 …and they find the same tokens in the same prose', () => {
+  for (const [text, want] of Object.entries(FIXTURE.prose)) {
+    const got = [...text.matchAll(new RegExp(REF_TOKEN_RE.source, 'g'))]
+      .map((m) => [m[1], m[0].slice(String(m[1]).length + 2)])
+    assert.deepEqual(got, want.map((w) => [w[0], w[1]]),
+      `the two matchers disagree about ${JSON.stringify(text)}`)
+  }
+})
+
+test('§24 a token from ANOTHER org is parsed, and is not this org', () => {
+  // parsing is not resolving. The org segment exists so a token copied out of
+  // another org resolves to nothing here rather than to a local namesake.
+  const a = parseRef('@item:alpha/shared-name')
+  const b = parseRef('@item:beta/shared-name')
+  assert.equal(a?.id, b?.id)
+  assert.notEqual(a?.org, b?.org)
+})

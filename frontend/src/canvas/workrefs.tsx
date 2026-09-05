@@ -148,3 +148,58 @@ export function WorkRefText({ text, index, onPick }: {
       ))} />
   )
 }
+
+// ---------------------------------------------------------------- typed refs
+//
+// The canonical token an agent emits. Defined once in `backend/orgtree/refs.py`
+// and parsed twice — there, and here. `frontend/tests/ref-tokens.json` is
+// generated from the Python and asserted by both sides, so the two cannot
+// drift without a red test.
+//
+// ⚠ EVERY TOKEN CARRIES ITS ORG, and that is not decoration: prose gets copied
+// between orgs, and two orgs can hold the same item slug, agent name or mail
+// id. A token whose org is not the one on screen must NEVER be resolved
+// locally — it is reported as belonging elsewhere.
+
+export type RefKind = 'item' | 'doc' | 'agent' | 'mail'
+export type MailBox = 'user' | 'org' | 'node'
+
+export interface TypedRef {
+  kind: RefKind
+  org: string
+  /** item slug · document id · node id · mail id */
+  id: string
+  /** mail only */
+  box?: MailBox
+  /** mail in a node's box only */
+  node?: string
+}
+
+/** one segment — the intersection of every identity alphabet in the product,
+ *  which is why `:` and `/` can be delimiters at all */
+const SEG = '[a-z0-9-]+'
+export const REF_TOKEN_RE =
+  new RegExp(`@(item|doc|agent|mail):(?:${SEG})(?:/${SEG})*`, 'g')
+
+/** A token to its parts, or null when it is not one. Never a guess: a
+ *  malformed token resolves to nothing rather than to something plausible. */
+export function parseRef(token: string): TypedRef | null {
+  const m = new RegExp(`^@(item|doc|agent|mail):((?:${SEG})(?:/${SEG})*)$`)
+    .exec(String(token ?? ''))
+  if (!m) return null
+  const kind = m[1] as RefKind
+  const seg = (m[2] as string).split('/')
+  if (kind !== 'mail') {
+    return seg.length === 2
+      ? { kind, org: seg[0] as string, id: seg[1] as string } : null
+  }
+  if (seg.length === 3 && (seg[1] === 'user' || seg[1] === 'org')) {
+    return { kind, org: seg[0] as string, box: seg[1] as MailBox,
+      id: seg[2] as string }
+  }
+  if (seg.length === 4 && seg[1] === 'node') {
+    return { kind, org: seg[0] as string, box: 'node',
+      node: seg[2] as string, id: seg[3] as string }
+  }
+  return null
+}

@@ -151,6 +151,33 @@ def the_matcher_finds_tokens_in_prose_and_stops_at_the_token():
                      ("mail", "alpha/user/ab12")], found
 
 
+def the_cross_language_fixture_is_current():
+    """⚠ TWO PARSERS ARE TWO CHANCES TO DISAGREE. The backend emits these
+    tokens and the browser resolves them, and a disagreement is a link that
+    opens the wrong thing. `frontend/tests/ref-tokens.json` is generated from
+    THIS module and asserted by the TypeScript suite as well; this check is
+    what stops it going stale, because a fixture nobody regenerates is a
+    contract nobody is holding.
+
+    Regenerate with `python backend/tools/gen_ref_fixture.py`."""
+    import json
+    sys.path.insert(0, os.path.join(BACKEND, "tools"))
+    import gen_ref_fixture                                        # noqa: PLC0415
+    want = gen_ref_fixture.build()
+    with open(gen_ref_fixture.OUT, encoding="utf-8") as fh:
+        have = json.load(fh)
+    assert have == want, (
+        "frontend/tests/ref-tokens.json is out of date — the token format "
+        "changed and the browser's copy of the contract did not. Run "
+        "`python backend/tools/gen_ref_fixture.py`")
+    # and it must actually carry the half that matters
+    bad = [t for t, v in want["parse"].items() if v is None]
+    assert len(bad) >= 8, ("the fixture has almost no malformed cases, so "
+                           f"'never guessed' is untested on both sides: {bad}")
+
+
+check("the cross-language fixture is current",
+      the_cross_language_fixture_is_current)
 check("every reference carries its org", every_reference_carries_its_org)
 check("the same name in two orgs is two different references",
       the_same_name_in_two_orgs_is_two_different_references)

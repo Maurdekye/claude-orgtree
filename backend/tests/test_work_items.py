@@ -1773,14 +1773,17 @@ def the_marker_is_not_evidence_the_records_are():
         "clean records were called legacy because the marker was missing"
     assert client.get(f"/api/orgs/{slug}/work-items").status_code == 200
 
-    # POSITIVE CONTROL 2: a POINTER still written the old way is legacy too —
-    # the records are not clean just because no item carries an `id`
+    # ⚠ AND A POINTER IS NOT EVIDENCE EITHER. My first correction judged
+    # pointers by SHAPE and made this legacy — the same mistake `_work_find`
+    # exists to avoid, one function away: an item can legally be named
+    # `w1234abcd`, so a pointer at it would read as unconverted forever.
+    # Canonical-or-dead; the two dedicated checks below drive both.
     org = store.load_org(slug)
     it, _ = org._work_find(parent)
     it["dependencies"] = ["wdeadbeef"]
     store.save_org(org)
-    assert store.load_org(slug).work_identity_state() == "legacy", \
-        "an old-style POINTER survived while the state reported converted"
+    assert store.load_org(slug).work_identity_state() == "slug", \
+        "a dangling pointer was mistaken for old identity"
 
 
 def an_empty_org_needs_no_migration():
@@ -1845,6 +1848,114 @@ check("a move records the parent it actually had",
       a_move_records_the_parent_it_actually_had)
 check("passing the retired `id` argument is refused even alongside `slug`",
       passing_the_retired_argument_is_refused_even_alongside_slug)
+
+
+def a_canonical_name_shaped_like_an_old_id_is_usable_as_a_POINTER():
+    """⚠ COUNTEREXAMPLE EXECUTED BY coordinator-astra, 2026-09-05 — the SAME
+    ordering mistake `_work_find` exists to avoid, reintroduced one function
+    away. `work_identity_state` judged pointers by SHAPE, so an item legally
+    named `w1234abcd` made every item pointing AT it read as unconverted: the
+    move succeeded, the next read 409'd, and the next mutation drove a
+    migration that had nothing to convert. An unusable docket, forever.
+
+    A pointer is only ever canonical-or-dead. Membership decides, never shape.
+    Driven through the real routes end to end, because that loop is a
+    route-level behaviour."""
+    slug = fresh_org()
+    odd = create(slug, title="W1234abcd")
+    assert odd == "w1234abcd", odd
+    child = create(slug, title="Child of the odd one", parent=odd)
+    dependant = create(slug, title="Depends on the odd one", dependencies=[odd])
+
+    # the pointers are stored, and the document is NOT legacy because of them
+    assert store.load_org(slug).work_identity_state() == "slug", \
+        "an item pointing at a legally w-hex-named item read as unconverted"
+
+    # THE NEXT READ, over the real route
+    r = client.get(f"/api/orgs/{slug}/work-items")
+    assert r.status_code == 200, (r.status_code, r.text)
+    assert get_item(slug, child)["parent"] == odd
+    assert get_item(slug, dependant)["dependencies"][0]["slug"] == odd
+
+    # THE NEXT MUTATION, which is where the loop closed
+    ok(slug, "boss", "update", slug=child, done_so_far=["still fine"],
+       working_on_next=[])
+    ok(slug, "boss", "move", slug=child, parent="")
+    ok(slug, "boss", "move", slug=child, parent=odd)
+    assert client.get(f"/api/orgs/{slug}/work-items").status_code == 200
+
+    # POSITIVE CONTROL: an ordinary name behaves identically, so nothing above
+    # passes merely because the checks stopped noticing anything
+    plain = create(slug, title="Ordinary parent")
+    ok(slug, "boss", "move", slug=child, parent=plain)
+    assert get_item(slug, child)["parent"] == plain
+
+
+def two_items_answering_to_one_name_is_legacy_and_refuses():
+    """⚠ ALSO FROM THAT REVIEW: a document with duplicate names and NO opaque
+    keys reported `slug`, so it was served as converted and never reached the
+    migration's duplicate refusal. Ambiguity is exactly what must not be
+    served — two items answering to one name means every reference to it is a
+    coin toss."""
+    slug = fresh_org()
+    a = create(slug, title="Twin")
+    b = create(slug, title="Twin")          # -> twin-2
+    org = store.load_org(slug)
+    it, _ = org._work_find(b)
+    it["slug"] = a                          # forge the collision, no ids at all
+    store.save_org(org)
+
+    assert all("id" not in x for x in store.load_org(slug)._work_all()), \
+        "the fixture is pointless unless there are no opaque keys left"
+    assert store.load_org(slug).work_identity_state() == "legacy", \
+        "a duplicate name was served as a converted document"
+    assert client.get(f"/api/orgs/{slug}/work-items").status_code == 409
+
+    # and the migration refuses it rather than picking a winner — twice, with
+    # nothing written either time
+    before = json.dumps(store.load_org(slug).d, sort_keys=True, default=str)
+    for _ in range(2):
+        r = client.post(f"/api/orgs/{slug}/migrate-work-identity")
+        assert r.status_code == 422 and "already carry the slug" in r.text, r.text
+    assert json.dumps(store.load_org(slug).d, sort_keys=True,
+                      default=str) == before, \
+        "a refused migration wrote to the document"
+
+
+def a_dangling_pointer_never_loops_the_document():
+    """A pointer naming nothing is a DATA DEFECT, not an identity state. If it
+    made the document legacy, the read would 409, the mutation would drive a
+    migration, the migration would find nothing to convert — and the next read
+    would 409 again, forever. `_work_view` already reports an unresolvable
+    dependency as an invisible one; that is the honest handling."""
+    slug = fresh_org()
+    wid = create(slug, title="Points at a ghost")
+    org = store.load_org(slug)
+    it, _ = org._work_find(wid)
+    it["dependencies"] = ["wdeadbeef", "also-not-a-real-name"]
+    store.save_org(org)
+
+    assert store.load_org(slug).work_identity_state() == "slug", \
+        "a dangling pointer was mistaken for old identity"
+    assert client.get(f"/api/orgs/{slug}/work-items").status_code == 200
+    # served honestly: it exists, it is not readable, and it is not named
+    deps = get_item(slug, wid)["dependencies"]
+    assert deps == [{"visible": False}, {"visible": False}], deps
+    # ...and the document stays usable rather than cycling through migrations
+    ok(slug, "boss", "update", slug=wid, done_so_far=["no loop"],
+       working_on_next=[])
+    r = client.post(f"/api/orgs/{slug}/migrate-work-identity")
+    assert r.status_code == 200 and r.json() == {"already": True}, r.text
+
+
+check("a canonical name shaped like an old id works as a POINTER, through "
+      "the real routes, on the next read and the next mutation",
+      a_canonical_name_shaped_like_an_old_id_is_usable_as_a_POINTER)
+check("two items answering to one name is legacy, and the migration refuses "
+      "it twice without writing",
+      two_items_answering_to_one_name_is_legacy_and_refuses)
+check("a dangling pointer never loops the document",
+      a_dangling_pointer_never_loops_the_document)
 
 
 def agents_are_told_to_use_the_slug():

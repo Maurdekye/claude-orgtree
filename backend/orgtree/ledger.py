@@ -9291,17 +9291,32 @@ class Org:
         ⚠ DERIVED FROM THE RECORDS; the durable marker is NOT consulted. A
         marker can outlive the records it describes — an old-build round trip
         or a partial restore leaves one set over an unconverted child — and a
-        state that trusts it serves mixed identity. No items at all is `slug`.
-        (test_work_items.py: "the marker is not evidence".)"""
+        state that trusts it serves mixed identity.
+
+        ⚠ AND POINTERS ARE NOT EVIDENCE EITHER. A pointer is only ever
+        canonical-or-dead: it names an item that exists, or it names nothing.
+        Judging one by SHAPE repeats the mistake `_work_find` exists to avoid —
+        a real item can be named `w1234abcd`, so a parent pointing at it would
+        read as "unconverted" forever, 409 every read, and drive a migration
+        that has nothing to convert. A dangling pointer is a data defect that
+        `_work_view` already reports as an invisible dependency; it is not an
+        identity state.
+
+        What DOES make a document legacy: an item still carrying the retired
+        key, an item with no name, or two items answering to the same name.
+        The last one must be caught here, or a duplicate reaches
+        `work_identity_migrate`'s refusal only by luck. No items at all is
+        `slug`."""
+        names: set[str] = set()
         for it in self._work_all():
             if "id" in it:
-                return "legacy"
-            if not str(it.get("slug") or ""):
+                return "legacy"          # old identity, definitively
+            name = str(it.get("slug") or "")
+            if not name:
                 return "legacy"          # unnamed: nothing can reference it
-            for ref in ([it.get("parent"), it.get("superseded_by")]
-                        + list(it.get("dependencies") or [])):
-                if ref and self._WORK_OLD_ID.match(str(ref)):
-                    return "legacy"      # a pointer still written the old way
+            if name in names:
+                return "legacy"          # ambiguous: two items answer to one
+            names.add(name)
         return self.WORK_IDENTITY_SLUG
 
     def _work_require_current_identity(self) -> None:
