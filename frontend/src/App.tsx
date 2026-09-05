@@ -32,6 +32,8 @@ import { AccountsPanel, UsageBars } from './canvas/accounts'
 import { DocGalleryModal } from './canvas/gallery'
 import { DocketModal, DocketToolbarButton } from './canvas/docket'
 import { mailRefTarget } from './canvas/reflinks'
+import type { RefWorld, ResolvedRef } from './canvas/reflinks'
+import type { RefKind, TypedRef } from './canvas/workrefs'
 import {
   SetBlock, SetGroup, SetRow, SettingsTabPanel, SettingsTabs, SetToggle,
   useVisitedTabs,
@@ -262,6 +264,10 @@ export default function App() {
   // to, so this is handed DOWN to it rather than re-decided here. One-shot,
   // like `focusAgent` above.
   const [mailJump, setMailJump] = useState<{ id: string; to: string } | null>(null)
+  // and a `@doc:` reference. The canvas owns the document reader (it opens
+  // from the node chips), so this travels the same way the mail pointer does
+  // rather than growing a second reader up here.
+  const [docJump, setDocJump] = useState<string | null>(null)
   // the usage button GLOWS once a lane nears its wall (user feature
   // 2026-08-19), so a freeze stops being the first notice. It rides
   // /api/usage/peek — the CACHE-ONLY readout — because this poll runs whether
@@ -976,6 +982,8 @@ export default function App() {
                 onFocusAgentHandled={() => setFocusAgent(null)}
                 openMailAt={mailJump}
                 onOpenMailHandled={() => setMailJump(null)}
+                openDocAt={docJump}
+                onOpenDocHandled={() => setDocJump(null)}
                 onAccounts={BASE ? undefined : () => setShowAccounts(true)}
                 onInbox={(jump: unknown) => {
                   setInboxJump(typeof jump === 'string' ? jump : null)
@@ -1007,6 +1015,21 @@ export default function App() {
                     setShowInbox(false)
                     setInboxJump(null)
                     setFocusAgent(id)
+                  }}
+                  onOpenItem={(item) => {
+                    // every destination is somewhere else, so each of these
+                    // closes the inbox first: the panels they open are the
+                    // same `.overlay` layer and would otherwise open BEHIND
+                    // the mail the reader clicked from.
+                    setShowInbox(false); setInboxJump(null)
+                    setDocketJump(item); setShowDocket(true)
+                  }}
+                  onOpenDoc={(id) => {
+                    setShowInbox(false); setInboxJump(null); setDocJump(id)
+                  }}
+                  onOpenMail={(r) => {
+                    setShowInbox(false); setInboxJump(null)
+                    setMailJump(mailRefTarget(r))
                   }}
                   close={() => {
                     setShowInbox(false); setInboxJump(null); refreshTree(slug)
@@ -1885,7 +1908,8 @@ interface UserAudReq {
   [k: string]: unknown
 }
 
-export function InboxPanel({ slug, tree, toast, refresh, close, jumpTo, onFocusAgent }: {
+export function InboxPanel({ slug, tree, toast, refresh, close, jumpTo,
+  onFocusAgent, onOpenItem, onOpenDoc, onOpenMail }: {
   slug: string
   tree: TreePayload
   toast: ToastFn
@@ -1893,10 +1917,53 @@ export function InboxPanel({ slug, tree, toast, refresh, close, jumpTo, onFocusA
   close: () => void
   jumpTo: string | null
   onFocusAgent?: (agentId: string) => void
+  /** a canonical reference written in a mail BODY, followed. Each is
+   *  optional and each one supplied is one more kind of token this panel
+   *  admits — an omitted one renders "not opened from here", which is the
+   *  true statement rather than a control that does nothing. */
+  onOpenItem?: (itemSlug: string) => void
+  onOpenDoc?: (docId: string) => void
+  onOpenMail?: (ref: TypedRef) => void
 }) {
   useEsc(close)
   const [folder, setFolder] = useState('inbox')
   const nodes = flatNodes(tree)
+  // ---- canonical references inside a mail body
+  //
+  // ⚠ THIS PANEL HOLDS NO LIST OF ITEMS OR DOCUMENTS, and says so by leaving
+  // both unset: `undefined` means "do not judge — the destination will", and
+  // the destinations do (the docket states an id it does not have; the reader
+  // reports a document it cannot fetch). An empty Map here would call every
+  // real item in every mail missing.
+  //
+  // ⚠ AGENTS AND NODE MAILBOXES IT CAN answer for, from the tree it already
+  // has — and it must, because the router downstream opens nothing and says
+  // nothing for a node it has never heard of.
+  const refWorld = useMemo<RefWorld>(() => {
+    const handles = new Set<RefKind>()
+    if (onOpenItem) handles.add('item')
+    if (onFocusAgent) handles.add('agent')
+    if (onOpenDoc) handles.add('doc')
+    if (onOpenMail) handles.add('mail')
+    return {
+      org: slug,
+      agents: new Map([...nodes.keys()].map((id) => [id, id])),
+      mail: (r) => (r.box !== 'node' ? 'ready'
+        : nodes.has(String(r.node ?? '')) ? 'ready' : 'absent'),
+      handles,
+    }
+    // `nodes` is rebuilt on every render from the polled tree; keying on the
+    // tree itself keeps the world stable between polls that changed nothing
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [slug, tree, onOpenItem, onFocusAgent, onOpenDoc, onOpenMail])
+  const openRef = useCallback((r: ResolvedRef) => {
+    if (r.ref.kind === 'item') onOpenItem?.(r.ref.id)
+    else if (r.ref.kind === 'agent') onFocusAgent?.(r.ref.id)
+    else if (r.ref.kind === 'doc') onOpenDoc?.(r.ref.id)
+    else if (r.ref.kind === 'mail') onOpenMail?.(r.ref)
+  }, [onOpenItem, onFocusAgent, onOpenDoc, onOpenMail])
+  const mailRefs = useMemo(() => ({ world: refWorld, onOpen: openRef }),
+    [refWorld, openRef])
   // G5: mail arrives, and audience requests are raised by agents, while this
   // panel sits open. Polled while mounted rather than fetched once — the same
   // gate as everywhere else: "is anyone looking at this".
@@ -2032,7 +2099,7 @@ export function InboxPanel({ slug, tree, toast, refresh, close, jumpTo, onFocusA
                   // SENDER — the file sits in that agent's own outbox/.
                   fileHref={(p, m) => fileUrl(slug, m.from, p)}
                   mdBase={(m) => fileBase(slug, m.from)}
-                  waitLabel="unread" jumpTo={jumpTo}
+                  waitLabel="unread" jumpTo={jumpTo} refs={mailRefs}
                   onRead={(m: MailEntry) => markRead(slug, [m.id])
                     .then(() => { setReadBump((n) => n + 1); refresh?.() })
                     .catch(() => {})}
@@ -2064,7 +2131,7 @@ export function InboxPanel({ slug, tree, toast, refresh, close, jumpTo, onFocusA
               // the user's OWN sends: attachments live in the RECIPIENT's
               // uploads/ (the upload landed there at stage time) — key on
               // m.to; a row without one ('' = unreachable) keeps plain chips
-              : <MailList delivered={box.sent ?? []} outgoing
+              : <MailList delivered={box.sent ?? []} outgoing refs={mailRefs}
                   onFocusAgent={onFocusAgent ? (agentId) => { close(); onFocusAgent(agentId) } : undefined}
                   fileHref={(p, m) => typeof m.to === 'string' && m.to
                     ? fileUrl(slug, m.to, p) : ''}

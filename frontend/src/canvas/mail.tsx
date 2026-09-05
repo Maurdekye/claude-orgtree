@@ -22,6 +22,8 @@ import {
 } from './shared'
 import type { CanvasNode, MailRow } from './shared'
 import { AgentName } from './identity'
+import { RefMdBody } from './refmd'
+import type { RefWorld, ResolvedRef } from './reflinks'
 import { isMobile } from '../mobile'
 import { fmtFull, fmtShort } from '../timefmt'
 
@@ -80,13 +82,22 @@ export interface MailListProps {
    *  a real agent whose model is unknown still navigates, without a chip.
    *  Omitted = this caller cannot say, so no local jump is claimed. */
   hasAgent?: (id: string) => boolean
+  /** canonical references (`@item:org/slug`) inside the READING PANE's body.
+   *  A body is rendered markdown, not React children, so this is the DOM pass
+   *  in refmd.tsx rather than the ordinary renderer.
+   *
+   *  ⚠ ONE OPTION, NOT TWO. The world says what a token resolves to and the
+   *  handler says what happens when it is clicked; a caller that supplies
+   *  neither gets plain prose, which is the honest rendering for a surface
+   *  with nowhere to send anybody. */
+  refs?: { world: RefWorld; onOpen?: (r: ResolvedRef) => void }
 }
 
 const MAIL_WINDOW = 40
 
 export function MailList({ pending = [], delivered = [], waitLabel, sender, rowSender,
   outgoing, onRead, onReply, onRetract, jumpTo, fileHref, mdBase, renderBody, rowMark,
-  onFocusAgent, tierOf, hasAgent }: MailListProps) {
+  onFocusAgent, tierOf, hasAgent, refs }: MailListProps) {
   // ONE order, by send time, always — never grouped, never re-grouped.
   //
   // Unread used to sort as its own block on top, which meant the list
@@ -445,13 +456,18 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, rowS
                     {curPile.slice().reverse().map((n) => (
                       <div className="notepile-row" key={keyOf(n)}>
                         <span className="notepile-at">{when(n.at)}</span>
-                        <span className="notepile-text md"
-                          dangerouslySetInnerHTML={md(n.body, mdBase?.(n) || undefined)} />
+                        {/* a folded notice is a body like any other — a
+                            reference written in one is followed the same way */}
+                        <RefMdBody key={keyOf(n)} el="span"
+                          className="notepile-text md"
+                          html={md(n.body, mdBase?.(n) || undefined)}
+                          world={refs?.world} onOpen={refs?.onOpen} />
                       </div>
                     ))}
                   </div>
-                : <div className="mailer-body md"
-                    dangerouslySetInnerHTML={md(cur.body, mdBase?.(cur) || undefined)} />}
+                : <RefMdBody className="mailer-body md"
+                    html={md(cur.body, mdBase?.(cur) || undefined)}
+                    world={refs?.world} onOpen={refs?.onOpen} />}
             {(cur.attachments ?? []).length > 0 && (
               <div className="attach-row">
                 {/* extern-shaped attachments may lack `path` — a download

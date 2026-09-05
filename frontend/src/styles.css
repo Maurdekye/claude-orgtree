@@ -3059,6 +3059,15 @@ main.solo { width: 100%; }
 .docket-question-note { margin-bottom: 6px; }
 .docket-reply-label { font-size: 12px; margin: 4px 0 6px; display: flex; align-items: center; gap: 4px; }
 .docket-foot { font-size: 11.5px; padding-top: 8px; }
+/* a reference that named an item this org does not have (or that this reader
+   may not see). It reads as a STATEMENT, not as the panel's ordinary "select
+   an item" invitation — those two looking alike is the failure it exists to
+   end — so it is not dimmed, and it is italic like the mail pane's equivalent
+   `.mailer-nojump`, which is the same sentence one panel over. */
+.docket-nojump {
+  display: block; max-width: 34em; line-height: 1.5;
+  color: var(--ink, inherit); font-style: italic;
+}
 /* ⚠ text-overflow DOES NOTHING on a flex container. The old rule put the
    ellipsis on the inline-flex wrapper, so a long agent name did not truncate —
    it ran on under the Dismiss button (Astra review 2026-09-05). The wrapper now

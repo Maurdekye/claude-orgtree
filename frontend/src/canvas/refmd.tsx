@@ -192,7 +192,8 @@ export function refClickHandler(worldOf: () => RefWorld,
  *
  *  The listener is attached ONCE and reads the current world through a ref,
  *  because the chips it serves are replaced under it on every rebuild. */
-export function useRefMd(world: RefWorld, onOpen?: (r: ResolvedRef) => void) {
+export function useRefMd(world: RefWorld | null | undefined,
+  onOpen?: (r: ResolvedRef) => void) {
   const host = useRef<HTMLDivElement | null>(null)
   const worldRef = useRef(world)
   worldRef.current = world
@@ -201,15 +202,42 @@ export function useRefMd(world: RefWorld, onOpen?: (r: ResolvedRef) => void) {
   useEffect(() => {
     const el = host.current
     if (!el) return
-    const h = refClickHandler(() => worldRef.current,
-      (r) => openRef.current?.(r))
+    const h = refClickHandler(() => worldRef.current as RefWorld,
+      (r) => { if (worldRef.current) openRef.current?.(r) })
     el.addEventListener('click', h)
     return () => el.removeEventListener('click', h)
   }, [])
   useEffect(() => {
-    if (host.current) linkifyRefs(host.current, world, !!onOpen)
+    // ⚠ NO WORLD MEANS NO JUDGEMENT, not a world of nothing. A caller that
+    // has not been given an org cannot tell a local reference from a foreign
+    // one, and an empty `RefWorld` would answer "another org" to every token
+    // in the app's own prose.
+    if (host.current && world) linkifyRefs(host.current, world, !!onOpen)
   })
   return host
+}
+
+/** A markdown body with its references live — the whole thing in one element,
+ *  for the surfaces that render `md()` into a div and nothing else.
+ *
+ *  `html` is what `md()` returned. It is passed in rather than produced here
+ *  because the call sites already choose their own image base, and the base
+ *  is per-author. */
+export function RefMdBody({ html, world, onOpen, className, el }: {
+  html: { __html: string }
+  world?: RefWorld | null
+  onOpen?: (r: ResolvedRef) => void
+  className?: string
+  /** the element to render, because a call site's LAYOUT is not this
+   *  component's business: the folded-notice list puts its body in a `span`
+   *  inside a flex row, and quietly promoting it to a `div` would be this
+   *  wrapper changing a page it was only meant to decorate. */
+  el?: 'div' | 'span'
+}) {
+  const host = useRefMd(world, onOpen)
+  const Tag = (el ?? 'div') as 'div'
+  return <Tag ref={host} className={className}
+    dangerouslySetInnerHTML={html} />
 }
 
 export { refToken }

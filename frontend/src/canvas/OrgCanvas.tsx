@@ -56,6 +56,12 @@ export interface OrgCanvasProps {
    *  Consumed once, exactly like `focusAgent`. */
   openMailAt?: { id: string; to: string } | null
   onOpenMailHandled?: () => void
+  /** open one presented document, from a panel that owns no reader — the
+   *  same one-shot route as `openMailAt`. The reader here IS the exact GET,
+   *  so an id this org does not have is reported by the reader rather than
+   *  guessed at up front. */
+  openDocAt?: string | null
+  onOpenDocHandled?: () => void
 }
 
 /** has this spring arrived? Both the spring loop (which snaps to the target on
@@ -114,7 +120,7 @@ const migrateClientNodeState = (slug: string, from: string, to: string): void =>
 
 export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox, onWorkItem,
   onAccounts, focusAgent, onFocusAgentHandled, openMailAt,
-  onOpenMailHandled }: OrgCanvasProps) {
+  onOpenMailHandled, openDocAt, onOpenDocHandled }: OrgCanvasProps) {
   const [draft, setDraft] = useState<DraftState | null>(null)
   const [configId, setConfigId] = useState<string | null>(null)
   const [lineageId, setLineageId] = useState<string | null>(null)
@@ -278,6 +284,11 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox, onWorkItem,
     openMailRef.current?.(openMailAt)
     onOpenMailHandled?.()
   }, [openMailAt, onOpenMailHandled])
+  useEffect(() => {
+    if (!openDocAt) return
+    setDocView(openDocAt)
+    onOpenDocHandled?.()
+  }, [openDocAt, onOpenDocHandled])
   // THE DOCKET LIVES IN APP, so a work link is handed straight up rather than
   // half-handled here. The canvas owns the inbox modals and genuinely routes
   // mail; it owns nothing of the docket and should not pretend to.

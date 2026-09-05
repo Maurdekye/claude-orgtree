@@ -526,8 +526,13 @@ export function DocketModal({ slug, toast, close, tree, onFocusAgent,
 
   // selection BY ID, not index — the list repolls under the user (G5)
   const selId = sel?.slug === slug ? sel.id : null
-  const setSelId = useCallback(
-    (id: string | null) => setSel(id ? { slug, id } : null), [slug])
+  // ⚠ CLEARED BY ANY DELIBERATE SELECTION. The notice answers ONE click; left
+  // standing it would reappear the moment the reader deselected a row, long
+  // after the reference that caused it.
+  const setSelId = useCallback((id: string | null) => {
+    setMissedJump(null)
+    setSel(id ? { slug, id } : null)
+  }, [slug])
   // ⚠ ORDER IS THE POINT. The CURRENT response is written LAST, so it wins over
   // anything held from an earlier one. Written the other way round — caches
   // last — an item that had just been reopened or promoted out of the archive
@@ -688,11 +693,20 @@ export function DocketModal({ slug, toast, close, tree, onFocusAgent,
   // ⚠ "ONCE" IS ENFORCED HERE, not by the parent clearing the prop: the deps
   // change identity on every poll, so a check on `jumpTo` alone re-fires and
   // drags the selection back each time the user moves it.
+  //
+  // ⚠ AND A JUMP THAT LANDS ON NOTHING SAYS SO. Discarding it silently left
+  // the panel open on "select an item to view it" — the same thing it shows
+  // when nobody clicked anything, so a reference to an item this viewer
+  // cannot see was indistinguishable from a misclick. Naming the id is safe
+  // here in a way naming a mail's subject is not: the id is what the reader
+  // just clicked, so it discloses nothing they did not already have.
   const doneJump = useRef<string | null>(null)
+  const [missedJump, setMissedJump] = useState<string | null>(null)
   useEffect(() => {
     if (!jumpTo || !data || doneJump.current === jumpTo) return
     doneJump.current = jumpTo
-    if (allKnown.has(jumpTo)) goToItem(jumpTo)
+    if (allKnown.has(jumpTo)) { setMissedJump(null); goToItem(jumpTo) }
+    else setMissedJump(jumpTo)
     onJumpHandled?.()
   }, [jumpTo, data, allKnown, goToItem, onJumpHandled])
 
@@ -809,7 +823,12 @@ export function DocketModal({ slug, toast, close, tree, onFocusAgent,
                           close={close} onFocusAgent={onFocusAgent} facts={facts}
                           refIndex={refIndex} onGoToItem={goToItem}
                           refWorld={refWorld} onOpenRef={openRef} />
-                      : <div className="dim pad mailer-none">select an item to view it</div>}
+                      : missedJump
+                        ? <div className="pad mailer-none docket-nojump">
+                            <b>{missedJump}</b> is not an item in this org, or
+                            it is not one you can see.
+                          </div>
+                        : <div className="dim pad mailer-none">select an item to view it</div>}
                   </div>
                 </div>
               )}

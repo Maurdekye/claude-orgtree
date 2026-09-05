@@ -19,7 +19,7 @@
 import { execFileSync } from 'node:child_process'
 import { readFileSync, writeFileSync } from 'node:fs'
 
-const REFMD = 'src/canvas/refmd.ts'
+const REFMD = 'src/canvas/refmd.tsx'
 
 const MUTANTS = [
   {

@@ -186,6 +186,91 @@ uiTest('§5 CONTROL — a node this canvas does not have opens NOTHING, silently
     assert.equal(handled, 1)
   })
 
+uiTest('§5b a DOCUMENT pointer opens the reader on that id, once',
+  async (mount) => {
+    quietServer()
+    const { OrgCanvas } = await import('../src/canvas/OrgCanvas')
+    let handled = 0
+    const el = await mount(
+      <OrgCanvas tree={tree(['ceo'])} op={() => Promise.resolve({} as never)}
+        slug="mine" toast={noop} mailEvt={null}
+        openDocAt="d7" onOpenDocHandled={() => { handled += 1 }} />)
+    await flush()
+    assert.ok(el.querySelector('.doc-reader'), 'the document reader opened')
+    assert.equal(handled, 1, 'the pointer is consumed exactly once')
+  })
+
+// ------------------------------------------- and from a real mail body
+
+/** the user's inbox holding ONE message with `body` */
+function inboxServer(bodyText: string) {
+  ;(globalThis as unknown as { fetch: typeof fetch }).fetch =
+    ((url: string) => {
+      const path = String(url)
+      const payload = path.includes('/inbox')
+        ? { pending: [], sent: [], delivered: [{
+          id: 'm1', from: 'ceo', to: 'user_inbox', kind: 'message',
+          at: '2026-09-05T09:00:00.000Z', body: bodyText,
+        }] }
+        : {}
+      return Promise.resolve({
+        ok: true, status: 200, headers: new Headers(),
+        json: () => Promise.resolve(payload),
+      })
+    }) as unknown as typeof fetch
+}
+
+uiTest('§7 a reference written INSIDE A MAIL is a control, and it reaches the '
+  + 'panel that owns the destination', async (mount) => {
+    // the end of the path: the body is markdown, so this is the DOM pass in
+    // refmd, mounted inside the real inbox against a real fetch.
+    inboxServer('as agreed in @item:mine/the-plan, see also '
+      + '@mail:mine/node/never-hired/m9')
+    const { InboxPanel } = await import('../src/App')
+    const items: string[] = []
+    const el = await mount(
+      <InboxPanel slug="mine" tree={tree(['ceo'])} toast={noop}
+        jumpTo={null} close={noop} onOpenItem={(s) => items.push(s)} />)
+    await flush()
+    const row = el.querySelector('.mailrow') as HTMLElement
+    assert.ok(row, 'the message rendered')
+    await inAct(() => row.click())
+    await flush()
+    const chips = [...el.querySelectorAll('.mailer-body [data-ref-token]')]
+    assert.equal(chips.length, 2, 'both references in the body were decided')
+    const [item, mail] = chips as HTMLElement[]
+    assert.equal(item!.tagName, 'BUTTON', 'the item reference is a control')
+    await inAct(() => item!.click())
+    await flush()
+    assert.deepEqual(items, ['the-plan'],
+      'and it asked the shell to open that item')
+    // ⚠ THE CONTROLS IN THE SAME BODY. `onOpenMail` was NOT supplied, so a
+    // mail token is "not opened from here" — and it would be inert anyway,
+    // because `never-hired` has no mailbox in this tree. Neither is reported
+    // as a missing message.
+    assert.equal(mail!.tagName, 'SPAN')
+    assert.doesNotMatch(mail!.getAttribute('title') ?? '', /does not hold/)
+  })
+
+uiTest('§7b CONTROL — with no handlers at all a mail body is plain prose',
+  async (mount) => {
+    // a surface with nowhere to send anybody must not draw controls. Without
+    // this, §7 passes just as well for a panel that links everything always.
+    inboxServer('as agreed in @item:mine/the-plan')
+    const { InboxPanel } = await import('../src/App')
+    const el = await mount(
+      <InboxPanel slug="mine" tree={tree(['ceo'])} toast={noop}
+        jumpTo={null} close={noop} />)
+    await flush()
+    await inAct(() => (el.querySelector('.mailrow') as HTMLElement).click())
+    await flush()
+    const chips = [...el.querySelectorAll('.mailer-body [data-ref-token]')]
+    assert.equal(chips.length, 1, 'the token is still decided')
+    assert.equal(chips[0]!.tagName, 'SPAN', 'but nothing is clickable')
+    assert.ok(chips[0]!.className.includes('ref-elsewhere'),
+      'and it says why: there is nothing here to open it with')
+  })
+
 uiTest('§6 CONTROL — with no pointer the canvas opens no mailbox at all',
   async (mount) => {
     // the positive control for §3-§5: these panels are not simply always up

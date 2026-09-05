@@ -918,6 +918,50 @@ uiTest('§32 a mail reference is opened by the caller that owns a mailbox, and '
       { kind: 'mail', org: 'org1', box: 'node', node: 'agent1', id: 'm7' }])
   })
 
+uiTest('§33 a jump that lands on nothing SAYS SO, and a jump that lands does '
+  + 'not', async (mount) => {
+    // ⚠ THE SILENCE THIS ENDS: an unknown jump was discarded, leaving the
+    // panel showing "select an item to view it" — the very same thing it
+    // shows when nobody clicked anything. From a mail body, a reference to an
+    // item this viewer cannot see was indistinguishable from a misclick.
+    mockServer({
+      items: [mkItem({ slug: 'the-real-item' })], archived: [], backlogged: [],
+    })
+    const el = await mount(
+      <DocketModal slug="org1" toast={() => {}} close={() => {}}
+        tree={mkTree()} jumpTo="never-existed" />)
+    await flush()
+    const note = el.querySelector('.mailer-read .docket-nojump')
+    assert.ok(note, 'the panel stated that the jump landed on nothing')
+    assert.match(note!.textContent ?? '', /never-existed/,
+      'and it names the id that was clicked')
+    assert.equal(el.querySelector('.mailer-read .docket-pane-sub'), null)
+
+    // ⚠ AND IT IS ANSWERED BY THE NEXT DELIBERATE SELECTION. Left standing it
+    // would reappear whenever the reader deselected a row.
+    await inAct(() => (rows(el)[0] as HTMLElement).click())
+    await flush()
+    await inAct(() => (rows(el)[0] as HTMLElement).click())   // deselect
+    await flush()
+    assert.equal(el.querySelector('.docket-nojump'), null,
+      'the notice did not come back on deselect')
+  })
+
+uiTest('§33b CONTROL — a jump that DOES land shows the item and no notice',
+  async (mount) => {
+    mockServer({
+      items: [mkItem({ slug: 'the-real-item' })], archived: [], backlogged: [],
+    })
+    const el = await mount(
+      <DocketModal slug="org1" toast={() => {}} close={() => {}}
+        tree={mkTree()} jumpTo="the-real-item" />)
+    await flush()
+    assert.equal(el.querySelector('.docket-nojump'), null)
+    assert.equal(
+      el.querySelector('.docket-pane-sub .docket-slug-text')?.textContent,
+      'the-real-item', 'the jump selected its item')
+  })
+
 uiTest('§32b CONTROL — a node inbox for somebody this org does not have is '
   + 'unavailable, and the route is never called', async (mount) => {
     // ⚠ THE ROUTER WOULD HAVE NO-OPPED. It looks the node up on the canvas and

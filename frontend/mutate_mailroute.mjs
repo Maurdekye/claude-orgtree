@@ -22,6 +22,8 @@ import { readFileSync, writeFileSync } from 'node:fs'
 
 const REFLINKS = 'src/canvas/reflinks.tsx'
 const CANVAS = 'src/canvas/OrgCanvas.tsx'
+const MAIL = 'src/canvas/mail.tsx'
+const APP = 'src/App.tsx'
 
 const MUTANTS = [
   {
@@ -61,6 +63,47 @@ const MUTANTS = [
     from: `    openMailRef.current?.(openMailAt)
     onOpenMailHandled?.()`,
     to: `    openMailRef.current?.(openMailAt)`,
+  },
+  {
+    name: 'the canvas ignores a document pointer',
+    file: CANVAS, kills: '§5b a DOCUMENT pointer',
+    from: `    setDocView(openDocAt)
+    onOpenDocHandled?.()`,
+    to: `    onOpenDocHandled?.()`,
+  },
+  {
+    name: 'the reading pane stops deciding references in the body',
+    file: MAIL, kills: '§7 a reference written INSIDE A MAIL',
+    from: `                : <RefMdBody className="mailer-body md"
+                    html={md(cur.body, mdBase?.(cur) || undefined)}
+                    world={refs?.world} onOpen={refs?.onOpen} />}`,
+    to: `                : <RefMdBody className="mailer-body md"
+                    html={md(cur.body, mdBase?.(cur) || undefined)} />}`,
+  },
+  {
+    // the inbox advertising a kind nobody wired up: a control that looks live
+    // and drops the click
+    name: 'the inbox claims it can open every kind of reference',
+    file: APP, kills: '§7b CONTROL',
+    from: `    const handles = new Set<RefKind>()
+    if (onOpenItem) handles.add('item')`,
+    to: `    const handles = new Set<RefKind>(['item', 'agent', 'doc', 'mail'])
+    if (onOpenItem) handles.add('item')`,
+  },
+  {
+    name: 'the inbox drops an item reference click',
+    file: APP, kills: '§7 a reference written INSIDE A MAIL',
+    from: `    if (r.ref.kind === 'item') onOpenItem?.(r.ref.id)`,
+    to: `    if (r.ref.kind === 'item') { /* no-op */ }`,
+  },
+  {
+    // the panel holds no item list; inventing an empty one reports every real
+    // item mentioned in every mail as missing
+    name: 'the inbox judges items against a list it does not have',
+    file: APP, kills: '§7 a reference written INSIDE A MAIL',
+    from: `      agents: new Map([...nodes.keys()].map((id) => [id, id])),`,
+    to: `      agents: new Map([...nodes.keys()].map((id) => [id, id])),
+      items: new Map(),`,
   },
 ]
 
