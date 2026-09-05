@@ -1029,6 +1029,17 @@ TOOLS: list[dict[str, Any]] = [
                                           "decision", "status"],
                                  "description": "kind of the kickoff mail "
                                                 "(default 'request')"},
+                "work_item": {
+                    "type": "string",
+                    "description":
+                        "a docket item (its slug) to ASSIGN to the new agent "
+                        "in this same call — assignment is OWNERSHIP, so it "
+                        "becomes responsible for the item and the user's "
+                        "replies on it come to it. It is told so by mail, and "
+                        "that notification STARTS the agent by itself: with a "
+                        "work_item and no kickoff the hire is already running "
+                        "on its assignment. Use orgtree_staff instead when the "
+                        "item does not exist yet"},
             },
             # add_dirs / tools / org_visibility are deliberately NOT here:
             # they are REQUIRED in subordinate mode and FORBIDDEN in
@@ -1259,8 +1270,126 @@ TOOLS: list[dict[str, Any]] = [
                                           "decision", "status"],
                                  "description": "kind of the kickoff mail "
                                                 "(default 'request')"},
+                "work_item": {
+                    "type": "string",
+                    "description":
+                        "a docket item (its slug) to ASSIGN to the restored "
+                        "agent in this same call — assignment is OWNERSHIP, "
+                        "and the notification wakes it, so a rehire that "
+                        "carries one needs no kickoff to start"},
             },
             "required": ["node"]},
+    },
+    {
+        "name": "orgtree_staff",
+        "description": (
+            "STAFF A PIECE OF WORK IN ONE CALL: the docket item, the agent, "
+            "and the assignment that ties them together. It is the three calls "
+            "you would otherwise make — orgtree_work create (or update), "
+            "orgtree_hire (or orgtree_rehire), orgtree_work assign — with the "
+            "gaps between them removed. ORDER, and it matters: the seat is "
+            "created first, then the item is written with THAT SEAT as its "
+            "owner, so the item's history holds ONE assignment to the agent "
+            "actually doing the work rather than a moment of belonging to you. "
+            "ASSIGNMENT IS OWNERSHIP (user ruling 2026-09-05): the agent holds "
+            "the item's management rights, is who the docket names, and is "
+            "where the user's replies on it go. It is TOLD so by mail, and "
+            "that notification starts its first turn — `kickoff` is optional "
+            "here and, when you send one too, the agent still runs exactly "
+            "one first turn. hire vs rehire: pass `node` (an archived agent) "
+            "to bring somebody back, or omit it to seat somebody new; "
+            "`staff_mode` says it outright and is checked rather than obeyed. "
+            "Every argument means what it means in the tool it came from, and "
+            "the underlying permission checks, credit checks and refusals are "
+            "those tools' own — a refusal anywhere refuses the WHOLE call, "
+            "leaving no item, no seat and no mail. ⚠ ONE EXCEPTION TO THAT: "
+            "`parent` here is the parent WORK ITEM (as in orgtree_work), never "
+            "the seat's destination — say where the agent sits with `target` "
+            "and `hire_type`. To hand an item to an agent that is already "
+            "live, use orgtree_work action='assign' instead; to assign an "
+            "EXISTING item to a new hire without touching its status, "
+            "orgtree_hire/orgtree_rehire take `work_item`."),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                # -- the docket half (orgtree_work's vocabulary)
+                "action": {"type": "string", "enum": ["create", "update"],
+                           "description": "create a new item (default), or "
+                                          "update an existing one named by "
+                                          "`slug` and hand it over"},
+                "slug": {"type": "string",
+                         "description": "update: the existing item's readable name"},
+                "title": {"type": "string", "description": "create: short concrete title"},
+                "objective": {"type": "string",
+                              "description": "create (REQUIRED): the item's "
+                                             "description — the PROBLEM faced "
+                                             "first, then the proposed solution"},
+                "kind": {"type": "string", "description": "create: code|non-code"},
+                "status": {"type": "string",
+                           "description": "backlogged|open|in_progress|blocked|review"},
+                "done_so_far": {"type": "array", "items": {"type": "string"},
+                                "description": "what is complete — individual entries"},
+                "working_on_next": {"type": "array", "items": {"type": "string"},
+                                    "description": "what happens next — individual entries"},
+                "participants": {"type": "array", "items": {"type": "string"},
+                                 "description": "create: collaborator node ids"},
+                "acceptance": {"type": "array", "items": {"type": "string"},
+                               "description": "create: acceptance conditions"},
+                "dependencies": {"type": "array", "items": {"type": "string"},
+                                 "description": "create: names of items this one depends on"},
+                "parent": {"type": "string",
+                           "description": "the parent WORK ITEM to nest this "
+                                          "item under — NOT the seat's "
+                                          "destination (that is `target`)"},
+                # -- the seat half (orgtree_hire / orgtree_rehire's vocabulary)
+                "staff_mode": {"type": "string", "enum": ["hire", "rehire"],
+                               "description": "hire somebody new (default), or "
+                                              "rehire the archived agent named "
+                                              "by `node`"},
+                "node": {"type": "string",
+                         "description": "rehire: the archived agent to bring back"},
+                "name": {"type": "string",
+                         "description": "hire: 1-2 words, the node id · rehire: "
+                                        "rename it as it comes back"},
+                "tier": {"type": "string", "description": "hire: tier id from orgtree_list_tiers"},
+                "grant": {"type": "integer", "minimum": 0,
+                          "description": "credits it may spend on ITS OWN hires"},
+                "charter": {"type": "string",
+                            "description": "the agent's role + standing "
+                                           "instructions, written in full — "
+                                           "required on a hire"},
+                "add_dirs": {"type": "array", "items": {"type": "object"},
+                             "description": "folder grants, exactly as orgtree_hire takes them"},
+                "tools": {"type": "object", "description": "the tool switches, exactly as orgtree_hire takes them"},
+                "org_visibility": {"type": "string", "description": "full|subtree|self"},
+                "permission_mode": {"type": "string",
+                                    "description": "the seat's permission mode "
+                                                   "(capped at your own)"},
+                "effort": {"type": "string", "description": "reasoning effort"},
+                "team_charter": {"type": "string",
+                                 "description": "standing instruction for the "
+                                                "agent's own team"},
+                "prefer_reserve": {"type": "boolean",
+                                   "description": "prefer reserve capacity for this seat"},
+                "target": {"type": "string",
+                           "description": "where the seat goes (default: under you)"},
+                "hire_type": {"type": "string", "enum": ["subordinate", "superior"],
+                              "description": "which side of `target` to seat it"},
+                "audiences": {"type": "array", "items": {"type": "string"},
+                              "description": "audiences to grant it"},
+                "kickoff": {"type": "string",
+                            "description": "OPTIONAL here: the assignment "
+                                           "notification already starts the "
+                                           "agent. Send one only when there is "
+                                           "something to say beyond the item"},
+                "kickoff_kind": {"type": "string",
+                                 "enum": ["message", "question", "request",
+                                          "decision", "status"],
+                                 "description": "kind of the kickoff mail "
+                                                "(default 'request')"},
+            },
+            "required": [],
+        },
     },
     {
         "name": "orgtree_list_orgs",

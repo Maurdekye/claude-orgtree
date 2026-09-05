@@ -10521,7 +10521,17 @@ class Org:
         active.append(it)
         self._log("work_create", actor,
                   {"item": wid, "title": t[:60]}, [])
+        # ONE CALL CREATES AND ASSIGNS (user request 2026-09-05). The owner
+        # argument was always here; what is new is that handing an item to
+        # somebody else at creation TELLS THEM, with the same wording every
+        # other assignment route uses. Assigning it to yourself mails nobody.
+        notified = None
+        if own and own != actor and own != USER:
+            m = self._work_assign_mail(actor, it, own, None)
+            notified = own
         return {"created": wid, "slug": it["slug"], "rev": 1,
+                "owner": it["owner"], "notified": notified,
+                **({"deferred": bool(m.get("deferred"))} if notified else {}),
                 "status": f"work item {it['slug']} created — that name is "
                           f"its only identity; use it in mail, reports and "
                           f"every later update, question and handoff"}
@@ -10581,15 +10591,44 @@ class Org:
                     blocked_reason: str | None = None,
                     title: str | None = None, objective: str | None = None,
                     reopen: bool = False,
-                    waiting_reason: str | None = None) -> dict[str, Any]:
+                    waiting_reason: str | None = None,
+                    owner: str | None = None) -> dict[str, Any]:
         """THE docket status update. Always carries both lists (either may be
         empty, not both — Astra ruling 2026-09-05, no status-only bypass),
         moves `docket_at` and `last_updater`, and restates the manual flag:
         an update that does not pass attention=true CLEARS a standing flag,
-        because the latest update is the complete current statement."""
+        because the latest update is the complete current statement.
+
+        AN UPDATE CLAIMS THE ASSIGNMENT (user ruling 2026-09-05 21:02, via
+        Astra 21:15). Assignment is ownership, and the agent writing the status
+        is the agent doing the work — so an authorized update makes that agent
+        the owner. BEING ALLOWED TO UPDATE IS THE CLAIM MECHANISM the user
+        described, participants included; an actor that may not update is
+        refused before any of this and claims nothing.
+
+        ⚠ AUTHORIZATION IS READ FROM THE PRE-UPDATE STATE, and that ordering is
+        the guard. Every owner-level check below (drop, reopen, retitle,
+        re-scope) is answered against the authority the actor held when the
+        call ARRIVED — otherwise a participant's claim would take effect
+        mid-call and hand it, in the same breath, rights the first line of this
+        method had already refused it.
+
+        `owner` is the explicit target, and it WINS: a call that says where the
+        item goes never first assigns it to its author and then moves it, so
+        the history shows one assignment and the notification names one
+        recipient.
+
+        THE ADMINISTRATIVE UPDATE (Astra ruling 2026-09-05 21:18). A superior
+        writing a status on somebody else's item — a docket sweep, a root
+        summary, a correction — would otherwise take the item, because the
+        claim is uniform on purpose and has no ancestor exception. It passes
+        `owner=<the current owner>` and keeps it where it is: naming the target
+        that is already there changes nothing at all, so there is no history
+        row, no notification and no reassignment to undo afterwards."""
         self._work_require_live_agent_or_user(actor)
         self._work_sweep()
         it, phys = self._work_get_for(actor, wid)
+        pre_manage = self._work_can_manage(actor, it)
         done = self._work_norm_list(done_so_far, "done_so_far")
         nxt = self._work_norm_list(working_on_next, "working_on_next")
         if not done and not nxt:
@@ -10622,7 +10661,7 @@ class Org:
                     f"status must be one of {'|'.join(self.WORK_AGENT_STATUSES)}")
         # a participant's grant is NARROW: status updates and evidence. Closing
         # the item, resuming it or rewriting what it is are owner-level acts.
-        if not self._work_can_manage(actor, it):
+        if not pre_manage:
             if status == "dropped":
                 raise LedgerError("dropping an item is an owner-level act (owner, "
                                   "creator, their superiors, the user) - a "
@@ -10718,21 +10757,60 @@ class Org:
         self._work_stamp_docket(it, actor)
         self._log("work_update", actor,
                   {"item": wid, **({"status": status} if status else {})}, [])
+        # ---- and the assignment, LAST: the lists are already written, so the
+        # notification quotes the status this very update recorded rather than
+        # the one it replaced.
+        tgt = str(owner or "").strip()
+        if tgt and tgt != actor and not pre_manage:
+            # handing the item to a THIRD PARTY is the ordinary owner-level
+            # reassignment and needs owner-level authority. Claiming it for
+            # yourself is not: that is the update-claims-assignment rule, and
+            # it is the same act whether you spell it out or leave it implicit.
+            raise LedgerError("only the owner, the creator, their superiors or "
+                              "the user may assign an item to someone else — "
+                              "your update already claims it for you")
+        if not tgt and actor != USER:
+            tgt = actor
+        assigned: dict[str, Any] | None = None
+        if tgt and tgt != self._work_actor_node(it.get("owner")):
+            # ⚠ ONLY WHEN IT ACTUALLY CHANGES HANDS. The overwhelmingly common
+            # case is the owner updating its own item; writing an `assign`
+            # history row and mailing somebody on every such update would bury
+            # the real handovers in noise.
+            assigned = self._work_assign_core(
+                actor, it, tgt, True,
+                "update" if tgt == actor else "update+assign")
         return {"updated": wid, "rev": it["rev"], "status": it["status"],
+                "owner": it.get("owner"),
+                "assigned_to": (str(tgt) if assigned else None),
+                "notified": (assigned or {}).get("notified"),
                 "manual_attention": bool(it.get("manual_attention")),
                 "note": ("the standing attention flag was CLEARED by this "
                          "update (pass attention=true to keep one)"
                          if prev and attention is not True else None)}
 
-    def work_assign(self, actor: str, wid: str, owner: str) -> dict[str, Any]:
-        """Explicit reassignment. Never a docket update: the reply recipient
-        stays whoever last wrote the status."""
-        self._work_require_live_agent_or_user(actor)
-        self._work_sweep()
-        it, _ = self._work_get_for(actor, wid)
-        if not self._work_can_manage(actor, it):
-            raise LedgerError("only the owner, the creator, their superiors or "
-                              "the user may reassign an item")
+    # ---- ASSIGNMENT. User ruling 2026-09-05 21:02: ASSIGNMENT IS OWNERSHIP —
+    # the `owner` field is the ONE meaning behind the docket's Assignment line,
+    # the user's reply destination and any reminder that has to name somebody.
+    # There is deliberately no second "assignee" field: two fields would be two
+    # places to look and two to keep true, and the one that lost would still
+    # render somewhere. `last_updater` survives untouched as HISTORY (who wrote
+    # the latest status), which is what it always actually was.
+    def _work_assign_core(self, actor: str, it: WorkItem, owner: str,
+                          notify: bool, why: str) -> dict[str, Any]:
+        """Move the assignment, and TELL the agent that just acquired it.
+
+        ⚠ THE AUTHORITY CHECK IS THE CALLER'S JOB and is made BEFORE this runs
+        — every route in here is reached only past `_work_can_manage`. What is
+        checked HERE is the destination: you assign to yourself or into your own
+        subtree, exactly as before. The user assigns to anyone.
+
+        The notification is the whole point of the change (the old `assign` set
+        a field and told nobody, so an agent could hold an item for hours
+        without ever learning it existed). It is ordinary item-linked mail, so
+        it wakes the assignee through the caller's `drive` like any other
+        message — never silently, and never to the actor itself, which would be
+        an agent mailing itself every time it updated its own item."""
         own = str(owner or "").strip()
         self.node(own)
         if actor != USER and own != actor and not self.is_ancestor(actor, own):
@@ -10742,9 +10820,56 @@ class Org:
         it["owner"] = cast(WorkActor, self._work_actor(own))
         parts = [p for p in (it.get("participants") or []) if p != own]
         it["participants"] = parts
-        self._work_hist(it, actor, "assign", {"from": frm, "to": it["owner"]})
-        self._log("work_assign", actor, {"item": wid, "to": own}, [])
-        return {"assigned": wid, "owner": it["owner"], "rev": it["rev"]}
+        self._work_hist(it, actor, "assign",
+                        {"from": frm, "to": it["owner"], "why": why})
+        self._log("work_assign", actor,
+                  {"item": it["slug"], "to": own, "why": why}, [])
+        out: dict[str, Any] = {"assigned": it["slug"], "owner": it["owner"],
+                               "rev": it["rev"], "notified": None}
+        if not notify or own == actor or own == USER:
+            return out
+        m = self._work_assign_mail(actor, it, own, self._work_actor_node(frm))
+        out["notified"] = own
+        out["deferred"] = bool(m.get("deferred"))
+        return out
+
+    def _work_assign_mail(self, actor: str, it: WorkItem, own: str,
+                          prev: str | None) -> dict[str, Any]:
+        """The assignment notification itself — ONE wording, wherever the
+        assignment came from (`assign`, `create`, `update`, a hire that carried
+        an item, `orgtree_staff`). Written as an instruction the recipient can
+        act on without a second lookup: what it now holds, who handed it over,
+        what the item is for, and where the status stands."""
+        return self.post_mail(
+            actor, own,
+            f"[DOCKET ASSIGNMENT · {it['slug']} \"{str(it.get('title') or '')[:80]}\"] "
+            f"You are now the ASSIGNMENT on this docket item — that is "
+            f"OWNERSHIP: you hold its management rights, the user's replies on "
+            f"it come to you, and you are who the docket names as responsible."
+            f"\nAssigned by {'the user' if actor == USER else actor}"
+            f"{f' (previously {prev})' if prev and prev != own else ''}."
+            f"\nDescription: {str(it.get('objective') or '(none recorded)')[:600]}"
+            f"\nLatest status — done so far: "
+            f"{'; '.join(it.get('done_so_far') or []) or '(nothing recorded)'}"
+            f"\nWorking on / next: "
+            f"{'; '.join(it.get('working_on_next') or []) or '(nothing recorded)'}"
+            f"\nRead it in full with orgtree_work get slug={it['slug']}, and "
+            f"`update` it at the next meaningful boundary — your update is what "
+            f"the user reads.", "request")
+
+    def work_assign(self, actor: str, wid: str, owner: str,
+                    notify: bool = True) -> dict[str, Any]:
+        """Explicit reassignment, and it NOTIFIES (user request 2026-09-05):
+        the assignee learns it holds the item at its next turn, before it has
+        ever written a status update. Still not a docket update — `docket_at`
+        and `last_updater` are history and are left where they are."""
+        self._work_require_live_agent_or_user(actor)
+        self._work_sweep()
+        it, _ = self._work_get_for(actor, wid)
+        if not self._work_can_manage(actor, it):
+            raise LedgerError("only the owner, the creator, their superiors or "
+                              "the user may reassign an item")
+        return self._work_assign_core(actor, it, owner, notify, "assign")
 
     def work_participants(self, actor: str, wid: str,
                           add: list[Any] | None = None,
@@ -11105,19 +11230,27 @@ class Org:
                 "reason": cur.get("reason")}
 
     def work_reply_target(self, wid: str) -> dict[str, Any]:
-        """Who a general reply goes to: the LAST UPDATER, exactly. Nobody is
-        chosen in their place — the caller shows the failure instead."""
+        """Who a general reply goes to: THE ASSIGNMENT, exactly — the item's
+        owner. Nobody is chosen in their place; the caller shows the failure.
+
+        ⚠ THERE IS NO SECOND ROUTE (Astra ruling 2026-09-05 21:15). This used
+        to read `last_updater`, and an ownership fallback to it would be a
+        second assignment model living behind the first: the panel would say
+        one name, the reply would reach another, and every later rule about
+        "who holds this item" would have to pick a side. `last_updater` stays
+        stored, as the history of who wrote the latest status."""
         it, _ = self._work_find(wid)
-        lu = self._work_actor_node(it.get("last_updater"))
-        if not lu:
+        own = self._work_actor_node(it.get("owner"))
+        if not own:
             raise LedgerError(
-                f"no agent has written a docket status update on {wid} yet — "
-                f"there is nobody to reply to (message the owner directly)")
-        if lu not in self.nodes:
+                f"{wid} has no assignment — nobody owns it, so there is nobody "
+                f"to reply to. Assign it (orgtree_work assign) and the reply "
+                f"reaches whoever holds it")
+        if own not in self.nodes:
             raise LedgerError(
-                f"the last updater {lu!r} no longer exists in this org — the "
-                f"reply was not sent")
-        return {"node": lu, "state": self.nodes[lu].get("state"),
+                f"the assigned agent {own!r} no longer exists in this org — "
+                f"the reply was not sent")
+        return {"node": own, "state": self.nodes[own].get("state"),
                 "title": it["title"], "item": it["slug"]}
 
     def work_attach_check(self, nid: str, wid: str) -> str:

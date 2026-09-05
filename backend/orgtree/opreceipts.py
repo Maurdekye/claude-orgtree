@@ -175,6 +175,9 @@ _COVERAGE_STATIC: dict[str, str] = {
     "orgtree_message": TX_POST,       # drive / @org: / @net: / mail_to
     "orgtree_send_notice": TX_POST,   # notice_to
     "orgtree_hire": TX_POST,          # _seat_finish appends the seat to drive
+    # the seat, the item and the assignment in one transaction; the assignment
+    # notification drives the seat afterwards exactly as a kickoff does
+    "orgtree_staff": TX_POST,
     "orgtree_retool": TX_POST,        # ditto, for a retool that kicks off
     "orgtree_switch_model": TX_POST,  # stale_freeze_resumed wakes
     "orgtree_status": TX_POST,        # done/blocked reports to the parent
@@ -197,7 +200,12 @@ _ACTION_COVERAGE: dict[str, dict[str, str]] = {
     # list/get/verify never reach the shared transaction — list/get are
     # answered before the lock and `verify` sequences its own lock → git →
     # lock. Every other action is ordinary docket work inside the transaction.
-    "orgtree_work": {"list": NONE, "get": NONE, "verify": NONE},
+    # …and the three that can now MAIL AND WAKE the agent an item was handed
+    # to are TX_POST, not TX: the notification is posted inside the transaction
+    # and the assignee is driven after the save (api's orgtree_work branch), so
+    # they have a post-commit effect the plain document actions do not.
+    "orgtree_work": {"list": NONE, "get": NONE, "verify": NONE,
+                     "assign": TX_POST, "create": TX_POST, "update": TX_POST},
     # arming a dog runs its target ONCE, after the commit, through the same
     # `_wd_popen` the engine uses; the other actions are document-only.
     "orgtree_watchdog": {"create": TX_POST},
@@ -211,6 +219,11 @@ _ACTION_DEFAULT: dict[str, str] = {
 def coverage(tool: str, args: dict[str, Any] | None = None) -> str:
     """The coverage class of THIS call — arguments included."""
     a = args or {}
+    if tool == "orgtree_staff" and str(a.get("node") or "").strip() \
+            and str(a.get("staff_mode") or "rehire").lower() != "hire":
+        # staff in REHIRE mode runs the same pre-lock rename, and a rename
+        # moves folders on disk before any transaction exists to cover it
+        return PRE if str(a.get("name") or "").strip() else TX_POST
     if tool == "orgtree_rehire":
         # a rehire that also RENAMES moves folders on disk before the
         # transaction (and the dispatch says so in its own refusal); a plain
@@ -252,7 +265,10 @@ _RESULT_FIELDS: dict[str, tuple[str, ...]] = {
     # `item` and `ref` are the canonical identity every docket mutation
     # carries (api._work_mutate sets them before the receipt is filed)
     "orgtree_work": ("created", "updated", "assigned", "id", "slug", "item",
-                     "ref", "rev", "status"),
+                     "ref", "rev", "status", "notified"),
+    # the seat AND the item, because that is what one staff call did
+    "orgtree_staff": ("node", "name", "tier", "grant", "started", "item",
+                      "created", "updated", "assigned_to"),
     "orgtree_ask": ("id", "routed", "deferred"),
     "orgtree_request_scope": ("id", "routed", "deferred"),
     "orgtree_request_credits": ("id", "routed", "deferred"),

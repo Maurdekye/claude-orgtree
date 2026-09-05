@@ -3957,10 +3957,17 @@ def work_item_get(slug: str, wid: str) -> dict[str, Any]:
 
 @app.post("/api/orgs/{slug}/work-items/{wid}/reply")
 def work_item_reply(slug: str, wid: str, body: WorkReply) -> dict[str, Any]:
-    """The general reply box: mail to the LAST UPDATER, exactly — the agent
-    that authored the latest docket status update. Owner changes, question
-    attachments and dismissals never move that recipient, and when it cannot
-    be reached the failure is returned rather than a substitute chosen."""
+    """The general reply box: mail to THE ASSIGNMENT, exactly — the agent the
+    item is assigned to, which is its owner (user ruling 2026-09-05: assignment
+    IS ownership). Question attachments and dismissals never move that
+    recipient, and when it cannot be reached the failure is returned rather
+    than a substitute chosen.
+
+    It used to reach the last updater instead. Measured on the live document
+    the day this changed: 26 of 39 items had an owner different from their last
+    updater, and in 25 of those the last updater was the coordinator — so the
+    user's reply on nearly every finished item was landing on the coordinator
+    rather than on the agent holding the work."""
     text = str(body.body or "").strip()
     if not text:
         raise HTTPException(422, "empty reply")
@@ -4000,8 +4007,8 @@ def work_item_reply(slug: str, wid: str, body: WorkReply) -> dict[str, Any]:
                 "node_state": tgt.get("state")}
     sent = supervisor.send_message(
         slug, nid,
-        "(orgtree) The mail above is the user's reply on a docket item you "
-        "last updated — act on it now.", mail_ping=True)
+        "(orgtree) The mail above is the user's reply on a docket item "
+        "ASSIGNED TO YOU — act on it now.", mail_ping=True)
     return {"accepted": True, "to": nid, "deferred": False,
             "node_state": tgt.get("state"),
             "delivery": supervisor.delivery_note(slug, nid, sent)}
@@ -4277,7 +4284,11 @@ def _work_mutate_action(org: Org, nid: str, a: dict[str, Any],
             blocked_reason=_s("blocked_reason"),
             waiting_reason=_s("waiting_reason"),
             title=_s("title"), objective=_s("objective"),
-            reopen=_arg_flag(a, "reopen"))
+            reopen=_arg_flag(a, "reopen"),
+            # the explicit assignment target. Absent, the update claims the
+            # item for its author (ledger.work_update); present, it WINS —
+            # there is no transient assign-to-author in between.
+            owner=_s("owner"))
     if act == "assign":
         return org.work_assign(nid, wid, str(a.get("owner") or ""))
     if act == "participants":
@@ -5529,6 +5540,28 @@ def _seat_finish(org: Org, slug: str, actor: str, nid: str, a: dict[str, Any],
                 drive.append(d)
         result.setdefault("warnings", []).extend(ares.get("warnings") or [])
         applied.append(f"audience:{tgt}")
+    # THE DOCKET ASSIGNMENT, between the audiences and the kickoff (user
+    # request 2026-09-05: a hire or rehire may take responsibility for an item
+    # in the same call). It is a mutation like the others, so it rides this
+    # transaction and is PERSISTED BEFORE THE SEAT CAN RUN — `drive` is
+    # consumed after `store.save_org`, so the agent's first turn always finds
+    # itself already assigned.
+    #
+    # ⚠ THE NOTIFICATION MAY REPLACE THE KICKOFF. An assignment mail is a
+    # request like any other, so it starts the seat by itself: a hire that
+    # carries `work_item` and no `kickoff` is hired, assigned, told so, and
+    # RUNNING — and one that carries both still runs exactly ONE first turn,
+    # because `seat_drive` is a flag and the tail below appends the seat once.
+    wi = a.get("work_item")
+    if wi is not None and str(wi).strip():
+        _work_identity_ready(org, slug)
+        ares = org.work_assign(actor, str(wi).strip(), nid)
+        if ares.get("notified"):
+            mail_notify(slug, actor, nid)
+            if not ares.get("deferred"):
+                seat_drive = True
+        result["assigned_item"] = ares.get("assigned")
+        applied.append(f"work_item:{ares.get('assigned')}")
     kickoff = a.get("kickoff")
     if kickoff is not None and str(kickoff).strip():
         kkind = str(a.get("kickoff_kind") or "request")
@@ -5558,6 +5591,388 @@ def _seat_finish(org: Org, slug: str, actor: str, nid: str, a: dict[str, Any],
         result["applied"] = applied
     result["started"] = seat_drive
     return None
+
+
+def _hire_seat(org: Org, slug: str, actor: str, a: dict[str, Any],
+               drive: list[str]) -> dict[str, Any]:
+    """`orgtree_hire`, lifted out of the dispatch WHOLE (2026-09-05) so that
+    `orgtree_staff` runs the same hire rather than a second one written to
+    look like it. Not a line of it changed in the move: a shortcut whose seat
+    is created by a private copy of the hire path is a shortcut that drifts
+    out of agreement with it, quietly, at the first fix to either."""
+    result: dict[str, Any] = {}
+    provider_hire_gate(org, a.get("tier"))
+    hdirs, dwarns = supervisor.sandbox_dirs_to_host(
+        org, a.get("add_dirs"))
+    # D-224 ④: the destination pair. `target` (default: the
+    # caller) says WHERE, `hire_type` says on WHICH SIDE of it.
+    # `parent` is the pre-D-224 spelling of `target` and still
+    # works; both omitted = exactly today's behaviour.
+    _dest = str(a.get("target") or a.get("parent") or actor)
+    _htype = str(a.get("hire_type") or "subordinate")
+    # validated BEFORE the hire, so a bad destination creates
+    # nothing (the seat would otherwise be discarded with the
+    # unsaved doc — correct, but the refusal reads better here)
+    org.check_placement(actor, _dest, _htype)
+    if _htype == "superior":
+        # THE SEAT'S SCOPE IS NOT THE CALLER'S TO CHOOSE HERE, and
+        # accepting the fields anyway produced a response that
+        # contradicted itself: a caller asking for `plan` was
+        # answered `applied: ["permission_mode"]` while the seat
+        # came out at `bypassPermissions` (redteam 2026-09-02).
+        # An inserted superior must hold exactly what the branch
+        # beneath it holds, so the four clamped sets are taken
+        # from the target — say that at the door instead of
+        # overwriting the caller behind its back. Refusing is
+        # free here (nothing is created yet) and asks for LESS
+        # typing than the ordinary form, not more.
+        _conflict = [f for f in ("add_dirs", "tools",
+                                 "org_visibility",
+                                 "permission_mode")
+                     if a.get(f) is not None]
+        if _conflict:
+            raise LedgerError(
+                f"hire_type='superior' seats the new agent in "
+                f'"{_dest}"\'s own position, so it takes that '
+                f"seat's folders, tools, visibility and "
+                f"permission mode — it cannot also take yours. "
+                f"Omit {', '.join(_conflict)} (retool it after "
+                f"the insertion if it should hold less)")
+        _tsc = org.node(_dest)["scope"]
+        hdirs = [dict(d) for d in _tsc["add_dirs"]]
+        a = dict(a, tools={**_tsc["tools"],
+                           "mcp": list(_tsc["tools"].get("mcp") or [])},
+                 org_visibility=_tsc.get("org_visibility", "full"))
+    elif actor != USER:
+        # THE OTHER HALF OF THE SAME RULE (Astra audit 2026-09-04
+        # §11): the schema no longer lists add_dirs / tools /
+        # org_visibility as required, because the superior branch
+        # above refuses them and a flat `required` cannot say
+        # "required in one mode, forbidden in the other". So the
+        # ordinary mode's no-defaults rule is stated HERE, at the
+        # door, naming the mode — the ledger's own §4.2 refusal
+        # still stands behind it (and still checks every tool
+        # switch), but its wording predates the second mode and
+        # cannot tell a caller which of the two it got wrong.
+        _missing = [f for f in ("add_dirs", "tools",
+                                "org_visibility")
+                    if a.get(f) is None]
+        if _missing:
+            raise LedgerError(
+                f"an ordinary hire (hire_type='subordinate', the "
+                f"default) has no defaults — state "
+                f"{', '.join(_missing)} explicitly ([] is a "
+                f"valid add_dirs). Only hire_type='superior' "
+                f"takes them from the target instead")
+    result = org.hire(actor, _dest,
+                      a.get("tier"), _arg_num(a, "grant", 0),  # type: ignore[arg-type]  # ledger 422s a missing tier; _arg_num so hire's own whole-grant refusal can still fire
+                      a.get("name") or "", add_dirs=hdirs,
+                      tools=a.get("tools"),
+                      org_visibility=a.get("org_visibility"),
+                      charter=a.get("charter"))
+    if dwarns:
+        result.setdefault("warnings", []).extend(dwarns)
+    if result.get("node"):
+        # D-160: the scope fields, the audience grants and the
+        # kickoff — all of it inside this same transaction, with
+        # the kickoff strictly last. See _seat_finish.
+        #
+        # ⚠ `permission_mode` is refused up front in `superior`
+        # mode (the seat's is the target's), so it must not be in
+        # the field list either — `applied: ["permission_mode"]`
+        # beside a seat holding a different mode is a response
+        # contradicting itself, and `applied` is the
+        # machine-readable half (redteam 2026-09-02).
+        _fields = tuple(f for f in _SEAT_SCOPE_HIRE
+                        if not (_htype == "superior"
+                                and f == "permission_mode"))
+        _seat_finish(org, slug, actor,
+                     str(result["node"]), a, result, drive,
+                     fields=_fields)
+    if result.get("node") and _htype == "superior":
+        # …and the topology LAST of all: the seat is fully the
+        # agent that was described before it is spliced in, and
+        # `drive` is consumed after the save, so its first turn
+        # can only ever see the final tree (_seat_finish ①).
+        _ins = org.insert_parent(actor, str(result["node"]),
+                                 _dest)
+        result["inserted_above"] = _dest
+        result["reports_to"] = _ins["under"] or "the top level"
+        result["grant"] = _ins["grant"]
+        result.setdefault("warnings", []).extend(
+            _ins.get("warnings") or [])
+    # observed on another install (user report 2026-08-02): an
+    # agent hires, writes a thorough charter, and considers the
+    # delegation DONE — the hire then sits idle forever, because
+    # nothing in the tree self-starts. The charter is identity;
+    # mail is what runs a turn. Said in the RESULT because that is
+    # what the hiring agent reads next, not the tool description
+    # it read once. D-160: a hire that carried a `kickoff` HAS
+    # been started, so the nag would now be a lie — it says what
+    # actually happened instead.
+    if result.get("node"):
+        result["next_step"] = (
+            f'"{result["node"]}" is hired and RUNNING — its first '
+            f'turn starts on your kickoff. Nothing further needed.'
+            if result.get("started") else
+            f'"{result["node"]}" is hired and IDLE. Hiring does not '
+            f'start it — send it an orgtree_message now saying what '
+            f'to do (or pass `kickoff` to this tool next time), or '
+            f'it will never run.')
+    return result
+
+
+def _rehire_seat(org: Org, slug: str, actor: str, a: dict[str, Any],
+                 drive: list[str], renamed_to: str | None,
+                 rename_warnings: list[str]) -> dict[str, Any]:
+    """`orgtree_rehire`, lifted out of the dispatch whole — same reason as
+    `_hire_seat`. The RENAME is not in here: it takes DOC_LOCK itself and so
+    runs before the lock, in the dispatch, and hands its outcome in as
+    `renamed_to` / `rename_warnings`."""
+    result: dict[str, Any] = {}
+    _renamed_to, _rename_warnings = renamed_to, rename_warnings
+    # D-203: plain agent rehire is an admission on the archived
+    # node's stored provider. Check the durable user choice, but
+    # deliberately not transient sign-in/install state (D-197
+    # keeps recovery possible while a provider is signed out).
+    _rehire_node = a.get("node")
+    _rehire_tier = str(
+        org.node(_rehire_node).get("model") or "")  # type: ignore[arg-type]
+    provider_hire_gate(
+        org, _rehire_tier, user_choice_only=True)
+    # `grant` now goes through _arg_int like every other int
+    # argument. It was the ONE that did not, so {"grant": "abc"}
+    # reached `int(grant)` in the ledger and 500ed (mcptool suite,
+    # 2026-08-04). None/"" stays None — rehire's "no explicit grant".
+    _g = a.get("grant")
+    # D-224 ④: rehire takes the same destination pair as hire —
+    # both omitted restores the seat exactly where it was
+    _dest = str(a.get("target") or "")
+    _htype = str(a.get("hire_type") or "subordinate")
+    if _dest or _htype != "subordinate":
+        _dest = _dest or actor
+        org.check_placement(actor, _dest, _htype)
+        if _htype == "superior":
+            # same rule as the hire door: an inserted superior
+            # takes the target seat's scope, so the caller may
+            # not also dictate it (redteam 2026-09-02)
+            _conflict = [f for f in ("add_dirs", "tools",
+                                     "org_visibility",
+                                     "permission_mode")
+                         if a.get(f) is not None]
+            if _conflict:
+                raise LedgerError(
+                    f"hire_type='superior' restores the agent "
+                    f'into "{_dest}"\'s own position, so it takes '
+                    f"that seat's folders, tools, visibility and "
+                    f"permission mode. Omit "
+                    f"{', '.join(_conflict)} (retool it after the "
+                    f"insertion if it should hold less)")
+    result = org.rehire(actor, a.get("node"),  # type: ignore[arg-type]  # node() 422s on None
+                        None if _g is None or _g == ""
+                        else _arg_num(a, "grant", 0))
+    drive.extend(result.pop("drive", []))
+    # D-160: the other four calls. The rename already happened
+    # above (it cannot share this lock); the scope, the audiences
+    # and the kickoff all ride this transaction, kickoff last. A
+    # woken node is already in `drive` from the rehire itself —
+    # _seat_finish appends only if absent, so a rehire that had
+    # queued mail AND a kickoff still runs exactly one turn.
+    #
+    # ⚠ the id comes from `a`, NOT from `result`: rehire returns
+    # {cost, warnings, drive} and has never carried a `node` key.
+    # Keying the composite off result["node"] would have made
+    # every one of these steps silently skip. `a["node"]` is
+    # already the post-rename id (rebound above).
+    _rid = str(a.get("node") or "")
+    result["node"] = _rid
+    _seat_finish(org, slug, actor, _rid, a, result, drive,
+                 fields=_SEAT_SCOPE_REHIRE)
+    if _dest:
+        # topology last, exactly as the hire path: the restored
+        # seat is whole before it is placed. A rehire lands the
+        # node where it was archived, so reach the destination
+        # with an ordinary move first (budget-neutral, §4.5) —
+        # `move` is also what refuses a cycle here.
+        if org.node(_rid)["parent"] != _dest:
+            _mv = org.move(actor, _rid, _dest)
+            result.setdefault("warnings", []).extend(
+                _mv.get("warnings") or [])
+        if _htype == "superior":
+            _ins = org.insert_parent(actor, _rid, _dest)
+            result["inserted_above"] = _dest
+            result["reports_to"] = _ins["under"] or "the top level"
+            result.setdefault("warnings", []).extend(
+                _ins.get("warnings") or [])
+        else:
+            result["reports_to"] = _dest
+    if _renamed_to:
+        result["renamed_to"] = _renamed_to
+        result.setdefault("warnings", []).extend(_rename_warnings)
+    # the drive list, not `started`: a rehire wakes the node by
+    # itself when mail was waiting for it, and saying "IDLE" over
+    # a turn that is about to run would be the same lie in the
+    # other direction
+    _woke = str(result.get("node") or "") in drive
+    result["started"] = _woke
+    result["next_step"] = (
+        f'"{result.get("node")}" is back and RUNNING — nothing '
+        f'further needed.' if _woke else
+        f'"{result.get("node")}" is back and IDLE. Send it an '
+        f'orgtree_message, or pass `kickoff` to this tool next '
+        f'time, or it will sit there.')
+    return result
+
+
+def _staff_mode(a: dict[str, Any]) -> str:
+    """hire or rehire, decided ONCE and read everywhere — the pre-lock rename
+    step and the dispatch must agree about which one this call is.
+
+    A `node` names an agent that already exists, so it can only be a rehire;
+    without one there is nobody to bring back. An explicit `staff_mode` says it
+    outright and is checked against that, rather than quietly winning: a call
+    that says "hire" while naming an existing seat means one of the two, and
+    guessing which would create or restore the wrong agent."""
+    m = str(a.get("staff_mode") or "").strip().lower()
+    has_node = bool(str(a.get("node") or "").strip())
+    if not m:
+        return "rehire" if has_node else "hire"
+    if m not in ("hire", "rehire"):
+        raise LedgerError("staff_mode must be hire or rehire — to assign an "
+                          "item to an agent that is already live, use "
+                          "orgtree_work with action 'assign'")
+    if m == "rehire" and not has_node:
+        raise LedgerError("staff_mode 'rehire' needs `node`: the archived "
+                          "agent to bring back")
+    if m == "hire" and has_node:
+        raise LedgerError("staff_mode 'hire' does not take `node` — that names "
+                          "an agent that already exists. Use 'rehire' to bring "
+                          "it back, or drop `node` to seat somebody new")
+    return m
+
+
+def _staff_is_rehire(a: dict[str, Any]) -> bool:
+    """The same question, asked from OUTSIDE the lock and unable to refuse.
+
+    The pre-lock rename step needs to know which mode this call is, and it runs
+    where a raised refusal would be a 500 rather than a 422. A malformed
+    staff_mode therefore answers "not a rehire" here — nothing is renamed, and
+    `_staff_mode` states the real refusal a moment later, inside the lock,
+    where it turns into an ordinary 422 with nothing done."""
+    try:
+        return _staff_mode(a) == "rehire"
+    except LedgerError:
+        return False
+
+
+#: staff arguments that belong to the DOCKET half and must never reach the
+#: seat helpers. `parent` is the dangerous one: on a hire it is the pre-D-224
+#: spelling of `target` (where the seat goes) and on a work item it is the
+#: parent ITEM, so a caller nesting an item under another would otherwise
+#: silently reparent the agent instead. Stripped rather than refused — the
+#: argument has an unambiguous meaning here, it is only the OTHER reading that
+#: has to be made impossible.
+_STAFF_WORK_ONLY: tuple[str, ...] = ("action", "slug", "title", "objective", "kind",
+                           "owner", "participants", "acceptance",
+                           "dependencies", "done_so_far", "working_on_next",
+                           "status", "blocked_reason", "attention",
+                           "attention_reason", "reopen", "parent")
+
+
+def _staff_call(org: Org, slug: str, actor: str, a: dict[str, Any],
+                drive: list[str], renamed_to: str | None,
+                rename_warnings: list[str]) -> dict[str, Any]:
+    """`orgtree_staff` — the docket item, the seat, and the assignment that
+    ties them together, in ONE call (user request 2026-09-05 20:46).
+
+    THE SEAT IS CREATED FIRST, THEN THE ITEM IS WRITTEN WITH THAT SEAT AS ITS
+    OWNER, and that order is the point. Creating the item first would have to
+    give it an owner before the agent it is for exists — which means assigning
+    it to its author and moving it a moment later, exactly the transient
+    assign-to-author the user ruled against. This way the item's history
+    contains ONE assignment, to the agent that actually holds it, and the
+    notification names one recipient.
+
+    Everything else is inherited rather than reimplemented: the seat comes from
+    `_hire_seat` / `_rehire_seat` (the same code the standalone tools run,
+    including their permission checks, `_seat_finish` and its all-or-nothing
+    save), and the item comes from `work_create` / `work_update` (the same
+    validation, the same assignment notification). Nothing here has authority
+    of its own.
+
+    ONE FIRST TURN. The seat is appended to `drive` at most once, whether it
+    was started by a kickoff, by the assignment notification, or by both."""
+    mode = _staff_mode(a)
+    act = str(a.get("action") or "").strip().lower() \
+        or ("update" if str(a.get("slug") or "").strip() else "create")
+    if act not in ("create", "update"):
+        raise LedgerError("orgtree_staff writes the docket with action "
+                          "'create' or 'update' — every other docket action "
+                          "is orgtree_work's")
+    if act == "update" and not str(a.get("slug") or "").strip():
+        raise LedgerError("action 'update' needs `slug`: the item to update "
+                          "and hand to this agent")
+    # the item is written INSIDE this transaction, so the identity conversion
+    # has to be settled before it, exactly as the orgtree_work branch does
+    _work_identity_ready(org, slug)
+    seat_args = {k: v for k, v in a.items() if k not in _STAFF_WORK_ONLY}
+    # ⚠ and never `work_item` either: in staff the assignment is made BY the
+    # docket write below, so letting _seat_finish assign as well would file two
+    # assignments and mail the seat twice for one call.
+    seat_args.pop("work_item", None)
+    if mode == "hire":
+        result = _hire_seat(org, slug, actor, seat_args, drive)
+    else:
+        result = _rehire_seat(org, slug, actor, seat_args, drive,
+                              renamed_to, rename_warnings)
+    nid = str(result.get("node") or "")
+    if not nid:                     # defensive: neither helper returns without one
+        raise LedgerError("the seat was not created, so nothing was assigned")
+    if act == "create":
+        w = org.work_create(
+            actor, str(a.get("title") or ""), str(a.get("objective") or ""),
+            kind=str(a.get("kind") or "code"), owner=nid,
+            participants=_work_list_arg(a, "participants"),
+            acceptance=_work_list_arg(a, "acceptance"),
+            dependencies=_work_list_arg(a, "dependencies"),
+            done_so_far=a.get("done_so_far"),
+            working_on_next=a.get("working_on_next"),
+            status=str(a.get("status") or "open"),
+            parent=(str(a["parent"]) if a.get("parent") else None))
+        item = str(w.get("created") or "")
+    else:
+        w = org.work_update(
+            actor, str(a.get("slug") or ""), a.get("done_so_far"),
+            a.get("working_on_next"), status=(str(a["status"])
+                                              if a.get("status") is not None
+                                              else None),
+            attention=(True if _arg_flag(a, "attention") else None),
+            attention_reason=(str(a["attention_reason"])
+                              if a.get("attention_reason") is not None else None),
+            blocked_reason=(str(a["blocked_reason"])
+                            if a.get("blocked_reason") is not None else None),
+            title=(str(a["title"]) if a.get("title") is not None else None),
+            objective=(str(a["objective"])
+                       if a.get("objective") is not None else None),
+            reopen=_arg_flag(a, "reopen"), owner=nid)
+        item = str(a.get("slug") or "")
+    result["item"] = item
+    result["ref"] = refs.item(org.d["slug"], item)
+    result["assigned_to"] = nid
+    result[act + "d"] = item                 # created / updated, as the tools do
+    if w.get("notified"):
+        mail_notify(slug, actor, nid)
+        if not w.get("deferred") and nid not in drive:
+            drive.append(nid)
+    result["started"] = nid in drive
+    result["next_step"] = (
+        f'"{nid}" holds {item} and is RUNNING — its first turn starts on the '
+        f'assignment (and your kickoff, if you sent one). Nothing further '
+        f'needed.' if result["started"] else
+        f'"{nid}" holds {item} but is IDLE — the assignment mail is waiting in '
+        f'its inbox (it is archived, or the notification was deferred). Rehire '
+        f'it or send it an orgtree_message to start it.')
+    return result
 
 
 def _forced_self_restart(body: AgentCall, a: dict[str, Any]) -> dict[str, Any]:
@@ -6168,7 +6583,13 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
     # node under its new name, and the refusal says so in those words rather
     # than leaving the caller to discover it. Nothing else has happened, and
     # the seat has certainly not woken.
-    if body.tool == "orgtree_rehire" and str(a.get("name") or "").strip():
+    # ⚠ AND THE SAME FOR `orgtree_staff` IN REHIRE MODE, which is the same
+    # rehire wearing a different name: it takes `name` for the same purpose and
+    # would otherwise reach the ledger with the OLD id while the caller was
+    # told it had been renamed.
+    if str(a.get("name") or "").strip() \
+            and (body.tool == "orgtree_rehire"
+                 or (body.tool == "orgtree_staff" and _staff_is_rehire(a))):
         try:
             rn = supervisor.rename_node(body.org, str(a.get("node") or ""),
                                         str(a.get("name") or ""),
@@ -6531,6 +6952,18 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
                 # document untouched, because neither has been saved.
                 _work_identity_ready(org, body.org)
                 result = _work_mutate(org, body.node, a)
+                # AN ASSIGNMENT NOW MAILS THE AGENT THAT ACQUIRED THE ITEM, so
+                # this branch has a post-commit effect it never had: the
+                # notification is posted inside the transaction and the
+                # recipient is woken from `drive`, which agent_call consumes
+                # after the save. A deferred (archived) recipient reads it on
+                # rehire and is not driven — the same rule ordinary mail
+                # follows.
+                _notified = str(result.get("notified") or "")
+                if _notified and not result.get("deferred"):
+                    mail_notify(body.org, body.node, _notified)
+                    if _notified not in drive:
+                        drive.append(_notified)
             elif body.tool == "orgtree_withdraw_ask":
                 result = org.withdraw_ask(body.node)
             elif body.tool in ("orgtree_self_restart", "orgtree_self_update"):
@@ -6637,124 +7070,7 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
                                               a.get("body") or "",
                                               a.get("replaces"))
             elif body.tool == "orgtree_hire":
-                provider_hire_gate(org, a.get("tier"))
-                hdirs, dwarns = supervisor.sandbox_dirs_to_host(
-                    org, a.get("add_dirs"))
-                # D-224 ④: the destination pair. `target` (default: the
-                # caller) says WHERE, `hire_type` says on WHICH SIDE of it.
-                # `parent` is the pre-D-224 spelling of `target` and still
-                # works; both omitted = exactly today's behaviour.
-                _dest = str(a.get("target") or a.get("parent") or body.node)
-                _htype = str(a.get("hire_type") or "subordinate")
-                # validated BEFORE the hire, so a bad destination creates
-                # nothing (the seat would otherwise be discarded with the
-                # unsaved doc — correct, but the refusal reads better here)
-                org.check_placement(body.node, _dest, _htype)
-                if _htype == "superior":
-                    # THE SEAT'S SCOPE IS NOT THE CALLER'S TO CHOOSE HERE, and
-                    # accepting the fields anyway produced a response that
-                    # contradicted itself: a caller asking for `plan` was
-                    # answered `applied: ["permission_mode"]` while the seat
-                    # came out at `bypassPermissions` (redteam 2026-09-02).
-                    # An inserted superior must hold exactly what the branch
-                    # beneath it holds, so the four clamped sets are taken
-                    # from the target — say that at the door instead of
-                    # overwriting the caller behind its back. Refusing is
-                    # free here (nothing is created yet) and asks for LESS
-                    # typing than the ordinary form, not more.
-                    _conflict = [f for f in ("add_dirs", "tools",
-                                             "org_visibility",
-                                             "permission_mode")
-                                 if a.get(f) is not None]
-                    if _conflict:
-                        raise LedgerError(
-                            f"hire_type='superior' seats the new agent in "
-                            f'"{_dest}"\'s own position, so it takes that '
-                            f"seat's folders, tools, visibility and "
-                            f"permission mode — it cannot also take yours. "
-                            f"Omit {', '.join(_conflict)} (retool it after "
-                            f"the insertion if it should hold less)")
-                    _tsc = org.node(_dest)["scope"]
-                    hdirs = [dict(d) for d in _tsc["add_dirs"]]
-                    a = dict(a, tools={**_tsc["tools"],
-                                       "mcp": list(_tsc["tools"].get("mcp") or [])},
-                             org_visibility=_tsc.get("org_visibility", "full"))
-                elif body.node != USER:
-                    # THE OTHER HALF OF THE SAME RULE (Astra audit 2026-09-04
-                    # §11): the schema no longer lists add_dirs / tools /
-                    # org_visibility as required, because the superior branch
-                    # above refuses them and a flat `required` cannot say
-                    # "required in one mode, forbidden in the other". So the
-                    # ordinary mode's no-defaults rule is stated HERE, at the
-                    # door, naming the mode — the ledger's own §4.2 refusal
-                    # still stands behind it (and still checks every tool
-                    # switch), but its wording predates the second mode and
-                    # cannot tell a caller which of the two it got wrong.
-                    _missing = [f for f in ("add_dirs", "tools",
-                                            "org_visibility")
-                                if a.get(f) is None]
-                    if _missing:
-                        raise LedgerError(
-                            f"an ordinary hire (hire_type='subordinate', the "
-                            f"default) has no defaults — state "
-                            f"{', '.join(_missing)} explicitly ([] is a "
-                            f"valid add_dirs). Only hire_type='superior' "
-                            f"takes them from the target instead")
-                result = org.hire(body.node, _dest,
-                                  a.get("tier"), _arg_num(a, "grant", 0),  # type: ignore[arg-type]  # ledger 422s a missing tier; _arg_num so hire's own whole-grant refusal can still fire
-                                  a.get("name") or "", add_dirs=hdirs,
-                                  tools=a.get("tools"),
-                                  org_visibility=a.get("org_visibility"),
-                                  charter=a.get("charter"))
-                if dwarns:
-                    result.setdefault("warnings", []).extend(dwarns)
-                if result.get("node"):
-                    # D-160: the scope fields, the audience grants and the
-                    # kickoff — all of it inside this same transaction, with
-                    # the kickoff strictly last. See _seat_finish.
-                    #
-                    # ⚠ `permission_mode` is refused up front in `superior`
-                    # mode (the seat's is the target's), so it must not be in
-                    # the field list either — `applied: ["permission_mode"]`
-                    # beside a seat holding a different mode is a response
-                    # contradicting itself, and `applied` is the
-                    # machine-readable half (redteam 2026-09-02).
-                    _fields = tuple(f for f in _SEAT_SCOPE_HIRE
-                                    if not (_htype == "superior"
-                                            and f == "permission_mode"))
-                    _seat_finish(org, body.org, body.node,
-                                 str(result["node"]), a, result, drive,
-                                 fields=_fields)
-                if result.get("node") and _htype == "superior":
-                    # …and the topology LAST of all: the seat is fully the
-                    # agent that was described before it is spliced in, and
-                    # `drive` is consumed after the save, so its first turn
-                    # can only ever see the final tree (_seat_finish ①).
-                    _ins = org.insert_parent(body.node, str(result["node"]),
-                                             _dest)
-                    result["inserted_above"] = _dest
-                    result["reports_to"] = _ins["under"] or "the top level"
-                    result["grant"] = _ins["grant"]
-                    result.setdefault("warnings", []).extend(
-                        _ins.get("warnings") or [])
-                # observed on another install (user report 2026-08-02): an
-                # agent hires, writes a thorough charter, and considers the
-                # delegation DONE — the hire then sits idle forever, because
-                # nothing in the tree self-starts. The charter is identity;
-                # mail is what runs a turn. Said in the RESULT because that is
-                # what the hiring agent reads next, not the tool description
-                # it read once. D-160: a hire that carried a `kickoff` HAS
-                # been started, so the nag would now be a lie — it says what
-                # actually happened instead.
-                if result.get("node"):
-                    result["next_step"] = (
-                        f'"{result["node"]}" is hired and RUNNING — its first '
-                        f'turn starts on your kickoff. Nothing further needed.'
-                        if result.get("started") else
-                        f'"{result["node"]}" is hired and IDLE. Hiring does not '
-                        f'start it — send it an orgtree_message now saying what '
-                        f'to do (or pass `kickoff` to this tool next time), or '
-                        f'it will never run.')
+                result = _hire_seat(org, body.org, body.node, a, drive)
             elif body.tool == "orgtree_retool":
                 # effort joins retool (ceiling spec §6): a cost dial, so a
                 # superior may set it on REPORTS — never on itself (set_scope's
@@ -6789,96 +7105,12 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
                     old_sid=cast(str, result.get("old_session")),
                     reason="cheap_compact")
             elif body.tool == "orgtree_rehire":
-                # D-203: plain agent rehire is an admission on the archived
-                # node's stored provider. Check the durable user choice, but
-                # deliberately not transient sign-in/install state (D-197
-                # keeps recovery possible while a provider is signed out).
-                _rehire_node = a.get("node")
-                _rehire_tier = str(
-                    org.node(_rehire_node).get("model") or "")  # type: ignore[arg-type]
-                provider_hire_gate(
-                    org, _rehire_tier, user_choice_only=True)
-                # `grant` now goes through _arg_int like every other int
-                # argument. It was the ONE that did not, so {"grant": "abc"}
-                # reached `int(grant)` in the ledger and 500ed (mcptool suite,
-                # 2026-08-04). None/"" stays None — rehire's "no explicit grant".
-                _g = a.get("grant")
-                # D-224 ④: rehire takes the same destination pair as hire —
-                # both omitted restores the seat exactly where it was
-                _dest = str(a.get("target") or "")
-                _htype = str(a.get("hire_type") or "subordinate")
-                if _dest or _htype != "subordinate":
-                    _dest = _dest or body.node
-                    org.check_placement(body.node, _dest, _htype)
-                    if _htype == "superior":
-                        # same rule as the hire door: an inserted superior
-                        # takes the target seat's scope, so the caller may
-                        # not also dictate it (redteam 2026-09-02)
-                        _conflict = [f for f in ("add_dirs", "tools",
-                                                 "org_visibility",
-                                                 "permission_mode")
-                                     if a.get(f) is not None]
-                        if _conflict:
-                            raise LedgerError(
-                                f"hire_type='superior' restores the agent "
-                                f'into "{_dest}"\'s own position, so it takes '
-                                f"that seat's folders, tools, visibility and "
-                                f"permission mode. Omit "
-                                f"{', '.join(_conflict)} (retool it after the "
-                                f"insertion if it should hold less)")
-                result = org.rehire(body.node, a.get("node"),  # type: ignore[arg-type]  # node() 422s on None
-                                    None if _g is None or _g == ""
-                                    else _arg_num(a, "grant", 0))
-                drive.extend(result.pop("drive", []))
-                # D-160: the other four calls. The rename already happened
-                # above (it cannot share this lock); the scope, the audiences
-                # and the kickoff all ride this transaction, kickoff last. A
-                # woken node is already in `drive` from the rehire itself —
-                # _seat_finish appends only if absent, so a rehire that had
-                # queued mail AND a kickoff still runs exactly one turn.
-                #
-                # ⚠ the id comes from `a`, NOT from `result`: rehire returns
-                # {cost, warnings, drive} and has never carried a `node` key.
-                # Keying the composite off result["node"] would have made
-                # every one of these steps silently skip. `a["node"]` is
-                # already the post-rename id (rebound above).
-                _rid = str(a.get("node") or "")
-                result["node"] = _rid
-                _seat_finish(org, body.org, body.node, _rid, a, result, drive,
-                             fields=_SEAT_SCOPE_REHIRE)
-                if _dest:
-                    # topology last, exactly as the hire path: the restored
-                    # seat is whole before it is placed. A rehire lands the
-                    # node where it was archived, so reach the destination
-                    # with an ordinary move first (budget-neutral, §4.5) —
-                    # `move` is also what refuses a cycle here.
-                    if org.node(_rid)["parent"] != _dest:
-                        _mv = org.move(body.node, _rid, _dest)
-                        result.setdefault("warnings", []).extend(
-                            _mv.get("warnings") or [])
-                    if _htype == "superior":
-                        _ins = org.insert_parent(body.node, _rid, _dest)
-                        result["inserted_above"] = _dest
-                        result["reports_to"] = _ins["under"] or "the top level"
-                        result.setdefault("warnings", []).extend(
-                            _ins.get("warnings") or [])
-                    else:
-                        result["reports_to"] = _dest
-                if _renamed_to:
-                    result["renamed_to"] = _renamed_to
-                    result.setdefault("warnings", []).extend(_rename_warnings)
-                # the drive list, not `started`: a rehire wakes the node by
-                # itself when mail was waiting for it, and saying "IDLE" over
-                # a turn that is about to run would be the same lie in the
-                # other direction
-                _woke = str(result.get("node") or "") in drive
-                result["started"] = _woke
-                result["next_step"] = (
-                    f'"{result.get("node")}" is back and RUNNING — nothing '
-                    f'further needed.' if _woke else
-                    f'"{result.get("node")}" is back and IDLE. Send it an '
-                    f'orgtree_message, or pass `kickoff` to this tool next '
-                    f'time, or it will sit there.')
+                result = _rehire_seat(org, body.org, body.node, a, drive,
+                                      _renamed_to, _rename_warnings)
+            elif body.tool == "orgtree_staff":
+                # the docket item + the seat + the assignment, in one call
+                result = _staff_call(org, body.org, body.node, a, drive,
+                                     _renamed_to, _rename_warnings)
             elif body.tool == "orgtree_move":
                 _batch = a.get("moves")
                 if _batch:
