@@ -6,7 +6,7 @@ import type {
   AudiencesPayload, ChartersPayload, ChatPayload, DefaultsPayload,
   DiskDeleteResult, DiskDirPayload, DiskPayload, EventsPayload, FsPayload,
   HireDefaultsRequest, HistoryPayload, HostPayload,
-  InboxPayload, KioskCfgRequest, KioskSaveResult, KioskSpecRequest,
+  InboxPayload, KioskCfgRequest, KioskSaveResult, KioskSpecRequest, MailEntry,
   McpServersPayload, OpenRouterDoc, OpenRouterModelsPage, OpenRouterSort,
   OpRequest, OpResult, OrgListEntry, OrgMdPayload,
   OrgInboxEntry, OrgNetReveal, ProvidersPayload, ReorderRequest,
@@ -145,6 +145,17 @@ export const getInbox = (slug: string): Promise<InboxPayload> =>
   req(`/api/orgs/${slug}/inbox`)
 export const getNodeInbox = (slug: string, nid: string): Promise<InboxPayload> =>
   req(`/api/orgs/${slug}/nodes/${nid}/inbox`)
+/** ONE message, by id, from the box that holds it.
+ *
+ * ⚠ ASKED ONLY WHEN A REFERENCE LANDS OUTSIDE THE LOADED WINDOW. Every box
+ * route returns a slice, so "not in what I am holding" is not the same fact
+ * as "not there" — and the reading pane used to state the second when it
+ * only knew the first. This is the exact question; it is not a bigger poll. */
+export const getMailById = (slug: string, box: 'user' | 'org' | 'node',
+                            id: string, node?: string):
+  Promise<{ found: boolean; mail: MailEntry | null }> =>
+  req(`/api/orgs/${slug}/mail/${box}/${encodeURIComponent(id)}`
+    + (node ? `?node=${encodeURIComponent(node)}` : ''))
 export const resumeFrozen = (slug: string): Promise<{ resumed: string[] }> =>
   req(`/api/orgs/${slug}/resume`, { method: 'POST' })
 export const killAll = (slug: string): Promise<{

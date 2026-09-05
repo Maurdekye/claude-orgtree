@@ -179,6 +179,103 @@ check("a send with no local box carries no reference, and a local one does",
       a_send_with_no_local_box_carries_no_reference)
 
 
+def a_message_outside_the_window_can_still_be_found():
+    """⚠ THE CLAIM MADE FROM A SLICE (Astra, 2026-09-05). Every box route
+    returns a window, and the reading pane said "that message is not in this
+    folder" for anything outside it — so a RETAINED message at position 51 was
+    reported as gone. The panel can now ask the exact question."""
+    slug = fresh_org()
+    org = store.load_org(slug)
+    # ⚠ THE DELIVERED ARCHIVE, NOT THE PENDING QUEUE. Only `delivered` is
+    # windowed (`[-50:]`); undelivered mail is returned whole, so filling the
+    # queue proves nothing about a window. My first fixture did exactly that
+    # and its own positive control caught it.
+    old_id = "ab12cd34"
+    log = org.d.setdefault("mail_log", {}).setdefault("boss", [])
+    log.append({"id": old_id, "from": USER, "at": "2026-09-01T10:00:00Z",
+                "kind": "message", "body": "the oldest one"})
+    for i in range(60):
+        log.append({"id": f"fill{i:04d}", "from": USER,
+                    "at": f"2026-09-02T10:{i:02d}:00Z", "kind": "message",
+                    "body": f"filler {i}"})
+    store.save_org(org)
+
+    # the window really does exclude it — otherwise this proves nothing
+    r = client.get(f"/api/orgs/{slug}/nodes/boss/inbox")
+    assert r.status_code == 200, r.text
+    got = r.json()
+    window = got["pending"] + got["delivered"]
+    assert len(window) >= 50, f"positive control: a full window ({len(window)})"
+    assert not any(m["id"] == old_id for m in window), \
+        "positive control: the message really is outside the loaded window"
+
+    # …and the exact question finds it anyway, with its own reference
+    one = client.get(f"/api/orgs/{slug}/mail/node/{old_id}?node=boss")
+    assert one.status_code == 200, one.text
+    body = one.json()
+    assert body["found"] is True, "a retained message was reported as gone"
+    assert body["mail"]["body"] == "the oldest one"
+    assert body["mail"]["ref"] == f"@mail:{slug}/node/boss/{old_id}"
+
+
+check("a message outside the loaded window is still found by id",
+      a_message_outside_the_window_can_still_be_found)
+
+
+def a_message_that_is_really_absent_says_so():
+    """The other half, and the reason the first is not just "always say yes":
+    a box searched whole that does not hold the id answers no."""
+    slug = fresh_org()
+    org = store.load_org(slug)
+    org.post_mail(USER, "boss", "something", kind="message")
+    store.save_org(org)
+    r = client.get(f"/api/orgs/{slug}/mail/node/nosuchmail?node=boss")
+    assert r.status_code == 200, r.text
+    assert r.json() == {"found": False, "mail": None}
+
+
+check("a message that is really absent says so", a_message_that_is_really_absent_says_so)
+
+
+def the_lookup_adds_no_reach():
+    """It answers for the three boxes that are already served wholesale to this
+    client, and refuses anything else rather than searching for it."""
+    slug = fresh_org()
+    assert client.get(f"/api/orgs/{slug}/mail/wardrobe/abc").status_code == 404
+    assert client.get(f"/api/orgs/{slug}/mail/node/abc?node=ghost").status_code == 404
+    # the user box and the org box answer (no row, but a real answer)
+    for box in ("user", "org"):
+        r = client.get(f"/api/orgs/{slug}/mail/{box}/abc")
+        assert r.status_code == 200, (box, r.text)
+        assert r.json()["found"] is False
+
+
+check("the lookup adds no reach: unknown box or node is refused, not searched",
+      the_lookup_adds_no_reach)
+
+
+def org_inbox_rows_carry_their_references():
+    slug = fresh_org()
+    org = store.load_org(slug)
+    org.d.setdefault("org_inbox", []).append({
+        "id": "ab12cd34", "from": "@net:somewhere", "at": "2026-09-05T10:00:00Z",
+        "kind": "message", "body": "from outside",
+    })
+    store.save_org(org)
+    r = client.get(f"/api/orgs/{slug}/org_inbox")
+    assert r.status_code == 200, r.text
+    row = next(m for m in r.json()["entries"] if m["id"] == "ab12cd34")
+    assert row.get("ref") == f"@mail:{slug}/org/ab12cd34", \
+        f"the org inbox was the one box whose mail could not be linked: {row.get('ref')!r}"
+    # and the same row answers the by-id question
+    one = client.get(f"/api/orgs/{slug}/mail/org/ab12cd34").json()
+    assert one["found"] is True and one["mail"]["ref"] == row["ref"]
+
+
+check("org inbox rows carry their own references, and answer by id",
+      org_inbox_rows_carry_their_references)
+
+
 print(f"\n{PASSED} passed, {len(FAILED)} failed")
 for f in FAILED:
     print("\nFAIL", f)

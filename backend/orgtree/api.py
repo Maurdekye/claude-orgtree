@@ -4658,8 +4658,65 @@ def org_inbox_entries(slug: str) -> dict[str, Any]:
     except LedgerError as e:
         raise HTTPException(404, str(e))
     log = cast("list[dict[str, Any]]", org.d.get("org_inbox") or [])
-    return {"entries": log[-100:], "total": len(log),
+    # the rows carry their own references, like every other box — without
+    # this the org inbox was the one mailbox whose messages could not be
+    # linked to at all (Astra, 2026-09-05)
+    return {"entries": _mail_refs(slug, "org", log[-100:]), "total": len(log),
             "unread": max(0, len(log) - int(org.d.get("org_inbox_read", 0)))}
+
+
+@app.get("/api/orgs/{slug}/mail/{box}/{mid}")
+def mail_one(slug: str, box: str, mid: str, node: str = "") -> dict[str, Any]:
+    """ONE message, by id, from the box that actually holds it.
+
+    ⚠ WHY THIS EXISTS. Every mailbox route returns a WINDOW — the newest 50,
+    or 100 for the org inbox — and the reading pane said "that message is not
+    in this folder" whenever a reference named something outside it. That is a
+    claim about EXISTENCE made from a slice: a retained message at position 51
+    is still there, and the reader was told it was gone (Astra, 2026-09-05).
+    So the panel can now ask the exact question instead of inferring an answer
+    from what it happened to be holding.
+
+    ⚠ IT IS NOT A WIDER POLL. One id, asked once, only when a reference lands
+    outside the loaded window — the lists keep their windows, because the fix
+    for "the window is too small" must not be "send everything every five
+    seconds" (105 KB every 6 s was measured on the org inbox alone).
+
+    ⚠ AND IT ADDS NO REACH. Each box is searched through the same route that
+    already serves it wholesale to this client, so anything answered here was
+    already readable; an unknown box or node is a 404 rather than a search.
+    """
+    try:
+        org = store.load_org_snapshot(
+            slug, ("mail_log", "user_mail_log", "user_outbox", "org_inbox"))
+    except LedgerError as e:
+        raise HTTPException(404, str(e))
+    mid = str(mid or "")
+    rows: list[Any] = []
+    if box == "user":
+        rows = (list(org.d.get("user_inbox") or [])
+                + list(org.d.get("user_mail_log") or []))
+        _mail_refs(slug, "user", rows)
+    elif box == "org":
+        rows = list(org.d.get("org_inbox") or [])
+        _mail_refs(slug, "org", rows)
+    elif box == "node":
+        nid = str(node or "")
+        try:
+            org.node(nid)
+        except LedgerError as e:
+            raise HTTPException(404, str(e))
+        rows = (list((org.d.get("mail") or {}).get(nid, []))
+                + list((org.d.get("mail_log") or {}).get(nid, [])))
+        _mail_refs(slug, "node", rows, nid)
+    else:
+        raise HTTPException(404, f"no mailbox family named {box!r}")
+    for r in rows:
+        if isinstance(r, dict) and str(r.get("id") or "") == mid:
+            return {"found": True, "mail": r}
+    # ⚠ A NEGATIVE ANSWER IS AN ANSWER, and it is a different one from "not in
+    # the window". This box was searched whole; the message is not in it.
+    return {"found": False, "mail": None}
 
 
 @app.post("/api/orgs/{slug}/org_inbox/read")

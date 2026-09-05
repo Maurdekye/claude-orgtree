@@ -143,7 +143,9 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox, onWorkItem,
   // requests, and the panel's latch compares the request (`jumpKey`)
   const [nodeInboxJump, setNodeInboxJump] =
     useState<{ id: string; seq: number } | null>(null)
-  const [oiJump, setOiJump] = useState<string | null>(null)
+  // the org-mail a link or a reference targets — a REQUEST, so a repeat
+  // click on the same row is a second request (`jumpKey`)
+  const [oiJump, setOiJump] = useState<{ id: string; seq: number } | null>(null)
   const [dogView, setDogView] = useState<string | null>(null)  // FR-18 panel
   // ---- mobile wave (D-123/D-125) ----
   // the desk SHEET: explicit state, mobile-only. This deliberately does NOT
@@ -276,7 +278,8 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox, onWorkItem,
       setInboxSeen(nw)
       onInbox?.(m.id)
     } else if (String(m.to).startsWith('@')) {
-      setOiJump(m.id); setOiOpen(true)
+      setOiJump({ id: String(m.id), seq: jumpTo(String(m.id)).seq })
+      setOiOpen(true)
     } else if (map.has(m.to)) {
       setNodeInboxJump({ id: String(m.id), seq: jumpTo(String(m.id)).seq })
       setInboxId(m.to)
@@ -2850,7 +2853,8 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox, onWorkItem,
       )}
       {oiOpen && (
         <MaybePortal><OrgInboxModal inbox={tree.org_inbox} net={tree.net} map={map} slug={slug} toast={toast}
-          jumpTo={oiJump}
+          jumpTo={oiJump?.id ?? null} jumpSeq={oiJump?.seq}
+          refs={canvasRefs}
           onFocusAgent={centerOn}
           close={() => {
             setOiOpen(false); setOiJump(null)

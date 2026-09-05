@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import {
   audienceAction, BASE, clearInbox, createOrg, deleteOrg,
-  fileBase, fileUrl, getAudiences, getDefaults, getEvents, getHost, getInbox, getOrgMd,
+  fileBase, fileUrl, getAudiences, getDefaults, getEvents, getHost, getInbox,
+  getMailById, getOrgMd,
   getAntigravityUsage, getAntigravityUsagePeek,
   getCodexUsage, getCodexUsagePeek, getOpenRouterUsage, getOpenRouterUsagePeek,
   getOrgNet, getProviders, getSweepPreview, getTree,
@@ -2009,6 +2010,11 @@ export function InboxPanel({ slug, tree, toast, refresh, close, jumpTo, jumpSeq,
   // null (identity changed — §6.10), and blanking the inbox on every
   // mark-read would regress the instant-ack this bump exists to provide
   const box = usePolled(() => getInbox(slug), [slug], 5000, readBump)
+  // the exact question for a reference that landed outside this window —
+  // one id, asked once, never on the poll
+  const userLookup = useCallback(
+    (id: string) => getMailById(slug, 'user', id).then((r) => r.mail as MailRow | null),
+    [slug])
   useEffect(() => {
     const key = jumpKey(jumpTo, jumpSeq)
     if (!jumpTo || !box || foldedJump.current === key) return
@@ -2137,7 +2143,8 @@ export function InboxPanel({ slug, tree, toast, refresh, close, jumpTo, jumpSeq,
                   // SENDER — the file sits in that agent's own outbox/.
                   fileHref={(p, m) => fileUrl(slug, m.from, p)}
                   mdBase={(m) => fileBase(slug, m.from)}
-                  waitLabel="unread" jumpTo={jumpTo} refs={mailRefs}
+                  waitLabel="unread" jumpTo={jumpTo} jumpSeq={jumpSeq}
+                  lookup={userLookup} refs={mailRefs}
                   onRead={(m: MailEntry) => markRead(slug, [m.id])
                     .then(() => { setReadBump((n) => n + 1); refresh?.() })
                     .catch(() => {})}
@@ -2170,7 +2177,7 @@ export function InboxPanel({ slug, tree, toast, refresh, close, jumpTo, jumpSeq,
               // uploads/ (the upload landed there at stage time) — key on
               // m.to; a row without one ('' = unreachable) keeps plain chips
               : <MailList delivered={box.sent ?? []} outgoing refs={mailRefs}
-                  jumpTo={jumpTo} jumpSeq={jumpSeq}
+                  jumpTo={jumpTo} jumpSeq={jumpSeq} lookup={userLookup}
                   onFocusAgent={onFocusAgent ? (agentId) => { close(); onFocusAgent(agentId) } : undefined}
                   fileHref={(p, m) => typeof m.to === 'string' && m.to
                     ? fileUrl(slug, m.to, p) : ''}

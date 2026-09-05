@@ -186,3 +186,122 @@ uiTest('§7 an outgoing folder honours a jump too', async (mount) => {
   assert.match(pane(el), /message 2/)
   assert.equal(el.querySelector('.mailer-nojump'), null)
 })
+
+// ───────────────────────── §7 a window is not the world
+//
+// ⚠ ASTRA, 2026-09-05: every box route returns a slice, and this pane said
+// "that message is not in this folder" for anything outside it — a claim about
+// the MESSAGE made from what the panel happened to be holding. A retained
+// message at position 51 is still there.
+//
+// Three outcomes, and they must stay three: still asking, found outside the
+// window, and really absent. Collapsing the first into the third is the
+// original defect; collapsing the second into the third is worse.
+
+const older = (id: string): MailRow => ({
+  id, from: 'peer-one', to: 'me', at: '2026-08-01T09:00:00.000Z',
+  kind: 'message', body: 'the older message', read: true,
+} as MailRow)
+
+const listWith = (rows: MailRow[], extra: Record<string, unknown> = {}) => (
+  <MailList delivered={rows} jumpTo="outside-1" jumpSeq={1} {...extra} />
+)
+
+uiTest('§7 a reference outside the window is looked up, not called missing',
+async (mount) => {
+  let asked = 0
+  const { el } = await mount(listWith([older('in-window-1')], {
+    lookup: (id: string) => { asked += 1; return Promise.resolve(older(id)) },
+  }))
+  await flush()
+  assert.equal(asked, 1, 'the exact question was never asked')
+  const pane = el.querySelector('.mailer-read')
+  assert.ok(pane, 'no reading pane')
+  assert.equal(el.querySelectorAll('.mailer-nojump').length, 0,
+    'a retained message was reported as gone')
+  assert.match(pane!.textContent ?? '', /the older message/,
+    'the message it found is not on screen')
+})
+
+uiTest('§7b while the question is in flight it says so, and claims nothing',
+async (mount) => {
+  let settle: ((m: MailRow | null) => void) | null = null
+  const { el } = await mount(listWith([older('in-window-1')], {
+    lookup: () => new Promise<MailRow | null>((res) => { settle = res }),
+  }))
+  await flush()
+  const note = el.querySelector('.mailer-nojump')
+  assert.ok(note, 'nothing at all was said while the lookup was in flight')
+  assert.match(note!.textContent ?? '', /Looking for that message/)
+  assert.doesNotMatch(note!.textContent ?? '', /not in this folder/,
+    'it claimed the message was gone while still asking')
+  await inAct(async () => { settle!(null) })
+  await flush()
+  assert.match(el.querySelector('.mailer-nojump')?.textContent ?? '',
+    /not in this folder/, 'and once the answer is no, it says no')
+})
+
+uiTest('§7c CONTROL — with no lookup wired the notice is unchanged',
+async (mount) => {
+  // a surface that cannot ask must not pretend to have asked: the wording is
+  // the same one it has always shown
+  const { el } = await mount(listWith([older('in-window-1')]))
+  await flush()
+  assert.match(el.querySelector('.mailer-nojump')?.textContent ?? '',
+    /not in this folder/)
+})
+
+uiTest('§7d CONTROL — a message that IS in the window is never looked up',
+async (mount) => {
+  let asked = 0
+  const { el } = await mount(
+    <MailList delivered={[older('outside-1')]} jumpTo="outside-1" jumpSeq={1}
+      lookup={(id: string) => { asked += 1; return Promise.resolve(older(id)) }} />)
+  await flush()
+  assert.equal(asked, 0, 'the panel asked for a message it was already holding')
+  assert.equal(el.querySelectorAll('.mailer-nojump').length, 0)
+})
+
+uiTest('§7e an answer belongs to the request that asked for it',
+async (mount) => {
+  // ⚠ TWO JUMPS, TWO ANSWERS. Without keying the answer to the request, the
+  // FIRST lookup's row renders as the second request's message while the
+  // second is still in flight — the reader clicks one reference and is shown
+  // a different message, which is the wrong-target failure again.
+  const settle: ((m: MailRow | null) => void)[] = []
+  const lookup = () => new Promise<MailRow | null>((res) => { settle.push(res) })
+  const { el, render } = await mount(
+    <MailList delivered={[older('in-window-1')]} jumpTo="outside-1" jumpSeq={1}
+      lookup={lookup} />)
+  await flush()
+  await inAct(async () => { settle[0]!(older('outside-1')) })
+  await flush()
+  assert.match(el.querySelector('.mailer-read')?.textContent ?? '',
+    /the older message/, 'positive control: the first answer rendered')
+  // a second, different reference — its answer has NOT arrived yet
+  await render(
+    <MailList delivered={[older('in-window-1')]} jumpTo="outside-2" jumpSeq={2}
+      lookup={lookup} />)
+  await flush()
+  const note = el.querySelector('.mailer-nojump')
+  assert.ok(note, 'the stale answer was rendered as the new request')
+  assert.match(note!.textContent ?? '', /Looking for that message/)
+})
+
+uiTest('§7f a lookup that answers with the wrong message is not believed',
+async (mount) => {
+  // ⚠ THE ANSWER IS AN EXTERNAL INPUT. `lookup` belongs to the caller, and
+  // this pane cannot see how it resolves an id — so a row that is not the
+  // message asked for is refused rather than rendered as it. Without this the
+  // pane shows one message under another message's reference, which is the
+  // wrong-target failure the whole reference format exists to prevent.
+  const { el } = await mount(
+    <MailList delivered={[older('in-window-1')]} jumpTo="outside-1" jumpSeq={1}
+      lookup={() => Promise.resolve({ ...older('a-different-message'),
+        body: 'somebody else’s mail' } as MailRow)} />)
+  await flush()
+  assert.doesNotMatch(el.querySelector('.mailer-read')?.textContent ?? '',
+    /somebody else/, 'a message that was not asked for was rendered as the answer')
+  assert.match(el.querySelector('.mailer-nojump')?.textContent ?? '',
+    /not in this folder/, 'and the honest outcome is the refusal')
+})

@@ -26,31 +26,68 @@ const MAIL = 'src/canvas/mail.tsx'
 
 const MUTANTS = [
   {
+    // ⚠ ASTRA'S BLOCKER 6, restored: the pane never asks, so a retained message
+    // outside the window is reported gone.
+    name: 'the pane never asks for a message outside its window',
+    file: MAIL, kills: 'a reference outside the window is looked up',
+    from: `    if (!outsideWindow || !jumpTo || !lookup) return`,
+    to: `    if (true) return`,
+  },
+  {
+    // the found message is fetched and then not shown: the pane falls back to
+    // its empty state, which reads as "you clicked nothing"
+    name: 'a message found outside the window is not rendered',
+    file: MAIL, kills: 'a reference outside the window is looked up',
+    from: `  const cur = curPile?.[0] ?? (foundOutside ?? undefined)`,
+    to: `  const cur = curPile?.[0]`,
+  },
+  {
+    // the in-flight moment reads as a refusal — the pane says "gone" during
+    // the one second somebody is actually looking at it
+    name: 'the pane claims absence while it is still asking',
+    file: MAIL, kills: 'while the question is in flight it says so',
+    from: `  const lookingUp = outsideWindow && Boolean(lookup)
+    && (!ask || ask.asking)`,
+    to: `  const lookingUp = false`,
+  },
+  {
+    // ⚠ THE WRONG-TARGET FAILURE, in the reading pane: a row left over from an
+    // earlier lookup rendered as the message just asked for.
+    name: 'a stale row is rendered whatever message it is',
+    file: MAIL, kills: 'an answer belongs to the request that asked for it',
+    from: `  const foundOutside = ask && !ask.asking && ask.row
+    && keyOf(ask.row) === jumpTo ? ask.row : null`,
+    to: `  const foundOutside = ask && !ask.asking ? ask.row : null`,
+  },
+  {
     // THE ORIGINAL SILENCE. A reference that lands on nothing falls through
     // to the same invitation an untouched panel shows, so the reader concludes
     // they misclicked.
     name: 'a missing message falls back to "select a mail to read it"',
     file: MAIL, kills: '§3 a jump to a message',
-    from: `            {jumpMissing
-              ? <span className="mailer-nojump">`,
-    to: `            {false
-              ? <span className="mailer-nojump">`,
+    from: `              : jumpMissing
+                ? <span className="mailer-nojump">`,
+    to: `              : false
+                ? <span className="mailer-nojump">`,
   },
   {
     // the notice rendered for EVERY empty pane, which would make §3 and §4
     // pass while the panel cried wolf on an ordinary unselected mailbox.
     name: 'the not-here notice shows whenever nothing is selected',
     file: MAIL, kills: '§5 CONTROL',
-    from: `  const jumpMissing = Boolean(jumpTo) && !all.some((m) => keyOf(m) === jumpTo)`,
-    to: `  const jumpMissing = true`,
+    from: `  const outsideWindow = Boolean(jumpTo)
+    && !all.some((m) => keyOf(m) === jumpTo)`,
+    to: `  const outsideWindow = true`,
   },
   {
     // asked over the FILTERED set: typing in the search box then makes the
     // panel announce that a message it is holding does not exist.
     name: 'the not-here question is asked over the filtered rows',
     file: MAIL, kills: '§6 CONTROL',
-    from: `  const jumpMissing = Boolean(jumpTo) && !all.some((m) => keyOf(m) === jumpTo)`,
-    to: `  const jumpMissing = Boolean(jumpTo) && !shownForJump().some((m) => keyOf(m) === jumpTo)`,
+    from: `  const outsideWindow = Boolean(jumpTo)
+    && !all.some((m) => keyOf(m) === jumpTo)`,
+    to: `  const outsideWindow = Boolean(jumpTo)
+    && !shownForJump().some((m) => keyOf(m) === jumpTo)`,
     // `shown` is declared below this point, so the mutant reaches it through a
     // closure rather than reordering the file — the change under test is WHICH
     // SET is consulted, not where the line sits.
@@ -66,10 +103,11 @@ const MUTANTS = [
     name: 'the jump latch is a boolean again, so only the first link works',
     file: MAIL, kills: '§2 a SECOND jump',
     from: `  useEffect(() => {
-    if (!jumpTo || jumpTo === jumpedRef.current) return
-    jumpedRef.current = jumpTo
+    const key = jumpKey(jumpTo, jumpSeq)
+    if (!jumpTo || key === jumpedRef.current) return
+    jumpedRef.current = key
     setSelId(jumpTo)
-  }, [jumpTo])`,
+  }, [jumpTo, jumpSeq])`,
     to: ``,
   },
   {
@@ -86,8 +124,8 @@ const MUTANTS = [
     // only be written by naming what must not appear.
     name: 'the not-here notice names the message it is refusing',
     file: MAIL, kills: '§4 CONTROL',
-    from: `                  That message is not in this folder. It may have been
-                  retracted, or it may not be one you can open.`,
+    from: `                    That message is not in this folder. It may have been
+                    retracted, or it may not be one you can open.`,
     to: `                  Message {jumpTo} is not in this folder. It may have been
                   retracted, or it may not be one you can open.`,
   },

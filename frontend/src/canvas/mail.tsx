@@ -5,11 +5,11 @@
 // function identically). Extracted verbatim from Canvas.tsx in the phase-3
 // split.
 
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { KeyboardEvent, ReactNode } from 'react'
 import type { InboxPayload, OrgEvent, OrgInboxEntry, ToastFn, TreePayload } from '../types'
 import {
-  audienceAction, fileBase, fileUrl, getNodeInbox, getOrgInbox, orgInboxRead,
+  audienceAction, fileBase, fileUrl, getMailById, getNodeInbox, getOrgInbox, orgInboxRead,
   orgInboxSend, orgInboxUpload,
 } from '../api'
 import { AttachThumb, isImg } from './img'
@@ -59,6 +59,10 @@ export interface MailListProps {
   /** the REQUEST's identity: a repeat click on the same target is a new
    *  request, an unrelated repoll is not (`jumpKey`) */
   jumpSeq?: number | null
+  /** ASK FOR ONE MESSAGE BY ID, when a reference lands outside the loaded
+   *  window. Omitted = this surface cannot ask, and it then says only that
+   *  the message is not in the folder rather than that it does not exist. */
+  lookup?: (id: string) => Promise<MailRow | null>
   /** FR-21: the mail rides along so a call site whose files live under the
    *  SENDER's scratch (the user inbox — each row a different agent's outbox)
    *  can key the URL on `m.from`; fixed-node call sites ignore it. Returning
@@ -100,7 +104,7 @@ export interface MailListProps {
 const MAIL_WINDOW = 40
 
 export function MailList({ pending = [], delivered = [], waitLabel, sender, rowSender,
-  outgoing, onRead, onReply, onRetract, jumpTo, jumpSeq, fileHref, mdBase, renderBody, rowMark,
+  outgoing, onRead, onReply, onRetract, jumpTo, jumpSeq, lookup, fileHref, mdBase, renderBody, rowMark,
   onFocusAgent, tierOf, hasAgent, refs }: MailListProps) {
   // ONE order, by send time, always — never grouped, never re-grouped.
   //
@@ -229,13 +233,58 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, rowS
   // while a filter is typed must not be reported as a missing message.
   //
   // This list only ever renders once its box has loaded — its callers show
-  // "loading…" until then — so "not in `all`" here means ABSENT, not PENDING.
-  // If that ever stops being true, this reads as a false "not here" for the
-  // duration of the fetch, which is exactly when someone is looking at it.
-  const jumpMissing = Boolean(jumpTo) && !all.some((m) => keyOf(m) === jumpTo)
+  // "loading…" until then — so "not in `all`" here means NOT IN THE LOADED
+  // WINDOW, which is a smaller fact than "absent".
+  //
+  // ⚠ AND THE DIFFERENCE IS THE WHOLE OF THIS BLOCK. Every box route returns
+  // a slice (the newest 50, or 100 for the org inbox), so a retained message
+  // at position 51 is still there — and this pane used to tell the reader it
+  // was gone, in words, on the strength of a window (Astra, 2026-09-05). When
+  // a caller can ask the exact question we ask it; when none can, we say only
+  // what we actually know.
+  const outsideWindow = Boolean(jumpTo)
+    && !all.some((m) => keyOf(m) === jumpTo)
+  // ⚠ ONE VALUE, THREE STATES, keyed on the request. Two separate flags —
+  // "asked" and "answer" — flipped the first as soon as the question was
+  // SENT, so the in-flight moment read as a refusal: the pane said the
+  // message was gone while it was still looking for it.
+  const [ask, setAsk] = useState<
+    { asking: boolean; row: MailRow | null } | null>(null)
+  const key = jumpKey(jumpTo, jumpSeq)
+  useEffect(() => {
+    if (!outsideWindow || !jumpTo || !lookup) return
+    let live = true
+    setAsk({ asking: true, row: null })
+    // one id, once, only because a reference landed outside the window —
+    // never on the poll that keeps the list fresh
+    Promise.resolve(lookup(jumpTo))
+      .then((m) => { if (live) setAsk({ asking: false, row: m ?? null }) })
+      .catch(() => { if (live) setAsk({ asking: false, row: null }) })
+    return () => { live = false }
+  }, [outsideWindow, jumpTo, key, lookup])
+  // ⚠ THE ANSWER IS MATCHED TO THE QUESTION BY THE ROW'S OWN ID, not by
+  // remembering which request asked. A previous lookup's row is rendered
+  // only if it IS the message now being asked for — and if it is, it is the
+  // right answer whichever click fetched it. (A request-key comparison stood
+  // here; its mutant survived, because the effect re-arms `asking` on the
+  // same commit as the new request, so the comparison decided nothing.)
+  const lookingUp = outsideWindow && Boolean(lookup)
+    && (!ask || ask.asking)
+  const foundOutside = ask && !ask.asking && ask.row
+    && keyOf(ask.row) === jumpTo ? ask.row : null
+  // ⚠ THE THREE OUTCOMES ARE DECIDED BY THE READING PANE'S BRANCH ORDER, not
+  // by flags repeating it here: a found message becomes `cur` so the notice
+  // never renders, and `lookingUp` is checked before this. Both extra terms
+  // I first wrote were unfalsifiable for that reason and their mutants
+  // survived. What is left is the one fact this line owns.
+  const jumpMissing = outsideWindow
   const curPile = selId == null ? undefined
     : piles.find((g) => g.some((m) => keyOf(m) === selId))
-  const cur = curPile?.[0]
+  // ⚠ A MESSAGE FOUND OUTSIDE THE WINDOW IS STILL THE MESSAGE THEY ASKED
+  // FOR. It is not in the list — the list is a window — so it is read from
+  // the pane directly rather than pretended into the list, where it would
+  // sit in the wrong place in a run of send times.
+  const cur = curPile?.[0] ?? (foundOutside ?? undefined)
   // per-mail read (user ruling): a VIEWED unread mail is marked read the
   // moment you click OFF it — select another mail, or leave the list
   const curRef = useRef<MailRow | undefined>(undefined); curRef.current = cur
@@ -513,12 +562,20 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, rowS
                 subject, no body — because the reason it is not here may be
                 that this viewer is not allowed to see it, and an explanation
                 that discloses the thing it is refusing is not a refusal. */}
-            {jumpMissing
-              ? <span className="mailer-nojump">
-                  That message is not in this folder. It may have been
-                  retracted, or it may not be one you can open.
+            {lookingUp
+              /* ⚠ NOT "not here" YET. The message is outside the loaded
+                 window and the exact question is in flight; saying it is
+                 gone now would be a confident wrong answer during the one
+                 second somebody is looking at it. */
+              ? <span className="mailer-nojump looking">
+                  Looking for that message…
                 </span>
-              : shown.length ? 'select a mail to read it' : ''}
+              : jumpMissing
+                ? <span className="mailer-nojump">
+                    That message is not in this folder. It may have been
+                    retracted, or it may not be one you can open.
+                  </span>
+                : shown.length ? 'select a mail to read it' : ''}
           </div>
         )}
       </div>
@@ -660,6 +717,12 @@ export function InboxView({ slug, nid, onRetract, jumpTo, jumpSeq, tier, onFocus
   // the one panel whose whole job is showing mail was the one that did not
   // learn when mail arrived. Polled while mounted instead.
   const box = usePolled(() => getNodeInbox(slug, nid), [slug, nid])
+  // the exact question, for a reference that landed outside the window this
+  // poll returns. Same box, same access — it is the one-row form of the
+  // fetch above, not a wider one.
+  const nodeLookup = useCallback(
+    (id: string) => getMailById(slug, 'node', id, nid).then((r) => r.mail as MailRow | null),
+    [slug, nid])
   // the ONE piece of local state left here: mails this user just retracted,
   // held only until the server's copy agrees. That is an uncommitted operation,
   // not a mirror of server data — the distinction the whole refactor turns on.
@@ -702,6 +765,7 @@ export function InboxView({ slug, nid, onRetract, jumpTo, jumpSeq, tier, onFocus
             ? <MailList pending={pending} delivered={box.delivered}
                 tierOf={tierOf} hasAgent={hasAgent} refs={refs}
                 waitLabel="awaiting next turn" jumpTo={jumpTo} jumpSeq={jumpSeq}
+                lookup={nodeLookup}
                 fileHref={(p) => fileUrl(slug, nid, p)}
                 mdBase={() => fileBase(slug, nid)}
                 onFocusAgent={onFocusAgent}
@@ -721,6 +785,7 @@ export function InboxView({ slug, nid, onRetract, jumpTo, jumpSeq, tier, onFocus
             // so the same scratch-keyed href serves the Sent folder too
             : <MailList delivered={box.sent ?? []} outgoing jumpTo={jumpTo}
                 jumpSeq={jumpSeq} tierOf={tierOf} hasAgent={hasAgent} refs={refs}
+                lookup={nodeLookup}
                 onFocusAgent={onFocusAgent}
                 fileHref={(p) => fileUrl(slug, nid, p)}
                 mdBase={() => fileBase(slug, nid)} />}
@@ -851,10 +916,13 @@ interface OrgInboxModalProps {
   /** the REQUEST's identity: a repeat click on the same target is a new
    *  request, an unrelated repoll is not (`jumpKey`) */
   jumpSeq?: number | null
+  /** canonical references in org-mail bodies, forwarded to the lists */
+  refs?: { world: RefWorld; onOpen?: (r: ResolvedRef) => void }
   onFocusAgent?: (agentId: string) => void
 }
 
-export function OrgInboxModal({ inbox, net, map, slug, toast, close, jumpTo, onFocusAgent }: OrgInboxModalProps) {
+export function OrgInboxModal({ inbox, net, map, slug, toast, close, jumpTo,
+  jumpSeq, refs, onFocusAgent }: OrgInboxModalProps) {
   useEsc(close)
   // reworked (user spec 2026-08-05): no blurb, mailservers on their own TAB,
   // compose in its own modal, holders as bare chips with a drag-to-grant tip
@@ -874,6 +942,12 @@ export function OrgInboxModal({ inbox, net, map, slug, toast, close, jumpTo, onF
   // opening the panel shows the newest mail immediately and then fills in;
   // it must never show an empty mailbox that has mail in it.
   const [full, setFull] = useState<{ rows: OrgInboxEntry[]; total: number } | null>(null)
+  // ⚠ THE ORG LOG IS WINDOWED AT 100, so a reference to an older row landed
+  // on 'not in this folder' — a claim about the message made from a slice.
+  // One id, asked once, only when that happens.
+  const orgLookup = useCallback(
+    (id: string) => getMailById(slug, 'org', id).then((r) => r.mail as MailRow | null),
+    [slug])
   const [loadErr, setLoadErr] = useState<string | null>(null)
   const [reload, setReload] = useState(0)
   useEffect(() => {
@@ -1035,6 +1109,7 @@ export function OrgInboxModal({ inbox, net, map, slug, toast, close, jumpTo, onF
                 ? <MailList pending={inn.filter((r) => r._wait0)}
                     delivered={inn.filter((r) => !r._wait0)}
                     waitLabel="unread" onRead={markRead} jumpTo={jumpTo}
+                    jumpSeq={jumpSeq} refs={refs} lookup={orgLookup}
                     /* ⚠ AN INCOMING ORG-INBOX SENDER IS EXTERNAL BY
                        PROVENANCE, AND A NAME MATCH IS NOT EVIDENCE OTHERWISE.
                        These rows came from OUTSIDE this org, so the peer is an
@@ -1047,6 +1122,7 @@ export function OrgInboxModal({ inbox, net, map, slug, toast, close, jumpTo, onF
                        stays eligible.) */
                     sender={(id) => <b>{id}</b>} />
                 : <MailList delivered={out} outgoing jumpTo={jumpTo}
+                    jumpSeq={jumpSeq} refs={refs} lookup={orgLookup}
                     rowMark={glyph}
                     /* the list row names the RECIPIENT only — the pane's
                        "@agent as @org → @recipient" line is three identities
