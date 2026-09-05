@@ -19819,7 +19819,7 @@ def _steer_parts(msgs: list[Any]) -> tuple[list[Any], list[str], list[str]]:
 
 
 def commit_steer(slug: str, nid: str, msgs: list[Any], *,
-                 at: str | None = None) -> list[Any]:
+                 at: str | None = None, level: str = "accepted") -> list[Any]:
     """A steer that was DELIVERED becomes durable, and then visible.
 
     Both halves live here because they are one fact — "this message reached
@@ -19881,7 +19881,11 @@ def commit_steer(slug: str, nid: str, msgs: list[Any], *,
                     # and bound the ring by bytes instead of relying on a low
                     # per-row cap: 40×20k let the old shape reach 800k/node —
                     # the byte trim below keeps a strictly smaller worst case.
-                    log.append({"at": stamp, "text": s[:100000],
+                    # D1: `level` names the EVIDENCE this row rests on --
+                    # "accepted" (a provider accepted turn/steer: codex) or
+                    # "handoff" (the legacy claude fetch: the bytes left the
+                    # server, nothing more). Neither is "recorded".
+                    log.append({"at": stamp, "text": s[:100000], "level": level,
                                 **({"truncated": True}
                                    if len(s) > 100000 else {})})
                 del log[:-40]
@@ -19953,7 +19957,9 @@ def pop_steer(slug: str, nid: str, *, return_carriers: bool = False,
         st["steer"] = []
     if defer_commit:
         return list(msgs)
-    out = commit_steer(slug, nid, msgs, at=now_iso())
+    # the legacy claude fetch: fetch-is-commit, labelled as the unconfirmed
+    # HANDOFF it is (D1). `claim_steer` is the confirmed path.
+    out = commit_steer(slug, nid, msgs, at=now_iso(), level="handoff")
     if return_carriers:
         _, views, _ = _steer_parts(msgs)
         return [{"text": str(raw), "view": view}
@@ -20008,13 +20014,67 @@ def _steer_attempts(org: Org, nid: str) -> dict[str, dict[str, Any]]:
     return org.d.setdefault("steer_attempts", {}).setdefault(nid, {})
 
 
+#: open attempts kept per batch token -- every lease expiry mints a new
+#: attempt for the same batch; beyond this many, the OLDEST is resolved as
+#: `superseded` (its record, if it ever lands, is missed -- the newer attempt
+#: delivers the same words, so that is a possible duplicate, never a loss)
+STEER_ATTEMPTS_PER_BATCH = 8
+
+
+def _attempt_open(a: Mapping[str, Any]) -> bool:
+    return not a.get("recorded_at") and not a.get("resolved")
+
+
 def _trim_steer_attempts(org: Org, nid: str) -> None:
-    """Keep the newest few RESOLVED attempts (recorded or folded-and-done) so a
-    late row can still be matched, and every unresolved one."""
+    """RETENTION BOUNDARY. An attempt is OPEN while its record may still land
+    and still matter: its batch is in `delivering`, or its mail is back in
+    the mailbox / re-drained into another batch. It becomes RESOLVED when the
+    record lands (`recorded_at`), or terminally (`resolved`):
+      unconfirmable       no transcript path could ever be found
+      delivered-elsewhere its mail left the pending state by another route
+                          (the turn path delivered the folded copy and
+                          confirmed it) -- a record landing now has no row or
+                          batch to attach to, so it is not looked for
+      superseded          more than STEER_ATTEMPTS_PER_BATCH newer attempts
+                          exist for the same batch
+    Open attempts are therefore bounded by pending mail x the per-batch cap;
+    the resolved ring keeps the newest STEER_ATTEMPTS_KEEP so a late record
+    can still link a duplicate onto its row. No TTL: an open attempt whose
+    mail is still pending is never dropped by age."""
     atts = _steer_attempts(org, nid)
-    done = sorted((a.get("at") or "", k) for k, a in atts.items() if a.get("recorded_at"))
+    pending_toks = {str(b.get("tok")) for b in (org.d.get("delivering") or {}).get(nid) or []}
+    pending_mail = {str(m.get("id")) for m in (org.d.get("mail") or {}).get(nid) or []}
+    pending_mail |= {str(m.get("id")) for b in (org.d.get("delivering") or {}).get(nid) or []
+                     for m in b.get("mail") or []}
+    # mail a RECORDED row still covers keeps its other attempts open: a second
+    # record for it must be found and linked as a confirmed duplicate (review
+    # 2026-09-05). Bounded by the steered_log ring; once the row ages out, the
+    # attempt resolves like any other.
+    recorded_mail = {str(i) for r in (org.d.get("steered_log") or {}).get(nid) or []
+                     if r.get("level") == "recorded" for i in r.get("mail_ids") or []}
+    for a in atts.values():
+        if not _attempt_open(a):
+            continue
+        if a.get("unconfirmable"):
+            a["resolved"] = "unconfirmable"
+            continue
+        toks = {str(t) for t in a.get("toks") or []}
+        ids = {str(i) for i in a.get("mail_ids") or []}
+        if (toks or ids) and not (toks & pending_toks) and not (ids & pending_mail)                 and not (ids & recorded_mail):
+            a["resolved"] = "delivered-elsewhere"
+    done = sorted((a.get("at") or "", k) for k, a in atts.items() if not _attempt_open(a))
     for _, k in done[:-STEER_ATTEMPTS_KEEP]:
         atts.pop(k, None)
+
+
+def _supersede_steer_attempts(org: Org, nid: str, new_did: str, toks: Iterable[str]) -> None:
+    """Cap the open attempts per batch token (see `_trim_steer_attempts`)."""
+    atts = _steer_attempts(org, nid)
+    for tok in {str(t) for t in toks}:
+        opens = sorted((a.get("at") or "", k) for k, a in atts.items()
+                       if _attempt_open(a) and k != new_did and tok in (a.get("toks") or []))
+        for _, k in opens[:max(0, len(opens) - (STEER_ATTEMPTS_PER_BATCH - 1))]:
+            atts[k]["resolved"] = "superseded"
 
 
 def claim_steer(slug: str, nid: str, tool_use_id: str,
@@ -20050,20 +20110,36 @@ def claim_steer(slug: str, nid: str, tool_use_id: str,
                 continue
             c["claim"] = {"delivery_id": did, "tool_use_id": tool_use_id,
                           "claimed_at": now, "lease_until": now + STEER_CLAIM_LEASE_S,
-                          "acked": False, "attempts": int((cl or {}).get("attempts") or 0) + 1}
+                          "acked": False, "attempts": int((cl or {}).get("attempts") or 0) + 1,
+                          "ids": list((cl or {}).get("ids") or []) + [did]}
             chosen.append(c)
         if not chosen:
             return None, []
     out, views, toks = _steer_parts(chosen)
-    try:
-        size = os.path.getsize(transcript_path) if transcript_path else 0
-    except OSError:
-        size = 0
+    unconfirmable = False
     try:
         with store.DOC_LOCK:
             org = store.load_org(slug)
             if nid not in org.nodes:
                 raise LedgerError("node gone")
+            if not transcript_path:
+                # the hook did not say where the CLI records (an older or
+                # foreign payload): fall back to the session's transcript the
+                # supervisor already knows how to find; if THAT is unknown the
+                # delivery can never be confirmed -- say so now, once, rather
+                # than fold every message at the boundary in silence
+                transcript_path = transcript_path_for_node(org, nid) or ""
+                if not transcript_path:
+                    unconfirmable = True
+                    if not st.get("steer_unconfirmable_said"):
+                        st["steer_unconfirmable_said"] = True
+                        print(f"[orgtree] {slug}/{nid}: steer claim {did} has no transcript "
+                              f"path -- the CLI's record cannot be found, so this delivery "
+                              f"is UNCONFIRMABLE (delivered, folded at the boundary, redelivered)")
+            try:
+                size = os.path.getsize(transcript_path) if transcript_path else 0
+            except OSError:
+                size = 0
             mail_ids: list[str] = []
             for b in (org.d.get("delivering") or {}).get(nid) or []:
                 if b.get("tok") in toks:
@@ -20076,9 +20152,10 @@ def claim_steer(slug: str, nid: str, tool_use_id: str,
             _steer_attempts(org, nid)[did] = {
                 "at": now_iso(), "tool_use_id": tool_use_id, "toks": list(toks),
                 "mail_ids": mail_ids, "transcript_path": transcript_path,
-                "tp_offset": size,
+                "tp_offset": size, **({"unconfirmable": True} if unconfirmable else {}),
                 "views": [str(v)[:100000] for v in views], "texts_n": len(out),
                 "retried": any(int(c["claim"].get("attempts") or 0) > 1 for c in chosen)}
+            _supersede_steer_attempts(org, nid, did, toks)
             _trim_steer_attempts(org, nid)
             store.save_org(org)
     except Exception:                                        # noqa: BLE001
@@ -20088,6 +20165,16 @@ def claim_steer(slug: str, nid: str, tool_use_id: str,
                     c["claim"] = None
         return None, []
     return did, out
+
+
+def transcript_path_for_node(org: Org, nid: str) -> str | None:
+    """The node's own transcript, by session id (the same lookup ad1d5da's
+    warm-pool rule uses). None when the session has never written one."""
+    n = org.nodes.get(nid) or {}
+    sid = str(n.get("session_id") or "")
+    if not sid:
+        return None
+    return transcript_path(sid, _transcript_root(org))
 
 
 def ack_steer(slug: str, nid: str, delivery_id: str, tool_use_id: str) -> dict[str, Any]:
@@ -20120,18 +20207,26 @@ def ack_steer(slug: str, nid: str, delivery_id: str, tool_use_id: str) -> dict[s
     return {"status": "receipt"}
 
 
-def _read_steer_records(att: Mapping[str, Any]) -> list[tuple[str, str]]:
+def _read_steer_records(att: Mapping[str, Any],
+                        start: int | None = None,
+                        pos_out: list[int] | None = None) -> list[tuple[str, str]]:
     """(delivery_id, toolUseID) for every hook_additional_context row carrying
-    a delivery marker, read from the attempt's transcript from the file size
-    it had when the claim was made (the row cannot precede its claim)."""
+    a delivery marker, read from the attempt's transcript from `start` (or the
+    file size at claim time -- the row cannot precede its claim). `pos_out`
+    receives the offset after the last COMPLETE line read, so a caller can
+    keep a cursor and never reread the same tail."""
     path = str(att.get("transcript_path") or "")
     if not path:
         return []
     found: list[tuple[str, str]] = []
     try:
         with open(path, "rb") as f:
-            f.seek(int(att.get("tp_offset") or 0))
+            f.seek(int(att.get("tp_offset") or 0) if start is None else start)
             for raw in f:
+                if not raw.endswith(b"\n"):
+                    break                    # a line still being written
+                if pos_out is not None:
+                    pos_out[:] = [f.tell()]
                 if b"hook_additional_context" not in raw or b"ORGTREE-DELIVERY:" not in raw:
                     continue
                 try:
@@ -20151,43 +20246,73 @@ def _read_steer_records(att: Mapping[str, Any]) -> list[tuple[str, str]]:
 def _apply_steer_record(org: Org, nid: str, did: str, att: dict[str, Any],
                         stamp: str) -> tuple[list[str], dict[str, Any]]:
     """The commit, on an org already loaded under DOC_LOCK (caller saves).
-    Every batch the delivery carried is confirmed away; every folded copy is
-    reclaimed if its mail is untouched in the mailbox; every re-drained copy
-    is flagged. Returns (texts to announce, row)."""
+    Reconciled PER BATCH and PER MAIL, because the batches one delivery
+    carried can be in different states by the time its record lands
+    (review 2026-09-05, two executable counterexamples):
+
+      batch still in `delivering`   -> confirmed away (the ordinary case)
+      mail back in the mailbox      -> reclaimed (a fold the record outran)
+      mail re-drained into a NEWER batch -> that batch is flagged, so its
+                                       own row will say confirmed duplicate
+      mail already committed by another recorded delivery -> that row and
+                                       this one are linked and BOTH say
+                                       confirmed duplicate
+
+    The row carries `mail_ids` so the last case can be found after the
+    original batch is gone. Returns (net ids to mark read, the row)."""
     toks = set(att.get("toks") or [])
+    ids = [str(x) for x in (att.get("mail_ids") or [])]
     dlmap = org.d.get("delivering") or {}
     dl = dlmap.get(nid) or []
     batches = [b for b in dl if b.get("tok") in toks]
-    recorded_ids = sorted({did} | {x for b in batches for x in b.get("recorded_ids") or []})
-    acked_ids = sorted({x for b in batches for x in b.get("acked_ids") or []}
-                       | ({did} if att.get("acked_at") else set()))
-    attempts = max([int(b.get("attempts") or 0) for b in batches] + [1])
-    prev_rec = sorted({x for b in batches for x in b.get("previously_recorded") or []})
     if batches:
         keep = [b for b in dl if b.get("tok") not in toks]
         if keep:
             dlmap[nid] = keep
         else:
             dlmap.pop(nid, None)
-    else:
-        # folded already: the mail is back in the box (reclaim it) or has been
-        # re-drained into a newer batch (flag that batch)
-        ids = set(att.get("mail_ids") or [])
-        box = (org.d.get("mail") or {}).get(nid) or []
-        present = [m for m in box if str(m.get("id")) in ids]
-        if ids and len(present) == len(ids):
-            org.d["mail"][nid] = [m for m in box if str(m.get("id")) not in ids]
-        elif ids:
-            for b in dl:
-                if any(str(m.get("id")) in ids for m in b.get("mail") or []):
-                    b.setdefault("previously_recorded", []).append(did)
-    row = {"at": stamp, "delivery_id": did, "level": "recorded",
-           "delivery_ids": sorted({did} | {x for b in batches for x in b.get("delivery_ids") or []}),
-           "acked_ids": acked_ids, "recorded_ids": sorted(set(recorded_ids) | set(prev_rec)),
-           "attempts": attempts,
-           "retried": bool(att.get("retried")) or attempts > 1 or bool(prev_rec),
-           "confirmed_duplicate": len(set(recorded_ids) | set(prev_rec)) >= 2}
+        dl = keep
+    covered = {str(m.get("id")) for b in batches for m in b.get("mail") or [] if m.get("id")}
+    leftover = [i for i in ids if i not in covered]
+    prior_recorded: set[str] = {x for b in batches for x in b.get("previously_recorded") or []}
+    prior_recorded |= {x for b in batches for x in b.get("recorded_ids") or []}
     log = org.d.setdefault("steered_log", {}).setdefault(nid, [])
+    if leftover:
+        box = (org.d.get("mail") or {}).get(nid) or []
+        in_box = {str(m.get("id")) for m in box if str(m.get("id")) in leftover}
+        if in_box:
+            # a fold the record outran: the mail is untouched in the box
+            org.d["mail"][nid] = [m for m in box if str(m.get("id")) not in in_box]
+        for i in leftover:
+            if i in in_box:
+                continue
+            hit = False
+            for b in dl:
+                if any(str(m.get("id")) == i for m in b.get("mail") or []):
+                    # re-drained into a newer batch: its row will admit this
+                    b.setdefault("previously_recorded", [])
+                    if did not in b["previously_recorded"]:
+                        b["previously_recorded"].append(did)
+                    hit = True
+            if hit:
+                continue
+            for row in log:
+                if row.get("fold") or i not in (row.get("mail_ids") or []):
+                    continue
+                # already committed under another recorded delivery: link both
+                rec = sorted(set(row.get("recorded_ids") or []) | {did})
+                row["recorded_ids"] = rec
+                row["confirmed_duplicate"] = len(rec) >= 2
+                prior_recorded |= set(rec)
+    recorded_ids = sorted({did} | prior_recorded)
+    acked_ids = sorted({x for b in batches for x in b.get("acked_ids") or []}
+                       | ({did} if att.get("acked_at") else set()))
+    attempts = max([int(b.get("attempts") or 0) for b in batches] + [1])
+    row = {"at": stamp, "delivery_id": did, "level": "recorded", "mail_ids": ids,
+           "delivery_ids": sorted({did} | {x for b in batches for x in b.get("delivery_ids") or []}),
+           "acked_ids": acked_ids, "recorded_ids": recorded_ids, "attempts": attempts,
+           "retried": bool(att.get("retried")) or attempts > 1 or bool(prior_recorded),
+           "confirmed_duplicate": len(recorded_ids) >= 2}
     for v in att.get("views") or []:
         s = str(v)
         if not s:
@@ -20199,6 +20324,21 @@ def _apply_steer_record(org: Org, nid: str, did: str, att: dict[str, Any],
     att["recorded_at"] = stamp
     net_ids = [str(m["net_id"]) for b in batches for m in (b.get("mail") or []) if m.get("net_id")]
     return net_ids, row
+
+
+def _carrier_confirmed(c: Any, did: str, toks: set[str]) -> bool:
+    """Is this RAM carrier's mail now recorded? By BATCH ownership first (a
+    carrier re-claimed by B still carries A's batch tokens, and A's record
+    confirms it — review 2026-09-05, reproduced with real state), then by
+    claim history for tokenless carriers. A carrier bundling several tokens is
+    confirmed only when all of them are."""
+    if not isinstance(c, dict):
+        return False
+    ctoks = [str(t) for t in c.get("toks") or []]
+    if ctoks:
+        return all(t in toks for t in ctoks)
+    cl = c.get("claim") or {}
+    return did == cl.get("delivery_id") or did in (cl.get("ids") or [])
 
 
 def scan_steer_records(slug: str, nid: str) -> dict[str, int]:
@@ -20215,14 +20355,23 @@ def scan_steer_records(slug: str, nid: str) -> dict[str, int]:
             if nid not in org.nodes:
                 return out
             atts = _steer_attempts(org, nid)
-            pending = {k: a for k, a in atts.items() if not a.get("recorded_at")}
+            pending = {k: a for k, a in atts.items() if _attempt_open(a)}
         if not pending:
             return out
+        # the file is read OUTSIDE DOC_LOCK, from a per-attempt cursor kept in
+        # RAM (a restart rereads from the claim-time offset once)
+        with _state_lock:
+            cursors: dict[str, int] = dict(st.get("steer_scan_pos") or {})
         hits: dict[str, str] = {}
         for did, att in pending.items():
-            for found_id, tool in _read_steer_records(att):
+            pos: list[int] = []
+            for found_id, tool in _read_steer_records(att, cursors.get(did), pos):
                 if found_id == did:
                     hits[did] = tool
+            if pos:
+                cursors[did] = pos[0]
+        with _state_lock:
+            st["steer_scan_pos"] = {k: v for k, v in cursors.items() if k in pending}
         if not hits:
             return out
         announce: list[tuple[str, dict[str, Any]]] = []
@@ -20246,11 +20395,12 @@ def scan_steer_records(slug: str, nid: str) -> dict[str, int]:
                 _trim_steer_attempts(org, nid)
                 store.save_org(org)
         for did, info in announce:
+            ctoks = {str(t) for t in info["att"].get("toks") or []}
             with _state_lock:
                 st["steer"] = [c for c in st.get("steer") or []
-                               if not (isinstance(c, dict) and (c.get("claim") or {}).get("delivery_id") == did)]
+                               if not _carrier_confirmed(c, did, ctoks)]
                 st["queue"] = [c for c in st["queue"]
-                               if not (isinstance(c, dict) and (c.get("claim") or {}).get("delivery_id") == did)]
+                               if not _carrier_confirmed(c, did, ctoks)]
             if info["net_ids"]:
                 try:
                     net.note_read(slug, info["net_ids"])
@@ -20276,7 +20426,7 @@ def _reconcile_steer_records(org: Org) -> int:
     for nid in list(org.nodes):
         atts = (org.d.get("steer_attempts") or {}).get(nid) or {}
         for did, att in list(atts.items()):
-            if att.get("recorded_at"):
+            if not _attempt_open(att):
                 continue
             tool = dict(_read_steer_records(att)).get(did)
             if tool is None or tool != att.get("tool_use_id"):

@@ -340,11 +340,25 @@ if MUTANT == "ack_commits":
         return r
     supervisor.ack_steer = _ack_commits
     api.supervisor.ack_steer = _ack_commits
+elif MUTANT == "ram_cleanup_by_claim_id":
+    supervisor._carrier_confirmed = lambda c, did, toks: (isinstance(c, dict)
+                                                           and (c.get("claim") or {}).get("delivery_id") == did)
+elif MUTANT == "no_row_linkage":
+    _real_apply = supervisor._apply_steer_record
+
+    def _no_link(org, nid, did, att, stamp):
+        net_ids, row = _real_apply(org, nid, did, att, stamp)
+        for r in (org.d.get("steered_log") or {}).get(nid) or []:
+            if r.get("delivery_id") != did and did in (r.get("recorded_ids") or []):
+                r["recorded_ids"] = [x for x in r["recorded_ids"] if x != did]
+                r["confirmed_duplicate"] = len(r["recorded_ids"]) >= 2
+        return net_ids, row
+    supervisor._apply_steer_record = _no_link
 elif MUTANT == "record_any_owner":
     _real_read = supervisor._read_steer_records
 
-    def _any_owner(att):
-        return [(d, att.get("tool_use_id")) for d, _t in _real_read(att)]
+    def _any_owner(att, start=None, pos_out=None):
+        return [(d, att.get("tool_use_id")) for d, _t in _real_read(att, start, pos_out)]
     supervisor._read_steer_records = _any_owner
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -602,6 +616,217 @@ check("CONTRACT: both batches confirmed away and both rows recorded, none retrie
       lambda: eq((d9["delivering"], sorted((r["level"], r["retried"]) for r in d9["steered"])),
                  ([], [("recorded", False), ("recorded", False)]), d9))
 belt(slug, nid)
+
+# ── §10 reviewer case: two distinct recorded deliveries of the same mail ──
+print("\n§10 A recorded, then B recorded for the same mail: both rows linked, both confirmed duplicates")
+slug, nid = mkorg("tworec")
+responding(slug, nid)
+post_user_mail(slug, nid, MARK + " tworec")
+rA = run_hook(PROXY, slug, nid, "toolu_tr_A", "sess-tr", record=False)     # A: printed, acked, row late
+time.sleep(LEASE + 0.2)
+rB = run_hook(PROXY, slug, nid, "toolu_tr_B", "sess-tr", record=False)     # B: re-offered (A unacked? no: acked)
+# A was ACKED, so B must NOT have been offered anything (P13). Make A's ack lost instead:
+d10 = doc(slug, nid)
+EVIDENCE["sections"]["two_records_precheck"] = {"A": rA["has_mail"], "B": rB["has_mail"]}
+check("CONTRACT: B is offered nothing while A's receipt stands", lambda: eq(rB["has_mail"], False, rB))
+belt(slug, nid)
+
+slug, nid = mkorg("tworec2")
+responding(slug, nid)
+post_user_mail(slug, nid, MARK + " tworec2")
+PROXY.mode = "pass"
+# A: printed, ack LOST (drop only the ack), record late
+class _AckDrop:
+    def __init__(self, proxy): self.proxy = proxy
+    def __enter__(self):
+        self._orig = self.proxy._one
+        proxy = self.proxy
+        def one(c):
+            rec_mode = proxy.mode
+            # peek: read the request, drop it if it is the ack
+            req = Proxy._read_http(c)
+            if b"/steer/ack" in req.split(b"\r\n", 1)[0]:
+                proxy.log.append({"mode": "drop_ack", "from_upstream": 0, "to_client": 0, "path": "/steer/ack"})
+                c.close()
+                return
+            # otherwise forward normally
+            up = socket.create_connection(("127.0.0.1", APP_PORT), timeout=10)
+            up.sendall(req); up.settimeout(10)
+            resp = b""
+            while True:
+                try: chunk = up.recv(65536)
+                except socket.timeout: break
+                if not chunk: break
+                resp += chunk
+                head, sep, body = resp.partition(b"\r\n\r\n")
+                if sep:
+                    n = 0
+                    for line in head.split(b"\r\n"):
+                        if line.lower().startswith(b"content-length:"):
+                            n = int(line.split(b":", 1)[1].strip() or 0)
+                    if len(body) >= n: break
+            up.close(); c.sendall(resp); c.close()
+        self.proxy._one = one
+    def __exit__(self, *a):
+        self.proxy._one = self._orig
+
+
+with _AckDrop(PROXY):
+    rA = run_hook(PROXY, slug, nid, "toolu_t2_A", "sess-t2", record=False)
+time.sleep(LEASE + 0.2)
+rB = run_hook(PROXY, slug, nid, "toolu_t2_B", "sess-t2", record=False)      # re-offered: A never acked
+org = store.load_org(slug)
+atts = (org.d.get("steer_attempts") or {}).get(nid) or {}
+didA = next(k for k, a in atts.items() if a.get("tool_use_id") == "toolu_t2_A")
+didB = next(k for k, a in atts.items() if a.get("tool_use_id") == "toolu_t2_B")
+ram_before = ram(slug, nid)
+# the CLI now writes A's row (late), scan; then B's row, scan
+with open(transcript_for("sess-t2"), "a", encoding="utf-8") as f:
+    f.write(json.dumps({"type": "attachment", "attachment": {"type": "hook_additional_context",
+            "hookEvent": "PostToolUse", "toolUseID": "toolu_t2_A", "content": rA["context"]}}) + "\n")
+sA = supervisor.scan_steer_records(slug, nid)
+ram_mid = ram(slug, nid)
+dA = doc(slug, nid)
+with open(transcript_for("sess-t2"), "a", encoding="utf-8") as f:
+    f.write(json.dumps({"type": "attachment", "attachment": {"type": "hook_additional_context",
+            "hookEvent": "PostToolUse", "toolUseID": "toolu_t2_B", "content": rB["context"]}}) + "\n")
+sB = supervisor.scan_steer_records(slug, nid)
+dB = doc(slug, nid)
+EVIDENCE["sections"]["two_records"] = {"A": rA["has_mail"], "B": rB["has_mail"], "ram_before": ram_before,
+                                       "scanA": sA, "ram_after_A": ram_mid, "docA": dA, "scanB": sB, "docB": dB}
+check("fixture: A printed with its ack lost, B re-offered after the lease and printed",
+      lambda: truthy(rA["has_mail"] and rB["has_mail"] and didA != didB, {"A": rA, "B": rB}))
+check("fixture: after B's claim the RAM carrier is owned by B (the reviewer's RAM case)",
+      lambda: eq((ram_before["steer"][0].get("claim") or {}).get("delivery_id"), didB, ram_before))
+check("CONTRACT (RAM): A's record confirms the batch and REMOVES the carrier B holds (batch ownership, not claim id)",
+      lambda: eq((sA.get("recorded"), ram_mid["steer"], ram_mid["queue"], dA["delivering"]), (1, [], [], []),
+                 {"scan": sA, "ram": ram_mid, "doc": dA}))
+check("CONTRACT (linkage): B's later record links both rows -- both say confirmed duplicate, recorded_ids = {A, B}",
+      lambda: eq(sorted((r["delivery_id"], r["confirmed_duplicate"], sorted(r["recorded_ids"])) for r in dB["steered"]),
+                 sorted([(didA, True, sorted([didA, didB])), (didB, True, sorted([didA, didB]))]), dB["steered"]))
+belt(slug, nid)
+
+# ── §11 reviewer case: one delivery, two batches, mixed states at record time
+print("\n§11 one delivery covering t1 (still delivering) + t2 (folded to the mailbox): both reconciled")
+slug, nid = mkorg("mixed")
+responding(slug, nid)
+post_user_mail(slug, nid, MARK + " mixed-1")
+post_user_mail(slug, nid, MARK + " mixed-2")
+r11 = run_hook(PROXY, slug, nid, "toolu_mx_1", "sess-mx", record=False)
+org = store.load_org(slug)
+att11 = next(a for a in ((org.d.get("steer_attempts") or {}).get(nid) or {}).values())
+t1, t2 = att11["toks"][0], att11["toks"][1]
+# fold ONLY t2 back to the mailbox (a partial fold), keep t1 delivering + its carrier
+supervisor._fold_back_undelivered(slug, nid, only_toks=[t2])
+st11 = supervisor.state(slug, nid)
+with supervisor._state_lock:
+    st11["steer"] = [c for c in st11["steer"] if t2 not in (c.get("toks") or [])]
+d11_before = doc(slug, nid)
+with open(transcript_for("sess-mx"), "a", encoding="utf-8") as f:
+    f.write(json.dumps({"type": "attachment", "attachment": {"type": "hook_additional_context",
+            "hookEvent": "PostToolUse", "toolUseID": "toolu_mx_1", "content": r11["context"]}}) + "\n")
+s11 = supervisor.scan_steer_records(slug, nid)
+d11 = doc(slug, nid)
+EVIDENCE["sections"]["mixed_fold"] = {"before": d11_before, "scan": s11, "after": d11}
+check("fixture: t1 still delivering, t2's mail back in the mailbox",
+      lambda: eq((len(d11_before["delivering"]), len(d11_before["mailbox"])), (1, 1), d11_before))
+check("CONTRACT: the record confirms t1 AND reclaims t2's mail from the mailbox (nothing left to duplicate)",
+      lambda: eq((s11.get("recorded"), d11["delivering"], d11["mailbox"], ram(slug, nid)["steer"]), (1, [], [], []),
+                 {"scan": s11, "doc": d11, "ram": ram(slug, nid)}))
+belt(slug, nid)
+
+# ── §12 late record after the folded mail was RE-DRAINED into a new batch ──
+print("\n§12 late record after re-drain: the new batch is flagged; its own record is a confirmed duplicate")
+slug, nid = mkorg("redrain")
+responding(slug, nid)
+post_user_mail(slug, nid, MARK + " redrain")
+r12 = run_hook(PROXY, slug, nid, "toolu_rd_1", "sess-rd", record=False)
+# turn ends, backend restarts: reconcile folds the batch to the mailbox
+supervisor.state(slug, nid).clear(); supervisor.state(slug, nid).update({"queue": []})
+with store.DOC_LOCK:
+    org = store.load_org(slug)
+    supervisor._reconcile_steer_records(org)
+    dlv = org.d.pop("delivering", None) or {}
+    for b in dlv.get(nid) or []:
+        org.d.setdefault("mail", {}).setdefault(nid, [])[0:0] = b.get("mail") or []
+    store.save_org(org)
+# next turn re-drains the mailbox into a NEW batch and steers it
+responding(slug, nid)
+etext, tok2, _ = supervisor._envelope(slug, nid, "(orgtree) nudge")
+st12 = supervisor.state(slug, nid)
+with supervisor._state_lock:
+    st12.setdefault("steer", []).append({"toks": [tok2], "text": etext, "view": etext})
+d12_a = doc(slug, nid)
+# NOW the old record lands
+with open(transcript_for("sess-rd"), "a", encoding="utf-8") as f:
+    f.write(json.dumps({"type": "attachment", "attachment": {"type": "hook_additional_context",
+            "hookEvent": "PostToolUse", "toolUseID": "toolu_rd_1", "content": r12["context"]}}) + "\n")
+s12 = supervisor.scan_steer_records(slug, nid)
+d12_b = doc(slug, nid)
+# the new batch delivers and records
+r12b = run_hook(PROXY, slug, nid, "toolu_rd_2", "sess-rd")
+run_hook(PROXY, slug, nid, "toolu_rd_3", "sess-rd")
+d12_c = doc(slug, nid)
+EVIDENCE["sections"]["redrain"] = {"after_redrain": d12_a, "scan_old": s12, "after_old_record": d12_b,
+                                   "new_delivery": r12b["has_mail"], "final": d12_c}
+check("fixture: the mail was re-drained into a new batch", lambda: eq(len(d12_a["delivering"]), 1, d12_a))
+check("CONTRACT: the old record flags the new batch (previously_recorded), no row yet for the new batch",
+      lambda: truthy((d12_b["delivering"] and d12_b["delivering"][0].get("previously_recorded")), d12_b))
+check("CONTRACT: the new batch's own record is a confirmed duplicate, retried",
+      lambda: truthy(any(r.get("confirmed_duplicate") and r.get("retried") for r in d12_c["steered"]
+                         if r.get("delivery_id") != s12 and MARK in (r.get("text") or "")), d12_c["steered"]))
+belt(slug, nid)
+
+# ── §13 legacy hook (no identity) is labelled, never 'recorded' ─────────────
+print("\n§13 a hook without identity gets the legacy fetch, labelled handoff")
+slug, nid = mkorg("legacy")
+responding(slug, nid)
+post_user_mail(slug, nid, MARK + " legacy")
+import urllib.request as _ur
+req = _ur.Request(f"http://127.0.0.1:{APP_PORT}/api/orgs/{slug}/nodes/{nid}/steer", method="POST")
+with _ur.urlopen(req, timeout=5) as r:
+    legacy = json.load(r)
+d13 = doc(slug, nid)
+EVIDENCE["sections"]["legacy"] = {"response": legacy, "doc": d13}
+check("legacy fetch still delivers (an old hook keeps working)", lambda: truthy(legacy.get("messages") and legacy.get("legacy"), legacy))
+check("CONTRACT: its row is labelled level=handoff, not recorded",
+      lambda: eq([r.get("level") for r in d13["steered"]], ["handoff"], d13["steered"]))
+belt(slug, nid)
+
+# ── §14 retention boundary ─────────────────────────────────────────────────
+print("\n§14 attempts: open while recoverable, resolved when the mail left by another route, capped per batch")
+slug, nid = mkorg("retention")
+responding(slug, nid)
+post_user_mail(slug, nid, MARK + " retention")
+# many lease expiries: each mints an attempt for the same batch
+for i in range(supervisor.STEER_ATTEMPTS_PER_BATCH + 3):
+    PROXY.mode = "drop_response"
+    run_hook(PROXY, slug, nid, f"toolu_ret_{i}", "sess-ret")
+    PROXY.mode = "pass"
+    time.sleep(LEASE + 0.1)
+org = store.load_org(slug)
+atts = (org.d.get("steer_attempts") or {}).get(nid) or {}
+open_n = sum(1 for a in atts.values() if supervisor._attempt_open(a))
+superseded = sum(1 for a in atts.values() if a.get("resolved") == "superseded")
+# the mail then leaves by another route: simulate the turn path confirming the batch
+belt(slug, nid)
+org = store.load_org(slug)
+toks = [b.get("tok") for b in (org.d.get("delivering") or {}).get(nid) or []]
+supervisor._confirm_delivered(slug, nid, toks)
+supervisor.scan_steer_records(slug, nid)
+with store.DOC_LOCK:
+    org = store.load_org(slug); supervisor._trim_steer_attempts(org, nid); store.save_org(org)
+org = store.load_org(slug)
+atts2 = (org.d.get("steer_attempts") or {}).get(nid) or {}
+open_after = sum(1 for a in atts2.values() if supervisor._attempt_open(a))
+elsewhere = sum(1 for a in atts2.values() if a.get("resolved") == "delivered-elsewhere")
+EVIDENCE["sections"]["retention"] = {"attempts": len(atts), "open_while_pending": open_n, "superseded": superseded,
+                                     "open_after_turn_path": open_after, "delivered_elsewhere": elsewhere}
+check("CONTRACT: open attempts per batch are capped; older ones resolve as superseded, none dropped while pending",
+      lambda: eq((open_n, superseded > 0, len(atts)), (supervisor.STEER_ATTEMPTS_PER_BATCH, True,
+                                                        supervisor.STEER_ATTEMPTS_PER_BATCH + 3), atts and {"open": open_n, "sup": superseded}))
+check("CONTRACT: once the mail left by the turn path, no attempt stays open (nothing left to scan for)",
+      lambda: eq((open_after, elsewhere > 0), (0, True), {"open": open_after, "elsewhere": elsewhere}))
 
 # ── §4 hook latency on this machine (a measurement, not a bound) ───────────
 print("\n§4 hook round trip on this machine, idle, N=10 (fetch with mail present)")

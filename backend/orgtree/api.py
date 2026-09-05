@@ -3262,9 +3262,18 @@ def node_steer(slug: str, nid: str, body: SteerClaim | None = None) -> dict[str,
                                            body.transcript_path)
         return {"messages": msgs, "delivery_id": did}
     # an old hook (no stdin identity) still gets the legacy fetch-is-commit
-    # behaviour rather than nothing at all — loud in the log, not silent
+    # behaviour rather than nothing at all — its rows are labelled
+    # level="handoff" (unconfirmed), never "recorded", and the fallback is
+    # said in the log the first time it happens per node
     msgs = supervisor.pop_steer(slug, nid)
-    return {"messages": msgs}
+    if msgs:
+        st = supervisor.state(slug, nid)
+        if not st.get("steer_legacy_said"):
+            st["steer_legacy_said"] = True
+            print(f"[orgtree] {slug}/{nid}: steer fetch WITHOUT hook identity "
+                  f"(no tool_use_id) — legacy fetch-is-commit served; these "
+                  f"rows are unconfirmed handoffs, not recorded deliveries")
+    return {"messages": msgs, "legacy": True}
 
 
 @app.post("/api/orgs/{slug}/nodes/{nid}/steer/ack")
