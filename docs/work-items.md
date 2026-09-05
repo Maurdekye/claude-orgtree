@@ -21,7 +21,7 @@ archive is unbounded.
 
 | field | meaning |
 |---|---|
-| `id` | `w` + 8 hex, immutable; use it across handoffs |
+| `slug` | **the only identifier.** Readable, derived from the title, unique across active+archive, fixed at creation — it does NOT follow a later title edit, so a name already written down keeps working. Every stored reference uses it: `dependencies`, `superseded_by`, ask `work_item`, the routes, the frontend's keys |
 | `rev` | bumped by every mutation (verify revalidates against it) |
 | `title`, `objective`, `kind` (`code` / `non-code`) | what and why |
 | `status` | `open` · `in_progress` · `blocked` · `review` · `done` · `superseded` · `dropped` |
@@ -120,9 +120,20 @@ Explicit, never org-wide; nothing in an item is public.
 | `create` | any live agent (owner = itself or a subordinate) or the user |
 
 An agent that may not read an item gets one refusal indistinguishable from a
-nonexistent id. Dependencies outside the viewer's read set come back
-`{id, visible: false}` only. Reassignment is to oneself or a subordinate and
-never changes `last_updater`.
+nonexistent name.
+
+**Pointers at an item the viewer may not read are ANONYMOUS.** A dependency
+comes back `{visible: false}` with no name at all, `superseded_by` is `null`
+(while `superseded_by_visible` still says a pointer exists), and `history[].by`
+is redacted the same way. This got stricter when the opaque id was retired: an
+id carried no title, and the name is derived from one, so serving it in those
+slots would disclose the title of an item the viewer is not allowed to read.
+
+Reassignment is to oneself or a subordinate and never changes `last_updater`.
+A rename carries the current-identity fields — `owner`, `last_updater`,
+`participants` — onto the new id; `created_by`, `history[].by`, `evidence[].by`,
+the delivery claims and `accepted.by` are authored history and keep the name
+that was current when they were written.
 
 ## Delivery and acceptance metadata
 
@@ -151,10 +162,12 @@ deletion of the item.
 | route | purpose |
 |---|---|
 | `GET /api/orgs/{slug}/work-items[?archived=1]` | `{items, archived?, counts: {attention, active, archived}, now}` — every item, newest `docket_at` first, full set |
-| `GET /api/orgs/{slug}/work-items/{id}` | `{item}` (archived ids resolve) |
-| `POST …/work-items/{id}/reply {body}` | user mail to the **last updater**, exactly, prefixed `[DOCKET REPLY · id "title"]`; 422 when no agent has updated yet, 404 when that node is gone, `deferred: true` when it is archived — never a substitute recipient |
-| `POST …/work-items/{id}/dismiss-attention {set_rev}` | above; 409 on a stale rev |
-| `POST …/work-items/{id}/accept {note}` | the user accepts |
+| `GET /api/orgs/{slug}/work-items/{slug}` | `{item}` (archived items resolve) |
+| `POST …/work-items/{slug}/reply {body}` | user mail to the **last updater**, exactly, prefixed `[DOCKET REPLY · slug "title"]` (the canonical name, not the caller's spelling); 422 when no agent has updated yet, 404 when that node is gone, `deferred: true` when it is archived — never a substitute recipient |
+| `POST …/work-items/{slug}/dismiss-attention {set_rev}` | above; 409 on a stale rev |
+| `POST …/work-items/{slug}/accept {note}` | the user accepts |
+| `POST /api/orgs/{slug}/migrate-work-identity` | the one-shot conversion to slug-only identity: exports a JSON backup of the document as it stands, then rewrites it in the same locked save. `{already: true}` and no write when there is nothing to convert; 422 (nothing written) when two items already share a name |
+| `POST /api/orgs/{slug}/repair-rename {rename_at, documents[], work_items[], actor?}` | finishes a rename for records an earlier rename left under the old id: `documents[].node` and the current-identity work fields. Work items named by slug. Bounded to ONE logged rename event, an explicit allowlist, and records that still hold the old id; user or the renamed identity only; frozen against kiosk visitors |
 | `GET /api/orgs/{slug}` | carries `work_items_summary: {attention, active}` for the toolbar badge |
 
 `counts.attention` counts items (not questions) with effective attention over
