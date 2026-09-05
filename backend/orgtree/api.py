@@ -2688,11 +2688,12 @@ def antigravity_usage() -> dict[str, Any]:
     see `antigravity_limits`), so this reads the last wall a turn hit and
     the reset parsed from it. Synchronous: no process, no network.
 
-    It also carries `usage_estimate`: what the RECORDED windows support, which
-    is a different question from the standing (a window can be measured after
-    its wall has lifted, and with no complete window the estimate refuses to
-    give a number at all). Attached here rather than inside `fetch` so the
-    standing stays the standing; it reads local journal files only."""
+    It also carries `usage_estimate`: what the RECORDED intervals support,
+    which is a different question from the standing (an interval is measured
+    after its wall has lifted, and with none running from an observed reset to
+    a later wall it refuses to give a number at all). Attached here rather
+    than inside `fetch` so the standing stays the standing; it reads local
+    journal files only."""
     data = antigravity_limits.fetch()
     data["usage_estimate"] = antigravity_limits.standing_estimate()
     return data

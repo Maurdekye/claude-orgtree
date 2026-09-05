@@ -329,73 +329,110 @@ def _window_event(kind: str, now: float, *, tier: str = "", message: str = "",
     return event
 
 
-# ── windows and the estimate ────────────────────────────────────────────
+# ── intervals and the estimate ──────────────────────────────────────────
 #
-# WHAT AN ESTIMATE HERE CAN AND CANNOT BE. The account's ceiling is not
-# published anywhere orgtree can read, so nothing below is a provider-reported
-# limit and none of it is presented as one. What CAN be measured is: between
-# the moment a window began and the moment a wall was hit, orgtree spent this
-# many tokens. That is a LOWER BOUND on what the account spent, because the
-# same Google account is spendable in the Antigravity IDE where orgtree
-# observes nothing at all. A remaining-budget figure derived from it therefore
-# reads OPTIMISTIC — it can only ever say "at least this much was spent", so
-# "at most this much is left" is the honest direction of its error, and the
-# estimate carries that warning rather than burying it.
+# THE ONE MEASURABLE QUANTITY: between an observed reset instant and a later
+# wall, orgtree spent this many tokens. Nothing here is a provider-reported
+# limit — that CLI publishes no readout — and the figure is a LOWER BOUND,
+# since the same account is spendable in the Antigravity IDE, which orgtree
+# cannot see. So any remaining-budget reading from it is optimistic, and that
+# warning travels on the answer.
 
 
 class Window(TypedDict):
-    """One observed limit window, closed by a wall."""
-    limit: str                 # the metric the CLI named
+    """One recorded INTERVAL: an observed reset instant, and a later wall.
+
+    ⚠ NOT "one limit window". That name would assert two things nothing here
+    records: that windows abut, so one limit's reset opens the next; and that
+    the wall at the far end belongs to the same limit as the reset at the near
+    end. `boundary` says how much of that is actually known.
+    """
+    limit: str                 # the metric the CLI named ON THE CLOSING WALL
     tier: str
-    started_at: float | None   # when the window opened, if we can tell
+    started_at: float | None   # when the interval opened, if we can tell
     start_kind: str            # how we know: "reset" | "boot" | "unknown"
+    opened_by: dict[str, str]  # the identity that named the opening reset
     walled_at: float
     resets_at: float | None
     reset_seconds: float | None
     wall_id: str
     account_ns: str
-    gap_before_s: float        # orgtree not observing, inside this window
-    complete: bool             # a start we can defend AND a wall
+    gap_before_s: float        # orgtree not observing, inside this interval
+    reset_to_wall: bool        # an OBSERVED RESET at one end, a wall at the
+    #                            other. That is the whole claim
+    boundary: str              # "consistent" | "unknown" | "mismatch"
+    boundary_differs: str | None   # what proved it: account | tier | metric
 
 
-def _differs(a: Window, b: Window) -> str | None:
-    """The first way these two observations are DEMONSTRABLY about different
-    things, or None.
+def _identity_differs(a: dict[str, str], b: dict[str, str]) -> str | None:
+    """The first way two recorded identities are DEMONSTRABLY different, else
+    None.
 
-    ⚠ None means UNKNOWN, NOT "the same", and no caller may read it as
-    licence to average. Nothing this lane records can establish that two walls
-    came from one ceiling: the provider names no limit identity, and the
-    countdown it prints is time REMAINING, which moves with when the wall was
-    hit. The countdown is therefore not consulted here in either direction -
-    neither to call two observations the same limit nor to call them different
-    ones.
+    ⚠ None means UNKNOWN, NOT "the same", and no caller may read it as licence
+    to average or to certify continuity. A field EMPTY at either end decides
+    nothing: it is a field that was not recorded, not a field that agreed. The
+    countdown is not consulted in either direction - it is time REMAINING, so
+    it moves with when the wall was hit.
     """
-    if a["account_ns"] and b["account_ns"] \
-            and a["account_ns"] != b["account_ns"]:
-        return "account"
-    if a["tier"] and b["tier"] and a["tier"] != b["tier"]:
-        return "tier"
-    if a["limit"] != b["limit"]:
-        return "metric"
+    for field, name in (("account_ns", "account"), ("tier", "tier"),
+                        ("limit", "metric")):
+        x, y = a.get(field) or "", b.get(field) or ""
+        if x and y and x != y:
+            return name
     return None
 
 
-def windows(events: list[dict[str, Any]] | None = None) -> list[Window]:
-    """Reconstruct the closed windows the record supports.
+def _boundary(opened: dict[str, str],
+              closed: dict[str, str]) -> tuple[str, str | None]:
+    """How much is known about whether ONE limit spans an interval.
 
-    A window ENDS at a wall — that is the only unambiguous event this lane
-    produces. Its START is the previous wall's reset instant when we have one
-    (the moment the account was refilled), else the boot after which we began
-    watching, else unknown. A start we had to infer across a period when
-    orgtree was not running is still reported, with the gap attached, so a
-    caller can weigh it instead of being handed an average that hid it.
+    "mismatch" - the reset that opened it and the wall that closed it are
+    demonstrably different things, so the interval measures neither of them.
+    "consistent" - account, tier and metric are recorded at BOTH ends and
+    agree; that is agreement in the record, not continuity the provider
+    stated. "unknown" - something was not recorded at one end, which proves
+    nothing either way and is carried as unknown rather than settled.
+    """
+    differs = _identity_differs(opened, closed)
+    if differs:
+        return "mismatch", differs
+    if all((opened.get(k) or "") and (closed.get(k) or "")
+           for k in ("account_ns", "tier", "limit")):
+        return "consistent", None
+    return "unknown", None
+
+
+def _differs(a: Window, b: Window) -> str | None:
+    """The first way two recorded intervals are DEMONSTRABLY different, else
+    None - which means UNKNOWN, never "the same". See `_identity_differs`."""
+    return _identity_differs(
+        {"account_ns": a["account_ns"], "tier": a["tier"],
+         "limit": a["limit"]},
+        {"account_ns": b["account_ns"], "tier": b["tier"],
+         "limit": b["limit"]})
+
+
+def windows(events: list[dict[str, Any]] | None = None) -> list[Window]:
+    """Reconstruct the intervals the record supports.
+
+    An interval ENDS at a wall - the only unambiguous event this lane
+    produces. It BEGINS at the reset instant a previous wall named, else at
+    the boot after which orgtree began watching, else unknown.
+
+    ⚠ A RESET IS NOT A START CONTRACT FOR THE NEXT WALL. The CLI names when
+    the wall it just reported lifts. It does not say that the next wall will
+    be the same limit, and it does not say windows abut - so the reset is used
+    as the near end of an INTERVAL, and `boundary` carries what is known about
+    the two ends being one thing. Same tier is not an exception: a tier is not
+    a limit identity either.
     """
     rows = read_events() if events is None else sorted(
         events, key=lambda r: _number(r.get("at")) or 0.0)
     out: list[Window] = []
-    open_from: float | None = None          # when the current window began
+    open_from: float | None = None          # when the interval began
     open_kind = "unknown"
-    open_account = ""                       # whose window it is
+    open_ident: dict[str, str] = {}         # who named the opening reset
+    open_account = ""
     last_seen: float | None = None          # last moment we were observing
     gap = 0.0
     for row in rows:
@@ -403,25 +440,23 @@ def windows(events: list[dict[str, Any]] | None = None) -> list[Window]:
         if at is None:
             continue
         account = str(row.get("account_ns") or "")
-        # ⚠ A WINDOW DOES NOT SURVIVE AN ACCOUNT CHANGE. A reset instant is a
-        # statement about the account that was signed in when the CLI named
-        # it; carrying it across a switch would time one account's spending
-        # from another account's refill, and the receipts counted in between
-        # would belong to neither window. An EMPTY handle is "we could not
-        # tell", which is not evidence of a DIFFERENT account, so it does not
-        # break the window by itself.
+        # ⚠ AN INTERVAL DOES NOT SURVIVE A PROVEN ACCOUNT CHANGE: it would
+        # time one account's spending from another account's refill. An EMPTY
+        # handle is "could not tell", which is not evidence of a different
+        # account - it does not break the interval, it leaves `boundary`
+        # unknown, which is the honest record of not knowing.
         if open_account and account and account != open_account:
             open_from, open_kind, open_account, gap = None, "unknown", "", 0.0
+            open_ident = {}
         kind = str(row.get("kind") or "")
         if kind == "boot":
-            # time between the last thing we saw and this boot is time we were
-            # not watching. It does NOT mean receipts are missing — orgtree
-            # spends nothing while it is down — but a wall could have passed
-            # unseen, so it is carried on the window rather than discarded.
+            # time orgtree was not watching. It does NOT mean receipts are
+            # missing - orgtree spends nothing while it is down - but a wall
+            # could have passed unseen, so it rides on the interval.
             if last_seen is not None:
                 gap += max(0.0, at - last_seen)
             if open_from is None:
-                open_from, open_kind = at, "boot"
+                open_from, open_kind, open_ident = at, "boot", {}
                 open_account = account or open_account
             last_seen = at
             continue
@@ -429,30 +464,39 @@ def windows(events: list[dict[str, Any]] | None = None) -> list[Window]:
         if kind != "wall":
             continue
         resets = _number(row.get("resets_at"))
+        closing = {"account_ns": account,
+                   "tier": str(row.get("tier") or ""),
+                   "limit": str(row.get("label") or "individual quota")}
+        # ⚠ ONLY A RESET IS A DEFENSIBLE NEAR END. A boot marks when orgtree
+        # began WATCHING and can fall anywhere inside a window already
+        # running, so timing from it measures a fraction and reports it as the
+        # whole. Such an interval is still RECORDED, with its boot start.
+        reset_to_wall = (open_kind == "reset" and open_from is not None
+                         and open_from < at)
+        boundary, differs = (_boundary(open_ident, closing)
+                             if reset_to_wall else ("unknown", None))
         out.append({
-            "limit": str(row.get("label") or "individual quota"),
-            "tier": str(row.get("tier") or ""),
+            "limit": closing["limit"],
+            "tier": closing["tier"],
             "started_at": open_from,
             "start_kind": open_kind if open_from is not None else "unknown",
+            "opened_by": dict(open_ident),
             "walled_at": at,
             "resets_at": resets,
             "reset_seconds": _number(row.get("reset_seconds")),
             "wall_id": str(row.get("wall_id") or ""),
-            "account_ns": str(row.get("account_ns") or ""),
+            "account_ns": account,
             "gap_before_s": round(gap, 3),
-            # ⚠ ONLY A RESET IS A DEFENSIBLE START. A boot marks when orgtree
-            # began WATCHING, and that can fall anywhere inside a window that
-            # was already running - no account is refilled because a process
-            # started. Timing from it would measure part of a window and
-            # report it as the whole, i.e. a spend that is too low presented
-            # as a measurement. Such a window is still RECORDED, with its
-            # boot start and its `start_kind`, and is NOT complete.
-            "complete": (open_kind == "reset" and open_from is not None
-                         and open_from < at),
+            "reset_to_wall": reset_to_wall,
+            "boundary": boundary,
+            "boundary_differs": differs,
         })
-        # the NEXT window opens when this wall lifts, which is the one moment
-        # this lane states outright
+        # the next interval opens when THIS wall lifts. That instant is a
+        # statement about THIS wall's limit and account, so it is carried with
+        # them - the next wall is compared against it rather than assumed to
+        # match it.
         open_from, open_kind, gap = resets, "reset", 0.0
+        open_ident = dict(closing)
         open_account = account or open_account
     return out
 
@@ -481,6 +525,17 @@ def _receipt(value: Any) -> dict[str, Any] | None:
     return None
 
 
+_CONTINUITY_NOTE = {
+    "consistent": ("the account, tier and named metric recorded at the reset "
+                   "that opened this interval match those on the wall that "
+                   "closed it - agreement in the record, not a continuity the "
+                   "provider stated"),
+    "unknown": ("whether ONE limit spans this interval is unknown: something "
+                "was not recorded at one of its two ends, which neither "
+                "establishes continuity nor disproves it"),
+}
+
+
 def estimate(events: list[dict[str, Any]] | None = None,
              tokens_between: Any = None,
              now: float | None = None) -> dict[str, Any]:
@@ -494,42 +549,56 @@ def estimate(events: list[dict[str, Any]] | None = None,
     that also says what it could NOT count, and that shortfall is carried into
     `coverage` and caps the confidence (see `_receipt`).
 
-    ⚠ ONE OBSERVATION, NEVER AN AVERAGE. This reports the LATEST window whose
-    start the provider itself named, and only that one. Combining several
-    would assert that they describe the same ceiling, which nothing recorded
-    here can establish (see `_differs`), and an average of two unrelated
-    limits describes neither. `comparability` says "unknown" on every answer
-    so that no reader has to infer it from a sample count.
+    ⚠ ONE OBSERVATION, NEVER AN AVERAGE. This reports the LATEST interval
+    that runs from an observed reset to a later wall, and only that one.
+    Combining several would assert they describe one ceiling, which nothing
+    recorded here can establish (`_differs`), and an average of two unrelated
+    limits describes neither. `comparability` says "unknown" on every answer,
+    and `limit_continuity` says whether even the two ENDS of the reported
+    interval are known to be one limit.
 
-    With no defensible window it returns a refusal with a reason, NOT a
-    number: one wall on its own tells you a wall exists, not what it costs,
-    and printing the first figure that can be computed is how an inference
-    becomes a ceiling nobody checks.
+    With no such interval it returns a refusal with a reason and NO number:
+    one wall tells you a wall exists, not what it costs, and printing the
+    first computable figure is how an inference becomes a ceiling nobody
+    checks.
     """
     now = time.time() if now is None else now
     recorded = windows(events)
-    defensible = [w for w in recorded if w["complete"]]
-    if not defensible:
-        why = ("no defensible observed window yet: a window needs a START the "
-               "provider itself named - the previous wall's reset - and a "
-               "wall that closed it")
+    # ⚠ A PROVEN MISMATCH IS NOT MEASURABLE. An interval opened by one limit's
+    # reset and closed by a demonstrably different limit's wall measures
+    # NEITHER of them, so it is dropped here rather than reported with a
+    # caveat. An UNKNOWN boundary is kept and labelled: not knowing is not the
+    # same as knowing they differ, and discarding it would throw away the only
+    # evidence there is.
+    measurable = [w for w in recorded
+                  if w["reset_to_wall"] and w["boundary"] != "mismatch"]
+    if not measurable:
+        why = ("measuring needs an interval running from an OBSERVED RESET to "
+               "a later wall, and the record holds none")
         boots = [w for w in recorded if w["start_kind"] == "boot"]
         if boots:
-            why += (f"; {len(boots)} recorded window(s) begin only at a boot, "
-                    "which marks when orgtree began watching and can fall "
-                    "anywhere inside a window already running")
+            why += (f"; {len(boots)} recorded interval(s) begin only at a "
+                    "boot, which marks when orgtree began watching and can "
+                    "fall anywhere inside a window already running")
+        crossed = [w for w in recorded
+                   if w["reset_to_wall"] and w["boundary"] == "mismatch"]
+        if crossed:
+            fields = sorted({str(w["boundary_differs"]) for w in crossed})
+            n = len(crossed)
+            why += (f"; {n} interval{'' if n == 1 else 's'} "
+                    f"{'was' if n == 1 else 'were'} opened by one limit's "
+                    f"reset and closed by a demonstrably different wall "
+                    f"({', '.join(fields)}), which measures neither")
         return {"available": False, "samples": 0, "reason": why,
                 "comparability": "unknown", "estimate": None}
     if tokens_between is None:
-        return {"available": False, "samples": len(defensible),
+        return {"available": False, "samples": len(measurable),
                 "reason": "no token receipts were supplied to measure with",
                 "comparability": "unknown", "estimate": None}
-    # ⚠ THE LATEST DEFENSIBLE WINDOW, AND ONLY IT. The previous version
-    # grouped windows by "comparable" and averaged each group, which asserted
-    # that the members shared a ceiling. Nothing recorded here can establish
-    # that (`_differs`), so the grouping was an assumption wearing the clothes
-    # of a measurement. One window, measured, labelled as one.
-    chosen = defensible[-1]
+    # ⚠ THE LATEST MEASURABLE INTERVAL, AND ONLY IT. Grouping and averaging
+    # would assert the members share a ceiling, which nothing recorded here
+    # establishes (`_differs`). One interval, measured, labelled as one.
+    chosen = measurable[-1]
     start, end = chosen["started_at"], chosen["walled_at"]
     receipt: dict[str, Any] | None = None
     if start is not None:
@@ -539,11 +608,11 @@ def estimate(events: list[dict[str, Any]] | None = None,
             receipt = None
     if receipt is None:
         return {"available": False, "samples": 1,
-                "reason": "no receipts could be read for the observed window",
+                "reason": "no receipts could be read for that interval",
                 "comparability": "unknown", "estimate": None}
     unsummable = int(_number(receipt.get("unsummable_receipts")) or 0)
     receipts_read = int(_number(receipt.get("receipts")) or 0)
-    others = defensible[:-1]
+    others = measurable[:-1]
     different = [w for w in others if _differs(chosen, w)]
     measured = [{"tokens": int(receipt["tokens"]),
                  "receipts": receipts_read,
@@ -570,16 +639,23 @@ def estimate(events: list[dict[str, Any]] | None = None,
         "confidence": "low" if partial else "experimental",
         # stated on every answer, so nobody has to infer it from a count
         "comparability": "unknown",
+        # whether the reset that opened THIS interval and the wall that closed
+        # it are even one limit: "consistent" (recorded and agreeing at both
+        # ends) or "unknown" (something was not recorded at one end). Never
+        # "mismatch" - those are refused above, not reported with a caveat.
+        "limit_continuity": chosen["boundary"],
+        "limit_continuity_note": _CONTINUITY_NOTE[chosen["boundary"]],
+        "opened_by": chosen["opened_by"],
         "estimate": {"tokens": int(receipt["tokens"])},
         "reset_seconds": chosen["reset_seconds"],
         "observations": measured,
-        "other_windows": {
-            "defensible": len(others),
+        "other_intervals": {
+            "reset_to_wall": len(others),
             "demonstrably_different": len(different),
-            "note": ("other recorded windows are NOT combined with this one: "
-                     "a different account, tier or named metric proves some "
-                     "of them different, and nothing proves any of them the "
-                     "same, so none of them corroborates this number"),
+            "note": ("other recorded intervals are NOT combined with this "
+                     "one: a different account, tier or named metric proves "
+                     "some of them different, and nothing proves any of them "
+                     "the same, so none corroborates this number"),
         },
         "comparability_note": (
             "the CLI states the time REMAINING until a reset, not the "
@@ -588,9 +664,10 @@ def estimate(events: list[dict[str, Any]] | None = None,
             "limits can print the same one; countdown similarity is never "
             "read here as evidence that two windows share a ceiling"),
         # said on the face of it, every time, in the caller's words if it likes
-        "basis": ("tokens ORGTREE spent between the window opening and the "
-                  "wall; the provider publishes no usage readout, so this is "
-                  "an inference from observed walls, not a reported limit"),
+        "basis": ("tokens ORGTREE spent between an observed reset and the "
+                  "wall that followed it; the provider publishes no usage "
+                  "readout, so this is an inference from observed walls, not "
+                  "a reported limit"),
         "warning": ("a LOWER BOUND: the same account can be spent in the "
                     "Antigravity IDE, which orgtree cannot observe, so any "
                     "remaining-budget reading from this is optimistic"),
@@ -601,10 +678,10 @@ def estimate(events: list[dict[str, Any]] | None = None,
             "unsummable_receipts": sum(
                 int(m["unsummable_receipts"]) for m in measured),
             "note": ("a gap means orgtree was not running for part of the "
-                     "window, so a wall could have passed unseen; orgtree's "
-                     "own receipts are still complete for the time it ran"),
+                     "interval, so a wall could have passed unseen; its own "
+                     "receipts are still whole for the time it ran"),
             "unsummable_note": (
-                "receipts orgtree holds for this window but cannot add up: "
+                "receipts orgtree holds for this interval but cannot add up: "
                 "rows written before 2026-09-04 carry session-cumulative "
                 "usage, not the turn's, so summing them would multiply the "
                 "same tokens. They are counted, not hidden, and any window "

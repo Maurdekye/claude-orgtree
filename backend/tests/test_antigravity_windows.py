@@ -16,17 +16,24 @@ WHAT THE SUITE PINS, and why each one can fail:
    "append-only" cannot quietly mean "grows forever";
  · no secrets - the signed-in address must NOT appear, and the namespace hash
    must still change when the account changes (a constant would "not leak" too);
- · windows are NEVER averaged together, and the answer says outright that
+ · intervals are NEVER averaged together, and the answer says outright that
    comparability is UNKNOWN: nothing recorded here can prove two walls came
    from one ceiling, so repetition is not corroboration;
- · a BOOT is not a window start - it marks when orgtree began watching, which
-   can fall anywhere inside a window already running;
- · a window does not survive an ACCOUNT change;
+ · a BOOT is not an interval start - it marks when orgtree began watching,
+   which can fall anywhere inside a window already running;
+ · an interval does not survive an ACCOUNT change;
+ · ONE LIMIT'S RESET DOES NOT OPEN ANOTHER LIMIT'S WINDOW - an interval opened
+   by a flash reset and closed by a pro wall (or by a different named metric)
+   measures neither, and is refused rather than reported with a caveat;
+ · an identity MISSING at one end is recorded as unknown and the interval is
+   kept - not knowing is not the same as knowing they differ - but the answer
+   must say `limit_continuity: unknown` rather than certify continuity;
  · the countdown decides nothing in either direction: the same duration on a
    different tier is still a different thing, and two different durations are
    not proof of two limits;
- · with no complete window there is NO NUMBER, only a reason;
- · one complete window DOES produce a number, labelled `experimental` with
+ · with no interval from an observed reset to a later wall there is NO NUMBER,
+   only a reason;
+ · one such interval DOES produce a number, labelled `experimental` with
    samples=1 - a first sample is the only number anyone has, and suppressing
    it entirely would be as dishonest as dressing it up as a ceiling;
  · every estimate carries the lower-bound warning, because IDE usage is
@@ -61,6 +68,10 @@ LONG_WALL = ("Individual quota reached. Please upgrade your subscription to "
              "increase your limits. Resets in 165h21m54s.")
 SHORT_WALL = ("Individual quota reached. Please upgrade your subscription to "
               "increase your limits. Resets in 3h20m48s.")
+# a DIFFERENT named metric, same countdown - the CLI names the metric when it
+# has one, and `_label` reads it out of the quoted clause
+MODEL_WALL = ("Quota reached for limit 'model quota'. Please upgrade your "
+              "subscription to increase your limits. Resets in 3h20m48s.")
 
 
 def check(ok: object, label: str) -> None:
@@ -163,9 +174,9 @@ def test_windows_close_on_walls_and_open_on_resets() -> None:
     second = wall_event(reset1 + 3600, SHORT_WALL, wall_id="w2")
     ws = agy.windows([first, second])
     check(len(ws) == 2, f"two walls, two windows: {len(ws)}")
-    check(ws[0]["complete"] is False,
-          "the FIRST window has no defensible start and is not complete")
-    check(ws[1]["complete"] is True and ws[1]["started_at"] == reset1,
+    check(ws[0]["reset_to_wall"] is False,
+          "the FIRST interval has no observed reset at its near end")
+    check(ws[1]["reset_to_wall"] is True and ws[1]["started_at"] == reset1,
           f"the second opens at the first one's reset: {ws[1]['started_at']} "
           f"vs {reset1}")
     check(ws[1]["walled_at"] == reset1 + 3600, "and closes at its own wall")
@@ -182,8 +193,8 @@ def test_a_boot_gap_is_recorded_not_hidden() -> None:
     check(ws[1]["gap_before_s"] > 0,
           f"the period orgtree was not observing is attached to the window: "
           f"{ws[1]['gap_before_s']}s")
-    check(ws[1]["complete"] is True,
-          "the window is still usable - a restart does not by itself mean "
+    check(ws[1]["reset_to_wall"] is True,
+          "the interval is still usable - a restart does not by itself mean "
           "receipts are missing, it means a wall could have passed unseen")
 
 
@@ -207,7 +218,7 @@ def test_windows_are_never_averaged_together() -> None:
 
     out = agy.estimate([a1, a2, b1], tokens_between=receipts)
     check(len(seen) == 1,
-          f"three walls, two defensible windows, and exactly ONE of them is "
+          f"three walls, two measurable intervals, and exactly ONE of them is "
           f"measured: {len(seen)} call(s)")
     check(seen == [(float(a2["resets_at"]), float(b1["at"]))],
           f"and it is the LATEST one, over its own interval: {seen}")
@@ -216,9 +227,9 @@ def test_windows_are_never_averaged_together() -> None:
     check(out["comparability"] == "unknown",
           f"and it says outright that nothing proves these the same limit: "
           f"{out.get('comparability')}")
-    check(out["other_windows"]["defensible"] == 1,
-          f"the other defensible window is COUNTED, not folded in: "
-          f"{out['other_windows']}")
+    check(out["other_intervals"]["reset_to_wall"] == 1,
+          f"the other measurable interval is COUNTED, not folded in: "
+          f"{out['other_intervals']}")
 
 
 def test_the_countdown_decides_nothing_in_either_direction() -> None:
@@ -256,8 +267,9 @@ def test_a_boot_is_not_a_window_start() -> None:
     ws = agy.windows([boot, wall])
     check(ws[0]["start_kind"] == "boot" and ws[0]["started_at"] == t0 + 3000,
           f"the boot start is still RECORDED: {ws[0]['start_kind']}")
-    check(ws[0]["complete"] is False,
-          "but it is not a defensible start - no account is refilled because "
+    check(ws[0]["reset_to_wall"] is False,
+          "but it is not a defensible near end - no account is refilled "
+          "because "
           "a process started, and timing from it would measure a fraction of "
           "a window and report it as the whole")
     out = agy.estimate([boot, wall], tokens_between=lambda s, e: 40_000)
@@ -281,26 +293,29 @@ def test_a_window_does_not_survive_an_account_change() -> None:
     second = own(wall_event(float(first["resets_at"]) + 3600, SHORT_WALL,
                             wall_id="w2"), "bbbbbbbbbbbb")
     ws = agy.windows([first, second])
-    check(ws[1]["complete"] is False,
+    check(ws[1]["reset_to_wall"] is False,
           "one account's wall is not timed from ANOTHER account's refill - "
-          "the receipts in between belong to neither window")
+          "the receipts in between belong to neither interval")
     out = agy.estimate([first, second], tokens_between=lambda s, e: 40_000)
     check(out["available"] is False,
           f"so there is no number to report: {out.get('reason')!r}")
     # CONTROL: the very same events on ONE account do close a window
     same = own(dict(second), "aaaaaaaaaaaa")
     ws2 = agy.windows([first, same])
-    check(ws2[1]["complete"] is True,
-          "CONTROL: identical events, one account - the window closes")
+    check(ws2[1]["reset_to_wall"] is True and ws2[1]["boundary"] == "consistent",
+          "CONTROL: identical events, one account - the interval closes and "
+          "its two ends agree")
     # and an UNKNOWN handle is not evidence of a different account
     unknown = own(dict(second), "")
     ws3 = agy.windows([first, unknown])
-    check(ws3[1]["complete"] is True,
+    check(ws3[1]["reset_to_wall"] is True,
           "an empty handle means 'could not tell', not 'someone else'")
+    check(ws3[1]["boundary"] == "unknown",
+          f"but it is NOT read as continuity either: {ws3[1]['boundary']}")
 
 
 # ----------------------------------------------------------------- estimate
-def test_no_number_without_a_complete_window() -> None:
+def test_no_number_without_a_reset_started_interval() -> None:
     print("refusal")
     out = agy.estimate([], tokens_between=lambda s, e: 999999)
     check(out["available"] is False and out["estimate"] is None,
@@ -309,11 +324,11 @@ def test_no_number_without_a_complete_window() -> None:
     only = wall_event(1_788_000_000.0, SHORT_WALL, wall_id="w1")
     out = agy.estimate([only], tokens_between=lambda s, e: 999999)
     check(out["available"] is False and out["estimate"] is None,
-          "one wall with no defensible start: still no number "
+          "one wall with no observed reset before it: still no number "
           f"({out.get('reason')!r})")
 
 
-def test_one_complete_window_is_reported_as_one_sample() -> None:
+def test_one_measurable_interval_is_reported_as_one_sample() -> None:
     print("first sample")
     t0 = 1_788_000_000.0
     first = wall_event(t0, SHORT_WALL, wall_id="w1")
@@ -327,7 +342,8 @@ def test_one_complete_window_is_reported_as_one_sample() -> None:
 
     out = agy.estimate([first, second], tokens_between=receipts)
     check(out["available"] is True and out["samples"] == 1,
-          f"one complete window yields a number, as ONE sample: {out['samples']}")
+          f"one measurable interval yields a number, as ONE sample: "
+          f"{out['samples']}")
     check(out["confidence"] == "experimental",
           f"labelled experimental, not presented as a limit: {out['confidence']}")
     check(out["estimate"] == {"tokens": 41_000},
@@ -357,10 +373,10 @@ def test_more_windows_never_raise_the_confidence() -> None:
         t = float(e["resets_at"]) + 3600
     out = agy.estimate(evs, tokens_between=lambda s, e: 40_000)
     check(out["samples"] == 1,
-          f"four walls, three defensible windows, ONE reported observation: "
+          f"four walls, three measurable intervals, ONE observation: "
           f"{out['samples']}")
-    check(out["other_windows"]["defensible"] == 2,
-          f"the rest are counted, never combined: {out['other_windows']}")
+    check(out["other_intervals"]["reset_to_wall"] == 2,
+          f"the rest are counted, never combined: {out['other_intervals']}")
     check(out["confidence"] == "experimental",
           f"seeing the same thing repeatedly is not corroboration while "
           f"comparability is unknown: {out['confidence']}")
@@ -374,6 +390,81 @@ def test_more_windows_never_raise_the_confidence() -> None:
           f"{partial['confidence']}")
 
 
+def test_one_limits_reset_does_not_open_another_limits_window() -> None:
+    print("boundary crossing")
+    t0 = 1_788_000_000.0
+    # a flash "individual quota" wall names a reset; the NEXT wall is a
+    # different tier AND a different metric. The interval between them was
+    # opened by one limit and closed by another, so it measures neither.
+    a = own(wall_event(t0, SHORT_WALL, tier="flash", wall_id="a1"))
+    b = own(wall_event(float(a["resets_at"]) + 3600, MODEL_WALL, tier="pro",
+                       wall_id="b1"))
+    ws = agy.windows([a, b])
+    check(ws[1]["reset_to_wall"] is True,
+          "CONTROL: the interval really does run from an observed reset to a "
+          "later wall - the only thing wrong with it is WHOSE reset it was")
+    check(ws[1]["opened_by"].get("tier") == "flash",
+          f"the identity that named the opening reset is kept, not discarded: "
+          f"{ws[1]['opened_by']}")
+    check(ws[1]["boundary"] == "mismatch"
+          and ws[1]["boundary_differs"] == "tier",
+          f"and the two ends are DEMONSTRABLY different: "
+          f"{ws[1]['boundary']}/{ws[1]['boundary_differs']}")
+    out = agy.estimate([a, b], tokens_between=lambda s, e: 40_000)
+    check(out["available"] is False and out["estimate"] is None,
+          f"so there is NO number: {out.get('reason')!r}")
+    check("neither" in str(out.get("reason") or ""),
+          "and the refusal says the interval measures neither limit")
+    # CONTROL: the same two instants, one tier and one metric, DO measure
+    same = own(wall_event(float(a["resets_at"]) + 3600, SHORT_WALL,
+                          tier="flash", wall_id="b2"))
+    ok = agy.estimate([a, same], tokens_between=lambda s, e: 40_000)
+    check(ok["available"] is True and ok["estimate"] == {"tokens": 40_000},
+          f"CONTROL: identical interval, one limit at both ends, and it is "
+          f"measured: {ok.get('estimate')}")
+    check(ok["limit_continuity"] == "consistent",
+          f"reported as consistent rather than assumed: "
+          f"{ok.get('limit_continuity')}")
+    # a different NAMED METRIC is enough on its own, with the tier held equal
+    c = own(wall_event(float(a["resets_at"]) + 3600, MODEL_WALL, tier="flash",
+                       wall_id="c1"))
+    check(agy.windows([a, c])[1]["boundary_differs"] == "metric",
+          f"the same tier is not a limit identity: "
+          f"{agy.windows([a, c])[1]['boundary_differs']!r}")
+
+
+def test_an_unrecorded_identity_is_unknown_not_certified() -> None:
+    print("unknown identity at a boundary")
+    t0 = 1_788_000_000.0
+    known = own(wall_event(t0, SHORT_WALL, wall_id="k1"))
+    blank = own(dict(wall_event(float(known["resets_at"]) + 3600, SHORT_WALL,
+                                wall_id="k2")), "")
+    ws = agy.windows([known, blank])
+    check(ws[1]["reset_to_wall"] is True,
+          "an unreadable account handle does not throw the interval away - a "
+          "transient probe failure is not evidence of anything")
+    check(ws[1]["boundary"] == "unknown"
+          and ws[1]["boundary_differs"] is None,
+          f"but it is RECORDED as unknown, not read as continuity: "
+          f"{ws[1]['boundary']}")
+    out = agy.estimate([known, blank], tokens_between=lambda s, e: 40_000)
+    check(out["available"] is True,
+          f"the measurement is still reported - the evidence is kept: "
+          f"{out.get('reason')!r}")
+    check(out["limit_continuity"] == "unknown",
+          f"and the answer states that the two ends are not known to be one "
+          f"limit: {out.get('limit_continuity')}")
+    check("neither establishes" in out["limit_continuity_note"],
+          "in words on the answer, not only as a token")
+    # CONTROL: the same interval with the handle recorded at BOTH ends
+    both = own(dict(blank), "acct")
+    ok = agy.estimate([known, both], tokens_between=lambda s, e: 40_000)
+    check(ok["limit_continuity"] == "consistent",
+          f"CONTROL: recorded at both ends and agreeing: "
+          f"{ok.get('limit_continuity')}")
+
+
+
 for fn in (test_the_journal_keeps_what_the_standing_throws_away,
            test_a_clear_with_nothing_standing_is_not_an_observation,
            test_the_record_is_bounded,
@@ -384,8 +475,10 @@ for fn in (test_the_journal_keeps_what_the_standing_throws_away,
            test_the_countdown_decides_nothing_in_either_direction,
            test_a_boot_is_not_a_window_start,
            test_a_window_does_not_survive_an_account_change,
-           test_no_number_without_a_complete_window,
-           test_one_complete_window_is_reported_as_one_sample,
+           test_one_limits_reset_does_not_open_another_limits_window,
+           test_an_unrecorded_identity_is_unknown_not_certified,
+           test_no_number_without_a_reset_started_interval,
+           test_one_measurable_interval_is_reported_as_one_sample,
            test_more_windows_never_raise_the_confidence):
     fn()
 

@@ -1200,25 +1200,22 @@ const fmtTokens = (n: number): string =>
   : n >= 1e3 ? (n / 1e3).toFixed(0) + 'k'
   : String(n)
 
-/** What the Antigravity lane's observed windows support.
+/** What the Antigravity lane's recorded intervals support.
  *
- *  ⚠ NEVER A BAR AND NEVER A PERCENTAGE. A percentage implies a denominator,
- *  and the denominator is exactly the thing nobody can read here: the account
- *  ceiling is published nowhere orgtree can reach. So this prints a token
- *  count and the three qualifications that must travel with it — that it is an
- *  inference from walls that were actually hit rather than a reported limit,
- *  that it is a LOWER bound since the same Google account is spendable in the
- *  Antigravity IDE where orgtree observes nothing, and that it is ONE window
- *  whose comparability to any other is unknown.
+ *  ⚠ NEVER A BAR AND NEVER A PERCENTAGE — a percentage implies a denominator,
+ *  and the account ceiling is published nowhere orgtree can read. So: a token
+ *  count, and the qualifications that must travel with it. It is an inference
+ *  from walls actually hit, not a reported limit; it is a LOWER bound, since
+ *  the same account is spendable in the Antigravity IDE where orgtree sees
+ *  nothing; it is ONE interval whose comparability to any other is unknown;
+ *  and when `limit_continuity` is unknown, one limit is not even established
+ *  to span the interval itself.
  *
- *  ⚠ IT IS ONE OBSERVATION, AND MUST NOT READ AS SEVERAL AGREEING. Other
- *  recorded windows are named as a count, never merged into a range: nothing
- *  recorded can prove two walls share a ceiling, so a range across them would
- *  be an assumption wearing the clothes of a measurement.
+ *  ⚠ ONE OBSERVATION, WHICH MUST NOT READ AS SEVERAL AGREEING. Other recorded
+ *  intervals are a count, never a range.
  *
- *  With no complete window it prints the REASON and no number. A section that
- *  quietly rendered nothing would look identical to one whose estimate was
- *  simply missing. */
+ *  With no measurable interval it prints the REASON and no number: a section
+ *  that quietly rendered nothing would look identical to a missing one. */
 export function AntigravityEstimateNote(
   { est }: { est?: AgyEstimate | null },
 ) {
@@ -1234,26 +1231,29 @@ export function AntigravityEstimateNote(
   if (!e) return null
   const cov = est.coverage ?? {}
   const unsummable = cov.unsummable_receipts ?? 0
-  const others = est.other_windows?.defensible ?? 0
+  const others = est.other_intervals?.reset_to_wall ?? 0
   return (
     <div className="agy-est" data-testid="agy-estimate"
          title={[est.basis, est.warning, est.comparability_note,
+                 est.limit_continuity_note,
                  unsummable ? cov.unsummable_note : '']
            .filter(Boolean).join('\n\n')}>
       <span className="agy-est-n">~{fmtTokens(e.tokens)} tokens</span>
-      <span className="dim"> spent in ONE observed {est.limit ?? 'quota'}
-        {' '}window{' · '}{est.confidence}</span>
+      <span className="dim"> spent between an observed {est.limit ?? 'quota'}
+        {' '}reset and the wall that followed it{' · '}{est.confidence}</span>
       <div className="dim agy-est-why">
         inferred from walls orgtree hit, not a reported limit — a LOWER bound,
-        so any budget left reads high; comparability to any other window is
+        so any budget left reads high; comparability to any other interval is
         UNKNOWN, so this is not corroborated
-        {others > 0 && `; ${others} other recorded window`
+        {est.limit_continuity === 'unknown'
+          && '; and one limit is not even known to span this interval'}
+        {others > 0 && `; ${others} other recorded interval`
           + `${others === 1 ? ' is' : 's are'} counted but never combined `
           + `with it`}
         {unsummable > 0 && `; ${unsummable} older receipt`
           + `${unsummable === 1 ? '' : 's'} could not be counted`}
         {(cov.windows_with_unobserved_gaps ?? 0) > 0
-          && `; ${cov.windows_with_unobserved_gaps} window(s) span a period `
+          && `; ${cov.windows_with_unobserved_gaps} interval(s) span a period `
             + `orgtree was not running`}
       </div>
     </div>

@@ -1504,10 +1504,10 @@ export interface AccountUsage {
  *  turn reported; this is an inference from the walls turns actually hit,
  *  measured against the token receipts orgtree journalled in between.
  *
- *  `available: false` carries a `reason` and NO number: with no complete
- *  observed window there is nothing honest to print, and printing the first
- *  figure that can be computed is how an inference becomes a ceiling nobody
- *  checks. `samples` says how many windows it had, always.
+ *  `available: false` carries a `reason` and NO number: with no interval
+ *  running from an observed reset to a later wall there is nothing honest to
+ *  print, and printing the first computable figure is how an inference
+ *  becomes a ceiling nobody checks. `samples` says how many it had, always.
  *
  *  `coverage.unsummable_receipts` counts receipts orgtree holds for those
  *  windows but CANNOT add up (rows written before 2026-09-04 carry
@@ -1527,13 +1527,23 @@ export interface AntigravityEstimate {
    *  was hit. Carried as a field so a reader never has to infer corroboration
    *  from a sample count. */
   comparability?: 'unknown'
+  /** whether the reset that OPENED the reported interval and the wall that
+   *  CLOSED it are known to be one limit. 'consistent' = account, tier and
+   *  metric were recorded at both ends and agree (agreement in the record,
+   *  not continuity the provider stated); 'unknown' = something was not
+   *  recorded at one end, which settles nothing either way. A proven mismatch
+   *  never reaches a surface - the backend refuses to measure it. */
+  limit_continuity?: 'consistent' | 'unknown'
+  limit_continuity_note?: string
+  /** the identity that named the reset opening the interval, when recorded */
+  opened_by?: { account_ns?: string; tier?: string; limit?: string }
   /** the metric the CLI named on the wall, e.g. "individual quota" */
   limit?: string
   tier?: string
   estimate?: { tokens: number } | null
-  /** the other recorded windows, COUNTED and never combined with this one */
-  other_windows?: {
-    defensible?: number
+  /** the other recorded intervals, COUNTED and never combined with this one */
+  other_intervals?: {
+    reset_to_wall?: number
     demonstrably_different?: number
     note?: string
   }
