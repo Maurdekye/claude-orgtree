@@ -3809,14 +3809,27 @@ async def repair_rename(slug: str, body: RenameRepair) -> dict[str, Any]:
     with store.DOC_LOCK:
         try:
             org = store.load_org(slug)
+        except LedgerError as e:
+            raise HTTPException(404, str(e))
+        try:
+            # Convert an old-identity document IN THIS SAVE, like every other
+            # docket mutation. The ledger's own guard runs from `_work_sweep`,
+            # which this repair does not go through — it writes item fields
+            # directly, because the docket's mutators refuse for exactly the
+            # reason being repaired. Without this the repair would save a
+            # legacy document and the next read would 409.
+            migrated = _work_identity_ready(org, slug)
             r = org.repair_rename_identity(
                 body.actor, body.rename_at,
                 documents=body.documents, work_items=body.work_items)
         except LedgerError as e:
+            # nothing is saved on a refusal, so a document that was pending
+            # conversion is still pending — the repair does not convert it as
+            # a side effect of failing
             raise HTTPException(422, str(e))
         store.save_org(org)
     await hub.changed(slug)
-    return {"ok": True, **r}
+    return {"ok": True, "migrated": migrated, **r}
 
 
 # ---------------------------------------------------------------- the docket

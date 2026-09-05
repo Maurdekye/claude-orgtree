@@ -202,6 +202,76 @@ check("the actor travels to the ledger and an unauthorised one is refused",
 
 # "checks passed" is the phrase tools/run_tests.py counts (_CHECKS); without
 # it the suite runs but reports a blank total in the summary table
+def _make_legacy(slug: str) -> None:
+    """Put the stored document back into old-style docket identity: an opaque
+    `id` on every item and no `slug`. That is what a document written before
+    the slug migration looks like, and the state this route has to convert."""
+    org = store.load_org(slug)
+    for i, it in enumerate(org.d.get("work_items") or []):
+        it["id"] = f"w{i:08x}"
+        it.pop("slug", None)
+    store.save_org(org)
+    assert store.load_org(slug).work_identity_state() == "legacy", \
+        "the fixture did not actually produce a legacy document"
+
+
+def first_request_on_a_legacy_document_converts_and_repairs() -> None:
+    """The repair writes item fields DIRECTLY, so it never passes through
+    `_work_sweep` and the ledger's identity guard does not fire for it. The
+    route therefore converts in its own save. Without that it would leave a
+    converted-looking repair on an unconverted document, and the next read
+    would 409."""
+    slug, at, did, ref = stranded_org()
+    _make_legacy(slug)
+    r = client.post(f"/api/orgs/{slug}/repair-rename",
+                    json={"rename_at": at, "documents": [did]})
+    assert r.status_code == 200, r.text
+    assert r.json()["migrated"], \
+        "the response must say it converted — a silent conversion is a lie " \
+        "of omission about what the request did"
+    org = store.load_org(slug)
+    assert org.work_identity_state() == "slug", \
+        "the document is still legacy after a successful repair"
+    assert next(d for d in org.d["documents"] if d["id"] == did)["node"] \
+        == "root-renamed"
+    # the read path the missing conversion used to break
+    assert client.get(f"/api/orgs/{slug}/work-items").status_code == 200
+    _ = ref
+
+
+check("a first repair on a LEGACY document converts it and repairs, in one "
+      "save", first_request_on_a_legacy_document_converts_and_repairs)
+
+
+def a_refusal_leaves_the_pending_migration_pending() -> None:
+    """A refused repair must write nothing — including the conversion the
+    route would have done. Asserted from DISK, not from the response."""
+    slug, at, did, _ref = stranded_org()
+    _make_legacy(slug)
+    before = store.load_org(slug)
+    doc_before = next(d for d in before.d["documents"] if d["id"] == did)["node"]
+
+    for body, why in (
+        ({"rename_at": "2020-01-01T00:00:00.000Z", "documents": [did]},
+         "no such rename"),
+        ({"rename_at": at, "documents": [did, did]}, "duplicate"),
+        ({"rename_at": at, "documents": [did], "actor": "worker"}, "actor"),
+    ):
+        r = client.post(f"/api/orgs/{slug}/repair-rename", json=body)
+        assert r.status_code == 422, f"{why}: {r.status_code} {r.text}"
+
+    after = store.load_org(slug)
+    assert after.work_identity_state() == "legacy", \
+        "a refused repair converted the document anyway — the migration was " \
+        "pending and must still be pending"
+    assert next(d for d in after.d["documents"] if d["id"] == did)["node"] \
+        == doc_before == "root"
+
+
+check("a refused repair leaves the stored document untouched, INCLUDING a "
+      "pending migration", a_refusal_leaves_the_pending_migration_pending)
+
+
 print(f"\n{PASSED} checks passed, {len(FAILED)} failed")
 for f in FAILED:
     print(f"\nFAIL  {f}")
