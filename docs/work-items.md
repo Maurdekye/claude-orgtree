@@ -24,7 +24,7 @@ archive is unbounded.
 | `slug` | **the only identifier.** Readable, derived from the title, unique across active+archive, fixed at creation — it does NOT follow a later title edit, so a name already written down keeps working. Every stored reference uses it: `dependencies`, `superseded_by`, ask `work_item`, the routes, the frontend's keys |
 | `rev` | bumped by every mutation (verify revalidates against it) |
 | `title`, `objective`, `kind` (`code` / `non-code`) | what and why |
-| `status` | `open` · `in_progress` · `blocked` · `review` · `done` · `superseded` · `dropped` |
+| `status` | `backlogged` · `open` · `in_progress` · `blocked` · `review` · `done` · `superseded` · `dropped`. `review` means **review by agents** — see below |
 | `owner` `{node, generation}` | who is responsible, at the generation assigned; `owner_current` / `owner_state` say whether that seat is still live and unchanged |
 | `participants` | node ids with narrow collaborator rights (below) |
 | `done_so_far`, `working_on_next` | **the docket status** — the latest two lists |
@@ -54,11 +54,48 @@ update: a status change or an attention flag rides an update that restates the
 lists. The lists are **replaced**, not merged — they are the latest complete
 summary.
 
-Agents set `open|in_progress|blocked|review|dropped`. `done` is refused on
-`update`: assert `review` and wait for `accept`. `blocked_reason` is kept while
-the status is `blocked` and cleared otherwise.
+Agents set `backlogged|open|in_progress|blocked|review|dropped`. `done` is
+refused on `update`: assert `review` and wait for `accept`. `blocked_reason` is
+kept while the status is `blocked` and cleared otherwise.
+
+## `review` is the AGENT check — the user's review is attention
+
+User ruling 2026-09-05. `review` says **another agent or a coordinator is
+checking the work**. It is never how the user is asked for anything, and the UI
+labels it **Agent review** everywhere (row, detail pane, group heading).
+
+Asking the user to look at something is the **attention** mechanism: the manual
+flag, or an attached question. Nothing in the backend requires `review` before
+`accept` — an item that was only ever waiting on the user is accepted from
+whatever open status it is in.
+
+The user's own review is wanted only when one of these actually holds:
+
+* a decision was taken **beyond** the stated spec,
+* a **specialized edge case** was chosen,
+* a **definition gap** was filled on their behalf, or
+* a real question or blocker remains.
+
+Being visible in the UI is not a reason, and neither is who owns the item. Work
+that matches the stated requirements exactly — no deviations, no extra edge
+cases, no definitions supplied for them — is covered by the user's standing
+authorization once agents have verified it, and completes without a further
+acceptance round. An exact match may not be *claimed* without comparing the
+stated requirements against the delivered behaviour.
+
+Ambiguity is a **question asked before** the implementation that depends on it,
+not a choice made for the user and approved afterwards. Ordinary implementation
+mechanics that do not decide product behaviour are not asked about at all.
 
 ## Attention
+
+`attention_reason` carries the specifics: what was asked against what was built,
+the exact decision, edge case or definition added beyond the spec, and the
+confirmation wanted. `Ready for review` and `please approve` are not enough —
+this field is what the user reads to know what they are approving, so the detail
+lives here rather than in `evidence` or the done list. It is capped at
+`WORK_ATTENTION_REASON_MAX` (1000 characters) and the detail pane renders it
+with newlines preserved.
 
 **Manual flag.** `update … attention: true, attention_reason: "…"` sets
 `manual_attention` and mints the next `set_rev`. A later update that does not

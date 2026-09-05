@@ -37,17 +37,27 @@ import { ago, useEsc, usePolled } from './shared'
 import { buildMentionIndex, WorkRefText } from './workrefs'
 import type { MentionIndex } from './workrefs'
 
+// `review` READS AS "Agent review" EVERYWHERE (user ruling 2026-09-05). The
+// status says agents are checking the work; asking the USER to look at
+// something is the attention flag or an attached question, never this status.
+// "Under review" was ambiguous between the two and is gone.
+const REVIEW_HELP = 'Review by agents — a request for you rides the attention flag or a question'
 const STATUS_LABEL: Record<string, string> = {
   backlogged: 'Backlogged',
   open: 'Open',
   in_progress: 'In progress',
   blocked: 'Blocked',
-  review: 'Under review',
+  review: 'Agent review',
   done: 'Done',
   superseded: 'Superseded',
   dropped: 'Dropped',
 }
 const statusLabel = (status: string): string => STATUS_LABEL[status] ?? status
+/** the hover help beside a status word, where the word alone can be read two
+ *  ways. Only `review` has one; everything else deliberately returns nothing
+ *  rather than a restatement of its own label. */
+const statusHelp = (status: string): string | undefined =>
+  (status === 'review' ? REVIEW_HELP : undefined)
 
 /** Group-by-status order, exactly as specified: effective attention first,
  *  then blocked, in_progress, review, open, done, then everything else that
@@ -57,7 +67,7 @@ const STATUS_GROUPS: { key: string; heading: string }[] = [
   { key: 'attention', heading: 'Needs attention' },
   { key: 'blocked', heading: 'Blocked' },
   { key: 'in_progress', heading: 'In progress' },
-  { key: 'review', heading: 'Under review' },
+  { key: 'review', heading: 'Agent review' },
   { key: 'open', heading: 'Open' },
   { key: 'backlogged', heading: 'Backlogged' },
   { key: 'done', heading: 'Done' },
@@ -788,7 +798,8 @@ function DocketRow({ item, selected, onClick, onDismiss, facts, onFocusAgent,
         <span className="mtime">{ago(item.docket_at ?? item.at)}</span>
       </div>
       <div className="l2">
-        <span className={'docket-status status-' + item.status + (attention ? ' attention' : '')}>
+        <span className={'docket-status status-' + item.status + (attention ? ' attention' : '')}
+          title={attention ? undefined : statusHelp(item.status)}>
           {label}
         </span>
         <span className="docket-updater">
@@ -873,7 +884,8 @@ function DocketPane({ slug, item, toast, asksById, onDismiss, close, onFocusAgen
         )}
       </div>
       <div className={'dim docket-pane-sub' + (attention ? ' docket-pane-sub-attn' : '')}>
-        <span className={'docket-status status-' + item.status + (attention ? ' attention' : '')}>
+        <span className={'docket-status status-' + item.status + (attention ? ' attention' : '')}
+          title={attention ? undefined : statusHelp(item.status)}>
           {label}
         </span>
         <SlugText item={item} />
@@ -914,7 +926,12 @@ function DocketPane({ slug, item, toast, asksById, onDismiss, close, onFocusAgen
             <ActorName actor={manualAttn.by} facts={facts}
               onFocusAgent={onFocusAgent} close={close} />
           </div>
-          <div>
+          {/* THE REASON IS WHERE THE SPECIFICS LIVE (user 2026-09-05): what was
+              asked against what was built, the decision or edge case added, and
+              the confirmation wanted. It is written as several lines, so it gets
+              the DESCRIPTION's pre-wrap treatment — the plain <div> ran it all
+              together into one paragraph and the detail became unreadable. */}
+          <div className="docket-attention-body">
             <WorkRefText text={manualAttn.reason} index={refIndex}
               onPick={onGoToItem} onFocusAgent={goToAgent} />
           </div>

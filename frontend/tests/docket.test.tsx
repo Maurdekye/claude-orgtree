@@ -1450,3 +1450,72 @@ uiTest('§32b switching org never auto-opens an item the user did not click', as
   assert.match(pane(el)?.textContent ?? '', /Org two item/)
 })
 
+
+uiTest('§33 `review` reads as Agent review in the row, the pane and the group heading',
+  async (mount) => {
+    // USER RULING 2026-09-05: the status means agents are checking the work.
+    // "Under review" read equally as "the user is reviewing it", which is the
+    // confusion this removes; asking the user is the attention flag.
+    mockWorkItems([
+      mkItem({ title: 'Checked by agents', status: 'review' }),
+      mkItem({ title: 'Not started', status: 'open' }),
+    ])
+    forgetGroupChoice()
+    const { el } = await mount(docketModal())
+    await flush()
+    const status = (r: Element) => r.querySelector('.docket-status')
+    assert.equal(status(rows(el)[0]!)?.textContent, 'Agent review')
+    assert.match(status(rows(el)[0]!)?.getAttribute('title') ?? '', /Review by agents/,
+      'the hover help says whose review it is')
+    // CONTROL: the row beside it proves the label is read per status rather
+    // than being a constant, and that an unambiguous status gets no help text
+    assert.equal(status(rows(el)[1]!)?.textContent, 'Open')
+    assert.equal(status(rows(el)[1]!)?.getAttribute('title'), null)
+    assert.doesNotMatch(el.textContent ?? '', /Under review/, 'the old wording is gone')
+
+    await inAct(() => (rows(el)[0] as HTMLElement).click())
+    await flush()
+    assert.equal(pane(el)?.querySelector('.docket-status')?.textContent, 'Agent review')
+
+    await chooseGroup(el, 'status')
+    assert.ok(headings(el).includes('Agent review'), headings(el).join(' | '))
+  })
+
+uiTest('§34 the attention reason keeps every line the user is asked to read',
+  async (mount) => {
+    // The reason now carries three things at once — requested against
+    // delivered, the decision added, and the confirmation wanted (user
+    // 2026-09-05) — so it arrives as several lines. jsdom applies no CSS, so
+    // this pins the TEXT and the element the pre-wrap rule hangs on; that the
+    // lines are VISIBLY separate is measured in docket_layout_probe.py.
+    const reason = ['REQUESTED: a CSV export.',
+      'DELIVERED: CSV, plus a TSV switch I added.',
+      'CONFIRM: keep the TSV switch, or strip it?'].join('\n')
+    mockWorkItems([
+      mkItem({
+        title: 'Extra beyond spec', status: 'in_progress',
+        effective_attention: true, attention_sources: ['manual'],
+        manual_attention: {
+          reason, at: '2026-09-05T09:00:00.000Z',
+          by: { node: 'agent1', generation: 1 }, set_rev: 1,
+        },
+      }),
+      mkItem({ title: 'Nothing to confirm', status: 'in_progress' }),
+    ])
+    forgetGroupChoice()
+    const { el } = await mount(docketModal())
+    await flush()
+    await inAct(() => (rows(el)[0] as HTMLElement).click())
+    await flush()
+    const body = pane(el)?.querySelector('.docket-attention-box .docket-attention-body')
+    assert.ok(body, 'the reason has a body element of its own to style')
+    assert.equal(body?.textContent, reason, 'every line arrives, in order, verbatim')
+    assert.equal((body?.textContent ?? '').split('\n').length, 3)
+
+    // CONTROL: an item with no flag draws no attention box at all, so the
+    // assertions above are about this item's reason and not about a box the
+    // pane always renders
+    await inAct(() => (rows(el)[1] as HTMLElement).click())
+    await flush()
+    assert.equal(pane(el)?.querySelector('.docket-attention-box'), null)
+  })

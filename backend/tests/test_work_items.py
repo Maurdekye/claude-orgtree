@@ -1984,6 +1984,142 @@ check("the slug reaches agents: in the prompt, on the tool card, and in create's
       agents_are_told_to_use_the_slug)
 
 
+# ====================== §13 `review` is the AGENT check; the user's is attention
+print("§13 agent review vs user attention")
+
+
+def an_item_waiting_only_on_the_user_is_accepted_where_it_stands():
+    """`review` means review BY AGENTS (user ruling 2026-09-05), so nothing may
+    demand it before `accept`. An item that was only ever waiting on the user —
+    blocked, flag raised — is accepted from where it stands.
+
+    ⚠ THE CONTROLS ARE THE POINT. "accept succeeded" is worth nothing on its own
+    unless `accept` still refuses the things it is supposed to refuse, so the
+    two live guards are fired in the same check: the owner may never accept its
+    own item, and a closed one is refused."""
+    slug = fresh_org()
+    wid = create(slug, node="mid", owner="worker")
+    ok(slug, "worker", "update", slug=wid, status="blocked",
+       blocked_reason="waiting on the user's call about the extra switch",
+       attention=True,
+       attention_reason="asked for CSV; delivered CSV plus a TSV switch I added "
+                        "— confirm the extra or I strip it",
+       done_so_far=["exporter written"], working_on_next=["your call"])
+    it = get_item(slug, wid)
+    assert it["status"] == "blocked" and it["effective_attention"]
+    # it has NEVER been in review — no history row moved it there
+    assert not [h for h in it["history"]
+                if (h.get("changes") or {}).get("status", {}).get("to") == "review"], \
+        it["history"]
+    r = client.post(f"/api/orgs/{slug}/work-items/{wid}/accept",
+                    json={"note": "keep the switch"})
+    assert r.status_code == 200, r.text
+    it = get_item(slug, wid)
+    assert it["status"] == "done" and it["accepted"]["by"] == USER
+    # CONTROL 1 — the owner is still refused, from the same blocked status
+    wid2 = create(slug, node="mid", owner="worker")
+    ok(slug, "worker", "update", slug=wid2, status="blocked",
+       blocked_reason="same shape", done_so_far=["x"], working_on_next=["y"])
+    assert "superior" in refused(slug, "worker", "accept", slug=wid2)
+    # CONTROL 2 — an ancestor may, and only once
+    assert ok(slug, "mid", "accept", slug=wid2)["accepted"] == wid2
+    assert "already done" in refused(slug, "mid", "accept", slug=wid2)
+
+
+check("an item waiting only on the user is accepted without ever entering `review`",
+      an_item_waiting_only_on_the_user_is_accepted_where_it_stands)
+
+
+def the_attention_reason_holds_the_specifics_it_must_now_carry():
+    """The reason has to name requested-against-delivered, the decision or edge
+    case added, and the confirmation wanted (user 2026-09-05) — three things at
+    once. The old 500-character cap cut that down SILENTLY. Control: one
+    character past the current cap is still cut, so this measures a boundary
+    that exists rather than the absence of one."""
+    slug = fresh_org()
+    wid = create(slug)
+    cap = store.load_org(slug).WORK_ATTENTION_REASON_MAX
+    three = ("REQUESTED: a CSV export.\n"
+             "DELIVERED: a CSV export, plus a TSV switch.\n"
+             "BEYOND SPEC: the TSV switch is mine, not yours — "
+             + "the importer here rejects commas inside quoted fields, so CSV "
+               "alone loses rows. " * 6
+             + "\nCONFIRM: keep the TSV switch, or strip it back to CSV only?")
+    assert 500 < len(three) <= cap, len(three)
+    ok(slug, "boss", "update", slug=wid, attention=True, attention_reason=three,
+       done_so_far=["exporter written"], working_on_next=["your call"])
+    got = get_item(slug, wid)["manual_attention"]["reason"]
+    assert got == three, (len(got), len(three))
+    assert got.count("\n") == 3, "the line structure the pane renders is kept verbatim"
+    # CONTROL — the cap is real, so the assert above is not passing because
+    # nothing truncates at all
+    ok(slug, "boss", "update", slug=wid, attention=True,
+       attention_reason="z" * (cap + 1),
+       done_so_far=["x"], working_on_next=["y"])
+    assert len(get_item(slug, wid)["manual_attention"]["reason"]) == cap
+    # blank is still refused, and the refusal now says what the field must hold
+    d = refused(slug, "boss", "update", slug=wid, attention=True,
+                attention_reason="   ", done_so_far=["x"], working_on_next=["y"])
+    assert "what was asked" in d and "confirmation" in d, d
+
+
+check("the attention reason carries all three parts, and the cap that would cut them is 1000",
+      the_attention_reason_holds_the_specifics_it_must_now_carry)
+
+
+#: every sentence of the ruling that has to reach an agent, as it must read in
+#: the prompt. The control below blanks the doctrine and requires ALL of them to
+#: disappear — a phrase that survives is a phrase this check was never testing.
+POLICY_PHRASES = (
+    "REVIEW BY AGENTS",
+    "NEVER THE `review` STATUS",
+    "BEYOND the stated spec",            # trigger 1
+    "specialized edge case",             # trigger 2
+    "definition gap",                    # trigger 3
+    "Being visible in the UI is NOT a reason",
+    "neither is who owns the item",
+    "no further acceptance round is needed",
+    "Never CLAIM an exact match",
+    "`Ready for review`",
+    "ASK BEFORE YOU BUILD ON THE ANSWER",
+    "the wrong order",
+)
+
+
+def the_ruling_reaches_agents_where_they_read_it():
+    slug = fresh_org()
+    org = store.load_org(slug)
+    for nid in ("boss", "worker"):
+        p = supervisor.identity_prompt(org, nid)
+        for phrase in POLICY_PHRASES:
+            assert phrase in p, (nid, phrase)
+    # ⚠ POSITIVE CONTROL. Every assert above is a presence check, and a phrase
+    # that happens to occur elsewhere in the prompt would satisfy one without
+    # the doctrine teaching anything. Blank the doctrine and require the whole
+    # list to vanish: whatever survives, this check was never measuring.
+    keep = supervisor.DOCKET_DOCTRINE
+    try:
+        supervisor.DOCKET_DOCTRINE = ""
+        blank = supervisor.identity_prompt(org, "boss")
+    finally:
+        supervisor.DOCKET_DOCTRINE = keep
+    for phrase in POLICY_PHRASES:
+        assert phrase not in blank, \
+            f"{phrase!r} is in the prompt without the doctrine — that assert is inert"
+    # the tool card teaches the same thing to an agent reading the catalogue
+    card = next(t for t in mcptool.TOOLS if t["name"] == "orgtree_work")
+    d = card["description"]
+    assert "REVIEW BY AGENTS" in d and "ATTENTION mechanism" in d, d
+    assert "does not pass through `review` first" in d, d
+    props = card["inputSchema"]["properties"]
+    assert "REVIEW BY AGENTS" in props["status"]["description"]
+    assert "not enough" in props["attention_reason"]["description"]
+
+
+check("the agent-review ruling is in every agent's prompt and on the tool card",
+      the_ruling_reaches_agents_where_they_read_it)
+
+
 # ---------------------------------------------------------------- summary
 print(f"\n{PASSED} passed, {len(FAILED)} failed")
 for f in FAILED:

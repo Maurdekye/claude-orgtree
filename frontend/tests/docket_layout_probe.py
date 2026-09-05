@@ -95,6 +95,10 @@ CONTROLS = {
     # w2d5fab0a element 2: the skeleton lines gone
     "noline": """.docket-row.docket-child::before, .docket-row.docket-child::after {
   display: none !important; }""",
+    # the attention reason run together into one paragraph — the shape the
+    # plain <div> had before the pre-wrap rule, and the reason the specifics
+    # the user is being asked to confirm were unreadable (user 2026-09-05)
+    "nowrap": """.docket-attention-body { white-space: normal !important; }""",
 }
 
 # what a name may cost in chrome before it is a control again, and how much of
@@ -326,12 +330,51 @@ MEASURE = r"""
 }
 """
 
+# THE SECOND PANE. The attention reason lives on a different item from the
+# mentions, and one pane is open at a time — so it gets its own page. The claim
+# is a pure CSS one (`white-space: pre-wrap`), which no DOM test can see: jsdom
+# applies no stylesheet, so docket.test.tsx §34 can only pin the text and the
+# element. What the user actually asked for is that the lines they must read are
+# SEPARATE ON SCREEN, and that is a measurement.
+MEASURE_ATTENTION = r"""
+() => {
+  const bad = []
+  const box = document.querySelector('.mailer-read .docket-attention-box')
+  if (!box) return ['no attention box on the second page — this check is inert']
+  const body = box.querySelector('.docket-attention-body')
+  if (!body) {
+    return ['the reason has no body element of its own — the pre-wrap rule has '
+      + 'nothing to hang on, and the lines run together']
+  }
+  const written = ((body.textContent ?? '').match(/\n/g) ?? []).length + 1
+  if (written < 4) {
+    return [`the fixture reason is only ${written} line(s) — this check is inert`]
+  }
+  // count the LINE BOXES the text actually occupies. Without pre-wrap the
+  // newlines become spaces and these four short lines reflow into two or three.
+  const r = document.createRange()
+  r.selectNodeContents(body)
+  const tops = new Set([...r.getClientRects()].map((x) => Math.round(x.top)))
+  if (tops.size < written) {
+    bad.push(`the attention reason renders on ${tops.size} line(s) where the `
+      + `agent wrote ${written} — the specifics run together`)
+  }
+  const bb = body.getBoundingClientRect(), xb = box.getBoundingClientRect()
+  if (bb.right > xb.right + 1 || bb.bottom > xb.bottom + 1) {
+    bad.push('the reason spills out of its own box')
+  }
+  return bad
+}
+"""
 
-def dump() -> str:
+
+def dump(select: str | None = None) -> str:
     with tempfile.TemporaryDirectory() as tmp:
         out = pathlib.Path(tmp) / "docket.html"
-        subprocess.run(["node", str(HERE / "docket_dump.mjs"), str(out)],
-                       check=True, capture_output=True)
+        cmd = ["node", str(HERE / "docket_dump.mjs"), str(out)]
+        if select:
+            cmd.append(select)
+        subprocess.run(cmd, check=True, capture_output=True)
         return out.read_text(encoding="utf-8")
 
 
@@ -342,10 +385,12 @@ def main() -> int:
                     help="run a known-negative control; the probe must FAIL it")
     ap.add_argument("--shot")
     args = ap.parse_args()
-    fragment = dump()
     css = CSS.read_text(encoding="utf-8")
-    html = (f"<!doctype html><meta charset='utf-8'><style>{css}\n{FRAME}\n"
-            f"{CONTROLS.get(args.expect_fail or '', '')}</style>\n{fragment}")
+    sheet = (f"<!doctype html><meta charset='utf-8'><style>{css}\n{FRAME}\n"
+             f"{CONTROLS.get(args.expect_fail or '', '')}</style>\n")
+    html = sheet + dump()
+    # the second pane, opened on the item that carries a manual flag
+    html_attn = sheet + dump("explain-unavailable-actions")
     with sync_playwright() as pw:
         browser = pw.chromium.launch(channel="msedge", headless=True)
         page = browser.new_page(viewport={"width": 820, "height": 720},
@@ -356,6 +401,17 @@ def main() -> int:
                             .replace('__UP_PX__', str(UPDATER_MIN_PX))
                             .replace('__UP_SHOWN__', str(UPDATER_MIN_SHOWN))
                             .replace('__SUB_GAP__', str(SUB_GAP_MIN_PX)))
+        attn = browser.new_page(viewport={"width": 820, "height": 720},
+                                device_scale_factor=2)
+        attn.set_content(html_attn)
+        attn.wait_for_timeout(150)
+        bad += attn.evaluate(MEASURE_ATTENTION)
+        attn_lines = attn.evaluate(
+            "() => {"
+            "  const b = document.querySelector('.docket-attention-body');"
+            "  if (!b) return 0;"
+            "  const r = document.createRange(); r.selectNodeContents(b);"
+            "  return new Set([...r.getClientRects()].map((x) => Math.round(x.top))).size }")
         # measured separately so a green run states NUMBERS, not "fine"
         facts = page.evaluate(
             "() => {"
@@ -386,7 +442,9 @@ def main() -> int:
           f"its row; the narrowest last-updater name is {facts['minUpdater']:.0f}px "
           f"and readable; {facts['refs']} mentions render inline in the detail pane; "
           f"status dots agree with their row edges in {facts['dots']} distinct "
-          f"colours; the two progress lists draw different bullets")
+          f"colours; the two progress lists draw different bullets; on the "
+          f"second pane the four-line attention reason renders on "
+          f"{attn_lines} separate lines")
     return 0
 
 

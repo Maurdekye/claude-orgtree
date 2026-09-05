@@ -314,6 +314,17 @@ TOOLS: list[dict[str, Any]] = [
             "condition `index` met with evidence_ref), `accept` (→ done; "
             "the user or a superior of the owner, never the owner — assert "
             "`review` and wait), `archive` (a closed item, early), "
+            "`review` MEANS REVIEW BY AGENTS and is never how you ask the "
+            "user for anything: their own review is the ATTENTION mechanism "
+            "(attention:true, or a question via orgtree_ask work_item), and an "
+            "item waiting only on the user is accepted straight from whatever "
+            "status it is in — it does not pass through `review` first. Ask "
+            "for their review ONLY when you decided something beyond the "
+            "stated spec, chose a specialized edge case, filled a definition "
+            "gap for them, or a real question or blocker remains; being "
+            "visible in the UI and who owns the item are NOT reasons. Work "
+            "that matches the stated requirements exactly is covered by their "
+            "standing authorization once agents have verified it. "
             "`supersede` (by another item). Authority: owner, creator, "
             "their superiors, the user, and listed participants; nothing is "
             "org-public. Done items archive by themselves an hour after "
@@ -363,11 +374,11 @@ TOOLS: list[dict[str, Any]] = [
                 "working_on_next": {"type": "array", "items": {"type": "string"},
                                     "description": "update (required) / create: what you are doing now and the next steps"},
                 "status": {"type": "string",
-                           "description": "create/update: backlogged|open|in_progress|blocked|review|dropped (done only via accept)"},
+                           "description": "create/update: backlogged|open|in_progress|blocked|review|dropped (done only via accept). `review` = REVIEW BY AGENTS; asking the user to look at something is attention/orgtree_ask, not this status"},
                 "blocked_reason": {"type": "string", "description": "update: why, when status is blocked"},
                 "attention": {"type": "boolean",
                               "description": "update: raise the manual attention flag (needs attention_reason)"},
-                "attention_reason": {"type": "string", "description": "update: the concrete reason the user must see"},
+                "attention_reason": {"type": "string", "description": "update: the concrete reason the user must see — what was asked against what was built, the exact decision, edge case or definition you added beyond the spec, and the confirmation you want. 'Ready for review' or 'please approve' is not enough; this is what they read to know what they are approving"},
                 "reopen": {"type": "boolean", "description": "update: resume an archived/closed item"},
                 "stage": {"type": "string",
                           "description": "claim/verify: implemented|committed|pushed|deployed|in_build"},

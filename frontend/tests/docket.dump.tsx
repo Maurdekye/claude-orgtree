@@ -73,7 +73,14 @@ const ITEMS: WorkItem[] = [
   mk({ slug: 'explain-unavailable-actions',
     title: 'Explain why an unavailable action is unavailable', status: 'done',
     effective_attention: true, attention_sources: ['manual'],
-    manual_attention: { reason: 'needs a look before the next deploy',
+    // FOUR SHORT LINES ON PURPOSE (user 2026-09-05): the reason now carries
+    // requested-against-delivered, the extra, and the confirmation wanted, so
+    // it arrives written out. Short enough that WITHOUT pre-wrap they collapse
+    // into two — which is what makes the probe's line count able to fail.
+    manual_attention: { reason: ['REQUESTED: a CSV export.',
+      'DELIVERED: CSV plus a TSV switch.',
+      'BEYOND SPEC: the TSV switch.',
+      'CONFIRM: keep it, or CSV only?'].join('\n'),
       at: '2026-09-05T09:30:00.000Z',
       by: { node: 'coordinator-astra', generation: 0 }, set_rev: 1 },
     last_updater: { node: 'codex-checklist', generation: 5 } }),
@@ -145,12 +152,18 @@ if (!dest) {
   console.error('usage: node tests/docket_dump.mjs <out.html>')
   process.exit(2)
 }
+// WHICH ROW THE PANE OPENS ON is an argument, because two different claims are
+// measured on two different panes: the mentions live in one item's description,
+// the attention reason in another's, and only one pane is open at a time.
+const want = process.argv[3] || 'clickable-docket-references-across-text-surfaces'
 setTimeout(() => {
   const rows = [...document.querySelectorAll('.mailrow.docket-row')]
-  const target = rows.find((r) =>
-    r.querySelector('.l1 .mfrom')?.textContent
-      === 'clickable-docket-references-across-text-surfaces')
-  flushSync(() => { (target as HTMLElement | undefined)?.click() })
+  const target = rows.find((r) => r.querySelector('.l1 .mfrom')?.textContent === want)
+  if (!target) {
+    console.error(`no row named ${want} — the dump would be measuring nothing`)
+    process.exit(3)
+  }
+  flushSync(() => { (target as HTMLElement).click() })
   setTimeout(() => {
     writeFileSync(dest, host.innerHTML, 'utf8')
     console.log(`wrote ${dest} (${host.innerHTML.length} bytes)`)

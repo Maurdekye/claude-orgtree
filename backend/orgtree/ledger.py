@@ -9449,6 +9449,11 @@ class Org:
     WORK_EVIDENCE_MAX: Final = 50
     WORK_HISTORY_MAX: Final = 100
     WORK_LIST_ENTRY_MAX: Final = 40          # entries per docket list
+    # The attention reason must now carry the SPECIFICS the user is being asked
+    # to confirm — requested against delivered, the decision or edge case added,
+    # and the confirmation wanted (user 2026-09-05). 500 chars truncated that to
+    # roughly one of the three, silently, so the field is 1000.
+    WORK_ATTENTION_REASON_MAX: Final = 1000
     WORK_ARCHIVE_AFTER_S: Final = 3600       # strictly greater than → archived
     #
     # `backlogged` (user 2026-09-05) is NOT a closed state and NOT an active
@@ -10401,8 +10406,9 @@ class Org:
             if status not in self.WORK_AGENT_STATUSES:
                 if status == "done":
                     raise LedgerError(
-                        "assert `review`; acceptance belongs to your superior "
-                        "or the user (orgtree_work accept)")
+                        "assert `review` — which means REVIEW BY AGENTS; "
+                        "acceptance belongs to your superior or the user "
+                        "(orgtree_work accept)")
                 raise LedgerError(
                     f"status must be one of {'|'.join(self.WORK_AGENT_STATUSES)}")
         # a participant's grant is NARROW: status updates and evidence. Closing
@@ -10419,8 +10425,13 @@ class Org:
                 raise LedgerError("only the owner, the creator, their superiors "
                                   "or the user may retitle or re-scope an item")
         if attention is True and not str(attention_reason or "").strip():
-            raise LedgerError("attention=true needs a nonblank attention_reason "
-                              "— the concrete thing the user must see")
+            raise LedgerError(
+                "attention=true needs a nonblank attention_reason — the "
+                "concrete thing the user must see: what was asked against what "
+                "was built, the exact decision, edge case or definition you "
+                "added beyond the spec, and the confirmation you want. This "
+                "field is what they read to know what they are approving, so "
+                "it carries the detail rather than pointing at evidence")
         if reopen:
             if it.get("status") not in self.WORK_CLOSED and not phys:
                 pass                      # nothing to reopen; harmless
@@ -10469,7 +10480,8 @@ class Org:
         # the manual flag is restated by every update
         prev = it.get("manual_attention")
         if attention is True:
-            reason = str(attention_reason or "").strip()[:500]
+            reason = str(attention_reason or "").strip()[
+                :self.WORK_ATTENTION_REASON_MAX]
             last = (it.get("dismissals") or [])[-1:]
             if last and " ".join(str(last[0].get("reason") or "").lower().split()) \
                     == " ".join(reason.lower().split()):
@@ -10666,14 +10678,20 @@ class Org:
                     note: str | None = None) -> dict[str, Any]:
         """→ done. The user or a strict ancestor of the owner; never the
         owner. Starts the one-hour archive clock (a docket event) but leaves
-        `last_updater` alone — replies still reach the agent who did the work."""
+        `last_updater` alone — replies still reach the agent who did the work.
+
+        ANY open status is acceptable, not just `review`. `review` means review
+        BY AGENTS (user ruling 2026-09-05); an item that was only ever waiting
+        on the user — blocked on a question, or holding an attention flag — is
+        accepted from where it stands rather than being walked through an agent
+        check it never needed."""
         self._work_require_live_agent_or_user(actor)
         self._work_sweep()
         it, _ = self._work_get_for(actor, wid)
         if not self._work_can_accept(actor, it):
             raise LedgerError(
                 "acceptance belongs to the user or a superior of the owner — "
-                "an owner asserts `review` and waits")
+                "an owner asserts `review` (the AGENT check) and waits")
         if it.get("status") in self.WORK_CLOSED:
             raise LedgerError(f"{wid} is already {it.get('status')}")
         frm = it.get("status")

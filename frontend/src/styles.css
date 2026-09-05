@@ -3035,6 +3035,10 @@ main.solo { width: 100%; }
   background: color-mix(in srgb, var(--accent) 8%, var(--panel));
   border-radius: 6px; padding: 8px 10px; margin: 0 0 10px;
 }
+/* the attention reason carries the specifics the user is being asked to
+   confirm, written as several lines — same pre-wrap treatment as DESCRIPTION,
+   which without it collapsed into one paragraph (user 2026-09-05) */
+.docket-attention-body { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.5; }
 .docket-question-head { color: var(--accent); font-weight: 700; font-size: 12px; margin-bottom: 4px; display: flex; align-items: center; gap: 4px; }
 .docket-question-note { margin-bottom: 6px; }
 .docket-reply-label { font-size: 12px; margin: 4px 0 6px; display: flex; align-items: center; gap: 4px; }
