@@ -10354,7 +10354,15 @@ class Org:
             changed = (op in ("accept", "reopen", "supersede")
                        or (op == "update"
                            and isinstance(row.get("changes"), dict)
-                           and "status" in row["changes"]))
+                           and "status" in row["changes"])
+                       # ⚠ A DISMISSAL IS A TRANSITION ONLY WHEN IT MOVED THE
+                       # VALUE. It leaves the item blocked, so from an item
+                       # already blocked it changed nothing — and reading it as
+                       # a change would date a transition that never happened.
+                       # The history row records what it moved FROM, so this is
+                       # decidable rather than guessed (Astra, 2026-09-05).
+                       or (op == "dismiss_attention"
+                           and row.get("from") != "blocked"))
             if changed and row.get("at"):
                 return str(row["at"])
         return str(it.get("at") or "")
@@ -11076,7 +11084,13 @@ class Org:
         #
         # It is also a real state change, so it belongs in the status clock
         # like any other transition, even though nobody typed a status here.
-        self._work_stamp_status(it)
+        #
+        # ⚠ ONLY WHEN IT MOVED THE VALUE. Dismissing a flag on an item that was
+        # ALREADY blocked assigns `blocked` over `blocked`, and stamping that
+        # would make "most recently changed state" mean "most recently
+        # touched" — the exact confusion this clock removes (Astra, 2026-09-05).
+        if frm != "blocked":
+            self._work_stamp_status(it)
         it["blocked_reason"] = f"attention flag dismissed by the user ({cur.get('reason')})"[:500]
         it["waiting_reason"] = None
         if phys:

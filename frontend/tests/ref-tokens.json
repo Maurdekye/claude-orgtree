@@ -13,6 +13,8 @@
       "kind": "agent",
       "org": "alpha"
     },
+    "@agent:alpha/one@12x": null,
+    "@agent:alpha/one@bad": null,
     "@doc:alpha/d1a2b3c4": {
       "id": "d1a2b3c4",
       "kind": "doc",
@@ -26,6 +28,7 @@
       "org": "alpha"
     },
     "@item:alpha/not-a-node@4": null,
+    "@item:alpha/one/extra": null,
     "@item:alpha/w1234abcd": {
       "id": "w1234abcd",
       "kind": "item",
@@ -65,6 +68,7 @@
       "kind": "mail",
       "org": "alpha"
     },
+    "@mail:alpha/user/ab12cd34/extra": null,
     "@mail:org/mailbox/abc": null,
     "@mail:org/node/abc": null,
     "@mail:org/user": null,
@@ -86,6 +90,22 @@
       [
         "item",
         "a/c"
+      ]
+    ],
+    "@agent:alpha/one@item:alpha/two": [
+      [
+        "agent",
+        "alpha/one"
+      ],
+      [
+        "item",
+        "alpha/two"
+      ]
+    ],
+    "@item:alpha/one/extra then @item:alpha/two": [
+      [
+        "item",
+        "alpha/two"
       ]
     ],
     "@item:alpha/thing.": [
@@ -112,6 +132,15 @@
         "alpha/codex-checklist@4"
       ]
     ],
+    "before @agent:alpha/one@12 after": [
+      [
+        "agent",
+        "alpha/one@12"
+      ]
+    ],
+    "before @agent:alpha/one@12x after": [],
+    "before @agent:alpha/one@bad after": [],
+    "before @item:alpha/one/extra after": [],
     "https://x.dev/@item:alpha/thing is a URL": [
       [
         "item",

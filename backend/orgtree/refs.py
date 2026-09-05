@@ -51,6 +51,22 @@ SEG = r"[a-z0-9-]+"
 #: So the generation is part of the segment, never something to cut off.
 NODE = r"[a-z0-9-]+(?:@[0-9]+)?"
 
+#: ⚠ A TOKEN ENDS AT A BOUNDARY, or it is not a token.
+#:
+#: Without this a malformed token did not fail — it TRUNCATED, and the prefix
+#: that survived was a valid reference to something ELSE:
+#:
+#:     @agent:org/alpha@bad   -> agent `alpha`
+#:     @agent:org/alpha@12x   -> bearer `alpha@12`
+#:     @item:org/alpha/extra  -> item `alpha`
+#:
+#: Same wrong-target failure the org segment exists to prevent, reached from
+#: the other side: a broken token silently repaired into a working link
+#: somewhere else. Two continuations are refused — anything that could have
+#: been part of the id, and a bare `@` unless it opens another canonical token,
+#: because `…/alpha@item:org/beta` is two adjacent references.
+END = r"(?![A-Za-z0-9_/-])(?!@(?!(?:item|doc|agent|mail):))"
+
 #: the whole family, for a matcher that has to find these inside prose. The
 #: node positions are the only ones that admit `@`, and only as `@<digits>` —
 #: so a following `@item:…` can never be swallowed into one.
@@ -58,7 +74,7 @@ TOKEN_RE = re.compile(
     r"@(?:(item|doc):(" + SEG + r"/" + SEG + r")"
     r"|(agent):(" + SEG + r"/" + NODE + r")"
     r"|(mail):(" + SEG + r"/(?:user|org)/" + SEG
-    + r"|" + SEG + r"/node/" + NODE + r"/" + SEG + r"))")
+    + r"|" + SEG + r"/node/" + NODE + r"/" + SEG + r"))" + END)
 
 KINDS = ("item", "doc", "agent", "mail")
 MAIL_BOXES = ("user", "org", "node")

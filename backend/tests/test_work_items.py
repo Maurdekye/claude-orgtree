@@ -2300,6 +2300,111 @@ check("a folded history row is never read as a status change",
       a_folded_history_row_is_not_a_status_change)
 
 
+def a_dismissal_that_moved_nothing_is_not_a_transition():
+    """⚠ THE COUNTEREXAMPLE (Astra, 2026-09-05). A dismissal assigns `blocked`,
+    so on an item that was ALREADY blocked it changes nothing — and stamping it
+    would make "most recently changed state" mean "most recently touched",
+    which is the confusion this clock exists to remove. Driven through the real
+    route, with the open -> blocked case beside it as the control that proves
+    the check can move."""
+    slug = fresh_org()
+
+    # CONTROL: open -> blocked. A real transition, and it MUST advance.
+    moving = create(slug, title="flag on open work")
+    ok(slug, "boss", "update", slug=moving, status="open", attention=True,
+       attention_reason="the disk is full",
+       done_so_far=["a"], working_on_next=["b"])
+    before_move = _status_at(slug, moving)
+    time.sleep(0.01)
+    rev = get_item(slug, moving)["manual_attention"]["set_rev"]
+    r = client.post(f"/api/orgs/{slug}/work-items/{moving}/dismiss-attention",
+                    json={"set_rev": rev})
+    assert r.status_code == 200, r.text
+    assert get_item(slug, moving)["status"] == "blocked"
+    assert _status_at(slug, moving) > before_move, \
+        "control: a dismissal that MOVED the value must advance the clock"
+
+    # THE DEFECT: already blocked. Same route, same dismissal, no transition.
+    stuck = create(slug, title="flag on blocked work")
+    ok(slug, "boss", "update", slug=stuck, status="blocked",
+       blocked_reason="waiting", done_so_far=["a"], working_on_next=["b"])
+    ok(slug, "boss", "update", slug=stuck, attention=True,
+       attention_reason="the disk is still full",
+       done_so_far=["a"], working_on_next=["b"])
+    before_stuck = _status_at(slug, stuck)
+    time.sleep(0.01)
+    rev2 = get_item(slug, stuck)["manual_attention"]["set_rev"]
+    r2 = client.post(f"/api/orgs/{slug}/work-items/{stuck}/dismiss-attention",
+                     json={"set_rev": rev2})
+    assert r2.status_code == 200, r2.text
+    after = get_item(slug, stuck)
+    assert after["status"] == "blocked"
+    assert after["status_at"] == before_stuck, \
+        "a dismissal on an ALREADY BLOCKED item moved the status clock"
+    # …and the ordinary clocks did move, so the assertion above is not passing
+    # because the dismissal failed to land
+    assert after["docket_at"] >= before_stuck
+    assert after["dismissals"], "positive control: the dismissal was recorded"
+
+
+check("a dismissal that moved nothing is not a transition; one that moved the "
+      "value is", a_dismissal_that_moved_nothing_is_not_a_transition)
+
+
+def a_legacy_dismissal_derives_the_same_way():
+    """The derivation for items written before the field existed has to make
+    the SAME distinction from history alone. The row records what it moved
+    from, so this is decidable rather than guessed."""
+    slug = fresh_org()
+    moved = create(slug, title="legacy dismissal from open")
+    stayed = create(slug, title="legacy dismissal from blocked")
+    for wid, frm in ((moved, "open"), (stayed, "blocked")):
+        ok(slug, "boss", "update", slug=wid, status=frm,
+           **({"blocked_reason": "waiting"} if frm == "blocked" else {}),
+           done_so_far=["a"], working_on_next=["b"])
+        ok(slug, "boss", "update", slug=wid, attention=True,
+           attention_reason="look at this",
+           done_so_far=["a"], working_on_next=["b"])
+        rev = get_item(slug, wid)["manual_attention"]["set_rev"]
+        assert client.post(
+            f"/api/orgs/{slug}/work-items/{wid}/dismiss-attention",
+            json={"set_rev": rev}).status_code == 200
+
+    org = store.load_org(slug)
+    for wid in (moved, stayed):
+        it, _ = org._work_find(wid)
+        it.pop("status_at", None)          # exactly what an older item has
+    store.save_org(org)
+
+    m = get_item(slug, moved)
+    s = get_item(slug, stayed)
+    dism = [h for h in m["history"] if h.get("op") == "dismiss_attention"]
+    assert dism, "positive control: the dismissal really is in the history"
+    assert m["status_at"] == dism[-1]["at"], \
+        "a legacy dismissal FROM OPEN is a transition and must date from it"
+    # ⚠ THE SECOND ITEM HAS A REAL TRANSITION OF ITS OWN — the update that
+    # blocked it — so the honest answer is THAT row, not its creation and not
+    # the newer dismissal. (My first version of this check asserted creation
+    # and was simply wrong about the fixture; the code was right.)
+    real = [h for h in s["history"]
+            if isinstance(h.get("changes"), dict) and "status" in h["changes"]]
+    assert real, "positive control: the blocking update is in the history"
+    s_dism = [h for h in s["history"] if h.get("op") == "dismiss_attention"]
+    assert s_dism and s_dism[-1]["at"] > real[-1]["at"], \
+        "positive control: the dismissal is NEWER than the real transition, " \
+        "so a rule that took the newest row would be visibly wrong here"
+    assert s["status_at"] == real[-1]["at"], \
+        "a legacy dismissal from ALREADY BLOCKED moved nothing, so it must " \
+        "not displace the last transition that did"
+    # the two items are otherwise identical, so the difference is the rule
+    assert m["status_at"] != s["status_at"]
+
+
+check("a legacy dismissal counts only when it moved the value",
+      a_legacy_dismissal_derives_the_same_way)
+
+
+
 # ---------------------------------------------------------------- summary
 print(f"\n{PASSED} passed, {len(FAILED)} failed")
 for f in FAILED:

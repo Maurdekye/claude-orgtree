@@ -163,6 +163,54 @@ test('§6b repeated splits of the same text give the same answer', () => {
   assert.deepEqual([twice, thrice], [3, 3])
 })
 
+// --------------------------------------------------- §6d whole-token boundaries
+//
+// ⚠ THE WORST FAILURE THIS FILE GUARDS, and it was live until Astra's
+// counterexamples found it: a malformed token did not fail, it TRUNCATED, and
+// the surviving prefix was a valid reference to something ELSE. A reader saw
+// an ordinary working link that opened the wrong agent or the wrong item.
+//
+// The renderer is checked here, not only the parser: `splitTypedRefs` builds
+// its own scan from the shared source, so a grammar that refuses a malformed
+// token can still be rendered by a splitter that does not use it.
+
+test('§6d a malformed token is refused by the SPLITTER, not truncated into '
+  + 'a link to something else', () => {
+  for (const [text, why] of [
+    [`@agent:${HERE}/alpha@bad`, 'truncated to agent alpha'],
+    [`@agent:${HERE}/alpha@12x`, 'truncated to bearer alpha@12'],
+    [`@item:${HERE}/alpha/extra`, 'truncated to item alpha'],
+    [`@mail:${HERE}/user/ab12cd34/extra`, 'truncated to a user-box mail'],
+  ] as [string, string][]) {
+    const runs = splitTypedRefs(text, world())
+    assert.equal(runs.filter((r) => r.ref).length, 0, `${text}: ${why}`)
+    assert.equal(runs.map((r) => r.text).join(''), text,
+      'and the prose is still all there, character for character')
+  }
+})
+
+test('§6e CONTROL — the two things that must NOT be refused by that rule',
+  () => {
+    // a real knowledge bearer: `@<digits>` IS part of a node id
+    const bearer = splitTypedRefs(`@agent:${HERE}/alpha@12`, world())
+      .filter((r) => r.ref)
+    assert.equal(bearer.length, 1, 'a bearer is a real, addressable agent')
+    assert.equal(bearer[0]!.ref!.ref.id, 'alpha@12')
+    // two canonical tokens with NOTHING between them: the second one's `@`
+    // is a continuation of the first only if you are not reading it properly
+    const pair = splitTypedRefs(`@agent:${HERE}/alpha@item:${HERE}/beta`, world())
+      .filter((r) => r.ref)
+    assert.deepEqual(pair.map((r) => r.ref!.ref.id), ['alpha', 'beta'])
+  })
+
+test('§6f a refused token does not swallow a good one later in the line', () => {
+  const runs = splitTypedRefs(
+    `@item:${HERE}/alpha/extra then @item:${HERE}/beta`, world())
+  const linked = runs.filter((r) => r.ref)
+  assert.equal(linked.length, 1, 'the good token was lost with the bad one')
+  assert.equal(linked[0]!.ref!.ref.id, 'beta')
+})
+
 test('§6c CONTROL — every token the scanner finds also PARSES, which is what '
   + 'keeps the non-parse branch dead', () => {
   // `splitTypedRefs` has an `if (!parsed) continue` that cannot fire, because

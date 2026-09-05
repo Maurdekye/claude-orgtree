@@ -20,8 +20,27 @@ import { execFileSync } from 'node:child_process'
 import { readFileSync, writeFileSync } from 'node:fs'
 
 const REFMD = 'src/canvas/refmd.tsx'
+const WORKREFS = 'src/canvas/workrefs.tsx'
 
 const MUTANTS = [
+  {
+    // ⚠ THE WRONG-TARGET DEFECT, restored. Without the boundary a malformed
+    // token does not fail — it truncates, and the surviving prefix is a valid
+    // reference to something ELSE, rendered as an ordinary working control.
+    // (Astra's counterexamples, 2026-09-05.)
+    name: 'a token no longer has to end at a boundary',
+    file: WORKREFS, kills: '§2b a malformed token is refused by the DOM walk',
+    from: "  + END, 'g')",
+    to: "  + '', 'g')",
+  },
+  {
+    // the half-fix: refuse a trailing `@` outright, which also refuses the
+    // second of two adjacent tokens
+    name: 'the boundary refuses an adjacent canonical token too',
+    file: WORKREFS, kills: '§2c CONTROL',
+    from: "const END = '(?![A-Za-z0-9_/-])(?!@(?!(?:item|doc|agent|mail):))'",
+    to: "const END = '(?![A-Za-z0-9_/-@])'",
+  },
   {
     // the token in a fenced block is the thing being DISCUSSED
     name: 'code and pre are walked like ordinary prose',

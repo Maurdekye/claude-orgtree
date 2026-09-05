@@ -59,9 +59,36 @@ MUTANTS: list[tuple[str, str, str, str]] = [
         "accept, reopen and a user dismissal",
     ),
     (
+        # ⚠ ASTRA'S COUNTEREXAMPLE, restored. A dismissal assigns `blocked`, so
+        # on an item already blocked it changes nothing — and stamping it makes
+        # "most recently changed state" mean "most recently touched".
+        "a dismissal stamps even when it moved nothing",
+        '        if frm != "blocked":\n            self._work_stamp_status(it)',
+        '        if True:\n            self._work_stamp_status(it)',
+        "a dismissal that moved nothing is not a transition",
+    ),
+    (
+        # the same distinction on the DERIVED side: a legacy dismissal that
+        # moved nothing must not displace the transition that did
+        "a legacy dismissal counts whatever it moved from",
+        '                       or (op == "dismiss_attention"\n'
+        '                           and row.get("from") != "blocked"))',
+        '                       or op == "dismiss_attention")',
+        "a legacy dismissal counts only when it moved the value",
+    ),
+    (
+        # …and the other direction: ignoring legacy dismissals entirely, which
+        # is what the first version of this derivation did
+        "a legacy dismissal is never a transition",
+        '                       or (op == "dismiss_attention"\n'
+        '                           and row.get("from") != "blocked"))',
+        '                       or False)',
+        "a legacy dismissal counts only when it moved the value",
+    ),
+    (
         "a user's dismissal stops stamping",
-        '        self._work_stamp_status(it)\n        it["blocked_reason"] = f"attention flag dismissed',
-        '        it["blocked_reason"] = f"attention flag dismissed',
+        '        if frm != "blocked":\n            self._work_stamp_status(it)\n',
+        '',
         "accept, reopen and a user dismissal",
     ),
     (

@@ -58,6 +58,13 @@ TOKENS = [
     "@item:org/",
     "@",
     "",
+    # TRUNCATION, which is worse than refusal: each of these used to parse as
+    # a VALID reference to something else (Astra's counterexamples,
+    # 2026-09-05). A token ends at a boundary or it is not a token.
+    "@agent:alpha/one@bad",
+    "@agent:alpha/one@12x",
+    "@item:alpha/one/extra",
+    "@mail:alpha/user/ab12cd34/extra",
 ]
 
 #: prose the matcher must split identically on both sides
@@ -71,6 +78,17 @@ PROSE = [
     "two @agent:alpha/one and @agent:alpha/two together",
     "ask @agent:alpha/codex-checklist@4 about it",
     "@agent:a/b@2@item:a/c",
+    # the same three truncations found by a SCAN of prose rather than by a
+    # whole-string parse — the scanners are where they actually bit
+    "before @agent:alpha/one@bad after",
+    "before @agent:alpha/one@12x after",
+    "before @item:alpha/one/extra after",
+    # the controls that must keep working beside them: a real bearer, and two
+    # canonical tokens written with nothing between them
+    "before @agent:alpha/one@12 after",
+    "@agent:alpha/one@item:alpha/two",
+    # a refused token must not hide a good one later in the same line
+    "@item:alpha/one/extra then @item:alpha/two",
 ]
 
 

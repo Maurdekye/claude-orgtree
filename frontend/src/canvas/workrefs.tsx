@@ -229,12 +229,33 @@ const SEG = '[a-z0-9-]+'
  *  this format exists to prevent. The generation is part of the segment. */
 const NODE = '[a-z0-9-]+(?:@[0-9]+)?'
 
+/** ⚠ A TOKEN ENDS AT A BOUNDARY, or it is not a token.
+ *
+ *  Without this, a malformed token did not fail — it TRUNCATED, and the prefix
+ *  that survived was a valid reference to something else:
+ *
+ *      @agent:org/alpha@bad   → a control opening agent `alpha`
+ *      @agent:org/alpha@12x   → a control opening bearer `alpha@12`
+ *      @item:org/alpha/extra  → a control opening item `alpha`
+ *
+ *  That is the wrong-target failure this format exists to prevent, arrived at
+ *  from the other direction: not a token resolved against the wrong org, but a
+ *  broken token silently repaired into a working link somewhere else. Found by
+ *  Astra's counterexamples, 2026-09-05.
+ *
+ *  Two continuations are refused: anything that could have been part of the id
+ *  (so the match cannot be a prefix of a longer name), and a bare `@` — EXCEPT
+ *  when it opens another canonical token, because `…/alpha@item:org/beta` is
+ *  two adjacent references and both must survive. */
+const END = '(?![A-Za-z0-9_/-])(?!@(?!(?:item|doc|agent|mail):))'
+
 /** the family, for scanning prose. Only the node positions admit `@`, and
  *  only as `@<digits>`, so a following `@item:…` is never swallowed. */
 export const REF_TOKEN_RE = new RegExp(
   `@(?:(item|doc):(${SEG}/${SEG})`
   + `|(agent):(${SEG}/${NODE})`
-  + `|(mail):(${SEG}/(?:user|org)/${SEG}|${SEG}/node/${NODE}/${SEG}))`, 'g')
+  + `|(mail):(${SEG}/(?:user|org)/${SEG}|${SEG}/node/${NODE}/${SEG}))`
+  + END, 'g')
 
 /** Every token in `text`, as `[kind, rest]`, in order. The alternation makes
  *  group numbering an implementation detail; callers use this. */

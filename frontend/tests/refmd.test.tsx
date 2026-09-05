@@ -67,6 +67,41 @@ test('§2 CONTROL — a token this org does not have is marked, not deleted and 
     assert.match(c!.textContent!, /@item:orgtree\/ghost/)
   })
 
+// ⚠ §2b IS THE ONE THAT WAS LIVE. A malformed token did not fail here either
+// — the DOM walk truncated it and injected a working control for a DIFFERENT
+// target. Checked against this renderer as well as the splitter, because each
+// builds its own scan from the shared source and only one of them being right
+// is exactly how this would come back.
+test('§2b a malformed token is refused by the DOM walk, not truncated into a '
+  + 'control for something else', () => {
+  const all = new Map([['alpha', 'alpha'], ['alpha@12', 'alpha@12'],
+    ['one', 'one'], ['beta', 'beta']])
+  for (const text of [
+    'ask @agent:orgtree/alpha@bad about it',
+    'ask @agent:orgtree/alpha@12x about it',
+    'see @item:orgtree/alpha/extra for the rest',
+  ]) {
+    const el = body(text)
+    const n = linkifyRefs(el, world({ items: all, agents: all }))
+    assert.equal(n, 0, `${text}: a chip was injected for a truncated token`)
+    assert.equal(chips(el).length, 0)
+    assert.equal(readable(el), text, 'and the prose is untouched')
+  }
+})
+
+test('§2c CONTROL — the DOM walk still chips a real bearer and two adjacent '
+  + 'tokens', () => {
+  const all = new Map([['alpha', 'alpha'], ['alpha@12', 'alpha@12'],
+    ['beta', 'beta']])
+  const one = body('ask @agent:orgtree/alpha@12 about it')
+  assert.equal(linkifyRefs(one, world({ agents: all })), 1,
+    'a bearer is a real, addressable agent')
+  assert.equal(chips(one)[0]!.textContent, 'alpha@12')
+  const two = body('@agent:orgtree/alpha@item:orgtree/beta')
+  assert.equal(linkifyRefs(two, world({ agents: all, items: all })), 2,
+    'two canonical tokens written with nothing between them')
+})
+
 test('§3 A TOKEN INSIDE CODE IS LEFT ALONE — it is being quoted', () => {
   // both fences: `inline` and a block. The author is DISCUSSING the token.
   const el = body('write `@item:orgtree/alpha` like this\n\n'
