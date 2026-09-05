@@ -56,10 +56,9 @@ MUTANTS: list[tuple[str, str, str, str, str]] = [
     (
         "NOOP-CONTROL-comment-only",
         SUP,
-        "                    # THE STATE FLAGS FIRST: everything below them "
-        "can raise,",
-        "                    # THE STATE FLAGS FIRST (noop control): "
-        "everything below them can raise,",
+        "                    # and `st[\"proc\"]` is the handle ⏸ acts on.",
+        "                    # and `st[\"proc\"]` is the handle ⏸ acts on "
+        "(noop control).",
         "",
     ),
     (

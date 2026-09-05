@@ -15066,9 +15066,7 @@ def _run_one_turn(slug: str, nid: str,
                 dog_stop.set()
                 try:
                     # THE STATE FLAGS FIRST: everything below them can raise,
-                    # and this handle is the one ⏸ acts on — a raise in the
-                    # capture used to leave `st["proc"]` pointing at a process
-                    # that had already exited.
+                    # and `st["proc"]` is the handle ⏸ acts on.
                     with _state_lock:
                         st["proc"] = None
                         st["responding"] = False
@@ -15084,14 +15082,12 @@ def _run_one_turn(slug: str, nid: str,
                             _mcp_tool_surface_for_owner(slug, nid, proc)
                     finally:
                         if not parked:
-                            # ⚠ THE LOOP CAN LEAVE BY A DOOR THAT NEVER WAITED —
-                            # every ordinary exit above reaches `proc.wait()`, an
-                            # exception reaches none of them, and this used to
-                            # publish a death for a process still running. Nothing
-                            # reads it any more (`st["proc"]` is cleared above and
-                            # the sweep below tells its children so): end it, then
-                            # publish an exit that was observed rather than one
-                            # nobody made — the rule `_mcp_tool_count_end` already
+                            # ⚠ THE LOOP CAN LEAVE BY A DOOR THAT NEVER
+                            # WAITED: every ordinary exit above reaches
+                            # `proc.wait()`, an exception reaches none of
+                            # them. Nothing reads the process any more, so
+                            # end it, and publish only an exit that was
+                            # OBSERVED — the rule `_mcp_tool_count_end`
                             # applies to the tool surface beside it.
                             if proc.poll() is None:
                                 _wd_kill_tree(proc)
@@ -15126,14 +15122,12 @@ def _run_one_turn(slug: str, nid: str,
                                    in bg_live.items()]
                         bg_live.clear()
                     if orphans:
-                        # The cleanup above now ends a process the loop left
-                        # running, but its kill is BOUNDED — a tree that
-                        # outlives it still reads `returncode` None here, and
-                        # so does one this sweep reached past a raise.
+                        # The cleanup's kill is BOUNDED, so a tree that
+                        # outlived it — or one this sweep reached past a
+                        # raise — still reads `returncode` None here.
                         # Reporting "exited (rc=None)" would assert a death
-                        # that has not happened; poll and say the true thing
-                        # instead. Either way the conclusion for the agent is
-                        # the same — nothing is reading that stdout any more,
+                        # that has not happened; poll and say the true thing.
+                        # Either way nothing is reading that stdout any more,
                         # so no completion of theirs can ever reach it.
                         rc = proc.poll()
                         _bg_orphaned(slug, nid, orphans,
