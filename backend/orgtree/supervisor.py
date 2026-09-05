@@ -13056,22 +13056,24 @@ def _antigravity_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
                                     "next poll")
             turn.close()
         finally:
-            # ⚠ THE LIFECYCLE CLEAR IS A `finally`, not a statement after
-            # `turn.close()`. Close is named above as an exit that can raise,
-            # and with the clear behind it a raising teardown left `proc_live`
-            # True and `proc_lifecycle_owner` still pointing at the finished
-            # turn — a live-process indicator on an idle node, standing until
-            # that node next ran. Both calls are owner-guarded and safe to
-            # repeat, so making them unconditional costs nothing; the MCP
-            # retirement still only fires on an OBSERVED process exit, so a
-            # close that failed to kill keeps its generation owned rather
-            # than publishing an exit that did not happen.
-            #
+            # THE INVARIANT: `proc_live` reports a PROCESS, not a turn. The
+            # clear belongs in a `finally` because `close()` is named above as
+            # an exit that can raise — but it may raise BEFORE it kills
+            # anything, so the teardown is retried here and the report is made
+            # from an OBSERVED exit. Reporting not-live on the strength of the
+            # turn being over would trade a stuck indicator for a lying one.
             # `_commit_unfinished_tools` stays INNERMOST: the D4 row invariant
             # outranks the indicator, and `_mcp_tool_count_end` can raise.
             try:
-                warmpool._set_proc_lifecycle(slug, nid, live=False,
-                                             owner=turn)
+                if turn.pid is not None and turn.poll() is None:
+                    try:
+                        turn.close()
+                    except Exception:                        # noqa: BLE001
+                        pass
+                if turn.pid is None or turn.poll() is not None:
+                    warmpool._set_proc_lifecycle(slug, nid, live=False,
+                                                 owner=turn)
+                # self-guarding: retires a generation only on an observed exit
                 _mcp_tool_count_end(slug, nid, turn)
             finally:
                 _commit_unfinished_tools()
@@ -13111,21 +13113,20 @@ def _antigravity_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
         # duration is the last thing said, and the 200-character operator
         # cut could lose it on a longer wording.
         blob = detail or tail
+        walled = _looks_like_usage_limit(blob)
         reset_ts: float | None = None
-        if _looks_like_usage_limit(blob):
+        if walled:
             reset_ts = antigravity_limits.observe_wall(
                 reason or tail, tier=tier, now=time.time())
-        # ⚠ THE CEILING IS TESTED AFTER THE WALL, AND ONLY WHERE THERE IS NO
-        # WALL. This is the codex leg's stated rule — "a turn that ran to the
-        # ceiling AND came back with a real error is that error, not a
-        # timeout" — but its guard (`not detail`) cannot be copied onto this
-        # lane: this adapter always sets a stop_reason, so `not detail` would
-        # delete the raise instead of narrowing it. The cost of getting it
-        # wrong is the whole of D-209 above: a wall reported as a timeout
-        # keeps its reason but loses the freeze AND the reset, so the agent
-        # stops without a thaw and never auto-resumes. An ordinary timeout is
-        # not a wall and still raises here.
-        if reset_ts is None and time.time() - t0 >= TURN_TIMEOUT:
+        # THE INVARIANT: a RECOGNISED wall outranks the clock, dated or not.
+        # Gating on `reset_ts` instead would eat the undated wall, which
+        # `observe_wall` answers with None and which still freezes on the
+        # probe floor. The codex rule this restores — a turn that ran to the
+        # ceiling and came back with a real error is that error — cannot be
+        # copied as codex writes it (`not detail`): this adapter always sets a
+        # stop_reason, so that test never fires. Cost of getting it wrong is
+        # D-209 above: the wall keeps its words but loses its freeze.
+        if not walled and time.time() - t0 >= TURN_TIMEOUT:
             raise RuntimeError(f"turn killed: exceeded the {TURN_TIMEOUT}s "
                                "per-message ceiling")
         raise _ProviderTurnFailed(

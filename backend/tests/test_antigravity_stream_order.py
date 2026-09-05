@@ -1450,8 +1450,8 @@ def main() -> int:
                      ([("agy-seamtoken-2", "late text")], {}),
                      f"{committed_t}"))
 
-    print("§18 the process-lifecycle record: raised for the turn that owns "
-          "the process, cleared when that turn ends")
+    print("§18 the process-lifecycle record reports a PROCESS, not a turn: "
+          "raised for the turn that owns it, cleared only on an observed exit")
     # THE CONTROL FOR §11's two clear-on-a-raising-exit checks. Without it
     # "cleared" is free — a node that never raised the flag reads False too.
     # It also pins WHOSE liveness the record describes: the owner token must
@@ -1484,6 +1484,94 @@ def main() -> int:
                       st18.get("proc_lifecycle_owner")), (False, None),
                      f"proc_live {st18.get('proc_live')!r} owner "
                      f"{type(st18.get('proc_lifecycle_owner')).__name__}"))
+
+    # ── a close that raises BEFORE it kills anything ───────────────────────
+    # §11's close()-raises case kills first and then raises, so on its own it
+    # only establishes teardown errors AFTER the process has already ended
+    # (Astra, 2026-09-05). Here close() raises on its FIRST call with the
+    # process still running, so the leg's own retry is the only thing that can
+    # end it — and the flag may only fall once that exit is OBSERVED.
+    scenario("interruptmidtool", "agy-life-closefirst")
+    slug18c, nid18c = mkorg("lifecycleclosefirst")
+    _orig_close = antigravityrun.AntigravityTurn.close
+    _orig_wait18c = antigravityrun.AntigravityTurn.wait
+    closes18: dict = {"n": 0}
+    alive18: dict = {}
+
+    def counting_close(self, *a, **kw):
+        closes18["n"] += 1
+        if closes18["n"] == 1:
+            alive18["at_first_close"] = self.poll() is None
+            raise RuntimeError("planted close failure, before any kill")
+        return _orig_close(self, *a, **kw)
+
+    def stub_wait(self, *a, **kw):
+        # return while the CLI is STILL RUNNING — the real wait() only comes
+        # back on a process exit or its own deadline, and both would have
+        # killed it before close() was ever called
+        return {"conversation_id": self.conversation_id, "status": "completed",
+                "stop_reason": "end_turn", "agent_text": "", "denials": [],
+                "token_usage": None, "rate_limits": None}
+
+    antigravityrun.AntigravityTurn.close = counting_close
+    antigravityrun.AntigravityTurn.wait = stub_wait
+    try:
+        run_turn(slug18c, nid18c, "close raises before it kills")
+    except Exception:                                            # noqa: BLE001
+        pass
+    finally:
+        antigravityrun.AntigravityTurn.close = _orig_close
+        antigravityrun.AntigravityTurn.wait = _orig_wait18c
+    turn18c = TURNS[-1]
+    st18c = supervisor.state(slug18c, nid18c)
+    check("anti-vacuity: the first close() really did raise with the CLI "
+          "still running, so the retry is the only thing that could end it",
+          lambda: eq((closes18["n"] >= 2, alive18.get("at_first_close")),
+                     (True, True), f"closes {closes18}, alive {alive18}"))
+    check("a close that fails before killing is retried, and the record "
+          "falls only with the process actually gone",
+          lambda: eq((turn18c.poll() is not None,
+                      bool(st18c.get("proc_live"))), (True, False),
+                     f"poll {turn18c.poll()!r} "
+                     f"proc_live {st18c.get('proc_live')!r}"))
+
+    # …and the counterexample: when the process CANNOT be ended, the record
+    # must keep saying live. A flag that goes false because the turn is over
+    # is not a stuck indicator, it is a lying one.
+    scenario("interruptmidtool", "agy-life-stillalive")
+    slug18d, nid18d = mkorg("lifecyclealive")
+    _orig_kill = antigravityrun.kill_tree
+    _orig_ceiling18 = supervisor.TURN_TIMEOUT
+
+    def dead_kill(proc):        # the OS refuses; nothing dies
+        return None
+
+    antigravityrun.kill_tree = dead_kill
+    antigravityrun.AntigravityTurn.close = counting_close
+    closes18["n"] = 1           # every close on this turn raises
+    supervisor.TURN_TIMEOUT = 1.0
+    try:
+        run_turn(slug18d, nid18d, "nothing can kill this one")
+    except Exception:                                            # noqa: BLE001
+        pass
+    finally:
+        antigravityrun.AntigravityTurn.close = _orig_close
+        antigravityrun.kill_tree = _orig_kill
+        supervisor.TURN_TIMEOUT = _orig_ceiling18
+    turn18d = TURNS[-1]
+    st18d = supervisor.state(slug18d, nid18d)
+    still_alive = turn18d.poll() is None
+    live_said = bool(st18d.get("proc_live"))
+    _orig_kill(turn18d.proc)                    # do not leak the fixture's CLI
+    check("anti-vacuity: the CLI really was still running when the leg "
+          "finished with it",
+          lambda: truthy(still_alive, f"poll {turn18d.poll()!r}"))
+    check("a process that could not be ended is still reported LIVE — the "
+          "record follows the observation, not the end of the turn",
+          lambda: eq(live_said, True, f"proc_live {live_said!r}"))
+    check("cleanup: the fixture's surviving CLI is gone",
+          lambda: truthy(turn18d.poll() is not None,
+                         f"poll {turn18d.poll()!r}"))
 
     # …and the ORDER inside that teardown is itself a claim: the tool sweep is
     # innermost because the MCP retirement beside it can raise. Planting that

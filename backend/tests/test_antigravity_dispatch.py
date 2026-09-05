@@ -770,9 +770,11 @@ def main():
     # a turn `wait()` never actually killed. Both runs below hand `wait()` a
     # large timeout so its deadline never fires: the ONLY thing varied is the
     # leg's elapsed-versus-ceiling comparison.
-    def _over_ceiling(scen: str, label: str, text: str):
+    def _over_ceiling(scen: str, label: str, text: str, reset_in=None):
         from orgtree import antigravityrun                   # noqa: PLC0415
         os.environ["FAKEANTIGRAVITY_SCENARIO"] = scen
+        if reset_in is not None:
+            os.environ["FAKEANTIGRAVITY_RESET_IN"] = reset_in
         s_, n_ = mkorg(label)
         orig_wait = antigravityrun.AntigravityTurn.wait
         orig_ceiling = supervisor.TURN_TIMEOUT
@@ -789,6 +791,7 @@ def main():
             antigravityrun.AntigravityTurn.wait = orig_wait
             supervisor.TURN_TIMEOUT = orig_ceiling
             os.environ["FAKEANTIGRAVITY_SCENARIO"] = "text"
+            os.environ.pop("FAKEANTIGRAVITY_RESET_IN", None)
         return s_, n_
 
     def t9d():
@@ -823,6 +826,33 @@ def main():
     check("a wall arriving with the ceiling already exceeded is that wall, "
           "not a timeout: it keeps its freeze, its reset and the standing",
           t9e)
+
+    def t9f():
+        # THE UNDATED WALL, which is why the gate reads "was this recognised
+        # as a wall" and not "did a reset parse": `observe_wall` answers None
+        # for a wall that names no reset (t9c above), so gating on the parsed
+        # reset would have eaten exactly this case. Counterexample supplied by
+        # Astra, 2026-09-05, and measured on a4a923c before this correction.
+        antigravity_limits.invalidate()
+        t0 = time.time()
+        sf, nf = _over_ceiling("usage_limit", "ceilundated",
+                               "an undated wall past the ceiling",
+                               reset_in="")
+        err = str(supervisor.state(sf, nf).get("last_error") or "")
+        assert "Individual quota reached" in err and \
+               "per-message ceiling" not in err, err
+        fz = node_doc(sf, nf).get("frozen") or {}
+        eq((fz.get("limit"), fz.get("reset_src")), (True, "probe"),
+           "an undated wall past the ceiling still freezes, on the probe "
+           "floor")
+        assert abs(float(fz["until_ts"]) - (t0 + supervisor.PROBE_FLOOR)) < 30,\
+            fz
+        snap = antigravity_limits.snapshot()
+        eq((snap["available"], snap["limits"][0]["resets_at"]), (True, None),
+           "and the standing records it, undated")
+        antigravity_limits.invalidate()
+    check("an UNDATED wall past the ceiling freezes too — the gate is wall "
+          "recognition, not a successfully parsed reset", t9f)
 
     print()
     if FAIL:
