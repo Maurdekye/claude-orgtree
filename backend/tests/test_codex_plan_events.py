@@ -239,6 +239,30 @@ def main() -> int:
                    eq(steps_of({"plan": plans4[0]["steps"]}),
                       [("real", "pending")], "steps")) and None)
 
+    print("§4b a notification with NO identity at all is rejected, not "
+          "accepted as trivially current (review finding, 2026-09-05)")
+    scenario("plan_missing_ids", "fake-thread-plan-missingids")
+    slug4b, nid4b = mkorg("missingids")
+    run_turn(slug4b, nid4b, "one real plan, one with no identity")
+    recs4b = plan_records(slug4b)
+    check("the identity-less notification never landed at all",
+          lambda: eq(len(recs4b), 1, "codex_plan_updated records"))
+    check("the surviving snapshot is the real one",
+          lambda: eq(steps_of(recs4b[0]), [("real", "pending")], "steps"))
+
+    print("§4c a malformed `plan: null` is rejected, NOT read as the "
+          "model's own explicit `[]` clear (review finding, 2026-09-05)")
+    scenario("plan_null_plan", "fake-thread-plan-nullplan")
+    slug4c, nid4c = mkorg("nullplan")
+    run_turn(slug4c, nid4c, "one real plan, one malformed")
+    recs4c = plan_records(slug4c)
+    check("the malformed notification never landed at all — a real "
+          "checklist must survive it untouched, not be replaced by an "
+          "empty one",
+          lambda: eq(len(recs4c), 1, "codex_plan_updated records"))
+    check("the surviving snapshot still has its real step — not cleared",
+          lambda: eq(steps_of(recs4c[0]), [("real", "pending")], "steps"))
+
     print("§5 THE RACE: a notification before turn/start's own reply is "
           "buffered, not dropped")
     scenario("plan_early", "fake-thread-plan-early")
@@ -311,6 +335,25 @@ def main() -> int:
           lambda: eq([r.get("plan") for r in SEEN_LIVE if r.get("turnId") == "fake-turn-0001"
                      and r.get("threadId") == "fake-thread-plan-updated"],
                      [rec.get("plan") for rec in recs], "live vs journal plan payloads"))
+
+    print("§8b an over-long step is capped but the cut is FLAGGED, never "
+          "silent (review finding, 2026-09-05)")
+    scenario("plan_long_step", "fake-thread-plan-longstep")
+    slug8b, nid8b = mkorg("longstep")
+    run_turn(slug8b, nid8b, "one step, too long")
+    recs8b = plan_records(slug8b)
+    check("the over-long snapshot was journaled",
+          lambda: eq(len(recs8b) > 0, True, "any codex_plan_updated record"))
+    step8b = (recs8b[0].get("plan") or [{}])[0]
+    check("the step text is capped at 2000 chars, not left unbounded",
+          lambda: eq(len(step8b.get("step") or ""), 2000, "capped length"))
+    check("…and the cut is EXPLICITLY marked, not silent",
+          lambda: eq(step8b.get("truncated"), True, "truncated flag"))
+    # a normal turn's steps (§1's "a"/"b") never carry the flag at all — the
+    # marker names an ACTUAL cut, not a permanent property of every step
+    check("a step well under the cap carries no truncated flag at all",
+          lambda: eq("truncated" in (recs[0].get("plan") or [{}])[0], False,
+                     "truncated flag absent on a short step"))
 
     print("§9 anti-vacuity: duplicate identical snapshots do not bloat the "
           "journal")

@@ -8655,16 +8655,33 @@ def _codex_journal(slug: str, sid: str, recs: list[dict[str, Any]]) -> None:
 _CODEX_PLAN_STATUS: Final = {"pending": "pending", "inProgress": "in_progress",
                              "completed": "completed"}
 
+#: generous — real steps are one-line phrases — but explicit rather than
+#: unbounded: a runaway or hostile step string must not become an unbounded
+#: journal line. Review finding (2026-09-05): this used to cut silently;
+#: `_codex_plan_steps` now says so on the step itself instead.
+_PLAN_STEP_CAP: Final = 2000
 
-def _codex_plan_steps(raw: Any) -> list[dict[str, str]]:
-    """Normalize `turn/plan/updated`'s `plan` array. A non-list (missing,
-    null, wrong type) is an empty checklist, not a crash."""
-    if not isinstance(raw, list):
-        return []
-    return [{"step": str(s.get("step") or "")[:2000],
-             "status": _CODEX_PLAN_STATUS.get(str(s.get("status") or ""),
-                                              "pending")}
-            for s in raw if isinstance(s, dict)]
+
+def _codex_plan_steps(raw: list[Any]) -> list[dict[str, Any]]:
+    """Normalize an ALREADY-VALIDATED `turn/plan/updated` `plan` array (the
+    caller, `_apply_plan`, has confirmed `raw` really is a list — see its own
+    docstring for why that check cannot live here). Each step degrades
+    field-by-field rather than being dropped: an unrecognized status is still
+    a step the operator should see (same posture as `_occ_record`), and an
+    over-long one is kept, just flagged — never silently cut with no trace."""
+    out: list[dict[str, Any]] = []
+    for s in raw:
+        if not isinstance(s, dict):
+            continue
+        text = str(s.get("step") or "")
+        step: dict[str, Any] = {
+            "step": text[:_PLAN_STEP_CAP],
+            "status": _CODEX_PLAN_STATUS.get(str(s.get("status") or ""),
+                                             "pending")}
+        if len(text) > _PLAN_STEP_CAP:
+            step["truncated"] = True
+        out.append(step)
+    return out
 
 
 def _codex_tool_item(item: dict[str, Any]) -> tuple[str, dict[str, Any]] | None:
@@ -9680,37 +9697,60 @@ def _codex_leg_attempt(slug: str, nid: str, org: Org, st: dict[str, Any],
             _mcp_tool_count_names(
                 slug, nid, owner, names, "codex", "mcpServerStatus/list")
 
+    # a DEDICATED lock, not `jlock`/`emit_lock` reused: see
+    # `_drain_and_maybe_apply`'s docstring for the ordering guarantee this
+    # buys, and why layering it under those two (never the reverse) cannot
+    # deadlock with anything they already do.
+    plan_lock = threading.Lock()
+
     def _apply_plan(event_thread: str, event_turn: str,
                     params: dict[str, Any]) -> None:
         """Write one VALIDATED `turn/plan/updated` snapshot, durable + live.
 
-        Called only once this turn's own thread/turn ids are both resolved —
-        `_on_plan` buffers anything earlier (see its docstring) and drains
-        into here, in arrival order, the moment they are. threadId/turnId are
-        read and CHECKED, not assumed, exactly like the compact-fork loop's
-        `event_thread` guard a few hundred lines up this file: a snapshot for
-        a different thread, or a different (stale/foreign) turn on the SAME
-        thread, is discarded — the current snapshot is left standing, not
-        overwritten by something that was never this turn's to report."""
-        if event_thread and event_thread != turn.thread_id:
-            return
-        if event_turn and event_turn != turn.turn_id:
+        Called only from `_drain_and_maybe_apply`, which holds `plan_lock`
+        for its entire caller's duration — this function assumes that and
+        does none of its own cross-call ordering. threadId/turnId are read
+        and CHECKED, not assumed, exactly like the compact-fork loop's
+        `event_thread` guard a few hundred lines up this file: a snapshot
+        for a different thread, or a different (stale/foreign) turn on the
+        SAME thread, is discarded — the current snapshot is left standing,
+        not overwritten by something that was never this turn's to report.
+
+        ⚠ IDENTITY AND SHAPE ARE BOTH REQUIRED, NOT DEFAULTED (review finding,
+        2026-09-05). `threadId`/`turnId`/`plan` are all `required` in the
+        installed schema. The first cut here read a MISSING id as `""`, and
+        `"" and "" != turn.turn_id` short-circuits to False — so an event
+        with NO identity at all was accepted as trivially this turn's own,
+        which is backwards: an absent id is not evidence of ownership, it is
+        the absence of evidence, and accepting it on that technicality is
+        exactly how a malformed or foreign event would slip through
+        unnoticed. The same cut also let a `plan` that was missing or not a
+        list default to `[]` and land as an explicit CLEAR — conflating "the
+        model cleared its checklist" with "this notification is garbled",
+        when the acceptance criteria draws that line as the whole point of
+        the clearing case. Both a missing identity and a malformed `plan`
+        now leave the snapshot untouched, same as a wrong thread/turn."""
+        raw_plan = params.get("plan")
+        if (not event_thread or event_thread != turn.thread_id
+                or not event_turn or event_turn != turn.turn_id
+                or not isinstance(raw_plan, list)):
             return
         snapshot = {
             "threadId": turn.thread_id or "", "turnId": turn.turn_id or "",
             "explanation": (params.get("explanation")
                             if isinstance(params.get("explanation"), str)
                             else None),
-            "plan": _codex_plan_steps(params.get("plan"))}
-        with jlock:
-            if jstate.get("last_plan") == snapshot:
-                # identical consecutive snapshot: nothing the operator would
-                # see has changed, so nothing durable is worth adding — the
-                # schema has no per-step id, so a naive per-event append
-                # would let an unattended turn's untouched checklist rack up
-                # one journal line per notification for no visible reason.
-                return
-            jstate["last_plan"] = snapshot
+            "plan": _codex_plan_steps(raw_plan)}
+        if jstate.get("last_plan") == snapshot:
+            # identical consecutive snapshot: nothing the operator would see
+            # has changed, so nothing durable is worth adding — the schema
+            # has no per-step id, so a naive per-event append would let an
+            # unattended turn's untouched checklist rack up one journal line
+            # per notification for no visible reason. Reading/writing
+            # `last_plan` needs no lock of its own here: the whole caller is
+            # already serialized by `plan_lock`.
+            return
+        jstate["last_plan"] = snapshot
         ts = now_iso()
         _journal_records([{"type": "codex_plan_updated", "timestamp": ts,
                            **snapshot}])
@@ -9721,18 +9761,80 @@ def _codex_leg_attempt(slug: str, nid: str, org: Org, st: dict[str, Any],
         _visible_live_row({"kind": "plan", "text": "checklist updated",
                            "at": ts, **snapshot})
 
-    def _drain_plan_pending() -> None:
-        if turn.turn_id is None:
-            return
-        with jlock:
-            pending = cast("list[tuple[str, str, dict[str, Any]]]",
-                           jstate["plan_pending"])
-            if not pending:
+    def _drain_and_maybe_apply(
+            new_event: tuple[str, str, dict[str, Any]] | None) -> None:
+        """THE single funnel every plan event passes through — buffering,
+        draining and applying are one atomic decision, not three that merely
+        run in a hopeful order.
+
+        ⚠ TWO MEASURED FAILURES, BOTH FROM THE SAME ROOT CAUSE (review
+        findings, 2026-09-05), FIXED TOGETHER because fixing either alone
+        reintroduces the other:
+
+        1. `turn.turn_id` is set on the TURN THREAD, inside `turn.start()`,
+           the instant its own `turn/start` response arrives — but the
+           READER thread can have already dispatched this turn's ENTIRE
+           notification burst (every plan update, `turn/completed`, all of
+           it) through `_on_event` and gone idle BEFORE the turn thread's
+           poll loop ever notices that response and sets `self.turn_id`
+           (GIL scheduling under fakecodex's fixture measured this as the
+           common case, not a rare one: a purely in-memory notification
+           burst can finish before the turn thread's next scheduler slice).
+           If nothing but a FUTURE notification can trigger a drain, and no
+           future notification is coming because the turn already ended,
+           the buffered checklist is silently lost forever. So the turn
+           thread MUST also get to drain, right after it resolves
+           `turn.turn_id` — relying on the reader thread alone is not
+           sufficient.
+        2. But a naive turn-thread drain calls `_apply_plan` for each
+           buffered event OUTSIDE any lock spanning the whole operation,
+           and the reader thread can be applying a genuinely NEWER event
+           for the same turn AT THE SAME MOMENT (once turn_id is visible
+           to it too) — two independent `_apply_plan` calls, on two
+           threads, each writing the journal and pushing the live row
+           unsynchronized with each other. Whichever thread's write lands
+           on disk SECOND silently wins, and that is not always the
+           chronologically later event.
+
+        `plan_lock`, held for this ENTIRE function, is what closes both:
+        every check-and-apply decision — "is anything buffered, and if so
+        in what order does it drain" and "does the event that arrives NOW
+        apply immediately or wait" — happens as one uninterruptible step, on
+        whichever thread gets here first. Because leftover buffered events
+        ALWAYS drain before `new_event` is even considered, a call this
+        makes can never let a later-arriving event overtake an earlier one
+        still waiting — order is a property of the code, not of scheduling
+        luck. `plan_lock` is layered UNDER `jlock`/`emit_lock` (never taken
+        while holding either), so `_journal_records`/`_visible_live_row`'s
+        own locking beneath it cannot deadlock against it."""
+        with plan_lock:
+            if turn.turn_id is not None:
+                # only pop the buffer once there is an id to check it
+                # against — popping it while still unresolved and handing it
+                # to `_apply_plan` anyway would have every buffered event
+                # rejected (event_turn != None) and discarded for good.
+                with jlock:
+                    pending = cast("list[tuple[str, str, dict[str, Any]]]",
+                                   jstate["plan_pending"])
+                    batch = list(pending)
+                    jstate["plan_pending"] = []
+                for event_thread, event_turn, params in batch:
+                    _apply_plan(event_thread, event_turn, params)
+            if new_event is None:
                 return
-            batch = list(pending)
-            jstate["plan_pending"] = []
-        for event_thread, event_turn, params in batch:
+            event_thread, event_turn, params = new_event
+            if turn.turn_id is None:
+                with jlock:
+                    cast("list[Any]", jstate["plan_pending"]).append(new_event)
+                return
             _apply_plan(event_thread, event_turn, params)
+
+    def _drain_plan_pending() -> None:
+        """Opportunistic flush with nothing new to add — called from every
+        `_on_event` invocation (reader thread) AND once from the turn thread
+        right after `turn.start()` resolves `turn.turn_id` (see
+        `_drain_and_maybe_apply`'s docstring for why BOTH callers matter)."""
+        _drain_and_maybe_apply(None)
 
     def _on_plan(msg: dict[str, Any]) -> None:
         """`turn/plan/updated` (FR-17): the ONLY event this turn's checklist
@@ -9749,20 +9851,16 @@ def _codex_leg_attempt(slug: str, nid: str, org: Org, st: dict[str, Any],
         returns, on every measured run. This notification can arrive in that
         same window — before `turn.turn_id` is set on the Python object.
         Rejecting an early, legitimate plan update on that technicality would
-        silently drop real data; buffering it until the turn's own id is
-        known, THEN re-checking it against that id, is what tells a
-        genuinely early event apart from a genuinely wrong one."""
+        silently drop real data; `_drain_and_maybe_apply` buffers it until
+        the turn's own id is known, THEN re-checks it against that id, which
+        is what tells a genuinely early event apart from a genuinely wrong
+        one."""
         raw_params = msg.get("params")
         params: dict[str, Any] = (raw_params if isinstance(raw_params, dict)
                                   else {})
         event_thread = str(params.get("threadId") or "")
         event_turn = str(params.get("turnId") or "")
-        if turn.turn_id is None:
-            with jlock:
-                cast("list[Any]", jstate["plan_pending"]).append(
-                    (event_thread, event_turn, params))
-            return
-        _apply_plan(event_thread, event_turn, params)
+        _drain_and_maybe_apply((event_thread, event_turn, params))
 
     def _on_event(msg: dict[str, Any]) -> None:
         # M2 normalization: deltas are the sub-second draft; authoritative
@@ -9992,6 +10090,17 @@ def _codex_leg_attempt(slug: str, nid: str, org: Org, st: dict[str, Any],
         # process-bound fact `state()` holds; see its own docstring).
         with _state_lock:
             st["codex_turn_id"] = turn.turn_id
+        # ⚠ THIS CALL IS LOAD-BEARING, NOT A SAFETY NET (measured, 2026-09-05:
+        # removing it silently loses the checklist on a real fixture, not
+        # just a theoretical one). `turn.turn_id` is set HERE, on this
+        # thread — but the reader thread can already have dispatched this
+        # turn's ENTIRE notification burst, `turn/completed` included,
+        # before this thread's own poll loop even noticed `turn/start`'s
+        # response. If nothing but a FUTURE notification could trigger a
+        # drain, and the turn already ended, nothing ever would. See
+        # `_drain_and_maybe_apply`'s docstring for why this is safe against
+        # the reader thread despite running on a different thread: the whole
+        # buffer-or-apply decision is one lock-held step there, not two.
         _drain_plan_pending()
         _refresh_codex_mcp()
         if wp_turn is not None and tid:

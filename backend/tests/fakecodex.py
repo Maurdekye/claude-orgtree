@@ -101,6 +101,14 @@ scenarios selected by FAKECODEX_SCENARIO:
                `turn/start`'s own handler, before that request's reply is
                sent — the measured turn_id race a correct runner must
                buffer through rather than drop (see supervisor._on_plan)
+    plan_missing_ids (FR-17) a real snapshot, then one with NO threadId/
+               turnId at all — a missing required id is not evidence of
+               ownership and must not be accepted as trivially current
+    plan_null_plan (FR-17) a real snapshot, then one with valid ids but
+               `plan: null` — malformed, required-field-missing, and must
+               NOT read as the model's own explicit `[]` clear
+    plan_long_step (FR-17) a step text past the 2000-char cap — must be
+               flagged `truncated`, never silently cut with no trace
     plan_failed_turn / plan_interrupted_turn (FR-17) a checklist with an
                unfinished step, then the turn ends badly — nothing about
                that ending may mark the step done
@@ -436,6 +444,36 @@ def run_turn(thread_id, turn_id, dyn_tools, model=None):
             "threadId": thread_id, "turnId": turn_id, "explanation": None,
             "plan": [{"step": "early", "status": "pending"}]})
         agent_message("msg-early-plan", "done")
+    elif SCENARIO == "plan_missing_ids":
+        # ONE legitimate snapshot, then a MALFORMED notification — no
+        # threadId/turnId at all, which the schema marks `required`. Absence
+        # of identity is not evidence of ownership; a runner that treats a
+        # missing id as "trivially this turn's own" accepts a notification
+        # it has no actual basis for attributing to this turn.
+        notify("turn/plan/updated", {
+            "threadId": thread_id, "turnId": turn_id, "explanation": None,
+            "plan": [{"step": "real", "status": "pending"}]})
+        notify("turn/plan/updated", {
+            "explanation": None,
+            "plan": [{"step": "NO IDENTITY AT ALL", "status": "completed"}]})
+    elif SCENARIO == "plan_null_plan":
+        # ONE legitimate snapshot, then a notification with valid ids but a
+        # MALFORMED `plan` (missing/null, not the schema's array). This must
+        # never read as the model's own explicit `[]` clear — the schema
+        # marks `plan` required too, so a missing one is a garbled
+        # notification, not a checklist the model chose to empty.
+        notify("turn/plan/updated", {
+            "threadId": thread_id, "turnId": turn_id, "explanation": None,
+            "plan": [{"step": "real", "status": "pending"}]})
+        notify("turn/plan/updated", {
+            "threadId": thread_id, "turnId": turn_id, "explanation": None,
+            "plan": None})
+    elif SCENARIO == "plan_long_step":
+        # a step text past the cap — must be flagged, not silently cut with
+        # no trace (review finding, 2026-09-05)
+        notify("turn/plan/updated", {
+            "threadId": thread_id, "turnId": turn_id, "explanation": None,
+            "plan": [{"step": "x" * 2500, "status": "pending"}]})
     else:
         agent_message("msg-working", "working… ")
     if SCENARIO == "tool" and dyn_tools:
