@@ -1635,16 +1635,29 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
           render={(g) => heldChip(g, true)} />
         {((node.cost_usd ?? 0) > 0 || costUnknown) && (
           <span className="badge dim"
-            title={(node.turns ?? []).slice(-5).reverse().map((t) =>
-              `${fmtShort(t.at)} · $${(t.cost ?? 0).toFixed(2)}`
-              + (t.estimated ? ' est.' : '')
-              + (t.cost_source ? ` · ${t.cost_source}` : '')
-              + (t.cost_unknown_fields?.length
-                ? ` · unresolved: ${t.cost_unknown_fields.join(', ')}` : '')
-              + (t.ms ? ` · ${Math.round(t.ms / 1000)}s` : '')
-              + (t.denials ? ` · ${t.denials} denied` : '')
-              + (t.killed ? ' · killed' : '')).join('\n')
-              || 'per-turn detail appears after the next turn'}>
+            title={[
+              (node.turns ?? []).slice(-5).reverse().map((t) =>
+                `${fmtShort(t.at)} · $${(t.cost ?? 0).toFixed(2)}`
+                + (t.estimated ? ' est.' : '')
+                + (t.cost_source ? ` · ${t.cost_source}` : '')
+                + (t.cost_unknown_fields?.length
+                  ? ` · unresolved: ${t.cost_unknown_fields.join(', ')}` : '')
+                + (t.ms ? ` · ${Math.round(t.ms / 1000)}s` : '')
+                + (t.denials ? ` · ${t.denials} denied` : '')
+                + (t.approvals ? ` · ${t.approvals} approved` : '')
+                + (t.killed ? ' · killed' : '')).join('\n')
+                || 'per-turn detail appears after the next turn',
+              /* the rights rows behind those counts, for the LAST turn only
+                 (that is all the node carries). Same tooltip, no new chip —
+                 the №15 precedent. "approved" means orgtree's approval seam
+                 said yes to a sandbox-blocked request; it is not an
+                 observation that the command ran. */
+              ...(node.last_denials ?? []).map((d) =>
+                `denied · ${d.tool}${d.arg ? ` · ${d.arg}` : ''}`),
+              ...(node.last_approvals ?? []).map((d) =>
+                `approved · ${d.tool}${d.arg ? ` · ${d.arg}` : ''}`
+                + (d.cwd ? ` · in ${d.cwd}` : '')),
+            ].join('\n')}>
             {costUnknown
               ? ((node.cost_usd ?? 0) > 0
                 ? `$${node.cost_usd!.toFixed(2)} estimated/incomplete` : '$?')

@@ -708,6 +708,85 @@ def main() -> int:
                       "WILL BE REFUSED" in w_guide),
                      (True, False), "write-enabled wording, read-only absent"))
 
+    print("§13 the seam's answers are BOOKED: denials with their command, and "
+          "approvals at all")
+    # Two defects, measured hermetically 2026-09-05 and user-approved to fix:
+    # a codex command denial reached the desk as a chip with NO command
+    # (`_approve` stored the wire's string `command` where `_tool_arg` wants a
+    # dict), and an ACCEPTED escalation — a sandbox-blocked command orgtree
+    # let out — left no trace anywhere. The rows below are read off the
+    # persisted node after a real turn through the app-server double, whose
+    # approval requests now carry the measured v2 fields.
+    def rows(slug, nid, key):
+        return list(store.load_org(slug).node(nid).get(key) or [])
+
+    # POSITIVE: bash ON → both requests approved → two approval rows, no
+    # denial rows, and the command row shows its command AND its cwd
+    a_slug, a_nid = mkorg("book approve", edit=True, pm="default")
+    approval_decisions(a_slug, a_nid)
+    appr = rows(a_slug, a_nid, "last_approvals")
+    dens = rows(a_slug, a_nid, "last_denials")
+    check("bash ON: two approvals booked, zero denials",
+          lambda: eq((sorted(r["tool"] for r in appr), dens),
+                     (["commandExecution", "fileChange"], []),
+                     "approval tools / denial rows"))
+    cmd_row = next((r for r in appr if r["tool"] == "commandExecution"), {})
+    check("…the approved command row carries the command and its cwd",
+          lambda: eq((cmd_row.get("arg"), cmd_row.get("cwd")),
+                     ("echo probe", "C:\\fake\\scratch\\probe-cwd"),
+                     "arg / cwd off the wire's string command"))
+    file_row = next((r for r in appr if r["tool"] == "fileChange"), {})
+    check("…the approved fileChange row identifies the item (v2 carries no "
+          "paths)", lambda: eq(file_row.get("arg"), "patch-probe",
+                               "itemId as the identifier"))
+    ring = store.load_org(a_slug).node(a_nid).get("turns") or []
+    check("…and the turn ring counts them as approvals, not denials",
+          lambda: eq((ring[-1].get("approvals"), ring[-1].get("denials")),
+                     (2, 0), "last TurnStat approvals/denials"))
+
+    # NEGATIVE: bash OFF → the command is DECLINED and its row now carries
+    # the command text that used to be blank; the file change is still
+    # approved and lands on the other list
+    d_slug, d_nid = mkorg("book deny", edit=True, pm="default", bash=False)
+    approval_decisions(d_slug, d_nid)
+    dens = rows(d_slug, d_nid, "last_denials")
+    appr = rows(d_slug, d_nid, "last_approvals")
+    check("bash OFF: the command denial is booked WITH its command",
+          lambda: eq([(r["tool"], r.get("arg"), r.get("cwd")) for r in dens],
+                     [("commandExecution", "echo probe",
+                       "C:\\fake\\scratch\\probe-cwd")],
+                     "denial rows (was arg='' before 2026-09-05)"))
+    check("…and only the file change sits on the approvals list",
+          lambda: eq([r["tool"] for r in appr], ["fileChange"],
+                     "approval rows with bash off"))
+    ring = store.load_org(d_slug).node(d_nid).get("turns") or []
+    check("…ring: 1 denial, 1 approval",
+          lambda: eq((ring[-1].get("denials"), ring[-1].get("approvals")),
+                     (1, 1), "last TurnStat"))
+
+    # NOT-OBSERVED CONTROL: a result with no `permission_approvals` key at
+    # all (the claude and AGY legs never send one) must leave the node
+    # WITHOUT `last_approvals` and the ring entry WITHOUT `approvals` —
+    # absence means "no seam ran", and `[]`/`0` would read as "the seam ran
+    # and approved nothing". Driven through the same `_after_turn` the legs
+    # call, on the node that just booked two approvals, so the field has to
+    # be actively removed, not merely never written.
+    org = store.load_org(a_slug)
+    supervisor._after_turn(
+        a_slug, a_nid, org,
+        {"status": "completed", "total_cost_usd": 0.01, "duration_ms": 1,
+         "usage": {}, "permission_denials": []},
+        supervisor.state(a_slug, a_nid), 100)
+    after = store.load_org(a_slug).node(a_nid)
+    check("a lane that cannot report approvals leaves the field ABSENT, "
+          "not empty",
+          lambda: eq(("last_approvals" in after,
+                      "approvals" in (after.get("turns") or [{}])[-1],
+                      after.get("last_denials")),
+                     (False, False, []),
+                     "no last_approvals / no ring approvals / denials still "
+                     "booked as []"))
+
     print()
     if FAIL:
         print(f"{len(FAIL)} FAILED, {PASS} passed")

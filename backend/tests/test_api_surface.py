@@ -1000,6 +1000,10 @@ with store.DOC_LOCK:
     _o = store.load_org(K)
     _n = _o.nodes[NID]
     _n["last_denials"] = [{"tool": "Read", "arg": HOSTPATH}]
+    # the codex seam's APPROVED rows (2026-09-05) carry a `cwd` that is
+    # always a host path, on top of an `arg` that routinely is one
+    _n["last_approvals"] = [{"tool": "commandExecution", "arg": HOSTPATH,
+                             "cwd": HOSTUSER}]
     _n["frozen"] = {"at": "2026-01-01T00:00:00Z", "until": None,
                     "until_ts": None, "error": f"cli blew up at {HOSTUSER}"}
     _o.d.setdefault("events", []).append(
@@ -1049,6 +1053,17 @@ def _():
     assert_scrubbed(r, "tree/last_denials")
     assert '"arg": "<path>"' in r.text or '"arg":"<path>"' in r.text, \
         r.text[:400]
+
+
+@t("tree: last_approvals[].arg AND .cwd are scrubbed like the denials")
+def _():
+    r = pub("GET", f"/api/orgs/{K}")
+    assert_scrubbed(r, "tree/last_approvals")
+    # both fields present and both rewritten: a scrubber that DROPPED the
+    # row would pass assert_scrubbed while losing the record
+    txt = r.text.replace(" ", "")
+    assert '"cwd":"<path>"' in txt, r.text[:400]
+    assert txt.count('"arg":"<path>"') >= 2, r.text[:400]
 
 
 @t("events: details and warnings are scrubbed")

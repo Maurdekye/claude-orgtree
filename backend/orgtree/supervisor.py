@@ -10064,6 +10064,40 @@ def _codex_may_write(sc: Mapping[str, Any]) -> bool:
     return sc.get("permission_mode") != "plan"
 
 
+def _codex_approval_input(is_file: bool, params: Mapping[str, Any]
+                          ) -> dict[str, Any]:
+    """The structured argument booked for one codex approval request, in the
+    shape `_tool_arg` reads — the same chip formatter the claude lane's
+    denials go through.
+
+    It used to be `params.get("command") or {}`, and on the real wire
+    `command` is a STRING (nine of nine captured requests, codex-cli
+    0.153.x), which `_tool_arg` rejects outright — so a codex command denial
+    reached the desk as a `commandExecution` chip with no command on it
+    (measured hermetically 2026-09-05: `last_denials=[{'tool':
+    'commandExecution', 'arg': ''}]`). This hands the formatter a dict.
+
+    · commandExecution: `command` (string; a list — the older exec shape —
+      is joined) and `cwd`, both straight off the request. `_tool_arg` shows
+      the command; `_after_turn` carries `cwd` on the row separately.
+    · fileChange: the v2 request carries NO paths — only `grantRoot`
+      (nullable), `itemId` and `reason` — so the best identifier is the root
+      when asked for, else the item id. Not the file list; that is on the
+      item event, not the approval.
+
+    Bounded the same way as every other chip: `_tool_arg` caps the shown
+    argument at 90 characters and the tree scrubber rewrites host paths. No
+    other field of the request (reason, policy amendments, ids) is booked.
+    """
+    if is_file:
+        return {"path": str(params.get("grantRoot") or ""),
+                "item": str(params.get("itemId") or "")}
+    cmd = params.get("command")
+    if isinstance(cmd, list):
+        cmd = " ".join(str(c) for c in cast("list[Any]", cmd))
+    return {"command": str(cmd or ""), "cwd": str(params.get("cwd") or "")}
+
+
 def _codex_sandbox(sc: Mapping[str, Any]) -> str:
     """The OS sandbox mode one Codex turn runs under, from the node's scope.
 
@@ -10402,6 +10436,14 @@ def _codex_leg_attempt(slug: str, nid: str, org: Org, st: dict[str, Any],
         return out
 
     denials: list[dict[str, Any]] = []
+    #: the approvals this seam ANSWERED "accept" (2026-09-05, user-approved):
+    #: an accepted request used to return without a trace, so a command the
+    #: sandbox had blocked and orgtree let out was indistinguishable — in the
+    #: transcript, on the desk, in the org document — from one that ran
+    #: sandboxed. Same row shape as `denials`, booked beside them. It records
+    #: that orgtree APPROVED, not that anything ran: the callback answers
+    #: before execution, and nothing here observes the outcome.
+    approvals: list[dict[str, Any]] = []
 
     def _approve(method: str, params: dict[str, Any]) -> str:
         # approval callbacks are the ⚙-rights seam (design A.2): the same
@@ -10436,12 +10478,20 @@ def _codex_leg_attempt(slug: str, nid: str, org: Org, st: dict[str, Any],
         # codex, a read-only seat declines the whole callback. What that costs
         # is real and is written down in `_codex_may_write`.
         may_write = _codex_may_write(n["scope"])
+        # the method's own item segment (`item/<kind>/requestApproval`) so a
+        # third kind the app-server may add (the schema already carries a
+        # `permissions` request) is booked under its real name, not lumped
+        # into commandExecution
+        parts = method.split("/")
+        kind = parts[1] if len(parts) >= 3 and parts[1] else (
+            "fileChange" if is_file else "commandExecution")
+        row = {"tool_name": kind,
+               "tool_input": _codex_approval_input(is_file, params)}
         if (may_write if is_file
                 else (tools_sc.get("bash", True) and may_write)):
+            approvals.append(row)
             return "accept"
-        kind = "fileChange" if is_file else "commandExecution"
-        denials.append({"tool_name": kind,
-                        "tool_input": params.get("command") or {}})
+        denials.append(row)
         return "decline"
 
     jlock = threading.Lock()
@@ -11763,6 +11813,7 @@ def _codex_leg_attempt(slug: str, nid: str, org: Org, st: dict[str, Any],
                                        .get("outputTokens") or 0)},
         "duration_ms": int((time.time() - t0) * 1000),
         "permission_denials": denials,
+        "permission_approvals": approvals,
         "rate_limits": res_raw.get("rate_limits"),
         "result": str(res_raw.get("agent_text") or ""),
         "_mcp_tool_count": turn_mcp_count,
@@ -16573,10 +16624,25 @@ def _after_turn(slug: str, nid: str, org: Org, res: dict[str, Any],
             cw = mu.get("contextWindow") or cw
     # №7: the CLI reports every headless auto-deny on the result event — the
     # machine truth about the corrections the permission settings made
+    def _rights_row(d: Mapping[str, Any]) -> Denial:
+        row: Denial = {"tool": str(d.get("tool_name") or "tool"),
+                       "arg": _tool_arg(str(d.get("tool_name") or ""),
+                                        d.get("tool_input"))}
+        # the codex approval seam books the working directory beside the
+        # command (`_codex_approval_input`); `_tool_arg` shows only the
+        # command, so carry cwd on its own field. Bounded like `arg`.
+        inp = d.get("tool_input")
+        cwd = inp.get("cwd") if isinstance(inp, dict) else None
+        if isinstance(cwd, str) and cwd.strip():
+            row["cwd"] = " ".join(cwd.strip().split())[:160]
+        return row
+
     denials: list[Denial] = [
-        {"tool": d.get("tool_name", "tool"),
-         "arg": _tool_arg(d.get("tool_name", ""), d.get("tool_input"))}
-        for d in (res.get("permission_denials") or [])[:8]]
+        _rights_row(d) for d in (res.get("permission_denials") or [])[:8]]
+    # …and the codex seam's ACCEPTED escalations (2026-09-05), same shape,
+    # same cap, opposite meaning. Approved, not executed — see TurnStat.
+    approvals: list[Denial] = [
+        _rights_row(d) for d in (res.get("permission_approvals") or [])[:8]]
     spend_total = None
     cache_event: dict[str, Any] | None = None
     if cost or occ or cw or denials or res:
@@ -16646,6 +16712,15 @@ def _after_turn(slug: str, nid: str, org: Org, res: dict[str, Any],
             if cw:
                 n["context_window"] = cw
             n["last_denials"] = denials
+            # ONLY when the lane can report it. The claude/AGY legs carry no
+            # `permission_approvals` key at all; writing `[]` for them would
+            # render "0 approved" as if the seam had run and found nothing,
+            # which is the vacuous-pass shape this team refuses. Absent key =
+            # not observed; present list = the codex seam's actual answers.
+            if "permission_approvals" in res:
+                n["last_approvals"] = approvals
+            else:
+                n.pop("last_approvals", None)
             if mcp_success:
                 if mcp_snapshot is not None:
                     n["last_turn_mcp_tool_count"] = mcp_snapshot
@@ -16686,6 +16761,8 @@ def _after_turn(slug: str, nid: str, org: Org, res: dict[str, Any],
             entry: TurnStat = {"at": now_iso(), "cost": round(cost, 6),
                                "ms": res.get("duration_ms"),
                                "denials": len(denials)}
+            if "permission_approvals" in res:
+                entry["approvals"] = len(approvals)
             if out_toks:
                 entry["toks"] = out_toks
             if res.get("_cost_complete") is not None:

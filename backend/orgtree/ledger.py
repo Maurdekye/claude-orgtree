@@ -8808,6 +8808,11 @@ class Org:
                 # wears it until the boundary applies (or a cancel clears) it
                 "pending_switch": n.get("pending_switch"),
                 "last_denials": n.get("last_denials") or [],
+                # codex lane (2026-09-05): approvals the seam answered
+                # "accept". Absent when the lane cannot report it — a `[]`
+                # here would read as "seam ran, approved nothing"
+                **({"last_approvals": n["last_approvals"]}
+                   if "last_approvals" in n else {}),
                 "turns": (n.get("turns") or [])[-8:],
                 # the `if n.get("frozen")` guard proves the key present — the
                 # Any view sidesteps pyright's NotRequired-[] access flag

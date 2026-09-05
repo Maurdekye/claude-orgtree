@@ -1809,11 +1809,19 @@ def _scrub_public(tree: dict[str, Any]) -> None:
         fz: dict[str, Any] = n.get("frozen") or {}
         if fz.get("error"):
             fz["error"] = _WINPATH.sub("<path>", str(fz["error"]))
-        dens: list[Any] = n.get("last_denials") or []
-        for dn in dens:
-            if isinstance(dn, dict) and cast("dict[str, Any]", dn).get("arg"):
+        # …and `last_approvals` (2026-09-05) rides the same row shape with
+        # the same host-path exposure, plus a `cwd` that is ALWAYS a host
+        # path — scrub both lists, both fields, or the new one leaks exactly
+        # the way the old one was measured to.
+        for key in ("last_denials", "last_approvals"):
+            rows: list[Any] = n.get(key) or []
+            for dn in rows:
+                if not isinstance(dn, dict):
+                    continue
                 d2 = cast("dict[str, Any]", dn)
-                d2["arg"] = _WINPATH.sub("<path>", str(d2["arg"]))
+                for fld in ("arg", "cwd"):
+                    if d2.get(fld):
+                        d2[fld] = _WINPATH.sub("<path>", str(d2[fld]))
         children: list[dict[str, Any]] = n.get("children") or []
         for c in children:
             walk(c)

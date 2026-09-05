@@ -662,6 +662,7 @@ export interface CanvasNode {
   /** D-234: the model switch queued behind the running turn (TreeNode's) */
   pending_switch?: PendingSwitch | null
   last_denials?: TreeNode['last_denials']
+  last_approvals?: TreeNode['last_approvals']
   turns?: TreeNode['turns']
   frozen?: TreeNode['frozen']
   audiences_held?: string[]

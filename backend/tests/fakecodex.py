@@ -524,12 +524,23 @@ def run_turn(thread_id, turn_id, dyn_tools, model=None):
         # Both kinds are asked in one turn on purpose: the file answer and the
         # command answer come from different rules, and a scenario that asked
         # only one could not show them diverging.
+        # The params mirror the MEASURED v2 wire (codex-cli 0.153.x, nine
+        # captured requests, 2026-09-05): `command` is a STRING, `cwd` and
+        # `itemId` ride beside it, and a fileChange request carries no file
+        # paths at all — only `grantRoot`/`itemId`/`reason`. The seam's
+        # booked row is built from exactly these fields, so a double that
+        # sent a dict `command` would let a string-vs-dict bug (the one that
+        # blanked every codex denial chip) pass unseen.
         decisions = []
         for meth, extra in (
                 ("item/fileChange/requestApproval",
-                 {"callId": "a-file", "fileChange": {"path": "probe.txt"}}),
+                 {"callId": "a-file", "itemId": "patch-probe",
+                  "grantRoot": None, "reason": "probe"}),
                 ("item/commandExecution/requestApproval",
-                 {"callId": "a-cmd", "command": "echo probe"})):
+                 {"callId": "a-cmd", "itemId": "exec-probe",
+                  "command": "echo probe",
+                  "cwd": "C:\\fake\\scratch\\probe-cwd",
+                  "reason": "probe"})):
             ans = server_request(meth, {"threadId": thread_id,
                                         "turnId": turn_id, **extra})
             decisions.append({

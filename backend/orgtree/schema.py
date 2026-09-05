@@ -78,9 +78,17 @@ class NodeScope(TypedDict):
 
 
 class Denial(TypedDict):
-    """№7: one headless auto-deny from the CLI result event (_after_turn)."""
+    """№7: one headless auto-deny from the CLI result event (_after_turn).
+
+    Also the shape of one APPROVED escalation on the codex lane
+    (`last_approvals`, 2026-09-05): the same row, kept in a separate list
+    because the two mean opposite things. `cwd` is set only by the codex
+    approval seam, whose requests carry the working directory the command
+    would run in; the claude lane's CLI-reported denials have no such field.
+    """
     tool: str
     arg: NotRequired[str | None]
+    cwd: NotRequired[str | None]
 
 
 class TurnStat(TypedDict):
@@ -89,6 +97,13 @@ class TurnStat(TypedDict):
     cost: float
     ms: NotRequired[int | None]
     denials: int
+    #: codex lane only (2026-09-05): approvals `_approve` ANSWERED "accept" —
+    #: commands or file changes the sandbox had blocked and orgtree let out.
+    #: It counts approvals, not observed executions: the callback answers
+    #: before anything runs, and the seam itself cannot classify a request
+    #: beyond "codex asked". Absent on the claude/AGY lanes, which have no
+    #: such callback.
+    approvals: NotRequired[int]
     # killed-turn accounting (2026-08-04): output tokens ride every entry so a
     # later killed turn can estimate its unreported spend from the node's own
     # $/token history; `killed` marks the kill, `estimated` marks a derived
@@ -322,6 +337,10 @@ class NodeDoc(TypedDict):
     inflight: NotRequired[InflightInfo | None]
     pending_switch: NotRequired[dict[str, Any] | None]   # D-234 {tier, from, by, at, crossing}
     last_denials: NotRequired[list[Denial]]
+    #: codex lane (2026-09-05): the escalations `_approve` APPROVED on the
+    #: node's last turn — same row shape and same cap as `last_denials`, and
+    #: scrubbed the same way on the tree. Approved, not "ran": see TurnStat.
+    last_approvals: NotRequired[list[Denial]]
     turns: NotRequired[list[TurnStat]]
     frozen: NotRequired[FrozenInfo | None]
     remote_controlled: NotRequired[dict[str, Any] | None]  # FR-01 {at, pid} — the node is parked while the user drives its session directly

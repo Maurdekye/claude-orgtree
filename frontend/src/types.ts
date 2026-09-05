@@ -97,6 +97,9 @@ export interface NodeScope {
 export interface Denial {
   tool: string
   arg?: string | null
+  /** codex approval seam only (2026-09-05): the working directory the
+   *  request named; scrubbed like `arg` on the tree */
+  cwd?: string | null
 }
 
 // schema.py TurnStat (№15)
@@ -105,6 +108,10 @@ export interface TurnStat {
   cost: number
   ms?: number | null
   denials: number
+  /** codex lane only (2026-09-05): escalations orgtree's approval seam
+   *  answered "accept" — APPROVED, not observed to run. Absent on lanes
+   *  with no such seam; never read absence as zero. */
+  approvals?: number
   /** killed-turn accounting (2026-08-04): output tokens, the kill marker,
    *  and whether the cost is derived rather than API-reported */
   toks?: number
@@ -319,6 +326,9 @@ export interface TreeNode {
    *  applied, was cancelled, or the node was idle when asked */
   pending_switch?: PendingSwitch | null
   last_denials: Denial[]
+  /** codex lane (2026-09-05): last turn's APPROVED escalations, same row
+   *  shape as last_denials; absent when the lane cannot report it */
+  last_approvals?: Denial[]
   turns: TurnStat[]
   frozen: TreeFrozen | null
   audiences_held: string[]
