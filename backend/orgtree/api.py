@@ -72,6 +72,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, model_validator
 
 from . import crashreports
+from . import refs
 from . import deployment
 from . import frozen_install
 from . import workitems
@@ -3729,7 +3730,11 @@ def documents_list(slug: str) -> dict[str, Any]:
         org = store.load_org(slug)
     except LedgerError as e:
         raise HTTPException(404, str(e))
-    return {"documents": org.document_gallery()}
+    gallery = org.document_gallery()
+    for d in gallery:
+        if isinstance(d, dict) and d.get("id"):
+            d["ref"] = refs.doc(slug, str(d["id"]))
+    return {"documents": gallery}
 
 
 @app.get("/api/orgs/{slug}/documents/{did}")
@@ -3747,7 +3752,8 @@ def document_get(slug: str, did: str) -> dict[str, Any]:
                  f"later presentations (newest 10 per agent are kept; "
                  f"evictions are in the org log)")
     return {"id": doc["id"], "node": doc["node"], "title": doc["title"],
-            "body": doc["body"], "at": doc["at"]}
+            "body": doc["body"], "at": doc["at"],
+            "ref": refs.doc(slug, str(doc["id"]))}
 
 
 @app.delete("/api/orgs/{slug}/documents/{did}")
@@ -3858,8 +3864,9 @@ def work_items_list(slug: str, archived: int = 0,
     except LedgerError as e:
         raise HTTPException(404, str(e))
     _work_identity_guard(org)
-    return org.work_list(USER, include_archived=bool(archived),
-                         include_backlogged=bool(backlogged))
+    return _work_refs(slug, org.work_list(
+        USER, include_archived=bool(archived),
+        include_backlogged=bool(backlogged)))
 
 
 @app.get("/api/orgs/{slug}/work-items/{wid}")
@@ -3870,9 +3877,11 @@ def work_item_get(slug: str, wid: str) -> dict[str, Any]:
         raise HTTPException(404, str(e))
     _work_identity_guard(org)
     try:
-        return {"item": org.work_get(USER, wid)}
+        it = org.work_get(USER, wid)
     except LedgerError as e:
         raise HTTPException(404, str(e))
+    it["ref"] = refs.item(slug, str(it["slug"]))
+    return {"item": it}
 
 
 @app.post("/api/orgs/{slug}/work-items/{wid}/reply")
@@ -3998,6 +4007,43 @@ def work_item_accept(slug: str, wid: str, body: WorkAccept) -> dict[str, Any]:
     return r
 
 
+def _work_refs(org_slug: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """Stamp every listed item with its own reference. A LIST is where a
+    reader most often needs one — the user asked to link EXISTING work, not
+    only work that was just created."""
+    for group in ("items", "archived", "backlogged"):
+        for it in payload.get(group) or []:
+            if isinstance(it, dict) and it.get("slug"):
+                it["ref"] = refs.item(org_slug, str(it["slug"]))
+    return payload
+
+
+def _attach_ref(org_slug: str, tool: str, result: dict[str, Any]) -> None:
+    """Give a result the ready-to-paste reference for what it just made.
+
+    ⚠ EVERY BRANCH READS THE ACTUAL RECORD, never the request. A mail ref is
+    built from the DELIVERY record's own `delivered`/`id` — the same pair the
+    desk's existing "open in mailbox" link uses — so a send that produced no
+    local box entry gets no reference rather than a plausible one pointing
+    nowhere. `orgtree_status` is in the mail family only because it CAN post
+    mail; when it did not, there is no pair and no ref (Astra 2026-09-05:
+    do not assume every status result is mail).
+
+    Agents must never compose one of these by hand: an org segment assembled
+    from memory is exactly the mistake the org segment exists to prevent.
+    """
+    if result.get("ref"):
+        return                       # the docket sets its own, in _work_mutate
+    if tool in ("orgtree_message", "orgtree_send_notice", "orgtree_status"):
+        r = refs.mail(org_slug, str(result.get("delivered") or ""),
+                      str(result.get("id") or ""))
+        if r:
+            result["ref"] = r
+        return
+    if tool == "orgtree_present" and result.get("presented"):
+        result["ref"] = refs.doc(org_slug, str(result["presented"]))
+
+
 def _work_ref(a: dict[str, Any]) -> str:
     """The item a work action names. ONE argument, `slug`, because an item has
     one identity.
@@ -4079,6 +4125,11 @@ def _work_mutate(org: Org, nid: str, a: dict[str, Any]) -> dict[str, Any]:
         name = str(r.get("created") or wid or "")
         if name:
             r["item"] = name
+    if isinstance(r, dict) and r.get("item"):
+        # the ready-to-paste reference. Agents must never COMPOSE one of
+        # these: an org segment assembled by hand is exactly the mistake the
+        # org segment exists to prevent.
+        r["ref"] = refs.item(org.d["slug"], str(r["item"]))
     return r
 
 
@@ -6558,6 +6609,7 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
         # the bridge is an ADMIN affordance (ceiling spec §1) — an agent has
         # no path to raise the ceiling, so the offer never reaches one
         result.pop("bridge", None)
+        _attach_ref(body.org, body.tool, result)
     hub_changed(body.org)
     return result
 
