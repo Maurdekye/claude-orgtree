@@ -564,7 +564,14 @@ def _read_bytes(p: str) -> bytes:
 ROWED: tuple[str, ...] = ("nodes",)
 DICT_LOGS: tuple[str, ...] = ("mail_log", "steered_log", "turn_error_log")
 LIST_LOGS: tuple[str, ...] = ("events", "org_inbox", "notice_log",
-                              "user_mail_log", "user_outbox")
+                              "user_mail_log", "user_outbox",
+                              # operation receipts (opreceipts.py): append-only
+                              # and capped, and LAZY is the point — a call
+                              # that carries no `op_key` never touches it, so
+                              # it costs the hot path nothing (measured:
+                              # untouched 2.5 ms, materialise+append 5.9 ms at
+                              # 300 rows — evidence/receipt-cost.json)
+                              "op_receipts")
 LAZY_SECTIONS: frozenset[str] = frozenset(DICT_LOGS) | frozenset(LIST_LOGS)
 
 _SCHEMA_VERSION = "1"
@@ -1071,6 +1078,25 @@ class AppendLog(list[Any]):
         super().__imul__(n)
         self._row_ids = [None] * len(self)
         return self
+
+
+def appended_since_load(value: Any) -> int | None:
+    """How many rows a log section has GAINED since it was loaded — without
+    materialising anything.
+
+    An operation receipt brackets the document `events` one call produced,
+    and the obvious way to get that bracket (read `len(d["events"])` before
+    the dispatch) would materialise the whole unbounded events log on every
+    keyed call — the S1 cost this design is otherwise careful to avoid. An
+    `AppendLog` already knows its committed baseline, so if the dispatch
+    touched the section the count is free, and if it did not, nothing is
+    loaded. `None` means "not an AppendLog": a JSON document holds a plain
+    list, and its caller has the pre-dispatch length for free anyway because
+    JSON loads the whole document.
+    """
+    if isinstance(value, AppendLog):
+        return max(0, len(value) - len(value._rows))
+    return None
 
 
 class SectionMap(dict[str, Any]):
