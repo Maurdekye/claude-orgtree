@@ -125,13 +125,25 @@ for (const m of MUTANTS) {
   try {
     writeFileSync(m.file, Buffer.from(mutated.replace(/\n/g, '\r\n'), 'utf8'))
     const r = runSuite()
-    const named = r.out.includes(m.kills)
+    // ⚠ THE NAME MUST APPEAR ON A FAILING LINE. `out` holds the whole run,
+    // passing checks included, so a bare `includes(kills)` is true for almost
+    // every mutant and attributes the kill to whichever check was named —
+    // WRONG CHECK could then never fire. node:test marks failures with '✖'.
+    const named = r.out.split('\n')
+      .some((l) => l.trimStart().startsWith('✖') && l.includes(m.kills))
     if (r.failed && named) {
       console.log(`killed — ${m.name}`)
     } else if (r.failed) {
       console.error(`WRONG CHECK — ${m.name}`)
       console.error(`  the suite went red but "${m.kills}" is not among the failures`)
-      console.error(r.out.slice(0, 900))
+      // ⚠ NAME WHAT DID FAIL. Without this the only way to correct a `kills`
+      // is to re-apply the mutant by hand, which is how a misattribution
+      // survives a reader's attention in the first place.
+      for (const l of [...new Set(r.out.split('\n')
+        .filter((x) => x.trimStart().startsWith('✖'))
+        .map((x) => x.trim().replace(/\s*\([\d.]+ms\)$/, '')))]) {
+        console.error(`    ${l}`)
+      }
       survived++
     } else {
       console.error(`SURVIVED    — ${m.name}`)

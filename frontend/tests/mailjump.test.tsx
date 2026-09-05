@@ -135,6 +135,13 @@ uiTest('§5 CONTROL — a jump that IS found produces no such statement',
   async (mount) => {
     // §3 and §4 both assert on an element being present. If that element were
     // present unconditionally they would pass while the feature did nothing.
+    //
+    // ⚠ THIS ESTABLISHES LESS THAN IT LOOKS LIKE, and the limit is worth
+    // knowing before leaning on it: the notice lives inside `{!cur && …}`, so
+    // once a message is SELECTED it cannot render whatever `outsideWindow`
+    // says. This check therefore pins the FOUND path only — it does not
+    // constrain that flag, and a mutant forcing `outsideWindow = true` walks
+    // straight past it. §6, §7d and §15c are the ones that catch that.
     const { el } = await mount(<MailList delivered={THREE} jumpTo="m2" />)
     await flush()
     assert.equal(el.querySelector('.mailer-nojump'), null)

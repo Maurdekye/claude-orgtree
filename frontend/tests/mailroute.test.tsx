@@ -16,7 +16,7 @@
 //
 // Run:  cd frontend && node tests/run.mjs mailroute
 
-import { flush, inAct, mountView, realClock, useFakeClock } from './harness'
+import { advance, flush, inAct, mountView, realClock, useFakeClock } from './harness'
 import test from 'node:test'
 import type { TestContext } from 'node:test'
 import assert from 'node:assert/strict'
@@ -24,6 +24,20 @@ import { mailRefTarget } from '../src/canvas/reflinks'
 import { parseRef } from '../src/canvas/workrefs'
 import type { TypedRef } from '../src/canvas/workrefs'
 import type { TreePayload } from '../src/types'
+
+// ⚠ jsdom IMPLEMENTS NO LAYOUT, so `Element.scrollIntoView` does not exist and
+// the product's jump handler throws the moment a jump lands on a row that IS
+// in the list. Stubbed here rather than guarded in the source: the call is
+// correct in a browser, and adding `?.` to product code to satisfy a test
+// environment hides a real missing-method bug behind a shrug.
+{
+  const win = document.createElement('div').ownerDocument.defaultView as
+    unknown as { Element: { prototype: Record<string, unknown> } }
+  const proto = win.Element.prototype
+  if (typeof proto.scrollIntoView !== 'function') {
+    proto.scrollIntoView = function scrollIntoView() { /* no layout in jsdom */ }
+  }
+}
 
 const noop = () => {}
 
@@ -282,4 +296,205 @@ uiTest('§6 CONTROL — with no pointer the canvas opens no mailbox at all',
     await flush()
     assert.equal(heads(el).length, 0,
       `no panel should be open: ${JSON.stringify(heads(el))}`)
+  })
+
+// ─────────────── §8 the USER inbox panel is the same panel, and owes the same
+//
+// ⚠ FOUND BY fable-verify AGAINST c7d267f, from the source. `InboxPanel` is
+// this branch's own addition and carried a copy of the folder effect that
+// `InboxView` had before its corrections: an effect-scoped cancel with the
+// polled `box` in its deps, and a Sent list given the jump but never told the
+// outcome of the question the panel asks on its behalf.
+//
+// ⚠ AND BOTH EXISTING MOUNTS OF THIS PANEL PASS `jumpTo={null}`, so nothing
+// drove the lookup path at all. These mount the real panel and drive it.
+
+/** the user's box, plus a lookup route the check controls. A FRESH payload
+ *  per call: handing back one object makes `usePolled` bail out of its own
+ *  setState, and then no "under a repoll" claim means anything. */
+function userBoxServer(answer: () => Promise<unknown>) {
+  const had = (globalThis as { fetch?: typeof fetch }).fetch
+  const row = (id: string, body: string) => ({
+    id, from: 'ceo', to: 'user_inbox', kind: 'message',
+    at: '2026-09-05T09:00:00.000Z', body, read: true,
+  })
+  ;(globalThis as unknown as { fetch: typeof fetch }).fetch = ((url: string) => {
+    const path = String(url)
+    if (path.includes('/mail/user/')) return answer()
+    const payload = path.includes('/inbox')
+      ? {
+          pending: [], delivered: [row('in-1', 'RECEIVED CONTROL')],
+          sent: [row('sent-1', 'SENT CONTROL')],
+        }
+      : {}
+    return Promise.resolve({
+      ok: true, status: 200, headers: new Headers(),
+      json: () => Promise.resolve(payload),
+    })
+  }) as unknown as typeof fetch
+  return () => { (globalThis as { fetch?: typeof fetch }).fetch = had }
+}
+
+const foundOlder = () => ({
+  ok: true, status: 200, headers: new Headers(),
+  json: () => Promise.resolve({
+    found: true,
+    mail: {
+      id: 'older-1', from: 'ceo', to: 'user_inbox', kind: 'message',
+      at: '2026-08-01T09:00:00.000Z', body: 'OLDER RECEIVED', read: true,
+    },
+  }),
+})
+
+const folderNow = (el: HTMLElement) =>
+  [...el.querySelectorAll('.mail-folders button.on')].map((b) => b.textContent)
+
+const clickFolder = async (el: HTMLElement, name: string) => {
+  const b = [...el.querySelectorAll('.mail-folders button')]
+    .find((x) => x.textContent === name) as HTMLButtonElement
+  await inAct(() => { b.click() })
+  await flush()
+}
+
+/** settle the panel: the box fetch, the poll's first tick and any lookup */
+const rest = async () => { await flush(); await advance(200, 16); await flush() }
+
+/** these checks need a RE-RENDER (a second request), which the local `mount`
+ *  above does not hand back — so they drive `mountView` directly. */
+function panelTest(name: string,
+  body: (open: (jumpTo: string | null, seq: number) => Promise<{
+    el: HTMLElement; again: (j: string | null, s: number) => Promise<unknown>
+  }>) => Promise<void>): void {
+  test(name, async (t: TestContext) => {
+    useFakeClock()
+    const live: { unmount: () => Promise<void> }[] = []
+    t.after(async () => {
+      for (const m of live) { try { await m.unmount() } catch { /* gone */ } }
+      realClock()
+    })
+    const { InboxPanel } = await import('../src/App')
+    const node = (j: string | null, s: number) => (
+      <InboxPanel slug="mine" tree={tree(['ceo'])} toast={noop}
+        jumpTo={j} jumpSeq={s} close={noop} />)
+    await body(async (j, s) => {
+      const v = await mountView(node(j, s), (host) => host)
+      live.push(v)
+      return { el: v.el, again: (jj, ss) => v.render(node(jj, ss)) }
+    })
+  })
+}
+
+panelTest('§8 the user panel’s answer survives a poll tick underneath it',
+  async (open) => {
+    let settle: ((v: unknown) => void) | null = null
+    // ⚠ ONLY THE FIRST QUESTION IS HELD OPEN. The inbox list asks the same id
+    // again once the folder opens, and deferring that one too would stick the
+    // check on the second question instead of the race it exists for.
+    const restore = userBoxServer(() => (settle
+      ? Promise.resolve(foundOlder())
+      : new Promise((res) => { settle = res })))
+    try {
+      // ⚠ THE READER MUST BE ON SENT FIRST. This panel OPENS on `inbox`, so
+      // "the answer opened the inbox" is free from a standing start — the
+      // assertion only means anything when the answer has to move them.
+      const { el, again } = await open(null, 0)
+      await rest()
+      await clickFolder(el, 'sent')
+      assert.deepEqual(folderNow(el), ['sent'], 'positive control: they moved')
+      await again('older-1', 1)
+      await rest()
+      assert.ok(settle, 'positive control: the question is in flight')
+      await advance(6000, 16); await flush()   // the poll ticks underneath
+      await inAct(() => { settle!(foundOlder()) })
+      await rest()
+      assert.deepEqual(folderNow(el), ['inbox'],
+        'a poll tick underneath the question threw the answer away')
+      assert.match(el.querySelector('.mailer-read')?.textContent ?? '',
+        /OLDER RECEIVED/, 'the message it found never reached the screen')
+    } finally { restore() }
+  })
+
+panelTest('§8b the user panel’s Sent folder claims nothing while the panel is '
+  + 'still asking', async (open) => {
+    const restore = userBoxServer(() => new Promise(() => {}))
+    try {
+      const { el } = await open('older-1', 1)
+      await rest()
+      await clickFolder(el, 'sent')
+      const note = el.querySelector('.mailer-nojump')?.textContent ?? ''
+      assert.match(note, /Looking for that message/,
+        'a question still in flight was rendered as a confirmed absence')
+      assert.doesNotMatch(note, /not in this folder/)
+    } finally { restore() }
+  })
+
+panelTest('§8c the user panel reports its FAILED question, with a retry',
+  async (open) => {
+    let asks = 0
+    const restore = userBoxServer(() => {
+      asks += 1
+      return Promise.reject(new Error('network failed'))
+    })
+    try {
+      const { el } = await open('older-1', 1)
+      await rest()
+      await clickFolder(el, 'sent')
+      assert.ok(asks > 0, 'positive control: the question was asked')
+      const note = el.querySelector('.mailer-nojump')
+      assert.match(note?.textContent ?? '', /Could not check/,
+        'a rejected question was reported as a confirmed absence')
+      assert.doesNotMatch(note?.textContent ?? '', /retracted/,
+        'it stated a fact about the MESSAGE from a network error')
+      const again = note!.querySelector('button') as HTMLButtonElement
+      assert.ok(again, 'no way to try again')
+      const before = asks
+      await inAct(() => { again.click() })
+      await rest()
+      assert.ok(asks > before, 'the retry did not ask again')
+    } finally { restore() }
+  })
+
+panelTest('§8d CONTROL — a question ANSWERED “no” still says the message is '
+  + 'not in this folder', async (open) => {
+    const restore = userBoxServer(() => Promise.resolve({
+      ok: true, status: 200, headers: new Headers(),
+      json: () => Promise.resolve({ found: false, mail: null }),
+    }))
+    try {
+      const { el } = await open('older-1', 1)
+      await rest()
+      await clickFolder(el, 'sent')
+      const note = el.querySelector('.mailer-nojump')
+      assert.match(note?.textContent ?? '', /not in this folder/,
+        'a real negative answer must still be stated as one')
+      assert.equal(note!.querySelectorAll('button').length, 0,
+        'there is nothing to retry: the question was answered')
+    } finally { restore() }
+  })
+
+panelTest('§8e an older question does not answer over a newer already-loaded '
+  + 'target', async (open) => {
+    const pending: (() => void)[] = []
+    const restore = userBoxServer(() => new Promise((res) => {
+      pending.push(() => res(foundOlder()))
+    }))
+    try {
+      const { el, again } = await open('older-1', 1)
+      await rest()
+      assert.ok(pending.length, 'positive control: the older question is live')
+      // a NEW reference to a message the Sent list already holds: it needs no
+      // question, so nothing new is asked and nothing new stakes a claim
+      await again('sent-1', 2)
+      await rest()
+      assert.deepEqual(folderNow(el), ['sent'],
+        'positive control: the newer reference opened the folder holding it')
+      const late = pending.splice(0)     // ⚠ ALL of them, not merely the last
+      await inAct(() => { late.forEach((f) => f()) })
+      await rest()
+      assert.deepEqual(folderNow(el), ['sent'],
+        'the superseded question answered over the top of a newer request')
+      assert.match(el.querySelector('.mailer-read')?.textContent ?? '',
+        /SENT CONTROL/,
+        'the reader was left on a message they had stopped asking for')
+    } finally { restore() }
   })

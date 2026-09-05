@@ -84,7 +84,7 @@ const MUTANTS = [
     // the inbox advertising a kind nobody wired up: a control that looks live
     // and drops the click
     name: 'the inbox claims it can open every kind of reference',
-    file: APP, kills: '§7b CONTROL',
+    file: REFLINKS, kills: '§7b CONTROL',
     from: `    const handles = new Set<RefKind>()
     if (onOpenItem) handles.add('item')`,
     to: `    const handles = new Set<RefKind>(['item', 'agent', 'doc', 'mail'])
@@ -92,7 +92,7 @@ const MUTANTS = [
   },
   {
     name: 'the inbox drops an item reference click',
-    file: APP, kills: '§7 a reference written INSIDE A MAIL',
+    file: REFLINKS, kills: '§7 a reference written INSIDE A MAIL',
     from: `    if (r.ref.kind === 'item') onOpenItem?.(r.ref.id)`,
     to: `    if (r.ref.kind === 'item') { /* no-op */ }`,
   },
@@ -100,10 +100,76 @@ const MUTANTS = [
     // the panel holds no item list; inventing an empty one reports every real
     // item mentioned in every mail as missing
     name: 'the inbox judges items against a list it does not have',
-    file: APP, kills: '§7 a reference written INSIDE A MAIL',
-    from: `      agents: new Map([...nodes.keys()].map((id) => [id, id])),`,
-    to: `      agents: new Map([...nodes.keys()].map((id) => [id, id])),
+    file: REFLINKS, kills: '§7 a reference written INSIDE A MAIL',
+    from: `      agents: agents
+        ? new Map([...agents.keys()].map((id) => [id, id]))
+        : 'loading',`,
+    to: `      agents: agents
+        ? new Map([...agents.keys()].map((id) => [id, id]))
+        : 'loading',
       items: new Map(),`,
+  },
+  // ───── the user panel's own question (found by fable-verify against c7d267f)
+  {
+    // ⚠ THE ORIGINAL DEFECT. An effect-scoped cancel with the polled `box` in
+    // the deps: the poll replaces `box`, the cleanup kills the in-flight
+    // answer, and the re-run then returns early on the latch — so a question
+    // outlived by one tick is dropped with nothing said and nothing re-asked.
+    name: 'a poll tick throws away the user panel’s pending answer',
+    file: APP, kills: '§8 the user panel',
+    from: `    setJumpAsk('asking')
+    Promise.resolve(userLookup(jumpTo))`,
+    to: `    setJumpAsk('asking')
+    cancelOnRepoll = () => { askKey.current = null }
+    Promise.resolve(userLookup(jumpTo))`,
+    also: {
+      from: `  useEffect(() => {
+    // a retry is a new attempt at the same request: it must pass the latch
+    const req = jumpKey(jumpTo, jumpSeq) + '#' + askAgain`,
+      to: `  let cancelOnRepoll
+  useEffect(() => {
+    // a retry is a new attempt at the same request: it must pass the latch
+    const req = jumpKey(jumpTo, jumpSeq) + '#' + askAgain`,
+    },
+    then: {
+      from: `  }, [jumpTo, jumpSeq, box, userLookup, askAgain])`,
+      to: `    return () => cancelOnRepoll?.()
+  }, [jumpTo, jumpSeq, box, userLookup, askAgain])`,
+    },
+  },
+  {
+    // the panel asks and never says so, leaving the one folder that cannot
+    // ask for itself stating "not in this folder" about an open question
+    name: 'the user panel does not report the question it is asking',
+    file: APP, kills: '§8b the user panel',
+    from: `                  askState={jumpAsk}`,
+    to: ``,
+  },
+  {
+    // present, plausible and inert: a retry wired to the LIST's own lookup,
+    // which this folder does not have
+    name: 'the user panel’s retry does not re-ask the panel',
+    file: APP, kills: '§8c the user panel reports its FAILED question',
+    from: `                  onAskRetry={() => setAskAgain((n) => n + 1)}`,
+    to: ``,
+  },
+  {
+    // the claim staked after the branches that RETURN, so a newer target the
+    // box already holds never supersedes the question still in flight
+    name: 'the user panel stakes its claim after the branches that return',
+    file: APP, kills: '§8e an older question',
+    from: `    askKey.current = req
+    setJumpAsk(null)
+    if (!jumpTo || !box) return`,
+    to: `    setJumpAsk(null)
+    if (!jumpTo || !box) return`,
+    also: {
+      from: `    setJumpAsk('asking')
+    Promise.resolve(userLookup(jumpTo))`,
+      to: `    askKey.current = req
+    setJumpAsk('asking')
+    Promise.resolve(userLookup(jumpTo))`,
+    },
   },
 ]
 
@@ -143,7 +209,8 @@ let survived = 0
 for (const m of MUTANTS) {
   const before = readFileSync(m.file)
   const text = norm(before.toString('utf8'))
-  const edits = [{ from: m.from, to: m.to }, ...(m.also ? [m.also] : [])]
+  const edits = [{ from: m.from, to: m.to },
+    ...(m.also ? [m.also] : []), ...(m.then ? [m.then] : [])]
   let mutated = text
   let stale = false
   for (const e of edits) {
@@ -166,13 +233,25 @@ for (const m of MUTANTS) {
   try {
     writeFileSync(m.file, Buffer.from(mutated.replace(/\n/g, '\r\n'), 'utf8'))
     const r = runSuite()
-    const named = r.out.includes(m.kills)
+    // ⚠ THE NAME MUST APPEAR ON A FAILING LINE. `out` holds the whole run,
+    // passing checks included, so a bare `includes(kills)` is true for almost
+    // every mutant and attributes the kill to whichever check was named —
+    // WRONG CHECK could then never fire. node:test marks failures with '✖'.
+    const named = r.out.split('\n')
+      .some((l) => l.trimStart().startsWith('✖') && l.includes(m.kills))
     if (r.failed && named) {
       console.log(`killed — ${m.name}`)
     } else if (r.failed) {
       console.error(`WRONG CHECK — ${m.name}`)
       console.error(`  the suite went red but "${m.kills}" is not among the failures`)
-      console.error(r.out.slice(0, 900))
+      // ⚠ NAME WHAT DID FAIL. Without this the only way to correct a `kills`
+      // is to re-apply the mutant by hand, which is how a misattribution
+      // survives a reader's attention in the first place.
+      for (const l of [...new Set(r.out.split('\n')
+        .filter((x) => x.trimStart().startsWith('✖'))
+        .map((x) => x.trim().replace(/\s*\([\d.]+ms\)$/, '')))]) {
+        console.error(`    ${l}`)
+      }
       survived++
     } else {
       console.error(`SURVIVED    — ${m.name}`)

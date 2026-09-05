@@ -2012,10 +2012,29 @@ export function InboxPanel({ slug, tree, toast, refresh, close, jumpTo, jumpSeq,
   const userLookup = useCallback(
     (id: string) => getMailById(slug, 'user', id).then((r) => r.mail as MailRow | null),
     [slug])
+  // the panel's own question, for the folder that has no `lookup` and so is
+  // not the one asking, plus the deliberate retry that goes with it
+  const [jumpAsk, setJumpAsk] = useState<'asking' | 'failed' | null>(null)
+  const [askAgain, setAskAgain] = useState(0)
+  // ⚠ THE LIVE REQUEST, AND THE ONLY THING ALLOWED TO ANSWER. In a ref rather
+  // than the effect's closure: `box` is in the deps and the poll replaces it
+  // every few seconds, so an effect-scoped cancel abandons any answer slower
+  // than one tick. Superseded by a NEWER REQUEST or by unmount, never by a
+  // re-run of the same one.
+  const askKey = useRef<string | null>(null)
+  useEffect(() => () => { askKey.current = null }, [])
   useEffect(() => {
-    const key = jumpKey(jumpTo, jumpSeq)
-    if (!jumpTo || !box || foldedJump.current === key) return
-    foldedJump.current = key
+    // a retry is a new attempt at the same request: it must pass the latch
+    const req = jumpKey(jumpTo, jumpSeq) + '#' + askAgain
+    if (foldedJump.current === req) return
+    // ⚠ THE CLAIM IS STAKED BEFORE ANYTHING IS DECIDED ABOUT THE NEW REQUEST,
+    // because the branches below RETURN. A target already in a loaded list
+    // needs no question of its own, and staking the claim after those returns
+    // leaves the previous question live to answer over the top of it.
+    askKey.current = req
+    setJumpAsk(null)
+    if (!jumpTo || !box) return
+    foldedJump.current = req
     const here = (rows: { id?: string }[] | undefined) =>
       (rows ?? []).some((m) => m.id === jumpTo)
     if (here(box.pending) || here(box.delivered)) { setFolder('inbox'); return }
@@ -2024,12 +2043,18 @@ export function InboxPanel({ slug, tree, toast, refresh, close, jumpTo, jumpSeq,
     // is missing from its own window. The answer's folder is decided here — a
     // `@mail:org/user/<id>` names the user's RECEIVED mail, and the Sent rows
     // are copies of mail that lives in other boxes.
-    let live = true
+    setJumpAsk('asking')
     Promise.resolve(userLookup(jumpTo))
-      .then((m) => { if (live && m) setFolder('inbox') })
-      .catch(() => { /* the list reports the failure and offers a retry */ })
-    return () => { live = false }
-  }, [jumpTo, jumpSeq, box, userLookup])
+      .then((m) => {
+        if (askKey.current !== req) return
+        setJumpAsk(null)
+        if (m) setFolder('inbox')
+      })
+      .catch(() => {
+        if (askKey.current !== req) return
+        setJumpAsk('failed')
+      })
+  }, [jumpTo, jumpSeq, box, userLookup, askAgain])
   const aud = usePolled(() => getAudiences(slug), [slug])
   // №10: the record loads on demand — and keeps loading while that tab is up
   const events = usePolled(
@@ -2184,9 +2209,13 @@ export function InboxPanel({ slug, tree, toast, refresh, close, jumpTo, jumpSeq,
               // m.to; a row without one ('' = unreachable) keeps plain chips
               /* ⚠ NO `lookup` HERE. These rows are copies of mail that lives
                  in other boxes, so an exact answer never belongs in this
-                 folder — the panel above asks and opens the one that does. */
+                 folder — the panel above asks and opens the one that does. It
+                 hands down the OUTCOME of that question (`askState`) so this
+                 list does not read an unfinished or failed one as an absence. */
               : <MailList delivered={box.sent ?? []} outgoing refs={mailRefs}
                   jumpTo={jumpTo} jumpSeq={jumpSeq}
+                  askState={jumpAsk}
+                  onAskRetry={() => setAskAgain((n) => n + 1)}
                   onFocusAgent={onFocusAgent ? (agentId) => { close(); onFocusAgent(agentId) } : undefined}
                   fileHref={(p, m) => typeof m.to === 'string' && m.to
                     ? fileUrl(slug, m.to, p) : ''}
