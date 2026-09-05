@@ -3955,7 +3955,8 @@ html.mobile .chip-x { min-width: 28px; min-height: 28px; }
   html.mobile .sq.maplod.eye-map .map-name { font-size: 15px; }
   html.mobile .sq.maplod .eye-count { position: absolute; top: -8px; right: -8px; }
   /* desktop card affordances that have no meaning on the map */
-  html.mobile .hsof, html.mobile .doc-chips, html.mobile .gearbtn,
+  html.mobile .hsof, html.mobile .doc-chips, html.mobile .sq-actions,
+  html.mobile .gearbtn,
   html.mobile .mailbtn, html.mobile .retirebtn,
   html.mobile .user-label { display: none !important; }
 
