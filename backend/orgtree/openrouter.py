@@ -1260,6 +1260,51 @@ def tier_label(tier: str, models: Mapping[str, Any] | None = None) -> str:
     return tier[len(TIER_PREFIX):]
 
 
+def context_for(tier: str, models: Mapping[str, Any] | None = None) -> int | None:
+    """The context window of an OpenRouter TIER, or None when nothing local
+    knows it. The `tier_label` idiom, applied to a number.
+
+    ⚠ A DESELECTED FAVORITE IS NOT A FORGOTTEN ONE (audit finding C-1,
+    2026-09-05). Deselecting is "stop offering", never "evict": the org's
+    tier table is add-only, so a node hired on that tier keeps running on it.
+    Until now the window was read from the favorites registry alone, so the
+    moment the favorite went away the seat's window silently became unknown
+    and every surface fell back to the CLI's number — which this codebase
+    already measured under-reporting 1M models as 200k. Nobody would connect
+    a shrunken context bar back to a deselection.
+
+    Resolution, in order:
+      1. the current favorite's snapshot — unchanged, and still the answer
+         for every selected tier;
+      2. the org doc's own tier→model table (`models`, merged add-only by the
+         ledger hook — the same retained mapping `tier_label` reads), then the
+         LOCAL catalog card for that model id;
+      3. None.
+
+    ⚠ NO NETWORK, EVER. Step 2 consults the catalog only when it is ALREADY
+    in memory (`cost_detail`'s precedent, same guard): this runs on the turn
+    path and on every tree projection, and a fetch there would put an HTTP
+    call behind a context bar. A cold process therefore answers None rather
+    than reaching out, and None is honest.
+
+    ⚠ AND IT NEVER INVENTS A SIZE. No default window, no "probably 200k".
+    A model the local catalog does not carry stays unknown, which is what
+    the caller's existing observed-value fallback is for.
+    """
+    if not is_tier(tier):
+        return None
+    f = favorite_for_tier(tier)
+    if f is not None:
+        return f["context"] or None
+    mid = (models or {}).get(tier)
+    if not isinstance(mid, str) or not mid:
+        return None
+    if _catalog_mem.get("cards") is None:
+        return None
+    card = find(mid)
+    return (card["context"] or None) if card is not None else None
+
+
 def cost_detail(model_id: str, inp: int, cached: int, out: int,
                 cache_write: int = 0) -> CostDetail:
     """Dollars plus price knowledge for one turn at its catalog snapshot.

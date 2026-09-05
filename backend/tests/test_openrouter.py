@@ -1315,6 +1315,90 @@ def main():
                    eq(cachecontinuity.ttl_seconds("openrouter", "api_key"), 300, "ttl")))
     check("tier_context reads the favorite's catalog window for an or-* tier",
           lambda: eq(supervisor.tier_context(TIER), 1000000, "context"))
+
+    def deselected_tier_keeps_its_window():
+        """⚠ AUDIT FINDING C-1. Deselecting a favorite is 'stop offering',
+        never 'evict' — the org's tier table is add-only and a node hired on
+        that tier keeps running. Until 2026-09-05 the window came from the
+        favorites registry alone, so the seat's window silently became
+        unknown the moment the favorite went away and every surface fell back
+        to the CLI's number, which this codebase already measured
+        under-reporting 1M models as 200k. A shrinking context bar with no
+        message and no error.
+
+        Nothing about admission changes here: the tier is still not offered.
+        """
+        MODEL = "anthropic/claude-sonnet-5"
+        models = {TIER: MODEL}
+        # SELECTED (the control): known before, from the registry
+        eq(supervisor.tier_context(TIER, models), 1000000, "selected")
+        orr.remove_favorite(MODEL)
+        # ⚠ RED WITHOUT THE FIX: this read None and the seat lost its window
+        eq(supervisor.tier_context(TIER, models), 1000000,
+           "a still-seated DESELECTED tier keeps its known window")
+        # …and it is genuinely deselected — this is disclosure of a retained
+        # fact, not a restored favorite or a re-opened admission
+        eq(TIER in orr.tiers(), False, "still not offered as a tier")
+        eq(orr.favorite_for_tier(TIER), None, "still not a favorite")
+        # POSITIVE CONTROL FOR THE MAPPING: with no tier→model table there is
+        # nothing local to read, and unknown stays unknown rather than
+        # becoming an invented default
+        eq(supervisor.tier_context(TIER), None, "no mapping: unknown")
+        eq(supervisor.tier_context(TIER, {}), None, "empty mapping: unknown")
+        eq(supervisor.tier_context(TIER, {TIER: "nobody/never-in-catalog"}),
+           None, "a model the local catalog lacks stays unknown")
+        eq(supervisor.tier_context(TIER, {TIER: 7}), None,
+           "a malformed mapping value stays unknown")
+
+        # ⚠ AND THAT LAST LINE ALONE IS VACUOUS — measured: a resolver that
+        # coerces with `str(mid)` turns 7 into "7", finds no such model and
+        # answers None anyway, so the assertion passes on the broken version
+        # too. THIS is the one that bites: a non-string whose `str()` IS a
+        # real catalog id. A coercing resolver reads 1000000 here.
+        class _NotAString:
+            def __str__(self) -> str:
+                return MODEL
+        eq(supervisor.tier_context(TIER, {TIER: _NotAString()}), None,
+           "a non-string mapping value is never coerced into a model id")
+        # ⚠ NO NETWORK ON THIS PATH. With the catalog absent from memory the
+        # resolver answers None instead of fetching. `_http_get` is replaced
+        # by a counter here, so a fetch would be visible rather than assumed.
+        calls = {"n": 0}
+        real_get, real_cards = orr._http_get, orr._catalog_mem["cards"]
+
+        def counting_get(url, headers):
+            calls["n"] += 1
+            return real_get(url, headers)
+        orr._http_get, orr._catalog_mem["cards"] = counting_get, None
+        try:
+            eq(supervisor.tier_context(TIER, models), None,
+               "cold catalog answers unknown")
+            eq(calls["n"], 0, "and made NO network call to find out")
+        finally:
+            orr._http_get, orr._catalog_mem["cards"] = real_get, real_cards
+        # the explicit operator override still wins over all of it
+        supervisor.TIER_CONTEXT[TIER] = 4242
+        try:
+            eq(supervisor.tier_context(TIER, models), 4242, "override wins")
+        finally:
+            supervisor.TIER_CONTEXT.pop(TIER, None)
+        # a node still sitting on the tier reads the same window through the
+        # node-level accessor, which is what the context bar actually calls
+        node = {"model": TIER, "context_window": 200000}
+        eq(supervisor.context_window(node, models), 1000000, "node accessor")
+        # and an API tree projection carries its own model_id, so it needs no
+        # org threaded to it at all
+        eq(supervisor.context_window(
+            {"tier": TIER, "model_id": MODEL, "context_window": 200000}),
+           1000000, "projection shape resolves unaided")
+        # ⚠ THE OBSERVED FALLBACK IS NOT REMOVED: a tier nothing local knows
+        # still yields the doc's measured value rather than nothing
+        eq(supervisor.context_window({"model": TIER, "context_window": 200000}),
+           200000, "unknown tier still falls back to the observed window")
+        orr.add_favorite(MODEL)
+    check("a DESELECTED OpenRouter tier a node still sits on keeps its known "
+          "context window, while genuinely unknown metadata stays unknown "
+          "(audit C-1)", deselected_tier_keeps_its_window)
     r3 = client.delete("/api/openrouter/key").json()
     check("DELETE /api/openrouter/key: gone, and the gate now names the missing key",
           lambda: (eq(r3["key_set"], False, "key_set"),

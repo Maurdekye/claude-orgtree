@@ -229,17 +229,24 @@ except (json.JSONDecodeError, TypeError):
     pass
 
 
-def tier_context(tier: str) -> int | None:
+def tier_context(tier: str,
+                 models: Mapping[str, Any] | None = None) -> int | None:
     """The pinned context window for `tier`: the static table above for the
     CLI providers' tiers, the favorite's catalog `context_length` for an
     OpenRouter tier (2026-09-02 — those tiers are minted at runtime, so no
     import-time table can carry them). The env override still wins for any
-    tier it names, static or not."""
+    tier it names, static or not.
+
+    `models` is the org doc's tier→model table. Pass it and a DESELECTED
+    OpenRouter tier a node still sits on keeps its known window
+    (`openrouter.context_for`, audit finding C-1); omit it and the behaviour
+    is exactly what it was. The override above is checked FIRST either way,
+    so an operator who pinned a window still wins."""
     cw = TIER_CONTEXT.get(tier)
     if cw:
         return cw
     if openrouter.is_tier(tier):
-        return openrouter.contexts().get(tier)
+        return openrouter.context_for(tier, models)
     return None
 
 
@@ -2324,7 +2331,8 @@ def _refresh_projection(org: Org, nid: str, tpath: str,
     view_v = _file_version(view_path)
     source = cast("dict[str, Any] | None", entry.get("source"))
     cap_changed = (source is not None
-                   and source.get("context_cap") != context_window(n))
+                   and source.get("context_cap") != context_window(
+                       n, org.d.get("models")))
     raw_append = _can_append(tpath, entry.get("raw_version"), raw_v,
                              cast("tuple[tuple[int, int, str], ...]",
                                   entry.get("raw_anchors") or ()))
@@ -8228,13 +8236,15 @@ def _cache_moved_account(n: NodeDoc | dict[str, Any],
 
 
 def _auto_cheap_context_ready(n: NodeDoc | dict[str, Any],
-                              cfg: dict[str, float]) -> tuple[bool, str]:
+                              cfg: dict[str, float],
+                              models: Mapping[str, Any] | None = None
+                              ) -> tuple[bool, str]:
     """Destructive-action guard: real, sufficiently large, non-fresh context."""
     if n.get("state") not in (None, "live"):
         return False, "the agent is not live"
     if n.get("frozen") or n.get("limit_locked") or n.get("remote_controlled"):
         return False, "the agent is frozen or otherwise blocked"
-    occ, cw = n.get("occupancy"), context_window(n)
+    occ, cw = n.get("occupancy"), context_window(n, models)
     if not occ or not cw:
         return False, "context size is empty or unmeasured"
     if (n.get("occupancy_est") or n.get("compacted_unrun")
@@ -8272,7 +8282,7 @@ def _cache_precompact_decision(org: Org, nid: str,
     cfg = _auto_cheap_cfg(org, nid)
     if cfg is None:
         n = org.node(nid)
-        occ, cw = n.get("occupancy"), context_window(n)
+        occ, cw = n.get("occupancy"), context_window(n, org.d.get("models"))
         try:
             ratio = float(occ or 0) / float(cw or 0)
         except (TypeError, ValueError, ZeroDivisionError, OverflowError):
@@ -8288,7 +8298,8 @@ def _cache_precompact_decision(org: Org, nid: str,
         return ("not_applicable",
                 "The organization is frozen or storage-blocked; no send-time "
                 "compaction is promised.")
-    ready, why = _auto_cheap_context_ready(org.node(nid), cfg)
+    ready, why = _auto_cheap_context_ready(org.node(nid), cfg,
+                                           org.d.get("models"))
     if not ready:
         return "not_applicable", why
     return "will_compact", why
@@ -8659,7 +8670,8 @@ def cache_forecast_public(org: Org, nid: str,
 
 def _auto_cheap_ready(n: NodeDoc | dict[str, Any],
                       cfg: dict[str, float],
-                      forecast: dict[str, Any] | None = None) -> bool:
+                      forecast: dict[str, Any] | None = None,
+                      models: Mapping[str, Any] | None = None) -> bool:
     """True only for a proven-cold forecast and a measured large context.
 
     No turn timestamp, UI-idle clock or operator timeout is read here. Time can
@@ -8669,7 +8681,7 @@ def _auto_cheap_ready(n: NodeDoc | dict[str, Any],
     if not isinstance(forecast, dict) or forecast.get("state") not in (
             "known_incompatible", "expired_known_entry"):
         return False
-    return _auto_cheap_context_ready(n, cfg)[0]
+    return _auto_cheap_context_ready(n, cfg, models)[0]
 
 
 # ── reported-working prompt-cache lifecycle ───────────────────────────────
@@ -12857,10 +12869,11 @@ def _run_one_turn(slug: str, nid: str,
                         _cfg0 = _auto_cheap_cfg(org, nid)
                         if (_cfg0 is not None
                                 and _auto_cheap_ready(
-                                    org.node(nid), _cfg0, _forecast0)):
+                                    org.node(nid), _cfg0, _forecast0,
+                                    org.d.get("models"))):
                             _before = org.node(nid)
                             _occ0 = _before.get("occupancy")
-                            _cw0 = context_window(_before)
+                            _cw0 = context_window(_before, org.d.get("models"))
                             _state0 = str(_forecast0.get("state") or "")
                             _reason0 = str(_forecast0.get("reason") or "")
                             try:
@@ -14143,7 +14156,8 @@ def _run_one_turn(slug: str, nid: str,
                                                 and _auto_cheap_ready(
                                                     _co.node(nid), _cfg_b,
                                                     _fc0 if isinstance(
-                                                        _fc0, dict) else None)):
+                                                        _fc0, dict) else None,
+                                                    _co.d.get("models"))):
                                             # Leave the queue untouched. The
                                             # ordinary follow-up admission
                                             # cheap-compacts before it drains.
@@ -16834,7 +16848,7 @@ def _after_turn(slug: str, nid: str, org: Org, res: dict[str, Any],
                        and mcp_fingerprint_raw else None)
     # the pinned per-tier window wins; the CLI's modelUsage.contextWindow is
     # only a fallback for unknown tiers (it under-reported 1M models as 200k)
-    cw = tier_context(str(org.node(nid)["model"]))
+    cw = tier_context(str(org.node(nid)["model"]), org.d.get("models"))
     if not cw:
         for mu in (res.get("modelUsage") or {}).values():
             cw = mu.get("contextWindow") or cw
@@ -18251,7 +18265,8 @@ def _compact_split_body(slug: str, nid: str) -> None:
     # without writing a boundary otherwise hands back the pre-compaction fill
     # as a measured one (redteam 2026-08-20 — see `occupancy_of`)
     occ_new, occ_est = occupancy_of(transcript_path(new_sid, _transcript_root(org)),
-                                    context_window(org.node(nid))
+                                    context_window(org.node(nid),
+                                                   org.d.get("models"))
                                     if nid in org.nodes else None,
                                     require_boundary=True)
     with store.DOC_LOCK:
@@ -25140,15 +25155,28 @@ def occupancy_of(tpath: str | None,
     return fill.value, fill.estimated
 
 
-def context_window(n: NodeDoc | dict[str, Any]) -> int | None:
+def context_window(n: NodeDoc | dict[str, Any],
+                   models: Mapping[str, Any] | None = None) -> int | None:
     """The window this node's turns actually get. The pinned per-tier value
     wins (the rule `_after_turn` already follows — the CLI under-reported 1M
     models as 200k); the doc's observed `context_window` is the fallback, and
-    it is absent until the node's first turn writes one."""
+    it is absent until the node's first turn writes one.
+
+    `models` is the org's tier→model table, which is what lets a DESELECTED
+    OpenRouter tier keep its known window (finding C-1). A caller with no org
+    in hand omits it and gets exactly today's answer — the observed fallback
+    — so this is additive at every site."""
     # Ledger documents call the field `model`; API tree projections call the
     # same tier `tier`. Accept both so every surface derives one answer.
     tier = str(n.get("model") or n.get("tier") or "")
-    return tier_context(tier) or n.get("context_window")
+    # …and an API projection already carries its own resolved `model_id`
+    # (ledger's tree builder writes it from the same add-only table), so that
+    # shape needs no org threaded to it.
+    if models is None:
+        mid = n.get("model_id")
+        if isinstance(mid, str) and mid and mid != tier:
+            models = {tier: mid}
+    return tier_context(tier, models) or n.get("context_window")
 
 
 def session_occupancy(org: Org, nid: str,
@@ -25162,7 +25190,8 @@ def session_occupancy(org: Org, nid: str,
         n = org.node(nid)
         return occupancy_of(transcript_path(n["session_id"],
                                             _transcript_root(org)),
-                            context_window(n), require_boundary)
+                            context_window(n, org.d.get("models")),
+                            require_boundary)
     except Exception:                                            # noqa: BLE001
         return None, False
 
@@ -25227,7 +25256,7 @@ def _read_chat_source(org: Org, nid: str, last: int | None = None, *,
     msgs = cast("list[dict[str, Any]]", (_resume or {}).get("messages") or [])
     fill = cast("_OccTracker", (_resume or {}).get("fill")) \
         if (_resume or {}).get("fill") is not None \
-        else _OccTracker(context_window(n))
+        else _OccTracker(context_window(n, org.d.get("models")))
     by_tool_id = cast("dict[str, dict[str, Any]]",
                       (_resume or {}).get("by_tool_id") or {})
     after_boundary = bool((_resume or {}).get("after_boundary", False))
@@ -25601,7 +25630,7 @@ def _read_chat_source(org: Org, nid: str, last: int | None = None, *,
             "prev_ts": prev_ts,
             "prev_think": prev_think,
             "prompt_views": prompt_views,
-            "context_cap": context_window(n),
+            "context_cap": context_window(n, org.d.get("models")),
         }}
     # D-229: say how many fresh user events this poll is holding back for
     # want of their projection — zero on every ordinary read, and the desk's
