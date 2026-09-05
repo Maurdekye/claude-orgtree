@@ -1480,10 +1480,10 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
           <span className="cc-actions">
             {live && !liveKids &&
               <button className="danger" onClick={() => setAsking('retire')}>
-                retire · {node.seat! + node.grant!}</button>}
+                retire · {fmtCredits(node.seat! + node.grant!)}</button>}
             {live && liveKids &&
               <button className="danger" onClick={() => setAsking('dissolve')}>
-                dissolve · {node.seat! + node.grant!}</button>}
+                dissolve · {fmtCredits(node.seat! + node.grant!)}</button>}
             {!live && <button onClick={() => op({ op: 'rehire', node: node.id })}>rehire</button>}
           </span>
           <span className="cc-tabs">
@@ -2303,7 +2303,7 @@ export function LineagePanel({ node, op, slug, presence = ALL_PRESENT,
                 ) : <>
                   <select value={tiers[b.id] ?? ''} onChange={(e) =>
                     setTiers((t) => ({ ...t, [b.id]: e.target.value }))}>
-                    <option value="">as {tierLabel(b.tier)} · seat {SEAT(b.tier)}</option>
+                    <option value="">as {tierLabel(b.tier)} · seat {fmtCredits(SEAT(b.tier))}</option>
                     {[...ALL_TIERS, ...openrouterTierIds()]
                       .filter((t) => t !== b.tier
                         && tierShown(presence, t, b.tier))
@@ -2311,7 +2311,7 @@ export function LineagePanel({ node, op, slug, presence = ALL_PRESENT,
                       const why = rehireWhy(t, b.tier)
                       return (
                         <option key={t} value={t} disabled={!!why}>
-                          as {tierLabel(t)} · seat {SEAT(t)}{why ? ` — ${why}` : ''}
+                          as {tierLabel(t)} · seat {fmtCredits(SEAT(t))}{why ? ` — ${why}` : ''}
                         </option>
                       )
                     })}

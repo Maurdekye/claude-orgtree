@@ -145,7 +145,7 @@ export function UserNode({ pos, isDrop, stats, pip, seats, codexHire, claudeHire
             min={stats.circ}
             onCommit={pub ? undefined : (delta) =>
               saveKiosk(slug, { credits: kioskCredits + delta })
-                .then(() => toast?.([`kiosk credit cap: ${kioskCredits + delta}`]))
+                .then(() => toast?.([`kiosk credit cap: ${fmtCredits(kioskCredits + delta)}`]))
                 .catch((e: Error) => toast?.([`error: ${e.message}`]))} />
         : <div className="cbar-inf-wrap">
             <div className="cbar-infinite" />
@@ -544,7 +544,7 @@ function SpawnChips({ onSpawn, free, seats, maxTier, side, soleHire,
           : `hire ${/^[aeiou]/.test(name) ? 'an' : 'a'} ${name}`
             + (soleHire ? ''
               : ` ${side === 'top' ? 'superior' : side ? 'coworker' : 'subordinate'}`)
-            + ` (-${seat})`}
+            + ` (-${fmtCredits(seat)})`}
         onClick={(e) => { e.stopPropagation(); onSpawn(t) }}>
         {letter}
       </button>
@@ -558,7 +558,7 @@ function SpawnChips({ onSpawn, free, seats, maxTier, side, soleHire,
                    reason: string | null, seat: number) => (
     <button key={t} disabled className={'t-' + t + ' codex-preview'}
       title={`${tierLabel(t)} — ${label}; `
-        + (reason ?? 'hiring is not enabled yet') + ` (-${seat})`}>
+        + (reason ?? 'hiring is not enabled yet') + ` (-${fmtCredits(seat)})`}>
       {letter}
     </button>
   )
@@ -864,30 +864,30 @@ export function CreditBar({ seat = 0, grant, committed, segments = [], draftMode
         {draftMode && baseline != null ? (
           /* the counter-offer tip: what is offered, vs what the agent holds */
           <>
-            <div>offer <b className="n-fill">{grant}</b>
+            <div>offer <b className="n-fill">{fmtCredits(grant)}</b>
               {grant !== baseline && <span className={grant < baseline ? 'n-down' : 'dim'}>
-                {' '}({grant > baseline ? '+' : ''}{grant - baseline})</span>}
+                {' '}({grant > baseline ? '+' : ''}{fmtCredits(grant - baseline)})</span>}
             </div>
-            <div className="dim">now <b>{baseline}</b></div>
+            <div className="dim">now <b>{fmtCredits(baseline)}</b></div>
           </>
         ) : draftMode ? (
           <>
-            <div>grant <b className="n-fill">{grant}</b></div>
-            <div className="dim">seat <b className="n-seat">{seat}</b></div>
+            <div>grant <b className="n-fill">{fmtCredits(grant)}</b></div>
+            <div className="dim">seat <b className="n-seat">{fmtCredits(seat)}</b></div>
           </>
         ) : capMode ? (
           /* the eye's kiosk bar: the same numbers wear their org-level names */
           <>
-            <div>cap <b className="n-fill">{cur}</b>{delta !== 0 && <span className="dim"> ({delta > 0 ? '+' : ''}{delta})</span>}</div>
-            <div>circulation <b className="n-fill">{committed}</b></div>
-            <div>free <b className="n-free">{cur - committed}</b></div>
+            <div>cap <b className="n-fill">{fmtCredits(cur)}</b>{delta !== 0 && <span className="dim"> ({delta > 0 ? '+' : ''}{fmtCredits(delta)})</span>}</div>
+            <div>circulation <b className="n-fill">{fmtCredits(committed)}</b></div>
+            <div>free <b className="n-free">{fmtCredits(cur - committed)}</b></div>
           </>
         ) : (
           <>
-            <div>grant <b className="n-fill">{cur}</b>{delta !== 0 && <span className="dim"> ({delta > 0 ? '+' : ''}{delta})</span>}</div>
-            <div>alloc <b className="n-fill">{committed}</b></div>
-            <div>free <b className="n-free">{cur - committed}</b></div>
-            <div className="dim">seat <b className="n-seat">{seat}</b></div>
+            <div>grant <b className="n-fill">{fmtCredits(cur)}</b>{delta !== 0 && <span className="dim"> ({delta > 0 ? '+' : ''}{fmtCredits(delta)})</span>}</div>
+            <div>alloc <b className="n-fill">{fmtCredits(committed)}</b></div>
+            <div>free <b className="n-free">{fmtCredits(cur - committed)}</b></div>
+            <div className="dim">seat <b className="n-seat">{fmtCredits(seat)}</b></div>
           </>
         )}
       </div>
@@ -1350,7 +1350,7 @@ export function NodeSquare({ node, pos, lod, focused: deskOpen, dragging, isDrop
           maxGhost={cascadeAlloc === false && node.parent !== USER}
           onCommit={(delta) => op({ op: 'reallocate', node: node.id, delta })
             .then(() => toast(
-              [`${node.id} grant ${delta > 0 ? '+' : ''}${delta}`],
+              [`${node.id} grant ${delta > 0 ? '+' : ''}${fmtCredits(delta)}`],
               () => op({ op: 'reallocate', node: node.id, delta: -delta })
                 .catch(() => {})))
             .catch(() => {})}

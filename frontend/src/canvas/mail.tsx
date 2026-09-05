@@ -18,7 +18,7 @@ import {
   MailIcon, PublicIcon,
 } from '../icons'
 import {
-  EXTERN, isSystemNotice, md, pileNotices, providerOf, USER, useEsc, usePolled,
+  EXTERN, fmtCredits, isSystemNotice, md, pileNotices, providerOf, USER, useEsc, usePolled,
 } from './shared'
 import type { CanvasNode, MailRow } from './shared'
 import { isMobile } from '../mobile'
@@ -598,8 +598,8 @@ export function OrgRecord({ events }: OrgRecordProps) {
     const d = ev.detail || {}
     const bits = [d.node, d.from != null || d.to != null
       ? `${d.from ?? 'top'} → ${d.to ?? 'top'}` : null,
-    d.freed != null ? `freed ${d.freed}` : null,
-    d.grant != null ? `grant ${d.grant}` : null,
+    d.freed != null ? `freed ${typeof d.freed === 'number' ? fmtCredits(d.freed) : d.freed}` : null,
+    d.grant != null ? `grant ${typeof d.grant === 'number' ? fmtCredits(d.grant) : d.grant}` : null,
     d.reason, d.predecessor].filter(Boolean)
     return bits.join(' · ')
   }

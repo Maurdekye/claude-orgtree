@@ -41,7 +41,7 @@ import type { SettingsTab } from './settingskit'
 import { OpenRouterSection } from './openrouter'
 import {
   setCrowdPilesOn, setDeskDpi, setOpenRouterTiers, setStartView, setStartZoomOn,
-  TIER_LETTER,
+  fmtCredits, TIER_LETTER,
   TIERS, useCrowdPiles, useDeskDpi, useEsc, useStartView, useStartZoom,
 } from './shared'
 import type { StartView } from './shared'
@@ -737,7 +737,7 @@ export function AccountsPanel({ toast, close }: {
                   {codex.tiers.map((t) => (
                     <span key={t.tier} className="acct-prov-tier">
                       <span className={'tier t-' + t.tier}>{t.letter}</span>
-                      {t.tier} · seat {t.seat}
+                      {t.tier} · seat {fmtCredits(t.seat)}
                       <span className="dim"> · {t.model}</span>
                     </span>
                   ))}
@@ -819,7 +819,7 @@ export function AccountsPanel({ toast, close }: {
                   {antigravity.tiers.map((t) => (
                     <span key={t.tier} className="acct-prov-tier">
                       <span className={'tier t-' + t.tier}>{t.letter}</span>
-                      {t.tier} · seat {t.seat}
+                      {t.tier} · seat {fmtCredits(t.seat)}
                       <span className="dim"> · {t.model}</span>
                     </span>
                   ))}

@@ -24,7 +24,7 @@ import {
 } from './icons'
 import { DirList } from './forms'
 import { FolderPickerHost } from './picker'
-import { activeDocCount, ALL_TIERS, attentionPip, availableAutopsyModels, deskDpi, fallbackActive, formatCount, freezeKind, isOpenRouterTier, orgPxc, presenceOfPayload, primedRestartChip, setDeskDpi, TIER_LETTER, tierLabel, unicodeLength, usePolled } from './canvas/shared'
+import { activeDocCount, ALL_TIERS, attentionPip, availableAutopsyModels, deskDpi, fallbackActive, fmtCredits, formatCount, freezeKind, isOpenRouterTier, orgPxc, presenceOfPayload, primedRestartChip, setDeskDpi, TIER_LETTER, tierLabel, unicodeLength, usePolled } from './canvas/shared'
 import { AskCard } from './canvas/asks'
 import { AccountsPanel, UsageBars } from './canvas/accounts'
 import { DocGalleryModal } from './canvas/gallery'
@@ -1958,7 +1958,7 @@ function DefaultsPanel({ toast, close }: { toast: ToastFn; close: () => void }) 
                 <optgroup key={g.label} label={g.label}>
                   {g.models.map((m) => (
                     <option key={m.tier} value={m.tier}>
-                      {m.label}{m.seat != null ? ` · seat ${m.seat}` : ''}
+                      {m.label}{m.seat != null ? ` · seat ${fmtCredits(m.seat)}` : ''}
                     </option>
                   ))}
                 </optgroup>
@@ -2461,7 +2461,7 @@ export function SettingsPanel({ tree, toast, close }: {
                       <optgroup key={g.label} label={g.label}>
                         {g.models.map((m) => (
                           <option key={m.tier} value={m.tier}>
-                            {m.label}{m.seat != null ? ` · seat ${m.seat}` : ''}
+                            {m.label}{m.seat != null ? ` · seat ${fmtCredits(m.seat)}` : ''}
                           </option>
                         ))}
                       </optgroup>

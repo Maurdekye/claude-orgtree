@@ -870,7 +870,7 @@ export function NodeConfig({ node, map, tree, slug, op, toast, codexProvider,
     const why = unavailable(t)
     return (
       <option key={t} value={t} disabled={!!why}>
-        {tierLabel(t)} · seat {tierSeat(t)}{why ? ` — ${why}` : ''}
+        {tierLabel(t)} · seat {fmtCredits(tierSeat(t))}{why ? ` — ${why}` : ''}
       </option>
     )
   }
@@ -913,10 +913,10 @@ export function NodeConfig({ node, map, tree, slug, op, toast, codexProvider,
               dissolve button that asks */}
           {node.state === 'live' && !node.children.some((c) => c.state !== 'archived') &&
             <button className="danger" onClick={() => setAsking('retire')}>
-              retire · {node.seat! + node.grant!}</button>}
+              retire · {fmtCredits(node.seat! + node.grant!)}</button>}
           {node.state === 'live' && node.children.some((c) => c.state !== 'archived') &&
             <button className="danger" onClick={() => setAsking('dissolve')}>
-              dissolve subtree · {node.seat! + node.grant!}</button>}
+              dissolve subtree · {fmtCredits(node.seat! + node.grant!)}</button>}
           {node.state === 'archived' &&
             <button className="primary" onClick={() =>
               op({ op: 'rehire', node: node.id }).then(close).catch(() => {})}>

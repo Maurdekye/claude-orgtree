@@ -43,7 +43,7 @@ import type {
   OpenRouterDoc, OpenRouterModel, OpenRouterModelsPage, OpenRouterSort,
   ProviderInfo, ProviderTier,
 } from '../types'
-import { isDarkTierColor, modelLabel, setOpenRouterTiers } from './shared'
+import { fmtCredits, isDarkTierColor, modelLabel, setOpenRouterTiers } from './shared'
 
 type ToastFn = (lines: string[]) => void
 
@@ -130,7 +130,7 @@ export function ModelCard({ letter, color, accent, title, large }: {
  *  name, the vendor (once — it is no longer part of either name), prices, seat */
 const tierTitle = (t: ProviderTier): string =>
   `${t.label ?? modelLabel(t.model)} · ${t.name ?? ''} — ${t.vendor ?? ''} · `
-  + `${perM(t.prompt ?? 0)} in / ${perM(t.completion ?? 0)} out per 1M · seat ${t.seat}`
+  + `${perM(t.prompt ?? 0)} in / ${perM(t.completion ?? 0)} out per 1M · seat ${fmtCredits(t.seat)}`
 
 /** the whole section: head (label, switch), key row, favorites row, picker */
 export function OpenRouterSection({ provider, headRight, toast, pickerOpen,
