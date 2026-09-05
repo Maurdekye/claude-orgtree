@@ -21,6 +21,9 @@ import subprocess
 import sys
 import tempfile
 
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 BACKEND = os.path.dirname(HERE)
 
@@ -102,7 +105,30 @@ MUTANTS: list[tuple[str, str, str, str, str]] = [
         '        for it in self._work_active():\n'
         '            if it.get("slug") == ref:\n'
         "                return it, False",
-        "never shadow an existing opaque id",
+        "no unreachable name is minted",
+    ),
+    (
+        # an opaque id must count as a TAKEN NAME. Without this an item can be
+        # given a slug that some other item's id already answers to — and that
+        # name is permanently unreachable, because ids resolve first
+        # (Astra review 2026-09-05).
+        "opaque-ids-are-not-reserved-against-slugs",
+        "orgtree/ledger.py",
+        '            names.add(str(it["id"]))\n',
+        "",
+        "no unreachable name is minted",
+    ),
+    (
+        # and the reverse direction: a NEWLY MINTED id must not land on a name
+        # some existing slug already holds, which would strand that slug
+        "a-new-id-may-land-on-an-existing-slug",
+        "orgtree/ledger.py",
+        '        wid = "w" + uuid.uuid4().hex[:8]\n'
+        '        while wid in taken:\n'
+        '            wid = "w" + uuid.uuid4().hex[:8]\n'
+        '        taken.add(wid)',
+        '        wid = "w" + uuid.uuid4().hex[:8]',
+        "a newly minted id never lands on a name",
     ),
     (
         "backfill-runs-on-the-read-path",

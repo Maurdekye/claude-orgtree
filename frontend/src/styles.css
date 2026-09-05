@@ -2892,6 +2892,8 @@ main.solo { width: 100%; }
 }
 .docket-slug:hover { color: var(--ink-strong); border-color: var(--line); }
 .docket-slug.copied { color: var(--ok); border-color: var(--ok); }
+/* a refused clipboard says so rather than claiming a copy that never happened */
+.docket-slug.failed { color: var(--bad); border-color: var(--bad); }
 .docket-pane-sub .docket-slug { margin: 0 4px; vertical-align: middle; }
 /* THE DESCRIPTION — problem first, then the proposed solution */
 .docket-desc { margin: 0 0 12px; }

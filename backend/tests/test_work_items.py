@@ -1323,20 +1323,80 @@ check("a slug is accepted anywhere the opaque id is, without changing authority"
 
 
 def an_id_can_never_be_shadowed_by_a_slug():
-    """The compatibility promise: a reference that worked before slugs existed
-    resolves to the same item even if some other item is later NAMED that."""
+    """Two promises at once. A reference that worked before slugs existed still
+    resolves to the same item — and no item is ever GIVEN a name that an opaque
+    id already answers to, because such a name could never be resolved: the id
+    match runs first and would always win (Astra review 2026-09-05)."""
     slug = fresh_org()
     victim = create(slug, title="victim")
-    # name a second item exactly the first one's opaque id
+    # ask for a name that is exactly the first item's opaque id
     attacker = create(slug, title=victim)
-    assert get_item(slug, attacker)["slug"] == victim, \
-        "the fixture is pointless unless the slug really equals the other id"
     assert attacker != victim
     got = ok(slug, "boss", "get", id=victim)["item"]
     assert got["id"] == victim, "an id must be resolved as an id, first and exactly"
 
+    # the collision is RESOLVED, not merely lost: the second item gets a
+    # different name, and that name actually reaches it
+    aslug = get_item(slug, attacker)["slug"]
+    assert aslug != victim, f"minted an unreachable name {aslug!r}"
+    assert ok(slug, "boss", "get", id=aslug)["item"]["id"] == attacker, \
+        "every name an item is given must resolve to that item"
 
-check("a slug can never shadow an existing opaque id", an_id_can_never_be_shadowed_by_a_slug)
+    # and the same holds once a name has moved into the ARCHIVE, where it lives on
+    org = store.load_org(slug)
+    it, _ = org._work_find(victim)
+    it["status"] = "done"
+    store.save_org(org)
+    backdate(slug, victim, 7200)
+    ok(slug, "boss", "update", id=attacker, done_so_far=["sweep"], working_on_next=[])
+    third = create(slug, title=victim)
+    tslug = get_item(slug, third)["slug"]
+    assert tslug not in (victim, aslug), f"reused a taken name: {tslug!r}"
+    assert ok(slug, "boss", "get", id=tslug)["item"]["id"] == third
+
+
+check("a slug can never shadow an opaque id, and no unreachable name is minted",
+      an_id_can_never_be_shadowed_by_a_slug)
+
+def a_new_id_never_lands_on_a_name_a_slug_already_holds():
+    """The reverse of the shadowing rule. An item whose SLUG looks like an id is
+    perfectly legal; what must never happen is a later item being minted with
+    that exact id, which would strand the slug — ids resolve first, so the name
+    would silently start addressing the new item instead."""
+    slug = fresh_org()
+    victim = create(slug, title="w1234abcd")
+    assert get_item(slug, victim)["slug"] == "w1234abcd", \
+        "the fixture is pointless unless the slug really looks like an id"
+
+    # force the id source: first draw collides with that slug, second does not
+    from orgtree import ledger as _L
+    drawn = []
+
+    class _FakeUuid:
+        @staticmethod
+        def uuid4():
+            drawn.append(len(drawn))
+            hexval = "1234abcd" + "0" * 24 if len(drawn) == 1 \
+                else "beefcafe" + "0" * 24
+            return type("_V", (), {"hex": hexval})
+
+    real = _L.uuid
+    _L.uuid = _FakeUuid
+    try:
+        other = create(slug, title="something else entirely")
+    finally:
+        _L.uuid = real
+
+    assert len(drawn) >= 2, "the first draw was not rejected — no second draw happened"
+    assert other != "w1234abcd", "minted an id that an existing slug already answers to"
+    assert other == "wbeefcafe", other
+    # and the name still reaches the item it was given to
+    assert ok(slug, "boss", "get", id="w1234abcd")["item"]["id"] == victim
+
+
+check("a newly minted id never lands on a name a slug already holds, "
+      "so no unreachable name is minted",
+      a_new_id_never_lands_on_a_name_a_slug_already_holds)
 
 
 def old_items_are_backfilled_by_a_WRITE_and_never_by_a_READ():

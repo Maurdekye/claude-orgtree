@@ -116,7 +116,8 @@ const mkTree = (o?: Partial<TreePayload>): TreePayload => ({
 })
 
 function uiTest(name: string, body: (mount: (v: React.ReactElement)
-  => Promise<{ el: HTMLElement }>) => Promise<void>) {
+  => Promise<{ el: HTMLElement; render: (v: React.ReactElement) => Promise<unknown> }>)
+  => Promise<void>) {
   test(name, async (t: TestContext) => {
     useFakeClock()
     let open: { el: HTMLElement; unmount: () => Promise<void> } | null = null
@@ -124,7 +125,10 @@ function uiTest(name: string, body: (mount: (v: React.ReactElement)
     await body(async (v) => {
       const view = await mountView(v, (host) => host)
       open = view
-      return { el: view.el }
+      // `render` re-renders the SAME root with new props — mounting a second
+      // view would test a fresh component, which is the opposite of asking
+      // what happens to state that is already there
+      return { el: view.el, render: view.render }
     })
   })
 }
@@ -162,8 +166,10 @@ const docketModal = (extra?: Partial<{
   onFocusAgent: (id: string) => void
   tree: TreePayload
   toast: (lines: string[]) => void
+  slug: string
 }>) => (
-  <DocketModal slug="org1" toast={extra?.toast ?? noop} close={extra?.close ?? noop}
+  <DocketModal slug={extra?.slug ?? 'org1'} toast={extra?.toast ?? noop}
+    close={extra?.close ?? noop}
     tree={extra?.tree ?? mkTree()} onFocusAgent={extra?.onFocusAgent} />
 )
 
@@ -1260,4 +1266,175 @@ uiTest('§30 a long agent name truncates instead of running under the Dismiss bu
     'the truncating element must not itself be the flex container')
   assert.equal(name.textContent, 'an-extremely-long-agent-identifier-that-will-not-fit')
   assert.ok(r.querySelector('.docket-dismiss'), 'and the Dismiss button is still rendered')
+})
+
+uiTest('§31 a row that leaves the archive shows its CURRENT status, not the copy we cached',
+  async (mount) => {
+    // ⚠ THE FIXTURE MUST HAND OVER A DIFFERENT ARRAY, not mutate the one it
+    // already gave out. The panel caches the very array the mock returns, so
+    // emptying that array in place empties the cache too — and the stale state
+    // this test exists to reproduce never comes into being. (It did not, at
+    // first: the check passed against the defective code.)
+    mockWorkItems(
+      [mkItem({ id: 'w1', title: 'Live one' })],
+      [mkItem({
+        id: 'w2', title: 'Was archived', status: 'done', archived: true,
+        objective: 'the description it had while it was finished',
+      })])
+    forgetGroupChoice()
+    const { el } = await mount(docketModal())
+    await flush()
+    await inAct(() => showArchivedBox(el).click())
+    await flush()
+    await inAct(() => (rows(el)[1] as HTMLElement).click())
+    await flush()
+    assert.match(pane(el)?.textContent ?? '', /Done/)
+    assert.match(pane(el)?.textContent ?? '', /while it was finished/)
+
+    // the server now answers differently: the item has been reopened, so it is
+    // live work again with a new status and a rewritten description, and the
+    // archive no longer holds it. The panel still has the old copy cached.
+    mockWorkItems([
+      mkItem({ id: 'w1', title: 'Live one' }),
+      mkItem({
+        id: 'w2', title: 'Was archived', status: 'in_progress', archived: false,
+        objective: 'the description it has now that it is moving again',
+      }),
+    ], [])
+    // and the user unticks the filter, so the archived group is not even served
+    await inAct(() => showArchivedBox(el).click())
+    await flush()
+
+    assert.match(pane(el)?.textContent ?? '', /In progress/,
+      'the CURRENT row must win over the cached archived copy')
+    assert.match(pane(el)?.textContent ?? '', /moving again/)
+    assert.doesNotMatch(pane(el)?.textContent ?? '', /while it was finished/)
+  })
+
+uiTest('§32 switching org drops the previous org rows and selection', async (mount) => {
+  // each org answers with its own item, so "which org is on screen" is visible
+  // rather than inferred
+  const a = mkItem({ id: 'wA', title: 'Org one item', status: 'done', archived: true })
+  const b = mkItem({ id: 'wB', title: 'Org two item', status: 'open' })
+  ;(globalThis as unknown as { fetch: typeof fetch }).fetch =
+    ((url: string) => {
+      const path = String(url)
+      const two = path.includes('/orgs/org2/')
+      const headers = new Headers()
+      return Promise.resolve({
+        ok: true, status: 200, headers,
+        json: () => Promise.resolve({
+          items: two ? [b] : [],
+          ...(path.includes('archived=1') ? { archived: two ? [] : [a] } : {}),
+          counts: { attention: 0, active: two ? 1 : 0, archived: two ? 0 : 1, backlogged: 0 },
+          now: '2026-09-05T10:00:00.000Z',
+        }),
+      })
+    }) as typeof fetch
+
+  forgetGroupChoice()
+  const { el, render } = await mount(docketModal({ slug: 'org1' }))
+  await flush()
+  await inAct(() => showArchivedBox(el).click())
+  await flush()
+  assert.deepEqual(titles(el), ['Org one item'])
+  await inAct(() => (rows(el)[0] as HTMLElement).click())
+  await flush()
+  assert.match(pane(el)?.textContent ?? '', /Org one item/)
+
+  // the SAME mounted panel is handed a different org
+  await render(docketModal({ slug: 'org2' }))
+  await flush()
+  assert.deepEqual(titles(el), ['Org two item'],
+    "the previous org's cached archived row must not survive the switch")
+  assert.doesNotMatch(el.textContent ?? '', /Org one item/)
+  assert.ok(pane(el)?.querySelector('.mailer-none'),
+    'and no detail from the previous org may stay open under the new org URL')
+})
+
+uiTest('§32b switching org never auto-opens an item the user did not click', async (mount) => {
+  // the sharp case for scoping the SELECTION rather than only the cached rows:
+  // when the new org happens to hold the same id, an unscoped selection silently
+  // opens a different org's item under the same id — a detail pane the user
+  // never asked for, wired to a reply URL they never chose.
+  const one = mkItem({ id: 'wSAME', title: 'Org one item', status: 'done', archived: true })
+  const two = mkItem({ id: 'wSAME', title: 'Org two item', status: 'open' })
+  ;(globalThis as unknown as { fetch: typeof fetch }).fetch =
+    ((url: string) => {
+      const path = String(url)
+      const isTwo = path.includes('/orgs/org2/')
+      return Promise.resolve({
+        ok: true, status: 200, headers: new Headers(),
+        json: () => Promise.resolve({
+          items: isTwo ? [two] : [],
+          ...(path.includes('archived=1') ? { archived: isTwo ? [] : [one] } : {}),
+          counts: { attention: 0, active: isTwo ? 1 : 0, archived: isTwo ? 0 : 1, backlogged: 0 },
+          now: '2026-09-05T10:00:00.000Z',
+        }),
+      })
+    }) as typeof fetch
+
+  forgetGroupChoice()
+  const { el, render } = await mount(docketModal({ slug: 'org1' }))
+  await flush()
+  await inAct(() => showArchivedBox(el).click())
+  await flush()
+  await inAct(() => (rows(el)[0] as HTMLElement).click())
+  await flush()
+  assert.match(pane(el)?.textContent ?? '', /Org one item/, 'selected in org1')
+
+  await render(docketModal({ slug: 'org2' }))
+  await flush()
+  assert.deepEqual(titles(el), ['Org two item'])
+  assert.ok(pane(el)?.querySelector('.mailer-none'),
+    'the identical id must NOT carry the selection across into the new org')
+  assert.doesNotMatch(pane(el)?.textContent ?? '', /Org two item/)
+
+  // POSITIVE CONTROL: clicking in the new org still opens the new org's item,
+  // so the check above is not passing because selection stopped working
+  await inAct(() => (rows(el)[0] as HTMLElement).click())
+  await flush()
+  assert.match(pane(el)?.textContent ?? '', /Org two item/)
+})
+
+uiTest('§33 only a real copy reports "copied"', async (mount) => {
+  mockWorkItems([mkItem({ id: 'w1', slug: 'named-thing', title: 'Item' })])
+  forgetGroupChoice()
+  const set = (value: unknown) => Object.defineProperty(
+    window.navigator, 'clipboard', { configurable: true, value })
+  const { el } = await mount(docketModal())
+  await flush()
+  const chip = () => el.querySelector('.docket-slug') as HTMLElement
+
+  // NO CLIPBOARD AT ALL — the case the first version reported as success
+  set(undefined)
+  await inAct(() => chip().click())
+  await flush()
+  assert.equal(chip().textContent, 'copy failed')
+  assert.ok(chip().classList.contains('failed'))
+  assert.match(chip().getAttribute('title') ?? '', /copy it by hand/)
+
+  // ACCESS REFUSED — the promise rejects
+  set({ writeText: () => Promise.reject(new Error('denied')) })
+  await inAct(() => chip().click())
+  await flush()
+  assert.equal(chip().textContent, 'copy failed')
+
+  // ACCESS THROWS SYNCHRONOUSLY
+  set({ writeText: () => { throw new Error('blocked') } })
+  await inAct(() => chip().click())
+  await flush()
+  assert.equal(chip().textContent, 'copy failed')
+
+  // POSITIVE CONTROL: a clipboard that works DOES report copied, and copies the
+  // name — without this the three checks above would pass on a chip that can
+  // never say "copied" at all
+  const wrote: string[] = []
+  set({ writeText: (t: string) => { wrote.push(t); return Promise.resolve() } })
+  await inAct(() => chip().click())
+  await flush()
+  assert.deepEqual(wrote, ['named-thing'])
+  assert.equal(chip().textContent, 'copied')
+  assert.ok(chip().classList.contains('copied'))
+  set(undefined)
 })

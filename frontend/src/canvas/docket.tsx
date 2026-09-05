@@ -173,24 +173,38 @@ function ActorName({ actor, facts, onFocusAgent, close }: {
  *  item written before slugs existed — the server refuses to mint one on a
  *  read, so there is genuinely nothing else to show. */
 function SlugChip({ item }: { item: WorkItem }) {
-  const [copied, setCopied] = useState(false)
+  // ⚠ ONLY A REAL COPY MAY SAY "copied". The first version called its own
+  // success path whenever the clipboard was missing or threw, so in any context
+  // without clipboard access the chip reported a copy that never happened — a
+  // guard that reads correctly, runs, and means nothing (Astra review
+  // 2026-09-05). A failure now says so, and the name stays on screen to be
+  // selected by hand.
+  const [state, setState] = useState<'idle' | 'copied' | 'failed'>('idle')
   const name = item.slug ?? item.id
+  const flash = useCallback((s: 'copied' | 'failed') => {
+    setState(s)
+    window.setTimeout(() => setState('idle'), s === 'copied' ? 1200 : 2000)
+  }, [])
   const copy = useCallback((e: MouseEvent) => {
     e.stopPropagation()
-    const done = () => { setCopied(true); window.setTimeout(() => setCopied(false), 1200) }
+    let write: Promise<void> | undefined
     try {
-      const cb = navigator.clipboard
-      if (cb?.writeText) { void cb.writeText(name).then(done, () => undefined); return }
-    } catch { /* no clipboard in this context — the name is still readable */ }
-    done()
-  }, [name])
+      write = navigator.clipboard?.writeText?.(name)
+    } catch { /* access denied or no clipboard — reported below, never as success */ }
+    if (!write) { flash('failed'); return }
+    write.then(() => flash('copied'), () => flash('failed'))
+  }, [name, flash])
+  const label = state === 'copied' ? 'copied' : state === 'failed' ? 'copy failed' : name
   return (
-    <button className={'docket-slug' + (copied ? ' copied' : '')}
-      title={item.slug
-        ? `${name} — click to copy this item's name`
-        : `${name} — this item predates readable names; it gets one on its next update`}
+    <button className={'docket-slug' + (state === 'idle' ? '' : ' ' + state)}
+      title={state === 'failed'
+        ? `${name} — this browser would not give the page clipboard access; `
+          + 'select the name and copy it by hand'
+        : item.slug
+          ? `${name} — click to copy this item's name`
+          : `${name} — this item predates readable names; it gets one on its next update`}
       onClick={copy}>
-      {copied ? 'copied' : name}
+      {label}
     </button>
   )
 }
@@ -297,8 +311,18 @@ export function DocketModal({ slug, toast, close, tree, onFocusAgent }: {
   const [showBacklog, setShowBacklog] = useState(false)
   const [groupMode, setGroupMode] = useState<DocketGroupMode>(readGroupMode)
   const [bump, setBump] = useState(0)
-  const [archivedCache, setArchivedCache] = useState<WorkItem[]>([])
-  const [backlogCache, setBacklogCache] = useState<WorkItem[]>([])
+  // ⚠ EVERYTHING REMEMBERED IS SCOPED TO THE ORG IT CAME FROM. This panel can
+  // be handed a different `slug` while mounted; without the tag, the previous
+  // org's cached rows and selected id would survive that change and the pane
+  // would render one org's item while every action on it addressed another's
+  // URL (Astra review 2026-09-05). Comparing the tag during RENDER rather than
+  // clearing in an effect also means there is no frame in which the stale rows
+  // are still on screen.
+  const [cache, setCache] = useState<{ slug: string; archived: WorkItem[]; backlog: WorkItem[] }>(
+    { slug, archived: [], backlog: [] })
+  const [sel, setSel] = useState<{ slug: string; id: string } | null>(null)
+  const archivedCache = cache.slug === slug ? cache.archived : []
+  const backlogCache = cache.slug === slug ? cache.backlog : []
 
   // Polled data: deps is [slug] so ticking a filter does not clear data to null
   // (which would unmount the pane and wipe the user's in-flight reply draft).
@@ -307,10 +331,14 @@ export function DocketModal({ slug, toast, close, tree, onFocusAgent }: {
   const data = usePolled(() => getWorkItems(slug, showArchived, showBacklog),
     [slug], 5000, `${bump}-${showArchived}-${showBacklog}`)
 
-  useEffect(() => { if (data?.archived) setArchivedCache(data.archived) },
-    [data?.archived])
-  useEffect(() => { if (data?.backlogged) setBacklogCache(data.backlogged) },
-    [data?.backlogged])
+  useEffect(() => {
+    if (!data?.archived && !data?.backlogged) return
+    setCache((c) => ({
+      slug,
+      archived: data.archived ?? (c.slug === slug ? c.archived : []),
+      backlog: data.backlogged ?? (c.slug === slug ? c.backlog : []),
+    }))
+  }, [slug, data?.archived, data?.backlogged])
 
   const facts = useMemo(() => buildNodeFacts(tree?.roots), [tree?.roots])
 
@@ -329,12 +357,22 @@ export function DocketModal({ slug, toast, close, tree, onFocusAgent }: {
   const rowCount = sections.reduce((n, s) => n + s.items.length, 0)
 
   // selection BY ID, not index — the list repolls under the user (G5)
-  const [selId, setSelId] = useState<string | null>(null)
+  const selId = sel?.slug === slug ? sel.id : null
+  const setSelId = useCallback(
+    (id: string | null) => setSel(id ? { slug, id } : null), [slug])
+  // ⚠ ORDER IS THE POINT. The CURRENT response is written LAST, so it wins over
+  // anything held from an earlier one. Written the other way round — caches
+  // last — an item that had just been reopened or promoted out of the archive
+  // would be overwritten by its own stale archived copy, and the detail pane
+  // would show the status and description it used to have (Astra review
+  // 2026-09-05).
   const allKnown = useMemo(() => {
     const map = new Map<string, WorkItem>()
+    for (const item of archivedCache) map.set(item.id, item)
+    for (const item of backlogCache) map.set(item.id, item)
+    for (const item of (data?.archived ?? [])) map.set(item.id, item)
+    for (const item of (data?.backlogged ?? [])) map.set(item.id, item)
     for (const item of active) map.set(item.id, item)
-    for (const item of (data?.backlogged ?? backlogCache)) map.set(item.id, item)
-    for (const item of (data?.archived ?? archivedCache)) map.set(item.id, item)
     return map
   }, [active, data?.archived, data?.backlogged, archivedCache, backlogCache])
   const cur = allKnown.get(selId ?? '')

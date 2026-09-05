@@ -9179,15 +9179,28 @@ class Org:
         s = s[:Org.WORK_SLUG_MAX].strip("-")
         return s or "item"
 
-    def _work_slugs_in_use(self, skip: WorkItem | None = None) -> set[str]:
-        return {str(it.get("slug")) for it in
-                (self._work_active() + self._work_archive())
-                if it.get("slug") and it is not skip}
+    def _work_names_in_use(self, skip: WorkItem | None = None) -> set[str]:
+        """Every string that already NAMES an item — slugs AND opaque ids.
+
+        The ids belong in here because `_work_find` resolves an id first and
+        exactly. A slug that happens to equal some other item's id would
+        therefore be permanently unresolvable: the lookup would always land on
+        the other item, and the name would silently address the wrong row
+        rather than fail (Astra review 2026-09-05)."""
+        names: set[str] = set()
+        for it in self._work_active() + self._work_archive():
+            if it is skip:
+                continue
+            names.add(str(it["id"]))
+            if it.get("slug"):
+                names.add(str(it["slug"]))
+        return names
 
     def _work_unique_slug(self, title: str, taken: set[str]) -> str:
         """`base`, then `base-2`, `base-3`… Collisions are resolved against
         the ACTIVE AND ARCHIVED sets together: an archived item keeps its name,
-        so reusing it would make an old reference ambiguous."""
+        so reusing it would make an old reference ambiguous. `taken` must come
+        from `_work_names_in_use`, which counts opaque ids as taken names."""
         base = self._work_slugify(title)
         if base not in taken:
             return base
@@ -9204,7 +9217,7 @@ class Org:
         edited. Until the first mutation an old item simply has no slug and
         the UI shows its id; the backfill is not a migration and never runs
         against a document this process is not already about to save."""
-        taken = self._work_slugs_in_use()
+        taken = self._work_names_in_use()
         done: list[str] = []
         for it in self._work_active() + self._work_archive():
             if it.get("slug"):
@@ -9537,11 +9550,10 @@ class Org:
                 items.append(v)
 
         def key(v: dict[str, Any]) -> tuple[str, str]:
-            # id ASCENDING inside a docket_at tie: `reverse=True` flips the
-            # whole tuple, so the id is negated by comparing it reversed —
-            # done here by sorting ids descending under the same flag, which
-            # is deterministic either way. What matters is that it is stable
-            # and total, not which direction the tie runs.
+            # `reverse=True` applies to the WHOLE tuple, so a docket_at tie
+            # breaks on the id DESCENDING. Which direction it runs does not
+            # matter; that it is total and stable does, because that is what
+            # stops two rows trading places between polls.
             return (str(v.get("docket_at") or v.get("updated_at") or ""),
                     str(v.get("id") or ""))
         items.sort(key=key, reverse=True)
@@ -9698,10 +9710,17 @@ class Org:
             raise LedgerError("a docket update needs at least one entry in "
                               "done_so_far or working_on_next")
         from . import workitems       # noqa: PLC0415  (sandbox->store->ledger cycle)
+        # the id must not collide with an existing NAME either — an id equal to
+        # some other item's slug would make that slug unreachable from the
+        # moment this item exists, because ids are resolved first
+        taken = self._work_names_in_use()
         wid = "w" + uuid.uuid4().hex[:8]
+        while wid in taken:
+            wid = "w" + uuid.uuid4().hex[:8]
+        taken.add(wid)
         stamp = now()
         it: WorkItem = {
-            "id": wid, "slug": self._work_unique_slug(t, self._work_slugs_in_use()),
+            "id": wid, "slug": self._work_unique_slug(t, taken),
             "rev": 1, "kind": kind, "title": t,
             "objective": obj,
             "status": status, "blocked_reason": None,
