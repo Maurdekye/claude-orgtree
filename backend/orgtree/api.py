@@ -4925,8 +4925,15 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
                 # hold a fresh unprojected event back for one — an agent
                 # reading its report inside the grace would get the newest
                 # message zero times (D-229, review round 2); raw is honest
-                chat = supervisor.read_chat(org, target, hold_back=False)
                 last = max(1, min(_arg_int(a, "last", 30), 80))
+                # Feed the already-bounded page into the projection cache;
+                # retain the OUTER slice because preserving-bearer oracle rows
+                # are appended after read_chat's durable slice by contract.
+                # The established reader mode remains
+                # `read_chat(org, target, hold_back=False)`; only its already-
+                # bounded `last` argument is now supplied too.
+                chat = supervisor.read_chat(org, target, last=last,
+                                            hold_back=False)
                 msgs = chat["messages"][-last:]
                 return {"node": target, "busy": chat["busy"],
                         "occupancy": chat["occupancy"],

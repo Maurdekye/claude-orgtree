@@ -21,6 +21,7 @@ truth for live/archived. A server restart loses in-flight turns, never ledger st
 
 from __future__ import annotations
 
+import copy
 import datetime as _dtm
 import glob
 import hashlib
@@ -1878,6 +1879,605 @@ def _claude_mcp_refresh_counts(content: Any) -> list[tuple[str, int]]:
                     and count >= 0):
                 out.append((server, count))
     return out
+
+
+# A projection cache is deliberately process-local. The transcript and its
+# prompt-view sidecar remain the only durable truth; a restart simply makes the
+# next read cold. Both per-entry and aggregate limits matter: an entry-count
+# LRU alone still lets one giant history exhaust the backend.
+_CHAT_CACHE_MAX_ENTRIES = 32
+_CHAT_CACHE_MAX_ENTRY_BYTES = 32 * 1024 * 1024
+_CHAT_CACHE_MAX_ENTRY_ROWS = 100_000
+_CHAT_CACHE_MAX_BYTES = 96 * 1024 * 1024
+_chat_cache_lock = threading.Lock()
+_chat_cache: dict[tuple[str, str, str], dict[str, Any]] = {}
+
+
+def _chat_cache_clear() -> None:
+    """Test/restart analogue: forget derived state, never touch source files."""
+    with _chat_cache_lock:
+        _chat_cache.clear()
+
+
+def _file_version(path: str) -> tuple[int, int, int, int, int] | None:
+    try:
+        s = os.stat(path)
+        return (int(s.st_dev), int(s.st_ino), int(s.st_size),
+                int(s.st_mtime_ns), int(s.st_ctime_ns))
+    except OSError:
+        return None
+
+
+def _file_anchors(path: str, size: int
+                  ) -> tuple[tuple[int, int, str], ...]:
+    """Three bounded prefix witnesses used before accepting a growth append.
+
+    They catch the ordinary truncate-and-regrow case whose final size is
+    larger than the cached size. This is deliberately not advertised as a
+    cryptographic proof against a writer that restores all three sampled
+    regions plus every stat field after changing other middle bytes.
+    """
+    if size <= 0:
+        return ()
+    starts = sorted({0, max(0, size // 2 - 128), max(0, size - 256)})
+    out = []
+    try:
+        with open(path, "rb") as f:
+            for start in starts:
+                length = min(256, size - start)
+                f.seek(start)
+                body = f.read(length)
+                out.append((start, length, hashlib.sha256(body).hexdigest()))
+    except OSError:
+        return ()
+    return tuple(out)
+
+
+def _anchors_match(path: str,
+                   anchors: tuple[tuple[int, int, str], ...]) -> bool:
+    try:
+        with open(path, "rb") as f:
+            for start, length, digest in anchors:
+                f.seek(start)
+                if hashlib.sha256(f.read(length)).hexdigest() != digest:
+                    return False
+    except OSError:
+        return False
+    return True
+
+
+def _complete_lines(path: str, offset: int, pending: bytes, upto: int
+                    ) -> tuple[list[str], int, bytes, int]:
+    """Read one bounded file version and retain its incomplete final line."""
+    if upto < offset:
+        raise ValueError("projection source shrank")
+    try:
+        with open(path, "rb") as f:
+            f.seek(offset)
+            added = f.read(upto - offset)
+    except OSError:
+        if upto:
+            raise
+        added = b""
+    body = pending + added
+    pieces = body.splitlines(keepends=True)
+    tail = b""
+    if pieces and not pieces[-1].endswith((b"\n", b"\r")):
+        # Text-file iteration, used by the canonical cold reader, consumes a
+        # valid final JSON value even without a newline.  Preserve that exact
+        # boundary: keep an actually torn JSON fragment pending, but do not
+        # retain and later re-spend a complete occurrence when its newline is
+        # appended separately.
+        try:
+            json.loads(pieces[-1].decode("utf-8", errors="replace"))
+        except json.JSONDecodeError:
+            tail = pieces.pop()
+    lines = [p.decode("utf-8", errors="replace") for p in pieces]
+    return lines, upto, tail, len(added)
+
+
+def _add_prompt_view_lines(views: dict[str, list[dict[str, Any]]],
+                           lines: Iterable[str]) -> set[str]:
+    """The incremental form of `_load_prompt_views`, same row validation."""
+    added: set[str] = set()
+    for line in lines:
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if (not isinstance(row, dict)
+                or not isinstance(row.get("sha256"), str)
+                or not isinstance(row.get("visible"), str)):
+            continue
+        key = row["sha256"]
+        views.setdefault(key, []).append(row)
+        added.add(key)
+    return added
+
+
+def _source_metadata(source: dict[str, Any], old_len: int = 0) -> None:
+    msgs = cast("list[dict[str, Any]]", source["messages"])
+    if old_len <= 0 or "unresolved_indices" not in source:
+        source["unresolved_indices"] = [
+            i for i, m in enumerate(msgs) if m.get("_prompt_unresolved")]
+        source["unresolved_digests"] = {
+            hashlib.sha256(str(m.get("_prompt_raw") or "").encode("utf-8"))
+            .hexdigest() for m in msgs if m.get("_prompt_unresolved")}
+        source["monotonic"] = all(
+            str(msgs[i - 1].get("ts") or "")
+            <= str(msgs[i].get("ts") or "")
+            for i in range(1, len(msgs)))
+        source["live_evidence"] = _live_evidence(msgs)
+        return
+    unresolved = cast("list[int]", source["unresolved_indices"])
+    digests = cast("set[str]", source["unresolved_digests"])
+    for i in range(old_len, len(msgs)):
+        m = msgs[i]
+        if m.get("_prompt_unresolved"):
+            unresolved.append(i)
+            digests.add(hashlib.sha256(
+                str(m.get("_prompt_raw") or "").encode("utf-8")).hexdigest())
+    if source.get("monotonic", True):
+        start = max(1, old_len)
+        source["monotonic"] = all(
+            str(msgs[i - 1].get("ts") or "")
+            <= str(msgs[i].get("ts") or "")
+            for i in range(start, len(msgs)))
+    _extend_live_evidence(
+        cast("dict[str, Any]", source["live_evidence"]), msgs[old_len:])
+
+
+def _new_cache_entry(path: str) -> dict[str, Any]:
+    return {"path": path, "lock": threading.RLock(), "source": None,
+            "raw_offset": 0, "raw_pending": b"", "view_offset": 0,
+            "view_pending": b"", "raw_version": None,
+            "view_version": None, "raw_anchors": (), "view_anchors": (),
+            "source_bytes": 0}
+
+
+def _chat_cache_key(org: Org, nid: str, path: str) -> tuple[str, str, str]:
+    return (path, org.d["slug"], str(org.node(nid).get("session_id") or ""))
+
+
+def _entry_for(key: tuple[str, str, str], path: str) -> dict[str, Any]:
+    with _chat_cache_lock:
+        entry = _chat_cache.get(key)
+        if entry is None:
+            entry = _new_cache_entry(path)
+            _chat_cache[key] = entry
+        else:
+            # dict insertion order is the LRU; a pop+assignment moves the hit.
+            _chat_cache.pop(key)
+            _chat_cache[key] = entry
+        return entry
+
+
+def _drop_entry(key: tuple[str, str, str], entry: dict[str, Any]) -> None:
+    with _chat_cache_lock:
+        if _chat_cache.get(key) is entry:
+            _chat_cache.pop(key, None)
+
+
+def _trim_chat_cache(protected: tuple[str, str, str]) -> None:
+    with _chat_cache_lock:
+        def total() -> int:
+            return sum(int(e.get("source_bytes") or 0)
+                       for e in _chat_cache.values())
+        while (len(_chat_cache) > _CHAT_CACHE_MAX_ENTRIES
+               or total() > _CHAT_CACHE_MAX_BYTES):
+            victim = next((k for k in _chat_cache if k != protected), None)
+            if victim is None:
+                break
+            _chat_cache.pop(victim, None)
+
+
+def _cold_projection(org: Org, nid: str, tpath: str,
+                     raw_v: tuple[int, int, int, int, int],
+                     view_path: str,
+                     view_v: tuple[int, int, int, int, int] | None
+                     ) -> tuple[dict[str, Any], dict[str, Any]]:
+    # Keep the established load-then-stream ordering: the prompt-view race
+    # tests inject a canonical writer exactly at this boundary.
+    views = _load_prompt_views(org.d["slug"], org.node(nid)["session_id"])
+    view_after_load = _file_version(view_path)
+    view_off, view_tail = 0, b""
+    if view_v is not None:
+        bounded_lines, view_off, view_tail, _ = _complete_lines(
+            view_path, 0, b"", view_v[2])
+        # If the sidecar changed while the established loader ran, its return
+        # may include bytes beyond `view_v`. Rebuild that one input from the
+        # bounded prefix so the next catch-up cannot consume an occurrence
+        # twice. The ordinary stable cold path still parses it only once.
+        if view_after_load != view_v:
+            views = {}
+            _add_prompt_view_lines(views, bounded_lines)
+    elif view_after_load is not None:
+        views = {}
+    # A writer may have committed the transcript row while the sidecar load
+    # above was returning. Read the current bounded size, as the old streaming
+    # reader did, then verify/retry below.
+    raw_now = _file_version(tpath)
+    if raw_now is not None and raw_now[:2] == raw_v[:2] and raw_now[2] >= raw_v[2]:
+        raw_v = raw_now
+    raw_lines, raw_off, raw_tail, _ = _complete_lines(
+        tpath, 0, b"", raw_v[2])
+    built = _read_chat_source(org, nid, _lines=raw_lines,
+                              _prompt_views=views, _source_only=True)
+    source = cast("dict[str, Any]", built["source"])
+    _source_metadata(source)
+    # D-229's one reload remains observable and load-bearing. If the first
+    # pass found an envelope with no view, reload once and rebuild from the
+    # same transcript version. This catches view-first/row-second commits and
+    # torn rows without making hold-back a cached decision.
+    if source["unresolved_indices"]:
+        # Keep the established reload boundary observable, then bind the
+        # adopted offset/version to bytes WE parse.  The loader returns only
+        # its own completed snapshot: a writer may append after it returns but
+        # before our next stat.  Advancing through that newer tail while still
+        # projecting the loader's older mapping would skip the tail forever.
+        _load_prompt_views(org.d["slug"], org.node(nid)["session_id"])
+        view_now = _file_version(view_path)
+        fresh_views: dict[str, list[dict[str, Any]]] = {}
+        if view_now is not None:
+            bounded_views, view_off, view_tail, _ = _complete_lines(
+                view_path, 0, b"", view_now[2])
+            _add_prompt_view_lines(fresh_views, bounded_views)
+        else:
+            view_off, view_tail = 0, b""
+        rebuilt = _read_chat_source(org, nid, _lines=raw_lines,
+                                    _prompt_views=fresh_views,
+                                    _source_only=True)
+        source = cast("dict[str, Any]", rebuilt["source"])
+        _source_metadata(source)
+        built = rebuilt
+        view_v = view_now
+    entry = _new_cache_entry(tpath)
+    entry.update({
+        "source": source,
+        "raw_offset": raw_off, "raw_pending": raw_tail,
+        "view_offset": view_off, "view_pending": view_tail,
+        "raw_version": raw_v, "view_version": view_v,
+        "raw_anchors": _file_anchors(tpath, raw_v[2]),
+        "view_anchors": (_file_anchors(view_path, view_v[2])
+                         if view_v is not None else ()),
+        "source_bytes": raw_v[2] + (view_v[2] if view_v else 0),
+    })
+    return built["out"], entry
+
+
+def _can_append(path: str, old: tuple[int, int, int, int, int] | None,
+                new: tuple[int, int, int, int, int] | None,
+                anchors: tuple[tuple[int, int, str], ...]) -> bool:
+    if old is None:
+        # Still absent is unchanged; first creation can be consumed from byte
+        # zero as an append to the known-empty source.
+        return True
+    if new is None or old[:2] != new[:2] or new[2] < old[2]:
+        return False
+    if new[2] == old[2]:
+        return new == old
+    # Growth alone is not proof of append: a file can be truncated and regrown
+    # past its prior size between polls. Witness the old prefix before reuse.
+    return _anchors_match(path, anchors)
+
+
+def _refresh_projection(org: Org, nid: str, tpath: str,
+                        entry: dict[str, Any]
+                        ) -> tuple[dict[str, Any], dict[str, Any], bool]:
+    """Refresh once. Returns (dynamic envelope, entry, cacheable)."""
+    n = org.node(nid)
+    raw_v = _file_version(tpath)
+    if raw_v is None:
+        raise OSError(f"transcript disappeared: {tpath}")
+    view_path = _prompt_view_path(org.d["slug"], n["session_id"])
+    view_v = _file_version(view_path)
+    source = cast("dict[str, Any] | None", entry.get("source"))
+    cap_changed = (source is not None
+                   and source.get("context_cap") != context_window(n))
+    raw_append = _can_append(tpath, entry.get("raw_version"), raw_v,
+                             cast("tuple[tuple[int, int, str], ...]",
+                                  entry.get("raw_anchors") or ()))
+    view_append = _can_append(view_path, entry.get("view_version"), view_v,
+                              cast("tuple[tuple[int, int, str], ...]",
+                                   entry.get("view_anchors") or ()))
+    if (source is None or cap_changed or not raw_append or not view_append):
+        out, fresh = _cold_projection(org, nid, tpath, raw_v,
+                                      view_path, view_v)
+        lock = entry["lock"]
+        entry.clear()
+        entry.update(fresh)
+        entry["lock"] = lock
+    else:
+        views = cast("dict[str, list[dict[str, Any]]]",
+                     source["prompt_views"])
+        view_lines: list[str] = []
+        if view_v is not None and view_v[2] > int(entry["view_offset"]):
+            view_lines, view_off, view_tail, _ = _complete_lines(
+                view_path, int(entry["view_offset"]),
+                cast(bytes, entry["view_pending"]), view_v[2])
+            added = _add_prompt_view_lines(views, view_lines)
+            # A late view can change an old raw/withheld row. Rebuilding is
+            # rare and exact; silently keeping the old projection is not.
+            if added & cast("set[str]", source["unresolved_digests"]):
+                out, fresh = _cold_projection(org, nid, tpath, raw_v,
+                                              view_path, view_v)
+                lock = entry["lock"]
+                entry.clear()
+                entry.update(fresh)
+                entry["lock"] = lock
+                source = cast("dict[str, Any]", entry["source"])
+            else:
+                entry["view_offset"] = view_off
+                entry["view_pending"] = view_tail
+                entry["view_version"] = view_v
+                entry["view_anchors"] = _file_anchors(view_path, view_v[2])
+        if cast("dict[str, Any]", entry["source"]) is source:
+            raw_lines: list[str] = []
+            if raw_v[2] > int(entry["raw_offset"]):
+                raw_lines, raw_off, raw_tail, _ = _complete_lines(
+                    tpath, int(entry["raw_offset"]),
+                    cast(bytes, entry["raw_pending"]), raw_v[2])
+                old_len = len(cast("list[Any]", source["messages"]))
+                built = _read_chat_source(
+                    org, nid, _lines=raw_lines, _prompt_views=views,
+                    _resume=source, _source_only=True)
+                source = cast("dict[str, Any]", built["source"])
+                # carry the derived incremental fields that the projector does
+                # not need while parsing the next record.
+                for key in ("unresolved_indices", "unresolved_digests",
+                            "monotonic", "live_evidence"):
+                    source[key] = cast("dict[str, Any]", entry["source"])[key]
+                _source_metadata(source, old_len)
+                entry["source"] = source
+                entry["raw_offset"] = raw_off
+                entry["raw_pending"] = raw_tail
+                entry["raw_version"] = raw_v
+                entry["raw_anchors"] = _file_anchors(tpath, raw_v[2])
+                out = built["out"]
+            else:
+                built = _read_chat_source(
+                    org, nid, _lines=(), _prompt_views=views,
+                    _resume=source, _source_only=True)
+                out = built["out"]
+        else:
+            # late-view rebuild already produced `out`
+            pass
+        entry["view_version"] = view_v
+        if view_v is None:
+            entry["view_offset"] = 0
+            entry["view_pending"] = b""
+            entry["view_anchors"] = ()
+    current_raw = cast("tuple[int, int, int, int, int]", entry["raw_version"])
+    current_view = cast("tuple[int, int, int, int, int] | None",
+                        entry["view_version"])
+    entry["source_bytes"] = (current_raw[2]
+                             + (current_view[2] if current_view else 0))
+    source = cast("dict[str, Any]", entry["source"])
+    cacheable = (entry["source_bytes"] <= _CHAT_CACHE_MAX_ENTRY_BYTES
+                 and len(cast("list[Any]", source["messages"]))
+                 <= _CHAT_CACHE_MAX_ENTRY_ROWS)
+    return cast("dict[str, Any]", out), entry, cacheable
+
+
+def _synthetic_chat_rows(org: Org, nid: str) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for e in (org.d.get("steered_log") or {}).get(nid, []):
+        if e.get("fold"):
+            rows.append({
+                "role": "system", "text": "— " + (e.get("text") or
+                "mid-turn mail missed the steer window — delivered at "
+                "the next turn") + " —", "tools": [], "ts": e.get("at"),
+                "steer_fold": True})
+        else:
+            rows.append({
+                "role": "user", "text": e.get("text") or "", "tools": [],
+                "ts": e.get("at"), "steered": True,
+                "level": e.get("level") or "unknown",
+                "retried": bool(e.get("retried")),
+                "confirmed_duplicate": bool(e.get("confirmed_duplicate")),
+                "receipt": steer_receipt_text(e),
+                **({"truncated": True} if e.get("truncated") else {})})
+    for e in (org.d.get("turn_error_log") or {}).get(nid, []):
+        rows.append({"role": "system", "text": "⚠ " + (e.get("text") or ""),
+                     "tools": [], "ts": e.get("at"), "turn_error": True})
+    return rows
+
+
+def _visible_unresolved(source: dict[str, Any], org: Org, nid: str,
+                        hold_back: bool) -> set[int]:
+    withheld: set[int] = set()
+    msgs = cast("list[dict[str, Any]]", source["messages"])
+    for i in cast("list[int]", source["unresolved_indices"]):
+        m = msgs[i]
+        raw = str(m.get("_prompt_raw") or "")
+        if (_prompt_is_fresh(m.get("ts")) and hold_back
+                and _covered_by_pending(org, nid, raw)):
+            withheld.add(i)
+            print(f"[orgtree] {org.d['slug']}/{nid}: a user event "
+                  f"({m.get('ts')}) has no durable projection yet — held "
+                  "back this poll, its pending bubble covers it (D-229)")
+        elif _prompt_is_fresh(m.get("ts")):
+            print(f"[orgtree] {org.d['slug']}/{nid}: a user event "
+                  f"({m.get('ts')}) has no durable projection — rendered "
+                  "RAW rather than hidden " +
+                  ("(D-229 fail-open: this reader has no pending bubble to "
+                   "cover it)" if not hold_back else
+                   "(D-229 fail-open: its delivery is already confirmed, so "
+                   "the sidecar write failed)"))
+    return withheld
+
+
+def _public_row(row: dict[str, Any]) -> dict[str, Any]:
+    out = copy.deepcopy(row)
+    out.pop("_prompt_unresolved", None)
+    out.pop("_prompt_raw", None)
+    return out
+
+
+def _assemble_chat(org: Org, nid: str, last: int | None,
+                   hold_back: bool, dynamic: dict[str, Any],
+                   source: dict[str, Any]) -> dict[str, Any]:
+    base = cast("list[dict[str, Any]]", source["messages"])
+    withheld = _visible_unresolved(source, org, nid, hold_back)
+    synthetic = _synthetic_chat_rows(org, nid)
+    total = len(base) - len(withheld) + len(synthetic)
+
+    want = last if last is not None and last > 0 else None
+    if source.get("monotonic"):
+        if want is None:
+            base_part = [(i, m) for i, m in enumerate(base)
+                         if i not in withheld]
+        else:
+            need = want + len(synthetic)
+            picked: list[tuple[int, dict[str, Any]]] = []
+            for i in range(len(base) - 1, -1, -1):
+                if i not in withheld:
+                    picked.append((i, base[i]))
+                    if len(picked) >= need:
+                        break
+            base_part = list(reversed(picked))
+        candidates: list[tuple[str, int, int, dict[str, Any]]] = [
+            (str(m.get("ts") or ""), 0, i, m) for i, m in base_part]
+        candidates.extend((str(m.get("ts") or ""), 1, i, m)
+                          for i, m in enumerate(synthetic))
+        candidates.sort(key=lambda x: (x[0], x[1], x[2]))
+        selected = [x[3] for x in candidates]
+        if want is not None:
+            selected = selected[-want:]
+    else:
+        # Exact fallback for malformed/out-of-order timestamps: preserve the
+        # historical insert-before-first-greater algorithm byte for byte.
+        selected = [m for i, m in enumerate(base) if i not in withheld]
+        for row in synthetic:
+            at = row.get("ts") or ""
+            pos = len(selected)
+            for j, m in enumerate(selected):
+                if (m.get("ts") or "") > at:
+                    pos = j
+                    break
+            selected.insert(pos, row)
+        if want is not None:
+            selected = selected[-want:]
+
+    seq0 = total - len(selected)
+    messages = []
+    for i, row in enumerate(selected):
+        public = _public_row(row)
+        public["seq"] = seq0 + i
+        messages.append(public)
+
+    # Whole-history evidence remains separate from the viewer's page. A held
+    # durable user row changes the visible turn boundary, so that rare grace
+    # path deliberately falls back to the exact full sweep.
+    if withheld:
+        whole = [_public_row(m) for i, m in enumerate(base)
+                 if i not in withheld]
+        for row in synthetic:
+            at = row.get("ts") or ""
+            pos = len(whole)
+            for j, m in enumerate(whole):
+                if (m.get("ts") or "") > at:
+                    pos = j
+                    break
+            whole.insert(pos, _public_row(row))
+        live = _sweep_live(org.d["slug"], nid, whole)
+    else:
+        evidence = cast("dict[str, Any]", source["live_evidence"])
+        newest = max([str(evidence.get("newest_ts") or ""),
+                      *(str(m.get("ts") or "") for m in synthetic)])
+        live_evidence = {"tool_ids": evidence["tool_ids"],
+                         "turn_texts": evidence["turn_texts"],
+                         "newest_ts": newest}
+        live = _sweep_live(org.d["slug"], nid, [],
+                           _evidence=live_evidence)
+
+    out = dynamic
+    out["prompts_withheld"] = len(withheld)
+    out["live"] = live
+    out["draft_epoch"] = draft_epoch(org.d["slug"], nid)
+    out["messages"] = messages
+    fill = cast("_OccTracker", source["fill"])
+    out["occupancy"] = fill.value
+    out["occupancy_estimated"] = fill.estimated
+    n = org.node(nid)
+    if n.get("bearer_state") == "preserving":
+        for ex in n.get("oracle_exchanges", []):
+            out["messages"].append({"role": "user", "text": ex["q"],
+                                    "tools": [], "ts": ex["at"],
+                                    "oracle": True})
+            out["messages"].append({"role": "assistant", "text": ex["a"],
+                                    "tools": [], "ts": ex["at"],
+                                    "oracle": True})
+    return out
+
+
+def _read_chat_uncached(org: Org, nid: str, last: int | None = None, *,
+                        hold_back: bool = True) -> dict[str, Any]:
+    """Canonical fresh build used by tests and oversize/active fallbacks."""
+    n = org.node(nid)
+    tpath = transcript_path(n["session_id"], _transcript_root(org))
+    if not tpath:
+        return _read_chat_source(org, nid, last=last, hold_back=hold_back)
+    raw_v = _file_version(tpath)
+    if raw_v is None:
+        return _read_chat_source(org, nid, last=last, hold_back=hold_back)
+    view_path = _prompt_view_path(org.d["slug"], n["session_id"])
+    dynamic, temp = _cold_projection(
+        org, nid, tpath, raw_v, view_path, _file_version(view_path))
+    return _assemble_chat(org, nid, last, hold_back, dynamic,
+                          cast("dict[str, Any]", temp["source"]))
+
+
+def read_chat(org: Org, nid: str, last: int | None = None, *,
+              hold_back: bool = True) -> dict[str, Any]:
+    """Cached transcript projection with a bounded append-only fast path."""
+    n = org.node(nid)
+    tpath = transcript_path(n["session_id"], _transcript_root(org))
+    if not tpath:
+        return _read_chat_source(org, nid, last=last, hold_back=hold_back)
+    key = _chat_cache_key(org, nid, tpath)
+    while True:
+        entry = _entry_for(key, tpath)
+        with cast("threading.RLock", entry["lock"]):
+            # A waiter can retain this reference before the active reader
+            # fails and drops it. Never resume against that orphan's partially
+            # mutated parser state; re-resolve the current cache entry.
+            with _chat_cache_lock:
+                if _chat_cache.get(key) is not entry:
+                    continue
+            try:
+                dynamic: dict[str, Any] | None = None
+                cacheable = True
+                # A continuously active writer cannot starve a desk request.
+                # Two bounded catch-up passes are enough; then return the last
+                # complete observed version without adopting it into cache.
+                for _ in range(2):
+                    dynamic, entry, cacheable = _refresh_projection(
+                        org, nid, tpath, entry)
+                    n2 = org.node(nid)
+                    raw_after = _file_version(tpath)
+                    view_after = _file_version(_prompt_view_path(
+                        org.d["slug"], n2["session_id"]))
+                    if (raw_after == entry.get("raw_version")
+                            and view_after == entry.get("view_version")):
+                        break
+                else:
+                    cacheable = False
+                assert dynamic is not None and entry.get("source") is not None
+                result = _assemble_chat(
+                    org, nid, last, hold_back, dynamic,
+                    cast("dict[str, Any]", entry["source"]))
+            except Exception:
+                # The parser mutates its private state incrementally (including
+                # an earlier tool chip). Discard on any exception; ownership
+                # check above makes already-waiting readers re-resolve it.
+                _drop_entry(key, entry)
+                raise
+            if not cacheable:
+                _drop_entry(key, entry)
+            else:
+                _trim_chat_cache(key)
+            return result
 
 
 def _limit_cache_result_state(
@@ -23086,7 +23686,37 @@ def _iso_back(ts: str, secs: float) -> str:
     return d.strftime("%Y-%m-%dT%H:%M:%S.") + f"{d.microsecond // 1000:03d}Z"
 
 
-def _sweep_live(slug: str, nid: str, msgs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _live_evidence(msgs: Iterable[dict[str, Any]]) -> dict[str, Any]:
+    """The whole-history facts `_sweep_live` needs, incrementally reusable."""
+    evidence: dict[str, Any] = {
+        "tool_ids": set(), "turn_texts": [], "newest_ts": ""}
+    return _extend_live_evidence(evidence, msgs)
+
+
+def _extend_live_evidence(evidence: dict[str, Any],
+                          msgs: Iterable[dict[str, Any]]) -> dict[str, Any]:
+    tool_ids = cast("set[Any]", evidence["tool_ids"])
+    texts = cast("list[str]", evidence["turn_texts"])
+    newest = str(evidence.get("newest_ts") or "")
+    for m in msgs:
+        ts = str(m.get("ts") or "")
+        if ts > newest:
+            newest = ts
+        if m.get("role") == "user" and not m.get("steered"):
+            texts.clear()
+        if m.get("role") == "assistant" and m.get("text"):
+            texts.append(str(m["text"]))
+        if m.get("cmd_out"):
+            texts.append(str(m["cmd_out"]))
+        for tool in m.get("tools") or []:
+            if tool.get("id"):
+                tool_ids.add(tool["id"])
+    evidence["newest_ts"] = newest
+    return evidence
+
+
+def _sweep_live(slug: str, nid: str, msgs: list[dict[str, Any]], *,
+                _evidence: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     """Retire live rows the transcript has caught up on, and return the rest.
 
     This is the whole live/durable reconciliation, in ONE place that can see
@@ -23138,7 +23768,8 @@ def _sweep_live(slug: str, nid: str, msgs: list[dict[str, Any]]) -> list[dict[st
     output stays visible under the composer).
     D-50 holds throughout: every retirement still names the evidence."""
     turn = msgs
-    for i in range(len(msgs) - 1, -1, -1):
+    for i in (range(len(msgs) - 1, -1, -1)
+              if _evidence is None else ()):
         # ⚠ A STEER IS NOT A TURN BOUNDARY (user report 2026-09-03: "double
         # messages for in-progress message events ... but are present in the
         # transcript"). Mid-turn mail rides PostToolUse hook context the CLI
@@ -23167,6 +23798,10 @@ def _sweep_live(slug: str, nid: str, msgs: list[dict[str, Any]]) -> list[dict[st
             turn = msgs[i + 1:]
             break
 
+    evidence = _evidence if _evidence is not None else _live_evidence(msgs)
+    tool_ids = cast("set[Any]", evidence.get("tool_ids") or set())
+    evidence_texts = cast("list[str]", evidence.get("turn_texts") or [])
+
     def head_of(r: dict[str, Any]) -> str:
         return (r.get("text") or "")[:300]
 
@@ -23177,6 +23812,9 @@ def _sweep_live(slug: str, nid: str, msgs: list[dict[str, Any]]) -> list[dict[st
         rides `cmd_out` (read_chat's local_command branch); counting only
         assistant rows left those live rows unmatchable, duplicated beside
         their own twin until something newer landed for the backstop."""
+        if _evidence is not None:
+            return sum(1 for text in evidence_texts
+                       if text.startswith(head))
         return sum(1 for m in turn
                    if (m.get("role") == "assistant"
                        and (m.get("text") or "").startswith(head))
@@ -23188,8 +23826,10 @@ def _sweep_live(slug: str, nid: str, msgs: list[dict[str, Any]]) -> list[dict[st
             return False
         kind = r.get("kind")
         if kind == "tool":
-            return any(t.get("id") and t["id"] == r.get("id")
-                       for m in msgs for t in (m.get("tools") or []))
+            return (bool(r.get("id") and r.get("id") in tool_ids)
+                    if _evidence is not None else
+                    any(t.get("id") and t["id"] == r.get("id")
+                        for m in msgs for t in (m.get("tools") or [])))
         if kind == "text":
             # ⚠ COUNTED, not merely matched. An agent that says the same thing
             # twice in one turn ("done." after two edits) used to have its
@@ -23209,7 +23849,9 @@ def _sweep_live(slug: str, nid: str, msgs: list[dict[str, Any]]) -> list[dict[st
     # the chronology backstop's cutoff (docstring above): the newest durable
     # stamp, moved 2 s into the past. Stays '' — backstop off — when the
     # transcript is empty or its newest stamp does not parse.
-    newest_ts = max((m.get("ts") or "" for m in msgs), default="")
+    newest_ts = (str(evidence.get("newest_ts") or "")
+                 if _evidence is not None else
+                 max((m.get("ts") or "" for m in msgs), default=""))
     cutoff = _iso_back(newest_ts, 2.0) if newest_ts else ""
 
     def stale(r: dict[str, Any]) -> bool:
@@ -23580,8 +24222,12 @@ def session_occupancy(org: Org, nid: str,
         return None, False
 
 
-def read_chat(org: Org, nid: str, last: int | None = None, *,
-              hold_back: bool = True) -> dict[str, Any]:
+def _read_chat_source(org: Org, nid: str, last: int | None = None, *,
+                      hold_back: bool = True,
+                      _lines: Iterable[str] | None = None,
+                      _prompt_views: dict[str, list[dict[str, Any]]] | None = None,
+                      _resume: dict[str, Any] | None = None,
+                      _source_only: bool = False) -> dict[str, Any]:
     """Parse the node's transcript into renderable messages + context occupancy.
 
     Parity waves A+C (2026-07-31): tool chips carry their identifying argument,
@@ -23625,23 +24271,30 @@ def read_chat(org: Org, nid: str, last: int | None = None, *,
     # Structured source metadata, not marker parsing, decides which parts of
     # a provider user event are human conversation.  The raw transcript stays
     # untouched for audit/replay; only this response projection changes.
-    prompt_views = _load_prompt_views(org.d["slug"], n["session_id"])
+    prompt_views = (_prompt_views if _prompt_views is not None else
+                    _load_prompt_views(org.d["slug"], n["session_id"]))
     # D-229: the rows spent so far (so a mid-read reload cannot re-spend them),
     # whether the one permitted reload has happened, and how many fresh user
     # events were held back this poll for want of their projection
     views_consumed: list[dict[str, Any]] = []
     views_reloaded = False
     withheld = 0
-    msgs = []
-    fill = _OccTracker(context_window(n))
-    by_tool_id: dict[str, dict[str, Any]] = {}
-    after_boundary = False           # the next flagged record is the summary
-    prev_ts = None                   # the preceding record's timestamp
+    msgs = cast("list[dict[str, Any]]", (_resume or {}).get("messages") or [])
+    fill = cast("_OccTracker", (_resume or {}).get("fill")) \
+        if (_resume or {}).get("fill") is not None \
+        else _OccTracker(context_window(n))
+    by_tool_id = cast("dict[str, dict[str, Any]]",
+                      (_resume or {}).get("by_tool_id") or {})
+    after_boundary = bool((_resume or {}).get("after_boundary", False))
+    prev_ts = (_resume or {}).get("prev_ts")
     # (index, message.id) of the last appended thinking-only assistant row —
     # the merge anchor for a second thinking block of the SAME message (see
     # below). The index check invalidates it the moment any other row lands.
-    prev_think: tuple[int, str] | None = None
-    for line in open(tpath, encoding="utf-8", errors="replace"):
+    prev_think = cast("tuple[int, str] | None",
+                      (_resume or {}).get("prev_think"))
+    source_lines = (_lines if _lines is not None else
+                    open(tpath, encoding="utf-8", errors="replace"))
+    for line in source_lines:
         try:
             rec = json.loads(line)
         except json.JSONDecodeError:
@@ -23729,6 +24382,8 @@ def read_chat(org: Org, nid: str, last: int | None = None, *,
             continue
         if rec.get("isVisibleInTranscriptOnly"):
             continue
+        prompt_unresolved = False
+        prompt_raw: str | None = None
         if t == "user":
             raw_prompt: str | None = content if isinstance(content, str) else None
             if isinstance(content, list):
@@ -23746,50 +24401,14 @@ def read_chat(org: Org, nid: str, last: int | None = None, *,
                                           prompt_views, raw_prompt,
                                           rec.get("timestamp"),
                                           consumed=views_consumed))
+            # Cache source truth, not one reader's answer. Freshness, pending
+            # coverage and `hold_back` can all change while both files remain
+            # byte-identical, so an unresolved envelope is retained as a
+            # private marker and decided separately for every response.
             if (not projected and raw_prompt is not None
-                    and _prompt_is_fresh(rec.get("timestamp"))
                     and _carries_envelope(raw_prompt)):
-                # D-229: a FRESH event carrying the machine envelope with no
-                # projection means this read raced the writer (the sidecar
-                # row is written before the provider event on every lane)
-                # or read a torn row. Reload once. If the row is still
-                # missing, hold the event back ONLY while its pending bubble
-                # still covers it (its batch unconfirmed in `delivering`):
-                # then nothing goes missing on screen and the next poll
-                # draws the projected row in the same payload that retires
-                # the bubble (D-54). Once the batch is confirmed the bubble
-                # is gone, and holding the event would show the message
-                # zero times — so it renders raw, loudly: the sidecar write
-                # failed, and a message shown with its chrome beats a
-                # message not shown at all (D-50). Events that never carry
-                # the envelope (command echoes, remote-control prompts) are
-                # never held: they have no sidecar row by construction.
-                if not views_reloaded:
-                    views_reloaded = True
-                    prompt_views = _reload_prompt_views(
-                        org.d["slug"], n["session_id"], views_consumed)
-                    projected, human_text = _take_prompt_view(
-                        prompt_views, raw_prompt, rec.get("timestamp"),
-                        consumed=views_consumed)
-                if not projected:
-                    # `hold_back=False` is a reader with NO pending bubble
-                    # in its payload (`orgtree_read_transcript`, review
-                    # round 2): for it a held event would be on screen zero
-                    # times, so it gets the raw event instead
-                    if hold_back and _covered_by_pending(org, nid, raw_prompt):
-                        withheld += 1
-                        print(f"[orgtree] {org.d['slug']}/{nid}: a user "
-                              f"event ({rec.get('timestamp')}) has no "
-                              f"durable projection yet — held back this "
-                              f"poll, its pending bubble covers it (D-229)")
-                        continue
-                    print(f"[orgtree] {org.d['slug']}/{nid}: a user event "
-                          f"({rec.get('timestamp')}) has no durable "
-                          f"projection — rendered RAW rather than hidden "
-                          + ("(D-229 fail-open: this reader has no pending "
-                             "bubble to cover it)" if not hold_back else
-                             "(D-229 fail-open: its delivery is already "
-                             "confirmed, so the sidecar write failed)"))
+                prompt_unresolved = True
+                prompt_raw = raw_prompt
             if projected:
                 # An empty projection is a machine-only turn (automatic
                 # checkup/recovery/state plumbing).  It reached the provider
@@ -23986,6 +24605,9 @@ def read_chat(org: Org, nid: str, last: int | None = None, *,
             "tools": [x for x in tools if x],
             "ts": rec.get("timestamp"),
         }
+        if prompt_unresolved:
+            mrow["_prompt_unresolved"] = True
+            mrow["_prompt_raw"] = prompt_raw
         if thinks or sealed:
             if thinks:
                 mrow["thinking"] = "\n\n".join(thinks)[:6000]
@@ -24025,6 +24647,17 @@ def read_chat(org: Org, nid: str, last: int | None = None, *,
         msgs.append(mrow)
         if think_only and mid:
             prev_think = (len(msgs) - 1, mid)
+    if _source_only:
+        return {"out": out, "source": {
+            "messages": msgs,
+            "fill": fill,
+            "by_tool_id": by_tool_id,
+            "after_boundary": after_boundary,
+            "prev_ts": prev_ts,
+            "prev_think": prev_think,
+            "prompt_views": prompt_views,
+            "context_cap": context_window(n),
+        }}
     # D-229: say how many fresh user events this poll is holding back for
     # want of their projection — zero on every ordinary read, and the desk's
     # evidence that a message it cannot see in `messages` yet is on its way
