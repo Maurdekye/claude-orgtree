@@ -1,28 +1,16 @@
-// canvas/workrefs.tsx — turning a docket item's SLUG, written in ordinary
-// prose, into a link that goes to that item.
+// canvas/workrefs.tsx — a docket item's SLUG, written in ordinary prose,
+// rendered as a link to that item. One matcher, called by every surface.
 //
-// Agents are told to refer to work by its readable name (`git-review-workspace`,
-// not `w3becbb30`), so those names are already all over descriptions, progress
-// entries and status text. Until now every one of them was a lookup the reader
-// had to do by hand.
+// THE CONTRACT, and the two ways it can be broken:
 //
-// WHY THIS IS ONE MODULE AND NOT A REGEX AT EACH CALLSITE. Two things here are
-// easy to get subtly wrong, and getting either wrong is worse than not linking
-// at all:
-//
-//  1. WHAT COUNTS AS A MENTION. A slug is kebab-case, so one slug is very
-//     often a substring of another — `working-status-nudges` sits inside
-//     `working-status-nudges-every-twenty-minutes`. Link the short one and the
-//     reader is sent to the wrong item by a link that looks right. The same
-//     shape appears inside URLs (`.../clickable-docket-references`) and inside
-//     dotted or slashed identifiers.
-//  2. WHAT IS NOT TEXT ANY MORE. Everything not matched must come back out
-//     byte-for-byte, including the whitespace these surfaces render with
-//     `white-space: pre-wrap`. A linkifier that trims, collapses or reorders
-//     ordinary prose has broken the thing it was decorating.
-//
-// So the matcher is a pure function with its own tests, and every surface
-// calls it rather than approximating it.
+//  1. A MENTION IS THE LONGEST KNOWN SLUG AT A POSITION WHOSE BOTH BOUNDARIES
+//     ARE FREE. Slugs are kebab-case and routinely contain one another, so a
+//     shorter name must never win inside a longer one, inside a longer word,
+//     inside a URL path, or inside a dotted identifier. Wrong link beats no
+//     link only in the sense that it is worse.
+//  2. SPLITTING IS LOSSLESS. Concatenating every run's `text` reproduces the
+//     input exactly — whitespace included, since these surfaces render with
+//     `white-space: pre-wrap`.
 
 import { useMemo } from 'react'
 import type { WorkItem } from '../types'
