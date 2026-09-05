@@ -957,25 +957,19 @@ type SpendNode = {
 /** The header's $ badge — the per-turn ring in its tooltip (№15) and, under
  *  it, the ⚙-rights rows behind the ring's counts.
  *
- *  ⚠ THE GATE IS THE BEHAVIOUR HERE, which is why this is exported and
- *  mounted in a test. It used to be `cost > 0 || cost unknown`, i.e. "no
- *  money, nothing to say". But a complete turn on a SUBSCRIPTION lane costs
- *  a real, known $0.00 — so a codex seat whose approval seam had just let a
- *  sandbox-blocked command out rendered no badge at all, and the only
- *  surface those rows have disappeared with it. Rights now open the badge on
- *  their own, and the label stays truthful: a known zero prints as $0.00,
- *  never as an estimate.
- *
- *  The count test reads the SAME five turns the tooltip renders, so a badge
- *  opened for rights always has something about rights inside it. */
+ *  ⚠ THE GATE IS THE BEHAVIOUR (exported for `rightsbadge.test.tsx`): spend
+ *  alone must not decide it, because a complete SUBSCRIPTION turn costs a
+ *  real, known $0.00 and would hide the rights rows with the badge. Rights
+ *  open it on their own, off the SAME five turns the tooltip renders, so a
+ *  badge opened for rights always has rights in it. A known zero prints as
+ *  $0.00, never as an estimate. */
 export function SpendBadge({ node }: { node: SpendNode }) {
   const cost = node.cost_usd ?? 0
   const costUnknown = node.cost_usd_unknown === true
   const turns = (node.turns ?? []).slice(-5).reverse()
-  /* the rights rows behind those counts, for the LAST turn only (that is all
-     the node carries). Same tooltip, no new chip — the №15 precedent.
-     "approved" means orgtree's approval seam said yes to a sandbox-blocked
-     request; it is not an observation that the command ran. */
+  /* the rows behind those counts, for the LAST turn only (all the node
+     carries). "approved" means the seam said yes to a sandbox-blocked
+     request — never that the command ran. */
   const rights = [
     ...(node.last_denials ?? []).map((d) =>
       `denied · ${d.tool}${d.arg ? ` · ${d.arg}` : ''}`

@@ -10067,27 +10067,18 @@ def _codex_may_write(sc: Mapping[str, Any]) -> bool:
 def _codex_approval_input(is_file: bool, params: Mapping[str, Any]
                           ) -> dict[str, Any]:
     """The structured argument booked for one codex approval request, in the
-    shape `_tool_arg` reads — the same chip formatter the claude lane's
-    denials go through.
+    dict shape `_tool_arg` reads — the wire's own `command` is a STRING,
+    which that formatter rejects outright.
 
-    It used to be `params.get("command") or {}`, and on the real wire
-    `command` is a STRING (nine of nine captured requests, codex-cli
-    0.153.x), which `_tool_arg` rejects outright — so a codex command denial
-    reached the desk as a `commandExecution` chip with no command on it
-    (measured hermetically 2026-09-05: `last_denials=[{'tool':
-    'commandExecution', 'arg': ''}]`). This hands the formatter a dict.
+    · commandExecution: `command` (a list, the older exec shape, is joined)
+      and `cwd`, straight off the request; `_after_turn` carries `cwd` on the
+      row separately.
+    · fileChange: the v2 request carries NO paths, only `grantRoot`
+      (nullable), `itemId` and `reason` — so the identifier is the root when
+      asked for, else the item id.
 
-    · commandExecution: `command` (string; a list — the older exec shape —
-      is joined) and `cwd`, both straight off the request. `_tool_arg` shows
-      the command; `_after_turn` carries `cwd` on the row separately.
-    · fileChange: the v2 request carries NO paths — only `grantRoot`
-      (nullable), `itemId` and `reason` — so the best identifier is the root
-      when asked for, else the item id. Not the file list; that is on the
-      item event, not the approval.
-
-    Bounded the same way as every other chip: `_tool_arg` caps the shown
-    argument at 90 characters and the tree scrubber rewrites host paths. No
-    other field of the request (reason, policy amendments, ids) is booked.
+    Bounded like every other chip: `_tool_arg` caps the shown argument at 90
+    characters and the tree scrubber rewrites host paths.
     """
     if is_file:
         return {"path": str(params.get("grantRoot") or ""),
@@ -10436,13 +10427,10 @@ def _codex_leg_attempt(slug: str, nid: str, org: Org, st: dict[str, Any],
         return out
 
     denials: list[dict[str, Any]] = []
-    #: the approvals this seam ANSWERED "accept" (2026-09-05, user-approved):
-    #: an accepted request used to return without a trace, so a command the
-    #: sandbox had blocked and orgtree let out was indistinguishable — in the
-    #: transcript, on the desk, in the org document — from one that ran
-    #: sandboxed. Same row shape as `denials`, booked beside them. It records
-    #: that orgtree APPROVED, not that anything ran: the callback answers
-    #: before execution, and nothing here observes the outcome.
+    #: the requests this seam ANSWERED "accept" — sandbox-blocked commands
+    #: orgtree let out, which otherwise leave no trace anywhere. Same row
+    #: shape as `denials`. It records that orgtree APPROVED, not that
+    #: anything ran: the callback answers before execution.
     approvals: list[dict[str, Any]] = []
 
     def _approve(method: str, params: dict[str, Any]) -> str:
@@ -16637,18 +16625,16 @@ def _after_turn(slug: str, nid: str, org: Org, res: dict[str, Any],
             row["cwd"] = " ".join(cwd.strip().split())[:160]
         return row
 
-    denials: list[Denial] = [
-        _rights_row(d) for d in (res.get("permission_denials") or [])[:8]]
-    # …and the codex seam's ACCEPTED escalations (2026-09-05), same shape,
-    # same cap, opposite meaning. Approved, not executed — see TurnStat.
+    raw_denials = res.get("permission_denials") or []
+    denials: list[Denial] = [_rights_row(d) for d in raw_denials[:8]]
+    # the codex seam's ACCEPTED escalations: same row shape and cap, opposite
+    # meaning. Approved, not executed — see TurnStat.
     raw_approvals = res.get("permission_approvals") or []
     approvals: list[Denial] = [_rights_row(d) for d in raw_approvals[:8]]
-    # ⚠ THE COUNT IS THE REAL COUNT, NOT THE ROW COUNT. The detail rows stay
-    # capped at 8 — they ride on the node document — but the ring's number is
-    # what says how much the seam let out, and counting the CAPPED list
-    # reported nine approved escalations as eight. A short count on this
-    # number is the one thing it must never do.
-    n_approvals = len(raw_approvals)
+    # ⚠ the ring's counts are the REAL counts. Only the detail rows are capped
+    # at 8 (they ride on the node document); counting the capped list reports
+    # nine as eight, and these numbers say how much the seam let out.
+    n_denials, n_approvals = len(raw_denials), len(raw_approvals)
     spend_total = None
     cache_event: dict[str, Any] | None = None
     if cost or occ or cw or denials or res:
@@ -16718,11 +16704,9 @@ def _after_turn(slug: str, nid: str, org: Org, res: dict[str, Any],
             if cw:
                 n["context_window"] = cw
             n["last_denials"] = denials
-            # ONLY when the lane can report it. The claude/AGY legs carry no
-            # `permission_approvals` key at all; writing `[]` for them would
-            # render "0 approved" as if the seam had run and found nothing,
-            # which is the vacuous-pass shape this team refuses. Absent key =
-            # not observed; present list = the codex seam's actual answers.
+            # ONLY when the lane can report it: the claude/AGY legs send no
+            # `permission_approvals` key, and `[]` there would read as a seam
+            # that ran and approved nothing. Absent = not observed.
             if "permission_approvals" in res:
                 n["last_approvals"] = approvals
             else:
@@ -16766,7 +16750,7 @@ def _after_turn(slug: str, nid: str, org: Org, res: dict[str, Any],
             out_toks = int((res.get("usage") or {}).get("output_tokens") or 0)
             entry: TurnStat = {"at": now_iso(), "cost": round(cost, 6),
                                "ms": res.get("duration_ms"),
-                               "denials": len(denials)}
+                               "denials": n_denials}
             if "permission_approvals" in res:
                 entry["approvals"] = n_approvals
             if out_toks:

@@ -81,10 +81,9 @@ class Denial(TypedDict):
     """№7: one headless auto-deny from the CLI result event (_after_turn).
 
     Also the shape of one APPROVED escalation on the codex lane
-    (`last_approvals`, 2026-09-05): the same row, kept in a separate list
-    because the two mean opposite things. `cwd` is set only by the codex
-    approval seam, whose requests carry the working directory the command
-    would run in; the claude lane's CLI-reported denials have no such field.
+    (`last_approvals`) — the same row, kept in a separate list because the
+    two mean opposite things. `cwd` is set only by the codex approval seam,
+    whose requests name the directory the command would run in.
     """
     tool: str
     arg: NotRequired[str | None]
@@ -97,13 +96,10 @@ class TurnStat(TypedDict):
     cost: float
     ms: NotRequired[int | None]
     denials: int
-    #: codex lane only (2026-09-05): approvals `_approve` ANSWERED "accept" —
-    #: commands or file changes the sandbox had blocked and orgtree let out.
-    #: It counts approvals, not observed executions: the callback answers
-    #: before anything runs, and the seam itself cannot classify a request
-    #: beyond "codex asked". Absent on the claude/AGY lanes, which have no
-    #: such callback. It is the TRUE number the seam answered, not the length
-    #: of `last_approvals` — the detail rows are capped at 8, this is not.
+    #: codex lane only: escalations `_approve` ANSWERED "accept". It counts
+    #: approvals, not observed executions — the callback answers before
+    #: anything runs. Absent on lanes with no such callback. Like `denials`
+    #: it is the TRUE count, not the length of the capped detail rows.
     approvals: NotRequired[int]
     # killed-turn accounting (2026-08-04): output tokens ride every entry so a
     # later killed turn can estimate its unreported spend from the node's own
