@@ -136,3 +136,45 @@ test('zoomed-out card CSS keeps actions left-aligned and tier accents distinct',
       `${tier} retains its own top accent variable`)
   }
 })
+
+test('an idle card carries its age BESIDE the state word, not as a separate badge',
+  async () => {
+    // user 2026-09-05: "when agent idle place idle time beside word Idle, as
+    // in desk view … do NOT make separate card". The DOM claim is the parent:
+    // the age has to be inside the same `.sq-workstate` seat as the word.
+    const idle = node('quiet-agent', 'haiku', false)
+    ;(idle as unknown as { turns: unknown[] }).turns =
+      [{ at: new Date(Date.now() - 120_000).toISOString(), killed: false, cost: 0, denials: 0 }]
+    ;(idle as unknown as { last_status: unknown }).last_status =
+      { status: 'done', summary: 'finished', at: '' }
+    const view = await mountView(card(idle, 'norm', noop), (el) => el)
+    try {
+      const seat = view.el.querySelector('.sq-workstate')!
+      const word = seat.querySelector('.sq-idle')!
+      const time = seat.querySelector('.sq-idle-time')!
+      assert.ok(word, 'the state word is gone')
+      assert.ok(time, 'the age is not in the same seat as the word')
+      assert.match(time.textContent ?? '', /\d/, 'the age rendered no number')
+      // the word comes first, the age second — "beside", in that order
+      assert.equal(word.nextElementSibling, time)
+      // and the badge it used to be is GONE from the whole card
+      assert.equal(view.el.querySelector('.turnago'), null,
+        'the separate age badge is still rendered somewhere on the card')
+    } finally { await view.unmount() }
+  })
+
+test('a busy card keeps its activity treatment and shows no idle age', async () => {
+  // the busy/queued/working semantics are unchanged: the activity dot owns
+  // that state, and "2m ago" under a running turn contradicts it
+  const busy = node('running-agent', 'haiku', true)
+  ;(busy as unknown as { turns: unknown[] }).turns =
+    [{ at: new Date(Date.now() - 120_000).toISOString(), killed: false, cost: 0, denials: 0 }]
+  const view = await mountView(card(busy, 'norm', noop), (el) => el)
+  try {
+    assert.ok(view.el.querySelector('.sq-workstate .actlabel, .sq-workstate .act'),
+      'the busy card lost its activity treatment')
+    assert.equal(view.el.querySelector('.sq-idle'), null, 'a busy card shows a state word')
+    assert.equal(view.el.querySelector('.sq-idle-time'), null, 'a busy card shows an idle age')
+    assert.equal(view.el.querySelector('.turnago'), null)
+  } finally { await view.unmount() }
+})

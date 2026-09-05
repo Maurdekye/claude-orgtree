@@ -12,10 +12,16 @@ const seats = { haiku: 1, terra: 2, sol: 5, luna: .2, flash: 1 }
 const hire = { enabled: true, installed: true, reason: null }
 const opened: string[] = []
 
+// an idle node has a COMPLETED TURN, so its age actually renders — without one
+// LastTurnAge draws nothing and the placement check would measure an empty seat
+const lastTurn = [{ at: new Date(Date.now() - 120_000).toISOString(), killed: false,
+  cost: 0, denials: 0 }]
+
 function node(id: string, tier: string, busy: boolean): CanvasNode {
   return {
     id, title: id, state: 'live', tier, model_id: tier, seat: seats[tier as keyof typeof seats] ?? 1,
-    grant: 0, free: 0, scope: { tools: {}, add_dirs: [] }, children: [], lineage: [], turns: [],
+    grant: 0, free: 0, scope: { tools: {}, add_dirs: [] }, children: [], lineage: [],
+    turns: lastTurn,
     audiences_held: [], bearer_state: null, frozen: null, limit_locked: false, mail_pending: 3,
     last_status: busy ? { status: 'working', summary: 'browser fixture', at: '' }
       : { status: 'done', summary: 'idle positive control', at: '' }, prev_status: null,

@@ -28,6 +28,44 @@ CARDS = FRONTEND / "src" / "canvas" / "cards.tsx"
 CSS = FRONTEND / "src" / "styles.css"
 
 
+def age_failures(lod: str, row: dict) -> list[str]:
+    """The idle age sits BESIDE the state word (user 2026-09-05), and is really
+    on screen there. `.sq-workstate` clips, so a time that is present in the DOM
+    can still be scrolled out of its own seat by the word beside it — which is
+    exactly the "present, plausible and inert" result a DOM test would call a
+    pass. Every check here is geometric for that reason.
+
+    A BUSY card is the built-in negative: it must have neither, so a green run
+    is not one where the selectors simply match nothing everywhere."""
+    who, bad = f"{lod}/{row['id']}", []
+    if row["strayAge"]:
+        bad.append(f"{who}: the separate age badge is still on the card")
+    busy = ".busy" in row["classes"] or " busy" in f" {row['classes']}"
+    if busy:
+        if row["time"]:
+            bad.append(f"{who}: a busy card shows an idle age")
+        return bad
+    word, time, seat = row["word"], row["time"], row["seat"]
+    if not word:
+        return [f"{who}: an idle card has no state word"]
+    if not time:
+        return [f"{who}: the idle age is not beside the word"]
+    if time["w"] < 8 or time["h"] < 4:
+        bad.append(f"{who}: the age renders {time['w']:.0f}x{time['h']:.0f} — not readable")
+    if not (row["timeText"] or "").strip():
+        bad.append(f"{who}: the age element is empty")
+    # BESIDE: after the word horizontally, and on the same line as it
+    if time["x"] < word["x"] + word["w"] - 1:
+        bad.append(f"{who}: the age is not after the word")
+    if abs(time["y"] + time["h"] / 2 - (word["y"] + word["h"] / 2)) > 6:
+        bad.append(f"{who}: the age is on a different line from the word")
+    # VISIBLE: inside the seat that clips, with a pixel of tolerance
+    if seat and (time["x"] < seat["x"] - 1
+                 or time["x"] + time["w"] > seat["x"] + seat["w"] + 1):
+        bad.append(f"{who}: the age is clipped out of its own seat")
+    return bad
+
+
 def main() -> int:
     src = CARDS.read_text(encoding="utf-8")
     css = CSS.read_text(encoding="utf-8")
@@ -57,7 +95,16 @@ def main() -> int:
                 const br = b?.getBoundingClientRect();
                 const badges = card.querySelector('.sq-badges')?.getBoundingClientRect();
                 const actions = card.querySelector('.sq-actions')?.getBoundingClientRect();
+                // the idle age: where it sits, and whether it is really visible
+                const seatEl = card.querySelector('.sq-workstate');
+                const wordEl = card.querySelector('.sq-workstate .sq-idle');
+                const timeEl = card.querySelector('.sq-workstate .sq-idle-time');
+                const box = (e) => { if (!e) return null; const q = e.getBoundingClientRect();
+                  return {x:q.x,y:q.y,w:q.width,h:q.height} };
                 return { id: card.querySelector('.sq-title .name')?.textContent.trim(),
+                  seat: box(seatEl), word: box(wordEl), time: box(timeEl),
+                  timeText: timeEl?.textContent ?? null,
+                  strayAge: Boolean(card.querySelector('.turnago')),
                   classes: card.className, top: getComputedStyle(card).borderTopColor,
                   card: {x:r.x,y:r.y,w:r.width,h:r.height},
                   button: br && {x:br.x,y:br.y,w:br.width,h:br.height},
@@ -116,6 +163,7 @@ def main() -> int:
                 if part and (part["y"] < row["card"]["y"]
                              or part["y"] + part["h"] > row["card"]["y"] + row["card"]["h"]):
                     failures.append(f"{lod}/{row['id']}: row clips outside fixed card")
+            failures += age_failures(lod, row)
     by_id = {row["id"]: row for row in values["normal"]}
     for node_id, tier in (("claude-agent", "haiku"), ("codex-terra-agent", "terra"),
                           ("codex-sol-agent", "sol"), ("luna-agent", "luna"),

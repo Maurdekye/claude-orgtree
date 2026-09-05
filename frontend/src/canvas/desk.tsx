@@ -181,9 +181,14 @@ export function RouteBadge({ route }: { route?: CodexRouteInfo | null }) {
 }
 
 /** FR-23's authoritative completed-turn age, shared by cards and desks.
- * Busy/never-ran nodes deliberately render nothing, exactly as the card did. */
+ * Busy/never-ran nodes deliberately render nothing, exactly as the card did.
+ * Source is TurnStat.at, written at every turn completion — NOT NodeStatus.at,
+ * which exists only when the agent chose to report a status. */
 export function LastTurnAge({ turn, busy = false, variant = 'badge' }: {
-  turn?: TurnStat | null; busy?: boolean; variant?: 'badge' | 'map'
+  turn?: TurnStat | null; busy?: boolean
+  /** `inline` sits beside the card's state word, the way the desk banner's
+   *  time sits beside its label (user 2026-09-05) — same value, same clock */
+  variant?: 'badge' | 'map' | 'inline'
 }) {
   useSyncExternalStore(subscribeAgeClock, () => ageClockSecond,
     () => ageClockSecond)
@@ -191,7 +196,10 @@ export function LastTurnAge({ turn, busy = false, variant = 'badge' }: {
   const title = 'last turn ended '
     + fmtStamp(turn.at)
     + (turn.killed ? ' (killed)' : '')
-  return <span className={variant === 'map' ? 'map-ago' : 'badge dim turnago'}
+  const cls = variant === 'map' ? 'map-ago'
+    : variant === 'inline' ? 'sq-idle-time'
+      : 'badge dim turnago'
+  return <span className={cls}
     title={title} aria-label={title}>
     {ago(turn.at)}{variant === 'map' && turn.killed ? ' ✕' : ''}
   </span>

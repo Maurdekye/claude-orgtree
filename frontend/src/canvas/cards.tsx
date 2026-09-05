@@ -1423,10 +1423,15 @@ export function NodeSquare({ node, pos, lod, focused: deskOpen, dragging, isDrop
                     aria-label={`${node.last_status.status}: ${node.last_status.summary}`}
                     title={`${node.last_status.status}: ${node.last_status.summary}`} />}
               </>
-              : <span className={'sq-idle ' + (node.last_status?.status ?? (live ? 'idle' : node.state))}
+              : <>
+                {/* the age sits BESIDE the state word, as on the desk (user
+                    2026-09-05) — not as a separate badge further along */}
+                <span className={'sq-idle ' + (node.last_status?.status ?? (live ? 'idle' : node.state))}
                   title={node.last_status?.summary ?? undefined}>
-                {node.last_status?.status ?? (live ? 'idle' : node.state)}
-              </span>}
+                  {node.last_status?.status ?? (live ? 'idle' : node.state)}
+                </span>
+                <LastTurnAge turn={lastTurn} busy={node.busy} variant="inline" />
+              </>}
           </div>
           {live && <ProcessLifecycleMark warm={Boolean(node.proc_warm)}
             live={node.proc_live} relaunch={node.proc_relaunch}
@@ -1494,16 +1499,8 @@ export function NodeSquare({ node, pos, lod, focused: deskOpen, dragging, isDrop
               title={`${node.bearer_state} bearer — where this agent's context `
                 + 'came from, not what it is doing; a rehired bearer works '
                 + 'like any other agent'}>{node.bearer_state}</span>}
-          {/* FR-23 (user request 2026-08-09): the end of the most recent turn,
-              glanceable on the CANVAS — the desk already had it, hover-gated,
-              and that surfacing evidently wasn't enough or the request would
-              not exist. Source: TurnStat.at (written unconditionally at turn
-              completion, killed turns included) — NOT NodeStatus.at, which
-              only exists when the agent chose to report a status. Hidden
-              while busy (the activity dot owns that state; "3m ago" under a
-              running turn reads as a contradiction) and absent when no turn
-              ever ran (a fresh hire shows nothing rather than "never"). */}
-          <LastTurnAge turn={lastTurn} busy={node.busy} />
+          {/* FR-23's age is no longer a badge here — it moved up beside the
+              state word in `sq-workstate` (user 2026-09-05) */}
           {/* ⭐ clickable (user ruling 2026-08-06): the freeze badge IS the
               per-node unstick — the control lives where the user finds the
               agent, not only in org-level panels */}
