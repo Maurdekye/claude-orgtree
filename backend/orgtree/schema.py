@@ -151,6 +151,11 @@ class FrozenInfo(TypedDict, total=False):
     # time. `resume_frozen` lists the operation receipts this seat filed at or
     # after it inside the retry banner (Phase 2 of w71d69aac).
     receipts_since_ms: int
+    # connection kind only: the retry banner's OWN parts — {index, head,
+    # payload} — so resume can recompose it with the receipt list without
+    # parsing the replay text (the payload is the agent's message and may
+    # contain any marker). `index` is the position in `resume_texts`.
+    retry: dict[str, Any]
     # `limit` is the usage-limit kind flag, and it exists to be a POSITIVE
     # marker. The pre-№41 retag in Org.__init__ matches on shape — error, no
     # until, no resume_texts, no kind flag True — and a genuine usage-limit

@@ -51,53 +51,19 @@ Below the watermark the answer is `unknown`. That is the whole design: the
 capped log may forget, and forgetting always costs a refusal, never a
 duplicate.
 
-CUSTODY — WHY THE LOG THIS DOCUMENT CARRIES IS STILL THE ONE THAT WAS
-RECORDING. A restore puts an older document back, and the receipts inside it
-went back with it: operations that applied are no longer recorded, while the
-mail they sent and the processes they started were never recalled. The absence
-of a row then means nothing at all.
-
-This was first attempted with a stamp written into the exported copy, and then
-with a quarantine measured in milliseconds. Both were wrong, and both were
-wrong the same way — they asked a CLOCK a question only custody can answer:
-
-  · the stamp reached one of the four documented restore routes. A `.json`
-    dropped in by hand, a database restored out of `deleted/`, a parked
-    database moved back and any legacy backup carry no stamp, and two of those
-    restore a DATABASE, which an export-time stamp can never reach;
-  · the quarantine gated the LOOKUP's "not applied" while ADMISSION still
-    compared the client's mint time to the server's clock. A pre-restore key
-    minted by a client running 30 s ahead was admitted and executed a second
-    time one second into the quarantine, and a server clock that stepped
-    BACKWARDS revived a key the quarantine had supposedly outlived. Both
-    reproduced by execution, 2026-09-05 (evidence/admit-holes.json).
-
-So a key is bound to a server-issued EPOCH at mint, and an existing key is
-never rebound. The epoch lives in THIS PROCESS's memory (`_EPOCHS`), is never
-read back from the document, and rotates on exactly two events:
-
-    BOOT           the table starts empty, so the first touch after a restart
-                   mints a fresh one. Every restore that requires stopping the
-                   backend — and they all do, it holds the files open — is
-                   covered by this alone, legacy backups included.
-    A REWIND       `op_receipts_meta.seq` counts appends; this process
-                   remembers the highest it has seen per (root, slug) in
-                   `_SEEN`. A document that comes back with a LOWER seq than
-                   this process has already written was rewound underneath a
-                   running backend. `_SEEN` is not in the data root, so a
-                   restore cannot roll it back with the document — that is the
-                   whole point of keeping it here rather than on disk.
-
-An epoch that does not match refuses ADMISSION before dispatch (so a delayed
-pre-restore duplicate never executes, whatever any clock says) and answers a
-lookup `unknown` when there is no row. A row that IS found still answers
-`applied` across a rotation: a receipt is durable positive evidence, and
-saying so executes nothing.
-
-WHAT REMAINS UNCOVERED, SAID PLAINLY: a whole-root rewind performed LIVE,
-under a running backend, that loses no receipt this process has already seen.
-If it loses one, `_SEEN` catches it; if it loses none, nothing here has
-misjudged anything. Nothing else in this module infers coverage from a time.
+CUSTODY. A restored document carries an older log, so its silence means
+nothing. A key is therefore bound at mint to a server-issued EPOCH held in
+THIS PROCESS's memory (`_EPOCHS`), never read back from the document, rotated
+on exactly two events: BOOT (the table starts empty; every restore that stops
+the backend is covered, legacy backups included) and a REWIND (`meta.seq`
+counts appends; `_SEEN` holds the highest seq this process has COMMITTED per
+(root, slug) — advanced by `witness()` after every successful save of a
+receipt — and a document that comes back below it was rewound underneath a
+running backend). A stale epoch refuses ADMISSION before dispatch and answers
+a lookup `unknown` when no matching row exists; a matching applied row still
+answers `applied`. Uncovered, said plainly: a whole-root rewind performed live
+that loses no receipt this process has committed. Why the two earlier designs
+(an export stamp, a quarantine) were wrong is recorded in docs/op-receipts.md.
 """
 from __future__ import annotations
 
@@ -283,11 +249,12 @@ _RESULT_FIELDS: dict[str, tuple[str, ...]] = {
     "orgtree_reallocate": ("node", "delta", "grant"),
     "orgtree_switch_model": ("node", "tier", "queued"),
     "orgtree_status": ("recorded", "reported_to", "delivered"),
-    "orgtree_work": ("created", "updated", "assigned", "id", "rev", "status"),
+    "orgtree_work": ("created", "updated", "assigned", "id", "slug", "rev",
+                     "status"),
     "orgtree_ask": ("id", "routed", "deferred"),
     "orgtree_request_scope": ("id", "routed", "deferred"),
     "orgtree_request_credits": ("id", "routed", "deferred"),
-    "orgtree_present": ("id", "routed", "deferred"),
+    "orgtree_present": ("id", "presented", "routed", "deferred"),
     "orgtree_watchdog": ("id", "state", "created", "removed"),
     "orgtree_audience": ("granted", "revoked", "routed"),
     "orgtree_move": ("moved",),
@@ -301,10 +268,11 @@ _RESULT_FIELDS: dict[str, tuple[str, ...]] = {
     "orgtree_prime_restart": ("state", "armed"),
     "orgtree_restart_wake": ("armed", "cancelled", "state"),
 }
-# identity-shaped arguments worth keeping on the row. Bodies, charters,
-# kickoffs, questions and summaries are deliberately absent.
-_TARGET_ARGS = ("node", "to", "id", "action", "stage", "tier", "target",
-                "grantee", "from", "name")
+# identity-shaped arguments worth keeping on the row: node ids, docket item
+# ids/slugs, delivery stages and refs. Bodies, charters, kickoffs, questions
+# and summaries are deliberately absent.
+_TARGET_ARGS = ("node", "to", "id", "slug", "work_item", "ref", "action",
+                "stage", "tier", "target", "grantee", "from", "name")
 
 
 def _canonical(obj: Any) -> str:
@@ -434,6 +402,31 @@ def custody(d: dict[str, Any], root: str, slug: str) -> tuple[str, str]:
         return cast("str", ep), why
 
 
+def witness(root: str, slug: str, n: int) -> None:
+    """Record that THIS PROCESS has committed a document carrying seq `n`.
+    Called by the API AFTER `save_org` returned, still under DOC_LOCK — never
+    before: a save that raises committed nothing, and a witness advanced for
+    it would call the unchanged document a rewind.
+
+    ⚠ `custody()` advances the witness only when it is CALLED, and it is
+    called before admission. Without this, a receipt appended and saved with
+    no later custody read left the witness at the pre-append seq, so a
+    restore to that exact state was indistinguishable from no restore and a
+    delayed original was admitted again (Astra's counterexample,
+    2026-09-05)."""
+    k = (root, slug)
+    with _LOCK:
+        if k in _EPOCHS:
+            _SEEN[k] = max(int(_SEEN.get(k) or 0), int(n))
+
+
+def witnessed(root: str, slug: str) -> int | None:
+    """The highest seq this process has committed for the document, or None
+    when it holds no epoch for it. Read-only; for the suite."""
+    with _LOCK:
+        return _SEEN.get((root, slug))
+
+
 def forget_custody(root: str = "", slug: str = "") -> None:
     """Drop remembered custody — for tests that emulate a restart, and for a
     document leaving this process's care. No arguments = everything."""
@@ -491,6 +484,40 @@ def fp_node(row: dict[str, Any]) -> str:
     return str(row.get("fp_node") or row.get("node") or "")
 
 
+def matches(row: dict[str, Any], tool: str, args: dict[str, Any]) -> bool:
+    """Does this row identify THIS call? Tool and full fingerprint, computed
+    at the row's own subject (`fp_node`) and generation — the ones it was
+    minted with. Every claim about a row ("already applied", "fenced",
+    "replay") goes through this first: a row's existence under a key says
+    nothing about which call it was."""
+    fp = fingerprint(tool, fp_node(row), int(row.get("gen") or 0), args)
+    return row.get("tool") == tool and row.get("fp") == fp
+
+
+def classify(row: dict[str, Any] | None, tool: str, args: dict[str, Any]
+             ) -> str:
+    """"" (no row) | "conflict" (a different call) | "applied" | "fenced"."""
+    if row is None:
+        return ""
+    if not matches(row, tool, args):
+        return "conflict"
+    return "fenced" if row.get("outcome") == "fenced" else "applied"
+
+
+_ROW_DETAIL = {
+    "applied": "A receipt shows the operation ALREADY APPLIED; do not issue "
+               "it again.",
+    "fenced": "A lookup FENCED this key: no transaction under it was ever "
+              "recorded and none can be now. It did not apply at the "
+              "document; issue a fresh key if you mean to do it.",
+    "conflict": "The row under this key identifies a DIFFERENT operation; "
+                "nothing about this one is recorded.",
+    "": "Whether the original call applied is UNKNOWN: its receipt would "
+        "have been rolled out of the document by the same event. Do not "
+        "assume it failed.",
+}
+
+
 def rekey_nodes(d: dict[str, Any], renamed: dict[str, str]) -> int:
     """Follow a RENAME. `ledger.rename` re-keys every per-node structure in
     the document; the receipt rows are one of them, and without this a call
@@ -543,26 +570,19 @@ def admit(d: dict[str, Any], node: str, generation: int, key: str, tool: str,
         return REFUSE, {"reason": "malformed_key",
                         "detail": "op_key must be `<mint_ms>-<24 hex>`"}
     if not epoch_ok:
-        # ⚠ THE ONE REFUSAL NO CLOCK CAN REACH, and the reason this file no
-        # longer has a quarantine. The key was issued under an epoch this
-        # process has since rotated — a restart, or a document rewound
-        # underneath us — so a request still carrying it may be the delayed
-        # original of a call that ALREADY APPLIED and whose receipt went with
-        # the restore. Refuse before dispatch. A row found here is reported
-        # because it is useful, not because it changes the decision: an
-        # existing row makes "already applied" certain, and its absence
-        # proves nothing at all.
+        # the refusal no clock can reach: the key's epoch was rotated (a
+        # restart or a rewind), so this may be the delayed original of a call
+        # whose receipt went with the restore. Refuse before dispatch. A row
+        # found here is reported for what it IS — applied, fenced or a
+        # different call — never as "applied" from its mere existence.
         prior = find(d, node, key)
         return REFUSE, {
             "reason": "stale_epoch", "row": prior,
+            "row_state": classify(prior, tool, args),
             "detail": ("this key was issued under an operation epoch that is "
                        "no longer current — the backend restarted, or this "
                        "document was restored — so nothing was done. "
-                       + ("A receipt shows the operation ALREADY APPLIED; do "
-                          "not issue it again." if prior is not None else
-                          "Whether the original call applied is UNKNOWN: its "
-                          "receipt would have been rolled out of the document "
-                          "by the same event. Do not assume it failed."))}
+                       + _ROW_DETAIL[classify(prior, tool, args)])}
     if mint > ms + SKEW_MS:
         return REFUSE, {"reason": "key_from_the_future",
                         "detail": f"minted {(mint - ms) / 1000:.0f}s ahead of "
@@ -581,24 +601,19 @@ def admit(d: dict[str, Any], node: str, generation: int, key: str, tool: str,
                                       f"{row.get('at')} — it can no longer be "
                                       "admitted; issue a fresh key"}
         if int(row.get("gen") or 0) != int(generation):
-            # the key was used by an EARLIER INCARNATION of this seat. There
-            # is no safe reading: the receipt proves the call already applied
-            # once, and the seat that would run it now is not the one that
-            # issued it. Refuse — never execute, never replay somebody else's
-            # result as this incarnation's.
+            # used by an EARLIER INCARNATION of this seat: never execute,
+            # never replay another incarnation's result as this one's
+            state = classify(row, tool, args)
             return REFUSE, {"reason": "foreign_generation", "row": row,
+                            "row_state": state,
                             "detail": f"this key was used at generation "
                                       f"{row.get('gen')} and this seat is now "
-                                      f"at generation {generation}; the "
-                                      f"operation ALREADY APPLIED and will "
-                                      f"not be run again. Issue a fresh key "
-                                      f"if you mean to do it now."}
-        # ⚠ AT THE ROW'S OWN SUBJECT, not at the seat's current name: a rename
-        # moved this row to the new id (`rekey_nodes`) without touching the
-        # print it was minted with, so recomputing it here at the new name
-        # would read every renamed seat's receipt as a conflict.
-        fp = fingerprint(tool, fp_node(row), generation, args)
-        if row.get("tool") != tool or row.get("fp") != fp:
+                                      f"at generation {generation}, so it "
+                                      f"will not be run now. "
+                                      + _ROW_DETAIL[state]}
+        # compared at the row's own subject and generation (`matches`): a
+        # rename re-keys the row without touching the print it was minted with
+        if not matches(row, tool, args):
             return CONFLICT, {"row": row, "reason": "key_reused",
                               "detail": f"this key already identifies "
                                         f"{row.get('tool')} at {row.get('at')}"}

@@ -3,21 +3,25 @@ retry banner (supervisor.resume_frozen + opreceipts.applied_since).
 
 The net-retry banner tells the agent "whatever that turn had already done was
 not undone — check your real state". Operation receipts can say WHICH org
-operations that turn committed. This suite measures the four claims that make
+operations that turn committed. This suite measures the claims that make
 that list truthful rather than decorative:
 
   §1  `applied_since` — node, outcome and the inclusive bound; generation is
-      not a filter; a row that does not parse drops out, never in.
+      not a filter; a row that does not parse drops out, never in; the
+      server's filing stamp counts, not the client's mint time.
+  §4  the renderer and the composer on their own: empty renders nothing, the
+      payload is never inspected (markers inside it survive byte for byte),
+      the row cap.
   §2  the REAL freeze branch (synthetic CLI, `died-in-flight`) records the
       bound as the ATTEMPT'S START, not the death time; attempt 2 keeps the
       run's origin; a completed turn pops it.
-  §3  `resume_frozen` splices exactly ONE paragraph into the replay TEXT —
-      listing a row filed between attempt start and death, and a row filed
-      AFTER the freeze (the request that was on the wire) — with the view
-      byte-identical; an empty log leaves the text byte-identical; a stale
-      nested paragraph is replaced, not doubled.
-  §4  the renderer and the splice on their own: empty renders nothing, a
-      non-banner is untouched, the row cap.
+  §3  `resume_frozen` recomposes the banner from its STORED parts — exactly
+      ONE paragraph, replay TEXT only — listing a row filed between attempt
+      start and death and a row filed AFTER the freeze (the request that was
+      on the wire), view byte-identical; an empty log leaves the text
+      byte-identical; a payload containing the markers is untouched; a retry
+      of a retry (the resumed carrier dies again, through the real loop)
+      carries ONE banner, ONE paragraph, the payload once.
 
 §2/§3 borrow test_limit_freeze's rig (throwaway ORGTREE_DATA + HOME, the
 synthetic CLI, no port, no network) by importing it FIRST — it binds the
@@ -47,6 +51,9 @@ PASSED = 0
 FAILED: list[str] = []
 NOTES: list[str] = []
 VERBOSE = "-v" in sys.argv
+
+H, T = supervisor.RECEIPTS_HEAD, supervisor.RECEIPTS_TAIL
+B = supervisor.RETRY_BANNER_TAIL
 
 
 def check(label: str, fn) -> None:
@@ -145,20 +152,25 @@ def sec_applied_since() -> None:
 
 # ══════════════════════════════════════════════════════════════════════════ §4
 
+#: a payload that quotes every owned marker — an agent pasting a banner into
+#: its own message, or a message ABOUT this feature. All of it is the user's.
+HOSTILE_PAYLOAD = ("please do the thing\n" + H + "\nKEEP THIS USER INSTRUCTION\n"
+                   + T + "\n" + B + "\nkeep this too")
+
+
 def sec_render() -> None:
-    print("\n§4  the renderer and the splice, on their own")
+    print("\n§4  the renderer and the composer, on their own")
     S = 1_800_000_000_000
-    H, T = supervisor.RECEIPTS_HEAD, supervisor.RECEIPTS_TAIL
-    B = supervisor.RETRY_BANNER_TAIL
-    banner = ("(orgtree) Your previous turn died part-way through and is being "
-              "retried.\n\n" + B + "\n\nplease do the thing")
+    head = "(orgtree) Your previous turn died part-way through.\n\n"
 
     def _empty_renders_nothing() -> None:
         assert supervisor.render_turn_receipts([], S) == "", (
             "an EMPTY list rendered a paragraph — present, plausible, inert")
-        assert supervisor.splice_turn_receipts(banner, "") == banner
-    check("empty · no rows → no paragraph, and the banner is byte-identical",
-          _empty_renders_nothing)
+        plain = supervisor.compose_retry_banner(head, "", "msg")
+        assert plain == head + B + "\n\nmsg", repr(plain)
+        assert H not in plain
+    check("empty · no rows → no paragraph, and the banner is head + close + "
+          "payload", _empty_renders_nothing)
 
     def _positive() -> None:
         rows = [mkrow("mid", S + 1, to="boss"), mkrow("mid", S + 2,
@@ -169,20 +181,23 @@ def sec_render() -> None:
         for r in rows:
             assert r["id"] in p and r["tool"] in p, p
         assert "to=boss" in p and "name=kid" in p, p
-        assert "unrecorded here, not absent" in p, (
-            "the paragraph does not say what the log DOES NOT record")
-        out = supervisor.splice_turn_receipts(banner, p)
-        assert out.count(H) == 1 and out.index(H) < out.index(B), out
-        assert "please do the thing" in out
-    check("positive · rows render with tool, targets and id, and land once "
-          "before the closing sentence", _positive)
+        assert "unrecorded here, not absent" in p and "OBSERVED" in p, (
+            "the paragraph does not state its limits: observed-since-bound, "
+            "incomplete log")
+        assert "unknown" in p, "post-commit effects are not declared unknown"
+        out = supervisor.compose_retry_banner(head, p, "msg")
+        assert out == head + p + "\n\n" + B + "\n\nmsg", repr(out)
+    check("positive · rows render with tool, targets, id and the stated "
+          "limits, and compose once before the closing sentence", _positive)
 
-    def _non_banner_untouched() -> None:
+    def _payload_untouched() -> None:
         p = supervisor.render_turn_receipts([mkrow("mid", S + 1)], S)
-        plain = "just a message with no banner in it"
-        assert supervisor.splice_turn_receipts(plain, p) == plain
-    check("shape · text that is not a retry banner is returned unchanged",
-          _non_banner_untouched)
+        out = supervisor.compose_retry_banner(head, p, HOSTILE_PAYLOAD)
+        assert out.endswith(HOSTILE_PAYLOAD), (
+            "the payload was changed — the composer inspected user text")
+        assert out == head + p + "\n\n" + B + "\n\n" + HOSTILE_PAYLOAD
+    check("payload · a message quoting every marker survives byte for byte",
+          _payload_untouched)
 
     def _cap() -> None:
         rows = [mkrow("mid", S + i) for i in range(supervisor.RECEIPTS_MAX_ROWS + 3)]
@@ -193,27 +208,10 @@ def sec_render() -> None:
     check("cap · at most RECEIPTS_MAX_ROWS rows, and the remainder is counted",
           _cap)
 
-    def _nested_replaced() -> None:
-        stale = supervisor.render_turn_receipts([mkrow("mid", S + 1)], S)
-        fresh_rows = [mkrow("mid", S + 1), mkrow("mid", S + 2)]
-        fresh = supervisor.render_turn_receipts(fresh_rows, S)
-        inner = supervisor.splice_turn_receipts(banner, stale)
-        # the freeze branch's shape: a new banner wrapping the previous carrier
-        outer = banner[:banner.index(B) + len(B) + 2] + inner
-        fixture(outer.count(H) == 1 and outer.count(B) == 2,
-                "the nested fixture is not the shape the freeze branch writes")
-        out = supervisor.splice_turn_receipts(outer, fresh)
-        assert out.count(H) == 1 and out.count(T) == 1, (
-            f"the stale paragraph was not replaced — {out.count(H)} heads")
-        assert fresh_rows[1]["id"] in out, "the fresh paragraph is not the one kept"
-        assert out.index(H) < out.index(B), "not in front of the OUTER banner's close"
-    check("once · a stale paragraph nested from a previous attempt is replaced "
-          "by the fresh one, exactly one remains", _nested_replaced)
-
 
 # ══════════════════════════════════════════════════════════════════════════ §2
 
-def _freeze_once(slug: str, nid: str, msg: str) -> dict:
+def _freeze_once(slug: str, nid: str, msg) -> dict:
     rig.set_mode("died-in-flight")
     rig.run_turn(slug, nid, msg)
     n = rig.node(slug, nid)
@@ -262,6 +260,16 @@ def sec_freeze_bound() -> None:
     check("bound · receipts_since_ms lies in [attempt start, death) and equals "
           "the node's run origin", _bound_is_attempt_start)
 
+    def _structure() -> None:
+        r = fz.get("retry")
+        assert isinstance(r, dict) and r.get("index") == len(fz["resume_texts"]) - 1, r
+        assert "please do the thing" in str(r.get("payload")), r
+        assert fz["resume_texts"][r["index"]] == supervisor.compose_retry_banner(
+            str(r["head"]), "", str(r["payload"])), (
+            "the stored parts do not compose to the replay text written")
+    check("structure · the freeze keeps the banner's parts, and they compose "
+          "to exactly the replay text", _structure)
+
     def _second_attempt_keeps_the_origin() -> None:
         fixture(bool(since_holder), "the first check did not establish a bound")
         _unfreeze(slug, nid)
@@ -306,30 +314,27 @@ def _capture_resume(slug: str, nid: str) -> dict:
     return q[0]
 
 
-def sec_resume_splice() -> None:
+def sec_resume_compose() -> None:
     print("\n§3  resume_frozen — one paragraph, text only, read at resume time")
-    H, T = supervisor.RECEIPTS_HEAD, supervisor.RECEIPTS_TAIL
-    B = supervisor.RETRY_BANNER_TAIL
 
     slug, nid = rig.probe_org()
-    n = _freeze_once(slug, nid, "please do the thing")
+    n = _freeze_once(slug, nid, HOSTILE_PAYLOAD)
     fz = n["frozen"]
     since = int(fz["receipts_since_ms"])
     death = opreceipts.at_ms({"at": fz["at"]}) or 0
     # ⚠ THE MID-TURN ROW IS ANCHORED TO THE DEATH, NOT TO THE RECORDED BOUND.
-    # It was `since + 1` first, and a mutant that stamped the bound at freeze
-    # time (≈ the death) SURVIVED: a row placed relative to a wrong bound is
-    # still after it. The death time is an independent witness — a CLI launch
-    # takes far longer than the margin — so a row this far before the death is
-    # inside the turn whatever the bound says, and only a bound that is truly
-    # the attempt's start admits it.
+    # A mutant that stamped the bound at freeze time (≈ the death) survived a
+    # row placed at `since + 1`. The death is an independent witness — a CLI
+    # launch takes far longer than the margin — so only a bound that is truly
+    # the attempt's start admits a row this far before it.
     fixture(death - since >= 50,
             f"the CLI died {death - since} ms after the attempt start — too "
             f"close for a mid-turn row to sit between them on this run")
     texts0 = list(fz.get("resume_texts") or [])
     views0 = list(fz.get("resume_views") or [])
-    fixture(bool(texts0) and B in texts0[-1] and H not in texts0[-1],
-            "the freeze wrote no banner, or wrote the paragraph at freeze time")
+    fixture(bool(texts0) and texts0[-1].endswith(HOSTILE_PAYLOAD)
+            and texts0[-1].count(H) == 1,            # the ONE inside the payload
+            "the freeze wrote no banner, or wrote a paragraph at freeze time")
 
     mid_turn = mkrow(nid, death - 25, to="boss")             # start < at < death
     on_wire = mkrow(nid, int(time.time() * 1000), to="peer")  # AFTER the freeze
@@ -344,11 +349,13 @@ def sec_resume_splice() -> None:
 
     got: dict = {}
 
-    def _splice() -> None:
+    def _compose() -> None:
         got.update(_capture_resume(slug, nid))
-        text, view = str(got.get("text")), str(got.get("view"))
-        assert text.count(H) == 1 and text.count(T) == 1, (
-            f"{text.count(H)} paragraph(s) in the replay text")
+        text = str(got.get("text"))
+        # exactly one OWNED paragraph: the payload's quoted markers are the
+        # user's and are counted separately by the byte-identical check below
+        assert text.count(H) == 2 and text.count(T) == 2, (
+            f"{text.count(H) - 1} owned paragraph(s) in the replay text")
         assert mid_turn["id"] in text, (
             "the row filed between the attempt's start and its death is "
             "missing — the bound is the death time, or later")
@@ -358,19 +365,49 @@ def sec_resume_splice() -> None:
         for r, why in ((before, "before the bound"), (other, "another node"),
                        (fenced, "fenced, i.e. NOT applied")):
             assert r["id"] not in text, f"a row that is {why} was listed"
+        assert text.endswith(HOSTILE_PAYLOAD), (
+            "the payload is not byte-identical — user text was parsed or cut")
         assert text.index(H) < text.index(B), "not in front of the closing sentence"
-        assert "please do the thing" in text, "the original message is gone"
+        # the payload is `text[-8000:]` of the turn as launched — the message
+        # with whatever envelope prefix fit — exactly what the banner always
+        # replayed; the carrier brings that same string forward
+        assert str(got.get("retry_payload")).endswith(HOSTILE_PAYLOAD), (
+            "the carrier does not bring the original payload to the next attempt")
         assert not rig.node(slug, nid).get("frozen"), "still frozen after ▶"
-    check("splice · exactly one paragraph, listing the mid-turn row and the "
-          "on-the-wire row, excluding before/other-node/fenced", _splice)
+    check("compose · exactly one paragraph, listing the mid-turn row and the "
+          "on-the-wire row, excluding before/other-node/fenced; the payload "
+          "with every marker quoted is byte-identical", _compose)
 
     def _view_untouched() -> None:
-        fixture("text" in got, "the splice check did not capture a carrier")
+        fixture("text" in got, "the compose check did not capture a carrier")
         assert str(got.get("view")) == views0[-1], (
             "the human projection changed — the paragraph belongs in the "
             "replay text only")
-        assert H not in str(got.get("view"))
     check("view · resume_views is byte-identical", _view_untouched)
+
+    def _retry_of_a_retry() -> None:
+        """The resumed carrier (banner + paragraph + payload) dies AGAIN,
+        through the real loop; the next resume must carry ONE banner, ONE
+        paragraph, the payload once — not the previous banner nested."""
+        fixture("text" in got, "no carrier from the first resume")
+        rig.set_mode("died-in-flight")
+        rig.run_turn(slug, nid, dict(got))          # the real retry, dying
+        n2 = rig.node(slug, nid)
+        fixture(bool(n2.get("frozen")) and (n2.get("net_fail_run") or 0) == 2,
+                f"the retried carrier did not die into attempt 2: "
+                f"run={n2.get('net_fail_run')!r}")
+        c2 = _capture_resume(slug, nid)
+        text = str(c2["text"])
+        assert text.count(B) == 2, (            # one owned + one quoted
+            f"{text.count(B) - 1} banner(s) — the previous banner was nested")
+        assert text.count(H) == 2, f"{text.count(H) - 1} paragraph(s)"
+        assert text.count("KEEP THIS USER INSTRUCTION") == 1
+        assert text.endswith(HOSTILE_PAYLOAD)
+        assert mid_turn["id"] in text and on_wire["id"] in text, (
+            "attempt 1's receipts fell out of attempt 2's banner")
+        assert "attempt 2 of" in text
+    check("once · a retry of a retry, through the real loop, carries one "
+          "banner, one paragraph and the payload once", _retry_of_a_retry)
 
     def _empty_log_identical() -> None:
         s2, n2 = rig.probe_org()
@@ -380,30 +417,27 @@ def sec_resume_splice() -> None:
         assert c["text"] == t_before, (
             "with NO receipts the replay text changed — a paragraph with only "
             "a disclaimer in it is present, plausible and inert")
+        assert c.get("retry_payload") == "nothing was committed"[-8000:] or \
+            str(c.get("retry_payload")).endswith("nothing was committed")
     check("empty · with no receipts the replay text is byte-identical",
           _empty_log_identical)
 
-    def _nested_once_through_resume() -> None:
+    def _legacy_record_untouched() -> None:
+        """A freeze written by a build without `retry` parts: nothing to
+        recompose, nothing parsed, text unchanged."""
         s3, n3 = rig.probe_org()
-        nn = _freeze_once(s3, n3, "died twice")
-        fz3 = nn["frozen"]
-        since3 = int(fz3["receipts_since_ms"])
-        banner = str(fz3["resume_texts"][-1])
-        stale = supervisor.render_turn_receipts([mkrow(n3, since3 + 1)], since3)
-        inner = supervisor.splice_turn_receipts(banner, stale)
-        outer = banner[:banner.index(B) + len(B) + 2] + inner
-        fresh_row = mkrow(n3, since3 + 1, to="boss")
+        nn = _freeze_once(s3, n3, "old shape")
         with store.DOC_LOCK:
             o = store.load_org(s3)
-            o.nodes[n3]["frozen"]["resume_texts"] = [outer]      # type: ignore[index]
-            opreceipts.append(o.d, fresh_row)
+            o.nodes[n3]["frozen"].pop("retry", None)        # type: ignore[union-attr]
             store.save_org(o)
+            opreceipts.append(o.d, mkrow(n3, int(time.time() * 1000)))
+            store.save_org(o)
+        t_before = list(nn["frozen"].get("resume_texts") or [])[-1]
         c = _capture_resume(s3, n3)
-        text = str(c["text"])
-        assert text.count(H) == 1, f"{text.count(H)} paragraphs after a retry of a retry"
-        assert fresh_row["id"] in text and text.index(H) < text.index(B)
-    check("once · a retry of a retry carries ONE fresh paragraph, not two",
-          _nested_once_through_resume)
+        assert c["text"] == t_before and "retry_payload" not in c
+    check("legacy · a record without stored parts is replayed unchanged",
+          _legacy_record_untouched)
 
 
 def main() -> int:
@@ -411,7 +445,7 @@ def main() -> int:
     sec_render()
     if shutil.which("node"):
         sec_freeze_bound()
-        sec_resume_splice()
+        sec_resume_compose()
     else:
         NOTES.append("INERT: `node` is not on PATH — §2 and §3 (the real "
                      "freeze branch and resume) DID NOT RUN")

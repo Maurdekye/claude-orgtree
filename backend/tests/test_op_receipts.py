@@ -1488,6 +1488,252 @@ check("the receipt log is a lazy row-backed section; its meta is eager",
       _section_is_a_list_log)
 
 
+# ======================================= §11 Astra's counterexamples, 15:10Z
+print("\n§11  the review's counterexamples — witness, classification, fence")
+
+
+def _mail_count(slug):
+    return sum(len(v) for v in store.load_org(slug).d.get("mail_log", {}).values())
+
+
+def _snapshot(slug):
+    d = json.loads(json.dumps(store.load_org(slug).d))
+    return ([dict(r) for r in d.get("op_receipts", [])],
+            dict(d.get("op_receipts_meta") or {}))
+
+
+def _restore(slug, snap):
+    """Put the receipt log back the way a restore puts it back — and NOTHING
+    else touches custody in between (no epoch read, no lookup)."""
+    org = store.load_org(slug)
+    org.d["op_receipts"] = snap[0]
+    if snap[1]:
+        org.d["op_receipts_meta"] = snap[1]
+    else:
+        org.d.pop("op_receipts_meta", None)
+    store.save_org(org)
+
+
+def _a_receipt_saved_with_no_later_read_still_witnesses_a_rewind():
+    """⚠ ASTRA'S BLOCKER (15:10Z). `custody()` advanced the witness only when
+    CALLED, before admission; a receipt appended and saved with no later
+    custody read left it at the pre-append seq. Restore to exactly that state
+    and the rewind was invisible: the delayed original was admitted again.
+    The earlier rewind test read the epoch between commit and restore, which
+    is precisely the touch that masked it. Here nothing intervenes."""
+    slug = fresh_org()
+    e = epoch_of(slug)
+    snap = _snapshot(slug)
+    key = k()
+    st, js = call(slug, "mid", "orgtree_message", key=key, _epoch=e,
+                  to="boss", body="once")
+    assert st == 200, (st, js)
+    assert len(rows(slug)) == 1 and _mail_count(slug) == 1
+    _restore(slug, snap)                    # NO request between save and this
+    assert not rows(slug)
+    # the delayed original, under the epoch it was minted with
+    st, js = call(slug, "mid", "orgtree_message", key=key, _epoch=e,
+                  to="boss", body="once")
+    assert st == 422 and "stale_epoch" in str(js), (st, js)
+    assert _mail_count(slug) == 1, "the delayed original sent the mail AGAIN"
+    assert not rows(slug), "the delayed original filed a receipt again"
+    assert epoch_of(slug) != e, "the rewind did not rotate the epoch"
+    # POSITIVE CONTROL: the same shape without a restore executes once and
+    # replays, so this is not a build that refuses everything
+    s2 = fresh_org()
+    e2, key2 = epoch_of(s2), k()
+    st, js = call(s2, "mid", "orgtree_message", key=key2, _epoch=e2,
+                  to="boss", body="ordinary")
+    assert st == 200 and _mail_count(s2) == 1, (st, js)
+    st, js = call(s2, "mid", "orgtree_message", key=key2, _epoch=e2,
+                  to="boss", body="ordinary")
+    assert st == 200 and js.get("replayed") and _mail_count(s2) == 1, js
+    assert epoch_of(s2) == e2, "an ordinary call rotated the epoch"
+
+
+check("a receipt committed with NO later custody read still makes a restore "
+      "to the pre-commit state a rewind: the delayed original is refused "
+      "and the org proves it did not run again",
+      _a_receipt_saved_with_no_later_read_still_witnesses_a_rewind)
+
+
+def _a_save_that_raises_witnesses_nothing():
+    """The witness moves AFTER `save_org` returned. A save that raises
+    committed nothing, so advancing the witness for it would call the
+    unchanged document a rewind — and rotate the epoch for no reason."""
+    slug = fresh_org()
+    e = epoch_of(slug)
+    call(slug, "mid", "orgtree_message", key=k(), _epoch=e, to="boss", body="x")
+    seen = opreceipts.witnessed(store.DATA_ROOT, slug)
+    assert seen == 1, seen
+    real = store.save_org
+
+    def _boom(org, *a, **kw):
+        raise OSError("disk full (simulated)")
+    store.save_org = _boom
+    # the test client re-raises a handler's exception by default; a deployed
+    # server answers 500. Either way the request did not commit.
+    failed = False
+    try:
+        st, js = call(slug, "mid", "orgtree_message", key=k(), _epoch=e,
+                      to="boss", body="never lands")
+        failed = st >= 500
+    except OSError:
+        failed = True
+    finally:
+        store.save_org = real
+    assert failed, "the simulated save failure did not fail the request"
+    assert opreceipts.witnessed(store.DATA_ROOT, slug) == seen, (
+        "the witness advanced for a save that raised — a premature commit "
+        f"claim: {opreceipts.witnessed(store.DATA_ROOT, slug)}")
+    assert len(rows(slug)) == 1
+    assert epoch_of(slug) == e, "the unchanged document was called a rewind"
+    # …and the next real commit advances it (the instrument can move)
+    st, _ = call(slug, "mid", "orgtree_message", key=k(), _epoch=e,
+                 to="boss", body="lands")
+    assert st == 200
+    assert opreceipts.witnessed(store.DATA_ROOT, slug) == seen + 1
+
+
+check("a save that raises advances no witness; the next real commit does",
+      _a_save_that_raises_witnesses_nothing)
+
+
+def _a_fence_is_witnessed_too():
+    slug = fresh_org()
+    e = epoch_of(slug)
+    key = k()
+    snap = _snapshot(slug)
+    r = client.post("/api/agent", json={
+        "org": slug, "node": "mid", "tool": opreceipts.OP_LOOKUP,
+        "args": {"op_key": key, "op_epoch": e, "for_tool": "orgtree_message",
+                 "for_args": {"to": "boss", "body": "lost"}}})
+    assert r.status_code == 200 and r.json()["state"] == "not_applied", r.text
+    assert len(rows(slug)) == 1 and rows(slug)[0]["outcome"] == "fenced"
+    _restore(slug, snap)                    # the fence rolled out, no touch
+    st, js = call(slug, "mid", "orgtree_message", key=key, _epoch=e,
+                  to="boss", body="lost")
+    assert st == 422 and "stale_epoch" in str(js), (
+        "the fence's commit was not witnessed: after a restore that dropped "
+        f"the fence, the fenced key was admitted: {st} {js}")
+    assert _mail_count(slug) == 0
+
+
+check("a lookup's fence is a witnessed commit: a restore that drops it is a "
+      "rewind and the fenced key stays refused", _a_fence_is_witnessed_too)
+
+
+def _a_stale_lookup_classifies_before_it_answers():
+    """Counterexample 2: under a stale epoch a row's existence answered
+    `applied` before its fingerprint was compared."""
+    slug = fresh_org()
+    stale = epoch_of(slug)
+    key = k()
+    st, _ = call(slug, "mid", "orgtree_message", key=key, _epoch=stale,
+                 to="boss", body="first")
+    assert st == 200
+    opreceipts.forget_custody(store.DATA_ROOT, slug)      # rotate
+    assert epoch_of(slug) != stale
+
+    def ask(**for_args):
+        r = client.post("/api/agent", json={
+            "org": slug, "node": "mid", "tool": opreceipts.OP_LOOKUP,
+            "args": {"op_key": key, "op_epoch": stale,
+                     "for_tool": "orgtree_message", "for_args": for_args}})
+        assert r.status_code == 200, r.text
+        return r.json()
+    wrong = ask(to="boss", body="DIFFERENT")
+    assert wrong["state"] == "conflict", (
+        f"a stale lookup about a DIFFERENT operation under the key answered "
+        f"{wrong['state']}")
+    right = ask(to="boss", body="first")
+    assert right["state"] == "applied", right         # the positive control
+    # …and a FENCED row under a stale epoch is never `applied`
+    key2 = k()
+    e2 = epoch_of(slug)
+    r = client.post("/api/agent", json={
+        "org": slug, "node": "mid", "tool": opreceipts.OP_LOOKUP,
+        "args": {"op_key": key2, "op_epoch": e2, "for_tool": "orgtree_message",
+                 "for_args": {"to": "boss", "body": "z"}}})
+    assert r.json()["state"] == "not_applied", r.text
+    opreceipts.forget_custody(store.DATA_ROOT, slug)
+    r = client.post("/api/agent", json={
+        "org": slug, "node": "mid", "tool": opreceipts.OP_LOOKUP,
+        "args": {"op_key": key2, "op_epoch": e2, "for_tool": "orgtree_message",
+                 "for_args": {"to": "boss", "body": "z"}}})
+    js = r.json()
+    assert js["state"] == "unknown" and js.get("fenced") is True, js
+
+
+check("a stale-epoch lookup classifies the row FIRST: different arguments → "
+      "conflict, the same call → applied, a fenced row → never applied",
+      _a_stale_lookup_classifies_before_it_answers)
+
+
+def _a_stale_admission_names_what_the_row_is():
+    """Counterexample 3: a stale admission that found ANY row said ALREADY
+    APPLIED — measured true with a fenced row."""
+    slug = fresh_org()
+    stale = epoch_of(slug)
+    fenced_key, applied_key = k(), k()
+    r = client.post("/api/agent", json={
+        "org": slug, "node": "mid", "tool": opreceipts.OP_LOOKUP,
+        "args": {"op_key": fenced_key, "op_epoch": stale,
+                 "for_tool": "orgtree_message",
+                 "for_args": {"to": "boss", "body": "f"}}})
+    assert r.json()["state"] == "not_applied", r.text
+    st, _ = call(slug, "mid", "orgtree_message", key=applied_key, _epoch=stale,
+                 to="boss", body="a")
+    assert st == 200
+    opreceipts.forget_custody(store.DATA_ROOT, slug)      # rotate
+
+    st, js = call(slug, "mid", "orgtree_message", key=fenced_key, _epoch=stale,
+                  to="boss", body="f")
+    assert st == 422 and "stale_epoch" in str(js), (st, js)
+    assert "ALREADY APPLIED" not in str(js) and "FENCED" in str(js), (
+        f"a fenced row was reported as applied: {js}")
+    st, js = call(slug, "mid", "orgtree_message", key=applied_key, _epoch=stale,
+                  to="boss", body="NOT a")
+    assert st == 422 and "stale_epoch" in str(js), (st, js)
+    assert "ALREADY APPLIED" not in str(js) and "DIFFERENT" in str(js), (
+        f"a conflicting row was reported as applied: {js}")
+    st, js = call(slug, "mid", "orgtree_message", key=applied_key, _epoch=stale,
+                  to="boss", body="a")
+    assert st == 422 and "ALREADY APPLIED" in str(js), js   # positive control
+    assert _mail_count(slug) == 1
+
+
+check("a stale-epoch admission says what the row IS — fenced, a different "
+      "call, or applied — never applied from mere existence",
+      _a_stale_admission_names_what_the_row_is)
+
+
+def _targets_keep_docket_and_present_identity():
+    slug = fresh_org()
+    st, js = call(slug, "boss", "orgtree_work", key=k(), action="create",
+                  title="Receipts keep the slug", kind="code", owner="boss",
+                  objective="problem first: rows lost the slug; solution: allowlist")
+    assert st == 200, (st, js)
+    row = rows(slug)[-1]
+    assert row["result"].get("slug") and row["result"].get("created"), row
+    assert "objective" not in json.dumps(row) and "problem first" not in json.dumps(row)
+    st, js = call(slug, "boss", "orgtree_work", key=k(), action="update",
+                  id=str(js["slug"]), done_so_far=["x"], working_on_next=["y"])
+    assert st == 200, (st, js)
+    assert rows(slug)[-1]["targets"].get("id") == js.get("slug") or \
+        rows(slug)[-1]["targets"].get("id"), rows(slug)[-1]
+    st, js = call(slug, "boss", "orgtree_present", key=k(), title="T",
+                  body="a body that must not be stored")
+    assert st == 200, (st, js)
+    row = rows(slug)[-1]
+    assert "presented" in row["result"], row
+    assert "must not be stored" not in json.dumps(row)
+
+
+check("receipts keep the docket slug and the presented id, and still no "
+      "bodies", _targets_keep_docket_and_present_identity)
+
+
 print(f"\n{PASSED} passed, {len(FAILED)} failed")
 for f in FAILED:
     print("\n" + f)

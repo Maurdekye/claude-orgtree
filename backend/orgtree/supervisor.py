@@ -13234,10 +13234,14 @@ def _run_one_turn(slug: str, nid: str,
     # the canary (caught 2026-08-28, and the reason this comment exists).
     is_ping = _carrier_is_ping(text)
     dropped_here = False
+    # a replayed retry carrier brings the ORIGINAL message along (resume_frozen
+    # sets it), so a second death wraps that and not the previous banner
+    retry_payload = ""
     if isinstance(text, dict):
         is_cmd = bool(text.get("cmd"))
         turn_view = (str(text.get("view") or "") if "view" in text
                      else str(text.get("text") or ""))
+        retry_payload = str(text.get("retry_payload") or "")
         toks, text = list(text.get("toks") or []), text["text"]
     text = cast(str, text)    # unwrapped above — plain str from here on
     try:
@@ -15927,7 +15931,7 @@ def _run_one_turn(slug: str, nid: str,
                                     # agent gets, since from the inside it
                                     # cannot otherwise tell a failed turn
                                     # from nobody having messaged it.
-                                    _append_resume(fz,
+                                    head = (
                                         f"(orgtree) Your previous turn died "
                                         f"part-way through ({kind_txt}) and "
                                         f"is being retried — attempt {run} of "
@@ -15947,13 +15951,21 @@ def _run_one_turn(slug: str, nid: str,
                                         f"ever running — prose describing an "
                                         f"edit proves only that you meant to "
                                         f"make it. Trust the DISK, not the "
-                                        f"transcript.\n\n"
-                                        # ONE constant for the closing sentence:
-                                        # `resume_frozen` splices the receipt
-                                        # list in front of it, so the insertion
-                                        # point is a definition, not a guess
-                                        + RETRY_BANNER_TAIL + "\n\n"
-                                        + text[-8000:], turn_view[-8000:])
+                                        f"transcript.\n\n")
+                                    # the banner's parts are kept STRUCTURALLY
+                                    # (fz["retry"]) so resume can recompose it
+                                    # with the receipt list without parsing
+                                    # the payload, which is the agent's own
+                                    # message and may contain any marker
+                                    payload = retry_payload or text[-8000:]
+                                    fz["retry"] = {
+                                        "index": len(fz.get("resume_texts")
+                                                     or []),
+                                        "head": head, "payload": payload}
+                                    _append_resume(
+                                        fz, compose_retry_banner(head, "",
+                                                                 payload),
+                                        turn_view[-8000:])
                             store.save_org(o2)
                     if 0 < run <= NET_RETRY_MAX:
                         notify(slug, nid, "frozen")
@@ -19598,40 +19610,19 @@ def _ensure_frozen(n: NodeDoc) -> FrozenInfo:
 
 
 # ---- Phase 2 of w71d69aac: what the dying turn COMMITTED, in the retry banner
-#
-# The net-retry banner tells the agent to check what its dead turn already
-# did. Operation receipts (opreceipts) can NAME the org operations that turn
-# committed, and the three helpers below put that list into the banner —
-# under the rules codex-delivery set for the sibling `_mark_redelivery`: at
-# most ONE paragraph, exactly once, in the replay TEXT only, never in `view`,
-# never in the document. Full contract: the luna-reserve scratch's
-# evidence/retry-receipts-contract.md.
+# Contract: docs/op-receipts.md ("The retry banner names what the dead turn
+# committed"). One paragraph, replay TEXT only, never the view or the
+# document; the banner is recomposed from its own stored parts, never parsed.
 
-#: the banner's fixed closing sentence. ONE constant for the banner and the
-#: splice, so the insertion point is a definition rather than a guess.
 RETRY_BANNER_TAIL = "The message that turn was handling follows."
-#: the paragraph's brackets — fixed, so an earlier paragraph can be found and
-#: REPLACED: a carrier that died again is nested inside the new banner by the
-#: freeze branch's `+ text[-8000:]`, and two paragraphs describing one run is
-#: the failure to design out. The fresh one is a superset (same origin, read
-#: later).
 RECEIPTS_HEAD = "(orgtree) OPERATION RECEIPTS —"
 RECEIPTS_TAIL = "[end of operation receipts]"
 RECEIPTS_MAX_ROWS = 12
-_RECEIPTS_BLOCK = re.compile(re.escape(RECEIPTS_HEAD) + r".*?"
-                             + re.escape(RECEIPTS_TAIL) + r"\n*", re.S)
 
 
 def render_turn_receipts(rows: list[dict[str, Any]], since_ms: int) -> str:
-    """The paragraph, or "" when there is nothing to list.
-
-    ⚠ EMPTY RENDERS NOTHING. A paragraph whose only content is a disclaimer
-    is present, plausible and inert — and the banner it would sit in already
-    tells the agent to check its real state. The paragraph exists to carry
-    ROWS, and it says what a row proves (the document transaction committed)
-    and what the log does not record (anything that is not a receipted
-    orgtree call), because a list read as "everything that happened" is the
-    opposite of the point."""
+    """The paragraph, or "" when there is nothing to list — an empty list
+    renders NOTHING (a disclaimer-only paragraph is present and inert)."""
     if not rows:
         return ""
     since = _dtm.datetime.fromtimestamp(
@@ -19648,61 +19639,51 @@ def render_turn_receipts(rows: list[dict[str, Any]], since_ms: int) -> str:
     more = len(rows) - RECEIPTS_MAX_ROWS
     if more > 0:
         lines.append(f"  · …and {more} more")
-    return (f"{RECEIPTS_HEAD} the receipt log shows this seat COMMITTED these "
-            f"org operations after {since}, when the first attempt of this "
-            f"retry run began. Each one's document transaction committed; "
-            f"whether the delivery or drive after it happened is unknown. The "
-            f"log records ONLY receipted orgtree tool calls — files, git, "
-            f"shell commands and any unreceipted call are unrecorded here, "
-            f"not absent. Do not issue these again:\n"
+    return (f"{RECEIPTS_HEAD} receipts OBSERVED since {since} (when the first "
+            f"attempt of this retry run began) show this seat committed these "
+            f"org operations. This is what was RECORDED, not everything that "
+            f"happened: the log covers only receipted orgtree tool calls — "
+            f"files, git, shell commands and any unreceipted call are "
+            f"unrecorded here, not absent — and each row proves its document "
+            f"transaction only; the delivery or drive after it is unknown. "
+            f"Do not issue these again:\n"
             + "\n".join(lines) + f"\n{RECEIPTS_TAIL}")
 
 
-def splice_turn_receipts(text: str, para: str) -> str:
-    """Put `para` into a retry banner EXACTLY ONCE, in front of its closing
-    sentence. Any earlier bracketed paragraph — nested from a previous attempt
-    — is removed first. Text that is not a banner (no closing sentence) is
-    returned unchanged: nothing is guessed about a shape this was not written
-    for. An empty `para` changes nothing."""
-    if not para:
-        return text
-    stripped = _RECEIPTS_BLOCK.sub("", text)
-    i = stripped.find(RETRY_BANNER_TAIL)
-    if i < 0:
-        return text
-    return stripped[:i] + para + "\n\n" + stripped[i:]
+def compose_retry_banner(head: str, para: str, payload: str) -> str:
+    """The banner from its parts: head, the receipt paragraph (may be ""),
+    the closing sentence, the payload. The payload is never inspected."""
+    return (head + (para + "\n\n" if para else "")
+            + RETRY_BANNER_TAIL + "\n\n" + payload)
 
 
-def _receipts_into_replay(org: Org, nid: str, fz: FrozenInfo) -> list[str]:
-    """`resume_frozen`'s replay texts for this record, with the receipt list
-    spliced into the retry banner when there is one to splice.
+def _retry_replay(org: Org, nid: str, fz: FrozenInfo
+                  ) -> tuple[list[str], int, str]:
+    """`resume_frozen`'s replay texts for this record, the retry banner
+    recomposed with the receipt list; plus the banner's index (-1 when there
+    is none) and its payload, which the carrier brings to the next attempt.
 
-    Runs INSIDE resume's DOC_LOCK on the document as loaded, and that timing
-    is the point: a keyed request that was on the wire when the CLI died is
-    queued behind the freeze branch's own lock and commits AFTER the freeze
-    record is written, so a list rendered at freeze time would miss exactly
-    the receipts this exists to show. At resume — thirty seconds later at the
-    least, under the same lock — it is there.
-
-    Connection-kind records only, and only those carrying a bound. Never
-    raises: this runs on ▶, and a bookkeeping error must not block a resume;
-    the suite's positive control is what keeps that from hiding a broken
-    splice. `resume_views` is not touched — the human projection stays what
-    the agent was shown."""
+    Runs inside resume's DOC_LOCK, on the document as loaded: a keyed request
+    on the wire when the CLI died commits AFTER the freeze record, so the list
+    is read here, not at freeze. Never raises (this runs on ▶); the suite's
+    positive control keeps that from hiding a broken compose."""
     texts = [str(t) for t in (fz.get("resume_texts") or [])]
+    retry = cast("dict[str, Any]", fz.get("retry") or {})
     since = fz.get("receipts_since_ms")
-    if not fz.get("connection") or not since:
-        return texts
+    idx = int(retry.get("index", -1)) if retry else -1
+    payload = str(retry.get("payload") or "") if retry else ""
+    if idx < 0 or idx >= len(texts) or not fz.get("connection") or not since:
+        return texts, idx if 0 <= idx < len(texts) else -1, payload
     try:
         rows = opreceipts.applied_since(cast("dict[str, Any]", org.d), nid,
                                         int(since))
         para = render_turn_receipts(rows, int(since))
+        if para:
+            texts[idx] = compose_retry_banner(str(retry.get("head") or ""),
+                                              para, payload)
     except Exception:                                            # noqa: BLE001
-        return texts
-    if not para:
-        return texts
-    return [splice_turn_receipts(t, para) if RETRY_BANNER_TAIL in t else t
-            for t in texts]
+        pass
+    return texts, idx, payload
 
 
 def _append_resume(fz: FrozenInfo, raw: str, view: str = "") -> None:
@@ -20478,7 +20459,8 @@ def resume_frozen(slug: str, only: Iterable[str] | None = None,
     its context is warm — and only when the session has a transcript to
     reload. A refusal falls through to a plain resume, never a gate."""
     pick = None if only is None else set(only)
-    resumed: list[tuple[str, list[str], list[str], bool, str, str, str]] = []
+    resumed: list[tuple[str, list[str], list[str], bool, str, str, str,
+                        int, str]] = []
     with store.DOC_LOCK:
         org = store.load_org(slug)
         if org.d.get("spend_frozen"):
@@ -20526,20 +20508,27 @@ def resume_frozen(slug: str, only: Iterable[str] | None = None,
                 except LedgerError:
                     pass          # an optimization, never a gate (D-114)
             n.pop("frozen", None)
-            resumed.append((nid, _receipts_into_replay(org, nid, fz),
+            _texts, _ridx, _rpayload = _retry_replay(org, nid, fz)
+            resumed.append((nid, _texts,
                             fz.get("resume_views") or [], _limit_resume,
                             _frozen_at, _frozen_sid,
-                            str(org.node(nid).get("model") or "")))
+                            str(org.node(nid).get("model") or ""),
+                            _ridx, _rpayload))
         if resumed:
             store.save_org(org)
-    for nid, texts, views, limit_resume, frozen_at, frozen_sid, tier in resumed:
+    for (nid, texts, views, limit_resume, frozen_at, frozen_sid, tier,
+         retry_idx, retry_payload) in resumed:
         if not texts:
             texts = ["(orgtree) You were frozen by a usage limit and have been "
                      "resumed — handle any mail above and continue."]
         if len(views) < len(texts):
             views = [*views, *(str(t) for t in texts[len(views):])]
-        carriers = [{"text": t, "view": views[i]}
-                    for i, t in enumerate(texts)]
+        carriers: list[dict[str, Any]] = [{"text": t, "view": views[i]}
+                                          for i, t in enumerate(texts)]
+        if 0 <= retry_idx < len(carriers):
+            # the retry banner's payload rides with its carrier, so a second
+            # death wraps the ORIGINAL message and not this banner
+            carriers[retry_idx]["retry_payload"] = retry_payload
         st = state(slug, nid)
         claude_resume = _limit_cache_claude_state(st, tier)
         first = None

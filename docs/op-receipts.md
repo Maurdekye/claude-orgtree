@@ -164,6 +164,19 @@ told "that did not apply" — about a call the fence never covered.
 
 ### A restored document cannot speak for its own gaps
 
+The rewind witness (`_SEEN`) is advanced by `opreceipts.witness()` AFTER
+`save_org` returned for every committed receipt — an applied append and a
+lookup's fence alike — still under the document lock. `custody()` only
+advances it when called, and it is called before admission; a receipt saved
+with no later custody read left the witness at the pre-append seq, so a
+restore to exactly that state was invisible and a delayed original was
+admitted again (reproduced 2026-09-05). A save that raises advances nothing.
+
+A row found under a key is classified before any claim is made about it
+(`opreceipts.classify`: tool + full fingerprint at the row's own subject and
+generation): applied, fenced, or a different call. "Already applied" is never
+asserted from a row's existence, under any epoch.
+
 `store.export_json` stamps the **exported copy** (never the live document) as
 a point-in-time snapshot. A document rolled back from that export lost the
 receipts written after it — but not their effects: a document rollback does
@@ -239,16 +252,21 @@ it (`supervisor.resume_frozen`, `opreceipts.applied_since`).
   excluded, at most twelve with the remainder counted.
 - **Nothing is rendered when there is nothing to list.** A paragraph whose
   only content is a disclaimer is present, plausible and inert.
-- **Exactly one paragraph, text only.** It is bracketed by fixed markers; a
-  paragraph nested from a previous attempt is removed before the fresh one is
-  inserted in front of the banner's fixed closing sentence. The human
-  projection (`resume_views`) and the document are never touched. No extra
-  turn is spent.
+- **Exactly one paragraph, text only, never parsed.** The freeze record
+  keeps the banner's own parts (`frozen.retry` = head, payload, index) and
+  resume recomposes head + paragraph + closing sentence + payload. The
+  payload is the agent's message and is never inspected — a message that
+  quotes every marker survives byte for byte. A resumed carrier brings the
+  payload along (`retry_payload`), so a retry that dies again wraps the
+  original message, not the previous banner. The human projection
+  (`resume_views`) and the document are never touched. No extra turn is
+  spent. (A first version found the paragraph by regex and deleted user text
+  that happened to contain the markers — the delimiter-collision class.)
 
-The paragraph says what a row proves (the document transaction committed;
-delivery or drive after it is unknown) and what the log does not record
-(files, git, shell, any unreceipted call). It never says nothing else
-happened. Suite: `backend/tests/test_retry_receipts.py`.
+The paragraph says it lists receipts OBSERVED since the bound, that the log
+is not everything that happened (files, git, shell, any unreceipted call),
+and that a row proves its document transaction only (delivery or drive after
+it is unknown). Suite: `backend/tests/test_retry_receipts.py`.
 
 ## Cost
 

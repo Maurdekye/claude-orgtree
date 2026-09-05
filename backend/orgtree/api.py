@@ -5795,64 +5795,51 @@ def _op_lookup_call(body: AgentCall, a: dict[str, Any]) -> dict[str, Any]:
         d = cast("dict[str, Any]", org.d)
         epoch, _why = opreceipts.custody(d, store.DATA_ROOT, body.org)
         row = opreceipts.find(d, body.node, key)
+        # what the row under this key IS — before ANY claim about it, and
+        # regardless of the epoch: a row's existence says nothing about which
+        # call it records (tool + full fingerprint at the row's own subject
+        # and generation, `opreceipts.classify`)
+        state = opreceipts.classify(row, tool, for_args)
+        if state == "conflict":
+            return {"state": "conflict", "op_key": key, "receipt": row,
+                    "status": "that key already identifies a DIFFERENT "
+                              "operation; this one was never done"}
         if str(a.get("op_epoch") or "") != epoch:
-            # ⚠ CUSTODY, ASKED THE ONLY WAY IT CAN BE ANSWERED. The key was
-            # issued under an epoch this process has rotated — a restart, or
-            # this document rewound underneath us — so the log in front of us
-            # is not the one that would have recorded this call, and its
-            # silence means NOTHING. A row that IS here still answers
-            # `applied`: a receipt is durable positive evidence and reporting
-            # it executes nothing (Astra, 2026-09-05). And there is no fence:
-            # a stale-epoch original is already refused at admission, so
-            # writing a row to stop it would buy nothing and would advance
-            # the very counter the rewind check reads.
-            if row is not None and row.get("outcome") == "applied":
+            # the key's epoch was rotated (restart or rewind): the log's
+            # silence means nothing. A matching applied row is durable
+            # positive evidence and reporting it executes nothing; a fence is
+            # reported as a fence, not as an absence proof; no fence is
+            # written (admission already refuses a stale epoch).
+            if state == "applied":
                 return {"state": "applied", "op_key": key, "receipt": row,
                         "status": "the document transaction committed (its "
                                   "receipt survived, and is being read under "
                                   "a later operation epoch); post-commit "
                                   "effects are not covered"}
             return {"state": "unknown", "reason": "epoch_rotated",
-                    "op_key": key, "coverage": cls,
+                    "op_key": key, "coverage": cls, "fenced": state == "fenced",
                     "status": "the operation epoch this key was issued under "
                               "is no longer current — the backend restarted, "
                               "or this document was restored — so the absence "
                               "of a receipt proves nothing about whether the "
-                              "call applied. Do NOT reissue it; check the org."}
-        if row is not None:
-            # ⚠ THE FINGERPRINT IS COMPARED AT THE ROW'S OWN GENERATION, not
-            # at the seat's current one: `fingerprint` includes the
-            # generation, so recomputing it at a bumped generation would
-            # never match and every receipt would read as a conflict the
-            # moment the seat compacted.
-            row_gen = int(row.get("gen") or 0)
-            # …and at the row's own SUBJECT, for the same reason: a rename
-            # moved the row to this seat's new id without touching the print
-            # it was minted with (`opreceipts.rekey_nodes`).
-            fp = opreceipts.fingerprint(tool, opreceipts.fp_node(row),
-                                        row_gen, for_args)
-            if row.get("tool") != tool or row.get("fp") != fp:
-                # ⚠ CHECKED FOR A FENCED ROW TOO (Astra, 2026-09-05). Only
-                # the `applied` branch compared, so a lookup asking about a
-                # DIFFERENT operation under a fenced key was answered "that
-                # did not apply, safe to reissue" — about a call the fence
-                # never covered, classified by the ASKER's verb. A key
-                # identifies one call in either state.
-                return {"state": "conflict", "op_key": key, "receipt": row,
-                        "status": "that key already identifies a DIFFERENT "
-                                  "operation; this one was never done"}
-        if row is not None and row.get("outcome") == "applied":
+                              "call applied. Do NOT reissue it; check the org."
+                              + (" (A lookup had fenced this key, so no "
+                                 "document transaction under it can commit "
+                                 "from here on.)" if state == "fenced" else "")}
+        if state == "applied":
             return {"state": "applied", "op_key": key, "receipt": row,
                     "status": "the document transaction committed; "
                               "post-commit effects are not covered"}
-        if row is not None and row.get("outcome") == "fenced":
+        if state == "fenced":
             # an earlier lookup already fenced it — the SAME answer as fencing
             # it here, including the coverage caveat: a fence stops the
             # document effect, and cannot speak for work done outside it.
             # The class comes from the ROW, not from the asker's verb, which
             # by now is known to be the same call.
-            return _op_absent(key, str(row.get("cls") or cls),
-                              at=str(row.get("at") or ""))
+            return _op_absent(key, str(cast("dict[str, Any]", row).get("cls")
+                                       or cls),
+                              at=str(cast("dict[str, Any]", row).get("at")
+                                     or ""))
         with _OP_INFLIGHT_LOCK:
             running = (body.org, body.node, key) in _OP_INFLIGHT
         if running:
@@ -5880,6 +5867,8 @@ def _op_lookup_call(body: AgentCall, a: dict[str, Any]) -> dict[str, Any]:
             at=ledger_mod.now(),
             summary="fenced by a lookup: not recorded as applied"))
         store.save_org(org)
+        # the fence is a committed append too: witness it (see agent_call)
+        opreceipts.witness(store.DATA_ROOT, body.org, opreceipts.seq(d))
     return _op_absent(key, cls)
 
 
@@ -7000,6 +6989,12 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
             # describes are ONE transaction: both commit or neither does
             _op_file(org, body, a, _rcpt, result)
         store.save_org(org)
+        if _rcpt is not None:
+            # AFTER the save returned, still under the lock: this process has
+            # now committed this seq, and a document that later comes back
+            # below it is a rewind (opreceipts.witness)
+            opreceipts.witness(store.DATA_ROOT, body.org,
+                               opreceipts.seq(cast("dict[str, Any]", org.d)))
     if smoke_req is not None:
         # FAIL LOUDLY AT CREATE TIME (2026-08-22). Arming a dog used to tell
         # the agent nothing about whether its target actually works, so a
