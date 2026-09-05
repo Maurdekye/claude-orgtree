@@ -2910,17 +2910,64 @@ main.solo { width: 100%; }
 .docket-actor.fit-moved .docket-actor-name,
 .docket-actor.fit-gone .docket-actor-name { color: var(--dim); font-style: italic; }
 /* THE ITEM'S READABLE NAME, click to copy */
-.docket-slug {
-  font-family: var(--mono); font-size: 10.5px; color: var(--dim);
-  background: var(--input); border: 1px solid var(--line-soft);
-  border-radius: 3px; padding: 0 5px; cursor: pointer; flex-shrink: 0;
-  max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+/* THE ITEM'S NAME IS TEXT, NOT A CONTROL (user 2026-09-05). It was a padded,
+   bordered copy button in both the list and the detail pane; in a narrow list
+   that box ate the row's metadata space and truncated the agent name beside it
+   to "c…", and it read as something to press when the reader wanted a label.
+   Both are now plain selectable text and there is no copy affordance in this
+   panel at all — the browser's own selection does that job. */
+.docket-slug-text {
+  font-family: var(--mono); font-size: 11px; color: var(--dim);
+  user-select: text;
 }
-.docket-slug:hover { color: var(--ink-strong); border-color: var(--line); }
-.docket-slug.copied { color: var(--ok); border-color: var(--ok); }
-/* a refused clipboard says so rather than claiming a copy that never happened */
-.docket-slug.failed { color: var(--bad); border-color: var(--bad); }
-.docket-pane-sub .docket-slug { margin: 0 4px; vertical-align: middle; }
+/* the status word and the name are two separate facts and must not run
+   together — the removed chip carried this gap in its own margin, so taking
+   the chip out ran them into "In progressclickable-docket-references-…" */
+.docket-pane-sub .docket-slug-text { margin: 0 4px; vertical-align: middle; }
+/* the list row's primary name — the slug, not the descriptive title, which is
+   printed only in the detail pane (the full title is the row's hover text) */
+.docket-row .l1 .docket-rowname { font-family: var(--mono); font-size: 12px; }
+/* a mention of another item, inside ordinary prose: an underlined word, not a
+   button — it sits mid-sentence and must not break the line's rhythm.
+
+   ⚠ SCOPED UNDER .docket-modal ON PURPOSE, and it resets padding and font-size
+   explicitly. `.settings button` (above) sets `font-size: 14px; padding: 7px
+   15px; border-radius: 6px` and this panel IS a `.settings` modal, so a bare
+   `.docket-ref` loses on specificity: measured in Edge, the mention rendered
+   as a 35px-tall inline-BLOCK with 15px of padding on each side, punching a
+   visible hole in the sentence around it. `.cc-name` fights the same rule a
+   few hundred lines up; this is that same trap.
+
+   The name stays MONO because that is what a slug is everywhere else in the
+   panel, but at 0.92em — a mono face at the prose's own size reads a size too
+   large next to it. */
+.docket-modal .docket-ref {
+  font-family: var(--mono); font-size: 0.92em; color: var(--accent);
+  background: none; border: 0; border-radius: 0; padding: 0; margin: 0;
+  cursor: pointer; appearance: none;
+  text-decoration: underline; text-underline-offset: 2px;
+  display: inline; text-align: left; line-height: inherit;
+  vertical-align: baseline;
+}
+.docket-modal .docket-ref:hover { color: var(--ink-strong); }
+/* where a link just took you — a brief mark so the row the link meant is
+   identifiable among rows that otherwise look alike. Selection alone is not
+   enough when the reader's eye is still where the link was. */
+.docket-row.docket-flash {
+  animation: docket-flash 1.8s ease-out 1;
+}
+@keyframes docket-flash {
+  0%, 55% { background: color-mix(in srgb, var(--accent) 30%, var(--bg)); }
+  100% { background: transparent; }
+}
+@media (prefers-reduced-motion: reduce) {
+  /* no fade, but still a mark: removing the cue entirely would leave the
+     reduced-motion reader with no way to see where the link landed */
+  .docket-row.docket-flash {
+    animation: none;
+    background: color-mix(in srgb, var(--accent) 22%, var(--bg));
+  }
+}
 /* THE DESCRIPTION — problem first, then the proposed solution */
 .docket-desc { margin: 0 0 12px; }
 .docket-desc-body { white-space: pre-wrap; font-size: 12.5px; line-height: 1.5; }

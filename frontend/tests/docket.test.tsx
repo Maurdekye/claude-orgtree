@@ -64,7 +64,19 @@ function mockWorkItems(activeItems: WorkItem[], archivedItems: WorkItem[] = [],
   return calls
 }
 
+// ⚠ ROWS ARE NAMED BY SLUG NOW (user 2026-09-05), not by title. A fixture that
+// gives each item a distinct TITLE but leaves the default slug would render N
+// rows all reading "test-work-item", and every ordering, grouping and
+// "which row is this" assertion below would go vacuous while still passing.
+// So a test that names a title and not a slug gets that title as its slug.
+// Tests that care about slug SHAPE (kebab, substrings, boundaries) pass one
+// explicitly, and the reference-linking suite uses realistic slugs throughout.
 const mkItem = (o: Partial<WorkItem>): WorkItem => ({
+  ...mkItemBase(o),
+  ...(o.title !== undefined && o.slug === undefined ? { slug: o.title } : {}),
+})
+
+const mkItemBase = (o: Partial<WorkItem>): WorkItem => ({
   id: 'w10000001',
   slug: 'test-work-item',
   rev: 1,
@@ -181,9 +193,10 @@ uiTest('§1 an empty org says so rather than rendering a blank panel', async (mo
   assert.match(el.textContent ?? '', /no work items yet/)
 })
 
-uiTest('§2 a row carries title, status, time since latest docket update, and last status updater name', async (mount) => {
+uiTest('§2 the row is NAMED BY ITS SLUG, and carries status, time and updater', async (mount) => {
   mockWorkItems([mkItem({
     id: 'w1',
+    slug: 'build-the-work-docket',
     title: 'Build the work docket',
     status: 'in_progress',
     docket_at: '2026-09-05T09:55:00.000Z',
@@ -193,10 +206,16 @@ uiTest('§2 a row carries title, status, time since latest docket update, and la
   await flush()
   assert.equal(rows(el).length, 1)
   const r = rows(el)[0]!
-  assert.equal(r.querySelector('.l1 .mfrom')?.textContent, 'Build the work docket')
+  assert.equal(r.querySelector('.l1 .mfrom')?.textContent, 'build-the-work-docket')
   assert.ok((r.querySelector('.l1 .mtime')?.textContent ?? '').length > 0)
   assert.match(r.querySelector('.l2')?.textContent ?? '', /In progress/)
   assert.equal(r.querySelector('.l2 .docket-updater')?.textContent, 'luna-reserve')
+  // THE DESCRIPTIVE TITLE IS NOT PRINTED IN THE LIST (user 2026-09-05) — it is
+  // the row's hover text and nothing else. Asserting only "the slug is there"
+  // would pass on a row that printed both.
+  assert.equal(r.getAttribute('title'), 'Build the work docket')
+  assert.ok(!(r.textContent ?? '').includes('Build the work docket'),
+    'the descriptive title is still printed in the list row')
 })
 
 uiTest('§3 left row updater is last updater, not necessarily owner', async (mount) => {
@@ -1175,12 +1194,12 @@ uiTest('§26 an attention-holding backlog row arrives in the MAIN list, not behi
   assert.match(r.querySelector('.docket-status')?.textContent ?? '', /Needs attention/)
 })
 
-uiTest('§27 each row and the detail pane show the readable name, with copy and an id fallback', async (mount) => {
-  const copied: string[] = []
-  Object.defineProperty(window.navigator, 'clipboard', {
-    configurable: true,
-    value: { writeText: (t: string) => { copied.push(t); return Promise.resolve() } },
-  })
+uiTest('§27 the name is TEXT, in both places, with an id fallback and no copy control', async (mount) => {
+  // ⚠ THIS TEST EXISTS BECAUSE THE COPY BUTTON WAS REMOVED, TWICE. The name
+  // was a padded bordered chip in the row and again in the detail pane; from
+  // screenshots the user removed it from the list (13:03) and then from the
+  // detail as well (13:04), with "no replacement copy control anywhere". A
+  // test that only checked the name is present would pass on its return.
   mockWorkItems([
     mkItem({ id: 'w1', slug: 'git-review-workspace', title: 'Named' }),
     // an item written before slugs existed: the server serves null rather than
@@ -1190,20 +1209,50 @@ uiTest('§27 each row and the detail pane show the readable name, with copy and 
   const { el } = await mount(docketModal())
   await flush()
   const [rNamed, rOld] = rows(el)
-  assert.equal(rNamed!.querySelector('.docket-slug')?.textContent, 'git-review-workspace')
-  assert.equal(rOld!.querySelector('.docket-slug')?.textContent, 'w2ffffff')
-  assert.match(rOld!.querySelector('.docket-slug')?.getAttribute('title') ?? '',
+  assert.equal(rNamed!.querySelector('.l1 .mfrom')?.textContent, 'git-review-workspace')
+  assert.equal(rOld!.querySelector('.l1 .mfrom')?.textContent, 'w2ffffff',
+    'an item with no slug must fall back to its id, not render blank')
+
+  // NOTHING IN THE NAME LINE IS PRESSABLE. `.docket-slug` was the removed
+  // chip's class; a button in the name line is the shape of the thing the user
+  // rejected. (⚠ `assert.ok(x === null)`, never `assert.equal(node, null)` —
+  // on failure node serializes the whole jsdom subtree into the diff and the
+  // runner dies with "Array buffer allocation failed" instead of telling you
+  // which assertion went wrong. That cost a 27-second mystery here.)
+  assert.ok(el.querySelector('.docket-slug') === null,
+    'the boxed name/copy chip is back in the list')
+  assert.ok(rNamed!.querySelector('.l1 button') === null,
+    'the row name became a control again')
+
+  // clicking the NAME selects the item, because the name is just the row now
+  await inAct(() => (rNamed!.querySelector('.l1 .mfrom') as HTMLElement).click())
+  await flush()
+  assert.ok(!el.querySelector('.mailer-none'), 'clicking the row name did not open it')
+
+  // the detail pane: full title printed, slug as plain text beside it, and
+  // still no copy control
+  assert.equal(pane(el)?.querySelector('.docket-pane-head b')?.textContent, 'Named')
+  assert.equal(pane(el)?.querySelector('.docket-slug-text')?.textContent,
+    'git-review-workspace')
+  assert.ok(pane(el)?.querySelector('.docket-slug') === null,
+    'the boxed name/copy chip is back in the detail pane')
+  // the name itself must be plain text. The sub-line legitimately holds ONE
+  // button — the agent jump — so "no buttons here" would be a false alarm;
+  // what matters is that the NAME is not one.
+  assert.equal(pane(el)?.querySelector('.docket-slug-text')?.tagName, 'SPAN',
+    'the detail name is a control again')
+  assert.deepEqual(
+    [...(pane(el)?.querySelectorAll('.docket-pane-sub button') ?? [])]
+      .map((b) => b.className),
+    ['cc-name cc-name-jump docket-actor-name'],
+    'a control other than the agent jump appeared beside the detail name')
+
+  // and the id fallback explains itself where it matters
+  await inAct(() => (rOld as HTMLElement).click())
+  await flush()
+  assert.equal(pane(el)?.querySelector('.docket-slug-text')?.textContent, 'w2ffffff')
+  assert.match(pane(el)?.querySelector('.docket-slug-text')?.getAttribute('title') ?? '',
     /predates readable names/)
-
-  // copying must not ALSO select the row — the click cannot be allowed to bubble
-  await inAct(() => (rNamed!.querySelector('.docket-slug') as HTMLElement).click())
-  await flush()
-  assert.deepEqual(copied, ['git-review-workspace'])
-  assert.ok(el.querySelector('.mailer-none'), 'clicking copy must not open the item')
-
-  await inAct(() => (rNamed as HTMLElement).click())
-  await flush()
-  assert.equal(pane(el)?.querySelector('.docket-slug')?.textContent, 'git-review-workspace')
 })
 
 uiTest('§28 the detail pane leads with the description, and says so when there is none', async (mount) => {
@@ -1397,44 +1446,3 @@ uiTest('§32b switching org never auto-opens an item the user did not click', as
   assert.match(pane(el)?.textContent ?? '', /Org two item/)
 })
 
-uiTest('§33 only a real copy reports "copied"', async (mount) => {
-  mockWorkItems([mkItem({ id: 'w1', slug: 'named-thing', title: 'Item' })])
-  forgetGroupChoice()
-  const set = (value: unknown) => Object.defineProperty(
-    window.navigator, 'clipboard', { configurable: true, value })
-  const { el } = await mount(docketModal())
-  await flush()
-  const chip = () => el.querySelector('.docket-slug') as HTMLElement
-
-  // NO CLIPBOARD AT ALL — the case the first version reported as success
-  set(undefined)
-  await inAct(() => chip().click())
-  await flush()
-  assert.equal(chip().textContent, 'copy failed')
-  assert.ok(chip().classList.contains('failed'))
-  assert.match(chip().getAttribute('title') ?? '', /copy it by hand/)
-
-  // ACCESS REFUSED — the promise rejects
-  set({ writeText: () => Promise.reject(new Error('denied')) })
-  await inAct(() => chip().click())
-  await flush()
-  assert.equal(chip().textContent, 'copy failed')
-
-  // ACCESS THROWS SYNCHRONOUSLY
-  set({ writeText: () => { throw new Error('blocked') } })
-  await inAct(() => chip().click())
-  await flush()
-  assert.equal(chip().textContent, 'copy failed')
-
-  // POSITIVE CONTROL: a clipboard that works DOES report copied, and copies the
-  // name — without this the three checks above would pass on a chip that can
-  // never say "copied" at all
-  const wrote: string[] = []
-  set({ writeText: (t: string) => { wrote.push(t); return Promise.resolve() } })
-  await inAct(() => chip().click())
-  await flush()
-  assert.deepEqual(wrote, ['named-thing'])
-  assert.equal(chip().textContent, 'copied')
-  assert.ok(chip().classList.contains('copied'))
-  set(undefined)
-})

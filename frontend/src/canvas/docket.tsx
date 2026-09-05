@@ -22,8 +22,7 @@
 // `questions` array (wire contract v3) is only used to know WHICH asks to
 // look up and for the "who is asking" header — never to answer directly.
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
-import type { MouseEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type {
   AskInfo, ToastFn, TreeNode, TreePayload, WorkActor, WorkItem,
 } from '../types'
@@ -35,6 +34,8 @@ import { AskCard } from './asks'
 import { TierChip } from './gallery'
 import { MailReplyBox } from './mail'
 import { ago, useEsc, usePolled } from './shared'
+import { buildSlugIndex, WorkRefText } from './workrefs'
+import type { SlugIndex } from './workrefs'
 
 const STATUS_LABEL: Record<string, string> = {
   backlogged: 'Backlogged',
@@ -169,43 +170,28 @@ function ActorName({ actor, facts, onFocusAgent, close }: {
   )
 }
 
-/** The item's readable name, click to copy. Falls back to the opaque id for an
- *  item written before slugs existed — the server refuses to mint one on a
- *  read, so there is genuinely nothing else to show. */
-function SlugChip({ item }: { item: WorkItem }) {
-  // ⚠ ONLY A REAL COPY MAY SAY "copied". The first version called its own
-  // success path whenever the clipboard was missing or threw, so in any context
-  // without clipboard access the chip reported a copy that never happened — a
-  // guard that reads correctly, runs, and means nothing (Astra review
-  // 2026-09-05). A failure now says so, and the name stays on screen to be
-  // selected by hand.
-  const [state, setState] = useState<'idle' | 'copied' | 'failed'>('idle')
-  const name = item.slug ?? item.id
-  const flash = useCallback((s: 'copied' | 'failed') => {
-    setState(s)
-    window.setTimeout(() => setState('idle'), s === 'copied' ? 1200 : 2000)
-  }, [])
-  const copy = useCallback((e: MouseEvent) => {
-    e.stopPropagation()
-    let write: Promise<void> | undefined
-    try {
-      write = navigator.clipboard?.writeText?.(name)
-    } catch { /* access denied or no clipboard — reported below, never as success */ }
-    if (!write) { flash('failed'); return }
-    write.then(() => flash('copied'), () => flash('failed'))
-  }, [name, flash])
-  const label = state === 'copied' ? 'copied' : state === 'failed' ? 'copy failed' : name
+/** The item's readable name. Falls back to the opaque id for an item written
+ *  before slugs existed — the server refuses to mint one on a read, so there
+ *  is genuinely nothing else to show. */
+export const itemName = (item: WorkItem): string => item.slug ?? item.id
+
+/** The name in the DETAIL pane: plain selectable text, no control.
+ *
+ *  ⚠ THIS WAS A BUTTON AND THE USER REMOVED IT (2026-09-05, twice — first from
+ *  the list, then from here, from screenshots). A padded bordered copy chip
+ *  ate the row's metadata space and truncated the agent name beside it to
+ *  "c…", and it read as a control where the reader wanted a label. There is
+ *  now NO copy affordance anywhere in this panel: the name is selectable text
+ *  and the browser's own copy does the job. Do not reintroduce one without a
+ *  new ruling. */
+function SlugText({ item }: { item: WorkItem }) {
   return (
-    <button className={'docket-slug' + (state === 'idle' ? '' : ' ' + state)}
-      title={state === 'failed'
-        ? `${name} — this browser would not give the page clipboard access; `
-          + 'select the name and copy it by hand'
-        : item.slug
-          ? `${name} — click to copy this item's name`
-          : `${name} — this item predates readable names; it gets one on its next update`}
-      onClick={copy}>
-      {label}
-    </button>
+    <span className="docket-slug-text"
+      title={item.slug
+        ? undefined
+        : `${item.id} — this item predates readable names; it gets one on its next update`}>
+      {itemName(item)}
+    </span>
   )
 }
 
@@ -324,11 +310,25 @@ export function DocketModal({ slug, toast, close, tree, onFocusAgent }: {
   const archivedCache = cache.slug === slug ? cache.archived : []
   const backlogCache = cache.slug === slug ? cache.backlog : []
 
-  // Polled data: deps is [slug] so ticking a filter does not clear data to null
-  // (which would unmount the pane and wipe the user's in-flight reply draft).
-  // The refresh key causes an immediate re-fetch on a toggle or a bump, while
-  // the previous rows stay on screen until the new ones land.
-  const data = usePolled(() => getWorkItems(slug, showArchived, showBacklog),
+  // ⚠ BOTH GROUPS ARE ALWAYS FETCHED, AND THE CHECKBOXES ONLY DECIDE WHAT IS
+  // SHOWN. A slug link must work when it points at a backlogged or archived
+  // item — "reveal the row" is impossible if the row was never loaded, and a
+  // mention that silently refuses to link because a checkbox is off would be
+  // the worst of both worlds. `ledger.work_list` builds all three groups on
+  // every call regardless of the flags (they gate the RESPONSE, not the work),
+  // so this costs payload, not server time.
+  //
+  // deps is [slug] so ticking a filter does not clear data to null (which
+  // would unmount the pane and wipe the user's in-flight reply draft).
+  //
+  // ⚠ THE TOGGLES STAY IN THE REFRESH KEY even though they no longer change the
+  // REQUEST. They are what makes a tick refetch immediately instead of waiting
+  // out the five-second poll, and that is load-bearing: the panel keeps a copy
+  // of each group, and unticking is how a row that has just left the archive
+  // gets replaced by its current self rather than by the copy we cached. Drop
+  // them from the key and the stale copy survives on screen until the next
+  // poll (caught by §31 of docket.test.tsx).
+  const data = usePolled(() => getWorkItems(slug, true, true),
     [slug], 5000, `${bump}-${showArchived}-${showBacklog}`)
 
   useEffect(() => {
@@ -377,6 +377,46 @@ export function DocketModal({ slug, toast, close, tree, onFocusAgent }: {
   }, [active, data?.archived, data?.backlogged, archivedCache, backlogCache])
   const cur = allKnown.get(selId ?? '')
   const asksById = new Map<string, AskInfo>((tree.asks ?? []).map((a) => [a.id, a]))
+
+  // ---- slug mentions in prose become links to the item they name
+  //
+  // The index is built from `allKnown`, which is exactly the set of items this
+  // org served to this viewer. That is what keeps a link same-org by
+  // construction rather than by a check someone could forget: a name from
+  // another org is not in the map, so it is never marked as a mention.
+  const slugIndex = useMemo(
+    () => buildSlugIndex(allKnown.values()), [allKnown])
+  const [flash, setFlash] = useState<string | null>(null)
+  const rows = useRef(new Map<string, HTMLDivElement>())
+
+  const goToItem = useCallback((id: string) => {
+    const it = allKnown.get(id)
+    if (!it) return           // not ours to show — never a broken selection
+    // REVEAL BEFORE SELECT. A backlogged or archived item has no row while its
+    // group is filtered out, and selecting an invisible row would look like
+    // the link did nothing.
+    if (it.archived) setShowArchived(true)
+    else if (it.status === 'backlogged') setShowBacklog(true)
+    setSel({ slug, id })
+    setFlash(id)
+  }, [allKnown, slug])
+
+  // the flash is a hint, not a state: it clears itself and never survives to
+  // confuse the next visit
+  useEffect(() => {
+    if (!flash) return
+    const t = window.setTimeout(() => setFlash(null), 1800)
+    return () => window.clearTimeout(t)
+  }, [flash])
+
+  // scroll AFTER the render that created the row — a freshly revealed group's
+  // rows do not exist at the moment the link is clicked. `scrollIntoView` is
+  // absent in jsdom and in older engines, hence the guard rather than a call.
+  useEffect(() => {
+    if (!flash) return
+    const el = rows.current.get(flash)
+    el?.scrollIntoView?.({ block: 'nearest' })
+  }, [flash, sections])
 
   const onDismiss = (item: WorkItem) => {
     if (!item.manual_attention) return
@@ -461,7 +501,12 @@ export function DocketModal({ slug, toast, close, tree, onFocusAgent }: {
                           <DocketRow key={r.id} item={r} selected={r.id === selId}
                             onClick={() => setSelId(r.id === selId ? null : r.id)}
                             onDismiss={onDismiss} facts={facts}
-                            onFocusAgent={onFocusAgent} close={close} />
+                            onFocusAgent={onFocusAgent} close={close}
+                            flash={r.id === flash}
+                            rowRef={(el) => {
+                              if (el) rows.current.set(r.id, el)
+                              else rows.current.delete(r.id)
+                            }} />
                         ))}
                       </div>
                     ))}
@@ -470,7 +515,8 @@ export function DocketModal({ slug, toast, close, tree, onFocusAgent }: {
                     {cur
                       ? <DocketPane key={cur.id} slug={slug} item={cur} toast={toast}
                           asksById={asksById} onDismiss={onDismiss}
-                          close={close} onFocusAgent={onFocusAgent} facts={facts} />
+                          close={close} onFocusAgent={onFocusAgent} facts={facts}
+                          slugIndex={slugIndex} onGoToItem={goToItem} />
                       : <div className="dim pad mailer-none">select an item to view it</div>}
                   </div>
                 </div>
@@ -482,7 +528,8 @@ export function DocketModal({ slug, toast, close, tree, onFocusAgent }: {
   )
 }
 
-function DocketRow({ item, selected, onClick, onDismiss, facts, onFocusAgent, close }: {
+function DocketRow({ item, selected, onClick, onDismiss, facts, onFocusAgent,
+  close, flash, rowRef }: {
   item: WorkItem
   selected: boolean
   onClick: () => void
@@ -490,6 +537,10 @@ function DocketRow({ item, selected, onClick, onDismiss, facts, onFocusAgent, cl
   facts: Map<string, NodeFacts>
   onFocusAgent?: (agentId: string) => void
   close?: () => void
+  /** briefly true after a slug link brought the reader here, so the row the
+   *  link meant is identifiable among rows that all look alike */
+  flash?: boolean
+  rowRef?: (el: HTMLDivElement | null) => void
 }) {
   const attention = item.effective_attention
   // active (white) / attention (orange) / backlog (its own quiet colour) /
@@ -502,22 +553,24 @@ function DocketRow({ item, selected, onClick, onDismiss, facts, onFocusAgent, cl
       ? 'attention'
       : item.status === 'backlogged' ? 'backlog' : 'active'
   const cls = ['mailrow', 'docket-row', state, 'status-' + item.status,
-    selected ? 'on' : ''].filter(Boolean).join(' ')
+    selected ? 'on' : '', flash ? 'docket-flash' : ''].filter(Boolean).join(' ')
   const label = attention ? 'Needs attention' : statusLabel(item.status)
   // Dismiss clears the MANUAL flag only — a question-only attention item has
   // nothing to dismiss (answering the question is the only way to clear it).
   const canDismiss = item.attention_sources.includes('manual')
   return (
-    <div className={cls} title={item.title} onClick={onClick}>
+    // THE NAME IN THE LIST IS THE SLUG (user 2026-09-05). The full descriptive
+    // title is printed only in the detail pane; here it is the row's hover
+    // title, so nothing is lost and the row stays one line of name.
+    <div className={cls} title={item.title} onClick={onClick} ref={rowRef}>
       <div className="l1">
-        <span className="mfrom">{item.title || '(untitled)'}</span>
+        <span className="mfrom docket-rowname">{itemName(item)}</span>
         <span className="mtime">{ago(item.docket_at ?? item.at)}</span>
       </div>
       <div className="l2">
         <span className={'docket-status status-' + item.status + (attention ? ' attention' : '')}>
           {label}
         </span>
-        <SlugChip item={item} />
         <span className="docket-updater">
           <ActorName actor={item.last_updater} facts={facts}
             onFocusAgent={onFocusAgent} close={close} />
@@ -533,20 +586,30 @@ function DocketRow({ item, selected, onClick, onDismiss, facts, onFocusAgent, cl
   )
 }
 
-function DocketList({ heading, items }: { heading: string; items: string[] }) {
+function DocketList({ heading, items, slugIndex, onGoToItem }: {
+  heading: string
+  items: string[]
+  slugIndex: SlugIndex
+  onGoToItem?: (id: string) => void
+}) {
   return (
     <div className="docket-list">
       <div className="docket-list-heading dim">{heading}</div>
       {items.length === 0
         ? <div className="dim docket-list-empty">None</div>
         : <ul className="docket-list-items">
-            {items.map((t, i) => <li key={i}>{t}</li>)}
+            {items.map((t, i) => (
+              <li key={i}>
+                <WorkRefText text={t} index={slugIndex} onPick={onGoToItem} />
+              </li>
+            ))}
           </ul>}
     </div>
   )
 }
 
-function DocketPane({ slug, item, toast, asksById, onDismiss, close, onFocusAgent, facts }: {
+function DocketPane({ slug, item, toast, asksById, onDismiss, close, onFocusAgent,
+  facts, slugIndex, onGoToItem }: {
   slug: string
   item: WorkItem
   toast: ToastFn
@@ -555,6 +618,8 @@ function DocketPane({ slug, item, toast, asksById, onDismiss, close, onFocusAgen
   close: () => void
   onFocusAgent?: (agentId: string) => void
   facts: Map<string, NodeFacts>
+  slugIndex: SlugIndex
+  onGoToItem?: (id: string) => void
 }) {
   const attention = item.effective_attention
   const label = attention ? 'Needs attention' : statusLabel(item.status)
@@ -565,6 +630,8 @@ function DocketPane({ slug, item, toast, asksById, onDismiss, close, onFocusAgen
   const manualAttn = item.manual_attention
   return (
     <>
+      {/* THE ONLY PLACE THE FULL DESCRIPTIVE TITLE IS PRINTED (user
+          2026-09-05) — the list is named by slug alone. */}
       <div className="mailer-head docket-pane-head">
         <b>{item.title || '(untitled)'}</b>
         <span className="spacer" />
@@ -578,7 +645,7 @@ function DocketPane({ slug, item, toast, asksById, onDismiss, close, onFocusAgen
         <span className={'docket-status status-' + item.status + (attention ? ' attention' : '')}>
           {label}
         </span>
-        <SlugChip item={item} />
+        <SlugText item={item} />
         {' · Updated ' + ago(item.docket_at ?? item.at)}
         {lastUpdater?.node && (
           <>
@@ -595,14 +662,19 @@ function DocketPane({ slug, item, toast, asksById, onDismiss, close, onFocusAgen
       <div className="docket-desc">
         <div className="docket-list-heading dim">DESCRIPTION</div>
         {item.objective
-          ? <div className="docket-desc-body">{item.objective}</div>
+          ? <div className="docket-desc-body">
+              <WorkRefText text={item.objective} index={slugIndex}
+                onPick={onGoToItem} />
+            </div>
           : <div className="dim docket-list-empty">
               no description — this item predates the rule that every item
               states its problem and proposed solution
             </div>}
       </div>
-      <DocketList heading="DONE SO FAR" items={item.done_so_far} />
-      <DocketList heading="WORKING ON / NEXT" items={item.working_on_next} />
+      <DocketList heading="DONE SO FAR" items={item.done_so_far}
+        slugIndex={slugIndex} onGoToItem={onGoToItem} />
+      <DocketList heading="WORKING ON / NEXT" items={item.working_on_next}
+        slugIndex={slugIndex} onGoToItem={onGoToItem} />
       {manualAttn && (
         <div className="docket-attention-box">
           <div className="docket-question-head">
@@ -610,7 +682,10 @@ function DocketPane({ slug, item, toast, asksById, onDismiss, close, onFocusAgen
             <ActorName actor={manualAttn.by} facts={facts}
               onFocusAgent={onFocusAgent} close={close} />
           </div>
-          <div>{manualAttn.reason}</div>
+          <div>
+            <WorkRefText text={manualAttn.reason} index={slugIndex}
+              onPick={onGoToItem} />
+          </div>
         </div>
       )}
       {item.questions.map((q) => {
