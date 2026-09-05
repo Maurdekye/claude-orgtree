@@ -33,12 +33,11 @@ What each section establishes:
      record verifies against the live sidecar rows, node doc and mailbox.
   §7 all seven boundary call sites go through that one function (source
      scan, with the count asserted so a new door cannot be added silently).
-  §8 FLAG-OFF COMPATIBILITY, measured against the BASELINE revision — the
-     parent of the commit that added handoff.py, or `main` before it lands:
-     with `handoff.flag` absent the identity prompt is BYTE-IDENTICAL to the
-     one that revision's own supervisor.py builds for the same node, and the
-     boundary adds no notice. Positive control: with the flag on, the same
-     comparison reports a difference.
+  §8 FLAG-OFF COMPATIBILITY, measured against THIS BUILD with the handoff
+     block neutralised: with `handoff.flag` absent the identity prompt is
+     BYTE-IDENTICAL to the one the same code builds when `_handoff_block`
+     returns nothing at all, and the boundary adds no notice. Positive
+     control: with the flag on the two differ, by exactly the block.
   §9 generation-specific lookup: the successor reads g<generation-1> only; a
      stale older generation and a corrupted current one are not spliced.
   §10 the boundary is best-effort: a record that cannot be built or does not
@@ -1295,8 +1294,9 @@ def t7():
 
 check("all 7 export call sites exist and publication lives inside that one function", t7)
 
-# ── §8 flag-off compatibility, measured against main ───────────────────────
-print("\n§8 flag OFF: prompt byte-identical to main's own supervisor, no notice")
+# ── §8 flag-off compatibility, measured against this same build ───────────
+print("\n§8 flag OFF: prompt byte-identical to this build with the block "
+      "neutralised")
 
 FLAG = FLAG_PATH
 CHILD = r"""
@@ -1311,53 +1311,32 @@ sys.stdout.buffer.write(supervisor.identity_prompt(org, sys.argv[4]).encode("utf
 """
 
 
-def baseline_rev() -> str:
-    """The revision this feature is compared AGAINST: the parent of the commit
-    that added `handoff.py`, or `main` while it is not yet landed.
-
-    ⚠ IT CANNOT BE `main` ONCE THIS LANDS (found the moment it did, 2026-09-05:
-    the suite went red with an ImportError because `main:supervisor.py` was now
-    the version that imports `handoff`, in a package copy where handoff.py had
-    been deleted). A comparison whose baseline silently becomes the thing it is
-    supposed to differ from proves nothing — so the baseline is located from
-    the history, and `_pkg_copy` asserts it really lacks the feature."""
-    r = subprocess.run(["git", "-C", REPO, "log", "--diff-filter=A", "--format=%H",
-                        "-1", "--", "backend/orgtree/handoff.py"],
-                       capture_output=True, text=True)
-    if MUTANT == "baseline_is_main":
-        return "main"          # the staleness this function exists to prevent
-    sha = r.stdout.strip() if r.returncode == 0 else ""
-    return f"{sha}^" if sha else "main"
+#: appended to the package COPY, never to the shipped file: the oracle is this
+#: same build with the feature's only prompt-side contribution removed.
+NEUTRALISE = ('\n\n# —— test oracle: the handoff feature contributes nothing ——\n'
+              '_handoff_block = lambda org, nid: ""\n')
 
 
-BASELINE = baseline_rev()
+def _pkg_copy(neutral: bool) -> str:
+    """A private copy of the CURRENT backend package. With `neutral`, its
+    `supervisor.py` has `_handoff_block` rebound to return nothing.
 
-
-def _pkg_copy(from_main: bool) -> str:
-    """A private copy of the backend package; with `from_main`, supervisor.py
-    and ledger.py come from `BASELINE` and handoff.py does not exist at all."""
-    tmp = tempfile.mkdtemp(prefix="handoff-main-" if from_main else "handoff-branch-")
+    ⚠ THE ORACLE IS THIS BUILD, NOT AN OLD REVISION. The first version of this
+    comparison used the parent of the commit that added handoff.py, which made
+    every unrelated prompt change by anyone else fail this suite — 81efbe4 added
+    "While you remain in working status…" and two checks here went red for text
+    this feature never touches. An old revision is not an oracle for current
+    behaviour; the question is whether THIS code's prompt depends on the handoff
+    block, and that is asked by removing the block from this code."""
+    tmp = tempfile.mkdtemp(prefix="handoff-oracle-" if neutral else "handoff-branch-")
     shutil.copytree(os.path.join(REPO, "backend", "orgtree"),
                     os.path.join(tmp, "orgtree"),
                     ignore=shutil.ignore_patterns("__pycache__"))
-    if from_main:
-        for f in ("supervisor.py", "ledger.py"):
-            r = subprocess.run(["git", "-C", REPO, "show",
-                                f"{BASELINE}:backend/orgtree/{f}"], capture_output=True)
-            assert r.returncode == 0 and r.stdout, r.stderr[:300]
-            src = r.stdout.decode("utf-8", "replace")
-            # the WORD appears in unrelated prose (the docket doctrine says
-            # "handoff"), so the assertion is about the CODE: no use of the
-            # module and none of the symbols this feature added
-            for token in ("handoff.capture(", "handoff.verify(", "handoff.read_generation(",
-                          "handoff.write_generation(", "_publish_handoff_record",
-                          "handoff_flag_on", "_handoff_block", '"handoff.flag"'):
-                assert token not in src, (
-                    f"the baseline {BASELINE} already carries the feature "
-                    f"({token!r} in {f}) — this comparison would be against itself")
-            with open(os.path.join(tmp, "orgtree", f), "wb") as fh:
-                fh.write(r.stdout)
-        os.remove(os.path.join(tmp, "orgtree", "handoff.py"))
+    if neutral and MUTANT != "oracle_not_neutralised":
+        p = os.path.join(tmp, "orgtree", "supervisor.py")
+        with open(p, "a", encoding="utf-8", newline="\n") as fh:
+            fh.write(NEUTRALISE)
+        assert open(p, encoding="utf-8").read().endswith(NEUTRALISE)
     return tmp
 
 
@@ -1371,12 +1350,12 @@ def prompt_from(pkg: str, slug: str, nid: str) -> bytes:
 _PKGS: dict = {}
 
 
-def pkg(from_main: bool) -> str:
-    """Built on FIRST USE, inside a check — a baseline that turns out to
-    already carry the feature must fail a named check, not the import."""
-    if from_main not in _PKGS:
-        _PKGS[from_main] = _pkg_copy(from_main)
-    return _PKGS[from_main]
+def pkg(neutral: bool) -> str:
+    """Built on FIRST USE, inside a check — a broken copy must fail a named
+    check, not the import."""
+    if neutral not in _PKGS:
+        _PKGS[neutral] = _pkg_copy(neutral)
+    return _PKGS[neutral]
 
 
 SLUG8, NID8 = make_org("prompt")
@@ -1402,6 +1381,9 @@ check("a real crossing sets the first-turn marker itself (the splice gate is not
 
 
 def t8_off():
+    """With the flag off the feature must cost the prompt NOTHING — measured
+    against this same build with `_handoff_block` neutralised, so that a prompt
+    change made anywhere else cannot pass or fail this check."""
     assert not os.path.exists(FLAG), "the flag must start off"
     assert not supervisor.handoff_flag_on()
     org = store.load_org(SLUG8)
@@ -1410,17 +1392,19 @@ def t8_off():
     assert handoff.read_generation(SD8, GEN8), "control: a record IS on disk to be spliced"
     assert supervisor._handoff_block(org, NID8) == "", "flag off but a block was rendered"
     mine = supervisor.identity_prompt(org, NID8).encode("utf-8")
-    branch = prompt_from(pkg(False), SLUG8, NID8)
-    assert mine == branch, "control: the same code disagrees with itself across processes"
-    main = prompt_from(pkg(True), SLUG8, NID8)
-    assert mine == main, (
-        f"flag-off prompt differs from baseline {BASELINE}: {len(mine)} vs "
-        f"{len(main)} bytes")
+    same = prompt_from(pkg(False), SLUG8, NID8)
+    assert mine == same, "control: the same code disagrees with itself across processes"
+    oracle = prompt_from(pkg(True), SLUG8, NID8)
+    assert oracle, "the neutralised build produced no prompt at all"
+    assert b"[HANDOFF RECORD" not in oracle, "the oracle still carries a block"
+    assert mine == oracle, (
+        f"flag-off prompt differs from this build with the block neutralised: "
+        f"{len(mine)} vs {len(oracle)} bytes")
     OBS["flag_off_prompt_bytes"] = len(mine)
 
 
-check("flag OFF: identity prompt byte-identical to the pre-handoff baseline's "
-      "supervisor (control: same-code comparison agrees)", t8_off)
+check("flag OFF: the prompt is byte-identical to this same build with the handoff "
+      "block neutralised", t8_off)
 
 
 def _notices_across_a_boundary(name: str) -> list[str]:
@@ -1464,10 +1448,16 @@ def t8_on():
         assert "USER-INSTRUCTION-1" in p, "the spliced block carries no quoted instruction"
         for s in EXCLUDED:
             assert s not in p, f"leaked into the prompt: {s!r}"
-        main = prompt_from(pkg(True), slug, nid)
-        assert p.encode("utf-8") != main, \
-            "positive control: flag ON must differ from main, or the comparison is inert"
-        OBS["flag_on_extra_bytes"] = len(p.encode("utf-8")) - len(main)
+        oracle = prompt_from(pkg(True), slug, nid)
+        assert p.encode("utf-8") != oracle, \
+            "positive control: flag ON must differ from the neutralised build, or " \
+            "the comparison is inert"
+        # and it differs by EXACTLY the block, nothing else
+        blk = supervisor._handoff_block(o, nid)
+        assert blk, "the block is empty: the differential would be free"
+        assert p.replace(blk, "").encode("utf-8") == oracle, \
+            "flag ON changes the prompt by more than the handoff block"
+        OBS["flag_on_extra_bytes"] = len(p.encode("utf-8")) - len(oracle)
         # FIRST TURN ONLY: the same clearing that retires the breadcrumb splice
         with store.DOC_LOCK:
             o2 = store.load_org(slug)
@@ -1478,7 +1468,7 @@ def t8_on():
             "the block rendered on a turn after the first"
         assert supervisor.identity_prompt(o2, nid).encode("utf-8") == \
             prompt_from(pkg(True), slug, nid), \
-            "after the marker clears, the prompt must be main's again"
+            "after the marker clears, the prompt must be the neutralised one again"
         with store.DOC_LOCK:                       # restore for later sections
             o3 = store.load_org(slug)
             o3.node(nid)["cheap_compacted"] = True
@@ -1488,8 +1478,8 @@ def t8_on():
     assert not supervisor.handoff_flag_on()
 
 
-check("flag ON: notice + exactly one first-turn block, and it DIFFERS from main "
-      "(the comparison is not inert)", t8_on)
+check("flag ON: notice + exactly one first-turn block, and the prompt differs "
+      "from the neutralised build by exactly that block", t8_on)
 
 # ── §9 generation-specific lookup ──────────────────────────────────────────
 print("\n§9 the successor reads its own predecessor's generation only")
@@ -2199,10 +2189,10 @@ MUTANTS = {
     "reason_guessed": "boundary reason is the door",
     "memo_key_transcript_only": "forgery rejected",
     "memo_key_claimed_hash": "altered same-length transcript",
-    "baseline_is_main": "byte-identical to the pre-handoff baseline",
+    "oracle_not_neutralised": "by exactly that block",
     "nonatomic_publish": "leave NOTHING",
     "read_ignores_manifest": "refuses a manifest-less",
-    "flag_ignored": "byte-identical to the pre-handoff baseline",
+    "flag_ignored": "block neutralised",
     "select_dedupe_by_line": "same line keep their own",
     "select_radius_ignored": "outside the radius",
     "select_stop_at_first_oversize": "skipped and counted",
