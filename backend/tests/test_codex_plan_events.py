@@ -24,10 +24,16 @@ function invoked in isolation.
 §7 reconnect/restart: read_chat reconstructs the same checklist from the
    journal FILE alone, with no live/in-memory state at all
 §8 the live wire carries the checklist AS the turn runs, not one poll behind
-§9 anti-vacuity: the instrument can see a violation planted on purpose
+§9 dedupe: a REPEATED identical snapshot is suppressed, a real change is not
 
-ANTI-VACUITY, per behavioural claim (verified red while writing — see the
-commit message for the mutations run):
+ANTI-VACUITY, per behavioural claim. Each mutation below is stated as an
+EDIT YOU CAN MAKE and a result you can reproduce — every one was re-run on
+2026-09-05 against this file and is RED, so these are guards, not
+descriptions. (The previous version of this list pointed at "the commit
+message for the mutations run"; no FR-17 commit message ever contained one,
+so the citation was dangling and the claim unverifiable. Do not replace
+these with a pointer somewhere else — a mutation claim is worth exactly as
+much as the reader's ability to re-run it from what is written here.)
   · §1/§2 mapping: reading the FIRST notification instead of the LAST, or
     leaving `inProgress` unmapped, → red
   · §4 validation: dropping the threadId/turnId check in `_apply_plan` → red
@@ -38,6 +44,11 @@ commit message for the mutations run):
     → red (the checklist would read "completed" instead of "in_progress")
   · §7 restart: read_chat depending on any in-memory `state()` field for the
     checklist itself (not just busy/live) → red once that field is cleared
+  · §8 live wire: `_apply_plan` journaling but not pushing the live row → red
+  · §9 dedupe: deleting `_apply_plan`'s `last_plan` suppression → red. This
+    one was GREEN until 2026-09-05: the section reused `plan_updated`, whose
+    snapshots are pairwise distinct, so no scenario ever repeated one and the
+    dedupe branch was untested. `plan_duplicate` is what makes it a check.
 """
 
 import glob
@@ -367,13 +378,29 @@ def main() -> int:
 
     print("§9 anti-vacuity: duplicate identical snapshots do not bloat the "
           "journal")
-    scenario("plan_updated", "fake-thread-plan-dup-check")
-    # plan_updated's own three snapshots are already pairwise distinct
-    # (§1 proved exactly 3 journaled for 3 sent) — this restates it as its
-    # own explicit dedupe claim so a regression here fails ON THIS LABEL
     check("3 distinct snapshots in, 3 journaled out — no silent drop AND no "
           "silent duplication for genuinely different content",
           lambda: eq(len(recs), 3, "codex_plan_updated records"))
+
+    # ⚠ THE CHECK ABOVE DOES NOT TEST DEDUPE AT ALL (measured 2026-09-05 by
+    # mutation: deleting `_apply_plan`'s `last_plan` suppression entirely
+    # left the whole suite GREEN). It reuses `plan_updated`, whose three
+    # snapshots are pairwise DISTINCT, so nothing there ever asks the dedupe
+    # branch a question — the section's "anti-vacuity" label was itself the
+    # vacuous pass. Dedupe needs a scenario that actually REPEATS a snapshot.
+    scenario("plan_duplicate", "fake-thread-plan-duplicate")
+    slug9, nid9 = mkorg("duplicate")
+    run_turn(slug9, nid9, "same checklist twice, then a real change")
+    recs9 = plan_records(slug9)
+    check("3 notifications in, 2 journaled out: the byte-identical repeat was "
+          "suppressed",
+          lambda: eq(len(recs9), 2, "codex_plan_updated records"))
+    check("…and it is the REPEAT that was dropped, not the change after it — "
+          "a runner that simply stopped after the first notification would "
+          "satisfy the count alone",
+          lambda: eq([steps_of(r) for r in recs9],
+                     [[("a", "in_progress")], [("a", "completed")]],
+                     "journaled snapshots"))
 
     print("§10 a live 'plan' row survives until its durable twin lands — it "
           "is not retired on sight the way an unrecognized live-row kind "

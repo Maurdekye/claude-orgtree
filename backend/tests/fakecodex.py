@@ -92,6 +92,11 @@ scenarios selected by FAKECODEX_SCENARIO:
     plan_updated (FR-17) three successive `turn/plan/updated` notifications
                on one turn: pending → in_progress → a two-step list with an
                explanation — only the LAST should be what a caller shows
+    plan_duplicate (FR-17) a snapshot, the BYTE-IDENTICAL snapshot again, then
+               a genuinely different one. The repeat must be suppressed (the
+               schema has no per-step id, so an unattended turn's untouched
+               checklist would otherwise rack up one journal line per
+               notification) WITHOUT suppressing the real change after it
     plan_cleared (FR-17) a real checklist, then an EXPLICIT empty one — the
                "cleared" case, distinct from a notification never arriving
     plan_wrong_ids (FR-17) one legitimate snapshot, then one on a foreign
@@ -414,6 +419,18 @@ def run_turn(thread_id, turn_id, dyn_tools, model=None):
         _plan([{"step": "a", "status": "inProgress"}])
         _plan([{"step": "a", "status": "completed"},
                {"step": "b", "status": "pending"}], "steady progress")
+    elif SCENARIO == "plan_duplicate":
+        # FR-17: a snapshot, THE SAME snapshot again, then a real change.
+        # The repeat must be suppressed and the change must still land —
+        # asserting only the first half would pass just as well against a
+        # runner that dropped everything after the first notification.
+        def _dup(steps, explanation=None):
+            notify("turn/plan/updated", {
+                "threadId": thread_id, "turnId": turn_id,
+                "explanation": explanation, "plan": steps})
+        _dup([{"step": "a", "status": "inProgress"}], "same")
+        _dup([{"step": "a", "status": "inProgress"}], "same")
+        _dup([{"step": "a", "status": "completed"}], "moved on")
     elif SCENARIO == "plan_cleared":
         # a real checklist, then an EXPLICIT empty one — "cleared", not "the
         # notification never arrived" (that distinction is the whole point)
