@@ -176,7 +176,7 @@ function ActorName({ actor, facts, onFocusAgent, close }: {
 /** The item's readable name. Falls back to the opaque id for an item written
  *  before slugs existed — the server refuses to mint one on a read, so there
  *  is genuinely nothing else to show. */
-export const itemName = (item: WorkItem): string => item.slug ?? item.id
+export const itemName = (item: WorkItem): string => item.slug
 
 /** The name in the DETAIL pane: plain selectable text, no control.
  *
@@ -190,9 +190,7 @@ export const itemName = (item: WorkItem): string => item.slug ?? item.id
 function SlugText({ item }: { item: WorkItem }) {
   return (
     <span className="docket-slug-text"
-      title={item.slug
-        ? undefined
-        : `${item.id} — this item predates readable names; it gets one on its next update`}>
+      >
       {itemName(item)}
     </span>
   )
@@ -371,11 +369,11 @@ export function DocketModal({ slug, toast, close, tree, onFocusAgent }: {
   // 2026-09-05).
   const allKnown = useMemo(() => {
     const map = new Map<string, WorkItem>()
-    for (const item of archivedCache) map.set(item.id, item)
-    for (const item of backlogCache) map.set(item.id, item)
-    for (const item of (data?.archived ?? [])) map.set(item.id, item)
-    for (const item of (data?.backlogged ?? [])) map.set(item.id, item)
-    for (const item of active) map.set(item.id, item)
+    for (const item of archivedCache) map.set(item.slug, item)
+    for (const item of backlogCache) map.set(item.slug, item)
+    for (const item of (data?.archived ?? [])) map.set(item.slug, item)
+    for (const item of (data?.backlogged ?? [])) map.set(item.slug, item)
+    for (const item of active) map.set(item.slug, item)
     return map
   }, [active, data?.archived, data?.backlogged, archivedCache, backlogCache])
   const cur = allKnown.get(selId ?? '')
@@ -423,7 +421,7 @@ export function DocketModal({ slug, toast, close, tree, onFocusAgent }: {
 
   const onDismiss = (item: WorkItem) => {
     if (!item.manual_attention) return
-    dismissWorkItemAttention(slug, item.id, item.manual_attention.set_rev)
+    dismissWorkItemAttention(slug, item.slug, item.manual_attention.set_rev)
       .then(() => {
         toast([`dismissed the attention flag on “${item.title}”`])
         setBump((n) => n + 1)
@@ -501,14 +499,14 @@ export function DocketModal({ slug, toast, close, tree, onFocusAgent }: {
                           </div>
                         )}
                         {s.items.map((r) => (
-                          <DocketRow key={r.id} item={r} selected={r.id === selId}
-                            onClick={() => setSelId(r.id === selId ? null : r.id)}
+                          <DocketRow key={r.slug} item={r} selected={r.slug === selId}
+                            onClick={() => setSelId(r.slug === selId ? null : r.slug)}
                             onDismiss={onDismiss} facts={facts}
                             onFocusAgent={onFocusAgent} close={close}
-                            flash={r.id === flash}
+                            flash={r.slug === flash}
                             rowRef={(el) => {
-                              if (el) rows.current.set(r.id, el)
-                              else rows.current.delete(r.id)
+                              if (el) rows.current.set(r.slug, el)
+                              else rows.current.delete(r.slug)
                             }} />
                         ))}
                       </div>
@@ -516,7 +514,7 @@ export function DocketModal({ slug, toast, close, tree, onFocusAgent }: {
                   </div>
                   <div className="mailer-read">
                     {cur
-                      ? <DocketPane key={cur.id} slug={slug} item={cur} toast={toast}
+                      ? <DocketPane key={cur.slug} slug={slug} item={cur} toast={toast}
                           asksById={asksById} onDismiss={onDismiss}
                           close={close} onFocusAgent={onFocusAgent} facts={facts}
                           slugIndex={slugIndex} onGoToItem={goToItem} />
@@ -741,7 +739,7 @@ function DocketPane({ slug, item, toast, asksById, onDismiss, close, onFocusAgen
             {' · last updated this item'}
           </div>
           <MailReplyBox target={lastUpdater.node}
-            onSend={(text) => replyWorkItem(slug, item.id, text)
+            onSend={(text) => replyWorkItem(slug, item.slug, text)
               .then((r) => {
                 if (r.deferred) {
                   toast([`${lastUpdater.node} is archived — the reply waits for rehire`])

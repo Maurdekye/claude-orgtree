@@ -77,13 +77,13 @@ const MUTANTS = [
   {
     name: 'an empty slug is allowed into the index',
     file: REFS, kills: 'contributes nothing to the index',
-    from: `    if (it?.slug && it.id) out.set(it.slug, it.id)`,
-    to: `    if (it?.slug != null && it.id) out.set(it.slug, it.id)`,
+    from: `    if (it?.slug) out.set(it.slug, it.slug)`,
+    to: `    if (it?.slug != null) out.set(it.slug, it.slug)`,
   },
   {
     name: 'mentions render as plain text — the renderer is never asked',
     file: REFS, kills: 'the sentence still reads',
-    from: `  if (!onPick) return <>{text}</>`,
+    from: `  if (!render) return <>{text}</>`,
     to: `  return <>{text}</>`,
   },
 

@@ -1853,13 +1853,16 @@ export interface WorkDismissal {
  *  acceptance/dependencies/history ride along unread (spec: "preserve useful
  *  backend delivery/evidence metadata without adding crowded UI"). */
 export interface WorkItem {
-  id: string
-  /** the HUMAN-READABLE name derived from the title (user 2026-09-05), unique
-   *  and fixed at creation — it does NOT follow a later title edit. Null on an
-   *  item that predates slugs and has not been written since: the backend
-   *  refuses to persist a backfill on a read, so show `id` in that case rather
-   *  than inventing a name the server does not agree with. */
-  slug: string | null
+  /** THE ONLY IDENTIFIER (user 2026-09-05: "uniquely and solely identifiable
+   *  by their readable slugs, no more ids of any sort"). Derived from the
+   *  title, unique across active+archive, fixed at creation — it does NOT
+   *  follow a later title edit, so a name already written down keeps working.
+   *  Every reference uses it: React keys, selection, `dependencies`,
+   *  `superseded_by`, and the routes. The retired opaque `w########` key is
+   *  gone from the wire; a document still holding one is converted by
+   *  POST /api/orgs/{slug}/migrate-work-identity, and until it is, the list
+   *  and item routes answer 409 rather than serve two kinds of name. */
+  slug: string
   rev: number
   kind: 'code' | 'non-code'
   title: string
@@ -1906,8 +1909,13 @@ export interface WorkItem {
   effective_attention: boolean
   attention_sources: ('manual' | 'question')[]
   acceptance: { text: string; checked: null | { at: string; by: string; evidence_ref?: string; note?: string } }[]
-  dependencies: ({ id: string; visible: true; title: string; status: string }
-    | { id: string; visible: false })[]
+  /** ⚠ AN UNREADABLE DEPENDENCY IS ANONYMOUS. It used to arrive as
+   *  `{id, visible:false}` — safe, because an opaque id carried no title.
+   *  The name is DERIVED from the title, so it is withheld entirely from a
+   *  viewer who may not read the item: they learn a dependency exists and
+   *  nothing else. `superseded_by` is null for the same reason. */
+  dependencies: ({ slug: string; visible: true; title: string; status: string }
+    | { visible: false })[]
   evidence: { at: string; by: string; kind: string; ref?: string; note?: string }[]
   delivery: Record<string, unknown> | null
   accepted: { at: string; by: string; note?: string } | null

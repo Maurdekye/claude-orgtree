@@ -28,13 +28,13 @@ function mockWorkItems(activeItems: WorkItem[], archivedItems: WorkItem[] = [],
         const m = path.match(/\/work-items\/([^/]+)\/dismiss-attention$/)
         const id = m ? m[1] : ''
         const found = [...activeItems, ...archivedItems, ...backlogItems]
-          .find((x) => x.id === id)
+          .find((x) => x.slug === id)
         return ok({ item: found ? { ...found, manual_attention: null, status: 'blocked' } : null })
       }
       if (method === 'POST' && path.includes('/reply')) {
         const m = path.match(/\/work-items\/([^/]+)\/reply$/)
         const id = m ? m[1] : ''
-        const found = [...activeItems, ...archivedItems].find((x) => x.id === id)
+        const found = [...activeItems, ...archivedItems].find((x) => x.slug === id)
         const isDeferred = found?.last_updater?.node === 'archived-agent'
         return ok({ accepted: true, to: found?.last_updater?.node ?? 'agent', deferred: isDeferred })
       }
@@ -77,7 +77,6 @@ const mkItem = (o: Partial<WorkItem>): WorkItem => ({
 })
 
 const mkItemBase = (o: Partial<WorkItem>): WorkItem => ({
-  id: 'w10000001',
   slug: 'test-work-item',
   rev: 1,
   kind: 'code',
@@ -195,7 +194,6 @@ uiTest('§1 an empty org says so rather than rendering a blank panel', async (mo
 
 uiTest('§2 the row is NAMED BY ITS SLUG, and carries status, time and updater', async (mount) => {
   mockWorkItems([mkItem({
-    id: 'w1',
     slug: 'build-the-work-docket',
     title: 'Build the work docket',
     status: 'in_progress',
@@ -220,7 +218,6 @@ uiTest('§2 the row is NAMED BY ITS SLUG, and carries status, time and updater',
 
 uiTest('§3 left row updater is last updater, not necessarily owner', async (mount) => {
   mockWorkItems([mkItem({
-    id: 'w1',
     title: 'Item A',
     owner: { node: 'astras-entrance-exam', generation: 1 },
     last_updater: { node: 'luna-reserve', generation: 1 },
@@ -234,10 +231,10 @@ uiTest('§3 left row updater is last updater, not necessarily owner', async (mou
 
 uiTest('§4 active, attention and archived rows get correct classes and labels', async (mount) => {
   mockWorkItems([
-    mkItem({ id: 'w1', title: 'Active Item', status: 'in_progress', effective_attention: false, archived: false }),
-    mkItem({ id: 'w2', title: 'Attn Item', status: 'blocked', effective_attention: true, attention_sources: ['manual'], archived: false }),
+    mkItem({ title: 'Active Item', status: 'in_progress', effective_attention: false, archived: false }),
+    mkItem({ title: 'Attn Item', status: 'blocked', effective_attention: true, attention_sources: ['manual'], archived: false }),
   ], [
-    mkItem({ id: 'w3', title: 'Archived Item', status: 'done', effective_attention: false, archived: true }),
+    mkItem({ title: 'Archived Item', status: 'done', effective_attention: false, archived: true }),
   ])
   const { el } = await mount(docketModal())
   await flush()
@@ -259,10 +256,10 @@ uiTest('§4 active, attention and archived rows get correct classes and labels',
 
 uiTest('§5 show archived checkbox toggles archived items below active retaining recency order', async (mount) => {
   mockWorkItems([
-    mkItem({ id: 'w1', title: 'Active 1' }),
+    mkItem({ title: 'Active 1' }),
   ], [
-    mkItem({ id: 'w2', title: 'Archived 1', archived: true }),
-    mkItem({ id: 'w3', title: 'Archived 2', archived: true }),
+    mkItem({ title: 'Archived 1', archived: true }),
+    mkItem({ title: 'Archived 2', archived: true }),
   ])
   const { el } = await mount(docketModal())
   await flush()
@@ -279,7 +276,6 @@ uiTest('§5 show archived checkbox toggles archived items below active retaining
 
 uiTest('§6 right pane displays done so far and working on / next lists, with None when empty', async (mount) => {
   mockWorkItems([mkItem({
-    id: 'w1',
     title: 'Item with partial lists',
     done_so_far: ['Created schemas', 'Added endpoints'],
     working_on_next: [],
@@ -309,7 +305,6 @@ uiTest('§7 right pane updater name is a clickable agent jump that closes modal'
   let focused: string | null = null
   let closed = false
   mockWorkItems([mkItem({
-    id: 'w1',
     title: 'Work Item',
     last_updater: { node: 'luna-reserve', generation: 1 },
   })])
@@ -333,7 +328,6 @@ uiTest('§8 manual attention box renders reason and clickable author', async (mo
   let focused: string | null = null
   let closed = false
   mockWorkItems([mkItem({
-    id: 'w1',
     title: 'Work Item',
     effective_attention: true,
     attention_sources: ['manual'],
@@ -376,7 +370,6 @@ uiTest('§9 question box renders attached AskCard and clickable asker', async (m
   }
   const tree = mkTree({ asks: [ask], asks_open: 1 })
   mockWorkItems([mkItem({
-    id: 'w1',
     title: 'Work Item',
     effective_attention: true,
     attention_sources: ['question'],
@@ -421,7 +414,6 @@ uiTest('§10 batch note appears when ask covers other items too', async (mount) 
   }
   const tree = mkTree({ asks: [ask], asks_open: 1 })
   mockWorkItems([mkItem({
-    id: 'w1',
     title: 'Work Item',
     effective_attention: true,
     attention_sources: ['question'],
@@ -446,7 +438,6 @@ uiTest('§10 batch note appears when ask covers other items too', async (mount) 
 uiTest('§11 dismiss manual attention button calls endpoint with set_rev and updates refreshed row state', async (mount) => {
   let toasted: string[] = []
   let itemState = mkItem({
-    id: 'w1',
     title: 'Work Item',
     status: 'blocked',
     effective_attention: true,
@@ -516,7 +507,6 @@ uiTest('§11 dismiss manual attention button calls endpoint with set_rev and upd
 uiTest('§11b question+manual attention item stays in attention state after manual dismiss', async (mount) => {
   let toasted: string[] = []
   let itemState = mkItem({
-    id: 'w2',
     title: 'Multi-Attention Item',
     status: 'blocked',
     effective_attention: true,
@@ -582,7 +572,6 @@ uiTest('§11b question+manual attention item stays in attention state after manu
 
 uiTest('§12 dismiss button is ABSENT when attention is question-only', async (mount) => {
   mockWorkItems([mkItem({
-    id: 'w1',
     title: 'Work Item',
     effective_attention: true,
     attention_sources: ['question'],
@@ -900,7 +889,6 @@ uiTest('§19 multiple questions on an item render separate question boxes with r
     asks_open: 2,
   })
   mockWorkItems([mkItem({
-    id: 'w1',
     title: 'Item with 2 questions',
     effective_attention: true,
     attention_sources: ['question'],
@@ -948,9 +936,9 @@ uiTest('§20 production DocketToolbarButton displays orange attention count or m
 
 uiTest('§21 show archived toggle preserves detail selection and in-flight draft without full-panel reload', async (mount) => {
   mockWorkItems([
-    mkItem({ id: 'w1', title: 'Active Item', status: 'in_progress', last_updater: { node: 'agent1', generation: 1 } }),
+    mkItem({ title: 'Active Item', status: 'in_progress', last_updater: { node: 'agent1', generation: 1 } }),
   ], [
-    mkItem({ id: 'w2', title: 'Archived Item', status: 'done', archived: true }),
+    mkItem({ title: 'Archived Item', status: 'done', archived: true }),
   ])
   const { el } = await mount(docketModal())
   await flush()
@@ -994,11 +982,11 @@ uiTest('§21 show archived toggle preserves detail selection and in-flight draft
 
 uiTest('§22 entry styling colors entries by status', async (mount) => {
   mockWorkItems([
-    mkItem({ id: 'w1', title: 'In Progress Item', status: 'in_progress' }),
-    mkItem({ id: 'w2', title: 'Blocked Item', status: 'blocked' }),
-    mkItem({ id: 'w3', title: 'Review Item', status: 'review' }),
-    mkItem({ id: 'w4', title: 'Open Item', status: 'open' }),
-    mkItem({ id: 'w5', title: 'Done Item', status: 'done' }),
+    mkItem({ title: 'In Progress Item', status: 'in_progress' }),
+    mkItem({ title: 'Blocked Item', status: 'blocked' }),
+    mkItem({ title: 'Review Item', status: 'review' }),
+    mkItem({ title: 'Open Item', status: 'open' }),
+    mkItem({ title: 'Done Item', status: 'done' }),
   ])
   const { el } = await mount(docketModal())
   await flush()
@@ -1025,14 +1013,14 @@ uiTest('§22 entry styling colors entries by status', async (mount) => {
 uiTest('§23 three grouping modes; archive and backlog stay last in every one', async (mount) => {
   // the server hands rows back newest-first with a total order already applied
   mockWorkItems([
-    mkItem({ id: 'w3', title: 'In Progress New', status: 'in_progress', docket_at: '2026-09-05T10:40:00.000Z', owner: { node: 'ana', generation: 1 } }),
-    mkItem({ id: 'w1', title: 'Open New', status: 'open', docket_at: '2026-09-05T10:30:00.000Z', owner: { node: 'bo', generation: 1 } }),
-    mkItem({ id: 'w4', title: 'Blocked Mid', status: 'blocked', docket_at: '2026-09-05T10:20:00.000Z', owner: null }),
-    mkItem({ id: 'w2', title: 'In Progress Old', status: 'in_progress', docket_at: '2026-09-05T10:00:00.000Z', owner: { node: 'ana', generation: 1 } }),
+    mkItem({ title: 'In Progress New', status: 'in_progress', docket_at: '2026-09-05T10:40:00.000Z', owner: { node: 'ana', generation: 1 } }),
+    mkItem({ title: 'Open New', status: 'open', docket_at: '2026-09-05T10:30:00.000Z', owner: { node: 'bo', generation: 1 } }),
+    mkItem({ title: 'Blocked Mid', status: 'blocked', docket_at: '2026-09-05T10:20:00.000Z', owner: null }),
+    mkItem({ title: 'In Progress Old', status: 'in_progress', docket_at: '2026-09-05T10:00:00.000Z', owner: { node: 'ana', generation: 1 } }),
   ], [
-    mkItem({ id: 'w9', title: 'Archived One', status: 'done', archived: true }),
+    mkItem({ title: 'Archived One', status: 'done', archived: true }),
   ], undefined, [
-    mkItem({ id: 'w8', title: 'Backlog One', status: 'backlogged' }),
+    mkItem({ title: 'Backlog One', status: 'backlogged' }),
   ])
   forgetGroupChoice()
   const { el } = await mount(docketModal())
@@ -1077,10 +1065,10 @@ uiTest('§23 three grouping modes; archive and backlog stay last in every one', 
 
 uiTest('§23b attention outranks every status group, and an unknown status is still reachable', async (mount) => {
   mockWorkItems([
-    mkItem({ id: 'w1', title: 'Open Plain', status: 'open' }),
-    mkItem({ id: 'w2', title: 'Flagged Open', status: 'open', effective_attention: true, attention_sources: ['manual'] }),
-    mkItem({ id: 'w3', title: 'Blocked Plain', status: 'blocked' }),
-    mkItem({ id: 'w4', title: 'Odd', status: 'invented_later' }),
+    mkItem({ title: 'Open Plain', status: 'open' }),
+    mkItem({ title: 'Flagged Open', status: 'open', effective_attention: true, attention_sources: ['manual'] }),
+    mkItem({ title: 'Blocked Plain', status: 'blocked' }),
+    mkItem({ title: 'Odd', status: 'invented_later' }),
   ])
   forgetGroupChoice()
   const { el } = await mount(docketModal())
@@ -1091,7 +1079,7 @@ uiTest('§23b attention outranks every status group, and an unknown status is st
 })
 
 uiTest('§23c the chosen arrangement persists across a remount', async (mount) => {
-  mockWorkItems([mkItem({ id: 'w1', title: 'Only', status: 'open' })])
+  mockWorkItems([mkItem({ title: 'Only', status: 'open' })])
   forgetGroupChoice()
   const { el } = await mount(docketModal())
   await flush()
@@ -1117,11 +1105,11 @@ uiTest('§24 the model chip is shown only when it can honestly be attributed', a
       node('rolled-agent', 'opus', 4)] as unknown as TreeNode[],
   })
   mockWorkItems([
-    mkItem({ id: 'w1', title: 'Current', last_updater: { node: 'worker-agent', generation: 1 } }),
+    mkItem({ title: 'Current', last_updater: { node: 'worker-agent', generation: 1 } }),
     // the SAME node, but this update was written by an EARLIER generation: the
     // model that generation ran under is not recorded anywhere
-    mkItem({ id: 'w2', title: 'Superseded generation', last_updater: { node: 'rolled-agent', generation: 2 } }),
-    mkItem({ id: 'w3', title: 'Gone', last_updater: { node: 'never-existed', generation: 1 } }),
+    mkItem({ title: 'Superseded generation', last_updater: { node: 'rolled-agent', generation: 2 } }),
+    mkItem({ title: 'Gone', last_updater: { node: 'never-existed', generation: 1 } }),
   ])
   const { el } = await mount(docketModal({ tree }))
   await flush()
@@ -1153,9 +1141,9 @@ uiTest('§24 the model chip is shown only when it can honestly be attributed', a
 
 uiTest('§25 the backlog is hidden until asked for, counted apart, and never merged into current work', async (mount) => {
   mockWorkItems([
-    mkItem({ id: 'w1', title: 'Current', status: 'in_progress' }),
+    mkItem({ title: 'Current', status: 'in_progress' }),
   ], [], undefined, [
-    mkItem({ id: 'w2', title: 'Parked', status: 'backlogged' }),
+    mkItem({ title: 'Parked', status: 'backlogged' }),
   ])
   const { el } = await mount(docketModal())
   await flush()
@@ -1183,7 +1171,7 @@ uiTest('§26 an attention-holding backlog row arrives in the MAIN list, not behi
   // the backend keeps such a row in `items` so the toolbar badge always opens
   // onto something visible; the UI must therefore not hide it on status alone
   mockWorkItems([
-    mkItem({ id: 'w1', title: 'Parked but flagged', status: 'backlogged',
+    mkItem({ title: 'Parked but flagged', status: 'backlogged',
       effective_attention: true, attention_sources: ['manual'] }),
   ])
   const { el } = await mount(docketModal())
@@ -1194,17 +1182,19 @@ uiTest('§26 an attention-holding backlog row arrives in the MAIN list, not behi
   assert.match(r.querySelector('.docket-status')?.textContent ?? '', /Needs attention/)
 })
 
-uiTest('§27 the name is TEXT, in both places, with an id fallback and no copy control', async (mount) => {
+uiTest('§27 the name is TEXT in both places, and there is no copy control', async (mount) => {
   // ⚠ THIS TEST EXISTS BECAUSE THE COPY BUTTON WAS REMOVED, TWICE. The name
   // was a padded bordered chip in the row and again in the detail pane; from
   // screenshots the user removed it from the list (13:03) and then from the
   // detail as well (13:04), with "no replacement copy control anywhere". A
   // test that only checked the name is present would pass on its return.
+  // ⚠ THERE IS NO LONGER AN UNNAMED ITEM TO TEST. The server cannot serve one:
+  // a document still holding the retired opaque key is refused whole (409)
+  // rather than served with some rows unnamed, so the old id-fallback half of
+  // this check pinned a state the product can no longer reach.
   mockWorkItems([
-    mkItem({ id: 'w1', slug: 'git-review-workspace', title: 'Named' }),
-    // an item written before slugs existed: the server serves null rather than
-    // minting one on a read, so the UI shows the id instead of inventing a name
-    mkItem({ id: 'w2ffffff', slug: null, title: 'Unnamed' }),
+    mkItem({ slug: 'git-review-workspace', title: 'Named' }),
+    mkItem({ slug: 'second-named-item', title: 'Also named' }),
   ])
   // ⚠ onFocusAgent IS PASSED HERE ON PURPOSE, because App.tsx always passes it
   // (App.tsx:1027) and the assertion below is about the agent jump. It used to
@@ -1217,8 +1207,7 @@ uiTest('§27 the name is TEXT, in both places, with an id fallback and no copy c
   await flush()
   const [rNamed, rOld] = rows(el)
   assert.equal(rNamed!.querySelector('.l1 .mfrom')?.textContent, 'git-review-workspace')
-  assert.equal(rOld!.querySelector('.l1 .mfrom')?.textContent, 'w2ffffff',
-    'an item with no slug must fall back to its id, not render blank')
+  assert.equal(rOld!.querySelector('.l1 .mfrom')?.textContent, 'second-named-item')
 
   // NOTHING IN THE NAME LINE IS PRESSABLE. `.docket-slug` was the removed
   // chip's class; a button in the name line is the shape of the thing the user
@@ -1254,19 +1243,18 @@ uiTest('§27 the name is TEXT, in both places, with an id fallback and no copy c
     ['cc-name cc-name-jump docket-actor-name'],
     'a control other than the agent jump appeared beside the detail name')
 
-  // and the id fallback explains itself where it matters
+  // and the second row opens to its own name, not to the first one's
   await inAct(() => (rOld as HTMLElement).click())
   await flush()
-  assert.equal(pane(el)?.querySelector('.docket-slug-text')?.textContent, 'w2ffffff')
-  assert.match(pane(el)?.querySelector('.docket-slug-text')?.getAttribute('title') ?? '',
-    /predates readable names/)
+  assert.equal(pane(el)?.querySelector('.docket-slug-text')?.textContent,
+    'second-named-item')
 })
 
 uiTest('§28 the detail pane leads with the description, and says so when there is none', async (mount) => {
   mockWorkItems([
-    mkItem({ id: 'w1', title: 'Described',
+    mkItem({ title: 'Described',
       objective: 'agents cite opaque ids the user cannot read; give each item a name' }),
-    mkItem({ id: 'w2', title: 'Bare', objective: '' }),
+    mkItem({ title: 'Bare', objective: '' }),
   ])
   const { el } = await mount(docketModal())
   await flush()
@@ -1291,7 +1279,7 @@ uiTest('§29 the panel never re-sorts what the server ordered', async (mount) =>
   // sorted for itself would disagree with the server, and two orderings of the
   // same rows is exactly the shuffle this pins down
   mockWorkItems([
-    mkItem({ id: 'waaa', title: 'First from server', docket_at: '2026-09-05T10:00:00.000Z' }),
+    mkItem({ title: 'First from server', docket_at: '2026-09-05T10:00:00.000Z' }),
     mkItem({ id: 'wzzz', title: 'Second from server', docket_at: '2026-09-05T10:00:00.000Z' }),
     mkItem({ id: 'wmmm', title: 'Third from server', docket_at: '2026-09-05T11:00:00.000Z' }),
   ])
@@ -1303,7 +1291,7 @@ uiTest('§29 the panel never re-sorts what the server ordered', async (mount) =>
 
 uiTest('§30 a long agent name truncates instead of running under the Dismiss button', async (mount) => {
   mockWorkItems([mkItem({
-    id: 'w1', title: 'Long updater', effective_attention: true,
+    title: 'Long updater', effective_attention: true,
     attention_sources: ['manual'],
     manual_attention: { reason: 'look', at: '2026-09-05T09:00:00.000Z', by: { node: 'a', generation: 1 }, set_rev: 1 },
     last_updater: { node: 'an-extremely-long-agent-identifier-that-will-not-fit', generation: 1 },
@@ -1332,9 +1320,9 @@ uiTest('§31 a row that leaves the archive shows its CURRENT status, not the cop
     // this test exists to reproduce never comes into being. (It did not, at
     // first: the check passed against the defective code.)
     mockWorkItems(
-      [mkItem({ id: 'w1', title: 'Live one' })],
+      [mkItem({ title: 'Live one' })],
       [mkItem({
-        id: 'w2', title: 'Was archived', status: 'done', archived: true,
+        title: 'Was archived', status: 'done', archived: true,
         objective: 'the description it had while it was finished',
       })])
     forgetGroupChoice()
@@ -1351,9 +1339,9 @@ uiTest('§31 a row that leaves the archive shows its CURRENT status, not the cop
     // live work again with a new status and a rewritten description, and the
     // archive no longer holds it. The panel still has the old copy cached.
     mockWorkItems([
-      mkItem({ id: 'w1', title: 'Live one' }),
+      mkItem({ title: 'Live one' }),
       mkItem({
-        id: 'w2', title: 'Was archived', status: 'in_progress', archived: false,
+        title: 'Was archived', status: 'in_progress', archived: false,
         objective: 'the description it has now that it is moving again',
       }),
     ], [])
@@ -1413,8 +1401,11 @@ uiTest('§32b switching org never auto-opens an item the user did not click', as
   // when the new org happens to hold the same id, an unscoped selection silently
   // opens a different org's item under the same id — a detail pane the user
   // never asked for, wired to a reply URL they never chose.
-  const one = mkItem({ id: 'wSAME', title: 'Org one item', status: 'done', archived: true })
-  const two = mkItem({ id: 'wSAME', title: 'Org two item', status: 'open' })
+  // the same NAME in both orgs — that is the collision this guards against,
+  // and the name is the key now
+  const one = mkItem({ slug: 'same-name', title: 'Org one item',
+    status: 'done', archived: true })
+  const two = mkItem({ slug: 'same-name', title: 'Org two item', status: 'open' })
   ;(globalThis as unknown as { fetch: typeof fetch }).fetch =
     ((url: string) => {
       const path = String(url)
@@ -1441,9 +1432,11 @@ uiTest('§32b switching org never auto-opens an item the user did not click', as
 
   await render(docketModal({ slug: 'org2' }))
   await flush()
-  assert.deepEqual(titles(el), ['Org two item'])
+  // the row is named by its slug, and BOTH orgs use the same one — which is
+  // exactly the collision this test exists for
+  assert.deepEqual(titles(el), ['same-name'])
   assert.ok(pane(el)?.querySelector('.mailer-none'),
-    'the identical id must NOT carry the selection across into the new org')
+    'the identical NAME must NOT carry the selection across into the new org')
   assert.doesNotMatch(pane(el)?.textContent ?? '', /Org two item/)
 
   // POSITIVE CONTROL: clicking in the new org still opens the new org's item,

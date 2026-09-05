@@ -17,7 +17,7 @@ import { DocketModal } from '../src/canvas/docket'
 import type { TreePayload, WorkItem } from '../src/types'
 
 const mk = (o: Partial<WorkItem>): WorkItem => ({
-  id: 'w0', slug: null, rev: 1, kind: 'code', title: 'Item',
+  slug: 'fixture-item', rev: 1, kind: 'code', title: 'Item',
   objective: '', status: 'in_progress', blocked_reason: null,
   archived: false, archived_at: null,
   owner: { node: 'agent1', generation: 1 }, owner_current: true,
@@ -38,13 +38,13 @@ const mk = (o: Partial<WorkItem>): WorkItem => ({
 // agent ids — the row has to hold the ones it will really be given, not a
 // convenient short sample.
 const ITEMS: WorkItem[] = [
-  mk({ id: 'w1', slug: 'working-status-nudges-every-twenty-minutes',
+  mk({ slug: 'working-status-nudges-every-twenty-minutes',
     title: 'Working-status nudges every twenty minutes',
     status: 'review',
     last_updater: { node: 'coordinator-astra', generation: 0 },
     objective: 'agents report "working" and go quiet; nudge them. Blocked '
       + 'behind clickable-docket-references for the link work.' }),
-  mk({ id: 'w2', slug: 'clickable-docket-references-across-text-surfaces',
+  mk({ slug: 'clickable-docket-references-across-text-surfaces',
     title: 'Clickable docket references across text surfaces',
     status: 'in_progress',
     last_updater: { node: 'codex-checklist', generation: 5 },
@@ -58,29 +58,30 @@ const ITEMS: WorkItem[] = [
     done_so_far: ['removed the boxed copy button from list and detail',
       'shared renderer used by working-status-nudges-every-twenty-minutes too'],
     working_on_next: ['the four approved elements of nested-docket-items'] }),
-  mk({ id: 'w3', slug: 'antigravity-usage-limit-estimation',
+  mk({ slug: 'antigravity-usage-limit-estimation',
     title: 'Antigravity usage-limit estimation', status: 'blocked',
     blocked_reason: 'no authoritative window',
     last_updater: { node: 'agy-journal', generation: 2 } }),
-  mk({ id: 'w4', slug: 'explain-unavailable-actions',
+  mk({ slug: 'explain-unavailable-actions',
     title: 'Explain why an unavailable action is unavailable', status: 'done',
     effective_attention: true, attention_sources: ['manual'],
     manual_attention: { reason: 'needs a look before the next deploy',
       at: '2026-09-05T09:30:00.000Z',
       by: { node: 'coordinator-astra', generation: 0 }, set_rev: 1 },
     last_updater: { node: 'codex-checklist', generation: 5 } }),
-  // the legacy row the running backend still serves: no slug at all
-  mk({ id: 'w5ffabcd', slug: null, title: 'An item minted before slugs existed',
+  // a SHORT name beside the long ones — the row has to hold both without the
+  // metadata line reflowing differently
+  mk({ slug: 'mail-ack', title: 'Mail acknowledgement contract',
     status: 'open', last_updater: { node: 'mail-ack-contract', generation: 1 } }),
 ]
 
 const BACKLOG: WorkItem[] = [
-  mk({ id: 'w6', slug: 'nested-docket-items', status: 'backlogged',
+  mk({ slug: 'nested-docket-items', status: 'backlogged',
     title: 'Expandable docket items with sub-items',
     last_updater: { node: 'coordinator-astra', generation: 0 } }),
 ]
 const ARCHIVE: WorkItem[] = [
-  mk({ id: 'w7', slug: 'git-review-workspace', status: 'done', archived: true,
+  mk({ slug: 'git-review-workspace', status: 'done', archived: true,
     title: 'A finished thing', last_updater: { node: 'luna-reserve', generation: 1 } }),
 ]
 
@@ -120,7 +121,13 @@ document.body.appendChild(host)
 const root = createRoot(host)
 flushSync(() => {
   root.render(
-    <DocketModal slug="org1" toast={() => {}} close={() => {}} tree={tree} />)
+    // ⚠ `onFocusAgent` IS PASSED BECAUSE APP.TSX ALWAYS PASSES IT. Without it
+    // the shared AgentName renders the agent as plain text rather than a jump
+    // button — a shape the product never shows — and this probe would then be
+    // measuring a page that does not exist. It showed up as the updater's
+    // readable fraction moving without its pixel width changing at all.
+    <DocketModal slug="org1" toast={() => {}} close={() => {}} tree={tree}
+      onFocusAgent={() => {}} />)
 })
 
 // let the mocked fetch resolve, then select the item whose detail pane carries

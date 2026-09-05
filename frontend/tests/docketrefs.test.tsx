@@ -18,18 +18,18 @@ import test from 'node:test'
 import type { TestContext } from 'node:test'
 import assert from 'node:assert/strict'
 import { DocketModal } from '../src/canvas/docket'
-import { buildSlugIndex, splitSlugRefs } from '../src/canvas/workrefs'
+import { buildSlugIndex, splitRefs } from '../src/canvas/workrefs'
 import type { SlugIndex } from '../src/canvas/workrefs'
 import type { TreePayload, WorkItem } from '../src/types'
 
 // ---------------------------------------------------------------- the matcher
 
 const idx = (...slugs: string[]): SlugIndex =>
-  new Map(slugs.map((s, i) => [s, 'id' + i]))
+  new Map(slugs.map((s) => [s, s]))
 
 /** what the reader ends up looking at: linked runs marked with «» */
 const shape = (text: string, index: SlugIndex) =>
-  splitSlugRefs(text, index).map((p) => (p.id ? `«${p.text}»` : p.text)).join('')
+  splitRefs(text, index).map((p) => (p.ref ? `«${p.text}»` : p.text)).join('')
 
 test('§1 a bare mention becomes a link, and the prose around it is untouched',
   () => {
@@ -102,18 +102,18 @@ test('§5 every character of the input survives the split', () => {
     'a-b-c-d', '-a-b-', 'a-ba-b', 'a-b.a-b', '((a-b))',
   ]
   for (const s of samples) {
-    assert.equal(splitSlugRefs(s, i).map((p) => p.text).join(''), s,
+    assert.equal(splitRefs(s, i).map((p) => p.text).join(''), s,
       `round trip lost or changed text for ${JSON.stringify(s)}`)
   }
 })
 
 test('§6 an item with no slug contributes nothing to the index', () => {
   const items = [
-    { id: 'w1', slug: 'has-a-name' },
-    { id: 'w2', slug: null },
+    { slug: 'has-a-name' },
+    { slug: null },
     // an empty slug would compile into the alternation as an empty branch,
     // which matches at every position — the scanner would never terminate
-    { id: 'w3', slug: '' },
+    { slug: '' },
   ] as unknown as WorkItem[]
   const index = buildSlugIndex(items)
   assert.deepEqual([...index.keys()], ['has-a-name'])
@@ -123,7 +123,7 @@ test('§6 an item with no slug contributes nothing to the index', () => {
 // --------------------------------------------------------- the real panel
 
 const mkItem = (o: Partial<WorkItem>): WorkItem => ({
-  id: 'w0', slug: null, rev: 1, kind: 'code', title: 'Item',
+  slug: 'unnamed-fixture-item', rev: 1, kind: 'code', title: 'Item',
   objective: '', status: 'in_progress', blocked_reason: null,
   archived: false, archived_at: null,
   owner: { node: 'agent1', generation: 1 }, owner_current: true,
@@ -207,7 +207,7 @@ const archivedBox = (el: HTMLElement) =>
   el.querySelector('.docket-showarchived input') as HTMLInputElement
 
 const TARGET = mkItem({
-  id: 'w2', slug: 'clickable-docket-references',
+  slug: 'clickable-docket-references',
   title: 'Clickable docket references across text surfaces',
   docket_at: '2026-09-05T08:30:00.000Z',
 })
@@ -221,7 +221,7 @@ uiTest('§7 a mention in the DESCRIPTION is a link, and the sentence still reads
   async (mount) => {
     mockServer({
       items: [
-        mkItem({ id: 'w1', slug: 'explain-unavailable-actions',
+        mkItem({ slug: 'explain-unavailable-actions',
           title: 'Explain unavailable actions',
           objective: 'blocked behind clickable-docket-references until the '
             + 'renderer exists.' }),
@@ -247,7 +247,7 @@ uiTest('§8 mentions in PROGRESS entries and in an attention reason link too',
   async (mount) => {
     mockServer({
       items: [
-        mkItem({ id: 'w1', slug: 'explain-unavailable-actions', title: 'A',
+        mkItem({ slug: 'explain-unavailable-actions', title: 'A',
           objective: 'no mention here',
           done_so_far: ['landed ahead of clickable-docket-references'],
           working_on_next: ['then clickable-docket-references'],
@@ -273,7 +273,7 @@ uiTest('§9 clicking a mention selects, reveals and marks the item it names',
   async (mount) => {
     mockServer({
       items: [
-        mkItem({ id: 'w1', slug: 'explain-unavailable-actions',
+        mkItem({ slug: 'explain-unavailable-actions',
           title: 'Explain unavailable actions',
           objective: 'see clickable-docket-references' }),
         TARGET,
@@ -300,10 +300,10 @@ uiTest('§9 clicking a mention selects, reveals and marks the item it names',
 
 uiTest('§10 a link to a HIDDEN BACKLOG item turns its group on and shows the row',
   async (mount) => {
-    const hidden = mkItem({ id: 'w3', slug: 'nested-docket-items',
+    const hidden = mkItem({ slug: 'nested-docket-items',
       title: 'Expandable docket items', status: 'backlogged' })
     const urls = mockServer({
-      items: [mkItem({ id: 'w1', slug: 'explain-unavailable-actions', title: 'A',
+      items: [mkItem({ slug: 'explain-unavailable-actions', title: 'A',
         objective: 'design lives in nested-docket-items' })],
       archived: [], backlogged: [hidden],
     })
@@ -333,10 +333,10 @@ uiTest('§10 a link to a HIDDEN BACKLOG item turns its group on and shows the ro
   })
 
 uiTest('§10b the same for an ARCHIVED item', async (mount) => {
-  const gone = mkItem({ id: 'w4', slug: 'old-finished-thing',
+  const gone = mkItem({ slug: 'old-finished-thing',
     title: 'Old finished thing', status: 'done', archived: true })
   mockServer({
-    items: [mkItem({ id: 'w1', slug: 'explain-unavailable-actions', title: 'A',
+    items: [mkItem({ slug: 'explain-unavailable-actions', title: 'A',
       objective: 'superseded old-finished-thing' })],
     archived: [gone], backlogged: [],
   })
@@ -354,7 +354,7 @@ uiTest('§10b the same for an ARCHIVED item', async (mount) => {
 uiTest('§11 a name this org does not have stays prose, and nothing is clickable',
   async (mount) => {
     mockServer({
-      items: [mkItem({ id: 'w1', slug: 'explain-unavailable-actions', title: 'A',
+      items: [mkItem({ slug: 'explain-unavailable-actions', title: 'A',
         objective: 'see some-other-orgs-item and w2ffffff' })],
       archived: [], backlogged: [],
     })
@@ -366,25 +366,12 @@ uiTest('§11 a name this org does not have stays prose, and nothing is clickable
       'see some-other-orgs-item and w2ffffff')
   })
 
-uiTest('§12 an item whose own name is null is never linked from anywhere',
-  async (mount) => {
-    // the legacy row the running backend still serves: slug null, id only
-    mockServer({
-      items: [
-        mkItem({ id: 'w1', slug: 'explain-unavailable-actions', title: 'A',
-          objective: 'blocked on w2ffffff' }),
-        mkItem({ id: 'w2ffffff', slug: null, title: 'Legacy' }),
-      ],
-      archived: [], backlogged: [],
-    })
-    const el = await mount(modal())
-    await flush()
-    // its row still renders, named by its id
-    assert.ok(names(el).includes('w2ffffff'))
-    await openFirst(el)
-    assert.equal(refs(el).length, 0,
-      'an id was linked as if it were a name the server had minted')
-  })
+// §12 IS GONE ON PURPOSE. It pinned "an item served with slug: null is never
+// linked", and the server can no longer serve such an item at all — a document
+// still holding the retired opaque key is refused whole (409) rather than
+// served with some items unnamed. The defensive half of that check survives in
+// §6, which still proves buildSlugIndex drops a null or empty name rather than
+// compiling an empty branch into the matcher.
 
 // ------------------------------------- w2d5fab0a, the two elements that need
 // ------------------------------------- no parent relation to exist
@@ -398,9 +385,9 @@ uiTest('§13 the status dot follows the status, and ATTENTION outranks it',
     // status word already do.
     mockServer({
       items: [
-        mkItem({ id: 'w1', slug: 'plain-blocked-item', title: 'Blocked',
+        mkItem({ slug: 'plain-blocked-item', title: 'Blocked',
           status: 'blocked' }),
-        mkItem({ id: 'w2', slug: 'done-but-flagged', title: 'Flagged',
+        mkItem({ slug: 'done-but-flagged', title: 'Flagged',
           status: 'done', effective_attention: true,
           attention_sources: ['manual'],
           manual_attention: { reason: 'look at this', at: '2026-09-05T09:00:00.000Z',
@@ -426,7 +413,7 @@ uiTest('§14 the two progress lists are marked as different kinds of line',
     // as different kinds at all — if they are not, no stylesheet can tell them
     // apart later.
     mockServer({
-      items: [mkItem({ id: 'w1', slug: 'has-progress', title: 'Has progress',
+      items: [mkItem({ slug: 'has-progress', title: 'Has progress',
         done_so_far: ['finished this'], working_on_next: ['then this'] })],
       archived: [], backlogged: [],
     })
