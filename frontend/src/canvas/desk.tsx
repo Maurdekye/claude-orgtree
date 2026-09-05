@@ -1580,33 +1580,27 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
     onFocus: canJump ? (id: string) => jumpRef.current?.(id) : undefined,
     destination,
   }), [canJump, destination, facts])
-  // CANONICAL REFERENCES WRITTEN IN THE CHAT'S PROSE (`@item:org/slug` and its
-  // three siblings), rendered as things you can click.
+  // CANONICAL REFERENCES IN THE CHAT'S PROSE, rendered as things you can click.
   //
-  // ⚠ THE DESK NEEDS NOTHING NEW FROM THE CANVAS, which is why this is built
-  // here and not threaded down: it already holds `map` — the same map the
-  // canvas answers "is there an agent by this id?" with — and all four routes
-  // a reference can take. `onMailLink` even takes exactly the shape
-  // `mailRefTarget` returns, so the token→router translation stays the one in
-  // reflinks.tsx rather than a second copy written here.
+  // Built here rather than threaded down: the desk already holds `map` — the
+  // map the canvas answers "is there an agent by this id?" with — and all four
+  // routes. `onMailLink` takes exactly the shape `mailRefTarget` returns, so
+  // the token-to-router translation stays the one in reflinks.tsx.
   //
-  // ⚠ EACH ROUTE IS OMITTED WHEN ITS PROP IS, never stubbed. A desk mounted
-  // without a route (pins.tsx and cards.tsx hand this component different
-  // subsets — that is a real case, not a hypothetical) says "not opened from
-  // this panel", which is true, instead of drawing a chip that eats the click.
+  // ⚠ EACH ROUTE IS OMITTED WHEN ITS PROP IS, never stubbed. pins.tsx and
+  // cards.tsx mount this component with different subsets, and a desk without
+  // a route must say "not opened from this panel" rather than draw a chip that
+  // eats the click.
   //
-  // ⚠ AND EACH ONE ADAPTS ITS ARITY EXPLICITLY rather than handing the prop
-  // over bare. `onOpen` calls with one argument today, so a bare handoff would
-  // work and keep working right up until it did not — and the failure it would
-  // then have is a live one in this very file: `onJump` is `centerOn(id, z)`,
-  // whose `z ?? fit` default is defeated by ANY non-null second argument.
+  // ⚠ EACH ADAPTS ITS ARITY EXPLICITLY. `onJump` is `centerOn(id, z)`, whose
+  // `z ?? fit` default is defeated by any non-null second argument, so a bare
+  // handoff type-checks and poisons the camera.
   //
-  // ⚠ LATCHED, NOT REBUILT EACH RENDER, and that is not tidiness. `Msg` is
-  // memoized and THE COMPOSER'S TEXT LIVES IN THIS COMPONENT, so a value that
-  // changed identity every render would re-render — and re-`md()` — every row
-  // of the transcript on every keystroke. Same shape as `agentDir` above: the
-  // live values behind refs, the memo keyed on a signature of what can
-  // actually change the answers (which ids exist, which routes are wired).
+  // ⚠ LATCHED, NOT REBUILT EACH RENDER. `Msg` is memoized and the composer's
+  // text lives in this component, so a value that changed identity every
+  // render would re-render — and re-`md()` — every transcript row on every
+  // keystroke. Same shape as `agentDir`: live values behind refs, the memo
+  // keyed on what can change the answers.
   const workRef = useRef(onWorkLink); workRef.current = onWorkLink
   const docRef = useRef(onOpenDoc); docRef.current = onOpenDoc
   const mailLinkRef = useRef(onMailLink); mailLinkRef.current = onMailLink
@@ -1624,10 +1618,9 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
       ? (id: string) => docRef.current!(id) : undefined,
     onOpenMail: mailLinkRef.current
       ? (r: TypedRef) => mailLinkRef.current!(mailRefTarget(r)) : undefined,
-    // ⚠ THE SAME `destination` THE HEADER'S OWN NAME USES, not a second
-    // reading of the same rule: only the FOCUSED desk is somewhere you
-    // already are, so a pinned window and a switchboard panel both still
-    // navigate. One value, two renderers.
+    // the SAME `destination` the header's own name uses: only the focused
+    // desk is somewhere you already are, so a pinned window and a switchboard
+    // panel both still navigate
     destination,
     tierOf: (id: string) => mapRef.current.get(id)?.tier,
   }), [routeSig, destination])

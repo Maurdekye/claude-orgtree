@@ -1918,13 +1918,12 @@ export function usePolled<T>(
 
 /** A NAVIGATION REQUEST, with an identity of its own.
  *
- *  ⚠ AN ID IS NOT A REQUEST. Every jump latch in this app compared the target
- *  id and nothing else, so a second deliberate click on the SAME reference —
- *  after the reader had selected something else in between — was swallowed as
- *  "already handled" and the panel sat there (Astra, 2026-09-05). The latch
- *  still has to exist: without it an unrelated poll re-runs the jump and drags
- *  the reader back. So the request carries a sequence number, and the latch
- *  compares THAT: repeats are new requests, repolls are not.
+ *  ⚠ AN ID IS NOT A REQUEST. A latch that compares the target id swallows a
+ *  second deliberate click on the SAME reference — the reader selects
+ *  something else, clicks the reference again, and nothing happens. The latch
+ *  still has to exist, or an unrelated poll re-runs the jump and drags them
+ *  back. So the request carries a sequence number and the latch compares THAT:
+ *  repeats are new requests, repolls are not.
  */
 export interface JumpReq { id: string; seq: number }
 

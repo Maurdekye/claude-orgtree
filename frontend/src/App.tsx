@@ -1979,17 +1979,14 @@ export function InboxPanel({ slug, tree, toast, refresh, close, jumpTo, jumpSeq,
 }) {
   useEsc(close)
   const [folder, setFolder] = useState('inbox')
-  // ⚠ A REFERENCE MUST OPEN THE FOLDER THE MESSAGE IS IN. The user's own
-  // sends are a separate folder here, and a `@mail:` token naming one
-  // arrived with the panel showing `inbox` — so the message was one
-  // unmarked click away and the panel looked ordinary. The node inbox has
-  // done this since the mail-route work; this side had not (Astra,
-  // 2026-09-05).
+  // ⚠ A REFERENCE MUST OPEN THE FOLDER THE MESSAGE IS IN. The user's own sends
+  // are a separate folder, so a token naming one arriving with the panel on
+  // `inbox` leaves the message an unmarked click away while the panel looks
+  // perfectly ordinary.
   //
-  // Keyed on the REQUEST, not on the box: switching whenever the data
-  // changes would drag the reader out of a folder they chose by hand on
-  // every poll. `box` is in the deps because the answer is not knowable
-  // until it has loaded.
+  // Keyed on the REQUEST, not on the box: switching whenever the data changes
+  // would drag the reader out of a folder they chose by hand on every poll.
+  // `box` is in the deps because the answer is not knowable until it loads.
   const foldedJump = useRef<string | null>(null)
   const nodes = flatNodes(tree)
   const mailRefs = useShellRefs(slug, tree,

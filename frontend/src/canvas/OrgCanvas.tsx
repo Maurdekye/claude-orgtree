@@ -53,10 +53,10 @@ export interface OrgCanvasProps {
   focusAgent?: string | null
   onFocusAgentHandled?: () => void
   /** open one message, from a panel that owns no mailbox — the docket's
-   *  `@mail:` references (2026-09-05). The three boxes live on THIS side, and
-   *  the router below already knows which is which, so the shell hands the
-   *  pointer down rather than growing a second copy of that routing table.
-   *  Consumed once, exactly like `focusAgent`. */
+   *  `@mail:` references. The three boxes live on THIS side and the router
+   *  below already knows which is which, so the shell hands the pointer down
+   *  rather than growing a second copy of that routing table. Consumed once,
+   *  exactly like `focusAgent`. */
   openMailAt?: { id: string; to: string; seq?: number } | null
   onOpenMailHandled?: () => void
   /** open one presented document, from a panel that owns no reader — the
@@ -1263,14 +1263,9 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox, onWorkItem,
   // states an item it does not have and the reader reports a document it
   // cannot fetch. Agents and node mailboxes it CAN answer for, from `map`.
   //
-  // ⚠ THIS USED TO BUILD THE WORLD INLINE — a third hand-rolled copy of a
-  // decision the shell and the desk already shared, and the kind of drift
-  // nobody sees, because one surface quietly calling a real item missing
-  // looks exactly like a real missing item. It is the shared builder now.
-  //
-  // ⚠ AND `centerRef`, NOT `centerOn`. The camera takes (id, zoom) and reads
+  // ⚠ `centerRef`, NOT `centerOn`. The camera takes (id, zoom) and reads
   // `zoom ?? fit`, so anything non-null in the second argument becomes the
-  // zoom; every route here is written to pass exactly one.
+  // zoom; every route here passes exactly one.
   const canvasRefs = useRefRoutes(slug, map, {
     onOpenItem: onWorkItem ? (s: string) => onWorkItem(s) : undefined,
     onFocusAgent: (id: string) => { centerRef.current?.(id) },
@@ -2719,19 +2714,15 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox, onWorkItem,
                 const stat: (NodeStatus & { _stale?: boolean }) | null = n.last_status
                   ?? (n.prev_status ? { ...n.prev_status, _stale: true } : null)
                 return (
-                /* ⚠ THE ROW IS NO LONGER ITSELF A BUTTON, and that is what
-                   lets its summary carry reference controls. A `<button>`
-                   inside a `role="button"` is invalid nesting, so as long as
-                   the whole row claimed to be one control, a chip in the
-                   summary could not be another.
-                   Now: the row is a plain container that still navigates on
-                   click, the MAIN LINE is a real focusable button (keyboard
-                   Enter and Space arrive as a click and bubble to the row's
-                   own handler — one handler, not two, so activation cannot
-                   fire twice), and the summary sits OUTSIDE that button as a
-                   sibling. Nothing inside the main line is interactive:
-                   ContextWheel only becomes a button when given `onCompact`,
-                   which the tray does not pass. */
+                /* ⚠ THE ROW IS NOT ITSELF A BUTTON, which is what lets its
+                   summary carry reference controls: a button inside a
+                   `role="button"` is invalid nesting. The row navigates on
+                   click, the MAIN LINE is the focusable button (Enter/Space
+                   arrive as a click and bubble to the row's one handler, so
+                   activation cannot fire twice), and the summary is a sibling
+                   of that button. Nothing in the main line is interactive:
+                   ContextWheel is only a button when given `onCompact`, which
+                   the tray does not pass. */
                 <div key={n.id}
                   className={'tray-row' + (n.state !== 'live' ? ' off' : '')
                     + (ghost ? ' ghost' : '')
@@ -2773,18 +2764,12 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox, onWorkItem,
                                 title={n.last_status.summary} />
                             : <span className="statusdot idle" title="idle" />}
                   </button>
-                  {/* ⚠ THE WHOLE SUMMARY, MATCHED BEFORE ANY TRUNCATION. This
-                      line used to be `summary.slice(0, 70)`, which cut the
-                      text before a reference could be recognised — a token
-                      landing across the 70th character was neither a link nor
-                      readable, and which it was depended on how long the
-                      sentence happened to be. The clipping was always CSS's
-                      job here anyway (`.tray-sum-text` is ellipsis-clipped),
-                      so the slice was a second truncation doing nothing the
-                      stylesheet was not already doing better.
-                      The AGE is its own element so the ellipsis cannot eat
-                      it: a long summary now hides its own tail rather than
-                      the one fact next to it that is not in the summary. */}
+                  {/* ⚠ THE WHOLE SUMMARY, MATCHED BEFORE ANY TRUNCATION: a
+                      slice here cuts tokens in half, and the clipping is the
+                      stylesheet's job (`.tray-sum-text` is ellipsis-clipped).
+                      The AGE is its own element so the ellipsis eats the
+                      summary's tail rather than the one fact beside it that
+                      the summary does not contain. */}
                   {stat?.summary && (
                     <div className={'tray-sum' + (stat._stale ? ' stale' : '')}
                       title={stat.summary}>

@@ -10332,17 +10332,15 @@ class Org:
             changed status has held the one it was created with, so its
             creation is when that state began.
 
-        ⚠ WHAT IT MUST NEVER DO IS FALL BACK TO `updated_at` OR `docket_at`.
-        Both move for edits that changed no state at all, so an item nobody
-        has touched in weeks would sort as "just changed" because someone
-        fixed a typo in its title. That is not a worse guess than the creation
-        time — it is a different KIND of answer, one that states a state
-        change happened when none did.
+        ⚠ IT MUST NEVER FALL BACK TO `updated_at` OR `docket_at`. Both move
+        for edits that changed no state, so an item nobody has transitioned in
+        weeks would sort as "just changed" because someone fixed its title —
+        not a worse guess than the creation time but a different KIND of
+        answer, one that states a change happened when none did.
 
         ⚠ AND THE FOLDED HISTORY ROW IS NOT A STATUS CHANGE. Past the history
-        cap the oldest rows collapse into a summary row that carries no `op`;
-        reading it as one would date a state change to whenever the fold
-        happened to run.
+        cap the oldest rows collapse into a summary row carrying no `op`;
+        reading it as one dates a state change to whenever the fold ran.
         """
         stored = it.get("status_at")
         if stored:
@@ -10356,11 +10354,9 @@ class Org:
                            and isinstance(row.get("changes"), dict)
                            and "status" in row["changes"])
                        # ⚠ A DISMISSAL IS A TRANSITION ONLY WHEN IT MOVED THE
-                       # VALUE. It leaves the item blocked, so from an item
-                       # already blocked it changed nothing — and reading it as
-                       # a change would date a transition that never happened.
-                       # The history row records what it moved FROM, so this is
-                       # decidable rather than guessed (Astra, 2026-09-05).
+                       # VALUE: it leaves the item blocked, so from an already
+                       # blocked item it changed nothing. The history row
+                       # records what it moved FROM, so this is decidable.
                        or (op == "dismiss_attention"
                            and row.get("from") != "blocked"))
             if changed and row.get("at"):
@@ -10669,12 +10665,11 @@ class Org:
         if status is not None and status != it.get("status"):
             changes["status"] = {"from": it.get("status"), "to": status}
             it["status"] = status
-            # ⚠ INSIDE THE `!=` BRANCH, deliberately. An update that RESTATES
-            # the status it already had has changed nothing, and stamping it
-            # would make "most recently changed state" mean "most recently
-            # mentioned a state" — which is the exact confusion this clock
-            # exists to remove. The reopen path above assigns through this
-            # same branch, so it is covered without a second call.
+            # ⚠ INSIDE THE `!=` BRANCH. An update that RESTATES the status it
+            # already had changed nothing; stamping it would make "most
+            # recently changed state" mean "most recently mentioned a state".
+            # Reopen assigns through this same branch, so it needs no second
+            # call.
             self._work_stamp_status(it)
         self._work_state_info(it, was, {"blocked_reason": blocked_reason,
                                         "waiting_reason": waiting_reason})
@@ -11085,10 +11080,9 @@ class Org:
         # It is also a real state change, so it belongs in the status clock
         # like any other transition, even though nobody typed a status here.
         #
-        # ⚠ ONLY WHEN IT MOVED THE VALUE. Dismissing a flag on an item that was
-        # ALREADY blocked assigns `blocked` over `blocked`, and stamping that
-        # would make "most recently changed state" mean "most recently
-        # touched" — the exact confusion this clock removes (Astra, 2026-09-05).
+        # ⚠ ONLY WHEN IT MOVED THE VALUE. On an item ALREADY blocked this
+        # assigns `blocked` over `blocked`, and stamping that would make "most
+        # recently changed state" mean "most recently touched".
         if frm != "blocked":
             self._work_stamp_status(it)
         it["blocked_reason"] = f"attention flag dismissed by the user ({cur.get('reason')})"[:500]

@@ -41,30 +41,26 @@ from typing import Any
 #: delimiter.
 SEG = r"[a-z0-9-]+"
 
-#: ⚠ A NODE ID IS A WIDER DOMAIN THAN A SLUG, and assuming otherwise was wrong
-#: here. A knowledge bearer is `<name>@<generation>` (`ledger.py`: `pred_id =
-#: f"{nid}@{gen}"`), so `codex-checklist@4` is a real, addressable agent. The
-#: first version of this module derived its alphabet from the hire path alone
-#: and would have refused every bearer — and a parser that "recovered" by
-#: truncating at the `@` would silently address the LIVE agent instead of the
-#: bearer, which is the wrong-target failure this format exists to prevent.
-#: So the generation is part of the segment, never something to cut off.
+#: ⚠ A NODE ID IS A WIDER DOMAIN THAN A SLUG. A knowledge bearer is
+#: `<name>@<generation>` (`ledger.py`: `pred_id = f"{nid}@{gen}"`), so
+#: `codex-checklist@4` is a real, addressable agent. A parser that "recovered"
+#: by truncating at the `@` would address the LIVE agent instead of the bearer,
+#: which is the wrong-target failure this format exists to prevent — the
+#: generation is part of the segment, never something to cut off.
 NODE = r"[a-z0-9-]+(?:@[0-9]+)?"
 
-#: ⚠ A TOKEN ENDS AT A BOUNDARY, or it is not a token.
-#:
-#: Without this a malformed token did not fail — it TRUNCATED, and the prefix
-#: that survived was a valid reference to something ELSE:
+#: ⚠ A TOKEN ENDS AT A BOUNDARY, or it is not a token. Without this a
+#: malformed token does not fail, it TRUNCATES, and the prefix that survives
+#: is a valid reference to something ELSE — the same wrong-target failure the
+#: org segment prevents, reached from the other side:
 #:
 #:     @agent:org/alpha@bad   -> agent `alpha`
 #:     @agent:org/alpha@12x   -> bearer `alpha@12`
 #:     @item:org/alpha/extra  -> item `alpha`
 #:
-#: Same wrong-target failure the org segment exists to prevent, reached from
-#: the other side: a broken token silently repaired into a working link
-#: somewhere else. Two continuations are refused — anything that could have
-#: been part of the id, and a bare `@` unless it opens another canonical token,
-#: because `…/alpha@item:org/beta` is two adjacent references.
+#: Two continuations are refused: anything that could have been part of the id,
+#: and a bare `@` unless it opens another canonical token, because
+#: `…/alpha@item:org/beta` is two adjacent references.
 END = r"(?![A-Za-z0-9_/-])(?!@(?!(?:item|doc|agent|mail):))"
 
 #: the whole family, for a matcher that has to find these inside prose. The

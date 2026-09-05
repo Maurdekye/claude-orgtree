@@ -229,22 +229,16 @@ const SEG = '[a-z0-9-]+'
  *  this format exists to prevent. The generation is part of the segment. */
 const NODE = '[a-z0-9-]+(?:@[0-9]+)?'
 
-/** ⚠ A TOKEN ENDS AT A BOUNDARY, or it is not a token.
+/** ⚠ A TOKEN ENDS AT A BOUNDARY, or it is not a token. Without this a
+ *  malformed token does not fail — it TRUNCATES, and the prefix that survives
+ *  is a working control for something else:
  *
- *  Without this, a malformed token did not fail — it TRUNCATED, and the prefix
- *  that survived was a valid reference to something else:
- *
- *      @agent:org/alpha@bad   → a control opening agent `alpha`
- *      @agent:org/alpha@12x   → a control opening bearer `alpha@12`
- *      @item:org/alpha/extra  → a control opening item `alpha`
- *
- *  That is the wrong-target failure this format exists to prevent, arrived at
- *  from the other direction: not a token resolved against the wrong org, but a
- *  broken token silently repaired into a working link somewhere else. Found by
- *  Astra's counterexamples, 2026-09-05.
+ *      @agent:org/alpha@bad   → opens agent `alpha`
+ *      @agent:org/alpha@12x   → opens bearer `alpha@12`
+ *      @item:org/alpha/extra  → opens item `alpha`
  *
  *  Two continuations are refused: anything that could have been part of the id
- *  (so the match cannot be a prefix of a longer name), and a bare `@` — EXCEPT
+ *  (so a match cannot be the prefix of a longer name), and a bare `@` — except
  *  when it opens another canonical token, because `…/alpha@item:org/beta` is
  *  two adjacent references and both must survive. */
 const END = '(?![A-Za-z0-9_/-])(?!@(?!(?:item|doc|agent|mail):))'

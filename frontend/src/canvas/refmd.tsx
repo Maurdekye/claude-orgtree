@@ -60,12 +60,10 @@ function inSkipped(node: Node): boolean {
 
 /** EVERYTHING A CHIP RENDERS, in one string.
  *
- *  ⚠ THE CHEAP EXIT COMPARES THIS, not the outcome. Comparing outcomes alone
- *  said "nothing changed" while the visible answer had changed underneath —
- *  measured by Astra 2026-09-05: a document that gained its real title kept
- *  showing the id, and a body that lost its handler kept a live BUTTON that
- *  did nothing. Anything the chip puts on screen belongs in here, or the pass
- *  will skip a rebuild it needed. */
+ *  ⚠ THE CHEAP EXIT COMPARES THIS, not the outcome. Outcomes alone say
+ *  "nothing changed" while the visible answer has changed: a document that
+ *  gains its real title, a body that loses its handler. Anything the chip puts
+ *  on screen belongs in here, or the pass skips a rebuild it needed. */
 function chipSig(r: ResolvedRef, live: boolean): string {
   return [r.outcome, live ? '1' : '0', r.label, r.why,
     r.tier ?? '', r.atDestination ? '1' : '0'].join('')
@@ -93,8 +91,7 @@ function chipEl(doc: Document, r: ResolvedRef,
     t.textContent = TIER_LETTER[r.tier] ?? '?'
     el.appendChild(t)
   }
-  // ⚠ APPENDED, NOT ASSIGNED. `textContent =` would wipe the model icon added
-  // just above — which is exactly what it did on the first version of this.
+  // ⚠ APPENDED, NOT ASSIGNED: `textContent =` wipes the model icon above.
   //
   // ⚠ THE TOKEN IS SHOWN ON A FAILED REF, the label only on a live one —
   // the same rule as the React chip, and for the same reason: whoever has to
@@ -151,9 +148,8 @@ export function linkifyRefs(host: HTMLElement, world: RefWorld,
       if (!parsed) return false
       const r = resolveRef(parsed, world)
       // ⚠ THE WHOLE RENDERED ANSWER, not just the outcome — see `chipSig`.
-      // `clickable` is part of it: the same `ready` reference is a control on
-      // a surface with a handler and inert text on one without, and comparing
-      // outcomes alone kept the stale one.
+      // `clickable` is part of it: one `ready` reference is a control on a
+      // surface with a handler and inert text on one without.
       return el.getAttribute(SIG)
         === chipSig(r, r.outcome === 'ready' && clickable && !r.atDestination)
     })
@@ -209,11 +205,9 @@ export function refClickHandler(worldOf: () => RefWorld | null | undefined,
     if (!el) return
     const parsed = parseRef(el.getAttribute(TOK) ?? '')
     if (!parsed) return
-    // ⚠ THE WORLD IS CHECKED BEFORE IT IS USED, not after. The listener
-    // outlives the world it was attached with — chips rendered under one
-    // world stay in the DOM when the caller stops supplying one — and
-    // `resolveRef` reads `world.org` immediately, so a click on a stale chip
-    // threw a TypeError before reaching the guard below (Astra, 2026-09-05).
+    // ⚠ THE WORLD IS CHECKED BEFORE IT IS USED. The listener outlives the
+    // world it was attached with, and `resolveRef` reads `world.org`
+    // immediately — so a click on a stale chip throws before any later guard.
     const world = worldOf()
     if (!world) return
     const r = resolveRef(parsed, world)
@@ -262,10 +256,9 @@ export function useRefMd(world: RefWorld | null | undefined,
     // one, and an empty `RefWorld` would answer "another org" to every token
     // in the app's own prose.
     //
-    // ⚠ AND LOSING THE WORLD TAKES THE CHIPS WITH IT. Leaving them was the
-    // quiet failure: buttons that still look live, still take the click, and
-    // now have nothing behind them (Astra, 2026-09-05). Undoing the injection
-    // restores exactly the token the author wrote.
+    // ⚠ AND LOSING THE WORLD TAKES THE CHIPS WITH IT: buttons that still look
+    // live and have nothing behind them. Undoing the injection restores
+    // exactly the token the author wrote.
     if (world) linkifyRefs(host.current, world, !!onOpen)
     else unlinkifyRefs(host.current)
   })

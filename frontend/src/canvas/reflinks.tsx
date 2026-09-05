@@ -11,11 +11,10 @@
 //   foreign   — another org's token; NEVER resolved against what is on screen
 //   elsewhere — real as far as we know, but THIS panel has no way to open it
 //
-// ⚠ THE THREE THAT ARE NOT `ready` ARE THE FEATURE. An emitter that writes a
-// canonical token is CLAIMING a target exists, so quietly rendering a failed
-// one as ordinary prose (what I originally proposed, and what Astra rejected)
-// turns a broken pointer into text nobody can tell from a typo. Every outcome
-// says which one it is, on the chip, in words.
+// ⚠ THE FOUR THAT ARE NOT `ready` ARE THE FEATURE. An emitter that writes a
+// canonical token is CLAIMING a target exists, so rendering a failed one as
+// ordinary prose turns a broken pointer into text nobody can tell from a
+// typo. Every outcome says which one it is, on the chip, in words.
 //
 // ⚠ AND `pending` IS NOT `absent`. "I have not looked yet" and "I looked and it
 // is not there" are the same picture if you only track a boolean, and the wrong
@@ -210,38 +209,28 @@ export interface RefRoutes {
   onOpen: (r: ResolvedRef) => void
 }
 
-/** THE WORLD A PANEL JUDGES REFERENCES AGAINST, and the one place that decides
- *  what a click does. Every surface that renders a reference builds its world
- *  here — the shell panels, the docket, the desk — because written per surface
- *  they would drift, and the drift is invisible: one panel quietly calling a
- *  real item missing looks exactly like a real missing item.
+/** The world a surface judges references against, and what a click does.
+ *  Every surface builds its world here; written per surface they drift, and a
+ *  panel quietly calling a real item missing looks like a real missing item.
  *
- *  `agents` is a MAP THE CALLER ALREADY HOLDS, not a payload this hook fetches.
- *  The shell flattens the tree; the desk is handed the canvas map. Only the
- *  keys are read, which is why the value type is unconstrained — the two
- *  callers hold different node shapes and neither needs converting.
+ *  `agents` is a map the caller already holds — only the keys are read, which
+ *  is why the value type is unconstrained.
  *
- *  ⚠ `null` IS `loading`, NOT "none". An empty Map says "this org has no
- *  agents", which makes every agent reference and every node mailbox absent —
- *  a lie that appears while the first fetch is still in flight, which is
- *  exactly when someone is most likely to read it.
+ *  ⚠ `null` IS `loading`, NOT "none". An empty Map means "this org has no
+ *  agents", making every agent reference and node mailbox absent while the
+ *  first fetch is still in flight.
  *
- *  ⚠ NO ITEM OR DOCUMENT INDEX, DELIBERATELY. No caller holds either list, and
- *  `undefined` means "do not judge — the destination will". The destinations
- *  do: the docket states an id it does not have, and the reader reports a
- *  document it cannot fetch.
+ *  ⚠ NO ITEM OR DOCUMENT INDEX. No caller holds either list, and `undefined`
+ *  means "do not judge — the destination will".
  *
  *  ⚠ `handles` FOLLOWS THE CALLBACKS. A kind with no route reads "not opened
- *  from here", which stays true, rather than becoming a live chip that
- *  swallows the click. Pass `undefined` for a route you do not have — never a
- *  no-op function, which would claim the panel can do something it cannot.
+ *  from here"; pass `undefined` for a route you do not have, never a no-op,
+ *  which would claim the panel can do something it cannot.
  *
- *  ⚠ AND EVERY ROUTE IS CALLED WITH EXACTLY ONE ARGUMENT. Adapt at the call
- *  site — `(id) => centerOn(id)`, never bare `centerOn` — because a handoff
- *  that merely type-checks will hand a second argument to whatever is behind
- *  it. That is not hypothetical: `centerOn(id, z)` reads `z ?? fit`, so a
- *  DOM event arriving there is non-null, defeats the default, and the camera
- *  is computed from an object (Astra, 2026-09-05). */
+ *  ⚠ EVERY ROUTE IS CALLED WITH EXACTLY ONE ARGUMENT — adapt at the call site,
+ *  `(id) => centerOn(id)` and never bare `centerOn`. `centerOn(id, z)` reads
+ *  `z ?? fit`, so a DOM event in the second parameter is non-null, defeats the
+ *  default, and the camera is computed from an object. */
 export function useRefRoutes(org: string, agents: ReadonlyMap<string, unknown> | null,
   routes: {
     onOpenItem?: (itemSlug: string) => void
@@ -286,28 +275,21 @@ export function useRefRoutes(org: string, agents: ReadonlyMap<string, unknown> |
     else if (r.ref.kind === 'doc') onOpenDoc?.(r.ref.id)
     else if (r.ref.kind === 'mail') onOpenMail?.(r.ref)
   }, [onOpenItem, onFocusAgent, onOpenDoc, onOpenMail])
-  // ⚠ THE CALLERS PASS INLINE ARROWS, so `routes` is a fresh object every
-  // render and this memo recomputes with it. That is deliberate and it is
-  // cheap: what it produces is compared by OUTCOME downstream (refmd's pass
-  // returns having touched nothing when every chip still says the same
-  // thing), so a new world object does not cost a rebuild — and pinning the
-  // identity here would mean stale routes after any state change.
+  // ⚠ CALLERS PASS INLINE ARROWS, so `routes` is a fresh object each render
+  // and this memo recomputes with it. Downstream compares by rendered
+  // OUTCOME, so a new world object costs no rebuild; pinning the identity
+  // here would mean stale routes after any state change.
   return useMemo(() => ({ world, onOpen }), [world, onOpen])
 }
 
-/** ONE LINE OF PROSE AN AGENT WROTE, with any canonical reference in it made
- *  clickable. Plain text when the surface has no world — the honest rendering
- *  for a panel with nowhere to send anybody, and the reason this takes `refs`
- *  rather than reaching for a global.
+/** One line of prose an agent WROTE, with its references made clickable.
+ *  Plain text when the surface has no world.
  *
- *  ⚠ THE REACT RENDERER, NOT THE MARKDOWN ONE. Its call sites render text
- *  NODES — a checklist item, a status summary — so the prose is split into
- *  runs rather than walked as DOM. Using the markdown pass on them would
- *  claim they had been through `md()`, which they have not.
+ *  ⚠ THE REACT RENDERER, NOT THE MARKDOWN ONE: these call sites render text
+ *  NODES, so the prose is split into runs rather than walked as DOM.
  *
- *  ⚠ AND IT IS DELIBERATELY NOT USED FOR MACHINE-WRITTEN LINES. A sentence
- *  the app composed ABOUT an agent (a progress note, a derived summary) can
- *  quote an agent's text, and linkifying it would turn a quotation into a
+ *  ⚠ NOT FOR MACHINE-WRITTEN LINES. A sentence the app composed about an agent
+ *  can quote that agent's text, and linkifying it turns a quotation into a
  *  claim that somebody wrote a reference there. */
 export function Written({ text, refs }: { text: string; refs?: RefRoutes }) {
   if (!refs) return <>{text}</>
@@ -366,16 +348,14 @@ export function RefChip({ r, onOpen }: {
 }) {
   const cls = `ref-chip ref-${r.ref.kind} ref-${r.outcome}`
     + (r.atDestination ? ' ref-here' : '')
-  // an agent's CURRENT model, the same claim its name carries everywhere else.
-  // No tier means no icon and a working control — an unknown model is not an
-  // unknown agent (Astra, 2026-09-05).
+  // an agent's CURRENT model, the same claim its name carries elsewhere. No
+  // tier means no icon and a working control: an unknown model is not an
+  // unknown agent.
   const icon = r.ref.kind === 'agent' && r.tier
     ? <span className={'tier t-' + r.tier}>{TIER_LETTER[r.tier] ?? '?'}</span>
     : null
-  // ⚠ AT THE DESTINATION IT IS IDENTITY, NOT A ROUTE. A reference to the agent
-  // whose focused desk you are reading is real and resolvable and goes
-  // nowhere, so it keeps its icon and loses its control — the rule
-  // `AgentName` already follows, decided by the world rather than restated.
+  // ⚠ AT THE DESTINATION IT IS IDENTITY, NOT A ROUTE: real, resolvable, and
+  // nowhere to go, so it keeps its icon and loses its control.
   if (r.outcome === 'ready' && onOpen && !r.atDestination) {
     return (
       <button type="button" className={cls} title={r.why}

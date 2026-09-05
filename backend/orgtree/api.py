@@ -4100,12 +4100,11 @@ def _sent_refs(org_slug: str, rows: list[Any]) -> list[Any]:
 
     ⚠ A SENT ROW IS A COPY OF A MAIL THAT LIVES IN SOMEBODY ELSE'S BOX. The
     user's outbox is written by `post_mail` as `{**entry, "to": to}` — the same
-    entry it just appended to the RECIPIENT's archive — so addressing these
-    rows from the box you are reading names a message that is not there, and
-    on a colliding id names a DIFFERENT message that is (Astra, 2026-09-05).
-    Each row carries its own `to`, and `refs.mail` maps exactly the three
-    delivery values `post_mail` can return; anything else (a `@net:` peer)
-    gets no reference rather than an invented one.
+    entry it appended to the RECIPIENT's archive — so addressing these rows
+    from the box being read names a message that is not there, and on a
+    colliding id names a DIFFERENT message that is. Each row carries its own
+    `to`, and `refs.mail` maps the three delivery values `post_mail` returns;
+    anything else gets no reference rather than an invented one.
     """
     for r in rows:
         if isinstance(r, dict) and r.get("id"):
@@ -4658,9 +4657,8 @@ def org_inbox_entries(slug: str) -> dict[str, Any]:
     except LedgerError as e:
         raise HTTPException(404, str(e))
     log = cast("list[dict[str, Any]]", org.d.get("org_inbox") or [])
-    # the rows carry their own references, like every other box — without
-    # this the org inbox was the one mailbox whose messages could not be
-    # linked to at all (Astra, 2026-09-05)
+    # the rows carry their own references, like every other box: without this
+    # the org inbox is the one mailbox whose mail cannot be linked to
     return {"entries": _mail_refs(slug, "org", log[-100:]), "total": len(log),
             "unread": max(0, len(log) - int(org.d.get("org_inbox_read", 0)))}
 
@@ -4670,21 +4668,18 @@ def mail_one(slug: str, box: str, mid: str, node: str = "") -> dict[str, Any]:
     """ONE message, by id, from the box that actually holds it.
 
     ⚠ WHY THIS EXISTS. Every mailbox route returns a WINDOW — the newest 50,
-    or 100 for the org inbox — and the reading pane said "that message is not
-    in this folder" whenever a reference named something outside it. That is a
-    claim about EXISTENCE made from a slice: a retained message at position 51
-    is still there, and the reader was told it was gone (Astra, 2026-09-05).
-    So the panel can now ask the exact question instead of inferring an answer
-    from what it happened to be holding.
+    or 100 for the org inbox — so "not in the window" is not "not there". A
+    retained message at position 51 is still there, and a panel that infers
+    absence from its slice tells the reader it is gone. This is the exact
+    question instead.
 
-    ⚠ IT IS NOT A WIDER POLL. One id, asked once, only when a reference lands
-    outside the loaded window — the lists keep their windows, because the fix
-    for "the window is too small" must not be "send everything every five
-    seconds" (105 KB every 6 s was measured on the org inbox alone).
+    ⚠ IT IS NOT A WIDER POLL: one id, asked once, only when a reference lands
+    outside the loaded window. The lists keep their windows — the org inbox
+    alone was 105 KB every 6 s before they had them.
 
     ⚠ AND IT ADDS NO REACH. Each box is searched through the same route that
-    already serves it wholesale to this client, so anything answered here was
-    already readable; an unknown box or node is a 404 rather than a search.
+    already serves it wholesale to this client; an unknown box or node is a
+    404 rather than a search.
     """
     try:
         org = store.load_org_snapshot(

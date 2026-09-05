@@ -513,13 +513,10 @@ export function DocketModal({ slug, toast, close, tree, onFocusAgent,
    *  is the live-looking control that does nothing. */
   onOpenMail?: (ref: TypedRef) => void
 }) {
-  // ⚠ ONE DOCUMENT READER, OPENED BY REFERENCE. A `@doc:` token in an item's
-  // prose used to say "not opened from this panel", which was honest but was
-  // never the destination — a reference the user cannot follow is half a
-  // feature (Astra 2026-09-05). The reader is `DocReader`, the same one the
-  // canvas chips open, so the fetch is the EXACT get by id: it distinguishes
-  // "still loading" from "no such document" by itself, which is precisely the
-  // judgement this panel cannot make on its own (it holds no document list).
+  // ⚠ ONE DOCUMENT READER, OPENED BY REFERENCE. The reader is `DocReader`, the
+  // same one the canvas chips open, so the fetch is the EXACT get by id: it
+  // tells "still loading" from "no such document" by itself, which is the
+  // judgement this panel cannot make (it holds no document list).
   const [docView, setDocView] = useState<string | null>(null)
   // ⚠ ESCAPE BELONGS TO THE TOP-MOST THING ON SCREEN. Both listeners sit on
   // `window`, so an unguarded Escape with the reader open closes the reader

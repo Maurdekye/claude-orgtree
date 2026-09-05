@@ -150,10 +150,10 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, rowS
   // never ran again and the latch was already spent. Holding the id makes a
   // second click on a different reference move the selection and scroll again,
   // and a repeat click on the SAME one stay put.
-  // ⚠ THE LATCH IS ON THE REQUEST, NOT ON THE TARGET. Comparing ids alone
-  // refused a second deliberate click on the same message forever, once the
-  // reader had selected something else in between. The latch still exists,
-  // or every poll drags them back to a row they moved away from.
+  // ⚠ THE LATCH IS ON THE REQUEST, NOT ON THE TARGET: comparing ids alone
+  // refuses a second deliberate click on the same message once the reader has
+  // selected something else. The latch still exists, or every poll drags them
+  // back to a row they moved away from.
   const jumpedRef = useRef<string | null>(jumpKey(jumpTo, jumpSeq))
   // scrolling is tracked SEPARATELY from selecting. They are handled in
   // different places — an effect and a row ref — and a single latch shared
@@ -238,10 +238,10 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, rowS
   //
   // ⚠ AND THE DIFFERENCE IS THE WHOLE OF THIS BLOCK. Every box route returns
   // a slice (the newest 50, or 100 for the org inbox), so a retained message
-  // at position 51 is still there — and this pane used to tell the reader it
-  // was gone, in words, on the strength of a window (Astra, 2026-09-05). When
-  // a caller can ask the exact question we ask it; when none can, we say only
-  // what we actually know.
+  // at position 51 is still there — and saying it is gone on the strength of
+  // a window is a claim about the message made from what we happen to hold.
+  // When a caller can ask the exact question we ask it; when none can, we say
+  // only what we know.
   const outsideWindow = Boolean(jumpTo)
     && !all.some((m) => keyOf(m) === jumpTo)
   // ⚠ ONE VALUE, THREE STATES, keyed on the request. Two separate flags —
@@ -262,21 +262,18 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, rowS
       .catch(() => { if (live) setAsk({ asking: false, row: null }) })
     return () => { live = false }
   }, [outsideWindow, jumpTo, key, lookup])
-  // ⚠ THE ANSWER IS MATCHED TO THE QUESTION BY THE ROW'S OWN ID, not by
-  // remembering which request asked. A previous lookup's row is rendered
-  // only if it IS the message now being asked for — and if it is, it is the
-  // right answer whichever click fetched it. (A request-key comparison stood
-  // here; its mutant survived, because the effect re-arms `asking` on the
-  // same commit as the new request, so the comparison decided nothing.)
+  // ⚠ THE ANSWER IS MATCHED TO THE QUESTION BY THE ROW'S OWN ID. A previous
+  // lookup's row renders only if it IS the message now being asked for — and
+  // if it is, it is the right answer whichever click fetched it. `lookup` is
+  // the caller's, so a row that is not the one asked for is refused.
   const lookingUp = outsideWindow && Boolean(lookup)
     && (!ask || ask.asking)
   const foundOutside = ask && !ask.asking && ask.row
     && keyOf(ask.row) === jumpTo ? ask.row : null
   // ⚠ THE THREE OUTCOMES ARE DECIDED BY THE READING PANE'S BRANCH ORDER, not
   // by flags repeating it here: a found message becomes `cur` so the notice
-  // never renders, and `lookingUp` is checked before this. Both extra terms
-  // I first wrote were unfalsifiable for that reason and their mutants
-  // survived. What is left is the one fact this line owns.
+  // never renders, and `lookingUp` is checked before this. This line owns one
+  // fact — the reference landed outside the window.
   const jumpMissing = outsideWindow
   const curPile = selId == null ? undefined
     : piles.find((g) => g.some((m) => keyOf(m) === selId))
@@ -880,12 +877,11 @@ export function NodeInboxModal({ node, slug, close, jumpTo, jumpSeq, onFocusAgen
     <div className="overlay" onClick={close} onPointerDown={(e) => e.stopPropagation()}>
       <div className="settings wide" onClick={(e) => e.stopPropagation()}>
         <h3><MailIcon fontSize="inherit" /> {node.id} <span className="dim">· inbox</span></h3>
-        {/* ⚠ A REFERENCE CLOSES THIS MODAL ON THE WAY OUT, exactly as the name
-            beside it already does. Everything a token can open — an item, a
-            document, another mailbox, an agent's desk — is UNDER this
-            overlay, so following one without closing would look like a click
-            that did nothing. The world itself is untouched: only the handler
-            is wrapped, and with one argument. */}
+        {/* ⚠ A REFERENCE CLOSES THIS MODAL ON THE WAY OUT, as the name beside
+            it does. Everything a token can open is UNDER this overlay, so
+            following one without closing looks like a click that did nothing.
+            The world is untouched; only the handler is wrapped, with one
+            argument. */}
         <InboxView slug={slug} nid={node.id} jumpTo={jumpTo} jumpSeq={jumpSeq}
           tier={node.tier}
           tierOf={tierOf} hasAgent={hasAgent}

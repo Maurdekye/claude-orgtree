@@ -148,8 +148,10 @@ const MUTANTS = [
     // defeats the latch even with the outer memo in place.
     name: 'the world is rebuilt every render',
     file: LINKS, kills: '§9 the refs value keeps its identity',
-    from: `  }, [org, agents, onOpenItem, onFocusAgent, onOpenDoc, onOpenMail])`,
-    to: `  }, [org, agents, onOpenItem, onFocusAgent, onOpenDoc, onOpenMail, Math.random()])`,
+    from: `  }, [org, agents, onOpenItem, onFocusAgent, onOpenDoc, onOpenMail,
+    destination, tierOf])`,
+    to: `  }, [org, agents, onOpenItem, onFocusAgent, onOpenDoc, onOpenMail,
+    destination, tierOf, Math.random()])`,
   },
   {
     // THE PROGRESS CARD'S CHECKLIST — a Codex plan step or a TodoWrite item is
@@ -239,8 +241,10 @@ const MUTANTS = [
     // latch, it is a stale answer.
     name: 'the world ignores who exists, so it never changes',
     file: LINKS, kills: '§9 the refs value keeps its identity',
-    from: `  }, [org, agents, onOpenItem, onFocusAgent, onOpenDoc, onOpenMail])`,
-    to: `  }, [org, onOpenItem, onFocusAgent, onOpenDoc, onOpenMail])`,
+    from: `  }, [org, agents, onOpenItem, onFocusAgent, onOpenDoc, onOpenMail,
+    destination, tierOf])`,
+    to: `  }, [org, onOpenItem, onFocusAgent, onOpenDoc, onOpenMail,
+    destination, tierOf])`,
   },
 ]
 
