@@ -515,3 +515,197 @@ uiTest('§11c a reference to retained mail outside the window opens the folder '
       'an incoming message was dressed as one of the reader’s own sends')
   } finally { restore(); realClock() }
 })
+
+// ───────────── §12 the folder owner's failed question is the owner's to report
+//
+// ⚠ EXECUTED BY ASTRA AGAINST 222088a. Read from Sent, follow a reference to a
+// message in neither loaded list, and let the panel's question REJECT. The
+// panel caught it and said nothing, on the belief that "the list below reports
+// the failure" — but the Sent list is deliberately given no `lookup`, so it
+// reported the one thing a list can know without asking: not in this folder.
+// A network error was rendered as a fact about the message, in the one folder
+// where nothing could correct it.
+//
+// AND THE SAME HOLE IS OPEN WHILE THE QUESTION IS STILL IN FLIGHT: an
+// unanswered question read as a confirmed absence.
+
+/** a box stub whose one-message lookup is controlled by the caller */
+function stubAsk(answer: () => Promise<unknown>) {
+  const had = (globalThis as { fetch?: typeof fetch }).fetch
+  ;(globalThis as unknown as { fetch: typeof fetch }).fetch = ((url: string) => {
+    const u = String(url)
+    if (u.includes('/mail/node/')) return answer()
+    return Promise.resolve({
+      ok: true, status: 200, headers: new Headers(),
+      json: () => Promise.resolve(u.includes('/inbox') ? { ...NODE_BOX } : {}),
+    })
+  }) as unknown as typeof fetch
+  return () => { (globalThis as { fetch?: typeof fetch }).fetch = had }
+}
+
+const toSent = async (el: HTMLElement) => {
+  const b = [...el.querySelectorAll('.mail-folders button')]
+    .find((x) => x.textContent === 'sent') as HTMLButtonElement
+  await inAct(() => { b.click() })
+  await flush()
+}
+
+uiTest('§12 a rejected question, followed from Sent, is reported as a failed '
+  + 'question — with a retry', async (mount) => {
+  let asks = 0
+  useFakeClock()
+  const restore = stubAsk(() => {
+    asks += 1; return Promise.reject(new Error('network failed'))
+  })
+  try {
+    const { el, render } = await mount(
+      <InboxView slug="org" nid="me" tier={null} jumpTo="received-1" jumpSeq={1} />)
+    await settle(el)
+    await toSent(el)
+    assert.deepEqual(folderNow(el), ['sent'], 'positive control: they moved')
+    await render(
+      <InboxView slug="org" nid="me" tier={null} jumpTo="missing-one" jumpSeq={2} />)
+    await settle(el)
+    assert.ok(asks > 0, 'positive control: the question was actually asked')
+    const note = el.querySelector('.mailer-nojump')
+    assert.ok(note, 'nothing was said at all')
+    assert.match(note!.textContent ?? '', /Could not check/,
+      'a rejected question was reported as a confirmed absence, in a folder '
+      + 'that never asked anything')
+    assert.doesNotMatch(note!.textContent ?? '', /retracted/,
+      'it stated a fact about the MESSAGE on the strength of a network error')
+    const again = note!.querySelector('button')
+    assert.ok(again, 'no way to try again')
+    const before = asks
+    await inAct(() => { (again as HTMLButtonElement).click() })
+    await settle(el)
+    assert.ok(asks > before, 'the retry did not ask again')
+  } finally { restore(); realClock() }
+})
+
+uiTest('§12b an unanswered question, followed from Sent, claims nothing yet',
+async (mount) => {
+  useFakeClock()
+  // never settles: the question is in flight for the whole check
+  const restore = stubAsk(() => new Promise(() => {}))
+  try {
+    const { el, render } = await mount(
+      <InboxView slug="org" nid="me" tier={null} jumpTo="received-1" jumpSeq={1} />)
+    await settle(el)
+    await toSent(el)
+    await render(
+      <InboxView slug="org" nid="me" tier={null} jumpTo="missing-one" jumpSeq={2} />)
+    await settle(el)
+    const note = el.querySelector('.mailer-nojump')?.textContent ?? ''
+    assert.match(note, /Looking for that message/,
+      'a question still in flight was rendered as a confirmed absence')
+    assert.doesNotMatch(note, /not in this folder/)
+  } finally { restore(); realClock() }
+})
+
+uiTest('§12c CONTROL — a question ANSWERED "no" from Sent still says the '
+  + 'message is not here', async (mount) => {
+  useFakeClock()
+  const restore = stubAsk(() => Promise.resolve({
+    ok: true, status: 200, headers: new Headers(),
+    json: () => Promise.resolve({ found: false, mail: null }),
+  }))
+  try {
+    const { el, render } = await mount(
+      <InboxView slug="org" nid="me" tier={null} jumpTo="received-1" jumpSeq={1} />)
+    await settle(el)
+    await toSent(el)
+    await render(
+      <InboxView slug="org" nid="me" tier={null} jumpTo="missing-one" jumpSeq={2} />)
+    await settle(el)
+    const note = el.querySelector('.mailer-nojump')
+    assert.match(note?.textContent ?? '', /not in this folder/,
+      'a real negative answer must still be stated as one')
+    assert.equal(note!.querySelectorAll('button').length, 0,
+      'there is nothing to retry: the question was answered')
+  } finally { restore(); realClock() }
+})
+
+// ───────────── §13 an empty window is not an answer about a message
+//
+// ⚠ EXECUTED BY ASTRA AGAINST 222088a. `if (!all.length) return "no mail yet"`
+// sits ABOVE every jump outcome, so a folder whose window happens to be empty
+// answered an explicit reference with a remark about the folder — and would
+// have hidden a found message, an in-flight question and a real absence alike.
+
+uiTest('§13 an explicit jump into an empty window renders its OUTCOME, not '
+  + '"no mail yet"', async (mount) => {
+  const { el } = await mount(
+    <MailList delivered={[]} jumpTo="outside-1" jumpSeq={1}
+      lookup={() => Promise.resolve(
+        { ...older('outside-1'), body: 'FOUND OUTSIDE' })} />)
+  await flush()
+  assert.match(pane(el), /FOUND OUTSIDE/,
+    'the message the reader asked for was found and then hidden behind a '
+    + 'remark about the folder')
+})
+
+uiTest('§13b an explicit jump into an empty window reports a real absence',
+async (mount) => {
+  const { el } = await mount(
+    <MailList delivered={[]} jumpTo="outside-1" jumpSeq={1}
+      lookup={() => Promise.resolve(null)} />)
+  await flush()
+  assert.match(el.querySelector('.mailer-nojump')?.textContent ?? '',
+    /not in this folder/, 'an answered question said nothing')
+})
+
+uiTest('§13c CONTROL — an empty folder with NO jump still says "no mail yet"',
+async (mount) => {
+  const { el } = await mount(<MailList delivered={[]} />)
+  await flush()
+  assert.match(el.textContent ?? '', /no mail yet/,
+    'the ordinary empty folder lost its own sentence')
+  assert.equal(el.querySelectorAll('.mailer-nojump').length, 0,
+    'an empty folder nobody linked into announced a missing message')
+})
+
+// ───────────── §14 a repoll underneath must not abandon the question
+//
+// ⚠ RAISED BY ASTRA AS A READ-ONLY CONCERN, reproduced here. The panel's
+// folder effect depends on `box`, and the poll replaces `box` every few
+// seconds with a fresh object. The re-run cleans up the previous run (killing
+// the in-flight answer) and then returns early on its own latch — so a
+// question outlived by one poll tick is silently dropped and the reader is
+// left in the wrong folder with no outcome at all.
+
+uiTest('§14 an answer that arrives after a repoll still opens the folder',
+async (mount) => {
+  let settleAsk: ((v: unknown) => void) | null = null
+  const answer = {
+    ok: true, status: 200, headers: new Headers(),
+    json: () => Promise.resolve({ found: true, mail: OUTSIDE }),
+  }
+  useFakeClock()
+  // ⚠ ONLY THE PANEL'S QUESTION IS HELD OPEN. The inbox list asks the same id
+  // again once the folder opens (two requests per click, today); deferring
+  // that one too would leave the check stuck on the second question and
+  // stop it saying anything about the repoll race it exists for.
+  const restore = stubAsk(() => (settleAsk
+    ? Promise.resolve(answer)
+    : new Promise((res) => { settleAsk = res })))
+  try {
+    const { el, render } = await mount(
+      <InboxView slug="org" nid="me" tier={null} jumpTo="received-1" jumpSeq={1} />)
+    await settle(el)
+    await toSent(el)
+    await render(
+      <InboxView slug="org" nid="me" tier={null} jumpTo="older-received" jumpSeq={2} />)
+    await settle(el)
+    assert.ok(settleAsk, 'positive control: the question is in flight')
+    // the poll ticks underneath — a new `box` object, same data
+    await advance(6000, 16); await flush()
+    // …and only now does the answer come back
+    await inAct(() => { settleAsk!(answer) })
+    await settle(el)
+    assert.deepEqual(folderNow(el), ['inbox'],
+      'a poll tick underneath the question threw the answer away')
+    assert.match(pane(el), /OLDER RECEIVED/,
+      'the message it found never reached the screen')
+  } finally { restore(); realClock() }
+})

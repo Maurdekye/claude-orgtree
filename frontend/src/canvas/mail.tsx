@@ -66,6 +66,14 @@ export interface MailListProps {
   /** the exact lookup answered. The owner of the folders decides where that
    *  message belongs — this list only knows it was not in its own window. */
   onFound?: (m: MailRow) => void
+  /** the FOLDER OWNER's question about `jumpTo`, for a list that has no
+   *  `lookup` of its own and so is not the one asking. Without it such a list
+   *  reports the only thing it can know unaided — "not in this folder" — while
+   *  the question is still open or has failed, which is a claim about the
+   *  message made from a network state. Set with `onAskRetry`, never alone. */
+  askState?: 'asking' | 'failed' | null
+  /** re-ask the OWNER's question: the retry the failure notice offers */
+  onAskRetry?: () => void
   /** FR-21: the mail rides along so a call site whose files live under the
    *  SENDER's scratch (the user inbox — each row a different agent's outbox)
    *  can key the URL on `m.from`; fixed-node call sites ignore it. Returning
@@ -108,7 +116,7 @@ const MAIL_WINDOW = 40
 
 export function MailList({ pending = [], delivered = [], waitLabel, sender, rowSender,
   outgoing, onRead, onReply, onRetract, jumpTo, jumpSeq, lookup, onFound,
-  fileHref, mdBase, renderBody, rowMark,
+  askState, onAskRetry, fileHref, mdBase, renderBody, rowMark,
   onFocusAgent, tierOf, hasAgent, refs }: MailListProps) {
   // ONE order, by send time, always — never grouped, never re-grouped.
   //
@@ -275,9 +283,11 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, rowS
   }, [outsideWindow, jumpTo, key, lookup, retry])
   // ⚠ THE ANSWER IS MATCHED TO THE QUESTION BY THE ROW'S OWN ID: `lookup` is
   // the caller's, so a row that is not the message asked for is refused.
-  const lookingUp = outsideWindow && Boolean(lookup)
-    && (!ask || ask.asking)
-  const lookupFailed = outsideWindow && Boolean(ask?.failed)
+  // ⚠ EITHER THIS LIST IS ASKING OR ITS OWNER IS — never both, because a list
+  // given a `lookup` is never also given an `askState`.
+  const lookingUp = outsideWindow
+    && ((Boolean(lookup) && (!ask || ask.asking)) || askState === 'asking')
+  const lookupFailed = outsideWindow && (Boolean(ask?.failed) || askState === 'failed')
   const foundOutside = ask && !ask.asking && ask.row
     && keyOf(ask.row) === jumpTo ? ask.row : null
   // ⚠ THE THREE OUTCOMES ARE DECIDED BY THE READING PANE'S BRANCH ORDER, not
@@ -341,7 +351,12 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, rowS
     e.currentTarget.querySelectorAll('.mailrow')[next]
       ?.scrollIntoView({ block: 'nearest' })
   }
-  if (!all.length) return <div className="dim pad">no mail yet</div>
+  // ⚠ AN EMPTY WINDOW IS A FACT ABOUT THE FOLDER, NOT ABOUT A MESSAGE. This
+  // sentence used to sit above every jump outcome, so a reference followed
+  // into a folder whose window happens to be empty was answered with a remark
+  // about the folder — hiding a message the lookup had FOUND, a question still
+  // in flight, and a real absence alike. With no jump, it still says this.
+  if (!all.length && !jumpTo) return <div className="dim pad">no mail yet</div>
   return (
     <div className="mailer" tabIndex={-1} onKeyDown={onKey}>
       {/* paging is automatic: within a screen of the bottom, the next window
@@ -581,7 +596,9 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, rowS
                 ? <span className="mailer-nojump failed">
                     Could not check whether that message is here.{' '}
                     <button type="button" className="mailer-retry"
-                      onClick={() => setRetry((n) => n + 1)}>try again</button>
+                      onClick={onAskRetry ?? (() => setRetry((n) => n + 1))}>
+                      try again
+                    </button>
                   </span>
                 : jumpMissing
                   ? <span className="mailer-nojump">
@@ -752,30 +769,57 @@ export function InboxView({ slug, nid, onRetract, jumpTo, jumpSeq, tier, onFocus
   // time the poll returned. `box` is in the deps because the answer is not
   // knowable until it has loaded, and the panel mounts before that.
   const foldedJump = useRef<string | null>(null)
+  // ⚠ THE PANEL'S QUESTION IS THE PANEL'S TO REPORT. The list it is asking on
+  // behalf of may be one with no `lookup` of its own (Sent), and such a list
+  // can only say "not in this folder" — a claim about the message, made while
+  // the question is still in flight or after it FAILED.
+  const [jumpAsk, setJumpAsk] = useState<
+    { key: string; asking: boolean; failed: boolean } | null>(null)
+  // a deliberate retry, as in the list: nothing re-asks on its own
+  const [askAgain, setAskAgain] = useState(0)
+  // ⚠ A REQUEST IS SUPERSEDED ONLY BY A NEWER REQUEST. Held in a ref, not in
+  // the effect's closure: `box` is in the deps and the poll replaces it every
+  // few seconds, so an effect-scoped cancel killed any answer slower than one
+  // poll tick — and the re-run then returned early on the latch below, so the
+  // question was dropped with nothing said. Unmount clears it.
+  const askKey = useRef<string | null>(null)
+  useEffect(() => () => { askKey.current = null }, [])
   useEffect(() => {
-    let cleanup: (() => void) | undefined
     const key = jumpKey(jumpTo, jumpSeq)
-    if (!jumpTo || !box || foldedJump.current === key) return
-    foldedJump.current = key
+    // a retry is a new attempt at the same request: it must pass the latch
+    const req = key + '#' + askAgain
+    if (!jumpTo || !box || foldedJump.current === req) return
+    foldedJump.current = req
     const here = (rows: MailRow[] | undefined) =>
       (rows ?? []).some((m) => m.id === jumpTo)
-    if (here(box.delivered) || here(box.pending)) { setFolder('inbox'); return }
-    if (here(box.sent)) { setFolder('sent'); return }
+    const at = (f: string) => { setFolder(f); setJumpAsk(null) }
+    if (here(box.delivered) || here(box.pending)) { at('inbox'); return }
+    if (here(box.sent)) { at('sent'); return }
     // ⚠ IN NEITHER LOADED LIST: THE PANEL ASKS, not the list. A list knows
     // only that the id is missing from ITS window, so the Sent list would ask
     // for a message the inbox list is holding and pull the reader out of the
     // folder they chose. The answer's folder is decided here:
     // `@mail:org/node/<nid>/<id>` names that node's RECEIVED mail.
-    let live = true
+    askKey.current = req
+    setJumpAsk({ key, asking: true, failed: false })
     Promise.resolve(nodeLookup(jumpTo))
-      .then((m) => { if (live && m) setFolder('inbox') })
-      .catch(() => { /* the list below reports the failure and offers a retry */ })
-    cleanup = () => { live = false }
+      .then((m) => {
+        if (askKey.current !== req) return
+        setJumpAsk({ key, asking: false, failed: false })
+        if (m) setFolder('inbox')
+      })
+      .catch(() => {
+        if (askKey.current !== req) return
+        setJumpAsk({ key, asking: false, failed: true })
+      })
     // ⚠ `jumpSeq` IS IN THE DEPS because this effect READS it. Without it a
     // repeat request never re-runs, and the latch compares a new key the
     // effect is never woken to look at.
-    return cleanup
-  }, [jumpTo, jumpSeq, box, nodeLookup])
+  }, [jumpTo, jumpSeq, box, nodeLookup, askAgain])
+  // only for THIS request: a previous jump's outcome says nothing about it
+  const askState = jumpAsk && jumpAsk.key === jumpKey(jumpTo, jumpSeq)
+    ? (jumpAsk.asking ? 'asking' : jumpAsk.failed ? 'failed' : null)
+    : null
   useEffect(() => {         // let go as soon as the server has caught up
     if (!box) return
     setDropped((d) => d.filter((id) => box.pending.some((m) => m.id === id)))
@@ -811,9 +855,13 @@ export function InboxView({ slug, nid, onRetract, jumpTo, jumpSeq, tier, onFocus
             // so the same scratch-keyed href serves the Sent folder too
             /* ⚠ NO `lookup` HERE. The Sent rows are copies of mail that lives
                in other boxes, so an exact answer never belongs in this folder
-               — the panel above asks, and opens the folder that holds it. */
+               — the panel above asks, and opens the folder that holds it. It
+               hands down the OUTCOME of that question (`askState`) so this
+               list does not read an unfinished or failed one as an absence. */
             : <MailList delivered={box.sent ?? []} outgoing jumpTo={jumpTo}
                 jumpSeq={jumpSeq} tierOf={tierOf} hasAgent={hasAgent} refs={refs}
+                askState={askState}
+                onAskRetry={() => setAskAgain((n) => n + 1)}
                 onFocusAgent={onFocusAgent}
                 fileHref={(p) => fileUrl(slug, nid, p)}
                 mdBase={() => fileBase(slug, nid)} />}
