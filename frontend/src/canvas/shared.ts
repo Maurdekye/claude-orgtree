@@ -282,10 +282,39 @@ export const tierLabel = (tier: string): string => {
  * is not an observation. Nothing here has run a turn, a tool call or a
  * refusal against the model, so no wording may imply that it has. */
 export const toolsNote = (tools: boolean | null | undefined): string =>
-  tools === true ? 'Tools: supported (catalog)'
-    : tools === false ? 'Tools: not supported (catalog)'
-      : 'Tools: unknown (catalog)'
-/** the same note for a TIER. '' for a static Claude/Codex/Antigravity tier —
+  capabilityNote('tools', tools)
+/* ── UNIT C (2026-09-05): two more declarations, the SAME voice ──────────
+ * `image` is the catalog's `architecture.input_modalities` naming image;
+ * `reasoning` is whether its `supported_parameters` names the `reasoning`
+ * REQUEST PARAMETER. The second is deliberately worded "Reasoning parameter":
+ * membership in a parameter list is not a claim about how a model thinks,
+ * and the label must not assert more than the list does.
+ *
+ * ⚠ DISCLOSURE, NOT BEHAVIOUR. Orgtree sends image content blocks and
+ * `--effort` to every OpenRouter seat regardless of these values. None of
+ * these strings may read as "images work", "images will be refused",
+ * "thinking is on" or "effort is honoured" — no turn is behind any of them.
+ *
+ * `toolsNote` keeps meaning TOOLS ONLY. Callsites that want all three move
+ * to `tierCapabilityNotes` / `capabilityNotes` on purpose, so a reader of a
+ * tools-only phrase is never handed three. */
+export type CapabilityKind = 'tools' | 'image' | 'reasoning'
+const CAPABILITY_LABEL: Record<CapabilityKind, string> = {
+  tools: 'Tools', image: 'Image input', reasoning: 'Reasoning parameter',
+}
+export const capabilityNote = (kind: CapabilityKind,
+  value: boolean | null | undefined): string =>
+  value === true ? `${CAPABILITY_LABEL[kind]}: supported (catalog)`
+    : value === false ? `${CAPABILITY_LABEL[kind]}: not supported (catalog)`
+      : `${CAPABILITY_LABEL[kind]}: unknown (catalog)`
+/** all three notes for one catalog row / tier row, in a fixed order, joined
+ *  by ` · `. An absent field (older backend) is unknown, never skipped: a
+ *  skipped note would render the same blank as a lane that has no catalog. */
+export const capabilityNotes = (c: { tools?: boolean | null,
+  image?: boolean | null, reasoning?: boolean | null } | null | undefined): string =>
+  (['tools', 'image', 'reasoning'] as const)
+    .map((k) => capabilityNote(k, c ? c[k] : null)).join(' · ')
+/** the tools note for a TIER. '' for a static Claude/Codex/Antigravity tier —
  *  the catalog is an OpenRouter fact and inventing one for another lane would
  *  be a claim no catalog made.
  *
@@ -299,6 +328,12 @@ export const tierToolsNote = (tier: string): string => {
   if (!isOpenRouterTier(tier)) return ''
   const t = openrouterTier(tier)
   return toolsNote(t ? t.tools : null)
+}
+/** all three notes for a TIER, the same two rules: '' for a static lane,
+ *  three unknowns for an OpenRouter tier the registry does not carry. */
+export const tierCapabilityNotes = (tier: string): string => {
+  if (!isOpenRouterTier(tier)) return ''
+  return capabilityNotes(openrouterTier(tier))
 }
 /** seat for ANY tier the static tables or the registry know */
 export const anyTierSeat = (tier: string): number =>

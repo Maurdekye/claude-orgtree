@@ -124,6 +124,23 @@ class ModelCard(TypedDict):
     #: any OpenRouter model is behind this value. Every surface that prints it
     #: says `(catalog)` for exactly that reason.
     tools: bool | None
+    #: the catalog's IMAGE-INPUT declaration, the same three states and the
+    #: same caveat: `architecture.input_modalities` names `image` (True), is
+    #: a readable list that does not (False), or is unreadable (None). Read
+    #: from the structured list, never the legacy `modality` display string.
+    #: ⚠ Orgtree sends image content blocks to every Claude-CLI lane —
+    #: OpenRouter included — with no regard to this value; it discloses what
+    #: the catalog says and changes no delivery. Unit C, 2026-09-05.
+    image: bool | None
+    #: whether `supported_parameters` names the `reasoning` REQUEST PARAMETER
+    #: — three-state, same rule as `tools`. This is membership in a parameter
+    #: list, not a claim about how a model thinks, which is why the UI prints
+    #: "Reasoning parameter". The catalog also carries a top-level `reasoning`
+    #: object; measured 2026-09-05 the two disagree on 7 of 431 rows, and this
+    #: field reads the PARAMETER LIST by decision (the object is a later
+    #: effort-control question). ⚠ `--effort` is passed on every OpenRouter
+    #: turn regardless of this value; nothing here changes that.
+    reasoning: bool | None
     free: bool
     #: the catalog's own release timestamp (unix seconds), 0 if absent. The
     #: ONE honest recency signal the catalog carries — see `sort_key`.
@@ -664,12 +681,48 @@ def _declared_tools(params: Any) -> bool | None:
     as a declaration would invent one. Normalized `tools` FIELDS are the only
     place a bool is meaningful — see `_stored_tools`.
     """
+    return _declared_param(params, "tools")
+
+
+def _declared_param(params: Any, name: str) -> bool | None:
+    """Is `name` in the catalog's `supported_parameters` — three-state.
+
+    The `_declared_tools` rule, by name: a valid list of strings is a
+    declaration (`name` in it → True, not in it → False, and an EMPTY list is
+    a declaration of nothing, so False); anything else is unknown. `reasoning`
+    is read here as REQUEST-PARAMETER membership — `"reasoning" in the list`
+    — and only that. `include_reasoning` and `reasoning_effort` ride beside
+    it on every real row measured (304/304) and are deliberately NOT read: a
+    reader of a neighbour would agree today and mean something else.
+    """
     if not isinstance(params, list):
         return None
     items = cast("list[Any]", params)
     if not all(isinstance(p, str) for p in items):
         return None
-    return "tools" in items
+    return name in items
+
+
+def _declared_modality(arch: Any, name: str) -> bool | None:
+    """Is `name` among the catalog's `architecture.input_modalities` —
+    three-state, the same shape rule as `_declared_param`.
+
+    ⚠ THE STRUCTURED LIST, NOT `architecture.modality`. That legacy string
+    (`text+image+file->text`) agreed with the list on all 431 rows measured
+    2026-09-05, but it is a display grammar and the list is the field; the
+    test carries a row where the two disagree so a reader of the string is
+    caught. A missing or non-dict `architecture`, or a missing / null /
+    scalar / mixed `input_modalities`, is unknown — never "no image".
+    """
+    if not isinstance(arch, dict):
+        return None
+    mods = cast("dict[str, Any]", arch).get("input_modalities")
+    if not isinstance(mods, list):
+        return None
+    items = cast("list[Any]", mods)
+    if not all(isinstance(p, str) for p in items):
+        return None
+    return name in items
 
 
 def _stored_tools(value: Any) -> bool | None:
@@ -685,6 +738,11 @@ def _stored_tools(value: Any) -> bool | None:
     `True`, so every favorite adopted before the field existed claimed tool
     support that was never declared for it. Old rows are NOT rewritten: they
     stay exactly as saved and simply read as unknown.
+
+    The same reader serves every stored three-state field (`tools`, `image`,
+    `reasoning`): the rule is about the shape of a normalized bool-or-unknown
+    record field, not about tools. Every favorite adopted before unit C
+    (2026-09-05) has no `image`/`reasoning` key and reads unknown for both.
     """
     if value is True:
         return True
@@ -724,6 +782,10 @@ def card_of(m: dict[str, Any]) -> ModelCard | None:
             ("cache_read", cache_read_known),
             ("cache_write", cache_write_known)) if not known]
     tools = _declared_tools(m.get("supported_parameters"))
+    reasoning = _declared_param(m.get("supported_parameters"), "reasoning")
+    # from the RAW architecture value, so a non-dict reads unknown rather
+    # than the emptied `arch` above reading as "declared no image"
+    image = _declared_modality(arch_raw, "image")
     try:
         ctx = int(m.get("context_length") or 0)
     except (TypeError, ValueError):
@@ -745,6 +807,8 @@ def card_of(m: dict[str, Any]) -> ModelCard | None:
         "price_source": "openrouter-catalog",
         "context": ctx,
         "tools": tools,
+        "image": image,
+        "reasoning": reasoning,
         "created": created,
         "free": mid.endswith(":free") or (
             prompt_known and completion_known
@@ -1011,6 +1075,10 @@ def favorites() -> list[Favorite]:
                 # a claim of support (`_stored_tools`). The saved row is never
                 # rewritten to say so; it simply reads as unknown.
                 "tools": _stored_tools(f.get("tools")),
+                # unit C (2026-09-05): the same identity read; every favorite
+                # adopted before it has neither key and reads unknown
+                "image": _stored_tools(f.get("image")),
+                "reasoning": _stored_tools(f.get("reasoning")),
                 # 0 for a favorite adopted before the field was snapshotted —
                 # only the CATALOG is ever sorted by recency, never this list
                 "created": int(f.get("created") or 0),
@@ -1390,4 +1458,8 @@ def tier_infos() -> list[dict[str, Any]]:
         # It reached the picker and stopped there until 2026-09-05, so no
         # hire or switch surface could show what the picker already knew.
         "tools": f["tools"],
+        # the image-input and reasoning-parameter declarations, same three
+        # states, same source, same caveat (unit C, 2026-09-05)
+        "image": f["image"],
+        "reasoning": f["reasoning"],
     } for f in favorites()]

@@ -1486,6 +1486,56 @@ def _():
         api._providers_payload = old
 
 
+@t("list_tiers serves the image-input and reasoning-parameter declarations "
+   "as true/false/null over a real agent request, and refuses any other value")
+def _():
+    """Unit C (2026-09-05): the two declarations that joined `tools`, through
+    the same gateway, one field at a time. Each is what openrouter.ai's
+    CATALOG declared and never an observation: orgtree sends image blocks and
+    `--effort` to every OpenRouter seat regardless, and this test says nothing
+    about what a turn did with them.
+
+    ⚠ MEASURED BEFORE THE CHANGE: naming either field in the projection's
+    allowlist without its tristate branch failed the WHOLE discovery document
+    — every OpenRouter tier read as malformed. So the 200s below are not
+    free, and the 503s prove the arm still refuses near-misses by identity.
+    """
+    old = api._providers_payload
+
+    def fixture(**caps):
+        row = {"tier": "or-fixture", "provider": "openrouter",
+               "model": "vendor/fixture", "seat": 1.0}
+        row.update(caps)
+        return {"providers": [{
+            "id": "openrouter", "label": "OpenRouter", "hire_enabled": True,
+            "reason": None, "tiers": [row]}]}
+
+    try:
+        for field in ("image", "reasoning"):
+            for declared in (True, False, None):
+                api._providers_payload = (
+                    lambda f=field, d=declared: fixture(**{f: d}))
+                r = ag(NID, "orgtree_list_tiers")
+                ok200(r, f"{field}={declared!r} over the gateway")
+                row = r.json["providers"][0]["tiers"][0]
+                assert row[field] is declared, (field, declared, row)
+                assert field in row, row          # present-as-null, not dropped
+            for bad in (1, 0, 1.0, "true", "", [], {}, "secret"):
+                api._providers_payload = lambda f=field, b=bad: fixture(**{f: b})
+                r = ag(NID, "orgtree_list_tiers")
+                assert r.status == 503 and "secret" not in r.text, (field, bad, r)
+        # all three together, mixed states, in ONE row — the shape a real
+        # favorite produces (e.g. tools true, image false, reasoning unknown)
+        api._providers_payload = lambda: fixture(tools=True, image=False,
+                                                 reasoning=None)
+        r = ag(NID, "orgtree_list_tiers")
+        ok200(r, "mixed tristate row")
+        row = r.json["providers"][0]["tiers"][0]
+        assert (row["tools"], row["image"], row["reasoning"]) == (True, False, None), row
+    finally:
+        api._providers_payload = old
+
+
 @t("unknown tool → 422 with the name echoed")
 def _():
     r = ag(NID, "orgtree_nope")

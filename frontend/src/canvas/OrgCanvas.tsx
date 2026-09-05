@@ -14,7 +14,7 @@ import {
 } from '../icons'
 import {
   ago, ALL_TIER_SEAT, anyTierSeat, attentionPip, codexTierOffer, CODEX_TIER_LETTER, CODEX_TIER_SEAT, CODEX_TIERS, DOG_H, DOG_W, DRAFT, ease, edgeJumpPlacement, type EJForm, EXTERN, fallbackActive, familyOffer, flatten, fmtCredits, ANTIGRAVITY_TIER_LETTER, ANTIGRAVITY_TIER_SEAT, ANTIGRAVITY_TIERS, hireOf, INBOX, INBOX_H, layout, NODE_H, NODE_W, noteTierModels, openrouterTierIds, orgPxc, presenceOf, segD, setOpenRouterTiers,
-  providerOf, queuedSwitchTitle, savedView, saveView, segPoint, sizeOf, smooth, SPRING_C, SPRING_K, startView, startZoomOn, TIER_LETTER, TIER_SEAT, tierLabel, tierToolsNote, TIERS, useCrowdPiles, usePolled, USER, USER_H,
+  providerOf, queuedSwitchTitle, savedView, saveView, segPoint, sizeOf, smooth, SPRING_C, SPRING_K, startView, startZoomOn, TIER_LETTER, TIER_SEAT, tierCapabilityNotes, tierLabel, TIERS, useCrowdPiles, usePolled, USER, USER_H,
   USER_W, withDraftTree, Z_DESK, Z_MAX, Z_MINI,
 } from './shared'
 import type {
@@ -2652,7 +2652,8 @@ export function HireSheet({ anchor, seats, codexHire, antigravityHire, claudeHir
                 // and not only back in the catalog picker. Visible text, and
                 // the tooltip too where the row is not already explaining a
                 // refusal - a disabled row's reason keeps priority.
-                const tools = tierToolsNote(t)
+                // All three declarations since unit C (2026-09-05).
+                const tools = tierCapabilityNotes(t)
                 return (
                   <button key={t}
                     className={'hs-tier t-' + t + (tier === t ? ' on' : '')}

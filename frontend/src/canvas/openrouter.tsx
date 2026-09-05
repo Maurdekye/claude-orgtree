@@ -43,7 +43,7 @@ import type {
   OpenRouterDoc, OpenRouterModel, OpenRouterModelsPage, OpenRouterSort,
   ProviderInfo, ProviderTier,
 } from '../types'
-import { fmtCredits, isDarkTierColor, modelLabel, setOpenRouterTiers, toolsNote } from './shared'
+import { capabilityNote, capabilityNotes, fmtCredits, isDarkTierColor, modelLabel, setOpenRouterTiers } from './shared'
 import { fmtHm, fmtMonth } from '../timefmt'
 
 type ToastFn = (lines: string[]) => void
@@ -133,7 +133,7 @@ const tierTitle = (t: ProviderTier): string =>
   + `${knownPerM(t.completion, t.price_unknown, 'completion')} out per 1M`
   + `${t.price_unknown?.length ? ' · incomplete catalog pricing' : ''}`
   + ` · seat ${fmtCredits(t.seat)}`
-  + ` · ${toolsNote(t.tools)}`
+  + ` · ${capabilityNotes(t)}`
 
 /** the whole section: head (label, switch), key row, favorites row, picker */
 export function OpenRouterSection({ provider, headRight, toast, pickerOpen,
@@ -469,8 +469,10 @@ export function ModelPicker({ doc, busy, onToggle, onClose }: {
                    news (declared-tool-less, or unknown), keeping the
                    density the user asked for across ~425 rows; the
                    tooltip states it for ALL THREE so a row with no
-                   visible note is never ambiguous about which it is. */
-                title={toolsNote(m.tools)}
+                   visible note is never ambiguous about which it is —
+                   and carries all three declarations (tools, image
+                   input, reasoning parameter) since unit C. */
+                title={capabilityNotes(m)}
                 aria-pressed={on} disabled={busy}
                 onClick={() => onToggle(m, !on)}>
                 {/* the card drops to the 26px size the favorites row uses:
@@ -493,7 +495,12 @@ export function ModelPicker({ doc, busy, onToggle, onClose }: {
                         the SAME thing for a model the catalog declared
                         tool-less and one it said nothing readable about.
                         Three states, one shared formatter. */}
-                    {m.tools === true ? '' : ` · ${toolsNote(m.tools)}`}
+                    {m.tools === true ? '' : ` · ${capabilityNote('tools', m.tools)}`}
+                    {/* image input inline on the same rule — news when
+                        declared-not or unknown, silent when supported.
+                        The reasoning parameter stays title-only here
+                        (reviewer decision, unit C): the picker is dense. */}
+                    {m.image === true ? '' : ` · ${capabilityNote('image', m.image)}`}
                   </span>
                 </span>
                 {/* ONE line, was three. The price cell was the tallest thing

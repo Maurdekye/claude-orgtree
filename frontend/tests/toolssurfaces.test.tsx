@@ -26,6 +26,15 @@ const noop = () => {}
 const SUPPORTED = /Tools: supported \(catalog\)/
 const NOT_SUPPORTED = /Tools: not supported \(catalog\)/
 const UNKNOWN = /Tools: unknown \(catalog\)/
+// unit C (2026-09-05): the two declarations that joined `tools` on these
+// same three surfaces. Each surface asserts a MIXED row, so a callsite
+// printing one field's answer three times cannot pass.
+const IMG_SUPPORTED = /Image input: supported \(catalog\)/
+const IMG_NOT = /Image input: not supported \(catalog\)/
+const IMG_UNKNOWN = /Image input: unknown \(catalog\)/
+const RSN_SUPPORTED = /Reasoning parameter: supported \(catalog\)/
+const RSN_NOT = /Reasoning parameter: not supported \(catalog\)/
+const RSN_UNKNOWN = /Reasoning parameter: unknown \(catalog\)/
 
 const tier = (over: Partial<ProviderTier>): ProviderTier => ({
   tier: 'or-x', provider: 'openrouter', seat: 1, model: 'v/x',
@@ -35,11 +44,17 @@ const tier = (over: Partial<ProviderTier>): ProviderTier => ({
 
 const OR_TIERS: ProviderTier[] = [
   tier({ tier: 'or-v-full', model: 'v/full', name: 'Full', label: 'full',
-    letter: 'F', tools: true }),
+    letter: 'F', tools: true, image: true, reasoning: true }),
   tier({ tier: 'or-v-textonly', model: 'v/textonly', name: 'Textonly',
-    label: 'textonly', letter: 'T', tools: false }),
+    label: 'textonly', letter: 'T', tools: false, image: false,
+    reasoning: false }),
   tier({ tier: 'or-v-silent', model: 'v/silent', name: 'Silent',
-    label: 'silent', letter: 'S', tools: null }),
+    label: 'silent', letter: 'S', tools: null, image: null, reasoning: null }),
+  // ⚠ THE MIXED TIER. Every other row answers identically on all three
+  // axes, so a surface rendering the TOOLS note three times would pass
+  // without this one. Tools yes, image no, reasoning unknown.
+  tier({ tier: 'or-v-mixed', model: 'v/mixed', name: 'Mixed', label: 'mixed',
+    letter: 'M', tools: true, image: false, reasoning: null }),
 ]
 
 const provider = (id: string, tiers: ProviderTier[] = []): ProviderInfo => ({
@@ -53,7 +68,7 @@ const treeFixture = (): TreePayload => ({
   slug: 'org', dirs: [],
   tiers: { haiku: 1, sonnet: 2, opus: 5, fable: 10, luna: 0.2, terra: 2,
     sol: 5, flash: 1, pro: 2, 'or-v-full': 1, 'or-v-textonly': 1,
-    'or-v-silent': 1, 'or-v-deselected': 1 },
+    'or-v-silent': 1, 'or-v-mixed': 1, 'or-v-deselected': 1 },
   max_top_grant: 100, default_effort: '', effort_default: 'high',
   cascade_hire: true, sandboxed: false,
 } as unknown as TreePayload)
@@ -83,14 +98,29 @@ test('the HIRE SHEET states the declaration on every offered OpenRouter tier',
     assert.ok(buttons.length, 'the sheet rendered tier buttons')
     const rowOf = (t: string) => buttons
       .find((b) => (b.className || '').split(/\s+/).includes('t-' + t))
-    for (const t of ['or-v-full', 'or-v-textonly', 'or-v-silent', 'haiku']) {
+    for (const t of ['or-v-full', 'or-v-textonly', 'or-v-silent',
+      'or-v-mixed', 'haiku']) {
       assert.ok(rowOf(t), `${t} is offered by the sheet`)
     }
     assert.match(rowOf('or-v-full')!.textContent ?? '', SUPPORTED)
     assert.match(rowOf('or-v-textonly')!.textContent ?? '', NOT_SUPPORTED)
     assert.match(rowOf('or-v-silent')!.textContent ?? '', UNKNOWN)
+    // unit C: image input and the reasoning parameter on the same rows
+    assert.match(rowOf('or-v-full')!.textContent ?? '', IMG_SUPPORTED)
+    assert.match(rowOf('or-v-full')!.textContent ?? '', RSN_SUPPORTED)
+    assert.match(rowOf('or-v-textonly')!.textContent ?? '', IMG_NOT)
+    assert.match(rowOf('or-v-textonly')!.textContent ?? '', RSN_NOT)
+    assert.match(rowOf('or-v-silent')!.textContent ?? '', IMG_UNKNOWN)
+    assert.match(rowOf('or-v-silent')!.textContent ?? '', RSN_UNKNOWN)
+    // ⚠ THE MIXED ROW: three different answers at once
+    const mixed = rowOf('or-v-mixed')!.textContent ?? ''
+    assert.match(mixed, SUPPORTED)
+    assert.match(mixed, IMG_NOT)
+    assert.match(mixed, RSN_UNKNOWN)
     // static lanes are untouched: the catalog is an OpenRouter fact
-    assert.doesNotMatch(rowOf('haiku')!.textContent ?? '', /Tools:/)
+    for (const re of [/Tools:/, /Image input:/, /Reasoning parameter:/]) {
+      assert.doesNotMatch(rowOf('haiku')!.textContent ?? '', re)
+    }
     // ⚠ STILL HIREABLE. Disclosure, never admission control.
     assert.equal((rowOf('or-v-textonly') as HTMLButtonElement).disabled, false,
       'a declared tool-less tier is still hireable from the sheet')
@@ -124,7 +154,17 @@ test('the CONFIG model-switch states it for every offered OpenRouter tier',
   assert.match(byValue('or-v-full'), SUPPORTED)
   assert.match(byValue('or-v-textonly'), NOT_SUPPORTED)
   assert.match(byValue('or-v-silent'), UNKNOWN)
-  assert.doesNotMatch(byValue('haiku'), /Tools:/)
+  // unit C, and the mixed option is what makes these non-vacuous
+  assert.match(byValue('or-v-full'), IMG_SUPPORTED)
+  assert.match(byValue('or-v-full'), RSN_SUPPORTED)
+  assert.match(byValue('or-v-textonly'), IMG_NOT)
+  assert.match(byValue('or-v-silent'), RSN_UNKNOWN)
+  assert.match(byValue('or-v-mixed'), SUPPORTED)
+  assert.match(byValue('or-v-mixed'), IMG_NOT)
+  assert.match(byValue('or-v-mixed'), RSN_UNKNOWN)
+  for (const re of [/Tools:/, /Image input:/, /Reasoning parameter:/]) {
+    assert.doesNotMatch(byValue('haiku'), re)
+  }
   // ⚠ RECORDED, NOT ASSUMED. I expected a DESELECTED favorite that a node
   // still runs on to appear here as its own truthful selected option, and it
   // does NOT: `shownTiers` filters the family list, and the OpenRouter family
@@ -168,8 +208,22 @@ test('the REHIRE select states it', async () => {
   assert.match(full!, SUPPORTED)
   assert.match(byValue('or-v-textonly')!, NOT_SUPPORTED)
   assert.match(byValue('or-v-silent')!, UNKNOWN)
+  // unit C
+  assert.match(full!, IMG_SUPPORTED)
+  assert.match(full!, RSN_SUPPORTED)
+  assert.match(byValue('or-v-textonly')!, IMG_NOT)
+  assert.match(byValue('or-v-silent')!, IMG_UNKNOWN)
+  const mixedOpt = byValue('or-v-mixed')
+  assert.ok(mixedOpt !== null, 'the mixed tier is offered for rehire')
+  assert.match(mixedOpt!, SUPPORTED)
+  assert.match(mixedOpt!, IMG_NOT)
+  assert.match(mixedOpt!, RSN_UNKNOWN)
   const claude = byValue('haiku')
-  if (claude !== null) assert.doesNotMatch(claude, /Tools:/)
+  if (claude !== null) {
+    for (const re of [/Tools:/, /Image input:/, /Reasoning parameter:/]) {
+      assert.doesNotMatch(claude, re)
+    }
+  }
   await view.unmount()
   setOpenRouterTiers([])
 })

@@ -65,15 +65,23 @@ def raises(fn, needle, what):
 
 # ── the scripted catalog: one model per declaration state ───────────────
 CATALOG = {"data": [
+    # unit C (2026-09-05): the same three rows also carry the IMAGE-INPUT and
+    # REASONING-PARAMETER declarations in the same three states — declared,
+    # declared-not, and silent — so every tristate field crosses together
     {"id": "vendor/declares-tools", "name": "Vendor: Declares Tools",
      "context_length": 200000, "pricing": {"prompt": "0.000003",
                                            "completion": "0.000015"},
-     "supported_parameters": ["tools", "temperature"]},
+     "architecture": {"input_modalities": ["text", "image"],
+                      "output_modalities": ["text"]},
+     "supported_parameters": ["tools", "reasoning", "temperature"]},
     {"id": "vendor/declares-none", "name": "Vendor: Declares None",
      "context_length": 8192, "pricing": {"prompt": "0.0000001",
                                          "completion": "0.0000002"},
+     "architecture": {"input_modalities": ["text"],
+                      "output_modalities": ["text"]},
      "supported_parameters": ["temperature"]},
-    # no `supported_parameters` at all — the catalog declared nothing readable
+    # no `supported_parameters` and no `architecture` at all — the catalog
+    # declared nothing readable on any axis
     {"id": "vendor/silent", "name": "Vendor: Silent",
      "context_length": 32768, "pricing": {"prompt": "0.000001",
                                           "completion": "0.000002"}},
@@ -157,16 +165,66 @@ def main():
     check("a non-boolean tools value is refused as a malformed tier, while "
           "True/False/None pass", malformed_is_refused)
 
+    print("unit C: image input and the reasoning parameter cross the same way")
+
+    def image_and_reasoning_three_states():
+        for field in ("image", "reasoning"):
+            eq(rows[orr.tier_id("vendor/declares-tools")][field], True,
+               f"{field}: declared")
+            eq(rows[orr.tier_id("vendor/declares-none")][field], False,
+               f"{field}: declared not")
+            eq(rows[orr.tier_id("vendor/silent")][field], None,
+               f"{field}: nothing readable")
+            # unknown is a PRESENT null, distinct from declared-not
+            eq(field in rows[orr.tier_id("vendor/silent")], True,
+               f"{field}: unknown present as null")
+            assert (rows[orr.tier_id("vendor/silent")][field]
+                    is not rows[orr.tier_id("vendor/declares-none")][field])
+    check("image and reasoning cross the allowlist in all three states, "
+          "unknown as a present null", image_and_reasoning_three_states)
+
+    def image_and_reasoning_malformed_refused():
+        # ⚠ MEASURED BEFORE THE CHANGE: naming either field in the allowlist
+        # tuple WITHOUT the tristate set made every OpenRouter tier a
+        # "malformed tier" and took the whole document down. This check is
+        # the other half — the arm exists AND refuses near-misses.
+        real = api._providers_payload
+
+        def bad(field, value):
+            def patched():
+                doc = real()
+                for provider in doc["providers"]:
+                    if provider["id"] == orr.PROVIDER_ID:
+                        provider["tiers"][0][field] = value
+                return doc
+            return patched
+
+        try:
+            for field in ("image", "reasoning"):
+                for value in (1, 0, "true", "", [], {}, 1.0):
+                    api._providers_payload = bad(field, value)
+                    raises(api._tier_discovery_payload, "malformed tier",
+                           f"{field}={value!r}")
+                for value in (True, False, None):
+                    api._providers_payload = bad(field, value)
+                    api._tier_discovery_payload()
+        finally:
+            api._providers_payload = real
+    check("a non-boolean image/reasoning value is refused as a malformed "
+          "tier, while True/False/None pass",
+          image_and_reasoning_malformed_refused)
+
     def other_providers_unaffected():
         # C4: the discovery document's shape for every other lane is
-        # unchanged — this unit adds one optional field on one provider.
+        # unchanged — this unit adds optional fields on one provider.
         doc = api._tier_discovery_payload()
         for provider in doc["providers"]:
             if provider["id"] == orr.PROVIDER_ID:
                 continue
             for row in provider["tiers"]:
-                eq("tools" in row, False,
-                   f"{provider['id']} tier gained a tools key")
+                for field in ("tools", "image", "reasoning"):
+                    eq(field in row, False,
+                       f"{provider['id']} tier gained a {field} key")
         assert doc["advisory"]
     check("no other provider's tier rows changed shape", other_providers_unaffected)
 

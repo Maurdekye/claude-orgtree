@@ -2830,7 +2830,7 @@ def _providers_payload() -> dict[str, Any]:
 _TIER_DISCOVERY_FIELDS = (
     "tier", "provider", "seat", "model", "letter", "color", "accent",
     "name", "label", "vendor", "prompt", "completion", "context",
-    "price_unknown", "price_source", "tools",
+    "price_unknown", "price_source", "tools", "image", "reasoning",
 )
 _TIER_DISCOVERY_NUMBERS = frozenset({
     "seat", "prompt", "completion", "context",
@@ -2842,7 +2842,9 @@ _TIER_DISCOVERY_NUMBERS = frozenset({
 #: discovery document down with it. Identity checks, not truthiness: `0`/`1`
 #: are not this field's values, and `1 == True` would let an int through a
 #: `value in (True, False)` test.
-_TIER_DISCOVERY_TRISTATE = frozenset({"tools"})
+#: `image` and `reasoning` joined 2026-09-05 (unit C) — measured before the
+#: change: naming either in the tuple alone failed the whole document.
+_TIER_DISCOVERY_TRISTATE = frozenset({"tools", "image", "reasoning"})
 
 
 def _tier_discovery_payload() -> dict[str, Any]:

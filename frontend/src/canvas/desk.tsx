@@ -26,7 +26,7 @@ import {
   HearingIcon, LayersIcon, LockIcon, MailIcon, PlayIcon, PsychologyIcon,
   SettingsIcon, SparkIcon, StopIcon, WarnIcon,
 } from '../icons'
-import { ago, ALL_PRESENT, ALL_TIERS, anyTierSeat, CODEX_TIERS, CopyIcon, EXTERN, fmtCredits, freezeKind, FREEZE_LABEL, ANTIGRAVITY_TIERS, isOpenRouterTier, md, openrouterTierIds, PROVIDER_LABEL, providerOf, queuedSwitchTitle, TIER_LETTER, tierLabel, tierShown, tierToolsNote, USER, useEsc, usePolled } from './shared'
+import { ago, ALL_PRESENT, ALL_TIERS, anyTierSeat, CODEX_TIERS, CopyIcon, EXTERN, fmtCredits, freezeKind, FREEZE_LABEL, ANTIGRAVITY_TIERS, isOpenRouterTier, md, openrouterTierIds, PROVIDER_LABEL, providerOf, queuedSwitchTitle, TIER_LETTER, tierCapabilityNotes, tierLabel, tierShown, USER, useEsc, usePolled } from './shared'
 import type { ProviderPresence } from './shared'
 import {
   addPending, CHAT_WINDOW, dismissPending, dropPending,
@@ -2368,8 +2368,9 @@ export function LineagePanel({ node, op, slug, presence = ALL_PRESENT,
                         && tierShown(presence, t, b.tier))
                       .map((t) => {
                       const why = rehireWhy(t, b.tier)
-                      // same one formatter as every other tier surface
-                      const tools = tierToolsNote(t)
+                      // same one formatter as every other tier surface —
+                      // all three declarations (unit C, 2026-09-05)
+                      const tools = tierCapabilityNotes(t)
                       return (
                         <option key={t} value={t} disabled={!!why}>
                           as {tierLabel(t)} · seat {fmtCredits(SEAT(t))}{tools ? ` · ${tools}` : ''}{why ? ` — ${why}` : ''}

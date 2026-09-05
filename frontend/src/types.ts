@@ -1133,6 +1133,15 @@ export interface ProviderTier {
    *  readable, absent from an older backend. Never an observation - see
    *  `toolsNote`, which is the one place this is turned into words. */
   tools?: boolean | null
+  /** the catalog's IMAGE-INPUT declaration (`architecture.input_modalities`
+   *  names image), same three states, same caveat: orgtree sends image
+   *  blocks to every OpenRouter seat regardless — this only says what the
+   *  catalog declared. `capabilityNote` is the one place it becomes words. */
+  image?: boolean | null
+  /** whether the catalog's `supported_parameters` names the `reasoning`
+   *  REQUEST PARAMETER — list membership, not a claim about how the model
+   *  thinks, which is why the note says "Reasoning parameter". */
+  reasoning?: boolean | null
 }
 /** GET /api/openrouter — the API-backed lane's credit standing. Every field
  *  is what `GET /api/v1/key` said, or null when it said nothing. */
@@ -1178,6 +1187,11 @@ export interface OpenRouterModel {
   /** three-state, as the catalog declared it (see `ProviderTier.tools`);
    *  null is 'declared nothing readable', NOT 'declared no support' */
   tools: boolean | null
+  /** image input and the reasoning request parameter, the same three
+   *  states (see `ProviderTier.image` / `.reasoning`); optional because an
+   *  older backend's rows do not carry them, and absent reads as unknown */
+  image?: boolean | null
+  reasoning?: boolean | null
   free: boolean
   /** release date, unix seconds; 0 when the catalog did not carry one */
   created: number

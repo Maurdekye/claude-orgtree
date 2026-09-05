@@ -13,6 +13,7 @@ import json
 import os
 import sys
 import tempfile
+from typing import Any
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -928,7 +929,8 @@ def main():
                    eq(sorted(orr.tier_infos()[0]),
                        sorted(["tier", "provider", "seat", "model", "letter", "color",
                                "accent", "name", "label", "vendor", "prompt", "completion",
-                               "price_unknown", "price_source", "context", "tools"]),
+                               "price_unknown", "price_source", "context", "tools",
+                               "image", "reasoning"]),
                       "keys"),
                    no_secret(orr.tier_infos(), "tier_infos")))
 
@@ -1028,6 +1030,144 @@ def main():
     check("a model declaring NO tool support is still favoritable and still "
           "hireable — disclosure, never admission control",
           textonly_is_still_admitted)
+
+    print("§5c image input and the reasoning parameter: the same three states")
+
+    # ⚠ DECLARATIONS AGAIN, NEVER OBSERVATIONS. Orgtree sends image blocks and
+    # `--effort` to every OpenRouter seat regardless of these values (measured
+    # in the unit-C probe); nothing here gates, and nothing here ran a turn.
+
+    def _card(**entry: Any) -> Any:
+        return orr.card_of({"id": "v/x", "pricing": {"prompt": "0.000001"},
+                            **entry})
+
+    def image_states():
+        eq(_card(architecture={"input_modalities": ["text", "image"]})["image"],
+           True, "declared image input")
+        eq(_card(architecture={"input_modalities": ["text"]})["image"],
+           False, "declared text-only input")
+        eq(_card(architecture={"input_modalities": []})["image"],
+           False, "empty list is a declaration (the tools rule, unchanged)")
+        for label, entry in (
+                ("architecture absent", {}),
+                ("architecture null", {"architecture": None}),
+                ("architecture scalar", {"architecture": "text+image->text"}),
+                ("modalities absent", {"architecture": {}}),
+                ("modalities null", {"architecture": {"input_modalities": None}}),
+                ("modalities string",
+                 {"architecture": {"input_modalities": "text+image"}}),
+                ("modalities bool", {"architecture": {"input_modalities": True}}),
+                ("mixed list",
+                 {"architecture": {"input_modalities": ["text", 7]}})):
+            eq(_card(**entry)["image"], None, f"unknown from {label}")
+        # ⚠ THE WRONG-SOURCE GUARD. The legacy `modality` display string and
+        # the structured list agree on every real row measured 2026-09-05, so
+        # a reader of the string would pass any snapshot-derived fixture. This
+        # row makes them disagree: the LIST is the source.
+        eq(_card(architecture={"modality": "text+image->text",
+                               "input_modalities": ["text"],
+                               "output_modalities": ["text"]})["image"],
+           False, "the structured list wins over the modality string")
+        eq(_card(architecture={"modality": "text->text",
+                               "input_modalities": ["text", "image"],
+                               "output_modalities": ["text"]})["image"],
+           True, "…in both directions")
+        # and the sibling filter the same dict already drove is untouched
+        eq(_card(architecture={"input_modalities": ["text", "image"],
+                               "output_modalities": ["image"]}), None,
+           "a non-text OUTPUT is still filtered out")
+    check("card_of reads image input from architecture.input_modalities: "
+          "three states, list over string, unreadable is unknown",
+          image_states)
+
+    def reasoning_states():
+        eq(_card(supported_parameters=["reasoning", "tools"])["reasoning"],
+           True, "declared reasoning parameter")
+        eq(_card(supported_parameters=["tools"])["reasoning"],
+           False, "declared without it")
+        eq(_card(supported_parameters=[])["reasoning"],
+           False, "empty list is a declaration (the tools rule, unchanged)")
+        for label, entry in (
+                ("key absent", {}),
+                ("null", {"supported_parameters": None}),
+                ("scalar", {"supported_parameters": "reasoning"}),
+                ("literal True", {"supported_parameters": True}),
+                ("mixed list", {"supported_parameters": ["reasoning", 7]})):
+            eq(_card(**entry)["reasoning"], None, f"unknown from {label}")
+        # ⚠ THE TWO REAL DISAGREEMENT SHAPES (7 of 431 rows, 2026-09-05).
+        # The decision: the PARAMETER LIST is the source, the top-level
+        # `reasoning` object is not read. Both directions pinned so a reader
+        # of the object fails one of them.
+        eq(_card(supported_parameters=["tools"],
+                 reasoning={"mandatory": False})["reasoning"],
+           False, "object present, parameter absent (qwen/qwen3-max shape)")
+        eq(_card(supported_parameters=["reasoning", "tools"],
+                 reasoning=None)["reasoning"],
+           True, "parameter present, object null (openrouter/auto shape)")
+        # ⚠ NEIGHBOURS ARE NOT THE PARAMETER. On every real row they ride
+        # together, so a reader of either would agree today; these rows split
+        # them so only `"reasoning"` itself counts.
+        eq(_card(supported_parameters=["include_reasoning"])["reasoning"],
+           False, "include_reasoning alone is not the parameter")
+        eq(_card(supported_parameters=["reasoning_effort"])["reasoning"],
+           False, "reasoning_effort alone is not the parameter")
+        # and reading it did not disturb the tools read from the same list
+        eq(_card(supported_parameters=["reasoning"])["tools"], False,
+           "tools still read independently")
+    check("card_of reads the reasoning REQUEST PARAMETER from "
+          "supported_parameters: list membership, not the object, not a "
+          "neighbour", reasoning_states)
+
+    def snapshot_and_legacy():
+        # add_favorite SNAPSHOTS both fields into the stored row…
+        fav = orr.add_favorite("someone/llama-4-scout:free")
+        row = [f for f in orr._load_state()["favorites"]
+               if f["id"] == "someone/llama-4-scout:free"][0]
+        eq("image" in row and "reasoning" in row, True, "both snapshotted")
+        eq((fav["image"], fav["reasoning"]), (row["image"], row["reasoning"]),
+           "…and the read matches the row")
+        # …a row saved BEFORE unit C has neither key and reads unknown for
+        # both, without being rewritten
+        doc = orr._load_state()
+        rec = [f for f in doc["favorites"]
+               if f["id"] == "someone/llama-4-scout:free"][0]
+        rec.pop("image", None)
+        rec.pop("reasoning", None)
+        orr._save_state(doc)
+        orr._state_cache["doc"] = None
+        got = [f for f in orr.favorites()
+               if f["id"] == "someone/llama-4-scout:free"][0]
+        eq((got["image"], got["reasoning"]), (None, None),
+           "legacy row reads unknown on both")
+        ti = [t for t in orr.tier_infos()
+              if t["model"] == "someone/llama-4-scout:free"][0]
+        eq((ti["image"], ti["reasoning"]), (None, None),
+           "…and the hire surface says the same")
+        again = [f for f in orr._load_state()["favorites"]
+                 if f["id"] == "someone/llama-4-scout:free"][0]
+        eq("image" in again or "reasoning" in again, False,
+           "stored row untouched")
+        # positive control for the reader: a snapshotted value survives, and
+        # a near-miss is unknown (identity, not truthiness)
+        again_doc = orr._load_state()
+        rec2 = [f for f in again_doc["favorites"]
+                if f["id"] == "someone/llama-4-scout:free"][0]
+        rec2["image"], rec2["reasoning"] = True, 1
+        orr._save_state(again_doc)
+        orr._state_cache["doc"] = None
+        got2 = [f for f in orr.favorites()
+                if f["id"] == "someone/llama-4-scout:free"][0]
+        eq((got2["image"], got2["reasoning"]), (True, None),
+           "stored True survives; stored int 1 is unknown")
+        # ⚠ THE ANTI-BAN CONTROL, again: a row declaring neither image input
+        # nor the reasoning parameter is still favoritable and hireable
+        from orgtree import providers                      # noqa: PLC0415
+        eq(providers.tier_availability(fav["tier"])[0], True,
+           "no-image, no-reasoning seat is still offered")
+        orr.remove_favorite("someone/llama-4-scout:free")
+    check("add_favorite snapshots image/reasoning; a pre-unit-C row reads "
+          "unknown for both and is never rewritten; no admission ban",
+          snapshot_and_legacy)
 
     print("§6 failure honesty")
     orr.set_key("sk-or-v1-wrongkey-000000000000")
