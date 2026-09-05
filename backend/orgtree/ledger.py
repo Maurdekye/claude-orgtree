@@ -9257,6 +9257,44 @@ class Org:
             return False, "generation moved"
         return True, "live"
 
+    def _work_delivery_view(self, it: WorkItem) -> dict[str, Any] | None:
+        """The stored stages, each verified one marked against what `verify`
+        would compare with NOW. The stored receipt (verified/detail/target/
+        observed_at) is history and stays verbatim; the derived fields say
+        whether it still describes the running build:
+
+          evaluated_against_current_build  True  — same build identity
+                                           False — the build changed (a new
+                                                   commit, OR the same sha
+                                                   booted dirty); re-verify
+                                           None  — not an in_build result, or
+                                                   never verified
+          verified_current  the receipt's `verified` while current, else None
+
+        No git on a read path: the boot identity is frozen at process start
+        (restart_wake), and `pushed` is NOT re-compared here because that
+        would cost a rev-parse per read — its receipt already names the
+        tracking-ref OID it was measured against."""
+        d = it.get("delivery")
+        if d is None:
+            return None
+        from . import workitems       # noqa: PLC0415
+        cur = workitems.build_identity()
+        out: dict[str, Any] = {}
+        for stage, st in cast("dict[str, Any]", d).items():
+            if not st:
+                out[stage] = None
+                continue
+            row = dict(cast("dict[str, Any]", st))
+            current: bool | None = None
+            if stage == "in_build" and row.get("method") == "boot-ancestry" \
+                    and row.get("target"):
+                current = bool(cur) and row.get("target") == cur
+            row["evaluated_against_current_build"] = current
+            row["verified_current"] = (row.get("verified") if current else None)
+            out[stage] = row
+        return out
+
     def _work_view(self, it: WorkItem, physically: bool, viewer: str,
                    now_ts: float) -> dict[str, Any]:
         """The wire shape (evidence/docket-wire-contract-v3.md). Dependencies
@@ -9280,8 +9318,9 @@ class Org:
                 "id", "rev", "kind", "title", "objective", "status",
                 "owner", "created_by", "at", "updated_at", "done_so_far",
                 "working_on_next", "docket_at", "last_updater",
-                "manual_attention", "acceptance", "evidence", "delivery",
+                "manual_attention", "acceptance", "evidence",
                 "accepted", "superseded_by", "history")},
+            "delivery": self._work_delivery_view(it),
             "blocked_reason": it.get("blocked_reason"),
             "participants": list(it.get("participants") or []),
             "dismissals": list(it.get("dismissals") or []),
@@ -9527,6 +9566,15 @@ class Org:
                 f"{wid} is ARCHIVED (done for over an hour). If real work "
                 f"resumes, pass reopen=true with the new status; do not "
                 f"create a duplicate item")
+        if it.get("status") in self.WORK_CLOSED and not reopen:
+            # a closed item is not resumed by accident: the acceptance (or the
+            # supersede pointer) describes a completion that an ordinary
+            # update would otherwise leave standing beside new work
+            raise LedgerError(
+                f"{wid} is {it.get('status')} — to resume it pass reopen=true "
+                f"with the new status (its acceptance is then cleared and kept "
+                f"in history); to report on finished work without resuming "
+                f"it, add `evidence` instead")
         if status is not None:
             if status not in self.WORK_AGENT_STATUSES:
                 if status == "done":
@@ -9566,8 +9614,10 @@ class Org:
             # stands; history keeps who accepted what and when
             self._work_hist(it, actor, "reopen",
                             {"from": it.get("status"),
-                             "accepted_was": it.get("accepted")})
+                             "accepted_was": it.get("accepted"),
+                             "superseded_by_was": it.get("superseded_by")})
             it["accepted"] = None
+            it["superseded_by"] = None
         changes: dict[str, Any] = {}
         if status is not None and status != it.get("status"):
             changes["status"] = {"from": it.get("status"), "to": status}

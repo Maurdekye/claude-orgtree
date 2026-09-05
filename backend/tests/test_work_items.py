@@ -875,6 +875,96 @@ check("acceptance conditions are checked one at a time with an evidence ref, apa
       acceptance_checks_are_separate_evidence)
 
 
+def in_build_receipt_is_marked_against_the_current_boot():
+    """Astra final review: the receipt is history; whether it still describes
+    the RUNNING build is derived on read from the frozen boot identity — no
+    git on the read path (the fake runner records every call)."""
+    from orgtree import restart_wake
+    slug = fresh_org()
+    wid = create(slug)
+    sha_a = "a" * 40
+    saved = restart_wake._boot_info_cache
+    calls: list[list[str]] = []
+
+    def git(argv):
+        calls.append(argv)
+        if argv[0] == "rev-parse":
+            return 0, sha_a
+        return 0, ""                       # merge-base: ancestor
+    workitems.set_runner_for_tests(git)
+    try:
+        restart_wake._boot_info_cache = {"commit": sha_a, "commit_short": sha_a[:7],
+                                         "branch": None, "dirty": False}
+        ok(slug, "boss", "claim", id=wid, stage="in_build", ref=sha_a[:12])
+        r = ok(slug, "boss", "verify", id=wid, stage="in_build")
+        assert r["verified"] is True, r
+        st = get_item(slug, wid)["delivery"]["in_build"]
+        assert st["target"] == sha_a and st["evaluated_against_current_build"] is True
+        assert st["verified_current"] is True
+        n_calls = len(calls)
+        # the backend restarts on a NEW commit: the receipt stays, the marker flips
+        restart_wake._boot_info_cache = {"commit": "b" * 40, "commit_short": "b" * 7,
+                                         "branch": None, "dirty": False}
+        st = get_item(slug, wid)["delivery"]["in_build"]
+        assert st["verified"] is True and st["target"] == sha_a, "the historical receipt is verbatim"
+        assert st["evaluated_against_current_build"] is False and st["verified_current"] is None
+        # the SAME sha booted dirty is a different build for evidence
+        restart_wake._boot_info_cache = {"commit": sha_a, "commit_short": sha_a[:7],
+                                         "branch": None, "dirty": True}
+        st = get_item(slug, wid)["delivery"]["in_build"]
+        assert st["evaluated_against_current_build"] is False and st["verified_current"] is None
+        # back on the clean build it was measured against
+        restart_wake._boot_info_cache = {"commit": sha_a, "commit_short": sha_a[:7],
+                                         "branch": None, "dirty": False}
+        st = get_item(slug, wid)["delivery"]["in_build"]
+        assert st["evaluated_against_current_build"] is True and st["verified_current"] is True
+        assert len(calls) == n_calls, "reads ran git"
+        # the marker is in_build-only; other stages say None
+        ok(slug, "boss", "claim", id=wid, stage="committed", ref=sha_a[:12])
+        ok(slug, "boss", "verify", id=wid, stage="committed")
+        d = get_item(slug, wid)["delivery"]
+        assert d["committed"]["verified"] is True and d["committed"]["evaluated_against_current_build"] is None
+        assert d["implemented"] is None
+        # …and the tool's own get shows the same derived fields
+        assert ok(slug, "boss", "get", id=wid)["item"]["delivery"]["in_build"]["evaluated_against_current_build"] is True
+    finally:
+        workitems.set_runner_for_tests(None)
+        restart_wake._boot_info_cache = saved
+
+
+check("an in_build receipt is marked stale on read after a new boot or a same-sha dirty boot, without git",
+      in_build_receipt_is_marked_against_the_current_boot)
+
+
+def leaving_done_needs_reopen_even_before_archive():
+    slug = fresh_org()
+    wid = create(slug)
+    client.post(f"/api/orgs/{slug}/work-items/{wid}/accept", json={"note": "accepted v1"})
+    msg = refused(slug, "boss", "update", id=wid, status="in_progress",
+                  done_so_far=["more"], working_on_next=["v2"])
+    assert "reopen=true" in msg
+    it = get_item(slug, wid)
+    assert it["status"] == "done" and it["accepted"]["note"] == "accepted v1", "the refusal changed nothing"
+    # evidence on a finished item is still allowed without resuming it
+    ok(slug, "boss", "evidence", id=wid, kind="note", ref="post-mortem")
+    ok(slug, "boss", "update", id=wid, reopen=True, done_so_far=["more"], working_on_next=["v2"])
+    it = get_item(slug, wid)
+    assert it["status"] == "in_progress" and it["accepted"] is None
+    # a superseded item resumed by reopen drops its pointer (kept in history)
+    a = create(slug, title="A2")
+    b = create(slug, title="B2")
+    ok(slug, "boss", "supersede", id=a, by=b)
+    refused(slug, "boss", "update", id=a, status="open", done_so_far=["x"], working_on_next=[])
+    ok(slug, "boss", "update", id=a, reopen=True, status="open", done_so_far=["x"], working_on_next=[])
+    v = get_item(slug, a)
+    assert v["status"] == "open" and v["superseded_by"] is None
+    assert any(h.get("op") == "reopen" and h.get("superseded_by_was") == b for h in v["history"])
+
+
+check("a recently done (not yet archived) item cannot leave done without reopen; reopen clears acceptance",
+      leaving_done_needs_reopen_even_before_archive)
+
+
 # ================================================================= §9 caps
 print("§9 caps")
 
