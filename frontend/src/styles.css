@@ -3271,6 +3271,42 @@ span.ref-chip.ref-chip {
 .docket-modal button.cc-name:hover, .mailer-head button.cc-name:hover {
   color: var(--accent); text-decoration: underline;
 }
+/* THE DESK'S OWN DOCKET TAB (user ruling 2026-09-05 21:07). It is the docket's
+   rows and pane, so it WEARS .docket-modal and inherits every rule above —
+   this block is only what differs between a modal and a tab.
+
+   ⚠ TWO SCROLLERS, NOT THREE. `.msgs` (the tab's own class) is a scrolling
+   flex column; `.mailer` inside it scrolls its list and its pane separately.
+   Left as-is the outer one scrolls too, so the panel gets a scrollbar that
+   moves the WHOLE two-pane box while the list has its own inside it — the
+   list rows walk off the top and the reader chases them. The tab clips
+   instead and lets the two inner panes do the scrolling. */
+.msgs.docket-agent {
+  overflow: hidden; gap: 0; padding: 6px;
+}
+/* the desk column is much narrower than the modal, where 36% is a comfortable
+   list. Here that leaves a list too narrow for a slug, so the split favours
+   the list and the cap that suited a full-width modal is lifted. 52% is not a
+   taste: measured in a real browser at the desk's own width (430px), 36–48%
+   cut this org's real item names to under half, and 52% is the first split
+   that keeps every one of them past 55% while leaving the detail pane 200px
+   (tests/deskdocket_layout_probe.py). */
+.docket-agent .mailer-list { width: 52%; max-width: none; }
+.docket-agent .mailer-read { padding: 8px 10px; }
+/* THE REPLY LABEL WRAPS INSTEAD OF EATING THE NAME. The label is one flex line
+   in the modal, where it fits; in a 200px pane the same line truncated the
+   agent it offers to write to — "Reply to codex-… · assigned to this item" —
+   which is the one word on that line the reader needs. Wrapping puts the
+   explanation on its own line and leaves the name whole. */
+.docket-agent .docket-reply-label { flex-wrap: wrap; }
+.docket-agent .docket-reply-label .docket-actor-name {
+  overflow: visible; text-overflow: clip;
+}
+/* the two states with no rows to show are SENTENCES, and they are what the
+   reader sees for the whole width of the panel rather than a line hugging the
+   top-left corner of an empty box */
+.docket-agent > .pad { padding: 12px 10px; line-height: 1.5; }
+
 /* vibrant orange badge WITHOUT the mail bell's pulse animation — the
    2026-08-04 ruling keeps the glow/pulse to that one bell alone */
 .eye-count.docket-attn { background: var(--accent); color: #fff; }

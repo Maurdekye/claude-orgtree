@@ -30,12 +30,19 @@
 //    state, the checklist only when there are items, the "previous list"
 //    marker whenever what is shown is not current, and a Codex section's own
 //    header names Codex on screen.
-// §4 mounts the real DeskChat against the fake server: the fifth tab exists,
-//    the header chip is there, clicking either shows the panel, and the panel
-//    is fed by the SAME conversation store as the chat (a live TodoWrite row
-//    pushed on the server reaches the panel after one poll). §4b repeats the
-//    live-wire proof on a Codex node with a live 'plan' row, through the
-//    identical wiring.
+// §4 mounts the real DeskChat against the fake server. ⚠ THE FIFTH TAB IS NO
+//    LONGER THIS PANEL: the user ruled on 2026-09-05 21:07 that its contents
+//    are replaced entirely by the docket items the agent is answerable for,
+//    so §4 pins THAT wiring — the tab is `docket`, the chip counts the rows
+//    the tab lists (and another agent's item is in the fixture so "lists my
+//    items" cannot pass on a tab listing everything), and selecting a row
+//    opens the docket's own detail pane. §4b is the same wiring on a Codex
+//    node, and adds the review case: an item this agent was NAMED TO REVIEW
+//    is its work too, while still naming its real owner in the assignment
+//    column.
+//    §1–§3b still cover `deriveProgress`/`ProgressView` as a unit. ⚠ NOTHING
+//    IN src/ RENDERS ProgressView SINCE THE TAB CHANGED — raised for a
+//    decision rather than deleted here.
 //
 // ANTI-VACUITY, per behavioural claim (verified red while writing — see the
 // commit message for the mutations run):
@@ -49,11 +56,11 @@
 //     falling straight to the timestamp rule → red (the "identity says
 //     CURRENT despite an earlier timestamp" case flips)
 //   · §2 glyphs: a glyph swap in parseTodoResult → red
-//   · §4 wiring: removing the `view === 'progress'` branch → red
-//   · §4 live feed: dropping `todos` from the live row → the panel's supply
-//     becomes 'updating' and the §4 items assertion goes red
-//   · §4b Codex live feed: dropping `plan` from a 'plan' live row, or
-//     routing 'plan' rows through Claude's TodoWrite matcher → red
+//   · §4 wiring: removing the `view === 'docket'` branch → red
+//   · §4 the filter: `agentItems` returning every item → the third row
+//     (another agent's) appears and both the list and the chip go red
+//   · §4b reviewership: dropping the `reviewer?.node === nid` half of
+//     `agentItems` → the review row vanishes and the count falls to 1
 //
 // Run:  cd frontend && node tests/run.mjs progress
 
@@ -505,13 +512,43 @@ test('§3b ProgressView: fold state is a habit — one app-wide key, and it togg
 
 // ------------------------------------------------------ §4 the desk wiring
 
-test('§4 DeskChat: fifth tab + header chip open the panel, fed by the shared conversation store', async (t) => {
+/** one docket row as the server serves it — only the fields the desk's tab
+ *  and its chip actually read, so a change in the shape shows up here as a
+ *  type error rather than as a row that renders blank */
+const workRow = (over: Record<string, unknown>) => ({
+  slug: 'an-item', rev: 1, kind: 'code', title: 'An item',
+  objective: 'something is wrong; fix it', status: 'in_progress',
+  blocked_reason: null, archived: false, archived_at: null,
+  owner: { node: 'agent', generation: 1 }, owner_current: true,
+  owner_state: 'live', reviewer: null, participants: [],
+  created_by: { node: 'agent', generation: 1 },
+  at: '2026-09-05T08:00:00.000Z', updated_at: '2026-09-05T09:00:00.000Z',
+  docket_at: '2026-09-05T09:00:00.000Z',
+  done_so_far: ['a step'], working_on_next: ['the next step'],
+  last_updater: { node: 'agent', generation: 1 },
+  manual_attention: null, dismissals: [], questions: [],
+  effective_attention: false, attention_sources: [], acceptance: [],
+  dependencies: [], evidence: [], delivery: null, accepted: null,
+  superseded_by: null, history: [], ...over,
+})
+
+test('§4 DeskChat: the fifth tab is the agent\'s OWN DOCKET, and the chip counts what it lists', async (t) => {
   resetConvos()
   useFakeClock()
   const server = new FakeServer()
   installFetch(server)
   server.busy = true
   server.userMsg('plan the work')
+  // two items for this agent and one for somebody else — without the third
+  // row, "the tab lists the agent's items" would pass on a tab that lists
+  // EVERY item in the org, which is the Work panel and not this
+  server.workItems = [
+    workRow({ slug: 'mine-one', title: 'Mine one' }),
+    workRow({ slug: 'mine-two', title: 'Mine two', status: 'blocked' }),
+    workRow({ slug: 'someone-elses', title: 'Not mine',
+              owner: { node: 'other-agent', generation: 1 },
+              last_updater: { node: 'agent', generation: 1 } }),
+  ]
   const n = node({ id: 'agent', busy: true, inflight_at: new Date().toISOString(), proc_live: true })
   const view = await mountView(
     <DeskChat node={n} map={new Map([['agent', n]])} op={op} slug="prog" toast={noop} pub={false} bare onJump={noop} />,
@@ -519,72 +556,85 @@ test('§4 DeskChat: fifth tab + header chip open the panel, fed by the shared co
   t.after(async () => { await view.unmount(); resetConvos(); realClock() })
   await flush()
   const tabs = [...view.el.querySelectorAll('.cc-tabs button')].map((b) => b.textContent)
-  assert.deepEqual(tabs, ['chat', 'history', 'files', 'inbox', 'progress'])
-  assert.equal(Boolean(view.el.querySelector('.msgs.progress')), false, 'the panel must not be open on the chat tab')
-  // the header chip: present, honest about the state, and a way in
+  assert.deepEqual(tabs, ['chat', 'history', 'files', 'inbox', 'docket'])
+  assert.equal(Boolean(view.el.querySelector('.docket-agent')), false,
+    'the panel must not be open on the chat tab')
+  // the header chip: it counts the assignment, and it is a way in
   const chip = view.el.querySelector<HTMLButtonElement>('.cc-head-meta .progress-chip')
-  assert.ok(chip, 'no progress chip in the metadata row')
-  assert.equal(chip!.textContent, 'no todos')
-  assert.match(chip!.getAttribute('title') ?? '', /no todo list in the loaded transcript window/)
+  assert.ok(chip, 'no docket chip in the metadata row')
+  assert.equal(chip!.textContent, 'docket 2')
+  assert.match(chip!.getAttribute('title') ?? '', /assigned to agent/)
   const { act } = await import('react')
   await act(async () => { chip!.click() })
-  const panel = view.el.querySelector('.msgs.progress')
-  assert.ok(panel, 'clicking the chip did not open the progress tab')
-  assert.match(panel!.querySelector('.progress-todo .progress-note')?.textContent ?? '',
-    /no todo list in the loaded transcript window/)
-  assert.match(panel!.querySelector('.progress-state')?.textContent ?? '', /Claude · in a turn/)
-
-  // now the agent writes a todo list mid-turn: the server's live tail carries
-  // it (supervisor._todo_live_extra) and the panel — fed by the same store the
-  // chat reads — shows it after the next poll, with NO extra fetch path
-  server.live.push({ kind: 'tool', text: 'TodoWrite', id: 'toolu_x',
-    todos: [{ content: 'first', status: 'completed' }, { content: 'second', status: 'in_progress' }] })
-  const before = server.requests.length
-  await advance(3000)
-  await flush()
-  assert.ok(server.requests.length > before, 'the desk stopped polling — the panel would never update')
-  const rows = [...view.el.querySelectorAll('.msgs.progress .todo-item')]
-  assert.deepEqual(rows.map((r) => r.textContent), ['☑first', '◐second'],
-    'the live TodoWrite row did not reach the panel through the conversation store')
-  assert.match(view.el.querySelector('.msgs.progress .progress-todo .progress-note')?.textContent ?? '',
-    /live, this turn: 1\/2 done · now: second/)
-  assert.equal(view.el.querySelector('.cc-head-meta .progress-chip')?.textContent, '◐ 1/2')
-  // and the tab strip is the other way in
+  const panel = view.el.querySelector('.docket-agent')
+  assert.ok(panel, 'clicking the chip did not open the docket tab')
+  const names = [...panel!.querySelectorAll('.mailrow.docket-row .l1 .mfrom')]
+    .map((r) => r.textContent)
+  assert.deepEqual(names, ['mine-one', 'mine-two'])
+  assert.equal(names.length, Number(chip!.textContent!.replace(/\D/g, '')),
+    'the chip and the list disagree about how much work this agent has')
+  // it is the DOCKET's own row, not a second rendering of one: the status
+  // vocabulary and the assignment column come with it
+  assert.match(panel!.querySelector('.mailrow.docket-row .l2')?.textContent ?? '',
+    /In progress/)
+  assert.equal(panel!.querySelector('.mailrow.docket-row .l2 .docket-updater')?.textContent,
+    'agent')
+  // and selecting one opens the docket's own detail pane
+  await act(async () => { (panel!.querySelector('.mailrow.docket-row') as HTMLElement).click() })
+  assert.match(view.el.querySelector('.docket-agent .mailer-read')?.textContent ?? '',
+    /DONE SO FAR/)
+  // the tab strip is the other way in
   const chatTab = [...view.el.querySelectorAll<HTMLButtonElement>('.cc-tabs button')].find((b) => b.textContent === 'chat')!
   await act(async () => { chatTab.click() })
-  assert.equal(Boolean(view.el.querySelector('.msgs.progress')), false)
-  const progTab = [...view.el.querySelectorAll<HTMLButtonElement>('.cc-tabs button')].find((b) => b.textContent === 'progress')!
-  await act(async () => { progTab.click() })
-  assert.ok(view.el.querySelector('.msgs.progress'))
+  assert.equal(Boolean(view.el.querySelector('.docket-agent')), false)
+  const docketTab = [...view.el.querySelectorAll<HTMLButtonElement>('.cc-tabs button')].find((b) => b.textContent === 'docket')!
+  await act(async () => { docketTab.click() })
+  assert.ok(view.el.querySelector('.docket-agent'))
 })
 
-test('§4b DeskChat (Codex): a live turn/plan/updated row reaches the SAME panel through the SAME wiring', async (t) => {
+test('§4b DeskChat: the tab is what the agent is ANSWERABLE for — reviews included, on any lane', async (t) => {
   resetConvos()
   useFakeClock()
   const server = new FakeServer()
   installFetch(server)
-  server.busy = true
   server.userMsg('plan the work')
-  const n = node({ id: 'agent', tier: 'luna', busy: true, inflight_at: new Date().toISOString(), proc_live: true })
+  // a Codex node, because nothing about the docket tab is lane-specific and
+  // this used to be the lane whose panel was fed from a different source
+  server.workItems = [
+    workRow({ slug: 'i-own-this', title: 'I own this' }),
+    workRow({ slug: 'i-review-this', title: 'I review this', status: 'review',
+              owner: { node: 'other-agent', generation: 1 },
+              reviewer: { node: 'agent', generation: 1 } }),
+    workRow({ slug: 'neither', title: 'Neither',
+              owner: { node: 'other-agent', generation: 1 },
+              reviewer: { node: 'third-agent', generation: 1 } }),
+  ]
+  const n = node({ id: 'agent', tier: 'luna' })
   const view = await mountView(
     <DeskChat node={n} map={new Map([['agent', n]])} op={op} slug="prog" toast={noop} pub={false} bare onJump={noop} />,
     (el) => el)
   t.after(async () => { await view.unmount(); resetConvos(); realClock() })
   await flush()
   const chip = view.el.querySelector<HTMLButtonElement>('.cc-head-meta .progress-chip')
-  assert.ok(chip, 'no progress chip in the metadata row')
-  assert.notEqual(chip!.textContent, 'todo n/a', 'a Codex node must not show the old lane-cannot chip')
-  server.live.push({ kind: 'plan', text: 'checklist updated', threadId: 'thread-1', turnId: 'turn-1',
-    explanation: null, plan: [{ step: 'first', status: 'completed' }, { step: 'second', status: 'in_progress' }] })
-  await advance(3000)
-  await flush()
+  assert.ok(chip, 'no docket chip in the metadata row')
+  assert.equal(chip!.textContent, 'docket 2', 'a review it was named to is its work too')
   const { act } = await import('react')
   await act(async () => { chip!.click() })
-  const rows = [...view.el.querySelectorAll('.msgs.progress .todo-item')]
-  assert.deepEqual(rows.map((r) => r.textContent), ['☑first', '◐second'],
-    'the live turn/plan/updated row did not reach the panel through the conversation store')
-  assert.match(view.el.querySelector('.msgs.progress h4')?.textContent ?? '', /Codex/)
-  assert.equal(view.el.querySelector('.cc-head-meta .progress-chip')?.textContent, '◐ 1/2')
+  const names = [...view.el.querySelectorAll('.docket-agent .mailrow.docket-row .l1 .mfrom')]
+    .map((r) => r.textContent)
+  assert.deepEqual(names, ['i-own-this', 'i-review-this'])
+  // the review it holds still names its OWNER in the assignment column — the
+  // tab shows what it is answerable for, and never claims it owns the item
+  const reviewRow = [...view.el.querySelectorAll('.docket-agent .mailrow.docket-row')]
+    .find((r) => r.querySelector('.l1 .mfrom')?.textContent === 'i-review-this')!
+  assert.equal(reviewRow.querySelector('.l2 .docket-updater')?.textContent, 'other-agent')
+  // an org with no work for this agent SAYS SO rather than rendering blank
+  server.workItems = []
+  await advance(20000)
+  await flush()
+  assert.match(view.el.querySelector('.docket-agent')?.textContent ?? '',
+    /no docket items are assigned to agent/)
+  assert.equal(view.el.querySelector('.cc-head-meta .progress-chip')?.textContent, 'docket 0')
 })
 
 // ------------------------------------------------ §5 references in the card

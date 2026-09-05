@@ -83,6 +83,14 @@ new **action** on a multipurpose verb (`orgtree_work`, `orgtree_watchdog`)
 defaults to the verb's default class, so add it to `_ACTION_COVERAGE`
 yourself when you add a read-only one.
 
+`orgtree_work`'s `create`, `update` and `assign` are `transaction+post`, not
+`transaction`: since assignment is ownership (2026-09-05) each of them can hand
+the item to another agent, which posts mail inside the transaction and **drives
+that agent after the save**. `orgtree_staff` is `transaction+post` for the same
+reason — and `pre_transaction` when it rehires WITH a rename, because a rename
+moves folders on disk before any transaction exists to cover it, exactly as
+`orgtree_rehire` does.
+
 ## The lookup: five answers, and `unknown` by default
 
 When an answer is lost the client asks `orgtree_op_lookup` — the one

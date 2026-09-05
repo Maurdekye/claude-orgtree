@@ -98,6 +98,18 @@ def add_item(slug: str, title: str, *, owner: str | None = "agent",
             it["reviewer"] = {"node": reviewer,
                               "generation": int(org.node(reviewer)
                                                 .get("generation") or 0)}
+        # ⚠ SETUP MAIL IS DROPPED, and it has to be. Since 2026-09-05 creating
+        # an item FOR another agent NOTIFIES it, and that notification is
+        # ordinary waking mail — which `_auto_wake_gates_clear` treats as "a
+        # wake is already coming", so every reminder below would be suppressed
+        # by the fixture's own hand-off. What this suite is about is a seat
+        # that is IDLE with nothing pending and still owes an update, so the
+        # fixture puts it in exactly that state.
+        if owner:
+            box = org.d.get("mail", {})
+            box[owner] = [m for m in box.get(owner) or []
+                          if not str(m.get("body") or "").startswith(
+                              "[DOCKET ASSIGNMENT")]
         store.save_org(org)
     return str(r["slug"])
 

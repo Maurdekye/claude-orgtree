@@ -37,8 +37,12 @@ function mockWorkItems(activeItems: WorkItem[], archivedItems: WorkItem[] = [],
         const m = path.match(/\/work-items\/([^/]+)\/reply$/)
         const id = m ? m[1] : ''
         const found = [...activeItems, ...archivedItems].find((x) => x.slug === id)
-        const isDeferred = found?.last_updater?.node === 'archived-agent'
-        return ok({ accepted: true, to: found?.last_updater?.node ?? 'agent', deferred: isDeferred })
+        // the server replies to the item's OWNER (ledger.work_reply_target),
+        // so the mock answers about the owner too — a mock that still spoke
+        // about the last updater would let the panel name one agent while the
+        // reply reached another and nothing here would notice
+        const isDeferred = found?.owner?.node === 'archived-agent'
+        return ok({ accepted: true, to: found?.owner?.node ?? 'agent', deferred: isDeferred })
       }
       if (method === 'GET' && path.includes('/work-items')) {
         // the two filters are INDEPENDENT query flags, and a group is served
@@ -197,13 +201,14 @@ uiTest('§1 an empty org says so rather than rendering a blank panel', async (mo
   assert.match(el.textContent ?? '', /no work items yet/)
 })
 
-uiTest('§2 the row is NAMED BY ITS SLUG, and carries status, time and updater', async (mount) => {
+uiTest('§2 the row is NAMED BY ITS SLUG, and carries status, time and the assignment', async (mount) => {
   mockWorkItems([mkItem({
     slug: 'build-the-work-docket',
     title: 'Build the work docket',
     status: 'in_progress',
     docket_at: '2026-09-05T09:55:00.000Z',
-    last_updater: { node: 'luna-reserve', generation: 1 },
+    owner: { node: 'luna-reserve', generation: 1 },
+    last_updater: { node: 'codex-checklist', generation: 1 },
   })])
   const { el } = await mount(docketModal())
   await flush()
@@ -212,6 +217,8 @@ uiTest('§2 the row is NAMED BY ITS SLUG, and carries status, time and updater',
   assert.equal(r.querySelector('.l1 .mfrom')?.textContent, 'build-the-work-docket')
   assert.ok((r.querySelector('.l1 .mtime')?.textContent ?? '').length > 0)
   assert.match(r.querySelector('.l2')?.textContent ?? '', /In progress/)
+  // ASSIGNMENT IS OWNERSHIP (user 2026-09-05): the name in the row is who
+  // HOLDS the item, not whoever wrote the last update.
   assert.equal(r.querySelector('.l2 .docket-updater')?.textContent, 'luna-reserve')
   // THE DESCRIPTIVE TITLE IS NOT PRINTED IN THE LIST (user 2026-09-05) — it is
   // the row's hover text and nothing else. Asserting only "the slug is there"
@@ -221,17 +228,28 @@ uiTest('§2 the row is NAMED BY ITS SLUG, and carries status, time and updater',
     'the descriptive title is still printed in the list row')
 })
 
-uiTest('§3 left row updater is last updater, not necessarily owner', async (mount) => {
+uiTest('§3 the left row names the ASSIGNMENT, not the last updater', async (mount) => {
+  // The two names are DIFFERENT in this fixture on purpose: the row printed
+  // the last updater until 2026-09-05, so a fixture where owner and updater
+  // agree would pass on either behaviour and pin nothing.
   mockWorkItems([mkItem({
     title: 'Item A',
     owner: { node: 'astras-entrance-exam', generation: 1 },
+    last_updater: { node: 'luna-reserve', generation: 1 },
+  }), mkItem({
+    title: 'Item B',
+    owner: null,
     last_updater: { node: 'luna-reserve', generation: 1 },
   })])
   const { el } = await mount(docketModal())
   await flush()
   const r = rows(el)[0]!
-  assert.equal(r.querySelector('.l2 .docket-updater')?.textContent, 'luna-reserve')
-  assert.ok(!r.querySelector('.l2')?.textContent?.includes('astras-entrance-exam'))
+  assert.equal(r.querySelector('.l2 .docket-updater')?.textContent, 'astras-entrance-exam')
+  assert.ok(!r.querySelector('.l2')?.textContent?.includes('luna-reserve'),
+    'the row is still printing the last updater')
+  // an item nobody holds SAYS SO — an empty slot reads as "still loading"
+  const r2 = rows(el)[1]!
+  assert.equal(r2.querySelector('.l2 .docket-updater')?.textContent, 'Unassigned')
 })
 
 uiTest('§4 active, attention and archived rows get correct classes and labels', async (mount) => {
@@ -306,12 +324,13 @@ uiTest('§6 right pane displays done so far and working on / next lists, with No
   assert.equal(nextEmpty, 'None')
 })
 
-uiTest('§7 right pane updater name is a clickable agent jump that closes modal', async (mount) => {
+uiTest('§7 right pane assignment name is a clickable agent jump that closes modal', async (mount) => {
   let focused: string | null = null
   let closed = false
   mockWorkItems([mkItem({
     title: 'Work Item',
-    last_updater: { node: 'luna-reserve', generation: 1 },
+    owner: { node: 'luna-reserve', generation: 1 },
+    last_updater: { node: 'codex-checklist', generation: 1 },
   })])
   const { el } = await mount(docketModal({
     close: () => { closed = true },
@@ -321,12 +340,15 @@ uiTest('§7 right pane updater name is a clickable agent jump that closes modal'
   await inAct(() => (rows(el)[0] as HTMLElement).click())
   await flush()
 
-  const subUpdater = el.querySelector('.docket-pane-sub button.cc-name-jump') as HTMLButtonElement
-  assert.ok(subUpdater, 'clickable updater link in subtitle')
-  assert.equal(subUpdater.textContent?.trim(), 'luna-reserve')
-  await inAct(() => subUpdater.click())
+  const sub = el.querySelector('.docket-pane-sub')!
+  assert.match(sub.textContent ?? '', /Assigned to/,
+    'the subtitle still reads as "updated by"')
+  const subOwner = sub.querySelector('button.cc-name-jump') as HTMLButtonElement
+  assert.ok(subOwner, 'clickable assignment link in subtitle')
+  assert.equal(subOwner.textContent?.trim(), 'luna-reserve')
+  await inAct(() => subOwner.click())
   assert.ok(closed, 'modal was closed on agent click')
-  assert.equal(focused, 'luna-reserve', 'focused last updater agent')
+  assert.equal(focused, 'luna-reserve', 'focused the agent the item is assigned to')
 })
 
 uiTest('§8 manual attention box renders reason and clickable author', async (mount) => {
@@ -587,12 +609,16 @@ uiTest('§12 dismiss button is ABSENT when attention is question-only', async (m
   assert.equal(el.querySelector('.docket-dismiss'), null, 'no dismiss button for question-only attention')
 })
 
-uiTest('§13 general reply box targets last updater and handles deferred (archived) recipient', async (mount) => {
+uiTest('§13 general reply box targets the ASSIGNMENT and handles deferred (archived) recipient', async (mount) => {
   let toasted: string[] = []
+  // the backend routes an item reply to the OWNER and to nobody else
+  // (ledger.work_reply_target), so the label and the button must name the
+  // same agent the mail will actually reach
   const calls = mockWorkItems([mkItem({
     id: 'w-arch',
     title: 'Work Item',
-    last_updater: { node: 'archived-agent', generation: 1 },
+    owner: { node: 'archived-agent', generation: 1 },
+    last_updater: { node: 'somebody-else', generation: 1 },
   })])
   const { el } = await mount(docketModal({ toast: (t) => { toasted = t } }))
   await flush()
@@ -600,7 +626,9 @@ uiTest('§13 general reply box targets last updater and handles deferred (archiv
   await flush()
 
   const replyLabel = el.querySelector('.docket-reply-label')
-  assert.match(replyLabel?.textContent ?? '', /Reply to archived-agent · last updated this item/)
+  assert.match(replyLabel?.textContent ?? '', /Reply to archived-agent · assigned to this item/)
+  assert.ok(!(replyLabel?.textContent ?? '').includes('somebody-else'),
+    'the reply box is still offering the last updater')
 
   const textarea = el.querySelector('.mail-reply textarea') as HTMLTextAreaElement
   assert.ok(textarea, 'textarea exists')
@@ -649,6 +677,7 @@ uiTest('§13b reply box preserves draft on HTTP failure and clears on successful
         items: [mkItem({
           id: 'w-retry',
           title: 'Retry Item',
+          owner: { node: 'target-agent', generation: 1 },
           last_updater: { node: 'target-agent', generation: 1 },
         })],
         counts: { attention: 0, active: 1, archived: 0 },
@@ -1115,13 +1144,21 @@ uiTest('§24 active successors stay normal while retired actors stay historical'
       { ...node('retired-agent', 'haiku', 3), state: 'archived' },
     ] as unknown as TreeNode[],
   })
+  // the chip rides the name the row prints, which is the ASSIGNMENT — so
+  // these are owners, and the last updater is somebody the tree does not
+  // know at all, which would chip as "gone" if the row read the wrong field
+  const elsewhere = { node: 'never-existed', generation: 1 }
   mockWorkItems([
-    mkItem({ title: 'Current', last_updater: { node: 'worker-agent', generation: 1 } }),
-    // the SAME live node, but this update was written by an EARLIER generation:
+    mkItem({ title: 'Current', owner: { node: 'worker-agent', generation: 1 },
+      last_updater: elsewhere }),
+    // the SAME live node, but the item was assigned to an EARLIER generation:
     // the docket resolves it to the current successor and current model
-    mkItem({ title: 'Superseded generation', last_updater: { node: 'rolled-agent', generation: 2 } }),
-    mkItem({ title: 'Retired', last_updater: { node: 'retired-agent', generation: 3 } }),
-    mkItem({ title: 'Gone', last_updater: { node: 'never-existed', generation: 1 } }),
+    mkItem({ title: 'Superseded generation',
+      owner: { node: 'rolled-agent', generation: 2 }, last_updater: elsewhere }),
+    mkItem({ title: 'Retired', owner: { node: 'retired-agent', generation: 3 },
+      last_updater: elsewhere }),
+    mkItem({ title: 'Gone', owner: { node: 'never-existed', generation: 1 },
+      last_updater: elsewhere }),
   ])
   const { el } = await mount(docketModal({ tree }))
   await flush()
@@ -1307,7 +1344,7 @@ uiTest('§30 a long agent name truncates instead of running under the Dismiss bu
     title: 'Long updater', effective_attention: true,
     attention_sources: ['manual'],
     manual_attention: { reason: 'look', at: '2026-09-05T09:00:00.000Z', by: { node: 'a', generation: 1 }, set_rev: 1 },
-    last_updater: { node: 'an-extremely-long-agent-identifier-that-will-not-fit', generation: 1 },
+    owner: { node: 'an-extremely-long-agent-identifier-that-will-not-fit', generation: 1 },
   })])
   const { el } = await mount(docketModal())
   await flush()

@@ -628,7 +628,15 @@ class WorkItem(TypedDict):
     # the field existed; those derive it from retained history and fall back
     # to `at`, never to a clock that moves for edits (see _work_status_at).
     status_at: NotRequired[str | None]
-    last_updater: WorkActor | None  # author of the latest STATUS UPDATE — the general reply recipient
+    last_updater: WorkActor | None  # author of the latest STATUS UPDATE — history, not the reply recipient
+    # THE NAMED REVIEWER (user ruling 2026-09-05 21:23), set on the update that
+    # puts the item at `review` and readable as the agent answerable for the
+    # CHECK. It is not ownership: the owner keeps the work, and a reviewer gets
+    # read, evidence and one decision. ⚠ NotRequired AND nullable, in that
+    # order: items that were already at `review` when this shipped are NOT
+    # back-filled, so absent and null both mean "nobody was named" and neither
+    # may be invented into a name nobody chose.
+    reviewer: NotRequired[WorkActor | None]
     manual_attention: dict[str, Any] | None   # {reason, at, by, set_rev} — set_rev is the dismiss CAS stamp
     manual_attention_rev: int       # monotonic; every (re)set of the flag mints the next set_rev
     dismissals: list[dict[str, Any]]          # {at, by: "user", set_rev, reason} — every user dismissal, kept

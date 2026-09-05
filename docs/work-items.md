@@ -31,10 +31,11 @@ archive is unbounded.
 | `title`, `objective`, `kind` (`code` / `non-code`) | what and why |
 | `status` | `backlogged` · `open` · `in_progress` · `blocked` · `waiting` · `review` · `done` · `superseded` · `dropped`. `review` means **review by agents**, `waiting` means an external event — see below |
 | `blocked_reason`, `waiting_reason` | the state's own information, required on entry to that state and cleared on the way out, so at most one is ever set |
-| `owner` `{node, generation}` | who is responsible, at the generation assigned; `owner_current` / `owner_state` say whether that seat is still live and unchanged |
+| `owner` `{node, generation}` | **the assignment, and assignment IS ownership**: who is responsible, holds the item's management rights and receives the user's replies on it, at the generation assigned; `owner_current` / `owner_state` say whether that seat is still live and unchanged |
+| `reviewer` `{node, generation}` or null | the agent named to CHECK the work when the item entered `review`. Not ownership. Absent on items that predate the field and never back-filled — absent and null both mean nobody was named |
 | `participants` | node ids with narrow collaborator rights (below) |
 | `done_so_far`, `working_on_next` | **the docket status** — the latest two lists |
-| `docket_at`, `last_updater` | when the latest docket update was written and by which agent |
+| `docket_at`, `last_updater` | when the latest docket update was written and by which agent. `last_updater` is HISTORY: it is not who a reply reaches (that is `owner`) |
 | `manual_attention` `{reason, at, by, set_rev}` | the agent-raised flag, or null |
 | `dismissals` | every user dismissal of a flag, kept |
 | `questions` | open asks with a tab attached to this item (derived from the ask store) |
@@ -60,8 +61,37 @@ update: a status change or an attention flag rides an update that restates the
 lists. The lists are **replaced**, not merged — they are the latest complete
 summary.
 
+### An update CLAIMS the item
+
+User ruling 2026-09-05. Assignment is ownership, and the agent writing the
+status is the agent doing the work — so **an authorized update makes its author
+the owner**, participants included. Being allowed to update is the claim
+mechanism; an actor that may not update is refused before any of it and claims
+nothing.
+
+Authority is read from the **pre-update** state, so a participant's claim
+cannot hand it, in the same call, rights the first line of `work_update`
+already refused it.
+
+The **administrative update** — a superior writing a status on somebody else's
+item, a sweep, a correction — passes `owner=<the current owner>` and keeps the
+item where it is. Naming the owner that is already there changes nothing at
+all: no history row, no notification, no reassignment to undo. An explicit
+`owner` always wins over the claim, so the history shows one assignment and the
+notification names one recipient.
+
+### Handing an item over TELLS the agent
+
+`assign`, and a `create` or `update` that names somebody else as owner, post
+item-linked mail to the new owner and **wake it** — before it has written
+anything on the item. Keeping your own item notifies nobody. `orgtree_staff`
+does the item, the seat and the assignment in one call; `work_item` on
+`orgtree_hire`/`orgtree_rehire` does the same for a seat you are creating
+anyway.
+
 Agents set `backlogged|open|in_progress|blocked|waiting|review|dropped`. `done`
-is refused on `update`: assert `review` and wait for `accept`.
+is refused on `update`: assert `review` and wait for the reviewer's `approve`
+or for `accept`.
 
 ## `waiting`, and the information blocked and waiting owe
 
@@ -141,6 +171,32 @@ Ambiguity is a **question asked before** the implementation that depends on it,
 not a choice made for the user and approved afterwards. Ordinary implementation
 mechanics that do not decide product behaviour are not asked about at all.
 
+## The reviewer — a named check that is not ownership
+
+User ruling 2026-09-05 21:23/21:26, and the notification requirement 22:05.
+
+The update that puts an item at `review` **must name a `reviewer`**, and that
+agent is told immediately: it receives item-linked mail (`[DOCKET REVIEW
+REQUEST · slug "title"]`) and is woken once, on that transition. An ordinary
+update on an item already at `review` is not a new review request — it mails
+nobody and wakes nobody. Re-entering review after `changes` is a new request
+and does send one.
+
+* **Not ownership.** The owner keeps the work. A reviewer gets read, `evidence`
+  and exactly one decision; a status update from a reviewer-only actor is
+  refused by name, because an update would claim the item.
+* **`review` decision `approve`** completes the item — there is no second
+  acceptance round behind it — and **`changes`** returns it to the owner as
+  `in_progress`, waking them with the reviewer's note.
+* **Self-review is prohibited**, checked when the reviewer is named and again
+  when it decides, because ownership can move in between.
+* **Who may be named:** yourself, an agent in your subtree, or your own
+  superior — asking the agent above you to check your work is the ordinary
+  review here.
+* **Legacy items**: items already at `review` when the field shipped carry no
+  reviewer. Nothing is invented for them; the owner (or the user) names one
+  with an ordinary `update` carrying `reviewer`, with no status change.
+
 ## Attention
 
 `attention_reason` carries the specifics: what was asked against what was built,
@@ -207,7 +263,8 @@ Explicit, never org-wide; nothing in an item is public.
 |---|---|
 | read, `update`, `evidence`, attach a question | the owner node, the creator node, a strict ancestor of the owner (of the creator while unowned), the user, **participants** |
 | `assign`, `participants`, `archive`, `supersede`, `claim`, `verify`, `check` | the same set minus participants |
-| `accept` (→ `done`) | the user, or a strict ancestor of the owner — **never the owner** |
+| `accept` (→ `done`) | the user, a strict ancestor of the owner, or the item's **named reviewer** — never the owner |
+| `review` (`approve` / `changes`) | the item's named reviewer only |
 | `create` | any live agent (owner = itself or a subordinate) or the user |
 
 An agent that may not read an item gets one refusal indistinguishable from a
@@ -220,7 +277,8 @@ is redacted the same way. This got stricter when the opaque id was retired: an
 id carried no title, and the name is derived from one, so serving it in those
 slots would disclose the title of an item the viewer is not allowed to read.
 
-Reassignment is to oneself or a subordinate and never changes `last_updater`.
+Reassignment is to oneself or a subordinate, notifies and wakes the new
+owner, and never changes `last_updater` or `docket_at` — those are history.
 A rename carries the current-identity fields — `owner`, `last_updater`,
 `participants` — onto the new id; `created_by`, `history[].by`, `evidence[].by`,
 the delivery claims and `accepted.by` are authored history and keep the name
@@ -254,7 +312,7 @@ deletion of the item.
 |---|---|
 | `GET /api/orgs/{slug}/work-items[?archived=1]` | `{items, archived?, counts: {attention, active, archived}, now}` — every item, newest `docket_at` first, full set |
 | `GET /api/orgs/{slug}/work-items/{slug}` | `{item}` (archived items resolve) |
-| `POST …/work-items/{slug}/reply {body}` | user mail to the **last updater**, exactly, prefixed `[DOCKET REPLY · slug "title"]` (the canonical name, not the caller's spelling); 422 when no agent has updated yet, 404 when that node is gone, `deferred: true` when it is archived — never a substitute recipient |
+| `POST …/work-items/{slug}/reply {body}` | user mail to the **owner** — the assignment — exactly, prefixed `[DOCKET REPLY · slug "title"]` (the canonical name, not the caller's spelling); 422 when the item has no owner, 404 when that node is gone, `deferred: true` when it is archived. There is **no fallback to the last updater**: never a substitute recipient |
 | `POST …/work-items/{slug}/dismiss-attention {set_rev}` | above; 409 on a stale rev |
 | `POST …/work-items/{slug}/accept {note}` | the user accepts |
 | `POST /api/orgs/{slug}/migrate-work-identity` | the one-shot conversion to slug-only identity: exports a JSON backup of the document as it stands, then rewrites it in the same locked save. `{already: true}` and no write when there is nothing to convert; 422 (nothing written) when two items already share a name |

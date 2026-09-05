@@ -111,6 +111,23 @@ MUTANTS: list[tuple[str, str, str, str, str]] = [
         "delivers one message to the reviewer",
     ),
     (
+        # the legacy route (Astra 2026-09-05 22:27): items already at `review`
+        # when the field shipped are given a reviewer by an ordinary owner
+        # update. A rule that demanded a status change would leave them
+        # permanently unassignable.
+        "a-reviewer-can-only-be-named-while-entering-review",
+        "orgtree/ledger.py",
+        '        if not entering and prev_status != "review":',
+        "        if not entering:",
+        "legacy review item is given its reviewer",
+    ),
+    # ⚠ THERE IS NO MUTANT FOR `_work_name_reviewer`'s owner-level check
+    # (`if not pre_manage and owner_after != actor`). It was written and it
+    # SURVIVED: the branch is unreachable, because an actor that may update
+    # either manages the item already or claims it in the same call, and a
+    # reviewer-only actor is refused before it. Kept out rather than left in
+    # as a permanent failure — see the comment at that branch in ledger.py.
+    (
         # …and the other end of the same requirement: ORDINARY updates on an
         # item already at review must not read as fresh review requests.
         "every-update-at-review-re-requests-it",

@@ -10939,6 +10939,20 @@ class Org:
                 "a reviewer is named on the update that puts the item at "
                 "status review — name one when you ask for the review, not "
                 "before")
+        # NAMING A REVIEWER IS AN OWNER-LEVEL ACT.
+        #
+        # ⚠ AND THIS BRANCH IS UNREACHABLE TODAY — said here rather than left
+        # for a reader to assume it is load-bearing. Every actor that gets this
+        # far either already manages the item or has just CLAIMED it by
+        # updating (the claim is uniform), so `owner_after` is the actor
+        # whenever `pre_manage` is false; a reviewer-only actor is refused at
+        # the top of work_update and never arrives. It is kept because it
+        # states the rule the claim currently happens to satisfy: loosen the
+        # claim, add an update path that does not take ownership, and this is
+        # the line that keeps a bystander from choosing who checks the work.
+        # There is deliberately NO mutant for it in _mutate_staffing.py — a
+        # mutation nothing can kill would report a hole in the suite that is
+        # really a hole in the reachable state space.
         if not pre_manage and owner_after != actor:
             raise LedgerError("naming a reviewer is an owner-level act (owner, "
                               "creator, their superiors, the user)")

@@ -137,6 +137,12 @@ export class FakeServer {
   messages: ChatMessage[] = []
   live: LiveRowPayload[] = []
   pending_mail: PendingMail[] = []
+  /** the org's docket, as `GET /work-items` serves it. The desk polls this for
+   *  the agent's own docket tab, so a test that leaves it empty gets the empty
+   *  panel — which is the honest default, not a stub that hides the tab. */
+  workItems: unknown[] = []
+  workArchived: unknown[] = []
+  workBacklogged: unknown[] = []
   /** every chat request the client has made, newest last */
   requests: { last: number | null; at: number }[] = []
   /** truncation tier the real `node_chat` applies to a pending body */
@@ -306,7 +312,19 @@ export function installFetch(server: FakeServer): Transport {
               { name: 'notes.txt', dir: false, size: 12 }],
         }
         : /\/history$/.test(u.pathname) ? { items: [] }
-          : { ok: true }
+          : /\/work-items$/.test(u.pathname)
+            ? {
+              items: server.workItems,
+              // the two groups are served only when their flag is set, the
+              // same contract the real endpoint keeps
+              ...(u.searchParams.get('archived') ? { archived: server.workArchived } : {}),
+              ...(u.searchParams.get('backlogged') ? { backlogged: server.workBacklogged } : {}),
+              counts: { attention: 0, active: server.workItems.length,
+                        archived: server.workArchived.length,
+                        backlogged: server.workBacklogged.length },
+              now: new Date(Date.now()).toISOString(),
+            }
+            : { ok: true }
     return new Promise((resolve, reject) => {
       // every real response carries the answering process's id; the stub does
       // too, or the restart detector in `req` would be exercised by nothing

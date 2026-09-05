@@ -988,7 +988,21 @@ def _coverage_by_action():
     assert opreceipts.coverage("orgtree_work", {"action": "list"}) == opreceipts.NONE
     assert opreceipts.coverage("orgtree_work", {"action": "get"}) == opreceipts.NONE
     assert opreceipts.coverage("orgtree_work", {"action": "verify"}) == opreceipts.NONE
-    assert opreceipts.coverage("orgtree_work", {"action": "update"}) == opreceipts.TX
+    # …and the three docket actions that can HAND THE ITEM OVER are TX_POST as
+    # of 2026-09-05: assignment is ownership, so create/update/assign post the
+    # notification inside the transaction and DRIVE the agent after the save.
+    # A post-commit wake is exactly what TX cannot describe.
+    assert opreceipts.coverage("orgtree_work", {"action": "update"}) == opreceipts.TX_POST
+    assert opreceipts.coverage("orgtree_work", {"action": "assign"}) == opreceipts.TX_POST
+    assert opreceipts.coverage("orgtree_work", {"action": "create"}) == opreceipts.TX_POST
+    # the actions with no such effect stay plain document work
+    assert opreceipts.coverage("orgtree_work", {"action": "evidence"}) == opreceipts.TX
+    assert opreceipts.coverage("orgtree_work", {"action": "archive"}) == opreceipts.TX
+    # one call that hires a seat AND hands it an item is post-commit too, and
+    # in rehire-with-rename mode it moves folders BEFORE the transaction
+    assert opreceipts.coverage("orgtree_staff", {}) == opreceipts.TX_POST
+    assert opreceipts.coverage(
+        "orgtree_staff", {"node": "x", "name": "y"}) == opreceipts.PRE
     assert opreceipts.coverage("orgtree_watchdog", {"action": "create"}) == opreceipts.TX_POST
     assert opreceipts.coverage("orgtree_watchdog", {"action": "pause"}) == opreceipts.TX
     # …and a rehire that also RENAMES moves folders before the transaction

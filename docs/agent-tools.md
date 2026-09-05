@@ -10,12 +10,12 @@ the MCP catalog in `backend/orgtree/mcptool.py`.
 | Tool | Use |
 |---|---|
 | `orgtree_chart` | Show the organization visible to the caller, including scope and credit information. Pass `include_archived` to list retired nodes. |
-| `orgtree_hire` | Hire a report, or insert a superior above a seat in your subtree (`hire_type='superior'`). An ordinary hire must state folders, tools and visibility explicitly (plus name, tier, charter, grant, and permission mode); a superior insertion must omit folders, tools, visibility and permission mode, because the seat takes the target's own. Either way a `kickoff` starts its first task. |
+| `orgtree_hire` | Hire a report, or insert a superior above a seat in your subtree (`hire_type='superior'`). An ordinary hire must state folders, tools and visibility explicitly (plus name, tier, charter, grant, and permission mode); a superior insertion must omit folders, tools, visibility and permission mode, because the seat takes the target's own. Either way a `kickoff` starts its first task, and `work_item` assigns an existing docket item to the new seat as part of the same call. |
 | `orgtree_retool` | Change an agent's folders, tools, visibility, mode, charter, team charter, effort, or prefer_reserve in your subtree. A caller may only change its own team charter. |
 | `orgtree_switch_model` | Change an agent's tier in your subtree. Across providers, the pre-switch self is archived in place as a knowledge bearer (<node>@<gen>) and the agent starts a fresh session; its scratch, mail, and breadcrumbs remain. |
 | `orgtree_list_tiers` | List the tiers this machine currently offers, with provider, model, seat price, and advisory availability. Call it before `orgtree_hire` or `orgtree_switch_model` when choosing a tier; the hire gate rechecks fresh evidence, scope, and credits, so a listed tier can still be refused. |
 | `orgtree_retire` | Archive a node, preserving it for rehire. Retiring a node with live reports retires that subtree. |
-| `orgtree_rehire` | Restore an archived node, optionally renaming, re-scoping, granting audiences, and giving it a kickoff in one call. A recoverable bearer must stay with its original provider; use `orgtree_switch_model` after rehire to change providers. |
+| `orgtree_rehire` | Restore an archived node, optionally renaming, re-scoping, granting audiences, assigning a `work_item`, and giving it a kickoff in one call. A recoverable bearer must stay with its original provider; use `orgtree_switch_model` after rehire to change providers. |
 | `orgtree_cheap_compact` | Reset an idle agent's session in place (retaining seat id, parent, scope, charter, grant, and team) while archiving its prior session as a knowledge bearer (<node>@<gen>), avoiding a costly cold compaction. |
 | `orgtree_move` | Re-parent a node within the caller's reachable subtree. |
 | `orgtree_swap` | Two agents in your reach exchange seats: superior, reports, grant, team charter and scope stay with the seat; identity, session, charter and mailbox travel with the agent. Top-level swaps remain user-only. |
@@ -25,7 +25,8 @@ the MCP catalog in `backend/orgtree/mcptool.py`.
 | `orgtree_reallocate` | Move grant credits between a report and its parent. |
 | `orgtree_rename` | Rename a descendant and move its identity, mailbox, and working folder with it. |
 | `orgtree_status` | Report `working`, `idle`, `done`, or `blocked`; `done` and `blocked` notify the superior. |
-| `orgtree_work` | The docket: create, update (both lists, every time), assign, add participants, claim/verify delivery stages, record evidence, check acceptance conditions, accept, archive, supersede durable work items. See [work-items.md](work-items.md). |
+| `orgtree_work` | The docket: create, update (both lists, every time), assign, add participants, claim/verify delivery stages, record evidence, check acceptance conditions, record a reviewer's `review` decision, accept, archive, supersede durable work items. An authorized update CLAIMS the item (assignment is ownership); pass `owner` to write on somebody else's item without taking it, and `reviewer` on the update that asserts `review` — the named reviewer is told and woken at once. See [work-items.md](work-items.md). |
+| `orgtree_staff` | One call: create or update a docket item, hire or rehire the seat that will do it, assign the item to that seat and start it. Refused whole — a rejected call leaves no seat, no item, no mail and no wake. |
 
 ## Communication and audiences
 

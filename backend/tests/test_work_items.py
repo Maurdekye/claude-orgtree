@@ -2885,6 +2885,66 @@ check("the review transition itself delivers one message to the reviewer, and it
       the_transition_itself_delivers_one_message_that_survives_the_save)
 
 
+def a_legacy_review_item_gets_its_reviewer_by_an_owner_action():
+    """Astra 2026-09-05 22:27: the items ALREADY at `review` when this ships
+    carry no reviewer, and the acceptance question is how one is named on them.
+
+    THE SUPPORTED ENTRY POINT IS THE ORDINARY UPDATE — there is no
+    assign-reviewer verb, and no status change is needed. It is an OWNER-LEVEL
+    act, it persists, it tells the named agent once, and naming a REPLACEMENT
+    tells the new one (and only the new one)."""
+    slug = fresh_org()
+    wid = create(slug, node="worker")
+    # the legacy shape: at review, reviewer absent — built in the document
+    # because the tools refuse to create it now (entering review names one)
+    org = store.load_org(slug)
+    it, _ = org._work_find(wid)
+    it["status"] = "review"
+    it.pop("reviewer", None)
+    store.save_org(org)
+    assert get_item(slug, wid)["reviewer"] is None, "the fixture is not legacy-shaped"
+
+    # AUTHORIZATION: a bystander cannot name one, and neither can the agent
+    # that would like to review it
+    assert refused(slug, "stranger", "update", slug=wid, reviewer="mid",
+                   done_so_far=["x"], working_on_next=[])
+    n = len(DRIVEN)
+    r = ok(slug, "worker", "update", slug=wid, reviewer="mid",
+           done_so_far=["ready"], working_on_next=[])
+    assert r["reviewer_notified"] == "mid", r
+    assert get_item(slug, wid)["reviewer"]["node"] == "mid", "it did not persist"
+    assert get_item(slug, wid)["status"] == "review", "naming changed the status"
+    assert get_item(slug, wid)["owner"]["node"] == "worker", "naming moved the item"
+    box = [m for m in mailbox(slug, "mid")
+           if str(m.get("body", "")).startswith(f"[DOCKET REVIEW REQUEST · {wid} ")]
+    assert len(box) == 1 and len([d for d in DRIVEN[n:] if d[1] == "mid"]) == 1
+
+    # REPLACING the reviewer tells the NEW one and leaves the old one alone.
+    # The user does this one, because the ROOT is who reassigns these records
+    # and because `peer` — an unrelated top-level agent — is nameable by the
+    # user and by nobody in worker's chain.
+    org = store.load_org(slug)
+    org.work_update(USER, wid, ["ready"], [], reviewer="peer")
+    store.save_org(org)
+    assert get_item(slug, wid)["reviewer"]["node"] == "peer"
+    assert len([m for m in mailbox(slug, "peer")
+                if str(m.get("body", "")).startswith("[DOCKET REVIEW REQUEST")]) == 1
+    assert len([m for m in mailbox(slug, "mid")
+                if str(m.get("body", "")).startswith("[DOCKET REVIEW REQUEST")]) == 1, \
+        "the replaced reviewer was told again about a review it no longer holds"
+
+    # …and the DECISION follows the name. `peer` is a stranger to this item's
+    # chain — it owns nothing, manages nothing and is nobody's superior here —
+    # so its approval landing at all is the reviewership and nothing else.
+    assert get_item(slug, wid)["status"] == "review"
+    ok(slug, "peer", "review", slug=wid, decision="approve")
+    assert get_item(slug, wid)["status"] == "done"
+
+
+check("a legacy review item is given its reviewer by an owner action, and only the newest is told",
+      a_legacy_review_item_gets_its_reviewer_by_an_owner_action)
+
+
 def the_reviewer_may_read_and_decide_and_nothing_else():
     slug = fresh_org()
     wid = create(slug, node="worker")

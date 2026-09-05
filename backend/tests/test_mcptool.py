@@ -405,7 +405,8 @@ def _():
     # +orgtree_interrupt (⏸ in isolation, 2026-09-03)
     # +orgtree_restart_wake (2026-09-04)
     # +orgtree_work (the docket, 2026-09-05)
-    assert len(tools) == 33, [x["name"] for x in tools]
+    # +orgtree_staff (item + seat + assignment in one call, 2026-09-05)
+    assert len(tools) == 34, [x["name"] for x in tools]
     for c in tools:
         assert c["name"].startswith("orgtree_"), c
         assert len(c["description"]) > 20, c
@@ -589,7 +590,9 @@ def _():
     # +orgtree_swap +orgtree_self_subjugate (D-224, seat exchange, 2026-09-02)
     # +orgtree_interrupt (⏸ in isolation, 2026-09-03)
     # +orgtree_restart_wake (2026-09-04)
-    assert len(CARDS) == 33, len(CARDS)   # +orgtree_work (2026-09-05)
+    # +orgtree_work (2026-09-05); +orgtree_staff (2026-09-05, the item, the
+    # seat and the assignment in one call)
+    assert len(CARDS) == 34, len(CARDS)
 
 
 @t("☠ the op-lookup door answers, is never advertised, and does NOTHING")
