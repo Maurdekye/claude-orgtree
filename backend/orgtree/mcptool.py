@@ -15,18 +15,19 @@ from __future__ import annotations
 import json
 import os
 import sys
+import socket
 import urllib.error
 import urllib.request
 from typing import Any, cast
 
 if __package__:
-    from . import deployment
+    from . import deployment, opreceipts
 else:
     # Sandboxed Claude runs this dependency-free server by its mounted file
     # path rather than with ``-m``. Preserve that supported entry point while
     # sharing the one authoritative policy parser.
     sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-    from orgtree import deployment
+    from orgtree import deployment, opreceipts
 
 ORG: str = os.environ.get("ORGTREE_ORG", "")
 NODE: str = os.environ.get("ORGTREE_NODE", "")
@@ -1546,21 +1547,129 @@ def available_tools() -> list[dict[str, Any]]:
         if str(tool.get("name") or "") not in _AGENT_RESTART_TOOLS]
 
 
-def call_api(tool: str, args: dict[str, Any]) -> str:
+def _lost_kind(exc: Exception) -> str:
+    """Was the request DELIVERED before the answer went missing?
+
+    A refused connection or a name that does not resolve means no bytes ever
+    reached a backend, so nothing can have applied — that is `unsent`, and it
+    is the ordinary "the backend is not running" case, answered immediately
+    without a pointless second round trip. Everything else — a timeout, a
+    reset, a half-read response — means the request may well have been
+    processed and only the ANSWER was lost. That is `lost`, and it is the
+    case receipts exist for.
+    """
+    seen: list[object] = [exc]
+    reason = getattr(exc, "reason", None)
+    if reason is not None:
+        seen.append(reason)
+    for x in seen:
+        if isinstance(x, (ConnectionRefusedError, socket.gaierror)):
+            return "unsent"
+    return "lost"
+
+
+def _post(payload: dict[str, Any], timeout: float = 30) -> tuple[str, str]:
+    """POST once. Returns (kind, text) where kind is:
+
+        ok        the backend answered
+        refused   the backend answered with an HTTP error — a DEFINITE answer
+        unsent    no connection was ever made, so nothing can have applied
+        lost      the request may have been processed and the ANSWER went
+                  missing. Whether the call applied is UNKNOWN from here.
+
+    That last case is the whole reason receipts exist. Every failure used to
+    be reported as `orgtree API unreachable`, which reads like a refusal and
+    is not one: the mutation may have committed and the response died on the
+    way back.
+    """
     headers: dict[str, str] = {"Content-Type": "application/json"}
     if BRIDGE_SECRET:
         headers["X-Orgtree-Bridge"] = BRIDGE_SECRET
-    req = urllib.request.Request(
-        f"{BASE}/api/agent",
-        data=json.dumps({"org": ORG, "node": NODE, "tool": tool, "args": args}).encode(),
-        headers=headers, method="POST")
+    req = urllib.request.Request(f"{BASE}/api/agent",
+                                 data=json.dumps(payload).encode(),
+                                 headers=headers, method="POST")
     try:
-        with urllib.request.urlopen(req, timeout=30) as r:
-            return r.read().decode("utf-8", "replace")
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return "ok", r.read().decode("utf-8", "replace")
     except urllib.error.HTTPError as e:
-        return json.dumps({"error": e.read().decode("utf-8", "replace")[:500]})
+        return "refused", e.read().decode("utf-8", "replace")[:500]
     except Exception as e:                                   # noqa: BLE001
-        return json.dumps({"error": f"orgtree API unreachable: {e}"})
+        return _lost_kind(e), str(e)
+
+
+def call_api(tool: str, args: dict[str, Any]) -> str:
+    """One tool call, with an operation key so a LOST answer can be resolved
+    instead of guessed at.
+
+    The key rides the request envelope (never the tool's arguments), so no
+    tool card and no agent prompt changes for it. When the answer is lost we
+    ASK — `orgtree_op_lookup`, a verb an older backend refuses as unknown
+    rather than executing — and report what the org can actually prove. We
+    never reissue the call automatically: `not_applied` is handed to the agent
+    as a fact to act on, not acted on here."""
+    key = opreceipts.mint_key()
+    kind, text = _post({"org": ORG, "node": NODE, "tool": tool, "args": args,
+                        "op_key": key})
+    if kind == "ok":
+        return text
+    if kind == "refused":
+        return json.dumps({"error": text})
+    if kind == "unsent":
+        # no connection was made, so the call was never delivered: the old
+        # wording, and it is still the true one for this case
+        return json.dumps({"error": f"orgtree API unreachable: {text}"})
+    lost = text
+    lkind, ltext = _post({"org": ORG, "node": NODE,
+                          "tool": "orgtree_op_lookup",
+                          "args": {"op_key": key, "for_tool": tool,
+                                   "for_args": args}}, timeout=15)
+    if lkind == "ok":
+        try:
+            parsed = json.loads(ltext)
+        except json.JSONDecodeError:
+            parsed = None
+        # a line may parse as ANY json value — coerce once, so nothing below
+        # calls .get on a list
+        ans: dict[str, Any] = (cast("dict[str, Any]", parsed)
+                               if isinstance(parsed, dict) else {})
+        state = str(ans.get("state") or "")
+        head = (f"orgtree: no answer came back from the backend for this "
+                f"call ({lost}). Its receipt was then looked up, and the org "
+                f"reports: ")
+        if state == "applied":
+            return json.dumps({
+                "replayed": True, "state": "applied",
+                "status": head + "the operation DID apply — its document "
+                                 "transaction committed. Do not issue it "
+                                 "again. Post-commit effects (waking a "
+                                 "recipient, outbound transport) are not "
+                                 "covered by the receipt.",
+                "receipt": ans.get("receipt")})
+        if state == "not_applied":
+            return json.dumps({
+                "error": head + "the operation did NOT apply, and its key is "
+                                "now fenced so the lost call can never take "
+                                "effect. It is safe to issue this call again.",
+                "state": state, "op_lookup": ans})
+        why = str(ans.get("status") or "the outcome cannot be established")
+        return json.dumps({
+            "error": head + f"{state or 'unknown'} — {why}. Do NOT assume it "
+                            f"failed: check the org (your mailbox, the chart, "
+                            f"the docket) before doing anything that would "
+                            f"repeat it.",
+            "state": state or "unknown", "op_lookup": ans})
+    if lkind == "refused" and "orgtree_op_lookup" in ltext:
+        return json.dumps({
+            "error": f"orgtree API gave no answer for this call ({lost}), and "
+                     f"this backend does not support operation receipts, so "
+                     f"whether it applied CANNOT be established. Check the "
+                     f"org before repeating it.",
+            "state": "unknown", "reason": "unsupported_build"})
+    return json.dumps({
+        "error": f"orgtree API gave no answer for this call ({lost}), and the "
+                 f"follow-up lookup also failed ({ltext[:200]}) — whether it "
+                 f"applied is UNKNOWN. Check the org before repeating it.",
+        "state": "unknown", "reason": "lookup_failed"})
 
 
 def reply(id_: int | str | None, result: Any = None, error: Any = None) -> None:

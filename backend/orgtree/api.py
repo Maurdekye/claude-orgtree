@@ -75,6 +75,7 @@ from . import crashreports
 from . import deployment
 from . import frozen_install
 from . import workitems
+from . import opreceipts
 from . import ledger as ledger_mod
 from . import (accounts, antigravity_limits, appsettings, bridgeauth,
                codex_limits, codex_route, limits, net,
@@ -4878,6 +4879,13 @@ class AgentCall(Body):
     node: str
     tool: str
     args: dict[str, Any] = {}
+    # ---- durable operation receipts (opreceipts.py) ----------------------
+    # `op_key` rides the ENVELOPE, not `args`, and that is the point: no tool
+    # card changes, so this costs no agent the one prompt-prefix change a new
+    # or edited card would. It is minted by our own MCP client, one per
+    # tools/call; no card exposes a key, so a model never invents one. An
+    # older client simply omits it and nothing about its call changes.
+    op_key: str = ""
 
 
 # every `args` key the tool schema documents as text: an identifier, a tier
@@ -5226,6 +5234,238 @@ def _forced_self_restart(body: AgentCall, a: dict[str, Any]) -> dict[str, Any]:
     return r
 
 
+# ------------------------------------------------- operation receipts (§w71)
+#
+# ⚠ PROCESS-LOCAL AND NOT DURABLE, deliberately. It records the keyed calls
+# THIS process currently has in flight, so a lookup can say "running" instead
+# of fencing a call that is still going. It only ever ADDS certainty: its
+# absence is never evidence, because a request that died with the process
+# leaves nothing here either. The durable answers all come from the receipt
+# log and its watermark, which survive a restart; this table is why a live
+# call is not mistaken for a dead one.
+_OP_INFLIGHT: dict[tuple[str, str, str], float] = {}
+_OP_INFLIGHT_LOCK = threading.Lock()
+
+
+def _op_scope(body: AgentCall) -> tuple[str, str, str]:
+    return (body.org, body.node, body.op_key)
+
+
+def _op_generation(org: Org, nid: str) -> int:
+    return int(org.node(nid).get("generation") or 0)
+
+
+def _op_ev_baseline(org: Org) -> int | None:
+    """A JSON document loads everything, so the pre-dispatch event count is
+    free there. A SQLite document must NOT be made to materialise its
+    unbounded events log merely to number a receipt — for that backend the
+    count comes from `store.appended_since_load` afterwards, and only if the
+    dispatch materialised the section itself."""
+    if store.STORE_BACKEND != "sqlite":
+        return len(cast("list[Any]", org.d.get("events") or []))
+    return None
+
+
+def _op_ev_range(org: Org, pre: int | None) -> tuple[int | None, int | None]:
+    """The DOCUMENT events this call produced — never post-commit effects."""
+    if not dict.__contains__(cast("dict[str, Any]", org.d), "events"):
+        return (pre, pre) if pre is not None else (None, None)
+    log = dict.__getitem__(cast("dict[str, Any]", org.d), "events")
+    n = len(cast("list[Any]", log))
+    added = store.appended_since_load(log)
+    if added is None:
+        added = (n - pre) if pre is not None else None
+    return (n - added, n) if added is not None else (None, None)
+
+
+def _op_post_expected(tool: str, a: dict[str, Any]) -> list[str]:
+    """What the dispatch will ATTEMPT after `save_org` — recorded so the
+    receipt names what it is not proving, rather than staying silent."""
+    out: list[str] = []
+    cls = opreceipts.coverage(tool, a)
+    if cls == opreceipts.TX_POST:
+        out.append("drive")
+    if tool in ("orgtree_retire", "orgtree_dissolve", "orgtree_cheap_compact"):
+        out.append("remote_reap")
+    return out
+
+
+def _op_admit(org: Org, body: AgentCall, a: dict[str, Any]
+              ) -> dict[str, Any] | None:
+    """Admission, inside the caller's DOC_LOCK. Returns the receipt context
+    for a call that may proceed, or None when no receipt rides this call.
+    Raises the refusal itself for replay/conflict/refuse."""
+    if not body.op_key or not opreceipts.receipted(body.tool, a):
+        return None
+    gen = _op_generation(org, body.node)
+    d = cast("dict[str, Any]", org.d)
+    decision, info = opreceipts.admit(d, body.node, gen, body.op_key,
+                                      body.tool, a)
+    if decision == opreceipts.REPLAY:
+        row = cast("dict[str, Any]", info["row"])
+        return {"replay": {
+            "replayed": True, "op_id": row.get("id"), "at": row.get("at"),
+            "tool": row.get("tool"), "outcome": row.get("outcome"),
+            "receipt": row,
+            "status": "This operation ALREADY APPLIED — nothing was done "
+                      "again. This is its receipt, not a fresh result: the "
+                      "original result was not kept, and the receipt covers "
+                      "the document transaction only.",
+        }}
+    if decision == opreceipts.CONFLICT:
+        raise HTTPException(409, f"op_key conflict: {info.get('detail')}. "
+                                 f"Nothing was done. Use a fresh key.")
+    if decision == opreceipts.REFUSE:
+        raise HTTPException(
+            422, f"op_key refused ({info.get('reason')}): "
+                 f"{info.get('detail')}. Nothing was done, and whether the "
+                 f"original call applied is UNKNOWN — do not treat this as a "
+                 f"refusal of the operation itself.")
+    return {"gen": gen, "mint_ms": int(cast("int", info["mint_ms"])),
+            "ev_pre": _op_ev_baseline(org)}
+
+
+def _op_file(org: Org, body: AgentCall, a: dict[str, Any],
+             ctx: dict[str, Any], result: Any) -> None:
+    """Append the receipt — the LAST thing before `save_org`, so it rides the
+    same transaction as the effect it describes."""
+    ev = _op_ev_range(org, cast("int | None", ctx.get("ev_pre")))
+    opreceipts.append(cast("dict[str, Any]", org.d), opreceipts.row(
+        op_id=opreceipts.new_id(), node=body.node,
+        generation=int(cast("int", ctx["gen"])), key=body.op_key,
+        mint_ms=int(cast("int", ctx["mint_ms"])), tool=body.tool, args=a,
+        cls=opreceipts.coverage(body.tool, a), outcome="applied", at=ledger_mod.now(),
+        result=result, ev=ev,
+        post_expected=_op_post_expected(body.tool, a)))
+
+
+class _op_inflight:
+    """Marks a keyed call as IN FLIGHT in this process for as long as it holds
+    (or waits for) the document lock — see `_OP_INFLIGHT`. Written as a
+    context manager so it can ride the existing `with store.DOC_LOCK:` line
+    without re-indenting the dispatch: entered first, so the mark covers the
+    lock WAIT too, and left last."""
+
+    def __init__(self, body: AgentCall) -> None:
+        self._k: tuple[str, str, str] | None = (
+            _op_scope(body) if body.op_key else None)
+
+    def __enter__(self) -> None:
+        if self._k is not None:
+            with _OP_INFLIGHT_LOCK:
+                _OP_INFLIGHT[self._k] = time.time()
+
+    def __exit__(self, *exc: object) -> None:
+        if self._k is not None:
+            with _OP_INFLIGHT_LOCK:
+                _OP_INFLIGHT.pop(self._k, None)
+
+
+def _op_absent(key: str, cls: str, at: str = "") -> dict[str, Any]:
+    """The answer for a fenced key: not applied when the coverage class makes
+    absence provable, and `unknown` when the verb also works outside the
+    transaction the fence protects. One place, so the fresh fence and a fence
+    an earlier lookup wrote can never answer differently."""
+    base: dict[str, Any] = {"op_key": key, "fenced": True, "coverage": cls}
+    if at:
+        base["at"] = at
+    if opreceipts.provable_absence(cls):
+        return {**base, "state": "not_applied",
+                "status": "no document transaction for this key committed, "
+                          "and the key is now fenced so it can never apply — "
+                          "safe to reissue the operation under a NEW key"}
+    return {**base, "state": "unknown", "reason": "pre_transaction_step",
+            "status": "no document transaction committed and the key is now "
+                      "fenced, but this verb also does work OUTSIDE that "
+                      "transaction (a folder move, a file copy, a process "
+                      "signal, a wait for a turn boundary) which may already "
+                      "have happened — the outcome is unknown; do not reissue"}
+
+
+def _op_lookup_call(body: AgentCall, a: dict[str, Any]) -> dict[str, Any]:
+    """"Did the call carrying this key apply?" — five answers, and `unknown`
+    whenever the truth is not provable.
+
+    It takes the document lock and may WRITE, because a truthful
+    `not_applied` needs more than a look: the original request may still be
+    on the wire, unadmitted, and would then apply after the caller was told
+    it had not. So a lookup that finds nothing FENCES the key — a durable row
+    that admission refuses — and only then reports it as not applied. The
+    fence and the check are one transaction, so the original either committed
+    first (and is found) or is refused forever after."""
+    key = str(a.get("op_key") or "")
+    if not key:
+        raise HTTPException(422, "a lookup needs the `op_key` it is asking "
+                                 "about")
+    tool = str(a.get("for_tool") or "")
+    if not tool:
+        raise HTTPException(422, "a lookup needs `for_tool` — the verb the "
+                                 "lost call was making. Without it the "
+                                 "coverage class and the fingerprint of that "
+                                 "call cannot be established, and the answer "
+                                 "would be a guess.")
+    raw_for = a.get("for_args")
+    try:
+        # the SAME normalisation admission ran, or the two fingerprints of one
+        # call would disagree
+        for_args = _norm_args(cast("dict[str, Any]", raw_for)
+                              if isinstance(raw_for, dict) else {})
+    except LedgerError as e:
+        raise HTTPException(422, str(e))
+    cls = opreceipts.coverage(tool, for_args)
+    with store.DOC_LOCK:
+        try:
+            org = store.load_org(body.org)
+            org.node(body.node)
+        except LedgerError as e:
+            raise HTTPException(422, str(e))
+        gen = _op_generation(org, body.node)
+        d = cast("dict[str, Any]", org.d)
+        row = opreceipts.find(d, body.node, gen, key)
+        if row is not None and row.get("outcome") == "applied":
+            fp = opreceipts.fingerprint(tool, body.node, gen, for_args)
+            if row.get("tool") != tool or row.get("fp") != fp:
+                return {"state": "conflict", "op_key": key, "receipt": row,
+                        "status": "that key already identifies a DIFFERENT "
+                                  "operation; this one was never done"}
+            return {"state": "applied", "op_key": key, "receipt": row,
+                    "status": "the document transaction committed; "
+                              "post-commit effects are not covered"}
+        if row is not None and row.get("outcome") == "fenced":
+            # an earlier lookup already fenced it — the SAME answer as fencing
+            # it here, including the coverage caveat: a fence stops the
+            # document effect, and cannot speak for work done outside it
+            return _op_absent(key, cls, at=str(row.get("at") or ""))
+        with _OP_INFLIGHT_LOCK:
+            running = (body.org, body.node, key) in _OP_INFLIGHT
+        if running:
+            return {"state": "running", "op_key": key,
+                    "status": "a call with this key is executing in THIS "
+                              "backend process right now; its outcome is not "
+                              "decided yet — do not reissue"}
+        if not opreceipts.receipted(tool, for_args):
+            return {"state": "unknown", "reason": "unsupported_operation",
+                    "op_key": key, "coverage": cls,
+                    "status": "this verb never reaches the document "
+                              "transaction, so no receipt can exist either "
+                              "way — the outcome is unknown"}
+        # nothing recorded, nothing running: FENCE the key, then answer.
+        decision, info = opreceipts.admit(d, body.node, gen, key, tool,
+                                          for_args)
+        if decision == opreceipts.REFUSE:
+            return {"state": "unknown", "reason": info.get("reason"),
+                    "op_key": key, "coverage": cls,
+                    "status": str(info.get("detail") or "")}
+        opreceipts.append(d, opreceipts.row(
+            op_id=opreceipts.new_id(), node=body.node, generation=gen,
+            key=key, mint_ms=int(cast("int", info["mint_ms"])),
+            tool=tool, args=for_args, cls=cls, outcome="fenced",
+            at=ledger_mod.now(),
+            summary="fenced by a lookup: not recorded as applied"))
+        store.save_org(org)
+    return _op_absent(key, cls)
+
+
 @app.post("/api/agent")
 def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
     """Backend for the orgtree MCP server every node loads. The calling NODE is the
@@ -5245,6 +5485,16 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
         a = _norm_args(body.args)
     except LedgerError as e:
         raise HTTPException(422, str(e))
+    if body.tool == "orgtree_op_lookup":
+        # asking, not acting — see `_op_lookup_call`. A VERB rather than a
+        # flag on the envelope, and that is a safety property, not a taste:
+        # a backend that predates receipts ignores unknown envelope fields,
+        # so a `lookup` flag would have made an OLD build EXECUTE the very
+        # operation the client was only asking about. An unknown verb refuses
+        # instead, which is how the client learns the build cannot answer.
+        # It runs before the gates below because a lookup performs none of
+        # those operations.
+        return _op_lookup_call(body, a)
     if body.tool in ("orgtree_self_restart", "orgtree_self_update",
                      "orgtree_prime_restart") \
             and not deployment.current_policy().allow_agent_restart:
@@ -5421,10 +5671,17 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
             raise HTTPException(422, str(e))
         _archive_warnings = supervisor.interrupt_before_archive(
             body.org, _pre_org, _arch_node)
-    with store.DOC_LOCK:
+    with _op_inflight(body), store.DOC_LOCK:
         try:
             org = store.load_org(body.org)
             org.node(body.node)
+            # ADMISSION (w71d69aac). Inside this lock acquisition on purpose:
+            # the same one that mutates the document and saves it. A check
+            # before the lock would be a time-of-check/time-of-use hole, and
+            # two concurrent duplicates would both pass it.
+            _rcpt = _op_admit(org, body, a)
+            if _rcpt is not None and "replay" in _rcpt:
+                return cast("dict[str, Any]", _rcpt["replay"])
             if body.tool == "orgtree_message":
                 # the "notice" kind is minted ONLY by orgtree_send_notice —
                 # it is the marker every no-wake rule keys on (waking_mail),
@@ -6283,6 +6540,10 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
                          f'was not started — retry against "{_renamed_to}", '
                          f'without `name`.')
             raise HTTPException(422, str(e))
+        if _rcpt is not None:
+            # the LAST thing before the save, so the receipt and the effect it
+            # describes are ONE transaction: both commit or neither does
+            _op_file(org, body, a, _rcpt, result)
         store.save_org(org)
     if smoke_req is not None:
         # FAIL LOUDLY AT CREATE TIME (2026-08-22). Arming a dog used to tell
