@@ -71,10 +71,10 @@ MUTANTS: list[tuple[str, str, str, str, str]] = [
     (
         "NOOP-CONTROL-comment-only",
         SUP,
-        "                # PARKED IS UNTOUCHED: that process is deliberately "
-        "alive and",
-        "                # PARKED IS UNTOUCHED (noop control): that process is "
-        "deliberately alive and",
+        "                # PARKED IS UNTOUCHED: the pool owns that record. "
+        "Otherwise",
+        "                # PARKED IS UNTOUCHED (noop control): the pool owns "
+        "that record. Otherwise",
         "",
     ),
     (

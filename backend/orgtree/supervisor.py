@@ -12125,31 +12125,19 @@ def _codex_leg_attempt(slug: str, nid: str, org: Org, st: dict[str, Any],
                 # start/initialize exception before wait was reached.
                 turn.client.close()
         finally:
-            # ⚠ THE TEARDOWN ABOVE IS THE SAME "can each raise" LIST the fold
-            # note names, and this record is the ONLY effective clear for a
-            # turn-owned generation: warmpool's own clears all carry
-            # `owner=wp`, and `_set_proc_lifecycle` refuses a clear whose
-            # token is not the current owner — which is this CodexTurn from
-            # the `adopt=True` above. MEASURED on fd8a507
-            # (probe_codex_lifecycle.py, evidence/codex-lifecycle-fd8a507
-            # .json): with `close()` raising on the cold path, and with
-            # `discard()` raising on a warm process that could not park,
-            # `proc_live` stayed True and `proc_lifecycle_owner` still held
-            # the finished turn after the turn ended — `_run_one_turn`
-            # swallows the exception, so the node sat idle showing a live
-            # process until it next ran. The controls in the same run (an
-            # unplanted cold turn, an unplanted non-parking warm turn) both
-            # cleared, so "cleared" is not free.
+            # ⚠ ON EVERY EXIT: the teardown above is the same "can each raise"
+            # list the fold note names, and this is the ONLY effective clear
+            # for a turn-owned generation — warmpool's own clears carry
+            # `owner=wp`, which `_set_proc_lifecycle` refuses while this turn
+            # holds the token from the `adopt=True` above.
             turn_mcp_count, turn_mcp_names = _mcp_tool_surface_for_owner(
                 slug, nid, turn.client.proc)
             if not parked:
-                # PARKED IS UNTOUCHED: that process is deliberately alive and
-                # the pool now owns its record. Otherwise a teardown that
-                # raised may have left the tree running, so close it again
-                # (`close` kills by pid and waits) and publish the exit only
-                # once `poll()` has observed one — an exit that did not happen
-                # must not be published, and `_mcp_tool_count_end` applies the
-                # same rule to the generation's tool surface.
+                # PARKED IS UNTOUCHED: the pool owns that record. Otherwise
+                # retry the close for a tree that survived its teardown
+                # (`close` kills by pid and waits), and publish the exit only
+                # once `poll()` observes it — the rule `_mcp_tool_count_end`
+                # already applies to the tool surface.
                 if turn.client.proc.poll() is None:
                     try:
                         turn.client.close()
