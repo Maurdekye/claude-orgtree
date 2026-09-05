@@ -171,8 +171,14 @@ class NoAppServer:
 #: The guard was not wrong and neither was the gate: `NoAppServer` caught a
 #: real change. The narrowing keeps the spent-window property honest, and the
 #: conditional gate gets its OWN check below rather than being routed around.
+#: …and minus the LEGACY tokens (item 12, 2026-09-04): `gpt-reserve` is
+#: refused at the door by RULING now — not by the window, not by the grant —
+#: so it has no place in a loop that asserts "the window refuses nobody".
+#: Its grant rule is still pinned in §1/§3 below, where it answers the
+#: providers document instead of the door.
 _ALWAYS_CODEX_TIERS = sorted(
-    set(providers.CODEX_TIERS) - set(providers.CONDITIONAL_CODEX_TIERS))
+    set(providers.CODEX_TIERS) - set(providers.CONDITIONAL_CODEX_TIERS)
+    - set(providers.LEGACY_CODEX_TIERS))
 
 
 def _always_and_conditional_are_both_non_empty():
@@ -517,16 +523,26 @@ print("\n§4  controls — what would make the above vacuous")
 def the_gate_and_the_chip_are_one_function():
     """d7b98c7 wrote the reserve rule twice — once in `provider_hire_gate`,
     once inline in `providers_payload` — so the chip and the refusal could
-    drift. Both now read `reserve_availability`, and this is the check that
-    notices if a third copy appears."""
+    drift. Item 12 moved the rule's ONE reader: the door refuses the legacy
+    token by ruling and asks no capacity question at all (a door that asked
+    `reserve_availability` again would be re-gating a retired token on the
+    grant), while the providers document reads `reserve_availability`
+    through `reserve_status` for the `reserve` object and the deprecated
+    aliases. This is the check that notices a second copy of the rule."""
     import inspect
     from orgtree import api
     gate = inspect.getsource(api.provider_hire_gate)
-    assert "reserve_availability" in gate, gate[-900:]
+    assert "reserve_availability" not in gate,         "the door is asking the grant again — the token is refused by ruling"
+    assert "LEGACY_CODEX_TIERS" in gate, gate[-900:]
     assert 'kind") != "chatgpt"' not in gate.split("headless")[-1], (
         "the reserve branch is asking the login directly again")
     payload = inspect.getsource(providers.providers_payload)
     assert "reserve_availability" in payload, payload
+    status = inspect.getsource(providers.reserve_status)
+    assert "reserve_availability" in status, status
+    # no inline re-derivation of the grant in either
+    for src in (payload, status):
+        assert "grants(" not in src, "the grant question is asked inline again"
 
 
 def the_reserve_tier_name_lives_once():

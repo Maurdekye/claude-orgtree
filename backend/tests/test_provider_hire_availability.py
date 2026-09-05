@@ -22,7 +22,8 @@ the turn tried to spawn. A refusal at the door beats a failure at spawn.
     §3  the payload each family publishes, in all three states
     §4  the hire gate, now including Claude
     §5  controls: what would make the above vacuous
-    §6  gpt-reserve's own gate (OpenAI's grant comes and goes)
+    §6  gpt-reserve is a LEGACY token (item 12): refused at the door, its
+        grant rule now answers the providers document's `reserve` object
     §7  a spent usage window is NOT a hire gate (user ruling)
 
     python backend/tests/test_provider_hire_availability.py
@@ -341,66 +342,107 @@ class Codex:
         codex_limits.grants = self._g                                # type: ignore[assignment]
 
 
-def reserve_refused_on_api_key() -> None:
-    """Reserve capacity is a ChatGPT-subscription grant — an api-key session
-    is genuinely connected (sol/terra/luna hire fine there) and was never
-    granted reserve capacity at all."""
-    with Codex(kind="api-key"):
-        expect_error(lambda: api.provider_hire_gate(org(), "gpt-reserve"),
-                     "chatgpt")
-        api.provider_hire_gate(org(), "sol")      # the leg that must hold
+# ⚠ RE-WALKED FOR ITEM 12 (user ruling 2026-09-04). `gpt-reserve` is no
+# longer a tier anyone hires: reserve is the pool a `luna` hire spends first
+# (`codex_route`), so the door refuses the legacy token UNCONDITIONALLY and
+# points at luna — under every fixture, including the one where the grant is
+# live. The grant rule itself did not go anywhere: it now answers the
+# /api/providers `reserve` object (granted / withdrawn / unknown), which is
+# what the luna route reads, and `test_luna_reserve_route.py` pins the
+# routing. What this section keeps pinning is that the family's THREE live
+# tiers hire under all of those fixtures, and that the legacy door stays
+# open for a node that already wears the token.
+
+def legacy_token_refused_under_every_fixture() -> None:
+    """The refusal is the RULING, not a detection verdict — so it must hold
+    when the grant is live too, and it must name the tier to hire instead."""
+    for fixture in (Codex(), Codex(kind="api-key"), Codex(granted=False),
+                    Codex(granted=None)):
+        with fixture:
+            expect_error(lambda: api.provider_hire_gate(org(), "gpt-reserve"),
+                         "luna")
+            expect_error(lambda: api.provider_hire_gate(org(), "gpt-reserve"),
+                         "no longer hireable")
 
 
-def reserve_refused_when_the_grant_is_gone() -> None:
-    """THE 2026-09-02 REPORT, at the door. The user had reserve that morning,
-    lost it by evening, and NOTHING about the login moved — d7b98c7's check
-    passes throughout. What moved is the grant, and the usage board is where
-    that shows: a granted pool has a rate-limit window of its own there and a
-    withdrawn one has none."""
+def legacy_token_never_cites_capacity() -> None:
+    """A refusal that blamed the grant or the window would re-open the
+    detection-bug-hides-a-tier saga in a new costume: the token is gone by
+    ruling, and the message must say that rather than diagnose the account."""
     with Codex(granted=False):
-        expect_error(lambda: api.provider_hire_gate(org(), "gpt-reserve"),
-                     "no gpt-reserve capacity")
+        try:
+            api.provider_hire_gate(org(), "gpt-reserve")
+        except LedgerError as e:
+            for word in ("capacity right now", "usage window", "api key"):
+                assert word not in str(e).lower(), (word, str(e))
+        else:
+            raise AssertionError("must refuse")
 
 
-def reserve_passes_when_the_grant_is_live() -> None:
-    """THE LEG THAT MUST HOLD. Every other §6 check asserts a refusal, and a
-    gate that refused gpt-reserve unconditionally would satisfy all of them
-    while making the tier permanently unhireable."""
-    with Codex():
-        api.provider_hire_gate(org(), "gpt-reserve")
+def plain_rehire_door_stays_open() -> None:
+    """A node ALREADY on gpt-reserve restarts as it was: the plain-rehire
+    door (`user_choice_only=True`) returns before the legacy refusal. Retiring
+    a token must not strand the agents wearing it."""
+    with Codex(granted=False):
+        api.provider_hire_gate(org(), "gpt-reserve", user_choice_only=True)
 
 
-def unknown_evidence_is_not_a_refusal() -> None:
-    """A machine whose usage board is cold or unreadable knows NOTHING about
-    the grant — and must therefore not take the tier away. Failing closed
-    here would turn a detection bug into an outage."""
-    with Codex(granted=None):
-        api.provider_hire_gate(org(), "gpt-reserve")
-
-
-def reserve_gate_never_touches_the_other_three() -> None:
-    """Anti-vacuity: a gate that refused every codex tier under these
-    conditions would make the refusals above look right for the wrong reason.
-
-    `spent` is deliberately NOT in this list — exhaustion is the account's
-    and §7 requires it to hit all four. The two RESERVE-specific signals
-    are what must stay off luna/terra/sol."""
-    for fixture in (Codex(kind="api-key"), Codex(granted=False)):
+def the_three_live_tiers_hire_under_every_fixture() -> None:
+    """THE LEG THAT MUST HOLD. Every check above asserts a refusal, and a gate
+    that refused every codex tier would satisfy all of them. luna in
+    particular hires with no grant, on an api-key login, and with no
+    evidence at all: the ROUTE decides what a luna turn is sent as, the door
+    only asks whether the CLI is connected."""
+    for fixture in (Codex(), Codex(kind="api-key"), Codex(granted=False),
+                    Codex(granted=None)):
         with fixture:
             for t in ("luna", "terra", "sol"):
                 api.provider_hire_gate(org(), t)
 
 
-check("gpt-reserve is refused on an api-key session, naming ChatGPT — "
-      "sol still hires fine there", reserve_refused_on_api_key)
-check("…refused when the account holds no gpt-reserve window, on an "
-      "UNCHANGED ChatGPT login", reserve_refused_when_the_grant_is_gone)
-check("…and PASSES while the grant is live (the leg that must hold)",
-      reserve_passes_when_the_grant_is_live)
-check("no evidence either way is not a refusal",
-      unknown_evidence_is_not_a_refusal)
-check("…and its own rule never leaks onto luna/terra/sol",
-      reserve_gate_never_touches_the_other_three)
+def the_grant_rule_answers_the_providers_document() -> None:
+    """Where the old gate's three verdicts live now: `reserve.granted` on the
+    openai provider entry — True with a live grant, False withdrawn or on an
+    api-key login, None with no evidence — and the deprecated
+    `reserve_hire_enabled` alias mirrors the granted case. The offered tier
+    rows carry no gpt-reserve under any of them."""
+    for fixture, want in ((Codex(), True), (Codex(kind="api-key"), False),
+                          (Codex(granted=False), False), (Codex(granted=None), None)):
+        if want is None:
+            # "no evidence" means NO BOARD EITHER: the fixture stubs the
+            # grant question, and the fill is read off the cached board,
+            # which an earlier check in this process may have filled
+            codex_limits.invalidate()
+        with fixture:
+            entry = next(p for p in providers.providers_payload(
+                {"installed": True, "connected": True})["providers"]
+                if p["id"] == "openai")
+            res = entry["reserve"]
+            if want is None:
+                assert res["granted"] is None, res
+            elif want is False:
+                assert res["granted"] is False, res
+            else:
+                # with the fixture's board stubbed out, a live grant may read
+                # as granted (a real board) or unknown (no board to read the
+                # fill from) — never withdrawn
+                assert res["granted"] is not False, res
+            assert entry["reserve_hire_enabled"] == (want is not False and want is not None) \
+                or want is None, (entry["reserve_hire_enabled"], want)
+            assert "gpt-reserve" not in [t["tier"] for t in entry["tiers"]], entry["tiers"]
+            assert "luna" in [t["tier"] for t in entry["tiers"]], entry["tiers"]
+
+
+check("gpt-reserve is refused under EVERY fixture, naming luna",
+      legacy_token_refused_under_every_fixture)
+check("…and the refusal cites the ruling, never the account's capacity",
+      legacy_token_never_cites_capacity)
+check("…while the plain-rehire door stays open for a node already on it",
+      plain_rehire_door_stays_open)
+check("luna/terra/sol hire under every fixture (the leg that must hold)",
+      the_three_live_tiers_hire_under_every_fixture)
+check("the grant rule now answers the providers document's `reserve` object",
+      the_grant_rule_answers_the_providers_document)
 
 
 # --------------------------------- §7 a spent window does NOT gate hiring
@@ -449,7 +491,9 @@ def every_codex_tier_still_hires_while_spent() -> None:
     spent_board()
     try:
         with Codex():
-            for t in ("gpt-reserve", "luna", "terra", "sol"):
+            # (gpt-reserve is refused by RULING now — §6 — not by the
+            # window; it is deliberately not in this loop)
+            for t in ("luna", "terra", "sol"):
                 api.provider_hire_gate(org(), t)
     finally:
         codex_limits.invalidate()

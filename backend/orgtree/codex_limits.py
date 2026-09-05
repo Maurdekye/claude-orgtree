@@ -15,11 +15,13 @@ local signal that MOVES with an OpenAI grant; see the note above `grants`.
 from __future__ import annotations
 
 import datetime as _dt
+import json
+import os
 import threading
 import time
 from typing import Any, Final
 
-from . import codexrun, providers
+from . import cachecontinuity, codexrun, providers
 
 CACHE_TTL: Final = 30.0
 FETCH_TIMEOUT: Final = 15.0
@@ -27,10 +29,73 @@ MAX_EVIDENCE_AGE: Final = 900.0
 
 _lock = threading.Lock()
 _fetch_lock = threading.Lock()
-_cache: dict[str, Any] = {"at": 0.0, "data": None}
+#: `complete_at` — when the board was last filled by a COMPLETE
+#: `account/rateLimits/read`, as opposed to patched by a turn's sparse
+#: `account/rateLimits/updated` notifications.  The distinction decides what
+#: an ABSENT bucket means: a complete read that carries no `gpt-reserve`
+#: bucket is a withdrawn grant; a sparse notification that happens not to
+#: mention it says nothing at all (`observe` merges, never removes).
+#: `codex_route.resolve` reads `snapshot()["complete"]` before it will call a
+#: grant withdrawn.
+#: `account` — the codex ACCOUNT NAMESPACE the board describes, stamped at
+#: every fill (`account_namespace()`, the same digest the cache-continuity
+#: namespace uses). A board is evidence about one login: after `codex login`
+#: as someone else the cached windows describe the OLD account's pools, so
+#: `fetch` re-reads when the namespace moved and `snapshot` carries it for
+#: readers that scope their own records (`codex_route`) to compare against.
+_cache: dict[str, Any] = {"at": 0.0, "data": None, "complete_at": 0.0,
+                          "account": None}
 # Full snapshots by limit id.  Rolling notifications are sparse, so they merge
 # into this board rather than replacing it and accidentally erasing a window.
 _snapshots: dict[str, dict[str, Any]] = {}
+#: WHEN EACH BUCKET WAS LAST OBSERVED, by limit id. A sparse notification
+#: refreshes the bucket it names and no other, so "how fresh is the evidence
+#: about THIS pool" is answerable per pool — which is what lets a positive
+#: observation outrank a node's rejection mark only when it is genuinely
+#: newer than the rejection (a full read stamps every bucket it carries).
+_observed: dict[str, float] = {}
+
+
+def account_namespace() -> str:
+    """The codex account the board evidence belongs to — a private, stable
+    digest of the provider's own account id (or the API key), never the
+    credential. The ONE implementation; `supervisor._cache_codex_account_
+    namespace` delegates here so a route mark, a cache row and a board
+    stamp scope alike."""
+    return _account_namespace()[0]
+
+
+def _account_namespace() -> tuple[str, str]:
+    """(namespace, auth lane). See `account_namespace`. Refresh/access tokens
+    and their timestamps are deliberately excluded: rotating credentials for
+    the same account is not an account change."""
+    home = os.environ.get("CODEX_HOME") or os.path.expanduser("~/.codex")
+    try:
+        with open(os.path.join(home, "auth.json"), encoding="utf-8") as f:
+            loaded: Any = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return "unobserved", "unobserved"
+    if not isinstance(loaded, dict):
+        return "unobserved", "unobserved"
+    doc: dict[str, Any] = loaded
+    key = doc.get("OPENAI_API_KEY")
+    if isinstance(key, str) and key:
+        return ("codex-api-key:" + cachecontinuity.digest(
+            {"credential": key}, 16), "api_key")
+    tokens_row = doc.get("tokens")
+    tokens: dict[str, Any] = tokens_row if isinstance(tokens_row, dict) else {}
+    account_id = tokens.get("account_id")
+    if isinstance(account_id, str) and account_id:
+        return ("codex-chatgpt:" + cachecontinuity.digest(
+            {"account": account_id}, 16), "subscription")
+    # Older auth records may omit account_id while the display identity is
+    # still locally observable in the id-token claims.
+    status = providers._codex_account()  # pyright: ignore[reportPrivateUsage]
+    email = status.get("email")
+    if isinstance(email, str) and email:
+        return ("codex-chatgpt:" + cachecontinuity.digest(
+            {"account": email}, 16), "subscription")
+    return "codex-account-unobserved", "unobserved"
 
 
 def _iso(epoch: Any) -> str | None:
@@ -102,12 +167,14 @@ def _snapshots_of(raw: dict[str, Any]) -> list[dict[str, Any]]:
     return out
 
 
-def _normalize(raw: dict[str, Any]) -> dict[str, Any]:
+def _normalize(raw: dict[str, Any],
+               observed: dict[str, float] | None = None) -> dict[str, Any]:
     snapshots = _snapshots_of(raw)
     limits: list[dict[str, Any]] = []
     plan: str | None = None
     for snapshot in snapshots:
         limit_id = str(snapshot.get("limitId") or "codex")
+        seen_at = (observed or {}).get(limit_id)
         limit_name_raw = snapshot.get("limitName")
         limit_name = (str(limit_name_raw).strip()
                       if limit_name_raw is not None else "")
@@ -135,6 +202,9 @@ def _normalize(raw: dict[str, Any]) -> dict[str, Any]:
                 "model": limit_name or None,
                 "label": ((limit_name + " · ") if limit_name else "")
                          + _duration(duration),
+                # when THIS bucket was last observed (epoch); None on a
+                # board normalized without the observation ledger
+                "observed_at": seen_at,
             })
     return {"available": bool(limits), "limits": limits, "plan": plan}
 
@@ -152,8 +222,17 @@ def _account(data: dict[str, Any]) -> dict[str, Any]:
 def fetch(force: bool = False) -> dict[str, Any]:
     """Read Codex usage, cached for the modal's polling cadence."""
     now = time.time()
+    acct = account_namespace()
     with _lock:
         cached = _cache.get("data")
+        # a cached board describes ONE login: if the account moved under it
+        # (`codex login` as someone else), it is not this account's evidence
+        # and is dropped rather than served
+        if cached is not None and _cache.get("account") not in (None, acct):
+            _cache.update(at=0.0, data=None, complete_at=0.0, account=None)
+            _snapshots.clear()
+            _observed.clear()
+            cached = None
         if not force and cached is not None and now - float(_cache["at"]) <= CACHE_TTL:
             return _account(dict(cached))
     status = providers.codex_status()
@@ -184,15 +263,19 @@ def fetch(force: bool = False) -> dict[str, Any]:
                 codex_home=str(status.get("codex_home") or "") or None)
             client.initialize()
             raw = client.request("account/rateLimits/read", {}, FETCH_TIMEOUT)
-            data = _normalize(raw)
-            if not data["available"]:
-                data["error"] = "Codex reported no usage-limit windows"
+            _now = time.time()
             with _lock:
                 _snapshots.clear()
+                _observed.clear()
                 for snapshot in _snapshots_of(raw):
                     limit_id = str(snapshot.get("limitId") or "codex")
                     _snapshots[limit_id] = dict(snapshot)
-                _cache.update(at=time.time(), data=data)
+                    _observed[limit_id] = _now      # a full read sees every bucket
+                data = _normalize(raw, _observed)
+                if not data["available"]:
+                    data["error"] = "Codex reported no usage-limit windows"
+                _cache.update(at=_now, data=data, complete_at=_now,
+                              account=acct)
             return _account(dict(data))
         except Exception as e:  # noqa: BLE001 — protocol failures degrade the panel
             with _lock:
@@ -224,14 +307,20 @@ def observe(snapshot: Any) -> None:
     if not isinstance(snapshot, dict):
         return
     limit_id = str(snapshot.get("limitId") or "codex")
+    now = time.time()
     with _lock:
         _snapshots[limit_id] = _merge_sparse(_snapshots.get(limit_id, {}), snapshot)
+        # ONLY the bucket this notification names is observed now; the
+        # others keep the time they were last seen (see `_observed`)
+        _observed[limit_id] = now
         ordered = list(_snapshots.values())
         if not ordered:
             return
         raw = {"rateLimits": _snapshots.get("codex", ordered[0]),
                "rateLimitsByLimitId": dict(_snapshots)}
-        _cache.update(at=time.time(), data=_normalize(raw))
+        _cache.update(at=now, data=_normalize(raw, _observed))
+        if _cache.get("account") is None:
+            _cache["account"] = account_namespace()
 
 
 def peek() -> dict[str, Any]:
@@ -260,15 +349,29 @@ def snapshot(now: float | None = None) -> dict[str, Any]:
     with _lock:
         raw = _cache.get("data")
         observed = float(_cache.get("at") or 0.0)
+        complete_at = float(_cache.get("complete_at") or 0.0)
+        acct = _cache.get("account")
         if not isinstance(raw, dict):
             return {"available": False, "provider": "Codex", "limits": [],
-                    "observed_at": None, "age": None, "stale": False}
+                    "observed_at": None, "age": None, "stale": False,
+                    "complete": False, "complete_age": None,
+                    "account": None}
         data = dict(raw)
         data["limits"] = [dict(x) for x in raw.get("limits") or []
                           if isinstance(x, dict)]
     age = max(0.0, now - observed) if observed > 0 else None
+    complete_age = (max(0.0, now - complete_at) if complete_at > 0
+                    else None)
     data.update(provider="Codex", observed_at=_iso(observed), age=age,
-                stale=bool(age is not None and age > MAX_EVIDENCE_AGE))
+                stale=bool(age is not None and age > MAX_EVIDENCE_AGE),
+                # a board whose EVERY bucket was read at once, recently
+                # enough to trust an absence — see the note on `_cache`
+                complete=bool(complete_age is not None
+                              and complete_age <= MAX_EVIDENCE_AGE),
+                complete_age=complete_age,
+                # whose board this is — a reader scoped to a different
+                # account must treat it as no evidence
+                account=acct)
     return data
 
 
@@ -317,5 +420,6 @@ def grants(model: str) -> bool | None:
 
 def invalidate() -> None:
     with _lock:
-        _cache.update(at=0.0, data=None)
+        _cache.update(at=0.0, data=None, complete_at=0.0, account=None)
         _snapshots.clear()
+        _observed.clear()

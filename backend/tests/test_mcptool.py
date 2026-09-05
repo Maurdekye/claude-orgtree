@@ -620,17 +620,23 @@ def _():
         assert set(c) == {"name", "description", "inputSchema"}, c["name"]
 
 
-@t("static tier enums match non-conditional ledger tiers exactly")
+@t("static tier enums match non-conditional, non-legacy ledger tiers exactly")
 def _():
     from orgtree.ledger import TIERS
-    from orgtree.providers import CONDITIONAL_CODEX_TIERS
-    expected = set(TIERS) - set(CONDITIONAL_CODEX_TIERS)
+    from orgtree.providers import CONDITIONAL_CODEX_TIERS, LEGACY_CODEX_TIERS
+    # a LEGACY token (gpt-reserve, item 12) stays in ledger.TIERS for the
+    # nodes wearing it and is offered by no card
+    expected = set(TIERS) - set(CONDITIONAL_CODEX_TIERS) - set(LEGACY_CODEX_TIERS)
+    assert LEGACY_CODEX_TIERS, "the legacy set is empty — this check pins nothing"
+    for name in ("orgtree_hire", "orgtree_switch_model"):
+        for legacy in LEGACY_CODEX_TIERS:
+            assert legacy not in DESC[name], (name, legacy, "still recited")
     for name, key in (("orgtree_hire", "tier"), ("orgtree_switch_model", "tier")):
         assert sorted(SCHEMA[name]["properties"][key]["enum"]) == sorted(expected), \
             (name, SCHEMA[name]["properties"][key]["enum"])
     # and the seat costs the cards RECITE match the same table
     for tier, cost in TIERS.items():
-        if tier in CONDITIONAL_CODEX_TIERS:
+        if tier in CONDITIONAL_CODEX_TIERS or tier in LEGACY_CODEX_TIERS:
             continue
         for name in ("orgtree_hire", "orgtree_switch_model"):
             assert f"{tier} {cost}" in DESC[name].replace("·", "").replace(

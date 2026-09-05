@@ -94,16 +94,21 @@ def main():
                       if t not in providers.CODEX_TIERS
                       and t not in providers.ANTIGRAVITY_TIERS],
                      "claude family"))
-    check("codex offer family omits conditional Astra without live evidence",
+    check("codex offer family omits conditional Astra without live evidence "
+          "AND the legacy gpt-reserve token (item 12)",
           lambda: eq([(t["tier"], t["seat"], t["model"])
                       for t in providers.codex_tiers()],
-                     [("gpt-reserve", 0.2, "gpt-reserve"),
-                      ("luna", 0.2, "gpt-5.6-luna"),
+                     [("luna", 0.2, "gpt-5.6-luna"),
                       ("terra", 2, "gpt-5.6-terra"),
                       ("sol", 5, "gpt-5.6-sol")], "codex family"))
+    check("…while the AXIS still knows the legacy token (old nodes load)",
+          lambda: eq(("gpt-reserve" in providers.CODEX_TIERS,
+                      "gpt-reserve" in providers.CODEX_MODELS,
+                      "gpt-reserve" in providers.LEGACY_CODEX_TIERS),
+                     (True, True, True), "axis"))
     check("every codex tier carries a chip letter",
           lambda: eq([bool(t["letter"]) for t in providers.codex_tiers()],
-                     [True, True, True, True], "letters"))
+                     [True, True, True], "letters"))
     check("gpt-reserve has Luna's price band",
           lambda: eq(providers.CODEX_PRICES["gpt-reserve"],
                      providers.CODEX_PRICES["luna"], "gpt-reserve price"))

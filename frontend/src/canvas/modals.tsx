@@ -18,7 +18,7 @@ import { pickFolder } from '../picker'
 import {
   CloseIcon, DeleteIcon, FolderIcon, LayersIcon, SettingsIcon,
 } from '../icons'
-import { ago, ALL_PRESENT, anyTierSeat, codexTierOffer, CODEX_TIERS, ANTIGRAVITY_TIERS, fmtCredits, hireOf, isOpenRouterTier, MODEL_VERSIONS, openrouterTierIds, pileOrder, PROVIDER_LABEL, providerOf, reserveOffer, TIER_LETTER, tierLabel, TIERS, tierShown, USER, useEsc } from './shared'
+import { ago, ALL_PRESENT, anyTierSeat, codexTierOffer, CODEX_TIERS, ANTIGRAVITY_TIERS, fmtCredits, hireOf, isOpenRouterTier, MODEL_VERSIONS, openrouterTierIds, pileOrder, PROVIDER_LABEL, providerOf, TIER_LETTER, tierLabel, TIERS, tierShown, USER, useEsc } from './shared'
 import type { ProviderPresence } from './shared'
 import type { CanvasNode, DraftScope, DraftState, OpFn, Pile } from './shared'
 import { ProcessLifecycleMark } from './desk'
@@ -415,6 +415,33 @@ interface DraftScopeModalProps {
   close: () => void
 }
 
+/** item 12 — the "Prefer reserve" checkbox (user ruling 2026-09-04: "make
+ *  the choice to use reserve instead of normal weekly luna usage a checkbox,
+ *  on by default. when off, weekly usage is used first, then reserve"). One
+ *  component for the draft's modal and the gear so the wording cannot
+ *  drift. It sets the ORDER only: the other pool is the fallback either
+ *  way, and the header token reports what actually ran, not this box. */
+export function PreferReserveRow({ checked, onChange }: {
+  checked: boolean; onChange: (v: boolean) => void
+}) {
+  return (
+    <>
+      <div className="field-label">reserve capacity — luna only</div>
+      <label className="prefer-reserve">
+        <input type="checkbox" checked={checked}
+          onChange={(e) => onChange(e.target.checked)} />
+        {' '}prefer reserve capacity
+      </label>
+      <div className="dim hub-hint">
+        {checked
+          ? 'turns use OpenAI’s reserve pool first and fall back to normal weekly Luna usage when reserve is spent or withdrawn'
+          : 'turns use normal weekly Luna usage first and fall back to reserve when the weekly pool is spent'}
+        {' — the desk header shows which pool a turn actually ran on'}
+      </div>
+    </>
+  )
+}
+
 export function DraftScopeModal({ draft, map, tree, scope, onSave, close }: DraftScopeModalProps) {
   useEsc(close)
   const parent = draft.parent ? map.get(draft.parent) : null
@@ -438,6 +465,9 @@ export function DraftScopeModal({ draft, map, tree, scope, onSave, close }: Draf
     { ...base.tools, mcp: [...(base.tools.mcp ?? [])] })
   const [vis, setVis] = useState(base.org_visibility)
   const [effort, setEffort] = useState(base.effort ?? '')
+  // item 12 (user ruling 2026-09-04): "Prefer reserve", ON by default; only
+  // a luna draft shows it, and only a luna acts on it
+  const [preferReserve, setPreferReserve] = useState(base.prefer_reserve ?? true)
   const [newPath, setNewPath] = useState('')
   const [servers, setServers] = useState<string[]>([])
   const [sandboxMcp, setSandboxMcp] = useState(false)
@@ -521,6 +551,9 @@ export function DraftScopeModal({ draft, map, tree, scope, onSave, close }: Draf
           <option value="xhigh">xhigh</option>
           <option value="max">max</option>
         </select>
+        {draft.tier === 'luna' && (
+          <PreferReserveRow checked={preferReserve} onChange={setPreferReserve} />
+        )}
         <div className="hint">
           Grants clamp to what the parent holds (№30) — anything beyond its
           capability is trimmed at hire with a warning.
@@ -528,7 +561,8 @@ export function DraftScopeModal({ draft, map, tree, scope, onSave, close }: Draf
         <div className="row">
           <button className="primary" onClick={() =>
             onSave({ add_dirs: dirs, tools, org_visibility: vis,
-              ...(effort ? { effort } : {}) })}>apply</button>
+              ...(effort ? { effort } : {}),
+              ...(draft.tier === 'luna' ? { prefer_reserve: preferReserve } : {}) })}>apply</button>
           <button onClick={close}>cancel</button>
         </div>
       </div>
@@ -724,6 +758,13 @@ export function NodeConfig({ node, map, tree, slug, op, toast, codexProvider,
   const modelVersion = val('modelVersion', scope.model_version ?? '')
   const setModelVersion = set<string>('modelVersion', modelVersion)
   const versions = MODEL_VERSIONS[model] ?? []
+  // item 12 (user ruling 2026-09-04): the per-agent "Prefer reserve"
+  // checkbox — which pool a luna tries FIRST. Absent on the wire = on.
+  // Editable here so the preference is not creation-only; shown only when
+  // the (possibly just-picked) tier is luna, saved for any tier so it
+  // survives a switch away and back.
+  const preferReserve = val<boolean>('preferReserve', scope.prefer_reserve ?? true)
+  const setPreferReserve = set<boolean>('preferReserve', preferReserve)
   const [newPath, setNewPath] = useState('')
   const [servers, setServers] = useState<string[]>([])
   const [sandboxMcp, setSandboxMcp] = useState(false)
@@ -762,7 +803,8 @@ export function NodeConfig({ node, map, tree, slug, op, toast, codexProvider,
             : { enabled: accMode === 'on',
                 occ: (+accOcc || 50) / 100 },
           model_version: versions.includes(modelVersion)
-            ? modelVersion : '' }))
+            ? modelVersion : '',
+          prefer_reserve: preferReserve }))
       .then((r) => {
         if (r?.bridge?.raise_ceiling) {
           // one-action bridge (ceiling spec §1): same save, flag set
@@ -778,6 +820,7 @@ export function NodeConfig({ node, map, tree, slug, op, toast, codexProvider,
                       occ: (+accOcc || 50) / 100 },
                 model_version: versions.includes(modelVersion)
                   ? modelVersion : '',
+                prefer_reserve: preferReserve,
                 raise_ceiling: true })
               .then((r2) => toast(r2.warnings?.length ? r2.warnings
                 : ['ceiling raised — applied']))
@@ -820,13 +863,6 @@ export function NodeConfig({ node, map, tree, slug, op, toast, codexProvider,
         // the CLI's only login is a Google account — no keyed lane exists
         ? 'headless orgs cannot hire Antigravity (Google-account login only, no API key)'
         : null
-  // gpt-reserve rides codexUnavailable AND its own gate: reserve capacity is
-  // a per-account grant, so a Codex session that passes `codexUnavailable`
-  // can still lack it — same rule as `provider_hire_gate`.
-  const reserveUnavailable = codexUnavailable
-    ?? (codexProvider?.reserve_hire_enabled === false
-      ? codexProvider?.reserve_reason ?? 'reserve capacity unavailable'
-      : null)
   // the OpenRouter lane: a key IS a keyed login, so headless never refuses
   // it; kiosks hold it out like the other non-Claude lanes
   const openrouterUnavailable = !openrouterProvider?.hire_enabled
@@ -836,7 +872,6 @@ export function NodeConfig({ node, map, tree, slug, op, toast, codexProvider,
     // The current tier remains a truthful selected no-op even if policy has
     // since tightened around it; save does not call switch_model for a no-op.
     if (t === node.tier) return null
-    if (t === 'gpt-reserve') return reserveUnavailable
     if (CODEX_TIERS.includes(t) && codexUnavailable) return codexUnavailable
     if (ANTIGRAVITY_TIERS.includes(t) && antigravityUnavailable) return antigravityUnavailable
     if (isOpenRouterTier(t) && openrouterUnavailable) return openrouterUnavailable
@@ -849,21 +884,17 @@ export function NodeConfig({ node, map, tree, slug, op, toast, codexProvider,
   // whose provider is INSTALLED but signed out is still listed and disabled
   // with its reason (user confirmed 2026-08-30), while one whose provider is
   // absent is not listed at all. Two different claims, two different answers.
-  // gpt-reserve is REMOVED from the dropdown, not listed disabled, when its
-  // grant is withdrawn (user ruling 2026-09-02). Same verdict, same function
-  // as the hire chips — `reserveOffer` only says 'hide' for the
-  // reserve-specific case, so a Codex family that is merely signed out or out
-  // of usage still lists all four, disabled, with their reason.
+  // A LEGACY token (gpt-reserve, item 12) is REMOVED from the dropdown, not
+  // listed disabled — `codexTierOffer` answers 'hide' for it unconditionally,
+  // the same verdict the hire chips get, so no surface can offer it.
   //
   // `node.tier` survives it, by the same `keep` rule `tierShown` applies one
   // line down: a node ALREADY on gpt-reserve must still see its own tier as
   // the truthful selected no-op, or the select would silently read as some
-  // other model.
-  const reserveHidden = reserveOffer(hireOf(codexProvider)) === 'hide'
+  // other model. Moving it to luna is the offered way off the token.
   const codexHire = hireOf(codexProvider)
   const shownTiers = (fam: readonly string[]) =>
     fam.filter((t) => tierShown(presence, t, node.tier)
-      && !(reserveHidden && t === 'gpt-reserve' && t !== node.tier)
       && !(CODEX_TIERS.includes(t) && codexTierOffer(codexHire, t) === 'hide'
         && t !== node.tier))
   const modelOption = (t: string) => {
@@ -1111,6 +1142,10 @@ export function NodeConfig({ node, map, tree, slug, op, toast, codexProvider,
               ))}
             </select>
           </>
+        )}
+
+        {model === 'luna' && (
+          <PreferReserveRow checked={preferReserve} onChange={setPreferReserve} />
         )}
 
         <div className="field-label">thinking effort (user-approved: a deep

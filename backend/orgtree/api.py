@@ -76,7 +76,7 @@ from . import deployment
 from . import frozen_install
 from . import ledger as ledger_mod
 from . import (accounts, antigravity_limits, appsettings, bridgeauth,
-               codex_limits, limits, net,
+               codex_limits, codex_route, limits, net,
                providers, restart_wake, sandbox, store, subproxy, supervisor, warmpool)
 from .ledger import LedgerError, Org, USER, VIS_LEVELS, norm_dirs, norm_tools
 
@@ -1519,6 +1519,33 @@ def org_tree(slug: str, request: Request) -> dict[str, Any]:
         # around D-145's bound.
         node["ran_as_label"] = accounts.serving_label(
             str(st.get("ran_as") or ""), with_uuid=_public_slug(request) is None)
+        # ⚠ WHICH POOL A LUNA IS ACTUALLY ON (item 12; user spec 2026-09-04:
+        # a header token when Luna RUNS ON RESERVE). The in-memory record
+        # is the turn in flight or the last one this process ran; the
+        # document's `codex_route_last` covers a restart. `live` is what
+        # separates "reserve" from "last: reserve" — a token that cannot
+        # tell a running turn from yesterday's is the stale-state failure
+        # the spec names. Composed here from the same label rule the
+        # backend owns (`codex_route.route_label`) so the desk and the
+        # card cannot word it two ways. Null for every tier that does not
+        # route and for a direct luna with nothing to disclose.
+        _rt = st.get("codex_route")
+        if not isinstance(_rt, dict):
+            _rt = org.node(node["id"]).get("codex_route_last")
+        if isinstance(_rt, dict):
+            _live = bool(_rt.get("live")) and bool(st.get("busy"))
+            _rt_view = cast("codex_route.Route", _rt)
+            node["codex_route"] = {
+                "route": _rt.get("route"), "pool": _rt.get("pool"),
+                "model": _rt.get("model"), "requested": _rt.get("requested"),
+                "reason": _rt.get("reason"), "selection": _rt.get("selection"),
+                "prefer": _rt.get("prefer"),
+                "outcome": _rt.get("outcome"),
+                "reported_model": _rt.get("reported_model"),
+                "live": _live, "at": _rt.get("at"),
+                "label": codex_route.route_label(_rt_view, live=_live)}
+        else:
+            node["codex_route"] = None
         node["queued"] = len(st["queue"])
         # D-201 (contract frozen with styling 2026-08-30): is a pre-warmed
         # CLI process PARKED for this seat right now, holding a current
@@ -2412,6 +2439,10 @@ class Scope(Body):
     team_charter: str | None = None         # §15: binds this node's whole subtree
     effort: str | None = None               # thinking effort: low|medium|high|"" clears
     model_version: str | None = None        # a VERSION inside the tier ("" clears)
+    # item 12: try the reserve pool first (True, default) or the plan pool
+    # first (False); omitted = unchanged. Luna only has an effect; stored
+    # for any tier so it survives a switch.
+    prefer_reserve: bool | None = None
     # {enabled?, occ?} per-node cache-protection override; {} clears to inherit
     auto_cheap_compact: dict[str, Any] | None = None
     # post-hire @mcp:<peer> response handles (2026-08-22). REPLACES the node's
@@ -2447,7 +2478,8 @@ def node_scope(slug: str, nid: str, body: Scope,
                                    model_version=body.model_version,
                                    auto_cheap_compact=body.auto_cheap_compact,
                                    external_handles=body.external_handles,
-                                   raise_ceiling=rc)
+                                   raise_ceiling=rc,
+                                   prefer_reserve=body.prefer_reserve)
         except LedgerError as e:
             raise HTTPException(422, str(e))
         store.save_org(org)
@@ -4583,7 +4615,8 @@ _NET_ATT_MAX = 25 * 1048576
 # only the three that used to be retool's alone; `orgtree_rehire` takes none of
 # them, so it carries the lot — which is what collapses the five-call wake
 # (rehire, rename, retool, audience grant, message) into one.
-_SEAT_SCOPE_HIRE = ("permission_mode", "effort", "team_charter")
+_SEAT_SCOPE_HIRE = ("permission_mode", "effort", "team_charter",
+                    "prefer_reserve")
 _SEAT_SCOPE_REHIRE = _SEAT_SCOPE_HIRE + ("charter", "org_visibility", "tools",
                                          "add_dirs")
 
@@ -5498,7 +5531,8 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
                                        permission_mode=a.get("permission_mode"),
                                        charter=a.get("charter"),
                                        team_charter=a.get("team_charter"),
-                                       effort=a.get("effort"))
+                                       effort=a.get("effort"),
+                                       prefer_reserve=a.get("prefer_reserve"))
                 if dwarns:
                     result.setdefault("warnings", []).extend(dwarns)
             elif body.tool == "orgtree_retire":
@@ -6848,6 +6882,9 @@ class Op(Body):
     above: str | None = None
     org_visibility: str | None = None
     effort: str | None = None     # hire — thinking effort, applied WITH the hire
+    # hire — item 12: a luna's pool order (True = reserve first, the default;
+    # False = plan first). Applied WITH the hire like effort; omitted = default.
+    prefer_reserve: bool | None = None
     # reallocate. ⚠ FLOAT, not int, and the difference is a user-visible
     # outage: the credit bar rounds its TARGET to a whole number and sends
     # `target - grant`, so against a grant that is fractional for ANY reason
@@ -7058,20 +7095,21 @@ def provider_hire_gate(
             raise LedgerError(
                 f"tier '{tier}' is a conditional Codex tier and is not "
                 f"available to this account right now: {availability['reason']}")
-    if tier == providers.RESERVE_TIER:
-        # gpt-reserve rides the family's connected-CLI gate above and then one
-        # more of its own. Reserve capacity is a pool OpenAI grants and
-        # withdraws per account while the login sits still, so the tier goes
-        # away under a CLI that is installed, signed in, and hiring
-        # sol/terra/luna perfectly well — the user's report. The rule itself
-        # lives in `providers.reserve_availability`, which the /api/providers
-        # payload asks too, so the chip and this refusal cannot drift apart.
-        reserve = providers.reserve_availability(st)
-        if not reserve["enabled"]:
-            raise LedgerError(
-                f"tier '{providers.RESERVE_TIER}' is Codex's reserve-capacity "
-                f"lane and it is not available on this machine right now: "
-                f"{reserve['reason']}")
+    if tier in providers.LEGACY_CODEX_TIERS:
+        # `gpt-reserve` is a LEGACY token (user ruling 2026-09-04, item 12):
+        # reserve is the pool a `luna` hire spends first, not a tier to pick.
+        # A NEW hire, a switch, or a rehire that OVERRIDES the tier onto it is
+        # refused and pointed at luna. The plain-rehire door
+        # (`user_choice_only=True`) returned above, so a node that already
+        # wears the token restarts exactly as it was — nothing rewrites it.
+        # ⚠ NO CAPACITY CHECK rides here or on luna (the ruling above
+        # `providers.RESERVE_TIER`): a luna whose reserve AND direct pools
+        # are both spent is still hireable; the turn answers for capacity.
+        raise LedgerError(
+            f"tier '{tier}' is no longer hireable — hire 'luna' instead: it "
+            f"runs on reserve capacity first and falls back to the direct "
+            f"Luna lane when reserve is spent or withdrawn (existing "
+            f"'{tier}' agents keep running as they are)")
 
 
 @app.post("/api/orgs/{slug}/ops")
@@ -7178,6 +7216,10 @@ def _org_op_locked(slug: str, body: Op, allow_raise: bool = False) -> dict[str, 
                 # gear's effort used to ride a separate /scope call that the
                 # kiosk gateway 403s — a control that could never succeed
                 org.set_scope(body.actor, result["node"], effort=body.effort)
+            if body.prefer_reserve is not None:
+                # same atomic application for the pool order (item 12)
+                org.set_scope(body.actor, result["node"],
+                              prefer_reserve=body.prefer_reserve)
             if body.above is not None:
                 # FR-25 rework (2026-08-19): the splice is atomic with the
                 # hire. Pin the fresh node at the anchor's slot FIRST — they

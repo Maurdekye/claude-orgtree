@@ -46,6 +46,34 @@ scenarios selected by FAKECODEX_SCENARIO:
                one (test_midturn_mail_ingress.py, D-229)
     usage_limit (D-209) the turn ends the way a REAL subscription wall ends
                one, replayed from captured bytes — see below
+    reserve_wall / plan_wall / both_wall (item 12, reserve-first luna) the
+               wall is POOL-SPECIFIC: a turn/start whose `model` is
+               `gpt-reserve` (reserve_wall, both_wall) or `gpt-5.6-luna`
+               (plan_wall, both_wall) ends as `usage_limit` does — the
+               pool's OWN bucket at 100% on the wire (`limitName:
+               "gpt-reserve"` for reserve, the unnamed `codex` bucket for
+               the plan, both shapes measured 2026-09-03), then
+               turn/completed status "failed" with the 0.153.3 schema's
+               camelCase tag `usageLimitExceeded` — and a turn on the other
+               model completes normally. RESERVE_RESET_IN / PLAN_RESET_IN
+               set the two resets apart so a test can tell which one a
+               freeze was timed from
+    reserve_wall_after_output  as reserve_wall, but an agent message is
+               emitted BEFORE the wall: the turn ran, so it must NOT be
+               re-driven on the other pool
+    reserve_disconnect  on `gpt-reserve` the turn fails with the schema's
+               object-form `{"responseStreamDisconnected": {...}}` tag —
+               an UNKNOWN outcome that must never be replayed
+
+Board probe: FAKECODEX_BOARD shapes `account/rateLimits/read` (the COMPLETE
+board): "default" (no reserve bucket — the withdrawn-grant shape),
+"reserve-ok" (a `gpt-reserve` bucket with room), "reserve-exhausted" (that
+bucket at 100%, resetting in RESERVE_RESET_IN), "plan-exhausted" (the codex
+bucket at 100%, reserve with room), "both-exhausted".
+
+Model probe: FAKECODEX_MODELPROBE names a file that collects one JSON line
+per thread/start and turn/start recording the `model` the client sent — how
+test_luna_reserve_route.py proves which POOL each attempt went to.
 
 Env probe: whatever FAKECODEX_ENVPROBE names (comma-separated env keys) is
 written as JSON to <cwd>/envprobe.json at turn start — how the suite proves
@@ -93,6 +121,15 @@ LIMIT_ERROR_INFO = "usage_limit_exceeded"
 #: 7-day window it belongs to, far outside anything a prose parser could invent
 #: and far outside the 5-minute probe floor, so a test can tell the three apart.
 LIMIT_RESET_IN = 6 * 24 * 3600
+#: item 12 — the two pools' resets, deliberately different and both inside
+#: the horizon: reserve four days out, the plan two days out
+RESERVE_RESET_IN = 4 * 24 * 3600
+PLAN_RESET_IN = 2 * 24 * 3600
+RESERVE_MODEL = "gpt-reserve"
+DIRECT_LUNA_MODEL = "gpt-5.6-luna"
+#: the v2 schema's spelling (codex-cli 0.153.3, `CodexErrorInfo`), beside the
+#: 0.150.1 specimen's `usage_limit_exceeded` above — the classifier takes both
+LIMIT_ERROR_INFO_V2 = "usageLimitExceeded"
 
 _out_lock = threading.Lock()
 _requests: list[dict] = []
@@ -171,7 +208,43 @@ def sandbox_probe(method, params):
                             "sandbox": params.get("sandbox")}) + "\n")
 
 
-def run_turn(thread_id, turn_id, dyn_tools):
+def _model_probe(method, model):
+    path = os.environ.get("FAKECODEX_MODELPROBE")
+    if path:
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps({"method": method, "model": model}) + "\n")
+
+
+def _pool_wall(thread_id, turn_id, model):
+    """The pool-specific wall (item 12): the exhausted bucket of the pool
+    `model` names, then the failed completion. Mirrors `usage_limit`."""
+    if model == RESERVE_MODEL:
+        notify("account/rateLimits/updated", {
+            "rateLimits": {
+                "limitId": "base_model_inference", "limitName": RESERVE_MODEL,
+                "primary": {"usedPercent": 100.0,
+                            "windowDurationMins": 10080,
+                            "resetsAt": int(time.time()) + RESERVE_RESET_IN},
+                "secondary": None, "planType": "prolite",
+                "rateLimitReachedType": "rate_limit_reached"}})
+    else:
+        notify("account/rateLimits/updated", {
+            "rateLimits": {
+                "limitId": "codex", "limitName": None,
+                "primary": {"usedPercent": 100.0,
+                            "windowDurationMins": 10080,
+                            "resetsAt": int(time.time()) + PLAN_RESET_IN},
+                "secondary": None, "planType": "prolite",
+                "rateLimitReachedType": None}})
+    notify("turn/completed", {
+        "threadId": thread_id,
+        "turn": {"id": turn_id, "status": "failed",
+                 "error": {"message": LIMIT_MESSAGE,
+                           "codexErrorInfo": LIMIT_ERROR_INFO_V2,
+                           "additionalDetails": None}}})
+
+
+def run_turn(thread_id, turn_id, dyn_tools, model=None):
     global TURN_COUNT
     TURN_COUNT += 1
     turn_number = TURN_COUNT
@@ -195,7 +268,19 @@ def run_turn(thread_id, turn_id, dyn_tools):
             "itemId": iid, "delta": text})
         item_event("completed", {**base, "text": text})
 
-    if SCENARIO == "replay":
+    # item 12: is THIS attempt's model the one the scenario walls? Decided
+    # up front because a walled request meets the wall FIRST — no preamble
+    # message, no item, nothing ran (the shape a rejected request has on the
+    # wire). `reserve_wall_after_output` deliberately keeps the preamble.
+    pool_walled = (SCENARIO in ("reserve_wall", "plan_wall", "both_wall",
+                                "reserve_wall_after_output",
+                                "reserve_disconnect")
+                   and ((model == RESERVE_MODEL and SCENARIO != "plan_wall")
+                        or (model == DIRECT_LUNA_MODEL
+                            and SCENARIO in ("plan_wall", "both_wall"))))
+    if pool_walled and SCENARIO != "reserve_wall_after_output":
+        pass                       # the wall is the first thing the request meets
+    elif SCENARIO == "replay":
         # the SAME completion twice, ids and all — a reconnecting or retrying
         # app-server replaying what it already sent. Both the journal and the
         # live tail must end up with ONE copy, or the agent's answer stands on
@@ -311,6 +396,26 @@ def run_turn(thread_id, turn_id, dyn_tools):
         # message posted during the stall is decided by CODEX_STEER_POLL
         # alone — which is what lets a test make the miss CERTAIN.
         time.sleep(float(os.environ.get("FAKECODEX_STALL_S", "1.0")))
+    elif SCENARIO in ("reserve_wall", "plan_wall", "both_wall",
+                      "reserve_wall_after_output", "reserve_disconnect"):
+        walled = pool_walled
+        if walled and SCENARIO == "reserve_disconnect":
+            # the schema's object-form tag: a transport failure mid-turn
+            notify("turn/completed", {
+                "threadId": thread_id,
+                "turn": {"id": turn_id, "status": "failed",
+                         "error": {"message": "stream disconnected",
+                                   "codexErrorInfo": {
+                                       "responseStreamDisconnected": {
+                                           "httpStatusCode": None}},
+                                   "additionalDetails": None}}})
+            return
+        if walled:
+            # (`reserve_wall_after_output` already emitted the preamble
+            # message above — that IS the output the wall must not erase)
+            _pool_wall(thread_id, turn_id, model)
+            return
+        # the other pool serves: fall through to the ordinary completion
     elif SCENARIO == "usage_limit":
         # the exhausted bucket FIRST, carrying the only machine reset anyone
         # will ever get for this wall…
@@ -507,18 +612,39 @@ def main():
             # The real 0.150.1 protocol's full snapshot: one canonical bucket
             # plus a named/model bucket with two windows.  `codex` is repeated
             # in the map on purpose — the production normalizer must dedupe it.
+            board = os.environ.get("FAKECODEX_BOARD", "default")
+            plan_out = board in ("plan-exhausted", "both-exhausted")
             codex = {
                 "limitId": "codex", "limitName": None,
-                "primary": {"usedPercent": 12,
+                "primary": {"usedPercent": 100 if plan_out else 12,
                             "windowDurationMins": 10080,
-                            "resetsAt": 1_900_000_000},
+                            "resetsAt": (int(time.time()) + PLAN_RESET_IN
+                                         if plan_out else 1_900_000_000)},
                 "secondary": None, "planType": "prolite",
                 "rateLimitReachedType": None,
             }
+            # item 12: the reserve pool's bucket, named after the MODEL —
+            # the shape measured 2026-09-03 (`codex_limits.grants`)
+            reserve_rows = {}
+            if board in ("reserve-ok", "reserve-exhausted", "plan-exhausted",
+                         "both-exhausted"):
+                res_out = board in ("reserve-exhausted", "both-exhausted")
+                reserve_rows["base_model_inference"] = {
+                    "limitId": "base_model_inference",
+                    "limitName": RESERVE_MODEL,
+                    "primary": {"usedPercent": 100 if res_out else 8,
+                                "windowDurationMins": 10080,
+                                "resetsAt": (int(time.time()) + RESERVE_RESET_IN
+                                             if res_out else 1_900_000_300)},
+                    "secondary": None, "planType": "prolite",
+                    "rateLimitReachedType": ("rate_limit_reached"
+                                             if res_out else None),
+                }
             reply(rid, {
                 "rateLimits": codex,
                 "rateLimitsByLimitId": {
                     "codex": codex,
+                    **reserve_rows,
                     "codex_spark": {
                         "limitId": "codex_spark",
                         "limitName": "GPT-Spark",
@@ -537,8 +663,12 @@ def main():
             })
         elif method == "thread/start":
             sandbox_probe(method, params)
+            _model_probe(method, params.get("model"))
             dyn_tools = params.get("dynamicTools") or []
-            reply(rid, {"thread": {"id": thread_id}})
+            # the 0.153.3 schema's response carries the thread's `model`
+            # (ThreadStartResponse.model) — the provider-reported echo
+            reply(rid, {"thread": {"id": thread_id},
+                        "model": params.get("model") or "fake-default"})
         elif method == "thread/resume":
             sandbox_probe(method, params)
             thread_id = str(params.get("threadId") or thread_id)
@@ -546,7 +676,8 @@ def main():
             # probe_resume_dyntools.py) — mirror it, so a runner that stops
             # passing them on resume fails the tool scenario here first
             dyn_tools = params.get("dynamicTools") or []
-            reply(rid, {"thread": {"id": thread_id}})
+            reply(rid, {"thread": {"id": thread_id},
+                        "model": params.get("model") or "fake-resumed"})
         elif method == "thread/fork":
             thread_id = os.environ.get("FAKECODEX_FORK_ID",
                                        "fake-forked-thread-0002")
@@ -561,15 +692,18 @@ def main():
                 with open(input_probe, "w", encoding="utf-8") as f:
                     json.dump(params.get("input") or [], f)
             turn_id = "fake-turn-0001"
+            turn_model = params.get("model")
+            _model_probe(method, turn_model)
             if SCENARIO == "early_stream":
                 # the whole turn on the wire BEFORE the reply — see the
                 # scenario note at the top of this file
-                run_turn(thread_id, turn_id, dyn_tools)
+                run_turn(thread_id, turn_id, dyn_tools, turn_model)
                 reply(rid, {"turn": {"id": turn_id}})
             else:
                 reply(rid, {"turn": {"id": turn_id}})
                 threading.Thread(target=run_turn,
-                                 args=(thread_id, turn_id, dyn_tools),
+                                 args=(thread_id, turn_id, dyn_tools,
+                                       turn_model),
                                  daemon=True).start()
         elif method in ("turn/steer", "turn/interrupt"):
             pass                            # the scenario thread answers it

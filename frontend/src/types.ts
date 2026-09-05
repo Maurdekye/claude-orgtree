@@ -86,6 +86,11 @@ export interface NodeScope {
    *  subcategory of the tier, never a tier of its own. Absent = the tier
    *  default; the ledger re-validates it against the node's current tier. */
   model_version?: string
+  /** item 12 (user ruling 2026-09-04): does a luna try the reserve pool
+   *  FIRST (true — the default, and what ABSENT means) or its plan pool
+   *  first (false)? The other pool is the fallback either way. Stored for
+   *  any tier so it survives a switch; only luna acts on it. */
+  prefer_reserve?: boolean
 }
 
 // schema.py Denial (№7)
@@ -378,6 +383,10 @@ export interface TreeNode {
    *  registry, and the uuid is omitted for kiosk visitors. User ruling
    *  2026-08-25; this is what the desk badge renders. */
   ran_as_label?: string | null
+  /** which POOL a luna is on (item 12) — see `CodexRouteInfo`. The desk's
+   *  meta row and the card's badge row render `label` beside the "ran as"
+   *  badge. Null for every tier that does not route. */
+  codex_route?: CodexRouteInfo | null
   queued: number
   /** concurrently running subagents (Task/Agent calls in flight) — desk
    *  header shows it beside the working clock, only when > 0 */
@@ -1157,12 +1166,14 @@ export interface ProviderInfo {
    *  provider switched off. Deliberately separate from `status.installed`:
    *  the UI needs to tell "absent" from "turned off". See `HireState`. */
   user_enabled?: boolean
-  /** gpt-reserve's own gate, beside the family's `hire_enabled` (D-2xx):
-   *  reserve capacity is a per-account grant that OpenAI withdraws and
-   *  restores on its own, so this can be false while the rest of Codex is
-   *  `hire_enabled: true` — and can flip back without anything on this
-   *  machine changing. OMITTED on providers other than "openai", and on an
-   *  old backend. */
+  /** "openai" only (item 12): the reserve POOL a `luna` hire spends first —
+   *  granted / spent / when it resets / what a luna turn would be sent as
+   *  now. Disclosure, not an offer gate: no tier hides on it. OMITTED on
+   *  an old backend. */
+  reserve?: ReserveInfo | null
+  /** ⚠ DEPRECATED aliases of `reserve.granted` kept for older bundles; they
+   *  no longer gate any tier (gpt-reserve is not hireable at all — see
+   *  `LEGACY_CODEX_TIERS`). Do not add readers. */
   reserve_hire_enabled?: boolean
   reserve_reason?: string | null
   /** "openai" only: how far the resolved Codex CLI has drifted from what is
@@ -1171,6 +1182,48 @@ export interface ProviderInfo {
    *  the old refusal message blamed the account for it. OMITTED on an old
    *  backend and on every other provider. */
   cli_version?: CodexCliVersion
+}
+/** The reserve pool (item 12), as `/api/providers` describes it. Three-valued
+ *  on purpose: `granted`/`exhausted` are `null` when the board could not say —
+ *  unknown is not withdrawn, and unknown is not spent. */
+export interface ReserveInfo {
+  pool: 'reserve'
+  model: string
+  granted: boolean | null
+  exhausted: boolean | null
+  percent: number | null
+  resets_at: string | null
+  reason: string | null
+  evidence: string
+  board_age: number | null
+  complete: boolean
+  /** what a luna turn would be SENT as right now, by the same resolver the
+   *  turn uses (cached evidence only) — a forecast, never a receipt */
+  route: { route: 'reserve' | 'direct'; model: string; reason: string } | null
+}
+/** A routed (luna) node's ACTUAL route — the turn in flight, or the last one
+ *  (item 12; user spec 2026-09-04). `live` is the whole difference between
+ *  "reserve" and "last: reserve": a token that cannot tell a running turn
+ *  from yesterday's would be the stale-state failure the spec names, so the
+ *  backend composes `label` from `live` and the desk/card render it verbatim.
+ *  `model` is what was SENT; `reported_model` is what the provider echoed
+ *  back — never merged, neither is a measurement of which weights answered.
+ *  `null` on every tier that does not route and on an old backend. */
+export interface CodexRouteInfo {
+  route: 'reserve' | 'direct'
+  pool: 'reserve' | 'plan'
+  model: string
+  requested: string
+  reason: string
+  selection: 'preflight' | 'retry'
+  /** the pool the node's checkbox asks for FIRST — recorded apart from
+   *  `route`/`pool`, which are what actually ran */
+  prefer: 'reserve' | 'plan' | null
+  outcome: string | null
+  reported_model: string | null
+  live: boolean
+  at: string | null
+  label: string | null
 }
 /** ⚠ `update_available` is a TRISTATE: `null` means "cannot tell" (no CLI, no
  *  update check, an unparsable version, or a check too old to be evidence) and
@@ -1405,6 +1458,9 @@ export interface OpRequest {
   tools?: Partial<ToolGrant> | null
   org_visibility?: string | null
   effort?: string | null
+  /** hire — item 12: a luna's pool order, applied WITH the hire (omitted =
+   *  reserve first, the default) */
+  prefer_reserve?: boolean | null
   /** hire — FR-25 insert superior: the anchor node; the server splices the
    *  fresh hire in as its superior atomically (same save as the hire) */
   above?: string | null
@@ -1424,6 +1480,8 @@ export interface ScopeRequest {
   team_charter?: string | null
   effort?: string | null
   model_version?: string | null
+  /** item 12: reserve-first (true) or plan-first (false); omitted = unchanged */
+  prefer_reserve?: boolean | null
   /** per-node cache-protection override; {} clears back to org inherit */
   auto_cheap_compact?: { enabled?: boolean; occ?: number } | null
   raise_ceiling?: boolean

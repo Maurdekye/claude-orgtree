@@ -746,13 +746,13 @@ TOOLS: list[dict[str, Any]] = [
             "takes the target's own. The schema therefore lists those fields "
             "as optional; which mode you are in decides whether they are "
             "required or forbidden. Seat costs: haiku 1, sonnet 2, "
-            "opus 5, fable 10 (Claude); gpt-reserve 0.2, luna 0.2, terra 2, "
+            "opus 5, fable 10 (Claude); luna 0.2, terra 2, "
             "sol 5 (Codex — "
             "hireable only while the Codex CLI is signed in on this machine; "
-            "gpt-reserve ALSO needs a ChatGPT subscription sign-in AND a live "
-            "reserve grant — OpenAI hands that pool out and takes it back on "
-            "its own, so gpt-reserve comes and goes while Codex stays "
-            "connected and its three siblings keep hiring); "
+            "luna runs on OpenAI's reserve capacity FIRST when the signed-in "
+            "ChatGPT account holds that grant, and falls back to the direct "
+            "Luna lane when reserve is spent or withdrawn — there is no "
+            "separate reserve tier to hire); "
             "flash 1, pro 2 (Antigravity — hireable only while the "
             "Antigravity CLI is signed in on this machine); "
             "seat + grant must fit within YOUR free credits. "
@@ -775,7 +775,7 @@ TOOLS: list[dict[str, Any]] = [
                 "name": {"type": "string", "description": "1-2 words, the node id"},
                 "tier": {"type": "string",
                          "enum": ["haiku", "sonnet", "opus", "fable",
-                                  "gpt-reserve", "luna", "terra", "sol",
+                                  "luna", "terra", "sol",
                                   "flash", "pro"]},
                 "grant": {"type": "integer", "minimum": 0,
                           "description": "credits it may spend on ITS OWN hires"},
@@ -862,6 +862,14 @@ TOOLS: list[dict[str, Any]] = [
                            "description": "thinking effort for the hire — a "
                                           "cost/quality dial ('' = the CLI "
                                           "default)"},
+                "prefer_reserve": {
+                    "type": "boolean",
+                    "description": "luna only: try OpenAI's reserve capacity "
+                                   "FIRST (true, the default when omitted) or "
+                                   "the plan's normal weekly usage first "
+                                   "(false). The other pool is the fallback "
+                                   "either way when the first is spent or "
+                                   "withdrawn; ignored on every other tier"},
                 "team_charter": {"type": "string",
                                  "description": "standing instructions binding "
                                                 "the hire's OWN subtree — set "
@@ -970,6 +978,14 @@ TOOLS: list[dict[str, Any]] = [
                            "enum": ["low", "medium", "high", "xhigh", "max", ""],
                            "description": "thinking effort for this report "
                                           "('' clears to the CLI default)"},
+                "prefer_reserve": {
+                    "type": "boolean",
+                    "description": "luna only: try OpenAI's reserve capacity "
+                                   "FIRST (true, the default when omitted) or "
+                                   "the plan's normal weekly usage first "
+                                   "(false). The other pool is the fallback "
+                                   "either way when the first is spent or "
+                                   "withdrawn; ignored on every other tier"},
             },
             "required": ["node"],
         },
@@ -1090,6 +1106,14 @@ TOOLS: list[dict[str, Any]] = [
                 "effort": {"type": "string",
                            "enum": ["low", "medium", "high", "xhigh", "max", ""],
                            "description": "thinking effort ('' = CLI default)"},
+                "prefer_reserve": {
+                    "type": "boolean",
+                    "description": "luna only: try OpenAI's reserve capacity "
+                                   "FIRST (true, the default when omitted) or "
+                                   "the plan's normal weekly usage first "
+                                   "(false). The other pool is the fallback "
+                                   "either way when the first is spent or "
+                                   "withdrawn; ignored on every other tier"},
                 "team_charter": {"type": "string",
                                  "description": "standing instructions binding "
                                                 "its own subtree"},
@@ -1355,9 +1379,9 @@ TOOLS: list[dict[str, Any]] = [
             "the agent's own free allocation. Pricier: paid from its free first, "
             "any shortfall bubbles up the chain to YOU — refused only if the "
             "whole chain lacks it. Tiers: haiku 1 · sonnet 2 · opus 5 · "
-            "fable 10 (Claude); gpt-reserve 0.2 · luna 0.2 · terra 2 · sol 5 "
-            "(Codex, needs the "
-            "CLI signed in); flash 1 · pro 2 (Antigravity, needs the CLI "
+            "fable 10 (Claude); luna 0.2 · terra 2 · sol 5 "
+            "(Codex, needs the CLI signed in; luna prefers reserve capacity "
+            "and falls back to the direct lane); flash 1 · pro 2 (Antigravity, needs the CLI "
             "signed in); any `or-…` tier listed in this card's enum is an "
             "OpenRouter favorite (seat = its $/M input — floored to a whole "
             "number at or above $1, the price itself below it, never under "
@@ -1367,7 +1391,7 @@ TOOLS: list[dict[str, Any]] = [
                                        "tier": {"type": "string",
                                                 "enum": ["haiku", "sonnet",
                                                          "opus", "fable",
-                                                         "gpt-reserve", "luna",
+                                                         "luna",
                                                          "terra", "sol", "flash",
                                                          "pro"]}},
                         "required": ["node", "tier"]},

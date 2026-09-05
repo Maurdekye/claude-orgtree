@@ -733,6 +733,17 @@ class CodexTurn:
         #: no detector: it is not on stderr, it is here.
         self.error: dict[str, Any] | None = None
         self.status: str | None = None
+        #: WHAT THE PROVIDER SAID IT WAS RUNNING, kept apart from `model`
+        #: (what we ASKED for). `reported_model` is the `model` field of the
+        #: thread/start or thread/resume RESPONSE (0.153.3 schema:
+        #: ThreadStartResponse.model / ThreadResumeResponse.model) — the
+        #: server's echo of the thread's model, which is a receipt that the
+        #: field was accepted, not proof of which weights served the turn.
+        #: `rerouted` is the `model/rerouted` notification, the one place the
+        #: protocol positively reports serving a DIFFERENT model than asked.
+        #: Both None when the server said nothing; never inferred.
+        self.reported_model: str | None = None
+        self.rerouted: dict[str, Any] | None = None
         self._done = threading.Event()
         # whether THIS turn constructed the app-server, and may therefore end
         # it — see `close`. A borrowed one belongs to the warm pool.
@@ -745,6 +756,14 @@ class CodexTurn:
                          approval_decide=approval_decide)
 
     # ── event fold (M2: raw notifications → normalized fields) ───────────
+
+    def _note_reported_model(self, res: Any) -> None:
+        """Keep the `model` a thread/start or thread/resume RESPONSE names.
+        Absent on older servers; never substituted with what we asked for."""
+        if isinstance(res, dict):
+            m = cast("dict[str, Any]", res).get("model")
+            if isinstance(m, str) and m:
+                self.reported_model = m
 
     def _note_error(self, err: Any) -> None:
         """Keep a `turn.error` if there is one. A turn that completes cleanly
@@ -782,6 +801,13 @@ class CodexTurn:
                 self.rate_limits = rl
                 self.rate_limit_snapshots[
                     str(rl.get("limitId") or "codex")] = rl
+        elif method == "model/rerouted":
+            # the provider's own word that it served `toModel` instead of
+            # `fromModel` (schema 0.153.3). Kept whole; read by the route
+            # receipt, never by the classifiers.
+            self.rerouted = {k: params.get(k)
+                             for k in ("fromModel", "toModel", "reason",
+                                       "turnId")}
         elif method == "turn/completed":
             turn = params.get("turn")
             if isinstance(turn, dict):
@@ -858,12 +884,25 @@ class CodexTurn:
             # to when resumed at `workspace-write`. codex-cli 0.153.3.
             res = self.client.request("thread/resume", {
                 "threadId": self.thread_id,
+                # the ROUTE's model rides the resume too (item 12).
+                # `ThreadResumeParams.model` is in the 0.153.3 schema
+                # ("Configuration overrides for the resumed thread"); the
+                # per-turn override on `turn/start` below is what the
+                # schema documents as applying "for this turn and
+                # subsequent turns". Naming it here as well means the
+                # response's `model` echo (ThreadResumeResponse.model)
+                # describes the thread AS RESUMED rather than as it was
+                # born. ⚠ Whether a real server keeps the conversation
+                # across a model change is UNVERIFIED (no live control has
+                # run); older servers ignore unknown fields (measured).
+                "model": self.model,
                 "sandbox": self.sandbox,
                 "developerInstructions": self.developer_instructions,
                 "dynamicTools": self.dynamic_tools or None})
             resumed = _thread_id_of(res)
             if resumed:
                 self.thread_id = resumed
+            self._note_reported_model(res)
         else:
             res = self.client.request("thread/start", {
                 "model": self.model, "cwd": self.cwd,
@@ -877,6 +916,7 @@ class CodexTurn:
                     f"thread/start returned no thread id: "
                     f"{json.dumps(res)[:300]}")
             self.thread_id = tid
+            self._note_reported_model(res)
         user_input: list[dict[str, Any]] = [
             {"type": "text", "text": input_text}]
         user_input.extend(image_inputs or [])
@@ -977,4 +1017,7 @@ class CodexTurn:
             # dates it. Both are None/{} on every healthy turn.
             "error": self.error,
             "rate_limit_snapshots": dict(self.rate_limit_snapshots),
+            # the provider-reported side of the route receipt (see __init__)
+            "reported_model": self.reported_model,
+            "rerouted": dict(self.rerouted) if self.rerouted else None,
         }

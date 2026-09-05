@@ -8,8 +8,8 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import type { ReactNode } from 'react'
 import type {
-  CacheForecast, ChatMessage, ChatPayload, HistoryItem, PendingMail, Readiness,
-  ScratchPayload, TurnStat,
+  CacheForecast, ChatMessage, ChatPayload, CodexRouteInfo, HistoryItem, PendingMail,
+  Readiness, ScratchPayload, TurnStat,
   ToolChip as ToolChipData, ToastFn,
 } from '../types'
 import {
@@ -136,6 +136,31 @@ const subscribeAgeClock = (fn: () => void) => {
       ageClockTimer = null
     }
   }
+}
+
+/** The route token (item 12; user spec 2026-09-04) — shared by the desk's
+ * meta row and the card's badge row so the two cannot word it differently.
+ * Renders ONLY the backend's `label`: "reserve" while a luna turn is running
+ * on the reserve pool, "direct · reserve out" while it runs direct because
+ * reserve is spent/withdrawn, and the same with a "last: " prefix when it
+ * describes the previous turn rather than a live one. A null label (every
+ * other tier; a direct luna with nothing to disclose) renders nothing — the
+ * token carries news or it is absent. The tooltip states the selected model
+ * and, apart from it, what the provider reported back; neither is a claim
+ * about which weights answered. */
+export function RouteBadge({ route }: { route?: CodexRouteInfo | null }) {
+  if (!route?.label) return null
+  const reported = route.reported_model
+    ? `; provider reported ${route.reported_model}`
+    : '; provider reported nothing'
+  const when = route.live ? 'this turn' : `last turn${route.at ? ` (${ago(route.at)})` : ''}`
+  return (
+    <span className={'badge route-' + route.route + (route.live ? ' live' : '')}
+      title={`${when} was sent as ${route.model} on the ${route.route} pool `
+        + `(${route.reason}${route.selection === 'retry' ? ', after the other pool rejected it' : ''})`
+        + reported + ' — the next turn re-resolves'}>
+      {route.label}</span>
+  )
 }
 
 /** FR-23's authoritative completed-turn age, shared by cards and desks.
@@ -1610,6 +1635,14 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
             + 'resolved environment at spawn, so it describes what HAPPENED '
             + 'rather than what routing currently intends'}>
             {node.ran_as_label}</span>}
+        {/* WHICH POOL A LUNA IS ON (item 12; user spec 2026-09-04: a token on
+            the header's second row when Luna runs on reserve). Same slot and
+            same contract as the "ran as" badge beside it: it describes what
+            the turn was SENT as, not what routing prefers — the backend
+            composes `label` from the route receipt, and prefixes "last:"
+            when it describes the previous turn rather than a live one, so
+            a stale state is never worn as a current one. */}
+        <RouteBadge route={node.codex_route} />
         </div>
       </div>
       {/* F-01: superior chip at the TOP. For a top-level agent the superior is

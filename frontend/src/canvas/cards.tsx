@@ -23,7 +23,7 @@ import type {
 } from './shared'
 import {
   Activity, ContextWheel, DeskChat, DestinationBusy, LastTurnAge,
-  ProcessLifecycleMark,
+  ProcessLifecycleMark, RouteBadge,
 } from './desk'
 import { DocChips } from './docs'
 import { isMobile } from '../mobile'
@@ -596,12 +596,11 @@ function SpawnChips({ onSpawn, free, seats, maxTier, side, soleHire,
     if (!tiers.length) return
     const offer = familyOffer(hire)
     if (offer === 'hide') return
-    // gpt-reserve carries its OWN narrower offer (`reserveOffer`) inside an
-    // otherwise-live codex family: OpenAI grants and withdraws that pool per
-    // account, so a Codex CLI that offers sol/terra/luna can be missing
-    // reserve alone. User ruling 2026-09-02 — "dont just grey out the reserve
-    // token. remove it entirely" — so that verdict is 'hide', and a hidden
-    // tier leaves the row completely rather than sitting in it disabled.
+    // a LEGACY codex token (gpt-reserve, item 12) is 'hide' from
+    // `codexTierOffer` unconditionally: it is not a tier any more, and a
+    // hidden tier leaves the row completely rather than sitting in it
+    // disabled (user ruling 2026-09-02 — "dont just grey out the reserve
+    // token. remove it entirely").
     const offerOf = (t: string) =>
       (key === 'codex' ? codexTierOffer(hire, t) : offer)
     // ⚠ FILTERED BEFORE `tiers` IS STORED, because the inward-first sort below
@@ -615,10 +614,7 @@ function SpawnChips({ onSpawn, free, seats, maxTier, side, soleHire,
       body: vis.map((t) => (
         offerOf(t) === 'offer'
           ? chip(t, letters[t])
-          : outChip(t, letters[t], label,
-              (t === 'gpt-reserve' ? hire?.reserveReason : null)
-                ?? hire?.reason ?? null,
-              seatOf(t))
+          : outChip(t, letters[t], label, hire?.reason ?? null, seatOf(t))
       )),
     })
   }
@@ -1474,6 +1470,10 @@ export function NodeSquare({ node, pos, lod, focused: deskOpen, dragging, isDrop
             <span className="badge queued" title={queuedSwitchTitle(node)}>
               → {node.pending_switch.tier} next turn</span>}
           {node.limit_locked && <span className="badge dim"><LockIcon fontSize="inherit" /> limit</span>}
+          {/* item 12 (user spec 2026-09-04): the pool a luna is ACTUALLY on,
+              on the card's second row as on the desk's — same component,
+              same backend label, "last: " prefixed when it is not live */}
+          <RouteBadge route={node.codex_route} />
           {stackN > 0 &&
             <button className="badge stackbadge"
               onPointerDown={(e) => e.stopPropagation()}

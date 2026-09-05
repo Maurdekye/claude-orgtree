@@ -13,9 +13,9 @@ import './lightbox'
 import { onLiveBump } from '../livebus'
 import type { DependencyList } from 'react'
 import type {
-  ActivityInfo, AskInfo, CacheForecast, DirGrant, MailEntry, NodeState, NodeStatus,
-  OpRequest, OpResult, PendingSwitch, ProviderInfo, ProviderTier, ToolGrant, TreeNode,
-  TreePayload,
+  ActivityInfo, AskInfo, CacheForecast, CodexRouteInfo, DirGrant, MailEntry, NodeState,
+  NodeStatus, OpRequest, OpResult, PendingSwitch, ProviderInfo, ProviderTier, ReserveInfo,
+  ToolGrant, TreeNode, TreePayload,
 } from '../types'
 
 // One display alphabet for every provider-backed tier. Keeping the Codex rows
@@ -54,12 +54,22 @@ export const MODEL_VERSIONS: Record<string, string[]> =
  *  2026-09-03, so a `Record<string, number>` here genuinely holds a
  *  fraction. The hire surfaces use this family list when the Codex CLI is
  *  available. */
-export const CODEX_ALWAYS_TIERS = ['gpt-reserve', 'luna', 'terra', 'sol']
-/** All KNOWN Codex tiers, including rollout tiers whose metadata is installed
+export const CODEX_ALWAYS_TIERS = ['luna', 'terra', 'sol']
+/** LEGACY Codex tokens (user ruling 2026-09-04, audit item 12): known to the
+ *  axis so a node that already wears one keeps its letter, colour, seat and
+ *  provider class — but NEVER offered by any hire or switch surface
+ *  (`codexTierOffer` answers 'hide' for them unconditionally). `gpt-reserve`
+ *  stopped being a tier: a `luna` hire spends OpenAI's reserve pool first
+ *  and falls back to the direct lane by itself; the backend's route receipt
+ *  (`TreeNode.codex_route`) says which one a turn actually ran on. Mirrors
+ *  providers.LEGACY_CODEX_TIERS. */
+export const LEGACY_CODEX_TIERS = ['gpt-reserve']
+/** All KNOWN Codex tiers — legacy tokens (for the nodes wearing them), the
+ *  stable hireable family, and rollout tiers whose metadata is installed
  *  before their account access exists. A rollout tier is never offered merely
  *  because it is in this list; `codexTierOffer` requires it in the backend's
  *  live account-scoped tier rows. */
-export const CODEX_TIERS = [...CODEX_ALWAYS_TIERS, 'astra']
+export const CODEX_TIERS = [...LEGACY_CODEX_TIERS, ...CODEX_ALWAYS_TIERS, 'astra']
 export const CODEX_TIER_LETTER: Record<string, string> = {
   'gpt-reserve': 'R', luna: 'L', terra: 'T', sol: 'S', astra: 'A' }
 export const CODEX_TIER_SEAT: Record<string, number> = {
@@ -298,17 +308,10 @@ export interface HireState {
    *  old backend, or one that has never heard of the setting, must not read
    *  as every provider disabled. */
   userEnabled?: boolean
-  /** gpt-reserve's OWN gate, riding beside the family's (D-2xx): reserve
-   *  capacity is a grant OpenAI hands out and takes back per account, so it
-   *  comes and goes while the login sits still and sol/terra/luna keep
-   *  hiring. The backend decides (an api-key login can never hold it; past
-   *  that it reads the Codex CLI's own model registry and usage board) —
-   *  this side only renders the verdict. `undefined` (an old backend, or a
-   *  fixture that never set it) means UNKNOWN — same "unknown means offer"
-   *  rule as the rest of this file, so a machine that has never heard of
-   *  this field keeps today's behaviour rather than bricking the chip. */
-  reserveEnabled?: boolean
-  reserveReason?: string | null
+  /** The reserve POOL (item 12) — what a `luna` hire spends first. Rendered
+   *  for disclosure only (the accounts panel); it decides no offer. Absent
+   *  on an older backend. */
+  reserve?: ReserveInfo | null
   /** Tier ids this provider actually offered in its latest payload. Used only
    *  to tighten known conditional rollout tiers; stable tiers retain the
    *  family-level compatibility behavior when talking to an older backend. */
@@ -375,47 +378,22 @@ export const familyOffer = (h: HireState | null | undefined): FamilyOffer =>
 export const hireOf = (p: ProviderInfo | null | undefined): HireState | null =>
   (p ? { enabled: !!p.hire_enabled, installed: !!p.status?.installed,
          reason: p.reason, userEnabled: p.user_enabled,
-         reserveEnabled: p.reserve_hire_enabled, reserveReason: p.reserve_reason,
+         reserve: p.reserve ?? null,
          offeredTiers: (p.tiers ?? []).map((t) => t.tier) } : null)
 
-/** gpt-reserve's own offer verdict — the family's, narrowed by its own gate.
- *  Never loosens what `familyOffer` already decided (a hidden/disabled family
- *  stays that way for reserve too); only tightens 'offer' down when the family
- *  is live but reserve specifically is not (`reserveEnabled === false`,
- *  positively — `undefined` means an old backend never sent the field, which
- *  offers, same as everywhere else in this file).
- *
- *  IT TIGHTENS TO 'hide', NOT 'disable' (user ruling 2026-09-02: "dont just
- *  grey out the reserve token. remove it entirely"), and that lands on the
- *  right side of this file's own split. `familyOffer` disables the
- *  signed-out case because the user demonstrably HAS that harness and the
- *  remedy is one command away, and hides the not-installed case because it is
- *  a fact about the machine that no amount of repeating on hover makes more
- *  actionable. A withdrawn reserve grant is the second kind and then some:
- *  OpenAI took the pool back, THERE IS NOTHING THE USER CAN DO, and it
- *  returns on its own schedule. A permanently greyed chip carrying "this
- *  comes back on its own" on every card is the noise D-199 hid the
- *  uninstalled case to avoid.
- *
- *  ⚠ ONLY the reserve-specific darkness hides. When the whole Codex account
- *  is out of usage the FAMILY is 'disable' and reserve greys out beside its
- *  three siblings, carrying the family's reason — that state is actionable
- *  (buy credits, or wait for the reset the tooltip names) and it is not a
- *  lone stray chip, which is what the ruling was about. */
-export const reserveOffer = (h: HireState | null | undefined): FamilyOffer => {
-  const base = familyOffer(h)
-  return base === 'offer' && h?.reserveEnabled === false ? 'hide' : base
-}
-
-/** Offer verdict for one Codex tier. Stable tiers preserve the established
- *  family behavior. Any known tier outside that stable set is a conditional
+/** Offer verdict for one Codex tier. A LEGACY token (gpt-reserve) is never
+ *  offered — 'hide', unconditionally, whatever the payload says: it is not a
+ *  tier any more, and the ruling that removed it ("dont just grey out the
+ *  reserve token. remove it entirely", 2026-09-02) already wanted it gone
+ *  rather than greyed. Stable tiers preserve the established family
+ *  behavior. Any known tier outside that stable set is a conditional
  *  rollout and fails closed unless the backend's fresh account inventory put
  *  it in the provider's tier rows. Missing payload is therefore NOT enough
  *  to light Astra, even though it remains optimistic for the stable family. */
 export const codexTierOffer = (
   h: HireState | null | undefined, tier: string,
 ): FamilyOffer => {
-  if (tier === 'gpt-reserve') return reserveOffer(h)
+  if (LEGACY_CODEX_TIERS.includes(tier)) return 'hide'
   const base = familyOffer(h)
   return !CODEX_ALWAYS_TIERS.includes(tier)
     && !h?.offeredTiers?.includes(tier) ? 'hide' : base
@@ -536,7 +514,7 @@ export function availableAutopsyModels(
     const models: AutopsyModelOption[] = []
     for (const t of p.tiers || []) {
       if (t.tier === 'fable') continue // ⚠ FABLE NOT SELECTABLE (ruling 2026-09-03)
-      if (t.tier === 'gpt-reserve' && p.reserve_hire_enabled === false) continue
+      if (LEGACY_CODEX_TIERS.includes(t.tier)) continue   // not a tier any more
       if (t.tier === normCurrent) foundCurrent = true
       models.push({
         tier: t.tier,
@@ -666,6 +644,8 @@ export interface CanvasNode {
   ran_as?: string | null
   /** "fallback 2 · <uuid>" when that account is a fallback row, else null */
   ran_as_label?: string | null
+  /** item 12: which pool a luna is actually on (live or last turn) */
+  codex_route?: CodexRouteInfo | null
   queued?: number
   /** concurrently running subagents (Task/Agent calls in flight) — desk
    *  header shows it beside the working clock, only when > 0 */
@@ -687,6 +667,8 @@ export interface CanvasScope {
   /** the model VERSION pinned inside the tier — a gear-only subcategory,
    *  never a chip (ledger.MODEL_VERSIONS). Absent = the tier's latest. */
   model_version?: string
+  /** item 12: a luna's pool order — reserve first (true/absent) or plan first */
+  prefer_reserve?: boolean
 }
 
 /** the app-level event feeds OrgCanvas rides (produced by App's WS handler) */
@@ -760,6 +742,8 @@ export interface DraftScope {
   tools: Partial<ToolGrant>
   org_visibility: string
   effort?: string
+  /** item 12: a luna draft's pool order; undefined = the default (reserve first) */
+  prefer_reserve?: boolean
 }
 export interface Pile {
   key: string

@@ -40,7 +40,7 @@ from collections.abc import Callable, Iterable, Mapping
 from typing import Any, Final, cast
 
 from . import (accounts, appsettings, cachecontinuity, clipin, codex_limits,
-               deployment, envelope, imgblock,
+               codex_route, deployment, envelope, imgblock,
                limits, net, openrouter, providers, sandbox as sbx, store,
                tokens, turnusage, warmpool)
 from .ledger import (EXTERN, SYSTEM, USER, LedgerError, Org, expand_mcp,
@@ -6878,40 +6878,14 @@ def _cache_openrouter_spawn_env(org: Org, tier: str, nid: str
 def _cache_codex_account_namespace() -> tuple[str, str]:
     """Private stable Codex account evidence plus observable auth lane.
 
-    The CLI has one selected account, but that selection can still be replaced
-    by ``codex login``.  Hash the provider's own stable account id when it is
-    present, or the API key only as a digest. Refresh/access tokens and their
-    timestamps are deliberately excluded: rotating credentials for the same
-    account is not an account namespace change.
+    ONE implementation, in `codex_limits._account_namespace` (item 12 moved
+    it there so the rate-limit board can stamp the account it describes with
+    the same digest a route mark and a cache row carry). The CLI has one
+    selected account, but that selection can still be replaced by ``codex
+    login``; the provider's own stable account id is hashed when present, or
+    the API key only as a digest. Refresh/access tokens are excluded.
     """
-    home = os.environ.get("CODEX_HOME") or os.path.expanduser("~/.codex")
-    try:
-        with open(os.path.join(home, "auth.json"), encoding="utf-8") as f:
-            loaded: Any = json.load(f)
-    except (OSError, json.JSONDecodeError):
-        return "unobserved", "unobserved"
-    if not isinstance(loaded, dict):
-        return "unobserved", "unobserved"
-    doc = cast("dict[str, Any]", loaded)
-    key = doc.get("OPENAI_API_KEY")
-    if isinstance(key, str) and key:
-        return ("codex-api-key:" + cachecontinuity.digest(
-            {"credential": key}, 16), "api_key")
-    tokens_row = doc.get("tokens")
-    tokens_row = (cast("dict[str, Any]", tokens_row)
-                  if isinstance(tokens_row, dict) else {})
-    account_id = tokens_row.get("account_id")
-    if isinstance(account_id, str) and account_id:
-        return ("codex-chatgpt:" + cachecontinuity.digest(
-            {"account": account_id}, 16), "subscription")
-    # Older auth records may omit account_id while the display identity is
-    # still locally observable in the id-token claims.
-    status = providers._codex_account()  # pyright: ignore[reportPrivateUsage]
-    email = status.get("email")
-    if isinstance(email, str) and email:
-        return ("codex-chatgpt:" + cachecontinuity.digest(
-            {"account": email}, 16), "subscription")
-    return "codex-account-unobserved", "unobserved"
+    return codex_limits._account_namespace()  # pyright: ignore[reportPrivateUsage]
 
 
 def _cache_antigravity_account_namespace() -> str:
@@ -6972,6 +6946,8 @@ def _cache_snapshot(org: Org, nid: str, *, now: float | None = None,
     account = account_override
     lane = lane_override
     resolved_env: dict[str, str] = {}
+    route_model: str | None = None
+    route_pool: str | None = None
     # ⚠ FOUR PROVIDERS, FOUR LEGS — NO "EVERYTHING ELSE". Audit C1
     # (astras-entrance-exam, 2026-09-04): this used to be claude / openai /
     # else, and "else" was the Antigravity leg, so an OpenRouter node reported
@@ -6999,6 +6975,27 @@ def _cache_snapshot(org: Org, nid: str, *, now: float | None = None,
         resolved_account, resolved_lane = _cache_codex_account_namespace()
         account = account or resolved_account
         lane = lane or resolved_lane
+        # THE MODEL THAT WOULD GO OUT is the ROUTE's, not the tier's (item
+        # 12): a luna node's next request is `gpt-reserve` while reserve is
+        # granted and `gpt-5.6-luna` when it is out, and flipping between
+        # them is a namespace change the forecast has to show. Resolved from
+        # CACHED board evidence only (`codex_limits.snapshot`, no process
+        # spawn — this runs per render) with the same rule the turn uses;
+        # an unreadable board prefers reserve exactly as the turn would.
+        try:
+            _rt = codex_route.resolve(
+                tier, login_kind=str(providers.codex_status().get("kind")
+                                     or "") or None,
+                board=codex_limits.snapshot(now),
+                marks=cast("dict[str, Any] | None", n.get("codex_routes")),
+                account=resolved_account,
+                direct_model=providers.CODEX_MODELS.get(tier)
+                or org.model_for(nid), now=now,
+                prefer_reserve=org.prefer_reserve_for(nid))
+            route_model = _rt["model"]
+            route_pool = _rt["pool"]
+        except Exception:                                  # noqa: BLE001
+            route_model, route_pool = None, None
     else:
         # `google` — Antigravity, the only remaining answer `provider_of`
         # gives. It publishes no cache statistic (SUPPORTED_LANES).
@@ -7045,10 +7042,17 @@ def _cache_snapshot(org: Org, nid: str, *, now: float | None = None,
         # are served by 5.0, and when that machine finally redeploys the model
         # genuinely changes — which is a cache-namespace break and has to be
         # visible as one. `claude_model_for` is a no-op on every other lane.
-        "lane": lane or "unobserved", "model": claude_model_for(org, nid),
+        "lane": lane or "unobserved",
+        "model": route_model or claude_model_for(org, nid),
         "session": str(n.get("session_id") or ""),
         "node_generation": int(n.get("generation") or 0),
     }
+    if route_pool is not None:
+        # the pool dimension of a routed (codex) request, kept beside the
+        # model in every saved receipt (item 12). Informational: `classify`
+        # compares the fixed namespace keys above, and the model already
+        # moves with the pool, so this adds no second comparison.
+        namespace["pool"] = route_pool
     fingerprint = cachecontinuity.digest(
         {**namespace, "components": components, "history": history})
     return {
@@ -7078,6 +7082,33 @@ def _cache_prepare_relations(current: dict[str, Any],
 def _cache_persistable(snapshot: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in snapshot.items()
             if not k.startswith("_") and not k.endswith("_history_relation")}
+
+
+def _cache_attempt_as_model(attempt: dict[str, Any], model: str, *,
+                            pool: str = "") -> dict[str, Any]:
+    """The launch attempt re-stated for the model that ACTUALLY went out.
+
+    A routed (luna) turn can be re-driven on the other pool after a terminal
+    rejection; the forecast hashed the preflight model. The record that
+    becomes `last_turn`/`receipt` must name the model that was sent, with
+    its fingerprint recomputed over the same keys `_cache_boundary_attempt`
+    uses, or the next forecast would judge compatibility against a request
+    that never happened. Everything else in the attempt is unchanged: the
+    prompt, tools and history that went out were the same bytes."""
+    out = dict(attempt)
+    out["model"] = model
+    if pool:
+        out["pool"] = pool
+    out["fingerprint"] = cachecontinuity.digest({
+        "provider": out.get("provider"), "account": out.get("account"),
+        "lane": out.get("lane"), "model": out.get("model"),
+        "session": out.get("session"),
+        "node_generation": out.get("node_generation"),
+        **({"pool": out["pool"]} if out.get("pool") else {}),
+        "components": out.get("components"),
+        "history": out.get("history"),
+    })
+    return out
 
 
 def _cache_boundary_attempt(org: Org, nid: str) -> dict[str, Any] | None:
@@ -8995,12 +9026,180 @@ def _codex_sandbox(sc: Mapping[str, Any]) -> str:
     return "workspace-write"
 
 
+class _CodexRouteRejected(Exception):
+    """A routed (luna) turn was TERMINALLY REJECTED by the pool it was sent
+    to, before anything ran, and the other pool is a candidate. Raised by
+    `_codex_leg_attempt`, caught by `_codex_leg`, which records the rejection
+    and drives the same text once on the other route. See
+    `codex_route.classify_failure` for what counts as a rejection — a lost
+    stream or a timeout never raises this."""
+
+    def __init__(self, route: codex_route.Route,
+                 cls: codex_route.FailureClass, blob: str,
+                 journal_sid: str, other: codex_route.Route) -> None:
+        super().__init__(cls["why"])
+        self.route = route
+        self.cls = cls
+        self.blob = blob
+        self.journal_sid = journal_sid
+        self.other = other
+
+
+def _codex_account_namespace() -> str:
+    """The codex account the board evidence belongs to — the same digest the
+    cache namespace uses, so a route mark and a cache row scope alike."""
+    try:
+        return _cache_codex_account_namespace()[0]
+    except Exception:                                      # noqa: BLE001
+        return "unobserved"
+
+
+def _codex_resolve_route(org: Org, nid: str, tier: str, *,
+                         selection: str = "preflight") -> codex_route.Route:
+    """PREFLIGHT route for this node's next turn. Reads the board ONCE
+    (`codex_limits.fetch` is cached 30 s and the usage panel keeps it warm;
+    a cold cache costs one app-server read, at turn start, never per
+    render) and hands the decision to the pure resolver."""
+    n = org.node(nid)
+    status = providers.codex_status()
+    login_kind = str(status.get("kind") or "") or None
+    try:
+        codex_limits.fetch()
+    except Exception:                                      # noqa: BLE001
+        pass                 # the snapshot below reports whatever it has
+    board = codex_limits.snapshot()
+    return codex_route.resolve(
+        tier, login_kind=login_kind, board=board,
+        marks=cast("dict[str, Any] | None", n.get("codex_routes")),
+        account=_codex_account_namespace(),
+        direct_model=providers.CODEX_MODELS.get(tier) or org.model_for(nid),
+        selection=selection,
+        # the per-agent "Prefer reserve" checkbox (absent = on)
+        prefer_reserve=org.prefer_reserve_for(nid))
+
+
+def _codex_route_stamp(st: dict[str, Any], route: codex_route.Route, *,
+                       live: bool, outcome: str | None = None,
+                       reported_model: str | None = None,
+                       rerouted: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Write the route the node is running (or last ran) into its in-memory
+    state, in the shape the tree payload serves as `codex_route`. `live`
+    is the header's whole distinction between "on reserve" and "last:
+    reserve"; it is set True at spawn and False on every exit."""
+    rec: dict[str, Any] = {**route, "live": live, "at": now_iso()}
+    if outcome is not None:
+        rec["outcome"] = outcome
+    rec["reported_model"] = reported_model
+    rec["rerouted"] = rerouted
+    with _state_lock:
+        st["codex_route"] = rec
+    return rec
+
+
+def _codex_route_persist(slug: str, nid: str, rec: dict[str, Any],
+                         mark: tuple[str, dict[str, Any]] | None = None,
+                         clear_mark: str | None = None) -> None:
+    """Durable half of the route receipt: `codex_route_last` on the node
+    (survives a restart, so the header can still say "last: reserve"), plus
+    an optional pool mark written or cleared under the same lock."""
+    try:
+        with store.DOC_LOCK:
+            o2 = store.load_org(slug)
+            if nid not in o2.nodes:
+                return
+            nd = o2.node(nid)
+            nd["codex_route_last"] = {k: v for k, v in rec.items()
+                                      if k != "live"}
+            routes = nd.get("codex_routes")
+            if not isinstance(routes, dict):
+                routes = {}
+            if mark is not None:
+                routes[mark[0]] = mark[1]
+            if clear_mark is not None:
+                routes.pop(clear_mark, None)
+            if routes:
+                nd["codex_routes"] = routes
+            else:
+                nd.pop("codex_routes", None)
+            store.save_org(o2)
+    except Exception as e:                                 # noqa: BLE001
+        print(f"[orgtree] {slug}/{nid}: route receipt not persisted: {e!r}")
+
+
 def _codex_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
                text: str, toks: list[str],
                images: list[dict[str, Any]] | None = None,
                turn_view: str = ""
                ) -> tuple[dict[str, Any], int]:
+    """One codex turn behind the provider seam, WITH the reserve-first
+    fallback around it (item 12). `_codex_leg_attempt` is one attempt.
+
+    The leg resolves a preflight route and runs. If the pool terminally
+    rejects the request with nothing run (`_CodexRouteRejected`), this
+    records the rejection — a durable turn-error row, a scoped and timed
+    pool mark on the node, the console — and runs the SAME text once more on
+    the other route, with the journal already open so the user's row is not
+    written twice and with `toks=[]` so the batch is not confirmed twice.
+    A second rejection means both pools are out: the ordinary provider
+    freeze, timed to the earliest pool with a known reset.
+
+    Anything that is not a terminal rejection passes straight through: the
+    freeze/error machinery in `_run_one_turn` is unchanged for it.
+    """
+
+    def _note(rj: _CodexRouteRejected, retrying: bool) -> None:
+        mark = codex_route.make_mark(
+            rj.cls["pool_state"], rj.route["account"], rj.cls["reset_ts"],
+            time.time(), rj.cls["why"])
+        rec = _codex_route_stamp(st, rj.route, live=False,
+                                 outcome="rejected")
+        _codex_route_persist(slug, nid, rec, mark=(rj.route["pool"], mark))
+        why = (f"{rj.route['route']} route rejected the request "
+               f"({rj.cls['why']})")
+        if retrying:
+            why += f" — re-driven once on the {rj.other['route']} route"
+        _log_turn_error(slug, nid, f"route switched: {why}"
+                        if retrying else f"route exhausted: {why}")
+        print(f"[orgtree] {slug}/{nid}: {why}")
+
+    try:
+        return _codex_leg_attempt(slug, nid, org, st, text, toks, images,
+                                  turn_view)
+    except _CodexRouteRejected as rj:
+        _note(rj, retrying=True)
+        notify(slug, nid, "route_switched")
+        try:
+            return _codex_leg_attempt(slug, nid, org, st, text, [], images,
+                                      turn_view, route=rj.other,
+                                      journal_sid=rj.journal_sid)
+        except _CodexRouteRejected as rj2:
+            _note(rj2, retrying=False)
+            board = codex_limits.snapshot()
+            limits = [w for w in (board.get("limits") or [])
+                      if isinstance(w, dict)]
+            wake = codex_route.node_wake_epoch(limits, None)
+            raise _ProviderTurnFailed(
+                "turn failed: both Luna routes refused the request — "
+                f"reserve ({rj.cls['why']}); direct ({rj2.cls['why']})"
+                if rj.route["route"] == "reserve" else
+                "turn failed: both Luna routes refused the request — "
+                f"direct ({rj.cls['why']}); reserve ({rj2.cls['why']})",
+                blob=rj2.blob, reset_ts=wake) from rj2
+
+
+def _codex_leg_attempt(slug: str, nid: str, org: Org, st: dict[str, Any],
+                       text: str, toks: list[str],
+                       images: list[dict[str, Any]] | None = None,
+                       turn_view: str = "",
+                       route: codex_route.Route | None = None,
+                       journal_sid: str | None = None,
+                       ) -> tuple[dict[str, Any], int]:
     """One codex turn behind the provider seam (FR-15 M1b).
+
+    `route` — the pool/model to send this turn as; resolved here when None
+    (preflight), supplied by `_codex_leg` on a retry. `journal_sid`
+    — a retry's journal is already open on this thread id: the user's row
+    is durable and must not be written again.
 
     Runs inside `_run_one_turn`'s try, AFTER the provider-neutral prologue
     (slot, state gates, mail drain, inflight persist) and INSTEAD of the
@@ -9117,8 +9316,15 @@ def _codex_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
 
     jlock = threading.Lock()
     jstate: dict[str, Any] = {
-        "sid": "", "barrier": True, "pending": [], "held": [],
+        # a RETRY on the other route inherits the open journal: the user's
+        # row is already durable on this thread id and the barrier is down
+        "sid": journal_sid or "", "barrier": not journal_sid,
+        "pending": [], "held": [],
         "agent_items": 0,
+        # EVERY item event this attempt observed, any type — the count the
+        # route classifier reads to say "nothing ran". Distinct from
+        # `agent_items` (completed agent messages only).
+        "item_events": 0,
         "tool_ids": set(), "item_ids": set()}
 
     # ── THE ORDERING BARRIER (D-221) ────────────────────────────────────────
@@ -9438,6 +9644,9 @@ def _codex_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
         # item lifecycle events above are the durable, correctly separated
         # conversation (agent messages, reasoning and every tool kind).
         method = str(msg.get("method", ""))
+        if method.startswith("item/"):
+            with jlock:
+                jstate["item_events"] += 1
         if method == "item/agentMessage/delta":
             d = (msg.get("params") or {}).get("delta")
             if isinstance(d, str) and d:
@@ -9448,7 +9657,16 @@ def _codex_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
                              name=f"codexmcp-{slug}-{nid}").start()
         _on_item(msg)
 
-    codex_model = providers.CODEX_MODELS.get(tier) or org.model_for(nid)
+    # ── THE ROUTE (item 12): which pool this turn is SENT to ──────────────
+    # The tier is what the org asked for; the route is the pool/model on the
+    # wire. For `luna` that is reserve first, direct when reserve is out
+    # (`codex_route.resolve`); for every other codex tier it is the tier's
+    # own model, exactly as before. Stamped LIVE on the node state here so
+    # the header can say "reserve" while the turn runs, and flipped to
+    # not-live on every exit below.
+    route = route or _codex_resolve_route(org, nid, tier)
+    codex_model = route["model"]
+    _codex_route_stamp(st, route, live=True)
 
     # D-201, Codex lane: the keeper owns an uninitialized app-server at boot;
     # this turn claims it only when the exact process-scoped identity matches.
@@ -9742,6 +9960,11 @@ def _codex_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
             _steer_fold_log(slug, nid, len(leftover), "turn exit",
                             why="the turn ended before the steer pump's "
                                 "next poll")
+        # the route is no longer LIVE, whatever happens next: the header
+        # must not say "reserve" for a turn that has ended. The verdict
+        # (outcome, reported model) is stamped by the paths below; this is
+        # only the flip, on the one exit every path takes.
+        _codex_route_stamp(st, route, live=False)
         if wp_turn is not None:
             turn.client.unbind()
             keep, _bnd_lbl, keep_why = warmpool.boundary_check(
@@ -9806,13 +10029,58 @@ def _codex_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
                                "per-message ceiling")
         tail = " | ".join(turn.client.stderr_tail[-3:])[:300]
         blob = detail or tail
+        # ── WHAT KIND OF FAILURE, and may it be re-sent elsewhere? ────────
+        # Classified from the provider's terminal error tag and this
+        # attempt's own observations, never from prose alone. The route
+        # record is flipped to not-live with the verdict either way.
+        with jlock:
+            _items_seen = int(jstate["item_events"])
+        fcls = codex_route.classify_failure(
+            status=res_raw.get("status"), error=res_raw.get("error"),
+            snapshots=res_raw.get("rate_limit_snapshots"),
+            items_seen=_items_seen, token_usage=res_raw.get("token_usage"),
+            agent_text=str(res_raw.get("agent_text") or ""),
+            pool=route["pool"], board=codex_limits.snapshot(),
+            usage_prose=_looks_like_usage_limit(blob))
+        _frec = _codex_route_stamp(
+            st, route, live=False, outcome=fcls["kind"],
+            reported_model=res_raw.get("reported_model"),
+            rerouted=res_raw.get("rerouted"))
+        other = codex_route.other_route(route)
+        if fcls["rejected"] and other is not None:
+            # a terminal rejection with nothing run, on a routed tier: the
+            # wrapper records it (durable row, scoped mark) and — on the
+            # FIRST attempt only — tries the other pool once; a rejected
+            # retry means both pools are out and it freezes instead. NOT
+            # reached for a lost stream, a timeout, an auth failure, a 429
+            # or a turn that produced anything: those keep the receipt
+            # below and take the ordinary failure path.
+            with jlock:
+                _jsid = str(jstate["sid"] or "")
+            raise _CodexRouteRejected(route, fcls, blob, _jsid, other)
+        # every other failure: the receipt is persisted (no mark — nothing
+        # here is evidence about a POOL), then the ordinary path
+        _codex_route_persist(slug, nid, _frec)
+        if tier == codex_route.ROUTED_TIER:
+            # a routed node's wall is timed per POOL: the latest exhausted
+            # reset of the pool it was on, not the soonest window anywhere
+            # on the board (audit F2). None when unknown → the caller's
+            # probe floor, honestly short.
+            _limits = [w for w in (codex_limits.snapshot().get("limits") or [])
+                       if isinstance(w, dict)]
+            _reset = codex_route.node_wake_epoch(
+                _limits, res_raw.get("rate_limit_snapshots"))
+        else:
+            _reset = codexrun.limit_reset_epoch(
+                res_raw.get("rate_limit_snapshots"))
         raise _ProviderTurnFailed(
             "turn failed: " + (detail or "the codex app-server reported a "
                                "failed turn")
-            + (f" — {tail}" if tail and detail else ""),
-            blob=blob,
-            reset_ts=codexrun.limit_reset_epoch(
-                res_raw.get("rate_limit_snapshots")))
+            + (f" — {tail}" if tail and detail else "")
+            + (f" [{route['route']} route: {fcls['why']}]"
+               if fcls["kind"] == codex_route.KIND_USAGE_LIMIT
+               and fcls["why"] else ""),
+            blob=blob, reset_ts=_reset)
     # "interrupted" is a COMPLETED turn (C.3) — same as claude's ⏸
     tu = res_raw.get("token_usage")
     # The item lifecycle already journaled the conversation in real time.
@@ -9870,6 +10138,20 @@ def _codex_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
     if isinstance(usage_reset, dict):
         res["_codex_usage_reset"] = {
             "at": now_iso(), **usage_reset}
+    # ── THE ROUTE RECEIPT of a completed turn ─────────────────────────────
+    # Selected (route/pool/model/account/reason) beside REPORTED (the
+    # server's thread-model echo and any `model/rerouted`), never merged:
+    # the first is what we sent, the second is what the provider said, and
+    # neither is a measurement of which weights answered. `_after_turn`
+    # books it on the turn ring and the node.
+    _rec = _codex_route_stamp(st, route, live=False, outcome=status,
+                              reported_model=res_raw.get("reported_model"),
+                              rerouted=res_raw.get("rerouted"))
+    # a COMPLETED turn on a pool is positive recovery for that pool: its
+    # mark (if any) is cleared here, so a stale rejection cannot outlive
+    # the evidence that contradicts it
+    _codex_route_persist(slug, nid, _rec, clear_mark=route["pool"])
+    res["_codex_route"] = _rec
     return res, providers.codex_occupancy(tu)
 
 
@@ -14250,6 +14532,28 @@ def _after_turn(slug: str, nid: str, org: Org, res: dict[str, Any],
                 if not res["_cost_complete"]:
                     entry["estimated"] = True
             _stamp_ran_as(entry, slug, nid)
+            _route_rec = res.get("_codex_route")
+            if isinstance(_route_rec, dict):
+                # the ROUTE RECEIPT on the ring (item 12): what this turn was
+                # sent as — route, pool, model, account, reason, whether it
+                # was the preflight choice or a retry — and, apart from it,
+                # what the provider reported. Reserve turns and direct turns
+                # are countable per node from this.
+                entry["route"] = {
+                    k: _route_rec.get(k)
+                    for k in ("route", "pool", "model", "account", "reason",
+                              "selection", "prefer", "reported_model",
+                              "rerouted")}
+                # a RETRY ran on a different model than the launch forecast
+                # hashed: the cache record must carry the model that went
+                # out, or the next forecast would compare against a request
+                # that was never sent
+                if (isinstance(cache_attempt, dict)
+                        and str(cache_attempt.get("model") or "")
+                        != str(_route_rec.get("model") or "")):
+                    cache_attempt = _cache_attempt_as_model(
+                        cache_attempt, str(_route_rec.get("model") or ""),
+                        pool=str(_route_rec.get("pool") or ""))
             ring.append(entry)
             del ring[:-20]
             try:

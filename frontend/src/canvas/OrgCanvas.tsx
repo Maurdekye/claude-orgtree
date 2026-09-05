@@ -1722,7 +1722,11 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
          // and its failure was swallowed silently)
          ...(scope ? { add_dirs: scope.add_dirs, tools: scope.tools,
                        org_visibility: scope.org_visibility,
-                       effort: scope.effort || undefined } : {}) })
+                       effort: scope.effort || undefined,
+                       // item 12: the draft's "Prefer reserve" box (luna
+                       // only; omitted = the default, reserve first)
+                       ...(scope.prefer_reserve === undefined ? {}
+                         : { prefer_reserve: scope.prefer_reserve }) } : {}) })
       .then((r) => {
         // the real card replaces the draft IN PLACE — seed its birth position
         // from the draft's spring. Via seedRef, NOT a direct springs.set: the
@@ -2582,9 +2586,10 @@ function HireSheet({ anchor, seats, codexHire, antigravityHire, claudeHire, open
   // one field over: the form's own initial value asserted an availability
   // nobody had checked. Falls back to '' when nothing is offerable, which the
   // submit guard below already treats as not-ready.
-  // gpt-reserve can be individually dark inside an otherwise-'offer' codex
-  // row (`tierOffer`), so the default can't just be "the family's first
-  // tier" any more — it has to be the first tier that is ITSELF offerable.
+  // a codex row can carry tiers that are individually hidden (a legacy
+  // token, an unconfirmed rollout tier — `tierOffer`), so the default can't
+  // just be "the family's first tier" — it has to be the first tier that is
+  // ITSELF offerable.
   const tierOffer = (f: (typeof famRows)[number], t: string): FamilyOffer =>
     f.key === 'codex' ? codexTierOffer(f.hire, t) : f.offer
   const firstOfferable = famRows
@@ -2627,16 +2632,15 @@ function HireSheet({ anchor, seats, codexHire, antigravityHire, claudeHire, open
                 const tOffer = tierOffer(f, t)
                 // 'hide' is a tier that leaves the sheet entirely, not one
                 // rendered disabled — user ruling 2026-09-02 about the
-                // gpt-reserve token, applied here from the same `reserveOffer`
-                // the canvas chips read.
+                // gpt-reserve token (now a legacy token no surface offers),
+                // applied here from the same `codexTierOffer` the canvas
+                // chips read.
                 if (tOffer === 'hide') return null
-                const tReason = t === 'gpt-reserve'
-                  ? f.hire?.reserveReason ?? f.reason : f.reason
                 return (
                   <button key={t}
                     className={'hs-tier t-' + t + (tier === t ? ' on' : '')}
                     disabled={tOffer !== 'offer'}
-                    title={tOffer === 'offer' ? undefined : tReason}
+                    title={tOffer === 'offer' ? undefined : f.reason}
                     onClick={() => pickTier(t)}>
                     <span className={'tier t-' + t}>{f.letters[t]}</span>
                     {tierLabel(t)} · seat {fmtCredits(f.seatOf(t))}

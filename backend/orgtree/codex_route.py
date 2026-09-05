@@ -1,0 +1,675 @@
+# pyright: strict
+"""Reserve-first routing for the `luna` tier (audit item 12, user ruling
+2026-09-04).
+
+THE RULING. `gpt-reserve` stops being a tier anyone hires. A `luna` hire
+prefers OpenAI's reserve pool automatically and uses the direct Luna lane
+when reserve is exhausted. One hire surface; two pools, metered apart.
+
+WHAT A ROUTE IS. Model selection, credential selection and pool selection used
+to be one string (the tier). This module separates them: a *route* is the
+pool a turn is sent to (`reserve` or `plan`), the model id that names that pool
+on the wire, the account namespace the evidence belongs to, and the reason the
+choice was made. The tier stays what the org ASKED for; the route is what the
+turn was SENT as; and what the provider REPORTS back (`reported_model`,
+`model/rerouted`) is a third thing, recorded separately and never presented
+as either of the first two.
+
+WHAT THE EVIDENCE IS. The Codex app-server's rate-limit board. A pool OpenAI
+has granted to the signed-in account shows up as a bucket whose `limitName`
+is the model (`gpt-reserve`, measured 2026-09-03 in `codex_limits`); a
+withdrawn grant has no such bucket; an exhausted one has a window at 100%.
+Three facts, three different answers below, because the user's ruling and
+audit §9 both say they must not be confused:
+
+    reserve bucket present, room left  → route reserve         ("granted")
+    reserve bucket present, at 100%    → route direct   ("reserve-exhausted")
+    reserve bucket ABSENT, board complete → route direct        ("no-grant")
+    board stale/unknown/sparse-only    → route reserve  ("board-unknown"),
+                                         unless this node's own recent
+                                         rejection says otherwise
+    API-key login                      → route direct        ("login-kind")
+
+⚠ ABSENCE IS ONLY EVIDENCE ON A COMPLETE BOARD. `codex_limits` folds a turn's
+sparse `account/rateLimits/updated` notifications into its cache, and a
+notification that does not mention reserve says nothing about reserve. Only a
+board filled by a full `account/rateLimits/read` (`snapshot()["complete"]`)
+can call a grant withdrawn. A sparse-only board that lacks the bucket is
+"unknown", and unknown prefers reserve — the same fail-open the hire gate
+has always had for reserve (an unreadable board never hides a tier the user
+holds; the turn refuses loudly instead).
+
+⚠ EXHAUSTION IS SCOPED. A node's mark that reserve rejected it carries the
+account namespace it was learned under and an expiry. A mark from another
+account, or one whose reset has passed, or one contradicted by a fresh board
+that shows room, is ignored — so yesterday's withdrawal cannot pin a Luna to
+direct forever. No reset time on a rejection means "re-probe after the floor",
+never "recovered" and never "forever".
+
+⚠ A RE-DRIVE NEEDS A TERMINAL REJECTION, NOT A HUNCH. `classify_failure`
+says a request may be re-sent on the other route ONLY when the provider's own
+terminal error names a usage-limit rejection AND the turn shows no item and
+no token usage. A lost stream, a timeout, a missing error, an auth failure, a
+rate limit (429-class, transient) are each their own kind and none of them
+re-drives: an unknown outcome replayed is the duplicate this org has spent
+days removing on other lanes.
+
+This module is pure: it takes evidence and returns decisions. Reading the
+board, spawning anything, and writing the node belong to the callers
+(`supervisor._codex_leg`, `api.py`).
+"""
+
+from __future__ import annotations
+
+import datetime as _dt
+import time
+from typing import Any, Final, TypedDict
+
+#: the two models a routed tier can go out as. Read from `ledger.MODELS` by
+#: name so a rename upstream is a one-line data correction there.
+from .ledger import MODELS as _MODELS
+
+#: pool names — the RESOURCE a turn spends, distinct from the model string.
+RESERVE_POOL: Final = "reserve"
+PLAN_POOL: Final = "plan"
+
+#: the tier that routes between pools, and the legacy token that pinned a
+#: node to reserve alone. `gpt-reserve` nodes that already exist keep their
+#: tier and keep running reserve-only (compatibility, not a fold-in: folding
+#: them onto direct would change which budget they spend, which the ruling
+#: does not authorise).
+ROUTED_TIER: Final = "luna"
+LEGACY_RESERVE_TIER: Final = "gpt-reserve"
+
+RESERVE_MODEL: Final[str] = _MODELS[LEGACY_RESERVE_TIER]      # "gpt-reserve"
+DIRECT_LUNA_MODEL: Final[str] = _MODELS[ROUTED_TIER]          # "gpt-5.6-luna"
+
+#: how long a node's rejection mark stands when the provider gave no reset:
+#: long enough not to burn a rejected request every turn, short enough that a
+#: grant OpenAI hands back is noticed the same quarter-hour. Mirrors
+#: `codex_limits.MAX_EVIDENCE_AGE` deliberately — it is the same "how long is
+#: a fact about this account good for" question.
+MARK_PROBE_FLOOR: Final = 900.0
+
+#: kinds `classify_failure` answers with. Only REJECTED_USAGE may re-drive.
+KIND_USAGE_LIMIT: Final = "usage-limit"
+KIND_RATE_LIMIT: Final = "rate-limit"
+KIND_AUTH: Final = "auth"
+KIND_CONTEXT: Final = "context"
+KIND_BUDGET: Final = "budget"
+KIND_OVERLOADED: Final = "overloaded"
+KIND_CONNECTION: Final = "connection"
+KIND_USAGE_PROSE: Final = "usage-limit-prose"
+KIND_OTHER: Final = "other"
+KIND_UNKNOWN: Final = "unknown"
+
+
+class Route(TypedDict):
+    """What a turn is SENT as. `selection` says whether this was the preflight
+    choice or a retry after the other route's terminal rejection."""
+    requested: str          # the node's tier — what the org asked for
+    route: str              # "reserve" | "direct"
+    pool: str               # RESERVE_POOL | PLAN_POOL
+    model: str              # the id on the wire
+    account: str            # codex account namespace the evidence belongs to
+    reason: str             # why THIS route — see the table in the docstring
+    evidence: str           # "board" | "board-complete" | "mark" | "login" | "tier" | "none"
+    board_age: float | None
+    reset_ts: float | None  # when the OTHER pool's wall lifts, if known
+    selection: str          # "preflight" | "retry"
+    prefer: str             # the pool the node tries FIRST (its checkbox),
+                            # recorded apart from `pool`, the one chosen
+
+
+class PoolCapacity(TypedDict):
+    state: str              # "usable" | "exhausted" | "absent" | "unknown"
+    percent: float | None
+    reset_ts: float | None  # LATEST exhausted reset for the pool, None = unknown
+    reset_unknown: bool     # an exhausted window carried no resetsAt
+    observed_at: float | None  # when THIS pool's buckets were last observed
+
+
+def _iso(epoch: float | None) -> str | None:
+    if epoch is None:
+        return None
+    try:
+        return _dt.datetime.fromtimestamp(
+            float(epoch), tz=_dt.timezone.utc).isoformat().replace("+00:00", "Z")
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
+def _epoch(iso_or_num: Any) -> float | None:
+    if iso_or_num is None:
+        return None
+    if isinstance(iso_or_num, (int, float)):
+        return float(iso_or_num) or None
+    try:
+        s = str(iso_or_num).replace("Z", "+00:00")
+        return _dt.datetime.fromisoformat(s).timestamp()
+    except ValueError:
+        return None
+
+
+def pool_of_window(window: dict[str, Any]) -> str | None:
+    """Which pool a NORMALIZED board window (`codex_limits._normalize` shape,
+    `model` = limitName) constrains. The reserve pool is the bucket named
+    after the reserve model; the plan pool is every unnamed bucket. A bucket
+    named after some OTHER model (e.g. a Spark grant) constrains neither."""
+    name = str(window.get("model") or "")
+    if name == RESERVE_MODEL:
+        return RESERVE_POOL
+    if not name:
+        return PLAN_POOL
+    return None
+
+
+def pool_of_snapshot(snapshot: dict[str, Any]) -> str | None:
+    """Same question for a RAW `account/rateLimits/updated` snapshot (the
+    shape `CodexTurn.rate_limit_snapshots` keeps): `limitName` names a pool."""
+    name = str(snapshot.get("limitName") or "").strip()
+    if name == RESERVE_MODEL:
+        return RESERVE_POOL
+    if not name:
+        return PLAN_POOL
+    return None
+
+
+def pool_capacity(limits: list[dict[str, Any]], pool: str) -> PoolCapacity:
+    """Capacity of one pool from a NORMALIZED board.
+
+    Exhausted when ANY of its windows is at 100% or flagged active — a pool
+    with a session window spent and a weekly window open is still spent right
+    now. The reset is the LATEST among its exhausted windows (every constraint
+    must clear before the pool serves again), and it is `None` with
+    `reset_unknown=True` when an exhausted window carried no reset: an unknown
+    reset is a re-probe time, not a recovery.
+    """
+    mine = [w for w in limits if pool_of_window(w) == pool]
+    if not mine:
+        return {"state": "absent", "percent": None, "reset_ts": None,
+                "reset_unknown": False, "observed_at": None}
+    seen = [float(w["observed_at"]) for w in mine
+            if isinstance(w.get("observed_at"), (int, float))]
+    observed_at = max(seen) if seen else None
+    worst = 0.0
+    exhausted: list[dict[str, Any]] = []
+    for w in mine:
+        try:
+            pct = float(w.get("percent") or 0.0)
+        except (TypeError, ValueError):
+            pct = 0.0
+        worst = max(worst, pct)
+        if pct >= 100.0 or bool(w.get("is_active")):
+            exhausted.append(w)
+    if not exhausted:
+        return {"state": "usable", "percent": worst, "reset_ts": None,
+                "reset_unknown": False, "observed_at": observed_at}
+    resets = [_epoch(w.get("resets_at")) for w in exhausted]
+    known = [r for r in resets if r is not None]
+    unknown = len(known) != len(resets)
+    return {"state": "exhausted", "percent": worst,
+            "reset_ts": (max(known) if known and not unknown else None),
+            "reset_unknown": unknown, "observed_at": observed_at}
+
+
+def snapshots_pool_reset(snapshots: Any, pool: str) -> tuple[bool, float | None]:
+    """From a turn's RAW rate-limit board (keyed by limitId): did this pool
+    show an exhausted window, and when does the LATEST of them reset?
+
+    → `(exhausted, reset_ts)`; `reset_ts` is None when unknown. Positive
+    evidence only: a pool that does not appear here is simply not described
+    by this turn's sparse notifications (see the module note on absence).
+    """
+    if not isinstance(snapshots, dict):
+        return False, None
+    exhausted = False
+    resets: list[float | None] = []
+    for snap in snapshots.values():
+        if not isinstance(snap, dict) or pool_of_snapshot(snap) != pool:
+            continue
+        reached = bool(snap.get("rateLimitReachedType"))
+        for slot in ("primary", "secondary"):
+            win = snap.get(slot)
+            if not isinstance(win, dict):
+                continue
+            try:
+                pct = float(win.get("usedPercent") or 0.0)
+            except (TypeError, ValueError):
+                continue
+            if pct >= 100.0 or reached:
+                exhausted = True
+                try:
+                    rs = float(win.get("resetsAt") or 0.0) or None
+                except (TypeError, ValueError):
+                    rs = None
+                resets.append(rs)
+    if not exhausted:
+        return False, None
+    known = [r for r in resets if r is not None]
+    if not known or len(known) != len(resets):
+        return True, None
+    return True, max(known)
+
+
+def node_wake_epoch(limits: list[dict[str, Any]], snapshots: Any,
+                    pools: tuple[str, ...] = (RESERVE_POOL, PLAN_POOL),
+                    ) -> float | None:
+    """When might a routed node serve again, given BOTH pools are out?
+
+    Per pool: the latest applicable exhausted reset (board and the turn's own
+    snapshots, whichever is later). Across pools: the EARLIEST pool with a
+    known reset — the first moment a re-probe could find capacity. None when
+    no pool has a known reset (caller falls to its probe floor). This is a
+    probe time, not a provider promise: `pool_capacity` says so per pool.
+    """
+    candidates: list[float] = []
+    for pool in pools:
+        cap = pool_capacity(limits, pool)
+        _ex, snap_reset = snapshots_pool_reset(snapshots, pool)
+        known = [t for t in (cap["reset_ts"], snap_reset) if t is not None]
+        if known:
+            candidates.append(max(known))
+    return min(candidates) if candidates else None
+
+
+# ── the decision ────────────────────────────────────────────────────────────
+
+def _route_for(tier: str, pool: str, account: str, *, reason: str,
+               evidence: str, board_age: float | None = None,
+               reset_ts: float | None = None, selection: str = "preflight",
+               prefer: str = RESERVE_POOL, direct_model: str | None = None,
+               ) -> Route:
+    if pool == RESERVE_POOL:
+        return {"requested": tier, "route": "reserve", "pool": RESERVE_POOL,
+                "model": RESERVE_MODEL, "account": account, "reason": reason,
+                "evidence": evidence, "board_age": board_age,
+                "reset_ts": reset_ts, "selection": selection,
+                "prefer": prefer}
+    return {"requested": tier, "route": "direct", "pool": PLAN_POOL,
+            "model": direct_model or DIRECT_LUNA_MODEL, "account": account,
+            "reason": reason, "evidence": evidence, "board_age": board_age,
+            "reset_ts": reset_ts, "selection": selection, "prefer": prefer}
+
+
+def direct_route(tier: str, model: str, account: str, *,
+                 reason: str, evidence: str, board_age: float | None = None,
+                 reset_ts: float | None = None,
+                 selection: str = "preflight",
+                 prefer: str = RESERVE_POOL) -> Route:
+    return _route_for(tier, PLAN_POOL, account, reason=reason,
+                      evidence=evidence, board_age=board_age,
+                      reset_ts=reset_ts, selection=selection, prefer=prefer,
+                      direct_model=model)
+
+
+def reserve_route(tier: str, account: str, *, reason: str, evidence: str,
+                  board_age: float | None = None,
+                  reset_ts: float | None = None,
+                  selection: str = "preflight",
+                  prefer: str = RESERVE_POOL) -> Route:
+    return _route_for(tier, RESERVE_POOL, account, reason=reason,
+                      evidence=evidence, board_age=board_age,
+                      reset_ts=reset_ts, selection=selection, prefer=prefer)
+
+
+def mark_live(mark: Any, account: str, now: float) -> bool:
+    """Is a node's rejection mark still binding for THIS account right now?
+    Wrong account, expired, or shapeless → no."""
+    if not isinstance(mark, dict):
+        return False
+    m: dict[str, Any] = mark
+    if str(m.get("account") or "") != account:
+        return False
+    until = m.get("until_ts")
+    try:
+        until_f = float(until) if until is not None else None
+    except (TypeError, ValueError):
+        until_f = None
+    if until_f is None:
+        return False
+    return now < until_f
+
+
+def make_mark(kind: str, account: str, reset_ts: float | None, now: float,
+              reason: str) -> dict[str, Any]:
+    """A node's record that a pool rejected it: scoped to the account, timed
+    to the provider's reset when it gave one, else to the probe floor —
+    never open-ended."""
+    if reset_ts is not None and reset_ts > now:
+        until, src = reset_ts, "provider"
+    else:
+        until, src = now + MARK_PROBE_FLOOR, "probe"
+    return {"kind": kind, "account": account, "until_ts": until,
+            "until": _iso(until), "reset_src": src, "at": _iso(now),
+            "at_ts": now, "reason": reason}
+
+
+class _PoolView(TypedDict):
+    """One pool's standing for the resolver: excluded or not, and why."""
+    excluded: bool
+    reason: str             # "usable" | "unknown" | "exhausted" | "no-grant"
+                            # | "marked:<kind>" | "login-kind"
+    evidence: str           # "board" | "board-complete" | "mark" | "login" | "none"
+    reset_ts: float | None
+
+
+def _mark_at(mark: dict[str, Any]) -> float | None:
+    """When the mark was written (epoch). `at_ts` is exact; `at` (ISO) is
+    the fallback for a record written without it."""
+    ts = mark.get("at_ts")
+    if isinstance(ts, (int, float)):
+        return float(ts)
+    return _epoch(mark.get("at"))
+
+
+def _pool_view(pool: str, *, login_kind: str | None, board: dict[str, Any],
+               marks: dict[str, Any], account: str, now: float) -> _PoolView:
+    """What the evidence says about ONE pool, in precedence order: the login
+    kind (reserve is a subscription grant); a fresh board OF THIS ACCOUNT
+    (exhaustion excludes; absence excludes only on a COMPLETE board; room
+    admits — but only when that pool was observed AFTER this node's own
+    rejection mark, see below); then the node's live mark; then nothing
+    (unknown — which never excludes).
+
+    ⚠ A POSITIVE OBSERVATION MUST BE NEWER THAN THE REJECTION IT OVERRULES
+    (parent review 2026-09-05). A board read at T-20 s that shows reserve at
+    20% says nothing about a rejection the provider issued at T-1 s; and a
+    sparse notification about the PLAN bucket does not refresh what is
+    known about reserve. So recovery is judged per pool, on that pool's
+    own last observation time (`codex_limits` keeps one per bucket): room
+    observed after the mark clears it; room observed before the mark is
+    outranked by it. Without a per-pool time the mark wins.
+
+    ⚠ A BOARD FROM ANOTHER ACCOUNT IS NO EVIDENCE. `codex_limits` stamps
+    the board with the account it read; if that is not the account this
+    decision is being made for, the board is treated as absent.
+    """
+    if pool == RESERVE_POOL and login_kind == "api-key":
+        return {"excluded": True, "reason": "login-kind", "evidence": "login",
+                "reset_ts": None}
+    mark = marks.get(pool)
+    live_mark = mark_live(mark, account, now)
+    fresh = bool(board.get("available")) and not bool(board.get("stale"))
+    board_acct = board.get("account")
+    if fresh and board_acct is not None and str(board_acct) != account:
+        fresh = False                       # someone else's pools
+    if fresh:
+        limits = [w for w in (board.get("limits") or []) if isinstance(w, dict)]
+        cap = pool_capacity(limits, pool)
+        if cap["state"] == "usable":
+            newer = (live_mark and (cap["observed_at"] is None
+                                    or _mark_at(mark) is None
+                                    or cap["observed_at"] <= _mark_at(mark)))
+            if not newer:
+                return {"excluded": False, "reason": "usable",
+                        "evidence": "board", "reset_ts": None}
+            # room observed BEFORE the rejection: the mark stands, below
+        elif cap["state"] == "exhausted":
+            return {"excluded": True, "reason": "exhausted", "evidence": "board",
+                    "reset_ts": cap["reset_ts"]}
+        elif (cap["state"] == "absent" and pool == RESERVE_POOL
+                and bool(board.get("complete"))):
+            return {"excluded": True, "reason": "no-grant",
+                    "evidence": "board-complete", "reset_ts": None}
+        # absent on a sparse-only board, or a plan pool the board does not
+        # describe: unknown — fall through to the node's own mark
+    if live_mark:
+        m: dict[str, Any] = mark
+        try:
+            until = float(m.get("until_ts") or 0.0) or None
+        except (TypeError, ValueError):
+            until = None
+        return {"excluded": True, "reason": f"marked:{m.get('kind') or 'rejected'}",
+                "evidence": "mark", "reset_ts": until}
+    return {"excluded": False, "reason": "unknown", "evidence": "none",
+            "reset_ts": None}
+
+
+def resolve(tier: str, *, login_kind: str | None, board: dict[str, Any],
+            marks: dict[str, Any] | None, account: str,
+            now: float | None = None, direct_model: str | None = None,
+            selection: str = "preflight",
+            prefer_reserve: bool = True) -> Route:
+    """Which pool this turn is sent to. See the module docstring's table.
+
+    `prefer_reserve` (user ruling 2026-09-04, the per-agent "Prefer reserve"
+    checkbox, on by default): the pool tried FIRST. The other pool is the
+    fallback either way — turning the preference off never disables reserve
+    as a fallback, and turning it on never disables the plan pool as one.
+    The route records the preference (`prefer`) beside the pool that was
+    actually chosen; the header token reads the latter.
+
+    The rule is the same in both orders: send to the first pool in the
+    preferred order that the evidence does not EXCLUDE (excluded = login
+    kind cannot hold it, a fresh board shows it spent, a complete board shows
+    it absent, or this node's live mark says it rejected us). Unknown never
+    excludes — the turn's own answer is the probe. When both are excluded the
+    preferred pool is sent to anyway (the provider's refusal is the freeze
+    evidence; a pre-emptive freeze would be orgtree's word for the
+    provider's), and `reason` says both were out.
+
+    `board` is `codex_limits.snapshot()` (normalized, with `stale` and
+    `complete`); `marks` is the node's `codex_routes` record; `account` is
+    the codex account namespace (`supervisor._cache_codex_account_namespace`).
+    `direct_model` is the non-routed model for `tier` (ledger MODELS); for
+    the routed tier it defaults to the direct Luna id.
+    """
+    now = time.time() if now is None else now
+    marks = marks if isinstance(marks, dict) else {}
+    direct_model = direct_model or _MODELS.get(tier, tier)
+    prefer = RESERVE_POOL if prefer_reserve else PLAN_POOL
+    if tier == LEGACY_RESERVE_TIER:
+        # compatibility: an old reserve node is reserve, full stop
+        return reserve_route(tier, account, reason="legacy-tier",
+                             evidence="tier", selection=selection,
+                             prefer=RESERVE_POOL)
+    if tier != ROUTED_TIER:
+        return direct_route(tier, direct_model, account, reason="tier",
+                            evidence="tier", selection=selection,
+                            prefer=PLAN_POOL)
+    age = board.get("age")
+    board_age = float(age) if isinstance(age, (int, float)) else None
+    order = ((RESERVE_POOL, PLAN_POOL) if prefer_reserve
+             else (PLAN_POOL, RESERVE_POOL))
+    views = {p: _pool_view(p, login_kind=login_kind, board=board,
+                           marks=marks, account=account, now=now)
+             for p in order}
+    first, second = order
+    v1, v2 = views[first], views[second]
+    name = {RESERVE_POOL: "reserve", PLAN_POOL: "direct"}
+    if not v1["excluded"]:
+        # the preferred pool stands: "granted" keeps the historical wording
+        # for a reserve-first luna on a board with room; "preferred" is the
+        # plan-first case; unknown evidence prefers the preferred pool too
+        reason = ("granted" if first == RESERVE_POOL and v1["reason"] == "usable"
+                  else "preferred" if v1["reason"] == "usable"
+                  else ("board-stale" if board.get("available")
+                        and board.get("stale") else "board-unknown"))
+        return _route_for(tier, first, account, reason=reason,
+                          evidence=v1["evidence"], board_age=board_age,
+                          selection=selection, prefer=prefer,
+                          direct_model=DIRECT_LUNA_MODEL)
+    if not v2["excluded"]:
+        # the preferred pool is out; the other one is not known to be
+        why = v1["reason"]
+        reason = ("no-grant" if why == "no-grant"
+                  else "login-kind" if why == "login-kind"
+                  else f"{name[first]}-{why}")   # -exhausted | -marked:<kind>
+        return _route_for(tier, second, account, reason=reason,
+                          evidence=v1["evidence"], board_age=board_age,
+                          reset_ts=v1["reset_ts"], selection=selection,
+                          prefer=prefer, direct_model=DIRECT_LUNA_MODEL)
+    # both excluded: the provider answers, on the preferred pool, unless the
+    # preferred pool cannot be asked at all (api-key login has no reserve)
+    target = second if v1["reason"] == "login-kind" else first
+    known = [t for t in (v1["reset_ts"], v2["reset_ts"]) if t is not None]
+    return _route_for(tier, target, account,
+                      reason=f"both-out:{name[first]}-{v1['reason']},"
+                             f"{name[second]}-{v2['reason']}",
+                      evidence=v1["evidence"], board_age=board_age,
+                      reset_ts=(min(known) if known else None),
+                      selection=selection, prefer=prefer,
+                      direct_model=DIRECT_LUNA_MODEL)
+
+
+def other_route(route: Route) -> Route | None:
+    """The route to retry on after `route` was terminally rejected — only a
+    routed tier has one; a legacy reserve node and every other tier have
+    nowhere else to go."""
+    tier = route["requested"]
+    if tier != ROUTED_TIER:
+        return None
+    prefer = route.get("prefer") or RESERVE_POOL
+    if route["route"] == "reserve":
+        return direct_route(tier, DIRECT_LUNA_MODEL, route["account"],
+                            reason="reserve-rejected", evidence="rejection",
+                            selection="retry", prefer=prefer)
+    return reserve_route(tier, route["account"], reason="direct-rejected",
+                         evidence="rejection", selection="retry",
+                         prefer=prefer)
+
+
+# ── the failure classifier ──────────────────────────────────────────────────
+
+def _error_code(error: Any) -> str:
+    """The machine tag of a `TurnError`, normalised across the two spellings
+    this codebase has measured: `usage_limit_exceeded` (0.150.1 specimen) and
+    the v2 schema's `usageLimitExceeded` (0.153.3, `evidence/schema-0.153.3`).
+    The object forms (`{"httpConnectionFailed": {...}}`) name their variant
+    by their single key."""
+    if not isinstance(error, dict):
+        return ""
+    info: Any = error.get("codexErrorInfo")
+    if isinstance(info, dict):
+        d: dict[str, Any] = info
+        raw = str(d.get("type") or d.get("kind") or "")
+        if not raw and len(d) == 1:
+            raw = str(next(iter(d.keys())))
+    else:
+        raw = str(info or "")
+    return raw.replace("_", "").replace("-", "").strip().lower()
+
+
+_CODE_KIND: Final[dict[str, str]] = {
+    "usagelimitexceeded": KIND_USAGE_LIMIT,
+    "ratelimitexceeded": KIND_RATE_LIMIT,
+    "unauthorized": KIND_AUTH,
+    "contextwindowexceeded": KIND_CONTEXT,
+    "sessionbudgetexceeded": KIND_BUDGET,
+    "serveroverloaded": KIND_OVERLOADED,
+    "httpconnectionfailed": KIND_CONNECTION,
+    "responsestreamconnectionfailed": KIND_CONNECTION,
+    "responsestreamdisconnected": KIND_CONNECTION,
+    "responsetoomanyfailedattempts": KIND_CONNECTION,
+}
+
+
+class FailureClass(TypedDict):
+    kind: str
+    code: str
+    rejected: bool          # explicit terminal rejection with nothing run
+    pool_state: str         # "exhausted" | "no-grant" | "unexplained" | "n/a"
+    reset_ts: float | None  # the rejected pool's latest reset, if known
+    why: str
+
+
+def classify_failure(*, status: str | None, error: Any, snapshots: Any,
+                     items_seen: int, token_usage: Any, agent_text: str,
+                     pool: str, board: dict[str, Any] | None,
+                     usage_prose: bool = False) -> FailureClass:
+    """What kind of failure this was, and whether the request may be re-sent
+    on the other pool.
+
+    `rejected` is True ONLY for the provider's own terminal usage-limit tag on
+    a turn that observed no item, no token usage and no text. Everything else
+    — a lost stream, a timeout (status None), a 429-class rate limit, an auth
+    failure, a usage-limit read out of PROSE with no machine tag — is not a
+    rejection this code will act on by replaying.
+
+    `pool_state` explains a rejection from evidence, in order: the turn's own
+    snapshots showing the pool exhausted; else a fresh COMPLETE board
+    (exhausted / absent = no-grant); else "unexplained" — still a rejection,
+    but marked with the probe floor rather than a provider reset.
+    """
+    code = _error_code(error)
+    if status is None or status == "":
+        kind = KIND_UNKNOWN
+    elif code in _CODE_KIND:
+        kind = _CODE_KIND[code]
+    elif code:
+        kind = KIND_OTHER
+    elif usage_prose:
+        kind = KIND_USAGE_PROSE
+    elif status == "failed":
+        kind = KIND_UNKNOWN
+    else:
+        kind = KIND_OTHER
+    nothing_ran = (int(items_seen or 0) == 0 and token_usage is None
+                   and not (agent_text or "").strip())
+    # ⚠ THREE conditions, all required (parent review 2026-09-05): the
+    # provider's TERMINAL "failed" status — an interrupted, completed or
+    # in-progress turn carrying a usage tag is not a terminal rejection —
+    # the usage-limit machine tag, and nothing observed to have run
+    rejected = (status == "failed" and kind == KIND_USAGE_LIMIT
+                and nothing_ran)
+    pool_state = "n/a"
+    reset_ts: float | None = None
+    why = ""
+    if kind == KIND_USAGE_LIMIT:
+        ex, snap_reset = snapshots_pool_reset(snapshots, pool)
+        if ex:
+            pool_state, reset_ts = "exhausted", snap_reset
+            why = f"{pool} pool exhausted (turn's own rate-limit snapshot)"
+        elif board and board.get("available") and not board.get("stale"):
+            limits = [w for w in (board.get("limits") or [])
+                      if isinstance(w, dict)]
+            cap = pool_capacity(limits, pool)
+            if cap["state"] == "exhausted":
+                pool_state, reset_ts = "exhausted", cap["reset_ts"]
+                why = f"{pool} pool exhausted (account board)"
+            elif cap["state"] == "absent" and board.get("complete"):
+                pool_state = "no-grant"
+                why = (f"{pool} pool is not granted to this account "
+                       f"(absent from a complete board read)")
+            else:
+                pool_state = "unexplained"
+                why = f"{pool} rejected the request; the board does not say why"
+        else:
+            pool_state = "unexplained"
+            why = f"{pool} rejected the request; no fresh board to explain it"
+        if not nothing_ran:
+            why += " — but the turn had already produced output, so it is not replayed"
+    elif kind == KIND_UNKNOWN:
+        why = "outcome unknown (no terminal error from the provider) — never replayed"
+    elif kind == KIND_CONNECTION:
+        why = "transport failure — the request may have executed; never replayed"
+    elif kind == KIND_AUTH:
+        why = "credential rejected — not a capacity fact; no route change"
+    elif kind == KIND_RATE_LIMIT:
+        why = "transient rate limit — not pool exhaustion; no route change"
+    return {"kind": kind, "code": code, "rejected": rejected,
+            "pool_state": pool_state, "reset_ts": reset_ts, "why": why}
+
+
+def route_label(route: Route | None, *, live: bool) -> str | None:
+    """The header token text (user spec 2026-09-04: a token on the header's
+    second row when Luna RUNS ON RESERVE; must reflect the actual route and
+    must say when it describes the LAST turn rather than a live one).
+
+    Nothing (None) for tiers that do not route and for a direct Luna with no
+    reserve story to tell — the token carries news or it is absent.
+    """
+    if not route or route.get("requested") != ROUTED_TIER:
+        return None
+    prefix = "" if live else "last: "
+    if route.get("route") == "reserve":
+        return prefix + "reserve"
+    reason = str(route.get("reason") or "")
+    if (reason.startswith("reserve-") or reason == "no-grant"
+            or reason.startswith("both-out:")):
+        # a luna that ran direct because reserve is spent, withdrawn or
+        # rejected it: disclosed, because reserve is out. A plan-first luna
+        # running direct by preference has nothing to disclose.
+        return prefix + "direct · reserve out"
+    return None

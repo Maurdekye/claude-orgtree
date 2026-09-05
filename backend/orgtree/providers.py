@@ -85,6 +85,17 @@ _CODEX_LETTER: Final[dict[str, str]] = {
 #: bands read 1·1·2·5 and lost luna's 10× advantage over terra.
 _CODEX_ALWAYS_TIER_NAMES: Final = ("gpt-reserve", "luna", "terra", "sol")
 _CODEX_TIER_NAMES: Final = _CODEX_ALWAYS_TIER_NAMES + ("astra",)
+#: LEGACY tokens: known to the AXIS (an existing node on one still loads,
+#: prices, restarts and runs its lane) but never OFFERED for a new hire or a
+#: switch. `gpt-reserve` (user ruling 2026-09-04, audit item 12): reserve is
+#: no longer a tier one picks — a `luna` hire prefers the reserve pool by
+#: itself and falls back to the direct lane when reserve is out
+#: (`codex_route`). Old reserve nodes keep their tier and keep running
+#: reserve-only; nothing rewrites them.
+LEGACY_CODEX_TIERS: Final = frozenset({"gpt-reserve"})
+#: what a new hire may pick from — the axis minus the legacy tokens
+_CODEX_HIREABLE_TIER_NAMES: Final = tuple(
+    t for t in _CODEX_ALWAYS_TIER_NAMES if t not in LEGACY_CODEX_TIERS)
 #: Known Codex tiers whose metadata may exist in the ledger while their offer
 #: is controlled by the signed-in account's live model inventory. New rollout
 #: tiers belong here; stable tiers do not. The model id itself lives only in
@@ -402,7 +413,9 @@ def codex_tiers(available_models: set[str] | frozenset[str] | None = None
     full inventory. ``None`` therefore means no evidence and fails closed for
     those rows; it is never an optimistic default.
     """
-    offered = set(_CODEX_ALWAYS_TIER_NAMES)
+    # HIREABLE rows only: a legacy token (gpt-reserve) is on the axis for the
+    # nodes that already wear it, never in the offer
+    offered = set(_CODEX_HIREABLE_TIER_NAMES)
     if available_models is not None:
         offered.update(t for t in CONDITIONAL_CODEX_TIERS
                        if CODEX_MODELS[t] in available_models)
@@ -1127,6 +1140,79 @@ def reserve_availability(
     return {"enabled": True, "evidence": "granted", "reason": None}
 
 
+def reserve_status(status: dict[str, Any] | None = None) -> dict[str, Any]:
+    """The reserve POOL as the luna tier's tooltip and the usage panel need
+    it (item 12): granted or not, spent or not, when it resets — three
+    distinct facts, never collapsed into one boolean.
+
+    Built on the same evidence `reserve_availability` reads (the account's
+    rate-limit board through `codex_limits`), so the chip, the refusal and
+    this object cannot disagree. `granted`/`exhausted` are three-valued:
+    None means the board could not say (unknown is not withdrawn — the
+    module note in `codex_route` explains why absence needs a COMPLETE
+    board). `route` is what a luna hire's NEXT turn would be sent as, from
+    the same resolver the turn uses, with cached evidence only.
+    """
+    from . import codex_limits, codex_route      # noqa: PLC0415 — cycle seam
+    st = status if status is not None else codex_status()
+    out: dict[str, Any] = {
+        "pool": codex_route.RESERVE_POOL, "model": codex_route.RESERVE_MODEL,
+        "granted": None, "exhausted": None, "percent": None,
+        "resets_at": None, "reason": None, "evidence": "offline",
+        "board_age": None, "complete": False, "route": None}
+    if not st.get("connected"):
+        out["reason"] = "Codex CLI is not signed in"
+        return out
+    if st.get("kind") != "chatgpt":
+        out.update(granted=False, evidence="login-kind",
+                   reason="signed in with an API key — reserve capacity is "
+                          "a ChatGPT subscription grant")
+    else:
+        # THE GRANT VERDICT HAS ONE IMPLEMENTATION: `reserve_availability`
+        # (login kind, then the presence of a gpt-reserve window on the
+        # board through `codex_limits.grants`). It also warms the board; the
+        # FILL below is read off that same board.
+        avail = reserve_availability(st)
+        board = codex_limits.snapshot()
+        limits = [w for w in (board.get("limits") or []) if isinstance(w, dict)]
+        cap = codex_route.pool_capacity(limits, codex_route.RESERVE_POOL)
+        fresh = bool(board.get("available")) and not bool(board.get("stale"))
+        out.update(board_age=board.get("age"),
+                   complete=bool(board.get("complete")))
+        if not avail.get("enabled"):
+            # withdrawn (or an api-key login): `reserve_availability` only
+            # says so on positive evidence — unknown never lands here
+            out.update(granted=False, exhausted=None,
+                       evidence=str(avail.get("evidence") or "board-complete"),
+                       reason=avail.get("reason")
+                       or "this account has no gpt-reserve capacity right now")
+        elif fresh and cap["state"] in ("usable", "exhausted"):
+            out.update(granted=True, exhausted=cap["state"] == "exhausted",
+                       percent=cap["percent"], evidence="board",
+                       resets_at=codex_route._iso(cap["reset_ts"]),  # pyright: ignore[reportPrivateUsage]
+                       reason=(None if cap["state"] == "usable" else
+                               "reserve capacity is spent — luna runs on "
+                               "the direct lane until it resets"))
+        else:
+            # `reserve_availability` fails OPEN on no evidence (the tier was
+            # never hidden by an unreadable board); here that is honestly
+            # UNKNOWN, not granted
+            out.update(granted=None, exhausted=None, evidence="none",
+                       reason="reserve capacity could not be read — luna "
+                              "will try reserve first and fall back")
+    try:
+        from . import supervisor                    # noqa: PLC0415 — cycle seam
+        acct = supervisor._codex_account_namespace()  # pyright: ignore[reportPrivateUsage]
+        route = codex_route.resolve(
+            codex_route.ROUTED_TIER, login_kind=str(st.get("kind") or "") or None,
+            board=codex_limits.snapshot(), marks=None, account=acct)
+        out["route"] = {"route": route["route"], "model": route["model"],
+                        "reason": route["reason"]}
+    except Exception:                                  # noqa: BLE001
+        out["route"] = None
+    return out
+
+
 def providers_payload(claude_status: dict[str, Any]) -> dict[str, Any]:
     """The /api/providers document. `claude_status` is composed by the API
     layer from state it already owns (accounts registry, cli_version) — this
@@ -1137,6 +1223,9 @@ def providers_payload(claude_status: dict[str, Any]) -> dict[str, Any]:
     # again inside a dict literal would double that work for one answer.
     reserve = (reserve_availability(codex) if codex.get("connected")
                else {"enabled": False, "reason": None, "evidence": "offline"})
+    # the pool as an OBJECT (item 12) — reuses the board the line above
+    # warmed; the two legacy fields below are aliases of this
+    reserve_obj = reserve_status(codex)
     inventory = (codex_model_inventory(status=codex)
                  if codex.get("connected") else _inventory_failure("offline"))
     codex_models = (set(inventory.get("models") or [])
@@ -1216,13 +1305,20 @@ def providers_payload(claude_status: dict[str, Any]) -> dict[str, Any]:
                 else "not signed in — run `codex login` on this machine"
                 if codex.get("installed")
                 else f"Codex CLI not installed — {install_hint('openai')}"),
-            # gpt-reserve rides the SAME connected-CLI gate as the rest of
-            # the family, PLUS its own: reserve capacity is a pool OpenAI
-            # grants and withdraws while the login never changes, which is why
-            # this tier flickers where its siblings do not. `reserve` holds
-            # that whole rule (see `reserve_availability` above) and
-            # `provider_hire_gate` asks the SAME function at the door, so the
-            # chip and the refusal can never disagree.
+            # THE RESERVE POOL (item 12). Reserve is no longer a tier in
+            # `tiers` above; it is the pool a `luna` hire spends FIRST, and
+            # this object says whether the account holds it (`granted`),
+            # whether it is spent (`exhausted`), when it resets, and what a
+            # luna turn would be sent as right now (`route`). Same evidence
+            # `reserve_availability` reads, so nothing here can disagree
+            # with the turn.
+            "reserve": reserve_obj,
+            # ⚠ DEPRECATED ALIASES, kept for consumers written against the
+            # pre-item-12 payload (`reserveOffer` in older bundles, the
+            # hireavail probes). They now mean "reserve capacity is GRANTED
+            # to this account", i.e. luna will prefer it — NOT "gpt-reserve
+            # is hireable", which nothing is any more. Remove once no reader
+            # is left; do not grow new readers.
             "reserve_hire_enabled": bool(
                 codex_on and codex.get("connected") and reserve["enabled"]),
             "reserve_reason": (
