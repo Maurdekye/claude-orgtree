@@ -3,8 +3,9 @@
 # claude-orgtree
 
 A persistent, visual **organization of coding agents** — a tree of real,
-addressable Claude Code, Codex, and Antigravity sessions with a credit budget, an
-office-room canvas, and full agent-to-agent delegation. You sit at the root as
+addressable Claude Code, Codex, Antigravity, and OpenRouter-backed sessions
+with a credit budget, an office-room canvas, and full agent-to-agent
+delegation. You sit at the root as
 the overseer; you hire top-level agents, they hire their own reports, and each
 agent runs through the provider CLI for its selected tier.
 
@@ -30,10 +31,13 @@ chose the nesting that makes them so.
 **You are the root.** You hire top-level agents; agents hire their own reports
 with the `orgtree_*` MCP tools every node is given. **Credits are occupancy,
 not spend** — a live node *holds* its seat plus its grant; retiring releases
-everything back; tokens are unlimited (real dollars are *tracked* per node and
-per org, but deliberately not capped). The tier name chooses the provider:
+everything back. Credits do not buy tokens or bypass provider usage limits;
+usage and estimated dollar costs are tracked separately, with spend caps for
+kiosk orgs. The tier name chooses the provider:
 Claude has haiku (1), sonnet (2), opus (5), and fable (10); Codex has
-gpt-reserve (0.2), luna (0.2), terra (2), and sol (5); Antigravity has flash
+gpt-reserve (0.2), luna (0.2), terra (2), sol (5), and astra (10);
+Astra appears when the connected CLI reports it, while reserve availability
+depends on the account's separate reserve grant. Antigravity has flash
 (1) and pro (2); OpenRouter has one tier per model you favorite in App settings
 (its seat is the model's $/M input price — whole at or above $1/M, fractional
 below it, never under 0.1). Messaging is
@@ -45,8 +49,10 @@ strictly downward. Capabilities — folders with rw/ro modes, terminal, web,
 file editing, subagents, MCP servers, org-structure visibility — flow down
 like credits: a parent cannot grant what it does not hold.
 
-Nodes run **resume-on-demand**: no idle processes; each delivered message
-starts a turn through its provider CLI and the session sleeps again. A node
+Nodes run **resume-on-demand**: delivered work starts a turn in the node's
+existing provider session. Eligible Claude-harness and Codex agents also keep
+a **warm CLI process** between turns, reducing local startup work; Antigravity
+uses the per-turn path. A warm process is not proof of a provider cache hit. A node
 near its context limit is **compacted by splitting**: the successor carries on
 under the same name while the pre-compaction self is archived in place as a
 consultable *knowledge bearer*.
@@ -62,10 +68,24 @@ becomes a full Claude-Code-style chat desk — transcript, live per-message
 and per-tool feed, markdown rendering, and a composer whose send button
 turns into a red ■ STOP while the agent is responding.
 
+**Keep desks in view.** Pin a desk into a movable, resizable window that stays
+put while you pan or zoom the canvas. Pinned windows stay within the viewport,
+remember their positions in that browser, and return to their agent's place
+when unpinned. Each agent has one live desk, so pinned and canvas composers
+do not compete with one another.
+
+**See what an agent is working on.** The expandable progress panel leads with
+the agent's checklist, then shows its reported status and recent activity.
+Claude and OpenRouter checklists come from TodoWrite updates; older lists are
+marked as such. Codex and Antigravity currently show an explicit explanation
+when orgtree cannot observe their checklist, rather than an empty list that
+looks like there is no work.
+
 **Hire in one gesture.** Hover any card (or the eye) and pick a tier chip.
 The Claude, Codex, Antigravity and OpenRouter families sit in separate rows:
-H/S/O/F, R/L/T/S, F/P, and one monogram chip per favorited OpenRouter model (its
-letter and colour derive from the model id). A dashed draft appears: name it,
+H/S/O/F, R/L/T/S plus A when available, F/P, and one monogram chip per
+favorited OpenRouter model (its letter and colour derive from the model id).
+A dashed draft appears: name it,
 drag its credit bar to set the grant, optionally give it a **charter** (a
 standing role card — pick a named preset from `docs/charters/`, or write your
 own), and hire. The Codex and Antigravity rows become active after their local
@@ -77,13 +97,21 @@ other cards to re-parent whole subtrees; every hire, retire, move, or grant
 change notifies the agents it affects.
 
 **Talk to anyone — everything is mail.** Message any agent from its desk or
-the switchboard. A busy agent receives your message **mid-task** (delivered
-right after its next tool call, clearly attributed); idle agents wake
-immediately. Every message is persistent mail: you have an inbox on the eye
+the switchboard. Mail can reach a busy agent **mid-task**, with the timing
+depending on its provider and the current tool call; mail that misses that
+window remains for a later turn. Passive notices do not wake idle agents;
+ordinary messages do. Every message is persistent mail: you have an inbox on
+the eye
 (unread glow, per-mail read tracking, sent folder), and every agent has its
 own webmail-style inbox tab. Agents report status with a chip on their card
 and mail you results; top-level agents can always reach you, deeper ones
 need an **audience**.
+
+**Questions, documents, and files have their own surfaces.** Agents can put
+related questions, credit requests and scope requests in one answer card,
+present a report for in-page reading, or send a downloadable file. Images
+render in the conversation. A pending question can be withdrawn when it no
+longer needs an answer.
 
 **The switchboard.** Click the eye and it expands to your screen, opening
 side-by-side live chats with every agent that has a **direct line** to you —
@@ -106,13 +134,30 @@ compacted successor carries on under the same name; the predecessor stays
 consultable as a knowledge bearer in its lineage stack. In the zoomed view
 the wheel is also a button — click it to compact **now**.
 
-**Limits and safety valves.** Usage-limit freezes show a 🧊 badge and a
-resume button that stays **red until the reported reset time passes**, with
-an inline **auto** toggle that restarts everyone a minute after the reset.
+**Limits and safety valves.** Usage-limit freezes show a 🧊 badge, a resume
+control and any reported reset time, with an inline **auto** toggle for
+automatic recovery attempts. A reset estimate is not proof that every
+account or usage window is available again.
 There's a per-agent interrupt (the desk composer's ■ STOP), an org-wide
-**killswitch** (unlatch, then STOP ALL), per-agent rights (folders rw/ro, terminal, web, editing,
+**killswitch** (unlatch, then STOP ALL, which also pauses that org's watchdogs),
+per-agent rights (folders rw/ro, terminal, web, editing,
 subagents, MCP servers, org visibility) enforced server-side, org-wide hire
 defaults on the eye's gear, and real-dollar tracking per node and per org.
+
+**Inspect accounts and cache readiness.** The Accounts panel shows provider
+connections and available usage windows. Configured fallback accounts and
+optional Anthropic API-key fallback have their own routing and eligibility;
+a limit on one provider does not make an unrelated provider eligible to use
+that key. Usage-limit notices reach the affected agent's superior (or you for
+a top-level agent). Cache indicators distinguish compatible, incompatible,
+expired and unobserved evidence. A matching fingerprint is compatibility,
+not a guaranteed cache hit, and switching account or model changes the cache
+namespace.
+
+**Watch long-running work without polling an agent.** Persistent watchdogs
+can watch files, commands, processes or streams and send mail when a condition
+is met. They survive backend restarts; one-shot watches remove themselves
+after firing, and passive watches report without waking an agent.
 
 **A mail hub connects everything beyond one org.** The bundled
 **mailserver** (`hub/`, one Docker container) gives every org and every
@@ -130,9 +175,14 @@ a local hub and prefer `@net:`.
 holder) can run `orgtree_self_restart` to redeploy its own backend from the
 repo's current commit — code pulled from the remote, or committed right here
 and never pushed — and rebuild the machine's mail hub, without an outside
-operator session. Updates run detached with a log file; every org
-auto-resumes after the restart, so the cost is bounded at some mid-turn
-progress. Works on Windows (`update.ps1`) and Linux/macOS (`update.sh`).
+operator session. Updates run detached with a log file. A normal restart
+refuses while agents are working; `orgtree_prime_restart` schedules it for
+when the machine is quiet. An explicit forced restart stops working agents
+first and requires a reason; those agents need to be messaged afterwards to
+resume work. An optional deadline on a primed restart can force the deploy
+if quiet never arrives, with a wake-up for interrupted agents. Restart notices
+identify the running commit. Works on Windows (`update.ps1`) and Linux/macOS
+(`update.sh`).
 
 **Share an org with the world — kiosk mode.** Any org can be exposed
 through a **preauthenticated secret URL** on a separate public listener,
@@ -148,9 +198,9 @@ The full interaction manual — every gesture, badge, and panel — is
 - **At least one provider CLI** installed and authenticated. Claude Code,
   Codex, and Antigravity are supported; install only the providers whose tiers you
   want to hire. Agent turns use that provider's subscription or API account —
-  **real usage costs real money**. OpenRouter is the exception: it needs no
-  CLI, only an API key, and runs its models through Claude Code against the
-  key's prepaid credits.
+  **real usage costs real money**. OpenRouter needs an API key and the Claude
+  Code CLI as its harness, but no separate OpenRouter CLI or Anthropic login
+  for that route; it uses the key's prepaid credits.
 - **Python 3.11+**
 - **Node.js 18+** (builds the frontend; also used to invoke the Claude Code
   CLI in a newline-safe way on Windows)
@@ -174,7 +224,7 @@ cd claude-orgtree
 
 # a virtualenv, so the installed set is exactly what requirements.txt says
 python -m venv .venv
-source .venv/bin/activate        # Windows: .venv\Scriptsctivate
+source .venv/bin/activate        # Windows: .venv\Scripts\Activate.ps1
 
 # backend dependencies
 pip install -r requirements.txt
@@ -242,8 +292,9 @@ models to offer from the CLI version: a stale Codex CLI makes newer tiers
 vanish from the hire picker with no other symptom.
 
 ```bash
-# Codex: gpt-reserve (seat 0.2), luna (0.2), terra (2), sol (5)
-npm install --prefix ~/orgtree/codex @openai/codex
+# Codex: gpt-reserve (seat 0.2), luna (0.2), terra (2), sol (5), astra (10)
+# Match backend/orgtree/codexpin.py; deploys maintain this version floor.
+npm install --prefix ~/orgtree/codex @openai/codex@0.153.3 --save-exact
 npx --prefix ~/orgtree/codex codex login
 
 # Antigravity: flash (seat 1), pro (2) — Google's own installer, then sign in once
@@ -259,12 +310,13 @@ its private install under `ORGTREE_DATA` (Codex) or the installer's own
 location (Antigravity), then the CLI on `PATH`. It leaves each CLI's
 credentials in that CLI's own store and never copies them.
 
-### Optional provider: OpenRouter (API key, no CLI)
+### Optional provider: OpenRouter (API key, Claude Code harness)
 
 Open App settings → Providers, paste an [OpenRouter](https://openrouter.ai)
 API key into the OpenRouter row, and click the row of model cards under it to
 pick, from the live catalog, which models can be hired. Each favorite becomes
-its own tier (`or-<model>`; seat = the model's $/M input price, floored to 1)
+its own tier (`or-<model>`; seat = the model's $/M input price, rounded down
+to a whole credit at or above $1/M, fractional below it, never under 0.1)
 with a monogram chip whose letter and colour derive from the model id. Turns
 run through Claude Code pointed at openrouter.ai's Anthropic-compatible
 endpoint and are billed to the key's prepaid credits — the Providers row shows
@@ -301,9 +353,9 @@ pulls the latest changes, rebuilds the UI, installs any new dependencies, and
 restarts the backend in the background with a health check. `update.sh` also
 runs under Git Bash on Windows. Agents can trigger the same deploy from
 inside an org with the `orgtree_self_restart` tool (top-level or
-user-audience holders; both platforms) — the deploy runs detached, every
-org auto-resumes after the restart, and the hub container can be rebuilt in
-the same call without ever touching its data volume.
+user-audience holders; both platforms), or schedule it with
+`orgtree_prime_restart`. The deploy runs detached and the hub container can
+be rebuilt in the same call without ever touching its data volume.
 
 Both accept a deliberately awkward `-ExposeAdmin` / `--expose-admin` switch,
 which sets `ORGTREE_EXPOSE_ADMIN` and binds the **admin** API to `0.0.0.0`
@@ -332,9 +384,11 @@ No manual wiring is needed; the supervisor does all of it per turn:
   carry multiline input.
 - Each node has a durable session in its selected provider. Turns run
   headlessly and resume that provider session on demand.
-- Every node loads a per-org **MCP server** (`backend/orgtree/mcptool.py`, a
-  dependency-free stdio bridge back to the running backend) that provides the
-  `orgtree_*` tools: message, hire, retire/rehire/dissolve, reallocate,
+- Every node receives the same orgtree tool surface through its provider
+  adapter: MCP where supported, and app-server dynamic tools for Codex.
+  The **MCP server** (`backend/orgtree/mcptool.py`) is a dependency-free stdio
+  bridge back to the running backend. The `orgtree_*` tools include
+  message, hire, retire/rehire/dissolve, reallocate,
   status, chart, read_transcript, read_scratch, audience.
 - Nodes receive exactly the folders, tools, and MCP servers you grant. The
   provider adapters attach orgtree's MCP tools without changing your personal
@@ -342,6 +396,20 @@ No manual wiring is needed; the supervisor does all of it per turn:
 - Claude transcripts stay in Claude Code's normal store. Codex and Antigravity
   transcript records are kept in orgtree's journal store. Org state lives in
   **`~/orgtree/`** (ledger docs, per-org workspaces, per-node scratch dirs).
+
+### Storage and upgrades
+
+**SQLite is the default and canonical storage format**, with a database per
+organization. Existing JSON installations migrate through the update path;
+the legacy reader, migration safeguards and explicit rollback remain
+available. Read the [SQLite upgrade and rollback guide](docs/sqlite-cutover.md)
+before manually moving or converting an existing data root. Do not simply
+change a backend setting and assume the formats are interchangeable.
+
+Standing instructions and charters are saved in full. Where only an excerpt
+can be delivered or displayed, the UI reports that boundary; failed org.md
+or preset loads show an error and Retry rather than masquerading as empty
+content. Oversized org.md previews cannot overwrite the full stored file.
 
 ### Configuration
 
@@ -528,8 +596,9 @@ capacity*, not dollars.
 ## Development
 
 ```bash
-python tools/run_tests.py                   # every suite, fast tier (~2 min)
-cd frontend && npm run dev                  # vite dev server w/ API proxy
+export ORGTREE_DATA="$(mktemp -d)"           # disposable test data, never ~/orgtree
+python tools/run_tests.py                   # fast tier
+(cd frontend && npm run dev)                # vite dev server w/ API proxy
 python tools/ui_probe.py sweep <org> out/   # headless UI screenshot sweep
 ```
 
@@ -542,10 +611,24 @@ test runner behind an esbuild step — so each one can still be run directly
 runs all of them and prints a single summary:
 
 ```bash
-python tools/run_tests.py            # fast tier — hermetic only, ~2 min
-python tools/run_tests.py --full     # everything, live rigs included, ~13 min
+export ORGTREE_DATA="$(mktemp -d)"   # set BEFORE any orgtree import or test
+python tools/run_tests.py            # fast tier
+python tools/run_tests.py --full     # everything, including live rigs
 python tools/run_tests.py --list     # what would run, and how, without running it
 ```
+
+In PowerShell, use a fresh temporary directory instead:
+
+```powershell
+$env:ORGTREE_DATA = Join-Path ([IO.Path]::GetTempPath()) ([guid]::NewGuid().ToString())
+New-Item -ItemType Directory -Path $env:ORGTREE_DATA | Out-Null
+python tools/run_tests.py
+```
+
+The runner refuses to execute without an explicit `ORGTREE_DATA` (`--list`
+is exempt). Individual storage tests must also establish their own throwaway
+root **before importing orgtree**: the store binds its data root at import
+time. Never point tests at your running installation's data.
 
 Useful flags: `--only <substring>` · `--serial` · `--jobs N` · `--no-frontend`
 · `--logdir DIR` (per-suite logs; otherwise a temp directory, path printed).
