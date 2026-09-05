@@ -3560,7 +3560,7 @@ class Org:
                      f'consultable as "{pred_id}".')
         self._log("cheap_compact", actor,
                   {"node": nid, "bearer": pred_id, "old_session": old_sid,
-                   "notices_folded": folded},
+                   "notices_folded": folded, "transfer": "fresh"},
                   [])
         return {"node": nid, "bearer": pred_id, "old_session": old_sid,
                 "warnings": []}
@@ -4267,7 +4267,11 @@ class Org:
         # the split is on the record where cheap_compact's is: the bearer id
         # and the session it holds, so the switch's own log row names where
         # the conversation went
-        split = ({"bearer": pred_id, "old_session": old_sid}
+        # `transfer` names what the successor session received (verified
+        # handoff, audit §3): "fresh" = an empty session; files, mail and the
+        # file-only handoff record cross, the conversation does not. A
+        # same-provider switch keeps the session and carries no label.
+        split = ({"bearer": pred_id, "old_session": old_sid, "transfer": "fresh"}
                  if crossed else {})
         # D-234: an applied queue says when it was asked for, so the log row
         # and the result both read "queued at T, applied now"

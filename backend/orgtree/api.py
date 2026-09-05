@@ -6302,7 +6302,8 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
                 result = org.cheap_compact(body.node, a.get("node"))  # type: ignore[arg-type]
                 supervisor.export_predecessor_transcript(
                     org, str(a.get("node") or ""),
-                    old_sid=cast(str, result.get("old_session")))
+                    old_sid=cast(str, result.get("old_session")),
+                    reason="cheap_compact")
             elif body.tool == "orgtree_rehire":
                 # D-203: plain agent rehire is an admission on the archived
                 # node's stored provider. Check the durable user choice, but
@@ -6485,7 +6486,8 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
                     # is the same split)
                     supervisor.export_predecessor_transcript(
                         org, str(a.get("node") or ""),
-                        old_sid=cast(str, result.get("old_session")))
+                        old_sid=cast(str, result.get("old_session")),
+                        reason="switch_model")
                 # a crossing that cleared a stale provider freeze (see
                 # switch_model) leaves the node LIVE but idle — wake it. Not
                 # `drive`: that list's consumer below sends a generic "mail
@@ -8012,7 +8014,8 @@ def _org_op_locked(slug: str, body: Op, allow_raise: bool = False) -> dict[str, 
             result = org.cheap_compact(body.actor, body.node)  # type: ignore[arg-type]
             supervisor.export_predecessor_transcript(
                 org, cast(str, body.node),
-                old_sid=cast(str, result.get("old_session")))
+                old_sid=cast(str, result.get("old_session")),
+                reason="cheap_compact")
         elif body.op == "rehire":
             # D-197: rehire-with-a-tier is a door onto the provider axis like
             # any other, and it was the one the gate's own docstring named
@@ -8053,7 +8056,8 @@ def _org_op_locked(slug: str, body: Op, allow_raise: bool = False) -> dict[str, 
                 # cheap_compact (the same split)
                 supervisor.export_predecessor_transcript(
                     org, cast(str, body.node),
-                    old_sid=cast(str, result.get("old_session")))
+                    old_sid=cast(str, result.get("old_session")),
+                    reason="switch_model")
         elif body.op == "promote":
             result = org.promote(body.actor, body.node, body.new_parent)  # type: ignore[arg-type]
         elif body.op == "demote":

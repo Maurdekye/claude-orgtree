@@ -42,7 +42,7 @@ from functools import wraps
 from typing import Any, Final, cast
 
 from . import (accounts, appsettings, cachecontinuity, clipin, codex_limits,
-               codex_route, deployment, envelope, imgblock,
+               codex_route, deployment, envelope, handoff, imgblock,
                limits, localtime, net, openrouter, providers,
                sandbox as sbx, store,
                tokens, turnusage, warmpool)
@@ -3387,7 +3387,8 @@ def rename_node(slug: str, nid: str, new_name: str,
 
 
 def export_predecessor_transcript(org: Org, nid: str,
-                                  old_sid: str | None = None) -> str | None:
+                                  old_sid: str | None = None,
+                                  reason: str | None = None) -> str | None:
     """FR-24 cheap compact: copy the pre-compact session's raw CLI
     transcript into the (unchanged) node's OWN scratch as transcript.jsonl —
     the folder the successor session already works in, sandboxed included.
@@ -3417,8 +3418,81 @@ def export_predecessor_transcript(org: Org, nid: str,
     dst = os.path.join(scratch_dir(org.d["slug"], nid), "transcript.jsonl")
     try:
         shutil.copy2(src, dst)
-        return dst
     except OSError:
+        return None
+    _publish_handoff_record(org, nid, dst, sid, reason)
+    return dst
+
+
+def handoff_flag_on() -> bool:
+    """`<ORGTREE_DATA>/handoff.flag` — the runtime switch for the handoff
+    record's PROMPT-SIDE effects (the first-turn block and the notice
+    sentence). Off = main's prompt and notices are byte-identical; the
+    record itself is still written, file-only, so the item-15 experiment
+    can read it. Existence is the switch (like warm.flag, no schema): a
+    data-root file, no rebuild, no redeploy to change."""
+    return os.path.isfile(os.path.join(store.DATA_ROOT, "handoff.flag"))
+
+
+def _publish_handoff_record(org: Org, nid: str, dst: str, old_sid: str,
+                            reason: str | None = None) -> str | None:
+    """Verified handoff (audit §3 / item 15; contract in
+    mail-ack-contract/handoff-contract.md v2): build the citation-index
+    record for the boundary that just archived `old_sid`, from exactly the
+    files and doc that boundary leaves behind, verify it ANCHORED (sidecar
+    rows, node doc, mailbox all in hand here), and publish it atomically as
+    `<scratch>/handoff-g<gen>/` where gen is the archived predecessor's
+    generation. Best-effort like the copy above: a record that cannot be
+    built or does not verify is NOT written, and the split still succeeds.
+    No provider call. Returns the published directory or None."""
+    try:
+        n = org.node(nid)
+        gen = int(n.get("generation") or 0) - 1
+        if gen < 0:
+            return None
+        pred = org.nodes.get(f"{nid}@{gen}") or {}
+        old_tier = str(pred.get("model") or n.get("model") or "")
+        new_tier = str(n.get("model") or "")
+        with open(dst, encoding="utf-8", errors="replace") as f:
+            lines = f.read().splitlines(keepends=True)
+        loaded = _load_prompt_views(org.d["slug"], old_sid)
+        views_all = {h: rows[-1]["visible"] for h, rows in loaded.items() if rows}
+        box = list((org.d.get("mail") or {}).get(nid) or [])
+        moot = [a for a in org.d.get("asks", [])
+                if a.get("node") == nid and a.get("status") == "moot"]
+        sd = scratch_dir(org.d["slug"], nid)
+        grants = [sd] + [str(d.get("path")) for d in n["scope"].get("add_dirs", [])
+                         if isinstance(d, dict) and d.get("path")]
+        art = handoff.capture(
+            nid=nid, node=n, lines=lines, views_all=views_all, mailbox=box,
+            mooted_ask=moot[-1] if moot else None, grants=grants,
+            boundary={"reason": reason or "session_replaced",
+                      "from": {"tier": old_tier, "provider": providers.provider_of(old_tier)},
+                      "to": {"tier": new_tier, "provider": providers.provider_of(new_tier)},
+                      "at": pred.get("archived_at") or now_iso(),
+                      "views_note": "the LATEST projection captured per raw-text "
+                                    "hash: sidecar rows are keyed by hash, not by "
+                                    "turn, so a re-sent identical envelope shows "
+                                    "its newest visible text rather than a proof "
+                                    "of that turn's own render",
+                      "old_session": old_sid, "bearer": f"{nid}@{gen}"},
+            scratch=sd, at=now_iso())
+        bad = handoff.verify(art, lines, views_all=views_all, seat=n, mailbox=box)
+        if bad:
+            print(f"[orgtree] {org.d['slug']}/{nid}: handoff record g{gen} NOT written — "
+                  f"{len(bad)} verify problem(s): {bad[0][:160]}")
+            return None
+        out = handoff.write_generation(sd, gen, art, lines)
+        if out and handoff_flag_on():
+            org._notify([nid],
+                        f"A handoff record for this boundary is at handoff-g{gen}/record.md "
+                        f"in your working folder: a citation index of instructions, tool "
+                        f"calls, artifacts and mail built from files, with line refs into "
+                        f"transcript.jsonl — not memory, and not evidence that any "
+                        f"provider context carried over.")
+        return out
+    except Exception as e:                                       # noqa: BLE001
+        print(f"[orgtree] {org.d['slug']}/{nid}: handoff record skipped: {e!r}")
         return None
 
 
@@ -5121,6 +5195,51 @@ def _breadcrumbs_block(org: Org, nid: str) -> str:
             + "]\n" + txt)
 
 
+HANDOFF_HEAD = 12_000     # chars of record.md spliced (head: it is top-heavy)
+
+
+def _handoff_block(org: Org, nid: str) -> str:
+    """Verified handoff (contract v2 §3.3): the boundary's citation-index
+    record, spliced once — the same FIRST-TURN-ONLY gate as the breadcrumbs
+    block above (`cheap_compacted`, cleared by `_retire_breadcrumb_splice`)
+    — and ONLY behind `handoff.flag`. Flag off ⇒ "" ⇒ the prompt is
+    byte-identical to main. Generation-specific: reads
+    `handoff-g<generation-1>` only, through `read_generation`, which refuses
+    a directory without a manifest or with mismatched hashes — a stale or
+    partial record is never spliced. Head-taken: the record leads with the
+    instructions and the predecessor's claims; the cut is declared."""
+    if not org.node(nid).get("cheap_compacted") or not handoff_flag_on():
+        return ""
+    try:
+        gen = int(org.node(nid).get("generation") or 0) - 1
+        got = handoff.read_generation(scratch_dir(org.d["slug"], nid), gen,
+                                      node=nid)
+    except Exception:                                            # noqa: BLE001
+        # ⚠ THE PROMPT IS NOT THE PLACE TO RAISE (Astra review 2026-09-05).
+        # `read_generation` answers None for every malformed record it can
+        # recognise, but this block is on the path that BUILDS AN AGENT'S
+        # IDENTITY: whatever it failed to anticipate, the honest outcome is a
+        # prompt without a handoff block, never a turn that cannot start.
+        return ""
+    if not got:
+        return ""
+    txt = str(got.get(handoff.RECORD_MD) or "").strip()
+    if not txt:
+        return ""
+    cut = len(txt) > HANDOFF_HEAD
+    if cut:
+        txt = txt[:HANDOFF_HEAD]
+    return (f"\n\n[HANDOFF RECORD — handoff-g{gen}/record.md from your working "
+            f"folder: a citation index built by code from files at the session "
+            f"boundary. NOT memory, NOT a summary a model wrote, and NOT evidence "
+            f"that any provider context carried over. Quoted lines keep their "
+            f"author's role; a predecessor claim is a claim until you open its "
+            f"cited line in transcript.jsonl"
+            + (f"; TRUNCATED to the first {HANDOFF_HEAD} chars — read the file "
+               f"for the rest" if cut else "")
+            + "]\n" + txt)
+
+
 def _claudemd_caveat(org: Org, nid: str) -> str:
     """User ruling 2026-07-29: top-level agents work directly under the user, so
     CLAUDE.md files apply literally to them. Deeper agents read the same files
@@ -6354,6 +6473,7 @@ def identity_prompt(org: Org, nid: str, include_archived: bool = False) -> str:
         + (("\n\n[STANDING INSTRUCTIONS from your granted folders]\n" + cmd_block)
            if (cmd_block := _claudemd_block(org, nid)) else "")
         + _breadcrumbs_block(org, nid)
+        + _handoff_block(org, nid)
     )
 
 
@@ -9552,7 +9672,8 @@ def _apply_pending_switch_locked(o2: Org, slug: str, nid: str) -> bool:
         return False
     if r.get("old_session"):
         export_predecessor_transcript(o2, nid,
-                                      old_sid=cast(str, r["old_session"]))
+                                      old_sid=cast(str, r["old_session"]),
+                                      reason="switch_model")
     print(f"[orgtree] {slug}/{nid}: queued model switch "
           + (f"DROPPED — {r['dropped']}" if r.get("dropped")
              else f"applied → {r.get('model')}"
@@ -12960,7 +13081,8 @@ def _run_one_turn(slug: str, nid: str,
                                 _r0 = org.cheap_compact(SYSTEM, nid)
                                 export_predecessor_transcript(
                                     org, nid,
-                                    old_sid=str(_r0.get("old_session") or ""))
+                                    old_sid=str(_r0.get("old_session") or ""),
+                                    reason="cheap_compact")
                             except LedgerError:
                                 # A raced lifecycle change refuses the swap;
                                 # the original carrier proceeds normally.
@@ -19808,7 +19930,8 @@ def resume_frozen(slug: str, only: Iterable[str] | None = None,
                         r0 = org.cheap_compact(SYSTEM, nid)
                         export_predecessor_transcript(
                             org, nid,
-                            old_sid=str(r0.get("old_session") or ""))
+                            old_sid=str(r0.get("old_session") or ""),
+                            reason="cheap_compact")
                 except LedgerError:
                     pass          # an optimization, never a gate (D-114)
             n.pop("frozen", None)
