@@ -434,6 +434,14 @@ export interface AskInfo {
   kind?: string              // "question" | "credit" (credit rows may omit it in credit_requests)
   status: string
   at: string
+  /** docket wire contract v3: distinct work-item ids over this ask's tabs
+   *  (linkage is PER TAB — one open batch may ask about two items at once;
+   *  see each `AskQuestion`/`AskTab`'s own `work_item`). Filter `tree.asks`/
+   *  `node.ask` with `work_items.includes(id)`, not equality. Absent/empty
+   *  on an ask with no docket linkage. Every open ask stays here uncapped,
+   *  so this exact card/answerAsk/resolveBatch route is reused untouched —
+   *  never a second answering channel. */
+  work_items?: string[]
   resolved_at?: string
   reason?: string
   // question kind — options mirror AskUserQuestion ({label, description?});
@@ -475,6 +483,9 @@ export interface AskQuestion {
   multi?: boolean
   /** set once answered — the tab's answer (list for a multi tab) */
   answer?: string | string[]
+  /** docket wire contract v3: this specific tab's docket linkage (per-tab,
+   *  not per-card — one batch may cover two items) */
+  work_item?: string
 }
 
 /** FR-14: one tab of the composed batch card (ledger node_ask) */
@@ -494,6 +505,8 @@ export interface AskTab {
   item?: { kind: string; path?: string; mode?: string; tool?: string
     server?: string }
   label?: string
+  /** docket wire contract v3: this tab's docket linkage (per-tab) */
+  work_item?: string
 }
 
 /** FR-18: a watchdog — a free persistent pet (ledger `watchdogs`) */
@@ -690,6 +703,16 @@ export interface TreePayload {
    *  the header ask-icon glows iff asks_open > 0 */
   asks?: AskInfo[]
   asks_open?: number
+  /** docket wire contract v3 (confirmed, mail ab255d128712): the toolbar
+   *  badge count, riding the same poll as everything else here rather than
+   *  a standalone timer — mirrors `asks_open`/`activeDocCount(tree.roots)`.
+   *  ALWAYS present (zeros on an org with no docket activity), same numbers
+   *  as `counts` on GET .../work-items. `attention` = items (not questions)
+   *  with `effective_attention`, over ACTIVE AND ARCHIVED items (an
+   *  archived done item with a pending question still counts). `active` =
+   *  non-archived items whose status is not done/superseded/dropped, the
+   *  muted fallback when attention is zero. */
+  work_items_summary: { attention: number; active: number }
   user_inbox_count: number
   /** D-169: how many of those unread mails were tagged urgent by their
    *  sender. Added to `asks_open` it makes the ATTENTION count, which
@@ -1654,6 +1677,141 @@ export interface SendMessageResult {
   steering?: boolean
   warnings?: string[]
   [k: string]: unknown
+}
+
+// -------------------------------------------------------------- work docket
+// LOCKED wire contract v3 (luna-reserve, backend owner — mail 1f11803a2ea0,
+// doc luna-reserve/evidence/docket-wire-contract-v3.md). Field names/shapes
+// below mirror that document verbatim; do not rename without telling them.
+
+/** Who did something to a work item: a node at a generation. The user is the
+ *  literal string "user" wherever an actor is accepted. */
+export interface WorkActor { node: string; generation: number }
+
+/** One asker's OPEN question(s) attached to this item — the item's own view
+ *  of the same data `tree.asks`/`node.ask` carries (one entry per asker,
+ *  open only; closed asks drop out automatically). Render the "who is
+ *  asking" list and `effective_attention` from THIS; answer by finding the
+ *  matching real AskInfo in `tree.asks` by `ask_id` and rendering the
+ *  existing AskCard — never a second answering channel. */
+export interface WorkItemQuestion {
+  ask_id: string
+  node: string
+  rev: number
+  at: string
+  tabs: {
+    index: number
+    question: string
+    header?: string
+    options?: { label: string; description?: string }[]
+    multi?: boolean
+  }[]
+}
+
+/** An agent-set manual attention flag plus its required reason. `set_rev`
+ *  bumps every time this is (re)set — a dismiss must echo it, so a delayed
+ *  click can't clear a newer reason it never actually saw. */
+export interface WorkManualAttention {
+  reason: string
+  at: string
+  by: WorkActor
+  set_rev: number
+}
+
+/** One recorded user dismissal of a manual attention flag (kept, newest
+ *  last) — history, not live state; `manual_attention` is null after one. */
+export interface WorkDismissal {
+  at: string
+  by: 'user' | '@user'
+  set_rev: number
+  reason: string
+}
+
+/** A durable unit of work in the org document. Only the fields the docket UI
+ *  actually renders or mutates are typed strictly; delivery/evidence/
+ *  acceptance/dependencies/history ride along unread (spec: "preserve useful
+ *  backend delivery/evidence metadata without adding crowded UI"). */
+export interface WorkItem {
+  id: string
+  rev: number
+  kind: 'code' | 'non-code'
+  title: string
+  objective: string
+  /** open | in_progress | blocked | review | done | superseded | dropped */
+  status: string
+  blocked_reason: string | null
+  /** DERIVED on every read: (physically archived OR done && docket_at older
+   *  than 3600s, strictly) AND NOT effective_attention (Astra correction
+   *  2026-09-05) — an item with a pending question or manual flag is NEVER
+   *  in the archived group, even one that would otherwise qualify, so the
+   *  UI needs no special "attention item hidden behind Show archived" case:
+   *  trust this field directly for active/archived grouping and styling.
+   *  `archived_at` may still be non-null on such a row from an earlier
+   *  archival; ignore it whenever `archived` reads false. */
+  archived: boolean
+  archived_at: string | null
+  owner: WorkActor | null
+  owner_current: boolean
+  owner_state: 'live' | 'retired' | 'missing' | 'generation moved' | null
+  participants: string[]
+  created_by: WorkActor | 'user' | '@user'
+  at: string
+  updated_at: string
+  /** nonblank entries only; both this and working_on_next empty is a
+   *  server-rejected status update. Arrays of individual items, never a
+   *  markdown string to be parsed. */
+  done_so_far: string[]
+  working_on_next: string[]
+  /** time of the LATEST DOCKET UPDATE — the row's age and the archive rule
+   *  both read THIS, not `updated_at` (any mutation moves that). Null
+   *  before the item's first status update. */
+  docket_at: string | null
+  /** author of the latest status update — the docket general-reply
+   *  recipient. Owner changes, attached questions and dismissals never
+   *  replace it. Null before any status update (reply is refused). */
+  last_updater: WorkActor | null
+  manual_attention: WorkManualAttention | null
+  dismissals: WorkDismissal[]
+  questions: WorkItemQuestion[]
+  /** manual_attention != null OR questions.length > 0 */
+  effective_attention: boolean
+  attention_sources: ('manual' | 'question')[]
+  acceptance: { text: string; checked: null | { at: string; by: string; evidence_ref?: string; note?: string } }[]
+  dependencies: ({ id: string; visible: true; title: string; status: string }
+    | { id: string; visible: false })[]
+  evidence: { at: string; by: string; kind: string; ref?: string; note?: string }[]
+  delivery: Record<string, unknown> | null
+  accepted: { at: string; by: string; note?: string } | null
+  superseded_by: string | null
+  superseded_by_visible?: boolean | null
+  history: unknown[]
+  [k: string]: unknown
+}
+
+// GET /api/orgs/{slug}/work-items[?archived=1]
+export interface WorkItemsPayload {
+  items: WorkItem[]
+  archived?: WorkItem[]
+  counts: { attention: number; active: number; archived: number }
+  now: string
+}
+
+// GET /api/orgs/{slug}/work-items/{id}
+export interface WorkItemPayload { item: WorkItem }
+
+// POST /api/orgs/{slug}/work-items/{id}/dismiss-attention — 409 (thrown by
+// req()) on a null flag or a stale set_rev; success returns the updated item
+export interface DismissAttentionResult { item: WorkItem }
+
+// POST /api/orgs/{slug}/work-items/{id}/reply — failures are explicit HTTP
+// errors (422 nothing to reply to, 404 recipient gone), never a reroute;
+// req() throws those as Error(detail)
+export interface WorkItemReplyResult {
+  accepted: true
+  to: string
+  /** the recipient is archived — mail waits for rehire; say so in the UI */
+  deferred: boolean
+  delivery?: unknown
 }
 
 export interface UploadResult {

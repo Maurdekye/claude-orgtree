@@ -19,7 +19,7 @@ import { KillSwitch } from './KillSwitch'
 import { DiskBrowser, DiskFullAlert } from './DiskBrowser'
 import {
   AutorenewIcon, BlockIcon, CheckIcon, ChevronRightIcon, CloseIcon, CopyIcon, EyeIcon, LanIcon,
-  DataUsageIcon, DeleteIcon, DocIcon, ExpandMoreIcon, GitHubIcon, HearingIcon, HomeIcon, LockIcon,
+  DataUsageIcon, DeleteIcon, DocIcon, DocketIcon, ExpandMoreIcon, GitHubIcon, HearingIcon, HomeIcon, LockIcon,
   LockOpenIcon, MailIcon, MenuIcon, PlayIcon, PublicIcon, SettingsIcon,
   SparkIcon, StopIcon, StorageIcon, WarnIcon,
 } from './icons'
@@ -29,6 +29,7 @@ import { activeDocCount, ALL_TIERS, attentionPip, availableAutopsyModels, deskDp
 import { AskCard } from './canvas/asks'
 import { AccountsPanel, UsageBars } from './canvas/accounts'
 import { DocGalleryModal } from './canvas/gallery'
+import { DocketModal, DocketToolbarButton } from './canvas/docket'
 import {
   SetBlock, SetGroup, SetRow, SettingsTabPanel, SettingsTabs, SetToggle,
   useVisitedTabs,
@@ -225,6 +226,9 @@ export default function App() {
   // idiom the user asked for), so nothing about the canvas's reader is
   // lifted up here — that panel owns its selection.
   const [showGallery, setShowGallery] = useState(false)
+  // the native work docket (docket-final-spec.md) — its own list+pane modal,
+  // same pattern as the gallery above.
+  const [showDocket, setShowDocket] = useState(false)
   const [focusAgent, setFocusAgent] = useState<string | null>(null)
   // the usage button GLOWS once a lane nears its wall (user feature
   // 2026-08-19), so a freeze stops being the first notice. It rides
@@ -899,6 +903,14 @@ export default function App() {
                     </button>
                   )
                 })()}
+                {/* the work docket sits beside the gallery — same "standing
+                    pile, read in a list+pane panel" family. Badge counts ride
+                    the tree poll (docket-final-spec.md — no separate timer):
+                    orange = items needing attention, else muted active count
+                    (zero shown grey, never hidden). */}
+                <DocketToolbarButton
+                  summary={tree.work_items_summary}
+                  onClick={() => setShowDocket(true)} />
                 <button className="iconbtn barmore mob-only" title="more"
                   onClick={() => setBarMore((v) => !v)}>⋯</button>
                 {/* host subscription usage (the Claude Code /usage bars) —
@@ -943,6 +955,11 @@ export default function App() {
               {showInbox && (
                 <InboxPanel slug={slug} tree={tree} toast={toast}
                   refresh={() => refreshTree(slug)} jumpTo={inboxJump}
+                  onFocusAgent={(id) => {
+                    setShowInbox(false)
+                    setInboxJump(null)
+                    setFocusAgent(id)
+                  }}
                   close={() => {
                     setShowInbox(false); setInboxJump(null); refreshTree(slug)
                   }} />
@@ -973,6 +990,14 @@ export default function App() {
             setFocusAgent(id)
           }}
           close={() => setShowGallery(false)} />
+      )}
+      {showDocket && slug && tree && (
+        <DocketModal slug={slug} toast={toast} tree={tree}
+          onFocusAgent={(id) => {
+            setShowDocket(false)
+            setFocusAgent(id)
+          }}
+          close={() => setShowDocket(false)} />
       )}
       {showAccounts && (
         <AccountsPanel toast={toast} close={() => setShowAccounts(false)} />
@@ -1688,17 +1713,31 @@ export function resumableFrozen(
       n.resumable && n.frozen != null)
 }
 
-function SenderChip({ id, nodes }: { id: string; nodes: Map<string, TreeNode> }) {
+export function SenderChip({ id, nodes, onFocusAgent }: {
+  id: string
+  nodes: Map<string, TreeNode>
+  onFocusAgent?: (agentId: string) => void
+}) {
   if (id === SYSTEM || id === 'system') return <b className="dim">system</b>
   if (id === USER) return <b>you</b>
   const n = nodes.get(id)
-  if (!n) return <b>{id}</b>
-  return (
-    <span className={'sender ' + n.state} title={`${tierLabel(n.tier)} · ${n.state}`}>
-      <span className={'tier t-' + n.tier}>{TIER_LETTER[n.tier] ?? '?'}</span>
+  const isAgent = Boolean(n || (!id.startsWith('@') && id !== 'system'))
+  if (!n && !isAgent) return <b>{id}</b>
+  const chip = (
+    <span className={'sender ' + (n?.state ?? '')} title={n ? `${tierLabel(n.tier)} · ${n.state}` : id}>
+      {n && <span className={'tier t-' + n.tier}>{TIER_LETTER[n.tier] ?? '?'}</span>}
       <b>{id}</b>
     </span>
   )
+  if (onFocusAgent && isAgent) {
+    return (
+      <button className="cc-name cc-name-jump" title={`focus ${id}'s desk`}
+        onClick={() => onFocusAgent(id)}>
+        {chip}
+      </button>
+    )
+  }
+  return chip
 }
 
 
@@ -1710,13 +1749,14 @@ interface UserAudReq {
   [k: string]: unknown
 }
 
-function InboxPanel({ slug, tree, toast, refresh, close, jumpTo }: {
+export function InboxPanel({ slug, tree, toast, refresh, close, jumpTo, onFocusAgent }: {
   slug: string
   tree: TreePayload
   toast: ToastFn
   refresh?: () => void
   close: () => void
   jumpTo: string | null
+  onFocusAgent?: (agentId: string) => void
 }) {
   useEsc(close)
   const [folder, setFolder] = useState('inbox')
@@ -1742,8 +1782,8 @@ function InboxPanel({ slug, tree, toast, refresh, close, jumpTo }: {
   const events = usePolled(
     () => (folder === 'record' ? getEvents(slug).then((r) => r.events)
       : Promise.resolve(null)), [folder, slug])
-  const userAud = aud?.audiences.filter((a) => a.grantor === USER) ?? []
-  const userReqs = (aud?.requests.filter((r) => r.target === USER && r.currently_at === USER) ?? []) as UserAudReq[]
+  const userAud = aud?.audiences?.filter((a) => a.grantor === USER) ?? []
+  const userReqs = (aud?.requests?.filter((r) => r.target === USER && r.currently_at === USER) ?? []) as UserAudReq[]
   const act = (action: string, node: string, target?: string | null) =>
     audienceAction(slug, action, node, target)
       .catch((e: Error) => toast([`error: ${e.message}`]))
@@ -1872,16 +1912,20 @@ function InboxPanel({ slug, tree, toast, refresh, close, jumpTo }: {
                         toast([`error: ${e.message}`])
                       })
                   }}
-                  sender={(id: string) => <SenderChip id={id} nodes={nodes} />} />
+                  onFocusAgent={onFocusAgent ? (agentId) => { close(); onFocusAgent(agentId) } : undefined}
+                  sender={(id: string) => <SenderChip id={id} nodes={nodes}
+                    onFocusAgent={onFocusAgent ? (agentId) => { close(); onFocusAgent(agentId) } : undefined} />} />
               // the user's OWN sends: attachments live in the RECIPIENT's
               // uploads/ (the upload landed there at stage time) — key on
               // m.to; a row without one ('' = unreachable) keeps plain chips
               : <MailList delivered={box.sent ?? []} outgoing
+                  onFocusAgent={onFocusAgent ? (agentId) => { close(); onFocusAgent(agentId) } : undefined}
                   fileHref={(p, m) => typeof m.to === 'string' && m.to
                     ? fileUrl(slug, m.to, p) : ''}
                   mdBase={(m) => typeof m.to === 'string' && m.to
                     ? fileBase(slug, m.to) : ''}
-                  sender={(id: string) => <SenderChip id={id} nodes={nodes} />} />}
+                  sender={(id: string) => <SenderChip id={id} nodes={nodes}
+                    onFocusAgent={onFocusAgent ? (agentId) => { close(); onFocusAgent(agentId) } : undefined} />} />}
         </div>
         <div className="row">
           {/* ⚠ the bump is not optional here. These rows come from getInbox,

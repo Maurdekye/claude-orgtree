@@ -57,12 +57,14 @@ export interface MailListProps {
   /** per-ROW status mark (redteam §9.2: the delivery glyph lived only in the
    *  reading pane, so finding the one wedged send meant opening every mail) */
   rowMark?: (m: MailRow) => ReactNode
+  /** user ruling 2026-09-05: agent identities in right pane metadata are clickable jumps */
+  onFocusAgent?: (agentId: string) => void
 }
 
 const MAIL_WINDOW = 40
 
 export function MailList({ pending = [], delivered = [], waitLabel, sender, outgoing,
-  onRead, onReply, onRetract, jumpTo, fileHref, mdBase, renderBody, rowMark }: MailListProps) {
+  onRead, onReply, onRetract, jumpTo, fileHref, mdBase, renderBody, rowMark, onFocusAgent }: MailListProps) {
   // ONE order, by send time, always — never grouped, never re-grouped.
   //
   // Unread used to sort as its own block on top, which meant the list
@@ -119,8 +121,20 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, outg
   // renders the page, so a gesture that keeps going keeps paging.
   const paging = useRef(false)
   useEffect(() => { paging.current = false }, [vis])
+  const isAgentId = (id: string) => Boolean(id && !id.startsWith('@') && id !== USER && id !== 'system' && id !== 'SYSTEM')
   const S: (id: string, m: MailRow) => ReactNode =
-    sender ?? ((id) => <span>{id === USER ? '@user' : id}</span>)
+    sender ?? ((id) => {
+      if (id === USER) return <span>@user</span>
+      if (onFocusAgent && isAgentId(id)) {
+        return (
+          <button className="cc-name cc-name-jump" title={`focus ${id}'s desk`}
+            onClick={() => onFocusAgent(id)}>
+            {id}
+          </button>
+        )
+      }
+      return <span>{id}</span>
+    })
   const partyOf = (m: MailRow) => (outgoing ? m.to : m.from)
   const qn = q.trim().toLowerCase()
   const shown = qn
@@ -417,24 +431,34 @@ export function MailReplyBox({ target, onSend, placeholder }: {
   placeholder?: string
 }) {
   const [draft, setDraft] = useState('')
+  const [busy, setBusy] = useState(false)
   const send = () => {
     const t = draft.trim()
-    if (!t) return
-    onSend(t)
-    setDraft('')
+    if (!t || busy) return
+    const res = onSend(t)
+    if (res && typeof (res as Promise<unknown>).then === 'function') {
+      setBusy(true)
+      Promise.resolve(res)
+        .then(() => { setDraft('') })
+        .catch(() => {})
+        .finally(() => setBusy(false))
+    } else {
+      setDraft('')
+    }
   }
   return (
     <div className="mail-reply">
       <textarea rows={2} value={draft}
         placeholder={placeholder ?? (target ? `reply to ${target}…` : 'reply…')}
         onChange={(e) => setDraft(e.target.value)}
+        disabled={busy}
         onKeyDown={(e) => {
-          if (e.key === 'Enter' && !e.shiftKey && draft.trim() && !isMobile) {
+          if (e.key === 'Enter' && !e.shiftKey && draft.trim() && !isMobile && !busy) {
             e.preventDefault()
             send()
           }
         }} />
-      <button disabled={!draft.trim()} onClick={send}>
+      <button disabled={!draft.trim() || busy} onClick={send}>
         reply
       </button>
     </div>
@@ -508,9 +532,10 @@ interface InboxViewProps {
   jumpTo?: string | null
   /** the inbox owner's tier: its unread count wears that agent's provider */
   tier?: string | null
+  onFocusAgent?: (agentId: string) => void
 }
 
-export function InboxView({ slug, nid, onRetract, jumpTo, tier }: InboxViewProps) {
+export function InboxView({ slug, nid, onRetract, jumpTo, tier, onFocusAgent }: InboxViewProps) {
   const [folder, setFolder] = useState('inbox')
   // G5: was a fetch keyed on the `pulse` prop, which meant it refreshed on turn
   // events and on nothing else — and a mail DELIVERY is not a turn event, so
@@ -538,6 +563,7 @@ export function InboxView({ slug, nid, onRetract, jumpTo, tier }: InboxViewProps
                 waitLabel="awaiting next turn" jumpTo={jumpTo}
                 fileHref={(p) => fileUrl(slug, nid, p)}
                 mdBase={() => fileBase(slug, nid)}
+                onFocusAgent={onFocusAgent}
                 onRetract={onRetract
                   ? (m) => {
                       const id = m.id ?? ''
@@ -553,6 +579,7 @@ export function InboxView({ slug, nid, onRetract, jumpTo, tier }: InboxViewProps
             // outbox/ on send (api.py routes them through _agent_send_file),
             // so the same scratch-keyed href serves the Sent folder too
             : <MailList delivered={box.sent ?? []} outgoing
+                onFocusAgent={onFocusAgent}
                 fileHref={(p) => fileUrl(slug, nid, p)}
                 mdBase={() => fileBase(slug, nid)} />}
       </div>
@@ -630,15 +657,17 @@ interface NodeInboxModalProps {
   slug: string
   close: () => void
   jumpTo?: string | null
+  onFocusAgent?: (agentId: string) => void
 }
 
-export function NodeInboxModal({ node, slug, close, jumpTo }: NodeInboxModalProps) {
+export function NodeInboxModal({ node, slug, close, jumpTo, onFocusAgent }: NodeInboxModalProps) {
   useEsc(close)
   return (
     <div className="overlay" onClick={close} onPointerDown={(e) => e.stopPropagation()}>
       <div className="settings wide" onClick={(e) => e.stopPropagation()}>
         <h3><MailIcon fontSize="inherit" /> {node.id} <span className="dim">· inbox</span></h3>
-        <InboxView slug={slug} nid={node.id} jumpTo={jumpTo} tier={node.tier} />
+        <InboxView slug={slug} nid={node.id} jumpTo={jumpTo} tier={node.tier}
+          onFocusAgent={onFocusAgent ? (id) => { close(); onFocusAgent(id) } : undefined} />
         <div className="row">
           <button className="primary" onClick={close}>close</button>
         </div>
@@ -658,9 +687,10 @@ interface OrgInboxModalProps {
   toast: ToastFn
   close: () => void
   jumpTo?: string | null
+  onFocusAgent?: (agentId: string) => void
 }
 
-export function OrgInboxModal({ inbox, net, map, slug, toast, close, jumpTo }: OrgInboxModalProps) {
+export function OrgInboxModal({ inbox, net, map, slug, toast, close, jumpTo, onFocusAgent }: OrgInboxModalProps) {
   useEsc(close)
   // reworked (user spec 2026-08-05): no blurb, mailservers on their own TAB,
   // compose in its own modal, holders as bare chips with a drag-to-grant tip
@@ -840,16 +870,32 @@ export function OrgInboxModal({ inbox, net, map, slug, toast, close, jumpTo }: O
               {folder === 'inbox'
                 ? <MailList pending={inn.filter((r) => r._wait0)}
                     delivered={inn.filter((r) => !r._wait0)}
-                    waitLabel="unread" onRead={markRead} jumpTo={jumpTo} />
+                    waitLabel="unread" onRead={markRead} jumpTo={jumpTo}
+                    sender={(id) => <b>{id}</b>} />
                 : <MailList delivered={out} outgoing jumpTo={jumpTo}
                     rowMark={glyph}
-                    sender={(id, m) => (
-                      /* outbound attribution (user spec): @agent as @org → @recipient */
-                      <span><b>{m?._by ? `@${m._by}` : '@?'}</b>
-                        <span className="dim"> as </span><b>@{slug}</b>
-                        <span className="dim"> → </span><b>{id}</b>
-                        {m && glyph(m)}</span>
-                    )} />}
+                    sender={(id, m) => {
+                      const byIsLocalAgent = Boolean(m?._by && map.has(m._by))
+                      return (
+                        /* outbound attribution (user spec): @agent as @org → @recipient */
+                        <span>
+                          <b>
+                            {byIsLocalAgent && onFocusAgent ? (
+                              <button className="cc-name cc-name-jump" title={`focus ${m!._by}'s desk`}
+                                onClick={() => { close(); onFocusAgent(m!._by!) }}>
+                                @{m!._by}
+                              </button>
+                            ) : (
+                              m?._by ? `@${m._by}` : '@?'
+                            )}
+                          </b>
+                          <span className="dim"> as </span><b>@{slug}</b>
+                          <span className="dim"> → </span>
+                          <b>{id}</b>
+                          {m && glyph(m)}
+                        </span>
+                      )
+                    }} />}
             </div>
           </div>
         </>) : (

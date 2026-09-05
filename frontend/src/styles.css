@@ -2707,6 +2707,89 @@ main.solo { width: 100%; }
   display: flex; align-items: center; gap: 6px; font-family: var(--mono);
 }
 .badge.evicted { color: var(--dim); }
+/* the work docket (docket-final-spec.md) — SHAPED ON THE GALLERY the same
+   way the gallery was shaped on mail: wears .mailer/.mailer-list/.mailrow/
+   .mailer-read as-is, styles its own rows via .docket-modal the way
+   .gallery-modal styles its own. Three mutually exclusive row states
+   (active/attention/archived) where the gallery only had two
+   (active/past), so attention gets its own colour AND its own — orange,
+   not neutral — selection background (spec: "Neutral selection for
+   ordinary/archived entries; orange selection for attention"). */
+.docket-modal .gallery-head { display: flex; align-items: center; gap: 12px; margin: 0 0 4px; }
+.docket-modal .gallery-head h3 { margin: 0; }
+.docket-showarchived { font-size: 12.5px; color: var(--dim); cursor: pointer; }
+.docket-showarchived input { cursor: pointer; }
+.docket-modal .mailrow { overflow: hidden; }
+.docket-modal .mailrow .l1 .mfrom {
+  font-family: var(--sans); font-weight: 600;
+}
+.docket-modal .mailrow .l2 {
+  display: flex; align-items: center; gap: 6px; min-width: 0; overflow: hidden;
+}
+.docket-modal .mailrow .l2 > span:first-child { flex-shrink: 0; white-space: nowrap; }
+/* ACTIVE: white title (ordinary in-progress/open/blocked/review/done rows
+   with no attention flag or question attached) */
+.docket-modal .mailrow.active .l1 .mfrom { color: var(--ink-strong); font-weight: 700; }
+.docket-modal .mailrow.active .l2 { color: var(--ink); }
+/* ARCHIVED: muted grey throughout, darker resting background — same recipe
+   as the gallery's retired rows */
+.docket-modal .mailrow.archived .l1 .mfrom { color: var(--dim); font-weight: 500; }
+.docket-modal .mailrow.archived .l2 { color: var(--dim); }
+.docket-modal .mailrow.archived { background: color-mix(in srgb, black 12%, var(--bg)); }
+/* ATTENTION: orange title, orange status text — placed after .active/
+   .archived so it wins on order (an item is never both), not by accident
+   of specificity */
+.docket-modal .mailrow.attention .l1 .mfrom { color: var(--accent); font-weight: 700; }
+.docket-modal .mailrow.attention .l2 { color: var(--accent); }
+/* neutral selection for ordinary/archived rows (gallery's own rule) */
+.docket-modal .mailrow.on { background: var(--panel-2); }
+/* orange selection for attention rows — placed AFTER the neutral .on rule
+   so it wins on order for a row that is both selected and attention */
+.docket-modal .mailrow.attention.on {
+  background: color-mix(in srgb, var(--accent) 18%, var(--bg));
+}
+.docket-dismiss {
+  color: var(--accent); border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+  cursor: pointer; flex-shrink: 0; white-space: nowrap;
+}
+.docket-dismiss:hover { background: color-mix(in srgb, var(--accent) 15%, transparent); }
+.docket-pane-head { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.docket-pane-head b { font-size: 13.5px; min-width: 0; overflow-wrap: break-word; }
+.docket-pane-head .docket-dismiss { flex-shrink: 0; }
+.docket-pane-sub { font-size: 12px; margin: 2px 0 10px; }
+.docket-pane-sub-attn { color: var(--accent); }
+.docket-list { margin: 0 0 12px; }
+.docket-list-heading {
+  font-size: 10.5px; font-weight: 700; letter-spacing: .04em;
+  text-transform: uppercase; margin-bottom: 4px;
+}
+.docket-list-empty { font-style: italic; }
+.docket-list-items { margin: 0; padding-left: 18px; }
+.docket-list-items li { margin: 2px 0; }
+.docket-attention-box, .docket-question-box {
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--line));
+  background: color-mix(in srgb, var(--accent) 8%, var(--panel));
+  border-radius: 6px; padding: 8px 10px; margin: 0 0 10px;
+}
+.docket-question-head { color: var(--accent); font-weight: 700; font-size: 12px; margin-bottom: 4px; }
+.docket-question-note { margin-bottom: 6px; }
+.docket-reply-label { font-size: 12px; margin: 4px 0 6px; }
+.docket-foot { font-size: 11.5px; padding-top: 8px; }
+.docket-modal .mailrow .docket-updater {
+  font-family: var(--mono); font-size: 11px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  min-width: 0; flex-shrink: 1;
+}
+.docket-modal .mailrow .docket-dismiss { margin-left: auto; flex-shrink: 0; }
+.docket-modal button.cc-name, .mailer-head button.cc-name {
+  font-size: inherit; font-family: var(--mono); color: inherit; display: inline;
+}
+.docket-modal button.cc-name:hover, .mailer-head button.cc-name:hover {
+  color: var(--accent); text-decoration: underline;
+}
+/* vibrant orange badge WITHOUT the mail bell's pulse animation — the
+   2026-08-04 ruling keeps the glow/pulse to that one bell alone */
+.eye-count.docket-attn { background: var(--accent); color: #fff; }
 .usage-row { display: flex; flex-direction: column; gap: 5px; }
 .usage-row .u-head { display: flex; align-items: baseline; gap: 10px; }
 .usage-row .u-label { font-weight: 600; color: var(--ink-strong); }

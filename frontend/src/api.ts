@@ -16,6 +16,7 @@ import type {
   SettingsRequest, SettingsResult, SweepPreview, SweepResult, TreePayload,
   AccountsPayload, AccountUsage, UsageAllPayload,
   UploadResult, UsagePayload, UsagePeek,
+  WorkItemsPayload, WorkItemPayload, WorkItemReplyResult, DismissAttentionResult,
 } from './types'
 
 export const BASE = (location.pathname.match(/^\/k\/[A-Za-z0-9_-]+/) || [''])[0]
@@ -253,6 +254,27 @@ export const getDocuments = (slug: string): Promise<{ documents: DocRow[] }> =>
 export const dismissDocument = (slug: string, did: string):
   Promise<{ ok: boolean; node: string }> =>
   req(`/api/orgs/${slug}/documents/${did}`, { method: 'DELETE' })
+// LOCKED docket wire contract v3 (luna-reserve/evidence/docket-wire-
+// contract-v3.md) — see types.ts's "work docket" section.
+export const getWorkItems = (slug: string, archived = false):
+  Promise<WorkItemsPayload> =>
+  req(`/api/orgs/${slug}/work-items${archived ? '?archived=1' : ''}`)
+export const getWorkItem = (slug: string, id: string): Promise<WorkItemPayload> =>
+  req(`/api/orgs/${slug}/work-items/${id}`)
+export const replyWorkItem = (slug: string, id: string, body: string):
+  Promise<WorkItemReplyResult> =>
+  req(`/api/orgs/${slug}/work-items/${id}/reply`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ body }),
+  })
+export const dismissWorkItemAttention = (slug: string, id: string, setRev: number):
+  Promise<DismissAttentionResult> =>
+  req(`/api/orgs/${slug}/work-items/${id}/dismiss-attention`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ set_rev: setRev }),
+  })
 export const clearInbox = (slug: string): Promise<{ ok: boolean }> =>
   req(`/api/orgs/${slug}/inbox/clear`, { method: 'POST' })
 export const markRead = (slug: string, ids: string[]): Promise<{ read: number }> =>

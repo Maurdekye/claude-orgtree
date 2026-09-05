@@ -2419,6 +2419,7 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
       {inboxId && map.get(inboxId) && (
         <MaybePortal><NodeInboxModal node={map.get(inboxId)!} slug={slug}
           jumpTo={nodeInboxJump}
+          onFocusAgent={centerOn}
           close={() => { setInboxId(null); setNodeInboxJump(null) }} /></MaybePortal>
       )}
       {pileOpen && piles.get(pileOpen) && (
@@ -2429,6 +2430,7 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
       {oiOpen && (
         <MaybePortal><OrgInboxModal inbox={tree.org_inbox} net={tree.net} map={map} slug={slug} toast={toast}
           jumpTo={oiJump}
+          onFocusAgent={centerOn}
           close={() => {
             setOiOpen(false); setOiJump(null)
             // closing the panel acknowledges the whole log (same idiom as the
