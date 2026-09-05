@@ -330,7 +330,7 @@ main {
     0 0 18px color-mix(in srgb, var(--accent) 30%, transparent);
 }
 .gearbtn {
-  position: absolute; top: 6px; right: 6px; z-index: 3;
+  position: relative; top: auto; right: auto; z-index: 3;
   border: none; background: none; padding: 0 2px; font-size: 12px;
   color: var(--dim); opacity: 0; visibility: hidden;
   transition: opacity .15s, visibility .15s; line-height: 1;
@@ -339,7 +339,7 @@ main {
 .gearbtn:hover { opacity: 1 !important; color: var(--ink-strong); background: none; }
 /* ✉ on every card — same interface as the eye's; always visible while mail waits */
 .mailbtn {
-  position: absolute; top: 6px; right: 24px; z-index: 3;
+  position: relative; top: auto; right: auto; z-index: 3;
   border: none; background: none; padding: 0 2px; font-size: 12px;
   color: var(--dim); opacity: 0; visibility: hidden;
   transition: opacity .15s, visibility .15s; line-height: 1;
@@ -351,7 +351,7 @@ main {
    them; the danger red only arrives on ITS OWN hover so the head row doesn't
    wear a permanent alarm. Confirm-gated in the component. */
 .retirebtn {
-  position: absolute; top: 6px; right: 42px; z-index: 3;
+  position: relative; top: auto; right: auto; z-index: 3;
   border: none; background: none; padding: 0 2px; font-size: 12px;
   color: var(--dim); opacity: 0; visibility: hidden;
   transition: opacity .15s, visibility .15s; line-height: 1;
@@ -473,7 +473,7 @@ button.badge.audience-fold.alert {
 .credreq .cr-reason { margin: 6px 0; white-space: pre-wrap; }
 .mailbtn:hover { opacity: 1 !important; color: var(--ink-strong); background: none; }
 .mailbtn .count {
-  position: absolute; top: -5px; right: -7px; background: var(--accent);
+  position: absolute; top: -5px; right: 0; background: var(--accent);
   color: #fff; border-radius: 8px; font-size: 9.5px; padding: 0 4px; font-weight: 700;
 }
 .sq:hover { border-color: #4a4a4a; }
@@ -652,8 +652,16 @@ button.badge.audience-fold.alert {
 }
 
 /* tight head row (user ruling: long names must fit) — small margins, small
-   chrome, the context wheel pushed to the far right */
+   chrome, the context wheel pushed to the far right. */
 .sq-head { display: flex; align-items: center; gap: 4px; min-height: 19px; }
+.sq-actions {
+  display: flex; align-items: center; justify-content: flex-end; gap: 4px;
+  min-height: 16px;
+}
+.sq-actions > button {
+  position: relative; top: auto; right: auto; width: 16px; height: 16px;
+  flex: none;
+}
 .sq-head .tier {
   width: 16px; height: 16px; flex: none; display: grid; place-items: center;
   border-radius: 4px; font-weight: 700; font-size: 9px; font-family: var(--mono);

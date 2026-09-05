@@ -1361,6 +1361,18 @@ export function NodeSquare({ node, pos, lod, focused: deskOpen, dragging, isDrop
           <span className="queued-mark" title={queuedSwitchTitle(node)}>
             →{TIER_LETTER[node.pending_switch.tier] ?? '?'}</span>}
         <span className="name" title={node.id}>{node.id}</span>
+        <ContextWheel occ={node.occupancy} cw={node.context_window}
+          est={node.occupancy_est} compactAt={compactAt} />
+        {live && <ProcessLifecycleMark warm={Boolean(node.proc_warm)}
+          live={node.proc_live} relaunch={node.proc_relaunch}
+          reason={node.proc_relaunch_reason} busy={node.busy} tier={node.tier} />}
+        {lod === 'mini' && node.last_status &&
+          <span className={'statusdot ' + node.last_status.status}
+            title={`${node.last_status.status} — ${node.last_status.summary ?? ''}`} />}
+        {node.busy && <Activity act={node.activity} dotOnly />}
+        {node.last_error && <span className="errdot" title={node.last_error ?? undefined} />}
+      </div>}
+      {!focused && <div className="sq-actions">
         <button className={'mailbtn' + ((node.mail_pending ?? 0) > 0 ? ' has' : '')}
           onPointerDown={(e) => e.stopPropagation()}
           onClick={(e) => { e.stopPropagation(); onInbox() }}>
@@ -1385,16 +1397,6 @@ export function NodeSquare({ node, pos, lod, focused: deskOpen, dragging, isDrop
         <button className="gearbtn"
           onPointerDown={(e) => e.stopPropagation()}
           onClick={(e) => { e.stopPropagation(); onConfig() }}><SettingsIcon fontSize="inherit" /></button>
-        <ContextWheel occ={node.occupancy} cw={node.context_window}
-          est={node.occupancy_est} compactAt={compactAt} />
-        {live && <ProcessLifecycleMark warm={Boolean(node.proc_warm)}
-          live={node.proc_live} relaunch={node.proc_relaunch}
-          reason={node.proc_relaunch_reason} busy={node.busy} tier={node.tier} />}
-        {lod === 'mini' && node.last_status &&
-          <span className={'statusdot ' + node.last_status.status}
-            title={`${node.last_status.status} — ${node.last_status.summary ?? ''}`} />}
-        {node.busy && <Activity act={node.activity} dotOnly />}
-        {node.last_error && <span className="errdot" title={node.last_error ?? undefined} />}
       </div>}
       {!focused && lod === 'mini' && <div className="mini-name">{node.id}</div>}
       {node.busy && !focused && lod !== 'mini' && <Activity act={node.activity} />}
