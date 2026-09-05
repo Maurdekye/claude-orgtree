@@ -807,8 +807,10 @@ async def _wire_notify() -> None:  # type: ignore[unused-function]  # registered
     except OSError:
         pass
 
-    def notify(slug: str, node: str, event: str) -> None:
-        asyncio.run_coroutine_threadsafe(hub.node_event(slug, node, event), loop)
+    def notify(slug: str, node: str, event: str,
+               detail: dict[str, Any] | None = None) -> None:
+        asyncio.run_coroutine_threadsafe(
+            hub.node_event(slug, node, event, detail), loop)
 
     def _mail(slug: str, frm: str, to: str) -> None:
         # pure animation signal for the UI (spark on the wire) — no state rides on it
@@ -954,9 +956,13 @@ class Hub:
     async def changed(self, slug: str) -> None:
         await self._send(slug, {"type": "changed", "org": slug})
 
-    async def node_event(self, slug: str, node: str, event: str) -> None:
-        await self._send(slug, {"type": "node_event", "org": slug,
-                                "node": node, "event": event})
+    async def node_event(self, slug: str, node: str, event: str,
+                         detail: dict[str, Any] | None = None) -> None:
+        payload: dict[str, Any] = {"type": "node_event", "org": slug,
+                                   "node": node, "event": event}
+        if detail:
+            payload.update(detail)
+        await self._send(slug, payload)
 
 
 hub = Hub()

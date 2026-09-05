@@ -188,6 +188,21 @@ export const addPin = (slug: string, id: string, rect: PinRect):
   writePins(slug, next)
   return { ok: true }
 }
+/** Re-key a live pinned window after the server renames its agent. The
+ * rectangle, stacking order and snap geometry are deliberately retained;
+ * only the identity changes. Snap references held by neighbouring windows
+ * follow the same identity, so a later reload cannot discard their layout. */
+export const renamePin = (slug: string, from: string, to: string): boolean => {
+  if (!from || !to || from === to) return false
+  const pins = readPins(slug)
+  if (!pins.some((p) => p.id === from) || pins.some((p) => p.id === to)) return false
+  writePins(slug, pins.map((p) => ({
+    ...p,
+    id: p.id === from ? to : p.id,
+    snap: p.snap?.target === from ? { ...p.snap, target: to } : p.snap,
+  })))
+  return true
+}
 export const removePin = (slug: string, id: string): void => {
   const pins = readPins(slug)
   if (!pins.some((p) => p.id === id)) return

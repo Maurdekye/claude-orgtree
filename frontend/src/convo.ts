@@ -159,6 +159,12 @@ const BLANK: Convo = {
 }
 
 interface Entry {
+  /** canonical map key owning this Entry; callbacks verify it before
+   * publishing after a rename or removal. */
+  ownerKey: string
+  /** increments when the Entry changes identity, invalidating responses that
+   * were requested under its former node id. */
+  ownerVersion: number
   s: Convo
   subs: Set<() => void>
   thinkT0: number          // 0 = not thinking (the single is-thinking truth)
@@ -216,6 +222,9 @@ interface Entry {
   nudge: ReturnType<typeof setTimeout> | null
   poll: ReturnType<typeof setTimeout> | null
   inflight: boolean
+  /** monotonically identifies the request currently allowed to mutate this
+   *  Entry; rename/drop invalidate the prior request before its promise lands. */
+  requestSerial: number
   /** when the in-flight fetch STARTED. `inflight` alone cannot be trusted as
    *  a gate: it is cleared by the fetch settling, so a request that never
    *  settles latches it forever (see refreshConvo). */
@@ -243,13 +252,64 @@ const M = new Map<string, Entry>()
 // lookalike separator would not be.
 const key = (slug: string, nid: string) => `${slug}/${nid}`
 
+/** Preserve the in-memory conversation while a node's full identity is
+ * renamed. Views may remount because their React key follows the node id;
+ * moving the existing entry keeps fetched detail, pending rows and the
+ * thinking state attached to the renamed agent. */
+export function renameConvo(slug: string, from: string, to: string): void {
+  if (!from || !to || from === to) return
+  const oldKey = key(slug, from), newKey = key(slug, to)
+  const old = M.get(oldKey)
+  if (!old) return
+  // Existing callbacks capture this Entry, so moving it is safe without a
+  // name-based alias. Cancel callbacks that only captured the old key; a new
+  // subscription will arm the same Entry under its canonical key.
+  if (old.poll) { clearTimeout(old.poll); old.poll = null }
+  if (old.nudge) { clearTimeout(old.nudge); old.nudge = null }
+  stopClock(old)
+  old.inflight = false
+  old.requestSerial++
+  const replaced = M.get(newKey)
+  if (replaced && replaced !== old) {
+    // A live/loaded destination is a distinct identity (for example, a new
+    // A hired after A→B). Preserve it and invalidate the old callbacks rather
+    // than allowing a later B→A event to overwrite that new conversation.
+    // Pulse-created placeholders have no subscribers and are still safe to
+    // replace below.
+    if (replaced.subs.size || replaced.s.loaded || replaced.inflight) {
+      M.delete(oldKey)
+      return
+    }
+    if (replaced.poll) { clearTimeout(replaced.poll); replaced.poll = null }
+    if (replaced.nudge) { clearTimeout(replaced.nudge); replaced.nudge = null }
+    stopClock(replaced)
+  }
+  old.ownerKey = newKey
+  old.ownerVersion++
+  M.set(newKey, old)
+  M.delete(oldKey)
+}
+
+/** Forget a genuinely removed node and stop callbacks owned by its Entry. */
+export function dropConvo(slug: string, nid: string): void {
+  const target = key(slug, nid)
+  const old = M.get(target)
+  if (!old) return
+  if (old.poll) { clearTimeout(old.poll); old.poll = null }
+  if (old.nudge) { clearTimeout(old.nudge); old.nudge = null }
+  stopClock(old)
+  old.inflight = false
+  old.requestSerial++
+  M.delete(target)
+}
+
 function entry(k: string): Entry {
   let e = M.get(k)
   if (!e) {
-    e = { s: BLANK, subs: new Set(), thinkT0: 0, clock: null, nudge: null,
+    e = { ownerKey: k, ownerVersion: 0, s: BLANK, subs: new Set(), thinkT0: 0, clock: null, nudge: null,
           textSeen: 0, epochBoot: null,
           staleDraft: false, staleThink: false, staleAt: 0, streamAt: 0,
-          poll: null, inflight: false, inflightAt: 0, fetchedAt: 0,
+          poll: null, inflight: false, requestSerial: 0, inflightAt: 0, fetchedAt: 0,
           installed: 0, dirty: false }
     M.set(k, e)
   }
@@ -258,8 +318,8 @@ function entry(k: string): Entry {
 
 /** Patch and notify. The snapshot identity changes ONLY on a real change, which
  *  is what useSyncExternalStore requires to avoid an infinite render loop. */
-function patch(k: string, p: Partial<Convo>): void {
-  const e = entry(k)
+function patchEntry(e: Entry, p: Partial<Convo>, ownerVersion = e.ownerVersion): void {
+  if (M.get(e.ownerKey) !== e || ownerVersion !== e.ownerVersion) return
   let changed = false
   for (const [f, v] of Object.entries(p)) {
     if (e.s[f as keyof Convo] !== v) { changed = true; break }
@@ -267,6 +327,10 @@ function patch(k: string, p: Partial<Convo>): void {
   if (!changed) return
   e.s = { ...e.s, ...p }
   e.subs.forEach((cb) => cb())
+}
+
+function patch(k: string, p: Partial<Convo>): void {
+  patchEntry(entry(k), p)
 }
 
 // ------------------------------------------------------------------ the hook
@@ -335,9 +399,10 @@ function serverCopies(c: ChatPayload | null, text: string): number {
 /** Refresh a node's transcript. Concurrent calls collapse into the in-flight
  *  one — several views, several triggers, ONE request. */
 export function refreshConvo(slug: string, nid: string,
-                             opts: { force?: boolean } = {}): Promise<void> {
+                              opts: { force?: boolean } = {}): Promise<void> {
   const k = key(slug, nid)
   const e = entry(k)
+  const ownerVersion = e.ownerVersion
   // ⚠ `inflight` is a LATCH, and a latch needs a way out that does not depend
   // on the thing it is waiting for. It is cleared only by the fetch settling,
   // so a request that never settles — the backend accepting the connection and
@@ -353,9 +418,14 @@ export function refreshConvo(slug: string, nid: string,
     return Promise.resolve()
   }
   e.inflight = true
+  const requestSerial = ++e.requestSerial
   e.inflightAt = now
   const startedAt = now
+  const ownsRequest = (): boolean =>
+    M.get(e.ownerKey) === e && e.ownerVersion === ownerVersion
+      && e.requestSerial === requestSerial
   return getChat(slug, nid, e.s.win).then((c) => {
+    if (!ownsRequest()) return
     e.inflight = false
     e.fetchedAt = Date.now()
     // latest-STARTED request wins, not latest-landed — see Entry.installed
@@ -488,10 +558,11 @@ export function refreshConvo(slug: string, nid: string,
     // LiveRow.text is not — a cast would silently re-open the type hole the
     // typing wave closed
     const live: LiveRow[] = (c.live ?? []).map((r) => ({ ...r, text: r.text ?? '' }))
-    patch(k, { chat: c, loaded: true, loadingOlder: false, pending, live, ...retire })
+    patchEntry(e, { chat: c, loaded: true, loadingOlder: false, pending, live, ...retire }, ownerVersion)
   }).catch(() => {
+    if (!ownsRequest()) return
     e.inflight = false
-    patch(k, { loadingOlder: false })
+    patchEntry(e, { loadingOlder: false }, ownerVersion)
   })
 }
 

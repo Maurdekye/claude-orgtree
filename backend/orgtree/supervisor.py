@@ -39,7 +39,7 @@ import time
 import uuid
 from collections.abc import Callable, Iterable, Mapping
 from functools import wraps
-from typing import Any, Final, cast
+from typing import Any, Final, Protocol, cast
 
 from . import (accounts, appsettings, cachecontinuity, clipin, codex_limits,
                codex_route, deployment, envelope, handoff, imgblock,
@@ -1144,9 +1144,14 @@ import secrets as _secrets                                   # noqa: E402
 import atexit                                                # noqa: E402
 atexit.register(_reap_orphans)
 
-# set by the API layer so worker threads can push websocket events
-notify: Callable[[str, str, str], None] = \
-    lambda slug, node, event: None   # noqa: E731
+# set by the API layer so worker threads can push websocket events. The detail
+# is optional so the many existing three-argument callers and test doubles
+# retain their original contract while rename can carry its validated mapping.
+class _Notify(Protocol):
+    def __call__(self, slug: str, node: str, event: str,
+                 detail: dict[str, Any] | None = None) -> None: ...
+
+notify: _Notify = lambda slug, node, event, detail=None: None   # noqa: E731
 stream: Callable[[str, str, dict[str, Any]], None] = \
     lambda slug, node, payload: None   # noqa: E731 — live per-message feed
 mail_spark: Callable[[str, str, str], None] = \
@@ -3382,7 +3387,10 @@ def rename_node(slug: str, nid: str, new_name: str,
                 if (slug, k) in _state:
                     _state[(slug, nk)] = _state.pop((slug, k))
         _ = n
-    notify(slug, new, "renamed")
+    notify(slug, new, "renamed", {
+        "was": str(new_slug_probe.get("was") or nid),
+        "renamed": dict(new_slug_probe.get("renamed") or {}),
+    })
     return new_slug_probe
 
 

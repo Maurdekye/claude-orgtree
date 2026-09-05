@@ -26,7 +26,7 @@ import { useEffect } from 'react'
 import {
   addPending, CHAT_WINDOW, CMD_GRACE, dismissPending, dropPending, ingestPulse,
   ingestStream, loadOlder, MAX_WINDOW, markBusy, markGhostCommand,
-  refreshConvo, resetConvos, STALL_MS, useConvo,
+  dropConvo, refreshConvo, renameConvo, resetConvos, STALL_MS, useConvo,
 } from '../src/convo'
 import type { Convo } from '../src/convo'
 import type { StreamEvent } from '../src/canvas/shared'
@@ -57,6 +57,7 @@ interface Kit {
   ND: string
   s: FakeServer
   desk(): Promise<Desk>
+  deskFor(nid: string): Promise<Desk>
 }
 
 /** Every test gets a mocked clock, a fresh key, a FakeServer with the fetch
@@ -78,21 +79,23 @@ function convoTest(name: string, body: (k: Kit) => Promise<void>): void {
       resetConvos()
       realClock()
     })
+    const deskFor = async (nid: string): Promise<Desk> => {
+      const sink: Convo[] = []
+      const v = await mountView(<View slug={SL} nid={nid} sink={sink} />, () => sink.length)
+      const d: Desk = {
+        frames: sink,
+        now: () => sink[sink.length - 1]!,
+        unmount: v.unmount,
+      }
+      open.push(d)
+      return d
+    }
     await body({
       SL,
       ND,
       s,
-      desk: async () => {
-        const sink: Convo[] = []
-        const v = await mountView(<View slug={SL} nid={ND} sink={sink} />, () => sink.length)
-        const d: Desk = {
-          frames: sink,
-          now: () => sink[sink.length - 1]!,
-          unmount: v.unmount,
-        }
-        open.push(d)
-        return d
-      },
+      deskFor,
+      desk: () => deskFor(ND),
     })
   })
 }
@@ -876,7 +879,72 @@ convoTest('§5.1 resetConvos leaves a still-mounted view polling',
     assert.equal(d.now().chat?.messages.length, 2, 'and converged on the server again')
   })
 
-convoTest('§5.2 no timer outlives the last view', async ({ SL, ND, s, desk }) => {
+convoTest('§5.2 a delayed pre-rename response cannot overwrite the renamed or reused Entry',
+  async ({ SL, ND, s, desk, deskFor }) => {
+    // First load a real current snapshot into A. The held response below is a
+    // different, stale snapshot requested before A is renamed to B.
+    s.assistantMsg('B current')
+    const b = await desk()
+    await advance(100)
+    assert.deepEqual(b.now().chat?.messages.map((m) => m.text), ['B current'])
+
+    const t = installFetch(s)
+    t.holdAll = true
+    s.messages = []
+    s.assistantMsg('stale pre-rename payload')
+    await inAct(() => {
+      ingestStream(SL, { node: ND, kind: 'thinking', text: 'still thinking', t: Date.now() })
+    })
+    void refreshConvo(SL, ND, { force: true })
+    await flush()
+
+    // Exercise the normal App ordering where a pulse can create B before the
+    // rename event arrives. renameConvo must replace that placeholder rather
+    // than dropping the old Entry or leaving a permanent name alias.
+    ingestPulse(SL, { node: 'b', event: 'turn_done', t: Date.now() })
+    renameConvo(SL, ND, 'b')
+
+    // A distinct new hire reuses A's name. Its real view and fetch must remain
+    // isolated from the old request, even when that request settles first.
+    s.messages = []
+    s.assistantMsg('fresh A payload')
+    const a = await deskFor(ND)
+    t.holdAll = false
+    t.release()
+    await flush(10)
+
+    assert.deepEqual(b.now().chat?.messages.map((m) => m.text), ['B current'],
+      'the stale pre-rename response did not replace B current data')
+    assert.equal(b.now().thinking, 'still thinking',
+      'the stale response did not retire renamed Entry thinking state')
+    assert.equal(b.now().thinkSecs, 0,
+      'the stale response did not rewrite renamed Entry clock state')
+    assert.deepEqual(a.now().chat?.messages.map((m) => m.text), ['fresh A payload'],
+      'a newly hired A did not inherit B or the old A response')
+
+    // Reverse/chained renames must not overwrite that active fresh A with the
+    // former B Entry. This is the name-reuse case that permanent aliases made
+    // unsafe; the destination identity wins when it is already live.
+    renameConvo(SL, 'b', ND)
+    assert.deepEqual(a.now().chat?.messages.map((m) => m.text), ['fresh A payload'],
+      'B→A did not overwrite the distinct newly hired A')
+
+    // Removal has the same publication boundary: a held response for a
+    // dropped node must not recreate its key or update the mounted stale view.
+    s.messages = []
+    s.assistantMsg('late removed A')
+    t.holdAll = true
+    void refreshConvo(SL, ND, { force: true })
+    await flush()
+    dropConvo(SL, ND)
+    t.holdAll = false
+    t.release()
+    await flush(10)
+    assert.deepEqual(a.now().chat?.messages.map((m) => m.text), ['fresh A payload'],
+      'a response settling after removal did not repopulate the dropped A')
+  })
+
+convoTest('§5.3 no timer outlives the last view', async ({ SL, ND, s, desk }) => {
   const d = await desk()
   await advance(3000)
   await inAct(() => {
@@ -889,7 +957,7 @@ convoTest('§5.2 no timer outlives the last view', async ({ SL, ND, s, desk }) =
   assert.equal(s.requests.length, before, 'no fetch after the last unmount')
 })
 
-convoTest('§5.3 an unmount mid-fetch is not a crash and not a leak',
+convoTest('§5.4 an unmount mid-fetch is not a crash and not a leak',
   async ({ s, desk }) => {
     s.assistantMsg('one')
     const d = await desk()

@@ -343,6 +343,25 @@ def sec_rekey() -> None:
         assert org.d["turn_error_log"]["sprocket"][0]["error"] == "boom"
     check("the moved structures keep their contents", _payloads_survive)
 
+    def _presented_documents_follow_live_identity_only():
+        org = org3()
+        org.compact_split("kid", "s2")
+        # A live card and a card from an unrelated deleted/retired identity
+        # share one flat store. Only the entry covered by the validated rename
+        # map may move; the unrelated historical record must remain addressable
+        # by its original sender id for the gallery's retired classification.
+        org.d.setdefault("documents", []).extend([
+            {"id": "d-live", "node": "kid", "title": "live", "body": "x", "at": "t"},
+            {"id": "d-generation", "node": "kid@0", "title": "generation", "body": "g", "at": "t"},
+            {"id": "d-old", "node": "old-retiree", "title": "old", "body": "y", "at": "t"},
+        ])
+        org.rename(USER, "kid", "sprocket")
+        docs = {d["id"]: d["node"] for d in org.d["documents"]}
+        assert docs == {"d-live": "sprocket", "d-generation": "sprocket@0",
+                        "d-old": "old-retiree"}, docs
+    check("presented documents follow the live rename, not unrelated retirees",
+          _presented_documents_follow_live_identity_only)
+
     def _pointers():
         org = org3()
         org.rename(USER, "kid", "sprocket")
@@ -571,8 +590,17 @@ def sec_supervisor() -> None:
 
     def _moves():
         org, slug, d, p = setup()
-        r = supervisor.rename_node(slug, "kid", "Sprocket")
+        seen = []
+        prior_notify = supervisor.notify
+        supervisor.notify = lambda s, n, e, detail=None: seen.append(
+            (s, n, e, detail))
+        try:
+            r = supervisor.rename_node(slug, "kid", "Sprocket")
+        finally:
+            supervisor.notify = prior_notify
         assert r["node"] == "sprocket", r
+        assert seen and seen[-1][2] == "renamed", seen
+        assert seen[-1][3]["renamed"] == {"kid": "sprocket"}, seen
         nd = scratch_of(slug, "sprocket")
         assert os.path.isdir(nd) and not os.path.exists(d), \
             "the scratch dir must move with the identity"

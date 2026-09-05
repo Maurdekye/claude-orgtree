@@ -26,9 +26,10 @@ import { DocReader } from './docs'
 import { NodeInboxModal, OrgInboxModal } from './mail'
 import { NodeConfig, PilePicker, UserConfig, WatchdogPanel } from './modals'
 import { DraftNode, NodeSquare, UserNode } from './cards'
-import { addPin, clampRect, PinLayer, prunePins, showPin, usePins } from './pins'
+import { addPin, clampRect, PinLayer, prunePins, renamePin, showPin, usePins } from './pins'
 import type { PinRect } from './pins'
 import { isCompact, isMobile, MaybePortal, sheetGate } from '../mobile'
+import { dropConvo, renameConvo } from '../convo'
 
 export interface OrgCanvasProps {
   tree: TreePayload
@@ -60,6 +61,45 @@ const PARALLAX_BG = 0.88
 const atRest = (s: Spring, tgt: Pt): boolean =>
   Math.abs(tgt.x - s.x) <= 0.4 && Math.abs(tgt.y - s.y) <= 0.4
   && Math.abs(s.vx) <= 2 && Math.abs(s.vy) <= 2
+
+/** Move browser-owned state whose key includes a node id. The server's rename
+ * is authoritative; this only carries the corresponding client view state
+ * across the same validated identity transition. Existing destination values
+ * win defensively, so a stale or hand-edited key is never overwritten. */
+const migrateClientNodeState = (slug: string, from: string, to: string): void => {
+  try {
+    const oldDraft = `orgtree-draft-${slug}-${from}`
+    const newDraft = `orgtree-draft-${slug}-${to}`
+    const draft = localStorage.getItem(oldDraft)
+    if (draft != null) {
+      if (localStorage.getItem(newDraft) == null) localStorage.setItem(newDraft, draft)
+      localStorage.removeItem(oldDraft)
+    }
+    for (const suffix of ['eyemin', 'eyeseen']) {
+      const key = `orgtree-${suffix}-${slug}`
+      const raw = localStorage.getItem(key)
+      if (!raw) continue
+      const ids = JSON.parse(raw) as unknown
+      if (!Array.isArray(ids)) continue
+      const next = [...new Set(ids.map((id) => id === from ? to : id))]
+      if (JSON.stringify(next) !== JSON.stringify(ids)) localStorage.setItem(key, JSON.stringify(next))
+    }
+    const pileKey = `orgtree-pile-${slug}`
+    const rawPile = localStorage.getItem(pileKey)
+    if (rawPile) {
+      const pile = JSON.parse(rawPile) as unknown
+      if (pile && typeof pile === 'object' && !Array.isArray(pile)) {
+        const next: Record<string, string> = {}
+        for (const [parent, front] of Object.entries(pile as Record<string, unknown>)) {
+          const nextParent = parent === from || parent.startsWith(`${from}|`)
+            ? to + parent.slice(from.length) : parent
+          next[nextParent] = front === from ? to : String(front)
+        }
+        if (JSON.stringify(next) !== JSON.stringify(pile)) localStorage.setItem(pileKey, JSON.stringify(next))
+      }
+    }
+  } catch { /* private mode or hand-edited state — never block tree updates */ }
+}
 
 export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
   onAccounts, focusAgent, onFocusAgentHandled }: OrgCanvasProps) {
@@ -430,6 +470,23 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
   const hireDeskRef = useRef<{ id: string; at: number } | null>(null)
   const targetRef = useRef(target); targetRef.current = target
   const mapRef = useRef(map); mapRef.current = map
+  // The tree payload replaces ids on a full rename. Keep the prior projection
+  // just long enough to distinguish that identity transition from a genuine
+  // removal followed by a new hire. Explicit websocket rename mappings are
+  // authoritative; session_id matching below is only a bounded fallback for
+  // payloads that contain it (and is absent from kiosk payloads by design).
+  const previousMapRef = useRef<Map<string, CanvasNode>>(new Map())
+  const previousSlugRef = useRef(slug)
+  const migrateRename = useCallback((from: string, to: string) => {
+    if (!from || !to || from === to) return
+    renamePin(slug, from, to)
+    renameConvo(slug, from, to)
+    migrateClientNodeState(slug, from, to)
+    setConfigId((v) => v === from ? to : v)
+    setLineageId((v) => v === from ? to : v)
+    setInboxId((v) => v === from ? to : v)
+    setSheetId((v) => v === from ? to : v)
+  }, [slug])
   const nodeDrag = useRef<{
     id: string; sx: number; sy: number
     bases: Map<string, Pt>; moved: boolean
@@ -660,6 +717,45 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
   // re-partition circulation and must never move any other bar.
   const pxPerCredit = useMemo(() => orgPxc(tree), [tree])
 
+  // The websocket carries the authoritative old→new mapping. This is needed
+  // when a rename also changes session_id (compaction/reseed/provider handoff),
+  // where the polling fallback below cannot safely infer identity.
+  useEffect(() => {
+    const onRename = (ev: Event) => {
+      const d = (ev as CustomEvent<{ slug?: string; renames?: Record<string, string> }>).detail
+      if (!d || d.slug !== slug || !d.renames) return
+      Object.entries(d.renames).forEach(([from, to]) => migrateRename(from, to))
+    }
+    window.addEventListener('orgtree:rename', onRename)
+    return () => window.removeEventListener('orgtree:rename', onRename)
+  }, [migrateRename, slug])
+
+  useEffect(() => {
+    if (tree.slug !== slug) return
+    if (previousSlugRef.current !== slug) {
+      previousSlugRef.current = slug
+      previousMapRef.current = map
+      return
+    }
+    const previous = previousMapRef.current
+    const oldBySession = new Map<string, string>()
+    const sessionOf = (n: CanvasNode): string | null => {
+      const sid = (n as CanvasNode & { session_id?: unknown }).session_id
+      return typeof sid === 'string' && sid ? sid : null
+    }
+    for (const [id, n] of previous) {
+      const sid = sessionOf(n)
+      if (sid && !map.has(id)) oldBySession.set(sid, id)
+    }
+    for (const [id, n] of map) {
+      const sid = sessionOf(n)
+      const from = sid ? oldBySession.get(sid) : undefined
+      if (!from || previous.has(id)) continue
+      migrateRename(from, id)
+    }
+    previousMapRef.current = map
+  }, [map, migrateRename, slug, tree.slug])
+
   // composer drafts are keyed per node id and freed slugs are re-minted by
   // later hires (review): sweep drafts whose node no longer exists at all,
   // so a namesake never inherits a dead agent's unsent instruction.
@@ -716,6 +812,7 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
     // (gone from the tree — a retired agent stays in `map` and keeps its
     // window). Same two guards above; a window vanishing deserves a word.
     for (const id of prunePins(slug, (id) => map.has(id))) {
+      dropConvo(slug, id)
       toast([`${id} is gone from the org — its pinned window closed`])
     }
   }, [map, slug, tree.slug, toast])

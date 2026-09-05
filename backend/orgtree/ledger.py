@@ -6908,6 +6908,13 @@ class Org:
         for w in self.d.get("watchdogs", []):
             if w.get("owner") in renamed:
                 w["owner"] = renamed[w["owner"]]
+        # Presented documents are live identity records, not historical event
+        # text. Re-key only cards owned by the validated node/generation map;
+        # the event log (including genuinely retired generations) remains an
+        # immutable historical record and is intentionally not rewritten.
+        for doc in self.d.get("documents", []):
+            if doc.get("node") in renamed:
+                doc["node"] = renamed[doc["node"]]
         # the display title (set at hire from the raw name) follows the
         # identity — tree() ships it beside the id, so a stale title would
         # show exactly the name the rename was meant to replace

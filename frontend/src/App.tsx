@@ -81,7 +81,27 @@ type WsEvent =
       source?: string | null; reason?: string | null; emitted_at_ms?: number;
       waiting?: boolean; state?: string | null;
       forecast?: CacheForecast | null }
-  | { type: 'node_event'; node: string; event: string }
+  | { type: 'node_event'; node: string; event: string; was?: string;
+      renamed?: Record<string, string> }
+
+function emitRename(slug: string, value: {
+  was?: unknown; node?: unknown; renamed?: unknown
+}): void {
+  const was = typeof value.was === 'string' ? value.was : ''
+  const node = typeof value.node === 'string' ? value.node : ''
+  const raw = value.renamed
+  const renames: Record<string, string> = {}
+  if (raw && typeof raw === 'object') {
+    for (const [from, to] of Object.entries(raw as Record<string, unknown>)) {
+      if (typeof to === 'string' && from && to) renames[from] = to
+    }
+  }
+  if (was && node && !renames[was]) renames[was] = node
+  if (!Object.keys(renames).length) return
+  window.dispatchEvent(new CustomEvent('orgtree:rename', {
+    detail: { slug, renames },
+  }))
+}
 
 export const patchMcpNode = (
   node: TreeNode, id: string,
@@ -485,6 +505,7 @@ export default function App() {
         return   // live feed only — no tree refetch per message
       }
       if (data?.type === 'node_event') {
+        if (data.event === 'renamed') emitRename(slug, data)
         ingestPulse(slug, { node: data.node, event: data.event, t: Date.now() })
         // toasts only here — the tree refetch is the shared one below (each
         // branch used to call refreshTree and then fall through to it again,
@@ -516,6 +537,11 @@ export default function App() {
   const op = useCallback((body: OpRequest) =>
     runOp(slug!, body)
       .then((r) => {
+        if ((r as { renamed?: unknown; was?: unknown; node?: unknown }).renamed) {
+          emitRename(slug!, r as unknown as {
+            was?: unknown; node?: unknown; renamed?: unknown
+          })
+        }
         // op-specific result field (OpResult is open in types.ts) — the
         // ceiling-bridge marker, stated at the wire boundary
         const bridge = (r as { bridge?: { raise_ceiling?: boolean } } | null)?.bridge

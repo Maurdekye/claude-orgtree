@@ -36,6 +36,7 @@ import { NODE_H, NODE_W, Z_DESK, Z_MINI } from '../src/canvas/shared'
 import {
   addPin, clampRect, forgetPins, PIN_MAX, PIN_MIN_H, PIN_MIN_W,
   PIN_Z_BASE, PIN_Z_TOP, pinsKey, planUnpin, prunePins, raisePin,
+  renamePin,
   readPins, removePin, zIndexOf, commitRect,
 } from '../src/canvas/pins'
 import type { PinRect } from '../src/canvas/pins'
@@ -46,9 +47,10 @@ const noop = () => {}
 // ------------------------------------------------------------------ fixture
 const asTree = (v: unknown) => v as TreePayload
 
-function tree(nodeIds: string[], states: Record<string, string> = {}): TreePayload {
+function tree(nodeIds: string[], states: Record<string, string> = {},
+  sessions: Record<string, string> = {}): TreePayload {
   const mk = (id: string) => ({
-    id, title: id, tier: 'haiku', model_id: 'haiku', state: states[id] ?? 'live',
+    id, title: id, session_id: sessions[id], tier: 'haiku', model_id: 'haiku', state: states[id] ?? 'live',
     seat: 1, grant: 0, free: 0, ui_order: 0, cost_usd: 0, occupancy: null,
     context_window: null, charter: null, mail_pending: 0, limit_locked: false,
     last_status: null, prev_status: null, inflight_at: null, last_denials: [],
@@ -196,10 +198,10 @@ function uiTest(name: string, body: (k: { mount: Mount }) => Promise<void>): voi
 }
 
 async function mountCanvas(mount: Mount, ids: string[],
-  toasts: string[][] = []) {
+  toasts: string[][] = [], sessions: Record<string, string> = {}) {
   canvasMod = await import('../src/canvas/OrgCanvas')
   const { Host, box } = makeHost((lines) => { if (lines?.length) toasts.push(lines) })
-  const { el, unmount } = await mount(<Host initial={tree(ids)} />)
+  const { el, unmount } = await mount(<Host initial={tree(ids, {}, sessions)} />)
   await flush()
   const viewport = el.querySelector('.viewport') as HTMLElement | null
   assert.ok(viewport, 'the canvas viewport rendered')
@@ -747,6 +749,94 @@ uiTest('§B10 dissolved while pinned: the window closes with a word, and storage
   assert.equal(pinWin(el, 'cto'), null, 'no window for a node that left the tree')
   assert.deepEqual(stored(), [], 'the sweep removed the pin from storage')
   assert.ok(toasts.some((t) => /cto is gone/.test(t.join(' '))), `the user was told: ${JSON.stringify(toasts)}`)
+})
+
+uiTest('rename keeps the pinned window, geometry and draft; deletion still closes it', async ({ mount }) => {
+  const { el, viewport, setTree, toasts } = await mountCanvas(
+    mount, ['ceo', 'cto'], [], { cto: 'stable-cto' })
+  await settle(2500)
+  await pinFromDesk(el, viewport, 'cto')
+  const before = winRect(pinWin(el, 'cto')!)
+  const beforePin = readPins('mine')[0]!
+  const ta = el.querySelector('textarea') as HTMLTextAreaElement | null
+  assert.ok(ta, 'the pinned desk has a real composer')
+  const setValue = Object.getOwnPropertyDescriptor(
+    ta!.constructor.prototype, 'value')!.set!
+  setValue.call(ta, 'keep this unsent draft')
+  await inAct(() => { ta!.dispatchEvent(new Event('input', { bubbles: true })) })
+  await flush()
+  assert.equal((el.querySelector('textarea') as HTMLTextAreaElement).value,
+    'keep this unsent draft', 'the real composer accepted the draft')
+  const realFetch = globalThis.fetch
+  const calls: { url: string; init?: RequestInit }[] = []
+  ;(globalThis as unknown as { fetch: typeof fetch }).fetch = ((url: string, init?: RequestInit) => {
+    calls.push({ url, init })
+    const body = /\/chat(?:\?|$)/.test(url)
+      ? { busy: false, queued: 0, responding: false, last_error: null,
+          occupancy: null, occupancy_estimated: false, messages: [], live: [],
+          draft_epoch: null, mail_pending: 0, pending_mail: [] }
+      : { ok: true }
+    return Promise.resolve({ ok: true, status: 200,
+      headers: new Headers(), json: () => Promise.resolve(body) })
+  }) as typeof fetch
+  // The explicit event is the supported path when a rename also changes the
+  // session id; the tree update then verifies the incoming rename boundary.
+  await inAct(() => { window.dispatchEvent(new window.CustomEvent('orgtree:rename', {
+    detail: { slug: 'mine', renames: { cto: 'renamed' } },
+  })) })
+  await inAct(() => { setTree(tree(['ceo', 'renamed'], {}, { renamed: 'stable-cto' })) })
+  await flush()
+  const renamed = pinWin(el, 'renamed')
+  assert.ok(renamed, 'the renamed agent still has a rendered pinned window')
+  assert.equal(pinWin(el, 'cto'), null, 'the old identity no longer renders')
+  assert.deepEqual(winRect(renamed!), before, 'position and size are preserved')
+  assert.equal(readPins('mine')[0]!.z, beforePin.z, 'stacking order is preserved')
+  assert.equal(renamed!.querySelector('.pinwin-name')?.textContent, 'renamed')
+  assert.equal(localStorage.getItem('orgtree-draft-mine-renamed'), 'keep this unsent draft')
+  assert.equal(localStorage.getItem('orgtree-draft-mine-cto'), null)
+  const renamedTa = renamed!.querySelector('textarea') as HTMLTextAreaElement | null
+  assert.ok(renamedTa, 'the renamed desk still has its real composer')
+  assert.equal(renamedTa!.value, 'keep this unsent draft',
+    'the visible composer text survived the identity change')
+  assert.ok(calls.some(({ url }) => /\/nodes\/renamed\/chat/.test(url)),
+    'conversation refresh targets the new identity')
+  await inAct(() => { (renamed!.querySelector('.cc-send') as HTMLElement).click() })
+  await flush()
+  const send = calls.find(({ url }) => /\/nodes\/renamed\/message/.test(url))
+  assert.ok(send, 'the real composer send targets the new identity')
+  assert.match(String(send!.init?.body), /keep this unsent draft/)
+  ;(globalThis as unknown as { fetch: typeof fetch }).fetch = realFetch
+  assert.deepEqual(toasts, [], `a rename is not reported as a closed window: ${JSON.stringify(toasts)}`)
+
+  const renameTree = async (from: string, to: string, sid: string) => {
+    await inAct(() => { window.dispatchEvent(new window.CustomEvent('orgtree:rename', {
+      detail: { slug: 'mine', renames: { [from]: to } },
+    })) })
+    await inAct(() => { setTree(tree(['ceo', to], {}, { [to]: sid })) })
+    await flush()
+  }
+  // Reverse and repeat the mapping: a name-based alias would either cycle or
+  // attach the second rename to the wrong Entry.
+  await renameTree('renamed', 'cto', 'stable-cto')
+  assert.ok(pinWin(el, 'cto'), 'the reverse rename preserves the pinned window')
+  await renameTree('cto', 'renamed', 'stable-cto')
+  assert.ok(pinWin(el, 'renamed'), 'the chained rename preserves the pinned window')
+  // Reusing A for a distinct generation must not resolve through the old
+  // A→B mapping or inherit B's pin/conversation.
+  await inAct(() => { setTree(tree(['ceo', 'renamed', 'cto'], {}, {
+    renamed: 'stable-cto', cto: 'fresh-cto',
+  })) })
+  await flush()
+  assert.ok(pinWin(el, 'renamed'), 'the original B remains pinned')
+  assert.equal(pinWin(el, 'cto'), null, 'a newly hired A gets no old pin')
+  assert.equal(localStorage.getItem('orgtree-draft-mine-cto'), null,
+    'a newly hired A gets no old conversation draft')
+  await inAct(() => { setTree(tree(['ceo', 'cto'], {}, { cto: 'fresh-cto' })) })
+  await flush()
+  assert.equal(pinWin(el, 'renamed'), null, 'a genuine removal still closes the window')
+  assert.deepEqual(readPins('mine'), [], 'a genuine removal still prunes storage')
+  assert.ok(toasts.some((t) => /renamed is gone/.test(t.join(' '))),
+    `the chained rename removal is reported: ${JSON.stringify(toasts)}`)
 })
 
 uiTest('§B11 the sweep never fires in the org-switch window (tree.slug ≠ slug)', async ({ mount }) => {
