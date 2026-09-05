@@ -168,10 +168,18 @@ check("entering waiting or blocked without its field is refused, and writes "
 
 
 def other_states_owe_nothing() -> None:
-    slug = fixture()
+    """Open, in_progress, review and backlogged require no reason field.
+
+    ⚠ `review` still owes its REVIEWER (codex-sandbox's staffing change), and
+    that is a different requirement from the one this check is about — so the
+    reviewer is supplied for that one transition rather than dropping `review`
+    from the loop, which would quietly stop covering it. It must be somebody
+    other than the owner: self-review is prohibited."""
+    slug = fixture(peers=("checker",))
     wid = item(slug, "Ordinary work")
     for st in ("open", "in_progress", "review", "backlogged"):
-        upd(slug, wid, status=st)
+        upd(slug, wid, status=st, **({"reviewer": "checker"} if st == "review"
+                                     else {}))
         assert view(slug, wid)["status"] == st
 
 

@@ -1878,13 +1878,17 @@ export interface WorkItem {
    *  served in its own group behind its own toggle and never counted as
    *  active. `waiting` = active work whose next step is an EXTERNAL event
    *  (never the user — that is the attention flag): it counts as active and
-   *  stays on the desk, and only its idle reminders stop. */
+   *  stays on the desk, and only its idle reminders stop. `dropped` = the
+   *  terminal NON-SUCCESS outcome (cancelled, or failed unrecoverably): it is
+   *  closed, it archives on the same clock as done, and it is never Done. */
   status: string
   /** the state's own information, required on ENTRY to that state and cleared
-   *  on the way out, so at most one of them is ever set. `waiting_reason` is
-   *  optional on the wire because an older backend does not send it. */
+   *  on the way out, so at most one of them is ever set. `waiting_reason` and
+   *  `dropped_reason` are optional on the wire because an older backend does
+   *  not send them. */
   blocked_reason: string | null
   waiting_reason?: string | null
+  dropped_reason?: string | null
   /** DERIVED on every read: (physically archived OR done && docket_at older
    *  than 3600s, strictly) AND NOT effective_attention (Astra correction
    *  2026-09-05) — an item with a pending question or manual flag is NEVER

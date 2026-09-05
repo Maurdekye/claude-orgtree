@@ -1605,6 +1605,7 @@ uiTest('§35 a Waiting item has its own group, below what somebody can act on to
 uiTest('§36 the pane explains the state the item is IN, never a leftover one', async (mount) => {
   const REASON = 'the nightly build finishes; the build watchdog mails me'
   const BLOCK = 'the vendor has not sent the key; their support can send it'
+  const ENDED = 'CANCELLED by the user: the export format left the product'
   mockWorkItems([
     // ⚠ BOTH fields populated on purpose. The backend clears the one that does
     // not belong, so this shape should never reach the pane — which is exactly
@@ -1617,6 +1618,13 @@ uiTest('§36 the pane explains the state the item is IN, never a leftover one', 
     mkItem({ title: 'Moving Both', status: 'in_progress',
       waiting_reason: REASON, blocked_reason: BLOCK }),
     mkItem({ title: 'Waiting Silent', status: 'waiting' }),
+    // `dropped` is the third state that owes information, and it owes the
+    // most: it is the whole record of why the work ended. Same trap, same
+    // shape — all three fields planted, so choosing by "whichever is set"
+    // cannot pass.
+    mkItem({ title: 'Dropped All', status: 'dropped', dropped_reason: ENDED,
+      waiting_reason: REASON, blocked_reason: BLOCK }),
+    mkItem({ title: 'Dropped Silent', status: 'dropped' }),
   ])
   forgetGroupChoice()
   const { el } = await mount(docketModal())
@@ -1625,7 +1633,8 @@ uiTest('§36 the pane explains the state the item is IN, never a leftover one', 
   // so an index here silently follows whatever the previous test chose
   const rowFor = (t: string) => rows(el)[titles(el).indexOf(t)] as HTMLElement
   const stateBox = () => [...(pane(el)?.querySelectorAll('.docket-desc') ?? [])]
-    .find((d) => /BLOCKED BECAUSE|WAITING FOR/.test(d.textContent ?? ''))
+    .find((d) => /BLOCKED BECAUSE|WAITING FOR|ENDED WITHOUT COMPLETING/
+      .test(d.textContent ?? ''))
 
   await inAct(() => rowFor('Waiting Both').click())
   await flush()
@@ -1654,6 +1663,22 @@ uiTest('§36 the pane explains the state the item is IN, never a leftover one', 
   await inAct(() => rowFor('Waiting Silent').click())
   await flush()
   assert.match(stateBox()?.textContent ?? '', /WAITING FOR/)
+  assert.match(stateBox()?.textContent ?? '', /before the rule/)
+
+  // the terminal non-success outcome: the heading says the item ENDED without
+  // being completed, and the two reasons for states it is not in stay off it
+  await inAct(() => rowFor('Dropped All').click())
+  await flush()
+  assert.match(stateBox()?.textContent ?? '', /ENDED WITHOUT COMPLETING/)
+  assert.match(stateBox()?.textContent ?? '', /the export format left the product/)
+  assert.ok(!(stateBox()?.textContent ?? '').includes(BLOCK),
+    'a dropped item rendered a leftover blocked reason')
+  assert.ok(!(stateBox()?.textContent ?? '').includes(REASON),
+    'a dropped item rendered a leftover waiting reason')
+
+  await inAct(() => rowFor('Dropped Silent').click())
+  await flush()
+  assert.match(stateBox()?.textContent ?? '', /ENDED WITHOUT COMPLETING/)
   assert.match(stateBox()?.textContent ?? '', /before the rule/)
 })
 
@@ -1929,4 +1954,33 @@ async (mount) => {
     assert.match(pane(el)?.textContent ?? '', /second-item/,
       'an unchanged request re-ran and dragged the reader back')
   } finally { realClock() }
+})
+
+uiTest('§39 Dropped reads as an outcome that is not Done', async (mount) => {
+  // ⚠ THE WHOLE POINT OF THE STATUS. The word "Dropped" on its own can be
+  // read as "finished with", and the docket's own Done sits two rows away, so
+  // the row has to be readable as the opposite of a completion without
+  // opening anything. Checked on the ROW, which is what the user scans.
+  mockWorkItems([
+    mkItem({ title: 'Ended Work', status: 'dropped',
+      dropped_reason: 'FAILED UNRECOVERABLY: the vendor retired the API' }),
+    mkItem({ title: 'Finished Work', status: 'done' }),
+  ])
+  forgetGroupChoice()
+  const { el } = await mount(docketModal())
+  await flush()
+  const rowFor = (t: string) => rows(el)[titles(el).indexOf(t)] as HTMLElement
+  const chip = (t: string) =>
+    rowFor(t).querySelector('.docket-status') as HTMLElement | null
+
+  assert.equal(chip('Ended Work')?.textContent?.trim(), 'Dropped')
+  assert.equal(chip('Finished Work')?.textContent?.trim(), 'Done')
+  // the hover help is where the row says what the word means. Without it the
+  // only difference between the two outcomes is one dim colour.
+  const help = chip('Ended Work')?.getAttribute('title') ?? ''
+  assert.match(help, /WITHOUT being completed/)
+  assert.match(help, /never Done/)
+  // CONTROL: Done carries no such help, so the assertion above is about
+  // `dropped` and not about every chip having a title
+  assert.equal(chip('Finished Work')?.getAttribute('title'), null)
 })

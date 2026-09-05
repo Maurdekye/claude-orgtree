@@ -299,7 +299,7 @@ TOOLS: list[dict[str, Any]] = [
             "done_so_far AND working_on_next as lists of individual entries "
             "— either may be empty, both empty is refused — plus optional "
             "status backlogged|open|in_progress|blocked|waiting|review|"
-            "dropped, blocked_reason, waiting_reason, "
+            "dropped, blocked_reason, waiting_reason, dropped_reason, "
             "attention:true + attention_reason for a concrete reason the user "
             "must see, reopen:true to resume an archived item), `assign` "
             "(owner), `participants` (add/remove collaborators: they may "
@@ -390,9 +390,10 @@ TOOLS: list[dict[str, Any]] = [
                 "working_on_next": {"type": "array", "items": {"type": "string"},
                                     "description": "update (required) / create: what you are doing now and the next steps"},
                 "status": {"type": "string",
-                           "description": "create/update: backlogged|open|in_progress|blocked|waiting|review|dropped (done only via accept). `review` = REVIEW BY AGENTS; asking the user to look at something is attention/orgtree_ask, not this status. `waiting` = active work whose next step is an EXTERNAL EVENT, not yours: it stays on your desk and in the active count, and only stops producing idle reminders until the event happens"},
+                           "description": "create/update: backlogged|open|in_progress|blocked|waiting|review|dropped (done only via accept). `review` = REVIEW BY AGENTS; asking the user to look at something is attention/orgtree_ask, not this status. `waiting` = active work whose next step is an EXTERNAL EVENT, not yours: it stays on your desk and in the active count, and only stops producing idle reminders until the event happens. `dropped` = the TERMINAL NON-SUCCESS outcome for work explicitly cancelled or failed unrecoverably: it needs a `dropped_reason`, archives on the same one-hour clock as done, and is never Done — never route dead work through review and acceptance instead"},
                 "blocked_reason": {"type": "string", "description": "create/update: REQUIRED when you move an item to blocked — what is preventing progress, what would unblock it, and who can act when that is known. A blank string is refused rather than erasing what is recorded"},
                 "waiting_reason": {"type": "string", "description": "create/update: REQUIRED when you move an item to waiting — the external event this item is waiting for AND how you will learn it happened (a watchdog, a message, a build notification). Nothing detects the event for you: the wake that tells you is what prompts you to update the state. A blank string is refused rather than erasing what is recorded"},
+                "dropped_reason": {"type": "string", "description": "update: REQUIRED when you end an item as `dropped` — why this work ended without being completed. Say plainly whether it was CANCELLED or FAILED UNRECOVERABLY, who decided, and what would have to change for it to be worth resuming. A blank string is refused rather than erasing what is recorded"},
                 "attention": {"type": "boolean",
                               "description": "update: raise the manual attention flag (needs attention_reason)"},
                 "attention_reason": {"type": "string", "description": "update: the concrete reason the user must see — what was asked against what was built, the exact decision, edge case or definition you added beyond the spec, and the confirmation you want. 'Ready for review' or 'please approve' is not enough; this is what they read to know what they are approving"},

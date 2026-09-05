@@ -29,8 +29,8 @@ archive is unbounded.
 | `slug` | **the only identifier.** Readable, derived from the title, unique across active+archive, fixed at creation — it does NOT follow a later title edit, so a name already written down keeps working. Every stored reference uses it: `dependencies`, `superseded_by`, ask `work_item`, the routes, the frontend's keys |
 | `rev` | bumped by every mutation (verify revalidates against it) |
 | `title`, `objective`, `kind` (`code` / `non-code`) | what and why |
-| `status` | `backlogged` · `open` · `in_progress` · `blocked` · `waiting` · `review` · `done` · `superseded` · `dropped`. `review` means **review by agents**, `waiting` means an external event — see below |
-| `blocked_reason`, `waiting_reason` | the state's own information, required on entry to that state and cleared on the way out, so at most one is ever set |
+| `status` | `backlogged` · `open` · `in_progress` · `blocked` · `waiting` · `review` · `done` · `superseded` · `dropped`. `review` means **review by agents**, `waiting` means an external event, `dropped` is the terminal **non-success** outcome (cancelled or failed unrecoverably) and is never `done` — see below |
+| `blocked_reason`, `waiting_reason`, `dropped_reason` | the state's own information, required on entry to that state and cleared on the way out, so at most one is ever set |
 | `owner` `{node, generation}` | **the assignment, and assignment IS ownership**: who is responsible, holds the item's management rights and receives the user's replies on it, at the generation assigned; `owner_current` / `owner_state` say whether that seat is still live and unchanged |
 | `reviewer` `{node, generation}` or null | the agent named to CHECK the work when the item entered `review`. Not ownership. Absent on items that predate the field and never back-filled — absent and null both mean nobody was named |
 | `participants` | node ids with narrow collaborator rights (below) |
@@ -93,7 +93,7 @@ Agents set `backlogged|open|in_progress|blocked|waiting|review|dropped`. `done`
 is refused on `update`: assert `review` and wait for the reviewer's `approve`
 or for `accept`.
 
-## `waiting`, and the information blocked and waiting owe
+## `waiting`, `dropped`, and the information a state owes
 
 User ruling 2026-09-05. `waiting` is **active work whose next step is not the
 agent's to take**: a build, a deploy, another team's landing, an external
@@ -114,13 +114,20 @@ Each of the two states carries its own information, in its own field:
 | --- | --- | --- |
 | `blocked` | `blocked_reason` | what prevents progress, what would unblock it, and who can act when that is known |
 | `waiting` | `waiting_reason` | the external event, **and** how the agent will learn it happened |
+| `dropped` | `dropped_reason` | why the work ended without being completed: **cancelled** or **failed unrecoverably**, who decided, and what would have to change for it to be worth resuming |
 
-The rules are the same for both, and they are three separate rules:
+The rules are the same for all three, and they are three separate rules:
 
 * **Entering** the state requires the field — on `create` as well as `update`.
   No other status requires anything.
 * **Already** in the state, field not supplied: left alone. Items written
   before this requirement stay editable rather than becoming un-updatable.
+  ⚠ Reachable for `blocked` and `waiting` only. State information does not
+  override the closed-item rule: `dropped` is **closed**, so a plain `update`
+  is refused before this rule runs. A legacy drop stays **readable and
+  reopenable**, but is **not editable while it stays dropped** — it cannot be
+  given a reason after the fact, and a stored one cannot be corrected in
+  place. `reopen` is the way back, and it keeps the sentence in history.
 * A **blank** string is refused, never stored, **while the item is in that
   state**: blanking used to erase the field silently, and erasing required
   information without a word is the failure the requirement exists to stop.
@@ -242,8 +249,14 @@ superior, naming the item in the text — and nothing attaches.
 `archived` is **derived on every read**:
 
     archived = (physically in work_items_archive
-                OR status == done AND now − docket_at > 3600 s)      # strictly greater
-               AND NOT effective_attention
+                OR status in (done, dropped) AND now − docket_at > 3600 s)
+               AND NOT effective_attention                           # strictly greater
+
+`dropped` archives itself on the same clock as `done` (user 2026-09-05): work
+that was cancelled or failed unrecoverably is as finished as work that
+succeeded, and when only the successful kind archived itself every dead item
+stayed on the main list for good. `superseded` is deliberately not in that
+set — its `superseded_by` pointer is the thing you follow, and it is unchanged.
 
 So a done item is not archived at exactly one hour, is archived one second
 later, and an item holding attention (a pending attached question or a manual

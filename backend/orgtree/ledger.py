@@ -9498,8 +9498,17 @@ class Org:
     #: 2026-09-05). Entering one of these states requires the field; the other
     #: states require nothing. The field is cleared on the way out, so it never
     #: describes a state the item is no longer in.
+    #
+    # `dropped` (user 2026-09-05) is the TERMINAL NON-SUCCESS outcome: work
+    # that was explicitly cancelled, or that failed in a way it cannot be
+    # recovered from. It is closed, it archives on the same clock as `done`
+    # (`_work_eligible`), and it is never Done — which is the whole point of
+    # having it, because without a documented way to end work unsuccessfully
+    # the tidy path is `review` → accept, and the docket then records a
+    # completion that never happened. Its reason says WHICH of the two it was.
     WORK_STATE_INFO: Final = {"blocked": "blocked_reason",
-                              "waiting": "waiting_reason"}
+                              "waiting": "waiting_reason",
+                              "dropped": "dropped_reason"}
     WORK_EVIDENCE_KINDS: Final = ("note", "link", "file", "commit", "log")
 
     def _work_active(self) -> list[WorkItem]:
@@ -9927,9 +9936,18 @@ class Org:
             dt = dt.replace(tzinfo=timezone.utc)
         return now_ts - dt.timestamp()
 
+    #: statuses the hourly sweep archives by itself. `dropped` joined `done`
+    #: (user 2026-09-05, Astra 2026-09-05): work that was cancelled or failed
+    #: unrecoverably is as finished as work that succeeded, and leaving only
+    #: the successful kind to archive itself meant every dead item stayed on
+    #: the main list for good. `superseded` is deliberately NOT here — its
+    #: replacement pointer is the thing you follow, and it is left as it was.
+    WORK_ARCHIVES_ITSELF: Final = ("done", "dropped")
+
     def _work_eligible(self, it: WorkItem, now_ts: float) -> bool:
-        """Done, and the docket update is STRICTLY older than one hour."""
-        if it.get("status") != "done":
+        """Closed by an outcome that archives itself — done or dropped — and
+        the docket update is STRICTLY older than one hour."""
+        if it.get("status") not in self.WORK_ARCHIVES_ITSELF:
             return False
         age = self._work_age_s(it, now_ts)
         return age is not None and age > self.WORK_ARCHIVE_AFTER_S
@@ -9975,15 +9993,24 @@ class Org:
                       {"slugs": named, "why": "backfilled on the next write"}, [])
         active = self._work_active()
         moved: list[str] = []
+        # ⚠ THE OUTCOME IS RECORDED PER ITEM, not asserted once for the batch.
+        # This line used to say "done for over an hour" for everything it
+        # swept, which was true while `done` was the only status that archived
+        # itself; now that a cancelled or failed item ages out on the same
+        # clock, a single phrase would write "done" into the durable org log
+        # about work that was never completed.
+        outcomes: dict[str, str] = {}
         for it in list(active):
             if self._work_eligible(it, now_ts) and not self._work_attention(it):
                 active.remove(it)
                 it["archived_at"] = now()
                 self.d.setdefault("work_items_archive", []).append(it)
                 moved.append(it["slug"])
+                outcomes[it["slug"]] = str(it.get("status") or "")
         if moved:
             self._log("work_archived", "orgtree",
-                      {"items": moved, "why": "done for over an hour"}, [])
+                      {"items": moved, "why": "closed for over an hour",
+                       "outcomes": outcomes}, [])
         return moved
 
     def _work_owner_state(self, it: WorkItem) -> tuple[bool, str | None]:
@@ -10096,6 +10123,7 @@ class Org:
             "delivery": self._work_delivery_view(it),
             "blocked_reason": it.get("blocked_reason"),
             "waiting_reason": it.get("waiting_reason"),
+            "dropped_reason": it.get("dropped_reason"),
             "participants": list(it.get("participants") or []),
             "dismissals": list(it.get("dismissals") or []),
             "archived": self._work_archived(it, physically, now_ts),
@@ -10506,6 +10534,9 @@ class Org:
             "rev": 1, "kind": kind, "title": t,
             "objective": obj,
             "status": status, "blocked_reason": None, "waiting_reason": None,
+            # a new item can never start `dropped` (the status guard above
+            # refuses it), so this is only ever the field's resting value
+            "dropped_reason": None,
             "owner": (cast(WorkActor, self._work_actor(own)) if own else None),
             # named only when the item ENTERS review, never at creation: a
             # reviewer for work that has not been done yet is a name nobody
@@ -10564,6 +10595,10 @@ class Org:
         "waiting_reason": "the external event this item is waiting for AND how "
                           "you will learn it happened (a watchdog, a message, "
                           "a build notification)",
+        "dropped_reason": "why this work ended without being completed — say "
+                          "plainly whether it was CANCELLED or FAILED "
+                          "UNRECOVERABLY, who decided, and what (if anything) "
+                          "would have to change for it to be worth resuming",
     }
 
     def _work_state_info(self, it: WorkItem, was: str | None,
@@ -10572,17 +10607,28 @@ class Org:
         has been set.
 
         Three rules, one per situation, and they are not the same rule:
-          · ENTERING blocked or waiting REQUIRES the field. That is the user's
-            2026-09-05 requirement: those two states must say something.
+          · ENTERING a state in the map REQUIRES its field. That is the user's
+            2026-09-05 requirement: blocked, waiting and dropped must each say
+            something. For `dropped` it is the whole record of why the work
+            ended, so it is the one thing the item cannot be closed without.
           · ALREADY in the state and the field not supplied: left alone. Items
             that predate this requirement stay editable rather than becoming
             un-updatable, which is why the check is on the transition and not
             on every update.
+            ⚠ REACHABLE FOR blocked AND waiting ONLY, and nothing here
+            changes that: this helper carries state information, it does not
+            grant edit rights over a CLOSED item. A dropped item is closed, so
+            the closed-item guard refuses a plain update before this runs. A
+            legacy drop therefore stays READABLE and REOPENABLE but is not
+            editable while it stays dropped — it cannot be given a reason
+            after the fact, and a stored one cannot be corrected in place.
+            Said here rather than left as a rule that reads as though it
+            covered all three states.
           · A BLANK string supplied is REFUSED, never stored. Blanking used to
             erase the field silently; erasing required information without a
             word is exactly the failure the requirement exists to stop.
-        Any other status clears both fields — a reason must never survive the
-        state it describes.
+        Any other status clears every one of them — a reason must never
+        survive the state it describes.
         """
         st = it.get("status")
         for state, field in self.WORK_STATE_INFO.items():
@@ -10603,6 +10649,20 @@ class Org:
                     f"moving an item to `{state}` needs a nonblank {field}: "
                     f"{asks}")
 
+    def _work_clear_state_info(self, it: WorkItem) -> None:
+        """Clear EVERY state-information field, for the verbs that set a status
+        directly instead of going through `work_update`.
+
+        It reads the map rather than naming the fields, because the failure it
+        exists to stop is silent: a verb that clears the two fields it was
+        written beside and not the third leaves an item reading `DROPPED
+        BECAUSE …` while it sits in some other state, and nothing fails — the
+        pane simply lies. Adding a state to `WORK_STATE_INFO` now covers these
+        callers by construction.
+        """
+        for field in self.WORK_STATE_INFO.values():
+            it[field] = None                          # type: ignore[literal-required]
+
     def work_update(self, actor: str, wid: str, done_so_far: Any,
                     working_on_next: Any, status: str | None = None,
                     attention: bool | None = None,
@@ -10611,6 +10671,7 @@ class Org:
                     title: str | None = None, objective: str | None = None,
                     reopen: bool = False,
                     waiting_reason: str | None = None,
+                    dropped_reason: str | None = None,
                     owner: str | None = None,
                     reviewer: str | None = None) -> dict[str, Any]:
         """THE docket status update. Always carries both lists (either may be
@@ -10673,9 +10734,9 @@ class Org:
         now_ts = _time.time()
         if self._work_archived(it, phys, now_ts) and not reopen:
             raise LedgerError(
-                f"{wid} is ARCHIVED (done for over an hour). If real work "
-                f"resumes, pass reopen=true with the new status; do not "
-                f"create a duplicate item")
+                f"{wid} is ARCHIVED ({it.get('status')} for over an hour). If "
+                f"real work resumes, pass reopen=true with the new status; do "
+                f"not create a duplicate item")
         if it.get("status") in self.WORK_CLOSED and not reopen:
             # a closed item is not resumed by accident: the acceptance (or the
             # supersede pointer) describes a completion that an ordinary
@@ -10727,10 +10788,14 @@ class Org:
                 self.d.setdefault("work_items", []).append(it)
             it["archived_at"] = None
             # the earlier acceptance described a completion that no longer
-            # stands; history keeps who accepted what and when
+            # stands; history keeps who accepted what and when — and, for work
+            # that had been ended unsuccessfully, WHY it was ended, because
+            # resuming clears the live field and that sentence is the whole
+            # record of the outcome being overturned
             self._work_hist(it, actor, "reopen",
                             {"from": it.get("status"),
                              "accepted_was": it.get("accepted"),
+                             "dropped_reason_was": it.get("dropped_reason"),
                              "superseded_by_was": it.get("superseded_by")})
             it["accepted"] = None
             it["superseded_by"] = None
@@ -10746,7 +10811,15 @@ class Org:
             # call.
             self._work_stamp_status(it)
         self._work_state_info(it, was, {"blocked_reason": blocked_reason,
-                                        "waiting_reason": waiting_reason})
+                                        "waiting_reason": waiting_reason,
+                                        "dropped_reason": dropped_reason})
+        if it.get("status") == "dropped" and was != "dropped":
+            # the OUTCOME outlives the field. A later reopen clears
+            # `dropped_reason` (a reason must not survive its state), so
+            # without this line the docket would end up with no trace at all
+            # of why the work was ended — which is the one thing this status
+            # exists to record.
+            changes["dropped_reason"] = it.get("dropped_reason")
         if title is not None and str(title).strip():
             changes["title"] = {"from": it.get("title"), "to": str(title).strip()[:200]}
             it["title"] = str(title).strip()[:200]
@@ -11191,8 +11264,7 @@ class Org:
         frm = it.get("status")
         it["status"] = "done"
         self._work_stamp_status(it)
-        it["blocked_reason"] = None
-        it["waiting_reason"] = None
+        self._work_clear_state_info(it)
         it["accepted"] = {"at": now(), "by": self._work_actor(actor),
                           "note": (str(note).strip()[:500] if note else None),
                           "via": op}
@@ -11263,7 +11335,22 @@ class Org:
             return out
         frm = it.get("status")
         it["status"] = "in_progress"
-        it["blocked_reason"] = None
+        # A sendback is a real status change and belongs in the status clock
+        # like any other — this route was added after the clock and did not
+        # stamp, so an item sent back sorted by whatever it last changed to.
+        #
+        # ⚠ ONLY WHEN IT MOVED THE VALUE, the same guard `dismiss` carries: a
+        # sendback on an item already in_progress assigns in_progress over
+        # in_progress, and stamping that would turn "most recently changed
+        # state" into "most recently touched".
+        if frm != "in_progress":
+            self._work_stamp_status(it)
+        # ⚠ EVERY state-information field, not just `blocked_reason`. This verb
+        # does not require the item to be AT `review` — a superior of the owner
+        # or the user may send back an item that is `waiting` — so it can leave
+        # a state that owes information, and a field cleared by name is a field
+        # that stops being cleared the moment the map grows.
+        self._work_clear_state_info(it)
         self._work_hist(it, actor, "review_changes",
                         {"from": frm, "note": (str(note)[:200] if note else None)})
         it["docket_at"] = now()
@@ -11434,8 +11521,10 @@ class Org:
         self._work_stamp_status(it)
         it["superseded_by"] = other["slug"]
         it["manual_attention"] = None
-        it["blocked_reason"] = None
-        it["waiting_reason"] = None
+        # ⚠ a DROPPED item may be superseded (nothing here refuses one), so
+        # this clear is load-bearing and not merely tidy: without it the pane
+        # would print why the work was abandoned above a live replacement.
+        self._work_clear_state_info(it)
         self._work_hist(it, actor, "supersede", {"from": frm, "by": other["slug"]})
         self._work_stamp_docket(it, actor)
         return {"superseded": wid, "by": other["slug"], "rev": it["rev"]}
@@ -11464,7 +11553,6 @@ class Org:
         it["status"] = "blocked"
         # the SYSTEM's own transition into blocked, and it carries its own real
         # reason — it must keep working without agent input (Astra 2026-09-05).
-        # It also leaves `waiting`, so any waiting_reason stops applying.
         #
         # It is also a real state change, so it belongs in the status clock
         # like any other transition, even though nobody typed a status here.
@@ -11474,8 +11562,12 @@ class Org:
         # recently changed state" mean "most recently touched".
         if frm != "blocked":
             self._work_stamp_status(it)
+        # The clear comes FIRST and the new reason after it: the item may have
+        # arrived here from `waiting` or from `dropped`, and every reason it
+        # was carrying describes a state it has just left. It reads the state
+        # map, so it also covers the `waiting_reason` line this replaces.
+        self._work_clear_state_info(it)
         it["blocked_reason"] = f"attention flag dismissed by the user ({cur.get('reason')})"[:500]
-        it["waiting_reason"] = None
         if phys:
             # a dismissed flag on an archived item leaves it blocked, which is
             # open work — it comes back to the active list

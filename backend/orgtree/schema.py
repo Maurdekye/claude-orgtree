@@ -611,6 +611,7 @@ class WorkItem(TypedDict):
     # Required on entry to that state, cleared on the way out.
     blocked_reason: NotRequired[str | None]   # what blocks, what would unblock, who can act
     waiting_reason: NotRequired[str | None]   # the external event, and how the agent hears of it
+    dropped_reason: NotRequired[str | None]   # why the work ended: cancelled, or failed unrecoverably
     owner: WorkActor | None         # identity + generation at assignment
     participants: list[str]         # collaborator node ids: read + status update + evidence + attach a question
     created_by: WorkActor | str

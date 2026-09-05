@@ -424,7 +424,8 @@ def participants_cannot_close_claim_or_check():
     ok(slug, "boss", "check", slug=wid, index=0, evidence_ref="x")
     before = len([h for h in get_item(slug, wid)["history"] if h["op"] == "assign"])
     ok(slug, "boss", "update", slug=wid, status="dropped", owner="peer",
-       done_so_far=["p"], working_on_next=[])
+       done_so_far=["p"], working_on_next=[],
+       dropped_reason="cancelled by the owner")
     it = get_item(slug, wid)
     assert it["owner"]["node"] == "peer", "the administrative update took the item"
     assert len([h for h in it["history"] if h["op"] == "assign"]) == before, \
@@ -432,7 +433,8 @@ def participants_cannot_close_claim_or_check():
     # a participant still cannot reopen a closed item
     wid2 = create(slug, node="boss", title="closed one", participants=["stranger"])
     ok(slug, "boss", "update", slug=wid2, status="dropped",
-       done_so_far=["p"], working_on_next=[])
+       done_so_far=["p"], working_on_next=[],
+       dropped_reason="cancelled: not needed")
     assert "owner-level" in refused(slug, "stranger", "update", slug=wid2, reopen=True,
                                     done_so_far=["p"], working_on_next=[])
 
@@ -459,7 +461,8 @@ def supersede_is_honest():
     assert "cycle" in refused(slug, "boss", "supersede", slug=b, by=a) or \
         "superseded" in refused(slug, "boss", "supersede", slug=b, by=a)
     c = create(slug, node="boss", title="C")
-    ok(slug, "boss", "update", slug=c, status="dropped", done_so_far=["no"], working_on_next=[])
+    ok(slug, "boss", "update", slug=c, status="dropped", done_so_far=["no"],
+       working_on_next=[], dropped_reason="cancelled: C is not needed")
     assert "open work" in refused(slug, "boss", "supersede", slug=b, by=c)
     # SAME RULE AS `dependencies`, for the same reason: the pointer is a
     # title-derived name now, so a viewer who may not open it is not told what
@@ -543,14 +546,18 @@ def dropped_and_superseded():
     it = get_item(slug, a)
     assert it["status"] == "superseded" and it["superseded_by"] == b
     assert "itself" in refused(slug, "boss", "supersede", slug=b, by=b)
-    ok(slug, "boss", "update", slug=b, status="dropped", done_so_far=["nothing"], working_on_next=[])
+    ok(slug, "boss", "update", slug=b, status="dropped", done_so_far=["nothing"],
+       working_on_next=[], dropped_reason="cancelled: B is not needed")
     js = listing(slug)
     assert js["counts"]["active"] == 0, js["counts"]
-    assert {x["slug"] for x in js["items"]} == {a, b}, "closed-but-not-done items stay listed (only done ages out)"
+    # both are closed and neither is an HOUR old yet, so both are still listed.
+    # `dropped` now ages out on the same clock as done (test_work_closure §2);
+    # `superseded` still never does.
+    assert {x["slug"] for x in js["items"]} == {a, b}, "a just-closed item stays listed"
 
 
-check("supersede and dropped close an item without archiving it; active count excludes them",
-      dropped_and_superseded)
+check("supersede and dropped close an item; neither is archived on the spot; "
+      "active count excludes them", dropped_and_superseded)
 
 
 # ============================================================== §4 archive
@@ -616,7 +623,8 @@ def physical_move_on_next_write_and_reopen():
     assert not phys
     assert listing(slug)["counts"]["active"] == 2      # the reopened one + "unrelated write"
     # explicit archive of a closed item, early
-    ok(slug, "boss", "update", slug=wid, status="dropped", done_so_far=["no"], working_on_next=[])
+    ok(slug, "boss", "update", slug=wid, status="dropped", done_so_far=["no"],
+       working_on_next=[], dropped_reason="cancelled: no longer wanted")
     ok(slug, "boss", "archive", slug=wid)
     assert listing(slug, archived=True)["archived"][0]["slug"] == wid
     assert "done|superseded|dropped" in refused(slug, "boss", "archive", slug=create(slug))

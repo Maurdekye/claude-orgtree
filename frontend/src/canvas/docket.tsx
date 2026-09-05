@@ -57,11 +57,15 @@ const STATUS_LABEL: Record<string, string> = {
 // `waiting` is an EXTERNAL event, never the user — asking the user is the
 // attention flag (user ruling 2026-09-05)
 const WAITING_HELP = 'Active work waiting on an external event, not on the user — it names the event and how the agent will hear of it, and stops its own idle reminders until then'
+// the word on its own could be read as "finished with"; it means the opposite
+// of Done, and the pane says which of the two ways it ended
+const DROPPED_HELP = 'Ended WITHOUT being completed — cancelled, or failed in a way it cannot be recovered from. Closed, and archived on the same clock as Done, but never Done'
 const statusLabel = (status: string): string => STATUS_LABEL[status] ?? status
 /** hover help, only where the status word can be read two ways */
 const statusHelp = (status: string): string | undefined =>
   (status === 'review' ? REVIEW_HELP
-    : status === 'waiting' ? WAITING_HELP : undefined)
+    : status === 'waiting' ? WAITING_HELP
+      : status === 'dropped' ? DROPPED_HELP : undefined)
 
 /** Group-by-status order, exactly as specified: effective attention first,
  *  then blocked, in_progress, review, open, waiting, done, then everything
@@ -1275,7 +1279,13 @@ function DocketPane({ slug, item, toast, asksById, onDismiss, close, onFocusAgen
       ? { heading: 'BLOCKED BECAUSE', text: item.blocked_reason ?? '' }
       : item.status === 'waiting'
         ? { heading: 'WAITING FOR', text: item.waiting_reason ?? '' }
-        : null
+        : item.status === 'dropped'
+          // the heading says the outcome, not just the field name: `Dropped`
+          // is the status word, and what the reader needs beside it is that
+          // this work ENDED and was not completed
+          ? { heading: 'ENDED WITHOUT COMPLETING — WHY',
+              text: item.dropped_reason ?? '' }
+          : null
   // as an actor line does: close first, or the desk opens behind this modal
   const goToAgent = onFocusAgent
     ? (id: string) => { close(); onFocusAgent(id) }

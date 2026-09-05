@@ -4283,6 +4283,7 @@ def _work_mutate_action(org: Org, nid: str, a: dict[str, Any],
             attention_reason=_s("attention_reason"),
             blocked_reason=_s("blocked_reason"),
             waiting_reason=_s("waiting_reason"),
+            dropped_reason=_s("dropped_reason"),
             title=_s("title"), objective=_s("objective"),
             reopen=_arg_flag(a, "reopen"),
             # the explicit assignment target. Absent, the update claims the
