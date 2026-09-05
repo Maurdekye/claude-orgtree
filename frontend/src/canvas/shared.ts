@@ -1430,7 +1430,7 @@ export const FREEZE_LABEL_SHORT: Record<FreezeKind, string> = {
 // cannot drift apart. First measurement came in at 101.63px against a guessed
 // 58 — the guess would have shipped cards that still covered the desk on any
 // gutter between 66 and 110px, with the unit test green throughout.
-export const EJ_EDGE = 6     // the card's inset from the window edge
+export const EJ_EDGE = 6     // the card's inset from its edge of the free region
 export const EJ_FULL = 180   // .edge-jump max-width — the named card
 export const EJ_MID = 80     // measured 78.50 worst case (busy + unread dot)
 export const EJ_H = 26       // card height
@@ -1439,30 +1439,47 @@ export const EJ_GAP = 8      // clearance insisted on between card and desk
 export type EJForm = 'full' | 'mid' | 'tab'
 export type EJRect = { x0: number; y0: number; x1: number; y1: number }
 
+/** Placement is measured against `region` — the pin-free rectangle the camera
+ *  aims at — not the window (user bug 2026-09-05: cards are z-index 7, pins
+ *  10–16, so a card at the window edge under a docked pin is invisible).
+ *
+ *  ⚠ `region` is REQUIRED: defaulting it to the viewport would give a caller
+ *  that forgot it the old placement back, silently. Passing the viewport IS
+ *  the unpinned case and reduces every line here to the old arithmetic —
+ *  edgejump.test.ts §7 holds that identity down.
+ *
+ *  Coordinates: `desk`, `elev` and `region` are all viewport-local, and the
+ *  returned `inset` is the distance from the window edge on the card's own
+ *  side — the space CSS `left`/`right` anchor in. Unpinned it is `EJ_EDGE`.
+ */
 export function edgeJumpPlacement(
   side: 'l' | 'r',
   desk: EJRect,
   vp: { width: number; height: number },
   elev: number,
-): { form: EJForm; y: number; band: boolean } {
+  region: { x: number; y: number; w: number; h: number },
+): { form: EJForm; y: number; band: boolean; inset: number } {
+  const rx0 = region.x, rx1 = region.x + region.w
+  const ry0 = region.y, ry1 = region.y + region.h
+  const inset = (side === 'l' ? rx0 : vp.width - rx1) + EJ_EDGE
   const gutter = side === 'l'
-    ? desk.x0 - EJ_EDGE
-    : vp.width - desk.x1 - EJ_EDGE
-  // the neighbour's own elevation, kept inside the viewport
-  const atElev = Math.min(vp.height - EJ_H, Math.max(EJ_H, elev))
-  if (gutter >= EJ_FULL + EJ_GAP) return { form: 'full', y: atElev, band: false }
-  // the free band above / below the desk, whichever is deeper. No viewport
-  // clamp here: the band is inside the viewport by construction, and clamping
-  // would push a card in a shallow band back down onto the desk.
-  const above = desk.y0, below = vp.height - desk.y1
+    ? desk.x0 - (rx0 + EJ_EDGE)
+    : (rx1 - EJ_EDGE) - desk.x1
+  // the neighbour's own elevation, kept inside the region
+  const atElev = Math.min(ry1 - EJ_H, Math.max(ry0 + EJ_H, elev))
+  if (gutter >= EJ_FULL + EJ_GAP) return { form: 'full', y: atElev, band: false, inset }
+  // the free band above / below the desk, whichever is deeper. No clamp here:
+  // the band is inside the region by construction, and clamping would push a
+  // card in a shallow band back down onto the desk.
+  const above = desk.y0 - ry0, below = ry1 - desk.y1
   if (Math.max(above, below) >= EJ_H + EJ_GAP) {
     return {
-      form: 'full', band: true,
-      y: above >= below ? above / 2 : vp.height - below / 2,
+      form: 'full', band: true, inset,
+      y: above >= below ? ry0 + above / 2 : ry1 - below / 2,
     }
   }
-  if (gutter >= EJ_MID + EJ_GAP) return { form: 'mid', y: atElev, band: false }
-  return { form: 'tab', y: atElev, band: false }
+  if (gutter >= EJ_MID + EJ_GAP) return { form: 'mid', y: atElev, band: false, inset }
+  return { form: 'tab', y: atElev, band: false, inset }
 }
 
 export const ease = (t: number) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2)

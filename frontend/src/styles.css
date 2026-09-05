@@ -855,6 +855,10 @@ button.badge.audience-fold.alert {
   box-shadow: var(--shadow); max-width: 180px; white-space: nowrap;
   transition: color .12s, background .12s, border-color .12s;
 }
+/* ⚠ 6px is the UNPINNED value only: OrgCanvas writes an inline left/right from
+   edgeJumpPlacement()'s `inset` — the distance to the free region's edge on
+   that side, so a docked pin does not swallow the card (these are z-index 7,
+   pins 10-16). Unpinned, that inset is exactly this 6px. */
 .edge-jump.l { left: 6px; }
 .edge-jump.r { right: 6px; }
 .edge-jump:hover {

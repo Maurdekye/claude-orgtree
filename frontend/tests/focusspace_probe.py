@@ -22,6 +22,13 @@ free region computed from the same pin rectangles. Overflow is reported per
 edge, in pixels, so a failure says WHERE it escaped rather than just that it
 did.
 
+§G/§H add the EDGE JUMP CARDS (user bug 2026-09-05: they vanished when pins
+took space). Those need a browser for a second reason: jsdom reports every
+rect as 0x0, so `edgeJumps` bails on `!vp.width` and no card exists to look
+at under jsdom at all. And a rectangle is not the claim — the cards are
+z-index 7 under pins at 10-16, so §H also runs `document.elementFromPoint` at
+each card's own centre and requires the card itself to come back.
+
 ⚠ ANTI-VACUITY — A RED BASELINE, NOT AN INSPECTION. `--mutant viewport-centre`
 rebuilds the SAME page from an OrgCanvas whose `focusView` centres on the
 whole viewport again (the pre-w14aace89 camera), and `--mutant no-eye-region`
@@ -79,6 +86,15 @@ MUTANTS: dict[str, tuple[str, str, str]] = {
         "      const fillR = vp ? { w: vp.width, h: vp.height } : null",
         "the eye-focus gate measures screen-filling against the whole "
         "viewport again — the switchboard cannot open with a pin up"),
+    "jump-screen-edge": (
+        "    const reg = regionOf(vp)\n"
+        "    const free = reg.status === 'blocked'\n"
+        "      ? { x: 0, y: 0, w: vp.width, h: vp.height }\n"
+        "      : reg.rect",
+        "    const free = { x: 0, y: 0, w: vp.width, h: vp.height }",
+        "the edge jump cards hug the WINDOW edge again (user bug "
+        "2026-09-05) — a pin docked on that edge paints over them at "
+        "z-index 10-16 and the card is simply gone"),
 }
 
 
@@ -279,6 +295,34 @@ class Page:
     def box(self, sel: str) -> dict | None:
         return self.pg.evaluate(BOX, sel)
 
+    def jump_cards(self) -> list[dict]:
+        """Every rendered edge jump card: its REAL laid-out box, and whether a
+        REAL hit test at its own centre actually reaches it.
+
+        ⚠ `reached` is the whole point. A card's box being outside the pins is
+        an arithmetic claim; `document.elementFromPoint` at its centre coming
+        back as the card itself is the claim the user actually made — that they
+        can see and click it. Pins paint in z-index band 10-16 and a card is 7,
+        so a covered card still has a perfectly good rectangle and is still
+        invisible. Measuring only the rectangle would miss exactly the reported
+        bug."""
+        return self.pg.evaluate("""
+        () => [...document.querySelectorAll('.edge-jump')].map((e) => {
+          const r = e.getBoundingClientRect();
+          const cx = r.x + r.width / 2, cy = r.y + r.height / 2;
+          const hit = document.elementFromPoint(cx, cy);
+          return {
+            side: e.classList.contains('l') ? 'l' : 'r',
+            title: e.getAttribute('title'),
+            x: r.x, y: r.y, width: r.width, height: r.height,
+            reached: !!(hit && hit.closest('.edge-jump') === e),
+            covered_by: !hit ? null
+              : hit.closest('.pinwin') ? 'a pinned window'
+              : (hit.className || hit.tagName),
+          };
+        })
+        """)
+
     def toasts(self) -> list[str]:
         return self.pg.evaluate("() => window.__probe.toasts.slice()")
 
@@ -468,6 +512,76 @@ def run(html: pathlib.Path, verbose: bool = True) -> tuple[list[str], dict]:
                 bad(f"§E unpinned, the switchboard escapes the viewport by {ov}")
             else:
                 ok("§E unpinned, the switchboard fits the whole viewport")
+
+        # ---- §G POSITIVE CONTROL for the jump-card instrument (no pins)
+        # Everything §H asserts is of the form "the card is not covered". That
+        # is worth nothing until this section shows a card CAN be found and CAN
+        # be reached by a real hit test — otherwise a selector typo, a card
+        # that never rendered, or an elementFromPoint that always returns null
+        # would report the same clean sheet as a working fix.
+        P.reset()
+        P.click_agent("cto")
+        bare_cards = P.jump_cards()
+        obs["bare_jump_cards"] = bare_cards
+        if not bare_cards:
+            bad("§G no edge jump card rendered with NO pins at all — the "
+                "instrument below cannot see anything, so §H is vacuous")
+        else:
+            unreached = [c for c in bare_cards if not c["reached"]]
+            if unreached:
+                bad(f"§G unpinned, a jump card is not reachable by hit test: "
+                    f"{unreached}")
+            else:
+                ok(f"§G unpinned, {len(bare_cards)} jump card(s) render and a "
+                   "real hit test reaches each one: "
+                   + ", ".join(f"{c['side']}@{c['x']:.0f},{c['y']:.0f}"
+                               for c in bare_cards))
+
+        # ---- §H THE REPORTED BUG: pins docked on the sides, asymmetrically.
+        # A tall pin down the LEFT and a squat one BOTTOM-RIGHT, so the two
+        # sides are obstructed differently and a fix applied to one side, or a
+        # symmetric inset, does not pass.
+        P.reset(pins_asym)
+        P.click_agent("cto")
+        reg_j = clear_region(pins_asym, vp)
+        cards = P.jump_cards()
+        obs["pinned_jump_cards"], obs["jump_region"] = cards, reg_j
+        if not cards:
+            bad("§H NO jump card rendered at all with pins up — this is the "
+                "reported symptom: the proxies to the off-screen coworkers "
+                "disappear when pinned windows take space")
+        elif not reg_j:
+            bad("§H no free region computed for the pinned fixture")
+        else:
+            for c in cards:
+                where = (f"{c['side']} card '{c['title']}' at "
+                         f"{c['x']:.0f},{c['y']:.0f} "
+                         f"{c['width']:.0f}x{c['height']:.0f}")
+                under = [i for i, p in enumerate(pins_asym)
+                         if c["x"] < p["x"] + p["w"] and c["x"] + c["width"] > p["x"]
+                         and c["y"] < p["y"] + p["h"] and c["y"] + c["height"] > p["y"]]
+                if under:
+                    bad(f"§H the {where} overlaps pin(s) {under}")
+                else:
+                    ok(f"§H the {where} clears every pin")
+                ov = overflow(c, reg_j)
+                if any(v > 0 for v in ov.values()):
+                    bad(f"§H the {where} escapes the free region by {ov} px "
+                        f"(region {reg_j})")
+                else:
+                    ok(f"§H …and sits inside the free region {reg_j['w']}x"
+                       f"{reg_j['h']} at {reg_j['x']},{reg_j['y']}")
+                if not c["reached"]:
+                    bad(f"§H the {where} is NOT reachable — a hit test at its "
+                        f"own centre lands on {c['covered_by']!r}")
+                else:
+                    ok(f"§H …and a real hit test at its centre reaches it")
+            # the left card is the one the left pin used to swallow; if it is
+            # missing the section above quietly checked only the right one
+            if not any(c["side"] == "l" for c in cards):
+                bad("§H no LEFT jump card — the side the tall pin covers is "
+                    "the side this section exists to check, so its absence is "
+                    "the bug, not a pass")
 
         ctx.close()
         b.close()

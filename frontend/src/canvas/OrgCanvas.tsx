@@ -1847,16 +1847,28 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
 
   // edge JUMP CARDS (user spec 2026-08-17): at desk zoom the focused agent's
   // coworkers (live siblings) are usually off-screen — one small card per
-  // side hugs the SCREEN edge at the neighbor's own screen elevation
-  // (clamped into view) and glides the camera there on click. Only the NEXT
+  // side hugs the FREE REGION's edge at the neighbor's own screen elevation
+  // (clamped into it) and glides the camera there on click. Only the NEXT
   // sibling over in each direction, and only while that sibling is genuinely
-  // not clickable on-screen — a visible card needs no proxy.
+  // not clickable — a visible card needs no proxy.
+  //
+  // user bug 2026-09-05: BOTH the placement and the "is it already visible?"
+  // test use the region, not the window. A sibling under a pin is on-screen
+  // but unreachable, so counting it visible suppressed its proxy entirely.
   const edgeJumps = useMemo(() => {
     if (!focusId || compact) return []
     const me = map.get(focusId)
     if (!me || me.id === USER || me.isBearerOf) return []
     const vp = viewportRef.current?.getBoundingClientRect()
     if (!vp || !vp.width) return []
+    // ⚠ 'blocked' = pins cover the viewport and `rect` is empty; placing
+    // against it would put the cards off the top of the screen. Nowhere is
+    // better than the window, so fall back to it. A region too small for the
+    // tab form is the same deal: degraded, never dropped.
+    const reg = regionOf(vp)
+    const free = reg.status === 'blocked'
+      ? { x: 0, y: 0, w: vp.width, h: vp.height }
+      : reg.rect
     const sibs = (map.get(me.parent ?? '')?.children ?? [])
       .map((c) => c.id)
       .filter((k) => k !== DRAFT && map.get(k)?.state === 'live'
@@ -1874,7 +1886,8 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
       x1: (mp.x + ms.w) * view.z + view.x, y1: (mp.y + ms.h) * view.z + view.y,
     }
     const out: {
-      n: CanvasNode; side: 'l' | 'r'; y: number; form: EJForm; band: boolean
+      n: CanvasNode; side: 'l' | 'r'; y: number; inset: number
+      form: EJForm; band: boolean
     }[] = []
     for (const [k, side] of [[sibs[at - 1], 'l'], [sibs[at + 1], 'r']] as const) {
       if (!k) continue
@@ -1883,13 +1896,16 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
       const { w, h } = sizeOf(k)
       const x0 = p.x * view.z + view.x, y0 = p.y * view.z + view.y
       const x1 = (p.x + w) * view.z + view.x, y1 = (p.y + h) * view.z + view.y
-      if (x1 > 0 && x0 < vp.width && y1 > 0 && y0 < vp.height) continue  // visible
-      const put = edgeJumpPlacement(side, desk, vp, (y0 + y1) / 2)
-      out.push({ n, side, y: put.y, form: put.form, band: put.band })
+      // reachable without a proxy = it shows in the free region (unpinned,
+      // `free` is the viewport and this is the old test term for term)
+      if (x1 > free.x && x0 < free.x + free.w
+        && y1 > free.y && y0 < free.y + free.h) continue
+      const put = edgeJumpPlacement(side, desk, vp, (y0 + y1) / 2, free)
+      out.push({ n, side, y: put.y, inset: put.inset, form: put.form, band: put.band })
     }
     return out
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [focusId, map, target, hidden, view, compact])
+  }, [focusId, map, target, hidden, view, compact, pins, regionOf])
 
   const lod = view.z < Z_MINI ? 'mini' : 'norm'
 
@@ -2493,7 +2509,10 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
             + ' prov-' + providerOf(e.n.tier ?? '')
             + (e.band ? ' ej-band' : '')
             + ((e.n.mail_pending ?? 0) > 0 ? ' ej-mail' : '')}
-          style={{ top: e.y }} title={`jump to ${e.n.id}`}
+          /* inline because it is data: the window-to-region distance on this
+             side, over the stylesheet's 6px (which is the unpinned value) */
+          style={{ top: e.y, ...(e.side === 'l' ? { left: e.inset } : { right: e.inset }) }}
+          title={`jump to ${e.n.id}`}
           onPointerDown={(ev) => ev.stopPropagation()}
           onClick={() => centerOn(e.n.id)}>
           {e.side === 'l' && <ChevronLeftIcon fontSize="inherit" />}

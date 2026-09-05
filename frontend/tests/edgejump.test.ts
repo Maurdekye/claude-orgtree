@@ -28,31 +28,40 @@ import {
   EJ_EDGE, EJ_FULL, EJ_GAP, EJ_H, EJ_MID, edgeJumpPlacement, NODE_H, Z_DESK,
   type EJForm, type EJRect,
 } from '../src/canvas/shared'
+import { clearRegion } from '../src/canvas/clearRect'
 
 // The widths each form is pinned to by styles.css. `tab` is the
 // max-width: 22px on `.edge-jump.ej-tab:not(:hover)`; `mid` drops the name and
 // is bounded by EJ_MID; `full` is the .edge-jump max-width.
 const WIDTH: Record<EJForm, number> = { full: EJ_FULL, mid: EJ_MID, tab: 22 }
 
-// the desk a focus glide produces: square, side min(vw,vh) − 48, centred —
-// this is centerOn()'s fit, restated so the fixtures are the real geometry
-// rather than numbers picked to make the test pass.
-function deskFor(vw: number, vh: number): EJRect {
-  const side = Math.max(Z_DESK * NODE_H, Math.min(vw, vh) - 48)
+type Reg = { x: number; y: number; w: number; h: number }
+const whole = (vw: number, vh: number): Reg => ({ x: 0, y: 0, w: vw, h: vh })
+
+// the desk a focus glide produces: square, side min(rw,rh) − 48, centred IN
+// THE FREE REGION — this is centerOn()'s fit, restated so the fixtures are the
+// real geometry rather than numbers picked to make the test pass.
+function deskIn(r: Reg): EJRect {
+  const side = Math.max(Z_DESK * NODE_H, Math.min(r.w, r.h) - 48)
   return {
-    x0: (vw - side) / 2, x1: (vw + side) / 2,
-    y0: (vh - side) / 2, y1: (vh + side) / 2,
+    x0: r.x + (r.w - side) / 2, x1: r.x + (r.w + side) / 2,
+    y0: r.y + (r.h - side) / 2, y1: r.y + (r.h + side) / 2,
   }
 }
+const deskFor = (vw: number, vh: number): EJRect => deskIn(whole(vw, vh))
 
-// the box the card actually occupies, from the placement plus its form's width
+// the box the card actually occupies, from the placement's own `inset` plus
+// its form's width. ⚠ THE INSET COMES FROM THE PLACEMENT, not from EJ_EDGE:
+// reading the constant here instead would hard-code the screen-hugging
+// position and every region assertion below would be measuring the old
+// behaviour while claiming to measure the new one.
 function boxOf(
-  side: 'l' | 'r', put: { form: EJForm; y: number }, vw: number,
+  side: 'l' | 'r', put: { form: EJForm; y: number; inset: number }, vw: number,
 ) {
   const w = WIDTH[put.form]
   return {
-    x0: side === 'l' ? EJ_EDGE : vw - EJ_EDGE - w,
-    x1: side === 'l' ? EJ_EDGE + w : vw - EJ_EDGE,
+    x0: side === 'l' ? put.inset : vw - put.inset - w,
+    x1: side === 'l' ? put.inset + w : vw - put.inset,
     y0: put.y - EJ_H / 2, y1: put.y + EJ_H / 2,
   }
 }
@@ -78,7 +87,8 @@ test('§1 no jump card overlaps the focused desk, at any window shape', () => {
     for (const side of ['l', 'r'] as const) {
       // the worst case: a coworker on the same layout row, so the card's
       // natural elevation is dead centre — straight over the chat text
-      const put = edgeJumpPlacement(side, desk, vp, (desk.y0 + desk.y1) / 2)
+      const put = edgeJumpPlacement(side, desk, vp, (desk.y0 + desk.y1) / 2,
+        whole(vw, vh))
       const box = boxOf(side, put, vw)
       assert.equal(overlaps(box, desk), false,
         `${name} ${vw}x${vh} side=${side}: ${put.form} card `
@@ -93,7 +103,7 @@ test('§2 a card is always inside the viewport — degraded, never dropped', () 
     const desk = deskFor(vw, vh)
     for (const side of ['l', 'r'] as const) {
       const put = edgeJumpPlacement(side, desk, { width: vw, height: vh },
-        (desk.y0 + desk.y1) / 2)
+        (desk.y0 + desk.y1) / 2, whole(vw, vh))
       const box = boxOf(side, put, vw)
       assert.ok(box.y0 >= 0 && box.y1 <= vh,
         `${name}: card escaped the viewport vertically (${box.y0}..${box.y1})`)
@@ -107,7 +117,7 @@ test('§3 the form matches the room actually available', () => {
   const vp = (w: number, h: number) => ({ width: w, height: h })
   // wide: the gutter takes a full named card, at the coworker's own elevation
   let d = deskFor(1440, 860)
-  let put = edgeJumpPlacement('l', d, vp(1440, 860), 430)
+  let put = edgeJumpPlacement('l', d, vp(1440, 860), 430, whole(1440, 860))
   assert.equal(put.form, 'full')
   assert.equal(put.band, false)
   assert.equal(put.y, 430, 'a card with room stays at the neighbour elevation')
@@ -115,7 +125,7 @@ test('§3 the form matches the room actually available', () => {
   // narrow: gutter is 24px, but the band above/below is deep — keep the NAME
   // by moving into the band rather than shedding down to a tab
   d = deskFor(700, 900)
-  put = edgeJumpPlacement('l', d, vp(700, 900), 450)
+  put = edgeJumpPlacement('l', d, vp(700, 900), 450, whole(700, 900))
   assert.equal(put.form, 'full')
   assert.equal(put.band, true)
   assert.ok(put.y + EJ_H / 2 <= d.y0,
@@ -124,13 +134,13 @@ test('§3 the form matches the room actually available', () => {
   // near square: thin gutter AND shallow band — the one shape with nowhere to
   // go, which is what the tab form exists for
   d = deskFor(900, 860)
-  put = edgeJumpPlacement('l', d, vp(900, 860), 430)
+  put = edgeJumpPlacement('l', d, vp(900, 860), 430, whole(900, 860))
   assert.equal(put.form, 'tab')
   assert.equal(put.band, false)
 
   // a gutter between the two thresholds sheds only the name
   d = deskFor(1280, 1000)
-  put = edgeJumpPlacement('l', d, vp(1280, 1000), 500)
+  put = edgeJumpPlacement('l', d, vp(1280, 1000), 500, whole(1280, 1000))
   assert.equal(put.form, 'mid')
 })
 
@@ -144,7 +154,8 @@ test('§4 the Z_DESK floor case: desk overflows, gutter is negative', () => {
   const desk = deskFor(vw, vh)
   assert.ok(desk.x0 < 0, 'fixture must actually overflow, else §4 proves nothing')
   for (const side of ['l', 'r'] as const) {
-    const put = edgeJumpPlacement(side, desk, { width: vw, height: vh }, 130)
+    const put = edgeJumpPlacement(side, desk, { width: vw, height: vh }, 130,
+      whole(vw, vh))
     assert.equal(put.form, 'tab')
     assert.ok(Number.isFinite(put.y), 'y must stay a real number')
   }
@@ -160,24 +171,26 @@ test('§5 the gutter threshold is honoured exactly at the boundary', () => {
   const vh = 1000
   const want = EJ_EDGE + EJ_FULL + EJ_GAP
   const vp = { width: want + 900, height: vh }
+  const wholeVp = whole(vp.width, vp.height)
   const tall = (x0: number): EJRect =>
     ({ x0, x1: x0 + 400, y0: 5, y1: vh - 5 })
 
   const at = tall(want)
   assert.equal(Math.max(at.y0, vh - at.y1) < EJ_H + EJ_GAP, true,
     'fixture must leave no usable band, else this tests the wrong branch')
-  assert.equal(edgeJumpPlacement('l', at, vp, 500).form, 'full')
+  assert.equal(edgeJumpPlacement('l', at, vp, 500, wholeVp).form, 'full')
 
   // one pixel less and it must step down rather than cover the desk
-  const put = edgeJumpPlacement('l', tall(want - 1), vp, 500)
+  const put = edgeJumpPlacement('l', tall(want - 1), vp, 500, wholeVp)
   assert.equal(put.form, 'mid',
     'a gutter one pixel under the threshold must shed the name')
   assert.equal(overlaps(boxOf('l', put, vp.width), tall(want - 1)), false)
 
   // and the mid → tab boundary, same isolation
   const midEdge = EJ_EDGE + EJ_MID + EJ_GAP
-  assert.equal(edgeJumpPlacement('l', tall(midEdge), vp, 500).form, 'mid')
-  assert.equal(edgeJumpPlacement('l', tall(midEdge - 1), vp, 500).form, 'tab')
+  assert.equal(edgeJumpPlacement('l', tall(midEdge), vp, 500, wholeVp).form, 'mid')
+  assert.equal(edgeJumpPlacement('l', tall(midEdge - 1), vp, 500, wholeVp).form,
+    'tab')
 })
 
 // ---------------------------------------------------------------------------
@@ -193,7 +206,8 @@ test('§6 CONTROL — the old fixed placement DOES overlap, as it must', () => {
     const desk = deskFor(vw, vh)
     for (const side of ['l', 'r'] as const) {
       // the old code: always full width, always at the neighbour's elevation
-      const old = boxOf(side, { form: 'full', y: (desk.y0 + desk.y1) / 2 }, vw)
+      const old = boxOf(side,
+        { form: 'full', y: (desk.y0 + desk.y1) / 2, inset: EJ_EDGE }, vw)
       if (overlaps(old, desk)) offenders.push(`${name}/${side}`)
     }
   }
@@ -202,7 +216,106 @@ test('§6 CONTROL — the old fixed placement DOES overlap, as it must', () => {
     + 'no-overlap assertions above prove nothing about the fix')
   // and specifically at the shape the user reported it on
   const narrow = deskFor(700, 900)
-  const oldNarrow = boxOf('l', { form: 'full', y: 450 }, 700)
+  const oldNarrow = boxOf('l', { form: 'full', y: 450, inset: EJ_EDGE }, 700)
   assert.equal(overlaps(oldNarrow, narrow), true,
     'CONTROL BROKEN: the reported narrow-window case did not reproduce')
+})
+
+// ---------------------------------------------------------------------------
+// user bug 2026-09-05: WITH A PIN DOCKED ON AN EDGE, THE CARD ON THAT EDGE WAS
+// GONE. Pins paint in z-index band 10–16 and a jump card is 7, so a card 6px
+// from the window edge under a docked pin is not crowded — it is covered.
+// Placement now measures against the clear region (clearRect.ts), the same one
+// the camera fits the desk into.
+
+const PIN_GAP = 12   // clearRect.PIN_GAP, restated so a drift shows up here
+
+/** the raw pin rectangles, NOT the gap-grown obstacles: what the reader
+ *  actually sees painted over the canvas, which is what a card must clear. */
+type Pin = { x: number; y: number; w: number; h: number }
+const hits = (b: EJRect, p: Pin) =>
+  b.x0 < p.x + p.w && b.x1 > p.x && b.y0 < p.y + p.h && b.y1 > p.y
+
+// a tall pin down the LEFT and a squat one at the BOTTOM-RIGHT: both sides
+// obstructed, asymmetrically, which is the shape that catches a fix applied to
+// one side only or to a symmetric inset.
+const VW = 1280, VH = 900
+const PINS: Pin[] = [
+  { x: 0, y: 0, w: 360, h: VH },
+  { x: VW - 420, y: VH - 300, w: 420, h: 300 },
+]
+
+test('§7 IDENTITY — region = viewport is the old placement, term for term', () => {
+  // The region argument is required precisely so that nobody gets the old
+  // behaviour by accident; this pins down that passing the viewport IS the old
+  // behaviour, so the unpinned canvas is provably unchanged rather than
+  // unchanged-looking.
+  for (const [, vw, vh] of SHAPES) {
+    const desk = deskFor(vw, vh)
+    for (const side of ['l', 'r'] as const) {
+      const put = edgeJumpPlacement(side, desk, { width: vw, height: vh },
+        (desk.y0 + desk.y1) / 2, whole(vw, vh))
+      assert.equal(put.inset, EJ_EDGE,
+        `unpinned, the card must sit at the styles.css 6px inset (${side})`)
+    }
+  }
+})
+
+test('§8 a card clears every pin and stays inside the free region', () => {
+  const reg = clearRegion({ x: 0, y: 0, w: VW, h: VH }, PINS)
+  assert.equal(reg.status, 'reduced',
+    'fixture must actually reduce the region, else §8 is vacuous')
+  const r = reg.rect
+  // the desk the camera puts in that region — the same fit centerOn performs
+  const desk = deskIn(r)
+  for (const side of ['l', 'r'] as const) {
+    const put = edgeJumpPlacement(side, desk, { width: VW, height: VH },
+      (desk.y0 + desk.y1) / 2, r)
+    const box = boxOf(side, put, VW)
+    for (const [i, pin] of PINS.entries()) {
+      assert.equal(hits(box, pin), false,
+        `side=${side}: the ${put.form} card [${box.x0},${box.x1}]x`
+        + `[${box.y0},${box.y1}] is underneath pin ${i} `
+        + `[${pin.x},${pin.x + pin.w}]x[${pin.y},${pin.y + pin.h}]`)
+    }
+    assert.ok(box.x0 >= r.x - 0.001 && box.x1 <= r.x + r.w + 0.001,
+      `side=${side}: card [${box.x0},${box.x1}] escaped the free region `
+      + `[${r.x},${r.x + r.w}]`)
+    assert.ok(box.y0 >= r.y - 0.001 && box.y1 <= r.y + r.h + 0.001,
+      `side=${side}: card [${box.y0},${box.y1}] escaped the free region `
+      + `vertically [${r.y},${r.y + r.h}]`)
+    assert.equal(overlaps(box, desk), false,
+      `side=${side}: the card still covers the desk it sits beside`)
+  }
+})
+
+test('§9 the left card moves off the window edge by the left pin width', () => {
+  // Not a restatement of §8: this says the card MOVED, and by how much. A fix
+  // that clamped cards into the region without shifting the inset would pass a
+  // no-overlap check on the right-hand side alone.
+  const r = clearRegion({ x: 0, y: 0, w: VW, h: VH }, PINS).rect
+  const desk = deskIn(r)
+  const put = edgeJumpPlacement('l', desk, { width: VW, height: VH },
+    (desk.y0 + desk.y1) / 2, r)
+  assert.ok(put.inset >= 360 + PIN_GAP,
+    `the left card is inset ${put.inset}px from the window, but the left pin `
+    + `plus its ${PIN_GAP}px gap occupies the first ${360 + PIN_GAP}px`)
+})
+
+// ---------------------------------------------------------------------------
+// THE CONTROL FOR §8/§9. `hits()` reporting false proves nothing until it is
+// shown to report true on this exact geometry. Here is the SHIPPED-BEFORE
+// placement — the same call with the whole viewport as its region, which §7
+// establishes is the old code — run through the identical predicate and
+// REQUIRED to land under the pin. If this ever stops finding an overlap, §8
+// has stopped being a check.
+test('§10 CONTROL — screen-edge placement DOES vanish under the pin', () => {
+  const desk = deskIn(clearRegion({ x: 0, y: 0, w: VW, h: VH }, PINS).rect)
+  const old = edgeJumpPlacement('l', desk, { width: VW, height: VH },
+    (desk.y0 + desk.y1) / 2, whole(VW, VH))
+  const box = boxOf('l', old, VW)
+  assert.equal(box.x0, EJ_EDGE, 'the control must be the screen-hugging card')
+  assert.equal(hits(box, PINS[0]!), true,
+    'CONTROL BROKEN: the pre-fix card did NOT land under the left pin, so §8 '
+    + 'proves nothing about the fix')
 })
