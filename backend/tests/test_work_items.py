@@ -2075,10 +2075,13 @@ check("a three-part attention reason survives whole, line breaks included, insid
       the_attention_reason_holds_the_specifics_it_must_now_carry)
 
 
-#: every sentence of the ruling that has to reach an agent, as it must read in
-#: the prompt. The control below blanks the doctrine and requires ALL of them to
-#: disappear — a phrase that survives is a phrase this check was never testing.
+#: every sentence of the 2026-09-05 rulings that has to reach an agent, as it
+#: must read in the prompt. The control below blanks the doctrine and requires
+#: ALL of them to disappear — a phrase that survives is a phrase this check was
+#: never testing.
 POLICY_PHRASES = (
+    "TO DOCK SOMETHING",                 # the user's verb, recorded verbatim
+    "PUT A NEW FEATURE ON THE DOCKET",
     "REVIEW BY AGENTS",
     "NEVER THE `review` STATUS",
     "a QUESTION is an attached orgtree_ask",   # not the same door as the flag

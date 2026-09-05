@@ -8,6 +8,11 @@ reassignment. Specification of record: the 2026-09-05 docket workshop
 (`docket-final-spec.md` in the coordinator's scratch); this page documents what
 the backend actually does.
 
+**"Dock", the verb** (the user's own term, 2026-09-05): to **dock** something is
+to put a new feature on the docket — to create an item for it. It carries no
+other meaning here, and in particular nothing to do with docking a panel in the
+UI. It implies no extra step beyond the `create`.
+
 ## Storage
 
 Two plain keys in the org document: `work_items` (active) and
