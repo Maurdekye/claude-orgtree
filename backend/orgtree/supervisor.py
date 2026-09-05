@@ -10773,6 +10773,88 @@ def _antigravity_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
     antigravityrun.write_workspace(cwd, identity=ident, mcp_servers=servers,
                                    rights=rights)
 
+    # ── THE ORDERING BARRIER, this lane's shape (D4, 2026-09-05) ───────────
+    # INVARIANT (the codex leg's, transposed): no assistant output for a turn
+    # may become VISIBLE before that turn's user message is DURABLE.
+    #
+    # It was not kept here either, and by the same mechanism in a different
+    # coat: `AntigravityTurn._pump` dispatches every wire event to `_on_event`
+    # from the moment of spawn, while `start()` is still polling for `init` —
+    # so deltas and tool rows reached the desk while the journal held no user
+    # row for the turn (measured on main f217d94: four frames with zero user
+    # rows on disk, resumed turns alike). And this leg had a second defect the
+    # codex leg did not: the agent's text was JOINED across the whole turn and
+    # written once at the end, so "working…" said BEFORE two tools was
+    # journaled AFTER them, and a failure before that final write left every
+    # streamed word out of the transcript.
+    #
+    # Same two mechanisms as the codex leg: visible emission is a closure that
+    # runs now if the journal is open and is held IN ORDER if it is not; and
+    # `_open_journal` writes the user row FIRST, then releases what was held.
+    # Where the two lanes differ is WHEN the id is final: codex knows its
+    # thread id before `turn/start` goes on the wire, this CLI mints the
+    # conversation id in the `init` event AFTER the prompt is already on
+    # stdin (and a resume it cannot honour comes back with a fresh id), so
+    # there is no pre-wire instant here — the journal opens when `start()`
+    # returns with the id it validated, and everything before that waits.
+    # Same residual, stated: if `start()` raises, held output is never
+    # released; there is no transcript for that turn, so nothing is the
+    # honest render and the turn's durable error row is what the desk gets.
+    #
+    # `emit_lock` is the ORDER of emission, `jlock` the STATE it reads; every
+    # path takes them emit → j, so there is no cycle (see the codex leg's
+    # 2026-09-02 note for why the second lock is not redundant).
+    #
+    # IDENTITY: `turn_token` is minted per leg entry. The wire's step_index
+    # restarts with every process and the conversation id is the same on
+    # every resumed turn, so ids derived from those two alone REPEATED across
+    # turns (measured: tool ids 2 unique of 4 over two turns, text ids 1 of
+    # 2). `_sweep_live` retires a live tool row on a tool_use_id it calls
+    # globally unique, and the occupancy reader keys on `agy-…-usage` — both
+    # keep their contracts with the token in the middle.
+    turn_token = f"{time.time_ns():x}-{_secrets.token_hex(2)}"
+    jlock = threading.Lock()
+    jstate: dict[str, Any] = {
+        # `sid` empty = the journal is not open: durable records queue in
+        # `pending`, visible emissions in `held`. No separate barrier flag on
+        # this lane — nothing re-arms it mid-turn (no steer verb), so a flag
+        # beside `sid` would be state that can never disagree with it
+        "sid": "", "pending": [], "held": [],
+        # per-step text accumulation: step_index → [deltas…]; a step is
+        # committed when its DONE arrives and never again (`item_ids`)
+        "text_open": {}, "text_order": [], "item_ids": set(),
+        "tool_open": {}, "agent_items": 0}
+    emit_lock = threading.Lock()
+
+    def _item_id(step_index: Any) -> str:
+        return f"agy-{turn_token}-{step_index}"
+
+    def _visible(emit: Callable[[], None]) -> None:
+        with emit_lock:
+            with jlock:
+                if not jstate["sid"]:
+                    cast("list[Any]", jstate["held"]).append(emit)
+                    return
+            emit()         # outside jlock: emission reaches the websocket
+
+    def _visible_stream(payload: dict[str, Any]) -> None:
+        _visible(lambda: stream(slug, nid, payload))
+
+    def _visible_live_row(payload: dict[str, Any]) -> None:
+        _visible(lambda: live_row(slug, nid, payload))
+
+    def _committed(iid: str) -> bool:
+        """Has this item already been committed? A repeated DONE/ERROR (or
+        a late delta) for a committed step writes nothing and shows nothing
+        — the codex leg's item/completed rule. ONE mechanism, checked at the
+        top of every step path: the set is the dedup, nothing else is."""
+        with jlock:
+            return iid in jstate["item_ids"]
+
+    def _mark_committed(iid: str) -> None:
+        with jlock:
+            cast("set[str]", jstate["item_ids"]).add(iid)
+
     dstate: dict[str, Any] = {"buf": "", "timer": None}
     dlock = threading.Lock()
 
@@ -10782,7 +10864,9 @@ def _antigravity_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
             dstate["buf"] = ""
             dstate["timer"] = None
         while body:
-            stream(slug, nid, {"kind": "delta", "text": body[:2000]})
+            # through the barrier: a delta is the FIRST assistant output of a
+            # turn, so it is the first thing that could outrun the user's row
+            _visible_stream({"kind": "delta", "text": body[:2000]})
             body = body[2000:]
 
     def _queue_delta(body: str) -> None:
@@ -10803,10 +10887,10 @@ def _antigravity_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
         if fire:
             _flush_draft()
 
-    jlock = threading.Lock()
-    jstate: dict[str, Any] = {"sid": "", "pending": [], "tool_open": {}}
-
     def _journal_records(recs: list[dict[str, Any]]) -> None:
+        """Serialize reader-thread step events with the turn thread's start /
+        usage records. Before the conversation id is final, events wait in
+        memory; `_open_journal` writes the user row first, then this queue."""
         with jlock:
             sid = str(jstate["sid"] or "")
             if not sid:
@@ -10818,6 +10902,29 @@ def _antigravity_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
     # separate flag on this wire, and the CLI refuses the two combined
     model_id = org.model_for(nid)
     effort = providers.antigravity_effort(tier, org.effective_effort(nid))
+
+    def _commit_text(iid: str, body: str, ts: str) -> None:
+        """One completed (or, at the end, one unfinished) text step becomes
+        its own durable row, then its own `text` handover frame. Journal
+        FIRST: the frame retires the desk's draft, and D-50 wants the
+        replacement on disk before the draft goes (the `text` frame's
+        semantics, see t1c in test_antigravity_dispatch)."""
+        if not body:
+            return
+        _flush_draft()
+        with jlock:
+            jstate["agent_items"] += 1
+        _journal_records([{
+            "type": "assistant", "timestamp": ts,
+            "message": {"id": iid, "role": "assistant", "model": model_id,
+                        "content": [{"type": "text", "text": body}]}}])
+
+        def _handover() -> None:
+            _text_became_durable(slug, nid)
+            stream(slug, nid, {"kind": "text", "text": body[:2000],
+                               **({"truncated": True}
+                                  if len(body) > 2000 else {})})
+        _visible(_handover)
 
     def _d(obj: Any) -> dict[str, Any]:
         """A wire sub-document, or empty — the shapes are JSON objects by
@@ -10846,15 +10953,34 @@ def _antigravity_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
         step = _d(msg.get("step_update"))
         kind = str(step.get("step_type") or "")
         state_ = str(step.get("state") or "")
+        idx = step.get("step_index")
+        iid = _item_id(idx)
+        if kind not in ("agent_response", "tool"):
+            return
+        if _committed(iid):
+            # a repeated completion (or a late delta / a late ACTIVE for
+            # it): the step is on disk and on screen already
+            return
         if kind == "agent_response":
             delta = step.get("text_delta")
             if isinstance(delta, str) and delta:
                 _queue_delta(delta)
+                with jlock:
+                    if iid not in jstate["text_open"]:
+                        jstate["text_order"].append(iid)
+                    jstate["text_open"].setdefault(iid, []).append(delta)
+            if state_ not in ("DONE", "ERROR"):
+                return
+            # the step is complete: its text is a block in chronological
+            # place, committed now — not joined with whatever comes after the
+            # next tool. A repeated DONE for the same step is a no-op.
+            _mark_committed(iid)
+            with jlock:
+                body = "".join(jstate["text_open"].pop(iid, []))
+                if iid in jstate["text_order"]:
+                    jstate["text_order"].remove(iid)
+            _commit_text(iid, body, now_iso())
             return
-        if kind != "tool":
-            return
-        iid = (f"agy-{str(step.get('conversation_id') or '')[:8]}-"
-               f"{step.get('step_index')}")
         name, inp = _tool_identity(step)
         if state_ == "ACTIVE":
             if iid in jstate["tool_open"]:
@@ -10863,19 +10989,20 @@ def _antigravity_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
             jstate["tool_open"][iid] = name
             _journal_records([{
                 "type": "assistant", "timestamp": now_iso(),
-                "message": {"id": f"agy-{iid}", "role": "assistant",
+                "message": {"id": iid, "role": "assistant",
                             "model": model_id,
                             "content": [{"type": "tool_use", "id": iid,
                                          "name": name, "input": inp}]}}])
-            live_row(slug, nid, {"kind": "tool", "id": iid,
-                                 "text": name + ((" · " + _tool_arg(name, inp))
-                                                 if _tool_arg(name, inp)
-                                                 else "")})
+            _visible_live_row({"kind": "tool", "id": iid,
+                               "text": name + ((" · " + _tool_arg(name, inp))
+                                               if _tool_arg(name, inp)
+                                               else "")})
             return
         if state_ not in ("DONE", "ERROR"):
             return
         if iid not in jstate["tool_open"]:
             return
+        _mark_committed(iid)
         jstate["tool_open"].pop(iid, None)
         info = _d(step.get("tool_info"))
         err = _d(info.get("error"))
@@ -10887,7 +11014,52 @@ def _antigravity_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
                 "type": "tool_result", "tool_use_id": iid,
                 "content": body or state_.lower(),
                 "is_error": state_ == "ERROR"}]}}])
+        _visible_stream({"kind": "journal", "text": ""})
+
+    def _open_journal(cid_: str) -> None:
+        """Make this turn's user message durable, then release held output
+        IN ORDER. Idempotent. `_iso_ts(t0)`, not `now_iso()`: the user row
+        must carry the EARLIEST stamp of the turn (see the codex leg)."""
+        held: list[Callable[[], None]] = []
+        with emit_lock:
+            with jlock:
+                if jstate["sid"]:
+                    return
+                jstate["sid"] = str(cid_ or "")
+                if not jstate["sid"]:
+                    return
+                pending_recs = list(jstate["pending"])
+                jstate["pending"].clear()
+                _record_prompt_view(slug, jstate["sid"], text, turn_view,
+                                    at=_iso_ts(t0))
+                _codex_journal(slug, jstate["sid"], [
+                    {"type": "user", "timestamp": _iso_ts(t0),
+                     "message": {"role": "user", "content": text}},
+                    *pending_recs,
+                ])
+                held = cast("list[Callable[[], None]]", jstate["held"])[:]
+                cast("list[Any]", jstate["held"]).clear()
+            for emit in held:
+                emit()
         stream(slug, nid, {"kind": "journal", "text": ""})
+
+    def _commit_unfinished_text() -> None:
+        """The turn is over (completed, killed or failed) with a text step
+        still open: what it streamed was on the desk, so it is kept — under
+        the step's own id, never joined with a completed block. This is the
+        interrupted-turn behaviour this leg always had (its streamed text
+        was journaled), now also true of a failed turn."""
+        with jlock:
+            order = list(jstate["text_order"])
+        for iid in order:
+            if _committed(iid):
+                continue
+            _mark_committed(iid)
+            with jlock:
+                body = "".join(jstate["text_open"].pop(iid, []))
+                if iid in jstate["text_order"]:
+                    jstate["text_order"].remove(iid)
+            _commit_text(iid, body, now_iso())
 
     log_dir = os.path.join(providers.antigravity_probe_dir(), "logs", slug)
     os.makedirs(log_dir, exist_ok=True)
@@ -10944,18 +11116,10 @@ def _antigravity_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
                         "antigravity_conversation"] = cid
                     o2.node(nid).pop("session_unrun", None)
                     store.save_org(o2)
-        with jlock:
-            jstate["sid"] = str(cid or "")
-            pending_recs = list(jstate["pending"])
-            jstate["pending"].clear()
-            _record_prompt_view(slug, str(cid or ""), text, turn_view,
-                                at=_iso_ts(t0))
-            _codex_journal(slug, str(cid or ""), [
-                {"type": "user", "timestamp": _iso_ts(t0),
-                 "message": {"role": "user", "content": text}},
-                *pending_recs,
-            ])
-        stream(slug, nid, {"kind": "journal", "text": ""})
+        # the id is validated and adopted: the user row goes on disk NOW and
+        # everything the wire already delivered is released behind it, in
+        # order (THE ORDERING BARRIER, above)
+        _open_journal(str(cid or ""))
         with _state_lock:
             st["antigravity_turn"] = turn   # the ⏸ escape hatch (interrupt_turn)
             st["responding"] = True         # mail now steers instead of queueing
@@ -11030,6 +11194,11 @@ def _antigravity_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
             draft_timer.cancel()
             dstate["timer"] = None
     _flush_draft()
+    # BEFORE the status check: a text step still open when the process went
+    # away (killed, died, timed out) was on the desk, so it is on disk under
+    # its own id whether the turn is now reported completed or failed —
+    # the blocks that DID complete were committed as they completed (D4)
+    _commit_unfinished_text()
     status = str(res_raw.get("status") or antigravityrun.STATUS_FAILED)
     if status == antigravityrun.STATUS_FAILED:
         if time.time() - t0 >= TURN_TIMEOUT:
@@ -11073,20 +11242,29 @@ def _antigravity_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
         # account is not walled, and any wall on record is down
         antigravity_limits.observe_clear()
     tu = res_raw.get("token_usage")
+    # The step lifecycle already journaled the conversation in real time,
+    # each text step in its chronological place with its own id (D4). Retain
+    # one fallback for a run that priced no text step at all but carried a
+    # `result.response` (the `resultonly` shape), then append the render-
+    # empty usage record the occupancy fold reads. Ids carry the turn token:
+    # a resumed conversation must never repeat an earlier turn's ids.
     final_recs: list[dict[str, Any]] = []
-    if res_raw.get("agent_text"):
+    with jlock:
+        no_items = not jstate["agent_items"]
+    fallback_text = str(res_raw.get("agent_text") or "") if no_items else ""
+    if fallback_text:
         final_recs.append({
             "type": "assistant", "timestamp": now_iso(),
-            "message": {"id": f"agy-{cid or 'turn'}",
+            "message": {"id": f"agy-{turn_token}-final",
                         "role": "assistant", "model": model_id,
                         "content": [{"type": "text",
-                                     "text": str(res_raw["agent_text"])}]}})
+                                     "text": fallback_text}]}})
     tu_in = int((tu or {}).get("input") or 0)
     tu_cached = int((tu or {}).get("cached") or 0)
     tu_out = int((tu or {}).get("output") or 0)
     final_recs.append({
         "type": "assistant", "timestamp": now_iso(),
-        "message": {"id": f"agy-{cid or 'turn'}-usage",
+        "message": {"id": f"agy-{turn_token}-usage",
                     "role": "assistant", "model": model_id, "content": [],
                     # Cumulative/turn billing traffic and final-request context
                     # are distinct quantities.  The generic transcript reader
@@ -11100,32 +11278,16 @@ def _antigravity_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
                         "cache_read_input_tokens": tu_cached,
                         "output_tokens": tu_out}}})
     _journal_records(final_recs)
-    # THE DRAFT'S REPLACEMENT IS NOW IN HAND, SO SAY SO (user report
-    # 2026-09-04: "i see double messages in antigravity agents, same issue we
-    # were seeing in claude earlier").
-    #
-    # `{kind:"text"}` is the seam's handover signal: it is the ONE thing that
-    # marks a streamed draft superseded mid-turn (convo.ts ingestStream sets
-    # `staleDraft`, and the fetch it nudges clears the draft in the SAME patch
-    # that installs the durable row — atomic, so there is neither a gap nor a
-    # frame showing both). The claude and codex legs both emit it. This leg
-    # emitted `delta`, `tool` and `journal` and never `text`, so its draft had
-    # exactly one retirement: `turn_done`. Between the record above being
-    # written and the turn ending, the reply was on screen TWICE — once as the
-    # grey draft, once as its own transcript row — and a single dropped
-    # `turn_done` left the double up until the node went idle, which is the
-    # "nothing on screen may depend on having caught an event" rule broken in
-    # the one lane that had no second chance at it.
-    #
-    # Retiring the draft here is a REPLACEMENT, not a gap: `agent_text` is
-    # `"".join(...)` over the very `text_delta`s the draft accumulated
-    # (antigravityrun.py:416,552), so the row carries every character the
-    # draft is showing. D-50 holds — the evidence is named and already on
-    # disk, because the journal write above happens FIRST.
-    if res_raw.get("agent_text"):
+    # THE DRAFT'S HANDOVER (user report 2026-09-04: "i see double messages in
+    # antigravity agents"): `{kind:"text"}` is the seam's signal that a
+    # streamed draft is superseded by a durable row (convo.ts sets
+    # `staleDraft`; the fetch it nudges swaps draft for row in one patch).
+    # Every committed text step already sent its own frame from
+    # `_commit_text`, journal first; the fallback row above is the one case
+    # left to hand over here. D-50 holds: the row is on disk before the frame.
+    if fallback_text:
         _text_became_durable(slug, nid)
-        stream(slug, nid, {"kind": "text",
-                           "text": str(res_raw["agent_text"])[:2000]})
+        stream(slug, nid, {"kind": "text", "text": fallback_text[:2000]})
     res: dict[str, Any] = {
         "status": status,
         "total_cost_usd": providers.antigravity_cost(tu),

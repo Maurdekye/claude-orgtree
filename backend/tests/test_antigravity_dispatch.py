@@ -185,22 +185,26 @@ def main():
             + repr(sorted({str(p.get("kind")) for p in STREAMED}))
             + ". The desk's draft then has no mid-turn retirement and the "
               "reply renders twice beside its own transcript row.")
-        # …and it must be a REPLACEMENT, not a gap: the frame carries exactly
-        # what the deltas put on screen, so nothing is retired that the
-        # transcript does not already hold (D-50).
+        # …and it must be a REPLACEMENT, not a gap: the frames TOGETHER carry
+        # exactly what the deltas put on screen, so nothing is retired that
+        # the transcript does not already hold (D-50). One frame per
+        # completed text step since D4 (2026-09-05): the fixture's two
+        # priced requests are two rows in chronological place, not one row
+        # joined at the end of the turn — see test_antigravity_stream_order.
         deltas = "".join(p.get("text", "") for p in STREAMED
                          if p.get("kind") == "delta")
-        eq(texts[-1].get("text"), deltas,
-           "the text frame carries exactly what the deltas streamed")
-        # and the durable twin is already on disk when it goes out
+        eq("".join(str(p.get("text") or "") for p in texts), deltas,
+           "the text frames carry exactly what the deltas streamed")
+        eq(len(texts), 2, "one handover frame per completed text step")
+        # and each frame's durable twin is already on disk when it goes out
         recs = journal_lines(s1, "fake-agy-conv-0001")
-        durable = [r for r in recs
+        durable = [b.get("text") for r in recs
                    if r.get("type") == "assistant"
                    and isinstance((r.get("message") or {}).get("content"), list)
-                   and any(b.get("type") == "text"
-                           and b.get("text") == deltas
-                           for b in r["message"]["content"])]
-        assert durable, "the text frame's replacement row is not in the journal"
+                   for b in r["message"]["content"]
+                   if b.get("type") == "text"]
+        eq(durable, [str(p.get("text") or "") for p in texts],
+           "each text frame's replacement row is in the journal, in order")
     check("the streamed draft is handed over to a durable row, not left up",
           t1c)
 

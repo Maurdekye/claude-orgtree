@@ -33,6 +33,18 @@ FAKEANTIGRAVITY_SCENARIO:
                  ERROR after init, "Individual quota reached … Resets in
                  165h21m54s." — FAKEANTIGRAVITY_RESET_IN overrides the
                  duration text; empty means no reset named (D-209)
+    dupdone      `toolevents` with every DONE step_update (text and tool)
+                 emitted TWICE — the repeated-completion control for the
+                 journal contract (D4). ⚠ SYNTHETIC: no live log has shown
+                 the CLI repeating a DONE; this is the shape a replay or a
+                 duplicated notification would take, not a measured one
+    diesafterstep
+                 `toolevents` up to and including the run_command DONE, then
+                 the process exits rc=1 with NO result event — the failure-
+                 after-completed-blocks control (D4). Synthetic as above
+    diesmidstep  a completed text step, then a second text step that streams
+                 a delta and dies rc=1 mid-step, no DONE, no result — the
+                 partial-output control (D4). Synthetic as above
 
 `--conversation <id>` is honoured as a RESUME: the init echoes that id and
 the first delta is "RESUMED:<id> " so a suite can tell resume from fresh.
@@ -45,6 +57,10 @@ credential or CLI near the tests):
                              --add-dir: AGENTS.md, the orgtree plugin's
                              mcp_config.json, hooks.json, plus the prompt
                              text received on stdin and the argv
+  FAKEANTIGRAVITY_STEP_DELAY seconds to sleep before every step_update
+                             (default 0). A slow wire, so a suite can make
+                             steps arrive AFTER start() has returned as
+                             surely as the default makes them arrive before
 
 Subcommands the registry probe needs: `--version` prints 1.1.24; `models`
 prints the measured registry (tab-separated id/label rows) unless
@@ -150,11 +166,28 @@ def _usage(inp, out, think, cached):
             "total_tokens": inp + out}
 
 
+STEP_DELAY = float(os.environ.get("FAKEANTIGRAVITY_STEP_DELAY") or 0)
+
+
 def _step(cid, idx, state, kind, **more):
     d = {"conversation_id": cid, "step_index": idx, "state": state,
          "step_type": kind}
     d.update(more)
+    if STEP_DELAY:
+        time.sleep(STEP_DELAY)
     emit({"event": "step_update", "step_update": d})
+    if SCENARIO == "dupdone" and state == "DONE":
+        # the repeated-completion plant: the SAME completion, verbatim, a
+        # second time (a replay carries the same usage too — a consumer that
+        # re-prices it is a separate question this fixture does not answer)
+        emit({"event": "step_update", "step_update": d})
+
+
+def _die(rc):
+    """The process vanishes mid-wire: no result event, stdout closed by the
+    exit itself. `os._exit` so no atexit flush adds anything after this."""
+    sys.stdout.flush()
+    os._exit(rc)
 
 
 def main_turn():
@@ -268,8 +301,14 @@ def main_turn():
               text_delta="stalling until killed… ")
         time.sleep(8.0)
         return
-    if SCENARIO in ("toolevents", "hookdeny"):
-        if SCENARIO == "toolevents":
+    if SCENARIO == "diesmidstep":
+        # a second text step opens, says something, and the process is gone
+        # before that step's DONE — no result event follows
+        _step(cid, 2, "ACTIVE", "agent_response",
+              text_delta="partial words before death ")
+        _die(1)
+    if SCENARIO in ("toolevents", "hookdeny", "dupdone", "diesafterstep"):
+        if SCENARIO != "hookdeny":
             _step(cid, 2, "ACTIVE", "tool", tool_name="call_mcp_tool",
                   tool_info={"name": "call_mcp_tool", "parameters": {
                       "Arguments": {"message": "hi"}, "ServerName": "orgtree",
@@ -296,6 +335,11 @@ def main_turn():
                   duration_seconds=0.3,
                   tool_info={"name": "run_command", "parameters": params,
                              "output": "HOOK-CMD\r\n"})
+        if SCENARIO == "diesafterstep":
+            # two completed blocks (the first text step and both tools) are
+            # on the wire; the process dies before the closing text and
+            # before any result event
+            _die(1)
         # the second priced request: a SMALLER uncached input and a cache
         # hit — the last request is what occupancy must read (measured
         # shape: 4563 + 12175 for a ~16.7K context)
