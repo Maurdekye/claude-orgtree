@@ -760,24 +760,24 @@ attempt is `poem-3` — normally under the *same* `poem-autopsy` seat (see
 **Doing it.** The canvas has a one-click version of step 1 for a human at
 the keyboard: hover the failed fable's card and pick its TOP-edge opus chip
 (badge cost −5) — the draft splices in atomically, the fable ends up
-reporting to the new opus, and nothing else needs to move. **There is no
-equivalent one-call tool for an agent** — `orgtree_hire`'s `above` parameter
-is a canvas-only mechanic; the MCP `orgtree_hire` tool agents call has no
-such field, and passing one anyway is silently ignored. An agent runs the
-same shape as two calls instead:
+reporting to the new opus, and nothing else needs to move.
 
-1. **Hire the opus.** `orgtree_hire` it at opus tier with `parent` set to
-   the failed fable's *current* parent, so it lands as the fable's sibling —
-   not yet its superior.
-2. **Move the fable under it.** `orgtree_move(node=<failed fable>,
-   new_parent=<new opus>)` reparents it. This is **not atomic** with step 1
-   — there is a real window between the two calls where the opus exists as
-   a plain sibling and the fable has not moved yet. If a turn dies in that
-   window, nothing is lost; just finish the move rather than hiring a
-   second opus. Both calls need the acting agent to already hold authority
-   over the fable's current parent, the fable itself, and the freshly hired
-   opus — true automatically whenever the agent running the autopsy is
-   already the failed fable's own superior, which is the normal case.
+For an agent, `orgtree_hire` provides the exact same atomic insertion:
+
+1. **Insert the opus above the fable.** Call `orgtree_hire` with
+   `hire_type='superior'`, `target=<failed fable>`, `name='<failed fable>-autopsy'`,
+   `tier='opus'`, and the autopsy `charter`. In superior mode, folder grants,
+   tools, visibility, and permission mode MUST be omitted because the new seat
+   inherits the target's own. The ledger splices the opus between the fable
+   and its former superior atomically in a single call.
+2. **Move the fable under it (two-call fallback only).** If not using
+   one-call superior insertion, an agent can hire the opus as a sibling under
+   the failed fable's current parent and then run `orgtree_move(node=<failed fable>,
+   new_parent=<new opus>)`. This two-call fallback is not atomic; prefer
+   `hire_type='superior'` in step 1 whenever possible. Both calls need the acting
+   agent to already hold authority over the fable's current parent, the fable itself,
+   and the freshly hired opus — true automatically whenever the agent running the
+   autopsy is already the failed fable's own superior, which is the normal case.
 3. **Hire the new fable under the opus**, as its coworker — same parent as
    the failed fable now has, i.e. the new opus. **Restate the old fable's
    folder grants and tool switches explicitly before or as part of this

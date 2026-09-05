@@ -83,7 +83,7 @@ without changing anything. OpenAI picks which models to offer from the CLI
 version, so a stale pin silently hides newer tiers.
 
 ```bash
-# Codex: gpt-reserve (seat 0.2), luna (0.2), terra (2), sol (5)
+# Codex: luna (seat 0.2), terra (2), sol (5), astra (10, conditional) [legacy: gpt-reserve (0.2)]
 npm install --prefix ~/orgtree/codex @openai/codex
 npx --prefix ~/orgtree/codex codex login
 

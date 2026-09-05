@@ -115,7 +115,7 @@ Explicit, never org-wide; nothing in an item is public.
 | right | who |
 |---|---|
 | read, `update`, `evidence`, attach a question | the owner node, the creator node, a strict ancestor of the owner (of the creator while unowned), the user, **participants** |
-| `assign`, `participants`, `archive`, `supersede` | the same set minus participants |
+| `assign`, `participants`, `archive`, `supersede`, `claim`, `verify`, `check` | the same set minus participants |
 | `accept` (→ `done`) | the user, or a strict ancestor of the owner — **never the owner** |
 | `create` | any live agent (owner = itself or a subordinate) or the user |
 

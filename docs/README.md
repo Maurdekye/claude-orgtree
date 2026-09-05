@@ -15,6 +15,8 @@ Markdown file in this repository as current operating guidance.
   controls.
 - [`agent-tools.md`](agent-tools.md) is the complete agent-facing MCP tool
   catalog and its operational boundaries.
+- [`work-items.md`](work-items.md) covers the durable docket: work items,
+  delivery claims, git verification, acceptance conditions, and lifecycle.
 - [`cache-continuity.md`](cache-continuity.md) defines the persisted next-turn
   forecast, provider receipt evidence, and known-cold compaction policy;
   [`cache-hazards.md`](cache-hazards.md) records invalidation traps.

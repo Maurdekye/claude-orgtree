@@ -11,19 +11,21 @@ the MCP catalog in `backend/orgtree/mcptool.py`.
 |---|---|
 | `orgtree_chart` | Show the organization visible to the caller, including scope and credit information. Pass `include_archived` to list retired nodes. |
 | `orgtree_hire` | Hire a report, or insert a superior above a seat in your subtree (`hire_type='superior'`). An ordinary hire must state folders, tools and visibility explicitly (plus name, tier, charter, grant, and permission mode); a superior insertion must omit folders, tools, visibility and permission mode, because the seat takes the target's own. Either way a `kickoff` starts its first task. |
-| `orgtree_retool` | Change a report's folders, tools, visibility, mode, charter, team charter, or effort. A caller may only change its own team charter. |
-| `orgtree_switch_model` | Change a report's tier. A provider change requires confirmation and starts a fresh session; its scratch, mail, and breadcrumbs remain. |
+| `orgtree_retool` | Change an agent's folders, tools, visibility, mode, charter, team charter, effort, or prefer_reserve in your subtree. A caller may only change its own team charter. |
+| `orgtree_switch_model` | Change an agent's tier in your subtree. Across providers, the pre-switch self is archived in place as a knowledge bearer (<node>@<gen>) and the agent starts a fresh session; its scratch, mail, and breadcrumbs remain. |
 | `orgtree_list_tiers` | List the tiers this machine currently offers, with provider, model, seat price, and advisory availability. Call it before `orgtree_hire` or `orgtree_switch_model` when choosing a tier; the hire gate rechecks fresh evidence, scope, and credits, so a listed tier can still be refused. |
 | `orgtree_retire` | Archive a node, preserving it for rehire. Retiring a node with live reports retires that subtree. |
 | `orgtree_rehire` | Restore an archived node, optionally renaming, re-scoping, granting audiences, and giving it a kickoff in one call. A recoverable bearer must stay with its original provider; use `orgtree_switch_model` after rehire to change providers. |
-| `orgtree_cheap_compact` | Replace an idle report with a fresh same-tier report that can read the predecessor's folder, avoiding a costly cold compaction. |
+| `orgtree_cheap_compact` | Reset an idle agent's session in place (retaining seat id, parent, scope, charter, grant, and team) while archiving its prior session as a knowledge bearer (<node>@<gen>), avoiding a costly cold compaction. |
 | `orgtree_move` | Re-parent a node within the caller's reachable subtree. |
+| `orgtree_swap` | Two agents in your reach exchange seats: superior, reports, grant, team charter and scope stay with the seat; identity, session, charter and mailbox travel with the agent. Top-level swaps remain user-only. |
 | `orgtree_self_subjugate` | Voluntarily exchange your own seat with a live descendant, including when you are top-level. Your replacement takes the seat's reports, grant and scope; your identity and session stay with you. Ordinary swaps involving top-level seats remain user-only. |
 | `orgtree_dissolve` | Retire a node and all descendants. |
+| `orgtree_interrupt` | Stop a node's current turn in your subtree without retiring or archiving it; the node goes idle and queued actions (such as a pending model switch or mail) apply immediately at the boundary. |
 | `orgtree_reallocate` | Move grant credits between a report and its parent. |
 | `orgtree_rename` | Rename a descendant and move its identity, mailbox, and working folder with it. |
 | `orgtree_status` | Report `working`, `idle`, `done`, or `blocked`; `done` and `blocked` notify the superior. |
-| `orgtree_work` | The docket: create, update (both lists, every time), assign, add participants, claim/verify delivery stages, record evidence, accept, archive, supersede durable work items. See [work-items.md](work-items.md). |
+| `orgtree_work` | The docket: create, update (both lists, every time), assign, add participants, claim/verify delivery stages, record evidence, check acceptance conditions, accept, archive, supersede durable work items. See [work-items.md](work-items.md). |
 
 ## Communication and audiences
 
@@ -54,6 +56,7 @@ the MCP catalog in `backend/orgtree/mcptool.py`.
 | `orgtree_watchdog` | Create, inspect, pause, resume, or remove a file, command, process, or stream monitor. A `once: true` create makes a one-shot dog. |
 | `orgtree_self_restart` | Rebuild and restart the current backend from its committed repository state. It refuses while an agent is mid-turn. `force: true` (with a `reason`) deploys anyway — it stops every working agent, waits for their turns to finish, and then deploys; they come back idle and do not resume on their own. |
 | `orgtree_prime_restart` | Arm the same restart to run automatically once the machine is quiet. `deadline_minutes` (optional, needs a `reason`) bounds that wait: if the machine has not gone quiet in time the restart escalates to a forced deploy, unattended, and the agents it stops are woken again on the new build. A machine that goes quiet first never escalates. |
+| `orgtree_restart_wake` | Arm, cancel, or inspect status of a one-shot waking turn on next backend restart for yourself or a subordinate report, upgrading the passive restart notice into a wake with the deployed version. |
 
 ## Common constraints
 
