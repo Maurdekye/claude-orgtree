@@ -218,15 +218,18 @@ STEER_ACCEPTED: Final = "accepted"
 STEER_REJECTED: Final = "rejected"
 STEER_UNKNOWN: Final = "unknown"
 
-#: JSON-RPC codes that mean the request was NEVER APPLIED (parse, invalid
-#: request, unknown method, invalid params): an authoritative refusal. Any
-#: other error code (internal, server-defined) is only a refusal when its
-#: message names the turn precondition; otherwise the outcome is unknown.
+#: JSON-RPC codes the SPEC defines as raised before the method body runs
+#: (parse error, invalid request, method not found, invalid params): the only
+#: structural evidence that a request was never applied. Anything else —
+#: -32603 internal, the -32000… server range, an unknown code — is UNKNOWN
+#: whatever its message says: an internal failure can follow the append
+#: ("persistence failed after expectedTurnId validation" is still an append
+#: that happened), so message text is never read as evidence here (review
+#: 2026-09-05). ⚠ The real app-server's guard code is UNVERIFIED (no live
+#: control has run); if it answers with a code outside this set, the outcome
+#: reads unknown — a receipted redelivery, the safe direction — never a
+#: false refusal.
 _NEVER_APPLIED_CODES: Final = frozenset({-32700, -32600, -32601, -32602})
-_GUARD_TEXT: Final = re.compile(
-    r"active turn|expectedTurnId|no such turn|turn (?:is )?(?:not|no longer) "
-    r"(?:active|running|in progress)|turn .*(?:ended|finished|completed)",
-    re.IGNORECASE)
 
 
 class SteerOutcome(str):
@@ -258,16 +261,38 @@ class SteerOutcome(str):
 def classify_steer_error(code: int | None, message: str) -> SteerOutcome:
     """A JSON-RPC error on `turn/steer` → rejected or unknown (audit D3).
 
-    Rejected only when the error AUTHORITATIVELY means the input was not
-    appended: a never-applied code, or a message naming the expectedTurnId
-    precondition (schema: "The request fails when it does not match the
-    currently active turn"). An internal or server-defined error with any
-    other text could in principle follow the append, so it stays unknown."""
+    Rejected ONLY on structural evidence that the input was never appended:
+    a code the JSON-RPC spec reserves for failures raised before the method
+    runs (`_NEVER_APPLIED_CODES`). The message is carried in the reason for
+    a reader and is never itself evidence — an internal error can follow the
+    append. Everything else stays unknown."""
     msg = str(message or "")
-    if code in _NEVER_APPLIED_CODES or _GUARD_TEXT.search(msg):
+    if code in _NEVER_APPLIED_CODES:
         return SteerOutcome(STEER_REJECTED, f"server error {code}: {msg[:200]}")
     return SteerOutcome(STEER_UNKNOWN,
                         f"ambiguous server error {code}: {msg[:200]}")
+
+
+def classify_steer_result(result: Any, expected_turn_id: str | None
+                          ) -> SteerOutcome:
+    """A `turn/steer` RESULT → accepted or unknown (audit D3, review).
+
+    The schema (TurnSteerResponse) requires `turnId`; accepted means the
+    server named the turn we steered. A result without one, or naming some
+    other turn, is not an acknowledgement of THIS input — unknown, with the
+    shape in the reason."""
+    if isinstance(result, dict):
+        r: dict[str, Any] = result
+        tid = r.get("turnId")
+        if isinstance(tid, str) and tid and expected_turn_id \
+                and tid == expected_turn_id:
+            return SteerOutcome(STEER_ACCEPTED, "acknowledged")
+        return SteerOutcome(
+            STEER_UNKNOWN,
+            f"acknowledged with turnId={tid!r}, expected "
+            f"{expected_turn_id!r}")
+    return SteerOutcome(STEER_UNKNOWN,
+                        f"acknowledged with no result object ({type(result).__name__})")
 
 
 def _dyn_tool(name: str, description: str,
@@ -1365,14 +1390,19 @@ class CodexTurn:
                                  "outcome": None, "reason": ""}
         self.steer_log.append(entry)
 
+        expected = self.turn_id
+
         def _late(resp: dict[str, Any]) -> None:
+            # the SAME three-way classification as the prompt path: a late
+            # reply can be an acknowledgement, a structural refusal, or an
+            # ambiguous error / wrong-turn ack — and that last one stays
+            # UNKNOWN (review 2026-09-05: it must never read as refused)
             try:
-                AppServerClient._raise_for("turn/steer", resp)
-                resolved = SteerOutcome(STEER_ACCEPTED, "late acknowledgement")
+                result = AppServerClient._raise_for("turn/steer", resp)
+                resolved = classify_steer_result(result, expected)
             except CodexRequestError as e:
                 resolved = classify_steer_error(e.code, e.message)
-                resolved = SteerOutcome(str(resolved),
-                                        "late " + resolved.reason)
+            resolved = SteerOutcome(str(resolved), "late " + resolved.reason)
             entry["resolved"] = str(resolved)
             entry["resolved_reason"] = resolved.reason
             if on_late is not None:
@@ -1381,12 +1411,12 @@ class CodexTurn:
                                  daemon=True, name="codexsteer-late").start()
 
         try:
-            self.client.request("turn/steer", {
+            result = self.client.request("turn/steer", {
                 "threadId": self.thread_id,
                 "expectedTurnId": self.turn_id,
                 "input": [{"type": "text", "text": text}]},
                 STEER_TIMEOUT if timeout is None else timeout, on_late=_late)
-            out = SteerOutcome(STEER_ACCEPTED, "acknowledged")
+            out = classify_steer_result(result, expected)
         except CodexRequestError as e:
             out = classify_steer_error(e.code, e.message)
         except CodexRequestTimeout as e:

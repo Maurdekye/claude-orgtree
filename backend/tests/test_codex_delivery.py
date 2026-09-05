@@ -379,6 +379,34 @@ def main() -> int:
     check("…and it landed (STEERED[fine])",
           lambda: truthy("STEERED[fine]" in res2c["agent_text"], res2c["agent_text"]))
 
+    print("   control: classification is STRUCTURAL — message text is never evidence")
+    _cls = getattr(codexrun, "classify_steer_error", None)
+    _clr = getattr(codexrun, "classify_steer_result", None)
+    check("an internal error naming expectedTurnId is UNKNOWN, not rejected "
+          "(an internal failure can follow the append)",
+          lambda: eq((str(_cls(-32603, "Persistence failed after expectedTurnId validation")),
+                      str(_cls(-32603, "Internal failure while persisting input to active turn")),
+                      str(_cls(-32000, "no such active turn"))),
+                     ("unknown", "unknown", "unknown"), "ambiguous codes"))
+    check("the spec's never-applied codes are rejected; an unknown code is unknown",
+          lambda: eq([str(_cls(c, "x")) for c in (-32700, -32600, -32601, -32602, None, 12345)],
+                     ["rejected"] * 4 + ["unknown"] * 2, "codes"))
+    check("a result is accepted only when it names THIS turn; other/missing → unknown",
+          lambda: eq((str(_clr({"turnId": "T1"}, "T1")), str(_clr({"turnId": "T2"}, "T1")),
+                      str(_clr({}, "T1")), str(_clr(None, "T1")), str(_clr({"turnId": "T1"}, None))),
+                     ("accepted", "unknown", "unknown", "unknown", "unknown"), "results"))
+
+    print("   control: a prompt ack naming the WRONG turn is unknown on the wire too")
+    scenario("steer_ack_wrong_turn", "fake-thread-d3-wrongturn", FAKECODEX_ACK_TURNID="some-other-turn")
+    turn2d = runner_turn(lambda n, a: "unused")
+    turn2d.start("ack me wrongly")
+    time.sleep(0.3)
+    out2d = steer(turn2d, "whose turn", timeout=5.0)
+    turn2d.wait(timeout=30)
+    check("wrong-turn acknowledgement → unknown, with the shape in the reason",
+          lambda: eq((str(out2d), "some-other-turn" in getattr(out2d, "reason", "")),
+                     ("unknown", True), f"outcome {out2d!r}"))
+
     # ── §3 ───────────────────────────────────────────────────────────────────
     print("§3 supervisor: steered row lands while the REAL tool POST is held (D2)")
     scenario("slow_tool_then_steer", "fake-thread-d2-super")
@@ -425,6 +453,12 @@ def main() -> int:
     resp4 = wait_responding(slug4, nid4)
     time.sleep(0.3)
     routed4 = post_and_steer(slug4, nid4, "D3-MSG accepted then late ack")
+    # the durable uncertainty mark must exist BEFORE any acknowledgement
+    # could arrive (the ack is ACK_DELAY away): a crash in this window must
+    # leave a trace for the restart fold-back (review 2026-09-05)
+    marked_before_ack = wait_for(
+        lambda: any((b.get("attempt") or {}).get("outcome") == "unknown"
+                    for b in delivering(slug4, nid4)), min(ACK_DELAY - 0.3, 1.5))
     box4["thread"].join(timeout=ACK_DELAY + 90)
     owned4 = carriers_owned(slug4, nid4, box4)
     rows4 = log_rows(slug4, nid4)
@@ -435,6 +469,8 @@ def main() -> int:
           lambda: truthy(any("STEERED[" in (p.get("text") or "") and "D3-MSG" in
                              (p.get("text") or "") for p in STREAMED),
                          "no STEERED echo on the desk"))
+    check("the batch carried attempt.outcome=unknown BEFORE the ack could arrive",
+          lambda: truthy(marked_before_ack, "no unknown attempt mark before the ack"))
     check("THE FIX (D3): NOTHING requeued — no carrier owned after the turn",
           lambda: eq(owned4, [], "owned carriers"))
     check("…one durable steered row (delivered), batch confirmed",
@@ -782,6 +818,160 @@ def main() -> int:
                       st12.get("steer_limbo") or []), ([], 0, []), "owed"))
     warmpool.kill_org(slug12, "suite-teardown")
     os.environ["ORGTREE_WARM"] = "0"
+
+    # ── §13 ──────────────────────────────────────────────────────────────────
+    print("§13 supervisor: an AMBIGUOUS late reply keeps the outcome unknown — "
+          "redelivered at turn end, never receipted as refused")
+    scenario("steer_ack_late_error", "fake-thread-late-error", FAKECODEX_ACK_DELAY_S="1.5")
+    if hasattr(codexrun, "STEER_TIMEOUT"):
+        codexrun.STEER_TIMEOUT = STEER_TIMEOUT
+    STREAMED.clear()
+    slug13, nid13 = mkorg("late-error")
+    st13 = supervisor.state(slug13, nid13)
+    box13 = turn_in_background(slug13, nid13, "wait; answer late with an internal error")
+    resp13 = wait_responding(slug13, nid13)
+    time.sleep(0.3)
+    routed13 = post_and_steer(slug13, nid13, "LATE-ERR-MSG ambiguous late reply")
+    box13["thread"].join(timeout=60)
+    owned13 = carriers_owned(slug13, nid13, box13)
+    rows13 = log_rows(slug13, nid13)
+    check("fixture reached the seam: responding, steer door, STEERED echoed, clean end",
+          lambda: eq((resp13, bool(routed13.get("steering")), box13["error"],
+                      any("STEERED[" in (p.get("text") or "") for p in STREAMED)),
+                     (True, True, None, True), "seam"))
+    check("the late ambiguous reply was receipted as STILL UNKNOWN",
+          lambda: truthy(any(r.get("where") == "steer late-unknown" and
+                             r.get("outcome") == "unknown" for r in rows13),
+                         f"rows={rows13!r}"))
+    check("NO receipt says rejected/refused, and nothing was committed",
+          lambda: eq(([r for r in rows13 if r.get("outcome") == "rejected"
+                       or "refus" in (r.get("text") or "")],
+                      len(durable_steers(slug13, nid13))), ([], 0),
+                     "rejected receipts, steered rows"))
+    check("the carrier is owned for redelivery (turn-end decision), tokens intact",
+          lambda: eq([bool(isinstance(c, dict) and c.get("toks") and
+                           "[ORGTREE REDELIVERY" in str(c.get("text"))) for c in owned13],
+                     [True], "owned"))
+    scenario("tool", "fake-thread-late-error")
+    ran13 = drain_follow(slug13, nid13, box13["follow"])
+    check("…and it is delivered once by the next turn, nothing owed",
+          lambda: eq((ran13, rendered_user_rows(slug13, nid13, "LATE-ERR-MSG"),
+                      delivering(slug13, nid13), len(st13["queue"])),
+                     (1, 1, [], 0), "follow-ups, copies, delivering, queue"))
+
+    # ── §14 ──────────────────────────────────────────────────────────────────
+    print("§14 supervisor: CONTROLLED EARLY CALLBACK — the late reply beats the "
+          "pump's own return; delivered once, no stale limbo, no requeue")
+    scenario("steer_ack_never", "fake-thread-early-cb", FAKECODEX_STALL_S="2.0")
+    real_steer = codexrun.CodexTurn.steer
+    fired: list = []
+
+    def racing_steer(self, text, timeout=None, on_late=None):
+        # the real request times out (unknown); the resolver then fires
+        # SYNCHRONOUSLY, before the pump thread has seen the return value —
+        # the fastest possible late reply
+        out = real_steer(self, text, timeout=timeout, on_late=None)
+        if str(out) == "unknown" and on_late is not None:
+            fired.append(1)
+            on_late(codexrun.SteerOutcome("accepted", "late acknowledgement (raced)"))
+        return out
+    codexrun.CodexTurn.steer = racing_steer
+    try:
+        STREAMED.clear()
+        slug14, nid14 = mkorg("early-cb")
+        st14 = supervisor.state(slug14, nid14)
+        box14 = turn_in_background(slug14, nid14, "wait; race the callback")
+        resp14 = wait_responding(slug14, nid14)
+        time.sleep(0.3)
+        routed14 = post_and_steer(slug14, nid14, "RACE-MSG callback first")
+        box14["thread"].join(timeout=60)
+    finally:
+        codexrun.CodexTurn.steer = real_steer
+    owned14 = carriers_owned(slug14, nid14, box14)
+    rows14 = log_rows(slug14, nid14)
+    check("fixture reached the seam: responding, steer door, callback fired before return",
+          lambda: eq((resp14, bool(routed14.get("steering")), box14["error"], fired),
+                     (True, True, None, [1]), "seam"))
+    check("delivered ONCE as a steer: committed, no carrier owned, no limbo left, "
+          "no redelivery receipt",
+          lambda: eq((len(durable_steers(slug14, nid14)), owned14,
+                      st14.get("steer_limbo") or [],
+                      [r for r in rows14 if "redeliver" in (r.get("text") or "")],
+                      delivering(slug14, nid14)),
+                     (1, [], [], [], []), "steered rows, owned, limbo, redelivery, owed"))
+    check("…and the message renders exactly once",
+          lambda: eq(rendered_user_rows(slug14, nid14, "RACE-MSG"), 1, "copies"))
+
+    # ── §15 ──────────────────────────────────────────────────────────────────
+    print("§15 supervisor: the attempt mark CANNOT be persisted → no steer is "
+          "sent; delivered next turn, receipted")
+    scenario("steer", "fake-thread-nomark", FAKECODEX_STALL_S="1.0")
+    real_note = supervisor._note_steer_attempt
+    supervisor._note_steer_attempt = lambda *a, **k: False
+    try:
+        STREAMED.clear()
+        slug15, nid15 = mkorg("nomark")
+        st15 = supervisor.state(slug15, nid15)
+        box15 = turn_in_background(slug15, nid15, "wait for a steer that must not come")
+        resp15 = wait_responding(slug15, nid15)
+        time.sleep(0.3)
+        routed15 = post_and_steer(slug15, nid15, "NOMARK-MSG do not steer me")
+        box15["thread"].join(timeout=60)
+    finally:
+        supervisor._note_steer_attempt = real_note
+    owned15 = carriers_owned(slug15, nid15, box15)
+    rows15 = log_rows(slug15, nid15)
+    check("fixture reached the seam: responding, steer door",
+          lambda: eq((resp15, bool(routed15.get("steering")), box15["error"]),
+                     (True, True, None), "seam"))
+    check("NO steer reached the turn (the `steer` fixture would have echoed it)",
+          lambda: eq([p for p in STREAMED if "STEERED[" in (p.get("text") or "")], [],
+                     "STEERED echoes"))
+    check("the skip is receipted and the carrier is owned for the next turn",
+          lambda: eq((any(r.get("where") == "steer skipped" for r in rows15),
+                      [bool(isinstance(c, dict) and c.get("toks")) for c in owned15]),
+                     (True, [True]), "receipt, owned"))
+    scenario("tool", "fake-thread-nomark")
+    ran15 = drain_follow(slug15, nid15, box15["follow"])
+    check("…delivered once by the next turn",
+          lambda: eq((ran15, rendered_user_rows(slug15, nid15, "NOMARK-MSG"),
+                      delivering(slug15, nid15)), (1, 1, []), "follow-ups, copies, owed"))
+
+    # ── §16 ──────────────────────────────────────────────────────────────────
+    print("§16 state machine: late acceptance after redelivery reclaims PER CARRIER")
+    tr = getattr(supervisor, "_steer_late_transition", None)
+    A, B, X = {"text": "A", "toks": ["a"]}, {"text": "B", "toks": ["b"]}, {"text": "X", "toks": ["x"]}
+    st16: dict = {"queue": [A, X], "steer_limbo": []}
+    e16 = {"carriers": [A, B], "state": "redelivered", "late": None, "reason": ""}
+    res16 = tr(st16, e16, codexrun.SteerOutcome("accepted", "late")) if tr else None
+    check("partial: A (still queued) reclaimed, B (already drained) escaped, "
+          "unrelated X untouched",
+          lambda: eq((res16[0], [c["text"] for c in res16[1]], [c["text"] for c in res16[2]],
+                      [c["text"] for c in st16["queue"]]) if res16 else None,
+                     ("reclaim", ["A"], ["B"], ["X"]), "transition"))
+    st16b: dict = {"queue": [A, X], "steer_limbo": []}
+    e16b = {"carriers": [A, B], "state": "redelivered", "late": None, "reason": ""}
+    res16b = tr(st16b, e16b, codexrun.SteerOutcome("rejected", "late")) if tr else None
+    check("a late refusal after redelivery confirms it and moves nothing",
+          lambda: eq((res16b[0], [c["text"] for c in st16b["queue"]]) if res16b else None,
+                     ("confirmed", ["A", "X"]), "transition"))
+    e16c = {"carriers": [A], "state": "redelivered", "late": None, "reason": ""}
+    res16c = tr({"queue": [A], "steer_limbo": []}, e16c,
+                codexrun.SteerOutcome("unknown", "ambiguous")) if tr else None
+    check("a late UNKNOWN after redelivery changes nothing (still-unknown)",
+          lambda: eq(res16c[0] if res16c else None, "still-unknown", "transition"))
+    e16d = {"carriers": [A], "state": "inflight", "late": None, "reason": ""}
+    res16d = tr({"queue": [], "steer_limbo": [e16d]}, e16d,
+                codexrun.SteerOutcome("accepted", "late")) if tr else None
+    check("a reply arriving while the pump is still inflight is PARKED on the entry",
+          lambda: eq((res16d[0], str(e16d["late"])) if res16d else None,
+                     ("parked", "accepted"), "transition"))
+    e16e = {"carriers": [A], "state": "unknown", "late": None, "reason": ""}
+    st16e: dict = {"queue": [], "steer_limbo": [e16e]}
+    res16e = tr(st16e, e16e, codexrun.SteerOutcome("unknown", "ambiguous")) if tr else None
+    check("an ambiguous late reply in limbo leaves the entry in limbo, unknown",
+          lambda: eq((res16e[0], st16e["steer_limbo"] == [e16e], e16e["state"]) if res16e else None,
+                     ("still-unknown", True, "unknown"), "transition"))
 
     tool_srv.shutdown()
     print(f"\n{PASS} passed, {len(FAIL)} failed")

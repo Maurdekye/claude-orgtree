@@ -9932,9 +9932,45 @@ def _codex_leg_attempt(slug: str, nid: str, org: Org, st: dict[str, Any],
                 # response to this request. Buffer both their journal records
                 # and their desk frames so an accepted mid-turn question is
                 # durable + announced before the answer it caused.
+                # ── audit D3 (review 2026-09-05): OWN IT BEFORE THE WIRE ──
+                # 1. The durable batches are marked `attempt.outcome=unknown`
+                #    BEFORE the request goes out. A crash after the server
+                #    accepts and before our timeout would otherwise leave no
+                #    trace of the ambiguity, and the restart fold-back would
+                #    silently redeliver. If the mark CANNOT be persisted, the
+                #    steer is not sent at all: the carriers deliver at the
+                #    next turn under the turn machinery's own durable
+                #    confirmation, receipted — never a delivery whose
+                #    uncertainty is unrecorded.
+                toks = _steer_parts(carriers)[2]
+                if not _note_steer_attempt(slug, nid, toks,
+                                           codexrun.STEER_UNKNOWN,
+                                           "steer sent; acknowledgement "
+                                           "pending"):
+                    with _state_lock:
+                        st["queue"].extend(carriers)
+                    _steer_fold_log(
+                        slug, nid, len(carriers), "steer skipped",
+                        why="the attempt could not be recorded durably",
+                        text=f"{len(carriers)} mid-turn message(s) NOT "
+                             f"steered: the delivery attempt could not be "
+                             f"recorded durably — delivered at the next "
+                             f"turn instead")
+                    continue
+                # 2. The limbo entry exists BEFORE the request, in state
+                #    `inflight`, so a late reply that beats this thread to
+                #    the decision (the timeout registers the resolver a
+                #    moment before we return here) finds the entry and
+                #    parks its outcome in it instead of acting alone. Every
+                #    transition happens under `_state_lock`.
                 steer_at = _begin_visible_barrier()
+                entry: dict[str, Any] = {
+                    "carriers": carriers, "at": steer_at,
+                    "state": "inflight", "late": None, "reason": ""}
+                with _state_lock:
+                    st.setdefault("steer_limbo", []).append(entry)
                 try:
-                    # ── audit D3: THREE outcomes, read explicitly ──
+                    # ── THREE outcomes, read explicitly ──
                     # `turn.steer` answers accepted / rejected / unknown. It
                     # used to answer True/False, and False covered BOTH the
                     # guard's refusal and a mere timeout of an accepted
@@ -9944,9 +9980,7 @@ def _codex_leg_attempt(slug: str, nid: str, org: Org, st: dict[str, Any],
                     # outcome). Never branch on truthiness here.
                     try:
                         outcome = turn.steer(
-                            wrapped,
-                            on_late=lambda o, c=carriers, at=steer_at:
-                                _late_steer(c, at, o))
+                            wrapped, on_late=lambda o, e=entry: _late_steer(e, o))
                     except Exception as e:                   # noqa: BLE001
                         # Broken pipe / teardown failures can escape the
                         # runner's wrapper. Whether the text was appended is
@@ -9955,77 +9989,95 @@ def _codex_leg_attempt(slug: str, nid: str, org: Org, st: dict[str, Any],
                         outcome = codexrun.SteerOutcome(
                             codexrun.STEER_UNKNOWN,
                             f"steer raised {type(e).__name__}")
-                    if outcome == codexrun.STEER_ACCEPTED:
+                    with _state_lock:
+                        late = entry["late"]
+                        if outcome != codexrun.STEER_UNKNOWN:
+                            decided = outcome
+                        elif late is not None and \
+                                late != codexrun.STEER_UNKNOWN:
+                            decided = late          # the reply beat us here
+                        else:
+                            decided = outcome       # still unknown
+                        entry["state"] = str(decided)
+                        entry["reason"] = str(getattr(decided, "reason", ""))
+                        if decided != codexrun.STEER_UNKNOWN:
+                            limbo = st.get("steer_limbo") or []
+                            if entry in limbo:
+                                limbo.remove(entry)
+                    if decided == codexrun.STEER_ACCEPTED:
                         # accepted: NOW it is delivered — the durable steered
                         # row and desk frame are written before held output
                         commit_steer(slug, nid, carriers, at=steer_at)
-                    elif outcome == codexrun.STEER_REJECTED:
+                    elif decided == codexrun.STEER_REJECTED:
                         # the expectedTurnId guard refused — the turn ended
                         # under us. Nothing was claimed, so the WHOLE carriers
                         # (tokens included) go back on the queue and deliver
                         # next turn exactly once.
                         with _state_lock:
                             st["queue"].extend(carriers)
+                        _note_steer_attempt(slug, nid, toks,
+                                            codexrun.STEER_REJECTED,
+                                            entry["reason"])
                         _steer_fold_log(slug, nid, len(carriers),
                                         "steer refused",
+                                        why=entry["reason"],
                                         outcome=codexrun.STEER_REJECTED)
                     else:
                         # UNKNOWN: the provider may have the text. The
-                        # carriers wait in LIMBO — owned by this pump, not
+                        # carriers stay in LIMBO — owned by this pump, not
                         # queued, not committed — for a late reply
                         # (`_late_steer`) or for the turn-end decision in
-                        # the finally below. Durable on both sides: the
-                        # batch is marked `attempt.outcome=unknown` (so a
-                        # restart fold-back can say why a copy may repeat)
-                        # and the log says unknown where it happened.
-                        with _state_lock:
-                            st.setdefault("steer_limbo", []).append({
-                                "carriers": carriers, "at": steer_at,
-                                "reason": outcome.reason})
-                        _note_steer_attempt(
-                            slug, nid, _steer_parts(carriers)[2],
-                            codexrun.STEER_UNKNOWN, outcome.reason)
+                        # the finally below. The batch already carries the
+                        # unknown mark (step 1); the log says so here.
                         _steer_fold_log(
                             slug, nid, len(carriers), "steer unknown",
-                            why=outcome.reason,
+                            why=entry["reason"],
                             outcome=codexrun.STEER_UNKNOWN,
                             text=f"{len(carriers)} mid-turn message(s) sent "
                                  f"to the turn with an UNKNOWN outcome "
-                                 f"({outcome.reason[:120]}) — held for a "
+                                 f"({entry['reason'][:120]}) — held for a "
                                  f"late acknowledgement")
                 finally:
                     _release_visible_barrier()
 
-        def _late_steer(carriers: list[Any], at: str,
-                        outcome: Any) -> None:
-            """A steer's LATE reply (own thread, from the runner). Resolves
-            the limbo entry if the turn is still deciding; after the
-            turn-end decision has already requeued the carriers, an
-            acceptance recovers them from the queue when they have not run
-            yet — and is receipted as a possible duplicate when they have."""
-            accepted = str(outcome) == codexrun.STEER_ACCEPTED
+        def _late_steer(entry: dict[str, Any], outcome: Any) -> None:
+            """A steer's LATE reply (own thread, from the runner), kept
+            three-way: accepted / rejected / unknown — an ambiguous late
+            reply leaves the entry exactly as unknown as it was.
+
+            States of `entry` (all transitions under `_state_lock`):
+              inflight     the pump has not returned yet → park the outcome
+                           in `entry["late"]`; the pump applies it.
+              accepted /
+              rejected     already decided by the prompt reply → nothing.
+              unknown      in limbo → accepted commits; rejected requeues;
+                           unknown stays (turn end decides).
+              redelivered  the turn-end decision already requeued the
+                           carriers → an acceptance RECLAIMS, PER CARRIER,
+                           every copy still in the queue (delivered once)
+                           and receipts the copies that already left it
+                           (may have run: possible repeat); a refusal
+                           confirms the redelivery; unknown changes nothing.
+            """
+            word = str(outcome)
+            reason = str(getattr(outcome, "reason", ""))
+            carriers = cast("list[Any]", entry["carriers"])
+            toks = _steer_parts(carriers)[2]
             n = len(carriers)
             with _state_lock:
-                limbo = st.get("steer_limbo") or []
-                entry = next((e for e in limbo if e["carriers"] is carriers),
-                             None)
-                if entry is not None:
-                    limbo.remove(entry)
-                    where = "limbo"
-                else:
-                    q = st["queue"]
-                    if accepted and all(any(c is x for x in q)
-                                        for c in carriers):
-                        st["queue"] = [x for x in q
-                                       if not any(x is c for c in carriers)]
-                        where = "recovered"
-                    else:
-                        where = "gone"
-                if where != "limbo" and not accepted:
-                    where = "confirmed"
-            if where == "limbo":
-                if accepted:
-                    commit_steer(slug, nid, carriers, at=at)
+                where, reclaimed, escaped = _steer_late_transition(
+                    st, entry, outcome)
+            if where in ("parked", "decided"):
+                return
+            if where == "still-unknown":
+                _steer_fold_log(
+                    slug, nid, n, "steer late-unknown",
+                    why=reason, outcome=codexrun.STEER_UNKNOWN,
+                    text=f"{n} mid-turn message(s): the late reply was itself "
+                         f"ambiguous ({reason[:120]}) — outcome still unknown")
+            elif where == "limbo":
+                if word == codexrun.STEER_ACCEPTED:
+                    commit_steer(slug, nid, carriers, at=str(entry["at"]))
                     _steer_fold_log(
                         slug, nid, n, "steer late-ack",
                         outcome=codexrun.STEER_ACCEPTED,
@@ -10034,34 +10086,37 @@ def _codex_leg_attempt(slug: str, nid: str, org: Org, st: dict[str, Any],
                 else:
                     with _state_lock:
                         st["queue"].extend(carriers)
+                    _note_steer_attempt(slug, nid, toks,
+                                        codexrun.STEER_REJECTED, reason)
                     _steer_fold_log(slug, nid, n, "steer late-refusal",
-                                    why=str(getattr(outcome, "reason", "")),
+                                    why=reason,
                                     outcome=codexrun.STEER_REJECTED)
-            elif where == "recovered":
-                _note_steer_attempt(slug, nid, _steer_parts(carriers)[2],
+            elif where == "reclaim":
+                # every copy reclaimed from the queue is delivered ONCE (its
+                # steered row is the delivery); a copy that already left the
+                # queue is running or ran — its steered row is written where
+                # it landed and the receipt says the agent may see it twice.
+                # Per carrier, never all-or-none: unrelated bundled mail in
+                # the same queue is never touched (review 2026-09-05).
+                _note_steer_attempt(slug, nid, toks,
                                     codexrun.STEER_ACCEPTED, "late ack")
-                commit_steer(slug, nid, carriers, at=at)
-                _steer_fold_log(
-                    slug, nid, n, "steer late-ack",
-                    outcome=codexrun.STEER_ACCEPTED,
-                    text=f"{n} mid-turn message(s) acknowledged LATE after "
-                         f"the redelivery decision — recovered from the "
-                         f"queue, delivered once")
-            elif where == "gone":
-                # the redelivery is already running (or handed to the turn
-                # loop as its next carrier) and cannot be retracted. The
-                # earlier turn DID receive the text, so its durable steered
-                # row is written where it landed — the transcript then shows
-                # both copies, and the receipt says why there are two.
-                _note_steer_attempt(slug, nid, _steer_parts(carriers)[2],
-                                    codexrun.STEER_ACCEPTED, "late ack")
-                commit_steer(slug, nid, carriers, at=at)
-                _steer_fold_log(
-                    slug, nid, n, "steer late-ack",
-                    outcome=codexrun.STEER_ACCEPTED,
-                    text=f"{n} mid-turn message(s) acknowledged LATE after "
-                         f"their redelivery already ran — the agent may "
-                         f"have seen them twice")
+                commit_steer(slug, nid, carriers, at=str(entry["at"]))
+                if reclaimed:
+                    _steer_fold_log(
+                        slug, nid, len(reclaimed), "steer late-ack",
+                        outcome=codexrun.STEER_ACCEPTED,
+                        text=f"{len(reclaimed)} mid-turn message(s) "
+                             f"acknowledged LATE after the redelivery "
+                             f"decision — recovered from the queue, "
+                             f"delivered once")
+                if escaped:
+                    _steer_fold_log(
+                        slug, nid, len(escaped), "steer late-ack",
+                        outcome=codexrun.STEER_ACCEPTED,
+                        text=f"{len(escaped)} mid-turn message(s) "
+                             f"acknowledged LATE after their redelivery "
+                             f"already ran — the agent may have seen them "
+                             f"twice")
             else:
                 _steer_fold_log(
                     slug, nid, n, "steer late-refusal",
@@ -10107,6 +10162,7 @@ def _codex_leg_attempt(slug: str, nid: str, org: Org, st: dict[str, Any],
         with _state_lock:
             limbo_entries = st.pop("steer_limbo", None) or []
             for _entry in limbo_entries:
+                _entry["state"] = "redelivered"     # `_late_steer` reads it
                 for _c in _entry["carriers"]:
                     _mark_redelivery(_c, _entry.get("reason") or "")
                 st["queue"].extend(_entry["carriers"])
@@ -19108,22 +19164,80 @@ def _mark_redelivery(carrier: Any, reason: str) -> None:
     carrier["text"] = REDELIVERY_PREFACE + str(carrier.get("text") or "")
 
 
+def _steer_late_transition(st: dict[str, Any], entry: dict[str, Any],
+                           outcome: Any
+                           ) -> tuple[str, list[Any], list[Any]]:
+    """The state transition a LATE steer reply causes (audit D3, review
+    2026-09-05). Pure bookkeeping on the node state; the caller holds
+    `_state_lock` and does the receipts/commits the returned word calls for.
+
+    Returns (where, reclaimed, escaped):
+      parked         entry still `inflight` — outcome stored in entry["late"]
+                     for the pump thread, which applies it.
+      decided        the prompt reply already decided accepted/rejected.
+      still-unknown  the late reply was itself ambiguous — nothing moves.
+      limbo          entry was unknown in limbo and is now accepted/rejected
+                     (removed from limbo; entry["state"] updated).
+      reclaim        entry was already redelivered and the late reply is an
+                     acceptance: `reclaimed` are the carriers still in the
+                     queue (removed, per carrier — unrelated queued mail is
+                     untouched), `escaped` the ones that already left it.
+      confirmed      entry was already redelivered and the late reply is a
+                     refusal — the redelivery stands.
+    """
+    from . import codexrun                  # noqa: PLC0415 — codex lane only
+    word = str(outcome)
+    state = str(entry.get("state") or "")
+    carriers = cast("list[Any]", entry.get("carriers") or [])
+    reclaimed: list[Any] = []
+    escaped: list[Any] = []
+    if state == "inflight":
+        entry["late"] = outcome
+        return "parked", reclaimed, escaped
+    if state in (codexrun.STEER_ACCEPTED, codexrun.STEER_REJECTED):
+        return "decided", reclaimed, escaped
+    if word == codexrun.STEER_UNKNOWN:
+        entry["reason"] = str(getattr(outcome, "reason", ""))
+        return "still-unknown", reclaimed, escaped
+    if state == codexrun.STEER_UNKNOWN:
+        limbo = st.get("steer_limbo") or []
+        if entry in limbo:
+            limbo.remove(entry)
+        entry["state"] = word
+        return "limbo", reclaimed, escaped
+    # redelivered
+    if word != codexrun.STEER_ACCEPTED:
+        return "confirmed", reclaimed, escaped
+    q = list(st.get("queue") or [])
+    for c in carriers:
+        (reclaimed if any(c is x for x in q) else escaped).append(c)
+    if reclaimed:
+        st["queue"] = [x for x in q if not any(x is c for c in reclaimed)]
+    entry["state"] = codexrun.STEER_ACCEPTED
+    return "reclaim", reclaimed, escaped
+
+
 def _note_steer_attempt(slug: str, nid: str, toks: Iterable[str],
-                        outcome: str, reason: str = "") -> None:
+                        outcome: str, reason: str = "") -> bool:
     """Mark the DURABLE delivering batches behind a steer with the attempt's
     outcome (audit D3): `attempt = {via, outcome, at, n, reason}`. A restart
     then knows that a batch it folds back may already have reached the model
     (`reconcile` writes the receipt); the same vocabulary — accepted /
-    rejected / unknown — the D1 hook work uses. Best-effort: never breaks
-    the pump."""
+    rejected / unknown — the D1 hook work uses.
+
+    Returns whether the mark is DURABLE: True when it was saved, or when
+    there was nothing to mark (no tokens, or no batch still owed — nothing
+    to lose); False when the write itself failed. The pump reads it BEFORE
+    sending a steer and refuses to steer on False (review 2026-09-05): a
+    delivery whose uncertainty cannot be recorded is not attempted."""
     drop = {str(t) for t in toks}
     if not drop:
-        return
+        return True
     try:
         with store.DOC_LOCK:
             org = store.load_org(slug)
             if nid not in org.nodes:
-                return
+                return True
             hit = False
             for b in (org.d.get("delivering") or {}).get(nid) or []:
                 if b.get("tok") in drop:
@@ -19135,8 +19249,9 @@ def _note_steer_attempt(slug: str, nid: str, toks: Iterable[str],
                     hit = True
             if hit:
                 store.save_org(org)
+            return True
     except Exception:                                        # noqa: BLE001
-        pass
+        return False
 
 
 def _steer_fold_log(slug: str, nid: str, n: int, where: str,

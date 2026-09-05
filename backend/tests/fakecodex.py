@@ -505,6 +505,32 @@ def run_turn(thread_id, turn_id, dyn_tools, model=None):
                     return
         else:
             agent_message("msg-nosteer", "no steer arrived")
+    elif SCENARIO == "steer_ack_late_error":
+        # accepts (STEERED echoed), then FAKECODEX_ACK_DELAY_S later answers
+        # the request with an INTERNAL error — the ambiguous late reply: an
+        # internal failure can follow the append, so the client must keep
+        # the outcome unknown, never read it as a refusal (review 2026-09-05)
+        st = wait_request("turn/steer")
+        if st:
+            text = "".join(str(p.get("text", ""))
+                           for p in (st.get("params", {}).get("input") or []))
+            agent_message("msg-steer", f"STEERED[{text}]")
+            time.sleep(float(os.environ.get("FAKECODEX_ACK_DELAY_S", "2.0")))
+            reply_error(st["id"], "Persistence failed after expectedTurnId "
+                                  "validation", code=-32603)
+            time.sleep(0.5)
+        else:
+            agent_message("msg-nosteer", "no steer arrived")
+    elif SCENARIO == "steer_ack_wrong_turn":
+        # a prompt JSON-RPC result that does NOT name the steered turn:
+        # FAKECODEX_ACK_TURNID (default "some-other-turn"; empty = omit the
+        # field). Not an acknowledgement of THIS input → unknown.
+        st = wait_request("turn/steer")
+        if st:
+            tid = os.environ.get("FAKECODEX_ACK_TURNID", "some-other-turn")
+            reply(st["id"], {"turnId": tid} if tid else {})
+        else:
+            agent_message("msg-nosteer", "no steer arrived")
     elif SCENARIO == "steer_ack_after_end":
         # accepts, COMPLETES THE TURN, and only then (FAKECODEX_ACK_DELAY_S
         # later) acks — the reply lands after the client's turn-end decision.
