@@ -58,10 +58,21 @@ R.MUTANTS[:] = [
      "    status = _strict_http_status(ev.get(\"apiErrorStatus\"))",
      "coherence · typed 401 → UNTYPED engine error is terminal on the later error, not an auth park"),
 
+    # ⚠ THE OBVIOUS FIRST-WINS MUTATION IS DEAD CODE NOW. Guarding the two
+    # assignment lines with `if "status" in into: return` can never fire —
+    # the clearing above them ran first — so it mutated NOTHING and survived
+    # every check, which reads as a hole in the suite and is not one. Stated
+    # against the current code, first-wins means: retire the slot as shipped,
+    # but put the EARLIER value back whenever the later event is also typed.
     ("the synthetic slot is FIRST-wins (a stale 401 parks a 402 as auth)",
      SUP,
-     "    into[\"status\"] = status\n    into[\"status_text\"] = text.strip()[:300]",
-     "    if \"status\" in into:\n        return\n    into[\"status\"] = status\n    into[\"status_text\"] = text.strip()[:300]",
+     "    _clear_synthetic_status(into)\n    status = _strict_http_status(ev.get(\"apiErrorStatus\"))",
+     "    _first = (into.get(\"status\"), into.get(\"status_text\"))\n"
+     "    _clear_synthetic_status(into)\n"
+     "    status = _strict_http_status(ev.get(\"apiErrorStatus\"))\n"
+     "    if _first[0] is not None and status is not None:\n"
+     "        into[\"status\"], into[\"status_text\"] = _first\n"
+     "        return",
      "coherence · consecutive 401 → 402 is the 402 (latest), not a stale auth park"),
 
     ("the clean-empty-result adoption is dropped (the 402 books a completed turn)",
