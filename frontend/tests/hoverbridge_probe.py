@@ -38,8 +38,9 @@ OrgCanvas.tsx — none of that exists in a static HTML+CSS mockup. This drives
 the real app, the real DOM, the real event handlers, against a disposable
 backend/org that is deleted at the end of the run. It never touches port
 7360 (the operator's live backend — confirmed LISTENING before this file was
-ever written, and re-checked here: see `_port_free`/identity-check below) or
-any real org.
+ever written, and re-checked here: see `_check_ownership`/`_listener_pid`
+below, which verify the OS-reported LISTEN owner of our own port, not merely
+that something answers on it) or any real org.
 
 WHAT IS MEASURED, once per side ('l' and 'r' — both are checked; earlier
 drafts of this file claimed both but only ever gestured `bridge-l`, which
@@ -96,29 +97,38 @@ USAGE
                                                                 # `git stash`
                                                                 # on the fix
 
-Requires playwright (msedge channel), fastapi, uvicorn, websockets — same
-requirement as live_probe.py next door. Starts its own backend on a
-dedicated port with a throwaway ORGTREE_DATA/HOME; refuses to run at all if
-that port is already bound by anyone (own or otherwise), and refuses to
-mutate anything until the backend it just spawned has proven — by actually
-answering with zero pre-existing orgs — that it is a fresh instance of ITS
-OWN and not some other service that happens to be listening there; never
-rebuilds frontend/dist beyond what is already built; deletes the org it
-creates; kills its own backend child on every exit path, including a
-startup failure partway through.
+Requires playwright (msedge channel), fastapi, uvicorn, websockets, psutil —
+psutil is the one addition over live_probe.py next door, needed to ask the
+OS (not an HTTP response) who actually owns a listening socket. Starts its
+own backend on a dedicated port with a throwaway ORGTREE_DATA/HOME; refuses
+to run at all if that port is already bound by anyone (own or otherwise);
+before ANY mutation, self-tests its own ownership guard against two
+impostor servers (verify_identity_guard), then requires the OS-reported
+LISTEN owner of its port to be its own spawned child PID AND that child to
+answer the real endpoint's exact empty-list shape — an HTTP response by
+itself, even a correctly-shaped empty one from an unrelated process, is
+never treated as proof; rechecks both facts again immediately before the
+first mutating call; never rebuilds frontend/dist beyond what is already
+built; deletes the org it creates; kills its own backend child on every
+exit path, including a startup failure partway through.
 """
 
 from __future__ import annotations
 
 import argparse
+import http.server
 import json
 import os
 import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
+import urllib.error
 import urllib.request
+
+import psutil
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
@@ -175,12 +185,10 @@ def set_cfg(**default) -> None:
 
 
 def _port_free(port: int) -> bool:
-    """Binding is the only way to actually KNOW a port is free rather than
-    infer it from a probe response, which can only ever prove a port is
-    OCCUPIED, never that it is free (a non-answer is indistinguishable from
-    "nothing there yet"). Astra's review point: a readiness check that only
-    waits for ANY response accepts an unrelated service on this port just as
-    happily as our own child — this bind attempt is the actual guard."""
+    """A cheap pre-check only — see the module note above _check_ownership
+    for why a bind test alone (or an HTTP response alone) is NOT ownership
+    proof. This just fails fast on the common case; it does not gate any
+    mutation by itself."""
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
         s.bind(("127.0.0.1", port))
@@ -191,18 +199,188 @@ def _port_free(port: int) -> bool:
         s.close()
 
 
+def _listener_pid(port: int) -> int | None:
+    """The PID the OS itself says owns the LISTEN socket on 127.0.0.1:<port>.
+    This is the actual ownership fact; an HTTP response is not — anything
+    capable of answering GET /api/orgs with valid-looking JSON can produce
+    the same bytes our own backend would, whether or not it is our backend.
+    Returns None if nothing is listening (yet, or ever)."""
+    for c in psutil.net_connections(kind="tcp"):
+        if (c.status == psutil.CONN_LISTEN and c.laddr
+                and c.laddr.port == port
+                and c.laddr.ip in ("127.0.0.1", "0.0.0.0", "::1", "::")):
+            return c.pid
+    return None
+
+
+class _NotReady(Exception):
+    """Transient: nothing is listening yet, or the listener isn't answering
+    HTTP yet. Worth another poll. Never treated as an ownership verdict."""
+
+
+class _OwnershipViolation(RuntimeError):
+    """Fatal: something IS answering, on a real listening socket, and it is
+    either not ours or does not prove it's ours. More polling cannot fix
+    this — it is a verdict, not a timing issue."""
+
+
+def _check_ownership(port: int, expected_pid: int) -> None:
+    """Raises unless BOTH hold: (1) the OS reports `expected_pid` as the
+    actual LISTEN owner of `port` — not merely "something answered a
+    request", which review correctly named as no proof at all (a wrong
+    process racing us for the same port between our pre-check and our own
+    spawn would answer just as readily, and so would anything else that
+    happens to be listening there); and (2) that owner's own /api/orgs
+    response is EXACTLY the real endpoint's shape — a bare JSON list, per
+    api.py's `orgs_list() -> list[dict]` — and empty. Both checks are
+    needed: PID ownership alone doesn't prove the DATA root is the fresh
+    throwaway one; the empty-list shape alone doesn't prove OWNERSHIP
+    (review's exact point — and a loose `data.get('orgs', [])` reading also
+    let a bare `{}` from anything at all pass as "zero orgs", which this
+    replaces with a strict `isinstance(data, list)` requirement)."""
+    pid = _listener_pid(port)
+    if pid is None:
+        raise _NotReady(f"nothing listening on {port} yet")
+    if pid != expected_pid:
+        raise _OwnershipViolation(
+            f"port {port}'s actual LISTEN owner is pid {pid}, not the "
+            f"expected {expected_pid} — an HTTP response alone never "
+            f"proved this; the OS-reported socket owner is what's checked")
+    try:
+        raw = urllib.request.urlopen(f"http://127.0.0.1:{port}/api/orgs",
+                                      timeout=2).read()
+    except (urllib.error.URLError, ConnectionError, OSError, TimeoutError) as e:
+        raise _NotReady(f"pid {pid} owns the socket but isn't answering "
+                         f"HTTP yet: {e}") from e
+    try:
+        data = json.loads(raw.decode("utf-8", "replace"))
+    except json.JSONDecodeError as e:
+        raise _NotReady(f"pid {pid} answered non-JSON, possibly still "
+                         f"booting: {e}") from e
+    if not isinstance(data, list):
+        raise _OwnershipViolation(
+            f"pid {pid} (OS-confirmed owner) answered /api/orgs with a "
+            f"non-list payload {data!r} — not the real endpoint's shape, "
+            f"so this is not trusted as proof of anything")
+    if data:
+        raise _OwnershipViolation(
+            f"pid {pid} (OS-confirmed owner) answered /api/orgs with "
+            f"{len(data)} EXISTING org(s) {[o.get('slug') for o in data]!r} "
+            f"— not a fresh throwaway root")
+
+
+def _free_ephemeral_port() -> int:
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+    finally:
+        s.close()
+
+
+def _serve_json(port: int, payload):
+    """A minimal decoy server answering every GET on `port` with `payload`,
+    in a background thread of THIS process — so its true OS-level listener
+    PID is `os.getpid()`, known and checkable, unlike a real orgtree
+    backend's child PID which this file only learns about after spawning
+    it. Used only by verify_identity_guard() below, never by the real run."""
+    class _Handler(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *a):                                # noqa: D401
+            pass
+
+        def do_GET(self):                                          # noqa: N802
+            body = json.dumps(payload).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+    srv = http.server.HTTPServer(("127.0.0.1", port), _Handler)
+    t = threading.Thread(target=srv.serve_forever, daemon=True)
+    t.start()
+    return srv, t
+
+
+def verify_identity_guard() -> bool:
+    """Self-test, run once before the real backend is ever spawned: proves
+    `_check_ownership` actually discriminates, rather than trusting it on
+    faith. Two impostor scenarios, both named directly in review:
+      (a) a server that answers the exact same EMPTY, correctly-shaped
+          response our real backend would, but is NOT the process we
+          expected — must be REJECTED. This is "another empty Orgtree
+          instance could win the bind race" made concrete: empty and
+          correctly-shaped is not, by itself, ownership.
+      (b) a server we DO own (PID matches) but whose response is the wrong
+          SHAPE ({} instead of a bare list) — must be REJECTED. This is the
+          `data.get('orgs', [])` loophole: an unrelated `{}` must not read
+          as "zero orgs".
+    And one real-positive: a server we DO own answering the correct empty
+    shape — must be ACCEPTED, or every run would refuse to start at all."""
+    all_ok = True
+
+    port_a = _free_ephemeral_port()
+    srv_a, t_a = _serve_json(port_a, [])
+    try:
+        try:
+            _check_ownership(port_a, os.getpid())
+            check("[identity-guard] ACCEPTS a genuinely owned server "
+                  "answering the correct empty shape", True)
+        except Exception as e:                                    # noqa: BLE001
+            check("[identity-guard] ACCEPTS a genuinely owned server "
+                  "answering the correct empty shape", False, str(e))
+            all_ok = False
+
+        bogus_pid = os.getpid() + 1
+        try:
+            _check_ownership(port_a, bogus_pid)
+            check("[identity-guard] REJECTS the SAME empty, correctly-shaped "
+                  "server when the expected owner PID does not match "
+                  "(review's exact scenario — empty alone is not ownership)",
+                  False, "did not raise — accepted an impostor")
+            all_ok = False
+        except RuntimeError:
+            check("[identity-guard] REJECTS the SAME empty, correctly-shaped "
+                  "server when the expected owner PID does not match "
+                  "(review's exact scenario — empty alone is not ownership)",
+                  True)
+    finally:
+        srv_a.shutdown()
+        t_a.join(timeout=2)
+
+    port_b = _free_ephemeral_port()
+    srv_b, t_b = _serve_json(port_b, {})
+    try:
+        try:
+            _check_ownership(port_b, os.getpid())
+            check("[identity-guard] REJECTS a genuinely owned server whose "
+                  "response is the wrong SHAPE ({} instead of a bare list — "
+                  "the data.get('orgs', []) loophole named in review)",
+                  False, "did not raise — {} was read as zero orgs")
+            all_ok = False
+        except RuntimeError:
+            check("[identity-guard] REJECTS a genuinely owned server whose "
+                  "response is the wrong SHAPE ({} instead of a bare list — "
+                  "the data.get('orgs', []) loophole named in review)",
+                  True)
+    finally:
+        srv_b.shutdown()
+        t_b.join(timeout=2)
+
+    return all_ok
+
+
 def start_backend() -> None:
     """Own ORGTREE_DATA/HOME, own port, ORGTREE_CLAUDE_CLI -> fakecli.js,
     ORGTREE_BRIDGE_PORT=0 so the sandbox-bridge listener never contests the
     real one (same rig as live_probe.py's start_backend()).
 
-    Hardened per review: (a) refuses to even attempt to start if the port is
-    already bound by ANYONE — occupied is occupied, ours or not; (b) never
-    issues a mutating call (make_org/hire/DELETE) until the backend that
-    answers on this port has proven, by actually returning zero pre-existing
-    orgs, that it is OUR fresh throwaway instance and not some other service;
-    (c) kills its own child on every failure path out of this function, so a
-    partial startup never leaks a live process."""
+    Ownership is established by `_check_ownership` (OS-reported LISTEN PID
+    == our own spawned PROC.pid, AND the real endpoint's exact empty-list
+    shape) — an HTTP response by itself proves nothing, including a
+    same-shaped empty one (verify_identity_guard, called once before this
+    ever runs, exists to prove that check actually discriminates). Kills its
+    own child on every failure path out of this function, so a partial
+    startup never leaks a live process."""
     global PROC
     if not _port_free(PORT):
         raise RuntimeError(
@@ -237,29 +415,34 @@ def start_backend() -> None:
                     f"backend exited with {PROC.returncode} during startup; "
                     f"log tail:\n" + _log_tail())
             try:
-                raw = urllib.request.urlopen(BASE + "/api/orgs", timeout=1).read()
-            except Exception:                                    # noqa: BLE001
+                _check_ownership(PORT, PROC.pid)
+            except _NotReady:
                 time.sleep(0.1)
                 continue
-            try:
-                data = json.loads(raw.decode("utf-8", "replace"))
-            except Exception:                                    # noqa: BLE001
-                time.sleep(0.1)
-                continue
-            org_list = data if isinstance(data, list) else data.get("orgs", [])
-            if org_list:
-                raise RuntimeError(
-                    f"port {PORT} answered /api/orgs with {len(org_list)} "
-                    f"EXISTING org(s) {[o.get('slug') for o in org_list]!r} — "
-                    f"this is not our fresh throwaway data root, so it is not "
-                    f"our backend. Refusing to run any mutation against it.")
-            print(f"backend up on :{PORT}  (data={DATA}  home={HOME}) — "
-                  f"identity confirmed: fresh instance, zero pre-existing orgs")
+            # _OwnershipViolation (or anything else) propagates immediately:
+            # a genuine mismatch is a verdict, not a timing issue more
+            # polling could fix.
+            print(f"backend up on :{PORT}  pid={PROC.pid}  "
+                  f"(data={DATA}  home={HOME}) — ownership confirmed: OS "
+                  f"reports OUR spawned pid as the port's actual listener, "
+                  f"and it answers a fresh, empty, correctly-shaped org list")
             return
         raise RuntimeError(f"backend did not come up on {PORT}:\n" + _log_tail())
     except Exception:
         stop_backend()
         raise
+
+
+def assert_still_ours() -> None:
+    """Recheck immediately before the first mutating call, not just once at
+    startup: a backend confirmed ours a moment ago could still have died, or
+    (pathologically) the OS could have recycled the port to someone else in
+    between. Cheap, and closes the gap review named."""
+    if PROC is None or PROC.poll() is not None:
+        raise RuntimeError(
+            "backend child is not running anymore — refusing the first "
+            "mutation against a backend that never proved it's still ours")
+    _check_ownership(PORT, PROC.pid)
 
 
 def stop_backend() -> None:
@@ -699,8 +882,16 @@ def verify_pins_untouched(pg, slug: str, node: str) -> None:
 
 
 def run(shot: str | None, expect_bug: bool) -> int:
+    print("== identity-guard self-test (before any backend is spawned) ==")
+    if not verify_identity_guard():
+        print("\n  ABORT: the ownership guard itself does not discriminate "
+              "real from impostor — nothing that depends on it (including "
+              "every mutation below) would mean anything.")
+        return 1
+
     start_backend()
     try:
+        assert_still_ours()   # recheck immediately before the first mutation
         slug = make_org("ux7")
         node = hire(slug, "bridgee")
         print(f"  org={slug} node={node}")
