@@ -42,7 +42,7 @@ from functools import wraps
 from typing import Any, Final, Protocol, cast
 
 from . import (accounts, appsettings, cachecontinuity, clipin, codex_limits,
-               codex_route, deployment, envelope, handoff, imgblock,
+               codex_route, deployment, envelope, failfix, handoff, imgblock,
                limits, localtime, net, openrouter, opreceipts, providers,
                sandbox as sbx, store,
                tokens, turnusage, warmpool)
@@ -889,6 +889,47 @@ def _stream_error_detail(stream_err: Mapping[str, Any]) -> str:
                    "usable; it stays broken until a human runs "
                    "`claude auth login`. No amount of retrying will fix it.")
     return detail
+
+
+def _failfix_record(slug: str, nid: str, *, site: str, lane: str,
+                    err_blob: str, err: Any, res: Mapping[str, Any],
+                    stream_err: Mapping[str, Any], exit_code: Any,
+                    parked: bool, exit_only: bool, started: bool,
+                    boundary: bool, run: int, exhausted: bool,
+                    limit: bool, net: bool, typed: int | None,
+                    ran_as: Any) -> None:
+    """The redacted failure fixture (failfix.py, docs/failure-fixtures.md).
+    RECORDING ONLY, after every predicate, reads `err_blob` and never writes
+    it; fail-open, so it cannot change a turn's outcome. `run` < 0 means
+    "read the node's retry counter" (the terminal raise is reached by the
+    frozen retry path too, whose counter lives on the saved document)."""
+    try:
+        if run < 0:
+            _o = store.load_org(slug)
+            run = (int(_o.node(nid).get("net_fail_run") or 0)
+                   if nid in _o.nodes else 0)
+        failfix.record(
+            store.DATA_ROOT, slug, nid, lane=lane, site=site,
+            observed={"exit_code": exit_code, "parked": parked,
+                      "exit_only": exit_only, "started": started,
+                      "boundary": boundary,
+                      "errors_n": len(res.get("errors") or []),
+                      "is_error": res.get("is_error") is True,
+                      "api_error_status": res.get("api_error_status"),
+                      "stream_status": stream_err.get("status"),
+                      "stream_code": stream_err.get("code"),
+                      "terminal_reason": res.get("terminal_reason"),
+                      "run": run, "exhausted": exhausted},
+            text={"err_blob": err_blob,
+                  "stderr_tail": " / ".join(str(err or "").strip()
+                                            .splitlines()[-3:]),
+                  "result_detail": _result_detail(dict(res))},
+            recorded={"limit": limit, "net": net,
+                      "filtered": _looks_like_filtered(err_blob),
+                      "typed": typed},
+            ran_as=ran_as)
+    except Exception:                                        # noqa: BLE001
+        pass
 
 
 def _for_the_record(err_blob: str, res: dict[str, Any],
@@ -12234,6 +12275,33 @@ def _codex_leg_attempt(slug: str, nid: str, org: Org, st: dict[str, Any],
             pool=route["pool"], board=codex_limits.snapshot(),
             usage_prose=_looks_like_usage_limit(blob),
             served=_served)
+        try:
+            # the redacted fixture (failfix): an INPUT projection of the
+            # classification above plus its recorded verdict; fail-open
+            _cerr = res_raw.get("error")
+            failfix.record(
+                store.DATA_ROOT, slug, nid, lane="codex", site="codex",
+                observed={"started": _items_seen > 0,
+                          "boundary": res_raw.get("status") is not None},
+                text={"err_blob": blob, "stderr_tail": tail},
+                recorded={"limit": _looks_like_usage_limit(blob),
+                          "net": _looks_like_connection_failure(blob),
+                          "filtered": _looks_like_filtered(blob)},
+                codex={"status": res_raw.get("status"),
+                       "rpc_code": (_cerr.get("code")
+                                    if isinstance(_cerr, dict) else None),
+                       "error_code": codex_route._error_code(_cerr),
+                       "items_seen": _items_seen,
+                       "had_usage": res_raw.get("token_usage") is not None,
+                       "text_len": len(str(res_raw.get("agent_text") or "")),
+                       "pool": route["pool"], "served": _served,
+                       "usage_prose": _looks_like_usage_limit(blob),
+                       "now": int(time.time()),
+                       "kind_recorded": fcls["kind"],
+                       "rejected_recorded": fcls["rejected"]},
+                ran_as=st.get("ran_as"))
+        except Exception:                                    # noqa: BLE001
+            pass
         _frec = _codex_route_stamp(
             st, route, live=False, outcome=fcls["kind"],
             reported_model=res_raw.get("reported_model"),
@@ -16077,6 +16145,16 @@ def _run_one_turn(slug: str, nid: str,
                         # turn_error_log row. Same reasoning as the terminal
                         # raise below — after every predicate, never assigned
                         # back onto `err_blob`.
+                        _failfix_record(
+                            slug, nid, site="exhausted",
+                            lane="openrouter" if _or_lane else "claude",
+                            err_blob=err_blob, err=err, res=res,
+                            stream_err=stream_api_err,
+                            exit_code=proc.returncode, parked=bool(parked),
+                            exit_only=exit_only, started=saw_agent_out[0],
+                            boundary=saw_result[0], run=run, exhausted=True,
+                            limit=_limit_class, net=_net_class,
+                            typed=_or_typed, ran_as=st.get("ran_as"))
                         raise RuntimeError(
                             f"turn failed after {run} attempts ({kind_txt}) "
                             f"— it is not passing; the agent is no longer "
@@ -16117,6 +16195,17 @@ def _run_one_turn(slug: str, nid: str,
                 # AFTER every `_looks_like_*` call site, so the widened text
                 # cannot reach a predicate (OPEN-01 step 1, recording only)
                 _rec = _for_the_record(err_blob, res, stream_api_err)[:400]
+                # the redacted fixture (failfix): recording only, fail-open
+                _failfix_record(
+                    slug, nid, site="terminal",
+                    lane="openrouter" if _or_lane else "claude",
+                    err_blob=err_blob, err=err, res=res,
+                    stream_err=stream_api_err, exit_code=proc.returncode,
+                    parked=bool(parked), exit_only=exit_only,
+                    started=saw_agent_out[0], boundary=saw_result[0],
+                    run=-1, exhausted=False, limit=_limit_class,
+                    net=_net_class, typed=_or_typed,
+                    ran_as=st.get("ran_as"))
                 raise RuntimeError(f"turn failed: {_rec or 'no output'}")
             st["last_error"] = None
             st["turns_run"] += 1
