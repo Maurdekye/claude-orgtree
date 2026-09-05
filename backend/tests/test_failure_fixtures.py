@@ -25,7 +25,10 @@ tools/replay_failure.py, docs/failure-fixtures.md).
     §10 REAL codex and antigravity failures through the fake CLIs (python
         stand-ins, no node): the wall freezes exactly as before, the fixture
         carries the evidence, replay agrees, canaries and prose are absent;
-        the tool and the purity hook over those fixtures
+        a NON-wall antigravity failure past a (patched, 1s) ceiling: not
+        frozen, the ceiling kill recorded and recomputed, a named reset
+        NOT known without a wall; the tool and the purity hook over those
+        fixtures
 
 §5 and §6 spawn `node` for the stand-in CLI; declared INERT when absent.
 
@@ -1073,9 +1076,24 @@ def sec_real_codex_agy() -> dict:
         r = failfix.replay(moved, PREDICATES)
         assert r["recomputed"]["codex"]["pool_state"] == "exhausted" and \
             r["recomputed"]["codex"]["reset_ts"] == moved["codex"]["cap_reset"], r
+        # the recomputed KIND follows the EVIDENCE, never the recorded verdict
+        # (review 2026-09-05: `kind_recorded = "other"` above is the one
+        # direction a replay peeking at its own answer would still drift on).
+        # Re-key the machine tag on the real fixture, leave the recorded
+        # usage-limit verdict in place: the re-decision must move with the
+        # tag and the recorded kind must drift against it
+        rekeyed = copy.deepcopy(out["codex"])
+        assert rekeyed["codex"]["kind_recorded"] == codex_decide.KIND_USAGE_LIMIT
+        rekeyed["codex"]["error_code"] = "unauthorized"
+        r = failfix.replay(rekeyed, PREDICATES)
+        assert r["recomputed"]["codex"]["kind"] == codex_decide.KIND_AUTH, r
+        assert r["recomputed"]["codex"]["pool_state"] == "n/a" and \
+            r["recomputed"]["codex"]["reset_ts"] is None, r
+        assert {"codex.kind", "codex.pool_state", "codex.reset_ts"} <= set(r["drift"]), r
     check("codex controls · on the REAL fixture a wrong recorded kind drifts; "
           "removing the snapshot AND the board moves pool_state to unexplained; "
-          "the board alone explains it", _codex_controls)
+          "the board alone explains it; a re-keyed machine tag re-decides to "
+          "auth against the recorded usage-limit", _codex_controls)
 
     os.environ["FAKEANTIGRAVITY_SCENARIO"] = "usage_limit"
     os.environ.pop("FAKEANTIGRAVITY_RESET_IN", None)
@@ -1138,6 +1156,74 @@ def sec_real_codex_agy() -> dict:
         assert "agy.walled" in failfix.replay(wrong, PREDICATES)["drift"]
     check("antigravity control · a wrong recorded wall drifts on the real fixture",
           _agy_control)
+
+    # The NOT-walled branch through the real leg (review 2026-09-05: both
+    # scenarios above are walls, so `ceiling_kill_recorded` could sit
+    # permanently False and replay's `walled and` gate on reset_known could
+    # be dropped, and nothing would notice). A failure that is not a wall,
+    # past the ceiling: the stand-in stalls BEFORE init (inside start()'s
+    # own INIT_TIMEOUT, so wait() does not time the result out) and then
+    # reports an error whose sentence has no "limit" in it but DOES name a
+    # reset duration — the one input that tells a gated reset_known from an
+    # ungated one. The ceiling is patched to 1s for this turn only.
+    os.environ["FAKEANTIGRAVITY_SCENARIO"] = "plain_error"
+    os.environ["FAKEANTIGRAVITY_ERROR"] = ("Internal error: the model returned "
+                                          "no response. Resets in 3h0m0s.")
+    os.environ["FAKEANTIGRAVITY_INIT_DELAY"] = "1.5"
+    _real_ceiling = supervisor.TURN_TIMEOUT
+    supervisor.TURN_TIMEOUT = 1
+    try:
+        slug5, nid5 = _mkorg("agyceiling", "pro")
+        rig.run_turn(slug5, nid5, "antigravity slowly " + CANARIES[0])
+    finally:
+        supervisor.TURN_TIMEOUT = _real_ceiling
+        os.environ.pop("FAKEANTIGRAVITY_ERROR", None)
+        os.environ.pop("FAKEANTIGRAVITY_INIT_DELAY", None)
+
+    def _agy_ceiling() -> None:
+        n = rig.node(slug5, nid5)
+        assert not n.get("frozen"), f"a non-wall failure must not freeze: {n.get('frozen')!r}"
+        rows = (store.load_org(slug5).d.get("turn_error_log") or {}).get(nid5) or []
+        fixture(bool(rows), "no turn_error_log row — the failure left no trace")
+        # the production raise that ran: the ceiling, not the CLI's sentence
+        assert "per-message ceiling" in rows[-1]["text"], rows[-1]
+        fx = _last_fixture(slug5, nid5)
+        assert fx["lane"] == "antigravity" and fx["site"] == "antigravity", fx
+        a = fx["agy"]
+        assert a["status"] == "failed" and a["items"] == 0, a
+        # the duration IS carried, as evidence …
+        assert a["reset_in_s"] == 3 * 3600, a
+        assert a["ceiling_s"] == 1 and a["elapsed_s"] >= a["ceiling_s"], a
+        # … but only a WALL makes it a known reset: not walled, not known,
+        # probe schedule, and the ceiling kill is what the site decided
+        assert (a["walled_recorded"], a["reset_known_recorded"], a["schedule_recorded"],
+                a["ceiling_kill_recorded"]) == (False, False, "probe", True), a
+        assert fx["recorded"]["limit"] is False, fx["recorded"]
+        r = failfix.replay(fx, PREDICATES)
+        assert r["drift"] == [] and r["recomputed"]["agy"] == {
+            "walled": False, "reset_known": False, "schedule": "probe",
+            "ceiling_kill": True}, r
+        # the controls on THIS fixture: each recorded decision, flipped, drifts
+        for key, name in (("reset_known_recorded", "agy.reset_known"),
+                          ("ceiling_kill_recorded", "agy.ceiling_kill")):
+            wrong = copy.deepcopy(fx)
+            wrong["agy"][key] = not wrong["agy"][key]
+            assert name in failfix.replay(wrong, PREDICATES)["drift"], (key, name)
+        # and the ceiling verdict is READ from the timing: under the ceiling
+        # the same fixture recomputes no kill, and the recorded one drifts
+        under = copy.deepcopy(fx)
+        under["agy"]["elapsed_s"] = under["agy"]["ceiling_s"] - 1
+        r = failfix.replay(under, PREDICATES)
+        assert r["recomputed"]["agy"]["ceiling_kill"] is False and \
+            "agy.ceiling_kill" in r["drift"], r
+        leaves = " ".join(_every_leaf(fx, [])).lower()
+        assert "internal error" not in leaves and "no response" not in leaves, leaves[:300]
+        _assert_no_canary(fx)
+    check("antigravity ceiling · a non-wall failure past the ceiling through "
+          "the real leg: not frozen, the ceiling raise ran; the fixture records "
+          "the named reset as evidence but not-walled / reset unknown / probe / "
+          "ceiling kill; replay agrees; flipped decisions drift; the kill "
+          "verdict follows the timing; prose and canary absent", _agy_ceiling)
     return out
 
 

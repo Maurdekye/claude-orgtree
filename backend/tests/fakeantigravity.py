@@ -37,6 +37,10 @@ FAKEANTIGRAVITY_SCENARIO:
                  ERROR after init, "Individual quota reached … Resets in
                  165h21m54s." — FAKEANTIGRAVITY_RESET_IN overrides the
                  duration text; empty means no reset named (D-209)
+    plain_error  a lone result ERROR after init whose text is NOT a wall:
+                 FAKEANTIGRAVITY_ERROR (default "Internal error: the model
+                 returned no response."), rc=1 — the ordinary failure that
+                 obeys the per-message ceiling rather than freezing
     dupdone      `toolevents` with every DONE step_update (text and tool)
                  emitted TWICE — the repeated-completion control for the
                  journal contract (D4). ⚠ SYNTHETIC: no live log has shown
@@ -78,6 +82,11 @@ credential or CLI near the tests):
                              (default 0). A slow wire, so a suite can make
                              steps arrive AFTER start() has returned as
                              surely as the default makes them arrive before
+  FAKEANTIGRAVITY_INIT_DELAY seconds to sleep BEFORE the init event (default
+                             0): a slow start, spent inside start()'s own
+                             INIT_TIMEOUT, so a suite can put a turn past a
+                             small per-message ceiling before its result
+                             arrives — without wait() timing out first
 
 Subcommands the registry probe needs: `--version` prints 1.1.24; `models`
 prints the measured registry (tab-separated id/label rows) unless
@@ -249,6 +258,9 @@ def main_turn():
         resume = ""
     cid = resume or os.environ.get("FAKEANTIGRAVITY_CONVERSATION_ID",
                                    "fake-agy-conv-0001")
+    init_delay = float(os.environ.get("FAKEANTIGRAVITY_INIT_DELAY") or 0)
+    if init_delay > 0:
+        time.sleep(init_delay)
     served = "fake-default-model" if SCENARIO == "wrongmodel" else model
     yolo = has("--dangerously-skip-permissions")
     emit({"event": "init", "conversation_id": cid, "init": {
@@ -292,6 +304,18 @@ def main_turn():
                       "subscription to increase your limits."
                       + (f" Resets in {reset_in}." if reset_in else "")),
             "duration_seconds": 3.08, "num_turns": 1,
+            "usage": _usage(0, 0, 0, 0)}})
+        sys.exit(1)
+    if SCENARIO == "plain_error":
+        # the wall's shape (lone ERROR result after init, zero usage, rc=1)
+        # with a sentence that is NOT a wall — the ordinary failure the
+        # per-message ceiling applies to. SYNTHETIC: the wording is a
+        # placeholder, overridable; no live log has been banked for it
+        emit({"event": "result", "result": {
+            "conversation_id": cid, "status": "ERROR", "response": "",
+            "error": (os.environ.get("FAKEANTIGRAVITY_ERROR")
+                      or "Internal error: the model returned no response."),
+            "duration_seconds": 0.4, "num_turns": 1,
             "usage": _usage(0, 0, 0, 0)}})
         sys.exit(1)
     if SCENARIO == "canceled":
