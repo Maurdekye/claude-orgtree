@@ -479,9 +479,12 @@ const cacheForecastTitle = (forecast: CacheForecast, midTurn = false): string =>
     `reason: ${forecast.reason || 'unavailable'}`,
     changed,
     `lane/source: ${forecast.lane || 'unknown'} / ${forecast.source || 'unknown'}`,
-    `last authoritative inference receipt: ${forecast.last_receipt_at || 'none'}`,
+    // Local time with the zone said out loud (user rule: no visible UTC). These
+    // two lines predate timefmt.ts and were the last raw `Z` instants a desk
+    // could show — found by LOOKING at the deployed build, 2026-09-05.
+    `last authoritative inference receipt: ${fmtFull(forecast.last_receipt_at) || 'none'}`,
     `derived expiry: ${ttl}`,
-    `expires at: ${forecast.expires_at || 'not authoritatively known'}`,
+    `expires at: ${fmtFull(forecast.expires_at) || 'not authoritatively known'}`,
     // The policy line describes a send that STARTS a turn. Mid-turn a send
     // steers into the turn already running, so the line is vacuous there and
     // is dropped rather than left to imply a cost that cannot occur.

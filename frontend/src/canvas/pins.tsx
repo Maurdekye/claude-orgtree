@@ -312,9 +312,23 @@ export interface PinLayerProps {
   onJump: (id: string) => void
 }
 
+/** The viewport's PADDING box, in px. Pinned windows are absolutely positioned
+ *  children of .viewport, so their (0,0) is inside its 1px border — while
+ *  getBoundingClientRect() reports the BORDER box. Clamping against the border
+ *  box let a flush window overhang by the border on the right and bottom, and
+ *  .viewport's overflow:hidden then clipped the window's own border line off
+ *  those two sides (seen on the deployed build, 2026-09-05). Subtract the
+ *  computed borders; jsdom reports none, so the measured-viewport fixtures
+ *  keep their numbers. */
 const vpSize = (ref: RefObject<HTMLDivElement | null>): { w: number; h: number } | null => {
-  const r = ref.current?.getBoundingClientRect()
-  return r && r.width > 0 && r.height > 0 ? { w: r.width, h: r.height } : null
+  const el = ref.current
+  const r = el?.getBoundingClientRect()
+  if (!el || !r || r.width <= 0 || r.height <= 0) return null
+  const cs = getComputedStyle(el)
+  const px = (v: string) => { const n = parseFloat(v); return Number.isFinite(n) ? n : 0 }
+  const w = r.width - px(cs.borderLeftWidth) - px(cs.borderRightWidth)
+  const h = r.height - px(cs.borderTopWidth) - px(cs.borderBottomWidth)
+  return w > 0 && h > 0 ? { w, h } : null
 }
 
 interface Ghost { key: number; id: string; from: PinRect; to: PinRect | null }
@@ -504,7 +518,12 @@ function PinWindow({ pin, node, vp, onUnpin, slug, op, toast, pub,
   }
   return (
     <>
-    {preview && live && <div className="pin-snap-preview" role="status"
+    {preview && live && <div role="status"
+      /* the preview is a SIBLING of the window, outside its provider-accent
+         scope — without its own prov-* class it would draw in the root accent
+         (Claude orange) while dragging a teal Codex window. Pin chrome takes
+         the provider's colour; so does its shadow. */
+      className={'pin-snap-preview prov-' + providerOf(node.tier ?? '')}
       style={{ left: preview.rect.x, top: preview.rect.y, width: preview.rect.w, height: preview.rect.h }}>
       <span>{preview.label} · Shift for free placement</span>
     </div>}

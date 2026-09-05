@@ -20,6 +20,7 @@ import type { TestContext } from 'node:test'
 import assert from 'node:assert/strict'
 import { AccountsPanel } from '../src/canvas/accounts'
 import type { AccountsPayload, AccountUsage } from '../src/types'
+import { setDisplayZone } from '../src/timefmt'
 
 const NOW = 1_700_000_000_000                 // what useFakeClock pins Date to
 const iso = (ms: number) => new Date(NOW + ms).toISOString()
@@ -113,9 +114,11 @@ function panelTest(name: string,
   test(name, async (t: TestContext) => {
     useFakeClock()
     stubFetch()
+    setDisplayZone('Asia/Jerusalem')
     try {
       await body(t)
     } finally {
+      setDisplayZone(null)
       realClock()
       delete g.fetch
     }
@@ -128,7 +131,12 @@ panelTest('§0 provenance names the observed registration and optional mint fact
     <AccountsPanel toast={() => {}} close={() => {}} />, (el) => el)
   await inAct(async () => { await flush(8) })
   const body = txt(view.el)
-  assert.match(body, /registered 2026-08-30T13:00:00Z/)
+  // the observed registration instant is shown in the DISPLAY zone with the
+  // zone named (user rule: no visible UTC) — this line used to pin the raw
+  // ISO 'Z' string, i.e. it pinned the leak. Zone is fixed so the expected
+  // text does not depend on the machine running the suite.
+  assert.match(body, /registered 2026-08-30 16:00:00 GMT\+3/)
+  assert.doesNotMatch(body, /2026-08-30T13:00:00Z/)
   assert.match(body, /mint config: C:\\Users\\operator\\.claude-secondary/)
   assert.match(body, /registration config: C:\\Users\\host\\.claude/)
   assert.match(body, /authentication: alive \(probe had capacity then; not current capacity\)/)
