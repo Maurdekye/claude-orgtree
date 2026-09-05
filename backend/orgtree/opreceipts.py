@@ -7,12 +7,22 @@ committed, and the retry re-executes it: a second hire, a second mail. The
 incident is recorded at `supervisor.py` (the net-retry replay banner): "the
 effects a dying turn commits are exactly the non-idempotent ones".
 
-So every mutating agent call may carry an `op_key` on the request ENVELOPE
-(never in a tool's arguments — no tool card changes, so no agent's prompt
-prefix moves for this), and a call whose document transaction commits leaves
-a durable RECEIPT in the org document, appended inside the SAME `DOC_LOCK`
-transaction as the effect. A later call with the same key is answered from
-the receipt instead of being executed again.
+So every mutating agent call may carry an `op_key`, and a call whose document
+transaction commits leaves a durable RECEIPT in the org document, appended
+inside the SAME `DOC_LOCK` transaction as the effect. A later call with the
+same key is answered from the receipt instead of being executed again. No
+tool card exposes a key, so no agent's prompt prefix moves for this.
+
+WHY A KEYED CALL IS A VERB OF ITS OWN (`orgtree_op_call`, `api._op_unwrap`).
+The key first rode the request envelope, and that was wrong: a backend built
+before receipts DROPS an unknown envelope field and executes the operation
+anyway, leaving no receipt. Look the key up on a newer backend afterwards and
+the absence of a receipt reads as "never applied — safe to reissue", which is
+a licence to do it twice. Nothing observable after the fact distinguishes
+that from a call that truly never landed, and a recent mint time certainly
+does not. So the request is shaped so an old backend CANNOT execute it: it
+refuses the unknown verb and applies nothing. That structural refusal — not a
+timestamp, not a grace window — is what makes a missing receipt evidence.
 
 WHAT A RECEIPT PROVES, AND WHAT IT DOES NOT.
 
@@ -58,10 +68,16 @@ HORIZON_MS = 900_000        # 15 min: a key older than this is refused
 CEILING = 500               # rows retained before an eviction runs
 TRIM_TO = 400               # …and what an eviction leaves behind
 SKEW_MS = 60_000            # a key minted "in the future" by more than this is refused
-BOOTSTRAP_GRACE_MS = 300_000  # see `_bootstrap_ok`
 
 SECTION = "op_receipts"
 META = "op_receipts_meta"
+
+# The two verbs receipts add to the dispatch. Both are DISPATCH-ONLY on
+# purpose — a backend without receipts refuses an unknown verb and executes
+# nothing, which is how a client learns it cannot be protected here, and (for
+# `OP_CALL`) the reason a missing receipt is evidence at all.
+OP_CALL = "orgtree_op_call"
+OP_LOOKUP = "orgtree_op_lookup"
 
 # `<mint_ms>-<24 hex>`. The mint time is IN the key so the server can judge
 # the key's own age without having recorded it first — which is what lets a
@@ -285,11 +301,13 @@ def _meta(d: dict[str, Any], now_ms: int, create: bool) -> dict[str, Any]:
     if m is None:
         if not create:
             return {}
-        # BOOTSTRAP. `from_ms` starts at 0, not at "now": nothing has ever
-        # been evicted, so nothing is unprovable yet — and starting it at now
-        # would refuse the very first key, which was minted moments BEFORE
-        # this section came into being.
-        m = {"schema": SCHEMA, "coverage": COVERAGE, "bootstrap_ms": now_ms,
+        # `from_ms` starts at 0: nothing has ever been evicted, so nothing is
+        # unprovable yet. There is deliberately NO "receipts began at" time
+        # here. One lived here until 2026-09-05 and admitted keys minted
+        # within five minutes of it as covered — which is exactly the claim
+        # a mint time cannot support (see the module docstring). Coverage is
+        # established by the SHAPE of the request, not by its age.
+        m = {"schema": SCHEMA, "coverage": COVERAGE, "created_at": now_ms,
              "from_ms": 0, "horizon_ms": HORIZON_MS, "ceiling": CEILING,
              "trim_to": TRIM_TO, "evicted": 0}
         d[META] = m
@@ -301,14 +319,18 @@ def watermark(d: dict[str, Any]) -> int:
     return int(m.get("from_ms") or 0)
 
 
-def _bootstrap_ok(m: dict[str, Any], mint_ms: int) -> bool:
-    """A key minted long before this window existed cannot be judged: an
-    earlier build may have applied it and left no receipt. Inside the grace
-    the ordinary first-call case (a key minted milliseconds before the
-    section was created) is admitted; outside it the answer is `unknown`,
-    which is refusal — never a claim of historic coverage."""
-    boot = int(m.get("bootstrap_ms") or 0)
-    return not boot or mint_ms >= boot - BOOTSTRAP_GRACE_MS
+def schema_ahead(d: dict[str, Any]) -> str:
+    """A document written by a NEWER receipts build, now being read by this
+    one. Its rows were admitted and classified by rules this build does not
+    have, so this build cannot say what their absence means — the same
+    reasoning that removed the bootstrap grace, applied in the other
+    direction. Returns a reason, or "" when this build is current."""
+    m = cast("dict[str, Any]", d.get(META) or {})
+    if int(m.get("schema") or 0) > SCHEMA:
+        return f"row schema {m.get('schema')} > {SCHEMA}"
+    if int(m.get("coverage") or 0) > COVERAGE:
+        return f"coverage table {m.get('coverage')} > {COVERAGE}"
+    return ""
 
 
 def find(d: dict[str, Any], node: str, generation: int, key: str
@@ -350,7 +372,6 @@ def admit(d: dict[str, Any], node: str, generation: int, key: str, tool: str,
         return REFUSE, {"reason": "key_stale",
                         "detail": f"minted {(ms - mint) / 1000:.0f}s ago; the "
                                   f"receipt horizon is {HORIZON_MS // 1000}s"}
-    m = _meta(d, ms, create=False)
     row = find(d, node, generation, key)
     if row is not None:
         if row.get("outcome") == "fenced":
@@ -366,11 +387,17 @@ def admit(d: dict[str, Any], node: str, generation: int, key: str, tool: str,
                               "detail": f"this key already identifies "
                                         f"{row.get('tool')} at {row.get('at')}"}
         return REPLAY, {"row": row}
-    if m and not _bootstrap_ok(m, mint):
-        return REFUSE, {"reason": "before_bootstrap",
-                        "detail": "this key predates the receipt window; its "
-                                  "outcome is unknown"}
-    if m and mint < int(m.get("from_ms") or 0):
+    ahead = schema_ahead(d)
+    if ahead:
+        return REFUSE, {"reason": "schema_ahead",
+                        "detail": f"this document's receipts were written by a "
+                                  f"newer build ({ahead}); this one cannot "
+                                  f"judge them, so the outcome is unknown"}
+    # UNCONDITIONAL. It used to be skipped when the document had no meta at
+    # all, which made "no receipts have ever been written here" a silently
+    # different code path from "receipts exist and nothing was evicted". Both
+    # mean a watermark of 0; say so once.
+    if mint < watermark(d):
         return REFUSE, {"reason": "horizon_evicted",
                         "detail": "receipts for keys this old have been "
                                   "evicted; the outcome is unknown"}

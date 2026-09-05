@@ -1597,19 +1597,49 @@ def _post(payload: dict[str, Any], timeout: float = 30) -> tuple[str, str]:
         return _lost_kind(e), str(e)
 
 
+def _old_build_refusal(text: str) -> bool:
+    """The refusal a backend WITHOUT receipts gives the wrapper verb —
+    measured against the real pre-receipts build (a0fac2f):
+
+        422 {"detail": "unknown orgtree tool 'orgtree_op_call'"}
+
+    Both halves are required. The server's own complaints about a malformed
+    wrapper name the verb too, and treating one of those as "this build has no
+    receipts" would drop the key and reissue the call unprotected — turning a
+    client bug into the duplicate this whole file exists to prevent."""
+    return "unknown orgtree tool" in text and opreceipts.OP_CALL in text
+
+
 def call_api(tool: str, args: dict[str, Any]) -> str:
     """One tool call, with an operation key so a LOST answer can be resolved
     instead of guessed at.
 
-    The key rides the request envelope (never the tool's arguments), so no
-    tool card and no agent prompt changes for it. When the answer is lost we
-    ASK — `orgtree_op_lookup`, a verb an older backend refuses as unknown
-    rather than executing — and report what the org can actually prove. We
+    The call is issued as `orgtree_op_call`, which CARRIES the real call. That
+    shape is the safety property: a backend old enough to have no receipts
+    refuses the unknown verb and executes nothing, so this client never leaves
+    an unrecorded effect behind for a later lookup to misread as "never
+    applied". When the answer is lost we ASK — `orgtree_op_lookup`, refused by
+    those same older backends — and report what the org can actually prove. We
     never reissue the call automatically: `not_applied` is handed to the agent
     as a fact to act on, not acted on here."""
-    key = opreceipts.mint_key()
-    kind, text = _post({"org": ORG, "node": NODE, "tool": tool, "args": args,
-                        "op_key": key})
+    # The receipt verbs are never themselves keyed: a lookup is a QUESTION,
+    # and wrapping it would make asking whether something applied an
+    # operation with its own key.
+    key = "" if tool in (opreceipts.OP_CALL, opreceipts.OP_LOOKUP) \
+        else opreceipts.mint_key()
+    plain = {"org": ORG, "node": NODE, "tool": tool, "args": args}
+    kind, text = _post({"org": ORG, "node": NODE, "tool": opreceipts.OP_CALL,
+                        "args": {"tool": tool, "args": args, "op_key": key}}
+                       if key else plain)
+    if key and kind == "refused" and _old_build_refusal(text):
+        # This backend predates receipts. It applied NOTHING (it refused the
+        # verb before dispatch — measured, `probe_old_build.py`), so reissuing
+        # plainly is safe, and it is what this client did before receipts
+        # existed. The call is UNPROTECTED from here: `key` is dropped so a
+        # lost answer below reports unknown instead of asking a lookup this
+        # backend cannot answer either.
+        key = ""
+        kind, text = _post(plain)
     if kind == "ok":
         return text
     if kind == "refused":
@@ -1619,8 +1649,17 @@ def call_api(tool: str, args: dict[str, Any]) -> str:
         # wording, and it is still the true one for this case
         return json.dumps({"error": f"orgtree API unreachable: {text}"})
     lost = text
+    if not key:
+        # nothing to ask about: either this call is a receipt verb itself, or
+        # the backend has no receipts and said so
+        return json.dumps({
+            "error": f"orgtree API gave no answer for this call ({lost}), and "
+                     f"no operation receipt covers it, so whether it applied "
+                     f"CANNOT be established. Check the org before repeating "
+                     f"it.",
+            "state": "unknown", "reason": "unsupported_build"})
     lkind, ltext = _post({"org": ORG, "node": NODE,
-                          "tool": "orgtree_op_lookup",
+                          "tool": opreceipts.OP_LOOKUP,
                           "args": {"op_key": key, "for_tool": tool,
                                    "for_args": args}}, timeout=15)
     if lkind == "ok":

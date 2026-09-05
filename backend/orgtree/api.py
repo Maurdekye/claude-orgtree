@@ -4880,11 +4880,11 @@ class AgentCall(Body):
     tool: str
     args: dict[str, Any] = {}
     # ---- durable operation receipts (opreceipts.py) ----------------------
-    # `op_key` rides the ENVELOPE, not `args`, and that is the point: no tool
-    # card changes, so this costs no agent the one prompt-prefix change a new
-    # or edited card would. It is minted by our own MCP client, one per
-    # tools/call; no card exposes a key, so a model never invents one. An
-    # older client simply omits it and nothing about its call changes.
+    # Minted by our own MCP client, one per tools/call; no tool card exposes a
+    # key, so a model never invents one. It reaches this field only through
+    # `orgtree_op_call` (see `_op_unwrap`) — a request that SPELLS it on the
+    # envelope is refused, because that spelling is the one an older backend
+    # silently drops while executing the operation anyway.
     op_key: str = ""
 
 
@@ -5361,6 +5361,61 @@ class _op_inflight:
                 _OP_INFLIGHT.pop(self._k, None)
 
 
+OP_CALL, OP_LOOKUP = opreceipts.OP_CALL, opreceipts.OP_LOOKUP
+
+
+def _op_unwrap(body: AgentCall) -> AgentCall:
+    """THE COVERAGE PROOF. A keyed call arrives as `orgtree_op_call`, carrying
+    the real call in its arguments; this substitutes it back before any gate
+    runs.
+
+    Why a wrapping VERB rather than the plain `op_key` field it started as
+    (2026-09-05, Astra's review of d3cd3fe, reproduced in
+    `probe_old_build.py` against the real a0fac2f build):
+
+        an older backend IGNORES an unknown envelope field. It executed the
+        operation, filed no receipt, and returned nothing the caller ever
+        saw. Replace that backend with this one, look the key up, find no
+        receipt — and the honest-looking answer "not applied, safe to
+        reissue" was a licence to do it twice.
+
+    A recent mint time cannot rule that out; nothing the client can observe
+    afterwards can. So the request itself is shaped so that a backend without
+    receipts CANNOT execute it: the old dispatch answers `422 unknown orgtree
+    tool 'orgtree_op_call'` and applies nothing (measured — mail rows 0 → 0).
+    That is what makes the absence of a receipt evidence, and it is why this
+    file no longer has a bootstrap grace to get wrong."""
+    if body.tool != OP_CALL:
+        if body.op_key:
+            # the spelling an old build would have executed blind. Refuse it
+            # HERE rather than honour it, or the guarantee above holds only
+            # for clients that happen to use the wrapper.
+            raise HTTPException(
+                422, f"an `op_key` on the request envelope is not accepted: a "
+                     f"keyed operation is issued as `{OP_CALL}` with "
+                     f"`{{tool, args, op_key}}`. Nothing was done.")
+        return body
+    a = body.args if isinstance(body.args, dict) else {}
+    tool, key, inner = (str(a.get("tool") or ""), str(a.get("op_key") or ""),
+                        a.get("args"))
+    # ⚠ every refusal below is a CLIENT bug, and none of them may read like
+    # the old build's "unknown orgtree tool" — that string is what the client
+    # falls back on, and a fallback here would silently drop the receipt.
+    if tool in (OP_CALL, OP_LOOKUP):
+        # ⚠ NOT left to the dispatch's own unknown-tool refusal: that message
+        # would name `orgtree_op_call`, which is precisely the string the
+        # client reads as "this backend has no receipts".
+        raise HTTPException(422, f"`{OP_CALL}` cannot carry `{tool}`.")
+    if not key or not isinstance(inner, dict):
+        raise HTTPException(
+            422, f"`{OP_CALL}` needs `tool` (the verb being keyed), `args` (an "
+                 f"object) and `op_key`. Nothing was done.")
+    # an EMPTY or unknown `tool` is deliberately left to the dispatch, whose
+    # "unknown orgtree tool '<name>'" names the inner verb and so still reads
+    # correctly to a client
+    return body.model_copy(update={"tool": tool, "args": inner, "op_key": key})
+
+
 def _op_absent(key: str, cls: str, at: str = "") -> dict[str, Any]:
     """The answer for a fenced key: not applied when the coverage class makes
     absence provable, and `unknown` when the verb also works outside the
@@ -5481,11 +5536,15 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
     bridge_slug = getattr(request.state, "bridge_slug", None)
     if bridge_slug and body.org != bridge_slug:
         raise HTTPException(403, "bridge secret is scoped to its own org")
+    # ⚠ BEFORE EVERY GATE BELOW, because unwrapping only substitutes the call
+    # this request was always making: after it, `body.tool` is the real verb
+    # and every authority, capability and policy check below sees THAT.
+    body = _op_unwrap(body)
     try:
         a = _norm_args(body.args)
     except LedgerError as e:
         raise HTTPException(422, str(e))
-    if body.tool == "orgtree_op_lookup":
+    if body.tool == OP_LOOKUP:
         # asking, not acting — see `_op_lookup_call`. A VERB rather than a
         # flag on the envelope, and that is a safety property, not a taste:
         # a backend that predates receipts ignores unknown envelope fields,

@@ -22,11 +22,15 @@ watchdog create runs a real child process after the commit.
 
 ## What a receipt is
 
-Every mutating agent call may carry an **`op_key`** on the request envelope —
-never in a tool's arguments, so no tool card changes and no agent's prompt
-prefix moves for this. Our own MCP client mints one per `tools/call`; no card
-exposes a key, so a model never invents one, and an older client that omits
-it is unaffected in every way.
+Every mutating agent call may carry an **`op_key`**. Our own MCP client mints
+one per `tools/call`; no tool card exposes a key, so a model never invents one
+and no agent's prompt prefix moves for this, and an older client that omits it
+is unaffected in every way.
+
+A keyed call is issued as its own verb, **`orgtree_op_call`**, carrying
+`{tool, args, op_key}`. A key spelled on the request envelope is **refused**.
+See *Why a keyed call is a verb* below — this is the property that makes a
+missing receipt mean anything.
 
 When such a call's **document transaction commits**, a receipt row is
 appended to `op_receipts` **inside that same transaction**, immediately
@@ -96,7 +100,7 @@ the client learns the build cannot answer.
 | `conflict` | that key already identifies a different operation |
 | `running` | a call with this key is executing **in this process** right now |
 | `not_applied` | provably nothing committed, and the key is now fenced |
-| `unknown` | with a reason: `horizon_evicted`, `before_bootstrap`, `unsupported_operation`, `pre_transaction_step`, `unsupported_build`, `lookup_failed` |
+| `unknown` | with a reason: `horizon_evicted`, `schema_ahead`, `unsupported_operation`, `pre_transaction_step`, `unsupported_build`, `lookup_failed` |
 
 The in-flight table behind `running` is **process-local and not durable**. It
 only ever adds certainty; its absence is never evidence, because a request
@@ -131,11 +135,44 @@ legitimately be minted up to a minute ahead of this server's clock, and a
 watermark taken from the clock would leave exactly that key admissible with
 its receipt gone. The forgetting always costs a refusal, never a duplicate.
 
-At bootstrap `from_ms` is `0` and `bootstrap_ms` is the moment the section
-was created, because nothing has been evicted yet and starting the watermark
-at "now" would refuse the very first key — minted moments *before* the
-section existed. A key older than `bootstrap_ms - 300 s` reads `unknown`
-rather than claiming coverage of a window this build never had.
+On a document with no receipts yet `from_ms` is `0` — nothing has been
+evicted, so nothing is unprovable — and the very first key is admitted like
+any other. There is **no bootstrap grace window**: one existed until
+2026-09-05 and admitted any key minted within five minutes of the section's
+creation as "covered", which a mint time cannot establish. Coverage comes
+from the shape of the request instead.
+
+A document written by a *newer* receipts build (a higher `schema` or
+`coverage` in the meta) answers `unknown` / `schema_ahead`: its rows were
+admitted under rules this build does not have, so this build cannot say what
+a missing one means.
+
+## Why a keyed call is a verb
+
+A backend built before receipts **drops an unknown envelope field and runs
+the operation anyway**. So the first shape of this feature — `op_key` on the
+envelope — had a hole, reproduced against the real pre-receipts build
+(a0fac2f) in `luna-reserve/probe_old_build.py`:
+
+1. the client sends a keyed call; the old backend executes it, files no
+   receipt, and the answer is lost;
+2. the backend is replaced by one with receipts;
+3. the lookup finds no receipt, fences the key and reports **`not_applied` —
+   "safe to reissue"**, for an operation that already happened.
+
+Nothing observable afterwards distinguishes that from a call that never
+landed, and a recent mint time certainly does not. The fix is structural: the
+request is shaped so a backend without receipts **cannot execute it**. The
+old dispatch answers `422 unknown orgtree tool 'orgtree_op_call'` and applies
+nothing (measured: mail rows 0 → 0). A client that sees exactly that refusal
+knows nothing happened, and reissues the call plainly — unprotected, exactly
+as it behaved before receipts existed, and a lost answer to *that* call is
+reported as `unknown` / `unsupported_build`.
+
+Both halves of that refusal are required before the client falls back. The
+server's own complaints about a malformed wrapper also name the verb, and
+treating one of those as "this build has no receipts" would turn a client bug
+into the duplicate the feature exists to prevent.
 
 ## Cost
 

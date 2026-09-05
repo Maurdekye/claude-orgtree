@@ -25,6 +25,7 @@ Sections:
 """
 from __future__ import annotations
 
+import json
 import os
 import sys
 import tempfile
@@ -102,10 +103,16 @@ def fresh_org():
 def call(_slug, _node, _tool, key="", **args):
     """⚠ underscored parameters on purpose: `node`, `to`, `key` and `action`
     are all ordinary tool ARGUMENTS, and a bare name here would collide with
-    them."""
-    body = {"org": _slug, "node": _node, "tool": _tool, "args": args}
+    them.
+
+    A keyed call goes out as `orgtree_op_call` — the wrapper is the wire
+    format, not a detail of it, so every check here drives the shape a real
+    client sends."""
     if key:
-        body["op_key"] = key
+        body = {"org": _slug, "node": _node, "tool": opreceipts.OP_CALL,
+                "args": {"tool": _tool, "args": args, "op_key": key}}
+    else:
+        body = {"org": _slug, "node": _node, "tool": _tool, "args": args}
     r = client.post("/api/agent", json=body)
     js = (r.json() if r.headers.get("content-type", "").startswith("application/json")
           else r.text)
@@ -530,35 +537,102 @@ check("unknown/unsupported_operation — a verb that never reaches a transaction
       _lookup_unsupported_operation)
 
 
-def _lookup_before_bootstrap():
+def _envelope_key_is_refused():
+    """⚠ THE HOLE ASTRA FOUND IN d3cd3fe, closed at its source.
+
+    A key used to ride the request envelope, and a backend older than
+    receipts DROPS an unknown envelope field and runs the operation anyway —
+    reproduced against the real a0fac2f build in
+    `luna-reserve/probe_old_build.py`: mail delivered, no receipt written,
+    and this build's lookup then answering "not applied, safe to reissue".
+
+    This build refuses that spelling outright, so the only way a key reaches
+    the dispatch is through a verb an old build cannot execute. The check
+    that matters is the SECOND assertion: a refusal that still performed the
+    operation would close nothing."""
     slug = fresh_org()
-    # establish the window with an ordinary call …
-    call(slug, "mid", "orgtree_message", key=k(), to="boss", body="a")
-    boot = meta(slug)["bootstrap_ms"]
-    # … then ask about a key minted long before it existed
-    old = key_at(boot - opreceipts.BOOTSTRAP_GRACE_MS - 60_000)
-    ans = lookup(slug, "mid", old, "orgtree_message", to="boss", body="a")
-    assert ans["state"] == "unknown", ans
-    assert ans["reason"] == "before_bootstrap", ans
+    r = client.post("/api/agent", json={
+        "org": slug, "node": "mid", "tool": "orgtree_message",
+        "args": {"to": "boss", "body": "a"}, "op_key": k()})
+    assert r.status_code == 422, (r.status_code, r.text)
+    assert opreceipts.OP_CALL in r.text, r.text
+    assert not (store.load_org(slug).d.get("mail") or {}).get("boss"), \
+        "the envelope-keyed call was refused AND still delivered"
+    assert not rows(slug)
 
 
-check("unknown/before_bootstrap — no false claim of historic coverage",
-      _lookup_before_bootstrap)
+check("an `op_key` on the envelope is refused — the old build's spelling",
+      _envelope_key_is_refused)
 
 
-def _bootstrap_admits_the_first_key():
-    """…and the ordinary first call must still WORK: its key was minted
-    moments before the window came into being."""
+def _wrapper_refusals_do_not_look_like_an_old_build():
+    """The client falls back to an UNPROTECTED call when it sees the old
+    build's `unknown orgtree tool 'orgtree_op_call'`. So this server must
+    never answer a malformed wrapper with anything that reads like that, or a
+    client bug quietly becomes a duplicate."""
+    slug = fresh_org()
+    for bad in ({"args": {"to": "boss"}, "op_key": k()},          # no tool
+                {"tool": "orgtree_message", "op_key": k()},       # no args
+                {"tool": "orgtree_message", "args": {"to": "boss"}},  # no key
+                {"tool": opreceipts.OP_CALL, "args": {}, "op_key": k()},
+                {"tool": opreceipts.OP_LOOKUP, "args": {}, "op_key": k()}):
+        r = client.post("/api/agent", json={
+            "org": slug, "node": "mid", "tool": opreceipts.OP_CALL,
+            "args": bad})
+        assert r.status_code == 422, (bad, r.status_code, r.text)
+        assert not mcptool._old_build_refusal(r.text), (bad, r.text)
+    # positive control: the string the client DOES act on is recognised
+    assert mcptool._old_build_refusal(
+        '{"detail":"unknown orgtree tool \'orgtree_op_call\'"}')
+    assert not rows(slug)
+
+
+check("a malformed wrapper never reads as 'this build has no receipts'",
+      _wrapper_refusals_do_not_look_like_an_old_build)
+
+
+def _the_first_key_on_a_document_is_admitted():
+    """There is no grace window left to admit it: a key minted before this
+    document had any receipts at all is ordinary, because the wrapper verb —
+    not the key's age — is what proves a receipts build handled it."""
     slug = fresh_org()
     key = key_at(int(time.time() * 1000) - 5_000)
     st, js = call(slug, "mid", "orgtree_message", key=key, to="boss", body="a")
     assert st == 200, (st, js)
     assert len(rows(slug)) == 1
     assert meta(slug)["from_ms"] == 0, meta(slug)
+    assert "bootstrap_ms" not in meta(slug), meta(slug)
 
 
-check("bootstrap admits the very first key instead of refusing it",
-      _bootstrap_admits_the_first_key)
+check("the first key on a document is admitted, with no grace window",
+      _the_first_key_on_a_document_is_admitted)
+
+
+def _schema_ahead_is_unknown():
+    """A document written by a NEWER receipts build. Its rows were admitted
+    under rules this build does not have, so this build must not read a
+    missing one as "never applied"."""
+    slug = fresh_org()
+    call(slug, "mid", "orgtree_message", key=k(), to="boss", body="a")
+    for field, bump in (("schema", opreceipts.SCHEMA + 1),
+                        ("coverage", opreceipts.COVERAGE + 1)):
+        org = store.load_org(slug)
+        org.d["op_receipts_meta"] = {**meta(slug), field: bump}
+        store.save_org(org)
+        ans = lookup(slug, "mid", k(), "orgtree_message", to="boss", body="z")
+        assert ans["state"] == "unknown", (field, ans)
+        assert ans["reason"] == "schema_ahead", (field, ans)
+        org = store.load_org(slug)
+        org.d["op_receipts_meta"] = {**meta(slug), field: bump - 1}
+        store.save_org(org)
+    # positive control: with the meta back at this build's own revisions the
+    # very same lookup reaches a real answer
+    ans = lookup(slug, "mid", k(), "orgtree_message", to="boss", body="z")
+    assert ans["state"] == "not_applied", ans
+
+
+check("unknown/schema_ahead — a newer build's receipts are not ours to judge",
+      _schema_ahead_is_unknown)
 
 
 # ========================================================== §5 the fence
@@ -643,7 +717,7 @@ def _seed(slug, n, base_ms=None, node="mid"):
             at="2026-09-05T00:00:00.000000+00:00", result={}))
     org.d.setdefault("op_receipts_meta", {
         "schema": opreceipts.SCHEMA, "coverage": opreceipts.COVERAGE,
-        "bootstrap_ms": base - 1, "from_ms": 0,
+        "created_at": base - 1, "from_ms": 0,
         "horizon_ms": opreceipts.HORIZON_MS, "ceiling": opreceipts.CEILING,
         "trim_to": opreceipts.TRIM_TO, "evicted": 0})
     store.save_org(org)
@@ -741,9 +815,20 @@ def _coverage_is_complete():
                             "api.py"), encoding="utf-8").read()
     slice_ = src[src.index('@app.post("/api/agent")'):src.index("_UPLOAD_MAX")]
     verbs = set(re.findall(r'"(orgtree_\w+)"', slice_))
-    verbs.discard("orgtree_op_lookup")          # the asking door, not an operation
+    # ⚠ THE TWO RECEIPT VERBS ARE NOT IN THAT SLICE — they are constants in
+    # opreceipts, spelled nowhere in the dispatch — so they would be exempt by
+    # ACCIDENT. Put them in, then take them out on purpose, and prove the
+    # exemption is not covering anything: neither is an operation, so neither
+    # can carry a receipt.
+    verbs |= {opreceipts.OP_CALL, opreceipts.OP_LOOKUP}
+    for v in (opreceipts.OP_CALL, opreceipts.OP_LOOKUP):
+        assert not opreceipts.receipted(v, {}), v
+        verbs.discard(v)
     missing = sorted(v for v in verbs if not opreceipts.coverage(v, {}))
     assert not missing, f"dispatch verbs with no coverage class: {missing}"
+    # positive control: this check CAN fail — an unclassified verb is caught
+    assert not opreceipts.coverage("orgtree_not_a_real_verb", {})
+    assert "orgtree_message" in verbs, "the dispatch scan found nothing"
     carded = {c["name"] for c in mcptool.TOOLS}
     unclassified = sorted(c for c in carded if not opreceipts.coverage(c, {}))
     assert not unclassified, f"carded tools with no coverage class: {unclassified}"
@@ -837,6 +922,82 @@ check("the receipt brackets exactly the DOCUMENT events its call produced",
 
 # ==================================================== §9 compatibility
 print("\n§9  compatibility — old documents, no key, JSON")
+
+
+def _client_against_a_backend_without_receipts():
+    """A client of THIS build talking to a backend that has none. The old
+    build refuses the wrapper verb and applies nothing (measured against
+    a0fac2f in `luna-reserve/probe_old_build.py`), so the client reissues the
+    call plainly — and the operation must still happen, exactly once.
+
+    The other half is what a LOST answer means afterwards: no receipt covers
+    that call, so the honest report is `unknown`, and the client must NOT ask
+    a lookup the same backend cannot answer either."""
+    slug = fresh_org()
+    seen: list[tuple[str, str]] = []
+    real_post = mcptool._post
+
+    def old_build(payload, timeout=30):
+        tool = str(payload.get("tool") or "")
+        seen.append((tool, str((payload.get("args") or {}).get("tool") or "")))
+        if tool in (opreceipts.OP_CALL, opreceipts.OP_LOOKUP):
+            # the pre-receipts dispatch, word for word
+            return "refused", ('{"detail":"unknown orgtree tool '
+                               f"'{tool}'" '"}')
+        # ⚠ THROUGH THE TEST CLIENT, never `_post`: that one opens a real
+        # socket to whatever backend is running on this machine.
+        r = client.post("/api/agent", json=payload)
+        return ("ok" if r.status_code == 200 else "refused"), r.text
+
+    mcptool.ORG, mcptool.NODE = slug, "mid"
+    mcptool._post = old_build
+    try:
+        out = mcptool.call_api("orgtree_message", {"to": "boss", "body": "x"})
+        assert '"delivered"' in out, out
+        assert len((store.load_org(slug).d.get("mail") or {}).get("boss")) == 1
+        assert not rows(slug), "an old build cannot have filed a receipt"
+        assert [t for t, _ in seen] == [opreceipts.OP_CALL, "orgtree_message"]
+
+        # …and now the lost answer. `unknown`, with no lookup attempted.
+        seen.clear()
+
+        def old_build_lost(payload, timeout=30):
+            tool = str(payload.get("tool") or "")
+            seen.append((tool, ""))
+            if tool in (opreceipts.OP_CALL, opreceipts.OP_LOOKUP):
+                return "refused", ('{"detail":"unknown orgtree tool '
+                                   f"'{tool}'" '"}')
+            return "lost", "timed out"
+
+        mcptool._post = old_build_lost
+        lost = json.loads(mcptool.call_api("orgtree_message",
+                                           {"to": "boss", "body": "y"}))
+        assert lost["state"] == "unknown", lost
+        assert lost["reason"] == "unsupported_build", lost
+        assert opreceipts.OP_LOOKUP not in [t for t, _ in seen], seen
+
+        # …and against a backend that DOES have receipts, an ordinary refusal
+        # is reported once. Retrying it unkeyed would strip the receipt off a
+        # call the server merely disliked, which is how a client-side
+        # "fall back on any refusal" turns into an unprotected reissue.
+        seen.clear()
+
+        def modern(payload, timeout=30):
+            seen.append((str(payload.get("tool") or ""), ""))
+            r = client.post("/api/agent", json=payload)
+            return ("ok" if r.status_code == 200 else "refused"), r.text
+
+        mcptool._post = modern
+        out = json.loads(mcptool.call_api("orgtree_message",
+                                          {"to": "nobody", "body": "z"}))
+        assert "error" in out, out
+        assert [t for t, _ in seen] == [opreceipts.OP_CALL], seen
+    finally:
+        mcptool._post = real_post
+
+
+check("a client of this build never leaves an unrecorded effect on an old one",
+      _client_against_a_backend_without_receipts)
 
 
 def _no_key_no_section():
