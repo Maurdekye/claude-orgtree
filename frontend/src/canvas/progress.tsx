@@ -127,7 +127,7 @@ export interface ProgressModel {
 /** WORKING_CHECKUP_AFTER_S in supervisor.py — the engine's own rule for "a
  *  `working` report this old is stale enough to ask about". Mirrored, not
  *  invented: the panel must agree with the check-up mail the engine sends. */
-export const WORKING_STALE_MS = 30 * 60 * 1000
+export const WORKING_STALE_MS = 20 * 60 * 1000
 
 const TODO_ROW = /^TodoWrite(\s|$)/
 
@@ -368,7 +368,7 @@ function deriveReported(node: CanvasNode): ReportedVerdict {
   const when = at ? `${ago(at)} ago` : 'time unknown'
   return { status: s.status, summary: s.summary ?? null, at, stale,
     note: stale
-      ? `reported "working" ${when} and nothing since — older than the engine's 30-minute check-up threshold, so treat it as unconfirmed`
+      ? `reported "working" ${when} and nothing since — older than the engine's 20-minute check-up threshold, so treat it as unconfirmed`
       : `reported ${when}` }
 }
 

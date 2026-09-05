@@ -198,17 +198,17 @@ WORKING_CACHE_PROMPT = (
 # checkup turn OR the disposable cache read above; the two never run together.
 # The existing lifecycle keeper supplies the poll cadence, so this is the one
 # new timing policy rather than a second family of scheduler knobs.
-WORKING_CHECKUP_AFTER_S = 30.0 * 60.0
+WORKING_CHECKUP_AFTER_S = 20.0 * 60.0
 WORKING_CHECKUP_PROMPT = (
-    "[AUTOMATIC 30-MINUTE WORKING-STATUS CHECK]\n"
+    "[AUTOMATIC 20-MINUTE WORKING-STATUS CHECK]\n"
     "You previously reported that you were working, but Orgtree has not woken "
-    "you for 30 minutes. Check the actual work, files, processes, and messages. "
+    "you for 20 minutes. Check the actual work, files, processes, and messages. "
     "If useful work remains, make concrete progress now. Then report honestly "
     "with orgtree_status: use working only if work is still in progress, done "
     "if it is complete, or blocked if you truly cannot proceed. Do not claim "
     "that work is continuing without verifying it.")
 WORKING_CHECKUP_NUDGE = (
-    "(orgtree) This is the automatic 30-minute working-status check. The "
+    "(orgtree) This is the automatic 20-minute working-status check. The "
     "internally attributed mail above asks you to verify the work, make "
     "progress, and report your status honestly.")
 
@@ -6446,6 +6446,11 @@ def identity_prompt(org: Org, nid: str, include_archived: bool = False) -> str:
            "orgtree_message to 'user' (one message — do not duplicate it). "
            if n["parent"] is None else
            " — that is how your superior learns of it. ")
+        + "While you remain in working status, enabled automatic checkups may "
+          "wake you after 20 minutes without a real wake to check progress and "
+          "continue unfinished work. They wait while you are busy or have queued "
+          "work and respect normal turn-admission limits; they are not a precise "
+          "timer or a guaranteed cache hit. "
         + "Your scratch folder is your own: keep a CLAUDE.md there as "
           "standing notes. It is delivered to you at the start of "
           "every session and survives compaction; editing it "
@@ -8890,7 +8895,7 @@ def _working_checkup_anchor(n: NodeDoc | dict[str, Any]) -> float:
     turns = n.get("turns")
     if isinstance(turns, list) and turns and isinstance(turns[-1], dict):
         # A long real turn can finish well after its wake. Its completion is
-        # actual activity, so the 30 minutes begin there rather than firing as
+        # actual activity, so the 20 minutes begin there rather than firing as
         # soon as the busy bit falls.
         stamps.append(str(turns[-1].get("at") or ""))
     vals: list[float] = []
@@ -8947,7 +8952,7 @@ def _working_checkup_reserve(slug: str, nid: str, now: float) -> str | None:
         anchor = _working_checkup_anchor(n)
         if not anchor:
             # Reconcile a legacy/hand-edited working row without a timestamp
-            # conservatively. Absence is not evidence that 30 minutes passed.
+            # conservatively. Absence is not evidence that 20 minutes passed.
             n["working_activity_at"] = _iso_ts(now)
             store.save_org(org)
             return None
@@ -8962,7 +8967,7 @@ def _working_checkup_reserve(slug: str, nid: str, now: float) -> str | None:
             "model_only": True,
             "relationship": (
                 "the orgtree engine automatically checking a durable working "
-                "status after 30 minutes without an agent wake"),
+                "status after 20 minutes without an agent wake"),
         }
         box = org.d.setdefault("mail", {})
         box.setdefault(nid, []).append(cast(MailEntry, dict(entry)))

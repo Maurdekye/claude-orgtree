@@ -6225,7 +6225,7 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
                     "at": status_at}
                 if stored == "working":
                     # The report itself is observable agent activity and the
-                    # first durable anchor for the 30-minute checkup clock.
+                    # first durable anchor for the 20-minute checkup clock.
                     org.node(body.node)["working_activity_at"] = status_at
                 else:
                     org.node(body.node).pop("working_activity_at", None)

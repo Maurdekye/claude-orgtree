@@ -1381,7 +1381,12 @@ TOOLS: list[dict[str, Any]] = [
                         "summary; 'working' and 'idle' just record state. Reporting "
                         "'done' sends that report and then leaves you IDLE — "
                         "finished and idle are the same resting state, so there is "
-                        "no need to follow a 'done' with an 'idle'."),
+                        "no need to follow a 'done' with an 'idle'. While you remain "
+                        "working, enabled automatic checkups may wake you after "
+                        "20 minutes without a real wake to verify progress and "
+                        "continue unfinished work. Busy or queued work and normal "
+                        "turn-admission limits can delay a check; the interval "
+                        "does not guarantee a provider cache hit."),
         "inputSchema": {
             "type": "object",
             "properties": {

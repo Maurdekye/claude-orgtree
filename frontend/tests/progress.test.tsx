@@ -379,10 +379,11 @@ test('§1d deriveProgress: subagents, reported status and activity', () => {
   assert.equal(fresh.reported.stale, false)
   assert.equal(fresh.reported.summary, 'wiring the tab')
   assert.match(fresh.reported.note, /^reported 2m ago$/)
-  // staleness mirrors the engine's own 30-minute check-up rule
+  // staleness mirrors the engine's own 20-minute check-up rule
+  assert.equal(WORKING_STALE_MS, 20 * 60 * 1000)
   const stale = deriveProgress(node({ last_status: { status: 'working', summary: 's', at: new Date(Date.now() - WORKING_STALE_MS - 60_000).toISOString() } }), convo())
   assert.equal(stale.reported.stale, true)
-  assert.match(stale.reported.note, /30-minute check-up threshold/)
+  assert.match(stale.reported.note, /20-minute check-up threshold/)
   const oldDone = deriveProgress(node({ last_status: { status: 'done', summary: 's', at: new Date(Date.now() - WORKING_STALE_MS * 4).toISOString() } }), convo())
   assert.equal(oldDone.reported.stale, false, 'only "working" goes stale — an old "done" is simply old')
 

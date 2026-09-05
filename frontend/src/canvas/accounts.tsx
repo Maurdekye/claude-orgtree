@@ -858,7 +858,7 @@ export function AccountsPanel({ toast, close }: {
                 + 'instead of starting cold'} />
           </SetGroup>
           <SetGroup title="Turns">
-            <SetToggle label="check on working agents after 30 minutes"
+            <SetToggle label="check on working agents after 20 minutes"
               checked={workingCheckups !== false}
               disabled={workingCheckups == null || workingCheckupsBusy}
               onChange={runtimeSwitch(setWorkingCheckupsEnabled,

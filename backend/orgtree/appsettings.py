@@ -94,7 +94,7 @@ def provider_choices() -> dict[str, bool]:
 
 
 def working_checkups_enabled() -> bool:
-    """Whether reported-working seats get real 30-minute checkup turns.
+    """Whether reported-working seats get real 20-minute checkup turns.
 
     Only an explicit false disables it. This is both the compatibility rule
     for records written before the setting existed and the product default.

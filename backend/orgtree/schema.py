@@ -335,7 +335,7 @@ class NodeDoc(TypedDict):
     # projection for the next-turn cache-continuity forecast.
     cache_continuity: NotRequired[dict[str, Any]]
     # Latest durable wake/status/checkup-reservation boundary while the node
-    # reports `working`. It is the restart-safe 30-minute checkup clock and
+    # reports `working`. It is the restart-safe 20-minute checkup clock and
     # failed-wake cooldown; cleared when status leaves working.
     working_activity_at: NotRequired[str]
     # Runtime-observed MCP tool count captured at the last authoritative,

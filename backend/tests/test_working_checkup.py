@@ -90,6 +90,7 @@ def accepted(calls: list[tuple[str, str, str]]):
 
 
 def threshold_and_internal_mail() -> None:
+    assert S.WORKING_CHECKUP_AFTER_S == 1200, "working checkups must run at twenty minutes"
     slug, nid = fixture("zz-checkup-threshold")
     calls: list[tuple[str, str, str]] = []
     try:
@@ -103,12 +104,17 @@ def threshold_and_internal_mail() -> None:
             accepted(calls), BASE + S.WORKING_CHECKUP_AFTER_S,
             mode_enabled=True)
         assert [(s, n) for s, n, _ in calls] == [(slug, nid)], calls
-        assert "automatic 30-minute" in calls[0][2].lower(), calls
+        assert "automatic 20-minute" in calls[0][2].lower(), calls
         current = store.load_org(slug)
+        from orgtree.mcptool import TOOLS
+        status_card = next(t for t in TOOLS if t["name"] == "orgtree_status")
+        for instructions in (S.identity_prompt(current, nid), status_card["description"]):
+            assert "20 minutes without a real wake" in instructions
+            assert "enabled automatic checkups" in instructions
         mail = (current.d.get("mail") or {}).get(nid) or []
         assert len(mail) == 1, mail
         assert mail[0]["from"] == SYSTEM and mail[0]["kind"] == "message", mail
-        assert "AUTOMATIC 30-MINUTE WORKING-STATUS CHECK" in mail[0]["body"]
+        assert "AUTOMATIC 20-MINUTE WORKING-STATUS CHECK" in mail[0]["body"]
         assert "orgtree_status" in mail[0]["body"]
 
         # The persisted mail + activity reservation make another scheduler
@@ -121,7 +127,7 @@ def threshold_and_internal_mail() -> None:
         park(slug)
 
 
-check("fires exactly at 30 minutes, not early, with one @system ordinary mail",
+check("fires exactly at 20 minutes, not early, with one @system ordinary mail",
       threshold_and_internal_mail)
 
 
@@ -146,7 +152,7 @@ def real_wake_resets_clock() -> None:
         park(slug)
 
 
-check("real wake and later turn completion each reset the full 30-minute clock",
+check("real wake and later turn completion each reset the full 20-minute clock",
       real_wake_resets_clock)
 
 
