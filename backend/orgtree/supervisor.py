@@ -15064,56 +15064,86 @@ def _run_one_turn(slug: str, nid: str,
                     proc.wait()
             finally:
                 dog_stop.set()
-                turn_mcp_count, turn_mcp_names = _mcp_tool_surface_for_owner(
-                    slug, nid, proc)
-                with _state_lock:
-                    st["proc"] = None
-                    st["responding"] = False
-                    st["tasks"] = 0     # a dead process runs nothing
-                    st["bg_tasks"] = 0  # …its background children included
-                    leftover = _fold_steer(st)       # D-229, to the BACK
-                if leftover:
-                    # the receipt BEFORE the lifecycle calls below, which can
-                    # raise (review round 2 — the same rule as the legs)
-                    _steer_fold_log(slug, nid, len(leftover), "turn exit")
-                if not parked:
-                    warmpool._set_proc_lifecycle(
-                        slug, nid, live=False, owner=wp_turn or proc)
-                    _mcp_tool_count_end(slug, nid, proc)
-                # ⛔ FAIL LOUD (user ruling 2026-08-20). The process is gone.
-                # Anything still in the live set died with it and will never
-                # report: the CLI queues its own "killed" notification, but
-                # into the very process being destroyed, so it is never
-                # delivered. THIS is what left agents waiting forever on a
-                # subagent that had been dead for half an hour.
-                #
-                # One place deliberately, not one per teardown path: the
-                # stdout loop ends however the process ended — idle watchdog,
-                # TURN_TIMEOUT, manual ⏸, the backend's job-object leash, an
-                # outright crash — so every one of them lands here and none
-                # can be forgotten later.
-                with bg_lock:
-                    orphans = [(t, d, bg_out.get(t, "")) for t, d
-                               in bg_live.items()]
-                    bg_live.clear()
-                if orphans:
-                    # `_expire()` is the only kill in this function, so if the
-                    # stdout loop left by some other door the process can still
-                    # be alive here and `returncode` is None. Reporting
-                    # "exited (rc=None)" would assert a death that has not
-                    # happened; poll and say the true thing instead. Either way
-                    # the conclusion for the agent is the same — nothing is
-                    # reading that stdout any more, so no completion of theirs
-                    # can ever reach it.
-                    rc = proc.poll()
-                    _bg_orphaned(slug, nid, orphans,
-                                 timeout_why[0] if timed_out.is_set()
-                                 else f"the CLI process exited (rc={rc})"
-                                 if rc is not None
-                                 else "the turn ended while the CLI was still "
-                                      "alive — nothing is reading its output "
-                                      "any more",
-                                 sid=ran_sid)
+                try:
+                    # THE STATE FLAGS FIRST: everything below them can raise,
+                    # and this handle is the one ⏸ acts on — a raise in the
+                    # capture used to leave `st["proc"]` pointing at a process
+                    # that had already exited.
+                    with _state_lock:
+                        st["proc"] = None
+                        st["responding"] = False
+                        st["tasks"] = 0     # a dead process runs nothing
+                        st["bg_tasks"] = 0  # …its background children included
+                        leftover = _fold_steer(st)   # D-229, to the BACK
+                    if leftover:
+                        # the receipt BEFORE the lifecycle calls below, which
+                        # can raise (review round 2 — same rule as the legs)
+                        _steer_fold_log(slug, nid, len(leftover), "turn exit")
+                    try:
+                        turn_mcp_count, turn_mcp_names = \
+                            _mcp_tool_surface_for_owner(slug, nid, proc)
+                    finally:
+                        if not parked:
+                            # ⚠ THE LOOP CAN LEAVE BY A DOOR THAT NEVER WAITED —
+                            # every ordinary exit above reaches `proc.wait()`, an
+                            # exception reaches none of them, and this used to
+                            # publish a death for a process still running. Nothing
+                            # reads it any more (`st["proc"]` is cleared above and
+                            # the sweep below tells its children so): end it, then
+                            # publish an exit that was observed rather than one
+                            # nobody made — the rule `_mcp_tool_count_end` already
+                            # applies to the tool surface beside it.
+                            if proc.poll() is None:
+                                _wd_kill_tree(proc)
+                                if sandbox_name:
+                                    # the docker-exec client is not the process —
+                                    # reap the in-container one too (`_expire`)
+                                    sbx.kill_claude(sandbox_name, sid)
+                                try:
+                                    proc.wait(timeout=5)
+                                except (subprocess.TimeoutExpired, OSError,
+                                        ValueError):
+                                    pass
+                            if proc.poll() is not None:
+                                warmpool._set_proc_lifecycle(
+                                    slug, nid, live=False, owner=wp_turn or proc)
+                            _mcp_tool_count_end(slug, nid, proc)
+                finally:
+                    # ⛔ FAIL LOUD (user ruling 2026-08-20). The process is gone.
+                    # Anything still in the live set died with it and will never
+                    # report: the CLI queues its own "killed" notification, but
+                    # into the very process being destroyed, so it is never
+                    # delivered. THIS is what left agents waiting forever on a
+                    # subagent that had been dead for half an hour.
+                    #
+                    # One place deliberately, not one per teardown path: the
+                    # stdout loop ends however the process ended — idle watchdog,
+                    # TURN_TIMEOUT, manual ⏸, the backend's job-object leash, an
+                    # outright crash — so every one of them lands here and none
+                    # can be forgotten later.
+                    with bg_lock:
+                        orphans = [(t, d, bg_out.get(t, "")) for t, d
+                                   in bg_live.items()]
+                        bg_live.clear()
+                    if orphans:
+                        # The cleanup above now ends a process the loop left
+                        # running, but its kill is BOUNDED — a tree that
+                        # outlives it still reads `returncode` None here, and
+                        # so does one this sweep reached past a raise.
+                        # Reporting "exited (rc=None)" would assert a death
+                        # that has not happened; poll and say the true thing
+                        # instead. Either way the conclusion for the agent is
+                        # the same — nothing is reading that stdout any more,
+                        # so no completion of theirs can ever reach it.
+                        rc = proc.poll()
+                        _bg_orphaned(slug, nid, orphans,
+                                     timeout_why[0] if timed_out.is_set()
+                                     else f"the CLI process exited (rc={rc})"
+                                     if rc is not None
+                                     else "the turn ended while the CLI was still "
+                                          "alive — nothing is reading its output "
+                                          "any more",
+                                     sid=ran_sid)
             if timed_out.is_set():
                 # this path does its own (estimated) booking — tell the
                 # failure handler so the spend is not charged twice
