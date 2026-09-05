@@ -188,6 +188,86 @@ def scenario(name: str, thread: str) -> None:
     os.environ["FAKECODEX_THREAD_ID"] = thread
 
 
+def draft_timer_order(kind, delayed):
+    """Exercise actual nested callbacks with the timer paused during emission."""
+    import ast
+    import threading
+    from pathlib import Path
+
+    tree = ast.parse(Path(supervisor.__file__).read_text(encoding="utf-8"))
+    leg = next(n for n in tree.body if isinstance(n, ast.FunctionDef)
+               and n.name == "_codex_leg_attempt")
+    bodies = [n for n in leg.body if isinstance(n, ast.FunctionDef)
+              and n.name in ("_flush_draft", "_on_item", "_tool_started")]
+    assert len(bodies) == 3
+    entered, release, acquiring, done = (threading.Event() for _ in range(4))
+    frames, rows, errors = [], [], []
+
+    class ObservedLock:
+        def __init__(self):
+            self.lock = threading.Lock()
+        def __enter__(self):
+            if threading.current_thread().name == "completion":
+                acquiring.set()
+            self.lock.acquire()
+        def __exit__(self, *args):
+            self.lock.release()
+
+    def emit(payload):
+        if delayed and threading.current_thread().name == "draft-timer":
+            entered.set()
+            assert release.wait(3), "fixture did not release draft timer"
+        frames.append(payload["kind"])
+
+    env = dict(Any=object, dlock=ObservedLock(),
+               dstate={"buf": "hello", "timer": None},
+               jstate={"agent_items": 0, "tool_ids": set()},
+               _visible_stream=emit, _visible_live_row=emit,
+               _journal_records=lambda rs: rows.extend(rs),
+               _event_ts=lambda *a: "stamp", _first_time=lambda *a: True,
+               _codex_tool_item=lambda *a: ("read", {}),
+               _tool_arg=lambda *a: "", codex_model="fixture")
+    exec(compile(ast.Module(body=bodies, type_ignores=[]),
+                 "<actual Codex draft callbacks>", "exec"), env)
+    def complete():
+        if kind == "text":
+            env["_on_item"]({"method": "item/completed", "params": {
+                "item": {"type": "agentMessage", "id": "a", "text": "hello"}}})
+        else:
+            env["_tool_started"]({"id": "tool-a"}, "stamp")
+    def guarded(fn, finished=False):
+        try:
+            fn()
+        except BaseException as exc:
+            errors.append(exc)
+        finally:
+            if finished:
+                done.set()
+    if delayed:
+        timer = threading.Thread(target=lambda: guarded(env["_flush_draft"]),
+                                 name="draft-timer")
+        consumer = threading.Thread(target=lambda: guarded(complete, True),
+                                    name="completion")
+        timer.start()
+        try:
+            assert entered.wait(3), "timer never reached emission"
+            consumer.start()
+            assert acquiring.wait(3), "completion never attempted flush"
+            assert not done.wait(.1), "completion overtook the held draft"
+            assert not frames and not rows, "completion escaped before old delta"
+        finally:
+            release.set()
+            timer.join(3)
+            if consumer.ident is not None:
+                consumer.join(3)
+        assert not timer.is_alive() and not consumer.is_alive()
+    else:
+        complete()
+    assert not errors, errors
+    assert frames == ["delta", kind], frames
+    assert len(rows) == 1, rows
+
+
 def main() -> int:
     print("§1 stream-before-commit: the whole turn races the turn/start reply")
     scenario("early_stream", "fake-thread-order-early")
@@ -332,6 +412,11 @@ def main() -> int:
           "clean and not blind",
           lambda: eq(violations([("delta", 0), ("text", 1)], need=1),
                      [("delta", 0)], "detected violations"))
+
+    for kind in ("text", "tool"):
+        for delayed in (False, True):
+            check(f"draft precedes {kind}; held timer={delayed}",
+                  lambda k=kind, d=delayed: draft_timer_order(k, d))
 
     print()
     for label, tb in FAIL:

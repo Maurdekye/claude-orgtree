@@ -9585,11 +9585,13 @@ def _codex_leg_attempt(slug: str, nid: str, org: Org, st: dict[str, Any],
             body = str(dstate["buf"] or "")
             dstate["buf"] = ""
             dstate["timer"] = None
-        while body:
-            # through the barrier: a delta is the FIRST assistant output of a
-            # turn, so it is the first thing that could outrun the user's row
-            _visible_stream({"kind": "delta", "text": body[:2000]})
-            body = body[2000:]
+            # Keep extraction and emission ordered: completion/tool flushes
+            # must wait for an in-flight timer before publishing their row.
+            while body:
+                # through the barrier: a delta is the FIRST assistant output of a
+                # turn, so it is the first thing that could outrun the user's row
+                _visible_stream({"kind": "delta", "text": body[:2000]})
+                body = body[2000:]
 
     def _queue_delta(body: str) -> None:
         fire = False
