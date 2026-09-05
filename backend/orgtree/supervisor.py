@@ -212,11 +212,9 @@ WORKING_CHECKUP_NUDGE = (
     "internally attributed mail above asks you to verify the work, make "
     "progress, and report your status honestly.")
 
-# The docket's own reminder, and a SEPARATE opt-in switch from the checkup
-# above: an agent can be idle — settled, reported done, never reported at all
-# — while items it owns are still open, and none of that is a working status.
-# Same 20-minute quiet threshold and the same keeper cadence; what differs is
-# who it looks at and what it says.
+# The docket's own reminder, on a SEPARATE opt-in switch: an agent can be
+# idle while items it owns are still open, and that is not a working status.
+# Fires after MORE than this quiet interval, on the same keeper cadence.
 IDLE_DOCKET_REMINDER_AFTER_S = 20.0 * 60.0
 IDLE_DOCKET_REMINDER_MAX_ITEMS = 20
 #: first line of the reserved mail — how a pending reminder is recognised
@@ -9028,11 +9026,9 @@ def _latest_epoch(stamps: list[str]) -> float:
 def _activity_stamps(n: NodeDoc | dict[str, Any]) -> list[str]:
     """The durable activity boundaries every automatic wake clock reads.
 
-    ⚠ THE MAX OF ALL OF THEM, never the status stamp alone: a node can carry
-    a years-old `last_status` and have finished a real turn a minute ago, and
-    reading only the status would call that seat 20 minutes idle. A long real
-    turn also finishes well after its wake, so its COMPLETION is the boundary
-    rather than the moment the busy bit falls.
+    ⚠ The MAX of all of them, never the status stamp alone: a years-old
+    `last_status` beside a turn that finished a minute ago is one minute of
+    idleness. A long turn's COMPLETION is the boundary, not its wake.
     """
     status = n.get("last_status")
     stamps = [str(n.get("working_activity_at") or "")]
@@ -9162,8 +9158,7 @@ def _note_working_activity(slug: str, nid: str,
 # ── idle docket reminders ─────────────────────────────────────────────────
 def _idle_docket_anchor(n: NodeDoc | dict[str, Any]) -> float:
     """Latest boundary the idle clock reads: real activity, plus this node's
-    own last reminder. One stamp is both the cross-restart dedupe and the
-    cooldown, exactly as `working_activity_at` is for the checkup."""
+    own last reminder (the dedupe and the cooldown are one stamp)."""
     return _latest_epoch(_activity_stamps(n)
                          + [str(n.get("docket_reminder_at") or "")])
 
@@ -9182,10 +9177,10 @@ def _idle_docket_reminder_reserve(
         now: float) -> tuple[str, list[dict[str, str]]] | None:
     """Atomically claim one due reminder and persist its internal mail.
 
-    The durable carrier is the mail, as it is for the checkup: a backend that
-    dies after this save leaves ordinary waking mail that startup
-    reconciliation drives. `docket_reminder_at` is written in the same save
-    and is both the cross-restart dedupe and the failed-wake cooldown.
+    The mail is the durable carrier, as it is for the checkup: a backend that
+    dies after this save leaves ordinary waking mail for reconciliation.
+    `docket_reminder_at` is written in the same save and is both the
+    cross-restart dedupe and the failed-wake cooldown.
     """
     with store.DOC_LOCK:
         org = store.load_org(slug)
@@ -9193,19 +9188,16 @@ def _idle_docket_reminder_reserve(
             return None
         items = org.work_idle_reminder_items(nid)
         if not items:
-            # Nothing owed is not a quiet reminder: no wake AND no stamp, so
-            # the idle clock keeps belonging to real activity.
-            return None
+            return None                 # no wake AND no stamp
         n = org.node(nid)
         anchor = _idle_docket_anchor(n)
         if not anchor:
-            # A row carrying no timestamp at all is seeded, never fired on:
-            # absence is not evidence that 20 minutes passed.
+            # absence is not evidence that 20 minutes passed
             n["docket_reminder_at"] = _iso_ts(now)
             store.save_org(org)
             return None
-        if now - anchor < IDLE_DOCKET_REMINDER_AFTER_S:
-            return None
+        if now - anchor <= IDLE_DOCKET_REMINDER_AFTER_S:
+            return None                 # MORE than 20 minutes, not exactly
         mid = uuid_hex8()
         stamp = _iso_ts(now)
         n["docket_reminder_at"] = stamp
@@ -9231,12 +9223,10 @@ def _idle_docket_reminder_pass(
         now: float | None = None, *, mode_enabled: bool | None = None) -> None:
     """One deterministic fleet sweep for idle seats holding unfinished items.
 
-    Independent of the reported-working lifecycle above and of its mode: the
-    subject here is the docket, and an idle agent need not have reported
-    anything. The admission shape is deliberately the checkup's — runtime
-    idle, durable gates, atomic reservation, idle-only wake, withdraw on a
-    lost race — because that is the shape already proven not to spam a
-    scheduler tick or to jump a real turn's queue.
+    Runs on its own switch, independent of the reported-working lifecycle and
+    of its mode; an idle agent need not have reported anything. Admission is
+    the checkup's shape: runtime idle, durable gates, atomic reservation,
+    idle-only wake, withdraw on a lost race.
     """
     enabled = (appsettings.idle_docket_reminders_enabled()
                if mode_enabled is None else mode_enabled)
@@ -9321,12 +9311,11 @@ def _working_cache_due(org: Org, nid: str, now: float | None = None) -> bool:
     if n.get("frozen") or n.get("limit_locked") \
             or n.get("remote_controlled") or n.get("bearer_state"):
         return False
-    # An enabled-mode checkup — or an idle docket reminder, which runs on its
-    # own switch and can be reserved for this same seat — may have been
-    # durably reserved just before the operator switched modes or the backend
-    # died. Do not run the fallback cache request beside that already-
-    # scheduled real turn; reconciliation or the next ordinary wake owns the
-    # mail.
+    # An enabled-mode checkup, or an idle docket reminder on its own switch,
+    # may have been durably reserved just before the operator switched modes
+    # or the backend died. Do not run the fallback cache request beside that
+    # already-scheduled real turn; reconciliation or the next ordinary wake
+    # owns the mail.
     if any(m.get("from") == SYSTEM
            and (m.get("body") == WORKING_CHECKUP_PROMPT
                 or str(m.get("body") or "").startswith(
@@ -9771,18 +9760,13 @@ def _working_lifecycle_keeper_pass(
 
 
 def _auto_wake_keeper_pass(now: float | None = None) -> None:
-    """One scheduler tick: the reported-working lifecycle, then the docket
-    reminder.
-
-    Both switches can be on and both can name the same seat. What keeps that
-    to ONE wake is not this order — it is that either reservation leaves
-    waking mail, which `_auto_wake_gates_clear` refuses on, and the checkup
-    also moves `working_activity_at`, which the reminder's anchor reads. The
-    order only decides which one wins the tie: the checkup, because a stale
-    working status is the more urgent thing to say.
-    """
-    _working_lifecycle_keeper_pass(now=now)
+    """One scheduler tick: the docket reminder, then the reported-working
+    lifecycle. Exactly one wake per seat — either reservation leaves waking
+    mail and the shared gates then refuse the other. The reminder goes first
+    because it names the actual work; the generic checkup still fires for a
+    seat the reminder passes over."""
     _idle_docket_reminder_pass(now=now)
+    _working_lifecycle_keeper_pass(now=now)
 
 
 def working_cache_keeper_pass_now() -> None:

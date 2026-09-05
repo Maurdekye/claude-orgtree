@@ -36,7 +36,10 @@ from orgtree.ledger import SYSTEM, USER                      # noqa: E402
 
 PASS = FAIL = 0
 BASE = 1_800_000_000.0
-DUE = BASE + S.IDLE_DOCKET_REMINDER_AFTER_S
+#: exactly twenty minutes of quiet — the user asked for MORE than that, so
+#: this instant is still silent and BOUND + anything fires
+BOUND = BASE + S.IDLE_DOCKET_REMINDER_AFTER_S
+DUE = BOUND + 1
 
 
 def check(label, fn):
@@ -147,11 +150,13 @@ def threshold_and_internal_mail() -> None:
     wid = add_item(slug, "Ship the widget", status="in_progress")
     calls: list[tuple[str, str, str]] = []
     try:
-        fire(slug, DUE - 0.001, calls)
-        assert calls == [], calls
+        fire(slug, BOUND - 0.001, calls)
+        assert calls == [], "before the boundary"
+        fire(slug, BOUND, calls)
+        assert calls == [], "MORE than 20 minutes: the boundary itself is quiet"
         assert not store.load_org(slug).waking_mail(nid)
 
-        fire(slug, DUE, calls)
+        fire(slug, BOUND + 0.001, calls)
         assert [(s, n) for s, n, _ in calls] == [(slug, nid)], calls
         assert "idle-docket reminder" in calls[0][2]
         assert "1 unfinished docket item" in calls[0][2], calls[0][2]
@@ -173,7 +178,8 @@ def threshold_and_internal_mail() -> None:
         park(slug)
 
 
-check("fires at 20 minutes, not before, with one @system mail naming the item",
+check("fires only AFTER 20 minutes, never at the boundary, with one @system "
+      "mail naming the item",
       threshold_and_internal_mail)
 
 
@@ -433,7 +439,7 @@ def a_recent_turn_beats_an_ancient_status() -> None:
             "last_status": {"status": "done", "summary": "long ago",
                             "at": "1999-01-01T00:00:00Z"},
             "turns": [{"at": iso(BASE), "cost": 0.0, "ms": 1, "denials": 0}]}))
-        fire(slug, DUE - 1, calls)
+        fire(slug, BOUND, calls)
         assert calls == [], "the finished turn is the activity boundary"
         fire(slug, DUE, calls)
         assert len(calls) == 1, calls
@@ -450,6 +456,8 @@ def a_recent_turn_beats_an_ancient_status() -> None:
         fire(slug, DUE, calls)
         assert calls == [], "the clock starts when the turn ENDS"
         fire(slug, BASE + 900 + S.IDLE_DOCKET_REMINDER_AFTER_S, calls)
+        assert calls == [], "and it too is quiet AT the boundary"
+        fire(slug, BASE + 901 + S.IDLE_DOCKET_REMINDER_AFTER_S, calls)
         assert len(calls) == 1, calls
     finally:
         park(slug)
@@ -571,9 +579,9 @@ def repeated_ticks_and_restart() -> None:
     try:
         fire(slug, DUE, calls)
         park(slug)                                     # the turn drained the mail
-        fire(slug, DUE + S.IDLE_DOCKET_REMINDER_AFTER_S - 1, calls)
-        assert len(calls) == 1, calls
         fire(slug, DUE + S.IDLE_DOCKET_REMINDER_AFTER_S, calls)
+        assert len(calls) == 1, "the cooldown boundary is quiet too"
+        fire(slug, DUE + S.IDLE_DOCKET_REMINDER_AFTER_S + 1, calls)
         assert len(calls) == 2, calls
     finally:
         park(slug)
@@ -612,29 +620,96 @@ check("a wake refused by the real turn withdraws its mail and still cools down",
 print("\n§6  living beside the working checkup")
 
 
-def one_wake_per_tick() -> None:
-    slug, nid = fixture("zz-rem-both", status="working")
-    add_item(slug, "Unfinished")
-    sent: list[tuple[str, str, str]] = []
+def working_fixture(name: str):
+    """A seat the CHECKUP is also due for: reported working, quiet since BASE."""
+    slug, nid = fixture(name, status="working")
+    ledger_do(slug, lambda org: org.node(nid).update(
+        {"working_activity_at": iso(BASE)}))
+    return slug, nid
+
+
+def tick(sent: list[tuple[str, str, str]], now: float) -> None:
+    """One REAL scheduler tick — both passes, through send_message. The stub
+    deliberately does not take the seat busy, so only durable state can stop a
+    second wake."""
     real_send = S.send_message
+    S.send_message = lambda s, n, text, **kw: (                     # type: ignore[assignment]
+        sent.append((s, n, text)), {"accepted": True})[1]
     try:
-        ledger_do(slug, lambda org: org.node(nid).update(
-            {"working_activity_at": iso(BASE)}))
-        appsettings.set_working_checkups_enabled(True)
-        appsettings.set_idle_docket_reminders_enabled(True)
-        # neither reservation may be joined by the other's in one tick; the
-        # stub deliberately does NOT take the seat busy, so only the durable
-        # state can prevent the second wake
-        S.send_message = lambda s, n, text, **kw: (                 # type: ignore[assignment]
-            sent.append((s, n, text)), {"accepted": True})[1]
-        S._auto_wake_keeper_pass(DUE)
-        assert len(mine(sent, slug)) == 1, sent
-        assert "20-minute working-status check" in mine(sent, slug)[0][2], sent
-        assert reminders(slug) == [], "the checkup won; no reminder beside it"
+        S._auto_wake_keeper_pass(now)
     finally:
         S.send_message = real_send                                 # type: ignore[assignment]
+
+
+def checkup_mail(slug: str, nid: str = "agent") -> list[dict[str, Any]]:
+    return [m for m in (store.load_org(slug).d.get("mail") or {}).get(nid) or []
+            if m.get("body") == S.WORKING_CHECKUP_PROMPT]
+
+
+def the_reminder_wins_the_shared_tick() -> None:
+    """Both switches on, both wakes due, one seat: the wake that ARRIVES must
+    be the one that names the work."""
+    slug, nid = working_fixture("zz-rem-both")
+    wid = add_item(slug, "Unfinished")
+    sent: list[tuple[str, str, str]] = []
+    try:
+        appsettings.set_working_checkups_enabled(True)
+        appsettings.set_idle_docket_reminders_enabled(True)
+        tick(sent, DUE)
+        assert len(mine(sent, slug)) == 1, mine(sent, slug)
+        assert "idle-docket reminder" in mine(sent, slug)[0][2]
+        assert checkup_mail(slug) == [], "exactly one wake, and it is not the checkup"
+        got = reminders(slug)
+        assert len(got) == 1 and wid in got[0]["body"], got
+
+        # SECOND IDLE CYCLE: the woken turn drained its mail and finished, so
+        # both clocks moved. The seat goes quiet again and is due again.
+        park(slug)
+        ledger_do(slug, lambda org: org.node(nid).update(
+            {"working_activity_at": iso(DUE),
+             "turns": [{"at": iso(DUE), "cost": 0.0, "ms": 1, "denials": 0}]}))
+        tick(sent, DUE + 600)
+        assert len(mine(sent, slug)) == 1, "half an interval wakes nobody"
+        # (the boundary itself is pinned in §1; at exactly 1200 the CHECKUP is
+        # due by its own older `>=` rule, which this branch does not change)
+        tick(sent, DUE + S.IDLE_DOCKET_REMINDER_AFTER_S + 1)
+        assert len(mine(sent, slug)) == 2, mine(sent, slug)
+        assert "idle-docket reminder" in mine(sent, slug)[1][2]
+        assert checkup_mail(slug) == []
+        assert wid in reminders(slug)[0]["body"]
+    finally:
         appsettings.set_idle_docket_reminders_enabled(False)
         appsettings.set_working_checkups_enabled(True)
+        park(slug)
+
+
+def the_checkup_still_fires_when_the_reminder_passes() -> None:
+    """The controls for the arbitration above: a working seat with nothing
+    owed, and a working seat while the reminder switch is off."""
+    slug, _nid = working_fixture("zz-rem-nothing-owed")   # no items at all
+    sent: list[tuple[str, str, str]] = []
+    try:
+        appsettings.set_working_checkups_enabled(True)
+        appsettings.set_idle_docket_reminders_enabled(True)
+        tick(sent, DUE)
+        assert len(mine(sent, slug)) == 1, mine(sent, slug)
+        assert "20-minute working-status check" in mine(sent, slug)[0][2]
+        assert len(checkup_mail(slug)) == 1 and reminders(slug) == []
+    finally:
+        appsettings.set_idle_docket_reminders_enabled(False)
+        park(slug)
+
+    slug, _nid = working_fixture("zz-rem-switch-off")
+    add_item(slug, "Unfinished but the switch is off")
+    sent = []
+    try:
+        appsettings.set_working_checkups_enabled(True)
+        appsettings.set_idle_docket_reminders_enabled(False)
+        tick(sent, DUE)
+        assert len(mine(sent, slug)) == 1, mine(sent, slug)
+        assert "20-minute working-status check" in mine(sent, slug)[0][2]
+        assert reminders(slug) == []
+    finally:
         park(slug)
 
 
@@ -659,8 +734,11 @@ def a_reserved_reminder_blocks_the_cache_read() -> None:
         park(slug)
 
 
-check("checkup and reminder never both wake one seat in a tick",
-      one_wake_per_tick)
+check("one wake per tick, and it is the reminder that names the work; the "
+      "seat is due again after a second idle interval",
+      the_reminder_wins_the_shared_tick)
+check("the generic checkup still fires with nothing owed, or reminders off",
+      the_checkup_still_fires_when_the_reminder_passes)
 check("a reserved reminder stops the fallback cache read on that seat",
       a_reserved_reminder_blocks_the_cache_read)
 

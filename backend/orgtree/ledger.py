@@ -10129,21 +10129,11 @@ class Org:
 
     def work_idle_reminder_items(self, nid: str) -> list[dict[str, str]]:
         """Items this node still owes work on, for the idle-reminder wake:
-        OWNED, in flight, and not waiting on the user. Read-only.
+        OWNED, in flight (`_work_counts_active`) and not waiting on the user
+        (`_work_attention`) — the docket's own two rules, read-only.
 
-        Every clause is the docket's OWN rule rather than a second reading of
-        it. `_work_counts_active` is the toolbar badge's in-flight test —
-        closed and backlogged out — and `_work_attention` is the same
-        manual-flag/open-question pair the badge, the archive sweep and the
-        wire view read, so an item the user has been asked about is never
-        also nudged. Only the active list is scanned: the archive holds done
-        work, and a done-but-unswept item is excluded by status anyway.
-
-        ⚠ OWNERSHIP IGNORES THE OWNER'S GENERATION. A compaction, rehire or
-        model switch replaces the agent, not the assignment — `owner_current`
-        is False for exactly those items, and they are the ones most in need
-        of the reminder. Participants are not scanned: one nudge goes to the
-        agent responsible, not to everyone who may read the row.
+        ⚠ Ownership ignores the owner's GENERATION: a compaction or rehire
+        replaces the agent, not the assignment. Participants are not scanned.
         """
         out: list[dict[str, str]] = []
         for it in self._work_active():
