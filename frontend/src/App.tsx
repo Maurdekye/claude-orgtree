@@ -41,6 +41,7 @@ import type {
   KioskSpecRequest,
   MailEntry, OpRequest, OrgEvent, OrgListEntry, OrgMdPayload, SweepPreview, ToastFn,
   ProvidersPayload,
+  AntigravityEstimate as AgyEstimate,
   ToastUndo, TreeFrozen, TreeNode, TreePayload, UsageLimit, UsagePeek,
 } from './types'
 import type { MailRow, ProviderPresence } from './canvas/shared'
@@ -1165,6 +1166,68 @@ const noUsagePeek = (): Promise<UsagePeek> => Promise.resolve(NO_PEEK)
 const noProviders = (): Promise<ProvidersPayload> =>
   Promise.resolve({ providers: [] })
 
+/** 1_234_567 -> "1.2M". Token counts here run to hundreds of millions and the
+ *  reader wants the ORDER of the number, not its digits. */
+const fmtTokens = (n: number): string =>
+  n >= 1e9 ? (n / 1e9).toFixed(1) + 'B'
+  : n >= 1e6 ? (n / 1e6).toFixed(1) + 'M'
+  : n >= 1e3 ? (n / 1e3).toFixed(0) + 'k'
+  : String(n)
+
+/** What the Antigravity lane's observed windows support.
+ *
+ *  ⚠ NEVER A BAR AND NEVER A PERCENTAGE. A percentage implies a denominator,
+ *  and the denominator is exactly the thing nobody can read here: the account
+ *  ceiling is published nowhere orgtree can reach. So this prints a token
+ *  count, how many windows it came from, and the two qualifications that must
+ *  travel with it — that it is an inference from walls that were actually hit,
+ *  and that it is a LOWER bound, since the same Google account is spendable in
+ *  the Antigravity IDE where orgtree observes nothing.
+ *
+ *  With no complete window it prints the REASON and no number. A section that
+ *  quietly rendered nothing would look identical to one whose estimate was
+ *  simply missing. */
+export function AntigravityEstimateNote(
+  { est }: { est?: AgyEstimate | null },
+) {
+  if (!est) return null
+  if (!est.available) {
+    return (
+      <div className="agy-est dim" data-testid="agy-estimate">
+        no usage estimate yet{est.reason ? ` — ${est.reason}` : ''}
+      </div>
+    )
+  }
+  const e = est.estimate
+  if (!e) return null
+  const cov = est.coverage ?? {}
+  const unsummable = cov.unsummable_receipts ?? 0
+  const spread = e.tokens_lowest !== e.tokens_highest
+  return (
+    <div className="agy-est" data-testid="agy-estimate"
+         title={[est.basis, est.warning, unsummable ? cov.unsummable_note : '']
+           .filter(Boolean).join('\n\n')}>
+      <span className="agy-est-n">
+        ~{fmtTokens(e.tokens_latest)} tokens
+        {spread && ` (${fmtTokens(e.tokens_lowest)}–`
+          + `${fmtTokens(e.tokens_highest)} across windows)`}
+      </span>
+      <span className="dim"> spent before the last {est.limit ?? 'quota'} wall
+        {' · '}{est.samples} observed window{est.samples === 1 ? '' : 's'}
+        {' · '}{est.confidence}</span>
+      <div className="dim agy-est-why">
+        inferred from walls orgtree hit, not a reported limit — a LOWER bound,
+        so any budget left reads high
+        {unsummable > 0 && `; ${unsummable} older receipt`
+          + `${unsummable === 1 ? '' : 's'} could not be counted`}
+        {(cov.windows_with_unobserved_gaps ?? 0) > 0
+          && `; ${cov.windows_with_unobserved_gaps} window(s) span a period `
+            + `orgtree was not running`}
+      </div>
+    </div>
+  )
+}
+
 export function UsageModal({ close }: { close: () => void }) {
   useEsc(close)
   // ⚠ EVERY registered account, primary first then fallbacks in priority
@@ -1225,6 +1288,7 @@ export function UsageModal({ close }: { close: () => void }) {
               <span className="dim"> · {agy.label}</span>
             </div>
             <UsageBars u={agy} />
+            <AntigravityEstimateNote est={agy.usage_estimate} />
           </div>}
           {shown.openrouter && orr && <div className="usage-acct" key={orr.account}>
             <div className="usage-acct-head">

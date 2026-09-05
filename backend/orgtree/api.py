@@ -791,6 +791,14 @@ async def _wire_notify() -> None:  # type: ignore[unused-function]  # registered
     # the install-wide preflight at the ASGI lifecycle boundary. It must run
     # before warm processes or background drivers can admit a turn.
     _deployment_preflight()
+    # Mark that THIS process began watching the Antigravity lane. Without it
+    # the window record cannot tell "orgtree was down, a wall may have passed
+    # unseen" from "nothing happened", and every reconstructed window would
+    # claim a coverage it never had. On its own thread because the marker
+    # first asks whether this machine even has the CLI, and that answer costs
+    # a subprocess on a cold cache: it must not sit in front of the warm pool.
+    threading.Thread(target=antigravity_limits.note_boot,
+                     name="agy-boot-mark", daemon=True).start()
     loop = asyncio.get_running_loop()
     _LOOP = loop  # type: ignore[constant-redefinition]  # captured-at-startup cell, not a constant
     try:
@@ -2673,8 +2681,16 @@ def antigravity_usage() -> dict[str, Any]:
     """The Antigravity account's standing for the header modal — OBSERVED,
     never fetched. The CLI exposes no usage readout in print mode (measured;
     see `antigravity_limits`), so this reads the last wall a turn hit and
-    the reset parsed from it. Synchronous: no process, no network."""
-    return antigravity_limits.fetch()
+    the reset parsed from it. Synchronous: no process, no network.
+
+    It also carries `usage_estimate`: what the RECORDED windows support, which
+    is a different question from the standing (a window can be measured after
+    its wall has lifted, and with no complete window the estimate refuses to
+    give a number at all). Attached here rather than inside `fetch` so the
+    standing stays the standing; it reads local journal files only."""
+    data = antigravity_limits.fetch()
+    data["usage_estimate"] = antigravity_limits.standing_estimate()
+    return data
 
 
 @app.get("/api/antigravity/usage/peek")

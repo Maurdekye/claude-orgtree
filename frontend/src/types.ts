@@ -1492,6 +1492,54 @@ export interface AccountUsage {
   error?: string
   limits?: UsageLimit[]
   plan?: string
+  /** Antigravity only: what the RECORDED limit windows support. */
+  usage_estimate?: AntigravityEstimate
+}
+
+/** The Antigravity lane's estimated spend per limit window, on
+ *  GET /api/antigravity/usage.
+ *
+ *  NOT a provider-reported limit and never rendered as one. That CLI publishes
+ *  no usage readout, so the only evidence a limit exists is the wall a failed
+ *  turn reported; this is an inference from the walls turns actually hit,
+ *  measured against the token receipts orgtree journalled in between.
+ *
+ *  `available: false` carries a `reason` and NO number: with no complete
+ *  observed window there is nothing honest to print, and printing the first
+ *  figure that can be computed is how an inference becomes a ceiling nobody
+ *  checks. `samples` says how many windows it had, always.
+ *
+ *  `coverage.unsummable_receipts` counts receipts orgtree holds for those
+ *  windows but CANNOT add up (rows written before 2026-09-04 carry
+ *  session-cumulative usage, so summing them would bill the same tokens
+ *  repeatedly). A window holding one is measured in part, which caps
+ *  `confidence` at 'low'. */
+export interface AntigravityEstimate {
+  available: boolean
+  /** why there is no number — present exactly when `available` is false */
+  reason?: string
+  samples: number
+  confidence?: 'experimental' | 'low' | 'indicative'
+  /** the metric the CLI named on the wall, e.g. "individual quota" */
+  limit?: string
+  tier?: string
+  estimate?: {
+    tokens_lowest: number
+    tokens_highest: number
+    tokens_latest: number
+  } | null
+  /** what the number is an inference FROM; shown, not buried */
+  basis?: string
+  /** that it is a LOWER bound, because IDE usage is unobservable */
+  warning?: string
+  coverage?: {
+    windows_with_unobserved_gaps?: number
+    windows_partly_measured?: number
+    receipts?: number
+    unsummable_receipts?: number
+    note?: string
+    unsummable_note?: string
+  }
 }
 
 /** GET /api/accounts/usage — every account, primary first then keys in

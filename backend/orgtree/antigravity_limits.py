@@ -285,7 +285,18 @@ def note_boot(now: float | None = None) -> None:
     restart — but it IS a period in which a wall could have come and gone
     unseen, and a window whose start we inferred across one is worth less.
     Recorded so the estimator can say which, instead of averaging over it.
+
+    Nothing is recorded on a machine that does not have the CLI: a boot marker
+    for a lane that can never produce an observation is noise in a bounded
+    record. Asking that question costs a status probe (a subprocess on a cold
+    cache), which is why the caller runs this OFF the startup path.
     """
+    try:
+        installed = bool(providers.antigravity_status().get("installed"))
+    except Exception:                                        # noqa: BLE001
+        installed = False
+    if not installed:
+        return
     _append_event({"v": 1, "kind": "boot",
                    "at": time.time() if now is None else now,
                    "account_ns": _account_ns()})
@@ -419,6 +430,30 @@ def windows(events: list[dict[str, Any]] | None = None) -> list[Window]:
     return out
 
 
+def _receipt(value: Any) -> dict[str, Any] | None:
+    """A `tokens_between` answer, normalized, or None when it is not one.
+
+    A bare NUMBER is the whole answer and claims to have counted everything in
+    the interval. A MAPPING may also report what it could NOT count, under
+    `unsummable_receipts`; the real collector does, because Antigravity
+    receipts written before 2026-09-04 hold session-cumulative usage and
+    cannot be added up. Keeping that count is the whole point: a total that
+    quietly dropped them would read as a complete measurement of an interval
+    it had only partly measured.
+    """
+    tokens = _number(value)
+    if tokens is not None:
+        return {"tokens": int(tokens)}
+    if isinstance(value, dict):
+        fields: dict[str, Any] = {
+            str(k): v for k, v in value.items()}          # type: ignore[misc]
+        tokens = _number(fields.get("tokens"))
+        if tokens is None:
+            return None
+        return {**fields, "tokens": int(tokens)}
+    return None
+
+
 def estimate(events: list[dict[str, Any]] | None = None,
              tokens_between: Any = None,
              now: float | None = None) -> dict[str, Any]:
@@ -427,6 +462,10 @@ def estimate(events: list[dict[str, Any]] | None = None,
     `tokens_between(start, end)` returns the tokens ORGTREE spent in an
     interval — injected rather than imported so this stays a pure function of
     its evidence, and so a test can drive it with known numbers.
+
+    A number is the whole answer; the real collector instead returns a MAPPING
+    that also says what it could NOT count, and that shortfall is carried into
+    `coverage` and caps the confidence (see `_receipt`).
 
     The return always says how many samples it had. With no complete sample it
     returns a refusal with a reason, NOT a number: one wall on its own tells
@@ -462,12 +501,22 @@ def estimate(events: list[dict[str, Any]] | None = None,
         if start is None:
             continue
         try:
-            spent = int(tokens_between(start, end))
+            receipt = _receipt(tokens_between(start, end))
         except Exception:                                    # noqa: BLE001
             continue
-        measured.append({"tokens": spent, "walled_at": w["walled_at"],
+        if receipt is None:
+            continue
+        unsummable = int(_number(receipt.get("unsummable_receipts")) or 0)
+        measured.append({"tokens": int(receipt["tokens"]),
+                         "receipts": int(_number(receipt.get("receipts")) or 0),
+                         "unsummable_receipts": unsummable,
+                         "walled_at": w["walled_at"],
                          "gap_before_s": w["gap_before_s"],
-                         "covered": w["gap_before_s"] <= 0.0})
+                         "covered": w["gap_before_s"] <= 0.0,
+                         # a window holding receipts we could not add up is
+                         # measured IN PART, and the difference between a
+                         # number and a number that lies is saying so
+                         "partial": unsummable > 0})
     if not measured:
         return {"available": False, "samples": len(best),
                 "reason": "no receipts could be read for the observed windows",
@@ -479,7 +528,11 @@ def estimate(events: list[dict[str, Any]] | None = None,
     # one sample is worth reporting AS ONE SAMPLE. It is not worthless — it is
     # the only number anyone has — but it is an observation, not a limit, and
     # the label says which.
-    confidence = ("experimental" if n == 1
+    partial = [m for m in measured if m["partial"]]
+    # a window that could only be measured IN PART is not worth more than the
+    # weakest label, however many such windows there are
+    confidence = ("low" if partial
+                  else "experimental" if n == 1
                   else "low" if spread > 0.4 else "indicative")
     uncovered = [m for m in measured if not m["covered"]]
     return {
@@ -502,14 +555,36 @@ def estimate(events: list[dict[str, Any]] | None = None,
                     "remaining-budget reading from this is optimistic"),
         "coverage": {
             "windows_with_unobserved_gaps": len(uncovered),
+            "windows_partly_measured": len(partial),
+            "receipts": sum(int(m["receipts"]) for m in measured),
+            "unsummable_receipts": sum(
+                int(m["unsummable_receipts"]) for m in measured),
             "note": ("a gap means orgtree was not running for part of the "
                      "window, so a wall could have passed unseen; orgtree's "
                      "own receipts are still complete for the time it ran"),
+            "unsummable_note": (
+                "receipts orgtree holds for this window but cannot add up: "
+                "rows written before 2026-09-04 carry session-cumulative "
+                "usage, not the turn's, so summing them would multiply the "
+                "same tokens. They are counted, not hidden, and any window "
+                "holding one is reported as measured in part"),
         },
     }
 
 
 # ── observation (the leg's two calls) ───────────────────────────────────
+
+def standing_estimate(now: float | None = None) -> dict[str, Any]:
+    """`estimate()` wired to the REAL receipts: the one call a surface makes.
+
+    The collector is imported here rather than at module scope so `estimate`
+    itself stays a pure function of the evidence handed to it (that is what
+    lets a test drive its arithmetic with known numbers), and so this module
+    goes on not importing the supervisor.
+    """
+    from . import antigravity_receipts
+    return estimate(None, antigravity_receipts.tokens_between, now)
+
 
 def observe_wall(message: str, *, tier: str = "",
                  now: float | None = None) -> float | None:

@@ -7,8 +7,10 @@
 import { flush, inAct, mountView } from './harness'
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { UsageModal, usagePeak } from '../src/App'
-import type { AccountUsage, UsageAllPayload, UsagePeek } from '../src/types'
+import { AntigravityEstimateNote, UsageModal, usagePeak } from '../src/App'
+import type {
+  AccountUsage, AntigravityEstimate, UsageAllPayload, UsagePeek,
+} from '../src/types'
 
 const CLAUDE: UsageAllPayload = { accounts: [{
   account: 'primary', label: 'claude@example.test', available: true,
@@ -40,6 +42,22 @@ const QUIET: AccountUsage = {
   available: false, unsupported: true,
   error: 'Antigravity publishes no usage readout; a quota wall appears here '
     + 'when a turn hits one, with its reset',
+}
+
+// a measured window: one complete sample, every receipt in it countable
+const MEASURED: AntigravityEstimate = {
+  available: true, samples: 1, confidence: 'experimental',
+  limit: 'individual quota', tier: 'flash',
+  estimate: { tokens_lowest: 267_127_077, tokens_highest: 267_127_077,
+              tokens_latest: 267_127_077 },
+  basis: 'tokens ORGTREE spent between the window opening and the wall; the '
+    + 'provider publishes no usage readout, so this is an inference from '
+    + 'observed walls, not a reported limit',
+  warning: 'a LOWER BOUND: the same account can be spent in the Antigravity '
+    + 'IDE, which orgtree cannot observe, so any remaining-budget reading '
+    + 'from this is optimistic',
+  coverage: { windows_with_unobserved_gaps: 0, windows_partly_measured: 0,
+              receipts: 33, unsummable_receipts: 0 },
 }
 
 const stubFetch = (agy: AccountUsage) => {
@@ -85,6 +103,82 @@ test('with no wall on record the section carries the settled note', async () => 
     assert.ok(view.el.querySelector('.acct-unsupported'),
       'the note wears the settled styling, not the error one')
     assert.equal(view.el.querySelectorAll('.usage-track').length, 2)
+  } finally {
+    restore()
+  }
+})
+
+test('with no complete window the estimate prints the reason, not a number',
+  async () => {
+    const none: AntigravityEstimate = {
+      available: false, samples: 0, estimate: null,
+      reason: 'no complete observed window yet - an estimate needs a window '
+        + 'with a start we can defend and a wall that closed it',
+    }
+    const view = await mountView(
+      <AntigravityEstimateNote est={none} />, (el) => el)
+    await inAct(async () => { await flush(2) })
+    const text = view.el.textContent ?? ''
+    assert.match(text, /no usage estimate yet/)
+    assert.match(text, /no complete observed window yet/)
+    assert.ok(!/\d[\d.,]*[kMB]? tokens/.test(text),
+      `a refusal must carry NO number: ${text}`)
+    // CONTROL: the same component DOES print one when a window supports it
+    const ok = await mountView(
+      <AntigravityEstimateNote est={MEASURED} />, (el) => el)
+    await inAct(async () => { await flush(2) })
+    assert.match(ok.el.textContent ?? '', /267\.1M tokens/)
+  })
+
+test('an estimate never renders as a bar and always carries its two caveats',
+  async () => {
+    const view = await mountView(
+      <AntigravityEstimateNote est={MEASURED} />, (el) => el)
+    await inAct(async () => { await flush(2) })
+    const text = view.el.textContent ?? ''
+    // a percentage would imply a denominator, and the ceiling is unreadable
+    assert.equal(view.el.querySelectorAll('.usage-track').length, 0)
+    assert.ok(!/%/.test(text), `no percentage: ${text}`)
+    assert.match(text, /1 observed window\b/)
+    assert.match(text, /experimental/)
+    assert.match(text, /not a reported limit/)
+    assert.match(text, /LOWER bound/)
+  })
+
+test('receipts that could not be counted are said out loud, and cap the '
+  + 'confidence', async () => {
+    const partial: AntigravityEstimate = {
+      ...MEASURED, confidence: 'low',
+      coverage: { ...MEASURED.coverage, windows_partly_measured: 1,
+                  unsummable_receipts: 32 },
+    }
+    const view = await mountView(
+      <AntigravityEstimateNote est={partial} />, (el) => el)
+    await inAct(async () => { await flush(2) })
+    const text = view.el.textContent ?? ''
+    assert.match(text, /32 older receipts could not be counted/)
+    assert.match(text, /low/)
+    // CONTROL: the fully measured one says nothing of the kind
+    const clean = await mountView(
+      <AntigravityEstimateNote est={MEASURED} />, (el) => el)
+    await inAct(async () => { await flush(2) })
+    assert.ok(!/could not be counted/.test(clean.el.textContent ?? ''),
+      'a fully measured window must not carry the shortfall wording')
+  })
+
+test('the modal shows the estimate under the Antigravity bars', async () => {
+  const restore = stubFetch({ ...WALLED, usage_estimate: MEASURED })
+  try {
+    const view = await mountView(<UsageModal close={() => {}} />, (el) => el)
+    await inAct(async () => { await flush(8) })
+    const text = view.el.textContent ?? ''
+    assert.match(text, /267\.1M tokens/)
+    // it is TEXT under the section, not a fourth bar
+    assert.equal(view.el.querySelectorAll('.usage-track').length, 3)
+    const note = view.el.querySelector('[data-testid="agy-estimate"]')
+    assert.ok(note, 'the estimate is rendered')
+    assert.ok(note?.closest('.usage-acct')?.textContent?.includes('Antigravity'),
+      'and it sits inside the Antigravity section, not a stray div')
   } finally {
     restore()
   }
