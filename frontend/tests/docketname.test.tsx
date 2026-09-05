@@ -188,9 +188,9 @@ uiTest('§N2 the group head name goes to that agent, and closes the panel',
 uiTest('§N3 a group with an active earlier generation uses the current model',
   async (mount) => {
     groupByAgent()
-    // both items are owned by `checklist-evidence`, but one by the generation
-    // the tree still has and one by an earlier one. Two generations, two
-    // models, no single honest answer for the heading.
+    // Both items are owned by `checklist-evidence`; one names the generation
+    // the tree still has and one an earlier generation. They resolve to the
+    // same live successor and therefore to one current model.
     mockServer([
       mkItem({ slug: 'newer-item' }),
       mkItem({ slug: 'older-item',
@@ -204,8 +204,7 @@ uiTest('§N3 a group with an active earlier generation uses the current model',
     assert.ok(id, 'the agent group head vanished')
     assert.equal(id!.querySelector('.tier')?.textContent, 'F',
       'the heading uses the current successor model for both generations')
-    // the name still navigates — the agent is reachable, only the model is
-    // unknown
+    // the name still navigates — the agent is reachable
     assert.ok(id!.querySelector('button.cc-name'))
   })
 

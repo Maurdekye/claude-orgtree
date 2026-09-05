@@ -2894,8 +2894,12 @@ main.solo { width: 100%; }
 .docket-modal .docket-group-head button.cc-name.docket-group-name:hover {
   color: var(--accent); text-decoration: underline;
 }
-.docket-group-agent.fit-retired .docket-group-name {
+.docket-modal .docket-group-head .docket-group-agent.fit-retired .docket-group-name {
   color: var(--dim); font-style: italic;
+}
+.docket-modal .docket-group-head .docket-group-agent.fit-retired
+  button.docket-group-name:hover {
+  color: var(--accent);
 }
 /* the chip is a hair smaller here than in a row: the head is 10.5px and the
    row's 16px chip stands a full line taller than the words beside it */

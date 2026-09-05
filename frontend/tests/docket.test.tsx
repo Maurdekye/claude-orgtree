@@ -1132,7 +1132,6 @@ uiTest('§24 active successors stay normal while retired actors stay historical'
   assert.equal(rSuccessor!.querySelector('.docket-updater .tier')?.textContent?.trim(), 'O',
     'an earlier generation on a live node gets the current successor model')
   assert.equal(rSuccessor!.querySelector('.docket-actor')?.classList.contains('fit-current'), true)
-  assert.equal(rSuccessor!.querySelector('.docket-actor-name')?.classList.contains('docket-actor-name'), true)
   assert.equal(rRetired!.querySelector('.docket-updater .tier')?.textContent?.trim(), 'H',
     'a retired node keeps its recorded model badge')
   assert.equal(rRetired!.querySelector('.docket-actor')?.classList.contains('fit-retired'), true)

@@ -257,10 +257,9 @@ export interface Section {
 /** The identity a GROUP HEADING may claim.
  *
  *  ⚠ THE CHIP APPEARS ONLY WHEN EVERY OWNER IN THE GROUP ATTRIBUTES THE SAME
- *  MODEL. One heading names one agent, but its group can hold items owned by
- *  different generations of that name, which ran under different models; on
- *  disagreement the heading claims nothing and its title says so. `actorFit`'s
- *  abstention for one actor, applied to a set. */
+ *  MODEL. One heading names one agent, but its group can contain current,
+ *  retired, missing, or mixed references. If those references do not resolve
+ *  to one fit/tier, the heading claims no single model and says why. */
 export function groupIdentity(items: WorkItem[], facts: Map<string, NodeFacts>):
   { fit?: ActorFit; tier?: string; why: string | null } {
   const seen = new Map<string, { fit: ActorFit; tier?: string }>()
@@ -273,8 +272,8 @@ export function groupIdentity(items: WorkItem[], facts: Map<string, NodeFacts>):
   const only = seen.size === 1 ? [...seen.values()][0] : undefined
   if (!only) {
     return {
-      why: 'this group holds items owned by different generations of this '
-        + 'agent, so no one model can be attributed to the group',
+      why: 'this group holds references with different status or model '
+        + 'identity, so no one model can be attributed to the group',
     }
   }
   return { fit: only.fit, tier: only.tier, why: FIT_WHY[only.fit] }
