@@ -45,6 +45,15 @@ FAKEANTIGRAVITY_SCENARIO:
     diesmidstep  a completed text step, then a second text step that streams
                  a delta and dies rc=1 mid-step, no DONE, no result — the
                  partial-output control (D4). Synthetic as above
+    diesmidtool  `toolevents` up to the run_command ACTIVE, then rc=1 with no
+                 DONE for it and no result — ONE tool step left open by a
+                 crash. Synthetic as above
+    diesmidtools two tools opened and neither completed, then a text step
+                 streams a partial delta and the process dies rc=1 — several
+                 open ids plus partial text, for the order the closes take
+    interruptmidtool
+                 a tool opens and the process then stalls until it is killed
+                 (the `interrupt` shape with a tool left open) — the ⏸ path
 
 `--conversation <id>` is honoured as a RESUME: the init echoes that id and
 the first delta is "RESUMED:<id> " so a suite can tell resume from fresh.
@@ -307,7 +316,30 @@ def main_turn():
         _step(cid, 2, "ACTIVE", "agent_response",
               text_delta="partial words before death ")
         _die(1)
-    if SCENARIO in ("toolevents", "hookdeny", "dupdone", "diesafterstep"):
+    if SCENARIO == "diesmidtools":
+        # two tools open and NEITHER completes, then a text step says
+        # something and the process is gone: several open ids and a partial
+        # text block, so a suite can pin the order their closes take
+        _step(cid, 2, "ACTIVE", "tool", tool_name="call_mcp_tool",
+              tool_info={"name": "call_mcp_tool", "parameters": {
+                  "Arguments": {"message": "hi"}, "ServerName": "orgtree",
+                  "ToolName": "orgtree_ping"}})
+        _step(cid, 3, "ACTIVE", "tool", tool_name="run_command",
+              tool_info={"name": "run_command",
+                         "parameters": {"CommandLine": "echo HOOK-CMD"}})
+        _step(cid, 4, "ACTIVE", "agent_response",
+              text_delta="partial words before death ")
+        _die(1)
+    if SCENARIO == "interruptmidtool":
+        # the measured kill-mid-turn shape, with a tool left open: the step
+        # opens and nothing more is ever said until the tree is killed
+        _step(cid, 2, "ACTIVE", "tool", tool_name="run_command",
+              tool_info={"name": "run_command",
+                         "parameters": {"CommandLine": "sleep forever"}})
+        time.sleep(8.0)
+        return
+    if SCENARIO in ("toolevents", "hookdeny", "dupdone", "diesafterstep",
+                    "diesmidtool"):
         if SCENARIO != "hookdeny":
             _step(cid, 2, "ACTIVE", "tool", tool_name="call_mcp_tool",
                   tool_info={"name": "call_mcp_tool", "parameters": {
@@ -321,6 +353,10 @@ def main_turn():
         params = {"CommandLine": "echo HOOK-CMD"}
         _step(cid, 3, "ACTIVE", "tool", tool_name="run_command",
               tool_info={"name": "run_command", "parameters": params})
+        if SCENARIO == "diesmidtool":
+            # the run_command step is open and the process is gone before its
+            # DONE — no result event follows either
+            _die(1)
         if SCENARIO == "hookdeny":
             _step(cid, 3, "ERROR", "tool", tool_name="run_command",
                   duration_seconds=0.2,

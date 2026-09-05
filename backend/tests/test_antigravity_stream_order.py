@@ -16,7 +16,10 @@ INVARIANTS (the Codex leg's, transposed — see test_codex_stream_order.py):
      reported, and an unfinished step's streamed text is kept under its own
      identity rather than lost;
   6. a draft `delta` never follows the `text` handover that retired the
-     draft — the timer flush and the handover are serialized (§10).
+     draft — the timer flush and the handover are serialized (§10);
+  7. a tool step still open when the process goes away is closed under its
+     own id, exactly once, with a row that claims only that no result was
+     obtained — never that the tool failed (§11, §12).
 
 Measured on main f217d94 (2026-09-05, `probe_d4.py`): the antigravity leg
 kept none of these. `AntigravityTurn._pump` dispatches every wire event from
@@ -43,6 +46,7 @@ import json
 import os
 import sys
 import tempfile
+import threading
 import time
 import traceback
 
@@ -208,6 +212,109 @@ def draft_seam() -> dict:
     result["control"] = {"frames": ctl["frames"],
                          "durable_rows": ctl["durable_rows"]}
     return result
+
+
+def _leg_functions(names):
+    """The named closures of `_antigravity_leg`, AST-extracted from the
+    supervisor THIS TEST IMPORTED — so a mutated copy of the tree is what
+    gets exercised, not a fixed path."""
+    import ast
+    src = open(supervisor.__file__, encoding="utf-8").read()
+    leg = next(n for n in ast.parse(src).body
+               if isinstance(n, ast.FunctionDef)
+               and n.name == "_antigravity_leg")
+    fns = [n for n in leg.body if isinstance(n, ast.FunctionDef)
+           and n.name in names]
+    got = {f.name for f in fns}
+    if got != set(names):
+        raise AssertionError(f"seam: wanted {sorted(names)}, found "
+                             f"{sorted(got)}")
+    return fns
+
+
+class GateLock:
+    """A `jlock` that pauses ONE named thread just before ONE chosen
+    acquisition, so a two-thread interleaving can be pinned instead of hoped
+    for. The wait is BOUNDED: a gate that is never released must not hang the
+    suite, it must let the run finish and be judged on what it produced."""
+
+    def __init__(self, thread_name, index):
+        self._inner = threading.Lock()
+        self._name, self._index = thread_name, index
+        self._count = 0
+        self.reached = threading.Event()
+        self.release = threading.Event()
+
+    def __enter__(self):
+        if threading.current_thread().name == self._name:
+            self._count += 1
+            if self._count == self._index:
+                self.reached.set()
+                self.release.wait(5.0)
+        return self._inner.__enter__()
+
+    def __exit__(self, *a):
+        return self._inner.__exit__(*a)
+
+
+def claim_seam(gate_thread: str):
+    """One open tool step, reached at the same moment by the wire's own
+    DONE (thread `wire`) and the end-of-turn sweep (thread `sweep`), using
+    the leg's ACTUAL bodies. `gate_thread` is the one held just before its
+    claim, which chooses WHICH of the two arrives second.
+
+    The contract either way: exactly ONE `tool_result` for that tool id."""
+    fns = _leg_functions(["_d", "_item_id", "_committed", "_mark_committed",
+                          "_claim_tool", "_tool_identity", "_on_event",
+                          "_commit_unfinished_tools"])
+    import ast
+    from typing import Any, cast
+    rows: list[dict] = []
+    iid = "agy-seamtoken-3"
+    gate = GateLock(gate_thread, 2)
+    env = dict(
+        cast=cast, Any=Any, jlock=gate,
+        jstate={"sid": "seam", "pending": [], "held": [],
+                "text_open": {}, "text_order": [], "item_ids": set(),
+                "tool_open": {iid: "run_command"}, "agent_items": 0},
+        turn_token="seamtoken", model_id="seam",
+        now_iso=supervisor.now_iso, _tool_arg=supervisor._tool_arg,
+        _journal_records=lambda recs: rows.extend(recs),
+        _visible_stream=lambda payload: None,
+        _visible_live_row=lambda payload: None,
+        _flush_draft=lambda: None,
+        _queue_delta=lambda body: None,
+        _commit_text=lambda *a: None)
+    exec(compile(ast.Module(body=fns, type_ignores=[]),
+                 "<antigravity-leg-bodies>", "exec"), env)
+
+    done_msg = {"event": "step_update", "step_update": {
+        "step_type": "tool", "state": "DONE", "step_index": 3,
+        "tool_name": "run_command",
+        "tool_info": {"name": "run_command",
+                      "parameters": {"CommandLine": "echo x"},
+                      "output": "the tool DID report this"}}}
+    first = threading.Thread(target=lambda: env["_on_event"](done_msg),
+                             name="wire", daemon=True)
+    second = threading.Thread(target=env["_commit_unfinished_tools"],
+                              name="sweep", daemon=True)
+    lead, trail = ((first, second) if gate_thread == "wire"
+                   else (second, first))
+    lead.start()
+    reached = gate.reached.wait(5)
+    trail.start()
+    trail.join(10)
+    gate.release.set()
+    lead.join(10)
+    results = [b for r in rows
+               for b in ((r.get("message") or {}).get("content") or [])
+               if isinstance(b, dict) and b.get("type") == "tool_result"]
+    return {"gate_reached": reached,
+            "stuck": lead.is_alive() or trail.is_alive(),
+            "results": [{"id": b.get("tool_use_id"),
+                         "is_error": bool(b.get("is_error")),
+                         "body": str(b.get("content") or "")[:60]}
+                        for b in results]}
 
 
 SEEN: list[dict] = []
@@ -637,6 +744,247 @@ def main() -> int:
     check("normal control (no preemption) is the same order with one row",
           lambda: eq(seam["control"], {"frames": ["delta", "text"],
                                        "durable_rows": 1}, "control"))
+
+    print("§11 a tool step still open when the process goes away is CLOSED "
+          "— exactly once, saying only what is known")
+
+    def tool_rows(slug_):
+        """(tool_use id → name, tool_use_id → [result bodies]) from disk."""
+        uses, results = {}, {}
+        for rec in journal_lines(slug_):
+            content = (rec.get("message") or {}).get("content")
+            for part in content if isinstance(content, list) else []:
+                if not isinstance(part, dict):
+                    continue
+                if part.get("type") == "tool_use":
+                    uses[part.get("id")] = part.get("name")
+                elif part.get("type") == "tool_result":
+                    results.setdefault(part.get("tool_use_id"), []).append(
+                        {"body": str(part.get("content") or ""),
+                         "is_error": bool(part.get("is_error"))})
+        return uses, results
+
+    def chips(slug_, nid_):
+        out = []
+        for m in supervisor.read_chat(store.load_org(slug_), nid_)["messages"]:
+            for t in m.get("tools") or []:
+                out.append({"name": t.get("name"), "id": t.get("id"),
+                            "error": t.get("error"), "result": t.get("result")})
+        return out
+
+    UNAVAILABLE = "[orgtree: result unavailable]"
+
+    # ── the positive control: a tool that DOES complete is untouched ────────
+    scenario("toolevents", "agy-close-control")
+    slug11, nid11 = mkorg("closecontrol")
+    run_turn(slug11, nid11, "finish your tools")
+    uses_c, res_c = tool_rows(slug11)
+    check("positive control: both completed tools kept their own real "
+          "results, none marked an error, none rewritten by the sweep",
+          lambda: eq((len(uses_c), sorted(len(v) for v in res_c.values()),
+                      [r["is_error"] for v in res_c.values() for r in v],
+                      [UNAVAILABLE in r["body"]
+                       for v in res_c.values() for r in v]),
+                     (2, [1, 1], [False, False], [False, False]),
+                     "completed-tool results"))
+    check("positive control: every completed chip renders an outcome",
+          lambda: eq([c["name"] for c in chips(slug11, nid11)
+                      if not c["result"] and not c["error"]], [],
+                     "chips with no outcome"))
+
+    # ── a crash with one tool open ─────────────────────────────────────────
+    scenario("diesmidtool", "agy-close-crash")
+    slug12, nid12 = mkorg("closecrash")
+    run_turn(slug12, nid12, "die holding a tool")
+    uses_x, res_x = tool_rows(slug12)
+    open_x = [i for i in uses_x if i not in res_x]
+    check("anti-vacuity: the crash really left a tool open on the wire "
+          "(two tool_use rows, and the run_command DONE never arrived)",
+          lambda: eq((len(uses_x), sorted(uses_x.values())), (2, sorted(
+              ["orgtree_ping", "run_command"])), f"tool_use rows {uses_x}"))
+    check("every tool_use has a result — none is left dangling",
+          lambda: eq(open_x, [], f"dangling tool ids {open_x}"))
+    closed_x = [r for i, v in res_x.items() for r in v
+                if UNAVAILABLE in r["body"]]
+    check("the open tool got EXACTLY ONE generated result, and the tool that "
+          "did complete kept its own",
+          lambda: eq((len(closed_x), sorted(len(v) for v in res_x.values())),
+                     (1, [1, 1]), f"results {res_x}"))
+    check("the generated row is marked an error and says only that no result "
+          "was obtained — it claims no CLI report and no failed side effect",
+          lambda: eq((closed_x[0]["is_error"] if closed_x else None,
+                      "outcome is unknown" in (closed_x[0]["body"]
+                                               if closed_x else "")),
+                     (True, True),
+                     f"generated row {closed_x}"))
+    check("the desk can tell the unfinished tool from a silent success",
+          lambda: eq([bool(c["error"]) for c in chips(slug12, nid12)],
+                     [False, True], "chip outcomes"))
+    check("the turn itself is still booked as failed (the close does not "
+          "launder a crash into a success)",
+          lambda: truthy("without a result" in
+                         str(supervisor.state(slug12, nid12).get("last_error")),
+                         f"last_error {supervisor.state(slug12, nid12).get('last_error')}"))
+
+    # ── several open ids, and a partial text block beside them ─────────────
+    scenario("diesmidtools", "agy-close-many")
+    slug13, nid13 = mkorg("closemany")
+    run_turn(slug13, nid13, "die holding two tools")
+    uses_m, res_m = tool_rows(slug13)
+    check("anti-vacuity: the wire really left TWO tools open",
+          lambda: eq(len(uses_m), 2, f"tool_use rows {uses_m}"))
+    check("both open tools are closed, one generated result each",
+          lambda: eq((sorted(len(v) for v in res_m.values()),
+                      sum(1 for v in res_m.values() for r in v
+                          if UNAVAILABLE in r["body"])), ([1, 1], 2),
+                     f"results {res_m}"))
+    order_m = [(k, v) for k, _, v in shape(journal_lines(slug13))
+               if k in ("text", "tool_use", "tool_result")]
+    check("the closes land after the tool_use rows they answer, and the "
+          "partial text stays the last assistant block of the turn",
+          lambda: eq(([k for k, _ in order_m],
+                      order_m[-1][0] if order_m else None),
+                     (["text", "tool_use", "tool_use", "tool_result",
+                       "tool_result", "text"], "text"),
+                     f"journal order {order_m}"))
+    check("the partial text block survived beside the closed tools",
+          lambda: truthy(any(v.startswith("partial words")
+                             for k, v in order_m if k == "text"),
+                         f"blocks {order_m}"))
+
+    # ── the ⏸ path: a controlled interrupt with a tool open ────────────────
+    scenario("interruptmidtool", "agy-close-interrupt")
+    slug14, nid14 = mkorg("closeinterrupt")
+    stopped: dict = {}
+
+    def _pause_when_open():
+        # the JOURNAL, not the live rows: `_sweep_live` retires a live tool
+        # row the moment its durable twin is on disk, and the twin is written
+        # at ACTIVE — so a poll of `live` can miss the whole open window
+        for _ in range(200):
+            if tool_rows(slug14)[0]:
+                stopped["at"] = supervisor.interrupt_turn(slug14, nid14)
+                return
+            time.sleep(0.05)
+        stopped["at"] = {"interrupted": False, "reason": "never saw the tool"}
+
+    waiter = threading.Thread(target=_pause_when_open, daemon=True)
+    waiter.start()
+    run_turn(slug14, nid14, "hold a tool until paused")
+    waiter.join(10)
+    uses_i, res_i = tool_rows(slug14)
+    check("anti-vacuity: the ⏸ really fired while the tool was open",
+          lambda: eq(stopped.get("at"), {"interrupted": True},
+                     f"interrupt_turn returned {stopped.get('at')}"))
+    check("the interrupted turn's open tool is closed too, once",
+          lambda: eq((len(uses_i), sorted(len(v) for v in res_i.values()),
+                      sum(1 for v in res_i.values() for r in v
+                          if UNAVAILABLE in r["body"])), (1, [1], 1),
+                     f"uses {uses_i} results {res_i}"))
+
+    # ── a repeated DONE must not produce a second row either ───────────────
+    scenario("dupdone", "agy-close-dup")
+    slug15, nid15 = mkorg("closedup")
+    run_turn(slug15, nid15, "say it once")
+    uses_d, res_d = tool_rows(slug15)
+    check("a repeated DONE still yields one result per tool, and the sweep "
+          "adds nothing on a turn that closed everything itself",
+          lambda: eq((len(uses_d), sorted(len(v) for v in res_d.values()),
+                      sum(1 for v in res_d.values() for r in v
+                          if UNAVAILABLE in r["body"])), (2, [1, 1], 0),
+                     f"uses {uses_d} results {res_d}"))
+
+    # ── the exit paths that SKIP everything after the try/finally ──────────
+    # `wait()` and `close()` can both raise (the D-229 note names close), and
+    # a call placed after the try/finally would never run then. These two
+    # cases are why the sweep is an inner `finally` rather than a statement
+    # further down.
+    def closes_despite(what: str, patch_name: str, label: str):
+        scenario("interruptmidtool", f"agy-close-{what}")
+        slug_, nid_ = mkorg(f"close{what}")
+        original = getattr(antigravityrun.AntigravityTurn, patch_name)
+        fired: dict = {}
+
+        def boom(self, *a, **kw):
+            if patch_name == "wait":
+                for _ in range(200):        # let the tool actually open
+                    if tool_rows(slug_)[0]:
+                        break
+                    time.sleep(0.05)
+            else:
+                original(self, *a, **kw)
+            fired["raised"] = True
+            raise RuntimeError(f"planted {patch_name} failure")
+
+        setattr(antigravityrun.AntigravityTurn, patch_name, boom)
+        try:
+            run_turn(slug_, nid_, f"raise from {patch_name}")
+        except Exception:                                    # noqa: BLE001
+            pass
+        finally:
+            setattr(antigravityrun.AntigravityTurn, patch_name, original)
+        uses_, res_ = tool_rows(slug_)
+        check(f"anti-vacuity: the planted {patch_name}() failure really fired "
+              f"with a tool open ({label})",
+              lambda: eq((fired.get("raised"), len(uses_)), (True, 1),
+                         f"fired {fired}, tool_use rows {uses_}"))
+        check(f"the open tool is closed even when {patch_name}() raises on "
+              f"the way out ({label})",
+              lambda: eq((sorted(len(v) for v in res_.values()),
+                          sum(1 for v in res_.values() for r in v
+                              if UNAVAILABLE in r["body"])), ([1], 1),
+                         f"uses {uses_} results {res_}"))
+
+    closes_despite("waitraise", "wait", "the turn thread never reaches the "
+                                        "code after the try")
+    closes_despite("closeraise", "close", "the teardown itself fails")
+
+    # ── the per-message ceiling ────────────────────────────────────────────
+    scenario("interruptmidtool", "agy-close-timeout")
+    slug17, nid17 = mkorg("closetimeout")
+    _orig_timeout = supervisor.TURN_TIMEOUT
+    supervisor.TURN_TIMEOUT = 1.0
+    try:
+        run_turn(slug17, nid17, "hold a tool past the ceiling")
+    finally:
+        supervisor.TURN_TIMEOUT = _orig_timeout
+    uses_t, res_t = tool_rows(slug17)
+    check("anti-vacuity: the turn really died on the ceiling, not on its own",
+          lambda: truthy("ceiling" in
+                         str(supervisor.state(slug17, nid17).get("last_error")),
+                         f"last_error "
+                         f"{supervisor.state(slug17, nid17).get('last_error')}"))
+    check("a tool open when the per-message ceiling kills the turn is closed "
+          "too",
+          lambda: eq((len(uses_t), sorted(len(v) for v in res_t.values()),
+                      sum(1 for v in res_t.values() for r in v
+                          if UNAVAILABLE in r["body"])), (1, [1], 1),
+                     f"uses {uses_t} results {res_t}"))
+
+    print("§12 the wire's own completion and the end-of-turn sweep reach the "
+          "SAME open tool at the same moment — one result, never two")
+    # The fixture cases above cannot see this: in a single-threaded replay the
+    # sweep's snapshot never overlaps a completion in flight, so a sweep that
+    # ignored its claim, or a reader that claimed in two steps, passed them
+    # all. (Both shapes were ACCEPTED mutants before this section existed.)
+    for who, story in (("wire", "the sweep arrives second"),
+                       ("sweep", "the wire's DONE arrives second")):
+        seam = claim_seam(who)
+        check(f"anti-vacuity: the seam was reached and neither thread hung "
+              f"({story})",
+              lambda s=seam: eq((s["gate_reached"], s["stuck"]), (True, False),
+                                f"seam {s}"))
+        check(f"exactly one tool_result for the step, under its own id "
+              f"({story})",
+              lambda s=seam: eq((len(s["results"]),
+                                 [r["id"] for r in s["results"]]),
+                                (1, ["agy-seamtoken-3"]),
+                                f"results {s['results']}"))
+    check("when the wire's DONE wins, the durable row is the CLI's real "
+          "output — the sweep never overwrites a reported result",
+          lambda: truthy(any("DID report" in r["body"]
+                             for r in claim_seam("sweep")["results"]),
+                         "the reported output did not survive"))
 
     print()
     for label, tb in FAIL:

@@ -12482,6 +12482,25 @@ def _antigravity_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
         with jlock:
             cast("set[str]", jstate["item_ids"]).add(iid)
 
+    def _claim_tool(iid: str) -> str | None:
+        """Take exclusive ownership of ONE open tool step, or None if someone
+        already has it. Returns the tool's name.
+
+        TWO THREADS reach for the same open tool: the reader thread, when the
+        wire finally reports DONE/ERROR, and the turn thread's end-of-turn
+        sweep (`_commit_unfinished_tools`). Whoever wins writes that step's
+        one `tool_result`; the loser writes nothing. The pop and the
+        committed-mark happen under ONE `jlock` take because that pair IS the
+        claim — split across two takes (as the DONE path had it, correct
+        while the reader was the only writer) both threads can see the id
+        still open and both journal a result for it."""
+        with jlock:
+            name = cast("dict[str, Any]", jstate["tool_open"]).pop(iid, None)
+            if name is None:
+                return None
+            cast("set[str]", jstate["item_ids"]).add(iid)
+            return str(name)
+
     dstate: dict[str, Any] = {"buf": "", "timer": None}
     dlock = threading.Lock()
 
@@ -12622,10 +12641,12 @@ def _antigravity_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
             return
         name, inp = _tool_identity(step)
         if state_ == "ACTIVE":
-            if iid in jstate["tool_open"]:
-                return
+            with jlock:
+                if iid in jstate["tool_open"]:
+                    return
             _flush_draft()
-            jstate["tool_open"][iid] = name
+            with jlock:
+                jstate["tool_open"][iid] = name
             _journal_records([{
                 "type": "assistant", "timestamp": now_iso(),
                 "message": {"id": iid, "role": "assistant",
@@ -12639,10 +12660,8 @@ def _antigravity_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
             return
         if state_ not in ("DONE", "ERROR"):
             return
-        if iid not in jstate["tool_open"]:
+        if _claim_tool(iid) is None:
             return
-        _mark_committed(iid)
-        jstate["tool_open"].pop(iid, None)
         info = _d(step.get("tool_info"))
         err = _d(info.get("error"))
         body = (str(info.get("output") or "") if state_ == "DONE"
@@ -12699,6 +12718,45 @@ def _antigravity_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
                 if iid in jstate["text_order"]:
                     jstate["text_order"].remove(iid)
             _commit_text(iid, body, now_iso())
+
+    def _commit_unfinished_tools() -> None:
+        """The turn is over with a tool step still ACTIVE — ⏸, the per-message
+        ceiling, a CLI crash, or an exception on the way out — so the wire
+        will never report that step's DONE/ERROR.
+
+        Without this the `tool_use` row stands alone forever and the desk
+        draws a chip with no result and no error: indistinguishable from a
+        tool that ran and returned nothing (MEASURED on 8a9a4ad —
+        `probe_unfinished_tool.py`, control 2 results / died-mid-tool 1). The
+        TURN was always booked honestly (`last_error` carries the CLI's exit);
+        it is the ITEM record that was never closed. The codex leg says the
+        same thing through `_late_tool_result` (D2).
+
+        WHAT THIS ROW CLAIMS, exactly: that orgtree never received a result.
+        NOT that the tool failed — a command may well have run to completion
+        on the machine and the process died before it could say so — and not
+        a CLI report; orgtree writes this row itself. `is_error` is set
+        because a failure to obtain a result is not a normal completion and
+        must not read as one on the desk; the prose carries the rest.
+
+        Claimed through `_claim_tool`, so a DONE still in flight on the
+        reader thread either beat us here (and this writes nothing) or comes
+        after (and finds the step claimed, per the top-of-`_on_event`
+        `_committed` guard). Exactly one result row per tool id either way."""
+        with jlock:
+            open_ids = list(cast("dict[str, Any]", jstate["tool_open"]))
+        for iid in open_ids:
+            if _claim_tool(iid) is None:
+                continue           # the wire's own completion won the race
+            _journal_records([{
+                "type": "user", "timestamp": now_iso(),
+                "message": {"role": "user", "content": [{
+                    "type": "tool_result", "tool_use_id": iid,
+                    "content": ("[orgtree: result unavailable] The turn "
+                                "ended before this tool reported a result; "
+                                "its execution outcome is unknown."),
+                    "is_error": True}]}}])
+            _visible_stream({"kind": "journal", "text": ""})
 
     log_dir = os.path.join(providers.antigravity_probe_dir(), "logs", slug)
     os.makedirs(log_dir, exist_ok=True)
@@ -12804,29 +12862,48 @@ def _antigravity_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
         steer_thread.start()
         res_raw = turn.wait(timeout=TURN_TIMEOUT)
     finally:
-        stop.set()
-        # before the process is closed and before the turn machinery folds
-        # undelivered batches back — see the codex leg's note. This lane's
-        # `steer` returns False synchronously, so this is normally immediate.
-        if steer_thread is not None:
-            steer_thread.join()
-        # same fold as the codex leg, same lock take, same reason, same
-        # placement (D-229): a carrier appended after the pump's last poll
-        # must leave with the turn, not wait in RAM for a turn that nothing
-        # will start — and it happens BEFORE `turn.close()`, which can
-        # raise, so a failing teardown cannot leave `responding` True on an
-        # idle node. To the back: see the codex leg's ordering note.
-        with _state_lock:
-            st.pop("antigravity_turn", None)
-            st["responding"] = False
-            leftover = _fold_steer(st)
-        if leftover:
-            _steer_fold_log(slug, nid, len(leftover), "turn exit",
-                            why="the turn ended before the steer pump's "
-                                "next poll")
-        turn.close()
-        warmpool._set_proc_lifecycle(slug, nid, live=False, owner=turn)
-        _mcp_tool_count_end(slug, nid, turn)
+        # NESTED, and the sweep is the inner `finally`: every statement below
+        # can raise (`turn.close()` is named in the D-229 note as one that
+        # does), and a tool step left ACTIVE must be closed on EVERY exit this
+        # try was entered for — the ordinary return, ⏸, the ceiling, a crash,
+        # and an exception on the way out. Placing it after the try/finally
+        # instead would skip exactly the exception exits.
+        #
+        # It runs LAST because `turn.close()` kills the tree and so ends the
+        # reader's stdout: the reader is then usually done, and `_claim_tool`
+        # covers the case where it is not. `wait()` only attempts a BOUNDED
+        # join (5s) and `close()` joins nothing, so quiescence here is likely,
+        # not guaranteed — the claim is what makes that safe rather than the
+        # placement. Where `_open_journal` never ran, the `tool_use` and this
+        # close are both dropped with the rest of the queue: the turn has no
+        # transcript at all, which is this leg's stated no-transcript path.
+        try:
+            stop.set()
+            # before the process is closed and before the turn machinery folds
+            # undelivered batches back — see the codex leg's note. This lane's
+            # `steer` returns False synchronously, so this is normally
+            # immediate.
+            if steer_thread is not None:
+                steer_thread.join()
+            # same fold as the codex leg, same lock take, same reason, same
+            # placement (D-229): a carrier appended after the pump's last poll
+            # must leave with the turn, not wait in RAM for a turn that nothing
+            # will start — and it happens BEFORE `turn.close()`, which can
+            # raise, so a failing teardown cannot leave `responding` True on an
+            # idle node. To the back: see the codex leg's ordering note.
+            with _state_lock:
+                st.pop("antigravity_turn", None)
+                st["responding"] = False
+                leftover = _fold_steer(st)
+            if leftover:
+                _steer_fold_log(slug, nid, len(leftover), "turn exit",
+                                why="the turn ended before the steer pump's "
+                                    "next poll")
+            turn.close()
+            warmpool._set_proc_lifecycle(slug, nid, live=False, owner=turn)
+            _mcp_tool_count_end(slug, nid, turn)
+        finally:
+            _commit_unfinished_tools()
     with dlock:
         draft_timer = dstate.get("timer")
         if draft_timer:
