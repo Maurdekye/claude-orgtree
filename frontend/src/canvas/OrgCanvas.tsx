@@ -1065,8 +1065,20 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
   // a ref keeps the identities stable while still using current geometry.
   const pinRectsRef = useRef<PinRect[]>([])
   pinRectsRef.current = isMobile ? [] : pins.map((p) => p.rect)
+  // MEASURED COST (review 2026-09-05): the search is 0.191 ms/call at PIN_MAX
+  // = 8 pins with all-distinct edges, on a 1920x1080 viewport — 0.005 ms at
+  // one pin. That is affordable once, but this is read from `nearestId` and
+  // from the eye's render, both of which re-run on EVERY animation frame while
+  // the camera glides. The region does not depend on the camera at all: only
+  // on the viewport size and the pin geometry. So cache on exactly those, and
+  // a whole glide costs one search instead of one per frame.
+  const regionCache = useRef<{ key: string; val: Region } | null>(null)
   const regionOf = useCallback((vp: { width: number; height: number }): Region => {
     const box = { x: 0, y: 0, w: vp.width, h: vp.height }
+    const key = `${vp.width}x${vp.height}|` + pinRectsRef.current
+      .map((p) => `${p.x},${p.y},${p.w},${p.h}`).join(';')
+    const hit = regionCache.current
+    if (hit && hit.key === key) return hit.val
     // ⚠ AN UNMEASURED VIEWPORT IS NOT AN OBSTRUCTED ONE (regression caught by
     // swbrecenter.test.tsx). Before first paint — and under jsdom, which
     // reports every rect as zero — `getBoundingClientRect()` is 0x0.
@@ -1076,7 +1088,30 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
     // move the camera. It reports the full box instead, which is exactly the
     // pre-w14aace89 behaviour for that case.
     if (box.w <= 0 || box.h <= 0) return { rect: box, status: 'full' }
-    return clearRegion(box, pinRectsRef.current)
+    const val = clearRegion(box, pinRectsRef.current)
+    regionCache.current = { key, val }
+    return val
+  }, [])
+
+  /** The eye cell's WORLD width for a given region — ONE definition, shared by
+   *  the camera, the eye-focus gate and the render, because they disagreeing
+   *  is precisely the bug below.
+   *
+   *  ⚠ THE `USER_W` FLOOR IS WHY ASPECT ALONE IS NOT ENOUGH (browser probe
+   *  §D, review 2026-09-05). In a region narrower than it is tall the
+   *  aspect-derived width falls BELOW `USER_W` and is clamped up to it. The
+   *  cell is then wider, relative to its height, than the region is — so a
+   *  zoom chosen to fill the region's HEIGHT (as the old code did, height
+   *  being the eye's only fit axis when it could always widen freely)
+   *  overflows the region's WIDTH. Measured: an 811px-wide switchboard in a
+   *  748px region, escaping 29px left and 31px right. The camera must
+   *  therefore fit BOTH axes against this width. */
+  const eyeWorldW = useCallback((r: { w: number; h: number } | null): number => {
+    const h = r ? r.h - 48 : 0
+    const raw = r && h > 0
+      ? Math.round(USER_H * Math.max(1, r.w - 48) / h)
+      : Math.round(USER_H * 16 / 9)
+    return Math.max(raw, USER_W)
   }, [])
 
   const focusView = useCallback((id: string, z: number | null = null): View | null => {
@@ -1101,14 +1136,16 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
     // …fitted into the free region rather than the whole viewport. With no
     // pins `r` IS the viewport, so this is byte-for-byte the previous camera.
     const zz = z ?? Math.max(Z_DESK, id === USER
-      ? Math.min(Z_MAX, (r.h - 48) / USER_H)
+      // the eye fits on BOTH axes against its real cell width — see
+      // `eyeWorldW`. Height alone overflowed a tall/narrow region.
+      ? Math.min(Z_MAX, (r.h - 48) / USER_H, (r.w - 48) / eyeWorldW(r))
       : Math.min(Z_MAX, (Math.min(r.w, r.h) - 48) / NODE_H))
     return {
       x: r.x + r.w / 2 - (p.x + NODE_W / 2) * zz,
       y: r.y + r.h / 2 - (p.y + NODE_H / 2) * zz,
       z: zz,
     }
-  }, [regionOf])
+  }, [eyeWorldW, regionOf])
   const centerOn = useCallback((id: string, z: number | null = null) => {
     // focusing a BURIED pile member brings it to the front first (user spec
     // 2026-08-05), then finishes the glide once the re-layout gives it a
@@ -1725,7 +1762,18 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
   const nearestId = useMemo(() => {
     if (view.z < Z_DESK) return null
     const vp = viewportRef.current?.getBoundingClientRect()
-    const cw = vp ? vp.width / 2 : 500, ch = vp ? vp.height / 2 : 350
+    // ⚠ THE SEARCH CENTRE MUST BE THE REGION'S, NOT THE VIEWPORT'S
+    // (w14aace89, review 2026-09-05). This asks "which card is the camera
+    // sitting on"; `focusView` now parks the focused card at the centre of
+    // the FREE REGION, so measuring from the viewport centre asks about a
+    // point the camera was never aiming at. With a pin taking one side, the
+    // focused card sits an entire half-viewport away from `vp.width / 2` —
+    // far enough to exceed the 1.6-card radius below and open NO desk, or to
+    // hand focus to whichever card happens to lie nearer the middle instead.
+    const nvReg = vp ? regionOf(vp) : null
+    const nvR = nvReg && nvReg.status !== 'blocked' ? nvReg.rect : null
+    const cw = nvR ? nvR.x + nvR.w / 2 : (vp ? vp.width / 2 : 500)
+    const ch = nvR ? nvR.y + nvR.h / 2 : (vp ? vp.height / 2 : 350)
     let best: string | null = null, bestD = Infinity
     for (const [id] of target) {
       if (id === DRAFT) continue         // the EYE can be a desk too (switchboard)
@@ -1749,13 +1797,20 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
       // still demanded ~5.2, and the switchboard could never open at all while
       // any pin was up. Caught by focusspace.test.tsx §5, which measured the
       // eye's RENDERED width and found the unfocused square.
-      const fillH = vp ? regionOf(vp).rect.h : 0
-      const zFill = Math.min(Z_MAX, vp ? (fillH - 48) / USER_H : Z_MAX)
+      const fillR = vp ? regionOf(vp).rect : null
+      const zFill = fillR
+        ? Math.min(Z_MAX, (fillR.h - 48) / USER_H,
+          (fillR.w - 48) / eyeWorldW(fillR))
+        : Z_MAX
       if (view.z < zFill * 0.85) return null
     }
     return bestD < NODE_W * 1.6 * view.z ? best : null
+    // `pins` is a dependency because the two region reads above move with it:
+    // pinning or dragging a window changes both the search centre and the
+    // eye's fill threshold WITHOUT the camera moving, and `view` alone would
+    // leave this memo holding a verdict computed against the old free space.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [view, target, hidden])
+  }, [view, target, hidden, pins])
   const pinnedFocusId = nearestId && pinnedIds.has(nearestId) ? nearestId : null
   const focusId = pinnedFocusId ? null : nearestId
   focusRef.current = focusId
@@ -2201,12 +2256,11 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox,
             // viewport => identical to the previous expression.
             const eyeReg = vp ? regionOf(vp) : null
             const eyeR = eyeReg && eyeReg.status !== 'blocked' ? eyeReg.rect : null
-            // guard the divisor: a region thinner than the 48px margin would
-            // otherwise divide by <= 0 and hand the layout an Infinity width
-            const eyeH = eyeR ? eyeR.h - 48 : 0
-            const eyeW = eyeR && eyeH > 0
-              ? Math.round(USER_H * Math.max(1, eyeR.w - 48) / eyeH)
-              : Math.round(USER_H * 16 / 9)
+            // ONE definition, shared with the camera and the focus gate:
+            // `eyeWorldW` also guards the divisor (a region thinner than the
+            // 48px margin would otherwise hand the layout an Infinity width)
+            // and applies the USER_W floor.
+            const eyeW = eyeWorldW(eyeR)
             return <UserNode key={USER} pos={p} isDrop={dropId === USER} seats={seats}
               codexHire={codexHire} antigravityHire={antigravityHire}
               openrouterHire={openrouterHire}
