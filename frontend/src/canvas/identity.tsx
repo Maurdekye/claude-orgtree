@@ -16,7 +16,7 @@
 // ⚠ THE OWN-DESK EXEMPTION IS EXPLICIT AND KEYED ON DESTINATION. `atDestination`
 // is supplied by the surface, never inferred here from the id.
 
-import type { ReactNode } from 'react'
+import type { MouseEvent as ReactMouseEvent, ReactNode } from 'react'
 import { TIER_LETTER, tierLabel } from './shared'
 
 /** The model card: the letter chip every surface uses for a tier.
@@ -44,8 +44,15 @@ export interface AgentNameProps {
   /** why this identity is secondary or its chip withheld; becomes the title
    *  of the name element when there is no navigation to describe there. */
   why?: string | null
-  /** navigate to this agent. Omit it and the name is plain text. */
-  onFocus?: (id: string) => void
+  /** navigate to this agent. Omit it and the name is plain text.
+   *
+   *  The activation event is passed through because some surfaces have to tell
+   *  a POINTER activation from a KEYBOARD one: `e.detail` is 0 for a click
+   *  synthesised by Enter/Space and >= 1 for a real mouse click. pins.tsx
+   *  needs that — its name sits on a pointer-capturing drag handle, where the
+   *  mouse path is driven by the gesture and only the keyboard may go through
+   *  this handler. */
+  onFocus?: (id: string, e: ReactMouseEvent<HTMLButtonElement>) => void
   /** ⚠ THIS SURFACE IS THE DESTINATION, so the click would be a no-op — the
    *  agent's own focused desk. NOT "the name matches the agent whose surface
    *  this is": a switchboard panel and a pinned window BOTH show that same
@@ -89,7 +96,7 @@ export function AgentName({
           submit behaviour would be wrong */}
       <button type="button" className={'cc-name cc-name-jump' + extra}
         title={why ?? `focus ${id}'s desk`}
-        onClick={(e) => { e.stopPropagation(); onFocus(id) }}>
+        onClick={(e) => { e.stopPropagation(); onFocus(id, e) }}>
         {label}
       </button>
     </>

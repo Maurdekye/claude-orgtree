@@ -2065,6 +2065,7 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
       {view === 'files' && <FilesView slug={slug} nid={node.id} />}
       {view === 'progress' && <ProgressView model={progress} />}
       {view === 'inbox' && <InboxView slug={slug} nid={node.id} tier={node.tier}
+        tierOf={(id) => map.get(id)?.tier}
         onRetract={(m) => retractMail(slug, node.id, m.id)
           .then(() => refresh(true))
           // rethrow: InboxView's optimistic hide rolls back on rejection

@@ -534,9 +534,13 @@ interface InboxViewProps {
   /** the inbox owner's tier: its unread count wears that agent's provider */
   tier?: string | null
   onFocusAgent?: (agentId: string) => void
+  /** the SENDERS' models, for the chip beside each name. Resolved by the
+   *  caller because only it holds the tree; omitted, no chip is drawn. */
+  tierOf?: (id: string) => string | null | undefined
 }
 
-export function InboxView({ slug, nid, onRetract, jumpTo, tier, onFocusAgent }: InboxViewProps) {
+export function InboxView({ slug, nid, onRetract, jumpTo, tier, onFocusAgent,
+  tierOf }: InboxViewProps) {
   const [folder, setFolder] = useState('inbox')
   // G5: was a fetch keyed on the `pulse` prop, which meant it refreshed on turn
   // events and on nothing else — and a mail DELIVERY is not a turn event, so
@@ -561,6 +565,7 @@ export function InboxView({ slug, nid, onRetract, jumpTo, tier, onFocusAgent }: 
           ? <div className="dim pad">loading…</div>
           : folder === 'inbox'
             ? <MailList pending={pending} delivered={box.delivered}
+                tierOf={tierOf}
                 waitLabel="awaiting next turn" jumpTo={jumpTo}
                 fileHref={(p) => fileUrl(slug, nid, p)}
                 mdBase={() => fileBase(slug, nid)}
@@ -580,6 +585,7 @@ export function InboxView({ slug, nid, onRetract, jumpTo, tier, onFocusAgent }: 
             // outbox/ on send (api.py routes them through _agent_send_file),
             // so the same scratch-keyed href serves the Sent folder too
             : <MailList delivered={box.sent ?? []} outgoing
+                tierOf={tierOf}
                 onFocusAgent={onFocusAgent}
                 fileHref={(p) => fileUrl(slug, nid, p)}
                 mdBase={() => fileBase(slug, nid)} />}
@@ -659,15 +665,18 @@ interface NodeInboxModalProps {
   close: () => void
   jumpTo?: string | null
   onFocusAgent?: (agentId: string) => void
+  tierOf?: (id: string) => string | null | undefined
 }
 
-export function NodeInboxModal({ node, slug, close, jumpTo, onFocusAgent }: NodeInboxModalProps) {
+export function NodeInboxModal({ node, slug, close, jumpTo, onFocusAgent,
+  tierOf }: NodeInboxModalProps) {
   useEsc(close)
   return (
     <div className="overlay" onClick={close} onPointerDown={(e) => e.stopPropagation()}>
       <div className="settings wide" onClick={(e) => e.stopPropagation()}>
         <h3><MailIcon fontSize="inherit" /> {node.id} <span className="dim">· inbox</span></h3>
         <InboxView slug={slug} nid={node.id} jumpTo={jumpTo} tier={node.tier}
+          tierOf={tierOf}
           onFocusAgent={onFocusAgent ? (id) => { close(); onFocusAgent(id) } : undefined} />
         <div className="row">
           <button className="primary" onClick={close}>close</button>
@@ -872,20 +881,17 @@ export function OrgInboxModal({ inbox, net, map, slug, toast, close, jumpTo, onF
                 ? <MailList pending={inn.filter((r) => r._wait0)}
                     delivered={inn.filter((r) => !r._wait0)}
                     waitLabel="unread" onRead={markRead} jumpTo={jumpTo}
-                    /* ⚠ THE ORG INBOX IS THE ONE LIST WHOSE SENDERS ARE NOT
-                       THIS ORG'S AGENTS. A peer like `external-client` is an
-                       outside party and carries no `@` sigil, so MailList's
-                       default "not `@`-prefixed, therefore an agent" rule is
-                       wrong here — it would give an outsider a model chip and
-                       a jump into our tree. Resolution against `map` is the
-                       test that belongs here, and docket.test.tsx §17 is what
-                       caught this when I first removed the override. */
-                    sender={(id) => (map.has(id)
-                      ? <AgentName id={id} tier={map.get(id)?.tier}
-                          onFocus={onFocusAgent
-                            ? (a) => { close(); onFocusAgent(a) }
-                            : undefined} />
-                      : <b>{id}</b>)} />
+                    /* ⚠ AN INCOMING ORG-INBOX SENDER IS EXTERNAL BY
+                       PROVENANCE, AND A NAME MATCH IS NOT EVIDENCE OTHERWISE.
+                       These rows came from OUTSIDE this org, so the peer is an
+                       outside party even when it spells itself exactly like
+                       one of our agents — an external `luna-reserve` is not
+                       our `luna-reserve`, and resolving against `map` would
+                       hand it our agent's model chip and a jump into our tree.
+                       Plain text, always. (The OUTGOING side below differs:
+                       `_by` is recorded locally as the agent that sent, so it
+                       stays eligible.) */
+                    sender={(id) => <b>{id}</b>} />
                 : <MailList delivered={out} outgoing jumpTo={jumpTo}
                     rowMark={glyph}
                     sender={(id, m) => {

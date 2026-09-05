@@ -926,43 +926,92 @@ uiTest('snap preview wears the dragged window\'s provider class, not the root ac
 // window AND navigate away from it in one gesture. The discrimination reuses
 // the title bar's own `moved` verdict at its existing 3px threshold rather
 // than inventing a second one.
-uiTest('§B12 title-bar name: a click navigates, a drag repositions and does not',
+uiTest('§B12 title-bar name: the mouse path is the gesture, the keyboard path is the button',
   async ({ mount }) => {
     const { el, viewport } = await mountCanvas(mount, ['ceo', 'cto'])
     await settle(2500)
     await pinFromDesk(el, viewport, 'cto')
-    const win = pinWin(el, 'cto')!
-    const title = win.querySelector('.pinwin-title')!
-    const name = title.querySelector('button.cc-name.pinwin-name') as HTMLElement | null
-    assert.ok(name, 'the title-bar name is a navigation control')
-    assert.ok(title.querySelector('.tier'), 'and it carries the model chip')
+    await settle(1200)   // let the pin-creation flash clear before measuring
+    const win = () => pinWin(el, 'cto')!
+    const title = () => win().querySelector('.pinwin-title')!
+    const name = () => title().querySelector('button.cc-name.pinwin-name') as HTMLElement
+    assert.ok(name(), 'the title-bar name is a navigation control')
+    assert.ok(title().querySelector('.tier'), 'and it carries the model chip')
 
-    // A DRAG that starts and ends on the name: the window must move, and the
-    // camera must not. `click` is dispatched after the pointer pair exactly as
-    // a browser does when press and release share a target.
-    const before = winRect(win)
-    const camBefore = cam(el)
-    await inAct(() => { name!.dispatchEvent(pointer('pointerdown', 200, 60)) })
-    await inAct(() => { name!.dispatchEvent(pointer('pointermove', 380, 240)) })
-    await inAct(() => { name!.dispatchEvent(pointer('pointerup', 380, 240)) })
-    await inAct(() => { name!.dispatchEvent(new window.MouseEvent('click', { bubbles: true })) })
-    await settle(1200)
-    const after = winRect(pinWin(el, 'cto')!)
-    assert.notDeepEqual(after, before,
+    // ⚠ THE INSTRUMENT IS THE PIN'S OWN PULSE, NOT THE CAMERA. Navigating to a
+    // PINNED agent raises its window instead of gliding to the placeholder its
+    // card shows, so the camera does not move and measuring it would call
+    // every success a failure. `showPin` is the only thing that pulses —
+    // `raisePin`, which every title pointerdown does, does not — so the flash
+    // is exactly "a navigation happened" and nothing else.
+    const navigated = async () => {
+      await advance(64, 16)
+      const on = Boolean(pinWin(el, 'cto')?.classList.contains('flash'))
+      await settle(1200)
+      return on
+    }
+    // a keyboard activation carries detail 0; a real mouse click carries >= 1.
+    // That is the discrimination, and it is the EVENT's own property — not a
+    // flag waiting for a click that pointer capture may never deliver.
+    const press = (detail: number) => inAct(() => {
+      name().dispatchEvent(new window.MouseEvent('click', { bubbles: true, detail }))
+    })
+    // ⚠ `deliverClick` IS THE POINT OF THIS PARAMETER. Under pointer capture
+    // the browser MAY retarget or suppress the click that would normally
+    // follow a pointer pair — which is why the mouse path is driven by the
+    // gesture at all. A test that always delivers the click models only the
+    // easy half, and a flag-based implementation passes it while eating the
+    // next keypress in the real browser.
+    const drag = async (dx: number, dy: number, deliverClick = true) => {
+      await inAct(() => { name().dispatchEvent(pointer('pointerdown', 200, 60)) })
+      if (dx || dy) await inAct(() => { name().dispatchEvent(pointer('pointermove', 200 + dx, 60 + dy)) })
+      await inAct(() => { name().dispatchEvent(pointer('pointerup', 200 + dx, 60 + dy)) })
+      if (deliverClick) await press(1)
+    }
+
+    // (1) a DRAG: the window moves, and nothing navigates
+    const r0 = winRect(win())
+    await drag(180, 180)
+    assert.equal(await navigated(), false, 'a DRAG on the title name navigated')
+    assert.notDeepEqual(winRect(win()), r0,
       'positive control: the drag must actually have moved the window, or the '
-      + 'assertion below is about a gesture that never happened')
-    assert.deepEqual(cam(el), camBefore,
-      'a DRAG on the title name navigated — the window moved and the camera '
-      + 'followed the click, which is the failure this gate exists to stop')
+      + 'assertion above is about a gesture that never happened')
 
-    // A CLICK — press and release in the same place, under the threshold.
-    await inAct(() => { name!.dispatchEvent(pointer('pointerdown', 200, 60)) })
-    await inAct(() => { name!.dispatchEvent(pointer('pointerup', 201, 60)) })
-    await inAct(() => { name!.dispatchEvent(new window.MouseEvent('click', { bubbles: true })) })
-    await settle(1200)
-    assert.notDeepEqual(cam(el), camBefore,
+    // (2) ENTER after that drag must navigate
+    await press(0)
+    assert.equal(await navigated(), true,
+      'Enter after a drag did not navigate — a pointer gesture must not '
+      + 'consume the next keyboard activation')
+
+    // (2b) THE CASE THAT MATTERS: a drag whose click was NEVER DELIVERED,
+    // then ENTER. That is what pointer capture actually does, and it is where
+    // a "set a flag, let the click consume it" implementation strands the flag
+    // and swallows the keypress.
+    await drag(160, 160, false)
+    assert.equal(await navigated(), false, 'that drag must not have navigated')
+    await press(0)
+    assert.equal(await navigated(), true,
+      'Enter after a drag whose click was never delivered did not navigate — '
+      + 'a gesture must not leave something behind that eats the next '
+      + 'keyboard activation')
+
+    // (3) an ESC-CANCELLED gesture, then ENTER: same requirement
+    await inAct(() => { name().dispatchEvent(pointer('pointerdown', 200, 60)) })
+    await inAct(() => { name().dispatchEvent(pointer('pointermove', 320, 200)) })
+    await inAct(() => {
+      window.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    })
+    await inAct(() => { name().dispatchEvent(pointer('pointerup', 320, 200)) })
+    assert.equal(await navigated(), false, 'a cancelled gesture navigated')
+    await press(0)
+    assert.equal(await navigated(), true,
+      'Enter after an Escape-cancelled gesture did not navigate')
+
+    // (4) a CLICK — press and release in the same place, under the threshold
+    const r1 = winRect(win())
+    await drag(1, 0)
+    assert.equal(await navigated(), true,
       'a CLICK on the title name did not navigate — the name is not a route '
       + 'to its agent, which is the rule')
-    assert.deepEqual(winRect(pinWin(el, 'cto')!), after,
-      'and a click must not reposition the window')
+    assert.deepEqual(winRect(win()), r1, 'and a click must not reposition it')
   })

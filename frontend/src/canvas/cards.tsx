@@ -388,14 +388,9 @@ export function EyeDesk({ map, op, slug, toast, pip,
           {agents.map((a) => (
             <span key={a.id} className={'eye-tab'
               + (isPinned(a.id) ? ' pinned' : minned.has(a.id) ? '' : ' on')}>
-              {/* ⚠ THE NAME NAVIGATES; THE PANEL CONTROL IS A SEPARATE BUTTON
-                  (user rule 2026-09-05: agent names are clickable everywhere
-                  except inside that agent's own focused desk). The name used
-                  to sit INSIDE the minimize button, so clicking it minimized a
-                  chat instead of going to the agent, and the only route was
-                  the ⌖ beside it — an arrow that does not contain the name and
-                  so does not make the name a link. Same two actions as before,
-                  just no longer sharing one hit target. */}
+              {/* the NAME navigates; the PANEL CONTROL beside it opens /
+                  minimizes (or raises the pinned window). Two controls, not
+                  one hit target — the name used to sit inside the toggle. */}
               <span className="eye-tab-id">
                 <AgentName id={a.id} tier={a.tier} onFocus={onJump} />
               </span>
@@ -411,10 +406,8 @@ export function EyeDesk({ map, op, slug, toast, pip,
                 {(a.mail_pending ?? 0) > 0 &&
                   <b className={'eye-count prov-' + providerOf(a.tier ?? '')}>
                     {a.mail_pending}</b>}
-                {/* the panel control needs a glyph of its own, or it is an
-                    empty box whenever the agent is idle with no mail. One
-                    stable glyph: the tab's own `.on` styling already says
-                    whether the panel is showing. */}
+                {/* a glyph of its own, or the control is an empty box for an
+                    idle agent with no mail */}
                 {!isPinned(a.id) &&
                   <FullscreenIcon className="eye-tab-panel-glyph" fontSize="inherit" />}
               </button>

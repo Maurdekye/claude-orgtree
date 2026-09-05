@@ -1072,6 +1072,10 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox, onWorkItem,
   // a ref keeps the identities stable while still using current geometry.
   const pinRectsRef = useRef<PinRect[]>([])
   pinRectsRef.current = isMobile ? [] : pins.map((p) => p.rect)
+  // same reason as the rects above: `centerOn` is built with a stable identity
+  // and must not be rebuilt every time a pin moves
+  const pinnedIdsRef = useRef<Set<string>>(new Set())
+  pinnedIdsRef.current = pinnedIds
   // MEASURED COST (review 2026-09-05): the search is 0.191 ms/call at PIN_MAX
   // = 8 pins with all-distinct edges, on a 1920x1080 viewport — 0.005 ms at
   // one pin. That is affordable once, but this is read from `nearestId` and
@@ -1158,6 +1162,15 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox, onWorkItem,
     }
   }, [eyeWorldW, regionOf])
   const centerOn = useCallback((id: string, z: number | null = null) => {
+    // ⚠ A PINNED AGENT'S DESTINATION IS ITS WINDOW, NOT ITS CARD. The card
+    // renders a placeholder while the agent is pinned (`pinnedFocusId`), so
+    // gliding there lands the reader on the placeholder while the real chat
+    // sits somewhere else, unraised. Raise it instead — the same `showPin`
+    // the placeholder and the switchboard tab already call.
+    if (pinnedIdsRef.current.has(id)) {
+      showPin(slug, id, vpSizeNow())
+      return
+    }
     // focusing a BURIED pile member brings it to the front first (user spec
     // 2026-08-05), then finishes the glide once the re-layout gives it a
     // position (two frames: state commit, then layout)
@@ -2716,6 +2729,7 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox, onWorkItem,
       )}
       {inboxId && map.get(inboxId) && (
         <MaybePortal><NodeInboxModal node={map.get(inboxId)!} slug={slug}
+          tierOf={(id) => map.get(id)?.tier}
           jumpTo={nodeInboxJump}
           onFocusAgent={centerOn}
           close={() => { setInboxId(null); setNodeInboxJump(null) }} /></MaybePortal>

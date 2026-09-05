@@ -449,26 +449,19 @@ function PinWindow({ pin, node, vp, onUnpin, slug, op, toast, pub,
   // strand a window (render-time clamp; see PinLayer's resize tick)
   const rect = clampRect(live ?? pin.rect, vp)
 
-  // ⚠ CLICK-VS-DRAG FOR THE TITLE-BAR NAME, AND WHY THE OBVIOUS VERSION DOES
-  // NOT WORK. The name is a real button sitting ON the drag handle. A gated
-  // onClick is not enough: the title bar takes POINTER CAPTURE on pointerdown
-  // and calls preventDefault, so the browser's `click` is retargeted to the
-  // title (or suppressed) and the button's own handler never runs — measured
-  // in Edge, where the drag half passed and the click half did nothing.
-  //
-  // So the MOUSE path is driven from the gesture, which already knows the
-  // difference at the same 3px threshold the reposition uses: a release that
-  // did not move, from a press that started on the name, navigates. The
-  // BUTTON stays for the keyboard, where there is no gesture at all —
-  // `swallowClick` exists so a pointer-driven interaction cannot navigate
-  // twice, and it is consumed rather than left set, so the next keyboard
-  // activation is not eaten by it.
+  // THE TITLE-BAR NAME'S GESTURE CONTRACT. The name is a button on a
+  // pointer-capturing drag handle, so the two activation paths are separate
+  // and neither guesses about the other:
+  //   MOUSE    — the gesture decides. A release that did not move (the 3px
+  //              threshold the reposition already uses), from a press that
+  //              started on the name, navigates. Capture means the button's
+  //              own `click` may never arrive, so nothing waits for it.
+  //   KEYBOARD — the button's handler, taken only when `e.detail === 0`,
+  //              which is what a click synthesised by Enter/Space carries.
   const nameDown = useRef(false)
-  const swallowClick = useRef(false)
   const cancel = () => {
     const g = gesture.current
     gesture.current = null
-    swallowClick.current = true   // an aborted gesture is not a click either
     if (g) { try { g.capture.releasePointerCapture(g.pointerId) } catch { /* gone */ } }
     setLive(null)
   }
@@ -534,7 +527,6 @@ function PinWindow({ pin, node, vp, onUnpin, slug, op, toast, pub,
     const moved = g.moved || Math.hypot(e.clientX - g.sx, e.clientY - g.sy) >= 3
     const onName = nameDown.current
     nameDown.current = false
-    swallowClick.current = true
     gesture.current = null
     try { e.currentTarget.releasePointerCapture(e.pointerId) } catch { /* already released */ }
     setLive(null)
@@ -586,14 +578,15 @@ function PinWindow({ pin, node, vp, onUnpin, slug, op, toast, pub,
         }}
         onPointerMove={move} onPointerUp={end} onPointerCancel={cancel} onLostPointerCapture={cancel}>
         <PushPinIcon fontSize="inherit" className="pinwin-glyph" />
-        {/* the name navigates like every other agent name (user rule
-            2026-09-05). It sits ON the drag handle, so the click is gated by
-            the gesture's own `moved` verdict: a press that became a drag
-            repositions the window and navigates nowhere. Keyboard activation
-            has no gesture, so it always navigates. */}
+        {/* the name navigates like every other agent name; a press that
+            became a drag repositions the window instead (see the contract
+            above the gesture refs) */}
         <AgentName id={node.id} tier={node.tier} nameClass="pinwin-name"
-          onFocus={(id) => {
-            if (swallowClick.current) { swallowClick.current = false; return }
+          onFocus={(id, e) => {
+            // keyboard only: a mouse activation is the gesture's, and this
+            // handler must not double-fire it (nor fire when capture
+            // suppressed the click entirely — nothing is pending here)
+            if (e.detail !== 0) return
             onJump?.(id)
           }} />
         {state && <span className="pinwin-state" title={`this agent is ${state}; the window stays readable`}>{state}</span>}
