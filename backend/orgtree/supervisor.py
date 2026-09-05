@@ -10106,11 +10106,22 @@ def _codex_git_trust_env(sc: Mapping[str, Any]) -> dict[str, str]:
     config to THIS PROCESS ONLY. Nothing is written to `~/.gitconfig`, no
     other user or turn is affected, and the grant disappears with the process.
 
-    ⚠ SCOPED, NEVER BLANKET. One entry per path already in the node's
-    `add_dirs`, and never `safe.directory=*`. This confers NO new access: it
-    tells git "this repo is not a stranger", nothing more. A node gains trust
-    only for paths it already holds, so this cannot widen a grant — the ledger
-    remains the only thing that decides what a node may reach.
+    ⚠ SCOPED, NEVER BLANKET. Two entries per path already in the node's
+    `add_dirs` — the path itself and `<path>/*` — and never `safe.directory=*`.
+    This confers NO new access: it tells git "this repo is not a stranger",
+    nothing more. A node gains trust only for paths it already holds, so this
+    cannot widen a grant — the ledger remains the only thing that decides what
+    a node may reach.
+
+    WHY BOTH ENTRIES. `safe.directory` is EXACT-MATCH, so trusting a granted
+    directory does not trust a repository INSIDE it — and a git worktree under
+    a granted scratch folder is the ordinary case here, not an exotic one.
+    Measured on git 2.52 (probe_nested_wildcard.py, with git's own
+    GIT_TEST_ASSUME_DIFFERENT_OWNER forcing a real ownership mismatch so the
+    no-trust leg genuinely fails): `<dir>/*` trusts a repo one level down and
+    two levels down, does NOT trust `<dir>` itself, and does not reach a repo
+    outside `<dir>`. Hence one entry for the directory, one for its contents;
+    dropping either leaves a real case untrusted.
 
     Read-only grants are included deliberately: ownership trust is required to
     READ a repo, not only to write one, and an `ro` grant is supposed to mean
@@ -10131,12 +10142,18 @@ def _codex_git_trust_env(sc: Mapping[str, Any]) -> dict[str, str]:
         base = 0
     if base < 0:
         base = 0
-    env = {"GIT_CONFIG_COUNT": str(base + len(paths))}
-    for i, p in enumerate(paths):
-        env[f"GIT_CONFIG_KEY_{base + i}"] = "safe.directory"
+    values: list[str] = []
+    for p in paths:
         # forward slashes: what git itself prints in its own "To add an
         # exception" hint on Windows, and what was measured to work
-        env[f"GIT_CONFIG_VALUE_{base + i}"] = p.replace("\\", "/")
+        g = p.replace("\\", "/")
+        if g.endswith("/") and not g.endswith(":/"):
+            g = g[:-1]
+        values += [g, g + "/*"]
+    env = {"GIT_CONFIG_COUNT": str(base + len(values))}
+    for i, v in enumerate(values):
+        env[f"GIT_CONFIG_KEY_{base + i}"] = "safe.directory"
+        env[f"GIT_CONFIG_VALUE_{base + i}"] = v
     return env
 
 

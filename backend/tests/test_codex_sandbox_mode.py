@@ -45,6 +45,7 @@ established BEFORE `orgtree.store` is imported.
 
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import time
@@ -581,21 +582,39 @@ def main() -> int:
     # dubious ownership". That refusal is independent of the sandbox and no
     # sandbox mode fixes it. safe.directory rides the PROCESS ENV so nothing
     # is written to any config file.
-    d1 = tempfile.mkdtemp(prefix="codexsbx-g1-")
-    d2 = tempfile.mkdtemp(prefix="codexsbx-g2-")
+    # ⚠ realpath: %TEMP% here is the 8.3 SHORT path
+    # (C:\Users\NCOLA_~1\...) while git reports the long one, and
+    # safe.directory is a textual match — a short-path fixture makes the
+    # behaviour legs below fail for a reason that has nothing to do with
+    # the code under test.
+    d1 = os.path.realpath(tempfile.mkdtemp(prefix="codexsbx-g1-"))
+    d2 = os.path.realpath(tempfile.mkdtemp(prefix="codexsbx-g2-"))
     g_slug, g_nid = mkorg_dirs("granted", [d1, d2])
     trust = git_trust(g_slug, g_nid)
-    want_paths = sorted(p.replace("\\", "/") for p in (d1, d2))
+    # …and, since safe.directory is EXACT-MATCH, the repositories INSIDE each
+    # granted dir: a worktree under a granted scratch folder is the ordinary
+    # case, and `<dir>` alone leaves it untrusted. Both forms are needed —
+    # `<dir>/*` does not cover `<dir>` itself (measured, git 2.52).
+    exact = sorted(p.replace("\\", "/") for p in (d1, d2))
+    want_paths = sorted(exact + [p + "/*" for p in exact])
     got_paths = sorted(v for k, v in trust.items()
                        if k.startswith("GIT_CONFIG_VALUE_"))
-    check("both granted dirs become safe.directory values",
+    check("each granted dir becomes safe.directory for itself AND for the "
+          "repos nested inside it",
           lambda: eq(got_paths, want_paths, "safe.directory values"))
     check("every key entry is safe.directory and the count matches",
           lambda: eq(([v for k, v in sorted(trust.items())
                        if k.startswith("GIT_CONFIG_KEY_")],
                       trust.get("GIT_CONFIG_COUNT")),
-                     (["safe.directory", "safe.directory"], "2"),
+                     (["safe.directory"] * 4, "4"),
                      "keys and count"))
+    # THE BOUNDARY. A wildcard is only safe because of where it is anchored:
+    # every one must sit under a path the node already holds, and the bare
+    # `*` (trust every repository on the machine) must never appear.
+    check("every wildcard entry is anchored on a granted dir, none is bare",
+          lambda: eq(sorted(v for v in got_paths if v.endswith("*")),
+                     sorted(p + "/*" for p in exact),
+                     "wildcard entries"))
 
     # THE NEGATIVE THAT MATTERS: no grant must mean no trust, and nothing
     # anywhere may be a blanket wildcard
@@ -614,8 +633,65 @@ def main() -> int:
           lambda: eq((seen.get("GIT_CONFIG_COUNT"),
                       seen.get("GIT_CONFIG_KEY_0"),
                       seen.get("GIT_CONFIG_VALUE_0") in want_paths),
-                     ("2", "safe.directory", True),
+                     ("4", "safe.directory", True),
                      "env as fakecodex saw it"))
+
+    # ⚠ AND NOW THE BEHAVIOUR, because everything above is the SHAPE of an
+    # env var and would stay green if git ignored every entry in it. Real
+    # `git` is run against a real repo nested inside a granted dir, with the
+    # env this node's spawn would carry.
+    #
+    # git's ownership check only fires when the repo is owned by someone else,
+    # and in this suite the operator owns everything — so without a forced
+    # mismatch every leg passes and the check is worth nothing. git's own
+    # GIT_TEST_ASSUME_DIFFERENT_OWNER forces it; the NO-TRUST leg below is the
+    # positive control proving the mismatch is really in effect.
+    def _mkrepo(path):
+        clean = {k: v for k, v in os.environ.items()
+                 if not k.startswith("GIT_CONFIG")}
+        os.makedirs(path, exist_ok=True)
+        for args in (["git", "init", "-q"],
+                     ["git", "config", "user.email", "p@example.invalid"],
+                     ["git", "config", "user.name", "p"]):
+            subprocess.run(args, cwd=path, check=True, capture_output=True,
+                           env=clean)
+        with open(os.path.join(path, "f.txt"), "w", encoding="utf-8") as fh:
+            fh.write("probe\n")
+        subprocess.run(["git", "add", "f.txt"], cwd=path, check=True,
+                       capture_output=True, env=clean)
+        subprocess.run(["git", "commit", "-qm", "p"], cwd=path, check=True,
+                       capture_output=True, env=clean)
+
+    def _git_ok(repo, extra):
+        env = {k: v for k, v in os.environ.items()
+               if not k.startswith("GIT_CONFIG")}
+        env["GIT_TEST_ASSUME_DIFFERENT_OWNER"] = "1"
+        env.update(extra)
+        p = subprocess.run(["git", "-C", repo, "log", "-1", "--format=%H"],
+                           capture_output=True, text=True, env=env)
+        return p.returncode == 0
+
+    nested = os.path.join(d1, "wt", "deeper")     # a worktree-shaped path
+    outside = os.path.join(
+        os.path.realpath(tempfile.mkdtemp(prefix="codexsbx-out-")), "repo")
+    _mkrepo(nested)
+    _mkrepo(outside)
+    check("POSITIVE CONTROL: without the trust env git REFUSES the nested "
+          "repo (so the checks below are not free)",
+          lambda: eq(_git_ok(nested, {}), False, "git log with no trust"))
+    check("a repo nested inside a granted dir is trusted by the spawn env",
+          lambda: eq(_git_ok(nested, trust), True,
+                     "git log under the node's own trust env"))
+    check("…and a repo OUTSIDE every granted dir is still refused",
+          lambda: eq(_git_ok(outside, trust), False,
+                     "git log on an ungranted repo"))
+    # …and the granted dir ITSELF, which the wildcard does NOT cover (`/*`
+    # matches what is under a path, not the path) — so this is the exact
+    # entry's job and it is not redundant with the one above
+    _mkrepo(d2)
+    check("the granted dir itself is trusted too, by the exact entry",
+          lambda: eq(_git_ok(d2, trust), True,
+                     "git log on the granted dir as a repo"))
 
     # an operator who set their own GIT_CONFIG_* must not have it silently
     # dropped — the node's entries append above the inherited count
@@ -628,7 +704,7 @@ def main() -> int:
           lambda: eq((offset.get("GIT_CONFIG_COUNT"),
                       "GIT_CONFIG_KEY_0" in offset,
                       offset.get("GIT_CONFIG_KEY_1")),
-                     ("3", False, "safe.directory"),
+                     ("5", False, "safe.directory"),
                      "count / index 0 untouched / first appended key"))
 
     print("§11 the codex lane is TOLD that a sandbox denial can be retried")
