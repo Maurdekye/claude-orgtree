@@ -125,7 +125,22 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, rowS
   // the selected row deselects it again; either way off a viewed unread
   // mail marks it read.
   const [selId, setSelId] = useState<string | null>(jumpTo ?? null)
-  const jumpedRef = useRef(false)
+  // ⚠ WHICH JUMP HAS BEEN HANDLED, NOT WHETHER ONE HAS. A boolean latch meant
+  // the FIRST link into an open mailbox worked and every one after it did
+  // nothing at all — the box was already mounted, so the initial `useState`
+  // never ran again and the latch was already spent. Holding the id makes a
+  // second click on a different reference move the selection and scroll again,
+  // and a repeat click on the SAME one stay put.
+  const jumpedRef = useRef<string | null>(jumpTo ?? null)
+  // scrolling is tracked SEPARATELY from selecting. They are handled in
+  // different places — an effect and a row ref — and a single latch shared
+  // between them means whichever fires first spends it for the other.
+  const scrolledRef = useRef<string | null>(null)
+  useEffect(() => {
+    if (!jumpTo || jumpTo === jumpedRef.current) return
+    jumpedRef.current = jumpTo
+    setSelId(jumpTo)
+  }, [jumpTo])
   // №26: hunting an hour-old message decayed your unread set click by click —
   // a plain client-side filter over sender+body, no index, no server
   const [q, setQ] = useState('')
@@ -189,6 +204,15 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, rowS
   // notice selected on its own stays selected when a newer one arrives and
   // folds it into a run (the key would otherwise address a row that no
   // longer renders, and the reading pane would silently empty)
+  // ⚠ WAS THE LINKED MESSAGE ACTUALLY FOUND? Asked over `all`, NOT over
+  // `shown`: the search box filters what is listed, and a jump that lands
+  // while a filter is typed must not be reported as a missing message.
+  //
+  // This list only ever renders once its box has loaded — its callers show
+  // "loading…" until then — so "not in `all`" here means ABSENT, not PENDING.
+  // If that ever stops being true, this reads as a false "not here" for the
+  // duration of the fetch, which is exactly when someone is looking at it.
+  const jumpMissing = Boolean(jumpTo) && !all.some((m) => keyOf(m) === jumpTo)
   const curPile = selId == null ? undefined
     : piles.find((g) => g.some((m) => keyOf(m) === selId))
   const cur = curPile?.[0]
@@ -280,8 +304,8 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, rowS
               // a jump aimed at a folded member lands on the row that now
               // carries it, not on nothing
               if (el && jumpTo && g.some((x) => keyOf(x) === jumpTo)
-                && !jumpedRef.current) {
-                jumpedRef.current = true
+                && scrolledRef.current !== jumpTo) {
+                scrolledRef.current = jumpTo
                 el.scrollIntoView({ block: 'center' })
               }
             }}
@@ -457,7 +481,19 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, rowS
         )}
         {!cur && (
           <div className="dim pad mailer-none">
-            {shown.length ? 'select a mail to read it' : ''}
+            {/* ⚠ A LINK THAT LANDED ON NOTHING MUST SAY SO. Falling through to
+                "select a mail to read it" is the silent failure: the panel
+                opens, looks perfectly normal, and the reader concludes they
+                misclicked. It says nothing ABOUT the message — no sender, no
+                subject, no body — because the reason it is not here may be
+                that this viewer is not allowed to see it, and an explanation
+                that discloses the thing it is refusing is not a refusal. */}
+            {jumpMissing
+              ? <span className="mailer-nojump">
+                  That message is not in this folder. It may have been
+                  retracted, or it may not be one you can open.
+                </span>
+              : shown.length ? 'select a mail to read it' : ''}
           </div>
         )}
       </div>
@@ -596,6 +632,27 @@ export function InboxView({ slug, nid, onRetract, jumpTo, tier, onFocusAgent,
   // not a mirror of server data — the distinction the whole refactor turns on.
   const [dropped, setDropped] = useState<string[]>([])
   const pending = (box?.pending ?? []).filter((m) => !dropped.includes(m.id ?? ''))
+  // ⚠ A LINK MUST OPEN THE FOLDER THE MESSAGE IS ACTUALLY IN. This box has
+  // two, the panel opens on `inbox`, and the Sent list was not even given the
+  // jump — so a reference to a message this agent SENT could never be found,
+  // and the panel opened looking ordinary with the mail one unmarked click
+  // away. The org inbox has always done this; the node box had not.
+  //
+  // Keyed on the JUMP, not on the box: switching whenever the data changes
+  // would drag the reader back out of a folder they had chosen by hand every
+  // time the poll returned. `box` is in the deps because the answer is not
+  // knowable until it has loaded, and the panel mounts before that.
+  const foldedJump = useRef<string | null>(null)
+  useEffect(() => {
+    if (!jumpTo || !box || foldedJump.current === jumpTo) return
+    foldedJump.current = jumpTo
+    const here = (rows: MailRow[] | undefined) =>
+      (rows ?? []).some((m) => m.id === jumpTo)
+    if (here(box.delivered) || here(box.pending)) setFolder('inbox')
+    else if (here(box.sent)) setFolder('sent')
+    // in NEITHER: the folder is left where it is and MailList says so. Moving
+    // to a folder that also lacks it would just relocate the confusion.
+  }, [jumpTo, box])
   useEffect(() => {         // let go as soon as the server has caught up
     if (!box) return
     setDropped((d) => d.filter((id) => box.pending.some((m) => m.id === id)))
@@ -628,7 +685,7 @@ export function InboxView({ slug, nid, onRetract, jumpTo, tier, onFocusAgent,
             // sent-to-user attachments were COPIED into this node's own
             // outbox/ on send (api.py routes them through _agent_send_file),
             // so the same scratch-keyed href serves the Sent folder too
-            : <MailList delivered={box.sent ?? []} outgoing
+            : <MailList delivered={box.sent ?? []} outgoing jumpTo={jumpTo}
                 tierOf={tierOf} hasAgent={hasAgent}
                 onFocusAgent={onFocusAgent}
                 fileHref={(p) => fileUrl(slug, nid, p)}
