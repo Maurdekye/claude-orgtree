@@ -262,6 +262,7 @@ def failed_labels(out: str) -> list[str]:
 
 def main() -> int:
     print("baseline (unmutated copy) ...")
+    inert: list[str] = []
     base = tempfile.mkdtemp(prefix="mut-rnid-base-")
     try:
         root = os.path.join(base, "backend")
@@ -274,11 +275,22 @@ def main() -> int:
                   "meaningless. Stopping.")
             return 2
         print("  " + (re.findall(r"^rename: .*$", out, re.M) or ["green"])[0])
+        # A check the suite declares INERT cannot kill anything, so a mutant
+        # aimed at it would "survive" and read as a hole in the suite. Skip it
+        # BY NAME and say why: the guard is still there, the check that
+        # exercised it is not reachable in this tree.
+        inert[:] = [x.strip() for x in
+                 re.findall(r"^  ⚑ INERT\s+(.+)$", out, re.M)]
+        if inert:
+            print(f"  {len(inert)} check(s) inert in this tree: {inert}")
     finally:
         shutil.rmtree(base, ignore_errors=True)
 
     bad: list[str] = []
     for name, rel, old, new, must_fail in MUTANTS:
+        if must_fail and any(must_fail in x for x in inert):
+            print(f"  skipped  {name}  (its check is inert in this tree)")
+            continue
         tmp = tempfile.mkdtemp(prefix="mut-rnid-")
         try:
             root = os.path.join(tmp, "backend")
