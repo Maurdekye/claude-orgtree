@@ -705,20 +705,6 @@ class OrgDoc(TypedDict):
     # Nothing in either list is deleted automatically.
     work_items: NotRequired[list[WorkItem]]
     work_items_archive: NotRequired[list[WorkItem]]
-    # Durable operation receipts (opreceipts.py, docs/op-receipts.md). One row
-    # per mutating agent call that carried an `op_key` and whose document
-    # transaction committed — appended inside that same transaction, so the
-    # receipt and the effect commit together or neither does. An APPEND-ONLY
-    # log section (store.LIST_LOGS): lazily materialised, so a call without a
-    # key never pays for it. Rows carry a full fingerprint and identity-shaped
-    # arguments only — never a body, a charter or a kickoff.
-    op_receipts: NotRequired[list[dict[str, Any]]]
-    # {schema, coverage, bootstrap_ms, from_ms, horizon_ms, ceiling, trim_to,
-    # evicted}. `from_ms` is the WATERMARK: a key minted at or after it with
-    # no receipt was never applied, and it only ever increases. Eager (small)
-    # on purpose — the admission path reads it before deciding whether the
-    # log is worth materialising.
-    op_receipts_meta: NotRequired[dict[str, Any]]
     org_inbox: NotRequired[list[OrgInboxEntry]]
     org_inbox_read: NotRequired[int]
     kiosk: NotRequired[KioskCfg | None]

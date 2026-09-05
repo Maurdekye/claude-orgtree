@@ -44,10 +44,6 @@ Markdown file in this repository as current operating guidance.
   probes that gate each (D-233 records what the lane can know today).
 - [`adding-a-provider.md`](adding-a-provider.md) is the implementation
   playbook for a new model provider.
-- [`op-receipts.md`](op-receipts.md) explains durable operation receipts:
-  what an agent call's receipt proves when its answer was lost, the five
-  answers the lookup can give, and why the absence of a receipt is only ever
-  evidence above the retention watermark.
 - [`../DECISIONS.md`](../DECISIONS.md) is the normative decision register.
 - [`typing-plan.md`](typing-plan.md), [`social-preview.md`](social-preview.md),
   and [`message-visibility-suite.md`](message-visibility-suite.md) document

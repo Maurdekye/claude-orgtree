@@ -430,14 +430,7 @@ def s2_roundtrip() -> None:
         eq(rows(slug, "SELECT COUNT(*) FROM log_l WHERE sect='turn_error_log'")[0][0], 0)
         eq(rows(slug, "SELECT val FROM meta WHERE key='owners:turn_error_log'"), [("[]",)])
         eq(store.DICT_LOGS, ("mail_log", "steered_log", "turn_error_log"))
-        # +op_receipts (w71d69aac, 2026-09-05): operation receipts are an
-        # append-only capped log, so they are a LIST log — lazily loaded, and
-        # a call that carries no `op_key` never touches the section at all.
-        # Its small `op_receipts_meta` companion is deliberately NOT lazy: the
-        # admission path reads the watermark before deciding whether the log
-        # is worth materialising.
-        eq(store.LIST_LOGS, ("events", "org_inbox", "notice_log",
-                             "user_mail_log", "user_outbox", "op_receipts"))
+        eq(store.LIST_LOGS, ("events", "org_inbox", "notice_log", "user_mail_log", "user_outbox"))
     check("turn_error_log is classified as a DICT log (§3.2) — and empty sections leave a marker, not rows",
           turn_error_log_shape)
 

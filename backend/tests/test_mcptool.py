@@ -558,27 +558,12 @@ _DISPATCH = sorted(set(__import__("re").findall(r'"(orgtree_\w+)"', _AGENT_CALL)
 # below — never a place to park a name you forgot to card.
 ALIASES = {"orgtree_self_update": "orgtree_self_restart"}
 
-# NOT A TOOL AT ALL (w71d69aac, 2026-09-05): the door a lost CLIENT knocks on
-# to ask whether the call it never got an answer for applied. It is dispatched
-# rather than given its own route because a sandboxed container may POST to
-# exactly one path, and it is a VERB rather than a flag on the envelope
-# because a backend that predates receipts IGNORES unknown envelope fields —
-# a flag would have made an old build execute the operation a client was only
-# asking about, which is the one duplicate this feature must not cause. No
-# card advertises it and the recital never names it, so no agent can learn
-# it; `mcptool.call_api` is its only caller. This exemption is ATTACKED by
-# the check below rather than trusted: the verb must really answer, must not
-# be advertised, must not appear in an agent's prompt, and asking about a
-# hire must not hire.
-DISPATCH_ONLY = {"orgtree_op_lookup"}
-
 
 @t("the catalogue and the /api/agent dispatch name exactly the same verbs")
 def _():
-    assert sorted(CARDS) == sorted(set(_DISPATCH) - set(ALIASES)
-                                   - DISPATCH_ONLY), \
+    assert sorted(CARDS) == sorted(set(_DISPATCH) - set(ALIASES)), \
         f"drift: cards {sorted(set(CARDS) - set(_DISPATCH))}, " \
-        f"dispatch-only {sorted(set(_DISPATCH) - set(CARDS) - set(ALIASES) - DISPATCH_ONLY)}"
+        f"dispatch-only {sorted(set(_DISPATCH) - set(CARDS) - set(ALIASES))}"
     # +orgtree_present (FR-03, 2026-08-05); +orgtree_withdraw_ask (the
     # manual-invalidation ruling, 2026-08-06); +orgtree_self_update (FR-14,
     # 2026-08-06) — renamed orgtree_self_restart 2026-08-21 (D-142);
@@ -590,35 +575,6 @@ def _():
     # +orgtree_interrupt (⏸ in isolation, 2026-09-03)
     # +orgtree_restart_wake (2026-09-04)
     assert len(CARDS) == 33, len(CARDS)   # +orgtree_work (2026-09-05)
-
-
-@t("☠ the op-lookup door answers, is never advertised, and does NOTHING")
-def _():
-    """w71d69aac. `orgtree_op_lookup` is the one dispatch verb with no card:
-    the client asks it whether a call whose answer was lost applied. The
-    exemption in DISPATCH_ONLY is only honest if the verb really is all three
-    things it claims — reachable, invisible, and inert."""
-    from orgtree import opreceipts                            # noqa: PLC0415
-    # 1. it ANSWERS — through the real pipe, not the source
-    key = opreceipts.mint_key()
-    ans = BOSS.ok("orgtree_op_lookup",
-                  {"op_key": key, "for_tool": "orgtree_message",
-                   "for_args": {"to": "mid", "body": "lost?"}})
-    assert ans.get("state") in ("not_applied", "unknown"), ans
-    assert "unknown orgtree tool" not in json.dumps(ans), ans
-    # 2. it is INVISIBLE: no card, and nothing in the agent's own prompt
-    listed = {t["name"] for t in BOSS.rpc("tools/list")["result"]["tools"]}
-    assert "orgtree_op_lookup" not in listed,         "the asking door is advertised — agents are being taught a verb that "         "is not theirs to call"
-    org = store.load_org(A)
-    prompt = supervisor.identity_prompt(org, "boss") + supervisor.org_state_block(org, "boss")
-    assert "op_lookup" not in prompt, "the recital names the asking door"
-    # 3. it is INERT: asking about a hire does not hire
-    before = sorted(store.load_org(A).d["nodes"])
-    BOSS.ok("orgtree_op_lookup",
-            {"op_key": opreceipts.mint_key(), "for_tool": "orgtree_hire",
-             "for_args": {"parent": "boss", "tier": "haiku", "grant": 0,
-                          "name": "phantom", "charter": "x"}})
-    assert sorted(store.load_org(A).d["nodes"]) == before,         "a LOOKUP performed the operation it was asking about"
 
 
 @t("☠ the deprecated self_update alias is dispatchable but NOT advertised")
