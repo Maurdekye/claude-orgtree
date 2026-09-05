@@ -269,7 +269,8 @@ def protocol_env(gate: "GateLock", rows: list, *, tool_open=None,
     """The leg's ACTUAL event door, admitted body, claim and sweep, executed
     over a controlled namespace. Only the pause points are fakes."""
     fns = _leg_functions(["_d", "_item_id", "_committed", "_mark_committed",
-                          "_claim_tool", "_tool_identity", "_on_event",
+                          "_claim_tool", "_unavailable_result",
+                          "_tool_identity", "_on_event",
                           "_on_event_admitted", "_commit_unfinished_tools"])
     import ast
     from typing import Any, cast
@@ -280,7 +281,7 @@ def protocol_env(gate: "GateLock", rows: list, *, tool_open=None,
         jstate={"sid": "seam", "pending": [], "held": [],
                 "text_open": {}, "text_order": [], "item_ids": set(),
                 "tool_open": dict(tool_open or {}), "agent_items": 0,
-                "inflight": 0, "finalized": False},
+                "inflight": 0, "finalized": False, "swept": False},
         turn_token="seamtoken", model_id="seam", slug="seam", nid="seam",
         now_iso=supervisor.now_iso, _tool_arg=supervisor._tool_arg,
         _journal_records=journal_records or (lambda recs: rows.extend(recs)),
@@ -1206,6 +1207,99 @@ def main() -> int:
     check("the unfinished text block is still the last assistant block",
           lambda: eq(order_h[-1][0] if order_h else None, "text",
                      f"{order_h}"))
+
+    print("§15 the drain is BOUNDED, so a registration can still land after "
+          "the sweep looked: that registration closes ITSELF")
+    # Astra's root concern on 9490cd7, and it was MEASURED there before this
+    # flag existed (probe_late_active.py): held on the draft flush past the
+    # 5s drain, the sweep expired having snapshotted an EMPTY `tool_open`,
+    # closed nothing, and the callback then journaled 1 tool_use / 0 results
+    # and left the id open forever — the exact defect this unit removes.
+    rows_z: list = []
+    entered_z = threading.Event()
+    release_z = threading.Event()
+
+    def held_past_drain():
+        entered_z.set()
+        release_z.wait(20.0)
+
+    env_z = protocol_env(GateLock(), rows_z, flush_draft=held_past_drain)
+    wire_z = threading.Thread(
+        target=lambda: env_z["_on_event"](step_msg("ACTIVE")),
+        name="wire", daemon=True)
+    sweep_z = threading.Thread(target=env_z["_commit_unfinished_tools"],
+                               name="sweep", daemon=True)
+    wire_z.start()
+    reached_z = entered_z.wait(5)
+    t_z = time.monotonic()
+    sweep_z.start()
+    sweep_z.join(12)
+    took_z = time.monotonic() - t_z
+    sweep_alone_z = not sweep_z.is_alive()
+    rows_at_expiry_z = rows_shape(rows_z)
+    release_z.set()                    # only NOW does the callback register
+    wire_z.join(15)
+    check("anti-vacuity: the ACTIVE was held before registration PAST the "
+          "drain — the sweep expired on its own, closed NOTHING, and said so",
+          lambda: eq((reached_z, sweep_alone_z, 4.5 < took_z < 12,
+                      rows_at_expiry_z, len(env_z["_logged"])),
+                     (True, True, True, [], 1),
+                     f"took {took_z:.1f}s rows {rows_at_expiry_z} "
+                     f"logged {env_z['_logged']}"))
+    check("the late registration writes its call AND its own unknown-outcome "
+          "result: nothing dangles and nothing is left open",
+          lambda: eq((rows_shape(rows_z),
+                      dict(env_z["jstate"]["tool_open"]),
+                      UID in env_z["jstate"]["item_ids"]),
+                     ([("tool_use", UID), ("tool_result", UNAV)], {}, True),
+                     f"{rows_z}"))
+    # a DONE for that step admitted before finalization and still behind the
+    # registration must not add a second, contradicting result
+    env_z["_on_event_admitted"](step_msg("DONE", output="the real output"))
+    check("a DONE already admitted behind that registration finds the step "
+          "committed and writes nothing — one result per call, not two",
+          lambda: eq(rows_shape(rows_z),
+                     [("tool_use", UID), ("tool_result", UNAV)], f"{rows_z}"))
+    rows_ctl: list = []
+    env_ctl = protocol_env(GateLock(), rows_ctl,
+                           tool_open={UID: "run_command"})
+    env_ctl["_on_event_admitted"](step_msg("DONE", output="the real output"))
+    check("positive control: that same DONE against an open, uncommitted step "
+          "DOES write the CLI's own result",
+          lambda: eq(rows_shape(rows_ctl),
+                     [("tool_result", "the real output")], f"{rows_ctl}"))
+    # the pair is written as ONE journal write (one `_codex_journal` take):
+    # nothing else can land a row between a call and the result answering it.
+    # No hold needed — with nothing open and nothing in flight the sweep
+    # returns at once, and `_on_event_admitted` is the body a callback that
+    # was admitted before finalization is already inside.
+    calls_p: list = []
+    rows_p: list = []
+
+    def journal_p(recs):
+        calls_p.append(rows_shape(recs))
+        rows_p.extend(recs)
+
+    env_p = protocol_env(GateLock(), rows_p, journal_records=journal_p)
+    env_p["_commit_unfinished_tools"]()
+    swept_p, calls_before = env_p["jstate"]["swept"], list(calls_p)
+    env_p["_on_event_admitted"](step_msg("ACTIVE"))
+    check("anti-vacuity: the sweep raised the flag and wrote nothing itself "
+          "(there was nothing open), so the rows below are the callback's",
+          lambda: eq((swept_p, calls_before), (True, []), f"{calls_p}"))
+    check("the late call and its result are ONE journal write — no other "
+          "writer can land a row between a call and the result answering it",
+          lambda: eq(calls_p, [[("tool_use", UID), ("tool_result", UNAV)]],
+                     f"{calls_p}"))
+    rows_n: list = []
+    env_n = protocol_env(GateLock(), rows_n)
+    env_n["_on_event"](step_msg("ACTIVE"))
+    check("control: with no sweep the flag stays down and an ACTIVE registers "
+          "normally — one call row, the step left open for its own DONE",
+          lambda: eq((rows_shape(rows_n), env_n["jstate"]["swept"],
+                      dict(env_n["jstate"]["tool_open"])),
+                     ([("tool_use", UID)], False, {UID: "run_command"}),
+                     f"{rows_n}"))
 
     print()
     for label, tb in FAIL:
