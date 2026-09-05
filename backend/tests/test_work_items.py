@@ -2133,6 +2133,171 @@ def the_ruling_reaches_agents_where_they_read_it():
 
 check("the agent-review ruling is in every agent's prompt and on the tool card",
       the_ruling_reaches_agents_where_they_read_it)
+# ------------------------------------------------- §14 the status clock
+#
+# `updated_at` moves on any mutation and `docket_at` on any docket update, so
+# neither can answer "what has actually MOVED?" — a progress note, a retitle
+# or an attention flag advances both without a state changing at all. These
+# checks pin the third clock: it moves on a real transition and ONLY on one.
+
+
+def _status_at(slug, wid):
+    return get_item(slug, wid)["status_at"]
+
+
+def the_status_clock_moves_only_on_a_real_transition():
+    slug = fresh_org()
+    wid = create(slug)
+    born = _status_at(slug, wid)
+    assert born, "an item is created with a status, so it has a status time"
+    assert born == get_item(slug, wid)["at"],         "creation IS the first status change — the item has held that status "         "since it existed"
+
+    # a PROGRESS update: both lists rewritten, the same status restated
+    time.sleep(0.01)
+    ok(slug, "boss", "update", slug=wid, status="open",
+       done_so_far=["still reading"], working_on_next=["still writing"])
+    after_note = get_item(slug, wid)
+    assert after_note["status_at"] == born,         "a progress note that RESTATES the status moved the status clock"
+    # …and the control: the ordinary clocks DID move, so the check above is
+    # not passing because the update never landed
+    assert after_note["docket_at"] > born, "the docket clock did not move at all"
+
+    # a real transition
+    time.sleep(0.01)
+    ok(slug, "boss", "update", slug=wid, status="blocked",
+       blocked_reason="waiting on review",
+       done_so_far=["read"], working_on_next=["wait"])
+    moved = _status_at(slug, wid)
+    assert moved > born, "a genuine status change did not move the status clock"
+
+    # a retitle changes no state
+    time.sleep(0.01)
+    ok(slug, "boss", "update", slug=wid, title="a better title",
+       done_so_far=["read"], working_on_next=["wait"])
+    assert _status_at(slug, wid) == moved, "a retitle moved the status clock"
+
+
+check("the status clock moves on a transition and not on a note or a retitle",
+      the_status_clock_moves_only_on_a_real_transition)
+
+
+def accept_reopen_and_dismissal_all_count_as_transitions():
+    """The three transitions nobody types a status to reach. A clock that
+    only watched `update` would sit still through all of them."""
+    slug = fresh_org()
+    wid = create(slug, node="boss", owner="mid")
+    ok(slug, "mid", "update", slug=wid, status="review",
+       done_so_far=["built it"], working_on_next=["await acceptance"])
+    at_review = _status_at(slug, wid)
+
+    time.sleep(0.01)
+    ok(slug, "boss", "accept", slug=wid)
+    at_done = _status_at(slug, wid)
+    assert at_done > at_review, "accept did not move the status clock"
+
+    time.sleep(0.01)
+    ok(slug, "boss", "update", slug=wid, reopen=True, status="in_progress",
+       done_so_far=["built it"], working_on_next=["more of it"])
+    at_reopen = _status_at(slug, wid)
+    assert at_reopen > at_done, "reopen did not move the status clock"
+
+    # the user's dismissal of an attention flag really does change the state
+    time.sleep(0.01)
+    ok(slug, "boss", "update", slug=wid, attention=True,
+       attention_reason="the disk is full",
+       done_so_far=["built it"], working_on_next=["more of it"])
+    at_flag = _status_at(slug, wid)
+    assert at_flag == at_reopen, "raising an attention flag is not a transition"
+    set_rev = get_item(slug, wid)["manual_attention"]["set_rev"]
+    r = client.post(f"/api/orgs/{slug}/work-items/{wid}/dismiss-attention",
+                    json={"set_rev": set_rev})
+    assert r.status_code == 200, r.text
+    assert get_item(slug, wid)["status"] == "blocked"
+    assert _status_at(slug, wid) > at_flag,         "a dismissal leaves the item BLOCKED — a state change with no status typed"
+
+
+check("accept, reopen and a user dismissal all move the status clock",
+      accept_reopen_and_dismissal_all_count_as_transitions)
+
+
+def a_legacy_item_derives_its_status_time_honestly():
+    """An item written before the field existed must derive it from retained
+    history — and must NOT inherit a recent timestamp from an unrelated edit,
+    which would move untouched work to the top of "recently changed"."""
+    slug = fresh_org()
+    old = create(slug, title="legacy one")
+    never = create(slug, title="legacy two")
+    ok(slug, "boss", "update", slug=old, status="blocked",
+       blocked_reason="stuck", done_so_far=["a"], working_on_next=["b"])
+    time.sleep(0.01)
+    # a much later edit that changes NO state
+    ok(slug, "boss", "update", slug=old, title="legacy one, renamed",
+       done_so_far=["a"], working_on_next=["b"])
+    # ⚠ AND THE SECOND ITEM IS EDITED TOO, NEVER TRANSITIONED. Without this an
+    # item that was never touched has `updated_at == at`, so a derivation that
+    # wrongly fell back to `updated_at` would return the right answer by
+    # coincidence and the check would prove nothing. (Measured: that mutant
+    # SURVIVED a full run before this edit existed.)
+    time.sleep(0.01)
+    ok(slug, "boss", "update", slug=never, title="legacy two, renamed",
+       done_so_far=["a"], working_on_next=["b"])
+
+    org = store.load_org(slug)
+    for wid in (old, never):
+        it, _ = org._work_find(wid)
+        it.pop("status_at", None)            # exactly what an older item has
+    store.save_org(org)
+
+    o = get_item(slug, old)
+    n = get_item(slug, never)
+    hist_change = [h for h in o["history"]
+                   if isinstance(h.get("changes"), dict) and "status" in h["changes"]]
+    assert hist_change, "positive control: the history really records the change"
+    assert o["status_at"] == hist_change[-1]["at"],         "the derived time is not the newest recorded status change"
+    # ⚠ THE LIE THIS PREVENTS, stated as a check
+    assert o["status_at"] != o["updated_at"],         "it fell back to a clock that moves for edits — the retitle would "         "then read as a state change"
+    assert o["status_at"] < o["docket_at"],         "the derived time is not older than the unrelated update after it"
+    # an item that never changed status dates from its creation, not from now
+    assert n["at"] != n["updated_at"],         "positive control: the second item really was edited after creation"
+    assert n["status_at"] == n["at"],         "an item that never changed status must date from its CREATION — not "         "from the edit clock, which would date a transition that never happened"
+
+
+check("a legacy item derives its status time from history, never from an edit clock",
+      a_legacy_item_derives_its_status_time_honestly)
+
+
+def a_folded_history_row_is_not_a_status_change():
+    """Past the history cap the oldest rows collapse into ONE summary row that
+    carries no `op`. Reading it as a transition would date a state change to
+    whenever the fold happened to run."""
+    slug = fresh_org()
+    wid = create(slug)
+    ok(slug, "boss", "update", slug=wid, status="blocked", blocked_reason="x",
+       done_so_far=["a"], working_on_next=["b"])
+    # ⚠ THE HISTORY ROW'S OWN TIME, not the stored stamp. The two are separate
+    # `now()` reads a fraction of a millisecond apart, so comparing the derived
+    # value against the stored one fails whenever they straddle a millisecond —
+    # which is how this check flaked once before it was written this way.
+    real = [h for h in get_item(slug, wid)["history"]
+            if isinstance(h.get("changes"), dict) and "status" in h["changes"]][-1]["at"]
+    org = store.load_org(slug)
+    it, _ = org._work_find(wid)
+    it.pop("status_at", None)
+    # a fold row, newer than the real change, exactly as _work_hist writes it
+    it["history"].append({"kind": "folded", "count": 3, "first_at": real,
+                          "last_at": now_iso(), "at": now_iso(),
+                          "note": "older history rows summarised"})
+    store.save_org(org)
+    assert get_item(slug, wid)["status_at"] == real,         "the summary row was read as a status change"
+
+
+def now_iso():
+    from orgtree.ledger import now
+    return now()
+
+
+check("a folded history row is never read as a status change",
+      a_folded_history_row_is_not_a_status_change)
 
 
 # ---------------------------------------------------------------- summary

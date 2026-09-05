@@ -7239,7 +7239,7 @@ class Org:
             f"field(s) from {old!r} to {new!r}. Authored history is unchanged: "
             f"created_by, history, evidence, delivery claims, the event log, "
             f"mail bodies and sender fields still say {old!r}, and no item's "
-            f"rev, updated_at or docket_at moved."]
+            f"rev, updated_at, docket_at or status_at moved."]
         self._log("rename_repair", actor,
                   {"at": at, "node": old, "new": new,
                    "documents": want_docs,
@@ -9432,12 +9432,27 @@ class Org:
     # reassignment. Two doc-blob lists, `work_items` (active) and
     # `work_items_archive`; an old document without them is an empty docket.
     #
-    # Two clocks, on purpose. `updated_at` moves on ANY mutation; `docket_at`
-    # moves only on a DOCKET UPDATE — an agent's status update (the two
-    # lists), creation, acceptance, reopen, supersede. The row age the user
-    # sees and the one-hour auto-archive both run on `docket_at`, so a
+    # THREE clocks, on purpose. `updated_at` moves on ANY mutation;
+    # `docket_at` moves only on a DOCKET UPDATE — an agent's status update
+    # (the two lists), creation, acceptance, reopen, supersede. The row age the
+    # user sees and the one-hour auto-archive both run on `docket_at`, so a
     # question attachment, a delivery claim or a user dismissal never resets
     # the "last heard from" clock and never keeps a finished item young.
+    #
+    # `status_at` is the third, and it answers the question neither of the
+    # others can: WHEN DID THIS ITEM LAST ACTUALLY CHANGE STATE? A progress
+    # note, a retitle or an attention flag all advance `docket_at`, so an item
+    # that genuinely went open → blocked sorts identically to one whose owner
+    # merely added a line. It moves ONLY when the status VALUE changes —
+    # creation, an update that names a different status, accept, reopen,
+    # supersede — and creation is the initial status time, because an item has
+    # had its status since it existed.
+    #
+    # ⚠ ITEMS THAT PREDATE THE FIELD DERIVE IT FROM RETAINED HISTORY, and fall
+    # back to their creation time. What they must NEVER do is inherit a recent
+    # timestamp from an unrelated edit: that would move an item nobody touched
+    # to the top of "most recently changed state", which is a lie about the
+    # data dressed as an ordering. See `_work_status_at`.
     #
     # Archive is DERIVED on read (`_work_archived`), not a stored boolean:
     # a stored flag is exactly the durable-flag-nothing-clears defect the
@@ -10040,6 +10055,10 @@ class Org:
                 "working_on_next", "docket_at", "last_updater",
                 "manual_attention", "acceptance", "evidence",
                 "accepted")},
+            # ⚠ DERIVED ON READ FOR OLDER ITEMS, never written back. Deriving
+            # in place would stamp a "state changed" time onto items during an
+            # ordinary read, which is a durable claim made by a viewer.
+            "status_at": self._work_status_at(it),
             "history": self._work_history_view(it, viewer),
             # SAME DISCLOSURE RULE AS `dependencies`, for the same reason:
             # this pointer used to be an opaque id and is now a title-derived
@@ -10299,6 +10318,53 @@ class Org:
         it["rev"] = int(it.get("rev") or 0) + 1
         it["updated_at"] = now()
 
+    def _work_status_at(self, it: WorkItem) -> str:
+        """WHEN THIS ITEM LAST ACTUALLY CHANGED STATE.
+
+        Stored on every item written since the field existed. For an OLDER
+        item it is derived, here, from retained history — and derived
+        honestly:
+
+          · the newest history row that RECORDS A STATUS CHANGE wins. That is
+            an update carrying a `status` change, or an accept / reopen /
+            supersede, each of which changes the value by definition.
+          · with no such row, the CREATION time. An item that has never
+            changed status has held the one it was created with, so its
+            creation is when that state began.
+
+        ⚠ WHAT IT MUST NEVER DO IS FALL BACK TO `updated_at` OR `docket_at`.
+        Both move for edits that changed no state at all, so an item nobody
+        has touched in weeks would sort as "just changed" because someone
+        fixed a typo in its title. That is not a worse guess than the creation
+        time — it is a different KIND of answer, one that states a state
+        change happened when none did.
+
+        ⚠ AND THE FOLDED HISTORY ROW IS NOT A STATUS CHANGE. Past the history
+        cap the oldest rows collapse into a summary row that carries no `op`;
+        reading it as one would date a state change to whenever the fold
+        happened to run.
+        """
+        stored = it.get("status_at")
+        if stored:
+            return str(stored)
+        for row in reversed(it.get("history") or []):
+            if row.get("kind") == "folded":
+                continue
+            op = row.get("op")
+            changed = (op in ("accept", "reopen", "supersede")
+                       or (op == "update"
+                           and isinstance(row.get("changes"), dict)
+                           and "status" in row["changes"]))
+            if changed and row.get("at"):
+                return str(row["at"])
+        return str(it.get("at") or "")
+
+    def _work_stamp_status(self, it: WorkItem) -> None:
+        """Record that the status VALUE just changed. Called from every site
+        that assigns one — and only from those, which is why it is a method
+        rather than a line copied four times."""
+        it["status_at"] = now()
+
     def _work_stamp_docket(self, it: WorkItem, actor: str) -> None:
         """A DOCKET UPDATE: the row's clock and, for an agent, the reply
         recipient. The user is never `last_updater` — replies go to agents."""
@@ -10427,6 +10493,9 @@ class Org:
             "updated_at": stamp,
             "done_so_far": done, "working_on_next": nxt,
             "docket_at": stamp,
+            # creation IS the first status change: the item has held this
+            # status since the moment it existed
+            "status_at": stamp,
             "last_updater": (cast(WorkActor, self._work_actor(actor))
                              if actor != USER else None),
             "manual_attention": None, "manual_attention_rev": 0,
@@ -10592,6 +10661,13 @@ class Org:
         if status is not None and status != it.get("status"):
             changes["status"] = {"from": it.get("status"), "to": status}
             it["status"] = status
+            # ⚠ INSIDE THE `!=` BRANCH, deliberately. An update that RESTATES
+            # the status it already had has changed nothing, and stamping it
+            # would make "most recently changed state" mean "most recently
+            # mentioned a state" — which is the exact confusion this clock
+            # exists to remove. The reopen path above assigns through this
+            # same branch, so it is covered without a second call.
+            self._work_stamp_status(it)
         self._work_state_info(it, was, {"blocked_reason": blocked_reason,
                                         "waiting_reason": waiting_reason})
         if title is not None and str(title).strip():
@@ -10830,6 +10906,7 @@ class Org:
             raise LedgerError(f"{wid} is already {it.get('status')}")
         frm = it.get("status")
         it["status"] = "done"
+        self._work_stamp_status(it)
         it["blocked_reason"] = None
         it["waiting_reason"] = None
         it["accepted"] = {"at": now(), "by": self._work_actor(actor),
@@ -10962,6 +11039,7 @@ class Org:
             raise LedgerError("that would close a supersede cycle")
         frm = it.get("status")
         it["status"] = "superseded"
+        self._work_stamp_status(it)
         it["superseded_by"] = other["slug"]
         it["manual_attention"] = None
         it["blocked_reason"] = None
@@ -10995,6 +11073,10 @@ class Org:
         # the SYSTEM's own transition into blocked, and it carries its own real
         # reason — it must keep working without agent input (Astra 2026-09-05).
         # It also leaves `waiting`, so any waiting_reason stops applying.
+        #
+        # It is also a real state change, so it belongs in the status clock
+        # like any other transition, even though nobody typed a status here.
+        self._work_stamp_status(it)
         it["blocked_reason"] = f"attention flag dismissed by the user ({cur.get('reason')})"[:500]
         it["waiting_reason"] = None
         if phys:

@@ -623,6 +623,11 @@ class WorkItem(TypedDict):
     done_so_far: list[str]
     working_on_next: list[str]
     docket_at: str | None
+    # WHEN THE STATUS VALUE LAST CHANGED — the third clock, and the only one
+    # that answers "what has actually MOVED?". Absent on items written before
+    # the field existed; those derive it from retained history and fall back
+    # to `at`, never to a clock that moves for edits (see _work_status_at).
+    status_at: NotRequired[str | None]
     last_updater: WorkActor | None  # author of the latest STATUS UPDATE — the general reply recipient
     manual_attention: dict[str, Any] | None   # {reason, at, by, set_rev} — set_rev is the dismiss CAS stamp
     manual_attention_rev: int       # monotonic; every (re)set of the flag mints the next set_rev
