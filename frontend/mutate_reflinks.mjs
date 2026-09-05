@@ -151,6 +151,30 @@ const MUTANTS = [
     to: `  if (world.handles && !world.handles.has(ref.kind) && world.docs !== 'loading') {`,
   },
 
+  // ------------------- an explicit token outranks a bare name that collides
+  {
+    // the bare matcher let loose over the WHOLE string, tokens included. It
+    // finds the item name INSIDE `@agent:org/checklist-evidence` and cuts the
+    // token in half, so the writer's explicit choice loses to a bare rule.
+    name: 'the bare mention matcher also runs over the tokens',
+    file: F, kills: '§12 CONTROL',
+    from: `      {runs.map((p, i) => (p.ref
+        ? <RefChip key={i} r={p.ref} onOpen={onOpen} />`,
+    to: `      {runs.map((p, i) => (false
+        ? <RefChip key={i} r={p.ref!} onOpen={onOpen} />`,
+  },
+  {
+    // the other half of §12, so its control cannot pass vacuously: if bare
+    // mentions stopped linking entirely, "the token was not eaten" would be
+    // true for the boring reason.
+    name: 'bare mentions stop linking, so §12 could pass for the wrong reason',
+    file: F, kills: '§12 CONTROL',
+    from: `        : (slugIndex && slugIndex.size
+          ? <WorkRefText key={i} text={p.text} index={slugIndex} onPick={onPick} />
+          : <span key={i}>{p.text}</span>)))}`,
+    to: `        : <span key={i}>{p.text}</span>))}`,
+  },
+
   // ---------------------------------------------------------------- labelling
   {
     name: 'the label is invented rather than taken from the index',

@@ -164,7 +164,16 @@ for (const m of MUTANTS) {
     continue
   }
   try {
-    const mutated = text.replace(from, norm(m.to)).replace(/\n/g, '\r\n')
+    // ⚠ A FUNCTION REPLACEMENT, NOT A STRING ONE. In a string replacement `$`
+    // is special: `$`+backtick means "everything before the match" and `$&`
+    // means the match, so a mutant whose text contains one SILENTLY SPLICES
+    // THE WHOLE FILE INTO ITSELF. The suite then goes red on a syntax error
+    // and this harness reports WRONG CHECK — the wrong diagnosis, pointing at
+    // a line nobody touched. Measured, not assumed:
+    //   'AAA_TARGET_ZZZ'.replace('TARGET', 'x$`y')     -> 'AAA_xAAA_y_ZZZ'
+    //   'AAA_TARGET_ZZZ'.replace('TARGET', () => same) -> 'AAA_x$`y_ZZZ'
+    // Found in the sibling harness by checklist-evidence and raised here.
+    const mutated = text.replace(from, () => norm(m.to)).replace(/\n/g, '\r\n')
     writeFileSync(m.file, Buffer.from(mutated, 'utf8'))
     const r = runSuite(m.suite)
     const named = r.out.includes(m.kills)

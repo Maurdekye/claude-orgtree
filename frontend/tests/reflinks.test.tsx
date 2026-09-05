@@ -1,9 +1,9 @@
 // clickable-docket-references-across-text-surfaces — a canonical reference
-// decided: ready, pending, absent or foreign.
+// decided: ready, pending, absent, foreign or elsewhere.
 //
 // THE DEFECT THIS EXISTS TO CATCH IS NOT "the link does not work". It is a
-// reference that reports the WRONG ONE OF THE FOUR — most of all the two that
-// look alike from the outside:
+// reference that reports the WRONG ONE OF THE FIVE — most of all the three
+// that look alike from the outside:
 //
 //   · `foreign` silently resolved as local. Two orgs can hold the same item
 //     slug, so this does not fail visibly. It opens a different, unrelated
@@ -11,6 +11,10 @@
 //   · `pending` reported as `absent`. "Not loaded yet" rendered as "does not
 //     exist" is a false statement that appears exactly while the page is
 //     loading, which is when it will be read.
+//   · `elsewhere` reported as `absent`. "This panel has no reader for it" and
+//     "it does not exist" are the same picture unless you keep them apart —
+//     and the second is a claim about the DATA made because of a limit of the
+//     PANEL.
 //
 // Both are ASSERTED ON THE OUTCOME, not on whether a chip happens to be
 // clickable — `foreign` and `absent` are both inert, so an is-it-a-button
@@ -21,7 +25,7 @@
 import { flush, inAct, mountView } from './harness'
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { RefChip, TypedRefText, refToken, resolveRef, splitTypedRefs }
+import { RefChip, RefProse, TypedRefText, refToken, resolveRef, splitTypedRefs }
   from '../src/canvas/reflinks'
 import type { RefWorld } from '../src/canvas/reflinks'
 import { REF_TOKEN_RE, parseRef } from '../src/canvas/workrefs'
@@ -305,4 +309,50 @@ test('§11b the handles check runs before the index, so a kind this panel '
   const r = decide(`@doc:${HERE}/d1`,
     world({ docs: 'loading', handles: new Set<'item'>(['item']) }))
   assert.equal(r.outcome, 'elsewhere')
+})
+
+// --------------------------------- §12: an explicit token outranks a collision
+
+test('§12 CONTROL — an explicit @agent token is NOT eaten by an item that '
+  + 'happens to share the name', async () => {
+  // ⚠ THE ORG REALLY HAS THESE COLLISIONS. An agent named `checklist-evidence`
+  // works on an item that could easily be called the same thing, and the bare
+  // mention index resolves such a name to the ITEM. That rule is right for a
+  // bare word — but a writer who typed `@agent:orgtree/checklist-evidence`
+  // said which one they meant, and a bare-mention rule must not overrule them.
+  //
+  // What keeps it true is the ORDER inside RefProse: canonical tokens are cut
+  // out first, so the bare matcher only ever sees the text BETWEEN them and
+  // can never reach inside one. (Its boundary rules would also decline a slug
+  // preceded by `/` — but that is a second, independent rule agreeing by
+  // luck, and this must not depend on it.)
+  const NAME = 'checklist-evidence'
+  const picked: string[] = []
+  const opened: string[] = []
+  const view = await mountView(
+    <RefProse text={`ask @agent:${HERE}/${NAME} about ${NAME}`}
+      world={world()} onOpen={(r) => opened.push(r.ref.kind)}
+      slugIndex={new Map([[NAME, NAME]])} onPick={(n) => picked.push(n)} />,
+    (el) => el)
+  await flush()
+
+  const agent = view.el.querySelector('button.ref-chip.ref-agent')
+  assert.ok(agent, 'the explicit token rendered as an agent reference')
+  // ⚠ AND IT IS WHOLE. A bare match inside the token would have split it,
+  // leaving a stray `@agent:orgtree/` next to a separate item link.
+  assert.ok(!view.el.textContent!.includes(`@agent:${HERE}/`),
+    'the token was consumed as one unit, not cut in half')
+
+  await inAct(() => (agent as HTMLElement).click())
+  assert.deepEqual(opened, ['agent'], 'clicking it opens the AGENT')
+  assert.deepEqual(picked, [], 'and never the item that shares the name')
+
+  // CONTROL: the BARE occurrence of the same word, later in the same string,
+  // still links as the item. If it did not, this check would be passing
+  // because the item index was inert rather than because ordering works.
+  const bare = view.el.querySelectorAll('button.docket-ref')
+  assert.equal(bare.length, 1, 'the bare mention is still an item link')
+  await inAct(() => (bare[0] as HTMLElement).click())
+  assert.deepEqual(picked, [NAME])
+  await view.unmount()
 })
