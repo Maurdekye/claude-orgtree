@@ -1920,6 +1920,13 @@ export interface WorkItem {
    *  nothing else. `superseded_by` is null for the same reason. */
   dependencies: ({ slug: string; visible: true; title: string; status: string }
     | { visible: false })[]
+  /** SUB-ITEMS: the parent's name, or null at the top level. Null is also
+   *  what a viewer who may not READ the parent sees — `parent_visible` is the
+   *  difference, and it is false in that case rather than null, so the row can
+   *  say a parent exists without naming it. A child is an independent item:
+   *  its own owner, status and authority. */
+  parent: string | null
+  parent_visible?: boolean | null
   evidence: { at: string; by: string; kind: string; ref?: string; note?: string }[]
   delivery: Record<string, unknown> | null
   accepted: { at: string; by: string; note?: string } | null

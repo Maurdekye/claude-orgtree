@@ -84,6 +84,11 @@ CONTROLS = {
     # the alignment the dot broke: three children under space-between
     "centred": """.docket-row .l1 { justify-content: space-between; }
 .docket-row .l1 .mtime { margin-left: 0; }""",
+    # w2d5fab0a element 1: nesting that does not read as nesting
+    "flat": """.docket-row.docket-child { padding-left: 10px !important; }""",
+    # w2d5fab0a element 2: the skeleton lines gone
+    "noline": """.docket-row.docket-child::before, .docket-row.docket-child::after {
+  display: none !important; }""",
 }
 
 # what a name may cost in chrome before it is a control again, and how much of
@@ -111,7 +116,12 @@ MEASURE = r"""
     // 1. THE NAME IS TEXT, MEASURED AS SUCH — not a bordered, padded box, and
     //    not a button. Checking the class alone would pass on a restyled span.
     if (name.tagName === 'BUTTON') bad.push(`${label}: the row name is a button`)
-    if (r.querySelector('.l1 button')) bad.push(`${label}: a control is in the name line`)
+    // the FOLD ARROW is a control here on purpose (the approved design: the
+    // arrow expands, the row selects). Anything else in the name line is the
+    // chip coming back.
+    if (r.querySelector('.l1 button:not(.docket-fold)')) {
+      bad.push(`${label}: a control other than the fold arrow is in the name line`)
+    }
     const ncs = getComputedStyle(name)
     if (px(ncs.borderTopWidth) || px(ncs.borderLeftWidth)) {
       bad.push(`${label}: the row name is boxed again (border)`)
@@ -120,16 +130,22 @@ MEASURE = r"""
       bad.push(`${label}: the row name is padded like a chip`)
     }
 
-    // 1b. THE NAME STARTS AT THE LEFT. `.mailrow .l1` is `space-between`, so
-    //     the moment the row grew a third child the name floated to the middle
-    //     of the row. It still passed every DOM test — the name was present,
-    //     the time was present — and it looked obviously wrong in the preview.
+    // 1b. THE NAME FOLLOWS ITS DOT IMMEDIATELY. `.mailrow .l1` is
+    //     `space-between`, so the moment the row grew a third child the name
+    //     floated to the middle of the row. It passed every DOM test — the
+    //     name was present, the time was present — and looked obviously wrong.
+    //
+    //     ⚠ MEASURED AGAINST THE DOT, not against the row's content edge.
+    //     Rows now start with different things: a parent has a fold arrow, a
+    //     leaf does not, and a child is indented. The gap between the dot and
+    //     the name is the one distance that means the same on every row.
     const nb = name.getBoundingClientRect()
-    const rowLeft = r.getBoundingClientRect().left
-      + px(getComputedStyle(r).paddingLeft) + px(getComputedStyle(r).borderLeftWidth)
-    if (nb.left - rowLeft > 32) {
-      bad.push(`${label}: the row name starts `
-        + `${(nb.left - rowLeft).toFixed(0)}px in — it is not left-aligned`)
+    const dotEl = r.querySelector('.l1 .docket-dot')
+    const after = dotEl ? dotEl.getBoundingClientRect().right
+      : r.getBoundingClientRect().left + px(getComputedStyle(r).paddingLeft)
+    if (nb.left - after > 14) {
+      bad.push(`${label}: the row name sits ${(nb.left - after).toFixed(0)}px `
+        + 'after its status dot — it is not left-aligned')
     }
 
     // 2. nothing overflows the row horizontally
@@ -230,6 +246,52 @@ MEASURE = r"""
   if (rows.length >= 4 && seen.size < 3) {
     bad.push(`every status dot is one of only ${seen.size} colours across `
       + `${rows.length} rows of differing status`)
+  }
+
+  // 6b. w2d5fab0a elements 1 and 2 — the nesting has to LOOK nested, and the
+  //     skeleton line has to be drawn. Both are pure CSS claims; no DOM test
+  //     can see either, which is the whole reason this file exists.
+  const child = document.querySelector('.docket-row.docket-child')
+  if (!child) {
+    bad.push('no nested row in the fixture — the nesting checks are inert')
+  } else {
+    const parent = document.querySelector('.docket-row.docket-parent')
+    if (!parent) bad.push('a child row with no parent row above it')
+    const cb = child.getBoundingClientRect()
+    const nameL = child.querySelector('.l1 .mfrom')?.getBoundingClientRect().left ?? 0
+    // ⚠ THE INDENT IS THE ROW'S, NOT THE NAME'S. A parent carries a fold
+    // arrow and a leaf does not, so comparing name positions measures the
+    // arrow instead of the nesting — and reported the child as EIGHT PIXELS
+    // LEFT of its parent while the indent was working perfectly.
+    const indent = px(getComputedStyle(child).paddingLeft)
+      - (parent ? px(getComputedStyle(parent).paddingLeft) : 0)
+    if (indent < 12) {
+      bad.push(`a sub-item is indented only ${indent.toFixed(0)}px from its `
+        + 'parent — it does not read as nested')
+    }
+    // the connecting line is drawn, is inside the row, and is to the LEFT of
+    // the name it connects
+    for (const which of ['::before', '::after']) {
+      const cs = getComputedStyle(child, which)
+      if (cs.content === 'none' || cs.display === 'none') {
+        bad.push(`the skeleton line ${which} is not drawn`)
+        continue
+      }
+      const w = px(cs.width), h = px(cs.height)
+      if (w < 0.5 || h < 0.5) bad.push(`the skeleton line ${which} is ${w}x${h}`)
+      if (px(cs.left) > nameL - cb.left) {
+        bad.push(`the skeleton line ${which} is right of the name it connects`)
+      }
+    }
+    // the fold control exists on the parent and is a real hit target
+    const fold = parent?.querySelector('.docket-fold')
+    if (!fold) bad.push('a parent row has no fold control')
+    else {
+      const fb = fold.getBoundingClientRect()
+      if (fb.width < 8 || fb.height < 8) {
+        bad.push(`the fold control is ${fb.width.toFixed(0)}x${fb.height.toFixed(0)}`)
+      }
+    }
   }
 
   // 7. w2d5fab0a element 4 — the two progress lists must not wear the same

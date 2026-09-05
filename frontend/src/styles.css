@@ -2998,6 +2998,41 @@ main.solo { width: 100%; }
   vertical-align: baseline;
 }
 .docket-modal .docket-ref:hover { color: var(--ink-strong); }
+/* w2d5fab0a elements 1 and 2 — NESTED SUB-ITEMS AND THEIR SKELETON LINES.
+   The indent and the lines are both driven by `--docket-depth`, set once on
+   the row, so a deeper tree needs no new rules and no spacer elements. The
+   line is a left border on the row's padding, not an element, so it cannot be
+   selected, copied, or read out by a screen reader as content. */
+.docket-row.docket-child {
+  padding-left: calc(10px + var(--docket-depth, 1) * 16px);
+  position: relative;
+}
+.docket-row.docket-child::before {
+  content: ''; position: absolute; top: 0; bottom: 0;
+  left: calc(4px + (var(--docket-depth, 1) - 1) * 16px);
+  width: 1px; background: var(--line-soft);
+}
+/* the elbow into the row itself, so a child reads as attached to its parent
+   rather than merely indented */
+.docket-row.docket-child::after {
+  content: ''; position: absolute; top: 50%;
+  left: calc(4px + (var(--docket-depth, 1) - 1) * 16px);
+  width: 8px; height: 1px; background: var(--line-soft);
+}
+/* the fold arrow. Its own click target, kept away from the row's — the
+   approved design says the arrow expands and the row selects. */
+.docket-modal .docket-fold {
+  background: none; border: 0; padding: 0; margin: 0 4px 0 0;
+  color: var(--dim); cursor: pointer; font-size: 10px; line-height: 1;
+  width: 12px; flex-shrink: 0; text-align: center;
+  transition: transform .12s ease;
+}
+.docket-modal .docket-fold:hover { color: var(--ink-strong); }
+.docket-modal .docket-fold.folded { transform: rotate(-90deg); }
+@media (prefers-reduced-motion: reduce) {
+  .docket-modal .docket-fold { transition: none; }
+}
+
 /* where a link just took you — a brief mark so the row the link meant is
    identifiable among rows that otherwise look alike. Selection alone is not
    enough when the reader's eye is still where the link was. */

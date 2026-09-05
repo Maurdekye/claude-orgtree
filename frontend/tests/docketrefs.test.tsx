@@ -427,3 +427,121 @@ uiTest('§14 the two progress lists are marked as different kinds of line',
     assert.notEqual(lists[0]!.className, lists[1]!.className,
       'both progress lists are the same kind, so nothing can distinguish them')
   })
+
+// ---------------------------------- w2d5fab0a elements 1 and 2: sub-items
+
+import { ancestorsOf, nestRows } from '../src/canvas/docket'
+
+const kid = (slug: string, parent: string | null, title = slug) =>
+  mkItem({ slug, parent, title } as Partial<WorkItem>)
+
+/** the tree as indented text — the only readable way to assert a shape */
+const tree = (rows: { item: WorkItem; depth: number; kids: number }[]) =>
+  rows.map((r) => `${'  '.repeat(r.depth)}${r.item.slug}${r.kids ? `(${r.kids})` : ''}`)
+
+test('§15 children follow their parent, and the server order is untouched',
+  () => {
+    // the server hands them back in ITS order; nesting only re-parents
+    const rows = nestRows([
+      kid('docket-improvements', null),
+      kid('grouping-and-filters', 'docket-improvements'),
+      kid('canvas-navigation', null),
+      kid('readable-item-names', 'docket-improvements'),
+      kid('deep-one', 'grouping-and-filters'),
+    ], new Set())
+    assert.deepEqual(tree(rows), [
+      'docket-improvements(2)',
+      '  grouping-and-filters(1)',
+      '    deep-one',
+      '  readable-item-names',
+      'canvas-navigation',
+    ])
+  })
+
+test('§16 a parent in ANOTHER section is not a parent here', () => {
+  // the backlog and the archive are separate appended groups. A child whose
+  // parent is filtered out has nothing to nest under — it must render as a
+  // root of this section, not vanish.
+  const rows = nestRows([kid('orphan-here', 'lives-in-the-archive')], new Set())
+  assert.deepEqual(tree(rows), ['orphan-here'])
+})
+
+test('§17 folding hides a subtree and nothing else', () => {
+  const items = [
+    kid('parent-a', null), kid('child-a', 'parent-a'),
+    kid('parent-b', null), kid('child-b', 'parent-b'),
+  ]
+  assert.deepEqual(tree(nestRows(items, new Set(['parent-a']))), [
+    'parent-a(1)', 'parent-b(1)', '  child-b',
+  ])
+  // ...and the folded parent still reports its children, or the arrow could
+  // not say how many it is hiding
+  assert.equal(nestRows(items, new Set(['parent-a']))[0]!.kids, 1)
+})
+
+test('§18 A CYCLE CANNOT HANG THE LIST, and loses no row', () => {
+  // the backend refuses cycles on write, but a migrated or hand-edited
+  // document can still hold one, and a renderer that walks a ring locks the
+  // tab. Correctness of NESTING may suffer; the list may not.
+  const items = [kid('a-ring', 'b-ring'), kid('b-ring', 'a-ring'),
+    kid('innocent', null)]
+  const rows = nestRows(items, new Set())
+  assert.equal(rows.length, 3, 'a cycle swallowed a row')
+  assert.deepEqual(new Set(rows.map((r) => r.item.slug)),
+    new Set(['a-ring', 'b-ring', 'innocent']))
+})
+
+test('§19 an item is never its own parent, whatever the document says', () => {
+  const rows = nestRows([kid('selfish', 'selfish')], new Set())
+  assert.deepEqual(tree(rows), ['selfish'])
+})
+
+test('§20 ancestorsOf walks up, nearest first, and is bounded', () => {
+  const items = [kid('top', null), kid('mid', 'top'), kid('low', 'mid')]
+  assert.deepEqual(ancestorsOf(items, 'low'), ['mid', 'top'])
+  assert.deepEqual(ancestorsOf(items, 'top'), [])
+  // a ring must TERMINATE rather than spin, and it stops the moment the walk
+  // would revisit where it started — so the answer is the ring minus the
+  // starting item, not the whole ring. (My first expectation here was wrong;
+  // the code was right.)
+  const ring = [kid('x-ring', 'y-ring'), kid('y-ring', 'x-ring')]
+  assert.deepEqual(ancestorsOf(ring, 'x-ring'), ['y-ring'])
+})
+
+uiTest('§21 selecting a child OPENS ITS ANCESTORS, or the row is not there',
+  async (mount) => {
+    // ⚠ THE CASE THAT LOOKS LIKE A BROKEN LINK. A collapsed parent means the
+    // child's row does not exist on screen; selecting it would appear to do
+    // nothing at all.
+    mockServer({
+      items: [
+        mkItem({ slug: 'the-parent', title: 'The parent' } as Partial<WorkItem>),
+        mkItem({ slug: 'the-child', parent: 'the-parent', title: 'The child',
+          objective: 'x' } as Partial<WorkItem>),
+        mkItem({ slug: 'mentions-it', title: 'Mentions it',
+          objective: 'see the-child for detail' } as Partial<WorkItem>),
+      ],
+      archived: [], backlogged: [],
+    })
+    const el = await mount(modal())
+    await flush()
+
+    // fold the parent away, and check the child really is gone from the list
+    const fold = el.querySelector('.docket-fold') as HTMLElement
+    assert.ok(fold, 'a parent row had no fold control')
+    await inAct(() => fold.click())
+    await flush()
+    assert.ok(!names(el).includes('the-child'), 'folding did not hide the child')
+
+    // now follow a mention of the child
+    await inAct(() => (rows(el)[1] as HTMLElement).click())
+    await flush()
+    const link = refs(el)
+    assert.equal(link.length, 1)
+    await inAct(() => link[0]!.click())
+    await flush()
+
+    assert.ok(names(el).includes('the-child'),
+      'the ancestor stayed folded, so the selected row was never on screen')
+    assert.match(pane(el)?.textContent ?? '', /The child/)
+  })

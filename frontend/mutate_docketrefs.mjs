@@ -129,10 +129,24 @@ const MUTANTS = [
         mark="done" slugIndex={slugIndex} onGoToItem={onGoToItem} />`,
   },
   {
+    // the recovery pass for cycles is one word away from resurrecting every
+    // row a fold was hiding — which is what the first version did
+    name: 'a folded subtree reappears at the bottom instead of hiding',
+    file: DOCKET, kills: 'folding hides a subtree',
+    from: `  for (const it of items) if (!reachable.has(it.slug)) walk(it, 0)`,
+    to: `  for (const it of items) if (!seen.has(it.slug)) walk(it, 0)`,
+  },
+  {
+    name: 'selecting a child no longer opens its ancestors',
+    file: DOCKET, kills: 'OPENS ITS ANCESTORS',
+    from: `    const line = ancestorsOf([...allKnown.values()], id)`,
+    to: `    const line: string[] = []`,
+  },
+  {
     name: 'the arrived-here mark never appears',
     file: DOCKET, kills: 'selects, reveals and marks',
-    from: `    selected ? 'on' : '', flash ? 'docket-flash' : ''].filter(Boolean).join(' ')`,
-    to: `    selected ? 'on' : ''].filter(Boolean).join(' ')`,
+    from: `    selected ? 'on' : '', flash ? 'docket-flash' : '',`,
+    to: `    selected ? 'on' : '',`,
   },
 ]
 

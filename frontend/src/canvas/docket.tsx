@@ -227,6 +227,92 @@ interface Section {
   tone?: 'backlog' | 'archive'
 }
 
+/** One rendered line: the item, how deep it sits, and how many children of
+ *  ITS OWN are in this same section. */
+export interface DocketRowInfo {
+  item: WorkItem
+  depth: number
+  kids: number
+}
+
+/** Turn one section's flat, server-ordered list into the nested display order
+ *  (w2d5fab0a element 1).
+ *
+ *  ⚠ THE SERVER'S ORDER IS STILL THE ORDER. This only RE-PARENTS — a parent
+ *  keeps its own position among the roots, and its children follow it in the
+ *  order the server gave them. There is no second comparator here to drift out
+ *  of step with `ledger.work_list`, which is the same reason `buildSections`
+ *  only ever partitions.
+ *
+ *  ⚠ A PARENT OUTSIDE THIS SECTION IS NOT A PARENT HERE. The backlog and the
+ *  archive are separate appended groups, and a child whose parent sits in a
+ *  different group has nothing to nest under on screen — it renders as a root
+ *  of this section rather than vanishing. Losing a row because its parent was
+ *  filtered out would hide work.
+ *
+ *  ⚠ AND IT CANNOT HANG. The backend refuses cycles on write, but a document
+ *  can still hold one from a migration or a hand edit, and a renderer that
+ *  walks a ring locks the tab. `seen` bounds the walk and the leftovers are
+ *  appended as roots, so a bad document costs correctness of NESTING and never
+ *  the list itself. */
+export function nestRows(items: WorkItem[],
+                         collapsed: ReadonlySet<string>): DocketRowInfo[] {
+  const here = new Set(items.map((i) => i.slug))
+  const kids = new Map<string, WorkItem[]>()
+  const roots: WorkItem[] = []
+  for (const it of items) {
+    const p = it.parent && here.has(it.parent) && it.parent !== it.slug
+      ? it.parent : null
+    if (!p) { roots.push(it); continue }
+    const list = kids.get(p)
+    if (list) list.push(it)
+    else kids.set(p, [it])
+  }
+  // ⚠ REACHABILITY IS COMPUTED WITHOUT THE FOLD, and the display walk applies
+  // it. Conflating the two is how the first version leaked: the recovery pass
+  // below re-added every row that a COLLAPSED parent had hidden, so folding a
+  // subtree moved its children to the bottom of the list instead of hiding
+  // them. "Not drawn because you folded it" and "not drawn because nothing
+  // leads here" are different states and only the second needs rescuing.
+  const reachable = new Set<string>()
+  const mark = (it: WorkItem) => {
+    if (reachable.has(it.slug)) return
+    reachable.add(it.slug)
+    for (const k of kids.get(it.slug) ?? []) mark(k)
+  }
+  for (const r of roots) mark(r)
+
+  const out: DocketRowInfo[] = []
+  const seen = new Set<string>()
+  const walk = (it: WorkItem, depth: number) => {
+    if (seen.has(it.slug)) return
+    seen.add(it.slug)
+    const mine = kids.get(it.slug) ?? []
+    out.push({ item: it, depth, kids: mine.length })
+    if (collapsed.has(it.slug)) return
+    for (const k of mine) walk(k, depth + 1)
+  }
+  for (const r of roots) walk(r, 0)
+  // only what a CYCLE stranded — never what a fold hid
+  for (const it of items) if (!reachable.has(it.slug)) walk(it, 0)
+  return out
+}
+
+/** Every ancestor of `slug` present in `items`, nearest first — what has to be
+ *  expanded for a row to be on screen at all. Bounded against a cycle. */
+export function ancestorsOf(items: WorkItem[], slug: string): string[] {
+  const by = new Map(items.map((i) => [i.slug, i]))
+  const out: string[] = []
+  const seen = new Set<string>([slug])
+  let cur = by.get(slug)?.parent ?? null
+  while (cur && by.has(cur) && !seen.has(cur)) {
+    seen.add(cur)
+    out.push(cur)
+    cur = by.get(cur)?.parent ?? null
+  }
+  return out
+}
+
 /** The whole list, in order. The contract this function exists to keep: the
  *  backlog and the archive are ALWAYS the last two sections, in that order, in
  *  every grouping mode — so ticking a box can only ever add something to the
@@ -394,6 +480,19 @@ export function DocketModal({ slug, toast, close, tree, onFocusAgent,
     () => buildSlugIndex(allKnown.values()), [allKnown])
   const [flash, setFlash] = useState<string | null>(null)
   const rows = useRef(new Map<string, HTMLDivElement>())
+  // COLLAPSE IS OPT-IN. Everything starts expanded, because a docket that
+  // hides work by default is worse than one that is long; the arrow is how
+  // you make it shorter. Per-panel, not persisted — it is a reading posture,
+  // not org state.
+  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(
+    () => new Set<string>())
+  const toggleFold = useCallback((name: string) => {
+    setCollapsed((c) => {
+      const next = new Set(c)
+      if (!next.delete(name)) next.add(name)
+      return next
+    })
+  }, [])
 
   const goToItem = useCallback((id: string) => {
     const it = allKnown.get(id)
@@ -403,6 +502,18 @@ export function DocketModal({ slug, toast, close, tree, onFocusAgent,
     // the link did nothing.
     if (it.archived) setShowArchived(true)
     else if (it.status === 'backlogged') setShowBacklog(true)
+    // ⚠ AND OPEN ITS ANCESTORS. A collapsed parent means the row does not
+    // exist on screen, so selecting it would look like the link did nothing —
+    // the same failure as selecting a row inside a filtered-out group.
+    const line = ancestorsOf([...allKnown.values()], id)
+    if (line.length) {
+      setCollapsed((c) => {
+        if (!line.some((a) => c.has(a))) return c   // no needless re-render
+        const next = new Set(c)
+        for (const a of line) next.delete(a)
+        return next
+      })
+    }
     setSel({ slug, id })
     setFlash(id)
   }, [allKnown, slug])
@@ -528,15 +639,20 @@ export function DocketModal({ slug, toast, close, tree, onFocusAgent,
                             <span className="dim docket-group-n">{s.items.length}</span>
                           </div>
                         )}
-                        {s.items.map((r) => (
-                          <DocketRow key={r.slug} item={r} selected={r.slug === selId}
-                            onClick={() => setSelId(r.slug === selId ? null : r.slug)}
+                        {nestRows(s.items, collapsed).map((row) => (
+                          <DocketRow key={row.item.slug} item={row.item}
+                            selected={row.item.slug === selId}
+                            depth={row.depth} kids={row.kids}
+                            folded={collapsed.has(row.item.slug)}
+                            onFold={() => toggleFold(row.item.slug)}
+                            onClick={() => setSelId(
+                              row.item.slug === selId ? null : row.item.slug)}
                             onDismiss={onDismiss} facts={facts}
                             onFocusAgent={onFocusAgent} close={close}
-                            flash={r.slug === flash}
+                            flash={row.item.slug === flash}
                             rowRef={(el) => {
-                              if (el) rows.current.set(r.slug, el)
-                              else rows.current.delete(r.slug)
+                              if (el) rows.current.set(row.item.slug, el)
+                              else rows.current.delete(row.item.slug)
                             }} />
                         ))}
                       </div>
@@ -560,9 +676,16 @@ export function DocketModal({ slug, toast, close, tree, onFocusAgent,
 }
 
 function DocketRow({ item, selected, onClick, onDismiss, facts, onFocusAgent,
-  close, flash, rowRef }: {
+  close, flash, rowRef, depth = 0, kids = 0, folded = false, onFold }: {
   item: WorkItem
   selected: boolean
+  /** w2d5fab0a elements 1 and 2: how deep this row sits, and whether it has
+   *  children of its own to fold away. The connecting lines are drawn from
+   *  `depth` in CSS rather than with spacer elements. */
+  depth?: number
+  kids?: number
+  folded?: boolean
+  onFold?: () => void
   onClick: () => void
   onDismiss: (item: WorkItem) => void
   facts: Map<string, NodeFacts>
@@ -584,7 +707,9 @@ function DocketRow({ item, selected, onClick, onDismiss, facts, onFocusAgent,
       ? 'attention'
       : item.status === 'backlogged' ? 'backlog' : 'active'
   const cls = ['mailrow', 'docket-row', state, 'status-' + item.status,
-    selected ? 'on' : '', flash ? 'docket-flash' : ''].filter(Boolean).join(' ')
+    selected ? 'on' : '', flash ? 'docket-flash' : '',
+    depth > 0 ? 'docket-child' : '',
+    kids > 0 ? 'docket-parent' : ''].filter(Boolean).join(' ')
   const label = attention ? 'Needs attention' : statusLabel(item.status)
   // Dismiss clears the MANUAL flag only — a question-only attention item has
   // nothing to dismiss (answering the question is the only way to clear it).
@@ -593,8 +718,20 @@ function DocketRow({ item, selected, onClick, onDismiss, facts, onFocusAgent,
     // THE NAME IN THE LIST IS THE SLUG (user 2026-09-05). The full descriptive
     // title is printed only in the detail pane; here it is the row's hover
     // title, so nothing is lost and the row stays one line of name.
-    <div className={cls} title={item.title} onClick={onClick} ref={rowRef}>
+    <div className={cls} title={item.title} onClick={onClick} ref={rowRef}
+      style={depth ? { '--docket-depth': depth } as React.CSSProperties : undefined}>
       <div className="l1">
+        {/* TWO SEPARATE CLICK TARGETS (the approved design's own note): the
+            arrow folds, the row selects. A parent's own details stay reachable
+            even when it has children, so folding is never the only thing a
+            click on a parent can do. */}
+        {kids > 0 && (
+          <button className={'docket-fold' + (folded ? ' folded' : '')}
+            title={folded ? `show ${kids} sub-item${kids === 1 ? '' : 's'}`
+              : `hide ${kids} sub-item${kids === 1 ? '' : 's'}`}
+            aria-expanded={!folded}
+            onClick={(e) => { e.stopPropagation(); onFold?.() }}>▾</button>
+        )}
         {/* w2d5fab0a element 3: the small status dot beside the coloured left
             edge. Two readings of the same fact on purpose — the edge is easy
             to lose against a selected row's tint, and the dot sits with the
