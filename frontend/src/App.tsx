@@ -2018,9 +2018,18 @@ export function InboxPanel({ slug, tree, toast, refresh, close, jumpTo, jumpSeq,
     foldedJump.current = key
     const here = (rows: { id?: string }[] | undefined) =>
       (rows ?? []).some((m) => m.id === jumpTo)
-    if (here(box.pending) || here(box.delivered)) setFolder('inbox')
-    else if (here(box.sent)) setFolder('sent')
-  }, [jumpTo, jumpSeq, box])
+    if (here(box.pending) || here(box.delivered)) { setFolder('inbox'); return }
+    if (here(box.sent)) { setFolder('sent'); return }
+    // in NEITHER loaded list: the PANEL asks, because a list only knows the id
+    // is missing from its own window. The answer's folder is decided here — a
+    // `@mail:org/user/<id>` names the user's RECEIVED mail, and the Sent rows
+    // are copies of mail that lives in other boxes.
+    let live = true
+    Promise.resolve(userLookup(jumpTo))
+      .then((m) => { if (live && m) setFolder('inbox') })
+      .catch(() => { /* the list reports the failure and offers a retry */ })
+    return () => { live = false }
+  }, [jumpTo, jumpSeq, box, userLookup])
   const aud = usePolled(() => getAudiences(slug), [slug])
   // №10: the record loads on demand — and keeps loading while that tab is up
   const events = usePolled(
@@ -2173,8 +2182,11 @@ export function InboxPanel({ slug, tree, toast, refresh, close, jumpTo, jumpSeq,
               // the user's OWN sends: attachments live in the RECIPIENT's
               // uploads/ (the upload landed there at stage time) — key on
               // m.to; a row without one ('' = unreachable) keeps plain chips
+              /* ⚠ NO `lookup` HERE. These rows are copies of mail that lives
+                 in other boxes, so an exact answer never belongs in this
+                 folder — the panel above asks and opens the one that does. */
               : <MailList delivered={box.sent ?? []} outgoing refs={mailRefs}
-                  jumpTo={jumpTo} jumpSeq={jumpSeq} lookup={userLookup}
+                  jumpTo={jumpTo} jumpSeq={jumpSeq}
                   onFocusAgent={onFocusAgent ? (agentId) => { close(); onFocusAgent(agentId) } : undefined}
                   fileHref={(p, m) => typeof m.to === 'string' && m.to
                     ? fileUrl(slug, m.to, p) : ''}

@@ -25,6 +25,34 @@ const REFLINKS = 'src/canvas/reflinks.tsx'
 
 const MUTANTS = [
   {
+    // ⚠ ASTRA'S RULING: a token embedded in an ordinary word is not a
+    // reference. Dropping the leading boundary makes arbitrary text a control.
+    name: 'a token no longer has to START at a boundary',
+    file: WORKREFS, kills: '§2d a token embedded in a word',
+    from: `    if (at !== 0 && at !== end && LEAD.test(before)) {`,
+    to: `    if (false) {`,
+  },
+  {
+    // the over-strict half: refusing the second of two adjacent tokens, which
+    // starts immediately after an id character
+    name: 'the leading boundary forgets the token that just ended',
+    file: WORKREFS, suite: 'reflinks', kills: '§6g a token embedded in a word',
+    from: `    if (at !== 0 && at !== end && LEAD.test(before)) {`,
+    to: `    if (at !== 0 && LEAD.test(before)) {`,
+  },
+  {
+    // a renderer with its own loop is one that can miss a boundary the
+    // scanner enforces
+    name: 'the DOM walk scans with its own loop again',
+    file: REFMD, kills: '§2d a token embedded in a word',
+    from: `    for (const hit of scanRefs(s)) {`,
+    to: `    for (const hit of scanRefs(s).concat(
+      [...s.matchAll(new RegExp(REF_TOKEN_RE.source, 'g'))]
+        .filter((m) => !scanRefs(s).some((h) => h.index === m.index))
+        .map((m) => ({ index: m.index, token: m[0], ref: parseRef(m[0])! }))
+        .filter((h) => h.ref)).sort((a, b) => a.index - b.index)) {`,
+  },
+  {
     // ⚠ ASTRA'S COUNTEREXAMPLE: the exit compared OUTCOMES, so a document that
     // gained its real title kept showing the id — same outcome, different
     // visible answer, no rebuild.
@@ -286,7 +314,14 @@ for (const m of MUTANTS) {
       survived++
     }
   } finally {
-    writeFileSync(m.file, before)     // exact bytes, CRLF and all
+    writeFileSync(m.file, before)
+    // ⚠ PROVE THE RESTORE. A child that dies with a FATAL heap error can
+    // take this process with it, and a mutant left in the source then
+    // reads as a broken feature hours later. Measured, once.
+    if (!readFileSync(m.file).equals(before)) {
+      console.error(`⚠ NOT RESTORED: ${m.file} — fix that before anything else`)
+      process.exit(3)
+    }     // exact bytes, CRLF and all
   }
 }
 

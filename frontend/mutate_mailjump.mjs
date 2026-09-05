@@ -26,6 +26,45 @@ const MAIL = 'src/canvas/mail.tsx'
 
 const MUTANTS = [
   {
+    // ⚠ EXECUTED BY ASTRA: a rejected promise and a null answer rendered the
+    // same "retracted" sentence — a fact about the message stated from a
+    // network error.
+    name: 'a failed lookup is reported as a confirmed absence',
+    file: MAIL, kills: 'a lookup that FAILS says so',
+    from: `      .catch(() => {
+        if (live) setAsk({ asking: false, row: null, failed: true })
+      })`,
+    to: `      .catch(() => {
+        if (live) setAsk({ asking: false, row: null, failed: false })
+      })`,
+  },
+  {
+    // the reader is told the check failed and given no way to try again —
+    // a dead end where the answer may simply be one click away
+    name: 'the failed lookup offers no retry',
+    file: MAIL, kills: 'a lookup that FAILS says so',
+    from: `                    <button type="button" className="mailer-retry"
+                      onClick={() => setRetry((n) => n + 1)}>try again</button>`,
+    to: ``,
+  },
+  {
+    // ⚠ ASTRA'S SECOND COUNTEREXAMPLE: the effect READS jumpSeq and did not
+    // depend on it, so a repeat request never re-ran the folder decision. The
+    // latch below it is irrelevant when the effect is never woken.
+    name: 'the folder effect stops depending on the request it reads',
+    file: MAIL, kills: '§11 a repeat request re-runs the folder decision',
+    from: `  }, [jumpTo, jumpSeq, box, nodeLookup])`,
+    to: `  }, [jumpTo, box, nodeLookup])`,
+  },
+  {
+    // ⚠ ASTRA'S THIRD: the answer rendered where the reader happened to be,
+    // so an incoming message wore an outgoing row's dress in the wrong folder.
+    name: 'a found message does not open the folder that holds it',
+    file: MAIL, kills: '§11c a reference to retained mail outside the window',
+    from: `      .then((m) => { if (live && m) setFolder('inbox') })`,
+    to: `      .then(() => { /* leave the folder where it is */ })`,
+  },
+  {
     // ⚠ ASTRA'S BLOCKER 6, restored: the pane never asks, so a retained message
     // outside the window is reported gone.
     name: 'the pane never asks for a message outside its window',
@@ -65,10 +104,10 @@ const MUTANTS = [
     // they misclicked.
     name: 'a missing message falls back to "select a mail to read it"',
     file: MAIL, kills: '§3 a jump to a message',
-    from: `              : jumpMissing
-                ? <span className="mailer-nojump">`,
-    to: `              : false
-                ? <span className="mailer-nojump">`,
+    from: `                : jumpMissing
+                  ? <span className="mailer-nojump">`,
+    to: `                : false
+                  ? <span className="mailer-nojump">`,
   },
   {
     // the notice rendered for EVERY empty pane, which would make §3 and §4
@@ -124,10 +163,10 @@ const MUTANTS = [
     // only be written by naming what must not appear.
     name: 'the not-here notice names the message it is refusing',
     file: MAIL, kills: '§4 CONTROL',
-    from: `                    That message is not in this folder. It may have been
-                    retracted, or it may not be one you can open.`,
-    to: `                  Message {jumpTo} is not in this folder. It may have been
-                  retracted, or it may not be one you can open.`,
+    from: `                      That message is not in this folder. It may have been
+                      retracted, or it may not be one you can open.`,
+    to: `                      Message {jumpTo} is not in this folder. It may have
+                      been retracted, or it may not be one you can open.`,
   },
 ]
 
@@ -189,7 +228,14 @@ for (const m of MUTANTS) {
       survived++
     }
   } finally {
-    writeFileSync(m.file, before)     // exact bytes, CRLF and all
+    writeFileSync(m.file, before)
+    // ⚠ PROVE THE RESTORE. A child that dies with a FATAL heap error can
+    // take this process with it, and a mutant left in the source then
+    // reads as a broken feature hours later. Measured, once.
+    if (!readFileSync(m.file).equals(before)) {
+      console.error(`⚠ NOT RESTORED: ${m.file} — fix that before anything else`)
+      process.exit(3)
+    }     // exact bytes, CRLF and all
   }
 }
 

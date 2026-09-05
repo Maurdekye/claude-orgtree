@@ -251,15 +251,61 @@ export const REF_TOKEN_RE = new RegExp(
   + `|(mail):(${SEG}/(?:user|org)/${SEG}|${SEG}/node/${NODE}/${SEG}))`
   + END, 'g')
 
-/** Every token in `text`, as `[kind, rest]`, in order. The alternation makes
- *  group numbering an implementation detail; callers use this. */
-export function findRefs(text: string): [string, string][] {
-  const out: [string, string][] = []
-  for (const m of String(text ?? '').matchAll(
-    new RegExp(REF_TOKEN_RE.source, 'g'))) {
-    out.push([String(m[1] ?? m[3] ?? m[5]), String(m[2] ?? m[4] ?? m[6])])
+/** ⚠ AND A TOKEN STARTS AT A BOUNDARY TOO. `x@agent:org/alpha` inside an
+ *  ordinary word is not a reference somebody wrote — matching the right target
+ *  does not make arbitrary embedded text intentional.
+ *
+ *  This cannot be a lookbehind: two canonical tokens written with nothing
+ *  between them (`…/alpha@item:org/beta`) put an id character immediately
+ *  before the second one, and the backend's `re` has no variable-length
+ *  lookbehind to say "unless a whole token ends here". So the scan carries the
+ *  END OF THE LAST ACCEPTED TOKEN instead, which is the same rule stated where
+ *  it can actually be checked — and it is the ONE scanner every renderer uses,
+ *  so a boundary fixed here cannot be missing from one of them. */
+const LEAD = /[A-Za-z0-9_@-]/
+
+export interface RefHit {
+  /** where the token starts in `text` */
+  index: number
+  token: string
+  ref: TypedRef
+}
+
+/** Every canonical reference in `text`, in order, boundaries applied. */
+export function scanRefs(text: string): RefHit[] {
+  const s = String(text ?? '')
+  const re = new RegExp(REF_TOKEN_RE.source, 'g')
+  const out: RefHit[] = []
+  let end = -1                       // end of the last ACCEPTED token
+  let m: RegExpExecArray | null
+  while ((m = re.exec(s)) !== null) {
+    const at = m.index
+    const before = at > 0 ? s[at - 1]! : ''
+    if (at !== 0 && at !== end && LEAD.test(before)) {
+      // embedded in a word: not a reference. Resume one character in, so a
+      // real token later in the same run is still found.
+      re.lastIndex = at + 1
+      continue
+    }
+    const ref = parseRef(m[0])
+    if (!ref) { re.lastIndex = at + 1; continue }
+    out.push({ index: at, token: m[0], ref })
+    end = at + m[0].length
   }
   return out
+}
+
+/** Every token in `text`, as `[kind, rest]`, in order — the shape the
+ *  cross-language fixture compares. */
+export function findRefs(text: string): [string, string][] {
+  return scanRefs(text).map(({ ref }) => [
+    ref.kind,
+    ref.kind === 'mail' && ref.box === 'node'
+      ? `${ref.org}/node/${ref.node}/${ref.id}`
+      : ref.kind === 'mail'
+        ? `${ref.org}/${ref.box}/${ref.id}`
+        : `${ref.org}/${ref.id}`,
+  ])
 }
 
 /** A token to its parts, or null when it is not one. Never a guess: a

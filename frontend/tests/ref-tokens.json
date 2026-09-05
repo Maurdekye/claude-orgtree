@@ -92,6 +92,16 @@
         "a/c"
       ]
     ],
+    "@agent:alpha/one@2@item:alpha/two": [
+      [
+        "agent",
+        "alpha/one@2"
+      ],
+      [
+        "item",
+        "alpha/two"
+      ]
+    ],
     "@agent:alpha/one@item:alpha/two": [
       [
         "agent",
@@ -147,12 +157,7 @@
         "alpha/thing"
       ]
     ],
-    "not-a-token@item:alpha/thing is attached to a word": [
-      [
-        "item",
-        "alpha/thing"
-      ]
-    ],
+    "not-a-token@item:alpha/thing is attached to a word": [],
     "see @item:alpha/git-review-workspace, then @mail:alpha/user/ab12. done": [
       [
         "item",
@@ -172,6 +177,7 @@
         "agent",
         "alpha/two"
       ]
-    ]
+    ],
+    "x@agent:alpha/one": []
   }
 }

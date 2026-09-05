@@ -111,17 +111,41 @@ def mail(org: str, delivered: str, mid: str) -> str | None:
     return None
 
 
+#: ⚠ AND A TOKEN STARTS AT A BOUNDARY TOO. `x@agent:org/alpha` inside an
+#: ordinary word is not a reference somebody wrote; matching the right target
+#: does not make arbitrary embedded text intentional.
+#:
+#: Not a lookbehind: two canonical tokens written with nothing between them put
+#: an id character immediately before the second, and `re` has no
+#: variable-length lookbehind to say "unless a whole token ends here". The scan
+#: carries the end of the last ACCEPTED token instead.
+LEAD = re.compile(r"[A-Za-z0-9_@-]")
+
+
 def find_all(text: str) -> list[tuple[str, str]]:
-    """Every token in `text`, as `(kind, rest)` pairs, in order.
+    """Every token in `text`, as `(kind, rest)` pairs, in order, boundaries
+    applied.
 
     The regex uses an alternation so the node positions can admit `@<gen>`,
     which makes its group numbering an implementation detail. Callers — and
     the cross-language fixture — use this instead of reading groups."""
+    s = str(text or "")
     out: list[tuple[str, str]] = []
-    for m in TOKEN_RE.finditer(str(text or "")):
+    end = -1                        # end of the last ACCEPTED token
+    i = 0
+    while i <= len(s):
+        m = TOKEN_RE.search(s, i)
+        if not m:
+            break
+        at = m.start()
+        if at != 0 and at != end and LEAD.fullmatch(s[at - 1]):
+            i = at + 1              # embedded in a word: keep looking after it
+            continue
         kind = m.group(1) or m.group(3) or m.group(5)
         rest = m.group(2) or m.group(4) or m.group(6)
         out.append((str(kind), str(rest)))
+        end = m.end()
+        i = end
     return out
 
 

@@ -23,7 +23,7 @@
 
 import { useCallback, useMemo } from 'react'
 import type { ReactNode } from 'react'
-import { REF_TOKEN_RE, WorkRefText, parseRef } from './workrefs'
+import { WorkRefText, parseRef, scanRefs } from './workrefs'
 import { TIER_LETTER } from './shared'
 import type { MentionIndex, RefKind, TypedRef } from './workrefs'
 
@@ -312,28 +312,13 @@ export function splitTypedRefs(text: string, world: RefWorld): RefRun[] {
   if (!s) return []
   const out: RefRun[] = []
   let last = 0
-  // A FRESH REGEX EACH CALL, and NOT for the reason I first wrote down.
-  // `exec` resets `lastIndex` to 0 when a scan runs out of matches, so running
-  // this loop to exhaustion on a shared /g regex is in fact safe — I asserted
-  // otherwise, and the mutation harness caught me by surviving. What a fresh
-  // copy actually buys is independence from OTHER users of the exported
-  // `REF_TOKEN_RE`: any caller that stops iterating early leaves a non-zero
-  // `lastIndex` behind, and this function would then start mid-string.
-  const re = new RegExp(REF_TOKEN_RE.source, 'g')
-  let m: RegExpExecArray | null
-  while ((m = re.exec(s)) !== null) {
-    const parsed = parseRef(m[0])
-    // ⚠ UNREACHABLE BY CONSTRUCTION, AND SAID SO ON PURPOSE. `parseRef`
-    // anchors the SAME pattern this scanner uses, so anything found here
-    // parses. This is the narrowing TypeScript needs, not a guard — do not
-    // read it as one, and do not "test" it, because it cannot fire. The
-    // invariant that keeps it dead is pinned by §6c; if the two patterns ever
-    // drift apart, that check goes red rather than this branch quietly
-    // starting to eat text.
-    if (!parsed) continue
-    if (m.index > last) out.push({ text: s.slice(last, m.index) })
-    out.push({ text: m[0], ref: resolveRef(parsed, world) })
-    last = m.index + m[0].length
+  // ⚠ THE SHARED SCANNER, not a second loop over the same pattern. Both
+  // boundaries — a token ends at one, and starts at one — live in `scanRefs`,
+  // and a renderer with its own loop is a renderer that can miss one of them.
+  for (const hit of scanRefs(s)) {
+    if (hit.index > last) out.push({ text: s.slice(last, hit.index) })
+    out.push({ text: hit.token, ref: resolveRef(hit.ref, world) })
+    last = hit.index + hit.token.length
   }
   if (last < s.length) out.push({ text: s.slice(last) })
   return out

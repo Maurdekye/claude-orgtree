@@ -173,6 +173,11 @@ for (const m of MUTANTS) {
     }
   } finally {
     writeFileSync(DOCKET, before)
+    // ⚠ PROVE THE RESTORE — see the note in mutate_mailjump.mjs.
+    if (!readFileSync(DOCKET).equals(before)) {
+      console.error('⚠ NOT RESTORED: ' + DOCKET)
+      process.exit(3)
+    }
   }
 }
 

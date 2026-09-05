@@ -568,3 +568,23 @@ test('§11g the destination rule waits for the reference to resolve', async () =
   assert.match(chip.textContent ?? '', /unavailable/)
   await view.unmount()
 })
+
+test('§6g a token embedded in a word is not a reference, in the SPLITTER',
+  () => {
+    // ⚠ ASTRA'S RULING: matching the right target does not make arbitrary
+    // embedded text an intentional reference. Checked in the renderer, not
+    // only the parser — they share one scanner precisely so this cannot be
+    // true in one and false in the other.
+    const runs = splitTypedRefs(`not-a-token@item:${HERE}/alpha here`, world())
+    assert.equal(runs.filter((r) => r.ref).length, 0)
+    assert.equal(runs.map((r) => r.text).join(''),
+      `not-a-token@item:${HERE}/alpha here`)
+    // CONTROL: the same token with a space before it IS a reference
+    const ok = splitTypedRefs(`not a token @item:${HERE}/alpha here`, world())
+    assert.equal(ok.filter((r) => r.ref).length, 1)
+    // CONTROL: and two adjacent tokens both survive, where the second one
+    // starts immediately after an id character
+    const pair = splitTypedRefs(`@agent:${HERE}/alpha@2@item:${HERE}/beta`, world())
+      .filter((r) => r.ref)
+    assert.deepEqual(pair.map((r) => r.ref!.ref.id), ['alpha@2', 'beta'])
+  })

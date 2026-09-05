@@ -29,7 +29,7 @@
 import { useEffect, useRef } from 'react'
 import { resolveRef, refToken } from './reflinks'
 import type { RefOutcome, RefWorld, ResolvedRef } from './reflinks'
-import { REF_TOKEN_RE, parseRef } from './workrefs'
+import { parseRef, scanRefs } from './workrefs'
 import { TIER_LETTER } from './shared'
 
 /** the attribute that makes an injected chip findable again on the next pass.
@@ -167,21 +167,19 @@ export function linkifyRefs(host: HTMLElement, world: RefWorld,
   let count = 0
   for (const t of texts) {
     const s = t.data
-    // a fresh regex per text node — see splitTypedRefs for why the exported
-    // one is never iterated directly
-    const re = new RegExp(REF_TOKEN_RE.source, 'g')
     let last = 0
-    let m: RegExpExecArray | null
     let frag: DocumentFragment | null = null
-    while ((m = re.exec(s)) !== null) {
-      const parsed = parseRef(m[0])
-      if (!parsed) continue          // unreachable: parseRef anchors this same
-      frag = frag ?? doc.createDocumentFragment()   // pattern (reflinks §6c)
-      if (m.index > last) frag.appendChild(doc.createTextNode(s.slice(last, m.index)))
-      const r = resolveRef(parsed, world)
-      frag.appendChild(chipEl(doc, r, clickable))
+    // ⚠ THE SHARED SCANNER, not a second loop over the same pattern: both
+    // boundaries live in `scanRefs`, and a renderer with its own loop is one
+    // that can miss one of them.
+    for (const hit of scanRefs(s)) {
+      frag = frag ?? doc.createDocumentFragment()
+      if (hit.index > last) {
+        frag.appendChild(doc.createTextNode(s.slice(last, hit.index)))
+      }
+      frag.appendChild(chipEl(doc, resolveRef(hit.ref, world), clickable))
       count += 1
-      last = m.index + m[0].length
+      last = hit.index + hit.token.length
     }
     if (!frag) continue
     if (last < s.length) frag.appendChild(doc.createTextNode(s.slice(last)))

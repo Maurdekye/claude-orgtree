@@ -26,11 +26,11 @@
 //
 // Run: cd frontend && node tests/run.mjs mailjump
 
-import { flush, inAct, mountView } from './harness'
+import { advance, flush, inAct, mountView, realClock, useFakeClock } from './harness'
 import test from 'node:test'
 import type { TestContext } from 'node:test'
 import assert from 'node:assert/strict'
-import { MailList } from '../src/canvas/mail'
+import { InboxView, MailList } from '../src/canvas/mail'
 import type { MailRow } from '../src/canvas/shared'
 
 // ⚠ jsdom IMPLEMENTS NO LAYOUT, so `Element.scrollIntoView` does not exist
@@ -172,7 +172,13 @@ uiTest('§6 CONTROL — the search filter does not turn a found message into a '
     assert.equal(box.value, 'message 1', 'the filter really took the text')
     assert.ok(el.querySelectorAll('.mailrow').length < six.length,
       'and it really filtered — otherwise this control is inert')
-    assert.equal(el.querySelector('.mailer-nojump'), null,
+    // ⚠ THE COUNT, NOT THE NODE. `assert.equal(node, null)` makes node's diff
+    // walk the whole jsdom tree when it FAILS: measured here at 33 s and an
+    // "Array buffer allocation failed" instead of a message, which also took
+    // the mutation harness's process down with it and left a mutant in the
+    // source. The rule is already written in mailsender's header; this file
+    // had one left.
+    assert.equal(el.querySelectorAll('.mailer-nojump').length, 0,
       'filtering the list must not be reported as a missing message')
   })
 
@@ -304,4 +310,208 @@ async (mount) => {
     /somebody else/, 'a message that was not asked for was rendered as the answer')
   assert.match(el.querySelector('.mailer-nojump')?.textContent ?? '',
     /not in this folder/, 'and the honest outcome is the refusal')
+})
+
+// ───────────────────────── §8 a failed question is not a negative answer
+//
+// ⚠ EXECUTED BY ASTRA AGAINST THE PREVIOUS TIP: a rejected lookup promise and
+// a successful lookup returning null rendered the SAME "not in this folder /
+// retracted" sentence. One of those is a fact about the message; the other is
+// a fact about the network, and stating the first from the second tells a
+// reader their mail was retracted because a fetch failed.
+
+uiTest('§8 a lookup that FAILS says so, and offers a deliberate retry',
+async (mount) => {
+  let calls = 0
+  const { el } = await mount(
+    <MailList delivered={[older('in-window-1')]} jumpTo="outside-1" jumpSeq={1}
+      lookup={() => { calls += 1; return Promise.reject(new Error('network failed')) }} />)
+  await flush()
+  const note = el.querySelector('.mailer-nojump')
+  assert.ok(note, 'nothing was said at all')
+  assert.match(note!.textContent ?? '', /Could not check/,
+    'a failed question was reported as a confirmed absence')
+  assert.doesNotMatch(note!.textContent ?? '', /retracted/,
+    'it stated a fact about the MESSAGE on the strength of a network error')
+  assert.equal(calls, 1, 'and nothing retried on its own — an error path that '
+    + 'polls is a storm')
+  // the retry is a control the reader presses
+  const again = note!.querySelector('button')
+  assert.ok(again, 'no way to try again')
+  await inAct(() => { (again as HTMLButtonElement).click() })
+  await flush()
+  assert.equal(calls, 2, 'the retry did not ask again')
+})
+
+uiTest('§8b CONTROL — a lookup that ANSWERS "no" still says the message is not '
+  + 'here', async (mount) => {
+  const { el } = await mount(
+    <MailList delivered={[older('in-window-1')]} jumpTo="outside-1" jumpSeq={1}
+      lookup={() => Promise.resolve(null)} />)
+  await flush()
+  const note = el.querySelector('.mailer-nojump')
+  assert.match(note!.textContent ?? '', /not in this folder/,
+    'a searched box that does not hold it is a real negative answer')
+  assert.doesNotMatch(note!.textContent ?? '', /Could not check/)
+  assert.equal(note!.querySelectorAll('button').length, 0,
+    'there is nothing to retry: the question was answered')
+})
+
+// ─────────────────────── §9 the answer opens the folder that holds it
+uiTest('§9 a found message tells its owner, so the right folder can open',
+async (mount) => {
+  const found: string[] = []
+  const { el } = await mount(
+    <MailList delivered={[older('in-window-1')]} outgoing jumpTo="outside-1"
+      jumpSeq={1} lookup={(id: string) => Promise.resolve(older(id))}
+      onFound={(m: MailRow) => { found.push(String(m.id)) }} />)
+  await flush()
+  assert.deepEqual(found, ['outside-1'],
+    'the list that found it never told the panel that owns the folders')
+  assert.ok(el, 'mounted')
+})
+
+uiTest('§9b CONTROL — nothing is announced when nothing was found',
+async (mount) => {
+  const found: string[] = []
+  await mount(
+    <MailList delivered={[older('in-window-1')]} jumpTo="outside-1" jumpSeq={1}
+      lookup={() => Promise.resolve(null)}
+      onFound={(m: MailRow) => { found.push(String(m.id)) }} />)
+  await flush()
+  assert.deepEqual(found, [], 'a folder was opened for a message nobody found')
+})
+
+// ─────────────────── §11 the REAL InboxView, folders and repeat requests
+//
+// ⚠ WHY AT THIS LEVEL. §7-§9 drive `MailList`, which does not own the folders.
+// Astra's counterexample lives one layer up: the panel's folder effect READ
+// `jumpSeq` but did not depend on it, so a repeat request never re-ran it —
+// every latch below comparing the new key is irrelevant when the effect that
+// would act on it is never woken. A component test of the latch cannot see
+// that; this mounts the panel and clicks.
+
+const NODE_BOX = {
+  pending: [],
+  delivered: [{
+    id: 'received-1', from: 'alpha', to: 'me', at: '2026-09-05T09:00:00.000Z',
+    kind: 'message', body: 'RECEIVED CONTROL', read: true,
+  }],
+  sent: [{
+    id: 'sent-1', from: 'me', to: 'beta', at: '2026-09-05T09:30:00.000Z',
+    kind: 'message', body: 'SENT CONTROL', read: true,
+  }],
+}
+
+/** the older, retained message — deliberately NOT in the window above */
+const OUTSIDE = {
+  id: 'older-received', from: 'alpha', to: 'me',
+  at: '2026-08-01T09:00:00.000Z', kind: 'message', body: 'OLDER RECEIVED',
+  read: true,
+}
+
+function stubBox(onLookup?: () => void) {
+  const had = (globalThis as { fetch?: typeof fetch }).fetch
+  ;(globalThis as unknown as { fetch: typeof fetch }).fetch = ((url: string) => {
+    const u = String(url)
+    let body: unknown = {}
+    if (u.includes('/mail/node/')) {
+      onLookup?.()
+      body = { found: true, mail: OUTSIDE }
+    } else if (u.includes('/inbox')) body = NODE_BOX
+    return Promise.resolve({
+      ok: true, status: 200, headers: new Headers(),
+      json: () => Promise.resolve(body),
+    })
+  }) as unknown as typeof fetch
+  return () => { (globalThis as { fetch?: typeof fetch }).fetch = had }
+}
+
+const folderNow = (el: HTMLElement) =>
+  [...el.querySelectorAll('.mail-folders button.on')].map((b) => b.textContent)
+
+async function settle(el: HTMLElement) {
+  await flush(); await advance(200, 16); await flush()
+  return el
+}
+
+uiTest('§11 a repeat request re-runs the folder decision after the reader has '
+  + 'moved', async (mount) => {
+  useFakeClock()
+  const restore = stubBox()
+  try {
+    const { el, render } = await mount(
+      <InboxView slug="org" nid="me" tier={null} jumpTo="received-1" jumpSeq={1} />)
+    await settle(el)
+    assert.deepEqual(folderNow(el), ['inbox'],
+      'positive control: the first request opened the folder holding it')
+    // the reader chooses Sent by hand
+    const sent = [...el.querySelectorAll('.mail-folders button')]
+      .find((b) => b.textContent === 'sent') as HTMLButtonElement
+    await inAct(() => { sent.click() })
+    await flush()
+    assert.deepEqual(folderNow(el), ['sent'], 'positive control: they moved')
+    // …and clicks the SAME reference again: a new request
+    await render(
+      <InboxView slug="org" nid="me" tier={null} jumpTo="received-1" jumpSeq={2} />)
+    await settle(el)
+    assert.deepEqual(folderNow(el), ['inbox'],
+      'the second request never re-ran the folder decision — the effect reads '
+      + 'jumpSeq but did not depend on it')
+    assert.match(el.querySelector('.mailer-read')?.textContent ?? '',
+      /RECEIVED CONTROL/)
+  } finally { restore(); realClock() }
+})
+
+uiTest('§11b CONTROL — an unrelated repoll does not move the reader',
+async (mount) => {
+  useFakeClock()
+  const restore = stubBox()
+  try {
+    const { el, render } = await mount(
+      <InboxView slug="org" nid="me" tier={null} jumpTo="received-1" jumpSeq={1} />)
+    await settle(el)
+    const sent = [...el.querySelectorAll('.mail-folders button')]
+      .find((b) => b.textContent === 'sent') as HTMLButtonElement
+    await inAct(() => { sent.click() })
+    await flush()
+    // the SAME request re-delivered, plus the poll ticking underneath
+    await render(
+      <InboxView slug="org" nid="me" tier={null} jumpTo="received-1" jumpSeq={1} />)
+    await settle(el)
+    await advance(6000, 16)
+    await flush()
+    assert.deepEqual(folderNow(el), ['sent'],
+      'an unchanged request dragged the reader out of the folder they chose')
+  } finally { restore(); realClock() }
+})
+
+uiTest('§11c a reference to retained mail outside the window opens the folder '
+  + 'that HOLDS it, as received mail', async (mount) => {
+  let looked = 0
+  useFakeClock()
+  const restore = stubBox(() => { looked += 1 })
+  try {
+    const { el, render } = await mount(
+      <InboxView slug="org" nid="me" tier={null} jumpTo="received-1" jumpSeq={1} />)
+    await settle(el)
+    const sent = [...el.querySelectorAll('.mail-folders button')]
+      .find((b) => b.textContent === 'sent') as HTMLButtonElement
+    await inAct(() => { sent.click() })
+    await flush()
+    // now follow a reference to a RETAINED message that is in neither list
+    await render(
+      <InboxView slug="org" nid="me" tier={null} jumpTo="older-received" jumpSeq={2} />)
+    await settle(el)
+    assert.ok(looked > 0, 'positive control: the exact question was asked')
+    // ⚠ A NODE-BOX REFERENCE NAMES THAT NODE'S RECEIVED MAIL. Left on Sent it
+    // renders an incoming message in an outgoing row's dress ("to beta"),
+    // which is the wrong-target failure wearing the right id.
+    assert.deepEqual(folderNow(el), ['inbox'],
+      'the answer was rendered in the Sent folder')
+    const pane = el.querySelector('.mailer-read')?.textContent ?? ''
+    assert.match(pane, /OLDER RECEIVED/, 'the message it found is not on screen')
+    assert.doesNotMatch(pane, /to\s*beta/,
+      'an incoming message was dressed as one of the reader’s own sends')
+  } finally { restore(); realClock() }
 })

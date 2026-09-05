@@ -4098,13 +4098,10 @@ def _mail_refs(org_slug: str, box: str, rows: list[Any],
 def _sent_refs(org_slug: str, rows: list[Any]) -> list[Any]:
     """Stamp SENT rows, which are a different question from delivered ones.
 
-    ⚠ A SENT ROW IS A COPY OF A MAIL THAT LIVES IN SOMEBODY ELSE'S BOX. The
-    user's outbox is written by `post_mail` as `{**entry, "to": to}` — the same
-    entry it appended to the RECIPIENT's archive — so addressing these rows
-    from the box being read names a message that is not there, and on a
-    colliding id names a DIFFERENT message that is. Each row carries its own
-    `to`, and `refs.mail` maps the three delivery values `post_mail` returns;
-    anything else gets no reference rather than an invented one.
+    ⚠ A SENT ROW IS A COPY OF A MAIL THAT LIVES IN SOMEBODY ELSE'S BOX, so it
+    is addressed from its own `to`. Addressing it from the box being read names
+    a message that is not there — and on a colliding id, a different one that
+    is. A `to` with no local box gets no reference rather than an invented one.
     """
     for r in rows:
         if isinstance(r, dict) and r.get("id"):
@@ -4667,19 +4664,14 @@ def org_inbox_entries(slug: str) -> dict[str, Any]:
 def mail_one(slug: str, box: str, mid: str, node: str = "") -> dict[str, Any]:
     """ONE message, by id, from the box that actually holds it.
 
-    ⚠ WHY THIS EXISTS. Every mailbox route returns a WINDOW — the newest 50,
-    or 100 for the org inbox — so "not in the window" is not "not there". A
-    retained message at position 51 is still there, and a panel that infers
-    absence from its slice tells the reader it is gone. This is the exact
-    question instead.
+    Every mailbox route returns a WINDOW, so "not in the window" is not "not
+    there" — a retained message outside it is still there. This is the exact
+    question a panel asks instead of inferring absence from its slice.
 
-    ⚠ IT IS NOT A WIDER POLL: one id, asked once, only when a reference lands
-    outside the loaded window. The lists keep their windows — the org inbox
-    alone was 105 KB every 6 s before they had them.
-
-    ⚠ AND IT ADDS NO REACH. Each box is searched through the same route that
-    already serves it wholesale to this client; an unknown box or node is a
-    404 rather than a search.
+    ⚠ NOT A WIDER POLL: one id, asked once, only when a reference lands outside
+    the loaded window. ⚠ AND NO EXTRA REACH: each box is searched through the
+    same route that already serves it wholesale, and an unknown box or node is
+    a 404 rather than a search.
     """
     try:
         org = store.load_org_snapshot(

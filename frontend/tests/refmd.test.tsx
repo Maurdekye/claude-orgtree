@@ -476,3 +476,19 @@ uiTest('§14b LOSING the world takes the controls with it', async (mount, render
   assert.match(el.textContent ?? '', /@item:orgtree\/alpha/,
     'and the token the author wrote is back, exactly')
 })
+
+test('§2d a token embedded in a word is not a reference, in the DOM WALK',
+  () => {
+    const all = new Map([['alpha', 'alpha'], ['alpha@2', 'alpha@2'],
+      ['beta', 'beta']])
+    const el = body('not-a-token@item:orgtree/alpha here')
+    assert.equal(linkifyRefs(el, world({ items: all })), 0,
+      'arbitrary embedded text was turned into a control')
+    assert.equal(readable(el), 'not-a-token@item:orgtree/alpha here')
+    // CONTROL: with a boundary before it, the same token IS a reference
+    const spaced = body('not a token @item:orgtree/alpha here')
+    assert.equal(linkifyRefs(spaced, world({ items: all })), 1)
+    // CONTROL: adjacent canonical tokens both survive
+    const pair = body('@agent:orgtree/alpha@2@item:orgtree/beta')
+    assert.equal(linkifyRefs(pair, world({ agents: all, items: all })), 2)
+  })

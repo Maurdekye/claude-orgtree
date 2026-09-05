@@ -310,7 +310,14 @@ for (const m of MUTANTS) {
       survived++
     }
   } finally {
-    writeFileSync(m.file, before)     // exact bytes, CRLF and all
+    writeFileSync(m.file, before)
+    // ⚠ PROVE THE RESTORE. A child that dies with a FATAL heap error can
+    // take this process with it, and a mutant left in the source then
+    // reads as a broken feature hours later. Measured, once.
+    if (!readFileSync(m.file).equals(before)) {
+      console.error(`⚠ NOT RESTORED: ${m.file} — fix that before anything else`)
+      process.exit(3)
+    }     // exact bytes, CRLF and all
   }
 }
 

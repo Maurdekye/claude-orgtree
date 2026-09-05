@@ -63,6 +63,9 @@ export interface MailListProps {
    *  window. Omitted = this surface cannot ask, and it then says only that
    *  the message is not in the folder rather than that it does not exist. */
   lookup?: (id: string) => Promise<MailRow | null>
+  /** the exact lookup answered. The owner of the folders decides where that
+   *  message belongs — this list only knows it was not in its own window. */
+  onFound?: (m: MailRow) => void
   /** FR-21: the mail rides along so a call site whose files live under the
    *  SENDER's scratch (the user inbox — each row a different agent's outbox)
    *  can key the URL on `m.from`; fixed-node call sites ignore it. Returning
@@ -104,7 +107,8 @@ export interface MailListProps {
 const MAIL_WINDOW = 40
 
 export function MailList({ pending = [], delivered = [], waitLabel, sender, rowSender,
-  outgoing, onRead, onReply, onRetract, jumpTo, jumpSeq, lookup, fileHref, mdBase, renderBody, rowMark,
+  outgoing, onRead, onReply, onRetract, jumpTo, jumpSeq, lookup, onFound,
+  fileHref, mdBase, renderBody, rowMark,
   onFocusAgent, tierOf, hasAgent, refs }: MailListProps) {
   // ONE order, by send time, always — never grouped, never re-grouped.
   //
@@ -236,38 +240,44 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, rowS
   // "loading…" until then — so "not in `all`" here means NOT IN THE LOADED
   // WINDOW, which is a smaller fact than "absent".
   //
-  // ⚠ AND THE DIFFERENCE IS THE WHOLE OF THIS BLOCK. Every box route returns
-  // a slice (the newest 50, or 100 for the org inbox), so a retained message
-  // at position 51 is still there — and saying it is gone on the strength of
-  // a window is a claim about the message made from what we happen to hold.
-  // When a caller can ask the exact question we ask it; when none can, we say
-  // only what we know.
+  // ⚠ EVERY BOX ROUTE RETURNS A SLICE, so a retained message outside it is
+  // still there: saying it is gone from a window is a claim about the message
+  // made from what we happen to hold. With a `lookup` we ask; without one we
+  // say only that it is not in this folder.
   const outsideWindow = Boolean(jumpTo)
     && !all.some((m) => keyOf(m) === jumpTo)
-  // ⚠ ONE VALUE, THREE STATES, keyed on the request. Two separate flags —
-  // "asked" and "answer" — flipped the first as soon as the question was
-  // SENT, so the in-flight moment read as a refusal: the pane said the
-  // message was gone while it was still looking for it.
+  // ⚠ `failed` IS SEPARATE FROM A NULL ROW: "the box does not hold it" and
+  // "the question got no answer" are different facts, and only the first is
+  // about the message.
   const [ask, setAsk] = useState<
-    { asking: boolean; row: MailRow | null } | null>(null)
+    { asking: boolean; row: MailRow | null; failed: boolean } | null>(null)
+  // a deliberate retry: bumping this re-runs the effect. Nothing else does —
+  // a failed lookup that retried itself would be a poll on an error path.
+  const [retry, setRetry] = useState(0)
+  const foundRef = useRef(onFound); foundRef.current = onFound
   const key = jumpKey(jumpTo, jumpSeq)
   useEffect(() => {
     if (!outsideWindow || !jumpTo || !lookup) return
     let live = true
-    setAsk({ asking: true, row: null })
+    setAsk({ asking: true, row: null, failed: false })
     // one id, once, only because a reference landed outside the window —
     // never on the poll that keeps the list fresh
     Promise.resolve(lookup(jumpTo))
-      .then((m) => { if (live) setAsk({ asking: false, row: m ?? null }) })
-      .catch(() => { if (live) setAsk({ asking: false, row: null }) })
+      .then((m) => {
+        if (!live) return
+        setAsk({ asking: false, row: m ?? null, failed: false })
+        if (m) foundRef.current?.(m)
+      })
+      .catch(() => {
+        if (live) setAsk({ asking: false, row: null, failed: true })
+      })
     return () => { live = false }
-  }, [outsideWindow, jumpTo, key, lookup])
-  // ⚠ THE ANSWER IS MATCHED TO THE QUESTION BY THE ROW'S OWN ID. A previous
-  // lookup's row renders only if it IS the message now being asked for — and
-  // if it is, it is the right answer whichever click fetched it. `lookup` is
-  // the caller's, so a row that is not the one asked for is refused.
+  }, [outsideWindow, jumpTo, key, lookup, retry])
+  // ⚠ THE ANSWER IS MATCHED TO THE QUESTION BY THE ROW'S OWN ID: `lookup` is
+  // the caller's, so a row that is not the message asked for is refused.
   const lookingUp = outsideWindow && Boolean(lookup)
     && (!ask || ask.asking)
+  const lookupFailed = outsideWindow && Boolean(ask?.failed)
   const foundOutside = ask && !ask.asking && ask.row
     && keyOf(ask.row) === jumpTo ? ask.row : null
   // ⚠ THE THREE OUTCOMES ARE DECIDED BY THE READING PANE'S BRANCH ORDER, not
@@ -560,19 +570,25 @@ export function MailList({ pending = [], delivered = [], waitLabel, sender, rowS
                 that this viewer is not allowed to see it, and an explanation
                 that discloses the thing it is refusing is not a refusal. */}
             {lookingUp
-              /* ⚠ NOT "not here" YET. The message is outside the loaded
-                 window and the exact question is in flight; saying it is
-                 gone now would be a confident wrong answer during the one
-                 second somebody is looking at it. */
+              /* the question is in flight: not an answer yet, so not "gone" */
               ? <span className="mailer-nojump looking">
                   Looking for that message…
                 </span>
-              : jumpMissing
-                ? <span className="mailer-nojump">
-                    That message is not in this folder. It may have been
-                    retracted, or it may not be one you can open.
+              : lookupFailed
+                /* ⚠ A FAILED QUESTION IS NOT A NEGATIVE ANSWER — the message
+                   may be there. The retry is deliberate: an error path that
+                   retries itself is a storm. */
+                ? <span className="mailer-nojump failed">
+                    Could not check whether that message is here.{' '}
+                    <button type="button" className="mailer-retry"
+                      onClick={() => setRetry((n) => n + 1)}>try again</button>
                   </span>
-                : shown.length ? 'select a mail to read it' : ''}
+                : jumpMissing
+                  ? <span className="mailer-nojump">
+                      That message is not in this folder. It may have been
+                      retracted, or it may not be one you can open.
+                    </span>
+                  : shown.length ? 'select a mail to read it' : ''}
           </div>
         )}
       </div>
@@ -737,16 +753,29 @@ export function InboxView({ slug, nid, onRetract, jumpTo, jumpSeq, tier, onFocus
   // knowable until it has loaded, and the panel mounts before that.
   const foldedJump = useRef<string | null>(null)
   useEffect(() => {
+    let cleanup: (() => void) | undefined
     const key = jumpKey(jumpTo, jumpSeq)
     if (!jumpTo || !box || foldedJump.current === key) return
     foldedJump.current = key
     const here = (rows: MailRow[] | undefined) =>
       (rows ?? []).some((m) => m.id === jumpTo)
-    if (here(box.delivered) || here(box.pending)) setFolder('inbox')
-    else if (here(box.sent)) setFolder('sent')
-    // in NEITHER: the folder is left where it is and MailList says so. Moving
-    // to a folder that also lacks it would just relocate the confusion.
-  }, [jumpTo, box])
+    if (here(box.delivered) || here(box.pending)) { setFolder('inbox'); return }
+    if (here(box.sent)) { setFolder('sent'); return }
+    // ⚠ IN NEITHER LOADED LIST: THE PANEL ASKS, not the list. A list knows
+    // only that the id is missing from ITS window, so the Sent list would ask
+    // for a message the inbox list is holding and pull the reader out of the
+    // folder they chose. The answer's folder is decided here:
+    // `@mail:org/node/<nid>/<id>` names that node's RECEIVED mail.
+    let live = true
+    Promise.resolve(nodeLookup(jumpTo))
+      .then((m) => { if (live && m) setFolder('inbox') })
+      .catch(() => { /* the list below reports the failure and offers a retry */ })
+    cleanup = () => { live = false }
+    // ⚠ `jumpSeq` IS IN THE DEPS because this effect READS it. Without it a
+    // repeat request never re-runs, and the latch compares a new key the
+    // effect is never woken to look at.
+    return cleanup
+  }, [jumpTo, jumpSeq, box, nodeLookup])
   useEffect(() => {         // let go as soon as the server has caught up
     if (!box) return
     setDropped((d) => d.filter((id) => box.pending.some((m) => m.id === id)))
@@ -780,9 +809,11 @@ export function InboxView({ slug, nid, onRetract, jumpTo, jumpSeq, tier, onFocus
             // sent-to-user attachments were COPIED into this node's own
             // outbox/ on send (api.py routes them through _agent_send_file),
             // so the same scratch-keyed href serves the Sent folder too
+            /* ⚠ NO `lookup` HERE. The Sent rows are copies of mail that lives
+               in other boxes, so an exact answer never belongs in this folder
+               — the panel above asks, and opens the folder that holds it. */
             : <MailList delivered={box.sent ?? []} outgoing jumpTo={jumpTo}
                 jumpSeq={jumpSeq} tierOf={tierOf} hasAgent={hasAgent} refs={refs}
-                lookup={nodeLookup}
                 onFocusAgent={onFocusAgent}
                 fileHref={(p) => fileUrl(slug, nid, p)}
                 mdBase={() => fileBase(slug, nid)} />}

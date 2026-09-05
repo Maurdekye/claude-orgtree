@@ -71,7 +71,14 @@ TOKENS = [
 PROSE = [
     "see @item:alpha/git-review-workspace, then @mail:alpha/user/ab12. done",
     "`@doc:alpha/d1a2b3c4` in backticks is still a mention",
+    # ⚠ EMBEDDED IN A WORD IS NOT A REFERENCE (Astra ruling): matching the
+    # right target does not make arbitrary text somebody wrote on purpose.
     "not-a-token@item:alpha/thing is attached to a word",
+    "x@agent:alpha/one",
+    # …and the positive control that keeps it honest: two canonical tokens
+    # written with NOTHING between them, where the second one starts right
+    # after an id character and must still be found
+    "@agent:alpha/one@2@item:alpha/two",
     "https://x.dev/@item:alpha/thing is a URL",
     "@item:alpha/thing.",
     "@item:alpha/thing.json",
