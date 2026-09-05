@@ -1646,7 +1646,9 @@ test('§37 Waiting is painted, word and dot, and not with Open’s colour', () =
   assert.notEqual(paintOf('.docket-status.status-waiting', 'color'),
     paintOf('.docket-status.status-open', 'color'),
     'Waiting and Open declare the same colour again')
-// ───────────────────────────────────────────────────────── §37 the sort selector
+})
+
+// ───────────────────────────────────────────────────────── §38 the sort selector
 //
 // The docket could only be read in one order, and that order answers only one
 // of the three questions asked of it. These drive the REAL <select> the way a
@@ -1684,7 +1686,7 @@ const SORT_FIXTURE = [
            status_at: '2026-09-03T00:00:00.000Z' }),
 ]
 
-uiTest('§37 three orders, and Updated is still the default', async (mount) => {
+uiTest('§38 three orders, and Updated is still the default', async (mount) => {
   forgetGroupChoice(); forgetSortChoice()
   // the server hands them back in ITS order (newest docket update first)
   mockWorkItems([SORT_FIXTURE[0]!, SORT_FIXTURE[1]!, SORT_FIXTURE[2]!])
@@ -1712,7 +1714,7 @@ uiTest('§37 three orders, and Updated is still the default', async (mount) => {
     /most recent status change first/)
 })
 
-uiTest('§37b a progress-only update does not advance status order', async (mount) => {
+uiTest('§38b a progress-only update does not advance status order', async (mount) => {
   forgetGroupChoice(); forgetSortChoice()
   // `noted` was updated a minute ago but has not changed state in days;
   // `moved` really did transition, earlier today.
@@ -1734,7 +1736,7 @@ uiTest('§37b a progress-only update does not advance status order', async (moun
     'a progress note is not a state change, and must not outrank one')
 })
 
-uiTest('§37c ties break deterministically, and repeat across re-renders',
+uiTest('§38c ties break deterministically, and repeat across re-renders',
 async (mount) => {
   forgetGroupChoice(); forgetSortChoice()
   // ⚠ THE STORED ORDER IS THE OPPOSITE of a working tie-break's answer, so a
@@ -1755,7 +1757,7 @@ async (mount) => {
   assert.deepEqual(titles(el), first, 'the same list must come back the same')
 })
 
-uiTest('§37d sorting orders SIBLINGS inside their parent, not the whole tree flat',
+uiTest('§38d sorting orders SIBLINGS inside their parent, not the whole tree flat',
 async (mount) => {
   forgetGroupChoice(); forgetSortChoice()
   const parent = mkItem({ slug: 'the-parent', title: 'the-parent',
@@ -1786,7 +1788,7 @@ async (mount) => {
     'both rows are still CHILDREN — sorting flattened the tree')
 })
 
-uiTest('§37e an item from an older backend sorts by CREATION, never by its edit clock',
+uiTest('§38e an item from an older backend sorts by CREATION, never by its edit clock',
 async (mount) => {
   forgetGroupChoice(); forgetSortChoice()
   // ⚠ THE PAYLOAD WITHOUT THE FIELD. The server derives `status_at` for every
