@@ -37,7 +37,7 @@ import {
 
 /** every kind, named here so a new one added to the union without a label is
  *  a failure rather than a silent fall-through */
-const KINDS: FreezeKind[] = ['halted', 'spend', 'auth', 'connection', 'limit']
+const KINDS: FreezeKind[] = ['halted', 'spend', 'auth', 'balance', 'connection', 'limit']
 
 // ------------------------------------------------------ §1 classification
 test('§1 a leg per kind — each is classified as itself, not as `limit`', () => {
@@ -51,6 +51,11 @@ test('§1 a leg per kind — each is classified as itself, not as `limit`', () =
   // auth: carries limit:true, which is exactly why it used to read as one
   assert.equal(freezeKind({ limit: true, cause: 'auth' }), 'auth',
     'an auth freeze carries limit:true — that is the whole trap')
+  // balance (an OpenRouter 402, 2026-09-05): the same limit:true shape, and
+  // the same trap — it read "usage limit" while the remedy is the key's credit
+  assert.equal(freezeKind({ limit: true, cause: 'balance' }), 'balance',
+    'a balance freeze carries limit:true — same trap as auth')
+  assert.equal(freezeKind({ limit: true, cause: 'balance' }, true), 'halted')
   // spend
   assert.equal(freezeKind({ spend: true }), 'spend')
   // halted outranks everything: a fable lock's clock can never fire, so any
@@ -97,6 +102,9 @@ test('§4 the words a reader would be misled by are not used for other kinds', (
     'a spend freeze must not read as a usage limit')
   assert.notEqual(FREEZE_LABEL_SHORT.auth, FREEZE_LABEL_SHORT.limit)
   assert.notEqual(FREEZE_LABEL_SHORT.spend, FREEZE_LABEL_SHORT.limit)
+  assert.notEqual(FREEZE_LABEL.balance, FREEZE_LABEL.limit,
+    'a balance freeze must not read as a usage limit — a 402 is not a wall')
+  assert.notEqual(FREEZE_LABEL_SHORT.balance, FREEZE_LABEL_SHORT.limit)
   // and each names its own remedy rather than a capacity wait
   assert.match(FREEZE_LABEL.auth, /credential/i)
   assert.match(FREEZE_LABEL.spend, /spend/i)

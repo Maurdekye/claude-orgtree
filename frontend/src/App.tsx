@@ -815,7 +815,11 @@ export default function App() {
                           ? <>credential rejected — {frozen.length} agent
                             {frozen.length > 1 ? 's' : ''} frozen
                             {' · replace it, then ▶ to resume'}</>
-                          : frozen.some((n) => freezeKind(n.frozen) === 'auth')
+                          : frozen.every((n) => freezeKind(n.frozen) === 'balance')
+                          ? <>balance refused — {frozen.length} agent
+                            {frozen.length > 1 ? 's' : ''} frozen
+                            {' · check balance or in-flight requests, then ▶ to resume'}</>
+                          : frozen.some((n) => ['auth', 'balance'].includes(freezeKind(n.frozen) ?? ''))
                           ? <>{frozen.length} agent{frozen.length > 1 ? 's' : ''} frozen
                             {' · ▶ to resume'}</>
                           : <>usage limit hit — {frozen.length} agent

@@ -658,14 +658,86 @@ def _note_api_error(into: dict[str, str], code: Any, text: Any) -> None:
         into["text"] = text[:300]
 
 
-def _stream_error_detail(stream_err: dict[str, str]) -> str:
+def _strict_http_status(value: Any) -> int | None:
+    """An HTTP ERROR status the CLI reported, or None — `int` ONLY.
+
+    `True` is an int in Python and `"401"` is a digit string; both are
+    refused here on purpose. This value picks a turn's failure CLASS
+    exclusively (OpenRouter lane, 2026-09-05), so it must be a number the
+    CLI typed, never a coercion of something that merely looks like one."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value if 400 <= value <= 599 else None
+
+
+def _note_synthetic_status(into: dict[str, Any], ev: dict[str, Any],
+                           text: str) -> None:
+    """The LATEST unresolved synthetic API error, with its status — the one
+    carrier of a typed status the stream shows BEFORE the result event.
+
+    Measured in a CLI transcript on this machine (2.1.258, sdk-cli, an
+    OpenRouter-driven grok-4.6 agent, 2026-09-03T12:22:56Z): a top-level
+    assistant record with `message.model == "<synthetic>"`,
+    `isApiErrorMessage: true`, `error: "unknown"` and `apiErrorStatus: 402`
+    beside the human sentence. Presence in the stdout stream is inferred from
+    the record being the same message object; this reads the event and the
+    message and stays inert when neither carries the field.
+
+    LATEST WINS, unlike `_note_api_error` beside it: that one records the
+    originating CAUSE for the durable narrative; this one records the state
+    the turn is IN, and a 401 followed by a 402 is in the 402. Both slots
+    (`status` and `status_text`) move together so the number can never sit
+    beside another error's sentence. `_clear_synthetic_status` retires them
+    when a real assistant message follows — an error that was retried past is
+    resolved and must not classify the turn."""
+    status = _strict_http_status(ev.get("apiErrorStatus"))
+    if status is None:
+        msg = ev.get("message")
+        if isinstance(msg, dict):
+            status = _strict_http_status(
+                cast("dict[str, Any]", msg).get("apiErrorStatus"))
+    if status is None:
+        return
+    into["status"] = status
+    into["status_text"] = text.strip()[:300]
+
+
+def _clear_synthetic_status(into: dict[str, Any]) -> None:
+    """A top-level, NON-synthetic assistant message arrived: whatever API
+    error the stream showed before it was retried past. Only the typed slots
+    are cleared — `code`/`text` stay for the record (they say what the turn
+    went through, not what it died of)."""
+    into.pop("status", None)
+    into.pop("status_text", None)
+
+
+def _typed_api_status(res: dict[str, Any],
+                      stream_err: Mapping[str, Any]) -> int | None:
+    """The HTTP error status this turn ENDED on, as a strict int, or None.
+
+    Precedence: the top-level RESULT event first — `api_error_status` on a
+    result flagged `is_error` (measured 2026-08-24 for 401) — then the latest
+    unresolved synthetic status the stream showed (`_note_synthetic_status`).
+    A clean result with no synthetic left standing answers None, and None
+    means "no typed evidence": the caller falls back to the prose predicates
+    exactly as before this existed. A typed answer is never widened by prose
+    and prose never invents a number (coordinator ruling 2026-09-05)."""
+    if res.get("is_error") is True:
+        status = _strict_http_status(res.get("api_error_status"))
+        if status is not None:
+            return status
+    return _strict_http_status(stream_err.get("status"))
+
+
+def _stream_error_detail(stream_err: Mapping[str, Any]) -> str:
     """`stream_api_err` rendered for the durable record, or "".
 
     The human sentence is preferred and the typed code rides alongside it: the
     sentence is what tells the user WHICH remedy ("run `claude auth login`"),
     while the code is what survives a wording change upstream. Neither is
     trusted to be present."""
-    code, text = stream_err.get("code", ""), stream_err.get("text", "")
+    code = str(stream_err.get("code") or "")
+    text = str(stream_err.get("text") or "")
     if not (code or text):
         return ""
     detail = text or f"the CLI reported {code}"
@@ -682,7 +754,7 @@ def _stream_error_detail(stream_err: dict[str, str]) -> str:
 
 
 def _for_the_record(err_blob: str, res: dict[str, Any],
-                    stream_err: dict[str, str] | None = None) -> str:
+                    stream_err: Mapping[str, Any] | None = None) -> str:
     """`err_blob` with the CLI's own reason appended, for the DURABLE RECORD
     ONLY — `last_error` and the `turn_error_log` row.
 
@@ -12966,7 +13038,7 @@ def _run_one_turn(slug: str, nid: str,
             # session expired and could not be refreshed" — was in the CLI's
             # own transcript the whole time. RECORDING ONLY: this feeds
             # `_for_the_record` and nothing else. See D-149.
-            stream_api_err: dict[str, str] = {}
+            stream_api_err: dict[str, Any] = {}
             turn_occ = 0        # context-size HIGH-WATER over the turn's calls
                                 # (per-message point-in-time usage — see the
                                 # max() site; №24 was about the result event)
@@ -13446,6 +13518,25 @@ def _run_one_turn(slug: str, nid: str,
                                 _note_api_error(
                                     stream_api_err,
                                     ev.get("error") or _msg.get("error"), _t)
+                            # the TYPED status on the same record (latest
+                            # wins, top-level only): independent of the two
+                            # prose branches above, so a limit-worded 402
+                            # still carries its number for the lane that
+                            # classifies by number. Only an ENGINE-authored
+                            # message may set it — `<synthetic>` is a model
+                            # id no model can emit, and `isApiErrorMessage`
+                            # is the CLI's own flag on that record.
+                            if not sub and (_msg.get("model") == "<synthetic>"
+                                            or ev.get("isApiErrorMessage")
+                                            is True):
+                                _note_synthetic_status(stream_api_err, ev, _t)
+                        elif not sub:
+                            # a REAL top-level assistant message: any API
+                            # error the stream showed before it was retried
+                            # past and is resolved — it must not classify a
+                            # turn that went on to produce output. A synthetic
+                            # error AFTER this one sets the slot afresh.
+                            _clear_synthetic_status(stream_api_err)
                         u = ev.get("message", {}).get("usage") or {}
                         if u and not sub:
                             # Exact last top-level request receipt. The result
@@ -14176,6 +14267,36 @@ def _run_one_turn(slug: str, nid: str,
                 # durable turn_error_log row (before the interrupt check, so
                 # a manual ⏸ still clears everything)
                 err_blob = synth_limit_txt
+            # ── THE OPENROUTER LANE CLASSIFIES BY NUMBER (2026-09-05) ──────
+            # `_or_lane` is the spawn-stamped identity — the one fact about
+            # this turn that neither the model nor the CLI's prose can move.
+            # `_or_typed` is the strict HTTP status the turn ENDED on, or None;
+            # it is computed ONCE here and read by every branch below, so the
+            # class a status picks cannot differ between two sites (the
+            # `_auth_fail` rule). Every other lane sees None and runs the
+            # prose predicates exactly as it did before this existed.
+            _or_lane = str(st.get("ran_as") or "") == OPENROUTER_IDENTITY
+            _or_typed = (_typed_api_status(res, stream_api_err)
+                         if _or_lane else None)
+            if (not err_blob and _or_lane and not parked
+                    and stream_api_err.get("status") is not None
+                    and res.get("is_error") is not True
+                    and not str(res.get("result") or "").strip()):
+                # the REAL SHAPE of a gateway refusal, measured in a CLI
+                # transcript on this machine (2.1.258, sdk-cli, 2026-09-03):
+                # a `<synthetic>` assistant record flagged isApiErrorMessage
+                # with `apiErrorStatus: 402` — and then the turn ends
+                # NORMALLY, `is_error` unset, `result` empty. Nothing above
+                # sets `err_blob` for that (the limit adoption needs the word
+                # "limit", and this 402's sentence has none), so the turn was
+                # booked COMPLETED: no error row, no mail, no freeze, the
+                # agent silently stopped. Same adoption as `synth_limit_txt`
+                # directly above — engine-authored text, never the agent's —
+                # gated on a status a model cannot emit, and only when no
+                # real assistant message followed (`_clear_synthetic_status`).
+                err_blob = (str(stream_api_err.get("status_text") or "")
+                            or f"the CLI reported API status "
+                               f"{stream_api_err['status']}")
             with _state_lock:
                 if st.pop("interrupted", None):
                     err_blob = ""     # a manual ⏸ pause is not a failure
@@ -14204,6 +14325,22 @@ def _run_one_turn(slug: str, nid: str,
             # and on a healthy machine cli_diagnosis() is None, so this is
             # byte-for-byte a no-op.
             err_blob = _name_the_cause(err_blob)
+            # ── WHICH CLASS, decided ONCE (2026-09-05). On the OpenRouter lane
+            # a typed status chooses EXCLUSIVELY: 401/402/429 are the freeze
+            # class, 5xx the bounded transient retry, anything else terminal
+            # — a 403 whose sentence happens to say "limit" stays terminal
+            # and a 503 saying it stays a retry. Prose is consulted only when
+            # there is no number at all (`_or_typed is None`), which is also
+            # every non-OpenRouter turn: those two locals are then exactly the
+            # predicates the sites below used to call inline.
+            if _or_typed is None:
+                _limit_class = _looks_like_usage_limit(err_blob)
+                _net_class = _looks_like_connection_failure(err_blob)                     or _died_in_flight(exit_only=exit_only,
+                                       started=saw_agent_out[0],
+                                       boundary=saw_result[0])
+            else:
+                _limit_class = _or_typed in (401, 402, 429)
+                _net_class = _or_typed >= 500
             if err_blob:
                 if "No conversation found" in err_blob or "no conversation" in err_blob.lower():
                     with store.DOC_LOCK:
@@ -14275,7 +14412,13 @@ def _run_one_turn(slug: str, nid: str,
                 # to stop. Also the reason the answer is computed HERE and
                 # not inside the freeze block — `res` is final by now, and a
                 # second call there would be a second thing to keep in step.
-                _auth_fail = _looks_like_auth_failure(res)
+                _auth_fail = (_looks_like_auth_failure(res)
+                              if _or_typed is None else _or_typed == 401)
+                # a BALANCE refusal (OpenRouter 402): the gateway declined to
+                # serve the request against the key's credit — which is not
+                # proof the balance is exhausted (the measured wording names
+                # in-flight requests), so it is probed, bounded, then parked.
+                _balance = _or_typed == 402
                 # ⚠ THE POOL FACT IS TAKEN AT FREEZE TIME, NOT AT WAKE TIME
                 # (D-156). `None` = "this freeze never asked the resolver"
                 # — the 401 branch and the api-key branch below both leave it
@@ -14283,7 +14426,7 @@ def _run_one_turn(slug: str, nid: str,
                 # a freeze that ASKED and was told "nowhere has capacity" may
                 # later be woken by capacity appearing; see auto_resume_ready.
                 _pool_dry: bool | None = None
-                if _looks_like_usage_limit(err_blob) and not handled:
+                if _limit_class and not handled:
                     # what actually served this turn — stamped at spawn from
                     # the resolved env; an unstamped turn ran ambient, which
                     # is the primary lane
@@ -14297,10 +14440,22 @@ def _run_one_turn(slug: str, nid: str,
                             "the credential was rejected (401) — broken and "
                             "in need of replacing, not out of capacity; no "
                             "lane was marked"))
-                    elif _served in ("api-key", "key:unattributed") or not _tier:
+                    elif (_served in ("api-key", "key:unattributed",
+                                      OPENROUTER_IDENTITY) or not _tier):
                         # the API-key lane has no subscription capacity to
                         # mark, and a token no row explains has no lane —
-                        # the freeze path below owns both, unchanged
+                        # the freeze path below owns both, unchanged.
+                        # ⚠ AND THE OPENROUTER LANE (2026-09-05, measured):
+                        # `accounts.resolve` answers "primary, available" for
+                        # an `or-*` tier whenever a Claude login exists, so
+                        # an OpenRouter 429 was "re-driven on the next
+                        # account in line" — the next spawn of an OR tier
+                        # takes the same gateway key (spawn_env), so that is
+                        # the same wall, up to four real requests before the
+                        # freeze finally happened. The account roster cannot
+                        # serve this lane; it is never asked. Keyed on the
+                        # spawn identity, so a prose-only rate limit takes
+                        # the same door as a typed one.
                         pass
                     else:
                         # when does THIS lane refresh? The prose first; the
@@ -14362,7 +14517,7 @@ def _run_one_turn(slug: str, nid: str,
                             f"usage limit recorded for {_tier}; no other "
                             f"account has capacity for it"))
                 # user ruling: fable weekly-limit exhaustion → org-wide fable freeze
-                if _looks_like_usage_limit(err_blob) and not handled:
+                if _limit_class and not handled:
                     # ANY model's usage limit → the agent FREEZES (user ruling):
                     # the turn text (mail included — it was already drained) is
                     # kept so the org-wide ▶ resume replays it verbatim
@@ -14433,6 +14588,11 @@ def _run_one_turn(slug: str, nid: str,
                             # green on a node nothing can wake at all.)
                             if _auth_fail:
                                 fz["cause"] = "auth"
+                            elif _balance:
+                                # a STRING for the reason `auth` is one (the
+                                # `_resumable` allowlist); ▶ resumes it, the
+                                # timer probes it while it has a horizon.
+                                fz["cause"] = "balance"
                             else:
                                 fz.pop("cause", None)
                             if _pool_dry is None:
@@ -14585,10 +14745,23 @@ def _run_one_turn(slug: str, nid: str,
                                 # do instead, and `reset_src` stops
                                 # describing a number that is not there.
                                 fz["until_ts"] = None
-                                fz["until"] = ("credential rejected — replace "
-                                               "it, then resume")
+                                fz["until"] = (
+                                    # the OpenRouter key is replaced in the
+                                    # app, not with `claude auth login`: the
+                                    # label names the door (2026-09-05)
+                                    "credential rejected — replace the "
+                                    "OpenRouter key in App settings → "
+                                    "Providers, then resume"
+                                    if _or_lane else
+                                    "credential rejected — replace "
+                                    "it, then resume")
                                 fz["reset_src"] = "auth"
                                 _stamped_ts = None
+                                if _or_lane:
+                                    # the panel's cached /api/v1/key verdict
+                                    # must not keep saying "connected" beside
+                                    # a node the gateway just refused
+                                    openrouter.forget_key_status()
                                 # …and TELL SOMEBODY. The label above is read
                                 # by opening the node; nothing about a dead
                                 # credential ever puts it in front of the one
@@ -14598,6 +14771,53 @@ def _run_one_turn(slug: str, nid: str,
                                 # remedy, and a manager needs one instruction
                                 # rather than two competing ones.
                                 _parked = "auth"
+                            if _balance and not _auth_fail:
+                                # ── OPENROUTER 402: PROBE, BOUNDED, THEN PARK
+                                # (2026-09-05). The gateway declined to serve
+                                # the request against the key's credit. That
+                                # is NOT proof the balance is exhausted — the
+                                # captured wording names in-flight requests
+                                # that may settle — so it is re-tried on the
+                                # blind floor like a rate-limit-class text,
+                                # counted like `net_fail_run`, and parked
+                                # after NET_RETRY_MAX consecutive refusals
+                                # with the one instruction that fits: look at
+                                # the balance or the in-flight requests, then
+                                # ▶. Never a billing window (a gateway wall is
+                                # nothing the Anthropic key can serve), never
+                                # an account switch (the OR lane skips the
+                                # resolver above), never a spend.
+                                # The probe itself is the auto-resume timer's
+                                # ordinary `limit + probe` path, claimed
+                                # per (provider, key namespace, tier) through
+                                # `_claim_limit_probes` at dispatch — this
+                                # block only writes the record it reads.
+                                _br = int(o2.node(nid).get(
+                                    "balance_probe_run") or 0) + 1
+                                o2.node(nid)["balance_probe_run"] = _br
+                                fz["schedule_kind"] = "probe"
+                                if _br >= NET_RETRY_MAX:
+                                    fz["until_ts"] = None
+                                    fz["until"] = (
+                                        "balance refused %d turns running — "
+                                        "check balance or in-flight requests, "
+                                        "then resume manually" % _br)
+                                    fz["reset_src"] = "capped"
+                                    _stamped_ts = None
+                                    _parked = "balance"
+                                else:
+                                    fz["until_ts"] = time.time() + PROBE_FLOOR
+                                    fz["until"] = (
+                                        "balance refused — check balance or "
+                                        "in-flight requests, then resume; "
+                                        "probing again in ~5 min (%d/%d)"
+                                        % (_br, NET_RETRY_MAX))
+                                    fz["reset_src"] = "probe"
+                                    # no off-lock readout pass: the host
+                                    # subscription's usage says nothing about
+                                    # a gateway balance, and the label above
+                                    # must stay the one that names the remedy
+                                    _stamped_ts = None
                             fz["error"] = err_blob[:300]
                             # replay only what the CLI actually consumed: an
                             # unconsumed batch folds back as MAIL (C1) and
@@ -14822,9 +15042,7 @@ def _run_one_turn(slug: str, nid: str,
                     if org.node(nid)["model"] == "fable" and _trusted_blob \
                             and _looks_like_fable_tier_limit(err_blob):
                         notify(slug, nid, "fable_limit")
-                elif _looks_like_connection_failure(err_blob) or _died_in_flight(
-                        exit_only=exit_only, started=saw_agent_out[0],
-                        boundary=saw_result[0]):
+                elif _net_class:
                     # ⚠ TWO classifiers, ONE branch, and that is the whole
                     # shape of the 2026-08-21 fix: the retry machinery below
                     # was already correct — the shape-classified death simply
@@ -14849,7 +15067,9 @@ def _run_one_turn(slug: str, nid: str,
                     # was a CLI that died mid-answer having written no reason
                     # at all. Printing "network interruption" there would send
                     # the next debugger after a router that is probably fine.
-                    kind_txt = ("network interruption"
+                    kind_txt = (f"the provider answered {_or_typed}"
+                                if _or_typed is not None else
+                                "network interruption"
                                 if _looks_like_connection_failure(err_blob)
                                 else "the CLI died mid-response")
                     run = 0
@@ -15004,6 +15224,10 @@ def _run_one_turn(slug: str, nid: str,
                          "environment or arguments are wrong"
                          if exit_only and not saw_agent_out[0] else
                          "the turn ran and then failed with an error")
+                if _or_typed is not None:
+                    # the NUMBER, never the provider's sentence (rule 2 on
+                    # `_for_the_record`: this text becomes mail)
+                    _door += f" (API status {_or_typed})"
                 if not handled and _bump_hard_fail(slug, nid) == 1:
                     # ⚠ the NARROW blob, deliberately: this text becomes MAIL
                     # to the agent and drives its superior. See rule 2 on
@@ -15602,6 +15826,21 @@ _PARKED_KINDS: Final[dict[str, tuple[str, str]]] = {
         "The remedy is the operator's: replace the credential, then ▶ resume "
         "it. Resuming it first only spends another turn on the same refusal. "
         "If you are not the one who holds that credential, pass this up."),
+    "balance": (
+        "is parked after repeated BALANCE refusals",
+        "Its provider (the OpenRouter gateway) answered %d turns in a row "
+        "with a 402: the request was refused against the key's credit "
+        "balance.\n\n"
+        "⚠ THIS IS NOT PROOF THE BALANCE IS EXHAUSTED, and it is not a usage "
+        "limit. The gateway's own wording names in-flight requests that may "
+        "still settle, so orgtree re-tried a bounded number of times on a "
+        "short probe and then stopped rather than spending a turn on the "
+        "same refusal every few minutes indefinitely. There is no reset time "
+        "and nothing will wake it.\n\n"
+        "The remedy is the operator's: check the OpenRouter balance (App "
+        "settings → Providers shows the key's credit) or wait for in-flight "
+        "requests to settle, then ▶ resume it. Resuming it first only spends "
+        "another turn on the same refusal." % NET_RETRY_MAX),
     "untrusted": (
         "is parked after repeated SELF-REPORTED limits",
         "Several turns in a row, this agent's OWN final answer looked like a "
@@ -15805,7 +16044,11 @@ def _limit_announce(slug: str, nid: str, lane: str,
             n = org.node(nid)
             fz = cast("dict[str, Any]", n.get("frozen") or {})
             if not fz.get("limit") or fz.get("untrusted") \
-                    or fz.get("cause") == "auth":
+                    or fz.get("cause") in ("auth", "balance"):
+                # …and a BALANCE refusal (OpenRouter 402): a declined
+                # request, not a wall — it is probed quietly like the net
+                # retry and announced by `_parked_announce` only once it
+                # runs up to its cap (2026-09-05)
                 return False
             run = int(n.get("limit_run") or 0) + 1
             n["limit_run"] = run
@@ -16347,6 +16590,10 @@ def _after_turn(slug: str, nid: str, org: Org, res: dict[str, Any],
             # watches the node get stuck again must be told again — otherwise
             # the fix that did not work is itself silent.
             n.pop("parked_run", None)
+            # …and the OpenRouter balance-refusal run (2026-09-05): only a
+            # turn the gateway actually SERVED proves the credit is usable
+            # again — a status alone never does, in either direction
+            n.pop("balance_probe_run", None)
             # …and any run of TERMINAL failures. This is what re-arms the
             # abandonment announcement: one turn that actually works means the
             # next terminal failure is a NEW episode and gets said out loud
@@ -19509,6 +19756,14 @@ def auto_resume_ready(org: Org, now: float | None = None) -> set[str]:
             # be able to perform it. This suppresses the TIMER, not the person.
             # (Placed with the untrusted guard, before every branch below,
             # including the fallback fast-wake.)
+            continue
+        if fz.get("cause") == "balance" and fz.get("until_ts") is None:
+            # an OpenRouter balance refusal that ran up to its cap
+            # (2026-09-05): the probe budget is spent, and the org-wide
+            # 5-minute floor below must not keep re-presenting the same key
+            # to the same refusal. ▶ still resumes it — the operator who
+            # topped up the balance is the one who knows. While it still
+            # carries a horizon it is an ordinary probe-kind limit below.
             continue
         if fz.get("untrusted") and fz.get("until_ts") is None:
             # a run of self-diagnosed limits, capped: nothing here is evidence

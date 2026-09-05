@@ -1405,7 +1405,10 @@ def _rederive_freeze_reset(node: dict[str, Any],
     # (This was only reachable once `cause` reached the payload at all: the
     # projection dropped it, so this function could not see it and quietly
     # clobbered the one label that says what to do.)
-    if fz.get("cause") == "auth":
+    if fz.get("cause") in ("auth", "balance"):
+        # …and a BALANCE refusal (OpenRouter 402, 2026-09-05) for the same
+        # reason: its label names the remedy ("check balance or in-flight
+        # requests"), and the roster's capacity is not the question
         return
     # ⚠ THE PAYLOAD FIELD IS `tier`, NOT `model`. The node DOCUMENT calls it
     # `model`; `tree()` renames it on the way out. Reading `model` here found

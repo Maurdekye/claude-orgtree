@@ -186,6 +186,10 @@ class FrozenInfo(TypedDict, total=False):
     # carrying any True key outside its allowlist, which would make ▶ skip the
     # node FOREVER — and ▶ is exactly what an operator needs after replacing
     # the credential. `untrusted` fell into that trap the day it was added.
+    # "balance" = an OpenRouter 402 (2026-09-05): the gateway refused the
+    # request against the key's credit — NOT proof the balance is exhausted,
+    # so the timer probes it a bounded number of times (`balance_probe_run`,
+    # NET_RETRY_MAX) and then parks it with `until_ts: None`; ▶ resumes it.
     cause: str
     # what `accounts.resolve` said about this tier AT FREEZE TIME: "dry"
     # (nowhere had capacity) or "open" (capacity was standing available and

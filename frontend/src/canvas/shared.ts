@@ -1294,9 +1294,11 @@ export function sizeOf(id: string): { w: number; h: number } {
 // reset that nobody performs. `spend` outranks `limit` because a spend freeze
 // also carries limit-ish shape but is released by raising the limit, not by
 // waiting. `auth` outranks `limit` for the same reason — same shape, different
-// remedy. `connection` is last of the real kinds because it is the only one
-// that retries itself.
-export type FreezeKind = 'halted' | 'spend' | 'auth' | 'connection' | 'limit'
+// remedy. `balance` (an OpenRouter 402, 2026-09-05) likewise: limit-shaped, but
+// the remedy is the key's credit or its in-flight requests, and after its
+// bounded probes it parks until a person resumes it. `connection` is last of
+// the real kinds because it is the only one that retries itself.
+export type FreezeKind = 'halted' | 'spend' | 'auth' | 'balance' | 'connection' | 'limit'
 
 export function freezeKind(
   fz: { connection?: boolean | null; limit?: boolean | null
@@ -1307,6 +1309,7 @@ export function freezeKind(
   if (!fz) return null
   if (fz.spend) return 'spend'
   if (fz.cause === 'auth') return 'auth'
+  if (fz.cause === 'balance') return 'balance'
   // a PURE connection freeze only — a record carrying both flags is a limit
   // whose wake waits on the auto-resume toggle (D-122)
   if (fz.connection && !fz.limit) return 'connection'
@@ -1378,6 +1381,7 @@ export const FREEZE_LABEL: Record<FreezeKind, string> = {
   halted: 'HALTED — fable lock',
   spend: 'spend limit',
   auth: 'credential rejected',
+  balance: 'balance refused',
   connection: 'network',
   limit: 'usage limit',
 }
@@ -1387,6 +1391,7 @@ export const FREEZE_LABEL_SHORT: Record<FreezeKind, string> = {
   halted: 'halted',
   spend: 'spend',
   auth: 'credential',
+  balance: 'balance',
   connection: 'net',
   limit: 'limit',
 }

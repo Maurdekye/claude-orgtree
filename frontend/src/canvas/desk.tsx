@@ -1593,6 +1593,10 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
                 // connection branch does rather than say it twice
                 : node.frozen.cause === 'auth'
                 ? node.frozen.until.replace(/^credential rejected — /, '')
+                // a balance freeze's `until` likewise opens with the label's
+                // own words ("balance refused — …"); strip them the same way
+                : node.frozen.cause === 'balance'
+                ? node.frozen.until.replace(/^balance refused /, '')
                 // ⚠ NO VERB. The backend re-derives this string from the live
                 // account roster and it already says what it means ("capacity
                 // resets 3:10pm" / "capacity available — ▶ to resume" /
