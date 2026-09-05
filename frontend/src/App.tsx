@@ -54,6 +54,19 @@ const costSplitTitle = (tree: TreePayload): string => {
   return `subscription $${Math.max(0, tree.cost_usd_total - api).toFixed(2)}`
     + ` · api key $${api.toFixed(2)}`
 }
+export const costLabel = (tree: Pick<TreePayload, 'cost_usd_total' | 'cost_usd_unknown'>): string =>
+  tree.cost_usd_unknown
+    ? (tree.cost_usd_total > 0
+      ? `$${tree.cost_usd_total.toFixed(2)} estimated/incomplete` : '$?')
+    : `$${tree.cost_usd_total.toFixed(2)}`
+const costUnknownTitle = (tree: TreePayload): string => tree.cost_usd_unknown
+  ? 'recorded numeric estimate; unresolved amounts are not accounted for' : ''
+export const showCost = (tree: Pick<TreePayload, 'cost_usd_total' | 'cost_usd_unknown'>): boolean =>
+  tree.cost_usd_total > 0 || Boolean(tree.cost_usd_unknown)
+export const costTitle = (tree: TreePayload, kiosk = false): string => [
+  kiosk ? 'spend / limit' : (costSplitTitle(tree) || 'total spend'),
+  kiosk ? costSplitTitle(tree) : '', costUnknownTitle(tree),
+].filter(Boolean).join(' — ')
 const USER = '@user'       // typed actor sentinels — a node may be NAMED user/system
 const SYSTEM = '@system'
 
@@ -655,18 +668,17 @@ export default function App() {
                 {/* the bare cost chip is redundant when the kiosk spend chip
                     already shows the same figure against its limit (user
                     spec 2026-07-31) — limitless orgs keep it */}
-                {tree.cost_usd_total > 0 && !tree.kiosk?.spend_limit &&
-                  <span className="chip" title={costSplitTitle(tree) || 'total spend'}>
-                    ${tree.cost_usd_total.toFixed(2)}</span>}
+                {showCost(tree) && !tree.kiosk?.spend_limit &&
+                  <span className="chip" title={costTitle(tree)}>
+                    {costLabel(tree)}</span>}
                 {tree.fable_lock &&
                   <span className="chip bad" title={tree.fable_lock.at as string | undefined}><BlockIcon fontSize="inherit" /> fable limit</span>}
                 {tree.kiosk?.spend_limit && (
                   tree.spend_frozen
                     ? <span className="chip bad"><BlockIcon fontSize="inherit" /> spend limit reached — agents frozen</span>
                     : <span className={'chip' + (tree.cost_usd_total >= tree.kiosk.spend_limit * 0.9 ? ' bad' : '')}
-                        title={'spend / limit'
-                          + (costSplitTitle(tree) ? ' — ' + costSplitTitle(tree) : '')}>
-                        ${tree.cost_usd_total.toFixed(2)} / ${tree.kiosk.spend_limit.toFixed(2)}
+                        title={costTitle(tree, true)}>
+                        {costLabel(tree)} / ${tree.kiosk.spend_limit.toFixed(2)}
                       </span>
                 )}
                 {tree.disk ? (

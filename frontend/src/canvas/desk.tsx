@@ -1403,6 +1403,9 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
 
   const liveKids = node.children.some((c) => c.state === 'live')
   const lastTurn = node.turns?.[node.turns.length - 1]
+  // CanvasNode also covers synthetic cards, so it does not duplicate every
+  // additive TreeNode field. Real tree cards retain this field through flatten.
+  const costUnknown = 'cost_usd_unknown' in node && node.cost_usd_unknown === true
   const contextOccupancy = chat?.occupancy ?? node.occupancy
   const contextEstimated = chat?.occupancy != null
     ? chat.occupancy_estimated : node.occupancy_est
@@ -1623,16 +1626,22 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
           .map((g) => heldChip(g))}
         <RetiredFold ids={heldRet}
           render={(g) => heldChip(g, true)} />
-        {(node.cost_usd ?? 0) > 0 && (
+        {((node.cost_usd ?? 0) > 0 || costUnknown) && (
           <span className="badge dim"
             title={(node.turns ?? []).slice(-5).reverse().map((t) =>
               `${fmtShort(t.at)} · $${(t.cost ?? 0).toFixed(2)}`
               + (t.estimated ? ' est.' : '')
+              + (t.cost_source ? ` · ${t.cost_source}` : '')
+              + (t.cost_unknown_fields?.length
+                ? ` · unresolved: ${t.cost_unknown_fields.join(', ')}` : '')
               + (t.ms ? ` · ${Math.round(t.ms / 1000)}s` : '')
               + (t.denials ? ` · ${t.denials} denied` : '')
               + (t.killed ? ' · killed' : '')).join('\n')
               || 'per-turn detail appears after the next turn'}>
-            ${node.cost_usd!.toFixed(2)}</span>)}
+            {costUnknown
+              ? ((node.cost_usd ?? 0) > 0
+                ? `$${node.cost_usd!.toFixed(2)} estimated/incomplete` : '$?')
+              : `$${node.cost_usd!.toFixed(2)}`}</span>)}
         {(chat?.queued ?? 0) > 0 && <span className="badge">{chat!.queued} queued</span>}
         {/* The "ran as" badge, back for FALLBACKS ONLY (user ruling
             2026-08-25: "when an agent is running off a fallback, cite the

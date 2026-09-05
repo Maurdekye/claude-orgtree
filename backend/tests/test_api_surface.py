@@ -1374,6 +1374,8 @@ def _():
         "path": "C:/secret", "error": {"token": "secret"},
         "tiers": [{"tier": "fixture-tier", "provider": "fixture",
                    "model": "fixture-model", "seat": None,
+                   "prompt": 0.0, "price_source": "openrouter-catalog",
+                   "price_unknown": ["prompt", "prompt", "cache_read"],
                    "unknown": "secret"}],
     }]}
     try:
@@ -1387,7 +1389,9 @@ def _():
         "reason": None, "tiers": [{"tier": "fixture-tier",
                                      "provider": "fixture",
                                      "model": "fixture-model",
-                                     "seat": None}]}], result
+                                     "seat": None, "prompt": 0.0,
+                                     "price_source": "openrouter-catalog",
+                                     "price_unknown": ["prompt", "cache_read"]}]}], result
     assert "secret" not in json.dumps(result), result
 
 
@@ -1411,6 +1415,18 @@ def _():
             {"providers": [{**good["providers"][0],
                             "tiers": [{"tier": "neg-inf",
                                        "context": float("-inf")}]}]},
+            {"providers": [{**good["providers"][0],
+                            "tiers": [{"tier": "bad-price-fields",
+                                       "price_unknown": "prompt"}]}]},
+            {"providers": [{**good["providers"][0],
+                            "tiers": [{"tier": "bad-price-name",
+                                       "price_unknown": ["api_key"]}]}]},
+            {"providers": [{**good["providers"][0],
+                            "tiers": [{"tier": "bad-price-source",
+                                       "price_source": {"secret": True}}]}]},
+            {"providers": [{**good["providers"][0],
+                            "tiers": [{"tier": "invented-price-source",
+                                       "price_source": "provider-invoice"}]}]},
         )
         for bad in bad_values:
             api._providers_payload = lambda bad=bad: bad

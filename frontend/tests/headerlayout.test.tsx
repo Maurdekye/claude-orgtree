@@ -171,6 +171,38 @@ test('fresh desk preserves empty context, off process, and neutral Idle banner',
   assert.equal(banner.querySelector('svg,.cc-spin'), null)
 })
 
+test('desk cost badge distinguishes unresolved zero and positive estimates', async () => {
+  installFetch(new FakeServer())
+  const render = async (cost: number) => {
+    const n = {
+      id: `cost-${cost}`, state: 'live', tier: 'haiku', model_id: 'haiku',
+      children: [], seat: 1, grant: 0, free: 0, cost_usd: cost,
+      cost_usd_unknown: true, scope: { tools: {}, add_dirs: [] },
+      turns: [{ at: '2026-09-05T01:00:00Z', cost, denials: 0,
+        estimated: true, cost_complete: false, cost_source: 'catalog-snapshot',
+        cost_unknown_fields: ['cache_read'] }],
+    } as CanvasNode
+    const view = await mountView(
+      <DeskChat node={n} map={new Map([[n.id, n]])} op={op} slug={n.id}
+        toast={noop} pub={false} bare />, (el) => el)
+    await flush()
+    return view
+  }
+  const zero = await render(0)
+  try {
+    const badge = [...zero.el.querySelectorAll<HTMLElement>('.cc-head-meta .badge')]
+      .find((b) => b.textContent?.includes('$'))
+    assert.equal(badge?.textContent, '$?')
+    assert.match(badge?.title ?? '', /catalog-snapshot · unresolved: cache_read/)
+  } finally { await zero.unmount() }
+  const positive = await render(1.25)
+  try {
+    const badge = [...positive.el.querySelectorAll<HTMLElement>('.cc-head-meta .badge')]
+      .find((b) => b.textContent?.includes('$'))
+    assert.equal(badge?.textContent, '$1.25 estimated\/incomplete')
+  } finally { await positive.unmount() }
+})
+
 test('the MCP badge is absent for zero configured servers, not zero or unknown', async (t) => {
   installFetch(new FakeServer())
   // Case 1: no MCP servers granted at all — a claim about nothing that

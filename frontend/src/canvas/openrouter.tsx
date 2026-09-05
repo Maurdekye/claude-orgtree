@@ -63,6 +63,9 @@ const money = (v: number | null | undefined, digits = 2): string =>
 /** per-million price, trimmed: $0.14 · $2 · $10 */
 const perM = (v: number): string =>
   `$${Number.isInteger(v) ? v.toFixed(0) : v.toFixed(v < 1 ? 2 : 1).replace(/\.0$/, '')}`
+const knownPerM = (v: number | undefined, unknown: string[] | undefined,
+  field: 'prompt' | 'completion'): string =>
+  unknown?.includes(field) || v == null ? '—' : perM(v)
 const ctxK = (n: number): string =>
   n >= 1_000_000 ? `${(n / 1_000_000).toFixed(n % 1_000_000 ? 1 : 0)}M`
     : n >= 1000 ? `${Math.round(n / 1000)}K` : String(n)
@@ -126,7 +129,10 @@ export function ModelCard({ letter, color, accent, title, large }: {
  *  name, the vendor (once — it is no longer part of either name), prices, seat */
 const tierTitle = (t: ProviderTier): string =>
   `${t.label ?? modelLabel(t.model)} · ${t.name ?? ''} — ${t.vendor ?? ''} · `
-  + `${perM(t.prompt ?? 0)} in / ${perM(t.completion ?? 0)} out per 1M · seat ${fmtCredits(t.seat)}`
+  + `${knownPerM(t.prompt, t.price_unknown, 'prompt')} in / `
+  + `${knownPerM(t.completion, t.price_unknown, 'completion')} out per 1M`
+  + `${t.price_unknown?.length ? ' · incomplete catalog pricing' : ''}`
+  + ` · seat ${fmtCredits(t.seat)}`
 
 /** the whole section: head (label, switch), key row, favorites row, picker */
 export function OpenRouterSection({ provider, headRight, toast, pickerOpen,
@@ -487,7 +493,8 @@ export function ModelPicker({ doc, busy, onToggle, onClose }: {
                     than being repeated 25 times down the page. */}
                 <span className="orr-price" title="$ per 1M tokens">
                   {m.free ? 'free'
-                    : <>{perM(m.prompt)} in · {perM(m.completion)} out</>}
+                    : <>{knownPerM(m.prompt, m.price_unknown, 'prompt')} in · {' '}
+                      {knownPerM(m.completion, m.price_unknown, 'completion')} out</>}
                 </span>
                 <span className="orr-check">{on ? '✓ selected' : 'select'}</span>
               </button>

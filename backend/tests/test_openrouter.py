@@ -197,6 +197,25 @@ def main():
                    eq(sonnet["context"], 1000000, "context"),
                    eq(sonnet["tools"], True, "tools"),
                    eq(sonnet["vendor"], "anthropic", "vendor")))
+    def price_knowledge():
+        unknown = orr.card_of({"id": "probe/unknown",
+                               "pricing": {"request": "0"}})
+        zero = orr.card_of({"id": "probe/free:free", "pricing": {
+            "prompt": "0", "completion": "0", "input_cache_read": "0",
+            "input_cache_write": "0"}})
+        invalid = orr.card_of({"id": "probe/invalid", "pricing": {
+            "prompt": "nan", "completion": "-1", "input_cache_read": True}})
+        assert unknown and zero and invalid
+        eq(unknown["free"], False, "missing prompt/output are not free")
+        eq(unknown["price_unknown"],
+           ["prompt", "completion", "cache_read", "cache_write"], "unknowns")
+        eq(zero["free"], True, "explicit zero is free")
+        eq(zero["price_unknown"], [], "explicit zeros are known")
+        eq(invalid["price_unknown"],
+           ["prompt", "completion", "cache_read", "cache_write"], "invalids")
+        eq(invalid["prompt"], 0.0, "compatibility numeric stays zero")
+    check("catalog prices distinguish absent/invalid knowledge from explicit zero",
+          price_knowledge)
     check("display names: no vendor namespace, no `Vendor: ` prefix, the variant suffix stays",
           lambda: (eq(sonnet["name"], "Claude Sonnet 5", "name"),
                    eq(sonnet["label"], "claude-sonnet-5", "label"),
@@ -435,9 +454,13 @@ def main():
         doc = orr._load_state()
         doc["favorites"][0]["letter"] = "S"
         doc["favorites"][0]["name"] = "Anthropic: Claude Sonnet 5"
+        doc["favorites"][0].pop("price_unknown", None)
+        doc["favorites"][0].pop("price_source", None)
         orr._save_state(doc)
         eq(orr.favorites()[0]["letter"], "C", "recomputed on read")
         eq(orr.favorites()[0]["name"], "Claude Sonnet 5", "prefix stripped on read")
+        eq(orr.favorites()[0]["price_source"], "legacy-catalog-snapshot", "legacy source")
+        eq(orr.favorites()[0]["price_unknown"], [], "nonzero legacy prices retained")
     check("a favorite stored under an older rule reads under the current one", old_rule_record)
     orr.add_favorite("deepseek/deepseek-v4")
     orr.add_favorite("anthropic/claude-sonnet-5")          # idempotent
@@ -903,9 +926,9 @@ def main():
           lambda: (eq(orr.tier_infos()[0]["tier"], "or-anthropic-claude-sonnet-5", "tier"),
                    eq(orr.tier_infos()[0]["provider"], "openrouter", "provider"),
                    eq(sorted(orr.tier_infos()[0]),
-                      sorted(["tier", "provider", "seat", "model", "letter", "color",
-                              "accent", "name", "label", "vendor", "prompt", "completion",
-                              "context"]),
+                       sorted(["tier", "provider", "seat", "model", "letter", "color",
+                               "accent", "name", "label", "vendor", "prompt", "completion",
+                               "price_unknown", "price_source", "context"]),
                       "keys"),
                    no_secret(orr.tier_infos(), "tier_infos")))
 

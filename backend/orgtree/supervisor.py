@@ -15987,6 +15987,14 @@ def _log_turn_error(slug: str, nid: str, text: str) -> None:
         pass
 
 
+def _reported_cost(value: Any) -> float | None:
+    """A provider amount safe to treat as complete; bool is not a dollar."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    out = float(value)
+    return out if _math.isfinite(out) and out >= 0 else None
+
+
 def _after_turn(slug: str, nid: str, org: Org, res: dict[str, Any],
                 st: dict[str, Any], occ: int = 0,
                 on_key: bool = False,
@@ -16001,7 +16009,7 @@ def _after_turn(slug: str, nid: str, org: Org, res: dict[str, Any],
     needlessly compact-split the node."""
     if nid not in org.nodes:
         return
-    cost = float(res.get("total_cost_usd") or 0.0)
+    _tier0 = str(org.node(nid).get("model") or "")
     # THE OPENROUTER LANE'S COST (2026-09-02, measured on 2.1.258). The CLI
     # canonicalizes an `anthropic/…` id (modelUsage.canonicalModel) and
     # prices it at LIST (`costBasis: "list"`) — exactly OpenRouter's
@@ -16016,12 +16024,15 @@ def _after_turn(slug: str, nid: str, org: Org, res: dict[str, Any],
     # warm baseline — see the park site), so a warm continuation on such a
     # model can OVERSTATE input; overstating is the recoverable direction
     # (codex/antigravity precedent).
-    _tier0 = str(org.node(nid).get("model") or "")
     if openrouter.is_tier(_tier0):
+        _cli_cost = _reported_cost(res.get("total_cost_usd"))
+        cost = _cli_cost if _cli_cost is not None else 0.0
         _model_id = org.model_for(nid)
         _mu = cast("dict[str, Any]", res.get("modelUsage") or {})
         _row = cast("dict[str, Any]", _mu.get(_model_id) or {})
-        _u = cast("dict[str, Any]", res.get("usage") or {})
+        _usage_raw = res.get("usage")
+        _u = (cast("dict[str, Any]", _usage_raw)
+              if isinstance(_usage_raw, dict) else {})
         # ⚠ OPPORTUNISTIC, UNVERIFIED. We read `usage.cost` if the CLI
         # happens to surface it; we do NOT own the transport and cannot
         # request it (the fork's runner can, because it makes the HTTP
@@ -16032,25 +16043,54 @@ def _after_turn(slug: str, nid: str, org: Org, res: dict[str, Any],
         # path, not an error case. test_openrouter_cost.py constructs
         # the native case synthetically — it proves the branch works if
         # reached, not that it is ever reached.
-        _native_cost = _u.get("cost")
-        if _native_cost is None and isinstance(res.get("cost"), (int, float)):
-            _native_cost = res.get("cost")
+        _native_cost = _reported_cost(_u.get("cost"))
+        _native_source = "provider-usage"
+        if _native_cost is None:
+            _native_cost = _reported_cost(res.get("cost"))
+            _native_source = "provider-result"
         if _native_cost is not None:
-            try:
-                cost = float(_native_cost)
-                res = {**res, "total_cost_usd": cost, "_cost_complete": True}
-            except (ValueError, TypeError):
-                _native_cost = None
-        if _native_cost is None and (str(_row.get("costBasis") or "") != "list" or cost <= 0.0):
-            cost = openrouter.cost(
-                _model_id,
-                int(_u.get("input_tokens") or 0),
-                int(_u.get("cache_read_input_tokens") or 0),
-                int(_u.get("output_tokens") or 0),
-                int(_u.get("cache_creation_input_tokens") or 0))
-            res = {**res, "total_cost_usd": cost, "_cost_complete": False}
-        elif _native_cost is None:
-            res = {**res, "_cost_complete": False}
+            cost = _native_cost
+            res = {**res, "total_cost_usd": cost, "_cost_complete": True,
+                   "_cost_source": _native_source,
+                   "_cost_unknown_fields": []}
+        elif str(_row.get("costBasis") or "") == "list" and cost > 0.0:
+            res = {**res, "_cost_complete": False,
+                   "_cost_source": "claude-cli-list",
+                   "_cost_unknown_fields": []}
+        else:
+            def _tokens(key: str, *, absent_ok: bool) -> tuple[int, bool]:
+                if key not in _u:
+                    return 0, absent_ok
+                value = _u.get(key)
+                if isinstance(value, bool):
+                    return 0, False
+                if isinstance(value, int):
+                    return (value, True) if value >= 0 else (0, False)
+                if (isinstance(value, float) and _math.isfinite(value)
+                        and value >= 0 and value.is_integer()):
+                    return int(value), True
+                return 0, False
+
+            _inp, _inp_known = _tokens("input_tokens", absent_ok=False)
+            _cached, _cached_known = _tokens(
+                "cache_read_input_tokens", absent_ok=True)
+            _out, _out_known = _tokens("output_tokens", absent_ok=False)
+            _write, _write_known = _tokens(
+                "cache_creation_input_tokens", absent_ok=True)
+
+            _detail = openrouter.cost_detail(
+                _model_id, _inp, _cached, _out, _write)
+            _unknown = list(_detail["unknown_fields"])
+            if not all((_inp_known, _cached_known, _out_known, _write_known)):
+                _unknown.append("usage")
+            cost = _detail["amount"]
+            res = {**res, "total_cost_usd": cost, "_cost_complete": False,
+                   "_cost_source": _detail["source"],
+                   "_cost_unknown_fields": list(dict.fromkeys(_unknown))}
+    else:
+        # Preserve every other provider's established parsing contract. The
+        # strict validation above belongs only to OpenRouter precedence.
+        cost = float(res.get("total_cost_usd") or 0.0)
     mcp_success = (
         not res.get("is_error") and not st.get("interrupted")
         and str(res.get("status") or "").lower() not in (
@@ -16136,6 +16176,9 @@ def _after_turn(slug: str, nid: str, org: Org, res: dict[str, Any],
                 n["cost_usd"] = round(float(n.get("cost_usd") or 0.0) + cost, 6)
                 if on_key:
                     _bank_api_cost(o2, cost)
+            _cost_unknown = res.get("_cost_unknown_fields")
+            if isinstance(_cost_unknown, list) and _cost_unknown:
+                n["cost_usd_unknown"] = True
             # persisted so the UI context wheel survives server restarts
             if occ:
                 n["occupancy"] = occ
@@ -16191,6 +16234,12 @@ def _after_turn(slug: str, nid: str, org: Org, res: dict[str, Any],
                 entry["cost_complete"] = bool(res["_cost_complete"])
                 if not res["_cost_complete"]:
                     entry["estimated"] = True
+            if isinstance(res.get("_cost_source"), str):
+                entry["cost_source"] = str(res["_cost_source"])
+            if isinstance(_cost_unknown, list) and all(
+                    isinstance(x, str) for x in _cost_unknown):
+                entry["cost_unknown_fields"] = list(
+                    dict.fromkeys(cast("list[str]", _cost_unknown)))
             _stamp_ran_as(entry, slug, nid)
             _route_rec = res.get("_codex_route")
             if isinstance(_route_rec, dict):

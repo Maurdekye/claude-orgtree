@@ -108,6 +108,10 @@ class ModelCard(TypedDict):
     #: charge it (Anthropic 1.25× input); absent ones fall back to the input
     #: price, which is what every automatic-caching vendor charges
     cache_write: float
+    #: catalog price components that were absent/invalid. Numeric fields above
+    #: stay present for old API consumers; this is the knowledge boundary.
+    price_unknown: list[str]
+    price_source: str
     context: int
     tools: bool
     free: bool
@@ -124,6 +128,12 @@ class Favorite(ModelCard):
     tier: str
     seat: float          # fractional below $1/M (seat_for) — whole at/above it
     added_at: str
+
+
+class CostDetail(TypedDict):
+    amount: float
+    source: str
+    unknown_fields: list[str]
 
 
 # ── paths ──────────────────────────────────────────────────────────────────
@@ -608,11 +618,25 @@ def accent_for(model_id: str) -> str | None:
     return _VENDOR_ACCENT.get(vendor_of(model_id).lstrip("~"))
 
 
-def _per_m(v: Any) -> float:
+_PRICE_FIELDS: Final = ("prompt", "completion", "cache_read", "cache_write")
+_PRICE_SOURCES: Final = ("openrouter-catalog", "legacy-catalog-snapshot")
+
+
+def _price_per_m(v: Any) -> tuple[float, bool]:
+    """Compatibility numeric price plus whether the catalog actually said it."""
     try:
-        return round(float(v) * 1_000_000, 6)
+        if isinstance(v, bool):
+            return 0.0, False
+        out = float(v) * 1_000_000
+        if not math.isfinite(out) or out < 0:
+            return 0.0, False
+        return round(out, 6), True
     except (TypeError, ValueError):
-        return 0.0
+        return 0.0, False
+
+
+def _per_m(v: Any) -> float:
+    return _price_per_m(v)[0]
 
 
 def card_of(m: dict[str, Any]) -> ModelCard | None:
@@ -633,11 +657,18 @@ def card_of(m: dict[str, Any]) -> ModelCard | None:
                                if isinstance(pricing_raw, dict) else {})
     if not pricing:
         return None
-    prompt = _per_m(pricing.get("prompt"))
-    completion = _per_m(pricing.get("completion"))
-    cache_read = _per_m(pricing.get("input_cache_read"))
-    cache_write = (_per_m(pricing.get("input_cache_write"))
-                   if pricing.get("input_cache_write") is not None else prompt)
+    prompt, prompt_known = _price_per_m(pricing.get("prompt"))
+    completion, completion_known = _price_per_m(pricing.get("completion"))
+    cache_read, cache_read_known = _price_per_m(
+        pricing.get("input_cache_read"))
+    cache_write_raw, cache_write_known = _price_per_m(
+        pricing.get("input_cache_write"))
+    cache_write = cache_write_raw if cache_write_known else prompt
+    price_unknown = [
+        name for name, known in (
+            ("prompt", prompt_known), ("completion", completion_known),
+            ("cache_read", cache_read_known),
+            ("cache_write", cache_write_known)) if not known]
     params = m.get("supported_parameters")
     tools = isinstance(params, list) and "tools" in params
     try:
@@ -657,10 +688,14 @@ def card_of(m: dict[str, Any]) -> ModelCard | None:
         "completion": completion,
         "cache_read": cache_read,
         "cache_write": cache_write,
+        "price_unknown": price_unknown,
+        "price_source": "openrouter-catalog",
         "context": ctx,
         "tools": bool(tools),
         "created": created,
-        "free": mid.endswith(":free") or (prompt == 0 and completion == 0),
+        "free": mid.endswith(":free") or (
+            prompt_known and completion_known
+            and prompt == 0 and completion == 0),
         "letter": letter_for(mid),
         "color": color_for(mid, prompt),
         "accent": accent_for(mid),
@@ -884,6 +919,25 @@ def favorites() -> list[Favorite]:
     for f in _load_state()["favorites"]:
         try:
             mid = str(f["id"])
+            raw_unknown = f.get("price_unknown")
+            if isinstance(raw_unknown, list) and all(
+                    isinstance(x, str) and x in _PRICE_FIELDS
+                    for x in raw_unknown):
+                price_unknown = list(dict.fromkeys(raw_unknown))
+                price_source = (str(f.get("price_source"))
+                                if f.get("price_source") in _PRICE_SOURCES else
+                                "openrouter-catalog")
+            else:
+                # Pre-provenance snapshots cannot establish that a stored zero
+                # was a real quoted zero. Keep every numeric value unchanged,
+                # but do not promote absence of evidence into "free".
+                price_unknown = [
+                    key for key in _PRICE_FIELDS
+                    if key not in f or not float(f.get(key) or 0.0)]
+                price_source = "legacy-catalog-snapshot"
+            cache_write = (float(f.get("cache_write") or 0.0)
+                           if "cache_write" in f
+                           else float(f.get("prompt") or 0.0))
             out.append({
                 "id": mid, "tier": str(f["tier"]),
                 # the display forms are DERIVED on every read, never trusted
@@ -895,14 +949,20 @@ def favorites() -> list[Favorite]:
                 "prompt": float(f.get("prompt") or 0.0),
                 "completion": float(f.get("completion") or 0.0),
                 "cache_read": float(f.get("cache_read") or 0.0),
-                "cache_write": float(f.get("cache_write")
-                                     or f.get("prompt") or 0.0),
+                # Key presence, not truthiness: explicit zero is a real price.
+                "cache_write": cache_write,
+                "price_unknown": price_unknown,
+                "price_source": price_source,
                 "context": int(f.get("context") or 0),
                 "tools": bool(f.get("tools", True)),
                 # 0 for a favorite adopted before the field was snapshotted —
                 # only the CATALOG is ever sorted by recency, never this list
                 "created": int(f.get("created") or 0),
-                "free": bool(f.get("free", False)),
+                "free": (str(mid).endswith(":free") or (
+                    "prompt" not in price_unknown
+                    and "completion" not in price_unknown
+                    and float(f.get("prompt") or 0.0) == 0.0
+                    and float(f.get("completion") or 0.0) == 0.0)),
                 # letter and color are CANONICAL — a pure function of the id
                 # and the snapshot price — so they are recomputed on every
                 # read: a rule change (the first-word letter, 2026-09-03)
@@ -1076,9 +1136,15 @@ def tier_label(tier: str, models: Mapping[str, Any] | None = None) -> str:
     return tier[len(TIER_PREFIX):]
 
 
-def cost(model_id: str, inp: int, cached: int, out: int,
-         cache_write: int = 0) -> float:
-    """Dollars for one turn from token counts, at the favorite's snapshot
+def cost_detail(model_id: str, inp: int, cached: int, out: int,
+                cache_write: int = 0) -> CostDetail:
+    """Dollars plus price knowledge for one turn at its catalog snapshot.
+
+    The amount is the old numeric estimate (including disclosed fallbacks), so
+    callers that only understand a float keep their arithmetic. Unknown fields
+    are reported only when that component consumed tokens.
+
+    Prices come from the favorite snapshot
     prices (or the live card's, for a model that is no longer a favorite).
     `inp` is the NON-cached, non-cache-writing input (Anthropic's own
     accounting, which is what Claude Code's result `usage` reports:
@@ -1093,15 +1159,35 @@ def cost(model_id: str, inp: int, cached: int, out: int,
     if rec is None:
         c = find(model_id) if _catalog_mem.get("cards") is not None else None
         if c is None:
-            return 0.0
+            used = [("prompt", inp), ("cache_read", cached),
+                    ("cache_write", cache_write), ("completion", out)]
+            return {"amount": 0.0, "source": "unpriced",
+                    "unknown_fields": [k for k, n in used if max(n, 0) > 0]}
         rec = dict(c)
     p_in = float(rec.get("prompt") or 0.0)
     p_cached = float(rec.get("cache_read") or 0.0)
-    p_write = float(rec.get("cache_write") or p_in)
+    p_write = (float(rec.get("cache_write") or 0.0)
+               if "cache_write" in rec else p_in)
     p_out = float(rec.get("completion") or 0.0)
-    return round((max(inp, 0) * p_in + max(cached, 0) * p_cached
-                  + max(cache_write, 0) * p_write
-                  + max(out, 0) * p_out) / 1e6, 6)
+    unknown_raw = rec.get("price_unknown")
+    unknown = ({str(x) for x in unknown_raw if str(x) in _PRICE_FIELDS}
+               if isinstance(unknown_raw, list) else set())
+    used = [("prompt", inp), ("cache_read", cached),
+            ("cache_write", cache_write), ("completion", out)]
+    return {
+        "amount": round((max(inp, 0) * p_in + max(cached, 0) * p_cached
+                         + max(cache_write, 0) * p_write
+                         + max(out, 0) * p_out) / 1e6, 6),
+        "source": "catalog-snapshot",
+        "unknown_fields": [k for k, n in used
+                           if max(n, 0) > 0 and k in unknown],
+    }
+
+
+def cost(model_id: str, inp: int, cached: int, out: int,
+         cache_write: int = 0) -> float:
+    """Compatibility float wrapper for callers predating cost provenance."""
+    return cost_detail(model_id, inp, cached, out, cache_write)["amount"]
 
 
 # ── key status (credits) ───────────────────────────────────────────────────
@@ -1241,5 +1327,7 @@ def tier_infos() -> list[dict[str, Any]]:
         "accent": f["accent"],
         "name": f["name"], "label": f["label"], "vendor": f["vendor"],
         "prompt": f["prompt"], "completion": f["completion"],
+        "price_unknown": f["price_unknown"],
+        "price_source": f["price_source"],
         "context": f["context"],
     } for f in favorites()]

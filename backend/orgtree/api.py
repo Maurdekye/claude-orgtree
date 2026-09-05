@@ -2812,6 +2812,7 @@ def _providers_payload() -> dict[str, Any]:
 _TIER_DISCOVERY_FIELDS = (
     "tier", "provider", "seat", "model", "letter", "color", "accent",
     "name", "label", "vendor", "prompt", "completion", "context",
+    "price_unknown", "price_source",
 )
 _TIER_DISCOVERY_NUMBERS = frozenset({
     "seat", "prompt", "completion", "context",
@@ -2860,6 +2861,19 @@ def _tier_discovery_payload() -> dict[str, Any]:
                                               or not isinstance(value, (int, float))
                                               or isinstance(value, float)
                                               and not math.isfinite(value)):
+                        raise RuntimeError(
+                            "provider discovery returned a malformed tier")
+                elif key == "price_unknown":
+                    if (not isinstance(value, list)
+                            or not all(isinstance(x, str) and x in (
+                                "prompt", "completion", "cache_read",
+                                "cache_write") for x in value)):
+                        raise RuntimeError(
+                            "provider discovery returned a malformed tier")
+                    value = list(dict.fromkeys(value))
+                elif key == "price_source":
+                    if value not in (
+                            "openrouter-catalog", "legacy-catalog-snapshot"):
                         raise RuntimeError(
                             "provider discovery returned a malformed tier")
                 elif value is not None and not isinstance(value, str):

@@ -51,7 +51,8 @@ function stubFetch(seen: Seen[], opts: { keySet?: boolean; favorites?: string[] 
       tier: 'or-' + m.id.replace(/[^a-z0-9]+/g, '-'), provider: 'openrouter',
       seat: Math.max(1, Math.floor(m.prompt)), model: m.id, letter: m.letter,
       color: m.color, name: m.name, label: m.label, vendor: m.vendor, prompt: m.prompt,
-      completion: m.completion, context: m.context })),
+      completion: m.completion, price_unknown: m.price_unknown,
+      price_source: m.price_source, context: m.context })),
     user_enabled: true,
   })
   g.fetch = (url: string, init?: RequestInit) => {
@@ -425,4 +426,46 @@ async () => {
   assert.ok(before.includes('#ff5530') && after.includes('#00d4ff') && !after.includes('#ff5530'),
     'the injected sheet follows the accent')
   setOpenRouterTiers([])
+})
+
+test('§5 unknown catalog prices render as unknown, never free or compatibility $0',
+async () => {
+  const unknown: OpenRouterModel = {
+    id: 'probe/unknown', name: 'Unknown', label: 'unknown', vendor: 'probe',
+    prompt: 0, completion: 0, cache_read: 0, context: 1000, tools: true,
+    free: false, created: 0, letter: 'U', color: '#aaaaaa',
+    price_unknown: ['prompt', 'completion', 'cache_read', 'cache_write'],
+    price_source: 'openrouter-catalog',
+  }
+  const free: OpenRouterModel = {
+    ...unknown, id: 'probe/free:free', name: 'Free', label: 'free:free',
+    free: true, letter: 'F', price_unknown: [],
+  }
+  CATALOG.push(unknown, free)
+  const seen: Seen[] = []
+  stubFetch(seen, { keySet: true, favorites: [unknown.id] })
+  const view = await mountSection({ open: true })
+  try {
+    let rows: HTMLElement[] = []
+    for (let i = 0; i < 20; i++) {
+      rows = [...view.el.querySelectorAll<HTMLElement>('.orr-row')]
+      if (rows.some((r) => r.textContent?.includes('Unknown'))
+          && rows.some((r) => r.textContent?.includes('Free'))) break
+      await inAct(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 5)); await flush(2)
+      })
+    }
+    const unknownRow = rows.find((r) => r.textContent?.includes('Unknown'))
+    const freeRow = rows.find((r) => r.textContent?.includes('Free'))
+    assert.ok(unknownRow && freeRow, 'both positive-control rows render')
+    assert.match(unknownRow.querySelector('.orr-price')?.textContent ?? '', /— in ·\s+— out/)
+    assert.doesNotMatch(unknownRow.querySelector('.orr-price')?.textContent ?? '', /free|\$0/)
+    assert.equal(freeRow.querySelector('.orr-price')?.textContent?.trim(), 'free')
+    const favoriteTitle = view.el.querySelector('.orr-favs .orr-card')?.getAttribute('title') ?? ''
+    assert.match(favoriteTitle, /— in \/ — out per 1M · incomplete catalog pricing/)
+    assert.doesNotMatch(favoriteTitle, /\$0 in/)
+  } finally {
+    await view.unmount(); delete g.fetch
+    CATALOG.splice(-2)
+  }
 })

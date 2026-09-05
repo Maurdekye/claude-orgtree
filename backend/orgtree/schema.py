@@ -97,6 +97,10 @@ class TurnStat(TypedDict):
     killed: NotRequired[bool]
     estimated: NotRequired[bool]
     cost_complete: NotRequired[bool]
+    # How the numeric amount was obtained, and which used price components
+    # were unavailable. Additive: historical rows have neither field.
+    cost_source: NotRequired[str]
+    cost_unknown_fields: NotRequired[list[str]]
     # WHICH ACCOUNT SERVED THIS TURN (2026-08-25) — an account uuid, or a
     # sentinel ("ambient" / "api-key" / "token:unattributed"). Captured at
     # spawn from the resolved env, never from intent, and never a credential.
@@ -257,6 +261,9 @@ class NodeDoc(TypedDict):
     # (NB: `effort` lives in NodeScope, not here — sc["effort"].)
     team_charter: NotRequired[str | None]
     cost_usd: NotRequired[float]
+    # At least one future turn booked a numeric estimate with unresolved used
+    # price components. The numeric lifetime total remains API-compatible.
+    cost_usd_unknown: NotRequired[bool]
     # Latest observed backwards move in Codex's thread-cumulative token
     # counter. The adapter books the new snapshot whole and records the old
     # and new values here instead of silently clamping a negative delta.
@@ -642,6 +649,7 @@ class OrgDoc(TypedDict):
                                             # expiry warning (≤1/day survives
                                             # restarts — redteam finding)
     deleted_cost_usd: NotRequired[float]    # tombstone burn accumulator (cost_total)
+    deleted_cost_usd_unknown: NotRequired[bool]
     api_cost_usd: NotRequired[float]        # lifetime burn billed to the key while
                                             # an api_fallback window was open — the
                                             # hover split on the UI cost card.

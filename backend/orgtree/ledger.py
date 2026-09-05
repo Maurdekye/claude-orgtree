@@ -3422,6 +3422,7 @@ class Org:
                       "tools": {"bash": False, "web": False, "edit": False,
                                 "subagents": False, "mcp": []}},
         })
+        pred.pop("cost_usd_unknown", None)
         if model is not None:
             # the bearer is recorded on the tier whose provider owns
             # its transcript (a switch has already moved the successor)
@@ -3899,9 +3900,13 @@ class Org:
         # bank the burn BEFORE the nodes go — cost is history (see cost_total)
         lost = round(sum(float((self.nodes.get(k) or {}).get("cost_usd") or 0.0)
                          for k in doomed_set), 6)
+        lost_unknown = any(bool((self.nodes.get(k) or {}).get(
+            "cost_usd_unknown")) for k in doomed_set)
         if lost:
             self.d["deleted_cost_usd"] = round(
                 float(self.d.get("deleted_cost_usd") or 0.0) + lost, 6)
+        if lost_unknown:
+            self.d["deleted_cost_usd_unknown"] = True
         for k in doomed_set:
             self.nodes.pop(k, None)
             (self.d.get("mail") or {}).pop(k, None)
@@ -8252,6 +8257,7 @@ class Org:
                       "tools": {"bash": False, "web": False, "edit": False,
                                 "subagents": False, "mcp": []}},
         })
+        pred.pop("cost_usd_unknown", None)
         pred.pop("cheap_compacted", None)   # the bearer is the OLD session
         # a session that just compacted has demonstrably RUN, so neither half
         # of the split may carry the never-run exemption: the bearer's own
@@ -8350,6 +8356,7 @@ class Org:
                       "tools": {"bash": False, "web": False, "edit": False,
                                 "subagents": False, "mcp": []}},
         })
+        pred.pop("cost_usd_unknown", None)
         # same invariant reseed holds: a LOST record must not also carry
         # the never-run pardon — one row cannot assert both "this session
         # never ran" and "its transcript is gone" (redteam 2026-08-18).
@@ -8533,6 +8540,8 @@ class Org:
         if lost_cost:       # dissolve's convention — burn is never unbooked
             self.d["deleted_cost_usd"] = round(
                 float(self.d.get("deleted_cost_usd") or 0.0) + lost_cost, 6)
+        if n.get("cost_usd_unknown"):
+            self.d["deleted_cost_usd_unknown"] = True
         self.nodes.pop(pred_id, None)
         for tbl in ("mail", "mail_log", "notices", "steered_log"):
             box = cast("dict[str, Any]", self.d.get(tbl) or {})
@@ -8626,6 +8635,7 @@ class Org:
                       "tools": {"bash": False, "web": False, "edit": False,
                                 "subagents": False, "mcp": []}},
         })
+        pred.pop("cost_usd_unknown", None)
         pred.pop("cheap_compacted", None)   # the bearer is the OLD session
         # …and this bearer is stamped LOST — "its transcript is gone".
         # Inheriting the never-run pardon would make one record assert
@@ -8717,6 +8727,7 @@ class Org:
                 "effort_effective": self.effective_effort(nid),
                 "ui_order": n.get("ui_order", 0),
                 "cost_usd": round(float(n.get("cost_usd") or 0.0), 4),
+                "cost_usd_unknown": bool(n.get("cost_usd_unknown")),
                 "occupancy": n.get("occupancy"),
                 # a compaction fills this in before anything has measured the
                 # new session — the card says so rather than implying precision
@@ -8910,6 +8921,9 @@ class Org:
             "roots": [build(c) for c in self.org_children(None, _kids)],
             "audit": self.audit(),
             "cost_usd_total": self.cost_total(),
+            "cost_usd_unknown": bool(
+                self.d.get("deleted_cost_usd_unknown")
+                or any(n.get("cost_usd_unknown") for n in self.nodes.values())),
             # api_fallback split: the slice of cost_usd_total billed to the
             # org's key while a fallback window was open (supervisor banks it
             # at every cost-booking point) — the cost card's hover split

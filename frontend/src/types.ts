@@ -111,6 +111,8 @@ export interface TurnStat {
   killed?: boolean
   estimated?: boolean
   cost_complete?: boolean
+  cost_source?: string
+  cost_unknown_fields?: string[]
 }
 
 // schema.py AudienceGrant (§7.3)
@@ -283,6 +285,7 @@ export interface TreeNode {
   scope: NodeScope
   ui_order: number
   cost_usd: number
+  cost_usd_unknown?: boolean
   occupancy: number | null
   /** the fill above is a post-compaction ESTIMATE (system prompt + summary):
    *  a compaction reports the drop immediately, but nothing measures the new
@@ -679,6 +682,7 @@ export interface TreePayload {
   roots: TreeNode[]
   audit: AuditReport
   cost_usd_total: number
+  cost_usd_unknown?: boolean
   /** slice of cost_usd_total billed to the org's key while an api_fallback
    *  window was open — the cost chip's hover split */
   api_cost_usd_total?: number
@@ -1096,6 +1100,8 @@ export interface ProviderTier {
   /** $ per MILLION tokens, in and out */
   prompt?: number
   completion?: number
+  price_unknown?: string[]
+  price_source?: string
   context?: number
 }
 /** GET /api/openrouter — the API-backed lane's credit standing. Every field
@@ -1136,6 +1142,8 @@ export interface OpenRouterModel {
   prompt: number
   completion: number
   cache_read: number
+  price_unknown?: string[]
+  price_source?: string
   context: number
   tools: boolean
   free: boolean
