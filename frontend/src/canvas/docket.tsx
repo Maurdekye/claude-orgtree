@@ -12,13 +12,14 @@
 // `questions` array (wire contract v3) is only used to know WHICH asks to
 // look up and for the "who is asking" header — never to answer directly.
 
-import { useState } from 'react'
-import type { AskInfo, ToastFn, TreePayload, WorkItem } from '../types'
+import { useEffect, useMemo, useState } from 'react'
+import type { AskInfo, ToastFn, TreeNode, TreePayload, WorkItem } from '../types'
 import {
   dismissWorkItemAttention, getWorkItems, replyWorkItem,
 } from '../api'
 import { CloseIcon, DocketIcon } from '../icons'
 import { AskCard } from './asks'
+import { TierChip } from './gallery'
 import { MailReplyBox } from './mail'
 import { ago, useEsc, usePolled } from './shared'
 
@@ -32,6 +33,28 @@ const STATUS_LABEL: Record<string, string> = {
   dropped: 'Dropped',
 }
 const statusLabel = (status: string): string => STATUS_LABEL[status] ?? status
+
+const STATUS_ORDER: Record<string, number> = {
+  in_progress: 1,
+  review: 2,
+  blocked: 3,
+  open: 4,
+  done: 5,
+  superseded: 6,
+  dropped: 7,
+}
+
+function buildTierMap(roots?: TreeNode[]): Map<string, string> {
+  const map = new Map<string, string>()
+  const walk = (nodes?: TreeNode[]) => {
+    for (const n of nodes ?? []) {
+      if (n.id && n.tier) map.set(n.id, n.tier)
+      walk(n.children)
+    }
+  }
+  walk(roots)
+  return map
+}
 
 export function DocketToolbarButton({ summary, onClick }: {
   summary?: { attention: number; active: number } | null
@@ -64,17 +87,56 @@ export function DocketModal({ slug, toast, close, tree, onFocusAgent }: {
 }) {
   useEsc(close)
   const [showArchived, setShowArchived] = useState(false)
+  const [sortMode, setSortMode] = useState<'recent' | 'status'>('recent')
   const [bump, setBump] = useState(0)
-  const data = usePolled(() => getWorkItems(slug, showArchived), [slug, showArchived], 5000, bump)
-  // active items first, archived below — each group keeps the server's own
-  // recency order (spec: "retaining normal relative recency order within
-  // each group"), so this is a concat, never a client-side re-sort.
+  const [archivedCache, setArchivedCache] = useState<WorkItem[]>([])
+
+  // Polled data: deps is [slug] so toggling showArchived does not clear data to null
+  // (which would unmount the pane and wipe the user's in-flight reply draft).
+  // refreshKey causes an immediate re-fetch on archive toggle or bump.
+  const data = usePolled(() => getWorkItems(slug, showArchived), [slug], 5000, `${bump}-${showArchived}`)
+
+  useEffect(() => {
+    if (data?.archived) {
+      setArchivedCache(data.archived)
+    }
+  }, [data?.archived])
+
+  const tiersByNode = useMemo(() => buildTierMap(tree?.roots), [tree?.roots])
+  const tierOf = (node?: string | null) => (node ? tiersByNode.get(node) : undefined)
+
   const active = data?.items ?? []
-  const archived = showArchived ? (data?.archived ?? []) : []
-  const rows = [...active, ...archived]
+  const archived = showArchived ? (data?.archived ?? archivedCache) : []
+  const archivedCount = data?.counts?.archived ?? (data?.archived?.length ?? archivedCache.length)
+
+  // Sort rows based on sortMode
+  const rows = useMemo(() => {
+    const recencyOrder = (a: WorkItem, b: WorkItem) => {
+      const ta = a.docket_at ?? a.at ?? ''
+      const tb = b.docket_at ?? b.at ?? ''
+      return ta < tb ? 1 : ta > tb ? -1 : 0
+    }
+    if (sortMode === 'recent') {
+      return [...active.slice().sort(recencyOrder), ...archived.slice().sort(recencyOrder)]
+    }
+    return [...active, ...archived].sort((a, b) => {
+      const oa = STATUS_ORDER[a.status] ?? 99
+      const ob = STATUS_ORDER[b.status] ?? 99
+      if (oa !== ob) return oa - ob
+      if (a.archived !== b.archived) return a.archived ? 1 : -1
+      return recencyOrder(a, b)
+    })
+  }, [active, archived, sortMode])
+
   // selection BY ID, not index — the list repolls under the user (G5)
   const [selId, setSelId] = useState<string | null>(null)
-  const cur = rows.find((r) => r.id === selId)
+  const allKnown = useMemo(() => {
+    const map = new Map<string, WorkItem>()
+    for (const item of active) map.set(item.id, item)
+    for (const item of (data?.archived ?? archivedCache)) map.set(item.id, item)
+    return map
+  }, [active, data?.archived, archivedCache])
+  const cur = rows.find((r) => r.id === selId) ?? (selId ? allKnown.get(selId) : undefined)
   const asksById = new Map<string, AskInfo>((tree.asks ?? []).map((a) => [a.id, a]))
 
   const onDismiss = (item: WorkItem) => {
@@ -95,12 +157,25 @@ export function DocketModal({ slug, toast, close, tree, onFocusAgent }: {
       <div className="settings wide docket-modal" onClick={(e) => e.stopPropagation()}>
         <div className="gallery-head docket-head">
           <h3><DocketIcon fontSize="inherit" /> Work docket</h3>
-          <label className="checkline docket-showarchived">
+          <div className="docket-sortbar mail-folders" role="group" aria-label="Sort docket entries">
+            <button type="button"
+              className={'docket-sort-btn' + (sortMode === 'recent' ? ' on' : '')}
+              onClick={() => setSortMode('recent')}>
+              Recently updated
+            </button>
+            <button type="button"
+              className={'docket-sort-btn' + (sortMode === 'status' ? ' on' : '')}
+              onClick={() => setSortMode('status')}>
+              Group by status
+            </button>
+          </div>
+          <span className="spacer" />
+          <label className="checkline docket-showarchived" title="include archived and closed work items">
             <input type="checkbox" checked={showArchived}
               onChange={(e) => setShowArchived(e.target.checked)} />
             Show archived
+            {archivedCount > 0 && <span className="dim"> · {archivedCount}</span>}
           </label>
-          <span className="spacer" />
           <button className="chip-x" title="close" onClick={close}>
             <CloseIcon fontSize="inherit" />
           </button>
@@ -116,14 +191,14 @@ export function DocketModal({ slug, toast, close, tree, onFocusAgent }: {
                     {rows.map((r) => (
                       <DocketRow key={r.id} item={r} selected={r.id === selId}
                         onClick={() => setSelId(r.id === selId ? null : r.id)}
-                        onDismiss={onDismiss} />
+                        onDismiss={onDismiss} tierOf={tierOf} />
                     ))}
                   </div>
                   <div className="mailer-read">
                     {cur
                       ? <DocketPane key={cur.id} slug={slug} item={cur} toast={toast}
                           asksById={asksById} onDismiss={onDismiss}
-                          close={close} onFocusAgent={onFocusAgent} />
+                          close={close} onFocusAgent={onFocusAgent} tierOf={tierOf} />
                       : <div className="dim pad mailer-none">select an item to view it</div>}
                   </div>
                 </div>
@@ -135,11 +210,12 @@ export function DocketModal({ slug, toast, close, tree, onFocusAgent }: {
   )
 }
 
-function DocketRow({ item, selected, onClick, onDismiss }: {
+function DocketRow({ item, selected, onClick, onDismiss, tierOf }: {
   item: WorkItem
   selected: boolean
   onClick: () => void
   onDismiss: (item: WorkItem) => void
+  tierOf?: (node?: string | null) => string | undefined
 }) {
   const attention = item.effective_attention
   // active (white) / attention (orange) / archived (grey, darker bg) — three
@@ -147,11 +223,12 @@ function DocketRow({ item, selected, onClick, onDismiss }: {
   // principle) it also had attention, but the backend never actually hands
   // us that combination (an attention item comes back archived:false).
   const state = item.archived ? 'archived' : (attention ? 'attention' : 'active')
-  const cls = ['mailrow', 'docket-row', state, selected ? 'on' : ''].filter(Boolean).join(' ')
+  const cls = ['mailrow', 'docket-row', state, 'status-' + item.status, selected ? 'on' : ''].filter(Boolean).join(' ')
   const label = attention ? 'Needs attention' : statusLabel(item.status)
   // Dismiss clears the MANUAL flag only — a question-only attention item has
   // nothing to dismiss (answering the question is the only way to clear it).
   const canDismiss = item.attention_sources.includes('manual')
+  const updaterNode = item.last_updater?.node
   return (
     <div className={cls} title={item.title} onClick={onClick}>
       <div className="l1">
@@ -159,8 +236,15 @@ function DocketRow({ item, selected, onClick, onDismiss }: {
         <span className="mtime">{ago(item.docket_at ?? item.at)}</span>
       </div>
       <div className="l2">
-        <span>{label}</span>
-        {item.last_updater?.node && <span className="docket-updater">{item.last_updater.node}</span>}
+        <span className={'docket-status status-' + item.status + (attention ? ' attention' : '')}>
+          {label}
+        </span>
+        {updaterNode && (
+          <span className="docket-updater">
+            <TierChip tier={tierOf?.(updaterNode)} />
+            {updaterNode}
+          </span>
+        )}
         {canDismiss && (
           <button className="badge docket-dismiss" title="clear this manually-raised flag"
             onClick={(e) => { e.stopPropagation(); onDismiss(item) }}>
@@ -185,7 +269,7 @@ function DocketList({ heading, items }: { heading: string; items: string[] }) {
   )
 }
 
-function DocketPane({ slug, item, toast, asksById, onDismiss, close, onFocusAgent }: {
+function DocketPane({ slug, item, toast, asksById, onDismiss, close, onFocusAgent, tierOf }: {
   slug: string
   item: WorkItem
   toast: ToastFn
@@ -193,6 +277,7 @@ function DocketPane({ slug, item, toast, asksById, onDismiss, close, onFocusAgen
   onDismiss: (item: WorkItem) => void
   close: () => void
   onFocusAgent?: (agentId: string) => void
+  tierOf?: (node?: string | null) => string | undefined
 }) {
   const attention = item.effective_attention
   const label = attention ? 'Needs attention' : statusLabel(item.status)
@@ -213,10 +298,14 @@ function DocketPane({ slug, item, toast, asksById, onDismiss, close, onFocusAgen
         )}
       </div>
       <div className={'dim docket-pane-sub' + (attention ? ' docket-pane-sub-attn' : '')}>
-        {label} · Updated {ago(item.docket_at ?? item.at)}
+        <span className={'docket-status status-' + item.status + (attention ? ' attention' : '')}>
+          {label}
+        </span>
+        {' · Updated ' + ago(item.docket_at ?? item.at)}
         {lastUpdater?.node && (
           <>
             {' by '}
+            <TierChip tier={tierOf?.(lastUpdater.node)} />
             <button className="cc-name cc-name-jump" title={`focus ${lastUpdater.node}'s desk`}
               onClick={() => { close(); onFocusAgent?.(lastUpdater.node) }}>
               {lastUpdater.node}
@@ -230,6 +319,7 @@ function DocketPane({ slug, item, toast, asksById, onDismiss, close, onFocusAgen
         <div className="docket-attention-box">
           <div className="docket-question-head">
             Manual attention from{' '}
+            <TierChip tier={tierOf?.(manualAttn.by.node)} />
             <button className="cc-name cc-name-jump" title={`focus ${manualAttn.by.node}'s desk`}
               onClick={() => { close(); onFocusAgent?.(manualAttn.by.node) }}>
               {manualAttn.by.node}
@@ -251,6 +341,7 @@ function DocketPane({ slug, item, toast, asksById, onDismiss, close, onFocusAgen
           <div key={q.ask_id} className="docket-question-box">
             <div className="docket-question-head">
               Question from{' '}
+              <TierChip tier={tierOf?.(q.node)} />
               <button className="cc-name cc-name-jump" title={`focus ${q.node}'s desk`}
                 onClick={() => { close(); onFocusAgent?.(q.node) }}>
                 {q.node}
@@ -271,6 +362,7 @@ function DocketPane({ slug, item, toast, asksById, onDismiss, close, onFocusAgen
         <>
           <div className="dim docket-reply-label">
             Reply to{' '}
+            <TierChip tier={tierOf?.(lastUpdater.node)} />
             <button className="cc-name cc-name-jump" title={`focus ${lastUpdater.node}'s desk`}
               onClick={() => { close(); onFocusAgent?.(lastUpdater.node) }}>
               {lastUpdater.node}

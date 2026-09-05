@@ -1741,8 +1741,8 @@ button.cc-name:hover {
 /* …and the gallery button beside it carries its count the same way (user
    request 2026-09-03: "a number in the corner of the button ... similar to
    unread mail"). One rule for both, so the pair cannot drift apart. */
-.ask-bell, .doc-bell { position: relative; }
-.ask-bell .eye-count, .doc-bell .eye-count {
+.ask-bell, .doc-bell, .docket-bell { position: relative; }
+.ask-bell .eye-count, .doc-bell .eye-count, .docket-bell .eye-count {
   position: absolute; top: -4px; right: -6px;
 }
 .ask-bell.glow {
@@ -2717,8 +2717,18 @@ main.solo { width: 100%; }
    ordinary/archived entries; orange selection for attention"). */
 .docket-modal .gallery-head { display: flex; align-items: center; gap: 12px; margin: 0 0 4px; }
 .docket-modal .gallery-head h3 { margin: 0; }
-.docket-showarchived { font-size: 12.5px; color: var(--dim); cursor: pointer; }
-.docket-showarchived input { cursor: pointer; }
+.docket-sortbar { display: inline-flex; align-items: center; gap: 4px; }
+.docket-sortbar .docket-sort-btn {
+  background: none; border: 1px solid transparent; color: var(--dim);
+  font-size: 12px; padding: 2px 8px; border-radius: 4px; cursor: pointer;
+  white-space: nowrap; font-family: var(--sans);
+}
+.docket-sortbar .docket-sort-btn:hover { color: var(--ink-strong); }
+.docket-sortbar .docket-sort-btn.on {
+  color: var(--ink-strong); background: var(--panel-2); border-color: var(--line);
+}
+.docket-showarchived { font-size: 12.5px; color: var(--dim); cursor: pointer; display: inline-flex; align-items: center; gap: 5px; }
+.docket-showarchived input { cursor: pointer; margin: 0; }
 .docket-modal .mailrow { overflow: hidden; }
 .docket-modal .mailrow .l1 .mfrom {
   font-family: var(--sans); font-weight: 600;
@@ -2748,6 +2758,32 @@ main.solo { width: 100%; }
 .docket-modal .mailrow.attention.on {
   background: color-mix(in srgb, var(--accent) 18%, var(--bg));
 }
+/* Docket status styling */
+.docket-status { font-weight: 600; }
+.docket-status.status-open { color: var(--ink); }
+.docket-status.status-in_progress { color: var(--work); }
+.docket-status.status-blocked { color: var(--bad); }
+.docket-status.status-review { color: var(--warn); }
+.docket-status.status-done { color: var(--ok); }
+.docket-status.status-superseded, .docket-status.status-dropped { color: var(--dim); }
+.docket-status.attention { color: var(--accent); }
+
+/* Left border indicators by status */
+.docket-modal .mailrow.status-in_progress { border-left: 3px solid var(--work); }
+.docket-modal .mailrow.status-blocked { border-left: 3px solid var(--bad); }
+.docket-modal .mailrow.status-review { border-left: 3px solid var(--warn); }
+.docket-modal .mailrow.status-done { border-left: 3px solid var(--ok); }
+.docket-modal .mailrow.status-open { border-left: 3px solid var(--line); }
+.docket-modal .mailrow.status-superseded,
+.docket-modal .mailrow.status-dropped { border-left: 3px solid var(--line-soft); }
+.docket-modal .mailrow.attention { border-left: 3px solid var(--accent); }
+
+.docket-modal .tier {
+  width: 16px; height: 16px; display: inline-grid; place-items: center;
+  border-radius: 3px; font-size: 9px; font-weight: 700; font-family: var(--mono);
+  vertical-align: middle;
+}
+.docket-modal .mailrow.archived .tier { opacity: .75; }
 .docket-dismiss {
   color: var(--accent); border-color: color-mix(in srgb, var(--accent) 40%, transparent);
   cursor: pointer; flex-shrink: 0; white-space: nowrap;
@@ -2771,14 +2807,15 @@ main.solo { width: 100%; }
   background: color-mix(in srgb, var(--accent) 8%, var(--panel));
   border-radius: 6px; padding: 8px 10px; margin: 0 0 10px;
 }
-.docket-question-head { color: var(--accent); font-weight: 700; font-size: 12px; margin-bottom: 4px; }
+.docket-question-head { color: var(--accent); font-weight: 700; font-size: 12px; margin-bottom: 4px; display: flex; align-items: center; gap: 4px; }
 .docket-question-note { margin-bottom: 6px; }
-.docket-reply-label { font-size: 12px; margin: 4px 0 6px; }
+.docket-reply-label { font-size: 12px; margin: 4px 0 6px; display: flex; align-items: center; gap: 4px; }
 .docket-foot { font-size: 11.5px; padding-top: 8px; }
 .docket-modal .mailrow .docket-updater {
   font-family: var(--mono); font-size: 11px;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   min-width: 0; flex-shrink: 1;
+  display: inline-flex; align-items: center; gap: 4px;
 }
 .docket-modal .mailrow .docket-dismiss { margin-left: auto; flex-shrink: 0; }
 .docket-modal button.cc-name, .mailer-head button.cc-name {

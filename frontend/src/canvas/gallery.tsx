@@ -37,7 +37,7 @@ import { ago, md, TIER_LETTER, tierLabel, useEsc, usePolled } from './shared'
  *  icon card"). Same markup and same `t-<tier>` colour class as the mail
  *  sender chip and the node card, so a model reads the same everywhere.
  *  Nothing renders once the node is gone and the ledger has no tier to give. */
-function TierChip({ tier }: { tier?: string | null }) {
+export function TierChip({ tier }: { tier?: string | null }) {
   if (!tier) return null
   return (
     <span className={'tier t-' + tier} title={tierLabel(tier)}>

@@ -892,3 +892,173 @@ uiTest('§20 production DocketToolbarButton displays orange attention count or m
   assert.equal(badge3.textContent?.trim(), '0', 'zero is muted and not hidden')
   await view3.unmount()
 })
+
+uiTest('§21 show archived toggle preserves detail selection and in-flight draft without full-panel reload', async (mount) => {
+  mockWorkItems([
+    mkItem({ id: 'w1', title: 'Active Item', status: 'in_progress', last_updater: { node: 'agent1', generation: 1 } }),
+  ], [
+    mkItem({ id: 'w2', title: 'Archived Item', status: 'done', archived: true }),
+  ])
+  const { el } = await mount(docketModal())
+  await flush()
+
+  // Select active item w1
+  await inAct(() => (rows(el)[0] as HTMLElement).click())
+  await flush()
+
+  const textarea = el.querySelector('.mailer-read textarea') as HTMLTextAreaElement
+  assert.ok(textarea, 'textarea rendered in detail pane')
+  const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')?.set
+  await inAct(() => {
+    nativeSetter?.call(textarea, 'in-flight draft reply')
+    textarea.dispatchEvent(new Event('input', { bubbles: true }))
+  })
+  assert.equal(textarea.value, 'in-flight draft reply')
+
+  // Toggle Show archived ON
+  await inAct(() => showArchivedBox(el).click())
+  await flush()
+
+  // Verify full-panel reload did NOT happen (no loading... screen)
+  assert.ok(!el.textContent?.includes('loading…'), 'panel does not flash loading on archive toggle')
+  // Verify rows appended
+  assert.equal(rows(el).length, 2, 'archived row appended')
+  // Verify detail pane is STILL open on w1
+  assert.ok(el.querySelector('.mailer-read'), 'detail pane remains open')
+  const retainedTextarea = el.querySelector('.mailer-read textarea') as HTMLTextAreaElement
+  assert.ok(retainedTextarea, 'textarea still exists in detail pane')
+  assert.equal(retainedTextarea.value, 'in-flight draft reply', 'draft preserved across archive toggle')
+
+  // Toggle Show archived OFF
+  await inAct(() => showArchivedBox(el).click())
+  await flush()
+
+  assert.equal(rows(el).length, 1, 'archived row removed')
+  const stillTextarea = el.querySelector('.mailer-read textarea') as HTMLTextAreaElement
+  assert.ok(stillTextarea, 'detail pane still open')
+  assert.equal(stillTextarea.value, 'in-flight draft reply', 'draft still preserved')
+})
+
+uiTest('§22 entry styling colors entries by status', async (mount) => {
+  mockWorkItems([
+    mkItem({ id: 'w1', title: 'In Progress Item', status: 'in_progress' }),
+    mkItem({ id: 'w2', title: 'Blocked Item', status: 'blocked' }),
+    mkItem({ id: 'w3', title: 'Review Item', status: 'review' }),
+    mkItem({ id: 'w4', title: 'Open Item', status: 'open' }),
+    mkItem({ id: 'w5', title: 'Done Item', status: 'done' }),
+  ])
+  const { el } = await mount(docketModal())
+  await flush()
+
+  const rList = rows(el)
+  assert.equal(rList.length, 5)
+
+  assert.ok(rList[0]!.classList.contains('status-in_progress'), 'has status-in_progress class')
+  assert.ok(rList[0]!.querySelector('.docket-status.status-in_progress'), 'status element has status-in_progress class')
+
+  assert.ok(rList[1]!.classList.contains('status-blocked'), 'has status-blocked class')
+  assert.ok(rList[1]!.querySelector('.docket-status.status-blocked'), 'status element has status-blocked class')
+
+  assert.ok(rList[2]!.classList.contains('status-review'), 'has status-review class')
+  assert.ok(rList[2]!.querySelector('.docket-status.status-review'), 'status element has status-review class')
+
+  assert.ok(rList[3]!.classList.contains('status-open'), 'has status-open class')
+  assert.ok(rList[3]!.querySelector('.docket-status.status-open'), 'status element has status-open class')
+
+  assert.ok(rList[4]!.classList.contains('status-done'), 'has status-done class')
+  assert.ok(rList[4]!.querySelector('.docket-status.status-done'), 'status element has status-done class')
+})
+
+uiTest('§23 sort controls support Recently updated and Group by status', async (mount) => {
+  mockWorkItems([
+    mkItem({ id: 'w1', title: 'Open New', status: 'open', docket_at: '2026-09-05T10:30:00.000Z' }),
+    mkItem({ id: 'w2', title: 'In Progress Old', status: 'in_progress', docket_at: '2026-09-05T10:00:00.000Z' }),
+    mkItem({ id: 'w3', title: 'In Progress New', status: 'in_progress', docket_at: '2026-09-05T10:40:00.000Z' }),
+    mkItem({ id: 'w4', title: 'Blocked Mid', status: 'blocked', docket_at: '2026-09-05T10:20:00.000Z' }),
+  ])
+  const { el } = await mount(docketModal())
+  await flush()
+
+  // Find sort controls
+  const sortBtns = [...el.querySelectorAll('.docket-sort-btn')]
+  assert.equal(sortBtns.length, 2, 'two sort buttons rendered')
+  const recentBtn = sortBtns.find((b) => b.textContent?.includes('Recently updated')) as HTMLButtonElement
+  const statusBtn = sortBtns.find((b) => b.textContent?.includes('Group by status')) as HTMLButtonElement
+  assert.ok(recentBtn, 'Recently updated button present')
+  assert.ok(statusBtn, 'Group by status button present')
+  assert.ok(recentBtn.classList.contains('on'), 'Recently updated active by default')
+
+  // Default: recency order (w3: 10:40, w1: 10:30, w4: 10:20, w2: 10:00)
+  let rList = rows(el)
+  assert.equal(rList[0]!.querySelector('.l1 .mfrom')?.textContent, 'In Progress New')
+  assert.equal(rList[1]!.querySelector('.l1 .mfrom')?.textContent, 'Open New')
+  assert.equal(rList[2]!.querySelector('.l1 .mfrom')?.textContent, 'Blocked Mid')
+  assert.equal(rList[3]!.querySelector('.l1 .mfrom')?.textContent, 'In Progress Old')
+
+  // Click 'Group by status'
+  await inAct(() => statusBtn.click())
+  await flush()
+  assert.ok(statusBtn.classList.contains('on'), 'Group by status now active')
+
+  // Status group order: in_progress first, then blocked, open
+  rList = rows(el)
+  assert.equal(rList[0]!.querySelector('.l1 .mfrom')?.textContent, 'In Progress New')
+  assert.equal(rList[1]!.querySelector('.l1 .mfrom')?.textContent, 'In Progress Old')
+  assert.equal(rList[2]!.querySelector('.l1 .mfrom')?.textContent, 'Blocked Mid')
+  assert.equal(rList[3]!.querySelector('.l1 .mfrom')?.textContent, 'Open New')
+
+  // Click 'Recently updated' back
+  await inAct(() => recentBtn.click())
+  await flush()
+  assert.ok(recentBtn.classList.contains('on'))
+  rList = rows(el)
+  assert.equal(rList[0]!.querySelector('.l1 .mfrom')?.textContent, 'In Progress New')
+  assert.equal(rList[1]!.querySelector('.l1 .mfrom')?.textContent, 'Open New')
+})
+
+uiTest('§24 model icons render TierChip on docket entries from tree roots', async (mount) => {
+  const tree = mkTree({
+    roots: [
+      {
+        id: 'worker-agent',
+        title: 'Worker Agent',
+        tier: 'sonnet',
+        model_id: 'claude-3-5-sonnet',
+        state: 'live',
+        seat: 1,
+        grant: 1,
+        free: 1,
+        scope: { permission_mode: 'normal' },
+        ui_order: 1,
+        cost_usd: 0,
+        occupancy: null,
+        context_window: null,
+        charter: null,
+      },
+    ],
+  })
+  mockWorkItems([
+    mkItem({
+      id: 'w1',
+      title: 'Tiered Task',
+      status: 'in_progress',
+      last_updater: { node: 'worker-agent', generation: 1 },
+    }),
+  ])
+  const { el } = await mount(docketModal({ tree }))
+  await flush()
+
+  const r = rows(el)[0]!
+  const tierChip = r.querySelector('.docket-updater .tier')
+  assert.ok(tierChip, 'TierChip rendered in row docket-updater')
+  assert.ok(tierChip.classList.contains('t-sonnet'), 'tier class t-sonnet applied')
+  assert.equal(tierChip.textContent?.trim(), 'S', 'tier letter S rendered')
+
+  // Check detail pane
+  await inAct(() => (r as HTMLElement).click())
+  await flush()
+
+  const paneTier = el.querySelector('.docket-pane-sub .tier')
+  assert.ok(paneTier, 'TierChip rendered in detail pane subheader')
+  assert.ok(paneTier.classList.contains('t-sonnet'))
+})
