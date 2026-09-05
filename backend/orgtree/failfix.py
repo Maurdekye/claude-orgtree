@@ -21,7 +21,7 @@ from typing import Any, Callable, Mapping, cast
 
 from . import failclass
 
-SCHEMA = 3
+SCHEMA = 4
 CAP_BYTES = 8192            # three maximal feature sets fit (suite §1 bound)
 RING = 40
 TEXT_FIELDS = ("err_blob", "stderr_tail", "result_detail")
@@ -77,7 +77,13 @@ STREAM_CODES = frozenset(CODE_WORDS[:10])
 TERMINAL_REASONS = frozenset({"api_error", "max_turns", "error", "success",
                               "interrupted", "cancelled", "aborted"})
 CODEX_STATUS = frozenset({"completed", "failed", "interrupted", "in_progress"})
-CODEX_POOLS = frozenset({"direct", "reserve", "<sent>"})
+CODEX_POOLS = frozenset({"plan", "reserve", "<sent>"})   # codex_route pools
+# codex_decide vocabularies (pool_capacity states; FailureClass.pool_state)
+CAP_STATES = frozenset({"absent", "stale", "usable", "exhausted"})
+POOL_STATES = frozenset({"exhausted", "no-grant", "unexplained",
+                         "unattributed", "n/a"})
+AGY_STATUS = frozenset({"completed", "failed", "interrupted"})
+SCHEDULE_KINDS = frozenset({"observed-deadline", "probe"})
 # codex_route._CODE_KIND keys (normalised machine tags) and KIND_* values
 CODEX_ERROR_CODES = frozenset({
     "usagelimitexceeded", "ratelimitexceeded", "unauthorized",
@@ -87,8 +93,8 @@ CODEX_ERROR_CODES = frozenset({
 CODEX_KINDS = frozenset({"usage-limit", "rate-limit", "auth", "context",
                          "budget", "overloaded", "connection",
                          "usage-limit-prose", "other", "unknown"})
-LANES = frozenset({"claude", "openrouter", "codex"})
-SITES = frozenset({"terminal", "exhausted", "codex"})
+LANES = frozenset({"claude", "openrouter", "codex", "antigravity"})
+SITES = frozenset({"terminal", "exhausted", "codex", "antigravity"})
 PHASES = ("admission", "stream", "result-error", "teardown", "unknown")
 _VERSION_RE = re.compile(r"^\d{1,3}\.\d{1,3}\.\d{1,4}$")
 _AT_RE = re.compile(r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
@@ -146,6 +152,14 @@ def _int_or_none(value: Any) -> int | None:
 def _status(value: Any) -> int | None:
     """Typed HTTP evidence through the supervisor's own strict predicate."""
     return failclass._strict_http_status(value)
+
+
+def _epoch(value: Any) -> int | None:
+    """A reset instant / duration: a positive number (not a bool), as whole
+    seconds; None otherwise — no string coercion."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return int(value) if value > 0 else None
 
 
 def ran_as_sentinel(ran_as: Any) -> str:
@@ -208,7 +222,8 @@ def verdict_of(cl: Mapping[str, Any]) -> str:
 
 def build(*, lane: str, site: str, observed: Mapping[str, Any],
           text: Mapping[str, Any], recorded: Mapping[str, Any],
-          codex: Mapping[str, Any] | None = None, ran_as: Any = "",
+          codex: Mapping[str, Any] | None = None,
+          agy: Mapping[str, Any] | None = None, ran_as: Any = "",
           cli: Mapping[str, Any] | None = None,
           at: str | None = None) -> dict[str, Any]:
     obs: dict[str, Any] = {
@@ -250,8 +265,38 @@ def build(*, lane: str, site: str, observed: Mapping[str, Any],
             "served": _vocab(codex.get("served"), CODEX_POOLS),
             "usage_prose": codex.get("usage_prose") is True,
             "now": _int_or_none(codex.get("now")),
+            # the resolved evidence codex_decide.decide reads (typed)
+            "snap_exhausted": codex.get("snap_exhausted") is True,
+            "snap_reset": _epoch(codex.get("snap_reset")),
+            "board_fresh": codex.get("board_fresh") is True,
+            "board_complete": codex.get("board_complete") is True,
+            "cap_state": _vocab(codex.get("cap_state"), CAP_STATES),
+            "cap_reset": _epoch(codex.get("cap_reset")),
+            # the site's decision, kept apart by name; never an input
             "kind_recorded": _vocab(codex.get("kind_recorded"), CODEX_KINDS),
             "rejected_recorded": codex.get("rejected_recorded") is True,
+            "attributed_recorded": _vocab(codex.get("attributed_recorded"),
+                                          CODEX_POOLS),
+            "redrive_recorded": codex.get("redrive_recorded") is True,
+            "pool_state_recorded": _vocab(codex.get("pool_state_recorded"),
+                                          POOL_STATES),
+            "reset_recorded": _epoch(codex.get("reset_recorded")),
+        }
+    ag: dict[str, Any] | None = None
+    if agy is not None:
+        ag = {
+            "status": _vocab(agy.get("status"), AGY_STATUS),
+            "items": _int_or_none(agy.get("items")) or 0,
+            "had_usage": agy.get("had_usage") is True,
+            "reset_in_s": _epoch(agy.get("reset_in_s")),
+            "elapsed_s": _int_or_none(agy.get("elapsed_s")),
+            "ceiling_s": _int_or_none(agy.get("ceiling_s")),
+            # the site's decisions, kept apart by name
+            "walled_recorded": agy.get("walled_recorded") is True,
+            "reset_known_recorded": agy.get("reset_known_recorded") is True,
+            "schedule_recorded": _vocab(agy.get("schedule_recorded"),
+                                        SCHEDULE_KINDS),
+            "ceiling_kill_recorded": agy.get("ceiling_kill_recorded") is True,
         }
     fx: dict[str, Any] = {
         "schema": SCHEMA,
@@ -260,7 +305,7 @@ def build(*, lane: str, site: str, observed: Mapping[str, Any],
         "at": (str(at) if at and _AT_RE.match(str(at))
                else time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())),
         "observed": obs, "features": feats, "lens": lens, "recorded": rec,
-        "codex": cx, "ran_as": ran_as_sentinel(ran_as),
+        "codex": cx, "agy": ag, "ran_as": ran_as_sentinel(ran_as),
         "cli": {"exit": _int_or_none((cli or {}).get("exit")),
                 "version": _version((cli or {}).get("version"))},
     }
@@ -366,5 +411,53 @@ def replay(fx: Mapping[str, Any], predicates: Predicates) -> dict[str, Any]:
              if rec.get(k) != cl.get(k)]
     if phase != fx.get("phase"):
         drift.append("phase")
+    cx = fx.get("codex")
+    if isinstance(cx, Mapping) and "codex_decide" in predicates:
+        # re-decide from the recorded EVIDENCE (never from *_recorded)
+        cxm = cast("Mapping[str, Any]", cx)
+        ev = {
+            "status": cxm.get("status"), "code": cxm.get("error_code") or "",
+            "usage_prose": bool(cxm.get("usage_prose")),
+            "nothing_ran": bool(predicates["codex_nothing_ran"](
+                items_seen=int(cxm.get("items_seen") or 0),
+                had_usage=bool(cxm.get("had_usage")),
+                text_len=int(cxm.get("text_len") or 0))),
+            "pool": str(cxm.get("pool") or ""), "served": cxm.get("served"),
+            "snap_exhausted": bool(cxm.get("snap_exhausted")),
+            "snap_reset": cxm.get("snap_reset"),
+            "board_fresh": bool(cxm.get("board_fresh")),
+            "board_complete": bool(cxm.get("board_complete")),
+            "cap_state": cxm.get("cap_state"), "cap_reset": cxm.get("cap_reset"),
+        }
+        d = cast("Mapping[str, Any]", predicates["codex_decide"](ev))
+        cl["codex"] = {"kind": d["kind"], "rejected": bool(d["rejected"]),
+                       "attributed": d["attributed"],
+                       "redrive": bool(d["redrive"]),
+                       "pool_state": d["pool_state"],
+                       "reset_ts": _epoch(d["reset_ts"])}
+        for k, rk in (("kind", "kind_recorded"), ("rejected", "rejected_recorded"),
+                      ("attributed", "attributed_recorded"),
+                      ("redrive", "redrive_recorded"),
+                      ("pool_state", "pool_state_recorded"),
+                      ("reset_ts", "reset_recorded")):
+            if cxm.get(rk) != cl["codex"][k]:
+                drift.append("codex." + k)
+    ag = fx.get("agy")
+    if isinstance(ag, Mapping):
+        agm = cast("Mapping[str, Any]", ag)
+        walled = bool(predicates["limit"](blob))
+        reset_known = walled and agm.get("reset_in_s") is not None
+        el, ce = agm.get("elapsed_s"), agm.get("ceiling_s")
+        ceiling_kill = (not walled and isinstance(el, int)
+                        and isinstance(ce, int) and el >= ce)
+        cl["agy"] = {"walled": walled, "reset_known": reset_known,
+                     "schedule": "observed-deadline" if reset_known else "probe",
+                     "ceiling_kill": ceiling_kill}
+        for k, rk in (("walled", "walled_recorded"),
+                      ("reset_known", "reset_known_recorded"),
+                      ("schedule", "schedule_recorded"),
+                      ("ceiling_kill", "ceiling_kill_recorded")):
+            if agm.get(rk) != cl["agy"][k]:
+                drift.append("agy." + k)
     return {"recomputed": cl, "recorded": dict(rec), "phase": phase,
             "phase_recorded": fx.get("phase"), "drift": drift}

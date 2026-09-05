@@ -24,7 +24,7 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                 "..", "backend"))
 
-from orgtree import failclass, failfix  # noqa: E402
+from orgtree import codex_decide, failclass, failfix  # noqa: E402
 
 PREDICATES: failfix.Predicates = {
     "limit": failclass._looks_like_usage_limit,
@@ -32,6 +32,10 @@ PREDICATES: failfix.Predicates = {
     "filtered": failclass._looks_like_filtered,
     "died_in_flight": failclass._died_in_flight,
     "typed": failclass._typed_api_status,
+    # the codex lane is re-decided by the PRODUCTION core itself
+    # (codex_route.classify_failure == decide(failure_evidence(...)))
+    "codex_decide": codex_decide.decide,
+    "codex_nothing_ran": codex_decide.nothing_ran,
 }
 
 

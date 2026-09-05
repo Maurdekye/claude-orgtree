@@ -12497,7 +12497,10 @@ def _codex_leg_attempt(slug: str, nid: str, org: Org, st: dict[str, Any],
         # record is flipped to not-live with the verdict either way.
         with jlock:
             _items_seen = int(jstate["item_events"])
-        fcls = codex_route.classify_failure(
+        # classify_failure == decide(failure_evidence(...)): the evidence is
+        # resolved once, decided once, and the fixture below records THAT
+        # evidence beside the decision it produced
+        _fev = codex_route.failure_evidence(
             status=res_raw.get("status"), error=res_raw.get("error"),
             snapshots=res_raw.get("rate_limit_snapshots"),
             items_seen=_items_seen, token_usage=res_raw.get("token_usage"),
@@ -12505,9 +12508,10 @@ def _codex_leg_attempt(slug: str, nid: str, org: Org, st: dict[str, Any],
             pool=route["pool"], board=codex_limits.snapshot(),
             usage_prose=_looks_like_usage_limit(blob),
             served=_served)
+        fcls = codex_route.decide(_fev)
         try:
-            # the redacted fixture (failfix): an INPUT projection of the
-            # classification above plus its recorded verdict; fail-open
+            # the redacted fixture (failfix): the typed evidence above plus
+            # the recorded decision, kept apart by name; fail-open
             _cerr = res_raw.get("error")
             failfix.record(
                 store.DATA_ROOT, slug, nid, lane="codex", site="codex",
@@ -12520,15 +12524,25 @@ def _codex_leg_attempt(slug: str, nid: str, org: Org, st: dict[str, Any],
                 codex={"status": res_raw.get("status"),
                        "rpc_code": (_cerr.get("code")
                                     if isinstance(_cerr, dict) else None),
-                       "error_code": codex_route._error_code(_cerr),
+                       "error_code": _fev["code"],
                        "items_seen": _items_seen,
                        "had_usage": res_raw.get("token_usage") is not None,
-                       "text_len": len(str(res_raw.get("agent_text") or "")),
+                       "text_len": len(str(res_raw.get("agent_text") or "").strip()),
                        "pool": route["pool"], "served": _served,
-                       "usage_prose": _looks_like_usage_limit(blob),
+                       "usage_prose": _fev["usage_prose"],
                        "now": int(time.time()),
+                       "snap_exhausted": _fev["snap_exhausted"],
+                       "snap_reset": _fev["snap_reset"],
+                       "board_fresh": _fev["board_fresh"],
+                       "board_complete": _fev["board_complete"],
+                       "cap_state": _fev["cap_state"],
+                       "cap_reset": _fev["cap_reset"],
                        "kind_recorded": fcls["kind"],
-                       "rejected_recorded": fcls["rejected"]},
+                       "rejected_recorded": fcls["rejected"],
+                       "attributed_recorded": fcls["attributed"],
+                       "redrive_recorded": fcls["redrive"],
+                       "pool_state_recorded": fcls["pool_state"],
+                       "reset_recorded": fcls["reset_ts"]},
                 ran_as=st.get("ran_as"))
         except Exception:                                    # noqa: BLE001
             pass
@@ -13433,7 +13447,40 @@ def _antigravity_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
                 reason or tail, tier=tier, now=time.time())
         # A recognized usage wall retains its freeze treatment whether or not
         # it names a reset; ordinary failures still obey the ceiling.
-        if not walled and time.time() - t0 >= TURN_TIMEOUT:
+        _agy_elapsed = time.time() - t0
+        _agy_ceiling = not walled and _agy_elapsed >= TURN_TIMEOUT
+        try:
+            # the redacted fixture (failfix): recording only, after every
+            # predicate, fail-open — the lane's boundary facts beside the
+            # decisions just taken (walled / reset / schedule / ceiling)
+            with jlock:
+                _agy_items = int(jstate["agent_items"])
+            failfix.record(
+                store.DATA_ROOT, slug, nid, lane="antigravity",
+                site="antigravity",
+                observed={"started": _agy_items > 0,
+                          "boundary": res_raw.get("status") is not None,
+                          "is_error": True},
+                text={"err_blob": blob, "stderr_tail": tail,
+                      "result_detail": reason},
+                recorded={"limit": walled,
+                          "net": _looks_like_connection_failure(blob),
+                          "filtered": _looks_like_filtered(blob)},
+                agy={"status": res_raw.get("status"), "items": _agy_items,
+                     "had_usage": res_raw.get("token_usage") is not None,
+                     "reset_in_s": antigravity_limits.reset_in_seconds(
+                         reason or tail),
+                     "elapsed_s": int(_agy_elapsed),
+                     "ceiling_s": int(TURN_TIMEOUT),
+                     "walled_recorded": walled,
+                     "reset_known_recorded": reset_ts is not None,
+                     "schedule_recorded": ("observed-deadline" if reset_ts
+                                           else "probe"),
+                     "ceiling_kill_recorded": _agy_ceiling},
+                ran_as=st.get("ran_as"))
+        except Exception:                                    # noqa: BLE001
+            pass
+        if _agy_ceiling:
             raise RuntimeError(f"turn killed: exceeded the {TURN_TIMEOUT}s "
                                "per-message ceiling")
         raise _ProviderTurnFailed(

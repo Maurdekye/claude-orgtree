@@ -68,6 +68,13 @@ from typing import Any, Final, TypedDict, cast
 
 #: the two models a routed tier can go out as. Read from `ledger.MODELS` by
 #: name so a rename upstream is a one-line data correction there.
+from .codex_decide import (  # noqa: F401 — the decision core; names re-exported
+    KIND_AUTH, KIND_BUDGET, KIND_CONNECTION, KIND_CONTEXT, KIND_OTHER,
+    KIND_OVERLOADED, KIND_RATE_LIMIT, KIND_UNKNOWN, KIND_USAGE_LIMIT,
+    KIND_USAGE_PROSE, Evidence, FailureClass, _CODE_KIND, decide)
+from .codex_decide import error_code as _error_code  # noqa: F401
+from .codex_decide import attributed_pool as _attributed_pool
+from .codex_decide import nothing_ran as _nothing_ran
 from .ledger import MODELS as _MODELS
 
 #: pool names — the RESOURCE a turn spends, distinct from the model string.
@@ -100,17 +107,8 @@ EVIDENCE_MAX_AGE: Final = 900.0
 #: long is a fact about this account good for" question as the evidence age.
 MARK_PROBE_FLOOR: Final = EVIDENCE_MAX_AGE
 
-#: kinds `classify_failure` answers with. Only REJECTED_USAGE may re-drive.
-KIND_USAGE_LIMIT: Final = "usage-limit"
-KIND_RATE_LIMIT: Final = "rate-limit"
-KIND_AUTH: Final = "auth"
-KIND_CONTEXT: Final = "context"
-KIND_BUDGET: Final = "budget"
-KIND_OVERLOADED: Final = "overloaded"
-KIND_CONNECTION: Final = "connection"
-KIND_USAGE_PROSE: Final = "usage-limit-prose"
-KIND_OTHER: Final = "other"
-KIND_UNKNOWN: Final = "unknown"
+#: kinds `classify_failure` answers with (KIND_* — defined in codex_decide,
+#: re-exported above). Only REJECTED_USAGE may re-drive.
 
 
 class Route(TypedDict):
@@ -675,53 +673,47 @@ def served_pool(route: Route, rerouted: Any) -> str | None:
 
 # ── the failure classifier ──────────────────────────────────────────────────
 
-def _error_code(error: Any) -> str:
-    """The machine tag of a `TurnError`, normalised across the two spellings
-    this codebase has measured: `usage_limit_exceeded` (0.150.1 specimen) and
-    the v2 schema's `usageLimitExceeded` (0.153.3, `evidence/schema-0.153.3`).
-    The object forms (`{"httpConnectionFailed": {...}}`) name their variant
-    by their single key."""
-    if not isinstance(error, dict):
-        return ""
-    info: Any = error.get("codexErrorInfo")
-    if isinstance(info, dict):
-        d: dict[str, Any] = info
-        raw = str(d.get("type") or d.get("kind") or "")
-        if not raw and len(d) == 1:
-            raw = str(next(iter(d.keys())))
-    else:
-        raw = str(info or "")
-    return raw.replace("_", "").replace("-", "").strip().lower()
-
-
-_CODE_KIND: Final[dict[str, str]] = {
-    "usagelimitexceeded": KIND_USAGE_LIMIT,
-    "ratelimitexceeded": KIND_RATE_LIMIT,
-    "unauthorized": KIND_AUTH,
-    "contextwindowexceeded": KIND_CONTEXT,
-    "sessionbudgetexceeded": KIND_BUDGET,
-    "serveroverloaded": KIND_OVERLOADED,
-    "httpconnectionfailed": KIND_CONNECTION,
-    "responsestreamconnectionfailed": KIND_CONNECTION,
-    "responsestreamdisconnected": KIND_CONNECTION,
-    "responsetoomanyfailedattempts": KIND_CONNECTION,
-}
-
-
-class FailureClass(TypedDict):
-    kind: str
-    code: str
-    rejected: bool          # explicit terminal rejection with nothing run
-    attributed: str | None  # the pool the rejection is EVIDENCE ABOUT:
-                            # the sent pool, or the reroute destination's,
-                            # or None when the destination is unrecognised
-    redrive: bool           # rejected AND the pool that rejected is the one
-                            # we sent to — the only case a retry on the
-                            # other pool is a different request
-    pool_state: str         # "exhausted" | "no-grant" | "unexplained"
-                            # | "unattributed" | "n/a"
-    reset_ts: float | None  # the attributed pool's latest reset, if known
-    why: str
+def failure_evidence(*, status: str | None, error: Any, snapshots: Any,
+                     items_seen: int, token_usage: Any, agent_text: str,
+                     pool: str, board: dict[str, Any] | None,
+                     usage_prose: bool = False,
+                     served: str | None = "<sent>",
+                     now: float | None = None) -> Evidence:
+    """The wire, resolved into the typed Evidence `codex_decide.decide`
+    reads: the error's machine tag (`_error_code`), whether anything ran,
+    the pool that answered, and — for that pool — the turn's own snapshots
+    (`snapshots_pool_reset`) and the account board (`pool_capacity` at
+    `now`). Resolved whenever a pool is attributed, whatever the kind, so a
+    recorded Evidence is complete for re-deciding offline."""
+    now = time.time() if now is None else now
+    attributed = _attributed_pool(pool, served)
+    ev: Evidence = {
+        "status": status, "code": _error_code(error),
+        "usage_prose": bool(usage_prose),
+        "nothing_ran": _nothing_ran(
+            items_seen=int(items_seen or 0),
+            had_usage=token_usage is not None,
+            text_len=len((agent_text or "").strip())),
+        "pool": pool, "served": served,
+        "snap_exhausted": False, "snap_reset": None,
+        "board_fresh": False, "board_complete": False,
+        "cap_state": None, "cap_reset": None,
+    }
+    if attributed is None:
+        return ev
+    # the turn's own unnamed notification describes the pool that SERVED
+    # it (measured, see `snapshots_pool_reset`)
+    ev["snap_exhausted"], ev["snap_reset"] = snapshots_pool_reset(
+        snapshots, attributed, sent_pool=attributed)
+    if board:
+        ev["board_complete"] = bool(board.get("complete"))
+        if board.get("available") and not board.get("stale"):
+            ev["board_fresh"] = True
+            limits = [w for w in (board.get("limits") or [])
+                      if isinstance(w, dict)]
+            cap = pool_capacity(limits, attributed, now=now)
+            ev["cap_state"], ev["cap_reset"] = cap["state"], cap["reset_ts"]
+    return ev
 
 
 def classify_failure(*, status: str | None, error: Any, snapshots: Any,
@@ -731,106 +723,16 @@ def classify_failure(*, status: str | None, error: Any, snapshots: Any,
                      served: str | None = "<sent>",
                      now: float | None = None) -> FailureClass:
     """What kind of failure this was, and whether the request may be re-sent
-    on the other pool.
-
-    `rejected` is True ONLY for the provider's own terminal usage-limit tag on
-    a turn that observed no item, no token usage and no text. Everything else
-    — a lost stream, a timeout (status None), a 429-class rate limit, an auth
-    failure, a usage-limit read out of PROSE with no machine tag — is not a
-    rejection this code will act on by replaying.
-
-    ⚠ `served` / `attributed` / `redrive` (parent review 2026-09-05). `pool`
-    is the pool the turn was SENT to; `served` is the pool that answered —
-    the same one unless the server said `model/rerouted` (`served_pool`).
-    A rejection is evidence about the pool that ANSWERED, so `pool_state`
-    and `reset_ts` describe `attributed = served`, and a rejection after a
-    reroute is never booked against the pool we chose. And it may be
-    re-driven on the other pool ONLY when the pool that rejected is the one
-    we sent to: after a reserve→direct reroute, "the other pool" is direct
-    — the pool that just rejected — and re-sending there is the same
-    request to the same wall. With an unrecognised destination
-    (`served=None`) nothing is attributed to any pool and nothing is
-    re-driven: an unobserved destination is not inferred.
-
-    `pool_state` explains a rejection from evidence, in order: the turn's own
-    snapshots showing the attributed pool exhausted; else a fresh COMPLETE
-    board (exhausted / absent = no-grant); else "unexplained" — still a
-    rejection, but marked with the probe floor rather than a provider reset.
-    """
-    now = time.time() if now is None else now
-    code = _error_code(error)
-    if status is None or status == "":
-        kind = KIND_UNKNOWN
-    elif code in _CODE_KIND:
-        kind = _CODE_KIND[code]
-    elif code:
-        kind = KIND_OTHER
-    elif usage_prose:
-        kind = KIND_USAGE_PROSE
-    elif status == "failed":
-        kind = KIND_UNKNOWN
-    else:
-        kind = KIND_OTHER
-    nothing_ran = (int(items_seen or 0) == 0 and token_usage is None
-                   and not (agent_text or "").strip())
-    # ⚠ THREE conditions, all required (parent review 2026-09-05): the
-    # provider's TERMINAL "failed" status — an interrupted, completed or
-    # in-progress turn carrying a usage tag is not a terminal rejection —
-    # the usage-limit machine tag, and nothing observed to have run
-    rejected = (status == "failed" and kind == KIND_USAGE_LIMIT
-                and nothing_ran)
-    # the pool the answer is EVIDENCE ABOUT: the one that served the turn
-    attributed: str | None = pool if served == "<sent>" else served
-    redrive = rejected and attributed == pool
-    pool_state = "n/a"
-    reset_ts: float | None = None
-    why = ""
-    if kind == KIND_USAGE_LIMIT and attributed is None:
-        pool_state = "unattributed"
-        why = (f"sent to {pool}, but the provider rerouted to a model this "
-               "code does not know; the rejection is attributed to no pool")
-    elif kind == KIND_USAGE_LIMIT:
-        # the turn's own unnamed notification describes the pool that
-        # SERVED it (measured, see `snapshots_pool_reset`)
-        ex, snap_reset = snapshots_pool_reset(snapshots, attributed,
-                                              sent_pool=attributed)
-        if ex:
-            pool_state, reset_ts = "exhausted", snap_reset
-            why = f"{attributed} pool exhausted (turn's own rate-limit snapshot)"
-        elif board and board.get("available") and not board.get("stale"):
-            limits = [w for w in (board.get("limits") or [])
-                      if isinstance(w, dict)]
-            cap = pool_capacity(limits, attributed, now=now)
-            if cap["state"] == "exhausted":
-                pool_state, reset_ts = "exhausted", cap["reset_ts"]
-                why = f"{attributed} pool exhausted (account board)"
-            elif cap["state"] == "absent" and board.get("complete"):
-                pool_state = "no-grant"
-                why = (f"{attributed} pool is not granted to this account "
-                       f"(absent from a complete board read)")
-            else:
-                pool_state = "unexplained"
-                why = f"{attributed} rejected the request; the board does not say why"
-        else:
-            pool_state = "unexplained"
-            why = f"{attributed} rejected the request; no fresh board to explain it"
-        if attributed != pool:
-            why = (f"sent to {pool}, rerouted by the provider to {attributed}: "
-                   + why + " — not re-driven (the other pool is the one that "
-                   "rejected)")
-        if not nothing_ran:
-            why += " — but the turn had already produced output, so it is not replayed"
-    elif kind == KIND_UNKNOWN:
-        why = "outcome unknown (no terminal error from the provider) — never replayed"
-    elif kind == KIND_CONNECTION:
-        why = "transport failure — the request may have executed; never replayed"
-    elif kind == KIND_AUTH:
-        why = "credential rejected — not a capacity fact; no route change"
-    elif kind == KIND_RATE_LIMIT:
-        why = "transient rate limit — not pool exhaustion; no route change"
-    return {"kind": kind, "code": code, "rejected": rejected,
-            "attributed": attributed, "redrive": redrive,
-            "pool_state": pool_state, "reset_ts": reset_ts, "why": why}
+    on the other pool: `decide(failure_evidence(...))`. The rules (rejection
+    needs the terminal status, the usage tag and nothing run; attribution to
+    the pool that SERVED; re-drive only when that is the pool sent to;
+    pool_state from snapshots, then a fresh board, else unexplained) are
+    documented and implemented in `codex_decide.decide`."""
+    return decide(failure_evidence(
+        status=status, error=error, snapshots=snapshots,
+        items_seen=items_seen, token_usage=token_usage,
+        agent_text=agent_text, pool=pool, board=board,
+        usage_prose=usage_prose, served=served, now=now))
 
 
 def route_label(route: Route | None, *, live: bool,
