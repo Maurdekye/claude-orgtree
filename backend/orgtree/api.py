@@ -1168,6 +1168,10 @@ def orgs_create(body: OrgCreate) -> dict[str, Any]:
     # holding http://127.0.0.1:7370. The pop stays — it is what keeps the
     # key out of the org doc — and only the fallback moves, which also
     # puts the explicit value in exactly one place instead of two.
+    # The Luna pool-order preference is app-wide, unlike the other
+    # org-creation defaults above. Keep it in defaults.json and out of each
+    # org document so an absent per-agent preference remains live-inherited.
+    dflt.pop("prefer_reserve", None)
     local_hub_addr = str(dflt.pop("net_hub_address", "") or "") \
         or net._default_address()
     if dflt:
@@ -1850,6 +1854,9 @@ class Settings(Body):
                                             # (existing nodes keep theirs; the ⚙
                                             # panel changes those one at a time)
     default_effort: str | None = None       # ""=CLI default | low..max (live inherit)
+    # app-wide Luna pool-order default; agents with no individual preference
+    # inherit it (deliberately not an org-doc setting)
+    prefer_reserve: bool | None = None
     auto_resume: bool | None = None         # restart limit-frozen agents at reset+1min
     auto_resume_compact: bool | None = None  # cheap-compact a limit-frozen node
                                              # right before the AUTO resume wakes
@@ -1890,6 +1897,7 @@ _DEFAULTS_BASE = {
     "max_top_grant": 1000, "default_top_grant": 50, "compact_at": 0.80,
     "fable_limit_policy": "halt", "fable_filter_policy": "halt",
     "fable_filter_model": "opus",
+    "prefer_reserve": True,
     "cascade_hire": True, "cascade_alloc": True, "auto_resume": False,
     "auto_resume_compact": False,
     # F-06: NOT an org-doc key — popped + translated into the "local" hub
@@ -1916,7 +1924,12 @@ def load_org_defaults() -> dict[str, Any]:
 
 @app.get("/api/defaults")
 def defaults_get() -> dict[str, Any]:
-    return {**_DEFAULTS_BASE, **load_org_defaults()}
+    result = {**_DEFAULTS_BASE, **load_org_defaults()}
+    # Old installs (and malformed hand-edits) have no valid app-wide value;
+    # preserve the historical reserve-first behavior on the wire too.
+    if not isinstance(result.get("prefer_reserve"), bool):
+        result["prefer_reserve"] = True
+    return result
 
 
 @app.post("/api/defaults")
@@ -1945,6 +1958,8 @@ def defaults_set(body: Settings) -> dict[str, Any]:
     if body.default_effort is not None \
             and body.default_effort in ("", *Org.EFFORTS):
         d["default_effort"] = body.default_effort
+    if body.prefer_reserve is not None:
+        d["prefer_reserve"] = bool(body.prefer_reserve)
     if body.auto_resume is not None:
         d["auto_resume"] = bool(body.auto_resume)
     if body.auto_resume_compact is not None:
@@ -2446,10 +2461,11 @@ class Scope(Body):
     team_charter: str | None = None         # §15: binds this node's whole subtree
     effort: str | None = None               # thinking effort: low|medium|high|"" clears
     model_version: str | None = None        # a VERSION inside the tier ("" clears)
-    # item 12: try the reserve pool first (True, default) or the plan pool
-    # first (False); omitted = unchanged. Luna only has an effect; stored
+    # item 12: try the reserve pool first (True) or the plan pool first
+    # (False); omitted = unchanged. Luna only has an effect; stored
     # for any tier so it survives a switch.
     prefer_reserve: bool | None = None
+    clear_prefer_reserve: bool = False  # return this node to the app default
     # {enabled?, occ?} per-node cache-protection override; {} clears to inherit
     auto_cheap_compact: dict[str, Any] | None = None
     # post-hire @mcp:<peer> response handles (2026-08-22). REPLACES the node's
@@ -2486,6 +2502,7 @@ def node_scope(slug: str, nid: str, body: Scope,
                                    auto_cheap_compact=body.auto_cheap_compact,
                                    external_handles=body.external_handles,
                                    raise_ceiling=rc,
+                                   clear_prefer_reserve=body.clear_prefer_reserve,
                                    prefer_reserve=body.prefer_reserve)
         except LedgerError as e:
             raise HTTPException(422, str(e))

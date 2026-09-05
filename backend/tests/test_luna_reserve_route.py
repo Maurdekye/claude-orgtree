@@ -104,6 +104,12 @@ def eq(got, want, what):
         raise AssertionError(f"{what}: got {got!r}, wanted {want!r}")
 
 
+def app_prefer(value: bool) -> None:
+    """Set the app-wide default in this test's throwaway root."""
+    with open(os.path.join(DATA, "defaults.json"), "w", encoding="utf-8") as f:
+        json.dump({"prefer_reserve": value}, f)
+
+
 # ── board fixtures (normalized `codex_limits.snapshot()` shape) ─────────────
 
 def W(model, pct, resets=None, active=None, observed=None):
@@ -966,13 +972,40 @@ def main() -> int:
     print("§12 the preference: default, persistence, restart")
 
     def t_pref():
+        app_prefer(False)
         org = store.create_org("zz lunaroute pref")
         r = org.hire(USER, None, "luna", 2, "p", add_dirs=[],
                      tools={"bash": True, "web": False, "edit": True,
                             "subagents": False, "mcp": []},
                      org_visibility="team", charter="c")
         pid = r["node"]
-        eq(org.prefer_reserve_for(pid), True, "absent = on (the default)")
+        eq(org.prefer_reserve_for(pid), False,
+           "absent inherits the app-wide OFF default")
+        ambient = tempfile.mkdtemp(prefix="lunaroute-ambient-")
+        with open(os.path.join(ambient, "defaults.json"), "w", encoding="utf-8") as f:
+            json.dump({"prefer_reserve": True}, f)
+        bound = os.environ["ORGTREE_DATA"]
+        os.environ["ORGTREE_DATA"] = ambient
+        try:
+            eq(org.prefer_reserve_for(pid), False,
+               "ambient ORGTREE_DATA cannot redirect the bound store root")
+        finally:
+            os.environ["ORGTREE_DATA"] = bound
+        inherited = org.hire(USER, None, "luna", 0, "inherited", add_dirs=[],
+                             tools={"bash": True, "web": False, "edit": True,
+                                    "subagents": False, "mcp": []},
+                             org_visibility="team", charter="c")["node"]
+        org.set_scope(USER, inherited, effort="low")
+        assert "prefer_reserve" not in org.node(inherited)["scope"], \
+            "an unrelated save must not materialize an inherited preference"
+        eq(org.prefer_reserve_for(inherited), False,
+           "missing preference remains app-defaulted after unrelated save")
+        app_prefer(True)
+        eq(org.prefer_reserve_for(inherited), True,
+           "missing preference follows a later app-default flip")
+        app_prefer(False)
+        org.set_scope(USER, pid, prefer_reserve=True)
+        eq(org.prefer_reserve_for(pid), True, "explicit per-agent ON wins")
         org.set_scope(USER, pid, prefer_reserve=False)
         eq(org.prefer_reserve_for(pid), False, "off after set_scope")
         store.save_org(org)
@@ -991,13 +1024,28 @@ def main() -> int:
             pass
         else:
             raise AssertionError("self-retool must not set prefer_reserve")
-    check("§12 prefer_reserve: absent = on, persisted explicitly, survives "
-          "reload, superior-only", t_pref)
+        app_prefer(True)
+    check("§12 prefer_reserve: absent inherits app default, explicit value "
+          "persists across reload and remains superior-only", t_pref)
 
     def t_pref_api():
         from fastapi.testclient import TestClient
         from orgtree import api
         client = TestClient(api.app)
+        app_prefer(False)
+        saved = client.post("/api/defaults", json={"prefer_reserve": False})
+        assert saved.status_code == 200, saved.text
+        eq(saved.json()["prefer_reserve"], False,
+           "app-wide default round-trips through POST /api/defaults")
+        fetched = client.get("/api/defaults")
+        assert fetched.status_code == 200, fetched.text
+        eq(fetched.json()["prefer_reserve"], False,
+           "app-wide default round-trips through GET /api/defaults")
+        created = api.orgs_create(api.OrgCreate(
+            name="zz lunaroute app default", net_autoconnect=False))
+        created_doc = store.load_org(created["slug"]).d
+        assert "prefer_reserve" not in created_doc, \
+            "the app-wide default must not become an org-wide stored default"
         org = store.create_org("zz lunaroute api")
         org.d["max_top_grant"] = 200
         store.save_org(org)
@@ -1020,7 +1068,18 @@ def main() -> int:
                       "subagents": False, "mcp": []},
             "org_visibility": "team", "charter": "c"})
         assert r.status_code == 200, r.text
-        eq(store.load_org(s).prefer_reserve_for("boxdefault"), True, "omitted = on")
+        eq(store.load_org(s).prefer_reserve_for("boxdefault"), False,
+           "omitted agent inherits the app-wide OFF default")
+        r = client.post(f"/api/orgs/{s}/nodes/boxdefault/scope",
+                        json={"prefer_reserve": True})
+        assert r.status_code == 200, r.text
+        r = client.post(f"/api/orgs/{s}/nodes/boxdefault/scope",
+                        json={"clear_prefer_reserve": True})
+        assert r.status_code == 200, r.text
+        assert "prefer_reserve" not in store.load_org(s).node("boxdefault")["scope"], \
+            "clear action removes the individual override"
+        eq(store.load_org(s).prefer_reserve_for("boxdefault"), False,
+           "cleared preference returns to the app default")
         # editable afterwards through the gear's endpoint
         r = client.post(f"/api/orgs/{s}/nodes/boxdefault/scope",
                         json={"prefer_reserve": False})
@@ -1028,7 +1087,10 @@ def main() -> int:
         eq(store.load_org(s).prefer_reserve_for("boxdefault"), False, "edited later")
         # the tree payload exposes the preference on scope and the route
         # token on the node — null before any turn
-        nodes = tree_nodes(client.get(f"/api/orgs/{s}").json())
+        tree_payload = client.get(f"/api/orgs/{s}").json()
+        eq(tree_payload["prefer_reserve_default"], False,
+           "tree exposes the live app-wide OFF default")
+        nodes = tree_nodes(tree_payload)
         eq(nodes["boxdefault"]["scope"].get("prefer_reserve"), False, "scope on the wire")
         eq(nodes["boxdefault"].get("codex_route"), None, "no route before a turn")
         # a NEW gpt-reserve hire through the API is refused, pointing at luna
@@ -1079,7 +1141,9 @@ def main() -> int:
         assert "reserve_hire_enabled" in openai and "reserve_reason" in openai, \
             "the deprecated aliases are still served"
         assert "gpt-reserve" not in [t["tier"] for t in openai["tiers"]], openai["tiers"]
-    check("§12 through the API: hire with the box (omitted = on), edit later, "
+        app_prefer(True)
+    check("§12 through the API: app default round-trip, omitted inherits it, "
+          "hire with the box, edit later, "
           "tree carries scope + route token labelled last, gpt-reserve hire/"
           "switch refused, providers doc has the reserve object + aliases",
           t_pref_api)

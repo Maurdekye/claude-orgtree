@@ -495,6 +495,26 @@ def slugify(name: str) -> str:
     return slug
 
 
+def app_prefer_reserve_default() -> bool:
+    """Read the app-wide Luna pool-order default, with old-install fallback.
+
+    This stays in the ledger's dependency-light layer so supervisor routing,
+    cache forecasting, and tree/UI projections all use the same live value.
+    It is intentionally not copied into org documents.
+    """
+    # Import lazily: store imports Org, while this function is called only
+    # after the application has finished importing. This makes the canonical
+    # bound store root authoritative even if ambient ORGTREE_DATA changes.
+    from . import store
+    root = store.DATA_ROOT
+    try:
+        with open(os.path.join(root, "defaults.json"), encoding="utf-8") as f:
+            value = json.load(f).get("prefer_reserve")
+        return value if isinstance(value, bool) else True
+    except (OSError, json.JSONDecodeError, AttributeError):
+        return True
+
+
 class Org:
     """One organization: a node tree, its audiences/notices, and an event log.
 
@@ -5464,14 +5484,14 @@ class Org:
         return dict(MODEL_VERSIONS.get(tier) or {})
 
     def prefer_reserve_for(self, nid: str) -> bool:
-        """Does this node try the reserve pool FIRST (True, the default) or
-        its plan/weekly pool first (False)? Absent = True: every node hired
-        before the field existed keeps the reserve-first behaviour the
-        ruling made the default. Read by `supervisor._codex_resolve_route`
-        and the cache forecast; recorded on the route receipt as `prefer`,
-        separately from the route that actually ran."""
+        """Does this node try reserve FIRST or its plan pool first?
+
+        An explicit per-node value wins. An absent value is live-inherited
+        from the app-wide default so changing that setting affects existing
+        agents that never chose an individual preference.
+        """
         v = self.node(nid)["scope"].get("prefer_reserve")
-        return True if v is None else bool(v)
+        return app_prefer_reserve_default() if v is None else bool(v)
 
     def model_for(self, nid: str) -> str:
         """The `--model` id for this node: its chosen VERSION when it recorded
@@ -5499,6 +5519,7 @@ class Org:
                   auto_cheap_compact: Mapping[str, Any] | None = None,
                   external_handles: list[Any] | None = None,
                   raise_ceiling: bool = False,
+                  clear_prefer_reserve: bool = False,
                   prefer_reserve: bool | None = None) -> dict[str, Any]:
         """Per-node configuration (the ⚙): dir grants with modes, the full tool set
         (built-ins + MCP servers), org-structure visibility. Superior-only.
@@ -5532,6 +5553,7 @@ class Org:
                 ("model_version", model_version),
                 ("auto_cheap_compact", auto_cheap_compact),
                 ("prefer_reserve", prefer_reserve),
+                ("clear_prefer_reserve", clear_prefer_reserve),
                 # a handle is an outbound-mail PRIVILEGE (the post_mail
                 # per-address bypass), so self-granting one would let a node
                 # hand itself a channel out of the org — the exact thing the
@@ -5796,12 +5818,14 @@ class Org:
                 sc["model_version"] = model_version
             else:
                 sc.pop("model_version", None)   # "" clears ⇒ the tier default
-        if prefer_reserve is not None:
+        if clear_prefer_reserve:
+            sc.pop("prefer_reserve", None)
+        elif prefer_reserve is not None:
             # "Prefer reserve" (user ruling 2026-09-04, item 12): which of a
             # luna's two pools its turns try FIRST. A cost/budget dial like
             # effort — no ceiling clamp, superior-set, stored explicitly so
-            # the gear reads back what was chosen. ABSENT MEANS TRUE (the
-            # default, and every node hired before the field existed). Off
+            # the gear reads back what was chosen. ABSENT INHERITS THE APP
+            # DEFAULT (including nodes hired before the field existed). Off
             # does not disable reserve: the other pool is still the fallback
             # either way. Kept for every tier so it survives a switch to and
             # from luna; `prefer_reserve_for` is the one reader.
@@ -8926,6 +8950,7 @@ class Org:
             "default_effort": self.d.get("default_effort", ""),
             # what "" resolves to, so no UI string has to hardcode it
             "effort_default": self.DEFAULT_EFFORT,
+            "prefer_reserve_default": app_prefer_reserve_default(),
             "credit_requests": [r for r in self.d.get("credit_requests", [])
                                 if r["status"] == "pending"],
             # F-04: everything the user's inbox interleaves as ask cards —

@@ -705,7 +705,8 @@ export interface CanvasScope {
   /** the model VERSION pinned inside the tier — a gear-only subcategory,
    *  never a chip (ledger.MODEL_VERSIONS). Absent = the tier's latest. */
   model_version?: string
-  /** item 12: a luna's pool order — reserve first (true/absent) or plan first */
+  /** item 12: a luna's pool order — reserve first or plan first; absent uses
+   *  the app-wide default */
   prefer_reserve?: boolean
 }
 
@@ -780,7 +781,7 @@ export interface DraftScope {
   tools: Partial<ToolGrant>
   org_visibility: string
   effort?: string
-  /** item 12: a luna draft's pool order; undefined = the default (reserve first) */
+  /** item 12: a luna draft's pool order; undefined = the app-wide default */
   prefer_reserve?: boolean
 }
 export interface Pile {

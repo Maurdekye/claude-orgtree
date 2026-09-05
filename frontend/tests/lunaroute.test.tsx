@@ -133,12 +133,13 @@ test('desk header row 2 wears the reserve token while the turn runs, then "last:
 
 // ------------------------------------------------------------ the checkbox
 
-function tree(): TreePayload {
+function tree(preferReserve = true): TreePayload {
   return {
     slug: 'org', dirs: [], tiers: {
       haiku: 1, sonnet: 2, opus: 5, fable: 10, luna: 0.2, terra: 2, sol: 5,
     }, max_top_grant: 100, default_effort: '', effort_default: 'high',
     cascade_hire: true, sandboxed: false,
+    prefer_reserve_default: preferReserve,
   } as unknown as TreePayload
 }
 
@@ -163,14 +164,15 @@ function captureBodies(): { url: string; body: Record<string, unknown> }[] {
   return posts
 }
 
-function gear(n: CanvasNode) {
-  return <NodeConfig node={n} map={new Map([[n.id, n]])} tree={tree()} slug="org"
+function gear(n: CanvasNode, preferReserve = true) {
+  return <NodeConfig node={n} map={new Map([[n.id, n]])} tree={tree(preferReserve)} slug="org"
     op={op} toast={noop} codexProvider={codexProvider()} close={noop} />
 }
 
 const box = (el: HTMLElement) => el.querySelector<HTMLInputElement>('.prefer-reserve input')
 const hint = (el: HTMLElement) =>
-  el.querySelector('.prefer-reserve')?.nextElementSibling?.textContent ?? ''
+  [...el.querySelectorAll('.hub-hint')].map((x) => x.textContent ?? '')
+    .find((x) => x.includes('turns use')) ?? ''
 
 test('gear: "Prefer reserve" is on by default for a luna, explains the pool order, and saves its state',
   async (t: TestContext) => {
@@ -219,12 +221,24 @@ test('gear: a persisted OFF preference opens OFF, and saving without touching it
     await flush()
     const scopePost = posts.find((p) => /\/nodes\/lx\/scope$/.test(p.url))!
     assert.equal(scopePost.body.prefer_reserve, false, 'an untouched OFF must be saved as OFF')
-    // ON again, saved as true
+    const reset = [...view.el.querySelectorAll<HTMLButtonElement>('button')]
+      .find((b) => b.textContent?.includes('use app default'))!
+    await act(async () => { reset.click() })
+    assert.equal(box(view.el)!.checked, true, 'reset shows the app default')
+    posts.length = 0
+    await act(async () => { save.click() })
+    await flush()
+    const resetPost = posts.find((p) => /\/scope$/.test(p.url))!
+    assert.equal(resetPost.body.clear_prefer_reserve, true,
+      'reset clears the explicit override')
+    assert.equal('prefer_reserve' in resetPost.body, false,
+      'reset does not replace the inherited value with an explicit one')
+    // changing the reset checkbox creates a fresh explicit OFF override
     await act(async () => { box(view.el)!.click() })
     posts.length = 0
     await act(async () => { save.click() })
     await flush()
-    assert.equal(posts.find((p) => /\/scope$/.test(p.url))!.body.prefer_reserve, true)
+    assert.equal(posts.find((p) => /\/scope$/.test(p.url))!.body.prefer_reserve, false)
   })
 
 test('gear: the checkbox belongs to luna only', async (t: TestContext) => {
@@ -235,6 +249,57 @@ test('gear: the checkbox belongs to luna only', async (t: TestContext) => {
   t.after(async () => { await view.unmount(); realClock() })
   await flush()
   assert.equal(box(view.el), null, 'a non-luna gear must not show the reserve box')
+})
+
+test('missing per-agent preference uses the app default while explicit ON stays ON',
+  async (t: TestContext) => {
+    useFakeClock(); installFetch(new FakeServer())
+    const posts = captureBodies()
+    const missing = luna()
+    const offView = await mountView(gear(missing, false), (el) => el)
+    t.after(async () => { await offView.unmount(); realClock() })
+    await flush()
+    assert.equal(box(offView.el)?.checked, false,
+      'a missing preference must render the app-wide OFF default')
+    const save = [...offView.el.querySelectorAll<HTMLButtonElement>('button')]
+      .find((b) => b.textContent === 'save')!
+    const { act } = await import('react')
+    await act(async () => { save.click() })
+    await flush()
+    const scopePost = posts.find((p) => /\/nodes\/lx\/scope$/.test(p.url))!
+    assert.equal('prefer_reserve' in scopePost.body, false,
+      'saving an untouched inherited value must leave it absent')
+
+    await offView.render(gear(missing, true))
+    await flush()
+    assert.equal(box(offView.el)?.checked, true,
+      'a missing preference must follow a later app-default flip')
+
+    const explicit = luna({ scope: { tools: { mcp: [] }, add_dirs: [], prefer_reserve: true } })
+    await offView.render(gear(explicit, false))
+    await flush()
+    assert.equal(box(offView.el)?.checked, true,
+      'an explicit per-agent ON preference must override the app default')
+  })
+
+test('draft initializer reflects the app-wide OFF default', async (t: TestContext) => {
+  useFakeClock(); installFetch(new FakeServer())
+  const saved: DraftScope[] = []
+  const view = await mountView(
+    <DraftScopeModal draft={{ parent: null, tier: 'luna' }} map={new Map()}
+      tree={tree(false)} scope={null} onSave={(s) => saved.push(s)} close={noop} />,
+    (el) => el)
+  t.after(async () => { await view.unmount(); realClock() })
+  await flush()
+  const body = document.body as unknown as HTMLElement
+  const cb = box(body)
+  assert.equal(cb?.checked, false, 'draft with no preference uses app-wide OFF')
+  const apply = [...body.querySelectorAll<HTMLButtonElement>('button')]
+    .find((b) => b.textContent === 'apply')!
+  const { act } = await import('react')
+  await act(async () => { apply.click() })
+  assert.equal('prefer_reserve' in (saved.at(-1) ?? {}), false,
+    'draft preserves an absent preference when untouched')
 })
 
 test('draft modal: a luna hire stages the box ON by default and applies what was chosen',
@@ -258,7 +323,8 @@ test('draft modal: a luna hire stages the box ON by default and applies what was
     const apply = () => [...body.querySelectorAll<HTMLButtonElement>('button')]
       .find((b) => b.textContent === 'apply')!
     await act(async () => { apply().click() })
-    assert.equal(saved.at(-1)?.prefer_reserve, true, 'untouched: applied ON, explicitly')
+    assert.equal('prefer_reserve' in (saved.at(-1) ?? {}), false,
+      'untouched: inherited ON stays absent')
     await act(async () => { cb!.click() })
     assert.equal(box(body)!.checked, false)
     await act(async () => { apply().click() })

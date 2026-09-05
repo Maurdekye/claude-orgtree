@@ -418,12 +418,14 @@ interface DraftScopeModalProps {
 
 /** item 12 — the "Prefer reserve" checkbox (user ruling 2026-09-04: "make
  *  the choice to use reserve instead of normal weekly luna usage a checkbox,
- *  on by default. when off, weekly usage is used first, then reserve"). One
+ *  defaulted by the app-wide setting. when off, weekly usage is used first,
+ *  then reserve"). One
  *  component for the draft's modal and the gear so the wording cannot
  *  drift. It sets the ORDER only: the other pool is the fallback either
  *  way, and the header token reports what actually ran, not this box. */
-export function PreferReserveRow({ checked, onChange }: {
+export function PreferReserveRow({ checked, onChange, onUseAppDefault }: {
   checked: boolean; onChange: (v: boolean) => void
+  onUseAppDefault?: () => void
 }) {
   return (
     <>
@@ -433,6 +435,8 @@ export function PreferReserveRow({ checked, onChange }: {
           onChange={(e) => onChange(e.target.checked)} />
         {' '}prefer reserve capacity
       </label>
+      {onUseAppDefault && <button type="button" onClick={onUseAppDefault}>
+        use app default</button>}
       <div className="dim hub-hint">
         {checked
           ? 'turns use OpenAI’s reserve pool first and fall back to normal weekly Luna usage when reserve is spent or withdrawn'
@@ -466,9 +470,15 @@ export function DraftScopeModal({ draft, map, tree, scope, onSave, close }: Draf
     { ...base.tools, mcp: [...(base.tools.mcp ?? [])] })
   const [vis, setVis] = useState(base.org_visibility)
   const [effort, setEffort] = useState(base.effort ?? '')
-  // item 12 (user ruling 2026-09-04): "Prefer reserve", ON by default; only
-  // a luna draft shows it, and only a luna acts on it
-  const [preferReserve, setPreferReserve] = useState(base.prefer_reserve ?? true)
+  // item 12 (user ruling 2026-09-04): "Prefer reserve", seeded from the
+  // app-wide default; only a luna draft shows it, and only a luna acts on it
+  const [preferReserve, setPreferReserve] = useState(
+    base.prefer_reserve ?? tree.prefer_reserve_default ?? true)
+  const [preferReserveTouched, setPreferReserveTouched] = useState(
+    base.prefer_reserve !== undefined)
+  const changePreferReserve = (v: boolean) => {
+    setPreferReserve(v); setPreferReserveTouched(true)
+  }
   const [newPath, setNewPath] = useState('')
   const [servers, setServers] = useState<string[]>([])
   const [sandboxMcp, setSandboxMcp] = useState(false)
@@ -553,7 +563,7 @@ export function DraftScopeModal({ draft, map, tree, scope, onSave, close }: Draf
           <option value="max">max</option>
         </select>
         {draft.tier === 'luna' && (
-          <PreferReserveRow checked={preferReserve} onChange={setPreferReserve} />
+          <PreferReserveRow checked={preferReserve} onChange={changePreferReserve} />
         )}
         <div className="hint">
           Grants clamp to what the parent holds (№30) — anything beyond its
@@ -563,7 +573,8 @@ export function DraftScopeModal({ draft, map, tree, scope, onSave, close }: Draf
           <button className="primary" onClick={() =>
             onSave({ add_dirs: dirs, tools, org_visibility: vis,
               ...(effort ? { effort } : {}),
-              ...(draft.tier === 'luna' ? { prefer_reserve: preferReserve } : {}) })}>apply</button>
+              ...(draft.tier === 'luna' && preferReserveTouched
+                ? { prefer_reserve: preferReserve } : {}) })}>apply</button>
           <button onClick={close}>cancel</button>
         </div>
       </div>
@@ -760,12 +771,24 @@ export function NodeConfig({ node, map, tree, slug, op, toast, codexProvider,
   const setModelVersion = set<string>('modelVersion', modelVersion)
   const versions = MODEL_VERSIONS[model] ?? []
   // item 12 (user ruling 2026-09-04): the per-agent "Prefer reserve"
-  // checkbox — which pool a luna tries FIRST. Absent on the wire = on.
+  // checkbox — which pool a luna tries FIRST. Absent on the wire inherits the
+  // app-wide default.
   // Editable here so the preference is not creation-only; shown only when
   // the (possibly just-picked) tier is luna, saved for any tier so it
   // survives a switch away and back.
-  const preferReserve = val<boolean>('preferReserve', scope.prefer_reserve ?? true)
-  const setPreferReserve = set<boolean>('preferReserve', preferReserve)
+  const preferReserve = val<boolean>('preferReserve',
+    scope.prefer_reserve ?? tree.prefer_reserve_default ?? true)
+  const preferReserveChanged = val('preferReserveChanged', false)
+  const clearPreferReserve = val('clearPreferReserve', false)
+  const setPreferReserve = (v: boolean) => setEdit((e) => ({ ...e,
+    preferReserve: v, preferReserveChanged: true, clearPreferReserve: false }))
+  const useAppDefault = () => setEdit((e) => ({ ...e,
+    preferReserve: tree.prefer_reserve_default ?? true,
+    preferReserveChanged: false, clearPreferReserve: true }))
+  const reservePayload = clearPreferReserve
+    ? { clear_prefer_reserve: true }
+    : (scope.prefer_reserve !== undefined || preferReserveChanged)
+      ? { prefer_reserve: preferReserve } : {}
   const [newPath, setNewPath] = useState('')
   const [servers, setServers] = useState<string[]>([])
   const [sandboxMcp, setSandboxMcp] = useState(false)
@@ -805,7 +828,7 @@ export function NodeConfig({ node, map, tree, slug, op, toast, codexProvider,
                 occ: (+accOcc || 50) / 100 },
           model_version: versions.includes(modelVersion)
             ? modelVersion : '',
-          prefer_reserve: preferReserve }))
+          ...reservePayload }))
       .then((r) => {
         if (r?.bridge?.raise_ceiling) {
           // one-action bridge (ceiling spec §1): same save, flag set
@@ -821,7 +844,7 @@ export function NodeConfig({ node, map, tree, slug, op, toast, codexProvider,
                       occ: (+accOcc || 50) / 100 },
                 model_version: versions.includes(modelVersion)
                   ? modelVersion : '',
-                prefer_reserve: preferReserve,
+                ...reservePayload,
                 raise_ceiling: true })
               .then((r2) => toast(r2.warnings?.length ? r2.warnings
                 : ['ceiling raised — applied']))
@@ -1151,7 +1174,9 @@ export function NodeConfig({ node, map, tree, slug, op, toast, codexProvider,
         )}
 
         {model === 'luna' && (
-          <PreferReserveRow checked={preferReserve} onChange={setPreferReserve} />
+          <PreferReserveRow checked={preferReserve} onChange={setPreferReserve}
+            onUseAppDefault={scope.prefer_reserve !== undefined
+              ? useAppDefault : undefined} />
         )}
 
         <div className="field-label">thinking effort (user-approved: a deep

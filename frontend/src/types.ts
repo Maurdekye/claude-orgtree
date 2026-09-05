@@ -686,6 +686,8 @@ export interface TreePayload {
   default_effort: string
   /** what "" resolves to, so no UI string hardcodes it (ledger DEFAULT_EFFORT) */
   effort_default?: string
+  /** app-wide Luna pool-order default for agents without an individual setting */
+  prefer_reserve_default: boolean
   credit_requests: CreditRequest[]
   tiers: Record<string, number>
   /** tier → model id, the org's own add-only table (2026-09-03): how an
@@ -1484,6 +1486,8 @@ export interface DefaultsPayload {
   default_tools?: ToolGrant
   default_visibility?: string
   default_effort?: string
+  /** app-wide Luna default for agents without an individual preference */
+  prefer_reserve?: boolean
   [k: string]: unknown         // defaults.json is stored org-doc-shaped
 }
 
@@ -1557,6 +1561,8 @@ export interface ScopeRequest {
   model_version?: string | null
   /** item 12: reserve-first (true) or plan-first (false); omitted = unchanged */
   prefer_reserve?: boolean | null
+  /** clear the individual value so this node follows the app-wide default */
+  clear_prefer_reserve?: boolean
   /** per-node cache-protection override; {} clears back to org inherit */
   auto_cheap_compact?: { enabled?: boolean; occ?: number } | null
   raise_ceiling?: boolean
@@ -1578,6 +1584,8 @@ export interface SettingsRequest {
    *  frozen for kiosk visitors, unlike /defaults) */
   permission_mode?: string | null
   default_effort?: string | null
+  /** app-wide Luna default; not copied into individual org settings */
+  prefer_reserve?: boolean | null
   auto_resume?: boolean | null
   /** cheap-compact a limit-frozen node right before its AUTO resume wakes it */
   auto_resume_compact?: boolean | null

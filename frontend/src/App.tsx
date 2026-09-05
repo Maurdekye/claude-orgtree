@@ -2045,9 +2045,16 @@ function DefaultsPanel({ toast, close }: { toast: ToastFn; close: () => void }) 
             onChange={(e) => set('auto_resume_compact', e.target.checked)} />
           cheap-compact limit-frozen agents before auto-resume wakes them
         </label>
+        <div className="field-label">app-wide Luna reserve default</div>
+        <label className="checkline">
+          <input type="checkbox" checked={d.prefer_reserve !== false}
+            onChange={(e) => set('prefer_reserve', e.target.checked)} />
+          prefer reserve capacity first when no individual preference is set
+        </label>
         <div className="hint">
-          Existing organizations keep their own settings — these apply only at
-          creation.
+          Other defaults apply only when creating an organization. The
+          app-wide Luna reserve default also reaches existing agents that have
+          no individual preference; an explicit agent preference always wins.
         </div>
         <div className="row">
           <button className="primary" onClick={() =>
@@ -2064,7 +2071,11 @@ function DefaultsPanel({ toast, close }: { toast: ToastFn; close: () => void }) 
               cascade_alloc: d.cascade_alloc !== false,
               auto_resume: !!d.auto_resume,
               auto_resume_compact: !!d.auto_resume_compact,
-            }).then(() => { toast(['default org settings saved']); close() })
+              prefer_reserve: d.prefer_reserve !== false,
+            }).then(() => {
+              toast(['default org settings and app-wide Luna default saved'])
+              close()
+            })
               .catch((e: Error) => toast([`error: ${e.message}`]))}>save</button>
           <button onClick={close}>cancel</button>
         </div>
