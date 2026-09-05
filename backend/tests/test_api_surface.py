@@ -1329,6 +1329,101 @@ def ag(node, tool, args=None, org=None):
                  "args": args or {}})
 
 
+@t("list_tiers gateway validates caller/bridge and runs provider I/O outside DOC_LOCK")
+def _():
+    old = api._tier_discovery_payload
+    calls = []
+
+    def discovered():
+        owned = store.DOC_LOCK._is_owned()  # type: ignore[attr-defined]
+        calls.append(owned)
+        return {"advisory": "fixture", "providers": []}
+
+    api._tier_discovery_payload = discovered
+    archived = "tier-reader-archived"
+    try:
+        # Positive control: the instrument really detects ownership.
+        with store.DOC_LOCK:
+            assert store.DOC_LOCK._is_owned()  # type: ignore[attr-defined]
+        r = ag(NID, "orgtree_list_tiers")
+        ok200(r, "live caller")
+        assert r.json == {"advisory": "fixture", "providers": []}
+        assert calls == [False], calls
+        assert ag("ghost", "orgtree_list_tiers").status == 422
+        with store.DOC_LOCK:
+            org = store.load_org(K)
+            org.hire("@user", NID, "haiku", 0, archived)
+            org.retire(NID, archived)
+            store.save_org(org)
+        assert ag(archived, "orgtree_list_tiers").status == 422
+        before = len(calls)
+        cross = call(BRIDGE, "POST", "/api/agent", {
+            "org": K, "node": NID, "tool": "orgtree_list_tiers"},
+            headers=[("x-orgtree-bridge", SECRET)])
+        assert cross.status == 403 and len(calls) == before, (cross, calls)
+    finally:
+        api._tier_discovery_payload = old
+
+
+@t("list_tiers projection is explicit, secret-free, and keeps unknown seats unknown")
+def _():
+    old = api._providers_payload
+    api._providers_payload = lambda: {"providers": [{
+        "id": "fixture", "label": "Fixture", "hire_enabled": True,
+        "reason": None, "status": {"email": "secret@example.test"},
+        "path": "C:/secret", "error": {"token": "secret"},
+        "tiers": [{"tier": "fixture-tier", "provider": "fixture",
+                   "model": "fixture-model", "seat": None,
+                   "unknown": "secret"}],
+    }]}
+    try:
+        response = ag(NID, "orgtree_list_tiers")
+    finally:
+        api._providers_payload = old
+    ok200(response, "finite/null discovery serializes")
+    result = response.json
+    assert result["providers"] == [{
+        "id": "fixture", "label": "Fixture", "hire_enabled": True,
+        "reason": None, "tiers": [{"tier": "fixture-tier",
+                                     "provider": "fixture",
+                                     "model": "fixture-model",
+                                     "seat": None}]}], result
+    assert "secret" not in json.dumps(result), result
+
+
+@t("list_tiers fails closed when provider discovery is unavailable or malformed")
+def _():
+    old = api._providers_payload
+    good = {"providers": [{
+        "id": "fixture", "label": "Fixture", "hire_enabled": True,
+        "reason": None, "tiers": [{"tier": "fixture", "seat": 1.5}],
+    }]}
+    try:
+        bad_values = (
+            None,
+            [],
+            {"providers": [{**good["providers"][0],
+                            "hire_enabled": "false"}]},
+            {"providers": [{**good["providers"][0],
+                            "tiers": [{"tier": "nan", "seat": float("nan")}]}]},
+            {"providers": [{**good["providers"][0],
+                            "tiers": [{"tier": "inf", "prompt": float("inf")}]}]},
+            {"providers": [{**good["providers"][0],
+                            "tiers": [{"tier": "neg-inf",
+                                       "context": float("-inf")}]}]},
+        )
+        for bad in bad_values:
+            api._providers_payload = lambda bad=bad: bad
+            r = ag(NID, "orgtree_list_tiers")
+            assert r.status == 503 and "secret" not in r.text, r
+        api._providers_payload = lambda: (_ for _ in ()).throw(
+            OSError("fixture secret"))
+        r = ag(NID, "orgtree_list_tiers")
+        assert r.status == 503 and "secret" not in r.text, r
+    finally:
+        api._providers_payload = old
+
+
 @t("unknown tool → 422 with the name echoed")
 def _():
     r = ag(NID, "orgtree_nope")

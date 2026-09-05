@@ -404,7 +404,7 @@ def _():
     # +orgtree_swap +orgtree_self_subjugate (D-224, 2026-09-02)
     # +orgtree_interrupt (⏸ in isolation, 2026-09-03)
     # +orgtree_restart_wake (2026-09-04)
-    assert len(tools) == 31, [x["name"] for x in tools]
+    assert len(tools) == 32, [x["name"] for x in tools]
     for c in tools:
         assert c["name"].startswith("orgtree_"), c
         assert len(c["description"]) > 20, c
@@ -558,7 +558,7 @@ _DISPATCH = sorted(set(__import__("re").findall(r'"(orgtree_\w+)"', _AGENT_CALL)
 ALIASES = {"orgtree_self_update": "orgtree_self_restart"}
 
 
-@t("the catalogue and the /api/agent dispatch name exactly the same 28 verbs")
+@t("the catalogue and the /api/agent dispatch name exactly the same verbs")
 def _():
     assert sorted(CARDS) == sorted(set(_DISPATCH) - set(ALIASES)), \
         f"drift: cards {sorted(set(CARDS) - set(_DISPATCH))}, " \
@@ -573,7 +573,7 @@ def _():
     # +orgtree_swap +orgtree_self_subjugate (D-224, seat exchange, 2026-09-02)
     # +orgtree_interrupt (⏸ in isolation, 2026-09-03)
     # +orgtree_restart_wake (2026-09-04)
-    assert len(CARDS) == 31, len(CARDS)
+    assert len(CARDS) == 32, len(CARDS)
 
 
 @t("☠ the deprecated self_update alias is dispatchable but NOT advertised")
@@ -620,28 +620,17 @@ def _():
         assert set(c) == {"name", "description", "inputSchema"}, c["name"]
 
 
-@t("static tier enums match non-conditional, non-legacy ledger tiers exactly")
+@t("tier arguments accept runtime ids and point at transient discovery")
 def _():
-    from orgtree.ledger import TIERS
-    from orgtree.providers import CONDITIONAL_CODEX_TIERS, LEGACY_CODEX_TIERS
-    # a LEGACY token (gpt-reserve, item 12) stays in ledger.TIERS for the
-    # nodes wearing it and is offered by no card
-    expected = set(TIERS) - set(CONDITIONAL_CODEX_TIERS) - set(LEGACY_CODEX_TIERS)
-    assert LEGACY_CODEX_TIERS, "the legacy set is empty — this check pins nothing"
+    runtime = "or-synthetic-runtime"
     for name in ("orgtree_hire", "orgtree_switch_model"):
-        for legacy in LEGACY_CODEX_TIERS:
-            assert legacy not in DESC[name], (name, legacy, "still recited")
-    for name, key in (("orgtree_hire", "tier"), ("orgtree_switch_model", "tier")):
-        assert sorted(SCHEMA[name]["properties"][key]["enum"]) == sorted(expected), \
-            (name, SCHEMA[name]["properties"][key]["enum"])
-    # and the seat costs the cards RECITE match the same table
-    for tier, cost in TIERS.items():
-        if tier in CONDITIONAL_CODEX_TIERS or tier in LEGACY_CODEX_TIERS:
-            continue
-        for name in ("orgtree_hire", "orgtree_switch_model"):
-            assert f"{tier} {cost}" in DESC[name].replace("·", "").replace(
-                "  ", " ") or f"{tier} {cost}" in DESC[name], \
-                f"{name} recites a stale seat cost for {tier} (真 {cost})"
+        tier = SCHEMA[name]["properties"]["tier"]
+        assert tier["type"] == "string" and "enum" not in tier, (name, tier)
+        assert "orgtree_list_tiers" in tier["description"], (name, tier)
+        # A standards-valid runtime value must not be rejected by the schema.
+        assert isinstance(runtime, str)
+    assert SCHEMA["orgtree_list_tiers"] == {
+        "type": "object", "properties": {}}
 
 
 @t("the org_visibility enums match ledger.VIS_LEVELS")
@@ -741,7 +730,7 @@ def _():
     # paragraph says "swaps only the session", which is not this node's
     # prompt, so `orgtree_swap` really is absent rather than accidentally
     # satisfied.)
-    assert absent == ["orgtree_list_orgs", "orgtree_move", "orgtree_rename",
+    assert absent == ["orgtree_list_orgs", "orgtree_list_tiers", "orgtree_move", "orgtree_rename",
                       "orgtree_restart_wake",
                       "orgtree_self_subjugate", "orgtree_swap",
                       "orgtree_switch_model"], \

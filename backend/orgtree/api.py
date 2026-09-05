@@ -2809,6 +2809,81 @@ def _providers_payload() -> dict[str, Any]:
     })
 
 
+_TIER_DISCOVERY_FIELDS = (
+    "tier", "provider", "seat", "model", "letter", "color", "accent",
+    "name", "label", "vendor", "prompt", "completion", "context",
+)
+_TIER_DISCOVERY_NUMBERS = frozenset({
+    "seat", "prompt", "completion", "context",
+})
+
+
+def _tier_discovery_payload() -> dict[str, Any]:
+    """A secret-free, allowlisted projection of the provider document.
+
+    This result is turn data, never a tool definition. Missing prices remain
+    ``None`` rather than becoming a plausible zero-cost seat.
+    """
+    try:
+        document = _providers_payload()
+    except Exception as exc:  # noqa: BLE001 — fail closed at discovery boundary
+        raise RuntimeError("tier discovery is unavailable") from exc
+    if not isinstance(document, dict):
+        raise RuntimeError("provider discovery returned malformed data")
+    raw = document.get("providers")
+    if not isinstance(raw, list):
+        raise RuntimeError("provider discovery returned no provider list")
+    out: list[dict[str, Any]] = []
+    for provider in raw:
+        if not isinstance(provider, dict) or not isinstance(
+                provider.get("tiers"), list):
+            raise RuntimeError("provider discovery returned malformed data")
+        provider_id = provider.get("id")
+        label = provider.get("label")
+        reason = provider.get("reason")
+        hire_enabled = provider.get("hire_enabled")
+        if (not isinstance(provider_id, str) or not isinstance(label, str)
+                or reason is not None and not isinstance(reason, str)
+                or not isinstance(hire_enabled, bool)):
+            raise RuntimeError("provider discovery returned malformed data")
+        tiers: list[dict[str, Any]] = []
+        for row in provider["tiers"]:
+            if not isinstance(row, dict) or not isinstance(row.get("tier"), str):
+                raise RuntimeError("provider discovery returned a malformed tier")
+            item: dict[str, Any] = {}
+            for key in _TIER_DISCOVERY_FIELDS:
+                if key not in row:
+                    continue
+                value = row[key]
+                if key in _TIER_DISCOVERY_NUMBERS:
+                    if value is not None and (isinstance(value, bool)
+                                              or not isinstance(value, (int, float))
+                                              or isinstance(value, float)
+                                              and not math.isfinite(value)):
+                        raise RuntimeError(
+                            "provider discovery returned a malformed tier")
+                elif value is not None and not isinstance(value, str):
+                    raise RuntimeError(
+                        "provider discovery returned a malformed tier")
+                item[key] = value
+            item.setdefault("seat", None)
+            tiers.append(item)
+        out.append({
+            "id": provider_id,
+            "label": label,
+            "hire_enabled": hire_enabled,
+            "reason": reason,
+            "tiers": tiers,
+        })
+    return {
+        "advisory": (
+            "Machine availability only. A hire or switch rechecks fresh "
+            "provider evidence plus caller scope, credits and kiosk/headless "
+            "rules, and can still refuse a listed tier."),
+        "providers": out,
+    }
+
+
 @app.get("/api/providers")
 async def providers_info() -> dict[str, Any]:
     """The provider axis (FR-15 preview): each vendor's tier family and this
@@ -4886,10 +4961,19 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
             and _arg_flag(a, "force"):
         return _forced_self_restart(body, a)
     if body.tool in ("orgtree_read_transcript", "orgtree_read_scratch",
-                     "orgtree_chart", "orgtree_send_file"):
+                     "orgtree_chart", "orgtree_send_file",
+                     "orgtree_list_tiers"):
         try:
             org = store.load_org(body.org)
             org.node(body.node)
+            if body.tool == "orgtree_list_tiers":
+                # Provider discovery may probe a CLI or API behind its own
+                # short cache. Keep that I/O outside the global document lock.
+                org._require_live(body.node)
+                try:
+                    return _tier_discovery_payload()
+                except RuntimeError as e:
+                    raise HTTPException(503, str(e)) from e
             if body.tool == "orgtree_chart":
                 # D-178: archived nodes are hidden from the default chart (it
                 # is rebuilt into every turn of every agent); this flag is the

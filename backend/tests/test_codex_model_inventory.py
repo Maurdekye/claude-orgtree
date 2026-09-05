@@ -7,6 +7,7 @@ module seam, while the separate live negative probe is run explicitly during
 release verification on a signed-in machine.
 """
 
+import json
 import os
 import sys
 import tempfile
@@ -18,7 +19,7 @@ os.environ["ORGTREE_DATA"] = tempfile.mkdtemp(prefix="orgtree-astra-")
 os.environ["ORGTREE_ANTIGRAVITY"] = os.path.join(
     os.environ["ORGTREE_DATA"], "missing-agy")
 
-from orgtree import api, codexrun, mcptool, providers  # noqa: E402
+from orgtree import api, codexrun, mcptool, openrouter, providers  # noqa: E402
 from orgtree.ledger import LedgerError, MODELS, Org, TIERS  # noqa: E402
 
 PASS = 0
@@ -208,42 +209,35 @@ def hire_gate_passes_only_the_positive_case():
         providers.codex_status, providers.conditional_codex_availability = saved
 
 
-def mcp_cards_add_only_a_provider_offered_rollout():
-    saved = (mcptool._provider_dynamic_tiers, mcptool.deployment.current_policy)
+def mcp_cards_are_stable_across_rollout_and_connection_changes():
+    saved = (providers.codex_status, providers.codex_model_inventory,
+             openrouter.tiers, mcptool.deployment.current_policy)
     mcptool.deployment.current_policy = lambda: type(
         "Policy", (), {"allow_agent_restart": True})()
     try:
-        mcptool._provider_dynamic_tiers = lambda: []
-        dark = {t["name"]: t for t in mcptool.available_tools()}
-        assert "astra" not in dark["orgtree_hire"]["inputSchema"][
-            "properties"]["tier"]["enum"]
-        mcptool._provider_dynamic_tiers = lambda: ["astra"]
-        lit = {t["name"]: t for t in mcptool.available_tools()}
-        for name in ("orgtree_hire", "orgtree_switch_model"):
-            assert "astra" in lit[name]["inputSchema"]["properties"][
-                "tier"]["enum"], name
-    finally:
-        mcptool._provider_dynamic_tiers, mcptool.deployment.current_policy = saved
-
-
-def in_process_mcp_catalogue_uses_the_provider_cache_directly():
-    saved = (providers.codex_status, providers.codex_model_inventory,
-             mcptool.urllib.request.urlopen)
-    providers.codex_status = lambda force=False: {
-        "installed": True, "connected": True, "kind": "chatgpt"}
-    mcptool.urllib.request.urlopen = lambda *args, **kwargs: (
-        (_ for _ in ()).throw(AssertionError("must not loop back over HTTP")))
-    try:
-        assert "orgtree.supervisor" in sys.modules
-        providers.codex_model_inventory = lambda force=False, status=None: {
-            "available": False, "models": [], "error": "test outage"}
-        assert "astra" not in mcptool._provider_dynamic_tiers()
+        providers.codex_status = lambda force=False: {
+            "installed": True, "connected": True, "kind": "chatgpt"}
         providers.codex_model_inventory = lambda force=False, status=None: {
             "available": True, "models": ["gpt-6-astra"], "error": None}
-        assert "astra" in mcptool._provider_dynamic_tiers()
+        openrouter.tiers = lambda: {"or-synthetic": 1}
+        lit = json.dumps(mcptool.available_tools(), sort_keys=True,
+                         separators=(",", ":")).encode()
+        providers.codex_status = lambda force=False: {
+            "installed": False, "connected": False}
+        providers.codex_model_inventory = lambda force=False, status=None: {
+            "available": False, "models": [], "error": "fixture"}
+        openrouter.tiers = lambda: {}
+        dark = json.dumps(mcptool.available_tools(), sort_keys=True,
+                          separators=(",", ":")).encode()
+        assert lit == dark
+        served = {row["name"]: row for row in mcptool.available_tools()}
+        for name in ("orgtree_hire", "orgtree_switch_model"):
+            card = served[name]
+            tier = card["inputSchema"]["properties"]["tier"]
+            assert tier["type"] == "string" and "enum" not in tier, name
     finally:
         (providers.codex_status, providers.codex_model_inventory,
-         mcptool.urllib.request.urlopen) = saved
+         openrouter.tiers, mcptool.deployment.current_policy) = saved
 
 
 check("Astra metadata exists at seat 10 but is dark without evidence",
@@ -262,9 +256,7 @@ check("the hire gate force-refreshes and refuses a missing Astra",
       hire_gate_force_refreshes_and_refuses_the_negative_case)
 check("the hire gate passes confirmed Astra (anti-vacuity)",
       hire_gate_passes_only_the_positive_case)
-check("agent tool schemas gain Astra only while the provider offers it",
-      mcp_cards_add_only_a_provider_offered_rollout)
-check("in-process MCP catalogue avoids loopback HTTP and stays fail-closed",
-      in_process_mcp_catalogue_uses_the_provider_cache_directly)
+check("agent tool schemas stay byte-identical across provider state",
+      mcp_cards_are_stable_across_rollout_and_connection_changes)
 
 print(f"\nPASS — conditional Codex inventory, {PASS} checks")

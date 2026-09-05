@@ -12,7 +12,6 @@ Run: python -m orgtree.mcptool   (spawned by Claude Code via --mcp-config)
 
 from __future__ import annotations
 
-import copy
 import json
 import os
 import sys
@@ -774,9 +773,9 @@ TOOLS: list[dict[str, Any]] = [
             "properties": {
                 "name": {"type": "string", "description": "1-2 words, the node id"},
                 "tier": {"type": "string",
-                         "enum": ["haiku", "sonnet", "opus", "fable",
-                                  "luna", "terra", "sol",
-                                  "flash", "pro"]},
+                         "description": "tier id from orgtree_list_tiers; "
+                                        "the backend rechecks availability, "
+                                        "scope and credits before hiring"},
                 "grant": {"type": "integer", "minimum": 0,
                           "description": "credits it may spend on ITS OWN hires"},
                 "charter": {"type": "string",
@@ -1152,6 +1151,17 @@ TOOLS: list[dict[str, Any]] = [
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
+        "name": "orgtree_list_tiers",
+        "description": (
+            "List the model tiers this machine currently offers, with provider, "
+            "model, seat price and advisory machine availability. Call this "
+            "before orgtree_hire or orgtree_switch_model when choosing a tier. "
+            "The actual operation rechecks fresh provider evidence plus your "
+            "org's scope, credits, kiosk/headless rules, so a listed tier can "
+            "still be refused."),
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
         "name": "orgtree_move",
         "description": (
             "Reorganize: re-parent a node in your subtree under another node "
@@ -1382,18 +1392,18 @@ TOOLS: list[dict[str, Any]] = [
             "fable 10 (Claude); luna 0.2 · terra 2 · sol 5 "
             "(Codex, needs the CLI signed in; luna prefers reserve capacity "
             "and falls back to the direct lane); flash 1 · pro 2 (Antigravity, needs the CLI "
-            "signed in); any `or-…` tier listed in this card's enum is an "
+            "signed in); any `or-…` tier returned by orgtree_list_tiers is an "
             "OpenRouter favorite (seat = its $/M input — floored to a whole "
             "number at or above $1, the price itself below it, never under "
-            "0.1)."),
+            "0.1). Use orgtree_list_tiers for current offered ids, prices and "
+            "advisory machine availability."),
         "inputSchema": {"type": "object",
                         "properties": {"node": {"type": "string"},
                                        "tier": {"type": "string",
-                                                "enum": ["haiku", "sonnet",
-                                                         "opus", "fable",
-                                                         "luna",
-                                                         "terra", "sol", "flash",
-                                                         "pro"]}},
+                                                "description": "tier id from "
+                                                "orgtree_list_tiers; the backend "
+                                                "rechecks availability and "
+                                                "credits before switching"}},
                         "required": ["node", "tier"]},
     },
     {
@@ -1435,104 +1445,14 @@ _AGENT_RESTART_TOOLS = frozenset({
 })
 
 
-#: the two cards whose `tier` enum must also offer the DYNAMIC tiers
-_TIER_CARDS = frozenset({"orgtree_hire", "orgtree_switch_model"})
-
-
-def _provider_dynamic_tiers() -> list[str]:
-    """Currently offered provider tiers not baked into the static cards.
-
-    Rollout tiers are metadata in the backend ledger but must stay absent from
-    an agent's schema until the provider's account-scoped inventory confirms
-    them. `/api/providers` has already applied that fail-closed rule. If the
-    endpoint is missing, malformed, or unreachable, returning no additions is
-    the safe answer — the API admission gate independently re-queries before
-    any mutation.
-    """
-    # `available_tools()` is also called from supervisor.py inside the API
-    # process. Looping back through HTTP there can wait on the very worker
-    # currently building this catalogue. Read the same short-lived provider
-    # cache directly in that one process; standalone MCP servers keep using
-    # the API document so they share the backend's account-scoped evidence.
-    if "orgtree.supervisor" in sys.modules:
-        try:
-            from . import providers                  # noqa: PLC0415 — cycle seam
-            st = providers.codex_status()
-            inventory = (providers.codex_model_inventory(status=st)
-                         if st.get("connected") else None)
-            models = (set(inventory.get("models") or [])
-                      if inventory and inventory.get("available") else None)
-            return [row["tier"] for row in providers.codex_tiers(models)]
-        except Exception:                            # noqa: BLE001 — fail closed
-            return []
-
-    try:
-        req = urllib.request.Request(f"{BASE}/api/providers", method="GET")
-        with urllib.request.urlopen(req, timeout=5) as response:
-            doc: dict[str, Any] = json.loads(
-                response.read().decode("utf-8", "replace"))
-        out: list[str] = []
-        rows = doc.get("providers")
-        if not isinstance(rows, list):
-            return out
-        for provider in rows:
-            if not isinstance(provider, dict):
-                return []
-            if provider.get("id") != "openai":
-                continue
-            tiers = provider.get("tiers")
-            if not isinstance(tiers, list):
-                return []
-            for row in tiers:
-                if not isinstance(row, dict):
-                    return []
-                tier = row.get("tier")
-                if isinstance(tier, str) and tier:
-                    out.append(tier)
-        return out
-    except Exception:                                      # noqa: BLE001
-        return []
-
-
-def _with_dynamic_tiers(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Grow hire/switch enums with tiers that are offerable AT SERVE TIME.
-
-    OpenRouter favorites are runtime tiers. Conditional Codex rollout tiers
-    are static ledger metadata but runtime OFFERS, admitted only after the
-    provider endpoint confirms exact live model-list membership. Both are
-    additions here; failures add nothing. Deep-copied so a transient offer
-    never mutates the module constant or outlives its evidence.
-    """
-    from . import openrouter                   # noqa: PLC0415 — one lane
-    extra = sorted(set(openrouter.tiers()) | set(_provider_dynamic_tiers()))
-    if not extra:
-        return tools
-    out: list[dict[str, Any]] = []
-    for tool in tools:
-        if str(tool.get("name") or "") not in _TIER_CARDS:
-            out.append(tool)
-            continue
-        tool = copy.deepcopy(tool)
-        props = cast("dict[str, Any]", tool["inputSchema"]["properties"])
-        tier = cast("dict[str, Any]", props["tier"])
-        enum = cast("list[str]", tier.get("enum") or [])
-        tier["enum"] = enum + [t for t in extra if t not in enum]
-        tier["description"] = (
-            "static tiers, plus runtime tiers this machine currently offers "
-            "(OpenRouter favorites and provider-confirmed rollout tiers): "
-            + ", ".join(extra))
-        out.append(tool)
-    return out
-
-
 def available_tools() -> list[dict[str, Any]]:
     """The tool catalogue permitted by the install-wide deployment policy."""
 
     if deployment.current_policy().allow_agent_restart:
-        return _with_dynamic_tiers(TOOLS)
-    return _with_dynamic_tiers([
+        return TOOLS
+    return [
         tool for tool in TOOLS
-        if str(tool.get("name") or "") not in _AGENT_RESTART_TOOLS])
+        if str(tool.get("name") or "") not in _AGENT_RESTART_TOOLS]
 
 
 def call_api(tool: str, args: dict[str, Any]) -> str:

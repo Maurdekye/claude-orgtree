@@ -1027,13 +1027,13 @@ def main():
     check("…plain rehire (user_choice_only) skips the connect checks",
           lambda: api.provider_hire_gate(org, "or-nobody-nope", user_choice_only=True))
     cards = {c["name"]: c for c in mcptool.available_tools()}
-    check("MCP hire/switch cards grow the favorite into their tier enum at serve time",
-          lambda: (eq(TIER in cards["orgtree_hire"]["inputSchema"]["properties"]["tier"]["enum"],
-                      True, "hire enum"),
-                   eq(TIER in cards["orgtree_switch_model"]["inputSchema"]["properties"]["tier"]["enum"],
-                      True, "switch enum"),
+    check("MCP hire/switch schemas accept the runtime favorite without changing",
+          lambda: (eq("enum" not in cards["orgtree_hire"]["inputSchema"]["properties"]["tier"],
+                      True, "hire accepts runtime id"),
+                   eq("enum" not in cards["orgtree_switch_model"]["inputSchema"]["properties"]["tier"],
+                      True, "switch accepts runtime id"),
                    eq(TIER in json.dumps(mcptool.TOOLS), False,
-                      "the module constant itself stays static")))
+                      "favorite is transient discovery, not schema")))
     env = supervisor.spawn_env(org, tier=TIER)
     check("spawn_env for an or-* tier: the cookbook recipe, one credential, no account lane",
           lambda: (eq(env.get("ANTHROPIC_BASE_URL"), orr.ANTHROPIC_BASE, "base"),
