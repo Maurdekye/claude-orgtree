@@ -365,6 +365,20 @@ if MUTANT in _SELECT_MUTANTS:
     handoff._select_history = _mutated_select(**_SELECT_MUTANTS[MUTANT])
 
 
+if MUTANT == "prompt_splices_selected":
+    # "rendering it last is enough" — the weakening Astra caught in review
+    handoff.prompt_md = lambda md: md
+elif MUTANT == "reader_v3_only":
+    handoff.V_READABLE = (handoff.V,)
+elif MUTANT == "pairs_drop_one":
+    def _drop(inputs, lines):
+        rec = _real_extract(inputs, lines)
+        if rec["tool_pairs"]:
+            rec["tool_pairs"] = rec["tool_pairs"][:-1]
+        return rec
+    handoff.extract = _drop
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # fixture: one transcript holding every excluded thing
 THINK = "PRIVATE-REASONING-TEXT never carry me"
@@ -1932,6 +1946,181 @@ check("the section is file-only: it renders after every section the prompt head 
       t12_file_only)
 
 
+# ── §13 file-only is ENFORCED, old records still read, calls really propagate ─
+# Astra review of e8c526c, 2026-09-05: appending the section last does not make
+# it file-only — a SHORT record fits inside HANDOFF_HEAD whole, so it would be
+# spliced. Long-record tests cannot see that. Also: a version bump must not
+# make already-published records disappear, and "tool calls are excluded
+# because tool_pairs has them" is only true if every one of them is really
+# there.
+print("\n§13 prompt exclusion on a SHORT record · v2 records still read · "
+      "call propagation")
+SLUG13, NID13 = make_org("short")
+seed_session(SLUG13, NID13, recs=sel_records(n=6))
+ORG13, R13, DST13 = cross(SLUG13, NID13)
+SD13 = supervisor.scratch_dir(SLUG13, NID13)
+GEN13 = int(ORG13.node(NID13)["generation"]) - 1
+GOT13 = handoff.read_generation(SD13, GEN13, node=NID13)
+
+
+def t13_short_is_short():
+    """The premise of every check below: this record is SHORT ENOUGH to be
+    spliced whole, and it does carry a selected row. Without both, excluding
+    the section could not be told apart from the HANDOFF_HEAD cut."""
+    assert GOT13, "no record was published for the short fixture"
+    md = GOT13[handoff.RECORD_MD]
+    assert len(md) < supervisor.HANDOFF_HEAD, \
+        f"the 'short' record is {len(md)} chars: HANDOFF_HEAD would cut it anyway"
+    sel = GOT13["record"]["record"]["selected_history"]
+    assert sel, "the short record has no selected row: the exclusion is untestable"
+    assert handoff.SEL_HEADING in md, "the section is not in the file at all"
+    for e in sel:
+        assert e["text"] in md, "a selected row is not in the file"
+    OBS.setdefault("selected", {})["short_record"] = {
+        "record_md_chars": len(md), "selected_rows": len(sel),
+        "handoff_head": supervisor.HANDOFF_HEAD}
+
+
+check("SHORT-record control: the file is under HANDOFF_HEAD and does carry "
+      "selected rows", t13_short_is_short)
+
+
+def t13_prompt_excludes_selected():
+    """FILE ONLY, enforced: with the flag ON and the whole record inside
+    HANDOFF_HEAD, the spliced block still carries the record — and carries
+    NONE of the selected section."""
+    md = GOT13[handoff.RECORD_MD]
+    sel = GOT13["record"]["record"]["selected_history"]
+    open(FLAG, "w").close()
+    try:
+        o = store.load_org(SLUG13)
+        blk = supervisor._handoff_block(o, NID13)
+        assert blk, "no block rendered at all: the check would be free"
+        assert "## Instructions received" in blk, "the block lost the record itself"
+        assert "## Omitted (by rule)" in blk and "Source:" in blk, \
+            "the block lost sections that are not the selected one"
+        assert handoff.SEL_HEADING not in blk, "the selected section was spliced"
+        for e in sel:
+            assert e["text"] not in blk, f"a selected row reached the prompt: {e['text'][:40]!r}"
+        # and the projection is the SAME BYTES the prompt got before the
+        # section existed — recomputed here by removing the section's lines
+        lines = md.split("\n")
+        h = lines.index(handoff.SEL_HEADING)
+        f = next(i for i in range(h, len(lines)) if lines[i].startswith("Source: "))
+        want = "\n".join(lines[:h] + lines[f:])
+        assert handoff.prompt_md(md) == want, "prompt_md is not the pre-section bytes"
+        assert want.strip() in blk, "the block is not the pre-section projection"
+    finally:
+        os.remove(FLAG)
+
+
+check("FILE ONLY on a short record: the block carries the record and none of the "
+      "selected section", t13_prompt_excludes_selected)
+
+
+def _v2_directory(src_dir: str, dst_dir: str) -> dict:
+    """A genuine v2-SHAPED generation on disk: the current record with the new
+    section and the new per-item units taken back out, rendered the way v2
+    rendered it, and published under a v2 manifest."""
+    with open(os.path.join(src_dir, handoff.RECORD_JSON), encoding="utf-8") as f:
+        art = json.load(f)
+    art = copy.deepcopy(art)
+    art["v"] = 2
+    art["record"].pop("selected_history", None)
+    for key in ("instructions_received", "predecessor_said", "predecessor_claims",
+                "tool_pairs"):
+        for it in art["record"].get(key, []):
+            it.pop("unit", None)
+    js = json.dumps(art, indent=1, ensure_ascii=False)
+    md = handoff.prompt_md(handoff.render_md(json.loads(js)))
+    os.makedirs(dst_dir)
+    for name, body in ((handoff.RECORD_JSON, js), (handoff.RECORD_MD, md)):
+        with open(os.path.join(dst_dir, name), "w", encoding="utf-8", newline="\n") as f:
+            f.write(body)
+    man = {"v": 2, "kind": handoff.KIND, "node": art["node"],
+           "generation": art["inputs"].get("generation", 0),
+           "files": {handoff.RECORD_JSON: {"sha256": handoff.sha256(js),
+                                           "bytes": len(js.encode("utf-8"))},
+                     handoff.RECORD_MD: {"sha256": handoff.sha256(md),
+                                         "bytes": len(md.encode("utf-8"))}}}
+    return man
+
+
+def t13_v2_still_reads():
+    """A record published BEFORE this version bump is still on disk in live
+    scratch dirs — publication does not wait for the flag. It must still read
+    and still splice; what it must not do is claim to pass this version's
+    verifier."""
+    d13 = handoff.generation_dir(SD13, GEN13)
+    tmp = tempfile.mkdtemp(prefix="handoff-v2-")
+    dst = os.path.join(tmp, f"handoff-g{GEN13}")
+    man = _v2_directory(d13, dst)
+    man["generation"] = GEN13
+    with open(os.path.join(dst, handoff.MANIFEST), "w", encoding="utf-8", newline="\n") as f:
+        json.dump(man, f, indent=1)
+    got = handoff.read_generation(tmp, GEN13, node=man["node"])
+    assert got, "a valid v2 generation was refused: existing records would vanish"
+    assert got["v"] == 2, got["v"]
+    assert handoff.SEL_HEADING not in got[handoff.RECORD_MD]
+    assert "## Instructions received" in got[handoff.RECORD_MD]
+    # it does NOT pretend to verify under the current rules, and says so by name
+    bad = handoff.verify(got["record"], LINES13)
+    assert bad and bad[0] == f"not a v{handoff.V} handoff record", bad[:2]
+    # control: a version this reader does not know is still refused
+    man["v"] = 1
+    with open(os.path.join(dst, handoff.MANIFEST), "w", encoding="utf-8", newline="\n") as f:
+        json.dump(man, f, indent=1)
+    assert handoff.read_generation(tmp, GEN13, node=man["node"]) is None, \
+        "an unknown version was accepted: the version check is inert"
+    OBS.setdefault("selected", {})["v2_compatibility"] = {
+        "readable": list(handoff.V_READABLE), "written": handoff.V}
+
+
+with open(DST13, encoding="utf-8") as _f13:
+    LINES13 = [ln + "\n" for ln in _f13.read().splitlines()]
+check("a v2 generation still reads and still splices; an unknown version does not",
+      t13_v2_still_reads)
+
+
+def t13_calls_propagate():
+    """The tool-call exclusion is only honest if every excluded unit really IS
+    in `tool_pairs`. Checked as UNIT PROPAGATION, not as a duplicate count: the
+    fixture's own tool_use blocks are enumerated here and each one is required
+    to be present, by (line, kind, index)."""
+    lines = sel_lines(n=8)
+    art = sel_build(lines)
+    rec = art["record"]
+    want = set()
+    for i, raw in enumerate(lines, 1):
+        row = json.loads(raw)
+        if row.get("type") != "assistant" or row.get("isSidechain"):
+            continue
+        n = 0
+        for b in row["message"]["content"]:
+            if isinstance(b, dict) and b.get("type") == "tool_use":
+                want.add((i, "tool_call", n))
+                n += 1
+    assert want, "the fixture has no tool calls: this check would be free"
+    got = {(p["unit"]["line"], p["unit"]["kind"], p["unit"]["index"])
+           for p in rec["tool_pairs"]}
+    assert got == want, f"missing from tool_pairs: {sorted(want - got)}"
+    # every call adjacent to an anchor — the ones the selector drops — is there
+    anchors = {(it["unit"]["line"], it["unit"]["kind"], it["unit"]["index"])
+               for it in (rec["instructions_received"] + rec["predecessor_said"]
+                          + rec["predecessor_claims"])}
+    near = {u for u in want if any(abs(u[0] - a[0]) <= 2 for a in anchors)}
+    assert near, "no call sits near an anchor: the exclusion is untested here"
+    assert near <= got, sorted(near - got)
+    assert not [e for e in rec["selected_history"] if e["unit"]["kind"] == "tool_call"]
+    OBS.setdefault("selected", {})["call_propagation"] = {
+        "tool_calls_in_transcript": len(want), "in_tool_pairs": len(got),
+        "near_an_anchor": len(near)}
+
+
+check("every excluded tool call is really in tool_pairs, by unit, including the "
+      "ones beside an anchor", t13_calls_propagate)
+
+
 # ── §11 mutants ────────────────────────────────────────────────────────────
 MUTANTS = {
     "keep_thinking": "excluded content absent",
@@ -1955,6 +2144,9 @@ MUTANTS = {
     "select_budget_text_only": "rendered characters",
     "select_admits_calls": "never a second copy",
     "select_order_distance_only": "specified order",
+    "prompt_splices_selected": "none of the selected section",
+    "reader_v3_only": "still reads and still splices",
+    "pairs_drop_one": "really in tool_pairs",
 }
 
 if not MUTANT:

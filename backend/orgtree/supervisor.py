@@ -5204,7 +5204,11 @@ def _handoff_block(org: Org, nid: str) -> str:
         return ""
     if not got:
         return ""
-    txt = str(got.get(handoff.RECORD_MD) or "").strip()
+    # FILE-ONLY sections are removed HERE, not arranged into place: a short
+    # record fits inside HANDOFF_HEAD whole, so "rendered last" would still be
+    # spliced (Astra review 2026-09-05). `prompt_md` returns the same bytes the
+    # prompt got before those sections existed.
+    txt = handoff.prompt_md(str(got.get(handoff.RECORD_MD) or "")).strip()
     if not txt:
         return ""
     cut = len(txt) > HANDOFF_HEAD
@@ -5215,11 +5219,8 @@ def _handoff_block(org: Org, nid: str) -> str:
             f"boundary. NOT memory, NOT a summary a model wrote, and NOT evidence "
             f"that any provider context carried over. Quoted lines keep their "
             f"author's role; a predecessor claim is a claim until you open its "
-            f"cited line in transcript.jsonl. THIS BLOCK IS NOT LINE-ADDRESSABLE: "
-            f"cite the file by its section and its L<n> markers, never by a line "
-            f"number counted here — counting inside this block is off by the "
-            f"length of this header (observed 2026-09-05: a successor cited five "
-            f"lines, every one of them one past the line that carried the fact)"
+            f"cited line in transcript.jsonl. Do not count lines inside this "
+            f"block: open the file before citing a line number in it"
             + (f"; TRUNCATED to the first {HANDOFF_HEAD} chars — read the file "
                f"for the rest" if cut else "")
             + "]\n" + txt)

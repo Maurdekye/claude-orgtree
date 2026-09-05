@@ -73,6 +73,16 @@ import uuid
 from typing import Any, Iterable
 
 V = 3
+#: versions a READER accepts. Writing is always V; reading older records is a
+#: separate question and the answer is not "make them disappear" — records
+#: published before a shape change are already on disk in live scratch dirs
+#: (publication does not wait for the flag), they were verified when they were
+#: written, and the prompt path never re-verifies. So a v2 directory is still
+#: readable and still splices; what it cannot do is pass THIS version's
+#: `verify`, which rebuilds a v3 record and would differ. `read_generation`
+#: reports the version it read (`out["v"]`) so a caller that needs v3 can say
+#: so instead of guessing.
+V_READABLE = (2, 3)
 KIND = "orgtree.handoff"
 CAP_TEXT = 1200       # chars quoted per user/assistant item
 CAP_RESULT = 400      # chars of a tool result excerpt
@@ -964,7 +974,13 @@ def read_generation(scratch: str, gen: int,
     record", not a crash: manifest version and kind, per-file entry shapes,
     the artifact's own version/kind, and the generation and node the manifest
     claims (pass `node` to bind it — a record published for another seat is
-    not this seat's record)."""
+    not this seat's record).
+
+    VERSIONS: any version in `V_READABLE`, with the manifest and the artifact
+    agreeing on which; the version read is returned as `out["v"]`. An older
+    record is still a record — it was verified when it was published, and this
+    reader is the prompt path, which never re-verifies. `verify` is the place
+    that speaks only the current version, and it says which by name."""
     d = generation_dir(scratch, gen)
     try:
         with open(os.path.join(d, MANIFEST), encoding="utf-8") as f:
@@ -973,10 +989,10 @@ def read_generation(scratch: str, gen: int,
             return None
         files = man.get("files")
         if (not isinstance(files, dict) or man.get("kind") != KIND
-                or man.get("v") != V or man.get("generation") != gen
+                or man.get("v") not in V_READABLE or man.get("generation") != gen
                 or (node is not None and man.get("node") != node)):
             return None
-        out: dict[str, Any] = {"dir": d, "generation": gen}
+        out: dict[str, Any] = {"dir": d, "generation": gen, "v": man["v"]}
         for name in (RECORD_JSON, RECORD_MD):
             want = files.get(name)
             if (not isinstance(want, dict)
@@ -990,7 +1006,7 @@ def read_generation(scratch: str, gen: int,
             out[name] = b.decode("utf-8")
         art = json.loads(out[RECORD_JSON])
         if (not isinstance(art, dict) or art.get("kind") != KIND
-                or art.get("v") != V
+                or art.get("v") != man["v"]        # manifest and record agree
                 or (node is not None and art.get("node") != node)
                 or ((art.get("inputs") or {}).get("boundary") or {}).get("bearer")
                 not in (None, f"{art.get('node')}@{gen}")):
@@ -1051,11 +1067,10 @@ def render_md(art: dict[str, Any]) -> str:
     out.append("\n## Omitted (by rule)")
     for o in rec["omissions"]:
         out.append(f"- {o['kind']}: {o['count']}" + (f" {o['ids']}" if o.get("ids") else ""))
-    # ⚠ LAST, DELIBERATELY. `supervisor._handoff_block` splices the HEAD of this
-    # file (HANDOFF_HEAD chars). A section that can be 20 000 chars long would,
-    # anywhere earlier, push the instructions, claims and tool calls out of the
-    # spliced head — the section is FILE-ONLY, so it sits behind everything the
-    # prompt shows.
+    # ⚠ LAST, and REMOVED FROM THE PROMPT BY `prompt_md` — position alone is not
+    # file-only (Astra review 2026-09-05, on this diff): a SHORT record fits
+    # inside HANDOFF_HEAD entirely, so a section at the end is spliced like
+    # everything else. Being last only bounds what a LONG record loses.
     out.append("\n" + render_selected(rec.get("selected_history") or []).rstrip("\n"))
     tr = inp["transcript"]
     out.append(f"\nSource: {tr['path']} ({tr['lines']} lines, sha256 {tr['sha256'][:12]}); "
@@ -1065,3 +1080,22 @@ def render_md(art: dict[str, Any]) -> str:
                  "path-filtered. Verify offline with handoff.verify(record, transcript "
                  "lines); without the ledger the seat/mail/view snapshots are unanchored.")
     return "\n".join(out) + "\n"
+
+
+def prompt_md(md: str) -> str:
+    """record.md AS THE PROMPT SEES IT: the selected-history section removed,
+    whatever the record's length.
+
+    FILE ONLY has to be enforced, not arranged. Rendering the section last
+    bounds what a long record loses to the HANDOFF_HEAD cut, but a short record
+    fits under that cut whole, so the section would be spliced. This cut is by
+    the section's own heading and the footer that follows it, so the text the
+    prompt gets is BYTE-IDENTICAL to the text it got before the section
+    existed. A record without the section is returned unchanged."""
+    i = md.find("\n" + SEL_HEADING)
+    if i < 0:
+        return md
+    j = md.rfind("\nSource: ")            # the footer is the file's last line
+    if j <= i:
+        return md[:i] + "\n"
+    return md[:i] + md[j:]
