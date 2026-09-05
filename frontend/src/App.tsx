@@ -12,7 +12,7 @@ import {
   resumeFrozen, runOp, saveDefaults, saveKiosk, saveSettings, sendMessage,
   sweepLegacy,
 } from './api'
-import { fmtClock, fmtFull, localizeStamps } from './timefmt'
+import { fmtClock, fmtFull, localizeFreezeUntil } from './timefmt'
 import { bumpLive } from './livebus'
 import { AudienceFold, ConfirmModal, MailFolders, MailList, OrgCanvas, OrgRecord, RetiredFold, useEsc } from './Canvas'
 import { KillSwitch } from './KillSwitch'
@@ -745,8 +745,9 @@ export default function App() {
                   // retired agent keeps its freeze and ▶ has never resumed it
                   const frozen = resumableFrozen(tree)
                   if (!frozen.length) return null
-                  const until = localizeStamps(
-                    frozen.map((n) => n.frozen.until).find(Boolean) ?? '')
+                  const frz = frozen.find((n) => n.frozen.until)
+                  const until = localizeFreezeUntil(
+                    frz?.frozen.until, frz?.frozen.until_ts)
                   // RED while the reported reset time is still ahead (resuming
                   // would just re-hit the limit); normal once it has passed
                   const untilTs = Math.max(0, ...frozen.map((n) => n.frozen.until_ts || 0))

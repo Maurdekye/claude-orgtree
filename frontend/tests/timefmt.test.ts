@@ -25,7 +25,8 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
   browserZone, displayZone, fmtClock, fmtDay, fmtFull, fmtHm, fmtMonth,
-  fmtShort, fmtStamp, fmtWhen, isToday, localizeStamps, setDisplayZone,
+  fmtShort, fmtStamp, fmtWhen, isToday, localizeFreezeUntil, localizeStamps,
+  setDisplayZone,
 } from '../src/timefmt'
 
 const JERUSALEM = 'Asia/Jerusalem'
@@ -271,4 +272,91 @@ test('several tokens in one row all render', () => {
   const out = localizeStamps(row)
   assert.ok(!out.includes('⟦t:'), out)
   assert.ok(out.includes('2026-09-05') && out.includes('2026-01-15'), out)
+})
+
+// ──────────────────── freeze records stored before assignment 19 ──────
+//
+// ⚠ Matching a clock spelling does NOT prove where it came from:
+// `_parse_limit_reset` really returns '1:40pm' and 'Fri 4:11am' out of
+// PROVIDER error text, identical to what `_reset_label` emits. The rule is
+// not about origin — a label that is nothing but a clock carries no date and
+// no zone, so it says strictly less than the authoritative `until_ts` and can
+// be re-rendered without losing anything. A clock that is NOT alone is left
+// exactly as it is.
+
+const TS = Date.parse(INSTANT) / 1000
+
+test('valid clock-only labels are re-rendered from until_ts', () => {
+  setDisplayZone(NEW_YORK)
+  const local = fmtWhen(TS)
+  assert.ok(!local.includes('4:11am'), 'control: the zone really differs')
+  for (const s of ['4:11am', '9pm', '9 PM', '9 pm', '1:40pm', '12:05am',
+                   'Fri 4:11am', 'Fri 9pm', 'Sun 12:05am']) {
+    assert.equal(localizeFreezeUntil(s, TS), local, s)
+  }
+  for (const s of ['capacity resets 4:11am', 'capacity resets Fri 9 PM']) {
+    assert.equal(localizeFreezeUntil(s, TS), `capacity resets ${local}`, s)
+  }
+})
+
+test('⭐ only REAL weekdays count — a three-letter word does not', () => {
+  // `Pay 9pm` and `May 9pm` both matched a generic [A-Z][a-z]{2} weekday and
+  // were rewritten. Neither is a weekday; both are ordinary text that happens
+  // to precede a time.
+  setDisplayZone(NEW_YORK)
+  for (const s of ['Pay 9pm', 'May 9pm', 'Due 9pm', 'Sat9pm']) {
+    assert.equal(localizeFreezeUntil(s, TS), s, s)
+  }
+  // …and the control that keeps this from passing by never converting
+  assert.equal(localizeFreezeUntil('Fri 9pm', TS), fmtWhen(TS))
+})
+
+test('⭐ an impossible clock is not a clock', () => {
+  setDisplayZone(NEW_YORK)
+  for (const s of ['99:99pm', '13:00pm', '9:60pm', '0:30am', '24:00am']) {
+    assert.equal(localizeFreezeUntil(s, TS), s, s)
+  }
+})
+
+test('⭐ a clock that is not ALONE is left exactly as it is', () => {
+  // THE DANGEROUS CASE. A substring replace turns these into a LOCAL time
+  // still wearing the old zone — a wrong reading that looks authoritative.
+  setDisplayZone(NEW_YORK)
+  for (const s of ['9:00pm PST', '4:11am UTC', 'capacity resets 4:11am PST',
+                   'resets 9pm', 'try again at 9 PM', '9pm tomorrow',
+                   'the 9pm window']) {
+    assert.equal(localizeFreezeUntil(s, TS), s, s)
+  }
+})
+
+test('arbitrary descriptive provider text is untouched', () => {
+  setDisplayZone(JERUSALEM)
+  for (const s of ['credential rejected — replace it, then resume',
+                   'network interruption — attempt 1/4',
+                   'reset time unknown',
+                   'capacity available — ▶ to resume',
+                   'in about three hours, once the weekly window rolls',
+                   'unknown — probing again shortly',
+                   'the 9pm window']) {
+    assert.equal(localizeFreezeUntil(s, TS), s, s)
+  }
+})
+
+test('an absent or non-finite timestamp changes nothing', () => {
+  // ⚠ nothing authoritative to render from; inventing a time from a string we
+  // cannot place in a zone is how this whole class of bug started
+  setDisplayZone(JERUSALEM)
+  for (const ts of [null, undefined, 0, NaN, Infinity, -1]) {
+    assert.equal(localizeFreezeUntil('capacity resets 4:11am', ts as number),
+                 'capacity resets 4:11am', String(ts))
+  }
+  assert.equal(localizeFreezeUntil(null, TS), '')
+  assert.equal(localizeFreezeUntil('', TS), '')
+})
+
+test('a tokenised freeze label goes through localizeStamps instead', () => {
+  setDisplayZone(JERUSALEM)
+  const out = localizeFreezeUntil(`capacity resets ⟦t:${INSTANT}|clock⟧`, 0)
+  assert.ok(!out.includes('⟦t:'), out)
+  assert.ok(out.startsWith('capacity resets '), out)
 })

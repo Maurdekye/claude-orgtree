@@ -220,3 +220,42 @@ export const localizeStamps = (text: string): string =>
       // text somebody is reading — visible and reportable beats silent
       return out || whole
     })
+
+/** A freeze's `until` label, re-rendered from the authoritative `until_ts`
+ *  when — and only when — the WHOLE string is a valid clock-only label.
+ *
+ *  A label that is nothing but a clock carries no date and no zone, so it
+ *  says strictly less than `until_ts`, which is the authoritative instant for
+ *  the same freeze. Re-rendering it locally therefore loses nothing. This is
+ *  deliberately not a claim about origin: `_parse_limit_reset` lifts clock
+ *  spellings out of provider errors that are identical to the ones
+ *  `supervisor._reset_label` emits, and no pattern separates the two.
+ *
+ *  Recognised, whole string only — hours 1-12, real minutes, spacing and case
+ *  optional, an optional real weekday, and `api.py`'s optional prefix:
+ *    `9pm` · `9 PM` · `1:40pm` · `Fri 4:11am` · `capacity resets Fri 4:11am`
+ *
+ *  ⚠ EVERYTHING ELSE IS RETURNED BYTE FOR BYTE, and the case that matters is
+ *  a clock that is NOT alone: `'9:00pm PST'` names a zone this cannot honour,
+ *  so a substring replace would leave a LOCAL time still wearing `PST` — a
+ *  wrong reading that looks authoritative. Same for `'resets 9pm'`, `'Pay
+ *  9pm'` and any descriptive prose. Records written after assignment 19 carry
+ *  a `⟦t:…⟧` token and go to `localizeStamps` instead.
+ *
+ *  With no usable `until_ts` the label is returned untouched — there is
+ *  nothing authoritative to render from. */
+//   optional prefix · optional REAL weekday · hours 1-12 · real minutes
+const CLOCK_ONLY_LABEL =
+  /^(capacity resets )?(?:(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun) )?(?:1[0-2]|0?[1-9])(?::[0-5]\d)?\s?[AaPp][Mm]$/
+export const localizeFreezeUntil = (
+  until: string | null | undefined, untilTs: number | null | undefined,
+): string => {
+  const text = until ?? ''
+  if (!text) return ''
+  if (text.includes('⟦t:')) return localizeStamps(text)
+  if (untilTs == null || !Number.isFinite(untilTs) || untilTs <= 0) return text
+  const m = CLOCK_ONLY_LABEL.exec(text)
+  if (!m) return text
+  const local = fmtWhen(untilTs)
+  return local ? `${m[1] ?? ''}${local}` : text
+}

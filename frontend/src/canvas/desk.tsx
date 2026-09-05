@@ -41,7 +41,7 @@ import { InboxView, RetiredFold } from './mail'
 import { AskCard } from './asks'
 import { deriveProgress, ProgressChip, ProgressView } from './progress'
 import { isMobile } from '../mobile'
-import { fmtFull, fmtShort, fmtStamp, localizeStamps } from '../timefmt'
+import { fmtFull, fmtShort, fmtStamp, localizeFreezeUntil } from '../timefmt'
 
 interface ContextWheelProps {
   occ?: number | null
@@ -1579,7 +1579,7 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
                 badge does not. Saying "resumes" here promised a retry that,
                 with the toggle off, nobody performs (2026-08-10). */}
             {!node.limit_locked && node.frozen.until
-              ? ` · ${localizeStamps(node.frozen.connection
+              ? ` · ${localizeFreezeUntil(node.frozen.connection
                 ? node.frozen.until.replace(/^network interruption — /, '')
                 // an auth freeze's `until` says what to DO ("credential
                 // rejected — replace it, then resume"); the label above
@@ -1594,7 +1594,7 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
                 // which promised a wake that never comes on an org with
                 // auto_resume off — the default. Reporting capacity is the
                 // whole point; do not put "resumes" back.
-                : node.frozen.until)}` : ''}</span>}
+                : node.frozen.until, node.frozen.until_ts)}` : ''}</span>}
         {node.limit_locked &&
           <span className="badge dim"><LockIcon fontSize="inherit" /> limit</span>}
         {/* ⭐ the user's per-node override (ruling 2026-08-06): one click
