@@ -286,14 +286,20 @@ TOOLS: list[dict[str, Any]] = [
             "THE DOCKET — the organization's durable record of substantive "
             "work, read by the user in a Work panel. Items survive "
             "retirement, compaction and reassignment. Actions: `list` (the "
-            "items you may read; include_archived for finished ones), `get` "
-            "(one item in full), `create` (title, objective, kind "
+            "items you may read; include_archived for finished ones, "
+            "include_backlogged for ones nobody has started), `get` "
+            "(one item in full), `create` (title, REQUIRED objective, kind "
             "code|non-code, owner = you or a subordinate, participants, "
             "acceptance conditions, optional first done_so_far/"
-            "working_on_next), `update` (THE status update: ALWAYS carries "
+            "working_on_next). `objective` is the item's DESCRIPTION and may "
+            "not be blank: state the PROBLEM being faced FIRST, then the "
+            "proposed solution — the user reads it to know why the item "
+            "exists, and a title alone never says what is wrong. `update` "
+            "(THE status update: ALWAYS carries "
             "done_so_far AND working_on_next as lists of individual entries "
             "— either may be empty, both empty is refused — plus optional "
-            "status open|in_progress|blocked|review|dropped, blocked_reason, "
+            "status backlogged|open|in_progress|blocked|review|dropped, "
+            "blocked_reason, "
             "attention:true + attention_reason for a concrete reason the user "
             "must see, reopen:true to resume an archived item), `assign` "
             "(owner), `participants` (add/remove collaborators: they may "
@@ -314,7 +320,16 @@ TOOLS: list[dict[str, Any]] = [
             "their last update, records kept. A later update without "
             "attention:true CLEARS a standing attention flag; a user "
             "dismissal makes the item blocked and an exact repeat of the "
-            "dismissed reason is refused. The user's replies on an item go "
+            "dismissed reason is refused. `backlogged` means NOT YET "
+            "APPROACHED OR APPROVED: it is kept out of the toolbar's active "
+            "count and hidden behind its own toggle, so use it only for work "
+            "genuinely not started — do not reclassify open work that is "
+            "authorised or under way. Every item also has a HUMAN-READABLE "
+            "SLUG from its title (`git-review-workspace`), returned by create/"
+            "list/get and accepted anywhere the opaque id is: use the slug in "
+            "mail, reports and anything the user reads, and note it is fixed "
+            "at creation, so it does not follow a later title change. The "
+            "user's replies on an item go "
             "to its LAST UPDATER; question answers go to their asker "
             "(attach questions with orgtree_ask work_item)."),
         "inputSchema": {
@@ -325,10 +340,11 @@ TOOLS: list[dict[str, Any]] = [
                                     "participants", "evidence", "claim",
                                     "verify", "check", "accept", "archive",
                                     "supersede"]},
-                "id": {"type": "string", "description": "work item id (every action but list/create)"},
+                "id": {"type": "string", "description": "work item slug or opaque id (every action but list/create)"},
                 "include_archived": {"type": "boolean", "description": "list: include archived items"},
+                "include_backlogged": {"type": "boolean", "description": "list: include backlogged (not yet started) items"},
                 "title": {"type": "string", "description": "create/update: short concrete title"},
-                "objective": {"type": "string", "description": "create/update: the intended outcome"},
+                "objective": {"type": "string", "description": "create (REQUIRED) / update: the item's description — the PROBLEM faced first, then the proposed solution"},
                 "kind": {"type": "string", "description": "create: code|non-code · evidence: note|link|file|commit|log"},
                 "owner": {"type": "string", "description": "create/assign: owner node (you or a subordinate)"},
                 "participants": {"type": "array", "items": {"type": "string"},
@@ -344,7 +360,7 @@ TOOLS: list[dict[str, Any]] = [
                 "working_on_next": {"type": "array", "items": {"type": "string"},
                                     "description": "update (required) / create: what you are doing now and the next steps"},
                 "status": {"type": "string",
-                           "description": "create/update: open|in_progress|blocked|review|dropped (done only via accept)"},
+                           "description": "create/update: backlogged|open|in_progress|blocked|review|dropped (done only via accept)"},
                 "blocked_reason": {"type": "string", "description": "update: why, when status is blocked"},
                 "attention": {"type": "boolean",
                               "description": "update: raise the manual attention flag (needs attention_reason)"},

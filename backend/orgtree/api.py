@@ -3778,16 +3778,20 @@ class WorkAccept(Body):
 
 
 @app.get("/api/orgs/{slug}/work-items")
-def work_items_list(slug: str, archived: int = 0) -> dict[str, Any]:
-    """Every item, split by the DERIVED archive rule, newest docket update
-    first; `counts` over the full set for the toolbar badge. `?archived=1`
-    adds the archived group (the modal's Show-archived checkbox). Read-only:
-    the physical archive sweep runs on the next docket write, never here."""
+def work_items_list(slug: str, archived: int = 0,
+                    backlogged: int = 0) -> dict[str, Any]:
+    """Every item, split by the DERIVED archive and backlog rules, newest
+    docket update first; `counts` over the full set for the toolbar badge.
+    `?archived=1` adds the archived group and `?backlogged=1` the backlog
+    group — the modal's two independent header checkboxes, each of which only
+    APPENDS its group below the main list. Read-only: the physical archive
+    sweep runs on the next docket write, never here."""
     try:
         org = store.load_org(slug)
     except LedgerError as e:
         raise HTTPException(404, str(e))
-    return org.work_list(USER, include_archived=bool(archived))
+    return org.work_list(USER, include_archived=bool(archived),
+                         include_backlogged=bool(backlogged))
 
 
 @app.get("/api/orgs/{slug}/work-items/{wid}")
@@ -3934,8 +3938,10 @@ def _work_read_call(body: AgentCall, a: dict[str, Any]) -> dict[str, Any]:
         org = store.load_org(body.org)
         org._require_live(body.node)
         if act == "list":
-            return org.work_list(body.node,
-                                 include_archived=_arg_flag(a, "include_archived"))
+            return org.work_list(
+                body.node,
+                include_archived=_arg_flag(a, "include_archived"),
+                include_backlogged=_arg_flag(a, "include_backlogged"))
         return {"item": org.work_get(body.node, str(a.get("id") or ""))}
     except LedgerError as e:
         raise HTTPException(422, str(e))

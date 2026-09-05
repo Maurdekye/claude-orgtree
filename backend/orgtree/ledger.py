@@ -9127,11 +9127,22 @@ class Org:
     WORK_HISTORY_MAX: Final = 100
     WORK_LIST_ENTRY_MAX: Final = 40          # entries per docket list
     WORK_ARCHIVE_AFTER_S: Final = 3600       # strictly greater than → archived
-    WORK_STATUSES: Final = ("open", "in_progress", "blocked", "review",
-                            "done", "superseded", "dropped")
-    WORK_AGENT_STATUSES: Final = ("open", "in_progress", "blocked", "review",
-                                  "dropped")
+    #
+    # `backlogged` (user 2026-09-05) is NOT a closed state and NOT an active
+    # one: it means the work has not yet been approached or approved. It is
+    # therefore kept out of the toolbar's `active` count and served in its own
+    # list behind its own toggle, exactly the way the archive is — an item
+    # nobody has started must not inflate the number the user reads as "work
+    # in flight". It never archives (the sweep is done-only), and existing
+    # `open` items are NEVER reclassified into it: only an explicit update
+    # moves an item there, because plenty of open items are authorised and
+    # under way (Astra ruling 2026-09-05).
+    WORK_STATUSES: Final = ("backlogged", "open", "in_progress", "blocked",
+                            "review", "done", "superseded", "dropped")
+    WORK_AGENT_STATUSES: Final = ("backlogged", "open", "in_progress",
+                                  "blocked", "review", "dropped")
     WORK_CLOSED: Final = ("done", "superseded", "dropped")
+    WORK_BACKLOG: Final = "backlogged"
     WORK_EVIDENCE_KINDS: Final = ("note", "link", "file", "commit", "log")
 
     def _work_active(self) -> list[WorkItem]:
@@ -9153,13 +9164,74 @@ class Org:
             return str(cast("dict[str, Any]", a).get("node") or "") or None
         return None
 
+    # ---- human-readable slugs (user 2026-09-05). Agents and the user refer to
+    # an item as `git-review-workspace`, not `w3becbb30`. The opaque id stays
+    # the ONLY internal key: history rows, dependencies, ask linkage and every
+    # stored reference keep using it, so nothing breaks if a slug is ever
+    # regenerated. A slug is assigned ONCE, at creation, and never follows a
+    # later title edit — a name people have already copied into mail must not
+    # silently start pointing at nothing.
+    WORK_SLUG_MAX: Final = 48
+
+    @staticmethod
+    def _work_slugify(title: str) -> str:
+        s = re.sub(r"[^a-z0-9]+", "-", str(title or "").lower()).strip("-")
+        s = s[:Org.WORK_SLUG_MAX].strip("-")
+        return s or "item"
+
+    def _work_slugs_in_use(self, skip: WorkItem | None = None) -> set[str]:
+        return {str(it.get("slug")) for it in
+                (self._work_active() + self._work_archive())
+                if it.get("slug") and it is not skip}
+
+    def _work_unique_slug(self, title: str, taken: set[str]) -> str:
+        """`base`, then `base-2`, `base-3`… Collisions are resolved against
+        the ACTIVE AND ARCHIVED sets together: an archived item keeps its name,
+        so reusing it would make an old reference ambiguous."""
+        base = self._work_slugify(title)
+        if base not in taken:
+            return base
+        n = 2
+        while f"{base}-{n}" in taken:
+            n += 1
+        return f"{base}-{n}"
+
+    def _work_backfill_slugs(self) -> list[str]:
+        """Give every slug-less item one. Called from `_work_sweep`, which
+        runs at the head of every docket MUTATION — never from a read. A read
+        that quietly rewrites the document is the defect this avoids: it would
+        make `GET` a writer, race two viewers, and dirty documents nobody
+        edited. Until the first mutation an old item simply has no slug and
+        the UI shows its id; the backfill is not a migration and never runs
+        against a document this process is not already about to save."""
+        taken = self._work_slugs_in_use()
+        done: list[str] = []
+        for it in self._work_active() + self._work_archive():
+            if it.get("slug"):
+                continue
+            s = self._work_unique_slug(str(it.get("title") or ""), taken)
+            it["slug"] = s
+            taken.add(s)
+            done.append(s)
+        return done
+
     def _work_find(self, wid: str) -> tuple[WorkItem, bool]:
-        """(item, physically_archived). Raises when the id is unknown."""
+        """(item, physically_archived) by opaque id OR human-readable slug.
+        The ID IS TRIED FIRST and exactly: a slug can never shadow a real id,
+        so a reference that worked before slugs existed still resolves to the
+        same item. Raises when neither matches."""
+        ref = str(wid or "")
         for it in self._work_active():
-            if it["id"] == wid:
+            if it["id"] == ref:
                 return it, False
         for it in self._work_archive():
-            if it["id"] == wid:
+            if it["id"] == ref:
+                return it, True
+        for it in self._work_active():
+            if it.get("slug") == ref:
+                return it, False
+        for it in self._work_archive():
+            if it.get("slug") == ref:
                 return it, True
         raise LedgerError(f"no work item {wid!r}")
 
@@ -9263,11 +9335,34 @@ class Org:
             return False
         return physically or self._work_eligible(it, now_ts)
 
+    def _work_backlogged(self, it: WorkItem) -> bool:
+        """In the HIDDEN backlog group? Backlogged AND attention-free — the
+        same shape as `_work_archived`, and for the same reason: a row the
+        badge is counting must be reachable without first guessing which
+        checkbox hides it, so a backlogged item holding a question or a manual
+        flag stays in the main list. Physical archival is not consulted
+        because the sweep only ever moves DONE items."""
+        return it.get("status") == self.WORK_BACKLOG \
+            and not self._work_attention(it)
+
+    def _work_counts_active(self, it: WorkItem) -> bool:
+        """Does this item belong to the toolbar's `active` number? Neither
+        closed nor backlogged. Backlogged is excluded HERE rather than by
+        leaning on `_work_backlogged`, because an attention-holding
+        backlogged row is deliberately shown in the main list — being visible
+        is not the same as being in flight, and the badge means the latter."""
+        st = it.get("status")
+        return st not in self.WORK_CLOSED and st != self.WORK_BACKLOG
+
     def _work_sweep(self, now_ts: float | None = None) -> list[str]:
         """Physically move eligible, attention-free done items into the
         archive. Called at the head of every docket mutation; a read never
         writes. Returns the moved ids (logged, never silent)."""
         now_ts = _time.time() if now_ts is None else now_ts
+        named = self._work_backfill_slugs()
+        if named:
+            self._log("work_slugs", "orgtree",
+                      {"slugs": named, "why": "backfilled on the next write"}, [])
         active = self._work_active()
         moved: list[str] = []
         for it in list(active):
@@ -9351,6 +9446,10 @@ class Org:
             else:
                 deps.append({"id": did, "visible": False})
         return {
+            # `slug` is None on an item that predates slugs and has not been
+            # written since — the UI falls back to the id rather than the read
+            # path inventing (and failing to persist) a name.
+            "slug": it.get("slug") or None,
             **{k: it.get(k) for k in (
                 "id", "rev", "kind", "title", "objective", "status",
                 "owner", "created_by", "at", "updated_at", "done_so_far",
@@ -9385,49 +9484,82 @@ class Org:
         return self._work_can_read(viewer, t)
 
     def work_counts(self, now_ts: float | None = None) -> dict[str, int]:
-        """The toolbar badge's two numbers (+ the archive size), over the
-        FULL item set. `attention` counts items, never questions."""
+        """The toolbar badge's two numbers (+ the archive and backlog sizes),
+        over the FULL item set. `attention` counts items, never questions.
+
+        `active` EXCLUDES backlogged items — work nobody has approached is not
+        work in flight — but `attention` does not: a backlogged item that
+        holds a question or a manual flag still lights the badge, because the
+        badge must never point at something the user cannot then find. The UI
+        reveals such a row by its own rule; see `work_list`."""
         now_ts = _time.time() if now_ts is None else now_ts
-        attention = active = archived = 0
+        attention = active = archived = backlogged = 0
         for it, phys in ([(i, False) for i in self._work_active()]
                          + [(i, True) for i in self._work_archive()]):
             if self._work_attention(it):
                 attention += 1
             if self._work_archived(it, phys, now_ts):
                 archived += 1
-            elif it.get("status") not in self.WORK_CLOSED:
+            elif self._work_backlogged(it):
+                backlogged += 1
+            elif self._work_counts_active(it):
                 active += 1
-        return {"attention": attention, "active": active, "archived": archived}
+        return {"attention": attention, "active": active,
+                "archived": archived, "backlogged": backlogged}
 
     def work_list(self, viewer: str, include_archived: bool = False,
-                  now_ts: float | None = None) -> dict[str, Any]:
-        """Every item the viewer may read, split by the DERIVED archive rule,
-        newest docket update first within each group. Counts are over the
-        viewer's READABLE set - an agent must not learn from a number that a
-        hidden item exists (Astra review 2026-09-05); the user's counts are
-        the org's."""
+                  now_ts: float | None = None,
+                  include_backlogged: bool = False) -> dict[str, Any]:
+        """Every item the viewer may read, split into THREE disjoint groups —
+        the main list, the derived archive, and the derived backlog — newest
+        docket update first within each. Counts are over the viewer's READABLE
+        set: an agent must not learn from a number that a hidden item exists
+        (Astra review 2026-09-05); the user's counts are the org's.
+
+        Ordering is TOTAL, not merely "newest first": ties on `docket_at`
+        break on the item id, so two items stamped in the same clock tick come
+        back in the same order on every poll instead of shuffling under the
+        user's cursor between two five-second refreshes."""
         now_ts = _time.time() if now_ts is None else now_ts
         items: list[dict[str, Any]] = []
         arch: list[dict[str, Any]] = []
+        back: list[dict[str, Any]] = []
         for it, phys in ([(i, False) for i in self._work_active()]
                          + [(i, True) for i in self._work_archive()]):
             if not self._work_can_read(viewer, it):
                 continue
             v = self._work_view(it, phys, viewer, now_ts)
-            (arch if v["archived"] else items).append(v)
+            if v["archived"]:
+                arch.append(v)
+            elif self._work_backlogged(it):
+                back.append(v)
+            else:
+                items.append(v)
 
-        def key(v: dict[str, Any]) -> str:
-            return str(v.get("docket_at") or v.get("updated_at") or "")
+        def key(v: dict[str, Any]) -> tuple[str, str]:
+            # id ASCENDING inside a docket_at tie: `reverse=True` flips the
+            # whole tuple, so the id is negated by comparing it reversed —
+            # done here by sorting ids descending under the same flag, which
+            # is deterministic either way. What matters is that it is stable
+            # and total, not which direction the tie runs.
+            return (str(v.get("docket_at") or v.get("updated_at") or ""),
+                    str(v.get("id") or ""))
         items.sort(key=key, reverse=True)
         arch.sort(key=key, reverse=True)
+        back.sort(key=key, reverse=True)
         counts = (self.work_counts(now_ts) if viewer == USER else {
-            "attention": sum(1 for v in items + arch if v["effective_attention"]),
+            "attention": sum(1 for v in items + arch + back
+                             if v["effective_attention"]),
             "active": sum(1 for v in items
-                          if v["status"] not in self.WORK_CLOSED),
-            "archived": len(arch)})
+                          if v["status"] not in self.WORK_CLOSED
+                          and v["status"] != self.WORK_BACKLOG),
+            "archived": len(arch),
+            "backlogged": len(back)})
         out: dict[str, Any] = {"items": items, "counts": counts, "now": now()}
         if include_archived:
             out["archived"] = arch
+        if include_backlogged:
+            out["backlogged"] = back
         return out
 
     def work_get(self, viewer: str, wid: str,
@@ -9509,10 +9641,25 @@ class Org:
         t = str(title or "").strip()[:200]
         if not t:
             raise LedgerError("a work item needs a title")
+        # The DESCRIPTION is mandatory (user 2026-09-05). It is the existing
+        # `objective` field — deliberately not a second one: the wire, the
+        # detail pane and every stored item already carry exactly one piece of
+        # prose about what the item is for, and a parallel "description" would
+        # only make two places to look and two to keep true. What CHANGED is
+        # that it may no longer be blank, and what it is asked to say: the
+        # problem being faced FIRST, then the proposed solution.
+        obj = str(objective or "").strip()[:2000]
+        if not obj:
+            raise LedgerError(
+                "a work item needs a description in `objective` — state the "
+                "PROBLEM currently faced first, then the proposed solution. "
+                "The user reads this to know why the item exists; a title "
+                "alone does not say what is wrong")
         if kind not in ("code", "non-code"):
             raise LedgerError("kind must be code|non-code")
         if status not in self.WORK_AGENT_STATUSES or status == "dropped":
-            raise LedgerError("a new item starts open|in_progress|blocked|review")
+            raise LedgerError("a new item starts backlogged|open|in_progress"
+                              "|blocked|review")
         active = self.d.setdefault("work_items", [])
         if len(active) >= self.WORK_ACTIVE_MAX:
             raise LedgerError(
@@ -9540,8 +9687,10 @@ class Org:
         for d in dependencies or []:
             did = str(d or "").strip()
             if did:
-                self._work_find(did)        # must exist (active or archived)
-                deps.append(did)
+                # a dependency may be GIVEN as a slug, but it is STORED as the
+                # opaque id — stored references never depend on a name
+                dep, _ = self._work_find(did)
+                deps.append(dep["id"])
         done = self._work_norm_list(done_so_far, "done_so_far")
         nxt = self._work_norm_list(working_on_next, "working_on_next")
         if (done_so_far is not None or working_on_next is not None) \
@@ -9552,8 +9701,9 @@ class Org:
         wid = "w" + uuid.uuid4().hex[:8]
         stamp = now()
         it: WorkItem = {
-            "id": wid, "rev": 1, "kind": kind, "title": t,
-            "objective": str(objective or "").strip()[:2000],
+            "id": wid, "slug": self._work_unique_slug(t, self._work_slugs_in_use()),
+            "rev": 1, "kind": kind, "title": t,
+            "objective": obj,
             "status": status, "blocked_reason": None,
             "owner": (cast(WorkActor, self._work_actor(own)) if own else None),
             "participants": parts,
@@ -9571,10 +9721,13 @@ class Org:
             "accepted": None, "history": [], "superseded_by": None,
         }
         active.append(it)
-        self._log("work_create", actor, {"id": wid, "title": t[:60]}, [])
-        return {"created": wid, "rev": 1,
-                "status": f"work item {wid} created — use this id in every "
-                          f"later update, question and handoff"}
+        self._log("work_create", actor,
+                  {"id": wid, "slug": it["slug"], "title": t[:60]}, [])
+        return {"created": wid, "slug": it["slug"], "rev": 1,
+                "status": f"work item {it['slug']} ({wid}) created — refer to "
+                          f"it as {it['slug']} in mail and reports; either "
+                          f"name works in every later update, question and "
+                          f"handoff"}
 
     def work_update(self, actor: str, wid: str, done_so_far: Any,
                     working_on_next: Any, status: str | None = None,
@@ -9668,7 +9821,17 @@ class Org:
             changes["title"] = {"from": it.get("title"), "to": str(title).strip()[:200]}
             it["title"] = str(title).strip()[:200]
         if objective is not None:
-            it["objective"] = str(objective).strip()[:2000]
+            # rewriting the description is fine; ERASING it is not — the field
+            # is mandatory at creation, so a blanking update would be a way to
+            # end up with the very item the create guard refuses. Items that
+            # predate the rule keep whatever they have, including nothing:
+            # nothing here rewrites history or invents prose for them.
+            newobj = str(objective).strip()[:2000]
+            if not newobj:
+                raise LedgerError(
+                    "the description (`objective`) may be rewritten but not "
+                    "emptied — state the problem first, then the solution")
+            it["objective"] = newobj
         it["done_so_far"] = done
         it["working_on_next"] = nxt
         # the manual flag is restated by every update

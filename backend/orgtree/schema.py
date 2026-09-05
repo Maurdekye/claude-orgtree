@@ -578,12 +578,17 @@ class WorkItem(TypedDict):
     compaction and reassignment because nothing about it lives on a node.
     Bodies are user/agent content and may contain secrets: served only on
     the user route and to agents with read right; never in prompt blocks."""
-    id: str                         # "w" + 8 hex
+    id: str                         # "w" + 8 hex — the ONLY internal key
+    # human-readable name from the title, unique across active+archive, assigned
+    # once and NEVER re-derived from a later title edit. Absent on items that
+    # predate slugs until the next docket write backfills them; nothing stored
+    # references an item by it.
+    slug: NotRequired[str]
     rev: int                        # bumped by every mutation; verify revalidates against it
     kind: str                       # "code" | "non-code" (non-code: delivery is None)
     title: str
-    objective: str
-    status: str                     # open | in_progress | blocked | review | done | superseded | dropped
+    objective: str                  # the DESCRIPTION: problem faced first, then proposed solution (mandatory)
+    status: str                     # backlogged | open | in_progress | blocked | review | done | superseded | dropped
     blocked_reason: NotRequired[str | None]
     owner: WorkActor | None         # identity + generation at assignment
     participants: list[str]         # collaborator node ids: read + status update + evidence + attach a question

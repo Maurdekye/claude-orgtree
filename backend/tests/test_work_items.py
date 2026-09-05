@@ -118,6 +118,10 @@ def refused(slug, node, action, **args):
 
 def create(slug, node="boss", **kw):
     kw.setdefault("title", "ship the thing")
+    # the description is MANDATORY since 2026-09-05 (user): problem first,
+    # then the proposed solution. §11 proves the guard; every other section
+    # only needs a valid one, so it rides the helper.
+    kw.setdefault("objective", "the thing is not shipped; ship it")
     kw.setdefault("done_so_far", ["read the spec"])
     kw.setdefault("working_on_next", ["write it"])
     return ok(slug, node, "create", **kw)["created"]
@@ -158,7 +162,8 @@ def old_doc_reads_as_empty_docket():
         "a fresh doc must not grow docket keys until something writes one"
     js = listing(slug, archived=True)
     assert js["items"] == [] and js["archived"] == []
-    assert js["counts"] == {"attention": 0, "active": 0, "archived": 0}
+    assert js["counts"] == {"attention": 0, "active": 0, "archived": 0,
+                            "backlogged": 0}
     assert "archived" not in listing(slug), "the archived group is served only with ?archived=1"
     tree = client.get(f"/api/orgs/{slug}").json()
     assert tree["work_items_summary"] == {"attention": 0, "active": 0}, tree.get("work_items_summary")
@@ -311,7 +316,8 @@ def hidden_items_do_not_leak_through_counts():
     mine = create(slug, node="peer", title="peer's own")
     before = ok(slug, "peer", "list", include_archived=True)
     assert [x["id"] for x in before["items"]] == [mine]
-    assert before["counts"] == {"attention": 1 - 1, "active": 1, "archived": 0}
+    assert before["counts"] == {"attention": 1 - 1, "active": 1, "archived": 0,
+                                "backlogged": 0}
     # a hidden owner adds an item, flags it, and gets a question attached
     hidden = create(slug, node="boss", title="boss secret")
     ok(slug, "boss", "update", id=hidden, attention=True, attention_reason="see me",
@@ -321,11 +327,13 @@ def hidden_items_do_not_leak_through_counts():
     assert [x["id"] for x in after["items"]] == [mine]
     assert after["counts"] == before["counts"], (before["counts"], after["counts"])
     # the user's counts and the toolbar summary are the org's
-    assert listing(slug)["counts"] == {"attention": 1, "active": 2, "archived": 0}
+    assert listing(slug)["counts"] == {"attention": 1, "active": 2, "archived": 0,
+                                       "backlogged": 0}
     assert client.get(f"/api/orgs/{slug}").json()["work_items_summary"] == {"attention": 1, "active": 2}
     # positive control: an item the outsider CAN read moves its counts
     ok(slug, "boss", "participants", id=hidden, add=["peer"])
-    assert ok(slug, "peer", "list")["counts"] == {"attention": 1, "active": 2, "archived": 0}
+    assert ok(slug, "peer", "list")["counts"] == {"attention": 1, "active": 2,
+                                                  "archived": 0, "backlogged": 0}
 
 
 check("an agent's list counts cover only its readable set; hidden items move nothing (user counts are org-wide)",
@@ -432,9 +440,11 @@ def both_lists_always_and_never_both_empty():
     assert it["status"] == "blocked" and it["blocked_reason"] == "waiting on peer"
     assert it["done_so_far"] == [] and it["working_on_next"] == ["two"], "lists are replaced, not merged"
     # create with both lists blank is allowed (nothing claimed yet) but an explicit both-empty is not
-    wid2 = ok(slug, "boss", "create", title="bare")["created"]
+    wid2 = ok(slug, "boss", "create", title="bare",
+                objective="nothing is claimed yet; claim it later")["created"]
     assert get_item(slug, wid2)["done_so_far"] == []
-    st, js = work(slug, "boss", "create", title="bare2", done_so_far=[""], working_on_next=[])
+    st, js = work(slug, "boss", "create", title="bare2",
+                    objective="p; s", done_so_far=[""], working_on_next=[])
     assert st == 422
 
 
@@ -476,7 +486,8 @@ def exact_hour_edge():
     # at EXACTLY one hour: not archived
     v = org.work_list(USER, include_archived=True, now_ts=stamp + 3600)
     assert [x["id"] for x in v["items"]] == [wid] and v["archived"] == [], v["counts"]
-    assert v["counts"] == {"attention": 0, "active": 0, "archived": 0}
+    assert v["counts"] == {"attention": 0, "active": 0, "archived": 0,
+                           "backlogged": 0}
     # one second past: archived (derived), and the store is untouched by the read
     v = org.work_list(USER, include_archived=True, now_ts=stamp + 3601)
     assert v["items"] == [] and [x["id"] for x in v["archived"]] == [wid]
@@ -548,7 +559,8 @@ def attention_holds_an_item_active():
     row = js["items"][0]
     assert row["archived"] is False and row["effective_attention"] is True
     assert row["attention_sources"] == ["question"] and row["status"] == "done"
-    assert js["counts"] == {"attention": 1, "active": 0, "archived": 0}
+    assert js["counts"] == {"attention": 1, "active": 0, "archived": 0,
+                            "backlogged": 0}
     assert client.get(f"/api/orgs/{slug}").json()["work_items_summary"] == {"attention": 1, "active": 0}
     # a write cannot sweep it away while attention holds
     create(slug, title="another")
@@ -757,7 +769,8 @@ def reply_goes_to_the_last_updater_exactly():
     assert client.post(f"/api/orgs/{slug}/work-items/{wid}/reply", json={"body": "  "}).status_code == 422
     # no updater yet → explicit 422, nobody chosen instead
     org = store.load_org(slug)
-    org.work_create(USER, "user-made", owner="mid")     # owned, but no agent ever updated it
+    org.work_create(USER, "user-made", "the user made this; it has no updater",
+                    owner="mid")     # owned, but no agent ever updated it
     store.save_org(org)
     wid_u = [x["id"] for x in listing(slug)["items"] if x["title"] == "user-made"][0]
     r = client.post(f"/api/orgs/{slug}/work-items/{wid_u}/reply", json={"body": "hi"})
@@ -987,7 +1000,7 @@ check("the 51st evidence row is refused with the earlier 50 intact", evidence_ca
 def history_folds_with_a_visible_count():
     slug = fresh_org()
     org = store.load_org(slug)
-    wid = org.work_create("boss", "hist")["created"]
+    wid = org.work_create("boss", "hist", "history grows unbounded; fold it")["created"]
     for i in range(130):
         org.work_update("boss", wid, [f"step {i}"], [])
     it, _ = org._work_find(wid)
@@ -1005,9 +1018,9 @@ def active_cap_refuses_creation():
     slug = fresh_org()
     org = store.load_org(slug)
     for i in range(200):
-        org.work_create("boss", f"item {i}")
+        org.work_create("boss", f"item {i}", "the cap is untested; fill it")
     try:
-        org.work_create("boss", "one too many")
+        org.work_create("boss", "one too many", "one past the cap; refuse it")
     except LedgerError as e:
         assert "200" in str(e) and "archive" in str(e)
     else:
@@ -1069,6 +1082,319 @@ def json_export_survives():
 
 
 check("the docket keys are plain JSON in the org document", json_export_survives)
+
+
+# ================================== §11 backlog + the mandatory description
+print("§11 backlog and description")
+
+
+def backlog_is_its_own_group_and_out_of_the_active_count():
+    slug = fresh_org()
+    live = create(slug, title="under way")
+    ok(slug, "boss", "update", id=live, done_so_far=["started"],
+       working_on_next=["finish"], status="in_progress")
+    back = create(slug, title="not started", status="backlogged")
+
+    js = listing(slug)
+    ids = [x["id"] for x in js["items"]]
+    assert ids == [live], f"the backlog must not ride the main list: {ids}"
+    assert "backlogged" not in js, "the group is served only with ?backlogged=1"
+    # the number the user reads as "work in flight" excludes it
+    assert js["counts"]["active"] == 1, js["counts"]
+    assert js["counts"]["backlogged"] == 1, js["counts"]
+    tree = client.get(f"/api/orgs/{slug}").json()
+    assert tree["work_items_summary"]["active"] == 1, tree["work_items_summary"]
+
+    r = client.get(f"/api/orgs/{slug}/work-items?backlogged=1")
+    assert r.status_code == 200, r.text
+    js2 = r.json()
+    assert [x["id"] for x in js2["backlogged"]] == [back]
+    assert [x["id"] for x in js2["items"]] == [live], \
+        "revealing the backlog APPENDS a group; it never re-sorts the main list"
+    # POSITIVE CONTROL for the whole check: the same item as `open` IS active
+    ok(slug, "boss", "update", id=back, done_so_far=[], working_on_next=["go"],
+       status="open")
+    js3 = listing(slug)
+    assert js3["counts"]["active"] == 2 and js3["counts"]["backlogged"] == 0, js3["counts"]
+    assert back in [x["id"] for x in js3["items"]]
+
+
+check("backlogged items are a separate group, hidden by default, and out of the active count",
+      backlog_is_its_own_group_and_out_of_the_active_count)
+
+
+def backlogged_with_attention_stays_findable():
+    """The badge must never point at a row the user cannot reach. An item the
+    attention count is counting stays in the MAIN list even while backlogged
+    — but it still is not `active`, because visible is not the same as in
+    flight."""
+    slug = fresh_org()
+    wid = create(slug, title="parked but flagged", status="backlogged")
+    ok(slug, "boss", "update", id=wid, done_so_far=[], working_on_next=["ask"],
+       attention=True, attention_reason="needs a decision before anyone starts")
+
+    js = listing(slug)
+    assert [x["id"] for x in js["items"]] == [wid], \
+        "an attention-holding backlog row must not be hidden behind a checkbox"
+    assert js["counts"]["attention"] == 1, js["counts"]
+    assert js["counts"]["active"] == 0, ("still not in flight", js["counts"])
+    assert js["counts"]["backlogged"] == 0, \
+        ("the hidden-group count must match what the checkbox would reveal",
+         js["counts"])
+    r = client.get(f"/api/orgs/{slug}/work-items?backlogged=1")
+    assert r.json()["backlogged"] == [], \
+        "it is in the main list, so it must not ALSO be in the backlog group"
+    # NEGATIVE CONTROL: clear the flag and it drops back out of sight
+    ok(slug, "boss", "update", id=wid, done_so_far=[], working_on_next=["wait"])
+    js2 = listing(slug)
+    assert js2["items"] == [] and js2["counts"]["backlogged"] == 1, js2["counts"]
+
+
+check("a backlogged item holding attention stays in the main list but never counts as active",
+      backlogged_with_attention_stays_findable)
+
+
+def backlog_never_archives_and_open_work_is_not_reclassified():
+    slug = fresh_org()
+    old_back = create(slug, title="parked for a day", status="backlogged")
+    old_open = create(slug, title="open and old")
+    backdate(slug, old_back, 90000)          # 25 hours
+    backdate(slug, old_open, 90000)
+    js = client.get(f"/api/orgs/{slug}/work-items?archived=1&backlogged=1").json()
+    assert js["archived"] == [], "the sweep is DONE-only; age alone archives nothing"
+    assert [x["id"] for x in js["backlogged"]] == [old_back]
+    # the migration hazard: an aged, untouched `open` item stays open and active
+    assert [x["id"] for x in js["items"]] == [old_open]
+    assert js["items"][0]["status"] == "open", js["items"][0]["status"]
+    assert js["counts"]["active"] == 1, js["counts"]
+
+
+check("a backlogged item never archives by age, and old open work is never reclassified into the backlog",
+      backlog_never_archives_and_open_work_is_not_reclassified)
+
+
+def order_is_total_so_a_tie_cannot_shuffle():
+    """Two items stamped in the same clock tick must come back in the SAME
+    order on every poll, or the row under the user's cursor changes between
+    two five-second refreshes."""
+    slug = fresh_org()
+    a = create(slug, title="tie A")
+    b = create(slug, title="tie B")
+    c = create(slug, title="tie C")
+    org = store.load_org(slug)
+    for wid in (a, b, c):                    # one identical instant for all three
+        it, _ = org._work_find(wid)
+        it["docket_at"] = "2026-09-05T10:00:00+00:00"
+    # ⚠ THE VACUOUS PASS THIS AVOIDS. Item ids are random uuid hex, so with the
+    # rows left in creation order a stable sort would "happen" to be right one
+    # time in six and the check would prove nothing about the tie-break. So the
+    # stored order is forced to ASCENDING id — the exact opposite of the order
+    # a working tie-break must return — and a build without one is then wrong
+    # every single run, not sometimes.
+    org.d["work_items"].sort(key=lambda it: it["id"])
+    store.save_org(org)
+    expected = sorted([a, b, c], reverse=True)
+    first = [x["id"] for x in listing(slug)["items"]]
+    assert first == expected, (first, expected)
+    for _ in range(5):
+        assert [x["id"] for x in listing(slug)["items"]] == first, \
+            "a docket_at tie must break deterministically, not on list position"
+
+
+check("items tied on docket_at come back in one deterministic order on every read",
+      order_is_total_so_a_tie_cannot_shuffle)
+
+
+def the_description_is_mandatory_and_cannot_be_erased():
+    slug = fresh_org()
+    detail = refused(slug, "boss", "create", title="no description",
+                     done_so_far=[], working_on_next=["go"])
+    assert "objective" in detail and "PROBLEM" in detail, detail
+    # whitespace is not a description
+    assert "objective" in refused(slug, "boss", "create", title="blank",
+                                  objective="   ")
+    # POSITIVE CONTROL: the same call with one succeeds and serves it back
+    wid = create(slug, title="real one",
+                 objective="agents create items with no stated problem; "
+                           "require the problem first, then the solution")
+    assert get_item(slug, wid)["objective"].startswith("agents create items")
+    # it may be rewritten
+    ok(slug, "boss", "update", id=wid, done_so_far=[], working_on_next=["x"],
+       objective="the problem restated; the new solution")
+    assert get_item(slug, wid)["objective"] == "the problem restated; the new solution"
+    # but not emptied — otherwise the create guard is trivially bypassable
+    d2 = refused(slug, "boss", "update", id=wid, done_so_far=[],
+                 working_on_next=["x"], objective="  ")
+    assert "emptied" in d2, d2
+    assert get_item(slug, wid)["objective"] == "the problem restated; the new solution"
+
+
+check("a work item cannot be created without a description, nor have it erased later",
+      the_description_is_mandatory_and_cannot_be_erased)
+
+
+def the_new_rules_reach_the_agents():
+    slug = fresh_org()
+    org = store.load_org(slug)
+    p = supervisor.identity_prompt(org, "worker")
+    assert "backlogged" in p, "agents are never told the new status exists"
+    assert "PROBLEM" in p and "objective" in p, \
+        "agents are never told the description is required, or how to frame it"
+    card = next(t for t in mcptool.TOOLS if t["name"] == "orgtree_work")
+    props = card["inputSchema"]["properties"]
+    assert "include_backlogged" in props
+    assert "backlogged" in props["status"]["description"]
+    assert "REQUIRED" in props["objective"]["description"]
+    # the list action really honours the new flag through the agent route
+    back = create(slug, title="agent-visible backlog", status="backlogged")
+    assert [x["id"] for x in ok(slug, "boss", "list").get("backlogged", [])] == []
+    assert [x["id"] for x in
+            ok(slug, "boss", "list", include_backlogged=True)["backlogged"]] == [back]
+
+
+check("the backlog state and the description rule reach agents through the prompt and the tool card",
+      the_new_rules_reach_the_agents)
+
+
+# ============================================ §12 human-readable item slugs
+print("§12 slugs")
+
+
+def a_slug_is_derived_unique_and_stable():
+    slug = fresh_org()
+    a = create(slug, title="Git review workspace")
+    it = get_item(slug, a)
+    assert it["slug"] == "git-review-workspace", it["slug"]
+    # a second item with the SAME title gets a suffix, not a duplicate name
+    b = create(slug, title="Git review workspace")
+    assert get_item(slug, b)["slug"] == "git-review-workspace-2"
+    c = create(slug, title="Git review workspace")
+    assert get_item(slug, c)["slug"] == "git-review-workspace-3"
+    assert len({get_item(slug, x)["slug"] for x in (a, b, c)}) == 3
+    # STABLE: renaming the item does not re-point a name people have copied
+    ok(slug, "boss", "update", id=a, done_so_far=[], working_on_next=["x"],
+       title="Something else entirely")
+    after = get_item(slug, a)
+    assert after["title"] == "Something else entirely"
+    assert after["slug"] == "git-review-workspace", after["slug"]
+    # punctuation, unicode and length are handled without producing a blank
+    d = create(slug, title="   ***   ")
+    assert get_item(slug, d)["slug"] == "item", get_item(slug, d)["slug"]
+    e = create(slug, title="x" * 200)
+    assert 0 < len(get_item(slug, e)["slug"]) <= 48
+
+
+check("an item's slug is derived from its title, unique, and fixed once assigned",
+      a_slug_is_derived_unique_and_stable)
+
+
+def a_slug_works_wherever_an_id_does():
+    slug = fresh_org()
+    wid = create(slug, title="Reply routing check")
+    s = get_item(slug, wid)["slug"]
+    assert s == "reply-routing-check"
+    # every agent action that takes an id takes the slug and hits the SAME item
+    ok(slug, "boss", "update", id=s, done_so_far=["by slug"],
+       working_on_next=["more"], status="in_progress")
+    assert get_item(slug, wid)["done_so_far"] == ["by slug"]
+    assert ok(slug, "boss", "get", id=s)["item"]["id"] == wid
+    ok(slug, "boss", "evidence", id=s, kind="note", ref="notes.md",
+       note="found by name")
+    assert len(get_item(slug, wid)["evidence"]) == 1
+    # a dependency GIVEN as a slug is STORED as the opaque id
+    dep = create(slug, title="Depends on it", dependencies=[s])
+    assert get_item(slug, dep)["dependencies"][0]["id"] == wid
+    # an ask attached by slug still lands on the item (it normalises to the id)
+    st, js = agent(slug, "boss", "orgtree_ask",
+                   questions=[{"question": "which way?", "work_item": s,
+                               "options": [{"label": "left"}, {"label": "right"}]}])
+    assert st == 200, js
+    assert [q["ask_id"] for q in get_item(slug, wid)["questions"]], \
+        "an ask attached by slug must reach the item, not vanish"
+    # AUTHORITY IS UNCHANGED: a stranger naming the slug is refused exactly as
+    # it is when naming the id, and the refusal does not confirm either exists
+    d1 = refused(slug, "stranger", "get", id=s)
+    d2 = refused(slug, "stranger", "get", id=wid)
+    assert "may read" in d1 and "may read" in d2, (d1, d2)
+
+
+check("a slug is accepted anywhere the opaque id is, without changing authority",
+      a_slug_works_wherever_an_id_does)
+
+
+def an_id_can_never_be_shadowed_by_a_slug():
+    """The compatibility promise: a reference that worked before slugs existed
+    resolves to the same item even if some other item is later NAMED that."""
+    slug = fresh_org()
+    victim = create(slug, title="victim")
+    # name a second item exactly the first one's opaque id
+    attacker = create(slug, title=victim)
+    assert get_item(slug, attacker)["slug"] == victim, \
+        "the fixture is pointless unless the slug really equals the other id"
+    assert attacker != victim
+    got = ok(slug, "boss", "get", id=victim)["item"]
+    assert got["id"] == victim, "an id must be resolved as an id, first and exactly"
+
+
+check("a slug can never shadow an existing opaque id", an_id_can_never_be_shadowed_by_a_slug)
+
+
+def old_items_are_backfilled_by_a_WRITE_and_never_by_a_READ():
+    slug = fresh_org()
+    wid = create(slug, title="Already named")
+    # forge the pre-slug document: strip the field the way an old doc has it
+    org = store.load_org(slug)
+    it, _ = org._work_find(wid)
+    del it["slug"]
+    store.save_org(org)
+
+    # READ PATH: serves null, and writes NOTHING back
+    assert get_item(slug, wid)["slug"] is None
+    assert listing(slug)["items"][0]["slug"] is None
+    client.get(f"/api/orgs/{slug}")
+    reloaded, _ = store.load_org(slug)._work_find(wid)
+    assert "slug" not in reloaded, \
+        "a GET rewrote the document — reads must never persist a backfill"
+
+    # WRITE PATH: the next docket mutation names it, and it stays named
+    ok(slug, "boss", "update", id=wid, done_so_far=["touched"], working_on_next=[])
+    assert get_item(slug, wid)["slug"] == "already-named"
+    named, _ = store.load_org(slug)._work_find(wid)
+    assert named["slug"] == "already-named"
+    # the backfill respects names already taken — no duplicates come out of it
+    org = store.load_org(slug)
+    other = create(slug, title="Already named")     # -> already-named-2
+    org = store.load_org(slug)
+    it2, _ = org._work_find(other)
+    del it2["slug"]
+    store.save_org(org)
+    ok(slug, "boss", "update", id=wid, done_so_far=["again"], working_on_next=[])
+    slugs = [x["slug"] for x in listing(slug)["items"]]
+    assert len(slugs) == len(set(slugs)), slugs
+    assert None not in slugs, slugs
+
+
+check("items predating slugs are named by the next WRITE, never by a read, and never collide",
+      old_items_are_backfilled_by_a_WRITE_and_never_by_a_READ)
+
+
+def agents_are_told_to_use_the_slug():
+    slug = fresh_org()
+    org = store.load_org(slug)
+    p = supervisor.identity_prompt(org, "worker")
+    assert "SLUG" in p and "w3becbb30" in p, \
+        "agents are never told to prefer the readable name in what the user reads"
+    card = next(t for t in mcptool.TOOLS if t["name"] == "orgtree_work")
+    assert "slug" in card["inputSchema"]["properties"]["id"]["description"]
+    # create hands the name straight back, in the id field and in the words
+    js = ok(slug, "boss", "create", title="Name me back",
+            objective="agents cannot cite an item they were not told the name of; return it")
+    assert js["slug"] == "name-me-back", js
+    assert "name-me-back" in js["status"], js["status"]
+
+
+check("the slug reaches agents: in the prompt, on the tool card, and in create's own answer",
+      agents_are_told_to_use_the_slug)
 
 
 # ---------------------------------------------------------------- summary
