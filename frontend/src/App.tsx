@@ -977,7 +977,7 @@ export default function App() {
                     pile, read in a list+pane panel" family. Badge counts ride
                     the tree poll (docket-final-spec.md — no separate timer):
                     orange = items needing attention, else muted active count
-                    (zero shown grey, never hidden). */}
+                    (zero hidden). */}
                 <DocketToolbarButton
                   summary={tree.work_items_summary}
                   onClick={() => setShowDocket(true)} />

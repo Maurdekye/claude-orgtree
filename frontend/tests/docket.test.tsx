@@ -964,12 +964,36 @@ uiTest('§20 production DocketToolbarButton displays orange attention count or m
   assert.equal(badge2.textContent?.trim(), '7', 'shows active count when attention is 0')
   await view2.unmount()
 
-  // Zero active
-  const view3 = await mountView(<DocketToolbarButton summary={{ attention: 0, active: 0 }} />, (e) => e)
-  const badge3 = view3.el.querySelector('.eye-count')!
-  assert.ok(!badge3.classList.contains('docket-attn'))
-  assert.equal(badge3.textContent?.trim(), '0', 'zero is muted and not hidden')
+  // Zero active: no badge rendered, but button, icon, title and onClick survive
+  let clickedZero = false
+  const view3 = await mountView(<DocketToolbarButton summary={{ attention: 0, active: 0 }} onClick={() => { clickedZero = true }} />, (e) => e)
+  const btn3 = view3.el.querySelector('button.docket-bell') as HTMLButtonElement
+  assert.ok(btn3, 'button survives when count is 0')
+  assert.equal(btn3.getAttribute('title'), 'work docket', 'title attribute correct when attention is 0')
+  assert.ok(btn3.querySelector('svg'), 'docket icon is rendered')
+  const badge3 = view3.el.querySelector('.eye-count')
+  assert.equal(badge3, null, 'badge is not rendered when count is 0')
+  assert.equal(btn3.textContent?.trim(), '', 'no stray digit rendered when count is 0')
+  await inAct(() => btn3.click())
+  assert.ok(clickedZero, 'click triggers onClick when count is 0')
   await view3.unmount()
+
+  // First-paint / uninitialized cases: summary omitted and summary null
+  const view4 = await mountView(<DocketToolbarButton />, (e) => e)
+  const btn4 = view4.el.querySelector('button.docket-bell') as HTMLButtonElement
+  assert.ok(btn4, 'button survives when summary is omitted')
+  assert.equal(btn4.getAttribute('title'), 'work docket')
+  assert.equal(view4.el.querySelector('.eye-count'), null, 'no badge when summary is omitted')
+  assert.equal(btn4.textContent?.trim(), '', 'no stray digit rendered when summary is omitted')
+  await view4.unmount()
+
+  const view5 = await mountView(<DocketToolbarButton summary={null} />, (e) => e)
+  const btn5 = view5.el.querySelector('button.docket-bell') as HTMLButtonElement
+  assert.ok(btn5, 'button survives when summary is null')
+  assert.equal(btn5.getAttribute('title'), 'work docket')
+  assert.equal(view5.el.querySelector('.eye-count'), null, 'no badge when summary is null')
+  assert.equal(btn5.textContent?.trim(), '', 'no stray digit rendered when summary is null')
+  await view5.unmount()
 })
 
 uiTest('§21 show archived toggle preserves detail selection and in-flight draft without full-panel reload', async (mount) => {
