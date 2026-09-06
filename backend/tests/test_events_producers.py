@@ -1540,6 +1540,269 @@ check("routed question · three tabs (header, docket link, multi) and a single =
       "ask.routed on the asker's NodeRef", _routed)
 
 
+# ==================================================== §X family access_resources
+print("\n§X · access — audience requests/changes, scope request/change, grants, kiosk")
+
+from orgtree.ledger import EXTERN, SYSTEM                        # noqa: E402
+
+
+# ⚠ VERBATIM copies of the pre-typed producers (ledger.py @ 59c96ea).
+def old_aud_initial(actor, target, reason):
+    return (f'AUDIENCE REQUEST: your report "{actor}" asks to speak directly with '
+            f'{target}. Reason: "{reason[:300]}". You may forward it one hop up '
+            f'(orgtree_audience action=forward), deny it (action=deny), or simply '
+            f'handle the matter yourself and deny.')
+
+
+def old_aud_forwarded(frm, target, reason):
+    return (f'AUDIENCE REQUEST (forwarded): "{frm}" seeks {target}. '
+            f'Reason: {reason}. Forward, deny, or handle it.')
+
+
+def old_aud_target(frm, reason):
+    return (f'AUDIENCE REQUEST reached you: "{frm}" asks to speak '
+            f'with you directly. Reason: {reason}. Grant with '
+            f'orgtree_audience action=grant, or deny.')
+
+
+def old_aud_user(frm, reason):
+    return (f'Audience request (forwarded up the chain): "{frm}" asks '
+            f'to speak with you directly. Reason: {reason}. '
+            f'Grant or deny it from the inbox panel.')
+
+
+def old_scope_req(labels, reason):
+    return ("[SCOPE REQUEST — needs a grant or an escalation]\n"
+            + "\n".join("- " + x for x in labels)
+            + f"\nReason: {str(reason).strip()}"
+            + "\nIf you hold these, grant them directly with "
+              "orgtree_retool; otherwise escalate up your chain — "
+              "only the user can grant past your own scope.")
+
+
+def notices(slug, nid):
+    return [dict(r) for r in (store.load_org(slug).d.get("notices") or {}).get(nid) or []]
+
+
+def rig4():
+    """boss → kid → grandkid; boss2 top-level."""
+    slug = rig2()
+    o = store.load_org(slug)
+    o.hire("kid", "kid", "haiku", 2, "grandkid", add_dirs=[],
+           tools={"bash": True, "web": False, "edit": False, "subagents": False, "mcp": []},
+           org_visibility="team", charter="fixture")
+    o.hire(USER, None, "opus", 20, "boss2")
+    store.save_org(o)
+    return slug
+
+
+def _audience_requests():
+    slug = rig4()
+    o = store.load_org(slug)
+    o.request_audience("grandkid", "boss", "x" * 400)
+    store.save_org(o)
+    row = box_last(slug, "kid")
+    assert row["body"] == old_aud_initial("grandkid", "boss", "x" * 400), row["body"]
+    assert row["kind"] == "request" and row["from"] == "grandkid"
+    ev = decoded(row)
+    assert ev["variant"] == "access.audience_requested" and ev["stage"] == "initial"
+    assert ev["object"] == {"kind": "audience_request", "org": slug, "node": "grandkid",
+                            "target": "boss"}
+    assert ev["reason"] == "x" * 300 and row["body"] == events.render_agent(ev)
+    # forwarded one hop: kid → boss, and boss IS the target
+    o = store.load_org(slug)
+    o.audience_forward("kid", "grandkid", "boss")
+    store.save_org(o)
+    row = box_last(slug, "boss")
+    assert row["body"] == old_aud_target("grandkid", "x" * 300), row["body"]
+    assert decoded(row)["stage"] == "target"
+    # a request for the user climbs: grandkid → kid (initial) → boss (forwarded) → user inbox
+    slug = rig4()
+    o = store.load_org(slug)
+    o.request_audience("grandkid", USER, "please")
+    o.audience_forward("kid", "grandkid", USER)
+    store.save_org(o)
+    row = box_last(slug, "boss")
+    assert row["body"] == old_aud_forwarded("grandkid", USER, "please"), row["body"]
+    assert decoded(row)["stage"] == "forwarded"
+    o = store.load_org(slug)
+    o.audience_forward("boss", "grandkid", USER)
+    store.save_org(o)
+    u = user_last(slug)
+    assert u["body"] == old_aud_user("grandkid", "please"), u["body"]
+    uev = decoded(u)
+    assert uev["stage"] == "user" and u["body"] == events.render_agent(uev)
+
+
+check("audience request · initial / forwarded / reached-target / reached-user stages == "
+      "old text; access.audience_requested on the (node, target) ref", _audience_requests)
+
+
+def _audience_changes():
+    slug = rig4()
+    o = store.load_org(slug)
+    # user grants a user audience
+    o.audience_grant(USER, "grandkid", USER)
+    n = notices(slug if False else slug, "grandkid") or []
+    store.save_org(o)
+    n = notices(slug, "grandkid")[-1]
+    assert n["text"] == ("The user granted you a USER AUDIENCE — you may write to them "
+                         "directly until it is rescinded."), n["text"]
+    ev = decoded(n)
+    assert ev["variant"] == "access.audience_changed" and ev["outcome"] == "user_audience"
+    assert ev["by"] == USER and ev["target"] == USER and n["text"] == events.render_agent(ev)
+    # boss delegates its user audience to kid: kid's notice + the user's notice
+    o = store.load_org(slug)
+    o.audience_grant("boss", "kid", USER)
+    store.save_org(o)
+    n = notices(slug, "kid")[-1]
+    assert n["text"] == ('"boss" granted you a direct USER AUDIENCE — you may write to the '
+                         'user directly until it is rescinded.'), n["text"]
+    u = user_last(slug)
+    assert u["body"] == ('"boss" granted "kid" a direct audience to you — it may now write '
+                         'to your inbox. Revoke it from the audience panel at will.'), u["body"]
+    uev = decoded(u)
+    assert uev["outcome"] == "user_audience_seen" and uev["other"] == "kid"
+    assert uev["object"]["id"] == USER
+    # audience between agents: both sides
+    o = store.load_org(slug)
+    o.audience_grant("boss", "grandkid", "boss2")
+    store.save_org(o)
+    n = notices(slug, "grandkid")[-1]
+    assert n["text"] == ('"boss" granted you an audience with "boss2" — you may message '
+                         'them directly until it is rescinded.'), n["text"]
+    assert decoded(n)["outcome"] == "audience_with"
+    n2 = notices(slug, "boss2")[-1]
+    assert n2["text"] == ('"boss" granted "grandkid" an audience with you — it may now '
+                          'message you directly; you may revoke it at will.'), n2["text"]
+    ev2 = decoded(n2)
+    assert ev2["outcome"] == "audience_from" and ev2["other"] == "grandkid"
+    # rescind
+    o = store.load_org(slug)
+    o.audience_revoke("boss2", "grandkid")
+    store.save_org(o)
+    n = notices(slug, "grandkid")[-1]
+    assert n["text"] == "Your audience with boss2 was rescinded — fall back to the parent chain."
+    assert decoded(n)["outcome"] == "rescinded"
+    o = store.load_org(slug)
+    o.audience_revoke(USER, "kid", USER)
+    store.save_org(o)
+    n = notices(slug, "kid")[-1]
+    assert n["text"] == "Your audience with the user was rescinded — fall back to the parent chain."
+    # org inbox: grant, self-release, auto-grant
+    o = store.load_org(slug)
+    o.audience_grant(USER, "boss", "extern")
+    store.save_org(o)
+    n = notices(slug, "boss")[-1]
+    assert n["text"].startswith("The user granted you audience with the ORG INBOX: you now "
+                                "receive outside messages"), n["text"]
+    ev = decoded(n)
+    assert ev["outcome"] == "org_inbox" and ev["target"] == EXTERN
+    assert n["text"] == events.render_agent(ev)
+    o = store.load_org(slug)
+    o.audience_revoke("boss", "boss")
+    store.save_org(o)
+    n = notices(slug, "boss")[-1]
+    assert n["text"] == ("You gave up your ORG-INBOX audience — outside mail addressed to "
+                         "the org no longer reaches you.")
+    assert decoded(n)["outcome"] == "org_inbox_released"
+    o = store.load_org(slug)
+    o.post_external_mail("@org:other", "hello there")
+    store.save_org(o)
+    holders = [r for r in notices(slug, "boss") + notices(slug, "boss2")
+               if "auto-granted" in r["text"]]
+    assert holders, "the bootstrap auto-grant notice"
+    ev = decoded(holders[-1])
+    assert ev["outcome"] == "org_inbox_auto" and ev["actor"] == {"kind": "system", "id": SYSTEM}
+    assert holders[-1]["text"] == events.render_agent(ev)
+
+
+check("audience changes · user audience (direct, delegated + user's copy), agent audience "
+      "(both sides), rescind (agent, user), org inbox grant/release/auto == old text",
+      _audience_changes)
+
+
+def _scope_request_and_change():
+    slug = rig4()
+    o = store.load_org(slug)
+    r = o.request_scope("grandkid", [
+        {"kind": "dir", "path": "E:/data", "mode": "rw"},
+        {"kind": "tool", "tool": "web"},
+        {"kind": "mcp", "server": "fs"},
+        {"kind": "permission_mode", "mode": "bypassPermissions"}], "  need the dataset  ")
+    assert r.get("routed") == "kid", r
+    store.save_org(o)
+    row = box_last(slug, "kid")
+    labels = ["folder E:/data (rw)", "tool: web", "MCP server: fs",
+              "permission mode → bypassPermissions ⚠ UNGUARDED — removes every prompt"]
+    assert row["body"] == old_scope_req(labels, "  need the dataset  "), row["body"]
+    ev = decoded(row)
+    assert ev["variant"] == "access.scope_requested" and ev["object"]["id"] == "grandkid"
+    assert ev["items"] == labels and ev["reason"] == "need the dataset"
+    assert ev["wanted"] == {"folders": [{"path": "E:/data", "mode": "rw"}],
+                            "tools": {"bash": None, "web": True, "edit": None,
+                                      "subagents": None, "mcp": ["fs"]},
+                            "permission_mode": "bypassPermissions", "org_visibility": None}
+    assert row["body"] == events.render_agent(ev)
+    pub = events.public_event(ev)
+    assert "path" not in pub["wanted"]["folders"][0] and "mcp" not in pub["wanted"]["tools"]
+    # scope change notices: by the user and by the superior
+    o = store.load_org(slug)
+    o.set_scope(USER, "kid", tools={"bash": True, "web": True, "edit": False,
+                                    "subagents": False, "mcp": []})
+    o.set_scope("boss", "kid", charter="new role")
+    store.save_org(o)
+    rows = notices(slug, "kid")[-2:]
+    assert rows[0]["text"] == ("The user changed your configuration (folders, tools, charter, "
+                               "or org visibility). Your current scope is stated in your "
+                               "system prompt each turn."), rows[0]["text"]
+    assert rows[1]["text"] == ('Your superior "boss" changed your configuration (folders, '
+                               'tools, charter, or org visibility). Your current scope is '
+                               'stated in your system prompt each turn.'), rows[1]["text"]
+    e0, e1 = decoded(rows[0]), decoded(rows[1])
+    assert e0["changed"] == ["tools"] and e1["changed"] == ["charter"] and e1["by"] == "boss"
+
+
+check("scope · routed request (4 kinds, reason stripped) == old text with the wanted "
+      "scope as data (paths/mcp withheld publicly); scope-changed notices by user/superior",
+      _scope_request_and_change)
+
+
+def _grants_and_kiosk():
+    slug = rig4()
+    o = store.load_org(slug)
+    o.reallocate(USER, "kid", 3)
+    store.save_org(o)
+    n = notices(slug, "kid")[-1]
+    fr = store.load_org(slug).free("kid")
+    assert n["text"] == f"The user adjusted your grant by +3 (now 8, free {fr:g}).", n["text"]
+    ev = decoded(n)
+    assert ev["variant"] == "access.grant_changed" and ev["relation"] == "self"
+    assert ev["delta"] == 3.0 and ev["now"] == 8.0 and ev["by"] == USER
+    nb = notices(slug, "boss")[-1]
+    assert nb["text"] == 'The user adjusted "kid"\'s grant by +3.', nb["text"]
+    assert decoded(nb)["relation"] == "report"
+    o = store.load_org(slug)
+    o.reallocate("boss", "kid", -2)
+    store.save_org(o)
+    n = notices(slug, "kid")[-1]
+    assert n["text"].startswith('"boss" adjusted your grant by -2 (now 6, free '), n["text"]
+    assert decoded(n)["by"] == "boss" and n["text"] == events.render_agent(decoded(n))
+    # kiosk ceiling minted on load → user notice; clamp → node notice
+    o = store.load_org(slug)
+    ev = events.mint("access.kiosk_ceiling", {"kind": "system", "id": SYSTEM}, o.org_ref())
+    assert events.render_agent(ev).startswith("This kiosk now carries a PERMISSION CEILING")
+    ev = events.mint("access.kiosk_clamped", {"kind": "user", "id": USER}, o.node_ref("kid"),
+                     lost=["tool bash", "permission_mode bypassPermissions→acceptEdits"])
+    assert events.render_agent(ev) == (
+        "The kiosk permission ceiling was adjusted; your grants were clamped to fit: "
+        "tool bash, permission_mode bypassPermissions→acceptEdits.")
+
+
+check("grants · self and superior copies of a grant change (user / agent actor) == old "
+      "text; kiosk ceiling and clamp renderings == old literals", _grants_and_kiosk)
+
+
 # =========================================================================== summary
 print()
 for label, tb in FAIL:

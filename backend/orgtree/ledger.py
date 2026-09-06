@@ -673,15 +673,11 @@ class Org:
                     "add_dirs": [{"path": p, "mode": m} for p, m in md.items()],
                     "org_visibility": VIS_LEVELS[vr],
                     "permission_mode": PM_LEVELS[pr]}
+                cev = _mint("access.kiosk_ceiling", actor_of(SYSTEM), self.org_ref())
                 self.to_user_inbox({
                     "id": uuid.uuid4().hex[:8], "from": SYSTEM,
                     "kind": "notice", "at": now(),
-                    "body": ("This kiosk now carries a PERMISSION CEILING — the "
-                             "maximum layer grantable to any agent in it. It was "
-                             "minted from what the org already does, so nothing "
-                             "changed today; review and tighten it in the kiosk "
-                             "panel. Retooling within the ceiling is now open to "
-                             "visitors (the /scope freeze is lifted).")})
+                    "body": events.render_agent(cev)}, cev)
         # MAIL IDS. Ids arrived after the first mail did, so pre-id entries
         # really do need repairing — they render with no retraction ✕ and 404
         # the DELETE with a false excuse. What changed on 2026-09-03 is WHERE
@@ -1578,10 +1574,8 @@ class Org:
             if loss:
                 swept[nid] = loss
                 if n["state"] == "live" and not n.get("successor"):
-                    self._notify([nid],
-                                 f"The kiosk permission ceiling was adjusted; "
-                                 f"your grants were clamped to fit: "
-                                 f"{', '.join(loss)}.")
+                    self._notify_ev([nid], _mint("access.kiosk_clamped", actor_of(USER),
+                                                 self.node_ref(nid), lost=list(loss)))
         self._log("ceiling_set", USER, {"swept": swept}, [])
         warnings = ([f"ceiling lowered — {len(swept)} agent(s) "
                      f"clamped to fit: {sorted(swept)}"]
@@ -2536,14 +2530,8 @@ class Org:
             "grantee": first, "grantor": EXTERN, "granted_at": now(),
             "reason": "auto-granted: outside mail arrived with no org-inbox "
                       "audience holder"})
-        self._notify([first],
-                     "Outside mail arrived and no one held the ORG-INBOX "
-                     "audience, so it was auto-granted to you (the senior "
-                     "top-level agent). You now receive outside messages "
-                     "addressed to this organization and reply for it. Extend "
-                     "the audience to a better-suited agent with "
-                     "orgtree_audience action=grant target=extern; revoke "
-                     "your own with action=revoke once someone else holds it.")
+        self._notify_ev([first], self._aud_changed(SYSTEM, first, "org_inbox_auto",
+                                                   target=EXTERN))
         self._log("audience_grant", SYSTEM,
                   {"grantee": first, "grantor": EXTERN, "bootstrap": True}, [])
         return first
@@ -2598,11 +2586,11 @@ class Org:
         self.d["audience_requests"].append({
             "from": actor, "target": target, "currently_at": par,
             "reason": reason[:300], "opened_at": now()})
-        body = (f'AUDIENCE REQUEST: your report "{actor}" asks to speak directly with '
-                f'{target}. Reason: "{reason[:300]}". You may forward it one hop up '
-                f'(orgtree_audience action=forward), deny it (action=deny), or simply '
-                f'handle the matter yourself and deny.')
-        r = self.post_mail(actor, par, body, kind="request")
+        # typed (family access_resources): access.audience_requested, stage by
+        # stage up the chain; each body is its frozen rendering (§X tests)
+        r = self.post_mail(actor, par, "", kind="request",
+                           ev=self._audience_req_ev(actor, actor, target, "initial",
+                                                    reason[:300]))
         return {"currently_at": par, "drive": [] if par == USER else [par],
                 "warnings": r.get("warnings", [])}
 
@@ -2628,28 +2616,31 @@ class Org:
         nxt = target if actor == USER else self.parent(actor)
         req["currently_at"] = nxt
         drive: list[str] = []
+        reason = str(req["reason"])
         if nxt == target:
             if target == USER:
+                uev = self._audience_req_ev(actor, frm, target, "user", reason)
                 self.to_user_inbox({
                     "from": frm, "kind": "request", "at": now(),
-                    "body": (f'Audience request (forwarded up the chain): "{frm}" asks '
-                             f'to speak with you directly. Reason: {req["reason"]}. '
-                             f'Grant or deny it from the inbox panel.')})
+                    "body": events.render_agent(uev)}, uev)
             else:
-                self.post_mail(actor, target,
-                               f'AUDIENCE REQUEST reached you: "{frm}" asks to speak '
-                               f'with you directly. Reason: {req["reason"]}. Grant with '
-                               f'orgtree_audience action=grant, or deny.',
-                               kind="request")
+                self.post_mail(actor, target, "", kind="request",
+                               ev=self._audience_req_ev(actor, frm, target, "target",
+                                                        reason))
                 drive.append(target)
         else:
-            self.post_mail(actor, nxt,
-                           f'AUDIENCE REQUEST (forwarded): "{frm}" seeks {target}. '
-                           f'Reason: {req["reason"]}. Forward, deny, or handle it.',
-                           kind="request")
+            self.post_mail(actor, nxt, "", kind="request",
+                           ev=self._audience_req_ev(actor, frm, target, "forwarded",
+                                                    reason))
             if nxt != USER:
                 drive.append(nxt)
         return {"currently_at": nxt, "drive": drive, "warnings": []}
+
+    def _audience_req_ev(self, actor: str, frm: str, target: str, stage: str,
+                         reason: str) -> dict[str, Any]:
+        return _mint("access.audience_requested", actor_of(actor),
+                     self._audience_req_ref(frm, target), stage=stage,
+                     from_node=frm, target=target, reason=reason)
 
     def audience_grant(self, actor: str, frm: str,
                        target: str | None = None) -> dict[str, Any]:
@@ -2703,21 +2694,20 @@ class Org:
             r for r in self.d["audience_requests"]
             if not (r["from"] == frm and r["target"] == target)]
         drive: list[str] = []
-        who = "The user" if actor == USER else f'"{actor}"'
+        # typed (family access_resources): access.audience_changed, one event per
+        # audience told; every text is the event's rendering (§X tests)
         if target == USER:
             if actor == USER:
-                self._notify([frm], "The user granted you a USER AUDIENCE — you may "
-                                    "write to them directly until it is rescinded.")
+                self._notify_ev([frm], self._aud_changed(actor, frm, "user_audience",
+                                                         target=USER))
             else:
-                self._notify([frm],
-                             f'{who} granted you a direct USER AUDIENCE — you may '
-                             f'write to the user directly until it is rescinded.')
+                self._notify_ev([frm], self._aud_changed(actor, frm, "user_audience",
+                                                         target=USER))
+                uev = self._aud_changed(actor, USER, "user_audience_seen", target=USER,
+                                        other=frm)
                 self.to_user_inbox({
                     "id": uuid.uuid4().hex[:8], "from": SYSTEM, "kind": "notice",
-                    "at": now(),
-                    "body": f'{who} granted "{frm}" a direct audience to you — it '
-                            f'may now write to your inbox. Revoke it from the '
-                            f'audience panel at will.'})
+                    "at": now(), "body": events.render_agent(uev)}, uev)
         elif target == actor:
             # typed (family answer_decision): decision.audience, granted by the
             # target itself (test_events_producers §A)
@@ -2727,12 +2717,10 @@ class Org:
                                     granted=True, target=target, decided_by=actor))
             drive.append(frm)
         else:
-            self._notify([frm],
-                         f'{who} granted you an audience with "{target}" — you may '
-                         f'message them directly until it is rescinded.')
-            self._notify([target],
-                         f'{who} granted "{frm}" an audience with you — it may now '
-                         f'message you directly; you may revoke it at will.')
+            self._notify_ev([frm], self._aud_changed(actor, frm, "audience_with",
+                                                     target=target))
+            self._notify_ev([target], self._aud_changed(actor, target, "audience_from",
+                                                        target=target, other=frm))
             drive.append(frm)
         self._log("audience_grant", actor, {"grantee": frm, "grantor": target}, [])
         return {"drive": drive, "warnings": []}
@@ -2768,14 +2756,7 @@ class Org:
             if actor != USER:
                 entry["delegated_by"] = actor
             self.d["audiences"].append(entry)
-        who = "The user" if actor == USER else f'"{actor}"'
-        self._notify([frm],
-                     f"{who} granted you audience with the ORG INBOX: you now "
-                     f"receive outside messages addressed to this organization "
-                     f"(chatq sessions, other orgs) and may reply for it with "
-                     f"orgtree_message to the sender's @org:/@mcp:/@net: address. "
-                     f"Replies speak for the org as a whole — coordinate with "
-                     f"the other recipients before answering.")
+        self._notify_ev([frm], self._aud_changed(actor, frm, "org_inbox", target=EXTERN))
         self._log("audience_grant", actor, {"grantee": frm, "grantor": EXTERN}, [])
         # user ruling 2026-08-05: the grant alone wakes nobody. A new holder
         # receives only FUTURE inbound mail (delivery happens at arrival,
@@ -2803,6 +2784,14 @@ class Org:
             self._notify_ev([frm], dev)
         self._log("audience_deny", actor, {"from": frm, "target": target}, [])
         return {"drive": [frm] if actor != USER else [], "warnings": []}
+
+    def _aud_changed(self, by: str, node: str, outcome: str, *, target: str,
+                     other: str | None = None) -> dict[str, Any]:
+        """access.audience_changed as seen by `node` (the object): what changed
+        about its audiences, who did it, with whom (`target`) and — for the
+        grantor-side notices — which other node (`other`) was granted."""
+        return _mint("access.audience_changed", actor_of(by), self.node_ref(node),
+                     outcome=outcome, by=by, target=target, other=other)
 
     def _audience_req_ref(self, frm: str, target: str) -> dict[str, Any]:
         """(from, target) IS an audience request's identity (`_find_request`)."""
@@ -2847,14 +2836,12 @@ class Org:
         if actor == grantee:
             # self-revoke is only ever the org-inbox audience (no self
             # audiences exist otherwise) — say what actually happened
-            self._notify([grantee],
-                         "You gave up your ORG-INBOX audience — outside mail "
-                         "addressed to the org no longer reaches you.")
+            self._notify_ev([grantee], self._aud_changed(actor, grantee,
+                                                         "org_inbox_released",
+                                                         target=EXTERN))
         else:
-            self._notify([grantee],
-                         f"Your audience with "
-                         f"{label if label != USER else 'the user'} was "
-                         f"rescinded — fall back to the parent chain.")
+            self._notify_ev([grantee], self._aud_changed(actor, grantee, "rescinded",
+                                                         target=label))
         self._log("audience_revoke", actor,
                   {"grantee": grantee, **({"grantor": tgt} if tgt else {})}, [])
         return {"warnings": []}
@@ -4484,12 +4471,17 @@ class Org:
         # (switch_model's melt), so the write is quantised like every other.
         n["grant"] = _q(n["grant"] + delta)
         if delta != 0:
-            who = "the user" if actor == USER else f'"{actor}"'
-            self._notify([x for x in [nid] if x != actor],
-                         f"{who.capitalize()} adjusted your grant by {delta:+g} "
-                         f"(now {n['grant']:g}, free {self.free(nid):g}).")
-            self._notify([x for x in [n["parent"]] if x != actor],
-                         f'{who.capitalize()} adjusted "{nid}"\'s grant by {delta:+g}.')
+            # typed (family access_resources): access.grant_changed — the node's
+            # own copy and its superior's, each the event's rendering
+            fr = self.free(nid)
+            self._notify_ev([x for x in [nid] if x != actor],
+                            _mint("access.grant_changed", actor_of(actor), self.node_ref(nid),
+                                  relation="self", node=nid, delta=float(delta),
+                                  now=float(n["grant"]), free=float(fr), by=actor))
+            self._notify_ev([x for x in [n["parent"]] if x != actor],
+                            _mint("access.grant_changed", actor_of(actor), self.node_ref(nid),
+                                  relation="report", node=nid, delta=float(delta),
+                                  now=float(n["grant"]), free=float(fr), by=actor))
         self._log("reallocate", actor, {"node": nid, "delta": delta}, warnings + strand)
         return {"grant": n["grant"], "warnings": warnings}
 
@@ -5989,14 +5981,17 @@ class Org:
             # cascade injects a superior's team charter into their prompt
             # LIVE every turn, so the next turn already carries it.
             pass
-        elif actor == USER:
-            self._notify([nid], "The user changed your configuration (folders, tools, "
-                                "charter, or org visibility). Your current scope is "
-                                "stated in your system prompt each turn.")
         else:
-            self._notify([nid], f'Your superior "{actor}" changed your configuration '
-                                f'(folders, tools, charter, or org visibility). Your '
-                                f'current scope is stated in your system prompt each turn.')
+            # typed (family access_resources): access.scope_changed — `changed`
+            # names the fields this call carried (the text is the same either way)
+            changed_fields = [k for k, v in (("folders", add_dirs), ("tools", tools),
+                                             ("charter", charter),
+                                             ("org_visibility", org_visibility),
+                                             ("permission_mode", permission_mode))
+                              if v is not None]
+            self._notify_ev([nid], _mint("access.scope_changed", actor_of(actor),
+                                         self.node_ref(nid), by=actor,
+                                         changed=changed_fields))
         self._log("set_scope", actor, {"node": nid, "scope": sc}, warnings)
         res: dict[str, Any] = {"scope": sc, "warnings": warnings}
         if cascaded:
@@ -6281,14 +6276,26 @@ class Org:
         # grant what it holds directly (orgtree_retool) or escalate
         if n["parent"] is not None and not self._has_audience(nid, USER):
             sup = n["parent"]
-            body = ("[SCOPE REQUEST — needs a grant or an escalation]\n"
-                    + "\n".join("- " + self._scope_item_label(it)
-                                for it in norm)
-                    + f"\nReason: {str(reason).strip()}"
-                    + "\nIf you hold these, grant them directly with "
-                      "orgtree_retool; otherwise escalate up your chain — "
-                      "only the user can grant past your own scope.")
-            r = self.post_mail(nid, sup, body, kind="request")
+            # typed (family access_resources): access.scope_requested — the item
+            # labels as the text shows them AND the wanted scope as data
+            want: dict[str, Any] = {"folders": [], "tools": {"bash": None, "web": None,
+                                                              "edit": None, "subagents": None,
+                                                              "mcp": None},
+                                    "permission_mode": None, "org_visibility": None}
+            for it in norm:
+                if it["kind"] == "dir":
+                    want["folders"].append({"path": str(it["path"]), "mode": str(it["mode"])})
+                elif it["kind"] == "tool":
+                    want["tools"][str(it["tool"])] = True
+                elif it["kind"] == "mcp":
+                    want["tools"]["mcp"] = (want["tools"]["mcp"] or []) + [str(it["server"])]
+                else:
+                    want["permission_mode"] = str(it["mode"])
+            r = self.post_mail(nid, sup, "", kind="request",
+                               ev=_mint("access.scope_requested", actor_of(nid),
+                                        self.node_ref(nid),
+                                        items=[self._scope_item_label(it) for it in norm],
+                                        reason=str(reason).strip(), wanted=want))
             return {"routed": sup, "deferred": bool(r.get("deferred")),
                     "status": f"you hold no user audience — the request was "
                               f"mailed to your superior \"{sup}\"; they can "

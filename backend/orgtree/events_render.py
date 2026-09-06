@@ -319,8 +319,8 @@ def _r_audience_changed(ev: _R) -> str:
         return (f'{who} granted "{other}" an audience with you — it may now message '
                 f'you directly; you may revoke it at will.')
     if oc == "user_audience_seen":
-        return (f'{who} granted "{other}" a direct USER AUDIENCE: it may now write to '
-                f'your inbox. Revoke it from the audience panel at will.')
+        return (f'{who} granted "{other}" a direct audience to you — it may now write '
+                f'to your inbox. Revoke it from the audience panel at will.')
     if oc == "org_inbox":
         return (f"{who} granted you audience with the ORG INBOX: you now receive "
                 f"outside messages addressed to this organization (chatq sessions, "
