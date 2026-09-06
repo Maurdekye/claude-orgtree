@@ -5885,13 +5885,65 @@ def turn_usage_block(org: Org, nid: str, now: float | None = None, *,
 _CHART_SUPPRESS_MIN: Final = 280
 
 
+def _state_segments(org: Org, nid: str, state_text: str, facts: Mapping[str, Any],
+                    usage_text: str) -> list[dict[str, Any]]:
+    """The turn's machine-state segments: `context.org_state` (the block's text
+    plus the roster/credit facts it was rendered from) and
+    `context.provider_usage` (the board's text plus its structured rows from
+    turnusage.board_rows — recorded at render, never parsed back). Both are
+    model_only by disposition (HUMAN_HIDDEN_VARIANTS): the agent reads the text
+    as it always did; the human transcript shows no card for them."""
+    n = org.nodes.get(nid) or {}
+    kids = [k for k in org.children(nid) if org.nodes[k]["state"] == "live"] \
+        if nid in org.nodes else []
+    sibs = ([s for s in org.children(n.get("parent")) if s != nid]
+            if nid in org.nodes else [])
+    try:
+        free = float(org.free(nid))
+    except Exception:                                          # noqa: BLE001
+        free = 0.0
+    snapshot = {
+        "seq": facts.get("seq"), "at": now_iso(),
+        "reports": [{"id": k, "name": str(org.nodes[k].get("name") or k),
+                     "tier": str(org.nodes[k].get("model") or ""),
+                     "state": str(org.nodes[k].get("state") or "")} for k in kids],
+        "peers": list(sibs),
+        "chart": (str(facts.get("chart")) if facts.get("chart") else None),
+        "chart_ref": facts.get("chart_ref"),
+        "credits": {"seat": float(org.seat_cost(nid)) if nid in org.nodes else 0.0,
+                    "grant": float(n.get("grant") or 0), "free": free},
+        "notes": [],
+    }
+    segs = [{"kind": "state", "text": state_text,
+             "event": events.encode_ev(events.mint(
+                 "context.org_state", _SYSTEM_ACTOR, _org_ref(org),
+                 text=state_text, snapshot=snapshot))}]
+    if usage_text:
+        segs.append({"kind": "state", "text": usage_text,
+                     "event": events.encode_ev(events.mint(
+                         "context.provider_usage", _SYSTEM_ACTOR, _org_ref(org),
+                         text=usage_text, rows=turnusage.board_rows(usage_text),
+                         seq=int(facts.get("seq") or 0)))})
+    return segs
+
+
 def _envelope_state_block(org: Org, nid: str, now: float,
-                          pending: dict[str, envelope.Snapshot]) -> str:
+                          pending: dict[str, envelope.Snapshot],
+                          out: dict[str, Any] | None = None) -> str:
     """The turn's ORG STATE block, with the chart span suppressed while the org
     has not moved (D-223). A node whose visibility renders no chart has nothing
-    suppressible and simply gets the block it always got."""
+    suppressible and simply gets the block it always got.
+
+    `out` (typed composition): receives {"seq", "chart", "chart_ref"} — the
+    snapshot number and whether the chart went in full or by reference — so the
+    `context.org_state` segment can carry them as facts (design D-223: exactly
+    one of chart / chart_ref is non-null)."""
+    if out is not None:
+        out.update({"seq": None, "chart": "", "chart_ref": None})
     try:
         chart = org_state_chart(org, nid)
+        if out is not None:
+            out["chart"] = chart
         if len(chart) < _CHART_SUPPRESS_MIN:
             # Nothing to suppress, or not enough to be worth suppressing. A
             # two-person org's chart is ~130 characters and the sentence
@@ -5903,6 +5955,9 @@ def _envelope_state_block(org: Org, nid: str, now: float,
             return org_state_block(org, nid)
         full, seq = _envelope_decide(org, nid, envelope.ORG_STATE,
                                      envelope.digest(chart), now, pending)
+        if out is not None:
+            out.update({"seq": seq, "chart": chart if full else "",
+                        "chart_ref": None if full else seq})
         return org_state_block(org, nid, seq=seq,
                                chart_ref=None if full else seq)
     except Exception:                                      # noqa: BLE001
@@ -14057,6 +14112,7 @@ def _run_one_turn_recorded(slug: str, nid: str,
             # D-181: bound here, assigned under the lock below. Never folded
             # into `prelude` — see the note at the assignment.
             state_block = ""
+            state_facts: dict[str, Any] = {}
             usage_org: Org | None = None
             # D-223: what this turn's envelope claims the agent has now read.
             # STAGED here, committed only at the `_confirm_delivered` seam
@@ -14154,7 +14210,7 @@ def _run_one_turn_recorded(slug: str, nid: str,
                     #     the same block through the same door.
                     if not is_cmd:
                         state_block = _envelope_state_block(
-                            o2, nid, time.time(), env_pending)
+                            o2, nid, time.time(), env_pending, out=state_facts)
                         # Keep only the already-loaded doc across the lock
                         # boundary. Provider cache/registry locks must never
                         # sit underneath DOC_LOCK, and this block is advisory:
@@ -14183,6 +14239,12 @@ def _run_one_turn_recorded(slug: str, nid: str,
                                                 pending=env_pending)
                                if usage_org is not None else "")
                 text = (state_block + "\n\n" + usage_block + "\n\n" + text)
+                # typed composition (family context_change): the two machine
+                # state blocks ride the sidecar as `state` segments carrying
+                # their FULL text and facts — never rows, never re-rendered
+                if view_segments is not None and usage_org is not None:
+                    view_segments[:0] = _state_segments(
+                        usage_org, nid, state_block, state_facts, usage_block)
             # a new turn supersedes the previous failure: the durable system
             # row (_log_turn_error) already holds the history, so the banner
             # clears NOW instead of surviving until a later success — it used

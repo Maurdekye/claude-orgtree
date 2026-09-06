@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import math
+import threading
 import time
 from typing import Any, Final, cast
 
@@ -140,12 +141,48 @@ def _seen(snapshot: dict[str, Any], now: float) -> tuple[str, bool]:
     return f"{_iso(observed)} ({age_text},{freshness})", stale
 
 
+#: STRUCTURED ROW RECORDS (design family context_change, `context.provider_usage`).
+#: `_line` is the ONE place a board row is rendered, so it is the one place its
+#: facts exist un-rendered: it records them here keyed by the EXACT line it
+#: returned, and `board_rows` maps the rendered lines back by identity — a dict
+#: lookup on the whole string, never a parse of it. Thread-local because boards
+#: for different turns render concurrently; `board` clears it at the start.
+_tl = threading.local()
+
+
+def _recs() -> dict[str, dict[str, Any]]:
+    d = getattr(_tl, "recs", None)
+    if d is None:
+        d = _tl.recs = {}
+    return d
+
+
 def _line(provider: str, lane: str, window: str, used: str,
           amount: str, reset: str, observed: str, state: str,
           *, selected: bool = False) -> str:
     marker = "*" if selected else ""
-    return (f"{provider}/{lane}{marker} | {window} | {used} | {amount} | "
+    line = (f"{provider}/{lane}{marker} | {window} | {used} | {amount} | "
             f"{reset} | {observed} | {state}")
+    try:
+        pct = float(used[:-1]) if used.endswith("%") else None
+    except ValueError:
+        pct = None
+    _recs()[line] = {"provider": provider, "lane": lane, "window": window,
+                     "used_pct": (float(pct) if pct is not None else None),
+                     "amount": (None if amount in ("", "-") else amount),
+                     "reset_at": (None if reset in ("", "-") else reset),
+                     "observed_at": (None if observed in ("", "-") else observed),
+                     "state": state}
+    return line
+
+
+def board_rows(text: str) -> list[dict[str, Any]]:
+    """The UsageRow records of a board rendered ON THIS THREAD by the last
+    `board(...)` call, in the board's own order. Lines the recorder never
+    produced (the header, the footer, a failure block) are simply absent;
+    nothing is parsed."""
+    recs = _recs()
+    return [dict(recs[ln]) for ln in text.splitlines() if ln in recs]
 
 
 def _row_order(item: tuple[tuple[Any, ...], str]) -> tuple[Any, ...]:
@@ -418,7 +455,11 @@ def board(org: Org, nid: str, *, selected_provider: str = "",
     fallback ordinal, then this org's API-key lane.  Window order is session,
     weekly-all, weekly-scoped, then provider-specific.  Raw provider errors,
     account ids, emails, model labels and groups never enter the text.
+
+    Side effect: the rendered rows' structured records are recorded for
+    `board_rows` (thread-local, cleared here).
     """
+    _recs().clear()
     now = time.time() if now is None else now
     try:
         node = org.node(nid)

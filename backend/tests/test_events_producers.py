@@ -2212,6 +2212,63 @@ check("kickoff via hire/rehire (body verbatim, reason), engine-side lifecycle re
       "old literals, unroutable outside mail", _kickoff_and_renders)
 
 
+# ====================================================== §C family context_change
+print("\n§C · context — the turn's machine-state segments")
+
+from orgtree import turnusage                                    # noqa: E402
+
+
+def _state_segments():
+    import time as _time
+    slug = rig5()
+    o = store.load_org(slug)
+    facts: dict = {}
+    state_text = S._envelope_state_block(o, "boss", _time.time(), {}, out=facts)
+    usage_text = S.turn_usage_block(o, "boss", pending={})
+    assert state_text.startswith("[ORG STATE") and "[PROVIDER USAGE" in usage_text
+    segs = S._state_segments(o, "boss", state_text, facts, usage_text)
+    assert [x["kind"] for x in segs] == ["state", "state"]
+    st = events.decode_ev(segs[0]["event"])
+    assert st["variant"] == "context.org_state" and segs[0]["text"] == state_text
+    assert st["text"] == state_text, "the FULL block rides the segment, untouched"
+    snap = st["snapshot"]
+    assert {r["id"] for r in snap["reports"]} == {"kid", "kid2"}, snap["reports"]
+    assert snap["reports"][0]["tier"] == "haiku" and snap["reports"][0]["state"] == "live"
+    assert snap["peers"] == ["boss2"] and snap["credits"]["grant"] == 20.0
+    assert (snap["chart"] is None) != (snap["chart_ref"] is None) or facts.get("seq") is None, \
+        "D-223: exactly one of chart / chart_ref when a snapshot was recorded"
+    pu = events.decode_ev(segs[1]["event"])
+    assert pu["variant"] == "context.provider_usage" and pu["text"] == usage_text
+    rows = pu["rows"]
+    assert rows, "the board's rows are recorded at render (positive control below)"
+    # identity, not parsing: every recorded row's provider/lane prefix opens a line
+    # of the SAME text; and the recorder is per-thread, cleared per board
+    for r in rows:
+        assert any(ln.startswith(f"{r['provider']}/{r['lane']}") for ln in usage_text.splitlines()), r
+        assert r["state"] and r["window"]
+    assert turnusage.board_rows("nothing rendered here") == []
+    # dispositions: both are machine-only → hidden from the human card; the agent
+    # text is intact; the public projection carries structure only
+    for v in ("context.org_state", "context.provider_usage"):
+        assert v in events.human_hidden_variants()
+    pub = events.public_event(st)
+    assert "text" not in pub and "snapshot" not in pub and pub["variant"] == "context.org_state"
+    assert events.render_agent(st) == state_text and events.render_agent(pu) == usage_text
+    # the wire keeps them in place, both projections (mixed with a readable row)
+    stored = segs + [{"kind": "mail", "rows": [{"id": "m", "from": "@user", "kind": "message",
+                                                "body": "hi", "at": "t"}]}]
+    for public in (False, True):
+        out = events.wire_segments(stored, public=public)
+        assert [x["kind"] for x in out] == ["state", "state", "mail"]
+        key = "event_public" if public else "event"
+        assert out[0][key]["variant"] == "context.org_state"
+
+
+check("state segments · org_state (full text + roster/credit snapshot) and "
+      "provider_usage (full text + rows recorded at render, never parsed) — "
+      "machine-only, kept in place in both projections", _state_segments)
+
+
 # =========================================================================== summary
 print()
 for label, tb in FAIL:
