@@ -471,8 +471,8 @@ def _r_compacted(ev: _R) -> str:
     return (f'You were auto-compacted by the CLI: you are now generation {gen} and the '
             f'context you had before it survives only as your summary. There is NO '
             f'consultable bearer in this case — "{pred}" is a LOST generation and '
-            f'cannot be rehired, so anything the summary dropped is gone unless it was '
-            f'written down.')
+            f'cannot be rehired, so anything the summary dropped is gone. Ask whoever '
+            f'gave you the work rather than hunting for a past self.')
 
 
 @renderer("lifecycle.cheap_compacted")
@@ -579,6 +579,13 @@ def _r_switched(ev: _R) -> str:
         f'normal one — expect it, and do not switch back and forth. Check your scratch '
         f'CLAUDE.md, and your breadcrumbs and mail are untouched; read them to pick up '
         f'where you left off.')
+
+
+@renderer("lifecycle.switch_dropped")
+def _r_switch_dropped(ev: _R) -> str:
+    return (f"the queued switch of {ev['node']} to {ev['target']} was DROPPED at the "
+            f"end of its turn: {ev['reason']}. It stays on {ev['kept']}; ask "
+            f"again once that is resolved.")
 
 
 @renderer("lifecycle.switch_queued")

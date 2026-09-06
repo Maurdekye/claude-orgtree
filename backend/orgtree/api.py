@@ -5760,8 +5760,17 @@ def _seat_finish(org: Org, slug: str, actor: str, nid: str, a: dict[str, Any],
                 "'request' (the default), or drop kickoff and send an "
                 "orgtree_send_notice afterwards")
         # identical in effect to the orgtree_message the caller used to send
-        # by hand, and deliberately the LAST mutation in the composite
-        m = org.post_mail(actor, nid, str(kickoff), kkind)
+        # by hand, and deliberately the LAST mutation in the composite.
+        # Typed (family lifecycle): lifecycle.kickoff on the hire's NodeRef —
+        # the body is the caller's text verbatim (the renderer passes it through)
+        reason = ("rehire" if fields is _SEAT_SCOPE_REHIRE else
+                  "staff" if a.get("work_item") else "hire")
+        m = org.post_mail(
+            actor, nid, "", kkind,
+            ev=events.mint("lifecycle.kickoff", actor_of(actor), org.node_ref(nid),
+                           body=str(kickoff), hired_by=actor, reason=reason,
+                           tier=str(org.node(nid).get("model") or ""),
+                           grant=float(org.node(nid).get("grant") or 0)))
         result.setdefault("warnings", []).extend(m.get("warnings") or [])
         mail_notify(slug, actor, nid)
         seat_drive = True
