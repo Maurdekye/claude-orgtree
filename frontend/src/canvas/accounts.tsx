@@ -917,9 +917,7 @@ export function AccountsPanel({ toast, close }: {
         {/* one row's usage limits — a MODAL over the panel (user ruling
             2026-08-25), same bar family as the header usage modal */}
         {usageFor && (
-          <div className="overlay"
-            onClick={(e) => { e.stopPropagation(); setUsageFor(null) }}>
-            <div className="settings content-height usage-modal" onClick={(e) => e.stopPropagation()}>
+          <PinFrame kind="account-usage" title={`usage — ${rowLabel(usageFor)}`} panel="settings content-height usage-modal" close={() => setUsageFor(null)} pinnable={false}>
               <h3><DataUsageIcon fontSize="inherit" />{' '}
                 {isCapacityView(usageFor) ? 'model capacity' : 'usage'}
                 {' — '}{rowLabel(usageFor)}</h3>
@@ -930,8 +928,7 @@ export function AccountsPanel({ toast, close }: {
                 <button className="primary" type="button"
                   onClick={() => setUsageFor(null)}>done</button>
               </div>
-            </div>
-          </div>
+          </PinFrame>
         )}
     </PinFrame>
   )

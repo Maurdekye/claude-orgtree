@@ -244,13 +244,17 @@ uiTest('§D pin/unpin transfers cleanly: minimize choices and drafts survive',
     await inAct(() => { tabMain(el, 'ceo').click() })
     await flush()
     assert.deepEqual(minnedIds(), ['ceo'])
-    localStorage.setItem('orgtree-draft-mine-cto', 'half-written thought')
+    const composer = [...el.querySelectorAll('textarea')].find(t => t.placeholder.includes('cto'))!
+    assert.ok(composer, 'a real composer receives the draft before moving')
+    Object.getOwnPropertyDescriptor(composer.constructor.prototype, 'value')!.set!.call(composer, 'half-written thought')
+    await inAct(() => { composer.dispatchEvent(new Event('input', { bubbles: true })) })
+    await flush()
 
     await pin('cto')
     assert.deepEqual(minnedIds(), ['ceo'],
       'pinning must not write into the minimize set — it is the reader\'s '
       + 'own open/closed choice, not a slot the pin may borrow')
-    assert.equal(localStorage.getItem('orgtree-draft-mine-cto'),
+    assert.equal(localStorage.getItem('orgtree-draft-v2-["mine","cto",0]'),
       'half-written thought', 'the draft is keyed per NODE, not per surface')
 
     await unpin('cto')

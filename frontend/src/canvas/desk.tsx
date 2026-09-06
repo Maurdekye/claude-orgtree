@@ -1,3 +1,6 @@
+import { readAttachments, recoverableDrafts, storeAttachments } from '../draftstore'
+import { DeskSlot } from './deskhosts'
+import { PopoutButton, useSurface, useSurfaceDocument } from '../popout'
 // canvas/desk.tsx — the desk: DeskChat (the zoomed-in per-agent chat window,
 // styled as a miniature Claude Code session) with its transcript renderers
 // (Msg, ToolChip, ThoughtLine, SysLine), the composer's effort controls and
@@ -43,6 +46,7 @@ import { ConfirmModal } from './modals'
 import { InboxView, RetiredFold } from './mail'
 import { AskCard } from './asks'
 import { AgentDocketView, agentItems } from './docket'
+import { GitContextButton } from '../git/GitContextButton'
 import { PresentationCard } from './docs'
 import { buildNodeFacts } from './docket'
 import { AgentDirectoryProvider, AgentName, agentFactsSig, useAgentDirectory } from './identity'
@@ -132,13 +136,13 @@ export function ProcessWarmMark({ warm, embedded = false }: {
 let ageClockSecond = Math.floor(Date.now() / 1000)
 let ageClockTimer: ReturnType<typeof setInterval> | null = null
 const ageClockSubs = new Set<() => void>()
-const pulseAgeClock = () => {
+export const pulseAgeClock = () => {
   const next = Math.floor(Date.now() / 1000)
   if (next === ageClockSecond) return
   ageClockSecond = next
   for (const fn of [...ageClockSubs]) fn()
 }
-const subscribeAgeClock = (fn: () => void) => {
+export const subscribeAgeClock = (fn: () => void) => {
   ageClockSubs.add(fn)
   if (ageClockSubs.size === 1) {
     pulseAgeClock()
@@ -216,6 +220,212 @@ export function LastTurnAge({ turn, busy = false, variant = 'badge' }: {
   </span>
 }
 
+/** A busy arrow on navigation chrome must name the destination provider even
+ * when it is rendered inside another provider's themed desk. */
+export function DestinationBusy({ tier }: { tier?: string | null }) {
+  return <AutorenewIcon fontSize="inherit"
+    className={`cc-spin prov-${providerOf(tier ?? '')}`} />
+}
+
+export type AgentTurnState = 'working' | 'queued' | 'compacting' | 'idle'
+
+export function deriveTurnState(node: {
+  busy?: boolean
+  waiting?: boolean
+  phase?: string | null
+}): AgentTurnState {
+  if (node.phase === 'compacting') return 'compacting'
+  if (node.waiting) return 'queued'
+  if (node.busy) return 'working'
+  return 'idle'
+}
+
+/** Unified workstate presentation for NodeSquare. Subscribes to ageClockSecond
+ * so active turn elapsed time and idle time tick every second without props/SSE updates. */
+export function AgentWorkstate({ node, turn, live = true }: {
+  node: CanvasNode; turn?: TurnStat | null; live?: boolean
+}) {
+  useSyncExternalStore(subscribeAgeClock, () => ageClockSecond,
+    () => ageClockSecond)
+  const state = deriveTurnState(node)
+  if (state === 'working') {
+    return (
+      <>
+        <DestinationBusy tier={node.tier} />
+        <span className="sq-idle working"
+          title={node.inflight_at ? `running for ${ago(node.inflight_at)}` : 'working'}>
+          working
+        </span>
+        <span className="sq-idle-time">
+          {node.inflight_at ? ago(node.inflight_at) : '—'}
+        </span>
+      </>
+    )
+  }
+  if (state === 'queued') {
+    return (
+      <>
+        <span className="statusdot waiting" title="queued — waiting for a free turn slot" />
+        <span className="sq-idle waiting" title="queued">
+          queued
+        </span>
+        <span className="sq-idle-time">
+          {node.inflight_at ? ago(node.inflight_at) : '—'}
+        </span>
+      </>
+    )
+  }
+  if (state === 'compacting') {
+    return (
+      <>
+        <span className="sq-idle compacting" title="compacting">
+          compacting
+        </span>
+        <span className="sq-idle-time">
+          {node.inflight_at ? ago(node.inflight_at) : '—'}
+        </span>
+      </>
+    )
+  }
+  const recorded = node.last_status?.status ?? (live ? 'idle' : node.state)
+  return (
+    <>
+      <span className={'sq-idle ' + recorded}
+        title={node.last_status?.summary ?? undefined}>
+        {recorded}
+      </span>
+      {turn && (
+        <span className="sq-idle-time"
+          title={'last turn ended ' + fmtStamp(turn.at) + (turn.killed ? ' (killed)' : '')}>
+          {ago(turn.at)}
+        </span>
+      )}
+    </>
+  )
+}
+
+/** Unified tray status presentation for bottom-left tray rows and mobile sheet header.
+ * Subscribes to ageClockSecond so turn and idle times tick every second. */
+export function TrayStatus({ node, turn, live = true }: {
+  node: CanvasNode; turn?: TurnStat | null; live?: boolean
+}) {
+  useSyncExternalStore(subscribeAgeClock, () => ageClockSecond,
+    () => ageClockSecond)
+  const state = deriveTurnState(node)
+  if (state === 'working') {
+    return (
+      <span className="tray-status">
+        <DestinationBusy tier={node.tier} />
+        <span className="tray-status-label working"
+          title={node.inflight_at ? `running for ${ago(node.inflight_at)}` : 'working'}>
+          working
+        </span>
+        <span className="tray-status-time">
+          {node.inflight_at ? ago(node.inflight_at) : '—'}
+        </span>
+      </span>
+    )
+  }
+  if (state === 'queued') {
+    return (
+      <span className="tray-status">
+        <span className="statusdot waiting"
+          title="queued — waiting for a free turn slot" />
+        <span className="tray-status-label waiting" title="queued">
+          queued
+        </span>
+        <span className="tray-status-time">
+          {node.inflight_at ? ago(node.inflight_at) : '—'}
+        </span>
+      </span>
+    )
+  }
+  if (state === 'compacting') {
+    return (
+      <span className="tray-status">
+        <span className="tray-status-label compacting" title="compacting">
+          compacting
+        </span>
+        <span className="tray-status-time">
+          {node.inflight_at ? ago(node.inflight_at) : '—'}
+        </span>
+      </span>
+    )
+  }
+  if (node.frozen) {
+    return <FrozenIcon fontSize="inherit" className="tray-frozen" />
+  }
+  if (node.state !== 'live') {
+    return <span className="dim">{node.state}</span>
+  }
+  const recorded = node.last_status?.status ?? 'idle'
+  return (
+    <span className="tray-status">
+      <span className={'statusdot ' + recorded}
+        title={node.last_status?.summary ?? undefined} />
+      <span className={'tray-status-label ' + recorded}>
+        {recorded}
+      </span>
+      {turn && (
+        <span className="tray-status-time"
+          title={'last turn ended ' + fmtStamp(turn.at) + (turn.killed ? ' (killed)' : '')}>
+          {ago(turn.at)}
+        </span>
+      )}
+    </span>
+  )
+}
+
+/** Unified indicator dot for mapMode. */
+export function MapModeIndicator({ node }: { node: CanvasNode }) {
+  const state = deriveTurnState(node)
+  if (state === 'working') {
+    return (
+      <span title={node.inflight_at ? `running for ${ago(node.inflight_at)}` : 'working'}>
+        <DestinationBusy tier={node.tier} />
+      </span>
+    )
+  }
+  if (state === 'queued') {
+    return <span className="statusdot waiting" title="queued — waiting for a free turn slot" />
+  }
+  if (state === 'compacting') {
+    return <span className="statusdot compacting" title="compacting" />
+  }
+  if (node.frozen) {
+    return <FrozenIcon fontSize="inherit" className="tray-frozen" />
+  }
+  if (node.state !== 'live') {
+    return <span className="map-off">{node.state}</span>
+  }
+  return (
+    <span className={'statusdot ' + (node.last_status?.status ?? 'idle')}
+      title={node.last_status?.summary ?? undefined} />
+  )
+}
+
+/** Unified mapMode age chip subscribing to ageClockSecond. */
+export function MapTurnAge({ node, turn }: { node: CanvasNode; turn?: TurnStat | null }) {
+  useSyncExternalStore(subscribeAgeClock, () => ageClockSecond,
+    () => ageClockSecond)
+  const state = deriveTurnState(node)
+  if (state !== 'idle') {
+    return (
+      <span className="map-ago"
+        title={node.inflight_at ? `running for ${ago(node.inflight_at)}` : state}>
+        {node.inflight_at ? ago(node.inflight_at) : '—'}
+      </span>
+    )
+  }
+  if (!turn) return null
+  return (
+    <span className="map-ago"
+      title={'last turn ended ' + fmtStamp(turn.at) + (turn.killed ? ' (killed)' : '')}>
+      {ago(turn.at)}
+    </span>
+  )
+}
+
 export type TurnBannerState = 'idle' | 'working' | 'queued' | 'compacting'
 
 /** One persistent desk-header status/time seat. Its label and clock change
@@ -223,32 +433,40 @@ export type TurnBannerState = 'idle' | 'working' | 'queued' | 'compacting'
  * while Idle measures the last completed turn. Canvas cards continue to use
  * LastTurnAge; the focused desk deliberately has no second age chip. */
 export function TurnStatusBanner({ state, turn, inflightAt, tasks = 0,
-  reportedSummary }: {
+  reportedSummary, recordedState, tier }: {
   state: TurnBannerState; turn?: TurnStat | null; inflightAt?: string | null;
-  tasks?: number | null; reportedSummary?: string | null
+  tasks?: number | null; reportedSummary?: string | null; recordedState?: string | null;
+  tier?: string | null
 }) {
   useSyncExternalStore(subscribeAgeClock, () => ageClockSecond,
     () => ageClockSecond)
   const active = state !== 'idle'
   const reference = active ? inflightAt : turn?.at
   const elapsed = reference ? ago(reference) : '—'
-  const label = state === 'idle' ? 'Idle'
-    : state === 'working' ? 'Working'
-    : state === 'queued' ? 'Queued' : 'Compacting'
+  const outOfTurnState = (!active && recordedState && recordedState !== 'idle') ? recordedState : null
+  const displayClass = outOfTurnState || state
+  const label = active
+    ? (state === 'working' ? 'Working'
+      : state === 'queued' ? 'Queued' : 'Compacting')
+    : outOfTurnState
+      ? (outOfTurnState.charAt(0).toUpperCase() + outOfTurnState.slice(1))
+      : 'Idle'
   const taskText = (tasks ?? 0) > 0
     ? `${tasks} task${tasks === 1 ? '' : 's'}` : ''
-  const title = state === 'idle'
+  const title = !active
     ? (turn
-      ? `Idle · last turn ended ${fmtStamp(turn.at)}`
+      ? `${label} · last turn ended ${fmtStamp(turn.at)}`
         + (turn.killed ? ' (killed)' : '')
-      : 'Idle · no completed turn yet')
+      : `${label} · no completed turn yet`)
         + (reportedSummary ? ` · ${reportedSummary}` : '')
     : [label, reference ? `active for ${elapsed}` : 'start time unavailable',
         taskText, reportedSummary].filter(Boolean).join(' · ')
-  return <span className={`turn-status-banner ${state}`} title={title}
+  return <span className={`turn-status-banner ${displayClass}`} title={title}
     aria-label={title}>
     {state === 'working' &&
-      <AutorenewIcon fontSize="inherit" className="cc-spin" />}
+      <DestinationBusy tier={tier} />}
+    {state === 'queued' &&
+      <span className="statusdot waiting" />}
     <span className="turn-status-label">{label}</span>
     <span className="turn-status-time">{elapsed}</span>
   </span>
@@ -828,13 +1046,6 @@ export function CacheForecastWarning({ forecast, midTurn, composerFocused,
   </div>
 }
 
-/** A busy arrow on navigation chrome must name the destination provider even
- * when it is rendered inside another provider's themed desk. */
-export function DestinationBusy({ tier }: { tier?: string | null }) {
-  return <AutorenewIcon fontSize="inherit"
-    className={`cc-spin prov-${providerOf(tier ?? '')}`} />
-}
-
 /* click-to-copy for the React-rendered pres (filepre/respre/diffpre) — same
    .codewrap/.code-copy contract as the md() pipeline, so the one delegated
    click listener in shared.ts serves both. The listener swaps the button's
@@ -851,50 +1062,15 @@ function CopyablePre({ children }: { children: ReactNode }) {
 }
 
 const shortTool = (t: string | null | undefined) => (t || 'tool').replace(/^mcp__([^_]+)__/, '$1: ')
-// The CARD's version of the same name. The card label has ~108px — about 15
-// monospace characters — and `shortTool` spends nine of them on the server
-// prefix, so `mcp__orgtree__orgtree_send_notice` and
-// `mcp__orgtree__orgtree_request_credits` both truncate to the identical
-// `orgtree: orgtr…`: a status line that cannot distinguish two states is not
-// reporting one. The tail is the part that identifies the tool, and for these
-// servers the prefix is redundant with it anyway (`orgtree: orgtree_…`), so
-// the card drops the prefix and the hover title keeps the full form.
-const cardTool = (t: string | null | undefined) => (t || 'tool').replace(/^mcp__[^_]+__/, '')
-// fmtBytes moved to img.tsx (the attachment renderers need it too)
 
-export function Activity({ act, dotOnly }: { act?: ActivityInfo; dotOnly?: boolean }) {
-  const phase = act?.phase ?? 'thinking'
+export function Activity({ act, dotOnly, tier }: { act?: ActivityInfo; dotOnly?: boolean; tier?: string | null }) {
   if (dotOnly) {
-    return phase === 'tool'
-      ? <span className="actgear" title={`running ${shortTool(act?.tool)}`}><SettingsIcon fontSize="inherit" /></span>
-      : <span className="busydot" title={phase} />
+    return <DestinationBusy tier={tier} />
   }
-  // The label text gets its OWN element (user bug 2026-08-26: a working
-  // agent's status text ran off the side of its card and onto a second line
-  // below). It used to be a bare text node — an anonymous flex item, which
-  // cannot be given `text-overflow` and whose automatic minimum size is its
-  // longest unbreakable word. Tool names are long and full of them:
-  // `mcp__resonite__get_sync_object_definition` shortens to
-  // `resonite: get_sync_object_definition`, whose min-content width is 159px
-  // inside a card that has 108px to give. So it wrapped, and the wrapped line
-  // still overflowed — measured at +50.95px past the border, far enough to
-  // land on the neighbouring card. A real element can be clipped and
-  // ellipsised; the string is arbitrary, so the containment has to be
-  // structural rather than a width anyone has checked.
-  const label = phase === 'tool' ? cardTool(act?.tool)
-    : phase === 'writing' ? 'writing' : 'thinking'
-  // the full, untruncated name — server prefix included — stays reachable on
-  // hover. Ellipsising is a display decision and must never be the only copy
-  // of the information.
-  const full = phase === 'tool' ? shortTool(act?.tool) : label
   return (
-    <div className="actlabel" title={full}>
-      {phase === 'tool'
-        ? <span className="actgear"><SettingsIcon fontSize="inherit" /></span>
-        : phase === 'writing' ? <EditIcon fontSize="inherit" />
-        : <AutorenewIcon fontSize="inherit" className="cc-spin" />}
-      <span className="actlabel-text">{label}</span>
-      <span className="actdots" />
+    <div className="actlabel" title="working">
+      <DestinationBusy tier={tier} />
+      <span className="actlabel-text">working</span>
     </div>
   )
 }
@@ -905,12 +1081,14 @@ export function Activity({ act, dotOnly }: { act?: ActivityInfo; dotOnly?: boole
 // animation frame, and each open desk re-parsed its full transcript each
 // time. The comparator checks the DATA props only; the callback props close
 // over stable setters, so their per-render identities are ignorable.
-export const DeskChat = memo(DeskChatInner, (p, n) =>
+export const DeskChat = DeskSlot
+export const OwnedDeskChat = memo(DeskChatInner, (p, n) =>
   p.node === n.node && p.map === n.map && p.slug === n.slug
-  && p.pub === n.pub && p.bare === n.bare && p.compact === n.compact
+  && p.staleIdentity === n.staleIdentity && p.pub === n.pub && p.bare === n.bare && p.compact === n.compact
   && p.compactAt === n.compactAt && p.maxTop === n.maxTop && p.pxc === n.pxc)
 
-interface DeskChatProps {
+export interface DeskChatProps {
+  staleIdentity?: boolean
   node: CanvasNode
   map: Map<string, CanvasNode>
   op: OpFn
@@ -1045,7 +1223,7 @@ const SENDMODE_MS = 6000
 
 function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
   onRecenter, onJump, maxTop, pxc, pub, bare = false, compact = false,
-  compactAt, onMailLink, onWorkLink, onOpenDoc, onPin }: DeskChatProps) {
+  compactAt, onMailLink, onWorkLink, onOpenDoc, onPin, staleIdentity = false }: DeskChatProps) {
   // THE CONVERSATION IS NOT THIS COMPONENT'S. It lives in one per-node store
   // (convo.ts) that every view of this node subscribes to, because a node can
   // be on screen twice — its card and its switchboard panel — and two private
@@ -1053,6 +1231,8 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
   // "the switchboard desk going out of sync with the individual agent desks").
   // What stays local below is only what is genuinely per-VIEW: this desk's
   // scroll position, its open tab, its composer draft.
+  const surface = useSurface()
+  const surfaceDocument = useSurfaceDocument()
   const convo = useConvo(slug, node.id)
   const providerClass = node.tier && CODEX_TIERS.includes(node.tier)
     ? ' prov-openai' : node.tier && ANTIGRAVITY_TIERS.includes(node.tier)
@@ -1065,7 +1245,7 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
     thinking: convo.thinking, thinkSecs: convo.thinkSecs, pending: convo.pending }
   // №2: the draft survives the camera — persisted per node on every keystroke
   // (clicking a sibling card unmounts this whole component)
-  const draftKey = `orgtree-draft-${slug}-${node.id}`
+  const draftKey = `orgtree-draft-v2-${JSON.stringify([slug, node.id, node.generation])}`
   const [text, setTextRaw] = useState(() => {
     try { return localStorage.getItem(draftKey) || '' } catch { return '' }
   })
@@ -1077,6 +1257,10 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
     } catch { /* private mode */ }
     return next
   }), [draftKey])
+  const recoveryDrafts = recoverableDrafts(slug, node.id, node.generation)
+  const [legacyDraft, setLegacyDraft] = useState(() => {
+    try { return localStorage.getItem(`orgtree-draft-${slug}-${node.id}`) || '' } catch { return '' }
+  })
   // №11: which door the last send went through. It is a RECEIPT, not a state —
   // it answers "where did that message just go", and that answer goes stale the
   // moment the queue drains. It had no clear at all (user bug 2026-08-02: the
@@ -1115,9 +1299,11 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
   // would eventually disagree on screen. It is the same endpoint the Work
   // panel uses, at a slower interval — this is a summary, not the panel.
   const [workBump, setWorkBump] = useState(0)
+  const [showArchivedDocket, setShowArchivedDocket] = useState(false)
   const work = usePolled(() => getWorkItems(slug, true, true),
                          [slug], 15000, `${workBump}`)
-  const myWork = useMemo(() => agentItems(work, node.id), [work, node.id])
+  const myWork = useMemo(() => agentItems(work, node.id, showArchivedDocket),
+    [work, node.id, showArchivedDocket])
   // the identity facts the docket rows read (which model an owner ran under,
   // whether that seat is still live) — the same shape the Work panel builds,
   // from the canvas map this desk already holds rather than a second fetch
@@ -1386,7 +1572,7 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
 
   // an archived agent still RECEIVES mail (user ruling) — it queues in its
   // inbox and gets acted on at rehire; only unrecoverable nodes refuse
-  const canMail = live || node.state === 'archived'
+  const canMail = !staleIdentity && (live || node.state === 'archived')
   const send = () => {
     let t = text.trim()
     if ((!t && !attached.length) || !canMail) return
@@ -1455,11 +1641,22 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
   // focus moves. Tracked rather than read from `document.activeElement` so the
   // render stays a pure function of state.
   const [composerFocused, setComposerFocused] = useState(false)
-  const [attached, setAttached] = useState<{ name: string; path: string; bytes: number }[]>([])
+  const [attached, setAttachedRaw] = useState(() => readAttachments(draftKey))
+  const setAttached = useCallback((next: { name: string; path: string; bytes: number }[] | ((previous: { name: string; path: string; bytes: number }[]) => { name: string; path: string; bytes: number }[])) => {
+    setAttachedRaw((previous) => {
+      const value = typeof next === 'function' ? next(previous) : next
+      storeAttachments(draftKey, value)
+      return value
+    })
+  }, [draftKey])
+  const uploadIdentity = useRef({ draftKey, staleIdentity }); uploadIdentity.current = { draftKey, staleIdentity }
   const attach = (file: File) => {
+    if (staleIdentity) return
     uploadFile(slug, node.id, file)
-      .then((r) => setAttached((a) =>
-        [...a, { name: file.name, path: r.path, bytes: r.bytes }]))
+      .then((r) => {
+        if (uploadIdentity.current.staleIdentity || uploadIdentity.current.draftKey !== draftKey) return
+        setAttached((a) => [...a, { name: file.name, path: r.path, bytes: r.bytes }])
+      })
       .catch((e: Error) => toast([`upload error: ${e.message}`]))
   }
   // №13: the composer grows with the draft (2 → ~8 rows); the desk interior
@@ -1504,13 +1701,14 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
     && typeof contextOccupancy === 'number' && contextOccupancy > 0
     && typeof node.context_window === 'number' && node.context_window > 0)
     ? contextOccupancy / node.context_window : null
-  const turnActive = Boolean(node.busy || node.waiting
-    || node.phase === 'compacting' || chat?.busy)
+  const turnBannerState: TurnBannerState = deriveTurnState({
+    ...node,
+    busy: Boolean(node.busy || chat?.busy),
+  })
+  const turnActive = turnBannerState !== 'idle'
   // Waiting for a slot and compacting are desk activity, but neither proves
   // this CLI is claimed. The process cue lights only for an actual busy turn.
   const processActive = Boolean(node.busy || chat?.busy)
-  const turnBannerState: TurnBannerState = node.phase === 'compacting'
-    ? 'compacting' : node.waiting ? 'queued' : turnActive ? 'working' : 'idle'
   const bannerDuplicatesStatus = Boolean(node.last_status
     && node.last_status.status === turnBannerState)
   const processAction = node.proc_control_action
@@ -1672,11 +1870,14 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
           </span>
           <TurnStatusBanner state={turnBannerState} turn={lastTurn}
             inflightAt={node.inflight_at} tasks={node.tasks}
-            reportedSummary={bannerDuplicatesStatus ? node.last_status?.summary : undefined} />
+            recordedState={node.last_status?.status}
+            reportedSummary={bannerDuplicatesStatus ? node.last_status?.summary : undefined}
+            tier={node.tier} />
         </span>
         <span className="spacer" aria-hidden="true" />
         <span className="cc-head-right">
           <span className="cc-actions">
+            <GitContextButton slug={slug} agent={node.id} />
             {live && !liveKids &&
               <button className="danger" onClick={() => setAsking('retire')}>
                 retire · {fmtCredits(node.seat! + node.grant!)}</button>}
@@ -1698,7 +1899,8 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
             ))}
           </span>
           {/* FR-3: pin this desk to screenspace as a draggable window */}
-          {onPin &&
+          <PopoutButton />
+          {onPin && !surface?.detached &&
             <button className="cc-icon cc-pin" aria-label={`pin ${node.id}'s desk as a window`}
               title="pin as a window — it stays put while the canvas moves"
               onClick={onPin}>
@@ -2165,6 +2367,8 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
           what an ITEM click does, because it holds the rows itself. */}
       {view === 'docket' && <AgentDocketView slug={slug} nid={node.id}
         mine={myWork} facts={workFacts} toast={toast} onFocusAgent={onJump}
+        showArchived={showArchivedDocket}
+        onShowArchived={setShowArchivedDocket}
         refs={deskRefs}
         onChanged={() => setWorkBump((n) => n + 1)} />}
       {/* the mailbox is a name surface too (user request 2026-09-05: the inbox
@@ -2229,6 +2433,21 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
       {/* №13: the composer is present under EVERY tab — finding a wrong number
           on the files tab shouldn't cost your place to say so */}
       {sendMode && <div className="sendmode dim">{sendMode}</div>}
+      {legacyDraft && !staleIdentity && <div className="popout-error">
+        An older saved draft is available. Its generation was not recorded.
+        <button onClick={() => {
+          setText((previous) => previous ? previous + '\n' + legacyDraft : legacyDraft)
+          try { localStorage.removeItem(`orgtree-draft-${slug}-${node.id}`) } catch { /* unavailable */ }
+          setLegacyDraft('')
+        }}>Restore draft</button>
+      </div>}
+      {!staleIdentity && recoveryDrafts.length > 0 && <details className="popout-draft-recovery">
+        <summary>Older unsent drafts ({recoveryDrafts.length})</summary>
+        {recoveryDrafts.map(d => <div key={d.key}>
+          <p>Generation {d.generation} draft</p><pre>{d.text}</pre>
+          {d.attachments.map(a => <p key={a.path}>{a.name} ({a.bytes} bytes) {a.path}</p>)}
+        </div>)}
+      </details>}
       {/* staged attachments ride the NEXT message as mail attachments */}
       {attached.length > 0 && (
         <div className="attach-row">
@@ -2322,10 +2541,8 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
   // bare: the switchboard hosts many chats inside ONE counter-scaled surface —
   // no overlay wrapper, no second scale (that would double-scale), no
   // recenter-on-click
-  if (bare) return <div className={'desk-body eye-chat' + providerClass + processClass}
-    {...dropProps}>{content}</div>
   return (
-    <div className="desk-over" onWheel={(e) => e.stopPropagation()}
+    <fieldset disabled={staleIdentity} className="desk-control-scope"><div className={bare || surface?.detached ? "desk-bare" : "desk-over"} onWheel={(e) => e.stopPropagation()}
       onPointerDown={(e) => {
         // ROOT CAUSE (user bug 2026-09-03: "after the first drag finishes,
         // all subsequent drags immediately fail" / "focusing a node allows
@@ -2355,11 +2572,11 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
         // it (user ruling) — but never steal clicks meant for controls, and
         // never fight an in-progress text selection
         if ((e.target as Element).closest('button, input, textarea, select, a, label, .mailrow, .eff-pop')) return
-        if (window.getSelection()?.toString()) return
+        if (bare || surface?.detached || surfaceDocument.defaultView?.getSelection()?.toString()) return
         onRecenter?.()
       }}>
-      <div className={'desk-inner desk-body' + providerClass + processClass}>{content}</div>
-    </div>
+      <div className={(bare || surface?.detached ? 'desk-body eye-chat' : 'desk-inner desk-body') + providerClass + processClass}>{content}</div>
+    </div></fieldset>
   )
 }
 export function HistoryView({ slug, nid, refs }: { slug: string; nid: string; refs?: RefRoutes }) {
@@ -2961,8 +3178,9 @@ function EffortButton({ value, effective, onSet }:
     const away = (e: PointerEvent) => {
       if (!wrapRef.current?.contains(e.target as Node | null)) setOpen(false)
     }
-    window.addEventListener('pointerdown', away, true)
-    return () => window.removeEventListener('pointerdown', away, true)
+    const owner = wrapRef.current?.ownerDocument.defaultView ?? window
+    owner.addEventListener('pointerdown', away, true)
+    return () => owner.removeEventListener('pointerdown', away, true)
   }, [open])
   return (
     <span className="eff-wrap" ref={wrapRef}>

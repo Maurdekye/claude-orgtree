@@ -1,4 +1,5 @@
 import { sendLinkedReply } from './events/reply'
+import { CurrentOrg, RestartNotice, WindowMirrors, useOrgTransition } from './popout'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import {
@@ -15,9 +16,11 @@ import {
 } from './api'
 import { fmtClock, fmtFull, localizeFreezeUntil } from './timefmt'
 import { bumpLive } from './livebus'
-import { AudienceFold, ConfirmModal, MailFolders, MailList, OrgCanvas, OrgRecord, RetiredFold, useEsc } from './Canvas'
+import { AudienceFold, ConfirmModal, MailFolders, MailList, OrgCanvas, OrgRecord, RetiredFold } from './Canvas'
 import { KillSwitch } from './KillSwitch'
 import { DiskBrowser, DiskFullAlert } from './DiskBrowser'
+import { GitWorkspace } from './GitWorkspace'
+import type { GitContext } from './git/types'
 import {
   AutorenewIcon, BlockIcon, CheckIcon, ChevronRightIcon, CloseIcon, CopyIcon, EyeIcon, LanIcon,
   DataUsageIcon, DeleteIcon, DocIcon, DocketIcon, ExpandMoreIcon, GitHubIcon, HearingIcon, HomeIcon, LockIcon,
@@ -219,8 +222,9 @@ export default function App() {
   // apply the stored desk text size before anything renders a desk
   useEffect(() => { setDeskDpi(deskDpi()) }, [])
   const [orgs, setOrgs] = useState<OrgListEntry[]>([])
-  const [slug, setSlug] = useState<string | null>(slugFromPath)   // /o/<slug> survives refresh
+  const [slug, commitSlug] = useState<string | null>(slugFromPath)   // /o/<slug> survives refresh
   const [tree, setTree] = useState<TreePayload | null>(null)
+  const { request: setSlug, prompt: orgTransitionPrompt } = useOrgTransition(slug, commitSlug, BASE)
   const [toasts, setToasts] = useState<Toast[]>([])
   const [error, setError] = useState<string | null>(null)
   // G4: `pulses` used to live here — a per-node record of the last turn event,
@@ -258,6 +262,15 @@ export default function App() {
   // the native work docket (docket-final-spec.md) — its own list+pane modal,
   // same pattern as the gallery above.
   const [showDocket, setShowDocket] = useState(false)
+  const [gitContext, setGitContext] = useState<GitContext | null>(null)
+  useEffect(() => {
+    const openGit = (event: Event) => {
+      const detail = (event as CustomEvent<GitContext>).detail
+      if (!BASE && detail?.slug === slug) setGitContext(detail)
+    }
+    window.addEventListener('orgtree:git-open', openGit)
+    return () => window.removeEventListener('orgtree:git-open', openGit)
+  }, [slug])
   // a docket link from a tool chip: open the panel AT one item. Held as a
   // one-shot so re-opening the docket later does not silently re-select what
   // some earlier link pointed at — the panel consumes it and clears it.
@@ -290,6 +303,10 @@ export default function App() {
     onFocusAgent: (id) => { setShowGallery(false); setFocusAgent(id) },
     onOpenDoc: (id) => { setShowGallery(false); setDocJump(id) },
     onOpenMail: (r) => { setShowGallery(false); setMailJump({ ...mailRefTarget(r), seq: jumpTo(r.id).seq }) },
+  })
+  const gitRefs = useShellRefs(slug ?? '', tree ?? null, {
+    onOpenItem: (item) => { setGitContext(null); setDocketJump(jumpTo(item)); setShowDocket(true) },
+    onFocusAgent: (id) => { setGitContext(null); setFocusAgent(id) },
   })
   // the usage button GLOWS once a lane nears its wall (user feature
   // 2026-08-19), so a freeze stops being the first notice. It rides
@@ -672,7 +689,9 @@ export default function App() {
   )
 
   return (
-    <div className="app">
+    <CurrentOrg.Provider value={slug}><div className="app">
+      <RestartNotice />
+      {orgTransitionPrompt}
       {/* no active org: the org list IS the screen */}
       {!slug && (
         <div className="welcome">
@@ -984,6 +1003,8 @@ export default function App() {
                 <DocketToolbarButton
                   summary={tree.work_items_summary}
                   onClick={() => setShowDocket(true)} />
+                {!tree.public && <button className="iconbtn" title="Git repositories"
+                  onClick={() => setGitContext({ slug })}>⑂</button>}
                 <button className="iconbtn barmore mob-only" title="more"
                   onClick={() => setBarMore((v) => !v)}>⋯</button>
                 {/* host subscription usage (the Claude Code /usage bars) —
@@ -1023,6 +1044,10 @@ export default function App() {
                   the browser — it carries the button (user refinement) */}
               {tree.disk?.full && (
                 <DiskFullAlert onOpen={() => setShowDisk('largest')} />
+              )}
+              {gitContext && gitContext.slug === slug && !tree.public && (
+                <GitWorkspace key={slug} slug={slug} context={gitContext} routes={gitRefs}
+                  toast={toast} close={() => setGitContext(null)} />
               )}
               {showDisk && (
                 <DiskBrowser slug={slug} isPublic={!!tree.public} toast={toast}
@@ -1151,9 +1176,26 @@ export default function App() {
           </div>
         ))}
       </div>
+      <WindowMirrors>
+      <div className="toasts">
+        {toasts.map((t) => (
+          <div key={t.id} className="toast" onClick={() =>
+            setToasts((x) => x.filter((y) => y.id !== t.id))}>
+            {t.lines.map((l, i) => <div key={i}>{l}</div>)}
+            {t.undo && (
+              <button className="toast-undo" onClick={(e) => {
+                e.stopPropagation()
+                setToasts((x) => x.filter((y) => y.id !== t.id))
+                ;(typeof t.undo === 'function' ? t.undo : t.undo!.fn)()
+              }}>{typeof t.undo === 'function' ? 'undo' : t.undo.label}</button>
+            )}
+          </div>
+        ))}
+      </div>
+      </WindowMirrors>
       {/* the in-app folder picker: LAST so it stacks above every modal */}
       <FolderPickerHost />
-    </div>
+    </div></CurrentOrg.Provider>
   )
 }
 
@@ -1165,7 +1207,7 @@ export default function App() {
  *  change what cannot change after birth. No save button of its own: the
  *  create form submits, and the settings panel keeps its ONE bottom save
  *  (three save surfaces was a user-reported failure once already). */
-function AdvancedOrgModal({ title, close, children, tabs }: {
+export function AdvancedOrgModal({ title, close, children, tabs }: {
   title: string
   close: () => void
   children?: ReactNode
@@ -1173,12 +1215,10 @@ function AdvancedOrgModal({ title, close, children, tabs }: {
    *  presentation only; both callers keep their own save flow */
   tabs?: { label: string; content: ReactNode }[]
 }) {
-  useEsc(close)
   const [tab, setTab] = useState(0)
   return (
-    <div className="overlay" onClick={(e) => { e.stopPropagation(); close() }}>
-      <div className="settings" onClick={(e) => e.stopPropagation()}>
-        <h3><SettingsIcon fontSize="inherit" /> {title} — advanced</h3>
+    <PinFrame kind="advanced-org" title={`${title} advanced`} panel="settings" close={close} pinnable={false}>
+      <h3><SettingsIcon fontSize="inherit" /> {title} — advanced</h3>
         {tabs && (
           <div className="adv-tabs">
             {tabs.map((t, i) => (
@@ -1192,8 +1232,7 @@ function AdvancedOrgModal({ title, close, children, tabs }: {
         <div className="row">
           <button className="primary" type="button" onClick={close}>done</button>
         </div>
-      </div>
-    </div>
+    </PinFrame>
   )
 }
 

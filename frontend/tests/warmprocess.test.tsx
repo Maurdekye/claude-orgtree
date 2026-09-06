@@ -44,8 +44,10 @@ test('live cards retain warm-cache styling while using the unified cue', async (
     const root = view.el.querySelector('.sq')!
     assert.equal(root.classList.contains('proc-warm'), warm)
     assert.equal(root.classList.contains('proc-cold'), !warm)
-    assert.equal(root.querySelectorAll('.proc-state').length, 1)
-    assert.equal(root.querySelector('.proc-state')?.classList.contains(warm ? 'standby' : 'off'), true)
+    assert.equal(root.querySelectorAll('.proc-state').length, 0,
+      'zoomed-out cards do not mount CLI process status dots')
+    assert.equal(root.querySelectorAll('.cc-spin').length, 0,
+      'idle agents do not show spinning arrow')
     assert.equal(root.querySelectorAll('.proc-mark').length, 0)
   }
 })

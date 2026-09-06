@@ -44,7 +44,7 @@ function node(id: string, tier: string, busy: boolean): CanvasNode {
 
 function card(n: CanvasNode, lod: 'mini' | 'norm', onPin: () => void,
   pinned = false) {
-  return <NodeSquare node={n} pos={{ x: 0, y: 0 }} lod={lod} focused={false}
+  return <NodeSquare key={n.id} node={n} pos={{ x: 0, y: 0 }} lod={lod} focused={false}
     dragging={false} isDrop={false} seats={seats} codexHire={hire}
     antigravityHire={hire} claudeHire={hire} map={new Map([[n.id, n]])}
     op={op} slug="render" toast={noop} pxc={1} zoom={lod === 'mini' ? .4 : .8}
@@ -80,12 +80,10 @@ for (const lod of ['norm', 'mini'] as const) {
         const meta = root.querySelector<HTMLElement>('.sq-meta')
         const actions = root.querySelector<HTMLElement>('.sq-actions')
         assert.ok(name && meta && actions, 'all three card rows are mounted')
-        assert.ok(meta.querySelector('.actlabel'), 'actual activity is in Row 2')
-        const statusDot = meta.querySelector<HTMLElement>('.sq-status-dot')
-        assert.ok(statusDot, 'self-reported working state is in Row 2')
-        assert.match(statusDot.getAttribute('aria-label') ?? '', /working:/,
-          'status dot retains an accessible state summary')
-        assert.ok(meta.querySelector('.proc-state'), 'CLI status is in Row 2')
+        assert.ok(meta.querySelector('.sq-workstate .cc-spin'), 'spinning arrow is in Row 2 when busy')
+        assert.ok(meta.querySelector('.sq-workstate .sq-idle.working'), 'working state text is in Row 2')
+        assert.ok(meta.querySelector('.sq-workstate .sq-idle-time'), 'elapsed turn time is in Row 2')
+        assert.equal(meta.querySelector('.proc-state'), null, 'CLI status dot is not mounted in Row 2')
         assert.ok(meta.querySelector('.ctxwheel'), 'context wheel is in Row 2')
         assert.equal(actions.querySelectorAll('button').length, 4,
           'expand, mail, retire, and settings remain available')
@@ -168,21 +166,23 @@ test('an idle card carries its age BESIDE the state word, not as a separate badg
     } finally { await view.unmount() }
   })
 
-test('a busy card keeps its activity treatment and shows no idle age', async () => {
-  // the busy/queued/working semantics are unchanged: the activity dot owns
-  // that state, and "2m ago" under a running turn contradicts it
+test('a busy card shows spinning arrow, working state word, and elapsed turn time', async () => {
   const busy = node('running-agent', 'haiku', true)
+  busy.inflight_at = new Date(Date.now() - 45_000).toISOString()
   ;(busy as unknown as { turns: unknown[] }).turns =
     [{ at: new Date(Date.now() - 120_000).toISOString(), killed: false, cost: 0, denials: 0 }]
   const view = await mountView(card(busy, 'norm', noop), (el) => el)
   try {
-    // counts only — see the note in the idle test above
-    assert.equal(view.el.querySelectorAll('.sq-workstate .actlabel, .sq-workstate .act').length,
-      1, 'the busy card lost its activity treatment')
-    assert.equal(view.el.querySelectorAll('.sq-idle').length, 0,
-      'a busy card shows a state word')
-    assert.equal(view.el.querySelectorAll('.sq-idle-time').length, 0,
-      'a busy card shows an idle age')
+    const seat = view.el.querySelector('.sq-workstate')
+    const spin = seat?.querySelector('.cc-spin')
+    const word = seat?.querySelector('.sq-idle.working')
+    const time = seat?.querySelector('.sq-idle-time')
+    assert.equal(Boolean(spin), true, 'the busy spinning arrow is missing from sq-workstate')
+    assert.equal(word?.textContent, 'working', 'the working state text is missing')
+    assert.equal(Boolean(time), true, 'the elapsed turn time is missing from sq-workstate')
+    assert.match(time?.textContent ?? '', /\d|—/, 'the elapsed time rendered')
+    // the spinning arrow is on the left (first element in sq-workstate)
+    assert.equal(seat?.firstElementChild === spin, true, 'spinning arrow must be on the left')
     assert.equal(view.el.querySelectorAll('.turnago').length, 0,
       'a busy card shows the old age badge')
   } finally { await view.unmount() }

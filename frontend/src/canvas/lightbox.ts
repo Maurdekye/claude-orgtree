@@ -1,3 +1,4 @@
+import { initiatingDocument } from '../windowlife'
 // canvas/lightbox.ts — the full-size image viewer (user spec 2026-08-25:
 // images flow both ways — agents present them, users attach them — and every
 // inline rendering needs a "view it properly" step that isn't a download).
@@ -9,49 +10,49 @@
 
 /** open the viewer on one image. `download` names the href a "download"
  *  chrome link points at (usually the same /file URL); omitted = no link. */
-export function openLightbox(src: string, opts: { name?: string; download?: string } = {}): void {
-  closeLightbox()                       // one viewer, ever — a second click retargets
-  const ov = document.createElement('div')
+export function openLightbox(src: string, opts: { name?: string; download?: string } = {}, ownerDocument: Document = initiatingDocument()): void {
+  closeLightbox(ownerDocument)                       // one viewer, ever — a second click retargets
+  const ov = ownerDocument.createElement('div')
   ov.className = 'lb-overlay'
-  const img = document.createElement('img')
+  const img = ownerDocument.createElement('img')
   img.className = 'lb-img'
   img.src = src
   if (opts.name) img.alt = opts.name
   // the backdrop closes; the picture itself doesn't (mis-click near the edge)
   img.addEventListener('click', (e) => e.stopPropagation())
   ov.appendChild(img)
-  const bar = document.createElement('div')
+  const bar = ownerDocument.createElement('div')
   bar.className = 'lb-bar'
   bar.addEventListener('click', (e) => e.stopPropagation())
   if (opts.name) {
-    const name = document.createElement('span')
+    const name = ownerDocument.createElement('span')
     name.className = 'lb-name'
     name.textContent = opts.name
     bar.appendChild(name)
   }
   if (opts.download) {
-    const dl = document.createElement('a')
+    const dl = ownerDocument.createElement('a')
     dl.className = 'lb-dl'
     dl.href = opts.download
     dl.setAttribute('download', opts.name ?? '')
     dl.textContent = 'download'
     bar.appendChild(dl)
   }
-  const x = document.createElement('button')
+  const x = ownerDocument.createElement('button')
   x.className = 'lb-x'
   x.title = 'close (Esc)'
   x.textContent = '✕'
-  x.addEventListener('click', closeLightbox)
+  x.addEventListener('click', () => closeLightbox(ownerDocument))
   ov.appendChild(x)
   ov.appendChild(bar)
-  ov.addEventListener('click', closeLightbox)
-  document.body.appendChild(ov)
-  document.addEventListener('keydown', onKey)
+  ov.addEventListener('click', () => closeLightbox(ownerDocument))
+  ownerDocument.body.appendChild(ov)
+  ownerDocument.addEventListener('keydown', onKey)
 }
 
-export function closeLightbox(): void {
-  document.querySelector('.lb-overlay')?.remove()
-  document.removeEventListener('keydown', onKey)
+export function closeLightbox(ownerDocument: Document = initiatingDocument()): void {
+  ownerDocument.querySelector('.lb-overlay')?.remove()
+  ownerDocument.removeEventListener('keydown', onKey)
 }
 
 const onKey = (e: KeyboardEvent) => {
@@ -59,7 +60,7 @@ const onKey = (e: KeyboardEvent) => {
     // the desk's own Esc handlers (panel close, deselect) live upstream —
     // while the viewer is up, Esc means ONLY "close the viewer"
     e.stopPropagation()
-    closeLightbox()
+    closeLightbox((e.currentTarget as Document))
   }
 }
 
@@ -75,7 +76,8 @@ const onKey = (e: KeyboardEvent) => {
  *  `.overlay`'s backdrop-close handler — can still recognise and open an
  *  eligible image directly, instead of the click silently never reaching
  *  this file at all. */
-export function openLightboxIfEligibleImage(e: { target: EventTarget | null; preventDefault(): void }): boolean {
+export function openLightboxIfEligibleImage(e: { target: EventTarget | null; defaultPrevented?: boolean; preventDefault(): void }): boolean {
+  if (e.defaultPrevented) return false
   const img = (e.target as Element | null)?.closest?.('.md img') as HTMLImageElement | null
   if (!img || img.closest('a')) return false
   if (img.complete && img.naturalWidth === 0) return false
@@ -83,7 +85,7 @@ export function openLightboxIfEligibleImage(e: { target: EventTarget | null; pre
   openLightbox(img.currentSrc || img.src, {
     name: img.alt || undefined,
     download: img.currentSrc || img.src,
-  })
+  }, img.ownerDocument)
   return true
 }
 

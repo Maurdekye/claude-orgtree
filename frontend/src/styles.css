@@ -675,8 +675,13 @@ button.badge.audience-fold.alert {
 .sq-meta { display: flex; align-items: center; gap: 4px; min-width: 0; min-height: 16px; }
 .sq-workstate { display: flex; align-items: center; min-width: 0; flex: 1 1 auto; overflow: hidden; }
 .sq-workstate .actlabel { flex: 1 1 auto; }
+.sq-workstate .cc-spin { flex: none; margin-right: 3px; }
+.sq-workstate .statusdot { flex: none; margin-right: 4px; }
 .sq-idle { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   font: 600 10px/1 var(--mono); color: var(--dim); }
+.sq-idle.working { color: var(--accent); }
+.sq-idle.waiting, .sq-idle.queued { color: var(--work); }
+.sq-idle.compacting { color: var(--accent); }
 .sq-idle.done { color: var(--ok); }
 .sq-idle.blocked { color: var(--bad); }
 /* the age beside the state word; flex:none so the WORD truncates first and the
@@ -687,8 +692,8 @@ button.badge.audience-fold.alert {
   font-variant-numeric: tabular-nums;
 }
 .sq-status-dot { margin-left: 2px; }
-.sq-meta .proc-state { flex: none; }
-.sq-meta .ctxwheel { margin-left: auto; flex: none; width: 13px; height: 13px; }
+.sq-meta .proc-state, .sq-meta .cc-spin { flex: none; }
+.sq-meta .ctxwheel { flex: none; width: 13px; height: 13px; }
 .sq-actions {
   display: flex; align-items: center; justify-content: flex-start; gap: 4px;
   min-height: 16px;
@@ -1036,6 +1041,8 @@ html.mobile .edge-jump { display: none; }
 .turn-status-banner.working { color: var(--accent); }
 .turn-status-banner.queued,
 .turn-status-banner.compacting { color: var(--warn, #e5c07b); }
+.turn-status-banner.blocked { color: var(--bad); }
+.turn-status-banner.done { color: var(--ok); }
 .turn-status-banner.idle { color: var(--dim); }
 .turn-status-banner .turn-status-time {
   color: var(--dim); font-variant-numeric: tabular-nums;
@@ -4041,6 +4048,22 @@ svg.MuiSvgIcon-root {
   background: none; border: none; padding: 0; margin: 0;
   font: inherit; color: inherit; text-align: left; cursor: pointer;
 }
+.tray-status {
+  flex: none; display: inline-flex; align-items: center; gap: 4px;
+}
+.tray-status-label {
+  font: 600 10px/1 var(--mono); color: var(--dim);
+}
+.tray-status-label.working { color: var(--accent); }
+.tray-status-label.waiting, .tray-status-label.queued { color: var(--work); }
+.tray-status-label.compacting { color: var(--accent); }
+.tray-status-label.blocked { color: var(--bad); }
+.tray-status-label.done { color: var(--ok); }
+.tray-status-label.idle { color: var(--dim); }
+.tray-status-time {
+  font: 600 10px/1 var(--mono); color: var(--dim);
+  font-variant-numeric: tabular-nums;
+}
 .tray-sum {
   display: flex; align-items: baseline;
   font-size: 10.5px; color: var(--dim); padding-left: 26px;
@@ -5718,3 +5741,39 @@ a.doc-chip, a.doc-badge, a.doc-gallery-row { text-decoration: none; }
 
 .hist-event { padding: 8px; border-bottom: 1px solid var(--border); }
 .hist-event > .event-card { margin-top: 5px; }
+/* Movable surfaces keep a stable portal target in both documents. */
+.movable-anchor, .movable-surface, .movable-content, .movable-overlays,
+.movable-events, .desk-slot { display: contents; }
+.desk-bare { display: contents; }
+.popout-button { cursor: pointer; font-size: 18px; line-height: 1; padding: 3px 7px; }
+.popout-placeholder, .popout-error, .popout-restart, .popout-dependency {
+  display: flex; align-items: center; gap: 8px; padding: 8px 12px;
+  background: var(--bg, #171717); color: var(--ink); font-size: 12px;
+}
+.popout-error { color: #ffb59c; }
+.popout-restart { border: 1px solid #a9803b; flex-wrap: wrap; }
+.popout-document { margin: 0; overflow: hidden; }
+.popout-mount, .popout-mount > .movable-surface,
+.popout-mount .movable-content, .popout-mount .movable-events {
+  display: flex; flex-direction: column; height: 100%; min-height: 0; width: 100%;
+}
+.popout-mount { height: 100vh; }
+.popout-mount .popout-dependency, .popout-mount .popout-error,
+.popout-mount .popout-restart { flex: none; }
+.popout-mount .overlay-detached { position: relative; inset: auto; display: flex;
+  flex: 1; min-height: 0; padding: 0; background: none; width: 100%; }
+.popout-mount .overlay-detached > .settings { position: relative; margin: 0;
+  width: 100%; max-width: none; height: 100%; max-height: none; box-sizing: border-box; }
+.popout-mount .desk-body { flex: 1; min-height: 0; width: 100%; height: 100%; }
+.popout-mount .modalpin-bar { display: flex; }
+.popout-recovery { position: fixed; inset: 40px; z-index: 31; overflow: auto;
+  display: flex; background: var(--bg, #171717); }
+html.mobile .popout-button { display: none; }
+
+.desk-control-scope { display: contents; border: 0; padding: 0; margin: 0; }
+.popout-switch { z-index: 110; }
+
+.popout-draft-recovery pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+
+.popout-recovery { flex-direction: column; }
+.popout-recovery .desk-body { flex: 1; min-height: 0; width: 100%; }

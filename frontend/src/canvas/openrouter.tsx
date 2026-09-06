@@ -1,3 +1,4 @@
+import { PinFrame } from './modalpin'
 // canvas/openrouter.tsx — the OpenRouter lane's settings surface (user spec
 // 2026-09-02, verbatim intent):
 //
@@ -360,11 +361,7 @@ export function ModelPicker({ doc, busy, onToggle, onClose }: {
   const from = total ? offset + 1 : 0
   const to = page ? Math.min(offset + page.items.length, total) : 0
   return (
-    <div className="overlay" onClick={(e) => { e.stopPropagation(); onClose() }}
-      onPointerDown={(e) => e.stopPropagation()}>
-      <div className="settings orr-picker" role="dialog"
-        aria-label="OpenRouter model selection"
-        onClick={(e) => e.stopPropagation()}>
+    <PinFrame dialogLabel="OpenRouter model selection" kind="openrouter-picker" title="OpenRouter models" panel="settings orr-picker" close={onClose} pinnable={false}>
         <h3>OpenRouter models
           <span className="dim"> · {doc.tiers.length} selected</span></h3>
         {/* the SELECTED list: the same models the section's favorites row
@@ -528,7 +525,6 @@ export function ModelPicker({ doc, busy, onToggle, onClose }: {
           <span className="dim">{total ? `${from}–${to} of ${total}` : ''}</span>
           <button className="primary" type="button" onClick={onClose}>done</button>
         </div>
-      </div>
-    </div>
+    </PinFrame>
   )
 }

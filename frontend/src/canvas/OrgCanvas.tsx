@@ -1,3 +1,5 @@
+import { preserveRemovedDrafts, renameDrafts } from '../draftstore'
+import { DeskHosts } from './deskhosts'
 // canvas/OrgCanvas.tsx — the canvas core: the OrgCanvas component itself —
 // camera (pan/zoom/springs/follow), tree layout orchestration, wires and
 // mail sparks, node dragging and re-parenting, the retired/crowd piles, the
@@ -21,7 +23,7 @@ import type {
   CanvasNode, DraftScope, DraftState, FamilyOffer, MailEvent, MailLinkFn,
   HireState, OpFn, Pile, Pt, Seg, Spring, StreamEvent, View, WorkLinkFn,
 } from './shared'
-import { Activity, ContextWheel, DeskChat, DestinationBusy, LineagePanel, ProcessLifecycleMark } from './desk'
+import { ContextWheel, DeskChat, DestinationBusy, LineagePanel, TrayStatus } from './desk'
 import { DocReader } from './docs'
 import { mailRefTarget, useRefRoutes, Written } from './reflinks'
 import type { ResolvedRef } from './reflinks'
@@ -528,6 +530,8 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox, onWorkItem,
     renamePin(slug, from, to)
     renameConvo(slug, from, to)
     migrateClientNodeState(slug, from, to)
+    renameDrafts(slug, from, to)
+    window.dispatchEvent(new window.CustomEvent('orgtree:desk-rename', { detail: { slug, from, to } }))
     setConfigId((v) => v === from ? to : v)
     setLineageId((v) => v === from ? to : v)
     setInboxId((v) => v === from ? to : v)
@@ -814,6 +818,7 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox, onWorkItem,
     // node set — nearly everything. Only sweep when the two agree.
     if (tree.slug !== slug) return
     try {
+      preserveRemovedDrafts(slug, map)
       const pre = `orgtree-draft-${slug}-`
       for (let i = localStorage.length - 1; i >= 0; i--) {
         const k = localStorage.key(i)
@@ -2174,7 +2179,7 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox, onWorkItem,
   }, [tree])
 
   return (
-    <div className={'viewport' + (tree.sandboxed ? ' sandboxed' : '')
+    <DeskHosts map={map} slug={slug} treeSlug={tree.slug}><div className={'viewport' + (tree.sandboxed ? ' sandboxed' : '')
       + (tree.headless ? ' headless' : '')
       // api_fallback (user feature 2026-08-19): the office border goes red
       // while the org's own API key is the lane being billed. Whole-canvas,
@@ -2718,6 +2723,7 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox, onWorkItem,
                 // finished status survives the next turn as prev_status (dim)
                 const stat: (NodeStatus & { _stale?: boolean }) | null = n.last_status
                   ?? (n.prev_status ? { ...n.prev_status, _stale: true } : null)
+                const lastTurn = n.turns?.[n.turns.length - 1]
                 return (
                 /* ⚠ THE ROW IS NOT ITSELF A BUTTON, which is what lets its
                    summary carry reference controls: a button inside a
@@ -2750,24 +2756,7 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox, onWorkItem,
                       title={(n.charter || '').split('\n')[0] || n.id}>{n.id}</span>
                     <ContextWheel occ={n.occupancy} cw={n.context_window}
                       est={n.occupancy_est} compactAt={tree.compact_at} />
-                    {n.state === 'live' && <ProcessLifecycleMark warm={Boolean(n.proc_warm)}
-                      live={n.proc_live} relaunch={n.proc_relaunch}
-                      reason={n.proc_relaunch_reason} busy={n.busy} tier={n.tier} />}
-                    {n.busy ? (n.waiting
-                      ? <span className="statusdot waiting"
-                          title="queued — waiting for a free turn slot (№12)" />
-                      : <span title={n.inflight_at
-                          ? `running for ${ago(n.inflight_at)}` : 'working'}>
-                          <Activity act={n.activity} dotOnly />
-                        </span>)
-                      : n.frozen
-                        ? <FrozenIcon fontSize="inherit" className="tray-frozen" />
-                        : n.state !== 'live'
-                          ? <span className="dim">{n.state}</span>
-                          : n.last_status
-                            ? <span className={'statusdot ' + n.last_status.status}
-                                title={n.last_status.summary} />
-                            : <span className="statusdot idle" title="idle" />}
+                    <TrayStatus node={n} turn={lastTurn} live={n.state === 'live'} />
                   </button>
                   {/* ⚠ THE WHOLE SUMMARY, MATCHED BEFORE ANY TRUNCATION: a
                       slice here cuts tokens in half, and the clipping is the
@@ -2859,17 +2848,14 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox, onWorkItem,
       {sheetId && map.get(sheetId) && (() => {
         const n = map.get(sheetId)!
         const myDogs = (tree.watchdogs ?? []).filter((w) => w.owner === sheetId)
+        const sheetLastTurn = n.turns?.[n.turns.length - 1]
         return (
           <MaybePortal>
             <div className="mobsheet">
               <header className="mobsheet-head">
                 <span className={'tier t-' + n.tier}>{TIER_LETTER[n.tier ?? ''] ?? '?'}</span>
                 <b className="ms-name">{n.id}</b>
-                {n.busy && <Activity act={n.activity} dotOnly />}
-                {n.state === 'live' && <ProcessLifecycleMark warm={Boolean(n.proc_warm)}
-                  live={n.proc_live} relaunch={n.proc_relaunch}
-                  reason={n.proc_relaunch_reason} busy={n.busy} tier={n.tier} />}
-                {n.state !== 'live' && <span className="dim">{n.state}</span>}
+                <TrayStatus node={n} turn={sheetLastTurn} live={n.state === 'live'} />
                 <span className="spacer" />
                 {myDogs.length > 0 &&
                   <button className="ms-btn" onClick={() => setSheetDogs((v) => !v)}>
@@ -2951,7 +2937,7 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox, onWorkItem,
             }} />
         </MaybePortal>
       )}
-    </div>
+    </div></DeskHosts>
   )
 }
 

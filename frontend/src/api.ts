@@ -3,6 +3,7 @@ import type { ReplyTarget } from './generated/events'
 // (/k/<token>/…), every API call and the WS must carry the token prefix —
 // the public listener serves nothing outside it.
 import { bumpLive } from './livebus'
+import { backendRestart } from './windowlife'
 import type {
   AudiencesPayload, ChartersPayload, ChatPayload, DefaultsPayload,
   DiskDeleteResult, DiskDirPayload, DiskPayload, EventsPayload, FsPayload,
@@ -36,20 +37,17 @@ const u = (p: string) => BASE + p
  *  (the tree, the conversation, every open panel) all pass through `req`, so
  *  detection is within one poll of the restart.
  *
- *  ⚠ Deliberately unconditional — the user asked for a forced refresh. An
- *  unsent composer draft is lost, which is the same thing pressing F5 does.
- *  `reloading` only stops several in-flight responses from each calling
- *  `location.reload()` while the first one is already tearing the page down. */
+ *  Detached editable surfaces defer reload for an explicit user choice;
+ *  windowlife owns that sticky choice and the single reload operation. */
 let instance = ''
-let reloading = false
 function noteInstance(r: Response): void {
   const id = r.headers.get('X-Orgtree-Instance')
-  if (!id || reloading) return
+  if (!id) return
   if (!instance) { instance = id; return }
   if (id === instance) return
-  reloading = true
-  console.info(`orgtree restarted (${instance} → ${id}) — reloading`)
-  location.reload()
+  // The window lifecycle coordinator offers an explicit choice when a
+  // detached form could be lost. A deferred choice stays latched.
+  backendRestart(id)
 }
 
 /** A request that never answers is worse than one that fails.
@@ -82,7 +80,7 @@ const timeoutSignal = (ms: number): AbortSignal | undefined => {
 // the one wire-boundary cast in the app: runtime JSON is untyped, and each
 // endpoint's declared Promise<T> return type is the contract that types it.
 // T infers from that declared return at every call site - no `any` escapes.
-const req = <T,>(path: string, init?: RequestInit,
+export const req = <T,>(path: string, init?: RequestInit,
                  timeoutMs: number = DEFAULT_TIMEOUT_MS): Promise<T> =>
   fetch(u(path), init?.signal || !timeoutMs
     ? init

@@ -1,3 +1,5 @@
+import { MovableSurface, PopoutButton, useOverlayRoot, useCurrentOrg, useSurface, useSurfaceDocument } from '../popout'
+import { detachedKind } from '../windowlife'
 // canvas/modalpin.tsx — PINNING A MODAL TO THE WINDOW (user spec 2026-09-06):
 // "most openable modals in the app should be able to be pinned to the window
 // and dragged around, like pinned agent windows. this goes for inboxes,
@@ -179,7 +181,7 @@ export const isModalPinned = (kind: string): boolean =>
  *  a small box the user placed, and dismissing it there would throw that
  *  placement away with no undo. Same navigation, one condition. */
 export const closeIfCentred = (kind: string, close: () => void): void => {
-  if (!isModalPinned(kind)) close()
+  if (!isModalPinned(kind) && !detachedKind(kind)) close()
 }
 
 export const pinModal = (kind: string, rect: PinRect): void => {
@@ -260,12 +262,13 @@ export const measureRect = (el: HTMLElement | null): PinRect => {
  * the HOST above the dialog it just opened.
  */
 export function ModalOverPins({ children }: { children: ReactNode }) {
+  const overlayRoot = useOverlayRoot()
   if (typeof document === 'undefined') return <>{children}</>
   return createPortal(
     <div className="modalpin-over" onPointerDown={(e) => e.stopPropagation()}>
       {children}
     </div>,
-    document.body)
+    overlayRoot)
 }
 
 // --------------------------------------------------------------- component
@@ -277,6 +280,8 @@ type Gesture = GestureShape & { pointerId: number; moved: boolean; capture: HTML
 const EDGES = ['n', 's', 'e', 'w', 'ne', 'nw', 'se', 'sw'] as const
 
 export interface PinFrameProps {
+  pinnable?: boolean
+  dialogLabel?: string
   /** the window's identity in storage — stable, and unique per surface */
   kind: string
   /** what the pinned title bar calls this window */
@@ -309,15 +314,25 @@ export interface PinFrameProps {
  * pinning interaction folded in. Callers pass what used to be the two divs'
  * class names and handlers, and their children unchanged.
  */
-export function PinFrame({ kind, title, panel, overlayClass, close, children,
-  onEsc, backdropClose = true, onPanelClick }: PinFrameProps) {
+export function PinFrame(props: PinFrameProps) {
+  const org = useCurrentOrg()
+  const scope = ['usage', 'defaults', 'app-settings', 'advanced-org'].includes(props.kind) ? null : org
+  return <MovableSurface key={scope} org={scope} kind={props.kind} title={props.title}><PinFrameInner {...props} /></MovableSurface>
+}
+
+function PinFrameInner({ kind, title, panel, overlayClass, close, children,
+  onEsc, backdropClose = true, onPanelClick, pinnable = true, dialogLabel }: PinFrameProps) {
   const pin = useModalPin(kind)
-  const pinned = pin !== null
+  const surface = useSurface()
+  const ownerDocument = useSurfaceDocument()
+  const ownerWindow = ownerDocument.defaultView ?? window
+  const detached = !!surface?.detached
+  const pinned = pin !== null && !detached
   const panelRef = useRef<HTMLDivElement>(null)
   // Escape is the CENTRED surface's exit only (see onEsc). The hook is always
   // called — hooks are not conditional — and is handed a no-op when pinned.
   const esc = onEsc ?? close
-  useEsc(useCallback(() => { if (!pinned) esc() }, [pinned, esc]))
+  useEsc(useCallback(() => esc(), [esc]), !pinned && !detached)
 
   // the in-flight gesture's rect lives in component state (one render per
   // pointer move); the store is written ONCE, at pointer-up
@@ -329,9 +344,9 @@ export function PinFrame({ kind, title, panel, overlayClass, close, children,
   const [, setTick] = useState(0)
   useEffect(() => {
     const bump = () => setTick((n) => n + 1)
-    window.addEventListener('resize', bump)
-    return () => window.removeEventListener('resize', bump)
-  }, [])
+    ownerWindow.addEventListener('resize', bump)
+    return () => ownerWindow.removeEventListener('resize', bump)
+  }, [ownerWindow])
 
   const cancel = () => {
     const g = gesture.current
@@ -346,11 +361,11 @@ export function PinFrame({ kind, title, panel, overlayClass, close, children,
         e.preventDefault(); e.stopPropagation(); cancel()
       }
     }
-    window.addEventListener('keydown', onKey, true)
-    return () => window.removeEventListener('keydown', onKey, true)
-  }, [])
+    ownerWindow.addEventListener('keydown', onKey, true)
+    return () => ownerWindow.removeEventListener('keydown', onKey, true)
+  }, [ownerWindow])
 
-  const rect = pin ? clampRect(live ?? pin.rect, winSize()) : null
+  const rect = pin && !detached ? clampRect(live ?? pin.rect, winSize()) : null
 
   const begin = (e: ReactPointerEvent<HTMLElement>, g: GestureShape) => {
     if (e.button !== 0 || gesture.current || !rect) return
@@ -415,15 +430,15 @@ export function PinFrame({ kind, title, panel, overlayClass, close, children,
     : undefined
   return (
     <div className={'overlay' + (overlayClass ? ' ' + overlayClass : '')
-      + (pinned ? ' overlay-pinned' : '')}
-      style={pin ? { zIndex: modalZIndex(pin.z) } : undefined}
-      onClick={pinned || !backdropClose ? undefined
+      + (pinned ? ' overlay-pinned' : '') + (detached ? ' overlay-detached' : '')}
+      style={pin && !detached ? { zIndex: modalZIndex(pin.z) } : undefined}
+      onClick={pinned || detached || !backdropClose ? undefined
         : (e) => { e.stopPropagation(); close() }}
       onPointerDown={(e) => e.stopPropagation()}>
       {/* ⚠ SAME ELEMENT, SAME CHILDREN, IN BOTH MODES — see the header. Only
           the class list and the inline rect change, so React keeps the whole
           subtree mounted across a pin, an unpin, a drag and a resize. */}
-      <div ref={panelRef} className={panel + (pinned ? ' modalpin-win' : '')}
+      <div ref={panelRef} role={dialogLabel ? "dialog" : undefined} aria-label={dialogLabel} className={panel + (pinned ? ' modalpin-win' : '')}
         style={style}
         onClick={(e) => { onPanelClick?.(e); e.stopPropagation() }}
         onPointerDown={pinned ? () => raiseModal(kind) : undefined}>
@@ -449,7 +464,8 @@ export function PinFrame({ kind, title, panel, overlayClass, close, children,
               {title}</span>
           </>}
           <span className="spacer" />
-          <button type="button" className="modalpin-btn"
+          <PopoutButton />
+          {pinnable && <button type="button" className="modalpin-btn" disabled={detached}
             title={pinned
               ? 'unpin — put this back in the middle of the screen'
               : 'pin this to the window, so it stays put and can be dragged around'}
@@ -459,7 +475,7 @@ export function PinFrame({ kind, title, panel, overlayClass, close, children,
             onClick={(e) => { e.stopPropagation(); toggle() }}>
             {pinned ? <PushPinIcon fontSize="inherit" />
               : <PushPinOutlinedIcon fontSize="inherit" />}
-          </button>
+          </button>}
           {pinned && (
             <button type="button" className="modalpin-btn modalpin-x" title="close"
               aria-label="close this window"

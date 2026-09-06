@@ -14,7 +14,7 @@ import {
   LockIcon, MailIcon, PinIcon, RetireIcon, SettingsIcon,
 } from '../icons'
 import {
-  anyTierSeat, codexTierOffer, CODEX_TIER_LETTER, CODEX_TIER_SEAT, CODEX_TIERS, DESK_SCALE, deskDpi, DRAFT, familyOffer, fmtCredits, formatCount, freezeKind, FREEZE_LABEL_SHORT, ANTIGRAVITY_TIER_LETTER, ANTIGRAVITY_TIER_SEAT, ANTIGRAVITY_TIERS, isOpenRouterTier, NODE_H, NODE_W, openrouterTierIds, providerOf, queuedSwitchTitle, TIER_LETTER, TIER_SEAT, tierLabel, TIERS, unicodeLength, USER,
+  ago, anyTierSeat, codexTierOffer, CODEX_TIER_LETTER, CODEX_TIER_SEAT, CODEX_TIERS, DESK_SCALE, deskDpi, DRAFT, familyOffer, fmtCredits, formatCount, freezeKind, FREEZE_LABEL_SHORT, ANTIGRAVITY_TIER_LETTER, ANTIGRAVITY_TIER_SEAT, ANTIGRAVITY_TIERS, isOpenRouterTier, NODE_H, NODE_W, openrouterTierIds, providerOf, queuedSwitchTitle, TIER_LETTER, TIER_SEAT, tierLabel, TIERS, unicodeLength, USER,
   USER_H, USER_W,
 } from './shared'
 import type {
@@ -23,8 +23,8 @@ import type {
   Pt,
 } from './shared'
 import {
-  Activity, ContextWheel, DeskChat, DestinationBusy, LastTurnAge,
-  ProcessLifecycleMark, RouteBadge,
+  AgentWorkstate, ContextWheel, deriveTurnState, DeskChat, DestinationBusy, LastTurnAge,
+  MapModeIndicator, MapTurnAge, RouteBadge,
 } from './desk'
 import { DocChips } from './docs'
 import { isMobile } from '../mobile'
@@ -1332,15 +1332,7 @@ export function NodeSquare({ node, pos, lod, focused: deskOpen, dragging, isDrop
           {node.pending_switch &&
             <span className="queued-mark" title={queuedSwitchTitle(node)}>
               →{TIER_LETTER[node.pending_switch.tier] ?? '?'}</span>}
-          {node.busy
-            ? <span className="statusdot waiting" />
-            : node.frozen ? <FrozenIcon fontSize="inherit" className="tray-frozen" />
-            : node.state !== 'live' ? <span className="map-off">{node.state}</span>
-            : stat ? <span className={'statusdot ' + stat.status} />
-            : <span className="statusdot idle" />}
-          {live && <ProcessLifecycleMark warm={Boolean(node.proc_warm)}
-            live={node.proc_live} relaunch={node.proc_relaunch}
-            reason={node.proc_relaunch_reason} busy={node.busy} tier={node.tier} />}
+          <MapModeIndicator node={node} />
           {(dogs ?? 0) > 0 && <span className={'map-dogs' + ((oneShotDogs ?? 0) > 0 ? ' oneshot' : '')}
             aria-label={`${dogs} watchdog${dogs === 1 ? '' : 's'}${(oneShotDogs ?? 0) > 0
               ? `, ${oneShotDogs} one-shot dog${oneShotDogs === 1 ? '' : 's'}` : ''}`}>
@@ -1348,7 +1340,11 @@ export function NodeSquare({ node, pos, lod, focused: deskOpen, dragging, isDrop
           </span>}
         </div>
         <span className="map-name">{node.id}</span>
-        <LastTurnAge turn={lastTurn} busy={node.busy} variant="map" />
+        {deriveTurnState(node) !== 'idle' ? (
+          <MapTurnAge node={node} turn={lastTurn} />
+        ) : (
+          <LastTurnAge turn={lastTurn} busy={node.busy} variant="map" />
+        )}
       </div>
     )
   }
@@ -1414,31 +1410,21 @@ export function NodeSquare({ node, pos, lod, focused: deskOpen, dragging, isDrop
           <span className="name" title={node.id}>{node.id}</span>
         </div>
         <div className="sq-meta">
+          <ContextWheel occ={node.occupancy} cw={node.context_window}
+            est={node.occupancy_est} compactAt={compactAt} />
           <div className="sq-workstate">
-            {node.busy
-              ? <>
-                <Activity act={node.activity} />
-                {node.last_status &&
-                  <span className={'sq-status-dot statusdot ' + node.last_status.status}
-                    aria-label={`${node.last_status.status}: ${node.last_status.summary}`}
-                    title={`${node.last_status.status}: ${node.last_status.summary}`} />}
-              </>
-              : <>
-                {/* the age is the word's SIBLING, not its child: `.sq-idle`
-                    keeps its own ellipsis, and `.sq-idle-time` is flex:none so
-                    the word truncates before the clock does */}
+            {deriveTurnState(node) !== 'idle' ? (
+              <AgentWorkstate node={node} turn={lastTurn} live={live} />
+            ) : (
+              <>
                 <span className={'sq-idle ' + (node.last_status?.status ?? (live ? 'idle' : node.state))}
                   title={node.last_status?.summary ?? undefined}>
                   {node.last_status?.status ?? (live ? 'idle' : node.state)}
                 </span>
                 <LastTurnAge turn={lastTurn} busy={node.busy} variant="inline" />
-              </>}
+              </>
+            )}
           </div>
-          {live && <ProcessLifecycleMark warm={Boolean(node.proc_warm)}
-            live={node.proc_live} relaunch={node.proc_relaunch}
-            reason={node.proc_relaunch_reason} busy={node.busy} tier={node.tier} />}
-          <ContextWheel occ={node.occupancy} cw={node.context_window}
-            est={node.occupancy_est} compactAt={compactAt} />
           {node.last_error && <span className="errdot" title={node.last_error ?? undefined} />}
         </div>
       </div>}
