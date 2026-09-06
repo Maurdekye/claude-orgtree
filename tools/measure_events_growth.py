@@ -10,16 +10,26 @@ the live root: it sets ORGTREE_DATA to the given path BEFORE importing orgtree, 
 asserts `store.DATA_ROOT` is that path and does not resolve under the live root, and
 aborts otherwise. It writes nothing into the copy.
 
-WHAT IS MEASURED. Migration adds `ev` only to rows minted AFTER it; existing rows stay
-legacy and do not grow. So the number that matters is prospective: "if every row this
-org has accumulated had been minted typed, how much larger would each section be?" For
-each row in mail / mail_log / notices / notice_log / user_inbox:
-  * an authored row (kind in the ordinary set, or an agent/user sender) is charged the
-    ORDINARY envelope as the ROW encoder writes it (body elided, §5): the smallest `ev`;
-  * every other row is charged the LARGEST fixture `ev` of any system leaf (worst case:
-    the measurement does not classify rows by their text — it takes the ceiling).
-Both a "typical" (ordinary envelope everywhere) and the "worst case" total are reported,
-per section, in JSON bytes as stored, against the section's current size.
+WHAT IS MEASURED — two separate facts (coordinator 19:19):
+
+1. EXISTING ROWS GROW BY ZERO. Migration adds `ev` only to rows minted after it; there is
+   no backfill and no tag-on-read (design I5). Reported as `legacy_growth_bytes: 0` per
+   section, with the current section size beside it, so the number is on the record.
+
+2. PROSPECTIVE COST, as explicit SCENARIOS — no row is classified by its text or by its
+   kind/sender (kind=request/status/notice and a non-@system sender do not identify an
+   authored row: docket, review, generated status and engine-authored USER-routed rows
+   share them). Each scenario charges EVERY row of the section the same `ev` size:
+     * all_ordinary        — every row an ordinary.* envelope as the ROW encoder writes it
+                             (body elided): the floor.
+     * all_median_fixture  — every row the MEDIAN system-leaf fixture `ev`.
+     * all_largest_fixture — every row the LARGEST system-leaf fixture `ev`. This is the
+                             largest FIXTURE, not an upper bound: real payloads are
+                             variable-length (a docket objective, a watchdog's lines).
+   Each is reported in bytes and as % of the section's current size. The truth for a
+   given org lies between all_ordinary and an all-largest-fixture-sized load; which one
+   it is closer to depends on the org's mix, which this script deliberately does not
+   guess.
 """
 from __future__ import annotations
 
@@ -46,7 +56,6 @@ from orgtree.events_fixtures import FIXTURES            # noqa: E402
 assert os.path.realpath(store.DATA_ROOT) == COPY, ("DATA_ROOT bound elsewhere", store.DATA_ROOT)
 assert not os.path.realpath(store.DATA_ROOT).startswith(LIVE), store.DATA_ROOT
 
-ORDINARY = {"message", "question", "request", "decision", "status", "notice"}
 SECTIONS = ("mail", "mail_log", "notices", "notice_log", "user_inbox", "user_mail_log")
 
 
@@ -63,24 +72,38 @@ def _rows(doc: dict, section: str) -> list[dict]:
     return []
 
 
-# envelope sizes from the real codec
+# `ev` sizes from the real codec, on the real fixtures — as the ROW encoder writes them
 _ord_fx = FIXTURES["ordinary.message"]
 _ord_ev = events.mint("ordinary.message", {"kind": "agent", "id": "x"}, None, **_ord_fx["fields"])
-ORDINARY_ROW_BYTES = _size({"ev": events.encode_row_ev(_ord_ev, {"body": _ord_fx["fields"]["body"]})})
-_sys_sizes = {}
+ORDINARY_BYTES = _size({"ev": events.encode_row_ev(_ord_ev, {"body": _ord_fx["fields"]["body"]})})
+_sys_sizes: dict[str, int] = {}
 for v, fx in FIXTURES.items():
     if v.startswith(("ordinary.", "reply.")):
         continue
     ev = events.mint(v, fx["actor"], fx.get("object"), **fx["fields"])
     _sys_sizes[v] = _size({"ev": events.encode_row_ev(ev, {"body": events.render_agent(ev)})})
-WORST_LEAF, WORST_BYTES = max(_sys_sizes.items(), key=lambda kv: kv[1])
-MEDIAN_BYTES = sorted(_sys_sizes.values())[len(_sys_sizes) // 2]
+LARGEST_LEAF, LARGEST_BYTES = max(_sys_sizes.items(), key=lambda kv: kv[1])
+_sorted = sorted(_sys_sizes.items(), key=lambda kv: kv[1])
+MEDIAN_LEAF, MEDIAN_BYTES = _sorted[len(_sorted) // 2]
 
-report = {"copy": COPY, "ordinary_row_ev_bytes": ORDINARY_ROW_BYTES,
-          "system_leaf_median_bytes": MEDIAN_BYTES, "worst_leaf": WORST_LEAF,
-          "worst_leaf_bytes": WORST_BYTES, "orgs": []}
+SCENARIOS = {
+    "all_ordinary": ORDINARY_BYTES,
+    "all_median_fixture": MEDIAN_BYTES,
+    "all_largest_fixture": LARGEST_BYTES,
+}
+
+report = {
+    "copy": COPY,
+    "method": "no row is classified; each scenario charges every row the same ev size",
+    "ev_bytes_per_row": {"all_ordinary": ORDINARY_BYTES,
+                         "all_median_fixture": {"leaf": MEDIAN_LEAF, "bytes": MEDIAN_BYTES},
+                         "all_largest_fixture": {"leaf": LARGEST_LEAF, "bytes": LARGEST_BYTES,
+                                                 "note": "largest FIXTURE, not an upper bound "
+                                                         "on variable-length real payloads"}},
+    "orgs": [],
+}
+totals = {"doc_bytes": 0, "sections": {}}
 for o, org in store.list_orgs_with_docs():
-    slug = o["slug"]
     doc = org.d
     per = {}
     for sec in SECTIONS:
@@ -88,19 +111,25 @@ for o, org in store.list_orgs_with_docs():
         if not rows:
             continue
         cur = _size(doc.get(sec))
-        # notices carry no kind and are ALL system-typed after migration; mail rows are
-        # authored unless the engine signed them
-        n_ord = 0 if sec in ("notices", "notice_log") else sum(
-            1 for r in rows if str(r.get("kind") or "message") in ORDINARY
-            and str(r.get("from") or "") not in ("@system", "orgtree"))
-        n_sys = len(rows) - n_ord
-        per[sec] = {"rows": len(rows), "ordinary_rows": n_ord, "system_rows": n_sys,
-                    "bytes_now": cur,
-                    "typical_growth": n_ord * ORDINARY_ROW_BYTES + n_sys * MEDIAN_BYTES,
-                    "worst_growth": n_ord * ORDINARY_ROW_BYTES + n_sys * WORST_BYTES}
-        per[sec]["typical_pct"] = round(100.0 * per[sec]["typical_growth"] / max(cur, 1), 1)
-        per[sec]["worst_pct"] = round(100.0 * per[sec]["worst_growth"] / max(cur, 1), 1)
-    report["orgs"].append({"slug": slug, "doc_bytes": _size(doc), "sections": per})
+        entry = {"rows": len(rows), "bytes_now": cur, "legacy_growth_bytes": 0,
+                 "prospective": {}}
+        for name, per_row in SCENARIOS.items():
+            g = len(rows) * per_row
+            entry["prospective"][name] = {"bytes": g, "pct_of_now": round(100.0 * g / max(cur, 1), 1)}
+        per[sec] = entry
+        t = totals["sections"].setdefault(sec, {"rows": 0, "bytes_now": 0,
+                                                "prospective": {k: 0 for k in SCENARIOS}})
+        t["rows"] += len(rows)
+        t["bytes_now"] += cur
+        for name in SCENARIOS:
+            t["prospective"][name] += entry["prospective"][name]["bytes"]
+    db = _size(doc)
+    totals["doc_bytes"] += db
+    report["orgs"].append({"slug": o["slug"], "doc_bytes": db, "sections": per})
+for sec, t in totals["sections"].items():
+    t["pct_of_now"] = {k: round(100.0 * v / max(t["bytes_now"], 1), 1)
+                       for k, v in t["prospective"].items()}
+report["totals"] = totals
 
 out = json.dumps(report, indent=2, ensure_ascii=False)
 if "--json" in sys.argv:
