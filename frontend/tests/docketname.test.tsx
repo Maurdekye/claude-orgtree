@@ -247,7 +247,7 @@ test('§N4 groupIdentity: one answer, or none — the unit', () => {
 
 // ------------------------------------------------------ agents named in prose
 
-uiTest('§N5 an agent named in prose is a jump; a name this org lacks is words',
+uiTest('§N5 bare agent names in prose are words, even when this org has them',
   async (mount) => {
     mockServer([mkItem({
       slug: 'first-item',
@@ -261,21 +261,13 @@ uiTest('§N5 an agent named in prose is a jump; a name this org lacks is words',
     await flush()
     await openFirst(el)
 
-    const links = [...(desc(el)?.querySelectorAll('.docket-ref-agent') ?? [])]
-    assert.equal(links.length, 1,
-      'exactly one of the two names is an agent this org has')
-    assert.equal(links[0]!.textContent, 'coordinator-astra')
-    // ⚠ THE SENTENCE IS UNCHANGED. A linkifier that eats or reorders the
-    // words around its match has broken the thing it decorated. The chips are
-    // stripped first: a chip is a glyph the panel adds, not prose.
-    const clone = desc(el)!.cloneNode(true) as HTMLElement
-    for (const chip of [...clone.querySelectorAll('.tier')]) chip.remove()
-    assert.equal(clone.textContent,
+    const links = [...(desc(el)?.querySelectorAll('.docket-ref-agent, .ref-chip.ref-agent') ?? [])]
+    assert.equal(links.length, 0,
+      'a bare agent name became an unintended prose link')
+    assert.equal(desc(el)?.textContent,
       'coordinator-astra asked, and ghost-agent never existed.')
-    await inAct(() => (links[0] as HTMLElement).click())
-    await flush()
-    assert.deepEqual(went, ['coordinator-astra'])
-    assert.equal(closed, 1, 'the panel stayed open over the desk it focused')
+    assert.deepEqual(went, [])
+    assert.equal(closed, 0)
   })
 
 uiTest('§N6 an ITEM named exactly like an agent is still the item',
@@ -306,7 +298,7 @@ uiTest('§N6 an ITEM named exactly like an agent is still the item',
       'the mention did not select the item it names')
   })
 
-uiTest('§N7 a prose mention wears the CURRENT model of the desk it goes to',
+uiTest('§N7 agent names in prose stay plain while actor attribution remains',
   async (mount) => {
     mockServer([mkItem({
       slug: 'first-item',
@@ -319,40 +311,24 @@ uiTest('§N7 a prose mention wears the CURRENT model of the desk it goes to',
     await flush()
     await openFirst(el)
 
-    const mention = (id: string) =>
-      [...(desc(el)?.querySelectorAll('.docket-mention') ?? [])]
-        .find((m) => m.textContent?.includes(id)) as HTMLElement | undefined
+    // Agent names in ordinary prose are no longer destinations, even when the
+    // catalogue contains both names. The actor line is still a deliberate
+    // structural control and remains attributed normally.
+    assert.equal(desc(el)?.querySelectorAll(
+      '.docket-ref-agent, .ref-chip.ref-agent').length, 0,
+      'a bare prose agent name became an unintended link')
+    assert.match(desc(el)?.textContent ?? '',
+      /coordinator-astra asked, and tierless-agent agreed\./)
 
-    // 1. THE KNOWN AGENT: the chip is the model its desk runs under NOW, and
-    // the tooltip says which claim that is — this is navigation, not the
-    // authorship an actor line records.
-    const known = mention('coordinator-astra')
-    assert.ok(known, 'the known agent did not become a mention at all')
-    assert.equal(known!.querySelector('.tier')?.textContent, 'O',
-      "the mention does not wear the destination's current model")
-    assert.match(
-      known!.querySelector('.cc-name')?.getAttribute('title') ?? '',
-      /current model/,
-      'the chip does not say which model claim it is making')
-
-    // 2. THE CONTROL: an agent that is just as live and just as reachable, but
-    // whose model this app does not know, wears NO chip. Without this the
-    // check above passes for a chip drawn on everything that matched.
-    const unknown = mention('tierless-agent')
-    assert.ok(unknown, 'the tierless agent did not become a mention')
-    assert.ok(unknown!.querySelector('button.cc-name'),
-      'the tierless agent lost its jump along with its chip')
-    absent(unknown!.querySelector('.tier'),
-      'an agent with no known model was given one anyway')
-
-    // 3. and the ACTOR line is untouched by any of this: its chip is still the
+    // The ACTOR line is untouched by this prose rule: its chip is still the
     // recorded-generation claim, which is a different claim entirely.
     assert.equal(
       pane(el)?.querySelector('.docket-actor .tier')?.textContent, 'F',
       'the actor line stopped attributing the model it recorded')
 
-    // 4. the same rules inside a progress entry, not only the description
+    // A progress entry follows the same bare-name rule, not only the description.
     const list = pane(el)?.querySelector('.docket-list-items')
-    assert.equal(list?.querySelector('.docket-mention .tier')?.textContent, 'O',
-      'a progress entry did not get the same treatment as the description')
+    assert.equal(list?.querySelectorAll(
+      '.docket-ref-agent, .ref-chip.ref-agent').length, 0,
+      'a bare progress-entry agent name became an unintended link')
   })
