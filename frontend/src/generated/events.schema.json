@@ -218,18 +218,18 @@
         "org": {
           "type": "string"
         },
-        "id": {
+        "node": {
           "type": "string"
         },
-        "node": {
+        "target": {
           "type": "string"
         }
       },
       "required": [
         "kind",
         "org",
-        "id",
-        "node"
+        "node",
+        "target"
       ],
       "additionalProperties": false
     },
@@ -2004,7 +2004,7 @@
           "type": "boolean"
         },
         "object": {
-          "$ref": "#/$defs/AskRef"
+          "$ref": "#/$defs/NodeRef"
         },
         "from_node": {
           "type": "string"
@@ -5642,17 +5642,17 @@
             "audience_request"
           ]
         },
-        "id": {
+        "node": {
           "type": "string"
         },
-        "node": {
+        "target": {
           "type": "string"
         }
       },
       "required": [
         "kind",
-        "id",
-        "node"
+        "node",
+        "target"
       ],
       "additionalProperties": false
     },
@@ -7138,7 +7138,7 @@
           "$ref": "#/$defs/PublicActor"
         },
         "object": {
-          "$ref": "#/$defs/PublicAskRef"
+          "$ref": "#/$defs/PublicNodeRef"
         },
         "questions": {
           "type": "array",
