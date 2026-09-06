@@ -24,6 +24,7 @@ import threading
 import uuid
 from typing import Any, Final
 
+from . import events
 from . import sandbox as sbx
 from . import store
 from . import supervisor
@@ -270,7 +271,6 @@ def on_backend_startup(*, dry_run: bool = False) -> dict[str, Any]:
         notified: list[dict[str, Any]] = []
         dropped: list[dict[str, Any]] = []
 
-        pid_info = f"{current_pid}" + (f" (was: {previous_pid})" if previous_pid and previous_pid != current_pid else "")
         branch_info = f", branch: {branch}" if branch else ""
         dirty_info = " [DIRTY - uncommitted changes present at boot]" if dirty else ""
 
@@ -308,35 +308,38 @@ def on_backend_startup(*, dry_run: bool = False) -> dict[str, Any]:
                             woken.append({"org": slug, "node": nid, "reason": reason, "mode": "one_shot"})
                             wakes.pop(key, None)
                         else:
-                            # PASSIVE NOTICE PATH: live agent without toggle
+                            # PASSIVE NOTICE PATH: live agent without toggle.
+                            # Typed (family runtime_recovery): runtime.restart_notice
+                            # on the BuildRef; the body is its frozen rendering —
+                            # byte for byte the former literal (test_events_producers §R).
                             box = org.d.setdefault("mail", {}).setdefault(nid, [])
-                            notice_text = (
-                                f"[ORGTREE RESTART NOTICE] The backend was restarted. This is an informational "
-                                f"notice delivered to live agents so you know what code version went live.\n\n"
-                                f"Running build:\n"
-                                f"- Commit: {current_commit} (short: {current_short}){dirty_info}\n"
-                                f"- Backend PID: {pid_info}\n"
-                                f"- Started at: {started_at}{branch_info}\n\n"
-                                f"What you can do with this:\n"
-                                f"- If you were waiting on or verifying a deployed fix, check whether the running "
-                                f"commit contains your changes with:\n"
-                                f"  git merge-base --is-ancestor <your-commit> {current_commit}\n"
-                                f"- If you need to be woken immediately with a turn on the NEXT restart, call orgtree_restart_wake.\n"
-                                f"- Otherwise, no action is needed; this notice is for your awareness."
-                            )
-                            entry = {
+                            ev = events.mint(
+                                "runtime.restart_notice",
+                                {"kind": "system", "id": "@system"},
+                                {"kind": "build", "commit": str(current_commit),
+                                 "short": str(current_short), "dirty": bool(dirty),
+                                 "pid": int(current_pid)},
+                                prev_pid=(int(previous_pid) if previous_pid else None),
+                                started_at=str(started_at),
+                                branch=(str(branch) if branch else None))
+                            entry: dict[str, Any] = {
                                 "id": uuid.uuid4().hex[:12],
                                 "from": "orgtree",
                                 "kind": "notice",
-                                "body": notice_text,
+                                "body": events.render_agent(ev),
                                 "at": now_iso(),
                                 "relationship": "system",
                                 "restart_notice": True,
                             }
-                            # Supersede existing unread restart notice if present
+                            entry["ev"] = events.encode_row_ev(ev, entry)
+                            # Supersede an existing unread restart notice: the typed
+                            # variant first, then the durable flag; the body test is
+                            # the pre-typed rows' shape and stays for them only.
                             existing_idx = None
                             for idx, m in enumerate(box):
-                                if m.get("restart_notice") or (
+                                if (events.decode(m.get("ev"), m).get("ev") or {}).get(
+                                        "variant") == "runtime.restart_notice" \
+                                        or m.get("restart_notice") or (
                                     m.get("from") == "orgtree"
                                     and m.get("kind") == "notice"
                                     and "[ORGTREE RESTART" in m.get("body", "")
