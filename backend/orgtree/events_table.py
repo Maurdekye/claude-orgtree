@@ -454,9 +454,12 @@ STRUCTURAL: Final = frozenset({"v", "variant", "projection", "actor.kind"})
 
 # Leaves whose canonical `body` is by definition the row body: the ROW encoder elides the
 # duplicate and the row decoder restores it (§5). Bare events are always serialised in full.
+# `reply.docket` is NOT elided: its row body is the renderer's header + instruction
+# + the user's text, while `body` on the event is the user's text alone (the
+# compact card shows the text; the header is the agent's recital).
 ELIDED_FIELDS: Final[dict[str, tuple[str, ...]]] = {
     **{k: ("body",) for k in LEAVES if k.startswith("ordinary.")},
-    **{k: ("body",) for k in LEAVES if k.startswith("reply.")},
+    "reply.mail": ("body",), "reply.document": ("body",),
 }
 
 # The closed list of engine-authored events that today are routed under the USER's name and

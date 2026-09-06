@@ -1969,7 +1969,10 @@ class Org:
             raise LedgerError("post_mail takes typed=True OR ev, not both")
         if ev is not None:
             v = str(ev.get("variant") or "")
-            if v.startswith(("ordinary.", "reply.")):
+            # ordinary.* is minted HERE from the authored body (typed=True);
+            # reply.* is minted by the reply routes from a server-resolved
+            # target (design §8) and arrives as `ev` like a system leaf
+            if v.startswith("ordinary."):
                 raise LedgerError("post_event is for system leaves; authored mail goes "
                                   "through post_mail(typed=True)")
             _validate_ev(ev)
@@ -11831,6 +11834,79 @@ class Org:
                 "pending_questions": len(self._work_questions(wid)),
                 "notify": notify if notify in self.nodes else None,
                 "reason": cur.get("reason")}
+
+    # ---- STEP 4 (design §8): the server side of a qualified reply `target`
+    def resolve_reply_target(self, target: Mapping[str, str],
+                             recipient: str) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Resolve a client `target` (already shape-checked by
+        events.parse_reply_target) against THIS document, refusing rather
+        than fabricating: the object must exist here, and `recipient` must be
+        the one the object points at. Returns (Ref, extras) where the Ref is
+        filled from the stored object — the client never supplies a title,
+        sender or timestamp — and `extras` are the leaf's other fields
+        (the mail `quote`, the docket `role`/`owner`)."""
+        slug = str(self.d.get("slug") or "")
+        if target["org"] != slug:
+            raise LedgerError("target.org must be this org")
+        kind = target["kind"]
+        if kind == "document":
+            doc = next((d for d in self.d.get("documents") or []
+                        if str(d.get("id")) == target["id"]), None)
+            if doc is None:
+                raise LedgerError(f"no presented document {target['id']!r} in this org")
+            if str(doc.get("node")) != recipient:
+                raise LedgerError(f"document {target['id']!r} was presented by "
+                                  f"{doc.get('node')!r}, not {recipient!r}")
+            return ({"kind": "document", "org": slug, "id": str(doc["id"]),
+                     "title": str(doc.get("title") or ""), "node": str(doc.get("node"))},
+                    {})
+        if kind == "work_item":
+            it, _ = self._work_find(target["slug"])
+            owner = self._work_actor_node(it.get("owner"))
+            # participants are stored as plain node ids (work_participants);
+            # accept the actor shape too, as the docket's other readers do
+            parts = [(self._work_actor_node(p) if isinstance(p, dict) else str(p))
+                     for p in (it.get("participants") or [])]
+            parts = [p for p in parts if p]
+            if recipient == owner:
+                role, own = "owner", None
+            elif recipient in parts:
+                role, own = "participant", owner
+            else:
+                raise LedgerError(f"{recipient!r} is neither the owner nor a participant "
+                                  f"of {it['slug']}")
+            return (self.work_item_ref(it), {"role": role, "owner": own})
+        # kind == "mail"
+        box, mid = target["box"], target["id"]
+        row: Mapping[str, Any] | None = None
+        if box == "user":
+            rows = [*self.d.get("user_inbox", []), *self.d.get("user_mail_log", [])]
+            row = next((m for m in rows if str(m.get("id")) == mid), None)
+            allowed = {str(row.get("from"))} if row else set()
+        elif box == "org":
+            row = next((m for m in self.d.get("org_inbox") or []
+                        if str(m.get("id")) == mid), None)
+            allowed = {str(row.get("from") or row.get("peer") or "")} if row else set()
+        else:
+            node = target["node"]
+            if node not in self.nodes:
+                raise LedgerError(f"no such node {node!r}")
+            rows = [*((self.d.get("mail") or {}).get(node) or []),
+                    *((self.d.get("mail_log") or {}).get(node) or [])]
+            row = next((m for m in rows if str(m.get("id")) == mid), None)
+            # the author, or the box's own reader
+            allowed = {str(row.get("from")), node} if row else set()
+        if row is None:
+            raise LedgerError(f"no mail {mid!r} in the {box} box")
+        if recipient not in allowed:
+            raise LedgerError(f"mail {mid!r} does not involve {recipient!r}")
+        gist = " ".join(str(row.get("body") or "").split())
+        quote = {"from": str(row.get("from") or ""), "at": str(row.get("at") or ""),
+                 "gist": gist if len(gist) <= 200 else gist[:199] + "…"}
+        return ({"kind": "mail", "org": slug, "box": box,
+                 "node": (target.get("node") if box == "node" else None), "id": mid,
+                 "sender": str(row.get("from") or ""), "at": str(row.get("at") or "")},
+                {"quote": quote})
 
     def work_reply_target(self, wid: str) -> dict[str, Any]:
         """Who a general reply goes to: THE ASSIGNMENT, exactly — the item's

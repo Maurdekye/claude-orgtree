@@ -69,6 +69,7 @@ class Quiet:
 
         def spy(slug, nid, text, wake=False, **kw):
             self.calls.append((nid, bool(wake)))
+            return {"accepted": True, "queued": 0}      # the shape a route unpacks
         S.send_message = spy                                     # type: ignore
         return self
 
@@ -2267,6 +2268,167 @@ def _state_segments():
 check("state segments · org_state (full text + roster/credit snapshot) and "
       "provider_usage (full text + rows recorded at render, never parsed) — "
       "machine-only, kept in place in both projections", _state_segments)
+
+
+# ======================================================= §4 step 4 — reply routes
+print("\n§4 · step 4 — qualified reply targets and the receipt on every send")
+
+_pub = TestClient(api.PublicGateway(api.app))
+_KTOK = "tok_" + "q" * 24
+
+
+def _kiosk(slug):
+    o = store.load_org(slug)
+    o.d["kiosk"] = {"enabled": True, "token": _KTOK}
+    store.save_org(o)
+    api._token_cache["at"] = 0.0
+
+
+def _post(slug, nid, body, *, public=False):
+    with Quiet():
+        if public:
+            return _pub.post(f"/k/{_KTOK}/api/orgs/{slug}/nodes/{nid}/message", json=body)
+        return _client.post(f"/api/orgs/{slug}/nodes/{nid}/message", json=body)
+
+
+def _receipt_plain_and_legacy():
+    slug = rig2()
+    r = _post(slug, "boss", {"text": "plain hello"})
+    assert r.status_code == 200, r.text
+    j = r.json()
+    assert j["id"] and j["ref"] == f"@mail:{slug}/node/boss/{j['id']}", j
+    assert j["ev"]["variant"] == "ordinary.message" and j["ev"]["body"] == "plain hello"
+    assert "ev_public" not in j
+    row = box_last(slug, "boss")
+    assert row["id"] == j["id"] and decoded(row) == j["ev"], "receipt == the stored row's event"
+    # legacy reply_to: still an ordinary message with the sanitised quote, receipt too
+    r = _post(slug, "boss", {"text": "re", "reply_to": {"id": "x1", "from": "boss", "at": "t",
+                                                        "gist": "old  words\nhere"}})
+    assert r.status_code == 200, r.text
+    j = r.json()
+    row = box_last(slug, "boss")
+    assert row["reply_to"]["gist"] == "old words here" and j["ev"]["variant"] == "ordinary.message"
+    # both target and reply_to → refused, nothing written
+    before = len(store.load_org(slug).d["mail"]["boss"])
+    r = _post(slug, "boss", {"text": "x", "reply_to": {"gist": "g"},
+                             "target": {"kind": "document", "org": slug, "id": "d"}})
+    assert r.status_code == 422 and "one of" in r.text, r.text
+    assert len(store.load_org(slug).d["mail"]["boss"]) == before
+    # a kiosk visitor gets ev_public, never ev
+    _kiosk(slug)
+    r = _post(slug, "boss", {"text": "from the kiosk"}, public=True)
+    assert r.status_code == 200, r.text
+    j = r.json()
+    assert "ev" not in j and j["ev_public"]["projection"] == "public"
+    assert j["ev_public"]["variant"] == "ordinary.message" and j["id"]
+
+
+check("receipt · plain and legacy-reply sends return {id, ref, ev}; target+reply_to "
+      "refused; a visitor gets ev_public only", _receipt_plain_and_legacy)
+
+
+def _target_mail_and_document():
+    slug = rig2()
+    o = store.load_org(slug)
+    m = o.post_mail("boss", USER, "a question for you\nsecond line")
+    d = o.present_document("boss", "The Plan", "# plan\nbody")
+    d = {"id": d["presented"]}
+    store.save_org(o)
+    # reply to the user-inbox mail: server-fetched quote, legacy reply_to beside it
+    r = _post(slug, "boss", {"text": "my answer",
+                             "target": {"kind": "mail", "org": slug, "box": "user", "id": m["id"]}})
+    assert r.status_code == 200, r.text
+    j = r.json()
+    ev = j["ev"]
+    assert ev["variant"] == "reply.mail" and ev["body"] == "my answer"
+    assert ev["object"] == {"kind": "mail", "org": slug, "box": "user", "node": None,
+                            "id": m["id"], "sender": "boss", "at": ev["object"]["at"]}
+    assert ev["quote"] == {"from": "boss", "at": ev["object"]["at"],
+                           "gist": "a question for you second line"}
+    row = box_last(slug, "boss")
+    assert row["body"] == "my answer" and row["reply_to"]["gist"] == "a question for you second line"
+    assert decoded(row) == ev
+    # document reply
+    r = _post(slug, "boss", {"text": "looks good",
+                             "target": {"kind": "document", "org": slug, "id": d["id"]}})
+    assert r.status_code == 200, r.text
+    ev = r.json()["ev"]
+    assert ev["variant"] == "reply.document" and ev["object"] == {
+        "kind": "document", "org": slug, "id": d["id"], "title": "The Plan", "node": "boss"}
+    assert box_last(slug, "boss")["body"] == "looks good"
+    # refusals: wrong org, missing object, wrong recipient, client title — nothing written
+    before = len(store.load_org(slug).d["mail"]["boss"])
+    for tgt, frag in (
+            ({"kind": "document", "org": "other", "id": d["id"]}, "target.org"),
+            ({"kind": "document", "org": slug, "id": "nope"}, "no presented document"),
+            ({"kind": "mail", "org": slug, "box": "user", "id": "nope"}, "no mail"),
+            ({"kind": "document", "org": slug, "id": d["id"], "title": "spoof"}, "extra_field"),
+            ({"kind": "mail", "org": slug, "box": "node", "id": m["id"]}, "missing_field")):
+        r = _post(slug, "boss", {"text": "x", "target": tgt})
+        assert r.status_code == 422 and frag in r.text, (tgt, r.status_code, r.text)
+    r = _post(slug, "kid", {"text": "x", "target": {"kind": "document", "org": slug, "id": d["id"]}})
+    assert r.status_code == 422 and "presented by" in r.text, r.text
+    assert len(store.load_org(slug).d["mail"]["boss"]) == before
+    # node-box mail: the reader of the box is a valid recipient
+    o = store.load_org(slug)
+    m2 = o.post_mail(USER, "kid", "for kid")
+    store.save_org(o)
+    r = _post(slug, "kid", {"text": "reply to my own inbox row",
+                            "target": {"kind": "mail", "org": slug, "box": "node", "node": "kid",
+                                       "id": m2["id"]}})
+    assert r.status_code == 200, r.text
+    assert r.json()["ev"]["object"]["node"] == "kid"
+
+
+check("target · mail (user box, node box) and document replies mint reply.mail/"
+      "reply.document with server-fetched refs and quote; six refusals write nothing",
+      _target_mail_and_document)
+
+
+def _target_docket_and_route():
+    slug = rig3()
+    o = store.load_org(slug)
+    wid = o.work_create("kid", "Reply target item", "needs a reply; make one", owner="kid")["created"]
+    o.work_participants("kid", wid, add=["kid2"])
+    store.save_org(o)
+    # via the node message route with a work_item target: owner and participant
+    r = _post(slug, "kid", {"text": "owner text",
+                            "target": {"kind": "work_item", "org": slug, "slug": wid}})
+    assert r.status_code == 200, r.text
+    ev = r.json()["ev"]
+    assert ev["variant"] == "reply.docket" and ev["role"] == "owner" and ev["owner"] is None
+    row = box_last(slug, "kid")
+    assert row["body"] == (f'[DOCKET REPLY · {wid} "Reply target item"] (the user replied on this '
+                           f'docket item — treat it as item-linked mail and update the item if '
+                           f'it changes the work)\nowner text'), row["body"]
+    assert decoded(row)["body"] == "owner text", "the event carries the user's text alone"
+    r = _post(slug, "kid2", {"text": "participant text",
+                             "target": {"kind": "work_item", "org": slug, "slug": wid}})
+    assert r.status_code == 200, r.text
+    ev = r.json()["ev"]
+    assert ev["role"] == "participant" and ev["owner"] == "kid"
+    r = _post(slug, "boss", {"text": "x", "target": {"kind": "work_item", "org": slug, "slug": wid}})
+    assert r.status_code == 422 and "neither the owner" in r.text, r.text
+    # the docket reply route: shape unchanged, mints reply.docket, receipt added
+    with Quiet():
+        r = _client.post(f"/api/orgs/{slug}/work-items/{wid}/reply",
+                         json={"body": "via the docket route", "to": "kid2"})
+    assert r.status_code == 200, r.text
+    j = r.json()
+    assert j["role"] == "participant" and j["to"] == "kid2" and j["id"] and j["ref"]
+    assert j["ev"]["variant"] == "reply.docket" and j["ev"]["role"] == "participant"
+    row = box_last(slug, "kid2")
+    assert row["id"] == j["id"]
+    assert row["body"] == (f'[DOCKET REPLY · {wid} "Reply target item"] (the user replied on this '
+                           f'docket item ADDRESSED TO YOU AS A PARTICIPANT — the item is owned by '
+                           f'kid, not by you; treat this as item-linked mail, act on it, and '
+                           f'coordinate any update with the owner)\nvia the docket route'), row["body"]
+    assert decoded(row) == j["ev"]
+
+
+check("target · work_item replies (owner / participant / refused) and the docket reply "
+      "route mint reply.docket == old header text; receipt == stored row",
+      _target_docket_and_route)
 
 
 # =========================================================================== summary

@@ -3216,12 +3216,38 @@ class Message(Body):
     # composer stages them and sends them WITH the mail (user spec 2026-07-31)
     attachments: list[str] = []
     # FR-05: when this is an inline mailbox REPLY, a snapshot of the mail it
-    # answers ({id, from, at, gist}) — quoted in the agent's [MAIL] block
+    # answers ({id, from, at, gist}) — quoted in the agent's [MAIL] block.
+    # LEGACY path (design §8): an ordinary message with a quote.
     reply_to: dict[str, Any] | None = None
+    # STEP 4: the qualified reply target — identity keys only (events.ReplyTarget);
+    # the server fetches the object and mints reply.mail / reply.document /
+    # reply.docket. Exactly one of `target` / `reply_to`.
+    target: dict[str, Any] | None = None
+
+
+def _send_receipt(org: Org, slug: str, nid: str, r: Mapping[str, Any], *,
+                  public: str | None) -> dict[str, Any]:
+    """The durable receipt of a mail-producing send (TypedReplyReceipt): the
+    delivered id, its `@mail:` ref and the minted event in the CALLER's
+    projection (`ev` for the operator, `ev_public` for a visitor — never both).
+    The event is read back from the stored row, so what the receipt says is
+    exactly what the websocket row for the same id will say."""
+    mid = str(r.get("id") or "")
+    out: dict[str, Any] = {"id": mid, "ref": refs.mail(slug, nid, mid) or ""}
+    rows = [*((org.d.get("mail") or {}).get(nid) or []),
+            *((org.d.get("mail_log") or {}).get(nid) or [])]
+    row = next((m for m in rows if str(m.get("id")) == mid), None)
+    if row is not None:
+        w = events.wire_row(row, public=bool(public))
+        for k in ("ev", "ev_public"):
+            if k in w:
+                out[k] = w[k]
+    return out
 
 
 @app.post("/api/orgs/{slug}/nodes/{nid}/message")
-def node_message(slug: str, nid: str, body: Message) -> dict[str, Any]:
+def node_message(slug: str, nid: str, body: Message,
+                 request: Request = cast(Request, None)) -> dict[str, Any]:
     """A user message IS mail (user ruling — the direct-message channel was
     folded into the mail system): it lands persisted in the node's mailbox
     (and in your Sent folder), then the node is driven; a busy node gets it
@@ -3229,6 +3255,14 @@ def node_message(slug: str, nid: str, body: Message) -> dict[str, Any]:
     node notifies its whole superior chain (§7.4) and grants a user audience."""
     if not body.text.strip():
         raise HTTPException(422, "empty message")
+    if body.target is not None and body.reply_to is not None:
+        raise HTTPException(422, "send one of target, reply_to")
+    target: dict[str, str] | None = None
+    if body.target is not None:
+        try:
+            target = events.parse_reply_target(body.target)
+        except events.EventInvalid as e:
+            raise HTTPException(422, f"target: {e}")
     stripped = body.text.strip()
     # SLASH COMMAND (user-approved, 2026-07-31): a session command, not
     # correspondence — no mail entry, and it must reach the CLI with the
@@ -3373,8 +3407,28 @@ def node_message(slug: str, nid: str, body: Message) -> dict[str, Any]:
     with store.DOC_LOCK:
         try:
             org = store.load_org(slug)
-            r = org.post_mail(USER, nid, body.text, attachments=metas or None,
-                              reply_to=body.reply_to, missing=missing or None)
+            if target is not None:
+                ref, extra = org.resolve_reply_target(target, nid)
+                # a literal per kind: the coverage scan (test_events_ledger §7)
+                # wants every mint( site to name its variant as a string literal
+                if target["kind"] == "mail":
+                    rev = events.mint("reply.mail", actor_of(USER), ref, body=body.text, **extra)
+                elif target["kind"] == "document":
+                    rev = events.mint("reply.document", actor_of(USER), ref, body=body.text)
+                else:
+                    rev = events.mint("reply.docket", actor_of(USER), ref, body=body.text,
+                                      **extra)
+                # the legacy quote still rides the row for old readers (kind=mail)
+                legacy_rt = ({"id": ref["id"], "from": ref["sender"], "at": ref["at"],
+                              "gist": extra["quote"]["gist"]}
+                             if target["kind"] == "mail" else None)
+                r = org.post_mail(USER, nid, "", attachments=metas or None,
+                                  reply_to=legacy_rt, missing=missing or None, ev=rev)
+            else:
+                r = org.post_mail(USER, nid, body.text, attachments=metas or None,
+                                  reply_to=body.reply_to, missing=missing or None,
+                                  typed=True)
+            receipt = _send_receipt(org, slug, nid, r, public=_public_slug(request))
             # 80 chars truncated most instructions mid-clause; the notice is a
             # gist, but it has to survive being read on its own
             org.user_deep_reach(nid, body.text.strip().splitlines()[0][:160])
@@ -3393,7 +3447,7 @@ def node_message(slug: str, nid: str, body: Message) -> dict[str, Any]:
     if r.get("deferred"):
         # archived recipient (user ruling): the mail waits in its inbox and is
         # acted on at rehire — nothing to drive now
-        return {"accepted": True, "deferred": True, "queued": 0,
+        return {"accepted": True, "deferred": True, "queued": 0, **receipt,
                 **({"warnings": warn} if warn else {})}
     sent = supervisor.send_message(
         slug, nid,
@@ -3404,7 +3458,7 @@ def node_message(slug: str, nid: str, body: Message) -> dict[str, Any]:
     # own desk already renders the pending "delivering mid-task…" bubble live
     # for exactly this wait — a notice they cannot be sent would be the wrong
     # instrument for a reader who is already watching it happen.
-    sent = {**sent, "delivery": supervisor.delivery_note(slug, nid, sent)}
+    sent = {**sent, "delivery": supervisor.delivery_note(slug, nid, sent), **receipt}
     if warn:
         sent = {**sent, "warnings": warn + list(sent.get("warnings") or [])}
     return sent
@@ -4083,7 +4137,8 @@ def work_item_get(slug: str, wid: str) -> dict[str, Any]:
 
 
 @app.post("/api/orgs/{slug}/work-items/{wid}/reply")
-def work_item_reply(slug: str, wid: str, body: WorkReply) -> dict[str, Any]:
+def work_item_reply(slug: str, wid: str, body: WorkReply,
+                    request: Request = cast(Request, None)) -> dict[str, Any]:
     """The general reply box: mail to THE ASSIGNMENT, exactly — the agent the
     item is assigned to, which is its owner (user ruling 2026-09-05: assignment
     IS ownership). Question attachments and dismissals never move that
@@ -4138,9 +4193,13 @@ def work_item_reply(slug: str, wid: str, body: WorkReply) -> dict[str, Any]:
                 how = ("(the user replied on this docket item — treat it as "
                        "item-linked mail and update the item if it changes "
                        "the work)")
-            mail = (f"[DOCKET REPLY · {name} \"{str(tgt['title'])[:80]}\"] "
-                    f"{how}\n{text}")
-            r = org.post_mail(USER, nid, mail)
+            # typed (family linked_reply): reply.docket — the header/instruction
+            # prose is the renderer's; the body is the user's text
+            r = org.post_mail(USER, nid, "", ev=events.mint(
+                "reply.docket", actor_of(USER),
+                org.work_item_ref(org._work_find(wid)[0]), body=text, role=role,
+                owner=(str(tgt.get("owner") or "") if role == "participant" else None)))
+            receipt = _send_receipt(org, slug, nid, r, public=_public_slug(request))
             org.user_deep_reach(nid, text.splitlines()[0][:160])
             store.save_org(org)
         except LedgerError as e:
@@ -4150,7 +4209,7 @@ def work_item_reply(slug: str, wid: str, body: WorkReply) -> dict[str, Any]:
         # archived recipient: the mail waits in its inbox for a rehire — the
         # UI says so; nobody else is picked
         return {"accepted": True, "to": nid, "role": role, "deferred": True,
-                "node_state": tgt.get("state")}
+                "node_state": tgt.get("state"), **receipt}
     sent = supervisor.send_message(
         slug, nid,
         ("(orgtree) The mail above is the user's reply on a docket item you "
@@ -4161,7 +4220,7 @@ def work_item_reply(slug: str, wid: str, body: WorkReply) -> dict[str, Any]:
          "ASSIGNED TO YOU — act on it now."), mail_ping=True)
     return {"accepted": True, "to": nid, "role": role, "deferred": False,
             "node_state": tgt.get("state"),
-            "delivery": supervisor.delivery_note(slug, nid, sent)}
+            "delivery": supervisor.delivery_note(slug, nid, sent), **receipt}
 
 
 @app.post("/api/orgs/{slug}/work-items/{wid}/dismiss-attention")

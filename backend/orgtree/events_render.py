@@ -51,8 +51,28 @@ def _obj(ev: _R) -> dict[str, Any]:
 # ================================================================== ordinary / reply
 for _v in ("ordinary.message", "ordinary.question", "ordinary.request",
            "ordinary.decision", "ordinary.status", "ordinary.notice",
-           "reply.docket", "reply.document", "reply.mail", "lifecycle.kickoff"):
+           "reply.document", "reply.mail", "lifecycle.kickoff"):
     renderer(_v)(lambda ev: str(ev["body"]))
+
+
+@renderer("reply.docket")
+def _r_reply_docket(ev: _R) -> str:
+    """The docket reply as the agent reads it: the item header, the standing
+    instruction for the role, then the user's text — byte for byte the former
+    api.work_item_reply composition."""
+    o = _obj(ev)
+    if ev["role"] == "participant":
+        how = (f"(the user replied on this docket item ADDRESSED TO "
+               f"YOU AS A PARTICIPANT — the item is owned by "
+               f"{ev.get('owner') or 'nobody (unassigned)'}, not by "
+               f"you; treat this as item-linked mail, act on it, and "
+               f"coordinate any update with the owner)")
+    else:
+        how = ("(the user replied on this docket item — treat it as "
+               "item-linked mail and update the item if it changes "
+               "the work)")
+    return (f"[DOCKET REPLY · {o['slug']} \"{str(o.get('title') or '')[:80]}\"] "
+            f"{how}\n{ev['body']}")
 
 
 # =========================================================================== docket
