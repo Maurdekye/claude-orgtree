@@ -13,6 +13,12 @@ import type { GitBranch, GitChanges, GitCommit, GitContext, GitRegistry, GitSett
 import './git/workspace.css'
 
 const message = (e: unknown) => e instanceof Error ? e.message : String(e)
+function popoverPosition(element: HTMLElement, x: number, y: number) {
+  const frame = element.ownerDocument.defaultView!
+  const rect = element.getBoundingClientRect()
+  return { x: Math.max(8, Math.min(x, frame.innerWidth - rect.width - 8)),
+    y: Math.max(8, Math.min(y, frame.innerHeight - rect.height - 8)) }
+}
 const comparison = (c: GitBranch['sync']) => c.ahead === null || c.behind === null
   ? c.state.replaceAll('_', ' ') : `${c.ahead} ahead · ${c.behind} behind${c.state === 'diverged' ? ' · diverged' : ''}`
 
@@ -111,6 +117,8 @@ export function GitWorkspace({ slug, context, routes, toast, close }: {
   const [hover, setHover] = useState<{ x: number; y: number; body: ReactNode } | null>(null)
   const [action, setAction] = useState<{ x: number; y: number; kind: 'push' | 'pull'; branch: string } | null>(null)
   const viewport = useRef<HTMLDivElement>(null)
+  const hoverElement = useRef<HTMLDivElement>(null)
+  const actionElement = useRef<HTMLDivElement>(null)
   const hoverTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const sequence = useRef(0)
   const pageBusy = useRef(false)
@@ -119,6 +127,30 @@ export function GitWorkspace({ slug, context, routes, toast, close }: {
   const initialPosition = useRef(true)
   const appliedContext = useRef('')
   const layout = useMemo(() => snapshot ? layoutGraph(nodes, snapshot) : null, [nodes, snapshot])
+  useLayoutEffect(() => {
+    const element = hoverElement.current
+    if (!hover || !element) return
+    const resize = () => {
+      const p = popoverPosition(element, hover.x, hover.y)
+      setHover(old => old && (old.x !== p.x || old.y !== p.y) ? { ...old, ...p } : old)
+    }
+    resize()
+    const frame = element.ownerDocument.defaultView!
+    frame.addEventListener('resize', resize)
+    return () => frame.removeEventListener('resize', resize)
+  }, [hover])
+  useLayoutEffect(() => {
+    const element = actionElement.current
+    if (!action || !element) return
+    const resize = () => {
+      const p = popoverPosition(element, action.x, action.y)
+      setAction(old => old && (old.x !== p.x || old.y !== p.y) ? { ...old, ...p } : old)
+    }
+    resize()
+    const frame = element.ownerDocument.defaultView!
+    frame.addEventListener('resize', resize)
+    return () => frame.removeEventListener('resize', resize)
+  }, [action])
   const refreshRegistry = useCallback(async () => {
     try { const value = await api.listGit(slug); setRegistry(value); setRid(old => old || value.selected || value.repositories[0]?.id || '') }
     catch (e) { setError(message(e)) }
@@ -204,7 +236,8 @@ export function GitWorkspace({ slug, context, routes, toast, close }: {
   const showHover = (target: HTMLElement, body: ReactNode) => {
     clearTimeout(hoverTimer.current)
     const rect = target.getBoundingClientRect()
-    setHover({ x: Math.max(8, Math.min(window.innerWidth - 340, rect.right + 12)), y: Math.max(8, Math.min(window.innerHeight - 240, rect.top)), body })
+    const frame = target.ownerDocument.defaultView!
+    setHover({ x: Math.min(frame.innerWidth - 8, rect.right + 12), y: Math.min(frame.innerHeight - 8, rect.top), body })
   }
   const openRef = (kind: 'item' | 'agent', id: string) => {
     const ref = resolveRef({ kind, org: slug, id }, routes.world)
@@ -332,7 +365,7 @@ export function GitWorkspace({ slug, context, routes, toast, close }: {
             return <line key={n.oid + parent} x1={a.x} y1={a.y} x2={b?.x ?? a.x} y2={b?.y ?? a.y + 17}
               stroke={branchColor(a.owner ?? snapshot.config.trunk ?? 'main')} strokeWidth={1.5} strokeDasharray={b ? undefined : '3 3'} opacity={.65} />
           }) })}
-          {layout.annotations.filter(a => a.y > view.top - 150 && a.y < view.top + view.height + 150).map(a => <line key={a.branch.ref}
+          {layout.annotations.filter(a => a.y > view.top - 150 && a.y < view.top + view.height + 150).map(a => <line key={a.branch.ref} data-annotation-leader={a.branch.ref}
             x1={a.anchor.x + (a.x < a.anchor.x ? -7 : 7)} y1={a.anchor.y} x2={a.x < a.anchor.x ? a.x + 252 : a.x - 7} y2={a.y + a.height / 2} stroke={branchColor(a.branch.ref)} strokeDasharray="2 3" opacity={.6} />)}
         </svg>
         {nodes.filter(n => { const p = layout.points.get(n.oid)!; return p.y > view.top - 100 && p.y < view.top + view.height + 100 && p.x > view.left - 100 && p.x < view.left + view.width + 100 }).map(n => {
@@ -347,8 +380,9 @@ export function GitWorkspace({ slug, context, routes, toast, close }: {
             onPointerEnter={e => showHover(e.currentTarget, body)} onPointerLeave={hideHover}
             onFocus={e => showHover(e.currentTarget, body)} onBlur={hideHover}
             onClick={e => { setHover(null); if (!selectedAction) { setAction(null); return }
-              const rect = e.currentTarget.getBoundingClientRect(); setAction({ kind: selectedAction.action, branch: selectedAction.branch.ref,
-                x: Math.max(8, Math.min(window.innerWidth - 175, e.clientX || rect.right)), y: Math.max(8, Math.min(window.innerHeight - 45, e.clientY || rect.bottom)) }) }}><i /></button>
+              const rect = e.currentTarget.getBoundingClientRect(), frame = e.currentTarget.ownerDocument.defaultView!
+              setAction({ kind: selectedAction.action, branch: selectedAction.branch.ref,
+                x: Math.min(frame.innerWidth - 8, (e.clientX || rect.right) + 10), y: Math.min(frame.innerHeight - 8, (e.clientY || rect.bottom) + 10) }) }}><i /></button>
         })}
         {layout.annotations.filter(a => a.y > view.top - 150 && a.y < view.top + view.height + 150 && a.x > view.left - 280 && a.x < view.left + view.width + 100).map(a => {
           const owners = [...new Map(a.branch.tickets.filter(t => t.owner).map(t => [`${t.owner!.id}@${t.owner!.generation}`, t.owner!])).values()]
@@ -366,8 +400,8 @@ export function GitWorkspace({ slug, context, routes, toast, close }: {
           {loadingHistory ? 'Loading older history…' : cursor ? <button onClick={() => void loadOlder()}>Load older history · {Math.max(0, snapshot.total_commits - nodes.length)} commits not loaded</button> : snapshot.shallow ? 'Shallow history boundary' : 'Beginning of history'}</div>
       </div>
     </div>}
-    {hover && <div className="git-hover" role="tooltip" style={{ left: hover.x, top: hover.y }} onPointerEnter={() => clearTimeout(hoverTimer.current)} onPointerLeave={hideHover}>{hover.body}</div>}
-    {action && <div className="git-node-action" style={{ left: action.x + 10, top: action.y + 10 }}><button disabled={busy} onClick={() => void perform()}>{action.kind === 'push' ? 'Push local changes' : 'Pull unsynced commits'}</button></div>}
+    {hover && <div ref={hoverElement} className="git-hover" role="tooltip" style={{ left: hover.x, top: hover.y }} onPointerEnter={() => clearTimeout(hoverTimer.current)} onPointerLeave={hideHover}>{hover.body}</div>}
+    {action && <div ref={actionElement} className="git-node-action" style={{ left: action.x, top: action.y }}><button disabled={busy} onClick={() => void perform()}>{action.kind === 'push' ? 'Push local changes' : 'Pull unsynced commits'}</button></div>}
     {snapshot && <footer className="git-footer">Against trunk: local {snapshot.config.trunk ? shortRef(snapshot.config.trunk) : 'not selected'}. Upstream comparisons use configured tracking refs. Newer commits are higher.
       {(snapshot.omitted_active > 0 || snapshot.omitted_worktrees > 0) && <span> {snapshot.omitted_active} active branches and {snapshot.omitted_worktrees} checkouts outside this view.</span>}</footer>}
   </PinFrame>

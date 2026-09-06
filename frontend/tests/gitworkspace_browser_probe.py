@@ -63,6 +63,15 @@ def run(out: Path, executable: str | None = None) -> None:
     gw.link_item(f.slug, complex_registered['id'], 'refs/heads/main', item['slug'])
     gw.link_item(f.slug, complex_registered['id'], 'refs/heads/feature-a', item['slug'])
     gw.link_item(f.slug, complex_registered['id'], 'refs/heads/incoming', item['slug'])
+    long_branch = 'feature/' + 'long-branch-name-with-several-parts-' * 2
+    git(complex_repo.clone, 'checkout', '-b', long_branch)
+    f.org.hire(USER, None, 'haiku', 0, 'agent-two')
+    extra_items = [f.org.work_create(USER, f'Long annotation ticket {i}', 'Rich hover details for annotation bounds', owner='agent-two' if i % 2 else 'agent-one') for i in range(3)]
+    store.save_org(f.org)
+    for linked in [item, *extra_items]:
+        gw.link_item(f.slug, complex_registered['id'], 'refs/heads/' + long_branch, linked['slug'])
+    for i in range(8):
+        (complex_repo.clone / f'hover-detail-{i}.txt').write_text('fixture content\n' * 12, encoding='utf-8')
     gitsettings.change(lambda d: d['selected_by_org'].update({f.slug: f.rid}))
     app = FastAPI(); app.include_router(gitapi.router)
     client = TestClient(app)
@@ -194,8 +203,46 @@ def run(out: Path, executable: str | None = None) -> None:
         assert page.locator('.git-node-action').count() == 0
         assert page.locator('.git-node.ghost').count() >= 1
         assert page.locator('.git-node.unpushed').count() >= 1
-        assert page.locator('.git-annotation').count() == 3
+        assert page.locator('.git-annotation').count() == 4
         page.screenshot(path=str(out / 'git-workspace-divergence-merge.png'))
+        long_annotation = page.locator(f'[data-branch="refs/heads/{long_branch}"]')
+        row = long_annotation.locator('.git-branch-name')
+        geometry = long_annotation.evaluate('''(a)=>({height:a.offsetHeight,top:a.offsetTop,
+          rows:[...a.children].map(r=>({height:r.getBoundingClientRect().height,top:r.offsetTop})),
+          clipped:a.firstElementChild.scrollWidth>a.firstElementChild.clientWidth,
+          whiteSpace:getComputedStyle(a.firstElementChild).whiteSpace,
+          tickets:a.querySelectorAll('.git-ticket-row button').length,
+          agents:a.querySelectorAll('.git-agent-row .tier').length})''')
+        assert geometry['clipped'] and geometry['whiteSpace'] == 'nowrap', geometry
+        assert geometry['height'] == 54 and [r['height'] for r in geometry['rows']] == [18, 18, 18], geometry
+        assert geometry['tickets'] == 4 and geometry['agents'] == 2, geometry
+        leader = page.locator(f'[data-annotation-leader="refs/heads/{long_branch}"]')
+        assert abs(float(leader.get_attribute('y2')) - geometry['top'] - geometry['height'] / 2) < 1
+        row.hover()
+        assert long_branch in page.get_by_role('tooltip').inner_text()
+        # Move the real overflowing annotation next to both viewport edges.
+        # The API data and rendered rich hover remain unchanged.
+        long_annotation.evaluate("a=>Object.assign(a.style,{position:'fixed',left:(innerWidth-270)+'px',top:(innerHeight-75)+'px'})")
+        page.mouse.move(20, 20)
+        row.hover()
+        hover_rect = page.get_by_role('tooltip').bounding_box()
+        assert hover_rect['height'] > 300, hover_rect
+        assert hover_rect['x'] >= 8 and hover_rect['y'] >= 8, hover_rect
+        assert hover_rect['x'] + hover_rect['width'] <= 1493 and hover_rect['y'] + hover_rect['height'] <= 993, hover_rect
+        page.screenshot(path=str(out / 'git-workspace-hover-bottom-right.png'))
+        page.keyboard.press('Escape')
+        # A real unsynced node click at the bottom/right uses measured action size.
+        page.locator('[data-branch="refs/heads/incoming"] .git-branch-name').click()
+        edge_node = page.locator(f'[data-oid="{incoming}"]')
+        edge_node.evaluate("n=>Object.assign(n.style,{position:'fixed',left:(innerWidth-20)+'px',top:(innerHeight-20)+'px'})")
+        # Keyboard activation avoids Playwright scrolling the artificial edge
+        # target into its original canvas location before clicking it.
+        edge_node.evaluate('n=>n.focus({preventScroll:true})')
+        page.keyboard.press('Enter')
+        action_rect = page.locator('.git-node-action').bounding_box()
+        assert action_rect['x'] + action_rect['width'] <= 1493 and action_rect['y'] + action_rect['height'] <= 993, action_rect
+        assert action_rect['x'] >= 8 and action_rect['y'] >= 8, action_rect
+        page.screenshot(path=str(out / 'git-workspace-action-bottom-right.png'))
         assert not errors, errors
         # The interception guard has an intentional forbidden-request control.
         page.evaluate('fetch("http://forbidden.invalid/probe").catch(()=>{})')
@@ -204,6 +251,7 @@ def run(out: Path, executable: str | None = None) -> None:
         (out / 'git-browser.json').write_text(json.dumps({"data_root": str(DATA), "middle": middle, "pushed_tip": tip,
             "requests": requests, "captured_drag": trace, "horizontal_before": before, "horizontal_during": during,
             "large_history_pages": page_count, "stable_paged_anchor": anchor_position,
+            "long_annotation_geometry": geometry, "bottom_right_hover": hover_rect, "bottom_right_action": action_rect,
             "blocked_control": blocked, "errors": errors}, indent=2), encoding='utf-8')
         browser.close()
 

@@ -277,6 +277,13 @@ class GitWorkspaceTests(unittest.TestCase):
                   ("POST", f"/{f.rid}/fetch", None), ("POST", f"/{f.rid}/push", {"snapshot": token, "branch": "refs/heads/main"}),
                   ("POST", f"/{f.rid}/pull", {"snapshot": token, "branch": "refs/heads/main"}),
                   ("DELETE", f"/{f.rid}/registration", None)]
+        # The router guard is structural. Keep the behavioral controls complete
+        # as routes grow: an unlisted seventeenth route must fail this test.
+        values = {"slug": f.slug, "rid": f.rid, "wid": snap.json()["worktrees"][0]["id"]}
+        actual_routes = {(method, route.path.format_map(values))
+                         for route in gitapi.router.routes for method in route.methods}
+        tested_routes = {(method, prefix + suffix.partition("?")[0]) for method, suffix, _ in routes}
+        self.assertEqual(actual_routes, tested_routes, "Git route permission matrix is incomplete")
         for state_key in ("public_slug", "bridge_slug"):
             async def scoped(scope, receive, send, key=state_key):
                 scope.setdefault("state", {})[key] = f.slug
