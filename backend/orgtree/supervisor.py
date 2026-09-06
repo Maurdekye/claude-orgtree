@@ -45,7 +45,7 @@ from . import (accounts, appsettings, cachecontinuity, clipin, codex_limits,
                codex_route, deployment, envelope, failfix, handoff, imgblock,
                limits, localtime, net, openrouter, opreceipts, providers,
                sandbox as sbx, store,
-               tokens, turnusage, warmpool)
+               tokens, turnlog, turnusage, warmpool)
 from .ledger import (EXTERN, SYSTEM, USER, LedgerError, Org, expand_mcp,
                      freeze_describes_provider, now as now_iso)
 from .schema import (Denial, FrozenInfo, InflightInfo, KioskCfg, MailEntry,
@@ -933,18 +933,20 @@ def _failfix_record(slug: str, nid: str, *, site: str, lane: str,
                     parked: bool, exit_only: bool, started: bool,
                     boundary: bool, run: int, exhausted: bool,
                     limit: bool, net: bool, typed: int | None,
-                    ran_as: Any) -> None:
+                    ran_as: Any) -> str | None:
     """The redacted failure fixture (failfix.py, docs/failure-fixtures.md).
     RECORDING ONLY, after every predicate, reads `err_blob` and never writes
     it; fail-open, so it cannot change a turn's outcome. `run` < 0 means
     "read the node's retry counter" (the terminal raise is reached by the
-    frozen retry path too, whose counter lives on the saved document)."""
+    frozen retry path too, whose counter lives on the saved document).
+    Returns the path written (None when nothing was), so the turn record
+    (turnlog) can name the fixture; nothing else reads it."""
     try:
         if run < 0:
             _o = store.load_org(slug)
             run = (int(_o.node(nid).get("net_fail_run") or 0)
                    if nid in _o.nodes else 0)
-        failfix.record(
+        return failfix.record(
             store.DATA_ROOT, slug, nid, lane=lane, site=site,
             observed={"exit_code": exit_code, "parked": parked,
                       "exit_only": exit_only, "started": started,
@@ -967,7 +969,7 @@ def _failfix_record(slug: str, nid: str, *, site: str, lane: str,
                       "typed": typed},
             ran_as=ran_as)
     except Exception:                                        # noqa: BLE001
-        pass
+        return None
 
 
 def _for_the_record(err_blob: str, res: dict[str, Any],
@@ -11057,6 +11059,7 @@ def _codex_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
                turn_view: str = "",
                view_spans: list[dict[str, Any]] | None = None,
                startup_manifest: dict[str, Any] | None = None,
+               trec: turnlog.Recorder | None = None,
                ) -> tuple[dict[str, Any], int]:
     """One codex turn behind the provider seam, WITH the reserve-first
     fallback around it (item 12). `_codex_leg_attempt` is one attempt.
@@ -11092,16 +11095,19 @@ def _codex_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
     try:
         return _codex_leg_attempt(
             slug, nid, org, st, text, toks, images, turn_view,
-            view_spans=view_spans, startup_manifest=startup_manifest)
+            view_spans=view_spans, startup_manifest=startup_manifest,
+            trec=trec)
     except _CodexRouteRejected as rj:
         _note(rj, retrying=True)
         notify(slug, nid, "route_switched")
+        turnlog.emit(trec, "codex_redrive", to=str(rj.other.get("pool") or ""))
         try:
             return _codex_leg_attempt(slug, nid, org, st, text, [], images,
                                       turn_view, view_spans=view_spans,
                                       route=rj.other,
                                       journal_sid=rj.journal_sid,
-                                      startup_manifest=startup_manifest)
+                                      startup_manifest=startup_manifest,
+                                      trec=trec)
         except _CodexRouteRejected as rj2:
             _note(rj2, retrying=False)
             board = codex_limits.snapshot()
@@ -11126,6 +11132,7 @@ def _codex_leg_attempt(slug: str, nid: str, org: Org, st: dict[str, Any],
                        route: codex_route.Route | None = None,
                        journal_sid: str | None = None,
                        startup_manifest: dict[str, Any] | None = None,
+                       trec: turnlog.Recorder | None = None,
                        ) -> tuple[dict[str, Any], int]:
     """One codex turn behind the provider seam (FR-15 M1b).
 
@@ -11789,6 +11796,19 @@ def _codex_leg_attempt(slug: str, nid: str, org: Org, st: dict[str, Any],
         if method.startswith("item/"):
             with jlock:
                 jstate["item_events"] += 1
+                _ie_n = jstate["item_events"]
+            if method == "item/completed":
+                _it = (msg.get("params") or {}).get("item")
+                _ityp = str(_it.get("type") or "") if isinstance(_it, dict) else ""
+                turnlog.emit(trec, "codex_item", n=_ie_n,
+                             type={"agentMessage": "agent_message",
+                                   "reasoning": "reasoning", "plan": "plan",
+                                   "mcpToolCall": "tool_call",
+                                   "commandExecution": "tool_call",
+                                   "fileChange": "tool_call",
+                                   "toolOutput": "tool_output"}.get(_ityp, "other"))
+            elif _ie_n == 1:
+                turnlog.emit(trec, "first_output")
         if method == "item/agentMessage/delta":
             d = (msg.get("params") or {}).get("delta")
             if isinstance(d, str) and d:
@@ -11811,6 +11831,8 @@ def _codex_leg_attempt(slug: str, nid: str, org: Org, st: dict[str, Any],
                 _r = route_box.get("route")
             if _r is not None:
                 _codex_route_stamp(st, _r, live=True, rerouted=rr)
+                turnlog.emit(trec, "codex_rerouted",
+                             known=codex_route.served_pool(_r, rr) is not None)
         # opportunistic: the moment ANY event notices turn.turn_id has
         # resolved, flush whatever plan updates arrived too early to check
         _drain_plan_pending()
@@ -11834,6 +11856,8 @@ def _codex_leg_attempt(slug: str, nid: str, org: Org, st: dict[str, Any],
     with route_lock:
         route_box["route"] = route
     _codex_route_stamp(st, route, live=True)
+    turnlog.emit(trec, "codex_route", pool=route["pool"], route=route["route"],
+                 selection=route.get("selection"))
 
     # D-201, Codex lane: the keeper owns an uninitialized app-server at boot;
     # this turn claims it only when the exact process-scoped identity matches.
@@ -12396,6 +12420,7 @@ def _codex_leg_attempt(slug: str, nid: str, org: Org, st: dict[str, Any],
         # (outcome, reported model) is stamped by the paths below; this is
         # only the flip, on the one exit every path takes.
         _codex_route_stamp(st, route, live=False)
+        _td_discard: str | None = None       # the warm discard reason (turnlog)
         try:
             if wp_turn is not None:
                 turn.client.unbind()
@@ -12419,6 +12444,7 @@ def _codex_leg_attempt(slug: str, nid: str, org: Org, st: dict[str, Any],
                         reason = "turn-timeout"
                     else:
                         reason = "stdin-closed"
+                    _td_discard = reason
                     warmpool.discard(wp_turn, reason)
             else:
                 # `wait` normally closed the cold client; this also covers a
@@ -12447,6 +12473,14 @@ def _codex_leg_attempt(slug: str, nid: str, org: Org, st: dict[str, Any],
                     slug, nid, turn,
                     exited=turn.client.proc.poll() is not None)
                 _mcp_tool_count_end(slug, nid, turn.client.proc)
+            # RECORDING ONLY, inside its own guard: a NameError here would
+            # be an exception raised from a finally on the provider path
+            try:
+                turnlog.emit(trec, "teardown", parked=bool(parked),
+                             discard=_td_discard,
+                             exited=turn.client.proc.poll() is not None)
+            except Exception:                                # noqa: BLE001
+                pass
     # Last local observation: if auth moved while the process ran, neither
     # the selected account nor the now-current account is authoritative for
     # this provider turn. Keep the turn/output, but namespace the route as
@@ -12460,6 +12494,7 @@ def _codex_leg_attempt(slug: str, nid: str, org: Org, st: dict[str, Any],
         route["reason"] = (str(route.get("reason") or "")
                            + "; local auth changed during turn").lstrip("; ")
         res_raw["_codex_account_ambiguous"] = True
+    turnlog.emit(trec, "codex_account", ambiguous=account_ambiguous)
 
     with dlock:
         draft_timer = dstate.get("timer")
@@ -12498,14 +12533,21 @@ def _codex_leg_attempt(slug: str, nid: str, org: Org, st: dict[str, Any],
     elif _served is not None:
         for _snap in (list(_snaps.values()) if isinstance(_snaps, dict)
                       else [res_raw.get("rate_limits")]):
-            if codex_limits.observe(_snap, pool_hint=_served,
-                                    account=route["account"]):
+            _ok = codex_limits.observe(_snap, pool_hint=_served,
+                                       account=route["account"])
+            if _ok:
                 _folded += 1
+            _pct, _rst = turnlog.window_of(_snap)
+            turnlog.emit(trec, "codex_rate_limit", pool=_served, folded=_ok,
+                         percent=_pct, reset=_rst)
     elif _snaps or res_raw.get("rate_limits"):
         print(f"[orgtree] {slug}/{nid}: rate-limit notification not folded "
               f"— the provider rerouted to {str((res_raw.get('rerouted') or {}).get('toModel'))!r}, "
               "a model no pool is known for")
     status = str(res_raw.get("status") or codexrun.STATUS_FAILED)
+    _cerr0 = res_raw.get("error")
+    turnlog.emit(trec, "codex_status", status=res_raw.get("status"),
+                 rpc_code=_cerr0.get("code") if isinstance(_cerr0, dict) else None)
     if status == codexrun.STATUS_FAILED:
         # the CLI's own account of the failure. ⚠ NOT the stderr tail: for a
         # usage limit the app-server says everything on the WIRE — a message,
@@ -12516,6 +12558,10 @@ def _codex_leg_attempt(slug: str, nid: str, org: Org, st: dict[str, Any],
         if not detail and time.time() - t0 >= TURN_TIMEOUT:
             # only when the CLI gave no reason: a turn that ran to the ceiling
             # AND came back with a real error is that error, not a timeout
+            turnlog.emit(trec, "watchdog", why="ceiling",
+                         elapsed_ms=int((time.time() - t0) * 1000))
+            if trec is not None:
+                trec.dispose("killed")
             raise RuntimeError(f"turn killed: exceeded the {TURN_TIMEOUT}s "
                                "per-message ceiling")
         tail = " | ".join(turn.client.stderr_tail[-3:])[:300]
@@ -12538,11 +12584,15 @@ def _codex_leg_attempt(slug: str, nid: str, org: Org, st: dict[str, Any],
             usage_prose=_looks_like_usage_limit(blob),
             served=_served)
         fcls = codex_route.decide(_fev)
+        turnlog.emit(trec, "codex_decide", decision=fcls["kind"],
+                     rejected=fcls["rejected"], redrive=fcls["redrive"],
+                     pool_state=fcls["pool_state"],
+                     reset_known=fcls["reset_ts"] is not None)
         try:
             # the redacted fixture (failfix): the typed evidence above plus
             # the recorded decision, kept apart by name; fail-open
             _cerr = res_raw.get("error")
-            failfix.record(
+            _fxp = failfix.record(
                 store.DATA_ROOT, slug, nid, lane="codex", site="codex",
                 observed={"started": _items_seen > 0,
                           "boundary": res_raw.get("status") is not None},
@@ -12573,6 +12623,8 @@ def _codex_leg_attempt(slug: str, nid: str, org: Org, st: dict[str, Any],
                        "pool_state_recorded": fcls["pool_state"],
                        "reset_recorded": fcls["reset_ts"]},
                 ran_as=st.get("ran_as"))
+            if trec is not None:
+                trec.fixture(_fxp)
         except Exception:                                    # noqa: BLE001
             pass
         _frec = _codex_route_stamp(
@@ -12694,7 +12746,8 @@ def _antigravity_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
                      text: str, toks: list[str],
                      images: list[dict[str, Any]] | None = None,
                      turn_view: str = "",
-                     view_spans: list[dict[str, Any]] | None = None
+                     view_spans: list[dict[str, Any]] | None = None,
+                     trec: turnlog.Recorder | None = None,
                      ) -> tuple[dict[str, Any], int]:
     """One antigravity turn behind the provider seam (D-186, re-walked for
     the Antigravity CLI) — the `_codex_leg` contract exactly: runs inside
@@ -13072,6 +13125,19 @@ def _antigravity_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
             # a repeated completion (or a late delta / a late ACTIVE for
             # it): the step is on disk and on screen already
             return
+        # RECORDING ONLY (turnlog): the first admitted step is the first
+        # output; a step reaching DONE/ERROR is one `agy_step`
+        with jlock:
+            jstate["turnlog_steps"] = int(jstate.get("turnlog_steps") or 0) + (
+                1 if state_ in ("DONE", "ERROR") else 0)
+            _tl_n = jstate["turnlog_steps"]
+            _tl_first = not jstate.get("turnlog_first")
+            jstate["turnlog_first"] = True
+        if _tl_first:
+            turnlog.emit(trec, "first_output")
+        if state_ in ("DONE", "ERROR"):
+            turnlog.emit(trec, "agy_step", n=_tl_n,
+                         step="text" if kind == "agent_response" else "tool")
         if kind == "agent_response":
             delta = step.get("text_delta")
             if isinstance(delta, str) and delta:
@@ -13431,6 +13497,8 @@ def _antigravity_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
                     exited=turn.pid is None or turn.poll() is not None)
                 # self-guarding: retires a generation only on an observed exit
                 _mcp_tool_count_end(slug, nid, turn)
+                turnlog.emit(trec, "teardown", parked=False,
+                             exited=turn.pid is None or turn.poll() is not None)
             finally:
                 _commit_unfinished_tools()
     with dlock:
@@ -13445,6 +13513,7 @@ def _antigravity_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
     # the blocks that DID complete were committed as they completed (D4)
     _commit_unfinished_text()
     status = str(res_raw.get("status") or antigravityrun.STATUS_FAILED)
+    turnlog.emit(trec, "agy_status", status=res_raw.get("status"))
     if status == antigravityrun.STATUS_FAILED:
         tail = " | ".join(turn.stderr_tail[-3:])[:300]
         reason = str(res_raw.get("stop_reason") or "")
@@ -13484,7 +13553,14 @@ def _antigravity_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
             # decisions just taken (walled / reset / schedule / ceiling)
             with jlock:
                 _agy_items = int(jstate["agent_items"])
-            failfix.record(
+            turnlog.emit(trec, "agy_wall", walled=walled,
+                         reset_known=reset_ts is not None,
+                         reset_in_s=turnlog.seconds_of(
+                             antigravity_limits.reset_in_seconds(reason or tail)),
+                         schedule="observed-deadline" if reset_ts else "probe")
+            turnlog.emit(trec, "agy_ceiling", elapsed_s=int(_agy_elapsed),
+                         ceiling_s=int(TURN_TIMEOUT), killed=_agy_ceiling)
+            _fxp = failfix.record(
                 store.DATA_ROOT, slug, nid, lane="antigravity",
                 site="antigravity",
                 observed={"started": _agy_items > 0,
@@ -13507,9 +13583,15 @@ def _antigravity_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
                                            else "probe"),
                      "ceiling_kill_recorded": _agy_ceiling},
                 ran_as=st.get("ran_as"))
+            if trec is not None:
+                trec.fixture(_fxp)
         except Exception:                                    # noqa: BLE001
             pass
         if _agy_ceiling:
+            turnlog.emit(trec, "watchdog", why="ceiling",
+                         elapsed_ms=int(_agy_elapsed * 1000))
+            if trec is not None:
+                trec.dispose("killed")
             raise RuntimeError(f"turn killed: exceeded the {TURN_TIMEOUT}s "
                                "per-message ceiling")
         raise _ProviderTurnFailed(
@@ -13607,7 +13689,36 @@ def _run_one_turn(slug: str, nid: str,
     """One turn. Returns the next queued item for the caller to run, or None
     when the node went idle (`busy` is cleared here in that case, under the
     same lock that a concurrent `send_message` takes — so there is no window
-    where the queue is non-empty and nobody owns it)."""
+    where the queue is non-empty and nobody owns it).
+
+    THE TURN RECORD (turnlog, docs/turn-events.md) is opened here and closed
+    in this wrapper's own `finally`, OUTSIDE the turn's try/finally below:
+    whatever the turn's own cleanup raises, the record is still finalized.
+    Every call on the recorder is fail-open; nothing the turn does reads it
+    back except `disposition`, which only the exit paths below write. The
+    close is a synchronous write on this thread — it runs after the turn's
+    `finally` has released the queue, and does add its milliseconds before
+    the caller receives `follow`."""
+    _trec = turnlog.start(store.DATA_ROOT, slug, nid)
+    try:
+        return _run_one_turn_recorded(slug, nid, text, probe_token=probe_token,
+                                      trec=_trec)
+    finally:
+        if _trec is not None:
+            try:
+                _trec.close()
+            except Exception:                                # noqa: BLE001
+                pass
+
+
+def _run_one_turn_recorded(slug: str, nid: str,
+                           text: str | dict[str, Any], *,
+                           probe_token: str | None = None,
+                           trec: turnlog.Recorder | None = None,
+                           ) -> str | dict[str, Any] | None:
+    """`_run_one_turn`'s body — see its docstring. `trec` is this attempt's
+    recorder handle (None when recording is off)."""
+    _trec = trec
     st = state(slug, nid)
     # WHEN THIS ATTEMPT BEGAN, on this process's wall clock — the lower bound
     # the retry banner filters operation receipts by (Phase 2 of w71d69aac,
@@ -13683,6 +13794,10 @@ def _run_one_turn(slug: str, nid: str,
         retry_payload = str(text.get("retry_payload") or "")
         toks, text = list(text.get("toks") or []), text["text"]
     text = cast(str, text)    # unwrapped above — plain str from here on
+    if _trec is not None:
+        # the attempt's inputs, as counts (turnlog header)
+        _trec.set(cmd=is_cmd, ping=is_ping, toks=len(toks),
+                  text_len=len(text), resumed=bool(retry_payload))
     try:
         # blocked on a turn slot is NOT running (№12) — the UI shows it hollow
         if is_cmd:
@@ -13691,6 +13806,8 @@ def _run_one_turn(slug: str, nid: str,
         _slot_wait_t0 = time.monotonic()
         with _turn_slots:
             st["waiting"] = False
+            turnlog.emit(_trec, "start",
+                         slot_wait_ms=int((time.monotonic() - _slot_wait_t0) * 1000))
             # a wait a human should see, not just a forensic field on the
             # admit row: a stuck-mail incident (user report 2026-08-30)
             # traced back to a window where the machine-wide slot cap
@@ -13986,6 +14103,19 @@ def _run_one_turn(slug: str, nid: str,
             st["last_error"] = None
             notify(slug, nid, "turn_started")
             _turn_tier = str(org.node(nid).get("model") or "")
+            if _trec is not None:
+                # the node's own retry counter and its origin: the key that
+                # ties the attempts of one failure run together (turnlog)
+                _tn = org.node(nid)
+                _trec.set(tier=_turn_tier,
+                          lane=("codex" if _turn_tier in providers.CODEX_TIERS
+                                else "antigravity"
+                                if _turn_tier in providers.ANTIGRAVITY_TIERS
+                                else "claude"),
+                          run=int(_tn.get("net_fail_run") or 0),
+                          run_since_ms=_tn.get("net_fail_since_ms"),
+                          images_n=len(turn_images or []),
+                          view_len=len(turn_view or ""))
             # A limit marker belongs to a Claude result stream.  Retooling a
             # frozen node across providers must not let it survive a Codex or
             # Antigravity turn and attach to some unrelated future Claude result.
@@ -13998,13 +14128,16 @@ def _run_one_turn(slug: str, nid: str,
                 res, codex_occ = _codex_leg(
                     slug, nid, org, st, text, toks, turn_images, turn_view,
                     view_spans=view_spans,
-                    startup_manifest=cache_codex_manifest)
+                    startup_manifest=cache_codex_manifest, trec=_trec)
                 if res.get("_codex_account_ambiguous"):
                     # The provider turn is real, but no local observation can
                     # authoritatively attach it to either side of a login
                     # change. Preserve output/cost while recording no cache
                     # compatibility receipt for the captured old account.
                     cache_attempt = None
+                if _trec is not None:
+                    _trec.dispose("interrupted" if str(res.get("status") or "")
+                                  == "interrupted" else "completed")
                 st["last_error"] = None
                 st["turns_run"] += 1
                 st["account_switches"] = 0
@@ -14022,7 +14155,10 @@ def _run_one_turn(slug: str, nid: str,
                 # its own control raise, the SHARED finally owns the queue.
                 res, agy_occ = _antigravity_leg(
                     slug, nid, org, st, text, toks, turn_images, turn_view,
-                    view_spans=view_spans)
+                    view_spans=view_spans, trec=_trec)
+                if _trec is not None:
+                    _trec.dispose("interrupted" if str(res.get("status") or "")
+                                  == "interrupted" else "completed")
                 st["last_error"] = None
                 st["turns_run"] += 1
                 st["account_switches"] = 0
@@ -14146,6 +14282,14 @@ def _run_one_turn(slug: str, nid: str,
                     None, int((time.monotonic() - _spawn_t0) * 1000),
                     warm_lbl, slot_wait_s=slot_wait_s)
             ran_sid = sid          # the id _build_cmd just handed the CLI
+            if _trec is not None:
+                # the lane is the SPAWN-STAMPED identity (OpenRouter is the
+                # claude CLI under another key); `warm` = D-201 served it
+                _trec.set(lane=("openrouter" if str(st.get("ran_as") or "")
+                                == OPENROUTER_IDENTITY else "claude"),
+                          warm=wp_turn is not None)
+            turnlog.emit(_trec, "spawn", warm=wp_turn is not None,
+                         spawn_ms=int((time.monotonic() - _spawn_t0) * 1000))
             _mcp_tool_count_begin(
                 slug, nid, proc, "claude", "system/init.tools",
                 "Claude process is starting; runtime tools are not resolved yet",
@@ -14330,6 +14474,15 @@ def _run_one_turn(slug: str, nid: str,
             # that produced none never worked at all. Set in the assistant
             # branch below, off the same `not sub` sidechain guard.
             saw_agent_out = [False]
+            # turnlog: the first output of any shape (a delta, a thought, an
+            # assistant event) is one `first_output`; api retries are counted
+            _tl_first_out = [False]
+            _tl_retries = [0]
+
+            def _tl_first_output(thinking: bool = False) -> None:
+                if not _tl_first_out[0]:
+                    _tl_first_out[0] = True
+                    turnlog.emit(_trec, "first_output", thinking=thinking)
 
             def _dog() -> None:
                 while not dog_stop.wait(5.0):
@@ -14353,12 +14506,16 @@ def _run_one_turn(slug: str, nid: str,
                                "(idle watchdog — no top-level result event "
                                "ever arrived; the turn never reached a "
                                "boundary)"))
+                        turnlog.emit(_trec, "watchdog", why="idle",
+                                     elapsed_ms=int((now - last_ev[0]) * 1000))
                         _expire()
                         return
                     if now - budget_t0[0] > TURN_TIMEOUT:
                         timeout_why[0] = (
                             f"turn killed: exceeded the {TURN_TIMEOUT}s "
                             "per-message ceiling")
+                        turnlog.emit(_trec, "watchdog", why="budget",
+                                     elapsed_ms=int((now - budget_t0[0]) * 1000))
                         _expire()
                         return
             threading.Thread(target=_dog, daemon=True,
@@ -14485,6 +14642,7 @@ def _run_one_turn(slug: str, nid: str,
                         # chose.
                         _confirm_delivered(slug, nid, pend_toks)
                         pend_toks = []
+                        turnlog.emit(_trec, "delivered")
                         # D-223 rides the SAME proof. This event is the CLI
                         # telling us it read stdin; until it arrives, the
                         # envelope may never have reached the model and its
@@ -14499,6 +14657,7 @@ def _run_one_turn(slug: str, nid: str,
                                 and (sev.get("content_block") or {}).get("type")
                                 == "thinking"):
                             think_t0 = think_t0 or time.time()
+                            _tl_first_output(thinking=True)
                             # THE START of thinking, which is the only reliable
                             # marker when the reasoning is sealed: opus/sonnet
                             # send thinking_delta with an empty body, and on a
@@ -14513,6 +14672,7 @@ def _run_one_turn(slug: str, nid: str,
                             continue
                         d = sev.get("delta") or {}
                         if d.get("type") == "text_delta" and d.get("text"):
+                            _tl_first_output()
                             dbuf += d["text"]
                             if len(dbuf) >= 400 or time.time() - dlast >= 0.12:
                                 stream(slug, nid, {"kind": "delta",
@@ -14552,6 +14712,9 @@ def _run_one_turn(slug: str, nid: str,
                         # return, still broken (D-149).
                         _note_api_error(stream_api_err, ev.get("error"),
                                         ev.get("message") or ev.get("content"))
+                        _tl_retries[0] += 1
+                        turnlog.emit(_trec, "api_retry", code=ev.get("error"),
+                                     n=_tl_retries[0])
                         continue
                     if ev.get("type") == "system" and ev.get("subtype") == "init":
                         # №14: the CLI's own resolution of what this turn can
@@ -14566,6 +14729,7 @@ def _run_one_turn(slug: str, nid: str,
                         _mcp_tool_count_names(
                             slug, nid, proc, ev.get("tools") or [], "claude",
                             "system/init.tools")
+                        turnlog.emit(_trec, "init", **turnlog.init_shape(ev))
                         continue
                     if ev.get("type") == "system" and ev.get("subtype") in (
                             "background_tasks_changed", "task_started",
@@ -14692,6 +14856,9 @@ def _run_one_turn(slug: str, nid: str,
                             # has to emit the Task tool call before a subagent
                             # can exist, so its own output always comes first.
                             saw_agent_out[0] = True
+                            _tl_first_output()
+                            turnlog.emit(_trec, "assistant",
+                                         **turnlog.assistant_shape(ev))
                         _msg = ev.get("message", {})
                         # ⚠ the CLI's OWN flag is `is_api_error_message` on
                         # stdout and `isApiErrorMessage` in its transcript
@@ -14827,6 +14994,8 @@ def _run_one_turn(slug: str, nid: str,
                                     # other tool.
                                     **_todo_live_extra(slug, nid, b)})
                     elif ev.get("type") == "user" and not ev.get("parent_tool_use_id"):
+                        turnlog.emit(_trec, "tool_result",
+                                     **turnlog.tool_result_shape(ev))
                         # a running subagent resolves when its tool_result
                         # comes home (only ids WE opened — a subagent's own
                         # nested results never match)
@@ -14891,6 +15060,8 @@ def _run_one_turn(slug: str, nid: str,
                         if _nat is not None:
                             turn_native = (_nat if turn_native is None
                                            else max(turn_native, _nat))
+                        turnlog.emit(_trec, "result",
+                                     **turnlog.result_shape(ev, boundary=False))
                     elif ev.get("type") == "result" \
                             and not ev.get("parent_tool_use_id"):
                         # TWO guards, because a `result` event is not
@@ -14916,6 +15087,8 @@ def _run_one_turn(slug: str, nid: str,
                         #    2026-08-19 measured 0 turns booked, costs []).
                         res = ev
                         saw_result[0] = True
+                        turnlog.emit(_trec, "result",
+                                     **turnlog.result_shape(ev, boundary=True))
                         # what this turn has PROVABLY been billed, kept apart
                         # from `res` so a later straggler cannot erase it. At a
                         # boundary that FEEDS the next queued message, stdin
@@ -15454,8 +15627,13 @@ def _run_one_turn(slug: str, nid: str,
                 # retries a kill, and the node is left live and unfrozen, so
                 # without this it goes quiet exactly like the incident did.
                 _why = timeout_why[0] or "turn timed out and was killed"
-                if _bump_hard_fail(slug, nid) == 1:
+                _hf = _bump_hard_fail(slug, nid)
+                if _hf == 1:
                     _turn_abandoned(slug, nid, _why, "")
+                    turnlog.emit(_trec, "abandon", door="killed",
+                                 hard_fail_run=_hf)
+                if _trec is not None:
+                    _trec.dispose("killed")
                 raise RuntimeError(_why)
             # ⚠ a FLAG, not a re-parse of the sentence below. _died_in_flight
             # needs to know "nothing anywhere said why", and this is the one
@@ -15552,9 +15730,11 @@ def _run_one_turn(slug: str, nid: str,
                 err_blob = (str(stream_api_err.get("status_text") or "")
                             or f"the CLI reported API status "
                                f"{stream_api_err['status']}")
+            _tl_interrupted = False
             with _state_lock:
                 if st.pop("interrupted", None):
                     err_blob = ""     # a manual ⏸ pause is not a failure
+                    _tl_interrupted = True
             # ── NAME THE CAUSE (user ruling 2026-08-21) ────────────────────
             # A turn dying because the resolved CLI is too old already folds
             # its mail back and already records `last_error` — both pinned by
@@ -15597,12 +15777,28 @@ def _run_one_turn(slug: str, nid: str,
             else:
                 _limit_class = _or_typed in (401, 402, 429)
                 _net_class = _or_typed >= 500
+            # RECORDING ONLY (turnlog): the exit as observed, the interrupt,
+            # and the class the sites below act on — recorded, not recomputed
+            turnlog.emit(_trec, "exit", code=proc.returncode, parked=bool(parked),
+                         exit_only=exit_only, stderr_len=len(err or ""),
+                         stderr_lines=len((err or "").splitlines()))
+            if _tl_interrupted:
+                turnlog.emit(_trec, "interrupt")
             if err_blob:
+                turnlog.emit(_trec, "classify", limit=_limit_class,
+                             net=_net_class,
+                             filtered=_looks_like_filtered(err_blob),
+                             typed=_or_typed, started=saw_agent_out[0],
+                             boundary=saw_result[0], or_lane=_or_lane)
                 if "No conversation found" in err_blob or "no conversation" in err_blob.lower():
                     with store.DOC_LOCK:
                         o2 = store.load_org(slug)
                         o2.mark_unrecoverable(nid, err_blob[:200])
                         store.save_org(o2)
+                    turnlog.emit(_trec, "owner", branch="unrecoverable",
+                                 handled=False)
+                    if _trec is not None:
+                        _trec.dispose("unrecoverable")
                 # user spec: a Fable content-filter flag is its own eventuality
                 # — the org's fable_filter_policy decides: halt (default), or
                 # convert to opus and RETRY the flagged turn immediately
@@ -15615,6 +15811,7 @@ def _run_one_turn(slug: str, nid: str,
                                    if nid in o2.nodes else "halt")
                         store.save_org(o2)
                     notify(slug, nid, "filter_flagged")
+                    turnlog.emit(_trec, "owner", branch="filter", handled=False)
                     if applied == "opus":
                         with _state_lock:
                             # the replay carries the SAME enveloped text, so it
@@ -15760,6 +15957,10 @@ def _run_one_turn(slug: str, nid: str,
                                 f"account — re-driven on the next account "
                                 f"in line"))
                             handled = True   # the switch owns this failure
+                            turnlog.emit(_trec, "owner", branch="account_switch",
+                                         handled=True)
+                            if _trec is not None:
+                                _trec.dispose("redriven")
                             raise RuntimeError(
                                 "a usage limit was recorded and the turn "
                                 "has been re-driven on the next account in "
@@ -16295,6 +16496,11 @@ def _run_one_turn(slug: str, nid: str,
                             limit_lane_label(_tier_now, _acct_now,
                                              always_account=True))
                     handled = True      # frozen — ▶ / auto-resume owns it now
+                    turnlog.emit(_trec, "owner", branch="limit_freeze",
+                                 handled=True)
+                    turnlog.emit(_trec, "freeze", freeze_kind="limit")
+                    if _trec is not None:
+                        _trec.dispose("frozen")
                     if org.node(nid)["model"] == "fable" and _trusted_blob \
                             and _looks_like_fable_tier_limit(err_blob):
                         notify(slug, nid, "fable_limit")
@@ -16350,6 +16556,10 @@ def _run_one_turn(slug: str, nid: str,
                                     n2["net_fail_since_ms"])
                                 delay = min(300.0, 30.0 * (2 ** (run - 1)))
                                 fz["until_ts"] = time.time() + delay
+                                turnlog.emit(_trec, "freeze", freeze_kind="connection",
+                                             run=run, delay_s=int(delay),
+                                             schedule="backoff",
+                                             reset_known=True)
                                 # ⚠ a STATEMENT OF FACT, not a promise. This
                                 # said "retry {run}/{MAX} in ~{delay}s", and
                                 # on an org with auto_resume off — the default
@@ -16440,7 +16650,13 @@ def _run_one_turn(slug: str, nid: str,
                         # its own announcement and never reaches the terminal
                         # raise, so it is not double-counted.)
                         handled = True
+                        turnlog.emit(_trec, "owner", branch="net_retry",
+                                     handled=True)
+                        if _trec is not None:
+                            _trec.dispose("frozen")
                     elif run > NET_RETRY_MAX:
+                        turnlog.emit(_trec, "owner", branch="net_exhausted",
+                                     handled=False)
                         # ⚠ NOT "▶ or new mail" (peer report 2026-08-10, whose
                         # halves were the other way round). This branch writes
                         # NO freeze — the record is only written while
@@ -16472,11 +16688,17 @@ def _run_one_turn(slug: str, nid: str,
                             # below, which reaches a screen and nobody's
                             # inbox. See rule 2 on `_for_the_record`.
                             _retry_exhausted(slug, nid, run, err_blob, kind_txt)
+                            turnlog.emit(_trec, "abandon", door="ran_then_failed",
+                                         hard_fail_run=run)
+                            if _trec is not None:
+                                _trec.dispose("abandoned")
+                        elif _trec is not None:
+                            _trec.dispose("failed")
                         # the DURABLE RECORD for this door: `last_error` + the
                         # turn_error_log row. Same reasoning as the terminal
                         # raise below — after every predicate, never assigned
                         # back onto `err_blob`.
-                        _failfix_record(
+                        _fxp = _failfix_record(
                             slug, nid, site="exhausted",
                             lane="openrouter" if _or_lane else "claude",
                             err_blob=err_blob, err=err, res=res,
@@ -16486,6 +16708,8 @@ def _run_one_turn(slug: str, nid: str,
                             boundary=saw_result[0], run=run, exhausted=True,
                             limit=_limit_class, net=_net_class,
                             typed=_or_typed, ran_as=st.get("ran_as"))
+                        if _trec is not None:
+                            _trec.fixture(_fxp)
                         raise RuntimeError(
                             f"turn failed after {run} attempts ({kind_txt}) "
                             f"— it is not passing; the agent is no longer "
@@ -16515,19 +16739,29 @@ def _run_one_turn(slug: str, nid: str,
                     # the NUMBER, never the provider's sentence (rule 2 on
                     # `_for_the_record`: this text becomes mail)
                     _door += f" (API status {_or_typed})"
-                if not handled and _bump_hard_fail(slug, nid) == 1:
+                turnlog.emit(_trec, "owner", branch="terminal", handled=handled)
+                _hf = _bump_hard_fail(slug, nid) if not handled else 0
+                if not handled and _trec is not None:
+                    _trec.dispose("failed")
+                if _hf == 1:
                     # ⚠ the NARROW blob, deliberately: this text becomes MAIL
                     # to the agent and drives its superior. See rule 2 on
                     # `_for_the_record` — auth text in mail is what kills
                     # fable-tier sessions on this machine.
                     _turn_abandoned(slug, nid, _door, err_blob)
+                    turnlog.emit(_trec, "abandon", hard_fail_run=_hf,
+                                 door=("pre_model"
+                                       if exit_only and not saw_agent_out[0]
+                                       else "ran_then_failed"))
+                    if _trec is not None:
+                        _trec.dispose("abandoned")
                 # the DURABLE RECORD gets the CLI's own reason: this raise
                 # becomes `last_error` and the `turn_error_log` row, and it is
                 # AFTER every `_looks_like_*` call site, so the widened text
                 # cannot reach a predicate (OPEN-01 step 1, recording only)
                 _rec = _for_the_record(err_blob, res, stream_api_err)[:400]
                 # the redacted fixture (failfix): recording only, fail-open
-                _failfix_record(
+                _fxp = _failfix_record(
                     slug, nid, site="terminal",
                     lane="openrouter" if _or_lane else "claude",
                     err_blob=err_blob, err=err, res=res,
@@ -16537,7 +16771,11 @@ def _run_one_turn(slug: str, nid: str,
                     run=-1, exhausted=False, limit=_limit_class,
                     net=_net_class, typed=_or_typed,
                     ran_as=st.get("ran_as"))
+                if _trec is not None:
+                    _trec.fixture(_fxp)
                 raise RuntimeError(f"turn failed: {_rec or 'no output'}")
+            if _trec is not None:
+                _trec.dispose("interrupted" if _tl_interrupted else "completed")
             st["last_error"] = None
             st["turns_run"] += 1
             # ⚠ ONLY A COMPLETED TURN CLEARS THE SWITCH BOUND — the same
@@ -16618,6 +16856,11 @@ def _run_one_turn(slug: str, nid: str,
         # the next turn's START (see turn_started below); this row is what
         # keeps the failure in the conversation, in chronological place
         _log_turn_error(slug, nid, str(e) or type(e).__name__)
+        if _trec is not None:
+            # RECORDING ONLY: the raiser's CLASS, never its message. The
+            # default disposition is taken AFTER the provider-limit door
+            # below, which may still name this a freeze.
+            _trec.error(e)
         # ── D-209: THE PROVIDER SEAM'S USAGE-LIMIT DOOR ────────────────────
         # A codex/antigravity turn that hit a usage limit ended at the two lines
         # above and went no further: a `last_error` and a log row, the node
@@ -16647,6 +16890,18 @@ def _run_one_turn(slug: str, nid: str,
                                   schedule_kind=e.schedule_kind,
                                   provider=e.provider, account=e.account,
                                   resource_pool=e.resource_pool)
+            turnlog.emit(_trec, "owner", branch="provider_limit", handled=True)
+            turnlog.emit(_trec, "freeze", freeze_kind="limit",
+                         schedule=e.schedule_kind,
+                         reset_known=e.reset_ts is not None)
+            if _trec is not None:
+                _trec.dispose("frozen")
+        if _trec is not None and _trec.disposition is None:
+            # no exit path named a disposition: an expected RuntimeError (a
+            # written message from this machinery) is a failed turn, any
+            # other class is a crash
+            _trec.dispose("failed" if isinstance(e, RuntimeError)
+                          else "crashed")
         # …and the traceback to the backend log, but ONLY for a raiser the turn
         # machinery does not already explain. Every expected failure arrives as
         # a RuntimeError this function itself raised with a written message
@@ -16739,6 +16994,15 @@ def _run_one_turn(slug: str, nid: str,
                                 "the CLI before the turn ended — redelivered "
                                 "at the next boundary; a duplicate is possible")
         _fold_back_undelivered(slug, nid, keep_toks=alive)
+        turnlog.emit(_trec, "fold_back", undelivered_n=len(residual or []),
+                     uncertain_n=int(uncertain or 0))
+        if _trec is not None:
+            # what this attempt booked, as the exit paths left it: `turn_paid`
+            # is the CLI's own reported spend (0.0 = none reported, which is
+            # unknown, not free); a codex/antigravity leg books through
+            # `_after_turn` and reports nothing here
+            _trec.book(paid_booked=paid_booked,
+                       cost_usd=turn_paid if turn_paid > 0 else None)
         st.pop("on_fallback", None)     # this turn's lane is spent
         with _state_lock:
             if dropped_here:
