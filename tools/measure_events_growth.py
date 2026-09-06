@@ -26,10 +26,12 @@ WHAT IS MEASURED — two separate facts (coordinator 19:19):
      * all_largest_fixture — every row the LARGEST system-leaf fixture `ev`. This is the
                              largest FIXTURE, not an upper bound: real payloads are
                              variable-length (a docket objective, a watchdog's lines).
-   Each is reported in bytes and as % of the section's current size. The truth for a
-   given org lies between all_ordinary and an all-largest-fixture-sized load; which one
-   it is closer to depends on the org's mix, which this script deliberately does not
-   guess.
+   Each is reported in bytes and as % of the section's current size. These are
+   SCENARIOS, not predictions and not bounds: the largest fixture is explicitly NOT an
+   upper bound on real variable-length payloads, and the ordinary example is not proved
+   to be a universal floor (an ordinary row's `ev` size varies only with actor id
+   length, but nothing here proves every future row is at least that small). The org's
+   real mix is not guessed by this script.
 """
 from __future__ import annotations
 
