@@ -36,5 +36,5 @@
     "role": "owner",
     "owner": "reply.docket·owner"
   },
-  "body": "reply.docket·body"
+  "body": "[DOCKET REPLY · reply.docket·object.slug \"reply.docket·object.title\"] (the user replied on this docket item — treat it as item-linked mail and update the item if it changes the work)\nreply.docket·body"
 }
