@@ -408,34 +408,15 @@ uiTest('§11 a name this org does not have stays prose, and nothing is clickable
 // ------------------------------------- w2d5fab0a, the two elements that need
 // ------------------------------------- no parent relation to exist
 
-uiTest('§13 the status dot follows the status, and ATTENTION outranks it',
-  async (mount) => {
-    // ⚠ THE PRECEDENCE IS THE BEHAVIOUR, not the presence. A dot that simply
-    // echoes `status` looks right on every ordinary row and is wrong on the
-    // only row that matters: an item flagged for attention whose status is
-    // still `done` must read as attention, exactly as its left edge and its
-    // status word already do.
-    mockServer({
-      items: [
-        mkItem({ slug: 'plain-blocked-item', title: 'Blocked',
-          status: 'blocked' }),
-        mkItem({ slug: 'done-but-flagged', title: 'Flagged',
-          status: 'done', effective_attention: true,
-          attention_sources: ['manual'],
-          manual_attention: { reason: 'look at this', at: '2026-09-05T09:00:00.000Z',
-            by: { node: 'agent1', generation: 1 }, set_rev: 1 } }),
-      ],
-      archived: [], backlogged: [],
-    })
-    const el = await mount(modal())
-    await flush()
-    const dots = rows(el).map((r) => r.querySelector('.l1 .docket-dot')?.className)
-    assert.equal(dots[0], 'docket-dot status-blocked')
-    assert.ok(dots[1]?.includes('attention'),
-      'a flagged row reported its status where its flag should win')
-    // the dot carries no text: the row's readable content is still the name
-    assert.equal(rows(el)[0]?.querySelector('.l1 .docket-dot')?.textContent, '')
-  })
+// ⚠ §13 IS GONE, NOT REWRITTEN. It read the status dot in the row's name line
+// ("the status dot follows the status, and ATTENTION outranks it"), and the
+// user removed that dot on 2026-09-06 to give the width to long slug names.
+// The PRECEDENCE it cared about — a flagged row reads as attention whatever its
+// status says — is not lost: it is one expression, and docket.test.tsx checks
+// it on both surviving readings (the row's `attention` class and the status
+// word) at §4, §11, §11b and §26, the last of which is the same precedence over
+// a status that would otherwise style the row. Repointing this check at those
+// would have been another copy of that assertion, not new coverage.
 
 uiTest('§14 the two progress lists are marked as different kinds of line',
   async (mount) => {
