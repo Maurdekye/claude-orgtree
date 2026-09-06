@@ -4,7 +4,7 @@
 // carries — the src attribute, the element present or absent — never on the
 // helper having been called (a check that abstains reads exactly like a pass).
 //
-//   §11 the helpers: isImg, parseAttachedFiles
+//   §11 the helpers: isImg
 //   §12 md(): relative image srcs resolve per node, everything else untouched
 //   §13 the desk: send_file image cards, delivered/user attachments, embedded
 //       markdown images
@@ -23,7 +23,7 @@ import { refreshConvo, resetConvos } from '../src/convo'
 import { DeskChat } from '../src/canvas/desk'
 import { MailList } from '../src/canvas/mail'
 import { md } from '../src/canvas/shared'
-import { fmtBytes, isImg, parseAttachedFiles } from '../src/canvas/img'
+import { fmtBytes, isImg } from '../src/canvas/img'
 import { closeLightbox } from '../src/canvas/lightbox'
 import type { CanvasNode, MailRow } from '../src/canvas/shared'
 import type { OpResult } from '../src/types'
@@ -92,27 +92,12 @@ test('§11.1 isImg keys on the extension, case-insensitively', () => {
   assert.ok(!isImg(undefined), 'undefined is not')
 })
 
-test('§11.2 parseAttachedFiles lifts the envelope lines out of the body', () => {
-  const { rest, files } = parseAttachedFiles([
-    'look at these',
-    '[ATTACHED FILE: uploads/cat.png (12 KB) — in your working folder]',
-    '[ATTACHED FILE: uploads/report (final).pdf (900 B) — in your working folder]',
-    'thanks',
-  ].join('\n'))
-  assert.deepEqual(files, [
-    { path: 'uploads/cat.png', size: '12 KB' },
-    // a name carrying parens keeps them — the SIZE parens anchor at line end
-    { path: 'uploads/report (final).pdf', size: '900 B' },
-  ])
-  assert.equal(rest, 'look at these\nthanks')
-})
-
-test('§11.3 parseAttachedFiles leaves ordinary text alone', () => {
-  const t = 'no attachments here\n[ATTACHED FILE: but this line lacks the size suffix]'
-  const { rest, files } = parseAttachedFiles(t)
-  assert.deepEqual(files, [])
-  assert.equal(rest, t)
-})
+// Attachments arrive as explicit metadata, never marker-looking body lines.
+const attachmentSegments = (body: string, name: string, bytes: number) => [{ kind: 'mail', rows: [{
+  id: 'attachment-mail', from: '@user', kind: 'message', at: '2026-09-06T12:00:00Z', body,
+  ev: {v: 1, variant: 'ordinary.message', actor: {kind: 'user', id: '@user'}, object: null, engine_authored: false, body},
+  attachments: [{path: 'uploads/' + name, name, bytes}],
+}] }]
 
 // ==================================================================== §12
 // md() — RELATIVE IMAGE RESOLUTION
@@ -192,7 +177,7 @@ domTest('§13.2 a send_file NON-image keeps the download card, no phantom img',
 
 domTest('§13.3 a delivered user IMAGE attachment renders viewable, the marker line disappears',
   async ({ SL, ND, s, mount }) => {
-    s.userMsg('look at this\n[ATTACHED FILE: uploads/cat.png (12 KB) — in your working folder]')
+    s.userMsg('look at this').segments = attachmentSegments('look at this', 'cat.png', 12288)
     await refreshConvo(SL, ND)
     const { el } = await mount(deskEl(node(ND), SL))
     await flush()
@@ -207,7 +192,7 @@ domTest('§13.3 a delivered user IMAGE attachment renders viewable, the marker l
 
 domTest('§13.4 a delivered user NON-image attachment gets a download chip',
   async ({ SL, ND, s, mount }) => {
-    s.userMsg('here\n[ATTACHED FILE: uploads/data.csv (900 B) — in your working folder]')
+    s.userMsg('here').segments = attachmentSegments('here', 'data.csv', 900)
     await refreshConvo(SL, ND)
     const { el } = await mount(deskEl(node(ND), SL))
     await flush()

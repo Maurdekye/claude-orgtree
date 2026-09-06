@@ -887,6 +887,9 @@ export interface ToolChip {
 // role/text (every producer writes `text`, supervisor.py:2743-2972); `tools`
 // interleaves nulls (plumbing markers for user records)
 export interface ChatMessage {
+  /** Validated by the profile-specific segment decoder before rendering. */
+  segments?: unknown
+  delivery?: unknown
   role: string
   text: string
   ts?: string | null
@@ -946,6 +949,11 @@ export interface ChatInit {
 
 // api.py node_chat: the durable pending-mail projection (parity №11)
 export interface PendingMail {
+  ev?: unknown
+  ev_public?: unknown
+  ev_raw?: unknown
+  ev_error?: unknown
+  delivery?: unknown
   id: string | null
   from: string
   body: string
@@ -969,6 +977,9 @@ export interface PendingMail {
 // GET /api/orgs/{slug}/nodes/{nid}/chat — read_chat + node_chat additions
 /** one row of ChatPayload.live — the shape supervisor.live_row records */
 export interface LiveRowPayload {
+  /** Validated by the profile-specific segment decoder before rendering. */
+  segments?: unknown
+  delivery?: unknown
   kind: string
   text?: string
   id?: string

@@ -40,7 +40,7 @@ import {
   useVisitedTabs,
 } from './canvas/settingskit'
 import type { SettingsTab } from './canvas/settingskit'
-import { addPending, dropPending, ingestPulse, ingestStream, resetConvos } from './convo'
+import { addPending, bindPendingMail, dropPending, ingestPulse, ingestStream, resetConvos } from './convo'
 import type {
   AskInfo, AudiencesPayload, CacheForecast, DefaultsPayload, HostPayload, InboxPayload,
   KioskSpecRequest,
@@ -82,6 +82,7 @@ const SYSTEM = '@system'
 type WsEvent =
   | { type: 'mail'; from: string; to: string }
   | { type: 'node_stream'; node: string; kind: string; text?: string; sticky?: boolean; id?: string;
+      segments?: unknown; delivery?: unknown;
       count?: number | null; last_turn_count?: number | null; provider?: string;
       source?: string | null; reason?: string | null; emitted_at_ms?: number;
       waiting?: boolean; state?: string | null;
@@ -537,6 +538,8 @@ export default function App() {
         // (user bug 2026-08-02). See convo.ts.
         ingestStream(slug, {
           node: data.node, kind: data.kind, text: data.text ?? '',
+          ...(data.segments !== undefined ? { segments: data.segments } : {}),
+          ...(data.delivery !== undefined ? { delivery: data.delivery } : {}),
           // sticky rides through: immediate-command output lives in NO
           // transcript, so the live-feed reconciliation must never sweep it
           ...(data.sticky ? { sticky: true } : {}),
@@ -2196,7 +2199,7 @@ export function InboxPanel({ slug, tree, toast, refresh, close, jumpTo, jumpSeq,
                     // open behind this modal, or opened a second later —
                     // showed nothing at all until the server copy landed.
                     // Same store, same graduation-on-evidence rule.
-                    addPending(slug, m.from, text)
+                    const ghostId = addPending(slug, m.from, text)
                     // FR-05: the reply is attributed to the mail it answers —
                     // the agent's [MAIL] block quotes the snapshot, so a
                     // two-word reply is unambiguous
@@ -2205,7 +2208,7 @@ export function InboxPanel({ slug, tree, toast, refresh, close, jumpTo, jumpSeq,
                       gist: (m.body ?? '').trim().replace(/\s+/g, ' ')
                         .slice(0, 200),
                     })
-                      .then(() => toast([`sent to ${m.from}`]))
+                      .then(r => { bindPendingMail(slug, m.from, ghostId, r); toast([`sent to ${m.from}`]) })
                       .catch((e: Error) => {
                         dropPending(slug, m.from, text)
                         toast([`error: ${e.message}`])

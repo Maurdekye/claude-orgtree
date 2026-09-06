@@ -18,7 +18,7 @@ import {
   saveScope, sendMessage,
   unstickNode, uploadFile,
 } from '../api'
-import { AttachThumb, fmtBytes, ImgCardCaption, isImg, parseAttachedFiles } from './img'
+import { AttachThumb, fmtBytes, ImgCardCaption, isImg } from './img'
 import { openLightbox } from './lightbox'
 import PushPinIcon from '@mui/icons-material/PushPinOutlined'
 import {
@@ -32,7 +32,7 @@ import { ago, ALL_PRESENT, ALL_TIERS, anyTierSeat, CODEX_TIERS, CopyIcon, EXTERN
 import { closeIfCentred, ModalOverPins, PinFrame } from './modalpin'
 import type { ProviderPresence } from './shared'
 import {
-  addPending, CHAT_WINDOW, dismissPending, dropPending,
+  addPending, bindPendingMail, CHAT_WINDOW, dismissPending, dropPending,
   loadOlder as storeLoadOlder, markBusy, markGhostCommand,
   MAX_WINDOW, refreshConvo, useConvo,
 } from '../convo'
@@ -51,7 +51,9 @@ import { mailRefTarget, useRefRoutes } from './reflinks'
 import type { RefRoutes } from './reflinks'
 import type { TypedRef } from './workrefs'
 import { RefMdBody } from './refmd'
-import { ReceivedMailBody } from './mailpreview'
+import { EventCard } from '../events/card'
+import { decodeEventRow } from '../events/decode'
+import { authoredUserLabel, isSegments, SegmentList } from '../events/segments'
 import { isMobile } from '../mobile'
 import { fmtFull, fmtShort, fmtStamp, localizeFreezeUntil } from '../timefmt'
 
@@ -1179,39 +1181,13 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
   // seq is the PRE-slice ordinal, so a non-zero first seq means older rows exist
   const hasOlder = (chat?.messages[0]?.seq ?? 0) > 0
   const toBottom = () => { setStuck(true); pin() }
-  // FR-20 (user idea 2026-08-08; retarget-up 2026-08-14): the HUMAN's nearest
-  // message ABOVE the viewport, pinned at the top — the mirror of jumpbottom,
-  // aimed at a specific earlier row instead of "the newest". Scrolling up past
-  // the target hands the chip to the next user turn further up the chain, so
-  // it stays until the transcript above runs out of user turns.
-  // ⚠ Attribution is NOT `role === 'user'`: in orgtree a user-role transcript
-  // record is envelope-wrapped turn input from ANY sender (sibling, superior,
-  // org inbox) — the human is identified by the envelope's own FROM line,
-  // the durable twin of pending-mail's `m.from === USER` filter. Command
-  // bubbles are excluded on purpose: the chip is for the conversational turn,
-  // and a `/command` is machine-shaped chrome.
+  // Only explicit canonical actors establish authorship; legacy text stays readable.
   const userTurns = useMemo(() => {
     const out: { seq: number, label: string }[] = []
     for (const m of chat?.messages ?? []) {
-      if (m?.role === 'user' && m.seq != null
-          && new RegExp(`^FROM ${USER} \\(`, 'm').test(m.text ?? '')) {
-        // a restart replay wears the user's envelope but renders as a FOLDED
-        // one-line marker — jumping there shows nothing (live-caught
-        // 2026-08-12: the chip read "[ORGTREE RESTART] …" and the target
-        // looked empty). Same machine-chrome class as command bubbles; the
-        // ORIGINAL delivery of that message sits earlier in the transcript,
-        // so skipping the replay finds the row the reader actually means.
-        if (isRestart(splitNotices(m.text).rest)) continue
-        // the chip wraps to three lines now (user, 2026-08-19), so it takes
-        // the whole message rather than its first line — joined with spaces
-        // (a chip is a pointer, not a rendering of the message's shape) and
-        // capped well past what three lines hold at any panel width, so the
-        // fade always means "there is more", never "the slice ran out".
-        const label = stripEnvelope(splitNotices(m.text).rest)
-          .split('\n').map((l) => l.trim())
-          .filter((l) => l && !/^\*\*[^*]+\*\*$/.test(l)).join(' ')
-        out.push({ seq: m.seq, label: label.slice(0, 600) })
-      }
+      if (m.role !== 'user' || m.seq == null) continue
+      const label = authoredUserLabel(m.segments, BASE ? 'public' : 'operator')
+      if (label !== null) out.push({ seq: m.seq, label })
     }
     return out
   }, [chat])
@@ -1341,7 +1317,7 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
   // sit, question and all (user report 2026-09-01).
   // Steered mail (`delivering`, no `via`) stays below too: it arrived DURING
   // the turn, so the live rows above it really did happen first.
-  const pendMail = (chat?.pending_mail ?? []).filter((m) => m.from === USER)
+  const pendMail = (chat?.pending_mail ?? []).filter(m => decodeEventRow(m, BASE ? 'public' : 'operator').kind !== 'legacy' || m.from === USER)
   const pendNow = pendMail.filter((m) => m.delivering && m.via === 'turn')
   const pendLater = pendMail.filter((m) => !(m.delivering && m.via === 'turn'))
   // ONE renderer, two places (it is the same bubble; only its position says
@@ -1364,9 +1340,9 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
           what keeps the delivery tag / retract ✕ pinned at the top right where
           it already was, which the user asked for by name. */}
       <div className="pendbody">
-        {m.body && <RefMdBody className="msgtext md"
-          world={deskRefs.world} onOpen={deskRefs.onOpen}
-          html={md(m.body, fileBase(slug, node.id))} />}
+        <EventCard row={m} profile={BASE ? 'public' : 'operator'} org={slug} preview
+          world={deskRefs.world} onOpen={deskRefs.onOpen} actor={id => <MailFrom from={id} />}
+          imgBase={fileBase(slug, node.id)} />
         {/* a queued image renders viewable (dimmed like the bubble) — the
             upload already landed, only the MAIL is undelivered */}
         {(m.attachments ?? []).length > 0 && (
@@ -1421,12 +1397,13 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
     // optimistic ghost only until the server confirms — the durable copy
     // then renders from chat.pending_mail (№11); a failed send clears the
     // ghost instead of leaving a dimmed bubble forever
-    addPending(slug, node.id, t)
+    const ghostId = addPending(slug, node.id, t)
     if (live) markBusy(slug, node.id)
     flashMode('')   // the previous send's receipt must not outlive this one
     toBottom()
     sendMessage(slug, node.id, t, paths)
       .then((r) => {
+        bindPendingMail(slug, node.id, ghostId, r)
         // review C3: name every real outcome — "delivering" as the fallback
         // lied for frozen nodes (mail waits durably; nothing delivers now)
         flashMode(r.compacting ? 'compacting — the org way (§8)'
@@ -2074,7 +2051,7 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
               : f.kind === 'tool'
                 ? <div key={f.n ?? 'f' + i} className="msg live tools"><DotIcon fontSize="inherit" className="tooldot" /> {f.text}</div>
                 : f.kind === 'steered'
-                  ? <LiveSteerRow key={f.n ?? 'f' + i} text={f.text}
+                  ? <LiveSteerRow segments={f.segments} key={f.n ?? 'f' + i} text={f.text}
                       truncated={f.truncated} slug={slug} nid={node.id}
                       refs={deskRefs} />
                   : <div key={f.n ?? 'f' + i} className="msg assistant live">
@@ -2656,13 +2633,6 @@ export function LineagePanel({ node, op, slug, presence = ALL_PRESENT,
     </PinFrame>
   )
 }
-const splitNotices = (t: string | null | undefined) => {
-  // Structured server provenance owns machine-context visibility. Never
-  // infer authorship from marker-looking text: a person may type any marker
-  // literally and must get the exact text back.
-  return { notices: [] as string[], rest: t ?? '' }
-}
-
 /** The pending bubble's delivery RECEIPT (D-229). `stage` is where the server
  *  says the drained message is right now; the two legacy labels are kept
  *  byte-for-byte for rows from a backend that does not send one. A message no
@@ -2685,82 +2655,6 @@ export const pendTag = (m: PendingMail): string =>
       : m.stage === 'turn' || (!m.stage && m.via === 'turn')
         ? 'delivering…'
         : 'delivering mid-task…'
-
-/** A turn-start envelope can carry several authors.  Keep it structured until
- * render time: treating its raw text as one user markdown bubble made passive
- * notices look authored by the user, and a bold notice header could visually
- * run into its body.  This is display-only; the backend's durable envelope is
- * deliberately unchanged. */
-export interface TurnMail {
-  from: string
-  relationship: string
-  kind: string
-  at: string
-  body: string
-  passive: boolean
-}
-
-const TURN_MAIL_RE = /^\s*\[MAIL — \d+ message\(s\)\]\n([\s\S]*?)\n\[END MAIL\]\n*/
-const NOTICE_MAIL_RE = /^NOTICE FROM (\S+) \((.*?)\) · (.*?) — informational, delivered passively; no reply is expected\n?([\s\S]*)$/
-const DIRECT_MAIL_RE = /^FROM (\S+) \((.*?)\) · ([^·\n]+) · ([^\n]+)\n?([\s\S]*)$/
-// the opening line alone: a copy the server cut has no closing marker
-const TRUNC_MAIL_OPEN_RE = /^\s*\[MAIL — \d+ message\(s\)\]\n/
-
-// one header parser, so the whole-envelope and truncated-preview readers below
-// cannot drift on who sent a message or where its body starts
-const parseMailBlock = (block: string): TurnMail | null => {
-  const notice = NOTICE_MAIL_RE.exec(block)
-  if (notice) {
-    return { from: notice[1] ?? '', relationship: notice[2] ?? '', kind: 'notice',
-      at: notice[3] ?? '', body: notice[4] ?? '', passive: true }
-  }
-  const direct = DIRECT_MAIL_RE.exec(block)
-  if (direct) {
-    return { from: direct[1] ?? '', relationship: direct[2] ?? '', kind: direct[3] ?? '',
-      at: direct[4] ?? '', body: direct[5] ?? '', passive: false }
-  }
-  return null
-}
-
-export const splitTurnMail = (text: string | null | undefined) => {
-  const value = text ?? ''
-  const matched = TURN_MAIL_RE.exec(value)
-  if (!matched) return { mail: [] as TurnMail[], rest: value }
-  const mail: TurnMail[] = []
-  for (const block of (matched[1] ?? '').split('\n---\n')) {
-    const one = parseMailBlock(block)
-    // A future envelope shape must stay visible rather than silently vanish.
-    if (!one) return { mail: [] as TurnMail[], rest: value }
-    mail.push(one)
-  }
-  return { mail, rest: value.slice(matched[0].length) }
-}
-
-/** The envelope in a copy the SERVER DECLARED CUT — no `[END MAIL]`, because
- *  the cut landed before it. Used only when a `truncated` flag says so.
- *
- *  Identity comes from COMPLETE headers and nothing else: a block whose header
- *  line does not end inside the copy is never parsed, so a cut mid-header
- *  cannot invent a sender. Returns null when nothing can be established;
- *  `cut` is the trailing partial block, which the caller still displays. */
-export const splitTruncatedMail = (text: string | null | undefined) => {
-  const value = text ?? ''
-  const opened = TRUNC_MAIL_OPEN_RE.exec(value)
-  if (!opened) return null
-  const blocks = value.slice(opened[0].length).split('\n---\n')
-  const mail: TurnMail[] = []
-  for (let i = 0; i < blocks.length; i++) {
-    const block = blocks[i] ?? ''
-    // a terminated first line is what makes the header complete
-    const one = block.includes('\n') ? parseMailBlock(block) : null
-    if (one) { mail.push(one); continue }
-    // only the LAST block may be unreadable — that is where the cut is. An
-    // unrecognised shape anywhere else is refused, as splitTurnMail refuses.
-    if (i < blocks.length - 1) return null
-    return mail.length ? { mail, cut: block } : null
-  }
-  return { mail, cut: '' }
-}
 
 /** A mail sender's identity: its model chip and the route to its desk, or the
  *  plain name when this surface cannot vouch for it. Facts by context — see
@@ -2795,104 +2689,18 @@ function MailFrom({ from, nameClass }: { from: string; nameClass?: string }) {
     onFocus={dir?.onFocus ? (id) => dir.onFocus!(id) : undefined} />
 }
 
-function TurnMailCard({ mail, slug, nid, refs }:
-{ mail: TurnMail; slug: string; nid: string; refs?: RefRoutes }) {
-  const { rest: body, files } = parseAttachedFiles(mail.body)
-  const fb = fileBase(slug, nid)
-  return (
-    <section className={'turn-mail' + (mail.passive ? ' passive' : '')
-      + (mail.from === USER ? ' from-user' : '')}>
-      <header className="turn-mail-head">
-        <MailFrom from={mail.from} nameClass="turn-mail-from" />
-        <span>{mail.relationship}</span>
-        <span>{mail.kind}</span>
-        <time>{fmtFull(mail.at)}</time>
-        {mail.passive && <span className="turn-mail-passive">no reply expected</span>}
-      </header>
-      {body && <ReceivedMailBody
-        world={refs?.world} onOpen={refs?.onOpen} html={md(body, fb)} />}
-      {files.length > 0 && (
-        <div className="attach-row">
-          {files.map((f) => {
-            const name = f.path.split('/').pop() || f.path
-            const href = fileUrl(slug, nid, f.path)
-            return isImg(name)
-              ? <AttachThumb key={f.path} href={href} name={name} meta={f.size} />
-              : <a key={f.path} className="attach-chip" href={href} download={name} title="download">
-                  <DownloadIcon fontSize="inherit" /> {name}<span className="dim"> {f.size}</span></a>
-          })}
-        </div>
-      )}
-    </section>
-  )
+/** Live and settled inputs use the same validated composition. */
+function LiveSteerRow({ text, segments, slug, nid, truncated, refs }:
+  { text: string; segments?: unknown; slug: string; nid: string; truncated?: boolean; refs?: RefRoutes }) {
+  const profile = BASE ? 'public' : 'operator'
+  return <div className="msg user live">
+    {isSegments(segments, profile)
+      ? <SegmentList segments={segments} profile={profile} slug={slug} nid={nid}
+          world={refs?.world} onOpen={refs?.onOpen} actor={id => <MailFrom from={id} />} />
+      : <RefMdBody className="md" world={refs?.world} onOpen={refs?.onOpen} html={md(text, fileBase(slug, nid))} />}
+    {truncated && <div className="trunc-note">Shown truncated ? the full text follows shortly</div>}
+  </div>
 }
-
-/** MAIL THAT ARRIVED MID-TURN, drawn while the turn is still running.
- *
- *  ⚠ IT STAYS LIVE: `.msg.user.live`, never the settled card's dress — only
- *  the SENDER is upgraded from a bold name to its identity. Parsed with the
- *  settled card's own parsers so the two cannot drift; a complete header in a
- *  server-declared truncated copy still names its sender while the body stays
- *  live, and an unrecognised envelope falls back to the previous rendering
- *  rather than dropping text. Attachments stay as [ATTACHED FILE] lines —
- *  the settled card makes them chips. */
-function LiveSteerRow({ text, slug, nid, truncated, refs }:
-  { text: string; slug: string; nid: string; truncated?: boolean
-    refs?: RefRoutes }) {
-  // notices are split off here too: the live row would otherwise flash raw
-  // [ORG NOTICES] chrome for the second before the transcript refresh
-  // renders them as a card
-  const rest = splitNotices(text).rest
-  const whole = splitTurnMail(rest)
-  // the server caps this copy and DECLARES the cut, which takes `[END MAIL]`
-  // with it; complete headers before the cut still name their senders
-  const cut = whole.mail.length || !truncated ? null : splitTruncatedMail(rest)
-  const mail = whole.mail.length ? whole.mail : cut?.mail ?? []
-  const fb = fileBase(slug, nid)
-  if (!mail.length) {
-    return <RefMdBody className="msg user live md"
-      world={refs?.world} onOpen={refs?.onOpen}
-      html={md(stripEnvelope(rest), fb)} />
-  }
-  const after = stripEnvelope(whole.mail.length ? whole.rest : cut!.cut)
-  return (
-    <div className="msg user live">
-      {mail.map((m, i) => (
-        <div className="live-mail" key={i}>
-          <div className="live-mail-head"><MailFrom from={m.from} /></div>
-          {m.body.trim() && <RefMdBody className="md"
-            world={refs?.world} onOpen={refs?.onOpen}
-            html={md(m.body.trim(), fb)} />}
-        </div>
-      ))}
-      {after && <RefMdBody className="md" world={refs?.world}
-        onOpen={refs?.onOpen} html={md(after, fb)} />}
-      {/* the cards above would otherwise read as the whole message */}
-      {cut && <div className="trunc-note">
-        ✂ shown truncated — the full text follows shortly</div>}
-    </div>
-  )
-}
-
-// The restart replay (supervisor.reconcile) re-sends the message that drove an
-// interrupted turn, prefixed with this marker. Re-delivery is deliberate and
-// load-bearing — D-045's "worst case a duplicate, never a loss" — but the
-// reader already knows what they typed, so it folds into a one-line marker
-// instead of replaying their own prompt back at them (user, 2026-08-02).
-const RESTART_MARK = '[ORGTREE RESTART]'
-const isRestart = (t: string | null | undefined) =>
-  (t ?? '').trimStart().startsWith(RESTART_MARK)
-
-// hide the machine chrome — [MAIL]/[END MAIL] markers, drive nudges — and
-// render the FROM attribution as a small header instead of body text.
-const stripEnvelope = (t: string | null | undefined) => (t ?? '')
-  .split('\n')
-  .filter((l) => !/^\[(MAIL — .*|END MAIL)\]$/.test(l.trim())
-    && !l.trim().startsWith('(orgtree) '))
-  .join('\n')
-  .replace(/^FROM (\S+) \([^)]*\) · \S+ · \S+$/gm, '**$1**')
-  .replace(/^FROM (\S+) \([^)]*\)$/gm, '**$1**')
-  .trim()
 
 // Parity №1/№9/№10: the tool line says what it did — argument on the chip, a
 // red bit + first error line on failure, and the RESULT collapsed behind a
@@ -3006,57 +2814,19 @@ export const Msg = memo(function Msg({ m, slug, nid, onMailLink, onWorkLink, ref
   refs?: RefRoutes
 }) {
   if (m.role === 'system') return <SysLine m={m} />
-  // notices come out BEFORE the envelope strip — they are their own card
-  const { notices, rest } = m.role === 'user'
-    ? splitNotices(m.text) : { notices: [] as string[], rest: m.text }
-  // a restart replay is machinery, not something the reader said: one line,
-  // with the repeated prompt behind a click for anyone who wants to confirm it
-  if (m.role === 'user' && isRestart(rest)) {
-    return (
-      <div className="msg user restartmsg">
-        {notices.length > 0 && <NoticeLine notices={notices} />}
-        <RestartLine text={stripEnvelope(rest)} />
-      </div>
-    )
-  }
-  // delivered attachments ride the envelope as [ATTACHED FILE: …] lines —
-  // machine chrome, like the rest of the envelope: parsed OUT of the bubble
-  // and rendered as real attachments below it, images viewable in place
-  // (user spec 2026-08-25)
-  const turnMail = m.role === 'user'
-    ? splitTurnMail(rest) : { mail: [] as TurnMail[], rest }
-  // the steered log caps a row and DECLARES the cut; a cut that landed before
-  // `[END MAIL]` used to take every sender in the envelope down with it
-  const cutMail = m.role === 'user' && m.truncated && !turnMail.mail.length
-    ? splitTruncatedMail(rest) : null
-  if (turnMail.mail.length > 0 || cutMail) {
-    const mails = turnMail.mail.length ? turnMail.mail : cutMail!.mail
-    const tail = stripEnvelope(turnMail.mail.length ? turnMail.rest : cutMail!.cut)
-    return (
-      <div className="turn-mail-batch">
-        {notices.length > 0 && <NoticeLine notices={notices} />}
-        {mails.map((mail, i) =>
-          <TurnMailCard key={`${mail.at}-${i}`} mail={mail} slug={slug} nid={nid}
-            refs={refs} />)}
-        {tail && <div className="msg user turn-mail-tail">
-          <RefMdBody className="msgtext md" world={refs?.world} onOpen={refs?.onOpen}
-            html={md(tail, fileBase(slug, nid))} />
-        </div>}
-        {/* the cards above would otherwise read as the whole message */}
-        {cutMail && <div className="trunc-note">
-          ✂ shown truncated — the agent received the full message</div>}
-      </div>
-    )
-  }
-  const { rest: text, files } = m.role === 'user'
-    ? parseAttachedFiles(stripEnvelope(rest))
-    : { rest: m.text, files: [] }
+  const profile = BASE ? 'public' : 'operator'
+  if (m.role === 'user' && isSegments(m.segments, profile)) return <div className="msg user typed-input">
+    <SegmentList segments={m.segments} profile={profile} slug={slug} nid={nid}
+      world={refs?.world} onOpen={refs?.onOpen} actor={id => <MailFrom from={id} />} />
+    {m.truncated && <div className="trunc-note">Shown truncated ? the agent received the full message</div>}
+    {m.steered && m.receipt && <div className="trunc-note">{m.receipt}</div>}
+  </div>
+  const text = m.text
   // relative image srcs in the text (`![](outbox/plot.png)`) resolve against
   // this node's own files — the way an agent embeds a picture in its reply
   const fb = fileBase(slug, nid)
   return (
     <div className={'msg ' + m.role + (m.oracle ? ' oracle' : '')}>
-      {notices.length > 0 && <NoticeLine notices={notices} />}
       {(m.thinking || m.thinking_sealed) &&
         <ThoughtLine text={m.thinking} secs={m.think_secs}
           sealed={m.thinking_sealed} />}
@@ -3068,20 +2838,6 @@ export const Msg = memo(function Msg({ m, slug, nid, onMailLink, onWorkLink, ref
             onMailLink={onMailLink} onWorkLink={onWorkLink} />))}
       {text && <RefMdBody className="msgtext md" world={refs?.world}
         onOpen={refs?.onOpen} html={md(text, fb)} />}
-      {files.length > 0 && (
-        <div className="attach-row">
-          {files.map((f) => {
-            const name = f.path.split('/').pop() || f.path
-            const href = fileUrl(slug, nid, f.path)
-            return isImg(name)
-              ? <AttachThumb key={f.path} href={href} name={name} meta={f.size} />
-              : <a key={f.path} className="attach-chip" href={href}
-                  download={name} title="download">
-                  <DownloadIcon fontSize="inherit" /> {name}
-                  <span className="dim"> {f.size}</span></a>
-          })}
-        </div>
-      )}
       {/* the display copy was capped server-side (steered-log per-row cap) —
           without this line the tail is just silently missing and the message
           reads as complete (user report 2026-08-17) */}
@@ -3095,53 +2851,6 @@ export const Msg = memo(function Msg({ m, slug, nid, onMailLink, onWorkLink, ref
   )
 })
 
-// "resumed after a restart" — the replayed prompt is hidden by default because
-// the reader typed it and can see it upstream; one click proves what the agent
-// was actually re-sent, which matters when diagnosing a duplicated turn.
-function RestartLine({ text }: { text: string }) {
-  const [open, setOpen] = useState(false)
-  return (
-    <div className="thoughtwrap">
-      <button className="thoughtline noticeline" onClick={() => setOpen((o) => !o)}
-        title={open ? 'collapse' : 'show what was re-sent to the agent'}>
-        <AutorenewIcon fontSize="inherit" />
-        {' '}resumed after an orgtree restart {open ? '▾' : '▸'}
-      </button>
-      {open && <div className="thoughtbody noticebody">{text}</div>}
-    </div>
-  )
-}
-
-// Org-change notices (hire/retire/reallocate/move/scope) ride in on the next
-// turn's message. They are about the ORG, not the conversation, so they fold
-// into their own collapsed card — same shape as the thought line, deliberately
-// (one collapse vocabulary in the transcript, not two).
-function NoticeLine({ notices }: { notices: string[] }) {
-  const [open, setOpen] = useState(false)
-  return (
-    <div className="thoughtwrap">
-      <button className="thoughtline noticeline" onClick={() => setOpen((o) => !o)}
-        title={open ? 'collapse' : 'read the org changes delivered with this message'}>
-        <AutorenewIcon fontSize="inherit" />
-        {' '}{notices.length} notice{notices.length === 1 ? '' : 's'} {open ? '▾' : '▸'}
-      </button>
-      {open && (
-        <div className="thoughtbody noticebody">
-          {notices.map((n, i) => <div key={i}>{n}</div>)}
-        </div>
-      )}
-    </div>
-  )
-}
-
-// №18 evolved (user spec 2026-07-31): after thinking wraps up it folds into a
-// small clickable "thought for Xs" line; the click expands the thought
-// process. Fed live (measured) while the turn runs, and from the transcript's
-// thinking blocks (gap-derived seconds) ever after.
-// `sealed` = the block arrived signature-only, its plaintext withheld by the
-// API (the normal case since 2026-08-02). The thought and its duration are
-// still real, so the line stays — as a plain marker with no expander, because
-// an expander that opens on nothing is worse than no expander.
 function ThoughtLine({ text, secs, sealed }:
 { text?: string; secs?: number; sealed?: boolean }) {
   const [open, setOpen] = useState(false)

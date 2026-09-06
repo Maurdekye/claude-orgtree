@@ -24,7 +24,7 @@ import type { TestContext } from 'node:test'
 import assert from 'node:assert/strict'
 import { useEffect } from 'react'
 import {
-  addPending, CHAT_WINDOW, CMD_GRACE, dismissPending, dropPending, ingestPulse,
+  addPending, bindPendingMail, CHAT_WINDOW, CMD_GRACE, dismissPending, dropPending, ingestPulse,
   ingestStream, loadOlder, MAX_WINDOW, markBusy, markGhostCommand,
   dropConvo, refreshConvo, renameConvo, resetConvos, STALL_MS, useConvo,
 } from '../src/convo'
@@ -1230,3 +1230,33 @@ convoTest('§8.5 every ghost can be dismissed — the thing the user asked for',
       'and it took only its own bubble with it — dismissing by id, not by '
       + 'text, so two sends of the same words do not collapse into one')
   })
+
+
+// Typed delivery identities must distinguish identical authored messages.
+const typedRow = (id: string) => ({ id, from: '@user', kind: 'message', at: '2026-09-06T12:00:00Z', body: 'continue',
+  ev: { v: 1, variant: 'ordinary.message', actor: {kind: 'user', id: '@user'}, object: null, engine_authored: false, body: 'continue' } })
+convoTest('typed mail IDs retire only the matching repeated send through poll and steer', async ({SL,ND,s,desk}) => {
+  const d = await desk(); await flush()
+  let a=0,b=0
+  await inAct(() => { a=addPending(SL,ND,'continue'); b=addPending(SL,ND,'continue')
+    bindPendingMail(SL,ND,a,typedRow('a')); bindPendingMail(SL,ND,b,typedRow('b')) })
+  assert.equal(d.now().pending.length,2)
+  const row=s.userMsg('continue'); row.segments=[{kind:'mail',rows:[typedRow('a')]}]
+  await refreshConvo(SL,ND); await flush()
+  assert.deepEqual(d.now().pending.map(g=>g.mailId),['b'])
+  await inAct(()=>ingestStream(SL,{node:ND,kind:'steered',text:'continue',t:Date.now(),segments:[{kind:'mail',rows:[typedRow('a')]}]}))
+  assert.deepEqual(d.now().pending.map(g=>g.mailId),['b'],'a replay cannot retire b')
+  await inAct(()=>ingestStream(SL,{node:ND,kind:'steered',text:'unrelated transport text',t:Date.now(),segments:[{kind:'mail',rows:[typedRow('b')]}]}))
+  assert.equal(d.now().pending.length,0,'matching durable ID retires without body match')
+})
+convoTest('typed rows never graduate unbound ghosts by body and late response binds to current payload', async ({SL,ND,s,desk}) => {
+  const d=await desk(); await flush(); let id=0
+  await inAct(()=>{id=addPending(SL,ND,'continue')})
+  const row=s.userMsg('continue'); row.segments=[{kind:'mail',rows:[typedRow('other')]}]
+  await refreshConvo(SL,ND); await flush()
+  assert.equal(d.now().pending.length,1)
+  await inAct(()=>bindPendingMail(SL,ND,id,{id:'other',ev:{variant:'ordinary.message'}}))
+  assert.equal(d.now().pending[0].mailId,undefined,'malformed response cannot supply identity')
+  await inAct(()=>bindPendingMail(SL,ND,id,typedRow('other')))
+  assert.equal(d.now().pending.length,0,'late response sees its existing durable row')
+})

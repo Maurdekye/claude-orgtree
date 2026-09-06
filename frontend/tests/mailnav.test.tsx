@@ -185,7 +185,9 @@ function uiTest(name: string, body: (k: Kit) => Promise<void>): void {
   test(name, async (t: TestContext) => {
     useFakeClock()
     const s = new FakeServer()
-    s.userMsg(ENVELOPE)
+    s.userMsg(ENVELOPE).segments = [{kind:'mail',rows:[{id:'camera-control',from:PEER,kind:'message',at:'2026-09-05T10:00:00Z',body:'camera control',
+      ev:{v:1,variant:'ordinary.message',actor:{kind:'agent',id:PEER},object:null,engine_authored:false,body:'camera control'},
+    }]}]
     installFetch(s)
     const inner = (globalThis as { fetch: typeof fetch }).fetch
     ;(globalThis as unknown as { fetch: typeof fetch }).fetch = ((
@@ -280,7 +282,7 @@ uiTest('§2 CONTROL — the TRANSCRIPT\'s mail card reaches the same camera '
   // fact about the boundary §1 clicks and not about this fixture, this canvas
   // or this way of clicking.
   await openHome(host)
-  const head = host.querySelector('.sq.desk .turn-mail-head') as HTMLElement | null
+  const head = host.querySelector('.sq.desk .event-head') as HTMLElement | null
   assert.ok(head, 'positive control: the transcript rendered a mail card')
   await realClick(jumpIn(head!, 'the card names its sender as a route'))
   assert.equal(focusedDesk(host), PEER,

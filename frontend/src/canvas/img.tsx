@@ -16,25 +16,6 @@ export const fmtBytes = (n: number | null | undefined) => (n == null ? '0 B'
   : n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB`
   : n >= 1024 ? `${Math.round(n / 1024)} KB` : `${n} B`)
 
-// The envelope names delivered attachments in-band (supervisor._envelope:
-// "[ATTACHED FILE: uploads/x.png (12 KB) — in your working folder]"), which
-// the transcript then replays verbatim — the ONE machine-chrome line
-// stripEnvelope left in the bubble as literal text. Parse those lines out;
-// the caller renders them as real attachments (images viewable in place).
-const ATT_LINE = /^\[ATTACHED FILE: (.+) \((\d+ K?B)\) — in your working folder\]$/
-export interface AttachedFile { path: string; size: string }
-export const parseAttachedFiles = (text: string): { rest: string; files: AttachedFile[] } => {
-  if (!text.includes('[ATTACHED FILE:')) return { rest: text, files: [] }
-  const files: AttachedFile[] = []
-  const kept = text.split('\n').filter((l) => {
-    const m = ATT_LINE.exec(l.trim())
-    if (!m) return true
-    files.push({ path: m[1]!, size: m[2]! })
-    return false
-  })
-  return { rest: kept.join('\n').trim(), files }
-}
-
 /** A filename that must not wrap, split so CSS can elide the MIDDLE.
  *
  *  User report 2026-08-28: a long unbroken name (`kyo_spotlight_fixed_front

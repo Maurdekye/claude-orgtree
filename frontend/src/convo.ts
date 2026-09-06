@@ -18,7 +18,9 @@
 // It also costs LESS than what it replaces: one fetch per node instead of one
 // per mounted view.
 
-import { getChat } from './api'
+import { BASE, getChat } from './api'
+import { decodeEventRow, record } from './events/decode'
+import { segmentMailIds } from './events/wire'
 import type { ChatPayload } from './types'
 import type { LiveRow, PulseEvent, StreamEvent } from './canvas/shared'
 import { useCallback, useSyncExternalStore } from 'react'
@@ -58,6 +60,8 @@ export interface PendingGhost {
    *  of the list (dropOne), where an index key renames every ghost below the
    *  one that left. */
   id: number
+  /** Returned by the server for a typed send; never inferred from its body. */
+  mailId?: string
   text: string
   seen: number
   /** the newest transcript `seq` the payload showed when this ghost was made.
@@ -391,8 +395,22 @@ function serverCopies(c: ChatPayload | null, text: string): number {
   if (!c) return 0
   const needle = text.slice(0, COPIES_NEEDLE)
   return c.messages.slice(-COPIES_WINDOW)
-    .filter((m) => m.role === 'user' && (m.text || '').includes(needle)).length
-    + (c.pending_mail ?? []).filter((m) => (m.body || '').includes(needle)).length
+    .filter((m) => m.role === 'user' && m.segments === undefined && (m.text || '').includes(needle)).length
+    + (c.pending_mail ?? []).filter((m) => decodeEventRow(m, BASE ? 'public' : 'operator').kind === 'legacy' && (m.body || '').includes(needle)).length
+}
+
+/** A single current payload can carry a mail in the queue, transcript or live log. */
+function serverMailIds(c: ChatPayload | null): Set<string> {
+  const ids = new Set<string>()
+  if (!c) return ids
+  const profile = BASE ? 'public' : 'operator'
+  for (const row of [...c.messages, ...(c.live ?? [])]) {
+    for (const id of segmentMailIds(row.segments, profile)) ids.add(id)
+  }
+  for (const row of c.pending_mail ?? []) {
+    if (row.id && decodeEventRow(row, profile).kind === 'known') ids.add(row.id)
+  }
+  return ids
 }
 
 // -------------------------------------------------------------------- fetch
@@ -474,12 +492,14 @@ export function refreshConvo(slug: string, nid: string,
     const idleNow = !c.busy
     const cmdDead = (g: PendingGhost): boolean =>
       !!g.cmd && !g.failed && idleNow && Date.now() - g.at >= CMD_GRACE
+    const mailIds = serverMailIds(c)
     const pending = e.s.pending
       .map((g) => (cmdDead(g) ? { ...g, failed: true } : g))
       // a FAILED ghost is no longer waiting for evidence — it survives every
       // filter below and leaves only when the user dismisses it
       .filter((g) => g.failed
-        || (serverCopies(c, g.text) <= g.seen && !scrolledPast(c, g)))
+        || (g.mailId ? !mailIds.has(g.mailId)
+          : serverCopies(c, g.text) <= g.seen && !scrolledPast(c, g)))
       // a ghost made before the first payload has no seq baseline (see
       // addPending). This survivor's message is NOT in this payload — its
       // eventual row must come after everything the payload shows — so the
@@ -580,7 +600,7 @@ export function loadOlder(slug: string, nid: string): boolean {
   return true
 }
 
-export function addPending(slug: string, nid: string, text: string): void {
+export function addPending(slug: string, nid: string, text: string): number {
   const k = key(slug, nid)
   const e = entry(k)
   // Baseline: everything already ACCOUNTED FOR is not this send. That is the
@@ -590,9 +610,10 @@ export function addPending(slug: string, nid: string, text: string): void {
   // BOTH and the second message went off screen. (D-52 fixed the same-text
   // case across turns; this is the same-instant case its baseline missed.)
   const msgs = e.s.chat?.messages ?? []
+  const ghostId = ++GHOST_ID
   patch(k, {
     pending: [...e.s.pending, {
-      id: ++GHOST_ID,
+      id: ghostId,
       text,
       seen: serverCopies(e.s.chat, text)
         + e.s.pending.filter((g) => g.text === text).length,
@@ -604,6 +625,17 @@ export function addPending(slug: string, nid: string, text: string): void {
       at: Date.now(),
     }],
   })
+  return ghostId
+}
+
+/** Bind only a validated typed response. Old servers retain the legacy path. */
+export function bindPendingMail(slug: string, nid: string, ghostId: number, response: unknown): void {
+  if (!record(response) || typeof response.id !== 'string'
+      || decodeEventRow(response, BASE ? 'public' : 'operator').kind !== 'known') return
+  const k = key(slug, nid), e = entry(k), mailId = response.id
+  const visible = serverMailIds(e.s.chat).has(mailId)
+  patch(k, { pending: e.s.pending.flatMap(g => g.id !== ghostId ? [g]
+    : visible ? [] : [{ ...g, mailId }]) })
 }
 
 /** Mark the ghost for THIS send as a command (desk.tsx, on the response).
@@ -725,8 +757,13 @@ export function ingestStream(slug: string, ev: StreamEvent): void {
     // bounded needle for the same reason as serverCopies: the server caps the
     // event text (api `m[:2000]`), so a full-length needle from a longer steer
     // can never occur in it.
-    patch(k, { pending: dropOne(e.s.pending,
-      (g) => ev.text.includes(g.text.slice(0, COPIES_NEEDLE))) })
+    if (ev.segments !== undefined) {
+      const ids = segmentMailIds(ev.segments, BASE ? 'public' : 'operator')
+      patch(k, { pending: e.s.pending.filter(g => !g.mailId || !ids.has(g.mailId)) })
+    } else {
+      patch(k, { pending: dropOne(e.s.pending,
+        (g) => !g.mailId && ev.text.includes(g.text.slice(0, COPIES_NEEDLE))) })
+    }
   }
   nudge(slug, ev.node)
 }

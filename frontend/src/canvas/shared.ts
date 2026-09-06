@@ -755,6 +755,8 @@ export interface CanvasScope {
 /** the app-level event feeds OrgCanvas rides (produced by App's WS handler) */
 export interface PulseEvent { node: string; event: string; t: number }
 export interface StreamEvent {
+  segments?: unknown
+  delivery?: unknown
   node: string
   /** 'delta' | 'thinking' | 'thinking_start' | 'text' | 'tool' (supervisor.py
    *  stream()) + 'steered' (api.py) — open: built from untyped WS JSON.
@@ -842,6 +844,8 @@ export interface Pile {
 }
 /** a live-feed row: a StreamEvent copy or a folded thought line */
 export interface LiveRow {
+  segments?: unknown
+  delivery?: unknown
   kind: string
   text: string
   secs?: number
