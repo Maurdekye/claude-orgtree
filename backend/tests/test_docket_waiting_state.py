@@ -121,6 +121,10 @@ def waiting_is_listed_but_not_counted() -> None:
     slug = fixture()
     wid = item(slug, "Waits on a build")
     upd(slug, wid, status="waiting", waiting_reason=EVENT)
+    # AN ORG WHOSE ONLY WORK IS WAITING SHOWS ZERO on the button — the case the
+    # user is actually looking at when they say the number overstates the work
+    assert store.load_org(slug).work_counts()["active"] == 0, \
+        store.load_org(slug).work_counts()
     back = item(slug, "Nobody has started this", status="backlogged")
     live = item(slug, "Somebody is on this", status="in_progress")
     counts = store.load_org(slug).work_counts()
