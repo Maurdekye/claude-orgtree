@@ -1,7 +1,7 @@
 ﻿import type { ReactNode } from 'react'
 import type { Event, PublicEvent, Family } from '../generated/events'
 import { decodeEventRow } from './decode'
-import { humanValue } from './value'
+import { fieldType, humanValue } from './value'
 import type { HumanValue } from './value'
 import type { EventProfile } from './decode'
 import { projectEvent } from './project'
@@ -96,6 +96,9 @@ export function EventCard({ row, profile, org, preview = false, actor, ...conten
   const body = view.fields.filter(f => f.placement === 'body')
   const header = view.fields.filter(f => f.placement === 'header')
   const context = view.fields.filter(f => f.placement === 'context')
+  const objectValue = event.object ? humanValue(event.object, fieldType(event.variant, 'object'), profile) : null
+  const objectDetails = objectValue?.kind === 'record'
+    ? { ...objectValue, fields: objectValue.fields.filter(f => f.key !== 'kind') } : null
   const bodyContent = <div className="event-body"><Fields fields={body} {...content} profile={profile} org={org} actor={actor} /></div>
   return <section className={'event-card event-' + view.family} data-event-variant={event.variant}>
     <header className="event-head">
@@ -112,8 +115,10 @@ export function EventCard({ row, profile, org, preview = false, actor, ...conten
     </header>
     {body.length > 0 && (preview
       ? <ReceivedMailBody>{bodyContent}</ReceivedMailBody> : bodyContent)}
-    {context.length > 0 && <details className="event-context">
-      <summary>Context</summary><Fields fields={context} {...content} profile={profile} org={org} actor={actor} />
+    {(context.length > 0 || Boolean(objectDetails?.fields.length)) && <details className="event-context">
+      <summary>Context</summary>
+      {objectDetails && <div className="event-object-details"><Value value={objectDetails} {...content} profile={profile} org={org} actor={actor} /></div>}
+      <Fields fields={context} {...content} profile={profile} org={org} actor={actor} />
     </details>}
   </section>
 }

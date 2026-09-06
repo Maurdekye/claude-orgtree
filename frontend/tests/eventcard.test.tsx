@@ -80,3 +80,25 @@ test('digest members keep typed family and permitted values without dumping cano
     }
   }
 })
+
+
+test('compact object headings retain permitted build and reference facts in context', async t => {
+  const build=fixtures.find(f=>f.variant==='runtime.restart_notice')
+  const node=fixtures.find(f=>f.variant==='lifecycle.retired')
+  for(const profile of ['operator','public'] as const) {
+    const key=profile==='operator'?'private':'public'
+    const ev={...build[key],object:{...build[key].object,commit:'full-commit-C',short:'short-C',dirty:true,pid:424242}}
+    const view=await mountView(<EventCard org="fixture" profile={profile} row={profile==='operator'?{ev}:{ev_public:ev}}/>,h=>h)
+    t.after(()=>view.unmount())
+    assert.match(view.el.querySelector('.event-head')!.textContent!,/short-C/)
+    const context=view.el.querySelector('.event-context')!
+    assert.match(context.textContent!,/full-commit-C/)
+    assert.match(context.textContent!,/424242/)
+    assert.equal(context.querySelector('[data-event-field="dirty"] dd')!.textContent,'Yes')
+    const event={...node[key],object:{...node[key].object,generation:41}}
+    const reference=await mountView(<EventCard org="fixture" profile={profile} row={profile==='operator'?{ev:event}:{ev_public:event}}/>,h=>h)
+    t.after(()=>reference.unmount())
+    assert.match(reference.el.querySelector('.event-object-details')!.textContent!,/41/)
+    assert.equal(reference.el.querySelectorAll('.event-object-details [data-event-field="org"]').length,0)
+  }
+})
