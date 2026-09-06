@@ -280,6 +280,26 @@ def additions(a, b, seen: set, path: str = "") -> str | None:
     return None if a == b else f"{path}: {a!r} → {b!r}"
 
 
+FORBIDDEN_ON_PRETYPED = ("ev", "ev_public", "ev_error", "ev_raw")
+
+
+def forbidden_keys(x, path: str = "") -> list[str]:
+    """Every occurrence of a typed-data key ANYWHERE in a payload — inside allowed
+    additions too. The allowlist above says which keys may be ADDED; this says what
+    may never appear on a pre-typed document, at any depth."""
+    hits: list[str] = []
+    if isinstance(x, dict):
+        for k, v in x.items():
+            here = f"{path}.{k}" if path else str(k)
+            if k in FORBIDDEN_ON_PRETYPED:
+                hits.append(here)
+            hits += forbidden_keys(v, here)
+    elif isinstance(x, list):
+        for i, v in enumerate(x):
+            hits += forbidden_keys(v, f"{path}[{i}]")
+    return hits
+
+
 def _mutate_valid(ev: dict) -> dict:
     """A copy of `ev` with ONE schema-valid change: the actor id (a free string on
     every leaf, public by rule) is replaced by another id. Nothing else moves, so
@@ -369,14 +389,24 @@ def walk(label: str, src_root: str, slug: str, *, expect_typed: bool, enriched: 
                 if extra is not None:
                     raise AssertionError(f"{k}: RAW outputs differ beyond the documented additive "
                                          f"transport keys: {extra}")
-            assert not any(key in {"ev", "ev_public", "ev_error", "ev_raw"} for _, key in seen), seen
             assert seen <= UNTOUCHED_ADDITIVE, f"undocumented additions: {seen - UNTOUCHED_ADDITIVE}"
+            # no typed-data key ANYWHERE in the complete new outputs — including inside
+            # the allowed additions (a `delivery` value carrying an `ev` would pass the
+            # walker above; it must not pass this)
+            hits = [f"{k}: {h}" for k in sorted(new_out) for h in forbidden_keys(new_out[k]["body"])]
+            assert not hits, f"typed-data keys on a pre-typed document: {hits[:10]}"
+            # POSITIVE CONTROL: a forbidden key planted UNDER an allowed addition is found
+            planted = {"pending": [{"id": "legacy-row", "delivery": {"ev": {"injected": "typed"}}}]}
+            control_seen: set = set()
+            assert additions({"pending": [{"id": "legacy-row"}]}, planted, control_seen) is None \
+                and control_seen == {("pending", "delivery")}, "the walker should allow the addition"
+            assert forbidden_keys(planted) == ["pending[0].delivery.ev"], forbidden_keys(planted)
             print(f"         additive transport keys observed on this export: "
                   f"{sorted(seen) if seen else 'none (no in-flight rows — the exemption was not exercised)'}")
             if not seen:
                 assert not raw_differ, "outputs differ yet no addition was recorded"
     check(f"{label} · reader outputs "
-          f"{'diff-clean once this release' + chr(39) + 's keys are stripped (positive control: unstripped they differ)' if expect_typed else 'RAW-equal except the documented additive pending_mail transport keys; no ev anywhere'}",
+          f"{'diff-clean once this release' + chr(39) + 's keys are stripped (positive control: unstripped they differ)' if expect_typed else 'RAW-equal except the documented additive in-flight transport keys; no typed-data key at ANY depth (planted control caught)'}",
           _diff)
 
     def _roundtrip():
