@@ -1575,7 +1575,7 @@ export function NodeSquare({ node, pos, lod, focused: deskOpen, dragging, isDrop
           HEADER carries titled doc badges instead — world-scaled side chips
           blow up) and not on pile fronts (the side is the stack). */}
       {!focused && !pile && (node.documents?.length ?? 0) > 0 && onOpenDoc && (
-        <DocChips docs={node.documents!} onOpen={onOpenDoc} />
+        <DocChips slug={slug} docs={node.documents!} onOpen={onOpenDoc} />
       )}
       {/* F-03: side chips hire a COWORKER — same superior, landing on that
           side. Not on pile/crowd fronts: the card's edges there are the

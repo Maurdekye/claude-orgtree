@@ -5583,3 +5583,9 @@ html.mobile .modalpin-win.gallery-modal > .gallery-head {
 .docket-reply-picker { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; max-width: 100%; }
 .docket-reply-picker select { min-width: 0; max-width: 100%; }
 .docket-reply-note { font-size: 12px; margin-bottom: 6px; }
+
+/* HTML presentations use native links for reliable new-tab activation. */
+a.doc-chip, a.doc-badge, a.doc-gallery-row { text-decoration: none; }
+.doc-gallery-row[href] { color: inherit; }
+.mockup-open { padding: 16px 12px; }
+.mockup-unavailable { opacity: .6; cursor: default; }

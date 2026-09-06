@@ -21,12 +21,13 @@
 // are the same fetch and the same dismiss the overlay reader uses.
 
 import { useMemo, useState } from 'react'
+import type { ReactNode } from 'react'
 import type { DocRow } from '../api'
-import { fileBase, getDocuments, sendMessage } from '../api'
+import { BASE, fileBase, getDocuments, mockupUrl, sendMessage } from '../api'
 import { addPending } from '../convo'
 import type { ToastFn } from '../types'
 import { CloseIcon, DocIcon } from '../icons'
-import { dismissDoc, useDoc } from './docs'
+import { dismissDoc, MockupOpen, useDoc } from './docs'
 import { PinFrame } from './modalpin'
 import { RefMdBody } from './refmd'
 import type { RefWorld, ResolvedRef } from './reflinks'
@@ -161,7 +162,7 @@ export function DocGalleryModal({ slug, toast, close, onFocusAgent, onReply,
                 <div className="mailer">
                   <div className="mailer-list">
                     {rows!.map((r) => (
-                      <div key={r.id}
+                      <GalleryEntry key={r.id} slug={slug} row={r}
                         className={'mailrow doc-gallery-row'
                           // `.active`/`.past` — styled in styles.css, scoped
                           // to `.gallery-modal` only (accepted docket
@@ -186,9 +187,10 @@ export function DocGalleryModal({ slug, toast, close, onFocusAgent, onReply,
                         <div className="l2">
                           <TierChip tier={r.tier} />
                           {r.node || '?'}
+                          {r.format === 'html' && <span className="dim">HTML mockup</span>}
                           {r.evicted && <span className="badge evicted">content evicted</span>}
                         </div>
-                      </div>
+                      </GalleryEntry>
                     ))}
                   </div>
                   <div className="mailer-read">
@@ -206,6 +208,18 @@ export function DocGalleryModal({ slug, toast, close, onFocusAgent, onReply,
         </div>
     </PinFrame>
   )
+}
+
+/** The gallery's HTML card is itself a native new-tab link; selection
+ *  still reveals its metadata and dismiss control when the user returns. */
+function GalleryEntry({ slug, row, children, ...props }: {
+  slug: string; row: DocRow; children: ReactNode
+  className: string; title: string; onClick: () => void
+}) {
+  return row.format === 'html' && !row.evicted && !BASE
+    ? <a {...props} href={mockupUrl(slug, row.id)} target="_blank"
+        rel="noopener noreferrer">{children}</a>
+    : <div {...props}>{children}</div>
 }
 
 /** the right-hand viewer: the same fetch and the same dismiss the overlay
@@ -275,7 +289,8 @@ function DocPane({ slug, row, toast, onDismissed, close, onFocusAgent, onReply,
             {err && <div className="ask-warn">could not load the document: {err}</div>}
             {/* relative image srcs resolve against the PRESENTING node's
                 files — `![](outbox/chart.png)` embeds a figure that agent saved */}
-            {doc && <RefMdBody className="mailer-body md"
+            {doc?.format === 'html' && <MockupOpen slug={slug} docId={row.id} />}
+            {doc && doc.format !== 'html' && <RefMdBody className="mailer-body md"
               html={md(doc.body, fileBase(slug, doc.node))}
               world={refs?.world} onOpen={refs?.onOpen} />}
             {!doc && !err && <div className="dim pad">loading…</div>}

@@ -246,14 +246,19 @@ export const remoteControl = (slug: string, nid: string,
   })
 // FR-03: presented documents — the reader fetches the body on open
 export const getDocument = (slug: string, did: string):
-  Promise<{ id: string; node: string; title: string; body: string; at: string }> =>
+  Promise<{ id: string; node: string; title: string; body: string; at: string; format?: 'markdown' | 'html'; bytes?: number }> =>
   req(`/api/orgs/${slug}/documents/${did}`)
+/** A stable operator-only HTML preview; content isolation is server-enforced. */
+export const mockupUrl = (slug: string, did: string): string =>
+  u(`/api/orgs/${encodeURIComponent(slug)}/documents/${encodeURIComponent(did)}/mockup`)
 // the gallery (user request 2026-09-03): every card, org-wide, newest first —
 // metadata only (no body; the reader fetches that on open). `evicted` rows
 // are cards the retention prune dropped whose log line survives — no body to
 // fetch, but still findable rather than silently gone.
 export interface DocRow {
   id: string; node: string; title: string; at: string
+  format?: 'markdown' | 'html'
+  bytes?: number
   evicted: boolean; node_state: 'live' | 'archived' | 'unrecoverable' | 'deleted'
   /** the presenting agent's model, for the row's tier chip. Served from the
    *  ledger rather than looked up client-side: the gallery lists cards from

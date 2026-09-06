@@ -6,8 +6,9 @@
 // fetches the body on open.
 
 import { useEffect, useState } from 'react'
+import type { ReactNode } from 'react'
 import type { ToastFn } from '../types'
-import { dismissDocument, fileBase, getDocument } from '../api'
+import { BASE, dismissDocument, fileBase, getDocument, mockupUrl } from '../api'
 import { md } from './shared'
 import { RefMdBody } from './refmd'
 import type { RefWorld, ResolvedRef } from './reflinks'
@@ -16,9 +17,42 @@ import { PinFrame } from './modalpin'
 import { CloseIcon, DocIcon } from '../icons'
 import { fmtFull } from '../timefmt'
 
-export interface DocMeta { id: string; title: string; at: string }
+export interface DocMeta { id: string; title: string; at: string; format?: 'markdown' | 'html'; bytes?: number }
 
-export interface LoadedDoc { title: string; node: string; at: string; body: string }
+export interface LoadedDoc { title: string; node: string; at: string; body: string; format?: 'markdown' | 'html'; bytes?: number }
+
+/** The same activation in the canvas chips and titled desk cards. HTML
+ *  opens synchronously through a native link, never after an async fetch. */
+export function PresentationCard({ slug, doc, onOpen, className, children }: {
+  slug: string; doc: DocMeta; onOpen: (id: string) => void
+  className: string; children: ReactNode
+}) {
+  if (doc.format === 'html') {
+    if (BASE) return <span className={className + ' mockup-unavailable'}
+      aria-disabled="true" title="Mockup previews are available in the operator view">
+      {children}
+    </span>
+    return <a className={className} href={mockupUrl(slug, doc.id)}
+      target="_blank" rel="noopener noreferrer"
+      title={`open ${doc.title} in a new tab`}
+      onPointerDown={(e) => e.stopPropagation()}
+      onClick={(e) => e.stopPropagation()}>{children}</a>
+  }
+  return <button className={className} title={`read ${doc.title}`}
+    onPointerDown={(e) => e.stopPropagation()}
+    onClick={(e) => { e.stopPropagation(); onOpen(doc.id) }}>{children}</button>
+}
+
+/** Reference and gallery readers never put HTML into the app's own DOM. */
+export function MockupOpen({ slug, docId }: { slug: string; docId: string }) {
+  return <div className="mockup-open">
+    {BASE
+      ? <p className="dim">Mockup previews are available in the operator view.</p>
+      : <a href={mockupUrl(slug, docId)} target="_blank" rel="noopener noreferrer">
+          Open interactive mockup in a new tab
+        </a>}
+  </div>
+}
 
 /** fetch one document's body by id — the tree payload and the gallery list
  *  both carry metadata only, so every reading surface starts here.
@@ -66,18 +100,18 @@ export function dismissDoc(slug: string, docId: string, title: string,
  *  Square ICONS only (user report 2026-08-05: the titled chips were wide
  *  enough to overlap the adjacent card) — the title lives in the tooltip;
  *  the desk header carries the readable titled badges. */
-export function DocChips({ docs, onOpen }: {
+export function DocChips({ slug, docs, onOpen }: {
+  slug: string
   docs: DocMeta[]
   onOpen: (id: string) => void
 }) {
   return (
     <div className="doc-chips">
       {docs.slice(-4).map((d) => (
-        <button key={d.id} className="doc-chip" title={`read “${d.title}”`}
-          onPointerDown={(e) => e.stopPropagation()}
-          onClick={(e) => { e.stopPropagation(); onOpen(d.id) }}>
+        <PresentationCard key={d.id} slug={slug} doc={d}
+          className="doc-chip" onOpen={onOpen}>
           <DocIcon fontSize="inherit" />
-        </button>
+        </PresentationCard>
       ))}
     </div>
   )
@@ -144,7 +178,8 @@ export function DocReader({ slug, docId, toast, close, refs,
         {err && <div className="ask-warn">could not load the document: {err}</div>}
         {/* relative image srcs resolve against the PRESENTING node's files —
             `![](outbox/chart.png)` embeds a figure the agent saved */}
-        {doc && <RefMdBody className="doc-reader-body md"
+        {doc?.format === 'html' && <MockupOpen slug={slug} docId={docId} />}
+        {doc && doc.format !== 'html' && <RefMdBody className="doc-reader-body md"
           html={md(doc.body, fileBase(slug, doc.node))}
           world={refs?.world} onOpen={refs?.onOpen} />}
     </PinFrame>

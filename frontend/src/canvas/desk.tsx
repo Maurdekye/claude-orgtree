@@ -43,6 +43,7 @@ import { ConfirmModal } from './modals'
 import { InboxView, RetiredFold } from './mail'
 import { AskCard } from './asks'
 import { AgentDocketView, agentItems } from './docket'
+import { PresentationCard } from './docs'
 import { buildNodeFacts } from './docket'
 import { AgentDirectoryProvider, AgentName, agentFactsSig, useAgentDirectory } from './identity'
 import type { AgentDirectory } from './identity'
@@ -1867,10 +1868,10 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
       {onOpenDoc && (node.documents?.length ?? 0) > 0 && (
         <div className="desk-docs">
           {node.documents!.slice(-4).map((d) => (
-            <button key={d.id} className="doc-badge" title={`read “${d.title}”`}
-              onClick={() => onOpenDoc(d.id)}>
+            <PresentationCard key={d.id} slug={slug} doc={d}
+              className="doc-badge" onOpen={onOpenDoc}>
               <DocIcon fontSize="inherit" /><span>{d.title}</span>
-            </button>
+            </PresentationCard>
           ))}
         </div>
       )}
