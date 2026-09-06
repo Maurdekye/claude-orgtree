@@ -2574,7 +2574,11 @@ def _synthetic_chat_rows(org: Org, nid: str) -> list[dict[str, Any]]:
                 "retried": bool(e.get("retried")),
                 "confirmed_duplicate": bool(e.get("confirmed_duplicate")),
                 "receipt": steer_receipt_text(e),
-                **({"truncated": True} if e.get("truncated") else {})})
+                **({"truncated": True} if e.get("truncated") else {}),
+                # the typed composition persisted with the steered row (journal
+                # form; node_chat projects it per caller like every other row)
+                **({"segments": e["segments"]}
+                   if isinstance(e.get("segments"), list) else {})})
     for e in (org.d.get("turn_error_log") or {}).get(nid, []):
         rows.append({"role": "system", "text": "⚠ " + (e.get("text") or ""),
                      "tools": [], "ts": e.get("at"), "turn_error": True})
@@ -23356,6 +23360,11 @@ def commit_steer(slug: str, nid: str, msgs: list[Any], *,
     # CHEAPER than what it replaces: one doc write where there were two, which
     # answers the "the hot path must never wait on a doc save" note that put
     # the record off-thread in the first place.
+    # the typed composition of each delivered carrier, snapshotted from the journal
+    # BEFORE the batches are retired below (design §6): aligned with `views`, one
+    # list per carrier, journal form (full events); [] where a carrier had none
+    per_carrier: list[list[dict[str, Any]]] = [[] for _ in views]
+
     def _record() -> None:
         with store.DOC_LOCK:
             try:
@@ -23364,33 +23373,31 @@ def commit_steer(slug: str, nid: str, msgs: list[Any], *,
                 return
             if nid not in org.nodes:
                 return
+            dlmap = org.d.get("delivering") or {}
+            dl = dlmap.get(nid) or []
+            by_tok = {str(b.get("tok") or ""): b for b in dl}
+            for i, m in enumerate(msgs):
+                if isinstance(m, dict):
+                    for t in m.get("toks") or []:
+                        b = by_tok.get(str(t))
+                        if b and isinstance(b.get("segments"), list):
+                            per_carrier[i].extend(b["segments"])
             if any(views):
                 log = org.d.setdefault("steered_log", {}).setdefault(nid, [])
-                for t in views:
+                for i, t in enumerate(views):
                     if not t:
                         continue
                     s = str(t)
-                    # this row IS the message's only durable rendering (hook
-                    # context is never transcripted), so a silent cut here cut
-                    # the user's own words on screen forever (user report
-                    # 2026-08-17: "visually cut off"). Cap high, MARK the cut,
-                    # and bound the ring by bytes instead of relying on a low
-                    # per-row cap: 40×20k let the old shape reach 800k/node —
-                    # the byte trim below keeps a strictly smaller worst case.
-                    # D1: `level` names the EVIDENCE this row rests on --
-                    # "accepted" (a provider accepted turn/steer: codex) or
-                    # "handoff" (the legacy claude fetch: the bytes left the
-                    # server, nothing more). Neither is "recorded".
                     log.append({"at": stamp, "text": s[:100000], "level": level,
                                 **({"truncated": True}
-                                   if len(s) > 100000 else {})})
+                                   if len(s) > 100000 else {}),
+                                **({"segments": per_carrier[i]}
+                                   if per_carrier[i] else {})})
                 del log[:-40]
                 while (len(log) > 5
                        and sum(len(e.get("text") or "") for e in log) > 300000):
                     log.pop(0)
             drop = set(toks)
-            dlmap = org.d.get("delivering") or {}
-            dl = dlmap.get(nid)
             if dl and drop:
                 keep = [b for b in dl if b.get("tok") not in drop]
                 if keep:
@@ -23398,45 +23405,18 @@ def commit_steer(slug: str, nid: str, msgs: list[Any], *,
                 else:
                     dlmap.pop(nid, None)
             store.save_org(org)
-
     if out or toks:
         try:
             _record()
         except Exception:                                   # noqa: BLE001
-            # The frame below still retires the optimistic ghost. The
-            # unconfirmed delivery journal then folds back at the boundary —
-            # duplicate rather than loss, D-50's explicit failure direction.
             pass
-    # …and only now is it on screen. The frame stays capped (ws flood control)
-    # but the cut is DECLARED — the durable steered row above carries the whole
-    # text a poll later, and `convo.ingestStream` uses this frame for two
-    # things the heartbeat cannot do in time: retire the sender's optimistic
-    # ghost, and nudge the refetch that draws the durable row.
-    for raw in out:
+    for i, raw in enumerate(out):
         body = str(raw)
         stream(slug, nid, {"kind": "steered", "text": body[:2000],
                            **({"truncated": True} if len(body) > 2000 else {}),
-                           **_live_segments(slug, nid, raw)})
+                           **({"segments_raw": per_carrier[i]}
+                              if i < len(per_carrier) and per_carrier[i] else {})})
     return out
-
-
-def _live_segments(slug: str, nid: str, carrier: Any) -> dict[str, Any]:
-    """The typed composition of a steered carrier for its LIVE row (design §6): the
-    journal batches the carrier's `toks` name hold the segments, in journal form;
-    the hub projects them per socket (`segments_raw` → `segments`). A bare-string
-    carrier (an empty box, no journal) carries nothing typed."""
-    toks = list(carrier.get("toks") or []) if isinstance(carrier, dict) else []
-    if not toks:
-        return {}
-    try:
-        org = store.load_org(slug)
-    except Exception:                                        # noqa: BLE001
-        return {}
-    segs: list[dict[str, Any]] = []
-    for b in (org.d.get("delivering") or {}).get(nid, []):
-        if b.get("tok") in toks and isinstance(b.get("segments"), list):
-            segs.extend(b["segments"])
-    return {"segments_raw": segs} if segs else {}
 
 
 def pop_steer(slug: str, nid: str, *, return_carriers: bool = False,
