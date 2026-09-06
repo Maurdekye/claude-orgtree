@@ -1,4 +1,4 @@
-﻿import type { ReactNode } from 'react'
+import type { ReactNode } from 'react'
 import type { Event, PublicEvent, Family } from '../generated/events'
 import { decodeEventRow } from './decode'
 import { fieldType, humanValue } from './value'
@@ -61,7 +61,7 @@ export function eventReference(event: KnownEvent, enclosingOrg: string): TypedRe
     case 'document': return { kind: 'doc', org, id: object.id }
     case 'node': return { kind: 'agent', org, id: object.id }
     case 'mail': return { kind: 'mail', org, id: object.id, box: object.box, ...(object.node ? { node: object.node } : {}) }
-    case 'ask': case 'batch': case 'credit_request': case 'audience_request': case 'scope_request':
+    case 'ask': case 'batch': case 'credit_request': case 'audience_request':
     case 'watchdog': case 'task': case 'build': case 'org': case 'session': return null
   }
 }
