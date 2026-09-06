@@ -39,7 +39,9 @@ export interface GitSnapshot {
 }
 export interface GitRegistry {
   repositories: { id: string; name: string; path: string; links: { branch: string; item: string; agent: string | null }[] }[]; selected: string | null
-  discovery: { candidates: { path: string; name: string }[]; truncated: boolean; scanned: number; errors: unknown[] }
+}
+export interface GitDiscovery {
+  candidates: { path: string; name: string }[]; truncated: boolean; scanned: number; errors: unknown[]
 }
 export interface GitSettings {
   revision: number; auto_fetch: boolean; remote: string | null; trunk: string | null

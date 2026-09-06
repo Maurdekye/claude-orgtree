@@ -1,11 +1,11 @@
 import { req } from '../api'
-import type { GitRegistry, GitSnapshot, GitSettings, GitPage, GitOperation, GitFreshness } from './types'
+import type { GitRegistry, GitDiscovery, GitSnapshot, GitSettings, GitPage, GitOperation, GitFreshness } from './types'
 const base = (slug: string) => `/api/orgs/${encodeURIComponent(slug)}/git`
 const repo = (slug: string, id: string) => `${base(slug)}/${encodeURIComponent(id)}`
 const json = (method: string, body: unknown): RequestInit => ({ method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
 export const listGit = (slug: string): Promise<GitRegistry> => req(`${base(slug)}/repositories`)
 export const registerGit = (slug: string, path: string): Promise<{ id: string; name: string }> => req(`${base(slug)}/repositories`, json('POST', { path }))
-export const discoverGit = (slug: string, path: string): Promise<GitRegistry['discovery']> => req(`${base(slug)}/discover`, json('POST', { path }))
+export const discoverGit = (slug: string, path?: string): Promise<GitDiscovery> => req(`${base(slug)}/discover`, json('POST', { path }), 120_000)
 export const forgetGit = (slug: string, id: string): Promise<unknown> => req(`${repo(slug, id)}/registration`, { method: 'DELETE' })
 export const selectGit = (slug: string, id: string): Promise<unknown> => req(`${repo(slug, id)}/selection`, { method: 'POST' })
 export const getGitObservation = (slug: string, id: string): Promise<{ busy: boolean; ref_identity?: string; freshness?: GitFreshness }> => req(`${repo(slug, id)}/observation`)

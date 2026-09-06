@@ -6,6 +6,12 @@ most two directory levels and 200 directories inside the org's known roots;
 it does not initialize or clone repositories. Registration is host-operator
 only. Public visitors and bridge requests receive no Git data.
 
+Saved repositories load separately from automatic discovery of known folder
+roots. Discovery runs once when the workspace opens; its progress, results or
+failure are shown separately, so it does not hold up the graph or Add repository.
+Opening Discovery results shows those candidates. Scan subfolders keeps the
+same two-level, 200-directory limit and does not block the current graph.
+
 Select a trunk and remote in Repository settings when no unambiguous suggestion
 exists. A saved selection stays selected if its ref or remote disappears. Link
 branches to docket items there; links are many-to-many and repository-qualified.

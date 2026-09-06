@@ -84,6 +84,40 @@ class Fixture:
 
 
 class GitWorkspaceTests(unittest.TestCase):
+    def test_repository_list_does_not_probe_discovery_roots(self):
+        from orgtree import gitapi
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+        f = Fixture()
+        paths = []
+        for i in range(200):
+            path = f.base / f"not-a-repo-{i}"
+            path.mkdir()
+            paths.append(str(path))
+        app = FastAPI(); app.include_router(gitapi.router)
+        client = TestClient(app)
+        prefix = f"/api/orgs/{f.slug}/git"
+        with patch.object(gw, "roots", return_value=paths + [str(f.clone)]):
+            with patch.object(gw.gr, "run", wraps=gw.gr.run) as runner:
+                listed = client.get(prefix + "/repositories")
+                self.assertEqual(listed.status_code, 200, listed.text)
+                self.assertEqual([r["id"] for r in listed.json()["repositories"]], [f.rid])
+                self.assertNotIn("discovery", listed.json())
+                self.assertEqual(runner.call_count, 0, "Listing must not probe disk/Git roots")
+                discovered = client.post(prefix + "/discover", json={})
+                self.assertEqual(discovered.status_code, 200, discovered.text)
+                self.assertEqual(runner.call_count, 200, "Control: discovery still probes every bounded root")
+                self.assertEqual(discovered.json()["scanned"], 200)
+                self.assertTrue(discovered.json()["truncated"])
+                self.assertEqual(discovered.json()["candidates"], [])
+            # Explicit scanning still finds a real repository beyond the default cap.
+            found = client.post(prefix + "/discover", json={"path": str(f.clone)})
+            self.assertEqual(found.status_code, 200, found.text)
+            self.assertEqual(found.json()["candidates"][0]["path"], gw.canonical(str(f.clone)))
+            self.assertEqual(client.post(prefix + "/discover", json={"path": str(TMP)}).status_code, 403)
+        with patch.object(gw, "roots", return_value=[str(f.clone)]):
+            self.assertEqual(client.post(prefix + "/discover", json={}).json()["candidates"][0]["path"], gw.canonical(str(f.clone)))
+
     def test_registry_worktrees_and_settings(self):
         f = Fixture()
         branch = f.base / "linked"

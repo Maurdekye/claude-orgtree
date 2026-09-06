@@ -9,7 +9,7 @@ import { fmtFull } from './timefmt'
 import type { ToastFn } from './types'
 import * as api from './git/api'
 import { branchColor, canRecenter, layoutGraph, nodeAction, shortRef, ROW } from './git/layout'
-import type { GitBranch, GitChanges, GitCommit, GitContext, GitRegistry, GitSettings, GitSnapshot } from './git/types'
+import type { GitBranch, GitChanges, GitCommit, GitContext, GitDiscovery, GitRegistry, GitSettings, GitSnapshot } from './git/types'
 import './git/workspace.css'
 
 const message = (e: unknown) => e instanceof Error ? e.message : String(e)
@@ -111,6 +111,9 @@ export function GitWorkspace({ slug, context, routes, toast, close }: {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [branchesOpen, setBranchesOpen] = useState(false)
   const [discoveryOpen, setDiscoveryOpen] = useState(false)
+  const [discovery, setDiscovery] = useState<GitDiscovery | null>(null)
+  const [discovering, setDiscovering] = useState(false)
+  const [discoveryError, setDiscoveryError] = useState('')
   const [pullWorktrees, setPullWorktrees] = useState<Record<string, string>>({})
   const [selected, setSelected] = useState<string[] | undefined>()
   const [focused, setFocused] = useState<string | null>(null)
@@ -156,6 +159,14 @@ export function GitWorkspace({ slug, context, routes, toast, close }: {
     catch (e) { setError(message(e)) }
   }, [slug])
   useEffect(() => { void refreshRegistry() }, [refreshRegistry])
+  useEffect(() => {
+    let cancelled = false
+    setDiscovering(true); setDiscovery(null); setDiscoveryError('')
+    void api.discoverGit(slug).then(value => { if (!cancelled) setDiscovery(value) })
+      .catch(e => { if (!cancelled) setDiscoveryError(message(e)) })
+      .finally(() => { if (!cancelled) setDiscovering(false) })
+    return () => { cancelled = true }
+  }, [slug])
   useEffect(() => {
     if (!registry || (!context?.item && !context?.agent)) return
     const key = `${context.slug}:${context.item ?? ''}:${context.agent ?? ''}`
@@ -254,9 +265,9 @@ export function GitWorkspace({ slug, context, routes, toast, close }: {
   const scan = async () => {
     const path = (await pickFolder()).path
     if (!path) return
-    setBusy(true)
-    try { const discovery = await api.discoverGit(slug, path); setRegistry(old => old ? { ...old, discovery } : old); setDiscoveryOpen(true) }
-    catch (e) { setError(message(e)) } finally { setBusy(false) }
+    setDiscovering(true); setDiscovery(null); setDiscoveryError(''); setDiscoveryOpen(true)
+    try { setDiscovery(await api.discoverGit(slug, path)) }
+    catch (e) { setDiscoveryError(message(e)) } finally { setDiscovering(false) }
   }
   const chooseRepository = (id: string) => {
     setSelected(undefined); setRid(id)
@@ -304,7 +315,8 @@ export function GitWorkspace({ slug, context, routes, toast, close }: {
         {!rid && <option value="">Select repository</option>}
         {registry?.repositories.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
       </select><button disabled={busy} onClick={() => void add()}>Add repository</button>
-      <button disabled={busy} onClick={() => void scan()}>Scan subfolders</button>
+      <button disabled={discovering} onClick={() => void scan()}>Scan subfolders</button>
+      <button onClick={() => setDiscoveryOpen(v => !v)}>{discovering ? 'Finding repositories…' : 'Discovery results'}</button>
       {rid && <button onClick={() => setSettingsOpen(v => !v)}>Repository settings</button>}
       <button className="git-close" onClick={close} aria-label="Close Git workspace">×</button></header>
     {(context?.item || context?.agent) && <div className="git-context-note">Opened from {context.item ? `ticket ${context.item}` : `agent ${context.agent}`}
@@ -312,9 +324,11 @@ export function GitWorkspace({ slug, context, routes, toast, close }: {
     {error && <div className="git-error" role="alert">{error} <button onClick={() => void refresh()}>Refresh</button></div>}
     {(!rid || discoveryOpen) && <div className="git-empty"><p>Choose a repository to see its branches and checkouts.</p>
       {discoveryOpen && <button onClick={() => setDiscoveryOpen(false)}>Close discovery results</button>}
-      {registry?.discovery.candidates.map(c => <button key={c.path} onClick={() => void add(c.path)}>{c.name} · {c.path}</button>)}
-      {registry?.discovery.candidates.length === 0 && <p>No repositories found in the selected roots.</p>}
-      {registry?.discovery.truncated && <p>Discovery reached its directory limit.</p>}</div>}
+      {discovering && <p role="status">Finding repositories in the selected roots…</p>}
+      {discoveryError && <p role="alert">Discovery failed: {discoveryError}</p>}
+      {discovery?.candidates.map(c => <button key={c.path} onClick={() => void add(c.path)}>{c.name} · {c.path}</button>)}
+      {discovery?.candidates.length === 0 && <p>No repositories found in the selected roots.</p>}
+      {discovery?.truncated && <p>Discovery reached its directory limit.</p>}</div>}
     {rid && <nav className="git-toolbar">
       <button disabled={busy} onClick={() => void refresh()}>Refresh</button>
       <button disabled={busy || !snapshot?.config.remote} onClick={() => void fetch()}>Fetch now</button>
