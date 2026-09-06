@@ -19,7 +19,10 @@ import { useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import '../src/styles.css'
 import { DocGalleryModal } from '../src/canvas/gallery'
+import { OrgInboxModal } from '../src/canvas/mail'
 import { PinFrame } from '../src/canvas/modalpin'
+import type { OrgInboxEntry } from '../src/types'
+import type { CanvasNode } from '../src/canvas/shared'
 
 const q = new URLSearchParams(location.search)
 const log: string[] = []
@@ -50,12 +53,30 @@ window.fetch = ((input: RequestInfo | URL) => {
     return Promise.resolve(json(DOCS.find((d) => d.id === id) ?? DOCS[0]))
   }
   if (url.includes('/documents')) return Promise.resolve(json({ documents: DOCS }))
+  if (url.includes('/org_inbox')) {
+    return Promise.resolve(json({ entries: MAIL, total: MAIL.length, unread: 0 }))
+  }
   return Promise.resolve(json({}))
 }) as typeof fetch
 
+// ---- the org inbox's own log, for the `?compose=1` fixture. The question it
+// answers is what a NESTED centred modal (compose) does to its host once the
+// host is a pinned window, so the host has to be the real OrgInboxModal with
+// the real compose button, not a stand-in.
+const MAIL: OrgInboxEntry[] = Array.from({ length: 12 }, (_, i) => ({
+  id: `mail-${i}`,
+  dir: (i % 3 ? 'in' : 'out') as 'in' | 'out',
+  peer: `@net:peer-${i % 4}`,
+  body: `Message ${i} in the organization's shared mailbox.`,
+  at: new Date(Date.UTC(2026, 8, 6, 9, i % 60)).toISOString(),
+}))
+
 function Fixture() {
-  const [open, setOpen] = useState(true)
+  // the gallery stands down for `?compose=1`: both panels are a `.settings`,
+  // and two of them would make every selector below ambiguous
+  const [open, setOpen] = useState(q.get('compose') !== '1')
   const [second, setSecond] = useState(q.get('two') === '1')
+  const [orgInbox, setOrgInbox] = useState(q.get('compose') === '1')
   return <>
     <p>
       <button id="behind-modal" onClick={() => log.push('background clicked')}>
@@ -77,6 +98,12 @@ function Fixture() {
           <p key={i} className="second-para">Paragraph {i} of a panel that scrolls.</p>
         ))}
       </PinFrame>
+    )}
+    {orgInbox && (
+      <OrgInboxModal slug="probe" inbox={{ entries: MAIL, total: MAIL.length,
+        unread: 0, holders: [], visible: true }} map={new Map<string, CanvasNode>()}
+        toast={(l) => log.push('toast ' + l)}
+        close={() => { log.push('close orginbox'); setOrgInbox(false) }} />
     )}
   </>
 }

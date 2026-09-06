@@ -85,7 +85,8 @@ export function DocChips({ docs, onOpen }: {
 
 /** the in-page reader: title bar (✕ closes the reader; "dismiss" removes
  *  the card itself), markdown body under the desk's .md styling */
-export function DocReader({ slug, docId, toast, close, refs }: {
+export function DocReader({ slug, docId, toast, close, refs,
+  pinKind = 'doc' }: {
   slug: string
   docId: string
   toast: ToastFn
@@ -96,13 +97,22 @@ export function DocReader({ slug, docId, toast, close, refs }: {
    *  the DOM pass, not the React renderer. Omitted, the tokens are prose:
    *  a reader with nowhere to send anybody must not draw controls. */
   refs?: { world: RefWorld; onOpen?: (r: ResolvedRef) => void }
+  /** ⚠ THIS READER IS THE ONE SURFACE WITH TWO MOUNT SITES, and a pin identity
+   *  is per SURFACE, not per component: the canvas opens one of these and the
+   *  docket opens another, and both can be on screen at once. Sharing one kind
+   *  made the two windows one window — same rect, same z, neither movable,
+   *  raisable or resizable apart from the other (found by codex-delivery,
+   *  2026-09-06). Each site passes its own stable identity instead. The canvas
+   *  keeps the original `doc`, so pins stored before this fix still open where
+   *  they were left. */
+  pinKind?: string
 }) {
   const { doc, err } = useDoc(slug, docId)
   return (
     // an eligible image opens from `onPanelClick`, which the frame runs
     // BEFORE the stopPropagation every panel has (that one keeps a click
     // inside the reader from reaching `.overlay`'s backdrop-close).
-    <PinFrame kind="doc" title={doc?.title ?? 'document'}
+    <PinFrame kind={pinKind} title={doc?.title ?? 'document'}
       panel="settings doc-reader" close={close}
       onPanelClick={openLightboxIfEligibleImage}>
         <div className="doc-reader-head">

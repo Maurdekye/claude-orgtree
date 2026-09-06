@@ -29,7 +29,7 @@ import {
   SettingsIcon, SparkIcon, StopIcon, WarnIcon,
 } from '../icons'
 import { ago, ALL_PRESENT, ALL_TIERS, anyTierSeat, CODEX_TIERS, CopyIcon, EXTERN, fmtCredits, freezeKind, FREEZE_LABEL, ANTIGRAVITY_TIERS, isOpenRouterTier, md, openrouterTierIds, PROVIDER_LABEL, providerOf, queuedSwitchTitle, reportedLabel, TIER_LETTER, tierCapabilityNotes, tierLabel, tierShown, USER, usePolled } from './shared'
-import { closeIfCentred, PinFrame } from './modalpin'
+import { closeIfCentred, ModalOverPins, PinFrame } from './modalpin'
 import type { ProviderPresence } from './shared'
 import {
   addPending, CHAT_WINDOW, dismissPending, dropPending,
@@ -2636,16 +2636,20 @@ export function LineagePanel({ node, op, slug, presence = ALL_PRESENT,
         {!gens.length &&
           <div className="dim pad">no prior generations — this agent has never compacted</div>}
         <div className="row"><button onClick={close}>close</button></div>
-      {/* a CHILD of the frame, so a pinned panel keeps its own confirmation
-          above it — the box is `position: fixed` either way and still fills
-          the screen */}
+      {/* ⚠ A CHILD OF THE FRAME IS NOT ENOUGH, and the earlier comment here
+          was wrong: `position: fixed` fills the screen but does NOT escape the
+          host's stacking context, so a confirmation nested inside a pinned
+          panel is confined to that panel's z band and any window raised above
+          the host paints over it (measured by codex-delivery). ModalOverPins
+          portals it to <body>, above the whole band — the same fix compose
+          needed for the mirror-image symptom. */}
       {retiring && (
-        <ConfirmModal title={`retire generation ${retiring}?`}
+        <ModalOverPins><ConfirmModal title={`retire generation ${retiring}?`}
           body="It stops being consultable and frees its seat. Its transcript is kept and rehire brings it back — but reading a bearer's transcript is free and needs no rehire at all."
           confirmLabel="retire"
           onConfirm={() => op({ op: 'retire', node: retiring })
             .then(close).catch(() => {})}
-          close={() => setRetiring(null)} />
+          close={() => setRetiring(null)} /></ModalOverPins>
       )}
     </PinFrame>
   )

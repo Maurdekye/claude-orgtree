@@ -47,6 +47,7 @@ import {
   raiseModal, readModalPins, unpinModal, commitModalRect, measureRect,
 } from '../src/canvas/modalpin'
 import { PIN_MIN_H, PIN_MIN_W } from '../src/canvas/pins'
+import { DocReader } from '../src/canvas/docs'
 
 const noop = () => {}
 const reset = () => { localStorage.clear(); forgetModalPins() }
@@ -407,5 +408,65 @@ test('§6b closeIfCentred: a jump closes a centred panel and spares a pinned one
   // and it is per-surface, not a global switch
   closeIfCentred('gallery', () => { n += 1 })
   assert.equal(n, 2)
+  reset()
+})
+
+// ============================== §7 two mount sites, two windows, one component
+// ⚠ THE ONE SURFACE IN THIS APP WITH TWO MOUNT SITES. DocReader is opened by
+// the canvas AND by the docket, and both can be on screen at once — so a pin
+// identity that came from the COMPONENT rather than the MOUNT SITE made the
+// two readers one window: same rect, same z, neither movable, raisable or
+// resizable apart from the other. Found by codex-delivery in a real browser
+// with two real readers, 2026-09-06; this is the identity half of it, which is
+// where the bug actually lived. The geometry half is the browser's to answer.
+test('§7 two readers open at once are two windows, not one', async () => {
+  reset()
+  // ⚠ THE REAL DocReader, TWICE, exactly as its two mount sites render it:
+  // the canvas passes no `pinKind` at all (its identity stays the original
+  // `doc`, so pins stored before this fix still open where they were left) and
+  // the docket passes its own. Mounting PinFrame directly with two literal
+  // kinds would only prove the STORE can hold two keys, which was never in
+  // doubt — the defect was one component handing both windows one identity.
+  const reader = (pinKind?: string) => (
+    <DocReader slug="probe" docId="d1" toast={noop} pinKind={pinKind}
+      close={() => { closes.n += 1 }} />
+  )
+  const a = await mountView(reader(), shot)
+  const b = await mountView(reader('doc-docket'), shot)
+  await inAct(() => { click(a.el.querySelector('.modalpin-btn')!) })
+  await inAct(() => { click(b.el.querySelector('.modalpin-btn')!) })
+  await flush()
+
+  // CONTROL FIRST: this check is worthless unless BOTH are really pinned.
+  assert.equal(a.last().pinned, true, 'the canvas reader pinned')
+  assert.equal(b.last().pinned, true, 'the docket reader pinned')
+
+  const pins = readModalPins()
+  assert.deepEqual(Object.keys(pins).sort(), ['doc', 'doc-docket'],
+    'two windows in the store, not one shared entry')
+
+  // independent geometry: moving one leaves the other exactly where it was
+  const before = { ...pins['doc-docket']!.rect }
+  commitModalRect('doc', { x: 111, y: 222, w: 640, h: 480 })
+  await flush()
+  const after = readModalPins()
+  assert.deepEqual(after['doc']!.rect, { x: 111, y: 222, w: 640, h: 480 })
+  assert.deepEqual(after['doc-docket']!.rect, before,
+    'the docket reader did not move when the canvas reader did')
+
+  // independent stacking: raising one puts it above the other, both ways
+  assert.equal(b.last().z, String(MODAL_Z_BASE + 1), 'the newer one starts on top')
+  await inAct(() => { a.last().panel!.dispatchEvent(pointer('pointerdown', 90, 90)) })
+  await flush()
+  assert.equal(a.last().z, String(MODAL_Z_BASE + 1), 'and the older one can be raised')
+  assert.equal(b.last().z, String(MODAL_Z_BASE))
+
+  // independent persistence: closing one leaves the other's window on record
+  unpinModal('doc')
+  await flush()
+  assert.equal(isModalPinned('doc'), false)
+  assert.equal(isModalPinned('doc-docket'), true,
+    'unpinning one reader did not unpin the other')
+  await a.unmount(); await b.unmount()
   reset()
 })

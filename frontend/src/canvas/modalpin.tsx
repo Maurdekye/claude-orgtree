@@ -41,6 +41,7 @@
 // home to — unpinning re-centres it in place instead).
 
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { createPortal } from 'react-dom'
 import type { CSSProperties, MouseEvent as ReactMouseEvent, ReactNode,
   PointerEvent as ReactPointerEvent } from 'react'
 import PushPinIcon from '@mui/icons-material/PushPin'
@@ -65,6 +66,11 @@ export const MODAL_Z_BASE = 21
 export const MODAL_Z_TOP = 29
 export const modalZIndex = (z: number): number =>
   Math.min(MODAL_Z_TOP, MODAL_Z_BASE + Math.max(0, z))
+
+/** one step above the whole pinned band, for a dialog raised FROM a pinned
+ *  window (see ModalOverPins). Still below the disk browser's own centred
+ *  layer (55), the folder picker (60), the lightbox (95) and toasts (100). */
+export const MODAL_OVER_PINS_Z = 30
 
 export const MODAL_PINS_KEY = 'orgtree-modal-pins'
 
@@ -221,6 +227,47 @@ export const measureRect = (el: HTMLElement | null): PinRect => {
   return { x: r.left, y: r.top, w: r.width, h: r.height }
 }
 
+// ------------------------------------------------- a dialog OVER the windows
+/**
+ * A modal opened from INSIDE a pinned window — compose from the org inbox, a
+ * confirmation from the lineage panel. Two things must be true of it, and
+ * neither is true of a plain nested overlay:
+ *
+ * 1. IT MUST NOT BE TRAPPED IN ITS HOST'S STACKING CONTEXT. A DOM descendant
+ *    of a pinned panel paints inside that panel's z band whatever its own
+ *    z-index says, so its backdrop covers its own host — MEASURED in Edge:
+ *    with the org inbox pinned, `elementFromPoint` over the inbox's own title
+ *    bar returns the compose backdrop, and the window's drag handle and close
+ *    button are unreachable. The same shape from the other side, measured by
+ *    codex-delivery on the lineage panel's confirmation: a second pinned
+ *    window above the host paints over the dialog. A portal to document.body
+ *    takes the dialog out of the band entirely and fixes both.
+ *
+ * 2. THE PARENT MUST BE CONSTANT. document.body in BOTH modes, never "inline
+ *    when centred, portaled when pinned" — moving a subtree between parents
+ *    remounts it, and that would throw away a half-typed compose draft on
+ *    every pin toggle (Astra 2026-09-06: no lost draft on pin/unpin).
+ *
+ * Centred, the dialog sits at MODAL_OVER_PINS_Z, ABOVE the whole pinned band:
+ * a dialog raised from a pinned window that rendered BEHIND that window would
+ * be the same defect with its sign flipped. Pinned, the frame's own inline
+ * z-index wins over that rule and the dialog joins the band like any other
+ * window.
+ *
+ * The wrapper swallows pointerdown for the same reason `MaybePortal` does: a
+ * React portal still bubbles events through the REACT tree, so without this a
+ * press inside the dialog would also reach the host panel's handler and raise
+ * the HOST above the dialog it just opened.
+ */
+export function ModalOverPins({ children }: { children: ReactNode }) {
+  if (typeof document === 'undefined') return <>{children}</>
+  return createPortal(
+    <div className="modalpin-over" onPointerDown={(e) => e.stopPropagation()}>
+      {children}
+    </div>,
+    document.body)
+}
+
 // --------------------------------------------------------------- component
 type GestureShape =
   | { kind: 'move'; sx: number; sy: number; o: PinRect }
@@ -236,6 +283,11 @@ export interface PinFrameProps {
   title: ReactNode
   /** the panel's own classes, exactly the ones it had before it was wrapped */
   panel: string
+  /** extra classes for the OVERLAY, for the one surface that had them: the
+   *  disk browser's `.disk-overlay` carries its centred layer (z-index 55).
+   *  Pinning overrides that with the band's inline z-index, so the class can
+   *  stay exactly as it was and the centred layer is untouched. */
+  overlayClass?: string
   /** dismiss the surface (the same `close` the panel already had) */
   close: () => void
   children: ReactNode
@@ -257,8 +309,8 @@ export interface PinFrameProps {
  * pinning interaction folded in. Callers pass what used to be the two divs'
  * class names and handlers, and their children unchanged.
  */
-export function PinFrame({ kind, title, panel, close, children, onEsc,
-  backdropClose = true, onPanelClick }: PinFrameProps) {
+export function PinFrame({ kind, title, panel, overlayClass, close, children,
+  onEsc, backdropClose = true, onPanelClick }: PinFrameProps) {
   const pin = useModalPin(kind)
   const pinned = pin !== null
   const panelRef = useRef<HTMLDivElement>(null)
@@ -362,7 +414,8 @@ export function PinFrame({ kind, title, panel, close, children, onEsc,
     ? { left: rect.x, top: rect.y, width: rect.w, height: rect.h }
     : undefined
   return (
-    <div className={'overlay' + (pinned ? ' overlay-pinned' : '')}
+    <div className={'overlay' + (overlayClass ? ' ' + overlayClass : '')
+      + (pinned ? ' overlay-pinned' : '')}
       style={pin ? { zIndex: modalZIndex(pin.z) } : undefined}
       onClick={pinned || !backdropClose ? undefined
         : (e) => { e.stopPropagation(); close() }}
@@ -387,7 +440,13 @@ export function PinFrame({ kind, title, panel, close, children, onEsc,
           onLostPointerCapture={pinned ? cancel : undefined}>
           {pinned && <>
             <PushPinIcon fontSize="inherit" className="modalpin-glyph" />
-            <span className="modalpin-name">{title}</span>
+            {/* ⚠ THIS IS THE SURFACE'S HEADING WHILE PINNED, not decoration.
+                The panel's own <h3> is hidden by CSS in this mode (one title,
+                not two — Astra 2026-09-06), so if this span carried no
+                semantics the window would have no heading at all for a screen
+                reader. `aria-level` 3 is the level the hidden h3 had. */}
+            <span className="modalpin-name" role="heading" aria-level={3}>
+              {title}</span>
           </>}
           <span className="spacer" />
           <button type="button" className="modalpin-btn"

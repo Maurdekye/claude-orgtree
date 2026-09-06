@@ -119,7 +119,16 @@ configTest('an OpenRouter tier is named by its model, never by its or- slug (use
         node: { ...node(), tier: TIER } as CanvasNode,
         tree: tree({ tiers: { haiku: 1, sonnet: 2, opus: 5, fable: 10, [TIER]: 2 } }),
       })
-      assert.match(el.querySelector('h3')?.textContent ?? '', /· claude-sonnet-5 · configuration/,
+      // ⚠ THE HEADER, NOT THE H3. The tier label moved one line out of the
+      // heading when this panel became pinnable: a pinned window hides the
+      // panel's own title h3 (its title bar already says it), and a live tier
+      // is not part of a title. The subject of this check has not changed —
+      // the header still has to name the model and never the or- slug — so it
+      // reads the whole header block and would still fail if either half went
+      // missing or reverted to the slug.
+      const header = (el.querySelector('h3')?.textContent ?? '')
+        + ' ' + (el.querySelector('.modalpin-subtitle')?.textContent ?? '')
+      assert.match(header, /claude-sonnet-5 · configuration/,
         'the header names the model')
       const own = option(el, TIER)
       assert.ok(own, 'listed under its tier id — the value the op sends is untouched')

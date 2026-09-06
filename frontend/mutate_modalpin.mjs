@@ -156,13 +156,31 @@ const MUTANTS = [
     to: `        onPointerDown={undefined}>`,
     mustFail: '§6',
   },
+  {
+    // ⚠ THE DEFECT ITSELF: one component, two mount sites, ONE pin identity.
+    // The canvas reader and the docket reader are then the same window — same
+    // rect, same z, neither movable or raisable apart from the other (found in
+    // a real browser by codex-delivery, 2026-09-06). Ignoring the prop is
+    // exactly what the code did before the fix.
+    file: 'src/canvas/docs.tsx',
+    name: 'both-readers-share-one-pin-identity',
+    from: `    <PinFrame kind={pinKind} title={doc?.title ?? 'document'}`,
+    to: `    <PinFrame kind="doc" title={doc?.title ?? 'document'}`,
+    mustFail: '§7',
+  },
 ]
 
 // Normalise to LF, mutate, write CRLF back, restore the original bytes.
-const originalRaw = readFileSync(FILE, 'utf8')
-const original = originalRaw.split('\r\n').join('\n')
-const restore = () => writeFileSync(FILE, originalRaw)
-const writeMutant = (text) => writeFileSync(FILE, text.split('\n').join('\r\n'))
+// ⚠ A MUTANT MAY NAME ITS OWN FILE (`file:`), because not every mutation of
+// this feature lives in modalpin.tsx — the two-readers pin identity is a PROP
+// one component passes, in docs.tsx. Every file any mutant touches is read
+// once here and restored from those exact bytes, CRLF preserved, by the same
+// `finally` that always covered modalpin.tsx.
+const FILES = [...new Set([FILE, ...MUTANTS.map((m) => m.file ?? FILE)])]
+const RAW = new Map(FILES.map((f) => [f, readFileSync(f, 'utf8')]))
+const SRC = new Map(FILES.map((f) => [f, RAW.get(f).split('\r\n').join('\n')]))
+const restore = () => { for (const [f, raw] of RAW) writeFileSync(f, raw) }
+const writeMutant = (f, text) => writeFileSync(f, text.split('\n').join('\r\n'))
 
 function runSuite() {
   try {
@@ -191,12 +209,14 @@ if (RUN.length !== MUTANTS.length) console.log(`  (mutants ${from}..${to - 1} of
 let bad = 0
 try {
   for (const m of RUN) {
-    if (!original.includes(m.from)) {
-      console.log(`  ! ${m.name}: target text not found — THIS HARNESS IS STALE, fix it`)
+    const f = m.file ?? FILE
+    const src = SRC.get(f)
+    if (!src.includes(m.from)) {
+      console.log(`  ! ${m.name}: target text not found in ${f} — THIS HARNESS IS STALE, fix it`)
       bad++
       continue
     }
-    writeMutant(original.replace(m.from, m.to))
+    writeMutant(f, src.replace(m.from, m.to))
     const out = runSuite()
     restore()
     const failed = [...out.matchAll(/^✖ (§\S+ .+?) \(/gm)].map((x) => x[1])

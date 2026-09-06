@@ -938,7 +938,10 @@ export function DocketModal({ slug, toast, close, tree, onFocusAgent,
         later element at the same z-index, so it paints on top and keeps its
         clicks to itself. */}
     {docView && (
-      <DocReader slug={slug} docId={docView} toast={toast}
+      // `pinKind` is its OWN pin identity: the canvas can have a reader open
+      // at the same time as this one, and one identity would make them one
+      // window — same rect, same z, neither movable apart from the other.
+      <DocReader pinKind="doc-docket" slug={slug} docId={docView} toast={toast}
         close={() => setDocView(null)}
         // ⚠ THE READER CLOSES BEFORE ITS REFERENCE OPENS, except when the
         // destination IS another document. The item and the agent live

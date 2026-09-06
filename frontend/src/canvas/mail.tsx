@@ -26,7 +26,7 @@ import { AgentName } from './identity'
 import { RefMdBody } from './refmd'
 import type { RefWorld, ResolvedRef } from './reflinks'
 import { isMobile } from '../mobile'
-import { closeIfCentred, PinFrame } from './modalpin'
+import { closeIfCentred, ModalOverPins, PinFrame } from './modalpin'
 import { fmtFull, fmtShort } from '../timefmt'
 
 // One mail interface, everywhere (user ruling: the user's and the agents'
@@ -1416,11 +1416,23 @@ function ComposeModal({ slug, net, entries, toast, close }: {
       })
   }
   return (
-    <div className="overlay" onClick={close}
-      onPointerDown={(e) => e.stopPropagation()}>
-      <div className="settings cmp-modal" onClick={(e) => e.stopPropagation()}>
-        <h3><EditIcon fontSize="inherit" /> Compose mail
-          <span className="dim"> — goes out as the org, sent by you</span></h3>
+    // ⚠ ModalOverPins IS LOAD-BEARING, not tidiness. This dialog is rendered
+    // from inside OrgInboxModal, so without it the whole thing is a DOM child
+    // of that panel — and once the panel is a pinned window, a nested overlay
+    // is trapped in its stacking context: MEASURED in Edge, the compose
+    // backdrop covered the pinned inbox's own title bar and made its drag
+    // handle and close button unreachable. The portal parent is constant in
+    // both modes precisely so pinning never remounts this subtree and never
+    // loses a half-typed draft.
+    <ModalOverPins>
+      <PinFrame kind="compose" title="Compose mail" panel="settings cmp-modal"
+        close={close}>
+        <h3><EditIcon fontSize="inherit" /> Compose mail</h3>
+        {/* who this goes out as is a FACT ABOUT THE SEND, not part of the
+            title, and it used to sit inside the h3 — where a pinned window
+            hides it along with the duplicated heading. Outside, it is visible
+            in both modes (Astra 2026-09-06). */}
+        <div className="dim modalpin-subtitle">goes out as the org, sent by you</div>
         <div className="field-label">to
           <span className="dim"> — click to add, click again to remove; the
             mail goes to every selected recipient</span></div>
@@ -1502,8 +1514,8 @@ function ComposeModal({ slug, net, entries, toast, close }: {
             {busy ? 'sending…'
               : dests.length > 1 ? `send to ${dests.length}` : 'send'}</button>
         </div>
-      </div>
-    </div>
+      </PinFrame>
+    </ModalOverPins>
   )
 }
 

@@ -5499,7 +5499,43 @@ label.set-row { cursor: pointer; }
 .modalpin-rs.sw { bottom: -2px; left: -2px; cursor: nesw-resize; }
 .modalpin-rs.nw { top: -2px; left: -2px; cursor: nwse-resize; }
 .modalpin-rs.se { bottom: -2px; right: -2px; cursor: nwse-resize; }
+/* ONE TITLE, NOT TWO (Astra 2026-09-06). A pinned window names itself in its
+   title bar, and every one of these panels also opens with its own <h3> saying
+   the same words — so pinned, the panel's own title heading stands down.
+   ⚠ `> h3:first-of-type`, NOT `h3`: this must hit the SURFACE'S OWN title and
+   nothing else. A descendant h3 inside the panel's content is somebody else's
+   heading and stays exactly where it is.
+   ⚠ The semantics do not vanish with it — `.modalpin-name` in the title bar
+   carries role="heading" aria-level="3" in this mode, so the window still has
+   exactly one heading, in both the picture and the accessibility tree. */
+.modalpin-win > h3:first-of-type { display: none; }
+/* the explanatory line some panels used to keep INSIDE that h3 (the default
+   settings' "applied to every NEW organization", the watchdog's live state).
+   It is real information, not a title, so it lives outside the heading and is
+   visible in BOTH modes. */
+.modalpin-subtitle { font-size: 12px; margin: -6px 0 2px; }
+/* the agent config panel's lifecycle mark moved out of its h3 with the rest of
+   this text; it keeps the spacing it had in there (`.settings h3 .proc-mark`) */
+.modalpin-subtitle .proc-mark { margin: 0 4px; }
+.modalpin-win > .modalpin-subtitle:first-child { margin-top: 2px; }
+/* a dialog raised from inside a pinned window, portaled to <body> by
+   ModalOverPins. Centred it must sit ABOVE the pinned band (21-29) — a dialog
+   that opened BEHIND the window that raised it is the same defect as a dialog
+   whose backdrop covers that window. Pinned, PinFrame's own inline z-index
+   wins over this and the dialog joins the band like any other window. */
+.modalpin-over > .overlay { z-index: 30; }
+/* the disk browser's mode tabs and close button, lifted out of its title h3 so
+   a pinned window does not hide them with the duplicated heading. A row of its
+   own under the title — the same shape the settings panels' tab strips already
+   have — and the `.spacer` that was inert inside a block-level h3 now does
+   what the markup always said it did. */
+.disk-head { display: flex; align-items: center; margin: 0 0 6px; }
+.disk-head .disk-tabs { margin-left: 0; }
 /* mobile presents these surfaces as full-screen sheets and has no window to
    pin to (D-125). The store is not honoured there (modalPinsAvailable), and
    the control is not offered either. */
 html.mobile .modalpin-bar { display: none; }
+/* ...and with no bar there is no other title, so the panel's own heading must
+   not be hidden either. (Belt and braces: `modalPinsAvailable` already stops
+   `.modalpin-win` appearing there.) */
+html.mobile .modalpin-win > h3:first-of-type { display: revert; }

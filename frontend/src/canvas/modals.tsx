@@ -22,7 +22,7 @@ import { ago, ALL_PRESENT, anyTierSeat, codexTierOffer, CODEX_TIERS, ANTIGRAVITY
 import type { ProviderPresence } from './shared'
 import type { CanvasNode, DraftScope, DraftState, OpFn, Pile } from './shared'
 import { ProcessLifecycleMark } from './desk'
-import { PinFrame } from './modalpin'
+import { ModalOverPins, PinFrame } from './modalpin'
 import { fmtStamp } from '../timefmt'
 
 export interface ConfirmModalProps {
@@ -157,8 +157,15 @@ export function WatchdogPanel({ slug, dog, toast, close }: {
   return (
     <PinFrame kind="watchdog" title={`${dog.name} · watchdog`} panel="settings"
       close={close}>
-        <h3>🐕 {dog.name} <span className="dim">· watchdog · {dog.spent ? 'departing' : dog.state}</span>
-          {dog.once && <span className="wd-once-label">one-shot dog</span>}</h3>
+        <h3>🐕 {dog.name}</h3>
+        {/* THE DOG'S LIVE STATE IS NOT ITS NAME. It used to sit inside the h3,
+            which a pinned window hides along with the duplicated heading —
+            and 'departing' is exactly the thing you keep a watchdog window
+            open to watch. Outside it, visible in both modes (Astra
+            2026-09-06). */}
+        <div className="dim modalpin-subtitle">
+          watchdog · {dog.spent ? 'departing' : dog.state}
+          {dog.once && <span className="wd-once-label">one-shot dog</span>}</div>
         {dog.once && <div className="wd-once-note">
           {dog.spent
             ? 'This one-shot dog has fired. Its spark is travelling to its owner; it will disappear shortly.'
@@ -229,7 +236,8 @@ interface UserConfigProps {
 }
 
 export function UserConfig({ tree, slug, toast, close }: UserConfigProps) {
-  useEsc(close)
+  // Escape belongs to PinFrame now: a CENTRED surface still closes on it, a
+  // PINNED window ignores it the way an agent window does.
   // visitors configure the HIRE DEFAULTS too (user ruling 2026-07-31),
   // ceiling-clamped server-side; the org folder holdings stay admin-only
   // (host paths — the public payload only carries basenames anyway)
@@ -271,8 +279,8 @@ export function UserConfig({ tree, slug, toast, close }: UserConfigProps) {
   }, [])
   const allMcp = defTools.mcp.includes('*')
   return (
-    <div className="overlay" onClick={close} onPointerDown={(e) => e.stopPropagation()}>
-      <div className="settings" onClick={(e) => e.stopPropagation()}>
+    <PinFrame kind="user-config" title="you · configuration" panel="settings"
+      close={close}>
         <h3><SettingsIcon fontSize="inherit" /> you <span className="dim">· configuration</span></h3>
         <div className="row">
           <button className="danger" onClick={() => setAsking(true)}>
@@ -389,17 +397,18 @@ export function UserConfig({ tree, slug, toast, close }: UserConfigProps) {
               .catch((e: Error) => toast([`error: ${e.message}`]))}>save</button>
           <button onClick={close}>cancel</button>
         </div>
-      </div>
+      {/* portaled out: a confirmation nested in a pinned panel is trapped in
+          that panel's stacking context — see ModalOverPins */}
       {asking && (
-        <ConfirmModal title="dissolve ALL agents?"
+        <ModalOverPins><ConfirmModal title="dissolve ALL agents?"
           body="Every agent in the entire org is retired at once. Context is kept; rehire brings any of them back."
           confirmLabel="dissolve all"
           onConfirm={() => dissolveAll(slug)
             .then((r) => { toast([`dissolved ${r.nodes} node(s), freed ${fmtCredits(r.freed)} credits`]); close() })
             .catch((e: Error) => toast([`error: ${e.message}`]))}
-          close={() => setAsking(false)} />
+          close={() => setAsking(false)} /></ModalOverPins>
       )}
-    </div>
+    </PinFrame>
   )
 }
 // Pre-hire permissions (user spec): the same scope surface as the per-agent
@@ -708,7 +717,8 @@ interface NodeConfigProps {
 
 export function NodeConfig({ node, map, tree, slug, op, toast, codexProvider,
   antigravityProvider, openrouterProvider, presence = ALL_PRESENT, close }: NodeConfigProps) {
-  useEsc(close)
+  // Escape belongs to PinFrame now: a CENTRED surface still closes on it, a
+  // PINNED window ignores it the way an agent window does.
   const [asking, setAsking] =
     useState<'delete' | 'dissolve' | 'retire' | 'rescind' | 'crossprovider' | null>(null)
   // every card that opens a config panel carries a scope (real nodes and
@@ -941,13 +951,19 @@ export function NodeConfig({ node, map, tree, slug, op, toast, codexProvider,
   return (
     // pointerdown must not reach the viewport: its pan pointer-CAPTURE retargets
     // the click, so backdrop-close and every button in here silently broke
-    <div className="overlay" onClick={close} onPointerDown={(e) => e.stopPropagation()}>
-      <div className="settings cfg" onClick={(e) => e.stopPropagation()}>
-        <h3><SettingsIcon fontSize="inherit" /> {node.id}
+    <PinFrame kind="node-config" title={`${node.id} · configuration`}
+      panel="settings cfg" close={close}>
+        <h3><SettingsIcon fontSize="inherit" /> {node.id}</h3>
+        {/* ⚠ THE LIFECYCLE MARK IS LIVE STATE, NOT A TITLE — whether this
+            agent's process is warm, relaunching or mid-turn is the reason to
+            keep this panel open at all, and it used to sit inside the h3, which
+            a pinned window hides along with the duplicated heading. Outside it,
+            visible in both modes. */}
+        <div className="dim modalpin-subtitle">
           {node.state === 'live' && <ProcessLifecycleMark warm={Boolean(node.proc_warm)}
             live={node.proc_live} relaunch={node.proc_relaunch}
             reason={node.proc_relaunch_reason} busy={node.busy} tier={node.tier} />}
-          <span className="dim">· {tierLabel(node.tier ?? '')} · configuration</span></h3>
+          {tierLabel(node.tier ?? '')} · configuration</div>
         {/* FULL identity rename (user ruling 2026-08-05): id, mailbox,
             working folder and session all move; history keeps the old name
             (the warning rides the toast). Refused while mid-turn. */}
@@ -1289,7 +1305,10 @@ export function NodeConfig({ node, map, tree, slug, op, toast, codexProvider,
             (asksFirst ? setAsking('crossprovider') : doSave())}>save</button>
           <button onClick={close}>cancel</button>
         </div>
-      </div>
+      {/* every confirmation this panel raises is portaled out of it: nested in
+          a pinned panel they would be trapped in its stacking context — see
+          ModalOverPins */}
+      {asking && <ModalOverPins>
       {asking === 'crossprovider' && (
         <ConfirmModal
           title={midTurn
@@ -1350,7 +1369,8 @@ export function NodeConfig({ node, map, tree, slug, op, toast, codexProvider,
           onConfirm={() => op({ op: 'delete', node: node.id }).then(close).catch(() => {})}
           close={() => setAsking(null)} />
       })()}
-    </div>
+      </ModalOverPins>}
+    </PinFrame>
   )
 }
 // the RETIRED-PILE menu (user spec): pick which retiree sits in front — the

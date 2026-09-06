@@ -2274,8 +2274,13 @@ export function DefaultsPanel({ toast, close }: { toast: ToastFn; close: () => v
   return (
     <PinFrame kind="defaults" title="default org settings"
       panel="settings" close={close}>
-        <h3><SettingsIcon fontSize="inherit" /> default org settings
-          <span className="dim"> · applied to every NEW organization</span></h3>
+        <h3><SettingsIcon fontSize="inherit" /> default org settings</h3>
+        {/* WHICH ORGS THIS APPLIES TO is the panel's most load-bearing
+            sentence, and it used to live inside the h3 — where a pinned window
+            hides it along with the duplicated heading. Outside it, visible in
+            both modes (Astra 2026-09-06). */}
+        <div className="dim modalpin-subtitle">applied to every NEW
+          organization</div>
         <div className="field-label">top-level grant cap</div>
         <input type="number" min="1" step="1" style={{ width: '8em' }}
           value={d.max_top_grant ?? 1000}

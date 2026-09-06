@@ -26,6 +26,7 @@ import {
   ChevronRightIcon, CloseIcon, DeleteIcon, DownloadIcon, FolderIcon,
   StorageIcon, WarnIcon,
 } from './icons'
+import { PinFrame } from './canvas/modalpin'
 
 const fmt = (b: number | null | undefined): string => (b == null ? '?'
   : b >= 1e9 ? (b / 1e9).toFixed(2) + ' GB'
@@ -147,10 +148,21 @@ export function DiskBrowser({ slug, isPublic, toast, close, initialMode }: {
   )
 
   return (
-    <div className="overlay disk-overlay" onClick={close}>
-      <div className="settings disk-browser" onClick={(e) => e.stopPropagation()}>
-        <h3>
-          <StorageIcon fontSize="inherit" /> org disk
+    // `.disk-overlay` (z-index 55) is kept EXACTLY as it was, so the centred
+    // layer does not move: this surface still sits above every other centred
+    // modal. Pinned, PinFrame's own inline z-index overrides that class and
+    // the window joins the 21-29 band with the rest of them — which is what
+    // lets another pinned window be raised over it.
+    <PinFrame kind="disk" title="org disk" panel="settings disk-browser"
+      overlayClass="disk-overlay" close={close}>
+        {/* ⚠ THE CONTROLS ARE OUT OF THE HEADING ON PURPOSE. A pinned window
+            hides the panel's own title h3 (its title bar already says it), so
+            anything left inside that h3 goes with it — and this surface, alone
+            among them, kept its mode tabs and its close button in there. They
+            are the same row, and they look the same centred; they are just no
+            longer inside the element that stands down. */}
+        <h3><StorageIcon fontSize="inherit" /> org disk</h3>
+        <div className="disk-head">
           <span className="disk-tabs">
             <button className={mode === 'largest' ? 'on' : ''}
               onClick={() => setMode('largest')}>largest files</button>
@@ -160,7 +172,7 @@ export function DiskBrowser({ slug, isPublic, toast, close, initialMode }: {
           <span className="spacer" />
           <button className="iconbtn" title="close" onClick={close}>
             <CloseIcon fontSize="inherit" /></button>
-        </h3>
+        </div>
         {live && (
           <div className={'disk-usage' + (frac >= 0.9 ? ' bad'
             : frac >= 0.8 ? ' warn' : '')}>
@@ -286,8 +298,7 @@ export function DiskBrowser({ slug, isPublic, toast, close, initialMode }: {
             </>
           )}
         </div>
-      </div>
-    </div>
+    </PinFrame>
   )
 }
 
