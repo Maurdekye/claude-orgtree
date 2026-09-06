@@ -919,6 +919,31 @@ check("the general reply reaches the ASSIGNMENT exactly; every failure is explic
 print("§8 delivery")
 
 
+def addressed_participant_reply_clears_attention_and_bad_recipient_does_not():
+    slug = fresh_org()
+    wid = create(slug, node="boss", title="Participant acknowledgement",
+                 participants=["peer"])
+    ok(slug, "boss", "update", slug=wid, attention=True,
+       attention_reason="please confirm", done_so_far=["flagged"], working_on_next=[])
+    r = client.post(f"/api/orgs/{slug}/work-items/{wid}/reply",
+                    json={"body": "confirmed", "to": "peer"})
+    assert r.status_code == 200, r.text
+    assert r.json()["to"] == "peer" and r.json()["role"] == "participant"
+    assert get_item(slug, wid)["manual_attention"] is None
+    bad = create(slug, node="boss", title="Rejected recipient")
+    ok(slug, "boss", "update", slug=bad, attention=True,
+       attention_reason="still needs confirmation", done_so_far=["flagged"],
+       working_on_next=[])
+    r = client.post(f"/api/orgs/{slug}/work-items/{bad}/reply",
+                    json={"body": "wrong target", "to": "not-a-recipient"})
+    assert r.status_code == 422, r.text
+    assert get_item(slug, bad)["manual_attention"] is not None
+
+
+check("addressed participant reply clears attention; rejected recipient preserves it",
+      addressed_participant_reply_clears_attention_and_bad_recipient_does_not)
+
+
 def claim_and_verify_three_valued():
     slug = fresh_org()
     wid = create(slug)
@@ -3041,6 +3066,39 @@ def self_review_is_checked_again_when_the_decision_is_made():
 
 check("self-review is re-checked at decision time, not only when the reviewer was named",
       self_review_is_checked_again_when_the_decision_is_made)
+
+
+def user_reply_clears_only_manual_attention():
+    slug = fresh_org()
+    wid = create(slug, node="boss", title="Reply clears attention")
+    ok(slug, "boss", "update", slug=wid, attention=True,
+       attention_reason="please inspect", done_so_far=["flagged"], working_on_next=[])
+    before = get_item(slug, wid)
+    r = client.post(f"/api/orgs/{slug}/work-items/{wid}/reply", json={"body": "ack"})
+    assert r.status_code == 200, r.text
+    after = get_item(slug, wid)
+    assert after["manual_attention"] is None and after["status"] == before["status"]
+    assert after["questions"] == [] and after["effective_attention"] is False
+    wid_q = create(slug, node="boss", title="Question remains")
+    ok(slug, "boss", "update", slug=wid_q, attention=True,
+       attention_reason="needs answer", done_so_far=["flagged"], working_on_next=[])
+    agent(slug, "boss", "orgtree_ask", question="answer?", work_item=wid_q)
+    before_q = get_item(slug, wid_q)
+    r = client.post(f"/api/orgs/{slug}/work-items/{wid_q}/reply", json={"body": "answer"})
+    assert r.status_code == 200, r.text
+    after_q = get_item(slug, wid_q)
+    assert after_q["manual_attention"] is not None
+    assert after_q["effective_attention"] and after_q["status"] == before_q["status"]
+    wid_bad = create(slug, node="boss", title="Failed reply")
+    ok(slug, "boss", "update", slug=wid_bad, attention=True,
+       attention_reason="still needs reply", done_so_far=["flagged"], working_on_next=[])
+    assert client.post(f"/api/orgs/{slug}/work-items/{wid_bad}/reply",
+                       json={"body": "  "}).status_code == 422
+    assert get_item(slug, wid_bad)["manual_attention"] is not None
+
+
+check("successful user reply clears manual attention while preserving questions, status and failure behavior",
+      user_reply_clears_only_manual_attention)
 
 
 # ---------------------------------------------------------------- summary

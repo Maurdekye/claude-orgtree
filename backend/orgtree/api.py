@@ -4122,6 +4122,10 @@ def work_item_reply(slug: str, wid: str, body: WorkReply) -> dict[str, Any]:
                     f"{how}\n{text}")
             r = org.post_mail(USER, nid, mail)
             org.user_deep_reach(nid, text.splitlines()[0][:160])
+            # A successful user reply acknowledges manual attention without
+            # taking the explicit-dismissal path (which blocks the item).
+            # Attached questions deliberately keep attention active.
+            org.work_clear_attention_on_user_reply(wid)
             store.save_org(org)
         except LedgerError as e:
             raise HTTPException(422, str(e))

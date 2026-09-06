@@ -11800,6 +11800,25 @@ class Org:
                 "notify": notify if notify in self.nodes else None,
                 "reason": cur.get("reason")}
 
+    def work_clear_attention_on_user_reply(self, wid: str) -> dict[str, Any]:
+        """Clear only manual attention after a successful user reply.
+
+        Pending attached questions remain the effective attention source, and
+        the item's work status is deliberately unchanged. This is separate
+        from work_dismiss_attention: a reply acknowledges the request but is
+        not a user dismissal that should block the item.
+        """
+        it, _ = self._work_find(wid)
+        cur = it.get("manual_attention")
+        pending = self._work_questions(wid)
+        if not cur or pending:
+            return {"cleared": False, "pending_questions": len(pending)}
+        it["manual_attention"] = None
+        self._work_hist(it, USER, "reply_clear_attention",
+                        {"set_rev": int(cur.get("set_rev") or 0)})
+        self._work_stamp_docket(it, USER)
+        return {"cleared": True, "pending_questions": 0}
+
     def work_reply_target(self, wid: str) -> dict[str, Any]:
         """Who a general reply goes to: THE ASSIGNMENT, exactly — the item's
         owner. Nobody is chosen in their place; the caller shows the failure.
