@@ -14,7 +14,7 @@ import os
 from pathlib import Path
 import sys
 import tempfile
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 TMP = Path(tempfile.mkdtemp(prefix="orgtree-mockup-browser-"))
 DATA = TMP / "data"
@@ -70,6 +70,12 @@ def run(out: Path) -> None:
     assert published.status_code == 200, published.text
     did = published.json()["presented"]
     preview = f"/api/orgs/mockup-browser/documents/{did}/mockup"
+    saved = next(d for d in store.load_org("mockup-browser").d["documents"] if d["id"] == did)
+    download_path = "/api/orgs/mockup-browser/nodes/designer/file"
+    download_url = download_path + "?path=" + quote(saved["file"])
+    download_response = client.get(download_url)
+    assert download_response.status_code == 200, download_response.text
+    assert download_response.headers["content-disposition"].startswith("attachment;"), download_response.headers
     response = client.get(preview)
     assert response.status_code == 200, response.text
     (out / "response-headers.json").write_text(json.dumps(dict(response.headers), indent=2), encoding="utf-8")
@@ -89,8 +95,8 @@ def run(out: Path) -> None:
             if path.startswith("/api/forbidden") or urlsplit(request.url).netloc != "127.0.0.1:59991":
                 forbidden.append(request.url)
                 route.fulfill(status=200, body="recorded", content_type="text/plain")
-            elif path == preview:
-                result = client.get(path)
+            elif path in {preview, download_path}:
+                result = client.get(path + ("?" + urlsplit(request.url).query if urlsplit(request.url).query else ""))
                 headers = {k: v for k, v in result.headers.items() if k.lower() not in {"content-length", "content-encoding"}}
                 route.fulfill(status=result.status_code, body=result.content, headers=headers)
             elif path == "/probe.js":
@@ -154,6 +160,15 @@ def run(out: Path) -> None:
             assert direct.url == ORIGIN + preview
             assert forbidden == [], forbidden
             assert len(context.pages) == 3, "mockup opened another window"
+        # The existing alternate artifact URL must download, never render
+        # raw executable HTML on the application origin. No download attr:
+        # the actual server Content-Disposition is what protects this path.
+        app.evaluate("url => { const a=document.createElement('a'); a.id='raw-artifact'; a.href=url; a.textContent='Download'; document.body.append(a) }", ORIGIN + download_url)
+        with app.expect_download() as received:
+            app.locator("#raw-artifact").click()
+        assert Path(received.value.path()).read_text(encoding="utf-8") == PAYLOAD
+        assert app.evaluate("typeof window.MOCKUP_SCRIPT_RAN") == "undefined"
+        assert forbidden == [], forbidden
         # Unsupported visitor context never offers an active mockup URL.
         app.goto(f"{ORIGIN}/k/visitor/?id={did}&org=mockup-browser")
         app.locator(".doc-badge[aria-disabled=true]").wait_for()
@@ -168,6 +183,7 @@ def run(out: Path) -> None:
         browser.close()
     (out / "probe-results.json").write_text(json.dumps({"new_tab": True, "direct_entry": True,
         "interactions": True, "isolated": True, "visitor_unavailable": True,
+        "alternate_artifact_download_only": True,
         "positive_control_requests": forbidden, "transport": transport}, indent=2), encoding="utf-8")
     print("PASS: real card new tab, inline interactions, direct access, isolation, visitor UI and outgoing-request positive control")
 

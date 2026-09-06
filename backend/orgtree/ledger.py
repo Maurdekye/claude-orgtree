@@ -7789,8 +7789,11 @@ class Org:
                                               if html_file else {})}, [])
                 return {"presented": replaces,
                         **({"format": "html"} if html_file else {}),
-                        "status": "updated in place — the card and any open "
-                                  "reader now show this revision"}
+                        "status": ("updated in place — reopen the card or refresh "
+                                   "an open mockup tab to see this revision"
+                                   if html_file else
+                                   "updated in place — the card and any open "
+                                   "reader now show this revision")}
             # a dangling replaces falls through to a fresh card rather than
             # erroring: the user may have dismissed the original meanwhile
         did = "d" + uuid.uuid4().hex[:8]
