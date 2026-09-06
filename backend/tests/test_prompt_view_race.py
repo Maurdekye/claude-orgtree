@@ -399,7 +399,7 @@ class PromptViewRaceTests(unittest.TestCase):
                          S._load_prompt_views(self.slug, self.sid))
         # the successor projects the copied row exactly as the predecessor did
         views = S._load_prompt_views(self.slug, new_sid)
-        projected, text = S._take_prompt_view(views, raw, at)
+        projected, text, _segments = S._take_prompt_view(views, raw, at)
         self.assertTrue(projected)
         self.assertEqual(text, visible)
         # no predecessor sidecar → nothing copied, nothing raised
@@ -426,7 +426,7 @@ class PromptViewRaceTests(unittest.TestCase):
         stale_views = S._load_prompt_views(self.slug, self.sid)   # before
         self.append_view(raw, visible, at)
         self.append_user(raw, at)
-        projected, text = S._take_prompt_view(stale_views, raw, at)
+        projected, text, _segments = S._take_prompt_view(stale_views, raw, at)
         self.assertFalse(projected)
         self.assertEqual(text, raw)
         self.assertTrue(any(m in text for m in CHROME),

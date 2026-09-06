@@ -500,10 +500,12 @@ def _ts_shape():
     assert 'variant: "docket.assigned"' in ts
     assert "export interface PublicAccessScopeRequested" in ts
     private_part = ts.split("// ---- PUBLIC")[0]
-    public_part = ts.split("// ---- PUBLIC")[1].split("export const FAMILY_OF")[0]
+    public_part = ts.split("// ---- PUBLIC")[1].split("// ---- WIRE")[0]
     assert "path: string" in private_part
     assert "path: string" not in public_part, "public:false field absent in TS"
     assert "engine_authored" not in public_part
+    pf = public_part.split("export interface PublicFolder {")[1].split("}")[0]
+    assert "path" not in pf and "mode" in pf
     assert 'projection: "public"' in ts
     assert "GENERATED" in ts.splitlines()[0]
 
