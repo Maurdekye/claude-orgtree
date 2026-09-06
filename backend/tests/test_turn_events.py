@@ -728,7 +728,7 @@ def sec_summary() -> None:
             s = turnlog.summarize(r)
             assert s["evidence"] == "insufficient" and s["implied"] == "unknown" \
                 and s["phase"] == "unknown", s
-            assert turnlog.drift(r) == [], "an insufficient summary drifts against nothing"
+            assert turnlog.drift(r) == [], "an insufficient summary drifts on nothing but order"
         empty = _rec([], outcome="completed")
         assert turnlog.summarize(empty)["evidence"] == "insufficient"
         # a GAP (dropped > 0, truncated false, tail present) asserts nothing;
@@ -748,15 +748,31 @@ def sec_summary() -> None:
             g2 = copy.deepcopy(gap)
             g2["dropped"] = bad
             assert turnlog.summarize(g2)["gapped"] is False, bad
-        # ORDER is checked: a seq inversion drifts
+        # ORDER is checked INDEPENDENTLY of evidence: a seq inversion drifts
+        # on a complete record, and just the same on a gapped, truncated or
+        # partial one (a gap jumps seq, it never reverses it) — while an
+        # ordered gapped record still drifts nothing
         r = _rec([{"kind": "start"}, {"kind": "result", "boundary": True}],
                  outcome="completed")
         r["events"][0]["seq"], r["events"][1]["seq"] = 2, 1
         assert turnlog.drift(r) == ["order"]
+        ordered_gap = _rec([{"kind": "start"}, {"kind": "freeze", "freeze_kind": "limit"}],
+                           outcome="completed", dropped=5)
+        ordered_gap["events"][1]["seq"] = 9          # a jump, not a reversal
+        assert turnlog.summarize(ordered_gap)["ordered"] is True
+        assert turnlog.drift(ordered_gap) == []
+        for hdr in ({"dropped": 5}, {"truncated": True}, {"partial": True}):
+            bad = _rec([{"kind": "start"}, {"kind": "freeze", "freeze_kind": "limit"}],
+                       outcome="completed", **hdr)
+            bad["events"][0]["seq"], bad["events"][1]["seq"] = 9, 1
+            sb = turnlog.summarize(bad)
+            assert sb["evidence"] == "insufficient" and sb["implied"] == "unknown"
+            assert turnlog.drift(bad) == ["order"], (hdr, turnlog.drift(bad))
     check("insufficient · a partial or truncated record (or none at all) "
-          "yields unknown and no drift even against a wrong outcome; a "
-          "HEAD/TAIL gap is insufficient too while the same events complete "
-          "do drift; a seq inversion drifts as order", _insufficient)
+          "yields unknown and no outcome drift even against a wrong outcome; "
+          "a HEAD/TAIL gap is insufficient too while the same events complete "
+          "do drift; a seq inversion drifts as order on complete, gapped, "
+          "truncated and partial records alike, a jump does not", _insufficient)
 
     def _fixture_names() -> None:
         ok = "1788682251395-0044-stream-net.json"
@@ -1539,6 +1555,19 @@ def sec_tool(control: dict) -> None:
         r = _run_tool([sp, "--assert"])
         assert r.returncode == 0 and "PARTIAL" in r.stdout and \
             "evidence=insufficient" in r.stdout, r.stdout[-400:]
+        # a gapped record whose RETAINED events are out of order: --assert
+        # exits 1 on order even though the outcome evidence is insufficient
+        gp = os.path.join(rd, "1788682251161-0003-claude-completed.json")
+        gapped = copy.deepcopy(turnlog.load(paths[-1]))
+        gapped["fixture"] = None
+        gapped["dropped"] = 4
+        gapped["events"][0]["seq"], gapped["events"][1]["seq"] = \
+            gapped["events"][1]["seq"], gapped["events"][0]["seq"]
+        with open(gp, "w", encoding="utf-8") as f:
+            json.dump(gapped, f)
+        r = _run_tool([gp, "--assert"])
+        assert r.returncode == 1 and "drift: ['order']" in r.stdout and \
+            "evidence=insufficient" in r.stdout, (r.returncode, r.stdout[-300:])
     check("drifts · an edited outcome exits 1 with drift ['outcome']; an "
           "unresolved fixture name is reported not read; a stub renders as "
           "PARTIAL/insufficient and passes --assert", _drifts)

@@ -7,8 +7,10 @@ indicators), the ORDERED timeline (`seq  t_ms  kind  fields`), and the
 SUMMARY `turnlog.summarize` derives from the events alone — phase, the
 disposition the events imply, first-output and boundary latencies — beside
 the recorded outcome, with the `drift` between them. A `partial` (never
-finalized) or `truncated` record yields an INSUFFICIENT summary that asserts
-nothing and drifts against nothing. When the record names a failure fixture
+finalized), `truncated` or gapped (`dropped` > 0) record yields an
+INSUFFICIENT summary that asserts nothing about the outcome; the retained
+events' ORDER is still checked and an inversion is drift whatever the
+evidence. When the record names a failure fixture
 and it sits in the sibling `failfix/<org>/<node>/` directory (resolved by
 `turnlog.fixture_path`, never from an arbitrary path), the fixture is
 re-decided through `tools/replay_failure.py`'s predicates and that drift is

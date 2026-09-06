@@ -476,8 +476,10 @@ def summarize(rec: Mapping[str, Any]) -> dict[str, Any]:
                     ignored — copying them would be no derivation at all.
     evidence        "sufficient" | "insufficient" (partial, truncated, a
                     HEAD/TAIL gap — `dropped` > 0 — or no events): an
-                    insufficient summary asserts nothing and drifts against
-                    nothing; the retained timeline is still there to read."""
+                    insufficient summary asserts nothing about the outcome
+                    or phase; the retained timeline is still there to read,
+                    and its ORDER is still checked (`drift` reports
+                    "order" regardless of evidence)."""
     events = [e for e in (rec.get("events") or []) if isinstance(e, Mapping)]
     events = [e for e in events if e.get("kind") not in ("dispose", "end")]  # pyright: ignore[reportUnknownMemberType]
     partial = rec.get("partial") is True
@@ -562,13 +564,18 @@ def summarize(rec: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def drift(rec: Mapping[str, Any]) -> list[str]:
-    """Names whose event-derived value disagrees with the recorded one. An
-    insufficient summary yields NO drift — it asserts nothing."""
+    """Names whose event-derived value disagrees with the recorded one.
+
+    `outcome` is asserted only on SUFFICIENT evidence (an insufficient
+    summary implies nothing about the disposition). `order` is independent
+    of that gate: the retained events must be in strictly increasing `seq`
+    whatever was dropped — a gap can jump `seq`, it can never reverse it —
+    so an inversion is reported on a partial, truncated or gapped record
+    too."""
     s = summarize(rec)
-    if s["evidence"] != "sufficient":
-        return []
     out: list[str] = []
-    if s["implied"] != "unknown" and rec.get("outcome") not in (None, "unknown") \
+    if s["evidence"] == "sufficient" and s["implied"] != "unknown" \
+            and rec.get("outcome") not in (None, "unknown") \
             and s["implied"] != rec.get("outcome"):
         out.append("outcome")
     if not s["ordered"]:
