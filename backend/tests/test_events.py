@@ -542,6 +542,119 @@ def _manifest_complete():
 check("emit · manifest lists both attributes for every field of every leaf", _manifest_complete)
 
 
+# ================================================================= §T reply target (step 4)
+def _reply_target_shapes():
+    ok = events.parse_reply_target
+    assert ok({"kind": "mail", "org": "o", "box": "user", "id": "m1"}) ==         {"box": "user", "id": "m1", "kind": "mail", "org": "o"}
+    assert ok({"kind": "mail", "org": "o", "box": "node", "node": "n", "id": "m1"})["node"] == "n"
+    assert ok({"kind": "document", "org": "o", "id": "d1"})["kind"] == "document"
+    assert ok({"kind": "work_item", "org": "o", "slug": "s"})["slug"] == "s"
+    bad = [
+        ("not a mapping", "x", "bad_structure"),
+        ("unknown kind", {"kind": "notice", "org": "o", "id": "1"}, "bad_literal"),
+        ("bad box", {"kind": "mail", "org": "o", "box": "inbox", "id": "1"}, "bad_literal"),
+        ("box node without node", {"kind": "mail", "org": "o", "box": "node", "id": "1"},
+         "missing_field"),
+        ("node on a user box", {"kind": "mail", "org": "o", "box": "user", "node": "n", "id": "1"},
+         "extra_field"),
+        ("client title (spoof)", {"kind": "document", "org": "o", "id": "d", "title": "x"},
+         "extra_field"),
+        ("client gist (spoof)", {"kind": "mail", "org": "o", "box": "user", "id": "1",
+                                 "gist": "x"}, "extra_field"),
+        ("missing org", {"kind": "work_item", "slug": "s"}, "missing_field"),
+        ("empty id", {"kind": "document", "org": "o", "id": " "}, "wrong_type"),
+        ("non-string id", {"kind": "document", "org": "o", "id": 7}, "wrong_type"),
+    ]
+    for label, raw, code in bad:
+        try:
+            ok(raw)
+        except events.EventInvalid as e:
+            assert e.code == code, (label, e.code, code)
+            assert e.path.startswith("target"), (label, e.path)
+        else:
+            raise AssertionError(f"accepted: {label}")
+
+
+check("reply target · identity keys only; every spoof/shape error refused with a static code",
+      _reply_target_shapes)
+
+
+def _reply_target_emitted():
+    ts = events.emit_typescript()
+    assert "export type ReplyTarget =" in ts and "export interface TypedReplyReceipt" in ts
+    assert '["mail","document","work_item"]' in ts
+
+
+check("reply target · ReplyTarget / TypedReplyReceipt are emitted to events.ts",
+      _reply_target_emitted)
+
+
+# ============================================== §H human-hidden machine segments (ruling 21:35Z)
+def _human_hidden():
+    hidden = events.human_hidden_variants()
+    assert hidden == ["context.org_state", "context.provider_usage", "context.cache_continuity",
+                      "context.org_charter", "context.drive_mail_pointer",
+                      "context.drive_restart_interrupted", "context.drive_restart_wake"], hidden
+    # discrimination controls: a context leaf with ONE human-visible field is shown, a
+    # leaf with no own fields is shown (its variant is its content), a reminder is shown
+    for shown in ("context.command", "context.deep_reach", "context.notice_digest",
+                  "policy.unstuck", "reminder.idle_docket", "status.report"):
+        assert shown not in hidden, shown
+    assert events.manifest()["human_hidden"] == hidden
+    ts = events.emit_typescript()
+    assert "export const HUMAN_HIDDEN_VARIANTS = " in ts and '"context.org_state"' in ts
+    # the hidden ones still render for the agent and still project for the wire — hiding
+    # is a human-card rule, not a data change
+    for v in hidden:
+        fx = FIXTURES[v]
+        ev = events.mint(v, fx["actor"], fx["object"], **fx["fields"])
+        assert events.render_agent(ev)
+        events.public_event(ev)
+
+
+check("human-hidden · exactly the machine-only segments, derived from dispositions; "
+      "controls shown; events/render/projection untouched", _human_hidden)
+
+
+def _mixed_composition_backend():
+    """The backend half of the coordinator's mixed-composition control (21:35Z): a
+    machine-only state segment BETWEEN readable events is kept, in place, in both wire
+    projections — the human-card suppression is a renderer rule over
+    HUMAN_HIDDEN_VARIANTS, never a segment dropped or reordered by the server."""
+    def mk(v):
+        fx = FIXTURES[v]
+        return events.mint(v, fx["actor"], fx["object"], **fx["fields"])
+    before = mk("lifecycle.retired")
+    hidden = mk("context.org_state")
+    after = mk("docket.assigned")
+    stored = [
+        {"kind": "notices", "rows": [{"at": "t0", "text": events.render_agent(before),
+                                      "ev": events.encode_ev(before)}]},
+        {"kind": "state", "event": events.encode_ev(hidden), "text": events.render_agent(hidden)},
+        {"kind": "mail", "rows": [{"id": "m1", "from": "@user", "kind": "request",
+                                   "body": events.render_agent(after), "at": "t1",
+                                   "ev": events.encode_ev(after)}]},
+    ]
+    for public in (False, True):
+        out = events.wire_segments(stored, public=public)
+        assert [s["kind"] for s in out] == ["notices", "state", "mail"], (public, out)
+        st = out[1]
+        key = "event_public" if public else "event"
+        assert st[key]["variant"] == "context.org_state", (public, st)
+        assert st["text"] == events.render_agent(hidden), "agent text kept"
+        assert st[key]["variant"] in events.human_hidden_variants()
+        rk = "ev_public" if public else "ev"
+        assert out[0]["rows"][0][rk]["variant"] == "lifecycle.retired"
+        assert out[2]["rows"][0][rk]["variant"] == "docket.assigned"
+        assert out[0]["rows"][0][rk]["variant"] not in events.human_hidden_variants()
+        assert out[2]["rows"][0][rk]["variant"] not in events.human_hidden_variants()
+
+
+check("human-hidden · mixed composition: a hidden state segment between readable events is "
+      "kept in place in BOTH projections (suppression is the renderer's rule)",
+      _mixed_composition_backend)
+
+
 print("\n" + "═" * 70)
 print(f"{PASSED} checks passed, {len(FAILED)} failed")
 for f in FAILED:
