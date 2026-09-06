@@ -5,9 +5,9 @@ import { RefMdBody } from './refmd'
 /** Text fragments on the same visual row overlap vertically, including
  * inline links/code with different font sizes. Paragraph spacing is not a
  * line. Measure the unclipped body so expanding cannot change this answer. */
-function fiveLineHeight(body: HTMLElement): number | null {
+function fiveLineHeight(body: HTMLElement): { limit: number | null; lines: number } {
   const box = body.getBoundingClientRect()
-  if (!box.width || !body.offsetWidth) return null
+  if (!box.width || !body.offsetWidth) return { limit: null, lines: 0 }
   const fragments: DOMRect[] = []
   const walk = document.createTreeWalker(body, NodeFilter.SHOW_TEXT)
   const range = document.createRange()
@@ -25,11 +25,11 @@ function fiveLineHeight(body: HTMLElement): number | null {
       last.bottom = Math.max(last.bottom, rect.bottom)
     } else rows.push({ top: rect.top, bottom: rect.bottom })
   }
-  if (rows.length <= 5) return null
+  if (rows.length <= 5) return { limit: null, lines: rows.length }
   // Range rects include the canvas/desk transform; CSS height does not.
   const scale = box.width / body.offsetWidth
   const fifth = rows[4]!, sixth = rows[5]!
-  return (fifth.bottom + Math.max(0, sixth.top - fifth.bottom) / 2 - box.top) / scale
+  return { limit: (fifth.bottom + Math.max(0, sixth.top - fifth.bottom) / 2 - box.top) / scale, lines: rows.length }
 }
 
 /** Only received-mail transcript bodies use this preview. Headers and
@@ -40,12 +40,12 @@ export function ReceivedMailBody({ html, world, onOpen }: {
 }) {
   const content = useRef<HTMLDivElement>(null)
   const id = useId()
-  const [limit, setLimit] = useState<number | null>(null)
+  const [{ limit, lines }, setMeasure] = useState({ limit: null as number | null, lines: 0 })
   const [expanded, setExpanded] = useState(false)
   useLayoutEffect(() => {
     const body = content.current?.firstElementChild as HTMLElement | null
     if (!body) return
-    const measure = () => setLimit(fiveLineHeight(body))
+    const measure = () => setMeasure(fiveLineHeight(body))
     measure()
     const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(measure)
     observer?.observe(body)
@@ -75,7 +75,7 @@ export function ReceivedMailBody({ html, world, onOpen }: {
       aria-expanded={expanded} aria-controls={id}
       aria-label={expanded ? 'Collapse received mail' : 'Expand received mail'}
       onClick={e => { e.stopPropagation(); toggle() }}>
-      {expanded ? 'click to collapse' : 'click to expand'}
+      {expanded ? 'click to collapse' : "click to expand · " + lines + ' lines'}
     </button>}
   </div>
 }
