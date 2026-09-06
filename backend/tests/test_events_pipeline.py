@@ -258,6 +258,77 @@ def _ts():
 
 check("emit · Segment / PublicSegment / Delivery / wire row types present", _ts)
 
+# ══════════════════════════════════════════════════════════════════════════ §7
+print("\n§7  live rows: journal segments attached; the hub projects per socket")
+
+
+def _live_segments():
+    slug = fresh()
+    org = store.load_org(slug)
+    org.post_mail(USER, "boss", "steer me", "message", typed=True)
+    store.save_org(org)
+    _, tok, _ = supervisor._envelope(slug, "boss", "n", via="steer")
+    extra = supervisor._live_segments(slug, "boss", {"toks": [tok], "text": "x"})
+    segs = extra["segments_raw"]
+    assert [sg["kind"] for sg in segs] == ["mail", "text"]
+    assert segs[0]["rows"][0]["ev"]["body"] == "steer me"
+    assert supervisor._live_segments(slug, "boss", "bare string carrier") == {}
+    assert supervisor._live_segments(slug, "boss", {"toks": ["nope"]}) == {}
+
+
+check("live · a steered carrier's toks resolve to the journal's segments (journal form)",
+      _live_segments)
+
+
+def _hub_projection():
+    import asyncio
+    from orgtree import api
+
+    class FakeWS:
+        def __init__(self):
+            self.sent = []
+            self.scope = {}
+
+        async def accept(self):
+            pass
+
+        async def send_json(self, payload):
+            self.sent.append(payload)
+
+    hub = api.Hub()
+    admin, visitor = FakeWS(), FakeWS()
+    slug = fresh()
+    ev = events.mint("access.scope_requested", actor_of("kid"),
+                     {"kind": "scope_request", "org": slug, "id": "s1", "node": "kid"},
+                     items=["x"], reason="r",
+                     wanted={"folders": [{"path": "SENTINEL-LIVE-PATH", "mode": "rw"}],
+                             "tools": {"bash": None, "web": None, "edit": None,
+                                       "subagents": None, "mcp": None},
+                             "permission_mode": None, "org_visibility": None})
+    raw = [{"kind": "mail", "rows": [{"id": "m", "from": "kid", "kind": "request",
+                                      "body": "b", "at": "t", "ev": ev}]}]
+
+    async def run():
+        await hub.join(slug, admin)
+        await hub.join(slug, visitor, public=True)
+        await hub._send(slug, {"type": "node_stream", "kind": "steered", "text": "b",
+                               "segments_raw": raw})
+        await hub._send(slug, {"type": "changed", "org": slug})
+    asyncio.run(run())
+    a_row, v_row = admin.sent[0], visitor.sent[0]
+    assert "segments_raw" not in a_row and "segments_raw" not in v_row
+    assert a_row["segments"][0]["rows"][0]["ev"]["wanted"]["folders"][0]["path"] == "SENTINEL-LIVE-PATH"
+    vflat = json.dumps(v_row)
+    assert "SENTINEL-LIVE-PATH" not in vflat and '"ev"' not in vflat
+    assert v_row["segments"][0]["rows"][0]["ev_public"]["projection"] == "public"
+    assert admin.sent[1] == visitor.sent[1] == {"type": "changed", "org": slug}, \
+        "payloads without segments pass through untouched"
+
+
+check("hub · a visitor socket gets PublicSegment, an operator socket the full events; "
+      "segments_raw never leaves; other payloads untouched", _hub_projection)
+
+
 print("\n" + "═" * 70)
 print(f"{PASSED} checks passed, {len(FAILED)} failed")
 for f in FAILED:
