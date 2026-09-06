@@ -2153,7 +2153,7 @@ export function InboxPanel({ slug, tree, toast, refresh, close, jumpTo, jumpSeq,
         {userAud.length > 0 && (
           <>
             <div className="field-label">audience holders</div>
-            <div className="row" style={{ flexWrap: 'wrap' }}>
+            <div className="row aud-holders-row" style={{ alignItems: 'center', flexWrap: 'wrap' }}>
               <AudienceFold
                 ids={userAud.filter((a) => nodes.get(a.grantee)?.state === 'live')
                   .map((a) => a.grantee)}

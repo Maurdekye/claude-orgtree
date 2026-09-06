@@ -3419,6 +3419,52 @@ html.mobile .conn-chip { max-width: 46vw; }
   border-color: color-mix(in srgb, var(--aud-user) 30%, transparent);
 }
 .badge.dim { color: #7a7a7a; }
+/* Audience holder chips: inline-flex chip aligning the hearing icon, tier chip,
+   clickable agent name, and revoke affordance on a single horizontal row.
+   Resets button styles so `.settings button` padding does not inflate
+   either `.cc-name` or `.chip-x`. */
+.aud-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  vertical-align: middle;
+  line-height: normal;
+}
+.aud-badge svg { flex: none; }
+.aud-badge .tier {
+  width: 16px; height: 16px; display: inline-grid; place-items: center;
+  border-radius: 3px; font-size: 9.5px; flex: none;
+}
+.aud-badge .cc-name,
+.settings .aud-badge button.cc-name {
+  font-family: inherit; font-size: inherit; font-weight: inherit;
+  color: inherit; padding: 0; border: none; border-radius: 0;
+  background: none; min-width: 0; flex: 0 1 auto; line-height: inherit;
+  white-space: nowrap; cursor: pointer;
+}
+.aud-badge .cc-name-jump:hover,
+.settings .aud-badge button.cc-name-jump:hover {
+  color: var(--accent); text-decoration: underline;
+}
+.aud-badge .chip-x,
+.settings .aud-badge button.chip-x {
+  padding: 0 0 0 2px; margin: 0; border: none; border-radius: 0;
+  background: none; color: inherit; font-size: inherit; line-height: 1;
+  display: inline-flex; align-items: center; justify-content: center;
+  cursor: pointer; opacity: .7; flex: none;
+}
+.aud-badge .chip-x:hover,
+.settings .aud-badge button.chip-x:hover {
+  opacity: 1; color: var(--bad); background: none;
+}
+.aud-holders-row > .retired-fold,
+.aud-holders-row > .audience-fold {
+  align-self: center;
+}
+.settings .aud-holders-row button.retired-fold,
+.settings .aud-holders-row button.audience-fold {
+  font-size: 13px; padding: 3px 10px; border-radius: 9px;
+}
 /* A BEARER CHIP STATES PROVENANCE, NOT LIFECYCLE (user report 2026-08-28: "it
    looks retired… the ui is too similar"). It used to be `badge dim` — the same
    element, the same two classes, in the same slot as the `archived` chip it
