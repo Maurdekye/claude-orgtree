@@ -24,7 +24,7 @@ import { flush, inAct, mountView, realClock, useFakeClock } from './harness'
 import test from 'node:test'
 import type { TestContext } from 'node:test'
 import assert from 'node:assert/strict'
-import { DocketModal, groupIdentity } from '../src/canvas/docket'
+import { DocketModal, agentItems, groupIdentity } from '../src/canvas/docket'
 import type { NodeFacts } from '../src/canvas/docket'
 import type { TreePayload, WorkItem } from '../src/types'
 
@@ -84,6 +84,17 @@ function mockServer(items: WorkItem[]) {
       return ok({})
     }) as unknown as typeof fetch
 }
+
+test('agent docket excludes canonical archived rows by default and includes them when requested', () => {
+  const active = mkItem({ slug: 'active-item', archived: false })
+  const archived = mkItem({ slug: 'archived-item', archived: true,
+    archived_at: '2026-09-05T10:00:00.000Z' })
+  const data = { items: [active], archived: [archived], backlogged: [] }
+  assert.deepEqual(agentItems(data, 'checklist-evidence')?.map((x) => x.slug),
+    ['active-item'])
+  assert.deepEqual(agentItems(data, 'checklist-evidence', true)?.map((x) => x.slug),
+    ['active-item', 'archived-item'])
+})
 
 function uiTest(name: string, body: (mount: (v: React.ReactElement)
   => Promise<HTMLElement>) => Promise<void>) {

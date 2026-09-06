@@ -1113,9 +1113,11 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
   // would eventually disagree on screen. It is the same endpoint the Work
   // panel uses, at a slower interval — this is a summary, not the panel.
   const [workBump, setWorkBump] = useState(0)
+  const [showArchivedDocket, setShowArchivedDocket] = useState(false)
   const work = usePolled(() => getWorkItems(slug, true, true),
                          [slug], 15000, `${workBump}`)
-  const myWork = useMemo(() => agentItems(work, node.id), [work, node.id])
+  const myWork = useMemo(() => agentItems(work, node.id, showArchivedDocket),
+    [work, node.id, showArchivedDocket])
   // the identity facts the docket rows read (which model an owner ran under,
   // whether that seat is still live) — the same shape the Work panel builds,
   // from the canvas map this desk already holds rather than a second fetch
@@ -2188,6 +2190,8 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
           what an ITEM click does, because it holds the rows itself. */}
       {view === 'docket' && <AgentDocketView slug={slug} nid={node.id}
         mine={myWork} facts={workFacts} toast={toast} onFocusAgent={onJump}
+        showArchived={showArchivedDocket}
+        onShowArchived={setShowArchivedDocket}
         refs={deskRefs}
         onChanged={() => setWorkBump((n) => n + 1)} />}
       {/* the mailbox is a name surface too (user request 2026-09-05: the inbox

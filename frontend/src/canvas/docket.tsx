@@ -978,10 +978,10 @@ export function DocketModal({ slug, toast, close, tree, onFocusAgent,
  *  plausible-and-wrong surface this codebase keeps refusing. */
 export function agentItems(data: {
   items?: WorkItem[]; archived?: WorkItem[]; backlogged?: WorkItem[]
-} | null | undefined, nid: string): WorkItem[] | null {
+} | null | undefined, nid: string, includeArchived = false): WorkItem[] | null {
   if (!data) return null
   return [...(data.items ?? []), ...(data.backlogged ?? []),
-          ...(data.archived ?? [])]
+          ...(includeArchived ? (data.archived ?? []) : [])]
     .filter((it) => it.owner?.node === nid || it.reviewer?.node === nid)
 }
 
@@ -1004,7 +1004,7 @@ export function agentItems(data: {
  *  generation is what the row's chip reasons about, never what decides whether
  *  the work is yours. */
 export function AgentDocketView({ slug, nid, mine, facts, toast, onFocusAgent,
-  onChanged, refs }: {
+  onChanged, showArchived = false, onShowArchived = () => {}, refs }: {
   slug: string
   nid: string
   /** this agent's items, already selected by `agentItems` — null while the
@@ -1016,6 +1016,8 @@ export function AgentDocketView({ slug, nid, mine, facts, toast, onFocusAgent,
   onFocusAgent?: (agentId: string) => void
   /** ask the desk to refetch — a dismissal changes the server's copy */
   onChanged?: () => void
+  showArchived?: boolean
+  onShowArchived?: (show: boolean) => void
   /** THE DESK'S OWN REFERENCE WIRING, passed down whole rather than rebuilt.
    *  Required, not optional: a fallback world here would be a second answer to
    *  the same question on the same desk, and the two would drift. */
@@ -1093,6 +1095,11 @@ export function AgentDocketView({ slug, nid, mine, facts, toast, onFocusAgent,
   }
   return (
     <div className="msgs docket-modal docket-agent">
+      <label className="checkline docket-showarchived">
+        <input type="checkbox" checked={showArchived}
+          onChange={(e) => onShowArchived(e.target.checked)} />
+        Show archived
+      </label>
       {mine === null
         ? <div className="dim pad">loading…</div>
         : rows.length === 0
