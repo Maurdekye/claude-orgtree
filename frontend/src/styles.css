@@ -5650,6 +5650,16 @@ html.mobile .modalpin-win.gallery-modal > .gallery-head {
 /* HTML presentations use native links for reliable new-tab activation. */
 a.doc-chip, a.doc-badge, a.doc-gallery-row { text-decoration: none; }
 .doc-gallery-row[href] { color: inherit; }
+/* Format identity without changing row geometry, selection or native links. */
+.mockup-format {
+  display: inline-flex; align-items: center; gap: 3px; flex-shrink: 0;
+  padding: 0 4px; border: 1px solid color-mix(in srgb, var(--accent) 50%, var(--line));
+  border-radius: 3px; color: var(--accent-hover); background: var(--accent-soft);
+  font: 9px/14px var(--mono); white-space: nowrap;
+}
+.doc-badge .mockup-format { max-width: none; overflow: visible; }
+.mockup-format.compact { padding: 0; border: 0; background: none; font-size: 10px; }
+.doc-gallery-row.doc-mockup { box-shadow: inset 2px 0 var(--accent); }
 .mockup-open { padding: 16px 12px; }
 .mockup-unavailable { opacity: .6; cursor: default; }
 

@@ -21,22 +21,31 @@ export interface DocMeta { id: string; title: string; at: string; format?: 'mark
 
 export interface LoadedDoc { title: string; node: string; at: string; body: string; format?: 'markdown' | 'html'; bytes?: number }
 
+/** Stored HTML format has the same compact identity on every presentation surface. */
+export function MockupBadge({ compact = false }: { compact?: boolean }) {
+  return <span className={'mockup-format' + (compact ? ' compact' : '')}
+    aria-label="HTML mockup"><span aria-hidden="true">{'</>'}</span>
+    {!compact && ' HTML mockup'}</span>
+}
+
 /** The same activation in the canvas chips and titled desk cards. HTML
  *  opens synchronously through a native link, never after an async fetch. */
-export function PresentationCard({ slug, doc, onOpen, className, children }: {
+export function PresentationCard({ slug, doc, onOpen, className, children, compact = false }: {
   slug: string; doc: DocMeta; onOpen: (id: string) => void
-  className: string; children: ReactNode
+  className: string; children: ReactNode; compact?: boolean
 }) {
   if (doc.format === 'html') {
-    if (BASE) return <span className={className + ' mockup-unavailable'}
+    const content = <><MockupBadge compact={compact} />{children}</>
+    const htmlClass = className + ' doc-mockup'
+    if (BASE) return <span className={htmlClass + ' mockup-unavailable'}
       aria-disabled="true" title="Mockup previews are available in the operator view">
-      {children}
+      {content}
     </span>
-    return <a className={className} href={mockupUrl(slug, doc.id)}
+    return <a className={htmlClass} href={mockupUrl(slug, doc.id)}
       target="_blank" rel="noopener noreferrer"
-      title={`open ${doc.title} in a new tab`}
+      title={`open HTML mockup ${doc.title} in a new tab`}
       onPointerDown={(e) => e.stopPropagation()}
-      onClick={(e) => e.stopPropagation()}>{children}</a>
+      onClick={(e) => e.stopPropagation()}>{content}</a>
   }
   return <button className={className} title={`read ${doc.title}`}
     onPointerDown={(e) => e.stopPropagation()}
@@ -109,8 +118,8 @@ export function DocChips({ slug, docs, onOpen }: {
     <div className="doc-chips">
       {docs.slice(-4).map((d) => (
         <PresentationCard key={d.id} slug={slug} doc={d}
-          className="doc-chip" onOpen={onOpen}>
-          <DocIcon fontSize="inherit" />
+          className="doc-chip" compact onOpen={onOpen}>
+          {d.format !== 'html' && <DocIcon fontSize="inherit" />}
         </PresentationCard>
       ))}
     </div>

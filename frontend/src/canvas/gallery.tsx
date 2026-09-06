@@ -27,7 +27,7 @@ import { BASE, fileBase, getDocuments, mockupUrl, sendMessage } from '../api'
 import { addPending } from '../convo'
 import type { ToastFn } from '../types'
 import { CloseIcon, DocIcon } from '../icons'
-import { dismissDoc, MockupOpen, useDoc } from './docs'
+import { dismissDoc, MockupBadge, MockupOpen, useDoc } from './docs'
 import { PinFrame } from './modalpin'
 import { RefMdBody } from './refmd'
 import type { RefWorld, ResolvedRef } from './reflinks'
@@ -171,7 +171,8 @@ export function DocGalleryModal({ slug, toast, close, onFocusAgent, onReply,
                           // read muted grey)
                           + (isHired(r) ? ' active' : ' past')
                           + (r.id === selId ? ' on' : '')
-                          + (r.evicted ? ' evicted' : '')}
+                          + (r.evicted ? ' evicted' : '')
+                          + (r.format === 'html' ? ' doc-mockup' : '')}
                         title={[
                           r.evicted
                             ? 'content evicted — later presentations pushed '
@@ -187,7 +188,7 @@ export function DocGalleryModal({ slug, toast, close, onFocusAgent, onReply,
                         <div className="l2">
                           <TierChip tier={r.tier} />
                           {r.node || '?'}
-                          {r.format === 'html' && <span className="dim">HTML mockup</span>}
+                          {r.format === 'html' && <MockupBadge />}
                           {r.evicted && <span className="badge evicted">content evicted</span>}
                         </div>
                       </GalleryEntry>
