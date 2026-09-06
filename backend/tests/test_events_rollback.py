@@ -6,11 +6,16 @@ tip at landing) as a separate process, under a THROWAWAY data root that is verif
 before the first `orgtree` import on both sides, over a document written by HEAD:
 
     B8  · old readers over rows with `ev`  ==  HEAD readers with the new keys stripped
-          (inbox / history / chat / user inbox JSON, diff-clean); the old code's own
-          save (it posts one mail) preserves every `ev` bit-exact for HEAD to decode.
-    B13 · the same walk over a REAL export: `--doc <path-to-an-ORGTREE_DATA-copy>`
-          (the coordinator supplies a read-only export outside the live root; this
-          harness never opens the live root). Without --doc, the fixture org is used.
+          (inbox / history / chat / user inbox JSON, diff-clean); then the old code SAVES
+          (it posts one mail) and every `ev` is compared KEYED BY ROW ID, BIT-EXACT,
+          before vs after — with a mutation control proving the comparison can fail.
+    B13 · `--doc <ORGTREE_DATA copy> --slug <org>`: the same walk over a REAL export
+          (supplied read-only by the coordinator, outside the live root; only copies
+          are touched). Two phases, labelled: (1) the UNTOUCHED export — pre-typed, so
+          no `ev` may appear anywhere (no backfill) and the readers must agree without
+          any stripping; (2) an ENRICHED copy — HEAD adds a labelled set of typed rows
+          beside the real ones, the old release reads/saves it, and the retained REAL
+          rows plus the added `ev`s are compared bit-exact.
 
 ROLLBACK_BASE MUST be the main tip at landing — the landing checklist re-pins it;
 the first check asserts it is an ancestor of HEAD so it cannot silently go stale.
@@ -111,7 +116,13 @@ out["user/inbox"] = {"status": r.status_code, "body": r.json() if r.status_code 
 if post:
     with store.DOC_LOCK:
         o = store.load_org(slug)
-        o.post_mail(USER, nodes[0], "posted by the previous release")
+        # the box with the most headroom under the previous release's 100-row
+        # mail_log cap: a post into a full box evicts its oldest row (the old
+        # code's own cap, not a rollback defect) and would read as a lost row
+        logs = o.d.get("mail_log") or {}
+        target = min(nodes, key=lambda n: len(logs.get(n) or []))
+        assert len(logs.get(target) or []) < 100, "every candidate box is at the mail_log cap"
+        o.post_mail(USER, target, "posted by the previous release")
         store.save_org(o)
 sys.stdout.write(json.dumps(out, sort_keys=True))
 '''
@@ -157,6 +168,181 @@ def build_fixture() -> tuple[str, list[str]]:
     return slug, ["boss", "kid"]
 
 
+def snapshot_evs(root: str, slug: str) -> dict[str, dict]:
+    """{box:id → raw stored ev} for every mail / user-inbox / notice row of the org
+    under `root`, read by HEAD in a FRESH process (store binds at import)."""
+    p = subprocess.run([sys.executable, "-c", r"""
+import os, sys, json
+os.environ["ORGTREE_DATA"] = sys.argv[1]; sys.path.insert(0, sys.argv[2])
+from orgtree import store
+assert store.DATA_ROOT.startswith(sys.argv[1])
+o = store.load_org(sys.argv[3])
+out = {}
+def put(box, rows):
+    for i, r in enumerate(rows):
+        key = f"{box}:{r.get('id') or ('#' + str(i) + '@' + str(r.get('at')))}"
+        out[key] = {"ev": r.get("ev"), "body": r.get("body", r.get("text"))}
+for nid, ms in (o.d.get("mail") or {}).items(): put(f"mail/{nid}", ms)
+for nid, ms in (o.d.get("mail_log") or {}).items(): put(f"mail_log/{nid}", ms)
+put("user_inbox", o.d.get("user_inbox") or []); put("user_mail_log", o.d.get("user_mail_log") or [])
+for nid, rs in (o.d.get("notices") or {}).items(): put(f"notices/{nid}", rs)
+put("notice_log", o.d.get("notice_log") or [])
+sys.stdout.write(json.dumps(out, sort_keys=True))
+""", root, BACKEND, slug], capture_output=True, text=True, encoding="utf-8",
+        env={**os.environ, "ORGTREE_DATA": root, "PYTHONIOENCODING": "utf-8"}, cwd=BACKEND)
+    assert p.returncode == 0, p.stderr[-2000:]
+    return json.loads(p.stdout.strip().splitlines()[-1])
+
+
+def compare_evs(before: dict, after: dict) -> list[str]:
+    """Rows present before must be present after with the SAME ev (bit-exact JSON)
+    and the same body. Returns the list of differences (empty = identical)."""
+    diffs = []
+    for k, v in before.items():
+        if k not in after:
+            diffs.append(f"{k}: row gone after the old release saved")
+            continue
+        if json.dumps(v["ev"], sort_keys=True) != json.dumps(after[k]["ev"], sort_keys=True):
+            diffs.append(f"{k}: ev changed")
+        if v["body"] != after[k]["body"]:
+            diffs.append(f"{k}: body changed")
+    return diffs
+
+
+def enrich(root: str, slug: str) -> list[str]:
+    """ENRICHED COPY (labelled): HEAD adds typed rows beside the real ones. Returns the
+    ids/keys it added so the comparison can tell added from retained."""
+    p = subprocess.run([sys.executable, "-c", r"""
+import os, sys, json
+os.environ["ORGTREE_DATA"] = sys.argv[1]; sys.path.insert(0, sys.argv[2])
+from orgtree import store, events
+from orgtree.ledger import USER, SYSTEM, actor_of
+assert store.DATA_ROOT.startswith(sys.argv[1])
+with store.DOC_LOCK:
+    o = store.load_org(sys.argv[3])
+    live = [k for k, v in o.nodes.items() if v["state"] == "live"]
+    top = [k for k in live if o.nodes[k].get("parent") is None]
+    added = []
+    logs = o.d.get("mail_log") or {}
+    t = min(live, key=lambda n: len(logs.get(n) or []))    # any live box with headroom under the cap
+    assert len(logs.get(t) or []) < 97, "no live box has headroom for the enrichment"
+    r = o.post_mail(USER, t, "[B13 ENRICHMENT] plain typed user mail", typed=True); added.append(r["id"])
+    e = o.append_system_mail(t, events.mint("runtime.turn_failed_terminal", actor_of(SYSTEM),
+        {"kind": "session", "org": o.d["slug"], "node": t, "session_id": "b13"},
+        door="B13 enrichment", err="synthetic")); added.append(e["id"])
+    o.reallocate(USER, t, 1)                      # grant notices (typed)
+    store.save_org(o)
+sys.stdout.write(json.dumps({"added": added, "top": t}))
+""", root, BACKEND, slug], capture_output=True, text=True, encoding="utf-8",
+        env={**os.environ, "ORGTREE_DATA": root, "PYTHONIOENCODING": "utf-8"}, cwd=BACKEND)
+    assert p.returncode == 0, p.stderr[-2000:]
+    return json.loads(p.stdout.strip().splitlines()[-1])
+
+
+def live_nodes(root: str, slug: str) -> list[str]:
+    p = subprocess.run([sys.executable, "-c",
+                        "import os,sys;os.environ['ORGTREE_DATA']=sys.argv[1];sys.path.insert(0,sys.argv[2]);"
+                        "from orgtree import store;o=store.load_org(sys.argv[3]);"
+                        "print(','.join([k for k,v in o.nodes.items() if v['state']=='live'][:6]))",
+                        root, BACKEND, slug], capture_output=True, text=True, encoding="utf-8",
+                       env={**os.environ, "ORGTREE_DATA": root, "PYTHONIOENCODING": "utf-8"}, cwd=BACKEND)
+    assert p.returncode == 0, p.stderr[-2000:]
+    return [x for x in p.stdout.strip().splitlines()[-1].split(",") if x]
+
+
+def walk(label: str, src_root: str, slug: str, *, expect_typed: bool, enriched: bool) -> None:
+    """One rollback walk over a copy of `src_root`. `expect_typed` says whether the
+    document is KNOWN to carry typed rows (fixture / enriched copy) — on a pre-typed
+    export the honest expectations are the opposite ones, and they are asserted."""
+    tag = label.replace(" ", "_")
+    old_root = os.path.join(_TMP, tag, "old", "data")
+    new_root = os.path.join(_TMP, tag, "new", "data")
+    shutil.copytree(src_root, old_root)
+    shutil.copytree(src_root, new_root)
+    added: dict = {}
+    if enriched:
+        added = enrich(old_root, slug)
+        shutil.rmtree(new_root)
+        shutil.copytree(old_root, new_root)
+    nodes = live_nodes(new_root, slug)
+    assert nodes, "no live nodes to read"
+    before = snapshot_evs(old_root, slug)
+    typed_before = {k: v for k, v in before.items() if v["ev"] is not None}
+    if expect_typed:
+        assert len(typed_before) >= 3, f"{label}: expected typed rows, found {len(typed_before)}"
+    else:
+        assert not typed_before, f"{label}: a pre-typed export must carry NO ev (no backfill): " \
+                                 f"{list(typed_before)[:3]}"
+    old_out: dict = {}
+    new_out: dict = {}
+
+    def _old():
+        old_out.update(run_reader(os.path.join(ROLLBACK_WT, "backend"), old_root, slug, nodes,
+                                  post=True))
+        bad = {k: v["status"] for k, v in old_out.items() if v["status"] != 200}
+        assert not bad, bad
+    check(f"{label} · the previous release reads inbox/history/chat/user-inbox (all 200) and saves",
+          _old)
+
+    def _new():
+        new_out.update(run_reader(BACKEND, new_root, slug, nodes, post=False))
+        bad = {k: v["status"] for k, v in new_out.items() if v["status"] != 200}
+        assert not bad, bad
+    check(f"{label} · HEAD reads the same document (all 200)", _new)
+
+    def _diff():
+        assert old_out and new_out
+        import difflib
+        for k in sorted(new_out):
+            a, b = strip(old_out[k]["body"]), strip(new_out[k]["body"])
+            if a != b:
+                ja = json.dumps(a, sort_keys=True, indent=1); jb = json.dumps(b, sort_keys=True, indent=1)
+                d = "\n".join(list(difflib.unified_diff(ja.splitlines(), jb.splitlines(), "old", "new",
+                                                       lineterm=""))[:60])
+                raise AssertionError(f"{k}: old-release output differs from HEAD (new keys stripped):\n{d}")
+        raw_differ = any(old_out[k]["body"] != new_out[k]["body"] for k in new_out)
+        if expect_typed:
+            assert raw_differ, "positive control failed: HEAD added nothing to any payload"
+        else:
+            # a pre-typed export: HEAD must add NOTHING typed — the strip is a no-op here,
+            # said out loud rather than presumed
+            def has_new(x):
+                if isinstance(x, dict):
+                    return any(k in NEW_KEYS - {"segments", "delivery", "restart_notice"}
+                               for k in x) or any(has_new(v) for v in x.values())
+                return isinstance(x, list) and any(has_new(v) for v in x)
+            assert not any(has_new(v["body"]) for v in new_out.values()), \
+                "HEAD emitted ev/ev_public/ev_error for a pre-typed document (backfill?)"
+    check(f"{label} · reader outputs diff-clean between the releases "
+          f"({'new keys stripped; unstripped they differ' if expect_typed else 'pre-typed: no ev emitted, nothing to strip'})",
+          _diff)
+
+    def _roundtrip():
+        after = snapshot_evs(old_root, slug)
+        diffs = compare_evs(before, after)
+        assert not diffs, diffs[:10]
+        posted = [k for k, v in after.items() if v["body"] == "posted by the previous release"]
+        assert posted, "the old release's own save did not land"
+        assert all(after[k]["ev"] is None for k in posted), "the old release cannot mint ev"
+        if added:
+            for mid in added["added"]:
+                keys = [k for k in after if k.endswith(":" + mid)]
+                assert keys and all(after[k]["ev"] is not None for k in keys), f"added row {mid} lost its ev"
+        # MUTATION CONTROL: the comparison must fail when a valid field of one ev changes
+        import copy
+        mut = copy.deepcopy(after)
+        victim = next((k for k, v in mut.items() if v["ev"] is not None), None)
+        if victim is not None:
+            mut[victim]["ev"]["variant"] = mut[victim]["ev"]["variant"] + "-mutant"
+            assert compare_evs(before, mut), "the ev comparison is vacuous — a mutated ev passed"
+        else:
+            assert not expect_typed, "no typed row to mutate on a typed document"
+            mut[next(iter(mut))]["body"] = "MUTANT"
+            assert compare_evs(before, mut), "the body comparison is vacuous"
+    check(f"{label} · after the old release saved: every retained row's ev and body are BIT-EXACT "
+          f"(keyed by id); its own row is legacy; mutation control fails as it must", _roundtrip)
+
+
 def main() -> int:
     args = sys.argv[1:]
     doc = args[args.index("--doc") + 1] if "--doc" in args else None
@@ -175,8 +361,6 @@ def main() -> int:
         p = subprocess.run(["git", "merge-base", "--is-ancestor", ROLLBACK_BASE, "HEAD"],
                            cwd=REPO, capture_output=True, text=True)
         assert p.returncode == 0, f"ROLLBACK_BASE {ROLLBACK_BASE[:7]} is not an ancestor of HEAD — re-pin it"
-        assert os.path.isfile(os.path.join(ROLLBACK_WT, "backend", "orgtree", "ledger.py")), \
-            f"no worktree at {ROLLBACK_WT}: git worktree add --detach <path> {ROLLBACK_BASE[:7]}"
         head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROLLBACK_WT,
                               capture_output=True, text=True).stdout.strip()
         assert head == ROLLBACK_BASE, f"worktree is at {head[:7]}, not ROLLBACK_BASE"
@@ -189,95 +373,17 @@ def main() -> int:
         return 1
 
     if doc:
-        print(f"\n§B13 · real export: {doc}")
-        src_root, slug = doc, slug_arg
-        assert slug, "--slug is required with --doc"
-        nodes = [k for k, v in store.load_org(slug).nodes.items() if v["state"] == "live"][:6] \
-            if False else None
+        assert slug_arg, "--slug is required with --doc"
+        assert not os.path.normcase(os.path.abspath(doc)).startswith("c:\\users\\ncola_k8bx\\orgtree\\"), \
+            "--doc must be a copy OUTSIDE the live root"
+        print(f"\n§B13 · real export (untouched): {doc}")
+        walk("B13 untouched export", doc, slug_arg, expect_typed=False, enriched=False)
+        print(f"\n§B13 · real export + LABELLED typed enrichment (added by HEAD on a copy)")
+        walk("B13 enriched copy", doc, slug_arg, expect_typed=True, enriched=True)
     else:
         print("\n§B8 · fixture org written by HEAD")
-        slug, nodes = build_fixture()
-        src_root = store.DATA_ROOT
-    if nodes is None:
-        # --doc: read the org under the given root in a subprocess-free way by copying first
-        nodes = []
-
-    # two copies: one for the old release (it will also SAVE), one for HEAD
-    old_root = os.path.join(_TMP, "old", "data")
-    new_root = os.path.join(_TMP, "new", "data")
-    shutil.copytree(src_root, old_root)
-    shutil.copytree(src_root, new_root)
-    if not nodes:
-        env_slug = slug
-        p = subprocess.run([sys.executable, "-c",
-                            "import os,sys;os.environ['ORGTREE_DATA']=sys.argv[1];sys.path.insert(0,sys.argv[2]);"
-                            "from orgtree import store;o=store.load_org(sys.argv[3]);"
-                            "print(','.join([k for k,v in o.nodes.items() if v['state']=='live'][:6]))",
-                            new_root, BACKEND, env_slug], capture_output=True, text=True)
-        nodes = [x for x in p.stdout.strip().splitlines()[-1].split(",") if x]
-    assert nodes, "no live nodes to read"
-
-    old_out: dict = {}
-    new_out: dict = {}
-
-    def _old():
-        old_out.update(run_reader(os.path.join(ROLLBACK_WT, "backend"), old_root, slug, nodes,
-                                  post=True))
-        assert all(v["status"] == 200 for v in old_out.values()), \
-            {k: v["status"] for k, v in old_out.items()}
-    check("the previous release reads inbox/history/chat/user-inbox of the typed document (all 200) "
-          "and saves it", _old)
-
-    def _new():
-        new_out.update(run_reader(BACKEND, new_root, slug, nodes, post=False))
-        assert all(v["status"] == 200 for v in new_out.values())
-    check("HEAD reads the same document (all 200)", _new)
-
-    def _diff():
-        assert old_out and new_out
-        for k in sorted(new_out):
-            a, b = strip(old_out[k]["body"]), strip(new_out[k]["body"])
-            if a != b:
-                ja, jb = json.dumps(a, sort_keys=True, indent=1), json.dumps(b, sort_keys=True, indent=1)
-                import difflib
-                d = "\n".join(list(difflib.unified_diff(ja.splitlines(), jb.splitlines(), "old", "new", lineterm=""))[:60])
-                raise AssertionError(f"{k}: old-release output differs from HEAD (new keys stripped):\n{d}")
-        # positive control: without stripping, HEAD's output DOES differ (the ev is there)
-        assert any(old_out[k]["body"] != new_out[k]["body"] for k in new_out), \
-            "the strip is vacuous — HEAD added nothing to any payload"
-    check("B8 · every reader output is diff-clean between the releases once this release's new "
-          "keys are stripped (positive control: unstripped, they differ)", _diff)
-
-    def _roundtrip():
-        os.environ["ORGTREE_DATA"] = old_root       # HEAD re-reads the doc the OLD code saved
-        # a fresh process, so store binds to the old root
-        p = subprocess.run([sys.executable, "-c", r'''
-import os, sys, json
-os.environ["ORGTREE_DATA"] = sys.argv[1]; sys.path.insert(0, sys.argv[2])
-from orgtree import store, events
-assert store.DATA_ROOT.startswith(sys.argv[1])
-o = store.load_org(sys.argv[3])
-n_typed = n_legacy = 0; bad = []
-boxes = [*(o.d.get("mail") or {}).items(), *(o.d.get("mail_log") or {}).items()]
-rows = [m for _, ms in boxes for m in ms] + list(o.d.get("user_inbox") or []) + list(o.d.get("user_mail_log") or [])
-rows += [r for _, rs in (o.d.get("notices") or {}).items() for r in rs] + list(o.d.get("notice_log") or [])
-for r in rows:
-    d = events.decode(r.get("ev"), r)
-    if d["status"] == "legacy": n_legacy += 1
-    elif d["status"] == "ok": n_typed += 1
-    else: bad.append(d)
-posted = [m for _, ms in (o.d.get("mail") or {}).items() for m in ms if m.get("body") == "posted by the previous release"]
-print(json.dumps({"typed": n_typed, "legacy": n_legacy, "bad": bad, "posted": len(posted)}))
-''', old_root, BACKEND, slug], capture_output=True, text=True, encoding="utf-8",
-            env={**os.environ, "PYTHONIOENCODING": "utf-8"}, cwd=BACKEND)
-        assert p.returncode == 0, p.stderr[-2000:]
-        res = json.loads(p.stdout.strip().splitlines()[-1])
-        assert res["bad"] == [], res["bad"]
-        assert res["typed"] >= 5, res
-        assert res["posted"] == 1, "the old release's own save landed"
-        assert res["legacy"] >= 1, res
-    check("B8 · after the previous release SAVED the document, every `ev` still decodes ok and "
-          "its own (legacy) row sits beside them", _roundtrip)
+        slug, _nodes = build_fixture()
+        walk("B8 fixture", store.DATA_ROOT, slug, expect_typed=True, enriched=False)
 
     print()
     for label, tb in FAIL:
