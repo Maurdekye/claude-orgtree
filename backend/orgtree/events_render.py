@@ -785,13 +785,33 @@ def _r_limit_reset(ev: _R) -> str:
 
 
 # =========================================================================== monitor
+#: appended to a ONE-SHOT dog's fire mail (D-200). The owner must be told in the mail
+#: itself, because the alternative is an agent calling `list`, not finding its dog,
+#: and having to work out whether it broke something. Lives here (not in the ledger)
+#: because the renderer is the one place the sentence is produced; the ledger's raw
+#: path calls `watchdog_once_note` so both paths share the SAME truncation.
+WATCHDOG_ONCE_NOTE: str = (
+    "\n\n— This was a ONE-SHOT dog: it fired once and has REMOVED ITSELF. "
+    "It is gone from your list and will not fire again. Nothing is wrong "
+    "and you need not remove it. If you want to watch for this again, "
+    "arm a new one.")
+
+
+def watchdog_once_note(body: str) -> str:
+    """A fire body with the one-shot note appended, capped at the 8000 the mail row
+    keeps — truncated BEFORE the note, so a long event body can never push the
+    "it removed itself" sentence off the end of the mail that explains its absence."""
+    return body[:8000 - len(WATCHDOG_ONCE_NOTE)].rstrip() + WATCHDOG_ONCE_NOTE
+
+
 @renderer("monitor.watchdog_fired")
 def _r_wd_fired(ev: _R) -> str:
     o = _obj(ev)
     lines: list[str] = ev["lines"]
-    return (f"[WATCHDOG {o['name']}]{ev['prefix']} {ev['count']} event(s):\n"
+    body = (f"[WATCHDOG {o['name']}]{ev['prefix']} {ev['count']} event(s):\n"
             + "\n".join(x[:500] for x in lines[:20])
             + (f"\n… {ev['count'] - 20} more" if ev["count"] > 20 else ""))
+    return watchdog_once_note(body) if ev["once"] else body
 
 
 @renderer("monitor.watchdog_quiet")

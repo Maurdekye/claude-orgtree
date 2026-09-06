@@ -34,7 +34,7 @@ from collections.abc import Callable, Iterable, Mapping
 from datetime import datetime, timedelta, timezone
 from typing import Any, Final, Literal, cast
 
-from . import clipin, deployment, events, opreceipts
+from . import clipin, deployment, events, events_render, opreceipts
 from .schema import (AudienceGrant, DirGrant, FrozenInfo, MailEntry, NodeDoc,
                      NoticeEntry, NoticeLogEntry, OrgDoc, OrgInboxEntry, ToolGrant,
                      UserMailEntry, WorkActor, WorkItem, WorkStage)
@@ -6795,17 +6795,22 @@ class Org:
     #: appended to a ONE-SHOT dog's fire mail (D-200). The owner must be told
     #: in the mail itself, because the alternative is an agent calling `list`,
     #: not finding its dog, and having to work out whether it broke something.
-    WATCHDOG_ONCE_NOTE: Final = (
-        "\n\n— This was a ONE-SHOT dog: it fired once and has REMOVED ITSELF. "
-        "It is gone from your list and will not fire again. Nothing is wrong "
-        "and you need not remove it. If you want to watch for this again, "
-        "arm a new one.")
+    WATCHDOG_ONCE_NOTE: Final = events_render.WATCHDOG_ONCE_NOTE
 
-    def watchdog_fire(self, wid: str, gist: str,
-                      body: str) -> str | None:
+    def watchdog_fire(self, wid: str, gist: str, body: str = "", *,
+                      lines: list[str] | None = None,
+                      prefix: str = "") -> str | None:
         """The engine's hand: record the event and put the mail in the
         OWNER's box. Returns the owner to drive, or None (paused owner /
         archived owner — archived pauses the dog per the lifecycle ruling).
+
+        TYPED PATH (design §3, family monitor): the engine passes the event
+        `lines` (+ `prefix`) and THIS method mints `monitor.watchdog_fired` —
+        the ledger is the one place that knows whether the dog is one-shot,
+        so `once` on the event is true by construction and the rendered body
+        (note included) is frozen on the row beside `ev`. The positional
+        `body` path is the pre-typed shape: a caller-built body, no `ev`,
+        the note appended by the same helper the renderer uses.
 
         ⚠ D-200 — WHY THERE IS NO "ORDER" TO GET WRONG HERE. A one-shot dog
         must not mail without removing itself (that is the runaway this fixes)
@@ -6835,19 +6840,33 @@ class Org:
         one_shot = bool(w.get("once"))
         w["fired"] = int(w.get("fired") or 0) + 1
         w["last_fired"] = now()
-        ev = cast("list[dict[str, Any]]", w.setdefault("events", []))
-        ev.append({"at": now(), "gist": gist[:200]})
-        del ev[:-self.WATCHDOG_EVENTS_KEEP]
-        if one_shot:
+        ring = cast("list[dict[str, Any]]", w.setdefault("events", []))
+        ring.append({"at": now(), "gist": gist[:200]})
+        del ring[:-self.WATCHDOG_EVENTS_KEEP]
+        ev: dict[str, Any] | None = None
+        if lines is not None:
+            if not lines:
+                # a programming error, NOT a LedgerError: the engine's fire
+                # path swallows LedgerError as "the dog changed under me",
+                # and a fire with no event must not vanish under that label
+                raise ValueError("watchdog_fire: at least one event line")
+            ev = _mint("monitor.watchdog_fired",
+                       {"kind": "watchdog", "id": wid},
+                       self._watchdog_ref(w),
+                       prefix=prefix, lines=list(lines), count=len(lines),
+                       once=one_shot)
+            body = events.render_agent(ev)       # note included when once
+        elif one_shot:
             # truncate to the same 8000 the entry does, but AFTER the note, so
             # a long event body can never push the "it removed itself"
             # sentence off the end of the mail that explains its absence
-            body = body[:8000 - len(self.WATCHDOG_ONCE_NOTE)].rstrip() \
-                + self.WATCHDOG_ONCE_NOTE
+            body = events_render.watchdog_once_note(body)
         entry: MailEntry = {
             "id": uuid.uuid4().hex[:12], "from": str(w["name"]),
             "kind": "watchdog", "body": body[:8000], "at": now(),
             "relationship": "your watchdog"}
+        if ev is not None:
+            entry["ev"] = events.encode_row_ev(ev, entry)
         box = cast("dict[str, list[dict[str, Any]]]",
                    self.d.setdefault("mail", {}))
         box.setdefault(owner, []).append(dict(entry))
@@ -6908,10 +6927,22 @@ class Org:
         age = (datetime.now(timezone.utc) - spent).total_seconds()
         return age < 0 or age > self.WATCHDOG_TOMB_TTL_S
 
-    def watchdog_alert(self, wid: str, body: str) -> str | None:
+    def _watchdog_ref(self, w: Mapping[str, Any]) -> dict[str, Any]:
+        """The canonical WatchdogRef of a dog as the monitor family mints it."""
+        return {"kind": "watchdog", "org": str(self.d.get("slug") or ""),
+                "id": str(w["id"]), "name": str(w["name"]),
+                "owner": str(w["owner"])}
+
+    def watchdog_alert(self, wid: str, body: str = "", *,
+                       ev: Mapping[str, Any] | None = None) -> str | None:
         """Post a dog's SELF-REPORT to its owner — the subject went quiet, the
         target cannot be run, the dog is spent (D-176). Returns the owner to
         drive, or None.
+
+        TYPED PATH: `ev` is a `monitor.watchdog_quiet` event (the engine mints
+        it: the facts come from the dog's check state, which the engine owns);
+        the row body is its rendering, frozen, beside `ev`. The positional
+        `body` is the pre-typed shape: caller-built text, no `ev`.
 
         ⚠ Deliberately NOT `watchdog_fire`, though it is the same mailbox.
         A fire means "the condition you asked about happened"; this means "I
@@ -6929,10 +6960,18 @@ class Org:
         owner = str(w["owner"])
         if owner not in self.nodes or self.node(owner)["state"] != "live":
             return None
+        if ev is not None:
+            _validate_ev(ev)
+            if ev.get("variant") != "monitor.watchdog_quiet":
+                raise LedgerError("watchdog_alert carries monitor.watchdog_quiet, "
+                                  f"not {ev.get('variant')!r}")
+            body = events.render_agent(ev)
         entry: MailEntry = {
             "id": uuid.uuid4().hex[:12], "from": str(w["name"]),
             "kind": "watchdog", "body": body[:8000], "at": now(),
             "relationship": "your watchdog"}
+        if ev is not None:
+            entry["ev"] = events.encode_row_ev(ev, entry)
         box = cast("dict[str, list[dict[str, Any]]]",
                    self.d.setdefault("mail", {}))
         box.setdefault(owner, []).append(dict(entry))

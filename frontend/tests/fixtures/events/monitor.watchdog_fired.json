@@ -20,7 +20,8 @@
     "lines": [
       "monitor.watchdog_fired·lines[0]"
     ],
-    "count": 1
+    "count": 1,
+    "once": false
   },
   "public": {
     "v": 1,
@@ -40,7 +41,8 @@
     "lines": [
       "monitor.watchdog_fired·lines[0]"
     ],
-    "count": 1
+    "count": 1,
+    "once": false
   },
   "body": "[WATCHDOG monitor.watchdog_fired·object.name]monitor.watchdog_fired·prefix 1 event(s):\nmonitor.watchdog_fired·lines[0]"
 }
