@@ -5509,6 +5509,29 @@ label.set-row { cursor: pointer; }
    carries role="heading" aria-level="3" in this mode, so the window still has
    exactly one heading, in both the picture and the accessibility tree. */
 .modalpin-win > h3:first-of-type { display: none; }
+/* ⚠ THAT RULE IS A CHILD COMBINATOR AND THREE SURFACES KEEP THEIR TITLE ONE
+   LEVEL DEEPER, inside a header ROW that also carries controls — so it never
+   reached them and they said their name twice while pinned (browser-measured
+   by codex-delivery, 2026-09-06). The gallery and the docket both open with a
+   `.gallery-head`; the document reader has no h3 at all, its title is a <b>
+   which is why that one is named by a class of its own.
+   ⚠ EACH OWNING HEADER IS LISTED EXPLICITLY. NOT `.modalpin-win h3`, which
+   would take every heading in the panel's content with it — a descendant
+   heading belongs to somebody else and stays (Astra 2026-09-06). */
+.modalpin-win > .gallery-head > h3,
+.modalpin-win > .doc-reader-head > .doc-reader-title { display: none; }
+/* the gallery's header row is `space-between` over exactly two children, so
+   with the heading gone its show-retired checkbox would slide to the LEFT.
+   The user asked for that control at the far right (2026-09-05, confirmed by
+   a measurement) — this is what keeps it there. The docket's own row holds its
+   controls right with an explicit `.spacer`, so it needs nothing here. */
+.modalpin-win.gallery-modal > .gallery-head { justify-content: flex-end; }
+/* the reader's "· node · time" trails its title, so its leading separator is
+   part of the title and goes with it; the node and the time are not a title
+   and stay. */
+.modalpin-win > .doc-reader-head > .doc-reader-meta > .doc-reader-sep {
+  display: none;
+}
 /* the explanatory line some panels used to keep INSIDE that h3 (the default
    settings' "applied to every NEW organization", the watchdog's live state).
    It is real information, not a title, so it lives outside the heading and is
@@ -5538,4 +5561,11 @@ html.mobile .modalpin-bar { display: none; }
 /* ...and with no bar there is no other title, so the panel's own heading must
    not be hidden either. (Belt and braces: `modalPinsAvailable` already stops
    `.modalpin-win` appearing there.) */
-html.mobile .modalpin-win > h3:first-of-type { display: revert; }
+html.mobile .modalpin-win > h3:first-of-type,
+html.mobile .modalpin-win > .gallery-head > h3,
+html.mobile .modalpin-win > .doc-reader-head > .doc-reader-title,
+html.mobile .modalpin-win > .doc-reader-head > .doc-reader-meta
+  > .doc-reader-sep { display: revert; }
+html.mobile .modalpin-win.gallery-modal > .gallery-head {
+  justify-content: space-between;
+}

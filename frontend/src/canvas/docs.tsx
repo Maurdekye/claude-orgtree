@@ -117,8 +117,20 @@ export function DocReader({ slug, docId, toast, close, refs,
       onPanelClick={openLightboxIfEligibleImage}>
         <div className="doc-reader-head">
           <DocIcon fontSize="inherit" />
-          <b>{doc?.title ?? '…'}</b>
-          {doc && <span className="dim">· {doc.node} · {fmtFull(doc.at)}</span>}
+          {/* ⚠ THE TITLE IS NAMED BY A CLASS, not found by tag. Every other
+              pinnable surface opens with an <h3> the pinned window hides so it
+              does not say its own name twice; this reader's title is a <b>
+              inside a header row, which no tag-based rule can reach (measured
+              in a browser by codex-delivery, 2026-09-06: pinned, the document
+              title appeared in both the window bar and the panel). */}
+          <b className="doc-reader-title">{doc?.title ?? '…'}</b>
+          {doc && <span className="dim doc-reader-meta">
+            {/* the separator belongs to the TITLE it follows, so it goes with
+                it when the title stands down — otherwise a pinned reader opens
+                its header on a dangling "·". The node and the time are not a
+                title and stay in both modes. */}
+            <span className="doc-reader-sep">· </span>
+            {doc.node} · {fmtFull(doc.at)}</span>}
           <span className="spacer" />
           {doc && (
             <button className="dim" title="remove the card (the document is gone)"

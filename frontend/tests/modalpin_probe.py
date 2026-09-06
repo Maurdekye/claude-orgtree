@@ -42,6 +42,11 @@ WHAT IT CHECKS
   escape     Escape closes a centred surface and is ignored by a pinned one
   stack      two pinned windows coexist; a press raises one over the other
   unpin      the surface goes back to centred, with its backdrop
+  headrow    the three surfaces that keep their title INSIDE a header row —
+             the gallery, the docket and the document reader — say their name
+             once while pinned, and the controls sharing that row stay where
+             the user put them. CONTROL: centred, each one still shows its own
+             title, and the row's last control is still at the right edge
 
 POSITIVE CONTROLS live inside the checks (marked CONTROL above): the
 click-through check requires the centred case to behave the OLD way, and the
@@ -193,6 +198,34 @@ MUTANTS: dict[str, tuple[str, str, str, str]] = {
         ".modalpin-win > h3:first-of-type { display: none; }",
         ".modalpin-win h3, .settings h3 { display: none; }",
         "title: the CONTROL — a centred surface keeps its own heading"),
+    # THE DEFECT THAT SHIPPED IN THE FIRST VERSION OF THIS RULE, one surface
+    # shape at a time: a child combinator that misses a title nested one level
+    # down inside a header row. Both mutants are the rule as it was before the
+    # fix for that half of the app.
+    "the-title-rule-misses-a-header-row": (
+        "src/styles.css",
+        ".modalpin-win > .gallery-head > h3,\n"
+        ".modalpin-win > .doc-reader-head > .doc-reader-title { display: none; }",
+        ".modalpin-win > .doc-reader-head > .doc-reader-title { display: none; }",
+        "headrow/gallery + headrow/docket: a pinned window shows its title twice"),
+    "the-title-rule-misses-the-document-reader": (
+        "src/styles.css",
+        ".modalpin-win > .gallery-head > h3,\n"
+        ".modalpin-win > .doc-reader-head > .doc-reader-title { display: none; }",
+        ".modalpin-win > .gallery-head > h3 { display: none; }",
+        "headrow/reader: the reader's <b> title is not reachable by tag"),
+    "the-header-control-slides-left-with-the-heading": (
+        "src/styles.css",
+        ".modalpin-win.gallery-modal > .gallery-head { justify-content: flex-end; }",
+        ".modalpin-win.gallery-modal > .gallery-head { justify-content: flex-start; }",
+        "headrow/gallery: hiding the heading moved the show-retired checkbox"),
+    "the-reader-keeps-its-dangling-separator": (
+        "src/styles.css",
+        ".modalpin-win > .doc-reader-head > .doc-reader-meta > .doc-reader-sep {\n"
+        "  display: none;\n}",
+        ".modalpin-win > .doc-reader-head > .doc-reader-meta > .doc-reader-sep {\n"
+        "  display: revert;\n}",
+        "headrow/reader: the pinned header opens on a separator with no title"),
 }
 
 
@@ -253,6 +286,53 @@ COMPOSE = ".settings.cmp-modal"
 # a change on one side is a red check rather than two values moving together)
 MODAL_Z_TOP = 29
 DRAFT = "a half-typed draft that must survive being pinned"
+
+# ---- the surfaces whose own title sits INSIDE A HEADER ROW rather than in the
+# plain <h3> the other fourteen open with. That shape is invisible to a child
+# combinator, so the first version of the title rule reached none of them and
+# all three said their name twice while pinned (found by codex-delivery,
+# browser-measured, 2026-09-06). Each is driven here as ITSELF, one per page
+# load: (fixture, panel, the title element under it, the words it says, what to
+# wait for). `.gallery-head` is the gallery's own markup, worn by the docket.
+HEAD_ROW_SURFACES = [
+    ("gallery", ".gallery-modal", ".gallery-head > h3", "presented documents",
+     ".gallery-modal .mailer-list"),
+    ("docket", ".docket-modal", ".gallery-head > h3", "Work docket",
+     ".docket-modal .gallery-head"),
+    ("reader", ".doc-reader", ".doc-reader-head > .doc-reader-title",
+     "Document number 0 — a presented plan with a long enough title to wrap",
+     ".doc-reader .doc-reader-body"),
+]
+
+# ⚠ `innerText`, NOT `textContent`: the question is what the user SEES, and
+# textContent counts a heading that CSS has hidden. The last element in the
+# header row is whatever control that row ends with — the gallery's checkbox,
+# the docket's and the reader's close button — and it has to stay at the right
+# edge in both modes, which is where the user asked for it.
+HEAD_ROW = """
+(a) => {
+  const [panel, titleSel, words] = a;
+  const w = document.querySelector(panel);
+  if (!w) return null;
+  const t = w.querySelector(':scope > ' + titleSel);
+  const bar = w.querySelector(':scope > .modalpin-bar .modalpin-name');
+  const head = t && t.parentElement;
+  const last = head && head.lastElementChild;
+  const wr = w.getBoundingClientRect();
+  const lr = last && last.getBoundingClientRect();
+  return {
+    pinned: w.classList.contains('modalpin-win'),
+    display: t ? getComputedStyle(t).display : null,
+    text: t ? t.textContent.trim() : null,
+    bar: bar ? bar.textContent.trim() : null,
+    shown: w.innerText.split(words).length - 1,
+    head: head ? head.innerText.trim() : null,
+    ctl: last ? last.className : null,
+    ctlGap: lr ? Math.round(wr.right - lr.right) : null,
+    ctlRoom: lr ? Math.round(wr.width - lr.width) : null,
+  };
+}
+"""
 
 
 class Page:
@@ -770,6 +850,72 @@ def run(html: pathlib.Path, verbose: bool = True) -> tuple[list[str], dict]:
         if centred_h3 in (None, "none"):
             bad(f"title: unpinning left the panel's own heading hidden "
                 f"({centred_h3!r}) — the centred surface now has no title")
+
+        # ------------------------------------------------------- headrow
+        # The check above measures a surface whose title is a DIRECT child h3.
+        # These three keep theirs inside a header row, which is the shape the
+        # rule missed — so each one is loaded and pinned as itself, and the
+        # measurement is what the browser actually renders.
+        for name, panel, title_sel, words, ready in HEAD_ROW_SURFACES:
+            arg = [panel, title_sel, words]
+            page.open("titles=" + name, ready=ready)
+            before = page.pg.evaluate(HEAD_ROW, arg)
+            obs[f"headrow_{name}_centred"] = before
+            if before is None or before["text"] is None:
+                bad(f"headrow/{name}: nothing at `{panel} > {title_sel}` — "
+                    f"this check can see no title at all and is not measuring "
+                    f"the app")
+                continue
+            # the fixture has to SAY the words, or every count below is free
+            if before["text"] != words:
+                bad(f"headrow/{name}: the panel's own title reads "
+                    f"{before['text']!r}, not {words!r} — the fixture and this "
+                    f"check have drifted apart")
+                continue
+            # CONTROL: centred, the surface shows its own title, exactly once
+            if before["display"] == "none" or before["shown"] != 1:
+                bad(f"headrow/{name}: CONTROL — centred, this surface does not "
+                    f"show its own title once (display {before['display']!r}, "
+                    f"{before['shown']} occurrence(s) on screen)")
+            page.click(panel + " .modalpin-bar .modalpin-btn[aria-pressed]")
+            after = page.pg.evaluate(HEAD_ROW, arg)
+            obs[f"headrow_{name}_pinned"] = after
+            if not after["pinned"]:
+                bad(f"headrow/{name}: the pin control did not turn the surface "
+                    f"into a window — nothing after this is about pinning")
+                continue
+            if after["shown"] != 1:
+                bad(f"headrow/{name}: a pinned window shows its title "
+                    f"{after['shown']} time(s) — {after['text']!r} in the "
+                    f"panel and {after['bar']!r} in the window bar")
+            if after["display"] != "none":
+                bad(f"headrow/{name}: the panel's own title is still "
+                    f"{after['display']!r} inside a pinned window")
+            if after["bar"] != words:
+                bad(f"headrow/{name}: the window bar says {after['bar']!r}, "
+                    f"which is not the title the panel just gave up "
+                    f"({words!r}) — the words moved, they did not vanish")
+            # ...and the controls that share that row keep their place. The
+            # gallery's header is `space-between` over two children, so hiding
+            # the heading is exactly what would slide its checkbox to the left.
+            if before["ctlRoom"] is None or before["ctlRoom"] < 200:
+                bad(f"headrow/{name}: the header's last control "
+                    f"({before['ctl']!r}) is within {before['ctlRoom']}px of "
+                    f"the panel's own width — it cannot be seen to move, so "
+                    f"the position check below is free")
+            for mode, m in (("centred", before), ("pinned", after)):
+                if m["ctlGap"] is None or m["ctlGap"] > 40:
+                    bad(f"headrow/{name}: {mode}, the header row's last "
+                        f"control ({m['ctl']!r}) sits {m['ctlGap']}px from the "
+                        f"panel's right edge — it belongs at the far right")
+            # the reader's "· node · time" trails a title that is no longer
+            # there, so the separator must go with it
+            if name == "reader" and (after["head"] or "").startswith("·"):
+                bad(f"headrow/reader: the pinned header opens on a dangling "
+                    f"separator ({after['head'][:40]!r})")
+            if name == "reader" and not (before["head"] or "").startswith(words):
+                bad(f"headrow/reader: CONTROL — centred, the header does not "
+                    f"open with the document's title ({before['head']!r})")
 
         br.close()
     return fails, obs
