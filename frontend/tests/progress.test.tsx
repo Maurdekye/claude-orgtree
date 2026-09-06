@@ -921,3 +921,46 @@ test('§5d CONTROL: a desk with no doc or mail route renders those same '
   assert.ok(pane.querySelector('button.ref-chip.ref-item.ref-ready'),
     'the tab holds its own rows, so an item chip must still be live')
 })
+
+test('agent docket hides archived rows/count by default and reveals then hides selected detail',
+  async (t) => {
+    resetConvos()
+    useFakeClock()
+    const server = new FakeServer()
+    installFetch(server)
+    server.workItems = [workRow({ slug: 'agent-active', title: 'Active work' })]
+    server.workArchived = [workRow({ slug: 'agent-archived', title: 'Archived work',
+      archived: true, status: 'done' })]
+    const me = node({ id: 'agent' })
+    const view = await mountView(
+      <DeskChat node={me} map={new Map([['agent', me]])} op={op}
+        slug="org" toast={noop} pub={false} bare onJump={noop} />,
+      (el) => el)
+    t.after(async () => { await view.unmount(); resetConvos(); realClock() })
+    await flush()
+    const { act } = await import('react')
+    const chip = view.el.querySelector<HTMLButtonElement>('.cc-head-meta .progress-chip')!
+    assert.equal(chip.textContent?.trim(), 'docket 1')
+    await act(async () => { chip.click() })
+    assert.equal(view.el.querySelectorAll('.docket-agent .docket-row').length, 1)
+    const toggle = view.el.querySelector<HTMLInputElement>('.docket-agent .docket-showarchived input')!
+    assert.equal(toggle.checked, false)
+    await act(async () => {
+      view.el.querySelector<HTMLInputElement>('.docket-agent .docket-showarchived input')!.click()
+    })
+    assert.equal(view.el.querySelectorAll('.docket-agent .docket-row').length, 2)
+    assert.match(view.el.querySelector('.cc-head-meta .progress-chip')?.textContent ?? '', /docket 2/)
+    const archived = [...view.el.querySelectorAll<HTMLElement>('.docket-agent .docket-row')]
+      .find((r) => r.getAttribute('data-slug') === 'agent-archived')
+      ?? [...view.el.querySelectorAll<HTMLElement>('.docket-agent .docket-row')][1]
+    assert.ok(archived, 'positive control: archived row rendered')
+    await act(async () => { archived.click() })
+    assert.match(view.el.querySelector('.docket-agent .mailer-read')?.textContent ?? '',
+      /Archived work/)
+    await act(async () => {
+      view.el.querySelector<HTMLInputElement>('.docket-agent .docket-showarchived input')!.click()
+    })
+    assert.equal(view.el.querySelectorAll('.docket-agent .docket-row').length, 1)
+    assert.match(view.el.querySelector('.docket-agent .mailer-read')?.textContent ?? '',
+      /select an item to view it/)
+  })
