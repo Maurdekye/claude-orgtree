@@ -47,8 +47,29 @@ the MCP catalog in `backend/orgtree/mcptool.py`.
 |---|---|
 | `orgtree_read_transcript` | Read the caller's or a descendant's recent transcript entries. |
 | `orgtree_read_scratch` | List or read a descendant's scratch folder. |
-| `orgtree_present` | Render a Markdown document for in-page reading by the user. |
+| `orgtree_present` | Present Markdown for in-page reading, or a local HTML mockup as a card that opens a new browser tab. |
 | `orgtree_send_file` | Deliver a file to the user as a download card; images render in the conversation. |
+
+### Interactive HTML mockups
+
+Call `orgtree_present` with `{"title":"Prototype","path":"prototype.html"}`
+to publish a local self-contained `.html` or `.htm` file, up to 4 MiB. Supply
+exactly one of `path` or Markdown `body`. The path must be in the agent's
+working folder, the workspace, or a granted folder. Presenting still requires
+a direct user audience.
+
+The file is copied into outbox when presented. Editing the source does not
+change the card; present again with `replaces` set to the returned id to update
+it. Cards open a stable document URL in a new tab while the presentation is
+retained. Dismissing or evicting the presentation removes that URL; the outbox
+copy remains, as with a sent file.
+
+Inline CSS and JavaScript work inside an isolated frame, including local form
+handlers. The preview cannot access the application, cookies, storage, or APIs.
+External resources, network requests, form submissions, and navigation to other pages are
+blocked; include images and fonts as data URLs. The same protection applies
+when opening the document URL directly. This initial preview is operator-only;
+kiosk visitors see an unavailable message and the preview endpoint refuses access.
 
 ## Operations
 
@@ -68,7 +89,7 @@ the MCP catalog in `backend/orgtree/mcptool.py`.
 - Outside mail is sent as the organization and requires an organization-inbox
   audience holder. Coordinate before replying.
 - `orgtree_send_file` is for a downloadable artifact; `orgtree_present` is for
-  a document the user should read in the page.
+  Markdown to read in-page or an HTML mockup to open in a new tab.
 - Keep a watchdog for a condition that may take longer than a turn instead of
   polling it manually.
 
