@@ -3055,6 +3055,10 @@ main.solo { width: 100%; }
   min-width: 0; flex-shrink: 1; overflow: hidden;
   display: inline-flex; align-items: center;
 }
+.docket-modal .mailrow .docket-reviewer {
+  min-width: 0; flex-shrink: 1; overflow: hidden;
+  display: inline-flex; align-items: center; gap: 4px;
+}
 .docket-actor {
   font-family: var(--mono); font-size: 11px;
   display: inline-flex; align-items: center; gap: 4px;

@@ -1202,6 +1202,13 @@ function DocketRow({ item, selected, onClick, onDismiss, facts, onFocusAgent,
                 onFocusAgent={onFocusAgent} close={close} />
             : <span className="dim">{UNASSIGNED}</span>}
         </span>
+        {item.status === 'review' && item.reviewer?.node && (
+          <span className="docket-reviewer">
+            <span className="dim">Reviewer: </span>
+            <ActorName actor={item.reviewer} facts={facts}
+              onFocusAgent={onFocusAgent} close={close} />
+          </span>
+        )}
         {canDismiss && (
           <button className="badge docket-dismiss" title="clear this manually-raised flag"
             onClick={(e) => { e.stopPropagation(); onDismiss(item) }}>
@@ -1321,6 +1328,13 @@ function DocketPane({ slug, item, toast, asksById, onDismiss, close, onFocusAgen
           <>
             {' · Assigned to '}
             <ActorName actor={assignee} facts={facts}
+              onFocusAgent={onFocusAgent} close={close} />
+          </>
+        )}
+        {item.status === 'review' && item.reviewer?.node && (
+          <>
+            {' · Reviewer '}
+            <ActorName actor={item.reviewer} facts={facts}
               onFocusAgent={onFocusAgent} close={close} />
           </>
         )}

@@ -95,6 +95,7 @@ const mkItemBase = (o: Partial<WorkItem>): WorkItem => ({
   owner: { node: 'agent1', generation: 1 },
   owner_current: true,
   owner_state: 'live',
+  reviewer: null,
   participants: [],
   created_by: { node: 'agent1', generation: 1 },
   at: '2026-09-05T08:00:00.000Z',
@@ -2023,4 +2024,106 @@ uiTest('§39 Dropped reads as an outcome that is not Done', async (mount) => {
   // CONTROL: Done carries no such help, so the assertion above is about
   // `dropped` and not about every chip having a title
   assert.equal(chip('Finished Work')?.getAttribute('title'), null)
+})
+
+uiTest('§40 review-state tickets display clearly labelled Reviewer alongside assignee', async (mount) => {
+  let focused: string | null = null
+  let closed = false
+  mockWorkItems([
+    mkItem({
+      slug: 'review-with-reviewer',
+      title: 'Review with Reviewer',
+      status: 'review',
+      owner: { node: 'worker-agent', generation: 1 },
+      reviewer: { node: 'review-lead', generation: 1 },
+    }),
+    mkItem({
+      slug: 'in-progress-with-old-reviewer',
+      title: 'In Progress with Old Reviewer',
+      status: 'in_progress',
+      owner: { node: 'worker-agent', generation: 1 },
+      reviewer: { node: 'past-reviewer', generation: 1 },
+    }),
+    mkItem({
+      slug: 'review-without-reviewer',
+      title: 'Review without Reviewer',
+      status: 'review',
+      owner: { node: 'worker-agent', generation: 1 },
+      reviewer: null,
+    }),
+  ])
+  forgetGroupChoice()
+  const { el } = await mount(docketModal({
+    close: () => { closed = true },
+    onFocusAgent: (id) => { focused = id },
+  }))
+  await flush()
+
+  const rowList = rows(el)
+  assert.equal(rowList.length, 3)
+
+  const bySlug = (slug: string) => rowList.find((r) => r.querySelector('.docket-rowname')?.textContent === slug)!
+  const r1 = bySlug('review-with-reviewer')
+  const r2 = bySlug('in-progress-with-old-reviewer')
+  const r3 = bySlug('review-without-reviewer')
+
+  // Case 1: status === 'review' with distinct owner and reviewer
+  // List row check: shows assignee in .docket-updater and Reviewer in .docket-reviewer
+  const r1Updater = r1.querySelector('.docket-updater')
+  assert.ok(r1Updater, 'r1 has docket-updater')
+  assert.match(r1Updater.textContent ?? '', /worker-agent/, 'assignee shown in list row')
+  const r1Reviewer = r1.querySelector('.docket-reviewer')
+  assert.ok(r1Reviewer, 'r1 has docket-reviewer')
+  assert.match(r1Reviewer.textContent ?? '', /Reviewer:/, 'Reviewer label shown in list row')
+  assert.match(r1Reviewer.textContent ?? '', /review-lead/, 'reviewer name shown in list row')
+
+  // Case 2: status !== 'review' with stored reviewer: must NOT display reviewer in list row
+  assert.equal(r2.querySelector('.docket-reviewer'), null,
+    'non-review item does not display reviewer in list row')
+
+  // Case 3: status === 'review' with absent reviewer: must NOT display reviewer or guess from owner
+  assert.equal(r3.querySelector('.docket-reviewer'), null,
+    'review item with null reviewer does not display reviewer in list row')
+
+  // Open Case 1 in detail pane
+  await inAct(() => (r1 as HTMLElement).click())
+  await flush()
+
+  const sub1 = el.querySelector('.docket-pane-sub')!
+  assert.ok(sub1, 'docket-pane-sub rendered')
+  assert.match(sub1.textContent ?? '', /Assigned to\s+worker-agent/,
+    'detail subtitle shows clearly labelled Assigned to')
+  assert.match(sub1.textContent ?? '', /Reviewer\s+review-lead/,
+    'detail subtitle shows clearly labelled Reviewer')
+
+  // Preserves ownership and reply routing
+  const replyBox = el.querySelector('.docket-reply-label')
+  assert.match(replyBox?.textContent ?? '', /Reply to\s+worker-agent · assigned to this item/,
+    'reply label preserves assignment to worker-agent')
+
+  // Clicking reviewer jump focuses reviewer agent and closes modal
+  const reviewerBtn = sub1.querySelectorAll('button.cc-name-jump')[1] as HTMLButtonElement
+  assert.ok(reviewerBtn, 'reviewer jump button exists in subtitle')
+  assert.equal(reviewerBtn.textContent?.trim(), 'review-lead')
+  await inAct(() => reviewerBtn.click())
+  assert.ok(closed, 'modal closed on reviewer click')
+  assert.equal(focused, 'review-lead', 'focused reviewer desk')
+
+  // Open Case 2 in detail pane (non-review with stored reviewer)
+  await inAct(() => (r2 as HTMLElement).click())
+  await flush()
+  const sub2 = el.querySelector('.docket-pane-sub')!
+  assert.match(sub2.textContent ?? '', /Assigned to\s+worker-agent/)
+  assert.doesNotMatch(sub2.textContent ?? '', /Reviewer/,
+    'non-review item detail does not show Reviewer label')
+  assert.doesNotMatch(sub2.textContent ?? '', /past-reviewer/,
+    'non-review item detail does not show old stored reviewer')
+
+  // Open Case 3 in detail pane (review with absent reviewer)
+  await inAct(() => (r3 as HTMLElement).click())
+  await flush()
+  const sub3 = el.querySelector('.docket-pane-sub')!
+  assert.match(sub3.textContent ?? '', /Assigned to\s+worker-agent/)
+  assert.doesNotMatch(sub3.textContent ?? '', /Reviewer/,
+    'review item with absent reviewer does not show Reviewer label')
 })
