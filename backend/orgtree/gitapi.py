@@ -38,6 +38,10 @@ class PathBody(BaseModel):
     path: str = Field(min_length=1, max_length=4096)
 
 
+class DiscoveryBody(BaseModel):
+    path: str | None = Field(default=None, min_length=1, max_length=4096)
+
+
 class SettingsBody(BaseModel):
     revision: int
     values: dict[str, Any]
@@ -68,11 +72,12 @@ def repositories(slug: str) -> dict[str, Any]:
                          "links": [{"branch": branch, "item": item["slug"],
                                     "agent": item["owner"]["id"] if item["owner"] and item["owner"]["current"] else None}
                                    for branch, items in links.items() for item in items]})
-        return {"repositories": rows, "selected": doc["selected_by_org"].get(slug), "discovery": gw.discover(slug)}
+        # Listing saved registrations must never wait for filesystem/Git discovery.
+        return {"repositories": rows, "selected": doc["selected_by_org"].get(slug)}
 
 
 @router.post("/discover")
-def discover(slug: str, body: PathBody) -> dict[str, Any]:
+def discover(slug: str, body: DiscoveryBody) -> dict[str, Any]:
     with errors():
         return gw.discover(slug, body.path)
 
