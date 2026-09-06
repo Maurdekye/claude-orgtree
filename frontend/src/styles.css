@@ -675,8 +675,13 @@ button.badge.audience-fold.alert {
 .sq-meta { display: flex; align-items: center; gap: 4px; min-width: 0; min-height: 16px; }
 .sq-workstate { display: flex; align-items: center; min-width: 0; flex: 1 1 auto; overflow: hidden; }
 .sq-workstate .actlabel { flex: 1 1 auto; }
+.sq-workstate .cc-spin { flex: none; margin-right: 3px; }
+.sq-workstate .statusdot { flex: none; margin-right: 4px; }
 .sq-idle { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   font: 600 10px/1 var(--mono); color: var(--dim); }
+.sq-idle.working { color: var(--accent); }
+.sq-idle.waiting, .sq-idle.queued { color: var(--work); }
+.sq-idle.compacting { color: var(--accent); }
 .sq-idle.done { color: var(--ok); }
 .sq-idle.blocked { color: var(--bad); }
 /* the age beside the state word; flex:none so the WORD truncates first and the
@@ -687,8 +692,8 @@ button.badge.audience-fold.alert {
   font-variant-numeric: tabular-nums;
 }
 .sq-status-dot { margin-left: 2px; }
-.sq-meta .proc-state { flex: none; }
-.sq-meta .ctxwheel { margin-left: auto; flex: none; width: 13px; height: 13px; }
+.sq-meta .proc-state, .sq-meta .cc-spin { flex: none; }
+.sq-meta .ctxwheel { flex: none; width: 13px; height: 13px; }
 .sq-actions {
   display: flex; align-items: center; justify-content: flex-start; gap: 4px;
   min-height: 16px;
@@ -1036,6 +1041,8 @@ html.mobile .edge-jump { display: none; }
 .turn-status-banner.working { color: var(--accent); }
 .turn-status-banner.queued,
 .turn-status-banner.compacting { color: var(--warn, #e5c07b); }
+.turn-status-banner.blocked { color: var(--bad); }
+.turn-status-banner.done { color: var(--ok); }
 .turn-status-banner.idle { color: var(--dim); }
 .turn-status-banner .turn-status-time {
   color: var(--dim); font-variant-numeric: tabular-nums;
@@ -4040,6 +4047,22 @@ svg.MuiSvgIcon-root {
   display: flex; align-items: center; gap: 8px; width: 100%;
   background: none; border: none; padding: 0; margin: 0;
   font: inherit; color: inherit; text-align: left; cursor: pointer;
+}
+.tray-status {
+  flex: none; display: inline-flex; align-items: center; gap: 4px;
+}
+.tray-status-label {
+  font: 600 10px/1 var(--mono); color: var(--dim);
+}
+.tray-status-label.working { color: var(--accent); }
+.tray-status-label.waiting, .tray-status-label.queued { color: var(--work); }
+.tray-status-label.compacting { color: var(--accent); }
+.tray-status-label.blocked { color: var(--bad); }
+.tray-status-label.done { color: var(--ok); }
+.tray-status-label.idle { color: var(--dim); }
+.tray-status-time {
+  font: 600 10px/1 var(--mono); color: var(--dim);
+  font-variant-numeric: tabular-nums;
 }
 .tray-sum {
   display: flex; align-items: baseline;

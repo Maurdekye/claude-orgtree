@@ -130,13 +130,13 @@ export function ProcessWarmMark({ warm, embedded = false }: {
 let ageClockSecond = Math.floor(Date.now() / 1000)
 let ageClockTimer: ReturnType<typeof setInterval> | null = null
 const ageClockSubs = new Set<() => void>()
-const pulseAgeClock = () => {
+export const pulseAgeClock = () => {
   const next = Math.floor(Date.now() / 1000)
   if (next === ageClockSecond) return
   ageClockSecond = next
   for (const fn of [...ageClockSubs]) fn()
 }
-const subscribeAgeClock = (fn: () => void) => {
+export const subscribeAgeClock = (fn: () => void) => {
   ageClockSubs.add(fn)
   if (ageClockSubs.size === 1) {
     pulseAgeClock()
@@ -214,6 +214,212 @@ export function LastTurnAge({ turn, busy = false, variant = 'badge' }: {
   </span>
 }
 
+/** A busy arrow on navigation chrome must name the destination provider even
+ * when it is rendered inside another provider's themed desk. */
+export function DestinationBusy({ tier }: { tier?: string | null }) {
+  return <AutorenewIcon fontSize="inherit"
+    className={`cc-spin prov-${providerOf(tier ?? '')}`} />
+}
+
+export type AgentTurnState = 'working' | 'queued' | 'compacting' | 'idle'
+
+export function deriveTurnState(node: {
+  busy?: boolean
+  waiting?: boolean
+  phase?: string | null
+}): AgentTurnState {
+  if (node.phase === 'compacting') return 'compacting'
+  if (node.waiting) return 'queued'
+  if (node.busy) return 'working'
+  return 'idle'
+}
+
+/** Unified workstate presentation for NodeSquare. Subscribes to ageClockSecond
+ * so active turn elapsed time and idle time tick every second without props/SSE updates. */
+export function AgentWorkstate({ node, turn, live = true }: {
+  node: CanvasNode; turn?: TurnStat | null; live?: boolean
+}) {
+  useSyncExternalStore(subscribeAgeClock, () => ageClockSecond,
+    () => ageClockSecond)
+  const state = deriveTurnState(node)
+  if (state === 'working') {
+    return (
+      <>
+        <DestinationBusy tier={node.tier} />
+        <span className="sq-idle working"
+          title={node.inflight_at ? `running for ${ago(node.inflight_at)}` : 'working'}>
+          working
+        </span>
+        <span className="sq-idle-time">
+          {node.inflight_at ? ago(node.inflight_at) : '—'}
+        </span>
+      </>
+    )
+  }
+  if (state === 'queued') {
+    return (
+      <>
+        <span className="statusdot waiting" title="queued — waiting for a free turn slot" />
+        <span className="sq-idle waiting" title="queued">
+          queued
+        </span>
+        <span className="sq-idle-time">
+          {node.inflight_at ? ago(node.inflight_at) : '—'}
+        </span>
+      </>
+    )
+  }
+  if (state === 'compacting') {
+    return (
+      <>
+        <span className="sq-idle compacting" title="compacting">
+          compacting
+        </span>
+        <span className="sq-idle-time">
+          {node.inflight_at ? ago(node.inflight_at) : '—'}
+        </span>
+      </>
+    )
+  }
+  const recorded = node.last_status?.status ?? (live ? 'idle' : node.state)
+  return (
+    <>
+      <span className={'sq-idle ' + recorded}
+        title={node.last_status?.summary ?? undefined}>
+        {recorded}
+      </span>
+      {turn && (
+        <span className="sq-idle-time"
+          title={'last turn ended ' + fmtStamp(turn.at) + (turn.killed ? ' (killed)' : '')}>
+          {ago(turn.at)}
+        </span>
+      )}
+    </>
+  )
+}
+
+/** Unified tray status presentation for bottom-left tray rows and mobile sheet header.
+ * Subscribes to ageClockSecond so turn and idle times tick every second. */
+export function TrayStatus({ node, turn, live = true }: {
+  node: CanvasNode; turn?: TurnStat | null; live?: boolean
+}) {
+  useSyncExternalStore(subscribeAgeClock, () => ageClockSecond,
+    () => ageClockSecond)
+  const state = deriveTurnState(node)
+  if (state === 'working') {
+    return (
+      <span className="tray-status">
+        <DestinationBusy tier={node.tier} />
+        <span className="tray-status-label working"
+          title={node.inflight_at ? `running for ${ago(node.inflight_at)}` : 'working'}>
+          working
+        </span>
+        <span className="tray-status-time">
+          {node.inflight_at ? ago(node.inflight_at) : '—'}
+        </span>
+      </span>
+    )
+  }
+  if (state === 'queued') {
+    return (
+      <span className="tray-status">
+        <span className="statusdot waiting"
+          title="queued — waiting for a free turn slot" />
+        <span className="tray-status-label waiting" title="queued">
+          queued
+        </span>
+        <span className="tray-status-time">
+          {node.inflight_at ? ago(node.inflight_at) : '—'}
+        </span>
+      </span>
+    )
+  }
+  if (state === 'compacting') {
+    return (
+      <span className="tray-status">
+        <span className="tray-status-label compacting" title="compacting">
+          compacting
+        </span>
+        <span className="tray-status-time">
+          {node.inflight_at ? ago(node.inflight_at) : '—'}
+        </span>
+      </span>
+    )
+  }
+  if (node.frozen) {
+    return <FrozenIcon fontSize="inherit" className="tray-frozen" />
+  }
+  if (node.state !== 'live') {
+    return <span className="dim">{node.state}</span>
+  }
+  const recorded = node.last_status?.status ?? 'idle'
+  return (
+    <span className="tray-status">
+      <span className={'statusdot ' + recorded}
+        title={node.last_status?.summary ?? undefined} />
+      <span className={'tray-status-label ' + recorded}>
+        {recorded}
+      </span>
+      {turn && (
+        <span className="tray-status-time"
+          title={'last turn ended ' + fmtStamp(turn.at) + (turn.killed ? ' (killed)' : '')}>
+          {ago(turn.at)}
+        </span>
+      )}
+    </span>
+  )
+}
+
+/** Unified indicator dot for mapMode. */
+export function MapModeIndicator({ node }: { node: CanvasNode }) {
+  const state = deriveTurnState(node)
+  if (state === 'working') {
+    return (
+      <span title={node.inflight_at ? `running for ${ago(node.inflight_at)}` : 'working'}>
+        <DestinationBusy tier={node.tier} />
+      </span>
+    )
+  }
+  if (state === 'queued') {
+    return <span className="statusdot waiting" title="queued — waiting for a free turn slot" />
+  }
+  if (state === 'compacting') {
+    return <span className="statusdot compacting" title="compacting" />
+  }
+  if (node.frozen) {
+    return <FrozenIcon fontSize="inherit" className="tray-frozen" />
+  }
+  if (node.state !== 'live') {
+    return <span className="map-off">{node.state}</span>
+  }
+  return (
+    <span className={'statusdot ' + (node.last_status?.status ?? 'idle')}
+      title={node.last_status?.summary ?? undefined} />
+  )
+}
+
+/** Unified mapMode age chip subscribing to ageClockSecond. */
+export function MapTurnAge({ node, turn }: { node: CanvasNode; turn?: TurnStat | null }) {
+  useSyncExternalStore(subscribeAgeClock, () => ageClockSecond,
+    () => ageClockSecond)
+  const state = deriveTurnState(node)
+  if (state !== 'idle') {
+    return (
+      <span className="map-ago"
+        title={node.inflight_at ? `running for ${ago(node.inflight_at)}` : state}>
+        {node.inflight_at ? ago(node.inflight_at) : '—'}
+      </span>
+    )
+  }
+  if (!turn) return null
+  return (
+    <span className="map-ago"
+      title={'last turn ended ' + fmtStamp(turn.at) + (turn.killed ? ' (killed)' : '')}>
+      {ago(turn.at)}
+    </span>
+  )
+}
+
 export type TurnBannerState = 'idle' | 'working' | 'queued' | 'compacting'
 
 /** One persistent desk-header status/time seat. Its label and clock change
@@ -221,32 +427,40 @@ export type TurnBannerState = 'idle' | 'working' | 'queued' | 'compacting'
  * while Idle measures the last completed turn. Canvas cards continue to use
  * LastTurnAge; the focused desk deliberately has no second age chip. */
 export function TurnStatusBanner({ state, turn, inflightAt, tasks = 0,
-  reportedSummary }: {
+  reportedSummary, recordedState, tier }: {
   state: TurnBannerState; turn?: TurnStat | null; inflightAt?: string | null;
-  tasks?: number | null; reportedSummary?: string | null
+  tasks?: number | null; reportedSummary?: string | null; recordedState?: string | null;
+  tier?: string | null
 }) {
   useSyncExternalStore(subscribeAgeClock, () => ageClockSecond,
     () => ageClockSecond)
   const active = state !== 'idle'
   const reference = active ? inflightAt : turn?.at
   const elapsed = reference ? ago(reference) : '—'
-  const label = state === 'idle' ? 'Idle'
-    : state === 'working' ? 'Working'
-    : state === 'queued' ? 'Queued' : 'Compacting'
+  const outOfTurnState = (!active && recordedState && recordedState !== 'idle') ? recordedState : null
+  const displayClass = outOfTurnState || state
+  const label = active
+    ? (state === 'working' ? 'Working'
+      : state === 'queued' ? 'Queued' : 'Compacting')
+    : outOfTurnState
+      ? (outOfTurnState.charAt(0).toUpperCase() + outOfTurnState.slice(1))
+      : 'Idle'
   const taskText = (tasks ?? 0) > 0
     ? `${tasks} task${tasks === 1 ? '' : 's'}` : ''
-  const title = state === 'idle'
+  const title = !active
     ? (turn
-      ? `Idle · last turn ended ${fmtStamp(turn.at)}`
+      ? `${label} · last turn ended ${fmtStamp(turn.at)}`
         + (turn.killed ? ' (killed)' : '')
-      : 'Idle · no completed turn yet')
+      : `${label} · no completed turn yet`)
         + (reportedSummary ? ` · ${reportedSummary}` : '')
     : [label, reference ? `active for ${elapsed}` : 'start time unavailable',
         taskText, reportedSummary].filter(Boolean).join(' · ')
-  return <span className={`turn-status-banner ${state}`} title={title}
+  return <span className={`turn-status-banner ${displayClass}`} title={title}
     aria-label={title}>
     {state === 'working' &&
-      <AutorenewIcon fontSize="inherit" className="cc-spin" />}
+      <DestinationBusy tier={tier} />}
+    {state === 'queued' &&
+      <span className="statusdot waiting" />}
     <span className="turn-status-label">{label}</span>
     <span className="turn-status-time">{elapsed}</span>
   </span>
@@ -826,13 +1040,6 @@ export function CacheForecastWarning({ forecast, midTurn, composerFocused,
   </div>
 }
 
-/** A busy arrow on navigation chrome must name the destination provider even
- * when it is rendered inside another provider's themed desk. */
-export function DestinationBusy({ tier }: { tier?: string | null }) {
-  return <AutorenewIcon fontSize="inherit"
-    className={`cc-spin prov-${providerOf(tier ?? '')}`} />
-}
-
 /* click-to-copy for the React-rendered pres (filepre/respre/diffpre) — same
    .codewrap/.code-copy contract as the md() pipeline, so the one delegated
    click listener in shared.ts serves both. The listener swaps the button's
@@ -849,50 +1056,15 @@ function CopyablePre({ children }: { children: ReactNode }) {
 }
 
 const shortTool = (t: string | null | undefined) => (t || 'tool').replace(/^mcp__([^_]+)__/, '$1: ')
-// The CARD's version of the same name. The card label has ~108px — about 15
-// monospace characters — and `shortTool` spends nine of them on the server
-// prefix, so `mcp__orgtree__orgtree_send_notice` and
-// `mcp__orgtree__orgtree_request_credits` both truncate to the identical
-// `orgtree: orgtr…`: a status line that cannot distinguish two states is not
-// reporting one. The tail is the part that identifies the tool, and for these
-// servers the prefix is redundant with it anyway (`orgtree: orgtree_…`), so
-// the card drops the prefix and the hover title keeps the full form.
-const cardTool = (t: string | null | undefined) => (t || 'tool').replace(/^mcp__[^_]+__/, '')
-// fmtBytes moved to img.tsx (the attachment renderers need it too)
 
-export function Activity({ act, dotOnly }: { act?: ActivityInfo; dotOnly?: boolean }) {
-  const phase = act?.phase ?? 'thinking'
+export function Activity({ act, dotOnly, tier }: { act?: ActivityInfo; dotOnly?: boolean; tier?: string | null }) {
   if (dotOnly) {
-    return phase === 'tool'
-      ? <span className="actgear" title={`running ${shortTool(act?.tool)}`}><SettingsIcon fontSize="inherit" /></span>
-      : <span className="busydot" title={phase} />
+    return <DestinationBusy tier={tier} />
   }
-  // The label text gets its OWN element (user bug 2026-08-26: a working
-  // agent's status text ran off the side of its card and onto a second line
-  // below). It used to be a bare text node — an anonymous flex item, which
-  // cannot be given `text-overflow` and whose automatic minimum size is its
-  // longest unbreakable word. Tool names are long and full of them:
-  // `mcp__resonite__get_sync_object_definition` shortens to
-  // `resonite: get_sync_object_definition`, whose min-content width is 159px
-  // inside a card that has 108px to give. So it wrapped, and the wrapped line
-  // still overflowed — measured at +50.95px past the border, far enough to
-  // land on the neighbouring card. A real element can be clipped and
-  // ellipsised; the string is arbitrary, so the containment has to be
-  // structural rather than a width anyone has checked.
-  const label = phase === 'tool' ? cardTool(act?.tool)
-    : phase === 'writing' ? 'writing' : 'thinking'
-  // the full, untruncated name — server prefix included — stays reachable on
-  // hover. Ellipsising is a display decision and must never be the only copy
-  // of the information.
-  const full = phase === 'tool' ? shortTool(act?.tool) : label
   return (
-    <div className="actlabel" title={full}>
-      {phase === 'tool'
-        ? <span className="actgear"><SettingsIcon fontSize="inherit" /></span>
-        : phase === 'writing' ? <EditIcon fontSize="inherit" />
-        : <AutorenewIcon fontSize="inherit" className="cc-spin" />}
-      <span className="actlabel-text">{label}</span>
-      <span className="actdots" />
+    <div className="actlabel" title="working">
+      <DestinationBusy tier={tier} />
+      <span className="actlabel-text">working</span>
     </div>
   )
 }
@@ -1529,13 +1701,14 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
     && typeof contextOccupancy === 'number' && contextOccupancy > 0
     && typeof node.context_window === 'number' && node.context_window > 0)
     ? contextOccupancy / node.context_window : null
-  const turnActive = Boolean(node.busy || node.waiting
-    || node.phase === 'compacting' || chat?.busy)
+  const turnBannerState: TurnBannerState = deriveTurnState({
+    ...node,
+    busy: Boolean(node.busy || chat?.busy),
+  })
+  const turnActive = turnBannerState !== 'idle'
   // Waiting for a slot and compacting are desk activity, but neither proves
   // this CLI is claimed. The process cue lights only for an actual busy turn.
   const processActive = Boolean(node.busy || chat?.busy)
-  const turnBannerState: TurnBannerState = node.phase === 'compacting'
-    ? 'compacting' : node.waiting ? 'queued' : turnActive ? 'working' : 'idle'
   const bannerDuplicatesStatus = Boolean(node.last_status
     && node.last_status.status === turnBannerState)
   const processAction = node.proc_control_action
@@ -1697,7 +1870,9 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
           </span>
           <TurnStatusBanner state={turnBannerState} turn={lastTurn}
             inflightAt={node.inflight_at} tasks={node.tasks}
-            reportedSummary={bannerDuplicatesStatus ? node.last_status?.summary : undefined} />
+            recordedState={node.last_status?.status}
+            reportedSummary={bannerDuplicatesStatus ? node.last_status?.summary : undefined}
+            tier={node.tier} />
         </span>
         <span className="spacer" aria-hidden="true" />
         <span className="cc-head-right">
