@@ -114,7 +114,7 @@ export function ConfirmModal({ title, body, confirmLabel, onConfirm, close,
   }, [])
   return (
     <div className="overlay" onClick={close} onPointerDown={(e) => e.stopPropagation()}>
-      <div className="settings confirm-box" ref={boxRef} tabIndex={-1}
+      <div className="settings content-height confirm-box" ref={boxRef} tabIndex={-1}
         role="dialog" aria-modal="true"
         aria-labelledby={titleId}
         aria-describedby={body ? bodyId : undefined}
@@ -155,7 +155,7 @@ export function WatchdogPanel({ slug, dog, toast, close }: {
       .then((r) => { toast([`${dog.name}: ${r.state}`]); if (a === 'remove') close() })
       .catch((e: Error) => toast([`error: ${e.message}`]))
   return (
-    <PinFrame kind="watchdog" title={`${dog.name} · watchdog`} panel="settings"
+    <PinFrame kind="watchdog" title={`${dog.name} · watchdog`} panel="settings content-height"
       close={close}>
         <h3>🐕 {dog.name}</h3>
         {/* THE DOG'S LIVE STATE IS NOT ITS NAME. It used to sit inside the h3,
@@ -1407,7 +1407,7 @@ export function PilePicker({ pile, map, onPick, close, op, toast }: PilePickerPr
   }
   return (
     <div className="overlay" onClick={close} onPointerDown={(e) => e.stopPropagation()}>
-      <div className="settings pile-picker" onClick={(e) => e.stopPropagation()}>
+      <div className="settings content-height pile-picker" onClick={(e) => e.stopPropagation()}>
         <h3><LayersIcon fontSize="inherit" /> {crowd ? 'team stack' : 'retired pile'}
           <span className="dim"> · {pile.list.length} agents</span></h3>
         <div className="hint">

@@ -5589,3 +5589,15 @@ a.doc-chip, a.doc-badge, a.doc-gallery-row { text-decoration: none; }
 .doc-gallery-row[href] { color: inherit; }
 .mockup-open { padding: 16px 12px; }
 .mockup-unavailable { opacity: .6; cursor: default; }
+
+/* Small dialogs opt into their content height. Large readers/editors retain
+   the fixed .settings height; pinned windows retain their user-sized rect. */
+.settings.content-height:not(.modalpin-win) {
+  height: auto; max-height: 88vh; align-self: center;
+}
+.settings.content-height:not(.modalpin-win) > * { flex-shrink: 0; }
+@media (max-width: 640px) {
+  html.mobile .overlay > .settings.content-height {
+    height: auto; max-height: 88dvh !important; align-self: center;
+  }
+}

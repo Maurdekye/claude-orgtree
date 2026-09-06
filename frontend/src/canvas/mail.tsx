@@ -1427,7 +1427,7 @@ function ComposeModal({ slug, net, entries, toast, close }: {
     // both modes precisely so pinning never remounts this subtree and never
     // loses a half-typed draft.
     <ModalOverPins>
-      <PinFrame kind="compose" title="Compose mail" panel="settings cmp-modal"
+      <PinFrame kind="compose" title="Compose mail" panel="settings content-height cmp-modal"
         close={close}>
         <h3><EditIcon fontSize="inherit" /> Compose mail</h3>
         {/* who this goes out as is a FACT ABOUT THE SEND, not part of the

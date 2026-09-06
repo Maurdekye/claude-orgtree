@@ -919,7 +919,7 @@ export function AccountsPanel({ toast, close }: {
         {usageFor && (
           <div className="overlay"
             onClick={(e) => { e.stopPropagation(); setUsageFor(null) }}>
-            <div className="settings usage-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="settings content-height usage-modal" onClick={(e) => e.stopPropagation()}>
               <h3><DataUsageIcon fontSize="inherit" />{' '}
                 {isCapacityView(usageFor) ? 'model capacity' : 'usage'}
                 {' — '}{rowLabel(usageFor)}</h3>
