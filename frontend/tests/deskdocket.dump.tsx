@@ -15,6 +15,8 @@ import { writeFileSync } from 'node:fs'
 import { flushSync } from 'react-dom'
 import { createRoot } from 'react-dom/client'
 import { AgentDocketView } from '../src/canvas/docket'
+import type { RefRoutes } from '../src/canvas/reflinks'
+import type { RefKind } from '../src/canvas/workrefs'
 import type { WorkItem } from '../src/types'
 
 const mk = (o: Partial<WorkItem>): WorkItem => ({
@@ -61,6 +63,23 @@ const FACTS = new Map([
   ['coordinator-astra', { tier: 'fable', generation: 0, live: true }],
 ])
 
+// ⚠ THE DESK'S REFERENCE WIRING, WHICH THE TAB NO LONGER BUILDS FOR ITSELF.
+// Shaped like `deskRoutes` in desk.tsx — every kind routed, because the desk
+// routes every kind — so the probe measures the page the product shows. The
+// routes are no-ops on purpose: this dump measures GEOMETRY, and a chip's size
+// does not depend on where its click goes.
+const REFS: RefRoutes = {
+  world: {
+    org: 'orgtree',
+    agents: new Map([...FACTS.keys()].map((id) => [id, id])),
+    mail: () => 'ready',
+    destination: 'codex-sandbox',
+    tierOf: (id) => FACTS.get(id)?.tier ?? null,
+    handles: new Set<RefKind>(['item', 'agent', 'doc', 'mail']),
+  },
+  onOpen: () => {},
+}
+
 const dest = process.argv[2]
 if (!dest) {
   console.error('usage: node tests/deskdocket_dump.mjs <out.html> [empty]')
@@ -85,7 +104,7 @@ flushSync(() => {
     // and the probe would be measuring a page the product never shows.
     <AgentDocketView slug="orgtree" nid="codex-sandbox"
       mine={empty ? [] : MINE} facts={FACTS} toast={() => {}}
-      onFocusAgent={() => {}} onChanged={() => {}} />)
+      onFocusAgent={() => {}} onChanged={() => {}} refs={REFS} />)
 })
 
 setTimeout(() => {

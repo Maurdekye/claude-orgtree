@@ -61,6 +61,14 @@
 //     (another agent's) appears and both the list and the chip go red
 //   · §4b reviewership: dropping the `reviewer?.node === nid` half of
 //     `agentItems` → the review row vanishes and the count falls to 1
+//   · §5d the desk's world: putting the tab's old narrow `handles`
+//     (item + agent) back → red on the document chip
+//   · §5d CONTROL: declaring `handles` as a literal all-kinds set instead of
+//     deriving it from the desk's own → red, because a desk with no reader
+//     would then advertise one
+//   · §5c and §5d the item route: deleting the in-place `setSelId` and
+//     delegating every kind to the desk → both go red, because the tab
+//     navigates the canvas away from a row already on screen
 //
 // Run:  cd frontend && node tests/run.mjs progress
 
@@ -784,4 +792,132 @@ test('§5c the REAL desk hands its docket card a reference world', async (t) => 
     'the reference did not select the item it names')
   assert.deepEqual(opened, [],
     'the tab holds the item — it must not navigate the whole canvas away')
+})
+
+/** The docket tab's prose, with one reference of every kind in it. Written
+ *  once so §5d and its control read the SAME sentence — a control that
+ *  differed in its fixture would not be a control. */
+const EVERY_KIND = 'ship @doc:org/d7, tell @mail:org/node/other/m3, '
+  + 'ask @agent:org/other, after @item:org/sort-selector'
+
+test('§5d the docket tab reaches the DESK\'S OWN doc, mail and agent handlers',
+  async (t) => {
+  // ⚠ WHY THIS EXISTS. The tab used to build its own reference world with
+  // `handles` = item + agent, on the stated grounds that it "has no document
+  // reader and no mailbox". The desk builds routes for both and renders its
+  // own message bodies against them, so one desk answered the same `@doc:`
+  // token two ways — a live control in the chat above, inert text in the
+  // docket below. This pins the fix at the REAL desk: the tab is handed
+  // `deskRefs` whole, so every kind reaches the handler the desk already had.
+  //
+  // The item kind is the one exception and §5c owns it: the tab holds that row,
+  // so it selects in place instead of routing out. Asserted here too, because
+  // the fix must not have quietly traded it away.
+  resetConvos()
+  useFakeClock()
+  const server = new FakeServer()
+  installFetch(server)
+  const docs: string[] = []
+  const mails: unknown[] = []
+  const jumps: string[] = []
+  const opened: string[] = []
+  server.workItems = [
+    workRow({ slug: 'sort-selector', title: 'The sort selector' }),
+    workRow({ slug: 'desk-refs', title: 'Desk references', objective: EVERY_KIND }),
+  ]
+  const me = node({ id: 'agent' })
+  const other = node({ id: 'other', tier: 'opus' })
+  const view = await mountView(
+    <DeskChat node={me} map={new Map([['agent', me], ['other', other]])} op={op}
+      slug="org" toast={noop} pub={false} bare
+      onJump={(id) => { jumps.push(id) }}
+      onOpenDoc={(id) => { docs.push(id) }}
+      onMailLink={(m) => { mails.push(m) }}
+      onWorkLink={(w) => { opened.push(String(w?.slug)) }} />,
+    (el) => el)
+  t.after(async () => { await view.unmount(); resetConvos(); realClock() })
+  await flush()
+  const { act } = await import('react')
+  const chip = view.el.querySelector<HTMLButtonElement>('.cc-head-meta .progress-chip')
+  assert.ok(chip, 'positive control: the docket chip is there to click')
+  await act(async () => { chip!.click() })
+  const rows = [...view.el.querySelectorAll<HTMLElement>('.docket-agent .mailrow.docket-row')]
+  const refs = rows.find((r) => r.querySelector('.l1 .mfrom')?.textContent === 'desk-refs')!
+  await act(async () => { refs.click() })
+  const pane = view.el.querySelector('.docket-agent .mailer-read')!
+  const live = (kind: string) =>
+    pane.querySelector<HTMLButtonElement>(`button.ref-chip.ref-${kind}.ref-ready`)
+
+  // each kind is a LIVE control, and each one lands on the desk's own handler
+  const doc = live('doc')
+  assert.ok(doc, 'the document reference is not a control on the docket tab')
+  await act(async () => { doc!.click() })
+  assert.deepEqual(docs, ['d7'], 'the doc chip did not reach the desk\'s reader')
+
+  const mail = live('mail')
+  assert.ok(mail, 'the mail reference is not a control on the docket tab')
+  await act(async () => { mail!.click() })
+  assert.deepEqual(mails, [{ id: 'm3', to: 'other' }],
+    'the mail chip did not reach the desk\'s mail router, or it arrived as a '
+    + 'raw token instead of the router\'s own {id,to}')
+
+  const agent = live('agent')
+  assert.ok(agent, 'the agent reference is not a control on the docket tab')
+  await act(async () => { agent!.click() })
+  assert.deepEqual(jumps, ['other'], 'the agent chip did not reach the desk\'s jump')
+
+  // and the item still selects IN PLACE, without routing the canvas away
+  const item = live('item')
+  assert.ok(item, 'the item reference is not a control on the docket tab')
+  await act(async () => { item!.click() })
+  assert.equal(
+    view.el.querySelector('.docket-agent .mailer-read .docket-pane-head b')?.textContent,
+    'The sort selector',
+    'the item reference did not select the row the tab already holds')
+  assert.deepEqual(opened, [],
+    'the tab holds the item — it must not navigate the whole canvas away')
+})
+
+test('§5d CONTROL: a desk with no doc or mail route renders those same '
+  + 'references inert, and says so', async (t) => {
+  // ⚠ THE ANTI-VACUITY HALF. §5d would pass just as well against a tab that
+  // declared `handles` = every kind as a literal, which is the defect this
+  // codebase keeps naming: a chip advertising an opener that is not wired up.
+  // Same desk, same sentence, `onOpenDoc` and `onMailLink` withheld — the two
+  // chips must go inert and READ as inert ("not from here"), while the agent
+  // and item chips, whose routes are still there, stay live.
+  resetConvos()
+  useFakeClock()
+  const server = new FakeServer()
+  installFetch(server)
+  server.workItems = [
+    workRow({ slug: 'sort-selector', title: 'The sort selector' }),
+    workRow({ slug: 'desk-refs', title: 'Desk references', objective: EVERY_KIND }),
+  ]
+  const me = node({ id: 'agent' })
+  const other = node({ id: 'other', tier: 'opus' })
+  const view = await mountView(
+    <DeskChat node={me} map={new Map([['agent', me], ['other', other]])} op={op}
+      slug="org" toast={noop} pub={false} bare onJump={noop}
+      onWorkLink={noop} />,
+    (el) => el)
+  t.after(async () => { await view.unmount(); resetConvos(); realClock() })
+  await flush()
+  const { act } = await import('react')
+  const chip = view.el.querySelector<HTMLButtonElement>('.cc-head-meta .progress-chip')
+  await act(async () => { chip!.click() })
+  const rows = [...view.el.querySelectorAll<HTMLElement>('.docket-agent .mailrow.docket-row')]
+  const refs = rows.find((r) => r.querySelector('.l1 .mfrom')?.textContent === 'desk-refs')!
+  await act(async () => { refs.click() })
+  const pane = view.el.querySelector('.docket-agent .mailer-read')!
+  for (const kind of ['doc', 'mail']) {
+    assert.equal(pane.querySelector(`button.ref-chip.ref-${kind}`), null,
+      `the ${kind} chip is a control on a desk that cannot open one`)
+    const inert = pane.querySelector(`.ref-chip.ref-${kind}.ref-elsewhere`)
+    assert.ok(inert, `the ${kind} reference does not say it is not opened from here`)
+  }
+  assert.ok(pane.querySelector('button.ref-chip.ref-agent.ref-ready'),
+    'the agent route is still wired, so its chip must still be live')
+  assert.ok(pane.querySelector('button.ref-chip.ref-item.ref-ready'),
+    'the tab holds its own rows, so an item chip must still be live')
 })

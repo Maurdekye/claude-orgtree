@@ -38,7 +38,7 @@ import { ago, jumpKey, useEsc, usePolled } from './shared'
 import { buildMentionIndex } from './workrefs'
 import type { MentionIndex } from './workrefs'
 import { RefProse } from './reflinks'
-import type { RefWorld, ResolvedRef } from './reflinks'
+import type { RefRoutes, RefWorld, ResolvedRef } from './reflinks'
 import type { RefKind, TypedRef } from './workrefs'
 
 // `review` is the AGENT check, not the user's (user ruling 2026-09-05)
@@ -986,7 +986,7 @@ export function agentItems(data: {
  *  generation is what the row's chip reasons about, never what decides whether
  *  the work is yours. */
 export function AgentDocketView({ slug, nid, mine, facts, toast, onFocusAgent,
-  onChanged }: {
+  onChanged, refs }: {
   slug: string
   nid: string
   /** this agent's items, already selected by `agentItems` — null while the
@@ -998,6 +998,10 @@ export function AgentDocketView({ slug, nid, mine, facts, toast, onFocusAgent,
   onFocusAgent?: (agentId: string) => void
   /** ask the desk to refetch — a dismissal changes the server's copy */
   onChanged?: () => void
+  /** THE DESK'S OWN REFERENCE WIRING, passed down whole rather than rebuilt.
+   *  Required, not optional: a fallback world here would be a second answer to
+   *  the same question on the same desk, and the two would drift. */
+  refs: RefRoutes
 }) {
   const [selId, setSelId] = useState<string | null>(null)
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(
@@ -1010,31 +1014,49 @@ export function AgentDocketView({ slug, nid, mine, facts, toast, onFocusAgent,
                             [...facts].map(([id, f]) => [id, f.tier] as const)),
     [byName, facts])
   const cur = byName.get(selId ?? '')
-  /** THE REFERENCE WORLD OF THIS TAB, and it is deliberately smaller than the
-   *  Work panel's. It admits only what this surface can actually open:
-   *  · `item` — but only the rows this tab holds, so a mention of an item the
-   *    agent is not answerable for renders as identity and not as a control
-   *    that would select nothing;
-   *  · `agent` — the desk's own jump, the same callback the header uses.
-   *  `doc` and `mail` are LEFT OUT because this tab has no document reader and
-   *  no mailbox: a kind in `handles` with nothing behind it is the live-looking
-   *  control that does nothing, which this codebase keeps refusing.
+  /** THE DESK'S WORLD, WITH EXACTLY ONE ROUTE TAKEN OVER.
    *
-   *  `destination` is this desk's own agent, so a reference to the agent whose
-   *  desk you are already reading is identity rather than a jump back to here. */
+   *  ⚠ THIS TAB USED TO BUILD ITS OWN NARROW WORLD (`handles` = item + agent),
+   *  and the comment that justified it was wrong twice over. It said the tab
+   *  has no document reader and no mailbox, so `doc` and `mail` had nothing
+   *  behind them — but the desk builds routes for BOTH (`deskRoutes` in
+   *  desk.tsx) and already renders its own message bodies against them, so one
+   *  desk answered the same `@doc:`/`@mail:` token two ways: a live control in
+   *  the chat, inert text in this tab. The capability was one prop away the
+   *  whole time. It also judged `items` against this agent's own rows alone,
+   *  which reported a real item somebody else owns as `absent` — "no docket
+   *  item named X in this org" — a statement about the DATA caused by a limit
+   *  of the PANEL, which is the exact mistake `RefWorld` warns about.
+   *
+   *  So the world is the desk's, unchanged, and only the ITEM CLICK is
+   *  overridden below. `items` stays the desk's `undefined` ("do not judge —
+   *  the destination will"), `destination` stays the desk's own (a bare desk
+   *  is nobody's destination and its names must still navigate), and `handles`
+   *  gains `item` because this tab can always open one: its own rows itself,
+   *  anything else through the desk's work route. */
   const refWorld = useMemo<RefWorld>(() => ({
-    org: slug,
-    items: mine === null ? 'loading'
-      : new Map([...byName.keys()].map((s) => [s, s])),
-    agents: new Map([...facts.keys()].map((id) => [id, id])),
-    destination: nid,
-    tierOf: (id) => facts.get(id)?.tier ?? null,
-    handles: new Set<RefKind>(['item', 'agent']),
-  }), [slug, nid, mine, byName, facts])
+    ...refs.world,
+    handles: refs.world.handles
+      ? new Set<RefKind>([...refs.world.handles, 'item'])
+      : undefined,
+  }), [refs.world])
+  /** An item this tab HOLDS selects in place — the row is right there, and
+   *  navigating the whole canvas to the Work panel to show a row already on
+   *  screen is the surprising behaviour. Anything else is the desk's, which is
+   *  where `doc`, `mail`, `agent` and a foreign or unheld item all go.
+   *
+   *  ⚠ THE ORG IS CHECKED BEFORE THE MAP. Two orgs can hold the same slug, and
+   *  `byName` is keyed by slug alone, so a token from elsewhere that happened
+   *  to match would select a DIFFERENT item and look like it had worked.
+   *  `resolveRef` already renders such a token `foreign`, but a click can still
+   *  arrive from a keyboard or an older chip, so the refusal lives here too. */
   const openRef = useCallback((r: ResolvedRef) => {
-    if (r.ref.kind === 'item') setSelId(r.ref.id)
-    else if (r.ref.kind === 'agent') onFocusAgent?.(r.ref.id)
-  }, [onFocusAgent])
+    if (r.ref.kind === 'item' && r.ref.org === slug && byName.has(r.ref.id)) {
+      setSelId(r.ref.id)
+      return
+    }
+    refs.onOpen(r)
+  }, [refs, slug, byName])
   const toggleFold = useCallback((name: string) => {
     setCollapsed((c) => {
       const next = new Set(c)

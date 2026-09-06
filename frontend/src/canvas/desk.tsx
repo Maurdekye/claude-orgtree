@@ -2178,8 +2178,14 @@ function DeskChatInner({ node, map, op, slug, toast, onLineage, onConfig,
       )}
       {view === 'history' && <HistoryView slug={slug} nid={node.id} />}
       {view === 'files' && <FilesView slug={slug} nid={node.id} />}
+      {/* ⚠ THE SAME `deskRefs` THE CHAT AND THE INBOX USE. This tab was
+          building its own narrower world, which left a `@doc:` or `@mail:`
+          token live in the message above and inert in the docket below — one
+          desk, two answers. It is handed the world whole and overrides only
+          what an ITEM click does, because it holds the rows itself. */}
       {view === 'docket' && <AgentDocketView slug={slug} nid={node.id}
         mine={myWork} facts={workFacts} toast={toast} onFocusAgent={onJump}
+        refs={deskRefs}
         onChanged={() => setWorkBump((n) => n + 1)} />}
       {/* the mailbox is a name surface too (user request 2026-09-05: the inbox
           was named explicitly). `onJump` is the SAME callback NavChip and the
