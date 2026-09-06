@@ -3230,6 +3230,50 @@
       ],
       "additionalProperties": false
     },
+    "LifecycleSwitchDropped": {
+      "type": "object",
+      "properties": {
+        "v": {
+          "const": 1
+        },
+        "variant": {
+          "const": "lifecycle.switch_dropped"
+        },
+        "actor": {
+          "$ref": "#/$defs/Actor"
+        },
+        "engine_authored": {
+          "type": "boolean"
+        },
+        "object": {
+          "$ref": "#/$defs/NodeRef"
+        },
+        "node": {
+          "type": "string"
+        },
+        "target": {
+          "type": "string"
+        },
+        "kept": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "v",
+        "variant",
+        "actor",
+        "engine_authored",
+        "object",
+        "node",
+        "target",
+        "kept",
+        "reason"
+      ],
+      "additionalProperties": false
+    },
     "LifecycleSeatSwapped": {
       "type": "object",
       "properties": {
@@ -5310,6 +5354,9 @@
         },
         {
           "$ref": "#/$defs/LifecycleSwitchCancelled"
+        },
+        {
+          "$ref": "#/$defs/LifecycleSwitchDropped"
         },
         {
           "$ref": "#/$defs/LifecycleSeatSwapped"
@@ -8326,6 +8373,50 @@
       ],
       "additionalProperties": false
     },
+    "PublicLifecycleSwitchDropped": {
+      "type": "object",
+      "properties": {
+        "v": {
+          "const": 1
+        },
+        "variant": {
+          "const": "lifecycle.switch_dropped"
+        },
+        "projection": {
+          "const": "public"
+        },
+        "actor": {
+          "$ref": "#/$defs/PublicActor"
+        },
+        "object": {
+          "$ref": "#/$defs/PublicNodeRef"
+        },
+        "node": {
+          "type": "string"
+        },
+        "target": {
+          "type": "string"
+        },
+        "kept": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "v",
+        "variant",
+        "projection",
+        "actor",
+        "object",
+        "node",
+        "target",
+        "kept",
+        "reason"
+      ],
+      "additionalProperties": false
+    },
     "PublicLifecycleSeatSwapped": {
       "type": "object",
       "properties": {
@@ -10289,6 +10380,9 @@
         },
         {
           "$ref": "#/$defs/PublicLifecycleSwitchCancelled"
+        },
+        {
+          "$ref": "#/$defs/PublicLifecycleSwitchDropped"
         },
         {
           "$ref": "#/$defs/PublicLifecycleSeatSwapped"

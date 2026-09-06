@@ -981,18 +981,15 @@ class Org:
                 n.pop("limit_locked", None)
             for k in _freed:
                 _p = self.nodes[k]["parent"]
-                self._notify([_p] + self._peers_of(_p, k),
-                             f'"{k}" is RELEASED from the weekly-Fable halt '
-                             f'— the limit reset. It runs again; no need to '
-                             f'keep covering its work.')
-                self._notify([k], "The weekly Fable limit has reset: you "
-                                  "are no longer halted. Carry on.")
+                # typed (family lifecycle): policy.limit_reset per audience
+                self._notify_ev([_p], self._limit_reset_ev(k, "report", []))
+                self._notify_ev(self._peers_of(_p, k), self._limit_reset_ev(k, "peer", []))
+                self._notify_ev([k], self._limit_reset_ev(k, "self", []))
             if _freed:
+                uev = self._limit_reset_ev(sorted(_freed)[0], "user", sorted(_freed))
                 self.to_user_inbox({
                     "from": SYSTEM, "kind": "notice", "at": now(),
-                    "body": "Weekly Fable limit reset — halted fable "
-                            "agent(s) released: " + ", ".join(sorted(_freed))
-                            + ". Their superiors were told to stop covering."})
+                    "body": events.render_agent(uev)}, uev)
         # …and ORPHANED node flags (redteam 2026-08-06, the neoja card): a
         # limit_locked with NO fable_lock behind it is the same artifact
         # class as the timeless lock — the org lock went away without the
@@ -2423,12 +2420,11 @@ class Org:
             del log[:-100]
         if not tops:
             # nobody to receive it: surface to the user instead of losing it
+            uev = _mint("runtime.external_unroutable", actor_of(SYSTEM), self.org_ref(),
+                        peer=str(peer), excerpt=body[:2000])
             self.to_user_inbox({
                 "id": uuid.uuid4().hex[:8], "from": SYSTEM, "kind": "notice",
-                "at": now(),
-                "body": (f"Outside party {peer} messaged this org, but "
-                         f"no top-level agents are live to receive it:\n\n"
-                         + body[:2000])})
+                "at": now(), "body": events.render_agent(uev)}, uev)
         self._log("ext_mail", peer,
                   {"to": ",".join(tops) or "(user inbox)",
                    "gist": body.strip().splitlines()[0][:80]
@@ -2785,6 +2781,11 @@ class Org:
         self._log("audience_deny", actor, {"from": frm, "target": target}, [])
         return {"drive": [frm] if actor != USER else [], "warnings": []}
 
+    def _limit_reset_ev(self, node: str, relation: str,
+                        released: list[str]) -> dict[str, Any]:
+        return _mint("policy.limit_reset", actor_of(SYSTEM), self.node_ref(node),
+                     relation=relation, node=node, released=list(released))
+
     def _aud_changed(self, by: str, node: str, outcome: str, *, target: str,
                      other: str | None = None) -> dict[str, Any]:
         """access.audience_changed as seen by `node` (the object): what changed
@@ -2883,20 +2884,11 @@ class Org:
         # Every direct message, no marking (user ruling 2026-08-02: "requiring
         # me to manually mark a message as authoritative is costly to my time,
         # and it doesn't take much to bring this attention to each superior").
-        if kind == "command":
-            self._notify(
-                chain,
-                f'The user ran the session command "{gist}" on "{nid}", inside '
-                f'your chain. It came from the USER directly, not through you. '
-                f"Re-check any plan of yours that assumes {nid}'s session is "
-                f'unchanged. You are being told, not asked to act.')
-        else:
-            self._notify(
-                chain,
-                f'The user gave a direct instruction to "{nid}", inside your chain: '
-                f'"{gist}" — it carries the USER\'s authority and outranks anything '
-                f'you have told {nid}. Re-check any plan of yours that depends on '
-                f'it. You are being told, not asked to act.')
+        # typed (family context_change): context.deep_reach — the gist is the
+        # user's own line, carried as data; the text is the event's rendering
+        self._notify_ev(chain, _mint("context.deep_reach", actor_of(USER),
+                                     self.node_ref(nid), node=nid, gist=gist,
+                                     kind=("command" if kind == "command" else "message")))
         if not self._has_audience(nid, USER):
             self.d["audiences"].append({
                 "grantee": nid, "grantor": USER, "granted_at": now(),
@@ -3153,13 +3145,14 @@ class Org:
         # itself is skipped (it made the call and got the result)
         gist = (str(charter).strip().splitlines() or [""])[0][:120] if charter else ""
         why = f' Role: {gist}' if gist else ""
-        who = "the user" if actor == USER else f'"{actor}"'
-        self._notify([p for p in [parent] if p != actor],
-                     f'{who.capitalize()} hired "{nid}" ({tier}, grant {int(grant)}) '
-                     f'under you.{why}')
-        self._notify([p for p in self._peers_of(parent, nid) if p != actor],
-                     f'{who.capitalize()} hired "{nid}" ({tier}) alongside you, under '
-                     f'{parent or "the top level"}.{why}')
+        # typed (family lifecycle): lifecycle.hired, one event per audience
+        def _hired(relation: str) -> dict[str, Any]:
+            return _mint("lifecycle.hired", actor_of(actor), self.node_ref(nid), node=nid,
+                         by=actor, relation=relation, tier=str(tier), grant=float(grant),
+                         parent=parent, why=(gist or None))
+        self._notify_ev([p for p in [parent] if p != actor], _hired("report"))
+        self._notify_ev([p for p in self._peers_of(parent, nid) if p != actor],
+                        _hired("peer"))
         self._log("hire", actor, {"node": nid, "parent": parent, "tier": tier,
                                   "grant": int(grant), "charter": gist,
                                   **({"external_handles": handles} if handles else {})},
@@ -3402,10 +3395,12 @@ class Org:
         # delete destroys them. (The UI filters archived holders at render.)
         who = ("the user" if actor == USER
                else "itself (self-retirement)" if actor == nid else f'"{actor}"')
-        self._notify([p for p in [n["parent"]] if p != actor],
-                     f'Your report "{nid}" was retired by {who} (freed {freed:g} credits).')
-        self._notify([p for p in self._peers_of(n["parent"], nid) if p != actor],
-                     f'Your peer "{nid}" was retired by {who}.')
+        def _retired(relation: str) -> dict[str, Any]:
+            return _mint("lifecycle.retired", actor_of(actor), self.node_ref(nid), node=nid,
+                         by=actor, relation=relation, freed=float(freed))
+        self._notify_ev([p for p in [n["parent"]] if p != actor], _retired("report"))
+        self._notify_ev([p for p in self._peers_of(n["parent"], nid) if p != actor],
+                        _retired("peer"))
         self._log("retire", actor, {"node": nid, "freed": freed}, [])
         return {"freed": freed, "warnings": []}
 
@@ -3479,11 +3474,9 @@ class Org:
                     f"only {clawed:g} of the {stake:g}-credit stake could be "
                     f"reclaimed from {parent} — the freed headroom was "
                     f"already moved or spent since the archive")
-            self._notify([parent],
-                         f'Your report "{nid}" was RESCINDED by the user: it '
-                         f'is archived and your grant was reduced by {clawed:g} '
-                         f'— rehiring it (or replacing the seat) needs new '
-                         f'capacity from above, not the freed headroom.')
+            self._notify_ev([parent], _mint("lifecycle.rescinded", actor_of(actor),
+                                            self.node_ref(nid), node=nid,
+                                            clawed=float(clawed)))
         self._log("rescind", actor,
                   {"node": nid, "stake": stake, "clawed": clawed}, [])
         out = {"freed": r.get("freed", 0), "clawed": clawed,
@@ -3638,26 +3631,13 @@ class Org:
         team = (f" Your team ({', '.join(kids)}) is UNCHANGED and reports "
                 f"to you — they remember you; you do not remember them, so "
                 f"read the transcript before directing them." if kids else "")
-        self._notify([nid],
-                     f'You were CHEAP-COMPACTED: your seat, scope, team and '
-                     f'budget are unchanged, but this session is FRESH — you '
-                     f'have NO memory of your predecessor\'s work, and '
-                     f'unlike a normal compaction there is no summary. Your '
-                     f'predecessor\'s breadcrumbs.md — its realtime log of '
-                     f'decisions and findings — is spliced into your system '
-                     f'prompt when it exists (tail-truncated if long), and '
-                     f'survives in your working folder: keep appending to it '
-                     f'yourself. The full transcript is at transcript.jsonl '
-                     f'beside it; Grep/Read the parts you need instead of '
-                     f'reading it whole. You may also orgtree_rehire '
-                     f'"{pred_id}" as your own subordinate to interrogate it '
-                     f'directly, and retire it again when done.{team}')
-        self._notify([p for p in [n["parent"]] if p is not None
-                      and p != actor],
-                     f'Your report "{nid}" was cheap-compacted by '
-                     f'{"the user" if actor == USER else "the system (auto)" if actor_kind(actor) == "system" else actor}: '
-                     f'same seat and team, fresh session — its prior self is '
-                     f'consultable as "{pred_id}".')
+        def _cheap(relation: str) -> dict[str, Any]:
+            return _mint("lifecycle.cheap_compacted", actor_of(actor), self.node_ref(nid),
+                         node=nid, relation=relation, by=actor, predecessor=str(pred_id),
+                         team_note=(team or None))
+        self._notify_ev([nid], _cheap("self"))
+        self._notify_ev([p for p in [n["parent"]] if p is not None and p != actor],
+                        _cheap("report"))
         self._log("cheap_compact", actor,
                   {"node": nid, "bearer": pred_id, "old_session": old_sid,
                    "notices_folded": folded, "transfer": "fresh"},
@@ -3908,13 +3888,13 @@ class Org:
             warnings.append(
                 f"{len(woke)} watchdog(s) paused by the archive are armed "
                 f"again: " + ", ".join(str(w["name"]) for w in woke))
-        who = "the user" if actor == USER else f'"{actor}"'
-        self._notify([p for p in [parent] if p != actor],
-                     f'Your report "{nid}" was rehired by {who} (grant {grant}).')
-        self._notify([p for p in self._peers_of(parent, nid) if p != actor],
-                     f'Your peer "{nid}" was rehired by {who}.')
-        self._notify([nid], f"{who.capitalize()} rehired you. You are live again; "
-                            f"your prior context is intact.")
+        def _rehired(relation: str) -> dict[str, Any]:
+            return _mint("lifecycle.rehired", actor_of(actor), self.node_ref(nid), node=nid,
+                         by=actor, relation=relation, grant=float(grant))
+        self._notify_ev([p for p in [parent] if p != actor], _rehired("report"))
+        self._notify_ev([p for p in self._peers_of(parent, nid) if p != actor],
+                        _rehired("peer"))
+        self._notify_ev([nid], _rehired("self"))
         self._log("rehire", actor, {"node": nid, "grant": grant}, warnings)
         # mail that arrived while archived waited in the inbox (user ruling) —
         # tell the caller to drive the node so it finally acts on it. Notices
@@ -3975,13 +3955,12 @@ class Org:
                 self._moot_asks(k, "the asking agent was dissolved with its "
                                    "subtree before an answer arrived")
             # audiences survive dissolve too (paging, user ruling) — see retire
-        who = "the user" if actor == USER else f'"{actor}"'
-        self._notify([p for p in [parent] if p != actor],
-                     f'{who.capitalize()} dissolved your report "{nid}" and its whole '
-                     f'suborganization ({len(order)} node(s), freed {freed:g} credits).')
-        self._notify([p for p in self._peers_of(parent, nid) if p != actor],
-                     f'Your peer "{nid}" and its suborganization were dissolved '
-                     f'by {who}.')
+        def _dissolved(relation: str) -> dict[str, Any]:
+            return _mint("lifecycle.dissolved", actor_of(actor), self.node_ref(nid), node=nid,
+                         by=actor, relation=relation, nodes=len(order), freed=float(freed))
+        self._notify_ev([p for p in [parent] if p != actor], _dissolved("report"))
+        self._notify_ev([p for p in self._peers_of(parent, nid) if p != actor],
+                        _dissolved("peer"))
         self._log("dissolve", actor, {"node": nid, "freed": freed,
                                       "count": len(order)}, [])
         return {"freed": freed, "nodes": order, "warnings": []}
@@ -4064,11 +4043,11 @@ class Org:
             w for w in self.d.get("watchdogs", [])
             if w.get("owner") not in doomed_set]
         extra = len(doomed_set) - 1
-        self._notify([parent],
-                     f'The user permanently DELETED your report "{nid}"'
-                     + (f" and its suborganization ({extra} more node(s))" if extra else "")
-                     + ". Its records are gone from the org.")
-        self._notify(peers, f'Your peer "{nid}" was permanently deleted by the user.')
+        def _deleted(relation: str) -> dict[str, Any]:
+            return _mint("lifecycle.deleted", actor_of(actor), self.node_ref(nid), node=nid,
+                         relation=relation, extra=int(extra))
+        self._notify_ev([parent], _deleted("report"))
+        self._notify_ev(peers, _deleted("peer"))
         self._log("delete", actor, {"node": nid, "removed": sorted(doomed_set),
                                     **({"cost_usd": lost} if lost else {})}, [])
         return {"deleted": sorted(doomed_set), "warnings": []}
@@ -4121,9 +4100,10 @@ class Org:
                      f"— it stays on {old}; nothing changes when its turn ends."]
                 self._log("switch_queue_cancelled", actor,
                           {"node": nid, "was": pend["tier"], "kept": old}, w)
-                self._notify([x for x in [n["parent"]] if x not in (actor, None)],
-                             f'{"The user" if actor == USER else actor} cancelled '
-                             f'the queued switch of "{nid}" to {pend["tier"]}.')
+                self._notify_ev([x for x in [n["parent"]] if x not in (actor, None)],
+                                _mint("lifecycle.switch_cancelled", actor_of(actor),
+                                      self.node_ref(nid), node=nid,
+                                      target=str(pend["tier"]), by=actor))
                 return {"model": old, "seat": self.d["tiers"][old], "freed": 0,
                         "queued": False, "cancelled": pend["tier"],
                         "warnings": w}
@@ -4181,11 +4161,10 @@ class Org:
             self._log("switch_queued", actor,
                       {"node": nid, "from": old, "to": tier,
                        "replaced": replaced, "crossing": crossed}, warnings)
-            who = "the user" if actor == USER else f'"{actor}"'
-            self._notify([x for x in [n["parent"]] if x not in (actor, None)],
-                         f'{who.capitalize()} queued a model switch for '
-                         f'"{nid}": {old}→{tier}, applied when its current '
-                         f'turn ends.')
+            self._notify_ev([x for x in [n["parent"]] if x not in (actor, None)],
+                            _mint("lifecycle.switch_queued", actor_of(actor),
+                                  self.node_ref(nid), node=nid, old=str(old),
+                                  new=str(tier), by=actor))
             return {"model": old, "seat": self.d["tiers"][tier], "freed": 0,
                     "queued": True, "tier": tier, "from": old,
                     "replaced": replaced, "crossing": crossed,
@@ -4338,32 +4317,18 @@ class Org:
                 f"its next turn is a full cold open — the most expensive turn "
                 f"it can have. Its scratch folder, breadcrumbs and mail are "
                 f"untouched.")
-        who = "the user" if actor == USER else f'"{actor}"'
-        qnote = (" — queued while you were mid-turn, applied when that turn "
-                 "ended" if _queued else "")
-        self._notify([x for x in [nid] if x != actor],
-                     f'{who.capitalize()} switched your model {old}→{tier} '
-                     f'(seat {self.d["tiers"][old]:g}→{self.d["tiers"][tier]:g})'
-                     f'{qnote}. '
-                     + ('Your context is intact — carry on.' if not crossed else
-                        f'That is a different PROVIDER '
-                        f'({providers.provider_of(old)}→'
-                        f'{providers.provider_of(tier)}), so your conversation '
-                        f'could NOT be carried over: this session is FRESH and '
-                        f'you have no memory of your predecessor\'s work. Your '
-                        f'predecessor is archived as "{pred_id}" — its full '
-                        f'transcript is at transcript.jsonl beside your '
-                        f'breadcrumbs.md (Grep/Read the parts you need instead '
-                        f'of reading it whole), and you may orgtree_rehire '
-                        f'"{pred_id}" as your own subordinate to interrogate '
-                        f'it directly. Your warm process and prompt cache are '
-                        f'gone with it, so this turn is a cold open and costs '
-                        f'far more than a normal one — expect it, and do not '
-                        f'switch back and forth. Check your scratch CLAUDE.md, '
-                        f'and your breadcrumbs and mail are untouched; read '
-                        f'them to pick up where you left off.'))
-        self._notify([x for x in [n["parent"]] if x not in (actor, None)],
-                     f'{who.capitalize()} switched "{nid}" {old}→{tier}.')
+        def _switched(relation: str) -> dict[str, Any]:
+            return _mint("lifecycle.model_switched", actor_of(actor), self.node_ref(nid),
+                         node=nid, relation=relation, old=str(old), new=str(tier),
+                         seat_old=float(self.d["tiers"][old]),
+                         seat_new=float(self.d["tiers"][tier]), by=actor,
+                         queued=bool(_queued), crossed=bool(crossed),
+                         old_provider=(str(providers.provider_of(old)) if crossed else None),
+                         new_provider=(str(providers.provider_of(tier)) if crossed else None),
+                         predecessor=(str(pred_id) if crossed else None))
+        self._notify_ev([x for x in [nid] if x != actor], _switched("self"))
+        self._notify_ev([x for x in [n["parent"]] if x not in (actor, None)],
+                        _switched("report"))
         # the split is on the record where cheap_compact's is: the bearer id
         # and the session it holds, so the switch's own log row names where
         # the conversation went
@@ -4421,7 +4386,9 @@ class Org:
             tell = [x for x in {by, n.get("parent")}
                     if x and x != nid and x in self.nodes
                     and self.nodes[x]["state"] == "live"]
-            self._notify(tell, w[0])
+            self._notify_ev(tell, _mint("lifecycle.switch_dropped", actor_of(by),
+                                        self.node_ref(nid), node=nid, target=tier,
+                                        kept=str(n["model"]), reason=reason))
             return {"dropped": reason, "tier": tier, "warnings": w}
 
     def reallocate(self, actor: str, nid: str, delta: float) -> dict[str, Any]:
@@ -4772,54 +4739,38 @@ class Org:
                 warnings += self._stranding_warnings(
                     p_b, free_pb0, self.free(p_b))
 
-        who = "the user" if actor == USER else f'"{actor}"'
-        a_disp = f'"{n_a["parent"]}"' if n_a["parent"] else "the top level"
-        b_disp = f'"{p_a}"' if p_a else "the top level"
-        if p_a == p_b:
-            self._notify([p for p in [p_a] if p != actor],
-                         f'{who.capitalize()} swapped the seats of your '
-                         f'reports "{a}" and "{b}" — each now leads the '
-                         f'other\'s former team.')
-            self._notify([p for p in prior_peers_a if p != actor and p != b],
-                         f'Your peers "{a}" and "{b}" swapped seats — each '
-                         f'now leads the other\'s former team.')
-        else:
-            self._notify([p for p in [p_a] if p != actor],
-                         f'{who.capitalize()} seated "{b}" in "{a}"\'s place '
-                         f'— "{b}" now reports to you, leading that seat\'s '
-                         f'team.')
-            self._notify([p for p in prior_peers_a if p != actor],
-                         f'"{a}" and "{b}" swapped seats — "{b}" now holds '
-                         f'"{a}"\'s seat beside you.')
-            if not direct:
-                self._notify([p for p in [p_b] if p != actor],
-                             f'{who.capitalize()} seated "{a}" in "{b}"\'s '
-                             f'place — "{a}" now reports to you.')
-                self._notify([p for p in prior_peers_b if p != actor],
-                             f'"{a}" and "{b}" swapped seats — "{a}" now '
-                             f'holds "{b}"\'s seat beside you.')
-        self._notify([k for k in kids_a if k != actor],
-                     f'Seat change above you: "{b}" took over "{a}"\'s seat. '
-                     f'You now report to "{b}"; your own team, grant and '
-                     f'scope are unchanged.')
-        self._notify([k for k in kids_b if k != actor],
-                     f'Seat change above you: "{a}" took over "{b}"\'s seat. '
-                     f'You now report to "{a}"; your own team, grant and '
-                     f'scope are unchanged.')
+        # typed (family lifecycle): lifecycle.seat_swapped, one event per
+        # audience role; each text is the event's rendering (§L tests)
         aud_a = (f' You keep a standing audience with "{b}" — message it '
                  f'directly.' if retained else "")
         aud_b = (f' "{a}" keeps a standing audience with you.'
                  if retained else "")
-        self._notify([p for p in [a] if p != actor],
-                     f'{who.capitalize()} swapped your seat with "{b}": you '
-                     f'now report to {a_disp} and hold that seat\'s team, '
-                     f'grant ({g_b}) and scope; your identity, charter and '
-                     f'mailbox are unchanged.{aud_a}')
-        self._notify([p for p in [b] if p != actor],
-                     f'{who.capitalize()} seated you in "{a}"\'s place: you '
-                     f'now report to {b_disp}, lead its former team, and '
-                     f'hold the seat\'s grant ({g_a}) and scope; your '
-                     f'identity, charter and mailbox are unchanged.{aud_b}')
+        nested = bool(p_a == p_b)
+
+        def _swap(role: str, node: str, *, reports_to: str | None = None,
+                  grant_after: str | None = None, note: str | None = None) -> dict[str, Any]:
+            return _mint("lifecycle.seat_swapped", actor_of(actor), self.node_ref(node),
+                         a=a, b=b, role=role, nested=nested, by=actor,
+                         reports_to_after=reports_to, grant_after=grant_after,
+                         audience_note=(note or None))
+        if nested:
+            self._notify_ev([p for p in [p_a] if p != actor], _swap("parent_of_a", a))
+            self._notify_ev([p for p in prior_peers_a if p != actor and p != b],
+                            _swap("peer_of_a", a))
+        else:
+            self._notify_ev([p for p in [p_a] if p != actor], _swap("parent_of_a", a))
+            self._notify_ev([p for p in prior_peers_a if p != actor], _swap("peer_of_a", a))
+            if not direct:
+                self._notify_ev([p for p in [p_b] if p != actor], _swap("parent_of_b", b))
+                self._notify_ev([p for p in prior_peers_b if p != actor],
+                                _swap("peer_of_b", b))
+        self._notify_ev([k for k in kids_a if k != actor], _swap("child_of_a", a))
+        self._notify_ev([k for k in kids_b if k != actor], _swap("child_of_b", b))
+        self._notify_ev([p for p in [a] if p != actor],
+                        _swap("a", a, reports_to=n_a["parent"], grant_after=str(g_b),
+                              note=aud_a))
+        self._notify_ev([p for p in [b] if p != actor],
+                        _swap("b", b, reports_to=p_a, grant_after=str(g_a), note=aud_b))
         self._log(_op, actor,
                   {"a": a, "b": b, "nested": nested,
                    "a_to": n_a["parent"], "b_to": p_a}, warnings)
@@ -5129,32 +5080,19 @@ class Org:
         if dropped:
             warnings.append(f"capabilities the chain does not hold were "
                             f"dropped (№30): {dropped}")
-        who = "the user" if actor == USER else f'"{actor}"'
         kids = [k for k in self.children(target) if k != nid]
-        self._notify([x for x in [p] if x != actor],
-                     f'{who.capitalize()} inserted "{nid}" above your report '
-                     f'"{target}": "{nid}" now holds that position and '
-                     f'"{target}" reports to it, keeping its own team.')
-        self._notify([x for x in self._peers_of(p, nid) if x != actor
-                      and x != target],
-                     f'"{nid}" joined your team (inserted by {who} above '
-                     f'"{target}", which now reports to it).')
-        self._notify([x for x in [target] if x != actor],
-                     f'{who.capitalize()} inserted "{nid}" directly above '
-                     f'you: you now report to "{nid}" instead of '
-                     f'{p or "the top level"}, and your entire team, scope '
-                     f'and remaining grant ({n_t["grant"]}) came with you.')
-        self._notify([x for x in kids if x != actor],
-                     f'"{target}" now reports to "{nid}", inserted above it '
-                     f'by {who}. You still report to "{target}"; your own '
-                     f'team, grant and scope are unchanged.')
-        self._notify([x for x in [nid] if x != actor],
-                     f'{who.capitalize()} placed you in "{target}"\'s '
-                     f'position: you report to {p or "the top level"}, '
-                     f'"{target}" and its whole team now report to YOU, and '
-                     f"you hold that seat's scope with a grant of "
-                     f'{n_new["grant"]} (of which {seat_t + n_t["grant"]} is '
-                     f'committed to "{target}").')
+
+        def _ins(role: str) -> dict[str, Any]:
+            return _mint("lifecycle.inserted", actor_of(actor), self.node_ref(nid), node=nid,
+                         above=target, parent=p, role=role, by=actor,
+                         grant_target=str(n_t["grant"]), grant_new=str(n_new["grant"]),
+                         committed=str(seat_t + n_t["grant"]))
+        self._notify_ev([x for x in [p] if x != actor], _ins("parent"))
+        self._notify_ev([x for x in self._peers_of(p, nid) if x != actor and x != target],
+                        _ins("peer"))
+        self._notify_ev([x for x in [target] if x != actor], _ins("target"))
+        self._notify_ev([x for x in kids if x != actor], _ins("child"))
+        self._notify_ev([x for x in [nid] if x != actor], _ins("self"))
         self._log("insert_parent", actor,
                   {"node": nid, "target": target, "under": p}, warnings)
         return {"node": nid, "inserted_above": target, "under": p,
@@ -5289,23 +5227,19 @@ class Org:
         dropped = self._sweep_dirs(nid)
         if dropped:
             warnings.append(f"dirs not held by the new chain were dropped (№30): {dropped}")
-        who = "the user" if actor == USER else f'"{actor}"'
         subtree = len(self.descendants(nid, live_only=False))
         tail = f" Its suborganization ({subtree} node(s)) moved with it." if subtree else ""
-        frm, to = p_old or "the top level", new_parent or "the top level"
-        self._notify([p for p in [p_old] if p != actor],
-                     f'{who.capitalize()} moved your report "{nid}" away — it now '
-                     f'reports to {to}.{tail}')
-        self._notify([p for p in prior_peers if p != actor],
-                     f'Your peer "{nid}" was moved by {who} to under {to}.{tail}')
-        self._notify([p for p in [new_parent] if p != actor],
-                     f'{who.capitalize()} moved "{nid}" (from {frm}) to report to '
-                     f'you.{tail}')
-        self._notify([p for p in self._peers_of(new_parent, nid) if p != actor],
-                     f'"{nid}" joined your team (moved by {who} from {frm}).{tail}')
-        self._notify([nid],
-                     f"{who.capitalize()} moved you: you now report to {to} (you were "
-                     f"under {frm}). Your entire suborganization moved with you.")
+
+        def _mv(role: str) -> dict[str, Any]:
+            return _mint("lifecycle.moved", actor_of(actor), self.node_ref(nid), node=nid,
+                         from_parent=p_old, to_parent=new_parent, role=role, by=actor,
+                         tail=(tail or None))
+        self._notify_ev([p for p in [p_old] if p != actor], _mv("old_parent"))
+        self._notify_ev([p for p in prior_peers if p != actor], _mv("old_peer"))
+        self._notify_ev([p for p in [new_parent] if p != actor], _mv("new_parent"))
+        self._notify_ev([p for p in self._peers_of(new_parent, nid) if p != actor],
+                        _mv("new_peer"))
+        self._notify_ev([nid], _mv("self"))
         self._log(op, actor, {"node": nid, "from": p_old, "to": new_parent}, warnings)
         return {"warnings": warnings}
 
@@ -7130,9 +7064,8 @@ class Org:
                     f"addressing the old name until they notice — such mail "
                     f"will bounce with 'unknown recipient'."]
         self._log("rename", actor, {"node": nid, "new": new}, warnings)
-        self._notify([new], f"You have been renamed: {nid} → {new} "
-                            f"(by {'the user' if actor == USER else actor}). "
-                            f"Sign and refer to yourself as {new!r} from now on.")
+        self._notify_ev([new], _mint("lifecycle.renamed", actor_of(actor), self.node_ref(new),
+                                     old=nid, new=new, by=actor))
         _ = n
         return {"node": new, "was": nid, "renamed": renamed,
                 "warnings": warnings}
@@ -8560,49 +8493,49 @@ class Org:
         Returns the policy actually applied."""
         policy = self.d.get("fable_filter_policy", "halt")
         n = self.node(nid)
+
+        # typed (family lifecycle): policy.fable_flagged, one event per audience
+        # (parent / peers / the user's inbox); every text is the rendering
+        def _fl(audience: str, outcome: str, *, autopsy: str | None = None,
+                autopsy_model: str | None = None, replacement: str | None = None,
+                reason: str | None = None) -> dict[str, Any]:
+            return _mint("policy.fable_flagged", actor_of(SYSTEM), self.node_ref(nid),
+                         audience=audience, node=nid, outcome=outcome, autopsy=autopsy,
+                         autopsy_model=autopsy_model, replacement=replacement,
+                         reason=reason, detail=str(detail))
+
+        def _tell_user(ev: dict[str, Any]) -> None:
+            self.to_user_inbox({
+                "id": uuid.uuid4().hex[:8], "from": SYSTEM, "kind": "decision",
+                "at": now(), "body": events.render_agent(ev)}, ev)
+
         if policy == "opus" and n["model"] == "fable":
             n["model"] = "opus"
-            self._notify([n["parent"]],
-                         f'Your report "{nid}" switched fable→opus: a Fable content '
-                         f'filter flagged its message (org policy). Seat cost dropped '
-                         f'10→5; the flagged turn retries on opus.')
-            self._notify(self._peers_of(n["parent"], nid),
-                         f'Your peer "{nid}" switched fable→opus (content filter, '
-                         f'org policy).')
+            self._notify_ev([n["parent"]], _fl("parent", "switched"))
+            self._notify_ev(self._peers_of(n["parent"], nid), _fl("peer", "switched"))
         elif policy == "auto-autopsy" and n["model"] == "fable":
             autopsy_model = self.d.get("fable_filter_model", "opus")
             from . import providers
             avail, reason = providers.tier_availability(autopsy_model)
             if not avail:
-                self._notify([n["parent"]],
-                             f'Your report "{nid}" had a message FLAGGED by Fable\'s '
-                             f'content filters — auto-autopsy model "{autopsy_model}" '
-                             f'is unavailable ({reason}); its turn HALTED (org policy).')
-                self.to_user_inbox({
-                    "id": uuid.uuid4().hex[:8], "from": SYSTEM, "kind": "decision",
-                    "at": now(),
-                    "body": (f'A Fable content filter flagged a message from "{nid}" '
-                             f'(auto-autopsy configured with model "{autopsy_model}", '
-                             f'but that model is currently unavailable: {reason}; '
-                             f'turn halted). Detail: {detail[:200]}')})
+                self._notify_ev([n["parent"]],
+                                _fl("parent", "autopsy_unavailable",
+                                    autopsy_model=str(autopsy_model), reason=str(reason)))
+                _tell_user(_fl("user", "autopsy_unavailable",
+                               autopsy_model=str(autopsy_model), reason=str(reason)))
                 self._log("fable_filter", SYSTEM,
                           {"node": nid, "policy": "halt",
                            "reason": f"model {autopsy_model} unavailable: {reason}"}, [])
                 return "halt"
 
             applied_info = self._execute_auto_autopsy(nid, detail, autopsy_model)
-            self._notify([n["parent"]],
-                         f'Your report "{nid}" had a message FLAGGED by Fable\'s '
-                         f'content filters. Auto-autopsy invoked: hired "{applied_info["autopsy_id"]}" '
-                         f'({autopsy_model}), replacement "{applied_info["rep_id"]}" (fable), '
-                         f'and retired "{nid}".')
-            self.to_user_inbox({
-                "id": uuid.uuid4().hex[:8], "from": SYSTEM, "kind": "decision",
-                "at": now(),
-                "body": (f'A Fable content filter flagged a message from "{nid}" '
-                         f'(org policy applied: auto-autopsy — hired {applied_info["autopsy_id"]} '
-                         f'[{autopsy_model}], replacement {applied_info["rep_id"]}). '
-                         f'Detail: {detail[:200]}')})
+            self._notify_ev([n["parent"]],
+                            _fl("parent", "autopsy", autopsy=str(applied_info["autopsy_id"]),
+                                autopsy_model=str(autopsy_model),
+                                replacement=str(applied_info["rep_id"])))
+            _tell_user(_fl("user", "autopsy", autopsy=str(applied_info["autopsy_id"]),
+                           autopsy_model=str(autopsy_model),
+                           replacement=str(applied_info["rep_id"])))
             self._log("fable_filter", SYSTEM,
                       {"node": nid, "policy": "auto-autopsy",
                        "autopsy_model": autopsy_model,
@@ -8611,18 +8544,8 @@ class Org:
             return "auto-autopsy"
         else:
             policy = "halt"
-            self._notify([n["parent"]],
-                         f'Your report "{nid}" had a message FLAGGED by Fable\'s '
-                         f'content filters — its turn HALTED (org policy). Re-task '
-                         f'it, or the user may switch the org filter policy to '
-                         f'auto-convert to opus.')
-        self.to_user_inbox({
-            "id": uuid.uuid4().hex[:8], "from": SYSTEM, "kind": "decision",
-            "at": now(),
-            "body": (f'A Fable content filter flagged a message from "{nid}" '
-                     f'(org policy applied: {policy}'
-                     f'{" — retried on opus" if policy == "opus" else ""}). '
-                     f'Detail: {detail[:200]}')})
+            self._notify_ev([n["parent"]], _fl("parent", "halted"))
+        _tell_user(_fl("user", "switched" if policy == "opus" else "halted"))
         self._log("fable_filter", SYSTEM, {"node": nid, "policy": policy}, [])
         return policy
 
@@ -8687,7 +8610,14 @@ class Org:
             f'diagnose what instruction triggered the filter, and brief the replacement '
             f'agent "{rep_id}" with rewritten instructions to avoid tripping the filter.'
         )
-        self.post_mail(USER, autopsy_node, kickoff, kind="request")
+        # typed: lifecycle.kickoff(reason=autopsy) — the engine's own hand, carried
+        # under the user's name (design I3 exception: engine_authored on the row)
+        self.post_mail(USER, autopsy_node, "", kind="request",
+                       ev=_mint("lifecycle.kickoff", actor_of(SYSTEM),
+                                self.node_ref(autopsy_node), body=kickoff, hired_by=USER,
+                                reason="autopsy",
+                                tier=str(self.node(autopsy_node).get("model") or ""),
+                                grant=float(self.node(autopsy_node).get("grant") or 0)))
         return {"autopsy_id": autopsy_node, "rep_id": rep_id}
 
 
@@ -8725,6 +8655,15 @@ class Org:
         converted: list[str]
         dissolved: list[str]
         locked, converted, dissolved = [], [], []
+
+        # typed (family lifecycle): policy.weekly_limit, one event per audience;
+        # the user's summary carries the lists exactly as the old text printed them
+        def _wl(node: str, relation: str, outcome: str, *, nodes: int | None = None,
+                freed: str | None = None) -> dict[str, Any]:
+            return _mint("policy.weekly_limit", actor_of(SYSTEM), self.node_ref(node),
+                         relation=relation, node=node, outcome=outcome, nodes=nodes,
+                         freed=freed, policy=None, detected_at=None, halted=None,
+                         dissolved=None, converted=None)
         for k in [k for k, v in self.nodes.items()
                   if v["state"] == "live" and v["model"] == "fable"]:
             n = self.nodes[k]
@@ -8733,45 +8672,38 @@ class Org:
             if policy == "opus":
                 n["model"] = "opus"
                 converted.append(k)
-                self._notify([n["parent"]],
-                             f'Your report "{k}" switched fable→opus: weekly Fable '
-                             f'usage limit exhausted (org policy). Its seat cost '
-                             f'dropped 10→5; it keeps working.')
-                self._notify([k], "Weekly Fable usage limit exhausted: per org policy "
-                                  "you now run as OPUS. Carry on.")
+                self._notify_ev([n["parent"]], _wl(k, "report", "switched"))
+                self._notify_ev([k], _wl(k, "self", "switched"))
             elif policy == "dissolve":
                 parent, peers = n["parent"], self._peers_of(n["parent"], k)
                 taken = self.dissolve(SYSTEM, k)
                 dissolved.append(k)
-                self._notify([parent],
-                             f'Your report "{k}" and its entire suborganization '
-                             f'({len(taken["nodes"])} node(s)) were dissolved: weekly '
-                             f'Fable usage limit exhausted (org policy). '
-                             f'{taken["freed"]} credits returned to you.')
-                self._notify(peers,
-                             f'Your peer "{k}" and its suborganization were dissolved '
-                             f'(weekly Fable limit, org policy).')
+                self._notify_ev([parent], _wl(k, "report", "dissolved",
+                                              nodes=len(taken["nodes"]),
+                                              freed=str(taken["freed"])))
+                self._notify_ev(peers, _wl(k, "peer", "dissolved"))
             else:   # halt — the default
                 n["limit_locked"] = True
                 locked.append(k)
-                self._notify([n["parent"]],
-                             f'Your report "{k}" has HALTED: weekly Fable usage limit '
-                             f'exhausted. It holds its seat and will not run until the '
-                             f'limit resets or the user intervenes — decide how to '
-                             f'cover its work.')
-                self._notify(self._peers_of(n["parent"], k),
-                             f'Your peer "{k}" has halted (weekly Fable limit).')
-                self._notify([k], "Weekly Fable usage limit exhausted: you are halted. "
-                                  "Your reports remain active.")
+                self._notify_ev([n["parent"]], _wl(k, "report", "halted"))
+                self._notify_ev(self._peers_of(n["parent"], k), _wl(k, "peer", "halted"))
+                self._notify_ev([k], _wl(k, "self", "halted"))
+        first = (locked + dissolved + converted or [detecting_node or ""])[0]
+        uev = _mint("policy.weekly_limit", actor_of(SYSTEM),
+                    self.node_ref(first) if first in self.nodes else
+                    {"kind": "node", "org": str(self.d.get("slug") or ""), "id": str(first),
+                     "name": str(first), "generation": 0},
+                    relation="user", node=str(first),
+                    outcome=("switched" if policy == "opus" else
+                             "dissolved" if policy == "dissolve" else "halted"),
+                    nodes=None, freed=None, policy=str(policy),
+                    detected_at=(str(detecting_node) if detecting_node else None),
+                    halted=(str(locked) if locked else None),
+                    dissolved=(str(dissolved) if dissolved else None),
+                    converted=(str(converted) if converted else None))
         self.to_user_inbox({
             "from": SYSTEM, "kind": "decision", "at": now(),
-            "body": (f"Weekly Fable usage limit exhausted (detected at "
-                     f"{detecting_node or 'unknown'}; policy: {policy}). "
-                     f"Halted: {locked or 'none'}. Dissolved (whole subtrees): "
-                     f"{dissolved or 'none'}. Switched to opus: {converted or 'none'}"
-                     + (" — they stay opus until you change them." if converted else ".")
-                     + " Rehiring a fable yourself, or clearing the lock in settings, "
-                       "lifts the freeze.")})
+            "body": events.render_agent(uev)}, uev)
         self._log("fable_limit", SYSTEM,
                   {"policy": policy, "locked": locked, "dissolved": dissolved,
                    "converted": converted}, [])
@@ -8822,8 +8754,7 @@ class Org:
                     "released": []}
         cast("dict[str, Any]", n)["unstuck"] = {
             "by": USER, "at": now(), **({"was": was} if was else {})}
-        self._notify([nid], "The user manually UNSTUCK you (override) — "
-                            "any limit that held you is released; continue.")
+        self._notify_ev([nid], _mint("policy.unstuck", actor_of(USER), self.node_ref(nid)))
         self._log("unstick", actor, {"node": nid, "released": released}, [])
         warnings: list[str] = []
         if self.d.get("spend_frozen"):
@@ -8847,12 +8778,13 @@ class Org:
             v.pop("limit_locked", None)
         for k in freed:
             p = self.nodes[k]["parent"]
-            self._notify([p] + self._peers_of(p, k),
-                         f'"{k}" is RELEASED from the weekly-Fable halt (the '
-                         f'user cleared it). It runs again; no need to keep '
-                         f'covering its work.')
-            self._notify([k], "The Fable lock was cleared by the user: you "
-                              "are no longer halted. Carry on.")
+            self._notify_ev([p], _mint("policy.unlocked", actor_of(USER), self.node_ref(k),
+                                       node=k, relation="report"))
+            self._notify_ev(self._peers_of(p, k),
+                            _mint("policy.unlocked", actor_of(USER), self.node_ref(k),
+                                  node=k, relation="peer"))
+            self._notify_ev([k], _mint("policy.unlocked", actor_of(USER), self.node_ref(k),
+                                       node=k, relation="self"))
         self._log("fable_unlock", USER, {"freed": freed}, [])
 
     # ------------------------------------------------------- lineage (§8)
@@ -8919,10 +8851,11 @@ class Org:
         # a NORMAL compaction's successor carries the CLI's own summary — the
         # cheap-compact breadcrumbs splice (if armed) retires with the session
         n.pop("cheap_compacted", None)
-        self._notify([n["parent"]],
-                     f'"{nid}" compacted (now generation {gen + 1}). Its pre-compaction '
-                     f'self is archived as "{pred_id}" — rehire it to consult the full '
-                     f'detail the summary flattened.')
+        def _cp(relation: str) -> dict[str, Any]:
+            return _mint("lifecycle.compacted", actor_of(SYSTEM), self.node_ref(nid), node=nid,
+                         relation=relation, generation=gen + 1, predecessor=str(pred_id),
+                         auto=False, lost=False, size_note=None)
+        self._notify_ev([n["parent"]], _cp("report"))
         # …AND THE NODE ITSELF (user ruling 2026-08-10). This used to go only to
         # the parent, which is the one participant that did not lose anything:
         # the compacted agent cannot know it has a bearer, because knowing was
@@ -8930,15 +8863,7 @@ class Org:
         # "YOUR OWN knowledge bearer", and on the default org_visibility the
         # agent could neither see that it had one nor learn its id — a tool
         # advertising a capability its holder had no way to reach.
-        self._notify([nid],
-                     f'You were compacted: you are now generation {gen + 1}, and '
-                     f'the context you had before it is NOT in your summary in '
-                     f'full. Your pre-compaction self is archived as "{pred_id}" '
-                     f'and is CONSULTABLE — orgtree_rehire on that id brings it '
-                     f'back as your own subordinate, with everything you no '
-                     f'longer remember, and you may retire it again when done. '
-                     f'Reach for it when the answer you need is detail the '
-                     f'summary flattened rather than something you can rederive.')
+        self._notify_ev([nid], _cp("self"))
         self._log("compact_split", SYSTEM, {"node": nid, "predecessor": pred_id}, [])
         return pred_id
 
@@ -9023,44 +8948,17 @@ class Org:
         n["predecessor"] = pred_id
         size = (f'; ~{pre_tokens / 1000:.0f}k tokens summarized'
                 if pre_tokens else '')
-        if bearer_sid:
-            self._notify([n["parent"]],
-                         f'"{nid}" was auto-compacted BY THE CLI (now '
-                         f'generation {gen + 1}{size}). Its pre-compaction '
-                         f'self is preserved as "{pred_id}" — rehire it to '
-                         f'consult the full detail the summary flattened.')
-            self._notify([nid],
-                         f'You were auto-compacted by the CLI: you are now '
-                         f'generation {gen + 1}, and the context you had '
-                         f'before it is NOT in your summary in full. Your '
-                         f'pre-compaction self is archived as "{pred_id}" and '
-                         f'is CONSULTABLE — orgtree_rehire on that id brings '
-                         f'it back as your own subordinate, with everything '
-                         f'you no longer remember, and you may retire it '
-                         f'again when done. Reach for it when the answer you '
-                         f'need is detail the summary flattened rather than '
-                         f'something you can rederive.')
-        else:
-            self._notify([n["parent"]],
-                         f'"{nid}" was auto-compacted BY THE CLI (now '
-                         f'generation {gen + 1}{size}). Its pre-compaction '
-                         f'session could not be preserved — "{pred_id}" is '
-                         f'recorded as a LOST generation (visible, not '
-                         f'consultable).')
-            # the same courtesy as compact_split, with the OPPOSITE content —
-            # and saying so is the point. Here there is no bearer to wake, so
-            # telling the agent it has one would send it to a refusal; telling
-            # it nothing leaves it to discover the same refusal on its own. It
-            # is told that this generation is lost, precisely so it does not
-            # go looking.
-            self._notify([nid],
-                         f'You were auto-compacted by the CLI: you are now '
-                         f'generation {gen + 1} and the context you had before '
-                         f'it survives only as your summary. There is NO '
-                         f'consultable bearer in this case — "{pred_id}" is a '
-                         f'LOST generation and cannot be rehired, so anything '
-                         f'the summary dropped is gone. Ask whoever gave you '
-                         f'the work rather than hunting for a past self.')
+        # typed (family lifecycle): lifecycle.compacted with auto=True; `lost`
+        # says whether a consultable bearer exists (the same courtesy as
+        # compact_split, with the OPPOSITE content when there is none — and
+        # saying so is the point: an agent told it has a bearer it cannot wake
+        # is sent to a refusal, one told nothing discovers the same refusal)
+        def _cli(relation: str) -> dict[str, Any]:
+            return _mint("lifecycle.compacted", actor_of(SYSTEM), self.node_ref(nid), node=nid,
+                         relation=relation, generation=gen + 1, predecessor=str(pred_id),
+                         auto=True, lost=not bearer_sid, size_note=(size or None))
+        self._notify_ev([n["parent"]], _cli("report"))
+        self._notify_ev([nid], _cli("self"))
         self._log("cli_compact", SYSTEM,
                   {"node": nid, "predecessor": pred_id,
                    "preserved": bool(bearer_sid),
@@ -9094,11 +8992,9 @@ class Org:
         # ever mislead a later reader
         n.pop("cli_boundary_offset", None)
         succ = n.get("successor")
-        self._notify([succ, n.get("parent")],
-                     f'"{pred_id}" is RECOVERED — the generation recorded as '
-                     f'lost was never actually gone, and it is now a '
-                     f'consultable knowledge bearer. Rehire it to reach the '
-                     f'context that compaction summarized away.')
+        self._notify_ev([succ, n.get("parent")],
+                        _mint("lifecycle.recovered", actor_of(USER), self.node_ref(pred_id),
+                              predecessor=str(pred_id), successor=str(succ or "")))
         self._log("recover_lost_generation", USER,
                   {"node": pred_id, "successor": succ}, [])
         return pred_id
@@ -9182,12 +9078,9 @@ class Org:
         self.d["audiences"] = [a for a in self.d.get("audiences", [])
                                if pred_id not in (a.get("grantee"),
                                                   a.get("grantor"))]
-        self._notify([self.node(succ).get("parent"), succ],
-                     f'The lineage entry "{pred_id}" has been removed: it was '
-                     f'a PHANTOM. It recorded a generation that never existed '
-                     f'— orgtree logged its own §8 compaction a second time, '
-                     f'as a loss. Every record it named is held, in full, by '
-                     f'"{prev}". Nothing was deleted but a false row.')
+        self._notify_ev([self.node(succ).get("parent"), succ],
+                        _mint("lifecycle.phantom_removed", actor_of(USER), self.node_ref(succ),
+                              predecessor=str(pred_id), holder=str(prev)))
         self._log("drop_phantom_generation", USER,
                   {"node": pred_id, "successor": succ, "duplicate_of": prev},
                   [])
@@ -9197,11 +9090,9 @@ class Org:
         """№31: ledger said live, the session cannot actually resume."""
         n = self.node(nid)
         n["state"] = "unrecoverable"
-        self._notify([n["parent"]],
-                     f'⚠ Your report "{nid}" is UNRECOVERABLE — its session failed to '
-                     f'resume ({reason}). Its seat is still held; rehire it to RE-SEED '
-                     f'it (fresh session, same identity and credits), or retire it '
-                     f'to free the credits.')
+        self._notify_ev([n["parent"]],
+                        _mint("lifecycle.unrecoverable", actor_of(SYSTEM), self.node_ref(nid),
+                              node=nid, reason=str(reason)))
         self._log("unrecoverable", SYSTEM, {"node": nid, "reason": reason}, [])
 
     def reseed(self, actor: str, nid: str, new_session_id: str) -> dict[str, Any]:
@@ -9235,11 +9126,9 @@ class Org:
             n["lost_reason"] = "reseed"
             n["frozen"] = None
             n["inflight"] = None
-            self._notify([t for t in {succ, n["parent"]} if t and t != actor],
-                         f'Knowledge bearer "{nid}" lost its transcript and is '
-                         f'now a LOST generation — it can no longer be '
-                         f'consulted; what it held survives only in what was '
-                         f'already written down.')
+            self._notify_ev([t for t in {succ, n["parent"]} if t and t != actor],
+                            _mint("lifecycle.bearer_lost", actor_of(actor), self.node_ref(nid),
+                                  bearer=nid))
             self._log("reseed", actor, {"node": nid, "lost_bearer": True}, [])
             return {"warnings": [
                 f'{nid} was a knowledge bearer with no surviving transcript — '
@@ -9300,19 +9189,15 @@ class Org:
         # a reseeded session starts as empty as a cheap-compacted one (and
         # its predecessor is LOST) — the breadcrumbs splice applies equally
         n["cheap_compacted"] = True
-        who = "the user" if actor == USER else f'"{actor}"'
         # a re-seeded session is as memoryless as a cheap-compacted one —
         # same digest, same reason (see _fold_notices)
         folded = self._fold_notices(nid)
-        self._notify([p for p in [n["parent"]] if p and p != actor],
-                     f'Your report "{nid}" was RE-SEEDED by {who}: its dead session '
-                     f'is archived as "{pred_id}" (a lost generation) and it starts '
-                     f'fresh — same role, credits and reports, empty memory.')
-        self._notify([nid],
-                     f"{who.capitalize()} re-seeded you after your previous session "
-                     f"was lost. Your role, charter, credits and reports are intact, "
-                     f"but your memory starts fresh — check your scratch CLAUDE.md "
-                     f"and ask your chain to re-orient you.")
+
+        def _rs(relation: str) -> dict[str, Any]:
+            return _mint("lifecycle.reseeded", actor_of(actor), self.node_ref(nid), node=nid,
+                         relation=relation, by=actor, predecessor=str(pred_id))
+        self._notify_ev([p for p in [n["parent"]] if p and p != actor], _rs("report"))
+        self._notify_ev([nid], _rs("self"))
         self._log("reseed", actor, {"node": nid, "predecessor": pred_id,
                                     "notices_folded": folded}, [])
         return {"predecessor": pred_id,

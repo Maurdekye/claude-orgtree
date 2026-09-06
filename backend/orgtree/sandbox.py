@@ -212,15 +212,12 @@ def migrate_to_disk(org: Org) -> None:
             # review 2026-08-01: flooring RAISES a cap the operator
             # deliberately set — that change belongs in their inbox, not
             # only the backend log
+            from . import events as _events
+            dev = _events.mint("lifecycle.disk_migrated", {"kind": "system", "id": SYSTEM},
+                               o2.org_ref(), floored_from=str(floored_from))
             o2.to_user_inbox({
                 "id": uuid.uuid4().hex[:12], "from": SYSTEM, "kind": "notice",
-                "at": now(),
-                "body": f"Storage migration: this org's {floored_from} MB "
-                        f"limit was raised to the 4096 MB one-disk minimum "
-                        f"(system seed + transcripts now count inside the "
-                        f"cap). Its agents may consume up to 4 GB; the disk "
-                        f"can be grown online or shrunk (staged) from the "
-                        f"storage browser."})
+                "at": now(), "body": _events.render_agent(dev)}, dev)
         store.save_org(o2)
     _disk_flag.pop(slug, None)
     print(f"[orgtree] org {slug!r} migrated to its disk "

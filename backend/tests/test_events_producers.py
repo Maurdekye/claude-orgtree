@@ -1803,6 +1803,415 @@ check("grants · self and superior copies of a grant change (user / agent actor)
       "text; kiosk ceiling and clamp renderings == old literals", _grants_and_kiosk)
 
 
+# ============================================================= §L family lifecycle
+print("\n§L · lifecycle — hires, retirements, switches, reorganisation, compaction, policies")
+
+
+def last_notice(slug, nid):
+    return notices(slug, nid)[-1]
+
+
+def _ev_of(row):
+    return decoded(row)
+
+
+def rig5():
+    """boss → kid → grandkid; boss → kid2 (kid's peer); boss2 top-level."""
+    slug = rig4()
+    o = store.load_org(slug)
+    o.hire("boss", "boss", "haiku", 5, "kid2", add_dirs=[],
+           tools={"bash": True, "web": False, "edit": False, "subagents": False, "mcp": []},
+           org_visibility="team", charter="peer fixture")
+    store.save_org(o)
+    return slug
+
+
+def _hire_retire_rehire_dissolve_delete():
+    slug = rig5()
+    o = store.load_org(slug)
+    o.hire("kid", "kid", "haiku", 1, "newbie", add_dirs=[],
+           tools={"bash": True, "web": False, "edit": False, "subagents": False, "mcp": []},
+           org_visibility="team", charter="first line of the role\nsecond line")
+    store.save_org(o)
+    # the actor (kid) is the parent: it is NOT told; grandkid (newbie's peer) is
+    n = last_notice(slug, "grandkid")
+    assert n["text"] == ('"kid" hired "newbie" (haiku) alongside you, under kid. Role: first '
+                         'line of the role'), n["text"]
+    ev = _ev_of(n)
+    assert ev["variant"] == "lifecycle.hired" and ev["relation"] == "peer"
+    assert ev["why"] == "first line of the role" and ev["grant"] == 1.0 and ev["parent"] == "kid"
+    assert ev["object"]["id"] == "newbie" and n["text"] == events.render_agent(ev)
+    # user hires under kid: kid (parent) gets the report copy
+    o = store.load_org(slug)
+    o.hire(USER, "kid", "haiku", 2, "newbie2", add_dirs=[],
+           tools={"bash": True, "web": False, "edit": False, "subagents": False, "mcp": []},
+           org_visibility="team", charter="")
+    store.save_org(o)
+    n = last_notice(slug, "kid")
+    assert n["text"] == 'The user hired "newbie2" (haiku, grant 2) under you.', n["text"]
+    assert _ev_of(n)["relation"] == "report" and _ev_of(n)["why"] is None
+    # retire by self, by the user
+    o = store.load_org(slug)
+    f1 = o.retire("newbie", "newbie")["freed"]
+    f2 = o.retire(USER, "newbie2")["freed"]
+    store.save_org(o)
+    rows = notices(slug, "kid")[-2:]
+    assert rows[0]["text"] == f'Your report "newbie" was retired by itself (self-retirement) (freed {f1:g} credits).', rows[0]["text"]
+    assert rows[1]["text"] == f'Your report "newbie2" was retired by the user (freed {f2:g} credits).', rows[1]["text"]
+    assert _ev_of(rows[0])["by"] == "newbie" and _ev_of(rows[1])["freed"] == float(f2)
+    n = last_notice(slug, "grandkid")
+    assert n["text"] == 'Your peer "newbie2" was retired by the user.', n["text"]
+    # rehire: parent, peer and self copies
+    o = store.load_org(slug)
+    o.rehire("kid", "newbie")
+    store.save_org(o)
+    n = last_notice(slug, "newbie")
+    assert n["text"] == '"kid" rehired you. You are live again; your prior context is intact.', n["text"]
+    ev = _ev_of(n)
+    assert ev["variant"] == "lifecycle.rehired" and ev["relation"] == "self"
+    n = last_notice(slug, "grandkid")
+    assert n["text"] == 'Your peer "newbie" was rehired by "kid".', n["text"]
+    o = store.load_org(slug)
+    o.rehire(USER, "newbie2")
+    store.save_org(o)
+    n = last_notice(slug, "kid")
+    assert n["text"] == f'Your report "newbie2" was rehired by the user (grant {o.node("newbie2")["grant"]}).', n["text"]
+    assert _ev_of(n)["grant"] == float(o.node("newbie2")["grant"])
+    # dissolve kid's subtree by the user: boss (report copy), kid2 (peer copy)
+    o = store.load_org(slug)
+    r = o.dissolve(USER, "kid")
+    store.save_org(o)
+    n = last_notice(slug, "boss")
+    assert n["text"] == (f'The user dissolved your report "kid" and its whole suborganization '
+                         f'({len(r["nodes"])} node(s), freed {r["freed"]:g} credits).'), n["text"]
+    ev = _ev_of(n)
+    assert ev["variant"] == "lifecycle.dissolved" and ev["nodes"] == len(r["nodes"])
+    n = last_notice(slug, "kid2")
+    assert n["text"] == 'Your peer "kid" and its suborganization were dissolved by the user.'
+    # delete kid2 (no subtree) and boss2's subtree-less peer text
+    o = store.load_org(slug)
+    o.delete(USER, "kid2")
+    store.save_org(o)
+    n = last_notice(slug, "boss")
+    assert n["text"] == ('The user permanently DELETED your report "kid2". Its records are '
+                         'gone from the org.'), n["text"]
+    assert _ev_of(n)["extra"] == 0 and _ev_of(n)["variant"] == "lifecycle.deleted"
+
+
+check("hire (agent/user, role gist), retire (self/user), rehire (self/peer/report), "
+      "dissolve, delete == old text", _hire_retire_rehire_dissolve_delete)
+
+
+def _switch_and_reorg():
+    slug = rig5()
+    o = store.load_org(slug)
+    o.switch_model("boss", "kid", "sonnet")
+    store.save_org(o)
+    n = last_notice(slug, "kid")
+    seat_h, seat_s = o.d["tiers"]["haiku"], o.d["tiers"]["sonnet"]
+    assert n["text"] == (f'"boss" switched your model haiku→sonnet (seat {seat_h:g}→{seat_s:g}). '
+                         f'Your context is intact — carry on.'), n["text"]
+    ev = _ev_of(n)
+    assert ev["variant"] == "lifecycle.model_switched" and ev["crossed"] is False
+    assert ev["queued"] is False and ev["predecessor"] is None and ev["relation"] == "self"
+    assert n["text"] == events.render_agent(ev)
+    # the user switching: boss (parent) gets the report copy
+    o = store.load_org(slug)
+    o.switch_model(USER, "kid", "haiku")
+    store.save_org(o)
+    n = last_notice(slug, "boss")
+    assert n["text"] == 'The user switched "kid" sonnet→haiku.', n["text"]
+    assert _ev_of(n)["relation"] == "report"
+    # queued switch on a busy node, then cancelled
+    o = store.load_org(slug)
+    o.switch_model(USER, "kid", "sonnet", busy=True)
+    store.save_org(o)
+    n = last_notice(slug, "boss")
+    assert n["text"] == ('The user queued a model switch for "kid": haiku→sonnet, applied '
+                         'when its current turn ends.'), n["text"]
+    assert _ev_of(n)["variant"] == "lifecycle.switch_queued"
+    o = store.load_org(slug)
+    o.switch_model(USER, "kid", "haiku", busy=True)     # back to the current = cancel
+    store.save_org(o)
+    n = last_notice(slug, "boss")
+    assert n["text"] == 'The user cancelled the queued switch of "kid" to sonnet.', n["text"]
+    assert _ev_of(n)["variant"] == "lifecycle.switch_cancelled"
+    # rename
+    o = store.load_org(slug)
+    o.rename(USER, "grandkid", "gk")
+    store.save_org(o)
+    n = last_notice(slug, "gk")
+    assert n["text"] == ("You have been renamed: grandkid → gk (by the user). Sign and refer "
+                         "to yourself as 'gk' from now on."), n["text"]
+    assert _ev_of(n)["variant"] == "lifecycle.renamed" and _ev_of(n)["old"] == "grandkid"
+    # move gk from kid to kid2 (user): old parent, new parent, self
+    o = store.load_org(slug)
+    o.move(USER, "gk", "kid2")
+    store.save_org(o)
+    assert last_notice(slug, "kid")["text"] == \
+        'The user moved your report "gk" away — it now reports to kid2.'
+    assert last_notice(slug, "kid2")["text"] == \
+        'The user moved "gk" (from kid) to report to you.'
+    n = last_notice(slug, "gk")
+    assert n["text"] == ("The user moved you: you now report to kid2 (you were under kid). "
+                         "Your entire suborganization moved with you."), n["text"]
+    ev = _ev_of(n)
+    assert ev["variant"] == "lifecycle.moved" and ev["role"] == "self"
+    assert ev["from_parent"] == "kid" and ev["to_parent"] == "kid2" and ev["tail"] is None
+    # insert kid2's report gk above kid2? no — insert kid (a report of boss) above kid2:
+    # insert_parent(nid, target): nid must be a direct report of target. Use gk above...
+    # gk is kid2's direct report: insert gk above kid2.
+    o = store.load_org(slug)
+    r = o.insert_parent(USER, "gk", "kid2")
+    store.save_org(o)
+    n = last_notice(slug, "boss")
+    assert n["text"] == ('The user inserted "gk" above your report "kid2": "gk" now holds that '
+                         'position and "kid2" reports to it, keeping its own team.'), n["text"]
+    assert _ev_of(n)["role"] == "parent" and _ev_of(n)["variant"] == "lifecycle.inserted"
+    n = last_notice(slug, "kid")
+    assert n["text"] == '"gk" joined your team (inserted by the user above "kid2", which now reports to it).'
+    n = last_notice(slug, "kid2")
+    assert n["text"] == (f'The user inserted "gk" directly above you: you now report to "gk" '
+                         f'instead of boss, and your entire team, scope and remaining grant '
+                         f'({r["target_grant"]}) came with you.'), n["text"]
+    n = last_notice(slug, "gk")
+    assert n["text"].startswith('The user placed you in "kid2"\'s position: you report to boss, '
+                                '"kid2" and its whole team now report to YOU, and you hold that '
+                                f"seat's scope with a grant of {r['grant']} (of which "), n["text"]
+    assert _ev_of(n)["role"] == "self" and n["text"] == events.render_agent(_ev_of(n))
+    # seat swap (non-nested): kid (under boss) ↔ kid2 (under gk)
+    o = store.load_org(slug)
+    o.swap_seats(USER, "kid", "kid2")
+    store.save_org(o)
+    n = last_notice(slug, "kid")
+    ev = _ev_of(n)
+    assert ev["variant"] == "lifecycle.seat_swapped" and ev["role"] == "a" and ev["nested"] is False
+    assert n["text"].startswith('The user swapped your seat with "kid2": you now report to "gk" and hold '
+                                "that seat's team, grant ("), n["text"]
+    n = last_notice(slug, "kid2")
+    assert n["text"].startswith('The user seated you in "kid"\'s place: you now report to the top level'
+                                if False else 'The user seated you in "kid"\'s place: you now report to "boss"'), n["text"]
+    assert _ev_of(n)["role"] == "b" and n["text"] == events.render_agent(_ev_of(n))
+    n = last_notice(slug, "gk")
+    assert n["text"] == 'The user seated "kid" in "kid2"\'s place — "kid" now reports to you.', n["text"]
+    assert _ev_of(n)["role"] == "parent_of_b"
+
+
+check("model switch (self/report/queued/cancelled), rename, move, insert, seat swap == "
+      "old text with per-audience roles", _switch_and_reorg)
+
+
+def _lineage_and_policy():
+    slug = rig5()
+    o = store.load_org(slug)
+    pred = o.compact_split("kid", "sess-2")
+    store.save_org(o)
+    n = last_notice(slug, "boss")
+    assert n["text"] == (f'"kid" compacted (now generation 1). Its pre-compaction self is '
+                         f'archived as "{pred}" — rehire it to consult the full detail the '
+                         f'summary flattened.'), n["text"]
+    ev = _ev_of(n)
+    assert ev["variant"] == "lifecycle.compacted" and ev["auto"] is False and ev["lost"] is False
+    n = last_notice(slug, "kid")
+    assert n["text"].startswith("You were compacted: you are now generation 1, and the context")
+    assert _ev_of(n)["relation"] == "self" and n["text"] == events.render_agent(_ev_of(n))
+    # CLI compaction, bearer preserved (with size) and lost
+    o = store.load_org(slug)
+    pred2 = o.record_cli_compaction("kid", pre_tokens=123456, bearer_sid="sess-2")
+    store.save_org(o)
+    n = last_notice(slug, "boss")
+    assert n["text"] == (f'"kid" was auto-compacted BY THE CLI (now generation 2; ~123k tokens '
+                         f'summarized). Its pre-compaction self is preserved as "{pred2}" — '
+                         f'rehire it to consult the full detail the summary flattened.'), n["text"]
+    ev = _ev_of(n)
+    assert ev["auto"] is True and ev["lost"] is False and ev["size_note"] == "; ~123k tokens summarized"
+    o = store.load_org(slug)
+    pred3 = o.record_cli_compaction("kid")
+    store.save_org(o)
+    n = last_notice(slug, "kid")
+    assert n["text"] == (f'You were auto-compacted by the CLI: you are now generation 3 and the '
+                         f'context you had before it survives only as your summary. There is NO '
+                         f'consultable bearer in this case — "{pred3}" is a LOST generation and '
+                         f'cannot be rehired, so anything the summary dropped is gone. Ask whoever '
+                         f'gave you the work rather than hunting for a past self.'), n["text"]
+    assert _ev_of(n)["lost"] is True
+    # recover the lost generation
+    o = store.load_org(slug)
+    o.recover_lost_generation(pred3, "sess-x")
+    store.save_org(o)
+    n = last_notice(slug, "kid")
+    assert n["text"] == (f'"{pred3}" is RECOVERED — the generation recorded as lost was never '
+                         f'actually gone, and it is now a consultable knowledge bearer. Rehire '
+                         f'it to reach the context that compaction summarized away.'), n["text"]
+    assert _ev_of(n)["variant"] == "lifecycle.recovered"
+    # cheap compact (self + parent), reseed
+    o = store.load_org(slug)
+    r = o.cheap_compact(USER, "kid")
+    store.save_org(o)
+    n = last_notice(slug, "kid")
+    ev = _ev_of(n)
+    assert ev["variant"] == "lifecycle.cheap_compacted" and ev["relation"] == "self"
+    assert n["text"].startswith("You were CHEAP-COMPACTED: your seat, scope, team and budget are")
+    assert n["text"].endswith('read the transcript before directing them.'), n["text"][-80:]
+    assert "Your team (grandkid) is UNCHANGED" in n["text"]
+    n = last_notice(slug, "boss")
+    assert n["text"] == (f'Your report "kid" was cheap-compacted by the user: same seat and '
+                         f'team, fresh session — its prior self is consultable as '
+                         f'"{ev["predecessor"]}".'), n["text"]
+    o = store.load_org(slug)
+    o.mark_unrecoverable("grandkid", "session file missing")
+    store.save_org(o)
+    n = last_notice(slug, "kid")
+    assert n["text"] == ('⚠ Your report "grandkid" is UNRECOVERABLE — its session failed to '
+                         'resume (session file missing). Its seat is still held; rehire it to '
+                         'RE-SEED it (fresh session, same identity and credits), or retire it '
+                         'to free the credits.'), n["text"]
+    o = store.load_org(slug)
+    r = o.reseed("kid", "grandkid", "sess-new")
+    store.save_org(o)
+    n = last_notice(slug, "grandkid")
+    assert n["text"] == ('"kid" re-seeded you after your previous session was lost. Your role, '
+                         'charter, credits and reports are intact, but your memory starts fresh '
+                         '— check your scratch CLAUDE.md and ask your chain to re-orient you.'), n["text"]
+    assert _ev_of(n)["variant"] == "lifecycle.reseeded" and _ev_of(n)["relation"] == "self"
+    # fable policy: halt (default) — parent + user copies; then the release by the user
+    o = store.load_org(slug)
+    o.node("kid2")["model"] = "fable"
+    store.save_org(o)
+    o = store.load_org(slug)
+    assert o.fable_filter_hit("kid2", "d" * 300) == "halt"
+    store.save_org(o)
+    n = last_notice(slug, "boss")
+    assert n["text"] == ('Your report "kid2" had a message FLAGGED by Fable\'s content filters — '
+                         'its turn HALTED (org policy). Re-task it, or the user may switch the '
+                         'org filter policy to auto-convert to opus.'), n["text"]
+    assert _ev_of(n)["variant"] == "policy.fable_flagged" and _ev_of(n)["outcome"] == "halted"
+    u = user_last(slug)
+    assert u["body"] == (f'A Fable content filter flagged a message from "kid2" (org policy '
+                         f'applied: halt). Detail: {"d" * 200}'), u["body"]
+    assert decoded(u)["audience"] == "user" and u["kind"] == "decision"
+    o = store.load_org(slug)
+    o.fable_limit_hit("kid2", "weekly limit")
+    store.save_org(o)
+    assert last_notice(slug, "kid2")["text"] == ("Weekly Fable usage limit exhausted: you are "
+                                                 "halted. Your reports remain active.")
+    assert last_notice(slug, "boss")["text"] == (
+        'Your report "kid2" has HALTED: weekly Fable usage limit exhausted. It holds its '
+        'seat and will not run until the limit resets or the user intervenes — decide how '
+        'to cover its work.')
+    assert last_notice(slug, "kid")["text"] == 'Your peer "kid2" has halted (weekly Fable limit).'
+    u = user_last(slug)
+    assert u["body"] == ("Weekly Fable usage limit exhausted (detected at kid2; policy: halt). "
+                         "Halted: ['kid2']. Dissolved (whole subtrees): none. Switched to opus: "
+                         "none. Rehiring a fable yourself, or clearing the lock in settings, "
+                         "lifts the freeze."), u["body"]
+    uev = decoded(u)
+    assert uev["variant"] == "policy.weekly_limit" and uev["relation"] == "user"
+    assert uev["halted"] == "['kid2']" and uev["policy"] == "halt"
+    o = store.load_org(slug)
+    o.clear_fable_lock()
+    store.save_org(o)
+    assert last_notice(slug, "kid2")["text"] == ("The Fable lock was cleared by the user: you are "
+                                                 "no longer halted. Carry on.")
+    n = last_notice(slug, "kid")
+    assert n["text"] == ('"kid2" is RELEASED from the weekly-Fable halt (the user cleared it). '
+                         'It runs again; no need to keep covering its work.'), n["text"]
+    assert _ev_of(n)["variant"] == "policy.unlocked" and _ev_of(n)["relation"] == "peer"
+    o = store.load_org(slug)
+    o.node("kid2")["limit_locked"] = True
+    o.unstick(USER, "kid2")
+    store.save_org(o)
+    n = last_notice(slug, "kid2")
+    assert n["text"] == ("The user manually UNSTUCK you (override) — any limit that held you "
+                         "is released; continue.")
+    assert _ev_of(n)["variant"] == "policy.unstuck"
+
+
+check("compaction (split, CLI preserved/lost, recovered), cheap compact, unrecoverable, "
+      "reseed, fable filter halt, weekly limit halt, unlock, unstick == old text",
+      _lineage_and_policy)
+
+
+def _kickoff_and_renders():
+    slug = rig5()
+    # the seat composite's kickoff step, driven directly (the /api/agent hire
+    # route refuses without a signed-in Claude on this machine)
+    o = store.load_org(slug)
+    o.hire("boss", "boss", "haiku", 1, "hired1", add_dirs=[],
+           tools={"bash": True, "web": False, "edit": False, "subagents": False, "mcp": []},
+           org_visibility="team", charter="do x")
+    nid = "hired1"
+    res: dict = {}
+    api._seat_finish(o, slug, "boss", nid, {"kickoff": "Start by reading the docket."}, res, [])
+    store.save_org(o)
+    row = box_last(slug, nid)
+    assert row["body"] == "Start by reading the docket." and row["kind"] == "request"
+    ev = decoded(row)
+    assert ev["variant"] == "lifecycle.kickoff" and ev["reason"] == "hire"
+    assert ev["hired_by"] == "boss" and ev["tier"] == "haiku" and ev["grant"] == 1.0
+    assert ev["object"]["id"] == nid
+    # rehire with a kickoff → reason rehire
+    o = store.load_org(slug)
+    o.retire("boss", nid)
+    o.rehire("boss", nid)
+    res = {}
+    api._seat_finish(o, slug, "boss", nid, {"kickoff": "Welcome back."}, res, [],
+                     fields=api._SEAT_SCOPE_REHIRE)
+    store.save_org(o)
+    row = box_last(slug, nid)
+    assert row["body"] == "Welcome back." and decoded(row)["reason"] == "rehire"
+    # render-only parity for the engine-side leaves (their producers need a live rig)
+    o = store.load_org(slug)
+    ev = events.mint("lifecycle.handoff_record", {"kind": "system", "id": SYSTEM},
+                     o.node_ref("kid"), generation=3)
+    assert events.render_agent(ev) == (
+        "A handoff record for this boundary is at handoff-g3/record.md "
+        "in your working folder: a citation index of instructions, tool "
+        "calls, artifacts and mail built from files, with line refs into "
+        "transcript.jsonl — not memory, and not evidence that any "
+        "provider context carried over.")
+    ev = events.mint("lifecycle.bearer_exhausted", {"kind": "system", "id": SYSTEM},
+                     o.node_ref("kid"), bearer="kid@0")
+    assert events.render_agent(ev) == (
+        'Knowledge bearer "kid@0" has exhausted its headroom and is '
+        'now a PRESERVING ORACLE — it still answers, but exchanges '
+        'are no longer retained by it.')
+    ev = events.mint("lifecycle.disk_migrated", {"kind": "system", "id": SYSTEM}, o.org_ref(),
+                     floored_from="512")
+    assert events.render_agent(ev) == (
+        "Storage migration: this org's 512 MB "
+        "limit was raised to the 4096 MB one-disk minimum "
+        "(system seed + transcripts now count inside the "
+        "cap). Its agents may consume up to 4 GB; the disk "
+        "can be grown online or shrunk (staged) from the "
+        "storage browser.")
+    ev = events.mint("lifecycle.switch_dropped", {"kind": "user", "id": USER}, o.node_ref("kid"),
+                     node="kid", target="opus", kept="haiku", reason="no seat")
+    assert events.render_agent(ev) == (
+        "the queued switch of kid to opus was DROPPED at the end of its turn: no seat. "
+        "It stays on haiku; ask again once that is resolved.")
+    ev = o._limit_reset_ev("kid", "user", ["a", "kid"])
+    assert events.render_agent(ev) == ("Weekly Fable limit reset — halted fable agent(s) "
+                                       "released: a, kid. Their superiors were told to stop covering.")
+    # external mail with no live top-level: the user's inbox notice
+    o = store.load_org(slug)
+    for t in ("boss", "boss2"):
+        pass
+    o2 = Org.create(f"{slug}-empty", dirs=[_TMP])
+    o2.hire(USER, None, "opus", 20, "solo")
+    o2.retire(USER, "solo")
+    o2.post_external_mail("@org:peer", "hello\nworld")
+    u = (o2.d.get("user_mail_log") or []) + (o2.d.get("user_inbox") or [])
+    u = dict(u[-1])
+    assert u["body"] == ("Outside party @org:peer messaged this org, but no top-level agents "
+                         "are live to receive it:\n\nhello\nworld"), u["body"]
+    assert decoded(u)["variant"] == "runtime.external_unroutable"
+
+
+check("kickoff via hire/rehire (body verbatim, reason), engine-side lifecycle renders == "
+      "old literals, unroutable outside mail", _kickoff_and_renders)
+
+
 # =========================================================================== summary
 print()
 for label, tb in FAIL:
