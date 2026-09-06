@@ -25121,10 +25121,14 @@ def _wd_pause(slug: str, wid: str, why: str) -> None:
 def _wd_fire(slug: str, wid: str, name: str, lines: list[str],
              prefix: str = "") -> None:
     """Record + mail + drive + spark. Every step tolerates the dog or owner
-    having changed since the check ran."""
-    body = (f"[WATCHDOG {name}]{prefix} {len(lines)} event(s):\n"
-            + "\n".join(x[:500] for x in lines[:20])
-            + (f"\n… {len(lines) - 20} more" if len(lines) > 20 else ""))
+    having changed since the check ran.
+
+    The mail is a typed `monitor.watchdog_fired` event minted BY THE LEDGER
+    from `lines`/`prefix` (Org.watchdog_fire) — the ledger knows whether the
+    dog is one-shot, so the event's `once` and the note in the rendered body
+    cannot disagree with the removal. `name` is informational here: the row's
+    FROM header and the event's WatchdogRef both come from the document."""
+    del name                                        # the doc is authoritative
     owner = None
     notice = False
     one_shot = False
@@ -25160,7 +25164,7 @@ def _wd_fire(slug: str, wid: str, name: str, lines: list[str],
             except LedgerError:
                 notice = one_shot = False
             owner = org.watchdog_fire(wid, lines[0] if lines else "event",
-                                      body)
+                                      lines=lines, prefix=prefix)
             store.save_org(org)
     except LedgerError:
         return
@@ -25214,14 +25218,29 @@ def _wd_fire(slug: str, wid: str, name: str, lines: list[str],
                      wake=not notice, mail_ping=True)
 
 
-def wd_alert_body(w: dict[str, Any], lost: dict[str, Any]) -> str:
-    """The mail an owner gets when its dog's SUBJECT stopped producing.
+def wd_alert_event(org: Org, w: dict[str, Any],
+                   lost: dict[str, Any]) -> dict[str, Any]:
+    """The typed `monitor.watchdog_quiet` event an owner gets when its dog's
+    SUBJECT stopped producing (design §3, family monitor). Its rendering is
+    the mail body, byte for byte what `wd_alert_body` used to build.
 
     ⚠ THE CONTEXT IS THE DELIVERABLE, not the fact. "Your watchdog stopped"
     tells an agent nothing it can act on; "the log you are waiting on has not
     grown in 1.4 h, last written 21:20, 168 checks, and here is what the dog
     sees" tells it to go and look at the producer. The agent this was built
     for sat idle for ninety minutes because nothing said either sentence."""
+    return events.mint("monitor.watchdog_quiet", {"kind": "watchdog", "id": str(w["id"])},
+                       org._watchdog_ref(w), headline=str(lost["headline"]),
+                       facts=_wd_alert_facts(w), advice=str(lost["advice"]))
+
+
+def wd_alert_body(org: Org, w: dict[str, Any], lost: dict[str, Any]) -> str:
+    """The rendered alert mail — `render_agent(wd_alert_event(...))`."""
+    return events.render_agent(wd_alert_event(org, w, lost))
+
+
+def _wd_alert_facts(w: dict[str, Any]) -> list[str]:
+    """The aligned fact lines of a went-quiet alert, from the dog's check state."""
     tgt = str(w.get("target") or "")
     kind = str(w.get("kind") or "")
     quiet, since = _wd_stale_ok(w)
@@ -25245,12 +25264,7 @@ def wd_alert_body(w: dict[str, Any], lost: dict[str, Any]) -> str:
             facts.append(f"the file   : CANNOT BE READ — {e.strerror or e}")
     if w.get("last_output"):
         facts.append(f"it sees    : {str(w['last_output'])[:300]!r}")
-    return (f"[WATCHDOG {w.get('name')}] ⚠ {lost['headline'].upper()}\n\n"
-            + "\n".join(facts)
-            + f"\n\n{lost['advice']}\n\n"
-            + ("⚠ This is about the THING BEING WATCHED, not about orgtree. "
-               "Restarts and deploys do not produce this message: the counter "
-               "above only advances on checks that actually ran (D-176)."))
+    return facts
 
 
 def _wd_alert(slug: str, wid: str, lost: dict[str, Any]) -> None:
@@ -25279,7 +25293,7 @@ def _wd_alert(slug: str, wid: str, lost: dict[str, Any]) -> None:
         if w.get("state") != "armed" or w.get("alerted_why") == lost["why"]:
             return                            # already told them, or not ours
         w["alerted_why"] = lost["why"]
-        owner = org.watchdog_alert(wid, wd_alert_body(w, lost))
+        owner = org.watchdog_alert(wid, ev=wd_alert_event(org, w, lost))
         if owner and lost.get("pause"):
             # only after the mail is in the box, and under the same lock: a
             # dog paused without anyone being told turns a wait into a
