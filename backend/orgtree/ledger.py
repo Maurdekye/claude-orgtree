@@ -9486,17 +9486,10 @@ class Org:
     # closed state. `blocked` stays reminder-eligible: being stuck is a thing an
     # agent can be nudged about.
     #
-    # ⚠ TWO THINGS THE USER CHANGED ON 2026-09-06, both narrowing what waiting
-    # DISPLAYS while leaving what it MEANS alone:
-    #   · it no longer counts towards the docket button's corner number
-    #     ("waiting tasks shouldn't count towards the number in the corner of
-    #     the docket button") — see `WORK_UNCOUNTED`. The number reads as work
-    #     needing action, and nobody in this org can act on a waiting item;
-    #   · after an hour with no docket update it ages out of the main list into
-    #     the archive, on the SAME clock as `done` ("waiting tasks older than 1
-    #     hour should also be archived like done tasks") — see
-    #     `WORK_ARCHIVES_ITSELF`. It archives AS `waiting`: the status, the
-    #     reason and the history are untouched, and nothing marks it done.
+    # It is OUT of the `active` count (`WORK_UNCOUNTED`), and an hour after its
+    # last docket update it archives unless attention holds it
+    # (`WORK_ARCHIVES_ITSELF`) — as `waiting`, never as done. Both user
+    # 2026-09-06.
     WORK_STATUSES: Final = ("backlogged", "open", "in_progress", "blocked",
                             "waiting", "review", "done", "superseded",
                             "dropped")
@@ -9953,23 +9946,11 @@ class Org:
     #: the successful kind to archive itself meant every dead item stayed on
     #: the main list for good. `superseded` is deliberately NOT here — its
     #: replacement pointer is the thing you follow, and it is left as it was.
-    #
-    #: ⚠ `waiting` JOINED THEM ON 2026-09-06 AND IS NOT A CLOSED STATE (user:
-    #: "waiting tasks older than 1 hour should also be archived like done
-    #: tasks"). It is here on the strength of the same observation the archive
-    #: was built on — a row nobody is going to act on today should not sit in
-    #: the list of work in flight — and NOT because the work ended. Everything
-    #: that follows from that distinction is deliberate:
-    #:   · the item archives AS `waiting`. Nothing rewrites the status, the
-    #:     `waiting_reason` or the history, and no acceptance is recorded: an
-    #:     archived waiting item is not done and must never read as done.
-    #:   · the clock is the SAME clock — `WORK_ARCHIVE_AFTER_S` against
-    #:     `docket_at`, strictly greater. No second policy, no second constant.
-    #:   · the timer NEVER resumes it. Ageing out moves where the row is
-    #:     served, not what state it is in; a return to the main list takes the
-    #:     ordinary explicit `reopen=true` update, exactly as it does for a
-    #:     done item, and `work_update` refuses a plain update with the reason
-    #:     ("ARCHIVED (waiting for over an hour)") rather than resuming quietly.
+    #:
+    #: ⚠ `waiting` IS HERE AND IS NOT A CLOSED STATE (user 2026-09-06). It ages
+    #: out on the same clock, and only that: it archives AS `waiting`, keeping
+    #: its status, reason and history with no acceptance recorded, and the
+    #: timer never resumes it — coming back is the ordinary `reopen=true`.
     WORK_ARCHIVES_ITSELF: Final = ("done", "dropped", "waiting")
 
     def _work_eligible(self, it: WorkItem, now_ts: float) -> bool:
@@ -9998,26 +9979,24 @@ class Org:
         return it.get("status") == self.WORK_BACKLOG \
             and not self._work_attention(it)
 
-    #: statuses the toolbar badge's `active` number does NOT count. Closed work
-    #: is finished; `backlogged` was never approached; `waiting` is somebody
-    #: else's move (user 2026-09-06: "waiting tasks shouldn't count towards the
-    #: number in the corner of the docket button"). ONE tuple, because the rule
-    #: is written in two places — `_work_counts_active` for the org-wide badge
-    #: and `work_list` for a single viewer's readable set — and two copies of it
-    #: are two chances to disagree about what the same number means.
+    #: statuses the `active` count does NOT count: closed work is finished,
+    #: `backlogged` was never approached, and `waiting` is somebody else's move
+    #: (user 2026-09-06). ONE tuple, because the rule is written in two places —
+    #: `_work_counts_active` for the org-wide number and `work_list` for a
+    #: single viewer's readable set — and two copies are two chances to
+    #: disagree about what the same number means.
     WORK_UNCOUNTED: Final = (*WORK_CLOSED, WORK_BACKLOG, WORK_WAITING)
 
     def _work_counts_active(self, it: WorkItem) -> bool:
-        """Does this item belong to the toolbar's `active` number? The badge
-        means WORK THAT NEEDS SOMEBODY TO ACT, so it counts neither the closed,
-        nor the never-approached, nor the waiting.
+        """Does this item belong to the `active` number — work that needs
+        somebody to act?
 
-        Each exclusion is decided HERE rather than by leaning on
+        The exclusions are decided HERE rather than by leaning on
         `_work_backlogged` / `_work_archived`, because those answer a different
         question — which LIST a row is served in. An attention-holding
         backlogged row is deliberately shown in the main list, and a waiting row
         stays in the main list for its first hour; being visible is not the same
-        as being in flight, and the badge means the latter."""
+        as being in flight, and this number means the latter."""
         return it.get("status") not in self.WORK_UNCOUNTED
 
     def _work_sweep(self, now_ts: float | None = None) -> list[str]:
@@ -10043,10 +10022,8 @@ class Org:
         # swept, which was true while `done` was the only status that archived
         # itself; now that a cancelled or failed item ages out on the same
         # clock, a single phrase would write "done" into the durable org log
-        # about work that was never completed. Since 2026-09-06 a WAITING item
-        # ages out too, so the batch phrase cannot say "closed" either — the
-        # sweep no longer implies an ending, and the per-item status below is
-        # the only claim the log makes about what each row actually was.
+        # about work that was never completed. A waiting item ages out too, so
+        # the batch phrase cannot say "closed" either.
         outcomes: dict[str, str] = {}
         for it in list(active):
             if self._work_eligible(it, now_ts) and not self._work_attention(it):

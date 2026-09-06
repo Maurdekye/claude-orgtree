@@ -56,11 +56,7 @@ const STATUS_LABEL: Record<string, string> = {
 }
 // `waiting` is an EXTERNAL event, never the user — asking the user is the
 // attention flag (user ruling 2026-09-05)
-// ⚠ IT NO LONGER SAYS "ACTIVE" (user 2026-09-06). Waiting work is still real
-// work and still on its agent's desk, but it is not counted in the number on
-// the docket button and it ages into the archive after an hour — a help string
-// calling it active would contradict both of the things the user can see.
-const WAITING_HELP = 'Waiting on an external event, not on the user — it names the event and how the agent will hear of it. It stops its own idle reminders, is not counted on the docket button, and moves to the archive after an hour, still Waiting'
+const WAITING_HELP = 'Waiting on an external event, not on the user — it names the event and how the agent will hear of it. It stops its own idle reminders, is out of the active count, and archives an hour after its last docket update unless attention holds it, still Waiting'
 // the word on its own could be read as "finished with"; it means the opposite
 // of Done, and the pane says which of the two ways it ended
 const DROPPED_HELP = 'Ended WITHOUT being completed — cancelled, or failed in a way it cannot be recovered from. Closed, and archived on the same clock as Done, but never Done'
@@ -829,7 +825,7 @@ export function DocketModal({ slug, toast, close, tree, onFocusAgent,
           <h3><DocketIcon fontSize="inherit" /> Work docket</h3>
           <span className="spacer" />
           <label className="checkline docket-showarchived"
-            title="include archived work items — closed for over an hour, or waiting on an event for over an hour">
+            title="include archived work items — closed or waiting, with no docket update for over an hour">
             <input type="checkbox" checked={showArchived}
               onChange={(e) => setShowArchived(e.target.checked)} />
             Show archived
@@ -1178,13 +1174,6 @@ function DocketRow({ item, selected, onClick, onDismiss, facts, onFocusAgent,
             aria-expanded={!folded}
             onClick={(e) => { e.stopPropagation(); onFold?.() }}>▾</button>
         )}
-        {/* ⚠ THE SMALL STATUS DOT THAT USED TO SIT HERE IS GONE (user
-            2026-09-06: "remove the little colored dot, i changed my mind. we
-            need that space cor long slug names"). It was w2d5fab0a element 3,
-            a second reading of the status beside the coloured left edge; the
-            edge and the status word in `.l2` both stay, so no status
-            information was lost with it. Nothing takes its place — the point
-            was the width, so the name starts where the dot used to. */}
         <span className="mfrom docket-rowname">{itemName(item)}</span>
         <span className="mtime">{ago(item.docket_at ?? item.at)}</span>
       </div>

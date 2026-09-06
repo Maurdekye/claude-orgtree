@@ -2975,20 +2975,10 @@ main.solo { width: 100%; }
 .docket-modal .mailrow.status-dropped { border-left: 3px solid var(--line-soft); }
 .docket-modal .mailrow.attention { border-left: 3px solid var(--accent); }
 
-/* ⚠ THE `.docket-dot` RULES ARE GONE WITH THE DOT (user 2026-09-06: "remove
-   the little colored dot ... we need that space cor long slug names"). It was
-   w2d5fab0a element 3, a second reading of the status beside the coloured left
-   edge; the edge above and the status word in `.l2` both remain. The row is a
-   flex line with a `gap`, so removing the element gives the name BOTH the
-   dot's 6px and the gap that followed it — there is no reserved slot left
-   behind, and nothing here reserves one.
-
-   THE THREE RULES BELOW STAY, and they are not dot rules. `.mailrow .l1` is
-   `space-between`, which only puts the name left and the time right while
-   there are exactly two children — the fold arrow already makes three on any
-   parent row, and that CENTRED the name (caught in the browser preview, not by
-   any DOM test). Pinning the name left and pushing the time right explicitly
-   is what keeps a third child from doing it again. */
+/* ⚠ `.mailrow .l1` IS `space-between`, which puts the name left and the time
+   right only while there are exactly two children. A parent row has a third —
+   the fold arrow — and that centres the name between them. The name is pinned
+   left and the time pushed right explicitly so it cannot happen again. */
 .docket-row .l1 { justify-content: flex-start; }
 .docket-row .l1 .mfrom { min-width: 0; }
 .docket-row .l1 .mtime { margin-left: auto; }

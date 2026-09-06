@@ -95,12 +95,18 @@ or for `accept`.
 
 ## `waiting`, `dropped`, and the information a state owes
 
-User ruling 2026-09-05. `waiting` is **active work whose next step is not the
-agent's to take**: a build, a deploy, another team's landing, an external
-service. It counts as active, stays on the assigned desk and stays in the main
-list. The only thing it changes is that **this item** stops producing idle
-docket reminders until its event happens — it never silences any other item the
-same agent holds. It is not a second backlog and it is not a closed state.
+User ruling 2026-09-05. `waiting` is **work whose next step is not the agent's
+to take**: a build, a deploy, another team's landing, an external service. It
+stays on the assigned desk and stays readable, and **this item** stops producing
+idle docket reminders until its event happens — it never silences any other item
+the same agent holds. It is not a second backlog and it is not a closed state.
+
+Two narrowings, user 2026-09-06. It is **out of the `active` count** — that
+number is work needing action, and nobody here can act on a waiting item — and
+an hour after its **last docket update** it archives like `done` (below), still
+`waiting` and never marked done, unless attention holds it. Neither hides the
+row: it is in the main list for its first hour and in the archive after, and its
+`attention` count is unaffected either way.
 `blocked` stays reminder-eligible: being stuck is a thing an agent can usefully
 be nudged about.
 
@@ -249,16 +255,19 @@ superior, naming the item in the text — and nothing attaches.
 `archived` is **derived on every read**:
 
     archived = (physically in work_items_archive
-                OR status in (done, dropped) AND now − docket_at > 3600 s)
+                OR status in (done, dropped, waiting) AND now − docket_at > 3600 s)
                AND NOT effective_attention                           # strictly greater
 
 `dropped` archives itself on the same clock as `done` (user 2026-09-05): work
 that was cancelled or failed unrecoverably is as finished as work that
 succeeded, and when only the successful kind archived itself every dead item
-stayed on the main list for good. `superseded` is deliberately not in that
-set — its `superseded_by` pointer is the thing you follow, and it is unchanged.
+stayed on the main list for good. `waiting` joined them (user 2026-09-06) and is
+**not** a closed state: it ages out on the same clock and nothing else changes —
+it archives as `waiting`, keeps its reason and history, records no acceptance,
+and the timer never resumes it. `superseded` is deliberately not in that set —
+its `superseded_by` pointer is the thing you follow, and it is unchanged.
 
-So a done item is not archived at exactly one hour, is archived one second
+So an item is not archived at exactly one hour, is archived one second
 later, and an item holding attention (a pending attached question or a manual
 flag) is never archived — it shows in the active list so the badge always opens
 onto a visible row. The physical move happens in a sweep at the head of every
@@ -334,7 +343,7 @@ deletion of the item.
 
 `counts.attention` counts items (not questions) with effective attention over
 the full set; `counts.active` counts non-archived items not in
-`done|superseded|dropped`.
+`done|superseded|dropped|backlogged|waiting` (`WORK_UNCOUNTED`).
 
 ## Who an idle docket reminder goes to
 
