@@ -1905,11 +1905,21 @@ class Org:
                   reply_to: dict[str, Any] | None = None,
                   urgent: bool = False,
                   urgent_reason: str = "",
-                  missing: list[str] | None = None) -> dict[str, Any]:
+                  missing: list[str] | None = None,
+                  grant_reply_audience: bool = True) -> dict[str, Any]:
         """Agent-to-agent (or agent-to-user) mail under the §7.2 addressing rules:
         downward any depth (deep reach implicitly grants the recipient an audience),
         one hop up, siblings, held audiences. Everything else is refused with the
         proper route named.
+
+        `grant_reply_audience=False` (user ruling 2026-09-06, "keep existing
+        permissions"): the AUTOMATIC docket participation notice is mail the
+        adder never chose to send, so it must not widen anybody's standing.
+        Every §7.2 addressing check above still applies unchanged (an
+        unaddressable member is refused, and the caller reports it); only
+        the §7.3 implicit reply-audience grant below is skipped. Internal to
+        the ledger's own automatic notices — no tool or route exposes it,
+        and explicit orgtree_message / orgtree_send_notice keep the grant.
 
         `missing` (D-171): attachments the CALLER could not turn into files —
         a path that resolved to nothing, or one past the cap. They ride the
@@ -2161,7 +2171,10 @@ class Org:
                     f"sideways, or via a held audience; route anything else through "
                     f"your superior (§7.2)")
             # §7.3: messaging a non-child descendant implicitly grants the reply path
-            if self.is_ancestor(sender, to) and target["parent"] != sender \
+            # — for mail the sender CHOSE to send; an automatic participation
+            # notice passes grant_reply_audience=False and grants nothing
+            if grant_reply_audience and self.is_ancestor(sender, to) \
+                    and target["parent"] != sender \
                     and not self._has_audience(to, sender):
                 self.d["audiences"].append({
                     "grantee": to, "grantor": sender, "granted_at": now(),
@@ -11231,7 +11244,11 @@ class Org:
                     f"\nRead it with orgtree_work get slug={it['slug']} when "
                     f"your work touches it; no reply is expected to this "
                     f"notice.",
-                    "notice")
+                    "notice",
+                    # KEEP EXISTING PERMISSIONS (user 2026-09-06): this notice
+                    # is automatic, so it must not mint the §7.3 reply
+                    # audience an explicit message to a deep descendant would
+                    grant_reply_audience=False)
             except LedgerError as e:
                 refused.append({"node": pid, "reason": str(e)})
                 continue

@@ -420,6 +420,61 @@ check("participants named at creation are told exactly as a later add tells them
       participants_named_at_creation_are_told_the_same_way)
 
 
+def automatic_notice_grants_no_audience():
+    """User ruling 2026-09-06 (KEEP EXISTING PERMISSIONS): `participants add`
+    and create(participants=) never granted any authority, and the automatic
+    notice they now send must not start. Opus found (R1) that routing the
+    notice through post_mail minted the §7.3 reply audience to a NON-CHILD
+    descendant. Pinned here: boss > mid > worker; before and after boss adds
+    worker, worker holds no audience to boss — and the positive control next
+    to it shows an EXPLICIT message from boss to worker still grants it, so
+    the existing rule is untouched and the instrument can see a grant."""
+    slug = fresh_org()
+
+    def has(grantee, grantor):
+        return store.load_org(slug)._has_audience(grantee, grantor)
+
+    assert has("worker", "boss") is False
+    # participants add — deep descendant: told, no audience minted
+    wid = create(slug, node="boss", title="Deep add")
+    js = ok(slug, "boss", "participants", slug=wid, add=["worker"])
+    assert js["noticed"] == ["worker"] and "notice_refused" not in js, js
+    assert mailbox(slug, "worker")[-1]["kind"] == "notice"
+    assert has("worker", "boss") is False, "the automatic notice widened worker's standing"
+    assert not [a for a in store.load_org(slug).d.get("audiences") or []
+                if a.get("grantee") == "worker"], "an audience row was written"
+    # create(participants=) — same helper, same rule
+    st, js = agent(slug, "boss", "orgtree_work", action="create", title="Deep create",
+                   objective="p; s", done_so_far=["a"], working_on_next=["b"],
+                   participants=["worker"])
+    assert st == 200 and js["noticed"] == ["worker"], js
+    assert has("worker", "boss") is False
+    # the ledger-level staffed-create path is the same call: prove the flag
+    # reaches post_mail there too by calling create directly
+    org = store.load_org(slug)
+    r = org.work_create("boss", "Deep ledger create", "p; s", participants=["worker"])
+    assert r["noticed"] == ["worker"] and org._has_audience("worker", "boss") is False
+    # ⚠ POSITIVE CONTROL — an EXPLICIT message from boss to its grandchild
+    # still mints the §7.3 reply audience exactly as before, and warns so
+    r = org.post_mail("boss", "worker", "explicit: please report")
+    assert org._has_audience("worker", "boss") is True, "the explicit-mail grant is broken"
+    assert any("audience granted" in w for w in r.get("warnings") or []), r
+    # …and an explicit send_notice does too (unchanged): fresh org, same shape
+    slug2 = fresh_org()
+    org2 = store.load_org(slug2)
+    org2.post_mail("boss", "worker", "fyi", "notice")
+    assert org2._has_audience("worker", "boss") is True
+    # a direct child never triggered the grant, before or after
+    assert has("mid", "boss") is False
+    ok(slug, "boss", "participants", slug=wid, add=["mid"])
+    assert has("mid", "boss") is False
+
+
+check("the automatic participation notice grants no audience to a deep descendant, "
+      "while an explicit message or notice still does",
+      automatic_notice_grants_no_audience)
+
+
 def notice_is_best_effort_and_membership_stands():
     slug = fresh_org()
     # an archived member: the notice is stored, deferred, and nothing nudges it
