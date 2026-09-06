@@ -105,7 +105,7 @@ def run(out: Path) -> None:
 
         context.route("**/*", route_request)
         app = context.new_page()
-        app.goto(f"{ORIGIN}/?id={did}")
+        app.goto(f"{ORIGIN}/?id={did}&org=mockup-browser")
         app.evaluate("localStorage.setItem('operator-secret','private')")
         with app.expect_popup() as opened:
             app.locator("a.doc-badge").click()
@@ -155,7 +155,7 @@ def run(out: Path) -> None:
             assert forbidden == [], forbidden
             assert len(context.pages) == 3, "mockup opened another window"
         # Unsupported visitor context never offers an active mockup URL.
-        app.goto(f"{ORIGIN}/k/visitor/?id={did}")
+        app.goto(f"{ORIGIN}/k/visitor/?id={did}&org=mockup-browser")
         app.locator(".doc-badge[aria-disabled=true]").wait_for()
         assert app.locator('a[href$="/mockup"]').count() == 0
         # Positive control: same hostile payload without protection must reach
