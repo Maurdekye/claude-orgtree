@@ -3848,6 +3848,10 @@ async def repair_rename(slug: str, body: RenameRepair) -> dict[str, Any]:
 
 class WorkReply(Body):
     body: str
+    # the recipient the user CHOSE (user 2026-09-06): the item's owner or one
+    # of its participants, validated against the stored item at send time.
+    # Omitted → the assignment, exactly as before.
+    to: str | None = None
 
 
 class WorkDismiss(Body):
@@ -3967,10 +3971,19 @@ def work_item_reply(slug: str, wid: str, body: WorkReply) -> dict[str, Any]:
     the day this changed: 26 of 39 items had an owner different from their last
     updater, and in 25 of those the last updater was the coordinator — so the
     user's reply on nearly every finished item was landing on the coordinator
-    rather than on the agent holding the work."""
+    rather than on the agent holding the work.
+
+    AN ADDRESSED REPLY (user 2026-09-06): `to` names the owner or one of the
+    item's participants. It is validated against the STORED item under the
+    lock — the panel's list is a rendering, not an authorization — and a name
+    that is neither is refused with nothing sent and nobody substituted. A
+    participant is told, in the mail and in the wake, that the reply is
+    addressed to it as a participant and who owns the item; ownership does
+    not move. `role` in the response says which of the two was reached."""
     text = str(body.body or "").strip()
     if not text:
         raise HTTPException(422, "empty reply")
+    to = str(body.to or "").strip()
     with store.DOC_LOCK:
         try:
             org = store.load_org(slug)
@@ -3985,15 +3998,25 @@ def work_item_reply(slug: str, wid: str, body: WorkReply) -> dict[str, Any]:
         except LedgerError as e:
             raise HTTPException(404, str(e))
         try:
-            tgt = org.work_reply_target(wid)
+            tgt = (org.work_reply_recipient(wid, to) if to
+                   else org.work_reply_target(wid))
             nid = str(tgt["node"])
+            role = str(tgt.get("role") or "owner")
             # the CANONICAL name, not the caller's spelling — this string is
             # an instruction the recipient will act on, and it must resolve
             name = str(tgt.get("item") or wid)
+            if role == "participant":
+                how = (f"(the user replied on this docket item ADDRESSED TO "
+                       f"YOU AS A PARTICIPANT — the item is owned by "
+                       f"{tgt.get('owner') or 'nobody (unassigned)'}, not by "
+                       f"you; treat this as item-linked mail, act on it, and "
+                       f"coordinate any update with the owner)")
+            else:
+                how = ("(the user replied on this docket item — treat it as "
+                       "item-linked mail and update the item if it changes "
+                       "the work)")
             mail = (f"[DOCKET REPLY · {name} \"{str(tgt['title'])[:80]}\"] "
-                    f"(the user replied on this docket item — treat it as "
-                    f"item-linked mail and update the item if it changes the "
-                    f"work)\n{text}")
+                    f"{how}\n{text}")
             r = org.post_mail(USER, nid, mail)
             org.user_deep_reach(nid, text.splitlines()[0][:160])
             store.save_org(org)
@@ -4003,13 +4026,17 @@ def work_item_reply(slug: str, wid: str, body: WorkReply) -> dict[str, Any]:
     if r.get("deferred"):
         # archived recipient: the mail waits in its inbox for a rehire — the
         # UI says so; nobody else is picked
-        return {"accepted": True, "to": nid, "deferred": True,
+        return {"accepted": True, "to": nid, "role": role, "deferred": True,
                 "node_state": tgt.get("state")}
     sent = supervisor.send_message(
         slug, nid,
-        "(orgtree) The mail above is the user's reply on a docket item "
-        "ASSIGNED TO YOU — act on it now.", mail_ping=True)
-    return {"accepted": True, "to": nid, "deferred": False,
+        ("(orgtree) The mail above is the user's reply on a docket item you "
+         f"PARTICIPATE in (owner: {tgt.get('owner') or 'unassigned'}) — it "
+         "is addressed to you; act on it now."
+         if role == "participant" else
+         "(orgtree) The mail above is the user's reply on a docket item "
+         "ASSIGNED TO YOU — act on it now."), mail_ping=True)
+    return {"accepted": True, "to": nid, "role": role, "deferred": False,
             "node_state": tgt.get("state"),
             "delivery": supervisor.delivery_note(slug, nid, sent)}
 
@@ -6567,6 +6594,9 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
     org_send: tuple[str, str] | None = None   # (dst-slug, body) outbound to another org's inbox
     net_send = False                          # @net: — staged to the spool; kick after the lock
     notice_to: str | None = None              # send_notice recipient — nudged wake=False after the lock
+    # participants a docket `participants add` just told (passively) — each
+    # is nudged wake=False after the lock, exactly like a send_notice
+    noticed_nodes: list[str] = []
     # D-236: the orgtree_message recipient, so the drive below can report what
     # actually happened to the send instead of throwing that answer away
     mail_to: str | None = None
@@ -6977,6 +7007,15 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
                     # a deferred (archived) recipient reads it on rehire
                     if not result.get("deferred") and _n not in drive:
                         drive.append(_n)
+                # A NEW PARTICIPANT IS TOLD, NOT WOKEN (user 2026-09-06):
+                # membership is not assignment, so the notice rides the
+                # send_notice path below — a running recipient is steered,
+                # an idle one stays idle — and never the drive above.
+                _deferred = set(result.get("noticed_deferred") or [])
+                for _n in [str(x) for x in (result.get("noticed") or []) if x]:
+                    mail_notify(body.org, body.node, _n)
+                    if _n not in noticed_nodes and _n not in _deferred:
+                        noticed_nodes.append(_n)
             elif body.tool == "orgtree_withdraw_ask":
                 result = org.withdraw_ask(body.node)
             elif body.tool in ("orgtree_self_restart", "orgtree_self_update"):
@@ -7422,6 +7461,18 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
             # long the recipient has been without an injection point.
             result["delivery"] = supervisor.delivery_note(
                 body.org, notice_to, r)
+    for _n in noticed_nodes:
+        # same wake=False steer as a send_notice: the participation notice
+        # reaches a running recipient mid-task and waits for an idle one
+        r = supervisor.send_message(
+            body.org, _n,
+            "(orgtree) A notice arrived in your mail above — you were added "
+            "as a participant on a docket item. Informational, no reply "
+            "expected. Note it and continue your current task.",
+            wake=False, mail_ping=True, sender=body.node)
+        if isinstance(result, dict):
+            result.setdefault("notice_delivery", {})[_n] = \
+                supervisor.delivery_note(body.org, _n, r)
     if org_send is not None:
         err = supervisor.interorg_send(body.org, org_send[0], org_send[1])
         if err:

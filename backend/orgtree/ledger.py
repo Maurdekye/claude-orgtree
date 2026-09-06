@@ -10052,6 +10052,41 @@ class Org:
             return False, "generation moved"
         return True, "live"
 
+    def _work_node_reply_state(self, nid: str) -> str:
+        """One of 'live' | 'retired' | 'missing' — the SAME convention
+        `_work_owner_state` uses: a node that is absent from the table is
+        missing; one that is present but not live (archived, paused, armed,
+        unrecoverable) is retired. A retired lineage predecessor is absent
+        from the TREE (`org_children` skips archived predecessors) but present
+        HERE, which is why the panel asks the item and not the tree."""
+        n = self.nodes.get(nid)
+        if n is None:
+            return "missing"
+        return "live" if n.get("state") == "live" else "retired"
+
+    def _work_reply_recipients(self, it: WorkItem) -> list[dict[str, Any]]:
+        """Who the user may address a reply to, served with the item: the
+        owner first (when there is one), then the stored participants in
+        stored order, the owner deduped out. Derived on read from the CURRENT
+        node table — never stored — so a rename, retirement or deletion is
+        reflected the next time the item is read. The write side
+        (`work_reply_target`) re-derives the same set under the lock; this
+        list is what the panel shows, not what it is trusted with."""
+        out: list[dict[str, Any]] = []
+        own = self._work_actor_node(it.get("owner"))
+        if own:
+            out.append({"node": own, "role": "owner",
+                        "state": self._work_node_reply_state(own)})
+        seen = {own} if own else set()
+        for p in it.get("participants") or []:
+            pid = str(p or "")
+            if not pid or pid in seen:
+                continue
+            seen.add(pid)
+            out.append({"node": pid, "role": "participant",
+                        "state": self._work_node_reply_state(pid)})
+        return out
+
     def _work_delivery_view(self, it: WorkItem) -> dict[str, Any] | None:
         """The stored stages, each verified one marked against what `verify`
         would compare with NOW. The stored receipt (verified/detail/target/
@@ -10151,6 +10186,9 @@ class Org:
             "waiting_reason": it.get("waiting_reason"),
             "dropped_reason": it.get("dropped_reason"),
             "participants": list(it.get("participants") or []),
+            # who a reply may be addressed to (user 2026-09-06): owner first,
+            # then participants, each with a server-derived node state
+            "reply_recipients": self._work_reply_recipients(it),
             "dismissals": list(it.get("dismissals") or []),
             "archived": self._work_archived(it, physically, now_ts),
             "archived_at": it.get("archived_at"),
@@ -11126,19 +11164,74 @@ class Org:
                               "the user may change participants")
         parts = list(it.get("participants") or [])
         owner = self._work_actor_node(it.get("owner"))
+        added: list[str] = []
         for p in add or []:
             pid = str(p or "").strip()
             if pid and pid != owner:
                 self.node(pid)
                 if pid not in parts:
                     parts.append(pid)
+                    added.append(pid)
         for p in remove or []:
             pid = str(p or "").strip()
             if pid in parts:
                 parts.remove(pid)
         it["participants"] = parts
         self._work_hist(it, actor, "participants", {"now": parts})
-        return {"participants": parts, "rev": it["rev"]}
+        # A NEW participant is TOLD, passively (user 2026-09-06). Membership
+        # is not assignment: a participant may read, update, add evidence and
+        # attach questions, and the user's replies ADDRESSED to it arrive as
+        # item-linked mail — but it does not hold the item, so this is a
+        # notice (read at its next turn, never a wake), not the assignment
+        # mail. Only an ACTUAL addition is told: re-adding a member, adding the
+        # owner (a no-op) or the actor itself sends nothing. A removal is
+        # silent, as before.
+        #
+        # ⚠ THE NOTICE IS BEST-EFFORT AND THE MEMBERSHIP IS NOT. Membership
+        # has never been bounded by the §7.2 addressing rules (an owner may
+        # add anyone in the org), but mail is: an actor that cannot address
+        # the new member, or a member that is unrecoverable, would turn a
+        # valid membership change into a refusal. So a notice that cannot be
+        # posted is REPORTED in `notice_refused` (node + the reason) and the
+        # change stands — the caller is told, in its own result, exactly who
+        # was not reached.
+        noticed: list[str] = []
+        deferred: list[str] = []
+        refused: list[dict[str, str]] = []
+        for pid in added:
+            if pid == actor:
+                continue
+            try:
+                m = self.post_mail(
+                    actor, pid,
+                    f"[DOCKET PARTICIPATION · {it['slug']} "
+                    f"\"{str(it.get('title') or '')[:80]}\"] You are now a "
+                    f"PARTICIPANT on this docket item — not its assignment. "
+                    f"The item is owned by {owner or 'nobody (unassigned)'}; "
+                    f"you may read it, update it, add evidence and attach "
+                    f"questions, and the user's replies addressed to you on "
+                    f"it arrive as item-linked mail. Added by "
+                    f"{'the user' if actor == USER else actor}."
+                    f"\nDescription: {str(it.get('objective') or '(none recorded)')[:600]}"
+                    f"\nRead it with orgtree_work get slug={it['slug']} when "
+                    f"your work touches it; no reply is expected to this "
+                    f"notice.",
+                    "notice")
+            except LedgerError as e:
+                refused.append({"node": pid, "reason": str(e)})
+                continue
+            noticed.append(pid)
+            if m.get("deferred"):
+                # archived member: the notice sits in its inbox; nothing
+                # nudges it (a notice never starts a turn, rehire or not)
+                deferred.append(pid)
+        out: dict[str, Any] = {"participants": parts, "rev": it["rev"],
+                               "noticed": noticed}
+        if deferred:
+            out["noticed_deferred"] = deferred
+        if refused:
+            out["notice_refused"] = refused
+        return out
 
     def work_evidence(self, actor: str, wid: str, kind: str, ref: str,
                       note: str | None = None) -> dict[str, Any]:
@@ -11634,7 +11727,37 @@ class Org:
             raise LedgerError(
                 f"the assigned agent {own!r} no longer exists in this org — "
                 f"the reply was not sent")
-        return {"node": own, "state": self.nodes[own].get("state"),
+        return {"node": own, "role": "owner",
+                "state": self.nodes[own].get("state"),
+                "title": it["title"], "item": it["slug"]}
+
+    def work_reply_recipient(self, wid: str, to: str) -> dict[str, Any]:
+        """An ADDRESSED reply (user 2026-09-06): `to` must be the item's
+        current owner or one of its current participants, checked against the
+        STORED item at this moment — not against whatever list the panel was
+        rendered from. Anything else is refused, and a refusal chooses nobody
+        in the caller's place: the owner is NOT substituted for a participant
+        who was removed a second ago, because the user picked a name and the
+        wrong recipient acting on the reply is worse than no recipient.
+
+        Ownership is untouched: `work_reply_target` (no `to`) keeps meaning
+        THE ASSIGNMENT, and addressing a participant does not make them the
+        assignment — the mail says so in as many words."""
+        it, _ = self._work_find(wid)
+        nid = str(to or "").strip()
+        own = self._work_actor_node(it.get("owner"))
+        if nid == own:
+            return self.work_reply_target(wid)
+        if nid not in (it.get("participants") or []):
+            raise LedgerError(
+                f"{nid!r} is neither the assigned agent nor a participant of "
+                f"{it['slug']} — the reply was not sent")
+        if nid not in self.nodes:
+            raise LedgerError(
+                f"the participant {nid!r} no longer exists in this org — "
+                f"the reply was not sent")
+        return {"node": nid, "role": "participant", "owner": own,
+                "state": self.nodes[nid].get("state"),
                 "title": it["title"], "item": it["slug"]}
 
     def work_attach_check(self, nid: str, wid: str) -> str:
