@@ -1070,30 +1070,11 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox, onWorkItem,
     animRef.current = requestAnimationFrame(step)
   }, [rebasePan])
 
-  // the HUD ± buttons zoom about the SCREEN CENTER — changing z with x/y
-  // held fixed anchors the world origin instead, which (with the eye parked
-  // at world x=6000) read as a violent sideways pan, not a zoom
-  const zoomStep = useCallback((factor: number) => {
-    const vp = viewportRef.current?.getBoundingClientRect()
-    const v = viewRef.current
-    const lim = compactRef.current ? { min: 0.3, max: 1.6 } : { min: 0.24, max: Z_MAX }
-    const z = Math.min(lim.max, Math.max(lim.min, v.z * factor))
-    if (!vp || z === v.z) return
-    const cx = vp.width / 2, cy = vp.height / 2
-    const wx = (cx - v.x) / v.z, wy = (cy - v.y) / v.z
-    animateTo({ x: cx - wx * z, y: cy - wy * z, z }, 220)
-  }, [animateTo])
-
-  // the camera that FOCUSES `id` — the desk (or, for the eye, the
-  // switchboard) filling the viewport. Split from `centerOn` (D-228) so the
-  // startup path can land there without a glide: the switchboard an org
-  // opens on is the same switchboard the HUD eye button reaches, by
-  // construction, because both ask this one function.
   // w14aace89: the region every camera command aims at — the largest pin-free
   // rectangle of the viewport, chosen by AREA and INDEPENDENT of what is being
-  // focused (user ruling 2026-09-05). Agent focus, the switchboard and full
-  // view therefore all agree on one visible free space; the target is fitted
-  // inside it afterwards rather than choosing it.
+  // focused (user ruling 2026-09-05). Agent focus, the switchboard, full view
+  // and zoom buttons therefore all agree on one visible free space; the target
+  // is fitted or anchored inside it afterwards rather than choosing it.
   //
   // Pins are viewport-local (pins.tsx `clampRect` bounds x into [0, vp.w-w],
   // and PinLayer sets left/top straight from the rect), which is the same
@@ -1140,6 +1121,30 @@ export function OrgCanvas({ tree, op, slug, toast, mailEvt, onInbox, onWorkItem,
     regionCache.current = { key, val }
     return val
   }, [])
+
+  // the HUD ± buttons zoom about the FREE CANVAS CENTER — when pinned windows
+  // bound the usable canvas, anchor on the center of the available bounded
+  // rectangle (clearRegion), falling back to the whole viewport center when
+  // unobstructed or blocked
+  const zoomStep = useCallback((factor: number) => {
+    const vp = viewportRef.current?.getBoundingClientRect()
+    const v = viewRef.current
+    const lim = compactRef.current ? { min: 0.3, max: 1.6 } : { min: 0.24, max: Z_MAX }
+    const z = Math.min(lim.max, Math.max(lim.min, v.z * factor))
+    if (!vp || z === v.z) return
+    const reg = regionOf(vp)
+    const r = reg.status !== 'blocked' && reg.rect.w > 0 && reg.rect.h > 0
+      ? reg.rect : { x: 0, y: 0, w: vp.width, h: vp.height }
+    const cx = r.x + r.w / 2, cy = r.y + r.h / 2
+    const wx = (cx - v.x) / v.z, wy = (cy - v.y) / v.z
+    animateTo({ x: cx - wx * z, y: cy - wy * z, z }, 220)
+  }, [animateTo, regionOf])
+
+  // the camera that FOCUSES `id` — the desk (or, for the eye, the
+  // switchboard) filling the viewport. Split from `centerOn` (D-228) so the
+  // startup path can land there without a glide: the switchboard an org
+  // opens on is the same switchboard the HUD eye button reaches, by
+  // construction, because both ask this one function.
 
   /** The eye cell's WORLD width for a given region — ONE definition, shared by
    *  the camera, the eye-focus gate and the render, because they disagreeing
