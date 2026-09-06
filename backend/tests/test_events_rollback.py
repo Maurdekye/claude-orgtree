@@ -24,6 +24,7 @@ the first check asserts it is an ancestor of HEAD so it cannot silently go stale
 """
 from __future__ import annotations
 
+import difflib
 import json
 import os
 import shutil
@@ -45,7 +46,7 @@ sys.path.insert(0, BACKEND)
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-from orgtree import events, store                                # noqa: E402
+from orgtree import events, events_table, store                  # noqa: E402
 from orgtree.ledger import SYSTEM, USER, Org, actor_of           # noqa: E402
 
 LIVE = os.path.normcase(os.path.join(os.environ.get("USERPROFILE_REAL", "C:\\Users\\ncola_k8bx"), "orgtree"))
@@ -239,6 +240,55 @@ sys.stdout.write(json.dumps({"added": added, "top": t}))
     return json.loads(p.stdout.strip().splitlines()[-1])
 
 
+#: the ONLY differences this release may introduce on a PRE-TYPED document, and
+#: exactly where: node_chat `pending_mail` rows (in-flight delivery) now carry the
+#: delivery envelope and the row's kind/relationship (step 2c). Path-scoped.
+UNTOUCHED_ADDITIVE = {("pending_mail", "delivery"), ("pending_mail", "kind"),
+                      ("pending_mail", "relationship"),
+                      # node_inbox's in-flight `pending` rows carry the same envelope
+                      ("pending", "delivery")}
+
+
+def additions(a, b, seen: set, path: str = "") -> str | None:
+    """Walk old (a) and new (b) payloads together. Keys present in b and absent in a
+    on a `pending_mail` row are recorded in `seen` as ("pending_mail", key); ANY other
+    difference (a changed value, a removed key, an addition elsewhere) is returned as
+    a description. None = identical apart from recorded additions."""
+    if isinstance(a, dict) and isinstance(b, dict):
+        for k in a:
+            if k not in b:
+                return f"{path}.{k} removed"
+        for k in b:
+            if k not in a:
+                lst = next((n for n in ("pending_mail", "pending") if path.endswith(f"{n}[]")), None)
+                if lst is None:
+                    return f"{path}.{k} added"
+                seen.add((lst, k))
+                continue
+            r = additions(a[k], b[k], seen, f"{path}.{k}" if path else k)
+            if r is not None:
+                return r
+        return None
+    if isinstance(a, list) and isinstance(b, list):
+        if len(a) != len(b):
+            return f"{path}: list length {len(a)} → {len(b)}"
+        for i, (x, y) in enumerate(zip(a, b)):
+            r = additions(x, y, seen, f"{path}[]")
+            if r is not None:
+                return r
+        return None
+    return None if a == b else f"{path}: {a!r} → {b!r}"
+
+
+def _mutate_valid(ev: dict) -> dict:
+    """A copy of `ev` with ONE schema-valid change: the actor id (a free string on
+    every leaf, public by rule) is replaced by another id. Nothing else moves, so
+    the mutant validates as the same leaf."""
+    out = json.loads(json.dumps(ev))
+    out["actor"] = {"kind": out["actor"]["kind"], "id": str(out["actor"]["id"]) + "-x"}
+    return out
+
+
 def live_nodes(root: str, slug: str) -> list[str]:
     p = subprocess.run([sys.executable, "-c",
                         "import os,sys;os.environ['ORGTREE_DATA']=sys.argv[1];sys.path.insert(0,sys.argv[2]);"
@@ -292,7 +342,6 @@ def walk(label: str, src_root: str, slug: str, *, expect_typed: bool, enriched: 
 
     def _diff():
         assert old_out and new_out
-        import difflib
         for k in sorted(new_out):
             a, b = strip(old_out[k]["body"]), strip(new_out[k]["body"])
             if a != b:
@@ -304,17 +353,30 @@ def walk(label: str, src_root: str, slug: str, *, expect_typed: bool, enriched: 
         if expect_typed:
             assert raw_differ, "positive control failed: HEAD added nothing to any payload"
         else:
-            # a pre-typed export: HEAD must add NOTHING typed — the strip is a no-op here,
-            # said out loud rather than presumed
-            def has_new(x):
-                if isinstance(x, dict):
-                    return any(k in NEW_KEYS - {"segments", "delivery", "restart_notice"}
-                               for k in x) or any(has_new(v) for v in x.values())
-                return isinstance(x, list) and any(has_new(v) for v in x)
-            assert not any(has_new(v["body"]) for v in new_out.values()), \
-                "HEAD emitted ev/ev_public/ev_error for a pre-typed document (backfill?)"
-    check(f"{label} · reader outputs diff-clean between the releases "
-          f"({'new keys stripped; unstripped they differ' if expect_typed else 'pre-typed: no ev emitted, nothing to strip'})",
+            # a pre-typed export. The releases are compared RAW; the ONLY differences
+            # allowed are the documented additive transport keys this release puts
+            # on node_chat's in-flight `pending_mail` rows (UNTOUCHED_ADDITIVE, step
+            # 2c — the live row needs them; they are not typed data) and on node_inbox's
+            # in-flight `pending` rows (the delivery envelope). Every observed
+            # addition is collected and must be inside that set; no `ev`/`ev_public`/
+            # `ev_error`/`ev_raw` may appear anywhere (no backfill); and outside those
+            # keys the payloads must be identical. Whether the set was exercised is
+            # reported, so an export with no in-flight rows is not mistaken for proof.
+            seen: set = set()
+            for k in sorted(new_out):
+                a, b = old_out[k]["body"], new_out[k]["body"]
+                extra = additions(a, b, seen)
+                if extra is not None:
+                    raise AssertionError(f"{k}: RAW outputs differ beyond the documented additive "
+                                         f"transport keys: {extra}")
+            assert not any(key in {"ev", "ev_public", "ev_error", "ev_raw"} for _, key in seen), seen
+            assert seen <= UNTOUCHED_ADDITIVE, f"undocumented additions: {seen - UNTOUCHED_ADDITIVE}"
+            print(f"         additive transport keys observed on this export: "
+                  f"{sorted(seen) if seen else 'none (no in-flight rows — the exemption was not exercised)'}")
+            if not seen:
+                assert not raw_differ, "outputs differ yet no addition was recorded"
+    check(f"{label} · reader outputs "
+          f"{'diff-clean once this release' + chr(39) + 's keys are stripped (positive control: unstripped they differ)' if expect_typed else 'RAW-equal except the documented additive pending_mail transport keys; no ev anywhere'}",
           _diff)
 
     def _roundtrip():
@@ -328,13 +390,23 @@ def walk(label: str, src_root: str, slug: str, *, expect_typed: bool, enriched: 
             for mid in added["added"]:
                 keys = [k for k in after if k.endswith(":" + mid)]
                 assert keys and all(after[k]["ev"] is not None for k in keys), f"added row {mid} lost its ev"
-        # MUTATION CONTROL: the comparison must fail when a valid field of one ev changes
+        # MUTATION CONTROL: the comparison must fail when a SCHEMA-VALID value of one
+        # ev changes. The mutant is checked against the strict validator FIRST (so
+        # the control is a real changed event, not a broken one), then the keyed
+        # comparison must report it.
         import copy
         mut = copy.deepcopy(after)
         victim = next((k for k, v in mut.items() if v["ev"] is not None), None)
         if victim is not None:
-            mut[victim]["ev"]["variant"] = mut[victim]["ev"]["variant"] + "-mutant"
-            assert compare_evs(before, mut), "the ev comparison is vacuous — a mutated ev passed"
+            row = {"body": mut[victim]["body"]}
+            full = events.decode_row_ev(mut[victim]["ev"], row)     # validates
+            changed = _mutate_valid(full)
+            events.validate_event(changed)                            # still a valid leaf
+            assert json.dumps(changed, sort_keys=True) != json.dumps(full, sort_keys=True)
+            mut[victim]["ev"] = (events.encode_row_ev(changed, row)
+                                 if str(changed["variant"]) in events_table.ELIDED_FIELDS
+                                 else events.encode_ev(changed))
+            assert compare_evs(before, mut), "the ev comparison is vacuous — a valid mutated ev passed"
         else:
             assert not expect_typed, "no typed row to mutate on a typed document"
             mut[next(iter(mut))]["body"] = "MUTANT"

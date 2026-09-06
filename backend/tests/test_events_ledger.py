@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import ast
 import glob
+import json
 import os
 import sys
 import tempfile
@@ -164,6 +165,54 @@ def _post_event():
 
 check("post_event · docket.assigned: body == render_agent, ev with fields on the row",
       _post_event)
+
+
+def _frozen_at_mint():
+    """B3: the body is rendered ONCE, at mint. Proof by counting: the renderer for
+    the leaf is wrapped to count calls; posting renders exactly once; every read
+    path afterwards (load, wire projection, decode, the agent envelope's mail
+    block, a JSON round-trip) renders ZERO more times and returns the stored
+    bytes; and a renderer whose text CHANGES after the post leaves the row's
+    body untouched (control: a fresh mint DOES pick the new text up)."""
+    from orgtree import events_render  # noqa: F401  (registers)
+    reg = events.RENDERERS
+    calls = {"n": 0}
+    orig = reg["docket.assigned"]
+
+    def counting(ev):
+        calls["n"] += 1
+        return orig(ev)
+    reg["docket.assigned"] = counting
+    try:
+        o = org2()
+        ev = assigned_ev(o)
+        o.post_event("boss", "kid", ev, kind="request")
+        assert calls["n"] == 1, calls
+        row = box(o, "kid")[-1]
+        body0 = row["body"]
+        store.save_org(o)
+        o2 = store.load_org(o.d["slug"])
+        row2 = box(o2, "kid")[-1]
+        _ = events.wire_row(row2, public=False)
+        _ = events.wire_row(row2, public=True)
+        _ = events.decode(row2["ev"], row2)
+        _ = json.loads(json.dumps(row2))
+        assert row2["body"] == body0 and calls["n"] == 1, ("a read path re-rendered", calls)
+        # the renderer changes AFTER the post: the stored row must not follow it
+        reg["docket.assigned"] = lambda ev: "RE-RENDERED " + orig(ev)
+        o3 = store.load_org(o.d["slug"])
+        row3 = box(o3, "kid")[-1]
+        assert row3["body"] == body0 and not row3["body"].startswith("RE-RENDERED")
+        assert events.wire_row(row3, public=False)["body"] == body0
+        # control: a NEW mint does render with the new text (the renderer is live)
+        o3.post_event("boss", "kid", assigned_ev(o3), kind="request")
+        assert box(o3, "kid")[-1]["body"].startswith("RE-RENDERED ")
+    finally:
+        reg["docket.assigned"] = orig
+
+
+check("B3 · render happens ONCE at mint; load/wire/decode/json never re-render; a changed "
+      "renderer leaves stored rows untouched (control: a fresh mint follows it)", _frozen_at_mint)
 
 
 def _post_event_refusals():
@@ -326,6 +375,36 @@ check("fold · untagged verbatim in order (dupes kept), typed grouped with full 
       "malformed typed kept, digest first", _fold_mixed)
 
 
+def _fold_five_grants():
+    """Opus: five `access.grant_changed` notices to one node fold into ONE digest
+    group whose five members each keep their own delta/now/free/by — nothing is
+    deduplicated, summed or reconstructed."""
+    o = org2()
+    facts = [(1.0, 6.0, 6.0, USER), (-1.0, 5.0, 5.0, "boss"), (2.5, 7.5, 7.5, USER),
+             (1.0, 8.5, 8.5, "boss"), (-0.5, 8.0, 8.0, USER)]
+    for delta, now_, free, by in facts:
+        o._notify_ev(["kid"], events.mint("access.grant_changed", actor_of(by), _node_ref(o, "kid"),
+                                          relation="self", node="kid", delta=delta, now=now_,
+                                          free=free, by=by))
+    assert o._fold_notices("kid") == 4
+    rows = o.d["notices"]["kid"]
+    assert len(rows) == 1 and rows[0]["ev"]["variant"] == "context.notice_digest"
+    d = events.decode(rows[0]["ev"], rows[0])["ev"]
+    assert len(d["groups"]) == 1 and d["groups"][0]["variant"] == "access.grant_changed"
+    got = [(m["event"]["delta"], m["event"]["now"], m["event"]["free"], m["event"]["by"])
+           for m in d["groups"][0]["members"]]
+    assert got == facts, got
+    for delta, now_, free, by in facts:
+        line = events.render_agent(events.mint("access.grant_changed", actor_of(by),
+                                               _node_ref(o, "kid"), relation="self", node="kid",
+                                               delta=delta, now=now_, free=free, by=by))
+        assert line in rows[0]["text"], (line, rows[0]["text"])
+
+
+check("fold · five access.grant_changed notices → one group, five members with their own "
+      "delta/now/free/by, each member's text in the digest", _fold_five_grants)
+
+
 def _fold_nothing_to_fold():
     o = org2()
     o._notify(["boss"], "legacy only 1")
@@ -378,15 +457,13 @@ check("legacy · untyped calls still write rows without ev; decode says legacy; 
 print("\n§7  AST coverage (B1a)")
 
 
-def _mint_literals():
-    root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "orgtree")
+def _scan_mint_sites(sources: dict[str, str]) -> tuple[int, list[str]]:
+    """(sites seen, offending sites) over {file name: source}. Pure: the guard itself,
+    so a planted offender can be fed through the SAME code the real scan uses."""
     sites = 0
     bad: list[str] = []
-    for path in glob.glob(os.path.join(root, "*.py")):
-        name = os.path.basename(path)
-        if name.startswith("events"):
-            continue
-        tree = ast.parse(open(path, encoding="utf-8").read(), path)
+    for name, src in sources.items():
+        tree = ast.parse(src, name)
         # the sanctioned indirections: the `_mint` wrapper's own pass-through call, and
         # the `_ORDINARY_OF[kind]` lookup whose VALUES are checked below to be literals
         # in VARIANTS (design I4: the wire reaches exactly that closed set)
@@ -419,12 +496,35 @@ def _mint_literals():
             if not (isinstance(first, ast.Constant) and isinstance(first.value, str)
                     and first.value in events.VARIANTS):
                 bad.append(f"{name}:{node.lineno}")
+    return sites, bad
+
+
+def _mint_literals():
+    root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "orgtree")
+    sources = {os.path.basename(path): open(path, encoding="utf-8").read()
+               for path in glob.glob(os.path.join(root, "*.py"))
+               if not os.path.basename(path).startswith("events")}
+    sites, bad = _scan_mint_sites(sources)
     assert sites >= 1, "the scan must see at least one mint( site (ledger's digest) — not vacuous"
     assert not bad, f"mint( with a non-literal or unknown variant: {bad}"
+    # POSITIVE CONTROLS (Opus): the guard must actually FAIL a planted case — a
+    # computed variant, an unknown literal, and an aliased-name call — fed through
+    # the same scanner; and pass the sanctioned shapes.
+    planted = {
+        "planted_a.py": "def f(v):\n    return events.mint(v, actor, ref)\n",
+        "planted_b.py": "x = _mint(\"no.such_leaf\", actor, ref)\n",
+        "planted_c.py": "k = 'docket.assigned'\nx = events.mint(k, actor, ref)\n",
+    }
+    for name, src in planted.items():
+        n, b = _scan_mint_sites({name: src})
+        assert n == 1 and b == [f"{name}:{2 if name != 'planted_b.py' else 1}"], (name, n, b)
+    ok_src = "x = events.mint(\"docket.assigned\", a, r)\ny = _mint(_ORDINARY_OF[kind], a, None, body=b)\n"
+    n, b = _scan_mint_sites({"ok.py": ok_src})
+    assert n == 1 and b == [], (n, b)
 
 
 check("coverage · every mint( site outside events*/tests passes a string literal in VARIANTS "
-      "(scan sees ≥1 site)", _mint_literals)
+      "(scan sees ≥1 site; planted computed/unknown/aliased variants are CAUGHT)", _mint_literals)
 
 
 print("\n" + "═" * 70)
