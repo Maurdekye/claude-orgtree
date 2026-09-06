@@ -7686,7 +7686,8 @@ def _require_net_peer(target: str) -> None:
 
 
 def _outbox_snapshot(org: Org, nid: str, raw: str, *,
-                     max_bytes: int = _SENDFILE_MAX) -> tuple[str, int]:
+                     max_bytes: int = _SENDFILE_MAX,
+                     always_copy: bool = False) -> tuple[str, int]:
     """Resolve `raw` as the NODE sees it, prove the node may reach it, and
     copy it into the node's outbox/ — the orgtree_send_file rule, shared with
     present-by-path (HTML mockups, 2026-09-06) so both verbs have ONE
@@ -7694,7 +7695,14 @@ def _outbox_snapshot(org: Org, nid: str, raw: str, *,
     Copy, not reference: the card keeps working after the agent edits or
     deletes the original (re-sending an updated file yields report-2.pdf —
     both cards stay honest). Outbox lives in scratch, so kiosk storage
-    metering already counts it and org deletion sweeps it."""
+    metering already counts it and org deletion sweeps it.
+
+    A source ALREADY in outbox/ is referenced as-is for send_file (its
+    download card names the file the agent put there). `always_copy` is
+    present-by-path's opt-in: a mockup card promises a snapshot, so even an
+    outbox/ source gets its own dedupe-named copy — otherwise editing
+    outbox/x.html after presenting it would silently change a published
+    card (feature-astra review, 2026-09-06)."""
     slug = org.d["slug"]
     scratch = os.path.realpath(supervisor.scratch_dir(slug, nid))
     p = raw.replace("\\", "/").rstrip("/")
@@ -7762,7 +7770,7 @@ def _outbox_snapshot(org: Org, nid: str, raw: str, *,
             # TOLD its file is in outbox/ and finds a dir it cannot write
             # (live bug 2026-08-04, kiosk `vnuser`)
             sandbox.chown_agent(org, nid)
-        if src.startswith(os.path.realpath(outdir) + os.sep):
+        if not always_copy and src.startswith(os.path.realpath(outdir) + os.sep):
             final = os.path.relpath(src, outdir).replace("\\", "/")
         else:
             safe = re.sub(r"[^\w .()+\-]", "_",
@@ -7808,7 +7816,8 @@ def _agent_present(org: Org, nid: str, a: dict[str, Any]) -> dict[str, Any]:
     # the ledger gate (live node, audience, headless, title) runs BEFORE the
     # copy, so a refused present leaves no outbox residue behind
     org.present_gate(nid, title)
-    final, size = _outbox_snapshot(org, nid, raw, max_bytes=_MOCKUP_MAX)
+    final, size = _outbox_snapshot(org, nid, raw, max_bytes=_MOCKUP_MAX,
+                                   always_copy=True)
     return org.present_document(nid, title, "", a.get("replaces"),
                                 html_file=f"outbox/{final}", html_bytes=size)
 

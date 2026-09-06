@@ -318,18 +318,36 @@ check("snapshot · edits/deletes after present do not change the card; "
 
 
 def _from_outbox():
+    """A mockup card promises a SNAPSHOT. send_file references a source
+    already in outbox/ as-is (its card names that file); present must not
+    inherit that, or editing outbox/x.html after presenting it would change
+    a published card (feature-astra review, 2026-09-06)."""
     slug, _h, _f = fresh_org()
     ob = os.path.join(scratch(slug), "outbox")
     os.makedirs(ob, exist_ok=True)
-    plant(ob, "already.html")
+    src = plant(ob, "already.html")
     st, js = present(slug, title="T", path="outbox/already.html")
     assert st == 200, (st, js)
-    assert doc_of(slug, js["presented"])["file"] == "outbox/already.html"
-    assert outbox_names(slug) == ["already.html"], "no second copy"
+    did = js["presented"]
+    assert doc_of(slug, did)["file"] == "outbox/already-2.html", doc_of(slug, did)
+    assert outbox_names(slug) == ["already-2.html", "already.html"]
+    with open(src, "w", encoding="utf-8") as fh:
+        fh.write("<html>EDITED OUTBOX SOURCE</html>")
+    r = client.get(f"/api/orgs/{slug}/documents/{did}/mockup")
+    assert r.status_code == 200 and "EDITED" not in r.text, \
+        "editing the outbox source must not change the published card"
+    # send_file keeps its no-copy behaviour for an outbox/ source (its card
+    # names the file the agent put there) — the default is unchanged
+    r = client.post("/api/agent", json={"org": slug, "node": "boss",
+                                        "tool": "orgtree_send_file",
+                                        "args": {"path": "outbox/already.html"}})
+    assert r.status_code == 200 and r.json()["sent"]["path"] == "outbox/already.html", r.text
+    assert outbox_names(slug) == ["already-2.html", "already.html"], \
+        "send_file must not have started copying outbox/ sources"
 
 
-check("snapshot · a file already in outbox/ is referenced, not duplicated",
-      _from_outbox)
+check("snapshot · an outbox/ source is COPIED for present (edits do not reach "
+      "the card) while send_file still references it", _from_outbox)
 
 
 # ══════════════════════════════════════════════════════════════════════ §3
