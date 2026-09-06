@@ -7693,22 +7693,13 @@ class Org:
 
     DOC_BODY_MAX = 65536          # FR-03: a plan, not a data dump
 
-    def present_document(self, nid: str, title: str, body: str,
-                         replaces: str | None = None) -> dict[str, Any]:
-        """FR-03 (user request 2026-08-05): present a DOCUMENT to the user —
-        a reading surface, not a download. A small card pops out beside the
-        agent's node; clicking it opens the markdown in-page. Non-blocking
-        (the present parks like an ask but nothing voids it — a document is
-        a standing artifact, not a pending question). `replaces` updates an
-        earlier presentation in place instead of stacking a second card.
-
-        Gate (user ruling 2026-08-05, D-100): presentation needs a DIRECT
-        user audience — top-level or a held user-audience grant. Unlike
-        ask_user there is NO auto-bridge: everyone else is refused. A
-        document card is a standing claim on the user's screen, so the
-        chain of command applies to it harder than to a question, not
-        softer. Headless orgs refuse for ask_user's reason (§9.6 ②): the
-        reader IS the UI, and there is no screen to put the card on."""
+    def present_gate(self, nid: str, title: str) -> str:
+        """The refusals that do not depend on the document itself — live
+        node, headless org, direct user audience, a title — returning the
+        clipped title. Split out (2026-09-06) so present-by-path can run
+        them BEFORE snapshotting a file into outbox/: a refused present must
+        leave no residue. present_document calls it first, so the two paths
+        cannot drift apart."""
         self._require_live(nid)
         if self.d.get("headless"):
             raise LedgerError(
@@ -7726,32 +7717,84 @@ class Org:
                 "orgtree_message and let them present it, or ask them to "
                 "grant you a user audience")
         t = str(title or "").strip()[:120]
-        b = str(body or "")
         if not t:
             raise LedgerError("a title is required")
-        if not b.strip():
-            raise LedgerError("the document body is empty")
-        if len(b) > self.DOC_BODY_MAX:
-            raise LedgerError(
-                f"the document is {len(b)} bytes — over the 64 KB reading "
-                f"cap. Trim it, split it into parts, or hand the full file "
-                f"over with orgtree_send_file instead")
+        return t
+
+    def present_document(self, nid: str, title: str, body: str,
+                         replaces: str | None = None, *,
+                         html_file: str | None = None,
+                         html_bytes: int = 0) -> dict[str, Any]:
+        """FR-03 (user request 2026-08-05): present a DOCUMENT to the user —
+        a reading surface, not a download. A small card pops out beside the
+        agent's node; clicking it opens the markdown in-page. Non-blocking
+        (the present parks like an ask but nothing voids it — a document is
+        a standing artifact, not a pending question). `replaces` updates an
+        earlier presentation in place instead of stacking a second card.
+
+        HTML mockups (present-html-mockups-in-a-new-browser-tab, 2026-09-06):
+        `html_file` names a snapshot the API layer already copied into the
+        node's outbox/ (`outbox/mock.html`, the orgtree_send_file rule —
+        containment, copy-not-reference, name dedupe all happen THERE; this
+        method records, it does not touch disk). The record then carries
+        `format: "html"`, `file` and `bytes` and an EMPTY body, so the
+        markdown reader never renders HTML as markdown and the tree payload
+        stays metadata-only. The bytes are served by the mockup wrapper route
+        (api.document_mockup), never inline. `replaces` may switch a card
+        between the two formats; the stale format keys are dropped so a
+        record is never half of each.
+
+        Gate (user ruling 2026-08-05, D-100): presentation needs a DIRECT
+        user audience — top-level or a held user-audience grant. Unlike
+        ask_user there is NO auto-bridge: everyone else is refused. A
+        document card is a standing claim on the user's screen, so the
+        chain of command applies to it harder than to a question, not
+        softer. Headless orgs refuse for ask_user's reason (§9.6 ②): the
+        reader IS the UI, and there is no screen to put the card on."""
+        t = self.present_gate(nid, title)
+        b = str(body or "")
+        if html_file:
+            if b.strip():
+                raise LedgerError("an HTML mockup takes `path` OR `body`, "
+                                  "not both")
+            if not str(html_file).startswith("outbox/") \
+                    or not isinstance(html_bytes, int) or html_bytes <= 0:
+                # the API layer's contract, not an agent-reachable message:
+                # the snapshot must already sit in outbox/ and be non-empty
+                raise LedgerError("html_file must be an outbox/ snapshot "
+                                  "with a positive byte count")
+            fields: dict[str, Any] = {"title": t, "body": "", "at": now(),
+                                      "format": "html",
+                                      "file": str(html_file),
+                                      "bytes": int(html_bytes)}
+        else:
+            if not b.strip():
+                raise LedgerError("the document body is empty")
+            if len(b) > self.DOC_BODY_MAX:
+                raise LedgerError(
+                    f"the document is {len(b)} bytes — over the 64 KB reading "
+                    f"cap. Trim it, split it into parts, or hand the full "
+                    f"file over with orgtree_send_file instead")
+            fields = {"title": t, "body": b, "at": now()}
         docs = self.d.setdefault("documents", [])
         if replaces:
             old = next((x for x in docs
                         if x["id"] == replaces and x["node"] == nid), None)
             if old is not None:
-                old.update({"title": t, "body": b, "at": now()})
-                self._log("present", nid, {"id": replaces, "replaced": True},
-                          [])
+                for k in ("format", "file", "bytes"):
+                    old.pop(k, None)          # never half markdown, half html
+                old.update(fields)
+                self._log("present", nid, {"id": replaces, "replaced": True,
+                                           **({"format": "html"}
+                                              if html_file else {})}, [])
                 return {"presented": replaces,
+                        **({"format": "html"} if html_file else {}),
                         "status": "updated in place — the card and any open "
                                   "reader now show this revision"}
             # a dangling replaces falls through to a fresh card rather than
             # erroring: the user may have dismissed the original meanwhile
         did = "d" + uuid.uuid4().hex[:8]
-        docs.append({"id": did, "node": nid, "title": t, "body": b,
-                     "at": now()})
+        docs.append({"id": did, "node": nid, **fields})
         # both prunes log what they drop (redteam gap 2026-08-05): the
         # reader fetches the body by id on open, so an eviction can 404 a
         # document the user is reading — the log entry is the trace. Only
@@ -7770,13 +7813,23 @@ class Org:
         for x in evicted + foreign:
             self._log("present_evicted", x["node"],
                       {"id": x["id"], "title": str(x["title"])[:60],
-                       "by": did}, [])
-        self._log("present", nid, {"id": did, "title": t[:60]}, [])
+                       "by": did,
+                       **({"format": "html"} if x.get("format") == "html"
+                          else {})}, [])
+        self._log("present", nid, {"id": did, "title": t[:60],
+                                   **({"format": "html"} if html_file else {})},
+                  [])
         return {"presented": did,
-                "status": "the document is on the user's screen as a card "
-                          "beside your desk — non-blocking, keep working. "
-                          "Present again with replaces set to this id to "
-                          "update it in place."
+                **({"format": "html"} if html_file else {}),
+                "status": ("the mockup is on the user's screen as a card "
+                           "beside your desk; clicking it opens the page in "
+                           "a new browser tab, sandboxed (no network, no "
+                           "app access) — non-blocking, keep working. "
+                           if html_file else
+                           "the document is on the user's screen as a card "
+                           "beside your desk — non-blocking, keep working. ")
+                          + "Present again with replaces set to this id to "
+                            "update it in place."
                           + (f" ⚠ this pushed {len(evicted)} of your older "
                              f"card(s) off the screen (newest 10 per agent "
                              f"are kept): "
@@ -7844,11 +7897,15 @@ class Org:
                 continue
             seen.add(did)
             nid = str(x.get("node") or "")
-            rows.append({
+            row: dict[str, Any] = {
                 "id": did, "node": nid, "title": x.get("title") or "",
                 "at": x.get("at") or "", "evicted": False,
+                "format": x.get("format") or "markdown",
                 "node_state": _state(nid), "tier": _tier(nid), "_seq": i,
-            })
+            }
+            if x.get("format") == "html":
+                row["bytes"] = int(x.get("bytes") or 0)
+            rows.append(row)
         for i, e in enumerate(self.d.get("events") or []):
             if e.get("op") != "present_evicted":
                 continue
@@ -7862,6 +7919,8 @@ class Org:
                 "id": did, "node": nid,
                 "title": str(detail.get("title") or ""),
                 "at": e.get("at") or "", "evicted": True,
+                "format": "html" if detail.get("format") == "html"
+                else "markdown",
                 "node_state": _state(nid), "tier": _tier(nid), "_seq": i,
             })
         # both source lists are append-only (oldest→newest); `at` is ms ISO
@@ -9231,7 +9290,8 @@ class Org:
                 # fetches the body on open; bodies are up to 64 KB and would
                 # bloat every tree payload)
                 "documents": [{"id": x["id"], "title": x["title"],
-                               "at": x["at"]}
+                               "at": x["at"],
+                               "format": x.get("format") or "markdown"}
                               for x in self.d.get("documents", [])
                               if x["node"] == nid] or None,
                 "bearer_state": n["bearer_state"],

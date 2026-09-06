@@ -641,7 +641,15 @@ TOOLS: list[dict[str, Any]] = [
             "again with "
             "`replaces` set to the returned id to update the same card in "
             "place instead of stacking a second one (newest 10 per agent "
-            "are kept)."),
+            "are kept). HTML MOCKUPS: pass `path` (a .html/.htm file in your "
+            "working folder, the workspace or a folder you hold, ≤4 MB) "
+            "INSTEAD of `body` — the card then opens the page in a new "
+            "browser tab. The file is snapshotted when you present it (edit "
+            "and re-present with `replaces` to update). It runs SANDBOXED: "
+            "inline CSS/JS work, but there is NO network — external "
+            "scripts, stylesheets, fonts and images will not load (inline "
+            "them, e.g. data: URLs), and it cannot reach the orgtree app or "
+            "its API. Operator-only: kiosk visitors cannot open it."),
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -649,12 +657,19 @@ TOOLS: list[dict[str, Any]] = [
                           "description": "short document title (the card "
                                          "label)"},
                 "body": {"type": "string",
-                         "description": "the document, as markdown (≤64 KB)"},
+                         "description": "the document, as markdown (≤64 KB). "
+                                        "Exactly one of body | path"},
+                "path": {"type": "string",
+                         "description": "a self-contained .html/.htm mockup "
+                                        "to present instead of a markdown "
+                                        "body (≤4 MB, no network at "
+                                        "render time). Exactly one of "
+                                        "body | path"},
                 "replaces": {"type": "string",
                              "description": "id of an earlier presentation "
                                             "to update in place"},
             },
-            "required": ["title", "body"],
+            "required": ["title"],
         },
     },
     {

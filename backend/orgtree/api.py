@@ -3764,15 +3764,118 @@ def document_get(slug: str, did: str) -> dict[str, Any]:
         org = store.load_org(slug)
     except LedgerError as e:
         raise HTTPException(404, str(e))
+    doc = _document_or_404(org, did)
+    out: dict[str, Any] = {
+        "id": doc["id"], "node": doc["node"], "title": doc["title"],
+        "body": doc["body"], "at": doc["at"],
+        "format": doc.get("format") or "markdown",
+        "ref": refs.doc(slug, str(doc["id"]))}
+    if doc.get("format") == "html":
+        # the body is "" by construction (ledger.present_document); the page
+        # itself is only ever served through the sandboxed wrapper below
+        out["bytes"] = int(doc.get("bytes") or 0)
+        out["mockup"] = f"/api/orgs/{slug}/documents/{doc['id']}/mockup"
+    return out
+
+
+def _document_or_404(org: Org, did: str) -> dict[str, Any]:
     doc = next((x for x in org.d.get("documents", []) if x["id"] == did), None)
     if doc is None:
         raise HTTPException(
             404, f"no document {did!r} — it was dismissed, or evicted by "
                  f"later presentations (newest 10 per agent are kept; "
                  f"evictions are in the org log)")
-    return {"id": doc["id"], "node": doc["node"], "title": doc["title"],
-            "body": doc["body"], "at": doc["at"],
-            "ref": refs.doc(slug, str(doc["id"]))}
+    return doc
+
+
+# present-html-mockups-in-a-new-browser-tab (2026-09-06). The mockup's bytes
+# are AGENT-AUTHORED, EXECUTABLE HTML. The admin app authenticates by loopback
+# alone and the kiosk by the token in the URL path, and there is no CORS layer
+# — so a page of that kind rendered at the app origin with script would act
+# as the user against every /api route. It is therefore never served as a
+# document of its own. The ONLY route is this trusted wrapper: a page the
+# backend writes, carrying the mockup as an HTML-ESCAPED `srcdoc` inside a
+# sandboxed iframe (opaque origin: no cookies, no storage, no parent/top
+# access, no top navigation, no popups), under a response CSP that forbids
+# every network request and form submission for wrapper and child alike, and
+# with `<base href="about:blank">` + no-referrer so the child cannot learn
+# this page's URL (and on a kiosk, the token in it) through baseURI,
+# referrer or location — measured by feature-astra in Chromium 2026-09-06:
+# location=about:srcdoc, baseURI=about:blank, referrer="". `frame-src 'none'`
+# is what stops the child navigating ITSELF to an arbitrary URL: about:srcdoc
+# is exempt, everything else is a frame navigation the wrapper's policy
+# refuses. Root scope ruling: the preview is OPERATOR-ONLY — a kiosk visitor
+# gets 403, not a script-disabled substitute.
+_MOCKUP_CSP = ("sandbox allow-scripts allow-forms allow-modals; "
+               "default-src 'none'; script-src 'unsafe-inline'; "
+               "style-src 'unsafe-inline'; img-src data: blob:; "
+               "font-src data:; media-src data: blob:; "
+               "form-action 'none'; frame-src 'none'; "
+               "frame-ancestors 'none'; base-uri about:")
+_MOCKUP_HEADERS = {
+    "Content-Security-Policy": _MOCKUP_CSP,
+    "Referrer-Policy": "no-referrer",
+    "X-Content-Type-Options": "nosniff",
+    # Cache-Control: no-store is stamped on every /api/ response by the
+    # instance middleware above; not repeated here (a doubled header)
+}
+
+
+def _mockup_wrapper(title: str, payload: str) -> str:
+    """The trusted page around an untrusted mockup. Everything the child
+    could read is fixed here: `<base href="about:blank">` (baseURI), the
+    iframe's referrerpolicy (referrer), the srcdoc itself (location). The
+    payload is escaped with quote=True so a `"` in the mockup cannot close
+    the attribute — the ONE escaping step this whole boundary rests on."""
+    import html as _html
+    return ("<!DOCTYPE html><html><head><meta charset=\"utf-8\">"
+            "<base href=\"about:blank\">"
+            f"<title>{_html.escape(title, quote=True)}</title>"
+            "<style>html,body{margin:0;height:100%;background:#fff}"
+            "iframe{border:0;width:100%;height:100%;display:block}</style>"
+            "</head><body>"
+            "<iframe sandbox=\"allow-scripts allow-forms allow-modals\" "
+            "referrerpolicy=\"no-referrer\" "
+            f"srcdoc=\"{_html.escape(payload, quote=True)}\"></iframe>"
+            "</body></html>")
+
+
+@app.get("/api/orgs/{slug}/documents/{did}/mockup")
+def document_mockup(slug: str, did: str, request: Request) -> Response:
+    """The new-tab URL behind an HTML mockup card: the sandboxed wrapper
+    described above, and nothing else. 403 on the public gateway (root
+    ruling), 404 for a markdown document or one that is gone, 410 when the
+    record stands but its outbox snapshot was deleted from disk."""
+    if _public_slug(request):
+        raise HTTPException(403, "mockup previews are operator-only — the "
+                                 "card's metadata is still readable")
+    try:
+        org = store.load_org(slug)
+    except LedgerError as e:
+        raise HTTPException(404, str(e))
+    doc = _document_or_404(org, did)
+    if doc.get("format") != "html":
+        raise HTTPException(404, f"document {did!r} is not an HTML mockup")
+    rel = str(doc.get("file") or "")
+    base = os.path.realpath(supervisor.scratch_dir(slug, str(doc["node"])))
+    full = os.path.realpath(os.path.join(base, rel.replace("/", os.sep)))
+    if not rel.startswith("outbox/") or not full.startswith(
+            os.path.join(base, "outbox") + os.sep):
+        raise HTTPException(422, "the mockup record does not point into "
+                                 "the presenter's outbox")
+    try:
+        with open(full, "rb") as fh:
+            data = fh.read(_MOCKUP_MAX + 1)
+    except OSError:
+        raise HTTPException(410, f"the mockup file for {did!r} is no longer "
+                                 f"in the presenter's outbox")
+    if len(data) > _MOCKUP_MAX:
+        raise HTTPException(422, "the mockup file grew past the 4 MB cap "
+                                 "after it was presented")
+    payload = data.decode("utf-8", errors="replace")
+    return Response(_mockup_wrapper(str(doc.get("title") or ""), payload),
+                    media_type="text/html; charset=utf-8",
+                    headers=dict(_MOCKUP_HEADERS))
 
 
 @app.delete("/api/orgs/{slug}/documents/{did}")
@@ -7113,10 +7216,7 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
                         body.org, target, body.node, reason=reason)
             elif body.tool == "orgtree_present":
                 # FR-03: a reading card beside the node — non-blocking
-                result = org.present_document(body.node,
-                                              a.get("title") or "",
-                                              a.get("body") or "",
-                                              a.get("replaces"))
+                result = _agent_present(org, body.node, a)
             elif body.tool == "orgtree_hire":
                 result = _hire_seat(org, body.org, body.node, a, drive)
             elif body.tool == "orgtree_retool":
@@ -7585,15 +7685,16 @@ def _require_net_peer(target: str) -> None:
             f"ever deliver it. Known peers: {hint}.")
 
 
-def _agent_send_file(org: Org, nid: str, a: dict[str, Any]) -> dict[str, Any]:
-    """Copy a file the NODE can legitimately reach into its outbox/ scratch
-    folder. Copy, not reference: the card keeps working after the agent edits
-    or deletes the original (re-sending an updated file yields report-2.pdf —
-    both chat cards stay honest). Outbox lives in scratch, so kiosk storage
+def _outbox_snapshot(org: Org, nid: str, raw: str, *,
+                     max_bytes: int = _SENDFILE_MAX) -> tuple[str, int]:
+    """Resolve `raw` as the NODE sees it, prove the node may reach it, and
+    copy it into the node's outbox/ — the orgtree_send_file rule, shared with
+    present-by-path (HTML mockups, 2026-09-06) so both verbs have ONE
+    containment boundary. Returns (outbox-relative posix name, byte size).
+    Copy, not reference: the card keeps working after the agent edits or
+    deletes the original (re-sending an updated file yields report-2.pdf —
+    both cards stay honest). Outbox lives in scratch, so kiosk storage
     metering already counts it and org deletion sweeps it."""
-    raw = _no_nul(str(a.get("path") or "")).strip()
-    if not raw:
-        raise LedgerError("path is required — the file to deliver")
     slug = org.d["slug"]
     scratch = os.path.realpath(supervisor.scratch_dir(slug, nid))
     p = raw.replace("\\", "/").rstrip("/")
@@ -7645,9 +7746,9 @@ def _agent_send_file(org: Org, nid: str, a: dict[str, Any]) -> dict[str, Any]:
     size = os.path.getsize(src)
     if size == 0:
         raise LedgerError(f"{raw} is empty — nothing to send")
-    if size > _SENDFILE_MAX:
+    if size > max_bytes:
         raise LedgerError(f"{raw} is {size // 1048576} MB — over the "
-                          f"{_SENDFILE_MAX // 1048576} MB send cap")
+                          f"{max_bytes // 1048576} MB cap")
     if org.d.get("storage_blocked"):
         raise LedgerError("the org is over its storage limit — the outbox "
                           "copy is paused; delete files to lift the block, "
@@ -7674,6 +7775,51 @@ def _agent_send_file(org: Org, nid: str, a: dict[str, Any]) -> dict[str, Any]:
     except OSError as e:
         # e.g. the storage block's deny-ACE landing between check and copy
         raise LedgerError(f"outbox copy failed: {e}")
+    return final, size
+
+
+#: present-html-mockups-in-a-new-browser-tab (2026-09-06): a self-contained
+#: page with inline CSS/JS and base64 images is the point, so the cap is well
+#: above the 64 KB markdown reading cap — and well below the send cap, because
+#: the whole file is inlined into one wrapper response on every open.
+_MOCKUP_MAX = 4 * 1048576
+_MOCKUP_EXT = re.compile(r"\.html?$", re.I)
+
+
+def _agent_present(org: Org, nid: str, a: dict[str, Any]) -> dict[str, Any]:
+    """orgtree_present. `body` = markdown, read in-page (FR-03). `path` = a
+    self-contained HTML mockup (2026-09-06): the file is snapshotted into the
+    node's outbox/ by the orgtree_send_file rule — same containment, same
+    copy-not-reference — and the ledger records the snapshot's name, never
+    the bytes. Exactly one of the two. The bytes reach the user only through
+    the mockup wrapper route (document_mockup), sandboxed."""
+    raw = _no_nul(str(a.get("path") or "")).strip()
+    title = a.get("title") or ""
+    md = a.get("body") or ""
+    if not raw:
+        return org.present_document(nid, title, md, a.get("replaces"))
+    if str(md).strip():
+        raise LedgerError("an HTML mockup takes `path` OR `body`, not both")
+    if not _MOCKUP_EXT.search(raw):
+        raise LedgerError(
+            f"only a .html/.htm file may be presented by path — {raw} is "
+            f"not one. Markdown goes in `body`; any other file is a "
+            f"download (orgtree_send_file)")
+    # the ledger gate (live node, audience, headless, title) runs BEFORE the
+    # copy, so a refused present leaves no outbox residue behind
+    org.present_gate(nid, title)
+    final, size = _outbox_snapshot(org, nid, raw, max_bytes=_MOCKUP_MAX)
+    return org.present_document(nid, title, "", a.get("replaces"),
+                                html_file=f"outbox/{final}", html_bytes=size)
+
+
+def _agent_send_file(org: Org, nid: str, a: dict[str, Any]) -> dict[str, Any]:
+    """orgtree_send_file: snapshot the file into outbox/ (see
+    _outbox_snapshot) and describe the card the chat will render."""
+    raw = _no_nul(str(a.get("path") or "")).strip()
+    if not raw:
+        raise LedgerError("path is required — the file to deliver")
+    final, size = _outbox_snapshot(org, nid, raw)
     sent = {"name": os.path.basename(final), "path": f"outbox/{final}",
             "bytes": size}
     note = " ".join(str(a.get("note") or "").split())[:300]
